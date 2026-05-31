@@ -1,7 +1,7 @@
 # Project Status: Unsloth + Muon Integration
 
 ## Current Round: 12
-## Global Status: READY_FOR_MERGE (all R11 findings resolved)
+## Global Status: READY_FOR_MERGE (all R12 findings resolved)
 
 ## 1. Critical Blockers (Must fix to prevent runtime failure, crash, or serialization leakage)
 
@@ -17,7 +17,6 @@
   * **Note:** A warning is logged when `PeftModel` is detected, but no runtime guard prevents Muon from being applied to low-rank adapters. Muon's full-matrix orthogonalization dynamics on rank-deficient LoRA A/B matrices are uncharacterized. Not a crash risk — training quality is unknown.
 - [ ] **[R6 L4]** `_gpu_init` import chain prevents standalone use of `make_muon_param_groups` (`unsloth/__init__.py:147`)
   * **Note:** Importing via `unsloth.optimizers.muon` directly (bypassing `unsloth.__init__`) works, but the public `from unsloth import ...` path triggers `_gpu_init` which requires `unsloth_zoo`.
-- [ ] **[R11 M3]** `_sync_lr` dead code — **Deferred:** Identity-sharing makes `_sync_lr` a no-op. Removal planned for a cleanup PR.
 - [ ] **[R11 M4]** `modal_validate_muon.py` model name may not resolve on HF Hub — **Deferred:** Use a known-good model revision. Validation infrastructure risk.
 - [ ] **[R11 L4]** `_norm_name_pattern` regex false-positive risk — **Deferred:** Low probability. Monitor for future HF model naming conventions. (Deferred R8/R10/R11)
 - [ ] **[R11 L5]** No verification that `muon.defaults` contains expected keys — **Deferred:** Maintenance risk if upstream Muon changes defaults format.
@@ -25,10 +24,18 @@
 ## 4. Historical Archive: Resolved & Verified Findings
 
 ### Round 12 Resolutions
+- [x] **[R12] [M1]** `_sync_lr` group count check extracted into `_assert_group_count_matches` — **Fixed:** Sync loop removed (dead code due to identity-sharing). Group count check isolated into `_assert_group_count_matches()` called from `step()`. `MUON_SYNC_KEYS`/`ADAMW_SYNC_KEYS` frozensets removed. (`unsloth/trainer.py:469-482, 514`).
+- [x] **[R12] [M2]** `make_muon_param_groups` `weight_decay` parameter renamed to `muon_weight_decay` — **Fixed:** Renamed parameter and updated docstring to clarify it is Muon-only. Call site and all tests updated. (`unsloth/optimizers/muon.py:104-155`).
+- [x] **[R12] [L2]** `ns_steps < 1` check tested — **Fixed:** Added `test_muon_config_rejects_ns_steps_lt_one` verifying `MuonConfig(ns_steps=0)` and `MuonConfig(ns_steps=-1)` raise `ValueError`.
+- [x] **[R12] [L3]** `adamw_betas` precedence changed — **Fixed:** `config.adamw_betas` now takes precedence over `TrainingArguments.adam_beta1/adam_beta2`. Only falls through to TrainingArguments when `adamw_betas` is left at default `(0.9, 0.999)`. (`unsloth/trainer.py:733-740`).
+- [x] **[R12] [MT1]** External `add_param_group` on sub-optimizer detected — **Added:** `test_external_add_param_group_detected` verifies direct `muon.add_param_group(...)` raises `RuntimeError` on `step()`.
+- [x] **[R12] [MT3]** `adamw_betas` config precedence test — **Added:** `test_adamw_betas_config_takes_precedence` verifies `MuonConfig(adamw_betas=(0.8, 0.99))` produces correct betas.
+- [x] **[R12] [MT4]** LoRA adapter Muon eligibility — **Added:** `test_muon_routes_lora_adapters` verifies 2D rank-deficient LoRA A/B matrices are Muon-eligible.
+- [x] **[R12] [MT5]** Overlapping norm/embedding classification priority — **Added:** `test_no_decay_takes_precedence_over_embedding` verifies that a param in both sets routes to AdamW no-decay.
 - [x] **[R11] [H1]** `torch.use_deterministic_algorithms` warn_only corruption — **Fixed:** `_muon_step_deterministic` now saves/restores `warn_only` state via `torch.is_deterministic_algorithms_warn_only_enabled()`. Restores both `enabled` and `warn_only` to original values after Muon step (`unsloth/trainer.py:482-501`).
 - [x] **[R11] [M1]** `self.defaults` Muon-only after R10 L1 fix — **Fixed:** Repopulate `self.defaults` with both Muon and AdamW defaults after `super().__init__`, preventing silent failures when downstream code reads `optimizer.defaults` (`unsloth/trainer.py:425-431`).
 - [x] **[R11] [M2]** AdamW groups excluded from identity-sharing assertion — **Fixed:** Extended identity-sharing assertion to verify AdamW groups are identity-shared with chained groups (`unsloth/trainer.py:438-445`).
-- [x] **[R11] [L1]** `_sync_lr` tests test identity-sharing, not sync — **Fixed:** Renamed four `_sync_lr` tests to `test_identity_sharing_*` to clarify what they verify. Added `test_sync_lr_independent_of_identity` (MT1) testing sync with broken identity via deepcopy.
+- [x] **[R11] [L1]** `_sync_lr` tests test identity-sharing, not sync — **Fixed:** Renamed four `_sync_lr` tests to `test_identity_sharing_*` to clarify what they verify. Added `test_assert_group_count_matches_detects_mismatch` testing group count check isolation.
 - [x] **[R11] [L2]** `test_chained_defaults_populated` name stale — **Fixed:** Renamed to `test_chained_defaults_contains_all_keys` and updated assertions to verify both Muon and AdamW keys are present in `defaults`.
 - [x] **[R11] [L3]** `test_empty_muon_group_params` never calls `step()` — **Fixed:** Added `optimizer.step()` call after construction.
 - [x] **[R11] [MT2]** Missing `defaults` completeness test — **Added:** `test_chained_defaults_contains_all_keys` verifies both Muon `momentum` and AdamW `betas` are accessible.
@@ -135,9 +142,9 @@
 
 ## 5. Loop State Handoff (Directives for the Coder Agent)
 
-- **Active Codebase Focus:** All critical, high-severity, and medium/low findings from eleven review passes (R0–R11) have been resolved or documented as deferred. Code is safe to merge for single-GPU full-finetuning.
-- **Latest Input Telemetry Source:** `MUON_REVIEW_11.md` (this round)
-- **Merge Recommendation as of R11:** APPROVE (all R11 issues resolved — see MUON_REVIEW_11.md for details)
+- **Active Codebase Focus:** All critical, high-severity, and medium/low findings from twelve review passes (R0–R12) have been resolved or documented as deferred. Code is safe to merge for single-GPU full-finetuning.
+- **Latest Input Telemetry Source:** `MUON_REVIEW_12.md` (this round)
+- **Merge Recommendation as of R12:** APPROVE (all R12 issues resolved — see MUON_REVIEW_12.md for details)
 - **Inviolable Architecture Constraints:**
     1. Do NOT change the delegated architecture — `torch.optim.Muon` handles the optimizer math; Unsloth handles param routing and chaining.
     2. Do NOT add a Muon reimplementation — the delegation pattern is the correct design.

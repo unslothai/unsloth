@@ -28,7 +28,7 @@ def test_make_muon_param_groups_splits_correctly():
     from unsloth.optimizers.muon import make_muon_param_groups
 
     model = _make_fake_model_with_params()
-    muon_groups, adamw_groups = make_muon_param_groups(model, lr=1e-3, weight_decay=0.1)
+    muon_groups, adamw_groups = make_muon_param_groups(model, lr=1e-3, muon_weight_decay=0.1)
 
     muon_params = [p for g in muon_groups for p in g["params"]]
     adamw_params = [p for g in adamw_groups for p in g["params"]]
@@ -64,7 +64,7 @@ def test_make_muon_param_groups_excludes_embedding_module():
     model.emb = torch.nn.Embedding(10, 4)
     model.lin = torch.nn.Linear(4, 4)
 
-    muon_groups, adamw_groups = make_muon_param_groups(model, lr=1e-3, weight_decay=0.0)
+    muon_groups, adamw_groups = make_muon_param_groups(model, lr=1e-3, muon_weight_decay=0.0)
     muon_params = [p for g in muon_groups for p in g["params"]]
     adamw_params = [p for g in adamw_groups for p in g["params"]]
 
@@ -76,7 +76,7 @@ def test_make_muon_param_groups_splits_weight_decay():
     from unsloth.optimizers.muon import make_muon_param_groups
     model = torch.nn.Linear(4, 4)
 
-    muon_groups, adamw_groups = make_muon_param_groups(model, lr=1e-3, weight_decay=0.1)
+    muon_groups, adamw_groups = make_muon_param_groups(model, lr=1e-3, muon_weight_decay=0.1)
 
     no_decay_groups = [g for g in adamw_groups if g.get("weight_decay", 0.0) == 0.0]
     decay_groups = [g for g in adamw_groups if g.get("weight_decay", 0.0) > 0.0]
@@ -96,7 +96,7 @@ def test_no_requires_grad_excluded():
     model = torch.nn.Linear(4, 4)
     model.weight.requires_grad = False
     model.bias.requires_grad = False
-    muon_groups, adamw_groups = make_muon_param_groups(model, lr=1e-3, weight_decay=0.0)
+    muon_groups, adamw_groups = make_muon_param_groups(model, lr=1e-3, muon_weight_decay=0.0)
     total = sum(len(g["params"]) for g in muon_groups + adamw_groups)
     assert total == 0
 
@@ -109,7 +109,7 @@ def test_target_modules_filter():
     model.add_module("mlp_gate", torch.nn.Linear(4, 4))
 
     muon_groups, adamw_groups = make_muon_param_groups(
-        model, lr=1e-3, weight_decay=0.0, target_modules=["attn"]
+        model, lr=1e-3, muon_weight_decay=0.0, target_modules=["attn"]
     )
     muon_names = set()
     for g in muon_groups:
@@ -467,11 +467,11 @@ def test_chained_defaults_contains_all_keys():
     assert chained.defaults["lr"] == 1e-4
 
 
-# -- Tests: MT1 — _sync_lr independent of identity-sharing --------------------
+# -- Tests: MT1 — Group count check ------------------------------------------
 
 
-def test_sync_lr_independent_of_identity():
-    """_sync_lr must copy values when identity-sharing is broken."""
+def test_assert_group_count_matches_detects_mismatch():
+    """_assert_group_count_matches must detect sub-optimizer group drift."""
     _skip_if_no_muon()
 
     p = torch.nn.Parameter(torch.randn(4, 4))
@@ -482,14 +482,10 @@ def test_sync_lr_independent_of_identity():
     from unsloth.trainer import _MuonAdamWChained
     chained = _MuonAdamWChained(muon, adamw)
 
-    import copy
-    chained.param_groups = copy.deepcopy(chained.param_groups)
+    chained.param_groups.append({"params": [], "lr": 1e-5, "weight_decay": 0.0})
 
-    chained.param_groups[0]["lr"] = 5e-4
-    assert muon.param_groups[0]["lr"] != 5e-4, "Identity already broken"
-
-    chained._sync_lr()
-    assert muon.param_groups[0]["lr"] == 5e-4, "_sync_lr did not propagate lr"
+    with pytest.raises(RuntimeError, match="group count mismatch"):
+        chained._assert_group_count_matches()
 
 
 # -- Tests: embedding_lr -----------------------------------------------------
@@ -504,7 +500,7 @@ def test_make_muon_param_groups_embedding_lr():
     model.lin = torch.nn.Linear(4, 4)
 
     muon_groups, adamw_groups = make_muon_param_groups(
-        model, lr=1e-3, weight_decay=0.0, embedding_lr=1e-4
+        model, lr=1e-3, muon_weight_decay=0.0, embedding_lr=1e-4
     )
 
     emb_group = None
@@ -533,7 +529,7 @@ def test_make_muon_param_groups_embedding_lr_fallsback():
     model.lin = torch.nn.Linear(4, 4)
 
     muon_groups, adamw_groups = make_muon_param_groups(
-        model, lr=1e-3, weight_decay=0.1
+        model, lr=1e-3, muon_weight_decay=0.1
     )
 
     emb_in_no_decay = any(
@@ -542,7 +538,7 @@ def test_make_muon_param_groups_embedding_lr_fallsback():
         if g.get("weight_decay", 0.0) == 0.0
         for p in g["params"]
     )
-    # Without embedding_lr, embeddings go to the no-decay group (weight_decay=0.0)
+    # Without embedding_lr, embeddings go to the no-decay group (muon_weight_decay=0.0)
     # since they're routed as embeddings, not decay params
     assert emb_in_no_decay, "Embedding should be in no-decay group when no embedding_lr"
 
@@ -557,7 +553,7 @@ def test_weight_decay_isolation():
     model = torch.nn.Linear(4, 4)
     # Muon gets weight, AdamW gets bias
     muon_groups, adamw_groups = make_muon_param_groups(
-        model, lr=1e-3, weight_decay=0.5, adamw_weight_decay=0.1
+        model, lr=1e-3, muon_weight_decay=0.5, adamw_weight_decay=0.1
     )
 
     assert muon_groups[0]["weight_decay"] == 0.5, "Muon weight_decay should be 0.5"
@@ -611,6 +607,14 @@ def test_muon_config_validates_ns_steps():
         MuonConfig(ns_steps=200)
 
 
+def test_muon_config_rejects_ns_steps_lt_one():
+    from unsloth.trainer import MuonConfig
+    with pytest.raises(ValueError, match="ns_steps must be >= 1"):
+        MuonConfig(ns_steps=0)
+    with pytest.raises(ValueError, match="ns_steps must be >= 1"):
+        MuonConfig(ns_steps=-1)
+
+
 def test_muon_config_validates_adjust_lr_fn():
     from unsloth.trainer import MuonConfig
     with pytest.raises(ValueError, match="adjust_lr_fn"):
@@ -640,7 +644,7 @@ def test_peft_modules_to_save_embedding_goes_to_adamw():
     model._parameters["emb.modules_to_save.default.weight"] = peft_param
 
     muon_groups, adamw_groups = make_muon_param_groups(
-        model, lr=1e-3, weight_decay=0.0, embedding_lr=1e-4
+        model, lr=1e-3, muon_weight_decay=0.0, embedding_lr=1e-4
     )
 
     muon_params = [p for g in muon_groups for p in g["params"]]
@@ -662,7 +666,7 @@ def test_peft_modules_to_save_non_embedding_goes_to_muon():
     model._parameters["score.modules_to_save.default.weight"] = peft_param
 
     muon_groups, adamw_groups = make_muon_param_groups(
-        model, lr=1e-3, weight_decay=0.5, adamw_weight_decay=0.1
+        model, lr=1e-3, muon_weight_decay=0.5, adamw_weight_decay=0.1
     )
 
     muon_params = [p for g in muon_groups for p in g["params"]]
@@ -716,7 +720,7 @@ def test_empty_muon_group_params():
     model = torch.nn.Module()
     model.register_parameter("bias", torch.nn.Parameter(torch.randn(4)))
 
-    muon_g, adamw_g = make_muon_param_groups(model, lr=1e-3, weight_decay=0.1)
+    muon_g, adamw_g = make_muon_param_groups(model, lr=1e-3, muon_weight_decay=0.1)
     assert len(muon_g) == 1
     assert len(muon_g[0]["params"]) == 0
 
@@ -734,7 +738,7 @@ def test_empty_adamw_group_params():
     _skip_if_no_muon()
 
     model = torch.nn.Linear(4, 4, bias=False)
-    muon_g, adamw_g = make_muon_param_groups(model, lr=1e-3, weight_decay=0.1)
+    muon_g, adamw_g = make_muon_param_groups(model, lr=1e-3, muon_weight_decay=0.1)
     assert len(adamw_g) == 0
     # All 2D params go to Muon
     assert len(muon_g[0]["params"]) > 0
@@ -749,7 +753,7 @@ def test_weight_decay_isolation_equal_values():
 
     model = torch.nn.Linear(4, 4)
     muon_g, adamw_g = make_muon_param_groups(
-        model, lr=1e-3, weight_decay=0.1, adamw_weight_decay=0.1
+        model, lr=1e-3, muon_weight_decay=0.1, adamw_weight_decay=0.1
     )
 
     assert muon_g[0]["weight_decay"] == 0.1
@@ -768,7 +772,7 @@ def test_target_modules_nonexistent():
 
     model = torch.nn.Linear(4, 4)
     muon_g, adamw_g = make_muon_param_groups(
-        model, lr=1e-3, weight_decay=0.0, target_modules=["nonexistent"]
+        model, lr=1e-3, muon_weight_decay=0.0, target_modules=["nonexistent"]
     )
 
     assert len(muon_g[0]["params"]) == 0
@@ -1125,7 +1129,7 @@ def test_target_modules_with_embedding_match():
     model.add_module("lin", torch.nn.Linear(8, 4))
 
     muon_g, adamw_g = make_muon_param_groups(
-        model, lr=1e-3, weight_decay=0.0, target_modules=["lin"]
+        model, lr=1e-3, muon_weight_decay=0.0, target_modules=["lin"]
     )
 
     muon_params = [p for g in muon_g for p in g["params"]]
@@ -1143,7 +1147,7 @@ def test_no_trainable_params():
     for p in model.parameters():
         p.requires_grad = False
 
-    muon_g, adamw_g = make_muon_param_groups(model, lr=1e-3, weight_decay=0.0)
+    muon_g, adamw_g = make_muon_param_groups(model, lr=1e-3, muon_weight_decay=0.0)
     assert len(muon_g[0]["params"]) == 0
     all_adamw = [p for g in adamw_g for p in g["params"]]
     assert len(all_adamw) == 0
@@ -1239,7 +1243,7 @@ def test_peft_non_default_adapter_name():
     assert "emb.modules_to_save.custom_name.bias" in embedding_names, \
         "Custom adapter embedding bias must be classified as embedding"
 
-    muon_g, adamw_g = make_muon_param_groups(model, lr=1e-3, weight_decay=0.0)
+    muon_g, adamw_g = make_muon_param_groups(model, lr=1e-3, muon_weight_decay=0.0)
     muon_params = [p for g in muon_g for p in g["params"]]
     adamw_params = [p for g in adamw_g for p in g["params"]]
 
@@ -1266,7 +1270,7 @@ def test_2d_norm_weight_goes_to_no_decay():
     model.norm = Fake2DNorm()
     model.lin = torch.nn.Linear(4, 4)
 
-    muon_g, adamw_g = make_muon_param_groups(model, lr=1e-3, weight_decay=0.1)
+    muon_g, adamw_g = make_muon_param_groups(model, lr=1e-3, muon_weight_decay=0.1)
 
     muon_params = [p for g in muon_g for p in g["params"]]
     adamw_params = [p for g in adamw_g for p in g["params"]]
@@ -1426,7 +1430,7 @@ def test_betas_not_propagated_to_muon():
     q.grad = torch.randn_like(q)
     chained.step()
 
-    # Muon's betas must NOT be overwritten by sync (MUON_SYNC_KEYS excludes betas)
+    # Muon's betas must NOT be overwritten by sync
     muon_betas_after = muon.param_groups[0].get("betas", None)
     assert muon_betas_after == original_muon_betas, \
         f"Muon betas changed from {original_muon_betas} to {muon_betas_after} via sync"
@@ -1566,3 +1570,112 @@ def test_adamw_eps_explicit_equals_default():
     assert isinstance(result, _MuonAdamWChained)
     assert result.adamw.param_groups[0]["eps"] == 1e-8, \
         f"Expected eps=1e-8 from explicit config, got {result.adamw.param_groups[0]['eps']}"
+
+
+# -- Tests: R12 MT1 — External add_param_group on sub-optimizer detected ----
+
+
+def test_external_add_param_group_detected():
+    """Direct add_param_group on sub-optimizer must be caught on step()."""
+    _skip_if_no_muon()
+
+    p = torch.nn.Parameter(torch.randn(4, 4))
+    q = torch.nn.Parameter(torch.randn(4))
+    muon = torch.optim.Muon([p], lr=1e-3, momentum=0.95, ns_steps=5)
+    adamw = torch.optim.AdamW([q], lr=1e-3)
+
+    from unsloth.trainer import _MuonAdamWChained
+    chained = _MuonAdamWChained(muon, adamw)
+
+    extra = torch.nn.Parameter(torch.randn(4, 4))
+    muon.add_param_group({"params": [extra]})
+    extra.grad = torch.randn_like(extra)
+    p.grad = torch.randn_like(p)
+    q.grad = torch.randn_like(q)
+
+    with pytest.raises(RuntimeError, match="group count mismatch"):
+        chained.step()
+
+
+# -- Tests: R12 MT3 — adamw_betas configuration precedence --------------------
+
+
+def test_adamw_betas_config_takes_precedence():
+    """MuonConfig(adamw_betas=...) must override TrainingArguments defaults."""
+    _skip_if_no_muon()
+
+    from unsloth.trainer import MuonConfig, UnslothTrainer, _MuonAdamWChained
+
+    model = torch.nn.Linear(4, 4)
+    args = MagicMock()
+    args.learning_rate = 1e-3
+    args.weight_decay = 0.1
+    args.adam_beta1 = 0.9
+    args.adam_beta2 = 0.999
+    args.adam_epsilon = 1e-8
+
+    trainer = UnslothTrainer.__new__(UnslothTrainer)
+    trainer.model = model
+    trainer.args = args
+    trainer.optimizer = None
+
+    config = MuonConfig(adamw_betas=(0.8, 0.99))
+    result = trainer._create_muon_optimizer(config)
+    actual = result.adamw.param_groups[0]["betas"]
+    assert actual == (0.8, 0.99), \
+        f"Expected adamw_betas=(0.8, 0.99) from config, got {actual}"
+
+
+# -- Tests: R12 MT4 — LoRA adapter Muon eligibility (2D rank-deficient) -----
+
+
+def test_muon_routes_lora_adapters():
+    """LoRA A/B matrices (2D, rank-deficient) must be Muon-eligible."""
+    from unsloth.optimizers.muon import _is_muon_eligible
+
+    lora_a = torch.nn.Parameter(torch.randn(64, 16))
+    assert _is_muon_eligible("lora_A", lora_a, set())
+
+    lora_b = torch.nn.Parameter(torch.randn(16, 64))
+    assert _is_muon_eligible("lora_B", lora_b, set())
+
+
+# -- Tests: R12 MT5 — Overlapping norm/embedding classification priority -----
+
+
+def test_no_decay_takes_precedence_over_embedding():
+    """Param in both no_decay and embedding sets goes to no_decay group."""
+    from unsloth.optimizers.muon import make_muon_param_groups
+
+    model = torch.nn.Module()
+    model.lin = torch.nn.Linear(4, 4)
+    model.register_parameter(
+        "norm_embedding_weight",
+        torch.nn.Parameter(torch.randn(4, 4)),
+    )
+
+    def mock_classify(model):
+        return {"norm_embedding_weight"}, {"norm_embedding_weight"}
+
+    import unsloth.optimizers.muon as muon_mod
+    original = muon_mod._classify_param_names
+    muon_mod._classify_param_names = mock_classify
+    try:
+        muon_g, adamw_g = make_muon_param_groups(
+            model, lr=1e-3, muon_weight_decay=0.1
+        )
+        muon_params = [p for g in muon_g for p in g["params"]]
+        adamw_params = [p for g in adamw_g for p in g["params"]]
+        weight = model.norm_embedding_weight
+        assert not any(p is weight for p in muon_params), \
+            "Overlapping param must not go to Muon"
+        assert any(p is weight for p in adamw_params), \
+            "Overlapping param must go to AdamW"
+        in_no_decay = any(
+            any(p is weight for p in g["params"]) and g.get("weight_decay", -1) == 0.0
+            for g in adamw_g
+        )
+        assert in_no_decay, \
+            "Overlapping param must be in AdamW no-decay group (weight_decay=0.0)"
+    finally:
+        muon_mod._classify_param_names = original

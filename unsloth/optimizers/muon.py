@@ -104,7 +104,7 @@ def _is_muon_eligible(name: str, param: torch.Tensor, embedding_param_names: Set
 def make_muon_param_groups(
     model: torch.nn.Module,
     lr: float,
-    weight_decay: float,
+    muon_weight_decay: float,
     muon_lr_scale: float = 1.0,
     adamw_lr: Optional[float] = None,
     adamw_weight_decay: Optional[float] = None,
@@ -127,14 +127,14 @@ def make_muon_param_groups(
         The model whose parameters to split.
     lr : float
         Base learning rate from the training arguments.
-    weight_decay : float
+    muon_weight_decay : float
         Weight decay for Muon groups.
     muon_lr_scale : float, optional
         LR multiplier for Muon groups (applied on top of ``lr``).
     adamw_lr : float, optional
         Separate LR for AdamW fallback. Defaults to ``lr``.
     adamw_weight_decay : float, optional
-        Weight decay for AdamW fallback (decay group). Defaults to ``weight_decay``.
+        Weight decay for AdamW fallback (decay group). Defaults to ``muon_weight_decay``.
     target_modules : list of str, optional
         If set, only parameters whose name contains any of these substrings
         are eligible for Muon; all others go to AdamW.
@@ -152,7 +152,7 @@ def make_muon_param_groups(
         ``torch.optim.AdamW`` respectively.
     """
     adamw_lr = adamw_lr if adamw_lr is not None else lr
-    adamw_weight_decay = adamw_weight_decay if adamw_weight_decay is not None else weight_decay
+    adamw_weight_decay = adamw_weight_decay if adamw_weight_decay is not None else muon_weight_decay
 
     embedding_names, no_decay_names = _classify_param_names(model)
 
@@ -187,7 +187,7 @@ def make_muon_param_groups(
         else:
             adamw_decay_params.append(param)
 
-    muon_groups = [{"params": muon_params, "lr": lr * muon_lr_scale, "weight_decay": weight_decay}]
+    muon_groups = [{"params": muon_params, "lr": lr * muon_lr_scale, "weight_decay": muon_weight_decay}]
     adamw_groups: list[dict] = []
     if adamw_decay_params:
         adamw_groups.append(

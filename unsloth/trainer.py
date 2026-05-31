@@ -216,9 +216,6 @@ class MuonConfig:
     muon_weight_decay: Optional[float] = None
     adamw_lr: Optional[float] = None
     adamw_betas: tuple = (0.9, 0.999)
-    # Note: if TrainingArguments.adam_beta1/adam_beta2 are set, they override
-    # adamw_betas. This matches Q-GaLore's convention and allows users to
-    # set betas once in TrainingArguments for all optimizers.
     adamw_eps: object = _ADAMW_EPS_UNSET
     adamw_weight_decay: Optional[float] = None
     target_modules: Optional[List[str]] = None
@@ -391,9 +388,9 @@ class _MuonAdamWChained(torch.optim.Optimizer):
     ``param_groups`` is the concatenation of both sub-optimizers' groups.
     The groups are **identity-shared** — ``self.param_groups[i] is
     sub_optimizer.param_groups[i]``.  LR schedulers applied to this object
-    will have their LR changes visible to sub-optimizers immediately;
-    ``_sync_lr()`` is a no-op in the current implementation (but retained
-    for forward compatibility if identity-sharing is ever removed).
+    will have their LR changes visible to sub-optimizers immediately.
+    A group count check (``_assert_group_count_matches``) fires on every
+    ``step()`` to detect external ``add_param_group`` calls on sub-optimizers.
 
     .. warning::
 
@@ -458,20 +455,8 @@ class _MuonAdamWChained(torch.optim.Optimizer):
             "Add param groups to the sub-optimizers directly."
         )
 
-    MUON_SYNC_KEYS = frozenset({
-        "lr", "weight_decay", "momentum", "nesterov", "eps",
-        "ns_steps", "ns_coefficients", "adjust_lr_fn",
-    })
-    ADAMW_SYNC_KEYS = frozenset({
-        "lr", "weight_decay", "betas", "eps",
-    })
-
-    def _sync_lr(self):
-        idx = 0
-        if self.muon is not None:
-            n_muon = len(self.muon.param_groups)
-        else:
-            n_muon = 0
+    def _assert_group_count_matches(self):
+        n_muon = len(self.muon.param_groups) if self.muon is not None else 0
         n_adamw = len(self.adamw.param_groups) if self.adamw is not None else 0
         if n_muon + n_adamw != len(self.param_groups):
             raise RuntimeError(
@@ -480,18 +465,6 @@ class _MuonAdamWChained(torch.optim.Optimizer):
                 f"chained={len(self.param_groups)}. "
                 "This can happen if add_param_group was called on a sub-optimizer."
             )
-        if self.muon is not None:
-            for group in self.muon.param_groups:
-                for k in self.MUON_SYNC_KEYS:
-                    if k in self.param_groups[idx] and k in group:
-                        group[k] = self.param_groups[idx][k]
-                idx += 1
-        if self.adamw is not None:
-            for group in self.adamw.param_groups:
-                for k in self.ADAMW_SYNC_KEYS:
-                    if k in self.param_groups[idx] and k in group:
-                        group[k] = self.param_groups[idx][k]
-                idx += 1
 
     def _muon_step_deterministic(self):
         if not self._needs_deterministic:
@@ -512,7 +485,7 @@ class _MuonAdamWChained(torch.optim.Optimizer):
                 torch.use_deterministic_algorithms(False)
 
     def step(self, closure=None):
-        self._sync_lr()
+        self._assert_group_count_matches()
         if closure is not None:
             with torch.enable_grad():
                 loss = closure()
@@ -677,7 +650,7 @@ class UnslothTrainer(SFTTrainer):
         muon_groups, adamw_groups = make_muon_param_groups(
             self.model,
             lr=lr,
-            weight_decay=muon_weight_decay,
+            muon_weight_decay=muon_weight_decay,
             muon_lr_scale=config.muon_lr_scale,
             adamw_lr=config.adamw_lr,
             adamw_weight_decay=adamw_weight_decay,
@@ -730,10 +703,13 @@ class UnslothTrainer(SFTTrainer):
         else:
             muon_optimizer = None
 
-        adamw_betas = (
-            getattr(self.args, "adam_beta1", config.adamw_betas[0]),
-            getattr(self.args, "adam_beta2", config.adamw_betas[1]),
-        )
+        if config.adamw_betas != (0.9, 0.999):
+            adamw_betas = config.adamw_betas
+        else:
+            adamw_betas = (
+                getattr(self.args, "adam_beta1", 0.9),
+                getattr(self.args, "adam_beta2", 0.999),
+            )
         if config.adamw_eps is not MuonConfig._ADAMW_EPS_UNSET:
             adamw_eps = config.adamw_eps
         else:
