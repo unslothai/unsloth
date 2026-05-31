@@ -213,6 +213,44 @@ DIRECT_LINUX_BUNDLE_PROFILES: dict[str, dict[str, Any]] = {
     },
 }
 
+# Lowest CUDA major we ship prebuilts for, and the highest major we probe for
+# installed runtime libraries. Detection and runtime-line derivation are
+# generated per major so a new toolkit (cuda14, ...) needs no code change while
+# llama.cpp keeps the cudart64_<major>.dll / libcudart.so.<major> naming.
+_MIN_CUDA_MAJOR = 12
+_MAX_PROBE_CUDA_MAJOR = 19
+
+
+def _cuda_runtime_lines_for_major(major: int) -> list[str]:
+    """Runtime lines a driver of this CUDA major can use, newest major first
+    down to the minimum we ship. A driver runs its own major and any older one
+    (backward compatibility)."""
+    return [f"cuda{m}" for m in range(major, _MIN_CUDA_MAJOR - 1, -1)]
+
+
+def _resolve_linux_bundle_profile(bundle_profile: str) -> "dict[str, Any] | None":
+    """Profile (runtime line + sm coverage) for a linux-x64-cuda<major>-<class>
+    bundle. Known majors use their published coverage; an unknown future major
+    reuses the newest known major's coverage for the same class as a forward
+    default, with the post-build GPU smoke test as the backstop."""
+    known = DIRECT_LINUX_BUNDLE_PROFILES.get(bundle_profile)
+    if known is not None:
+        return known
+    m = re.fullmatch(r"cuda(?P<major>\d+)-(?P<klass>older|newer|portable)", bundle_profile)
+    if not m:
+        return None
+    base_key = max(
+        (k for k, v in DIRECT_LINUX_BUNDLE_PROFILES.items()
+         if v["coverage_class"] == m.group("klass")),
+        key = lambda k: int(re.match(r"cuda(\d+)-", k).group(1)),
+        default = None,
+    )
+    if base_key is None:
+        return None
+    profile = dict(DIRECT_LINUX_BUNDLE_PROFILES[base_key])
+    profile["runtime_line"] = f"cuda{m.group('major')}"
+    return profile
+
 
 @dataclass
 class HostInfo:
@@ -1229,7 +1267,7 @@ def parse_direct_linux_release_bundle(
     inferred_labels: list[str] = []
 
     linux_asset_re = re.compile(
-        r"^app-(?P<label>.+)-(?P<target>linux-x64(?:-cpu)?|linux-x64-(?:cuda12|cuda13)-(?:older|newer|portable))\.tar\.gz$"
+        r"^app-(?P<label>.+)-(?P<target>linux-x64(?:-cpu)?|linux-x64-cuda\d+-(?:older|newer|portable))\.tar\.gz$"
     )
     for asset_name in sorted(assets):
         match = linux_asset_re.fullmatch(asset_name)
@@ -1254,7 +1292,7 @@ def parse_direct_linux_release_bundle(
             continue
 
         bundle_profile = target.removeprefix("linux-x64-")
-        profile = DIRECT_LINUX_BUNDLE_PROFILES.get(bundle_profile)
+        profile = _resolve_linux_bundle_profile(bundle_profile)
         if profile is None:
             continue
         artifacts.append(
@@ -1763,8 +1801,8 @@ def linux_runtime_dirs_for_required_libraries(
 
 def detected_linux_runtime_lines() -> tuple[list[str], dict[str, list[str]]]:
     line_requirements = {
-        "cuda13": ["libcudart.so.13", "libcublas.so.13"],
-        "cuda12": ["libcudart.so.12", "libcublas.so.12"],
+        f"cuda{m}": [f"libcudart.so.{m}", f"libcublas.so.{m}"]
+        for m in range(_MAX_PROBE_CUDA_MAJOR, _MIN_CUDA_MAJOR - 1, -1)
     }
     detected: list[str] = []
     runtime_dirs: dict[str, list[str]] = {}
@@ -2959,17 +2997,21 @@ def compatible_linux_runtime_lines(host: HostInfo) -> list[str]:
     if not host.driver_cuda_version:
         return []
     major, _minor = host.driver_cuda_version
-    if major >= 13:
-        return ["cuda13", "cuda12"]
-    if major >= 12:
-        return ["cuda12"]
-    return []
+    if major < _MIN_CUDA_MAJOR:
+        return []
+    return _cuda_runtime_lines_for_major(major)
 
 
 def windows_runtime_line_info() -> dict[str, tuple[str, ...]]:
+    # Generated per CUDA major (newest first) so a new toolkit is detected
+    # without a code change while the cudart64_<major>.dll naming holds.
     return {
-        "cuda13": ("cudart64_13*.dll", "cublas64_13*.dll", "cublasLt64_13*.dll"),
-        "cuda12": ("cudart64_12*.dll", "cublas64_12*.dll", "cublasLt64_12*.dll"),
+        f"cuda{m}": (
+            f"cudart64_{m}*.dll",
+            f"cublas64_{m}*.dll",
+            f"cublasLt64_{m}*.dll",
+        )
+        for m in range(_MAX_PROBE_CUDA_MAJOR, _MIN_CUDA_MAJOR - 1, -1)
     }
 
 
@@ -2986,12 +3028,13 @@ def detected_windows_runtime_lines() -> tuple[list[str], dict[str, list[str]]]:
 
 
 def compatible_windows_runtime_lines(host: HostInfo) -> list[str]:
-    driver_runtime = pick_windows_cuda_runtime(host)
-    if driver_runtime == "13.1":
-        return ["cuda13", "cuda12"]
-    if driver_runtime == "12.4":
-        return ["cuda12"]
-    return []
+    if not host.driver_cuda_version:
+        return []
+    major, minor = host.driver_cuda_version
+    # cuda12 prebuilts need a 12.4+ driver; cuda13+ any minor of the major.
+    if major < _MIN_CUDA_MAJOR or (major == _MIN_CUDA_MAJOR and minor < 4):
+        return []
+    return _cuda_runtime_lines_for_major(major)
 
 
 def runtime_line_from_cuda_version(cuda_version: str | None) -> str | None:
@@ -3068,7 +3111,6 @@ def windows_cuda_attempts(
     selection_preamble: Iterable[str] = (),
 ) -> list[AssetChoice]:
     selection_log = list(selection_preamble)
-    runtime_by_line = {"cuda12": "12.4", "cuda13": "13.1"}
     driver_runtime = pick_windows_cuda_runtime(host)
     detected_runtime_lines, runtime_dirs = detected_windows_runtime_lines()
     compatible_runtime_lines = compatible_windows_runtime_lines(host)
@@ -3111,12 +3153,7 @@ def windows_cuda_attempts(
             selection_log.append(
                 "windows_cuda_selection: detected CUDA runtime DLLs were incompatible with the reported driver"
             )
-        fallback_runtime_lines = (
-            ["cuda13", "cuda12"]
-            if driver_runtime == "13.1"
-            else (["cuda12"] if driver_runtime == "12.4" else [])
-        )
-        normal_runtime_lines = fallback_runtime_lines
+        normal_runtime_lines = compatible_runtime_lines
 
     runtime_order: list[str] = []
     if preferred_runtime_line and preferred_runtime_line in normal_runtime_lines:
@@ -3151,13 +3188,16 @@ def windows_cuda_attempts(
 
     attempts: list[AssetChoice] = []
     for runtime_line in runtime_order:
-        major = 13 if runtime_line == "cuda13" else 12
-        # Use the minor ggml-org actually ships (13.1 -> 13.3); the hardcoded
-        # default is only a fallback when upstream has no matching asset.
-        runtime = (
-            _published_windows_cuda_runtime(upstream_assets, major)
-            or runtime_by_line[runtime_line]
-        )
+        major = int(runtime_line.removeprefix("cuda"))
+        # Track whatever minor llama.cpp actually ships for this major
+        # (cuda13 -> 13.1, 13.3, ...). Skip the line when the release has no
+        # matching asset instead of guessing a now-missing name.
+        runtime = _published_windows_cuda_runtime(upstream_assets, major)
+        if runtime is None:
+            selection_log.append(
+                f"windows_cuda_selection: no upstream asset for {runtime_line}"
+            )
+            continue
         selected_name = None
         asset_url = None
         for candidate_name in windows_cuda_upstream_asset_names(llama_tag, runtime):

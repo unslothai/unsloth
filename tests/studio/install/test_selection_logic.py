@@ -52,6 +52,7 @@ compatible_windows_runtime_lines = (
 runtime_line_from_cuda_version = INSTALL_LLAMA_PREBUILT.runtime_line_from_cuda_version
 apply_approved_hashes = INSTALL_LLAMA_PREBUILT.apply_approved_hashes
 linux_cuda_choice_from_release = INSTALL_LLAMA_PREBUILT.linux_cuda_choice_from_release
+parse_direct_linux_release_bundle = INSTALL_LLAMA_PREBUILT.parse_direct_linux_release_bundle
 windows_cuda_attempts = INSTALL_LLAMA_PREBUILT.windows_cuda_attempts
 resolve_upstream_asset_choice = INSTALL_LLAMA_PREBUILT.resolve_upstream_asset_choice
 resolve_requested_install_tag = INSTALL_LLAMA_PREBUILT.resolve_requested_install_tag
@@ -397,6 +398,44 @@ class TestCompatibleLinuxRuntimeLines:
         host = make_host(driver_cuda_version = (13, 0))
         assert compatible_linux_runtime_lines(host) == ["cuda13", "cuda12"]
 
+    def test_future_major_derives_lines(self):
+        # A future major (14.x) offers cuda14 first, then older majors.
+        host = make_host(driver_cuda_version = (14, 0))
+        assert compatible_linux_runtime_lines(host) == ["cuda14", "cuda13", "cuda12"]
+
+
+class TestParseDirectLinuxReleaseBundle:
+    def _release(self, *targets):
+        names = [f"app-bTEST-linux-x64-{t}.tar.gz" for t in targets]
+        return {
+            "tag_name": "bTEST",
+            "assets": [
+                {"name": n, "browser_download_url": "https://x/" + n} for n in names
+            ],
+        }
+
+    def _cuda_artifact(self, bundle):
+        return [a for a in bundle.artifacts if a.install_kind == "linux-cuda"][0]
+
+    def test_parses_known_cuda13_bundle(self):
+        bundle = parse_direct_linux_release_bundle(
+            "unslothai/llama.cpp", self._release("cuda13-newer")
+        )
+        assert bundle is not None
+        assert self._cuda_artifact(bundle).runtime_line == "cuda13"
+
+    def test_parses_future_cuda_major_with_forward_profile(self):
+        # A future major name parses and inherits the newest known major's
+        # coverage for the same class as a forward default.
+        bundle = parse_direct_linux_release_bundle(
+            "unslothai/llama.cpp", self._release("cuda14-newer")
+        )
+        assert bundle is not None
+        art = self._cuda_artifact(bundle)
+        assert art.runtime_line == "cuda14"
+        assert art.coverage_class == "newer"
+        assert art.max_sm == 120  # inherited from cuda13-newer
+
 
 # ===========================================================================
 # G. pick_windows_cuda_runtime + compatible_windows_runtime_lines
@@ -441,6 +480,10 @@ class TestCompatibleWindowsRuntimeLines:
     def test_driver_13_0_uses_cuda13_line(self):
         host = make_host(driver_cuda_version = (13, 0))
         assert compatible_windows_runtime_lines(host) == ["cuda13", "cuda12"]
+
+    def test_future_major_derives_lines(self):
+        host = make_host(driver_cuda_version = (14, 0))
+        assert compatible_windows_runtime_lines(host) == ["cuda14", "cuda13", "cuda12"]
 
 
 # ===========================================================================
@@ -1917,6 +1960,32 @@ class TestWindowsCudaAttempts:
         assets = self._upstream("13.3", "12.4")
         result = windows_cuda_attempts(host, self.TAG, assets, None)
         assert result[0].runtime_line == "cuda13"
+        assert result[0].name == f"llama-{self.TAG}-bin-win-cuda-13.3-x64.zip"
+
+    def test_tracks_future_cuda13_minor(self, monkeypatch):
+        # A later within-major bump (13.4) is tracked the same as 13.3.
+        mock_windows_runtime(monkeypatch, ["cuda13", "cuda12"])
+        host = make_host(system = "Windows", machine = "AMD64", driver_cuda_version = (13, 4))
+        assets = self._upstream("13.4", "12.4")
+        result = windows_cuda_attempts(host, self.TAG, assets, None)
+        assert result[0].name == f"llama-{self.TAG}-bin-win-cuda-13.4-x64.zip"
+
+    def test_new_cuda_major_selected_when_published(self, monkeypatch):
+        # A new CUDA major (14.x) driver picks the published cuda14 build.
+        mock_windows_runtime(monkeypatch, ["cuda14", "cuda13", "cuda12"])
+        host = make_host(system = "Windows", machine = "AMD64", driver_cuda_version = (14, 0))
+        assets = self._upstream("14.0", "13.3", "12.4")
+        result = windows_cuda_attempts(host, self.TAG, assets, None)
+        assert result[0].runtime_line == "cuda14"
+        assert result[0].name == f"llama-{self.TAG}-bin-win-cuda-14.0-x64.zip"
+
+    def test_new_cuda_major_degrades_to_published_cuda13(self, monkeypatch):
+        # A 14.x driver with no cuda14 build runs the newest published cuda13
+        # build via backward compatibility.
+        mock_windows_runtime(monkeypatch, ["cuda13", "cuda12"])
+        host = make_host(system = "Windows", machine = "AMD64", driver_cuda_version = (14, 0))
+        assets = self._upstream("13.3", "12.4")
+        result = windows_cuda_attempts(host, self.TAG, assets, None)
         assert result[0].name == f"llama-{self.TAG}-bin-win-cuda-13.3-x64.zip"
 
 
