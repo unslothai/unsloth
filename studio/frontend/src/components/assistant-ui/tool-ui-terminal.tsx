@@ -5,7 +5,8 @@
 
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import type { ToolCallMessagePartComponent } from "@assistant-ui/react";
-import { CheckIcon, CopyIcon, LoaderIcon, TerminalIcon } from "lucide-react";
+import { CheckIcon, CopyIcon, TerminalIcon } from "lucide-react";
+import { ToolCallSpinner } from "@/components/assistant-ui/tool-call-spinner";
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import {
   ToolFallbackContent,
@@ -86,7 +87,7 @@ const TerminalToolUIImpl: ToolCallMessagePartComponent = ({
         <div className="border-l-2 border-muted-foreground/20 pl-2">
           {isRunning ? (
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
-              <LoaderIcon className="size-3.5 animate-spin" />
+              <ToolCallSpinner className="size-3.5" />
               <span>Running&hellip;</span>
             </div>
           ) : output ? (

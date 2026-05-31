@@ -8,6 +8,7 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
+import { ToolCallSpinner } from "@/components/assistant-ui/tool-call-spinner";
 import { useCollapseScrollLock } from "@/hooks/use-collapse-scroll-lock";
 import { cn } from "@/lib/utils";
 import {
@@ -141,10 +142,7 @@ function ToolFallbackTrigger({
       {...props}
     >
       {isRunning ? (
-        <StatusIcon
-          data-slot="tool-fallback-trigger-icon"
-          className="aui-tool-fallback-trigger-icon size-4 shrink-0 animate-spin"
-        />
+        <ToolCallSpinner className="aui-tool-fallback-trigger-icon" />
       ) : ToolIcon ? (
         <ToolIcon
           data-slot="tool-fallback-trigger-icon"
@@ -169,7 +167,12 @@ function ToolFallbackTrigger({
           isCancelled && "text-muted-foreground line-through",
         )}
       >
-        <span className="block break-words">
+        <span
+          className={cn(
+            "block truncate leading-normal",
+            "group-data-[state=open]/trigger:overflow-visible group-data-[state=open]/trigger:whitespace-normal group-data-[state=open]/trigger:break-words",
+          )}
+        >
           {label}:{" "}
           <span className="font-medium text-foreground/85">{displayName}</span>
         </span>
@@ -177,7 +180,10 @@ function ToolFallbackTrigger({
           <span
             aria-hidden={true}
             data-slot="tool-fallback-trigger-shimmer"
-            className="aui-tool-fallback-trigger-shimmer shimmer pointer-events-none absolute inset-0 block break-words motion-reduce:animate-none"
+            className={cn(
+              "aui-tool-fallback-trigger-shimmer shimmer pointer-events-none absolute inset-0 block truncate leading-normal motion-reduce:animate-none",
+              "group-data-[state=open]/trigger:overflow-visible group-data-[state=open]/trigger:whitespace-normal group-data-[state=open]/trigger:break-words",
+            )}
           >
             {label}:{" "}
             <span className="font-medium text-foreground/85">{displayName}</span>
@@ -187,9 +193,8 @@ function ToolFallbackTrigger({
       <ChevronDownIcon
         data-slot="tool-fallback-trigger-chevron"
         className={cn(
-          "aui-tool-fallback-trigger-chevron size-3.5 shrink-0",
-          "opacity-0 transition-[transform,opacity] duration-(--animation-duration) ease-out",
-          "group-hover/trigger:opacity-100 group-focus-visible/trigger:opacity-100",
+          "aui-tool-fallback-trigger-chevron mr-1 size-3.5 shrink-0 self-center",
+          "transition-[transform,opacity] duration-(--animation-duration) ease-out",
           "group-data-[state=closed]/trigger:-rotate-90",
           "group-data-[state=open]/trigger:rotate-0",
         )}

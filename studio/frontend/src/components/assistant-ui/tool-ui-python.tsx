@@ -7,7 +7,8 @@ import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { getAuthToken } from "@/features/auth/session";
 import type { ToolCallMessagePartComponent } from "@assistant-ui/react";
 import { code as codePlugin } from "@streamdown/code";
-import { CheckIcon, CodeIcon, CopyIcon, LoaderIcon } from "lucide-react";
+import { CheckIcon, CodeIcon, CopyIcon } from "lucide-react";
+import { ToolCallSpinner } from "@/components/assistant-ui/tool-call-spinner";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Streamdown } from "streamdown";
 import {
@@ -148,7 +149,7 @@ const PythonToolUIImpl: ToolCallMessagePartComponent = ({
           {/* Output */}
           {isRunning ? (
             <div className="mt-2 flex items-center gap-2 text-sm text-muted-foreground">
-              <LoaderIcon className="size-3.5 animate-spin" />
+              <ToolCallSpinner className="size-3.5" />
               <span>Running&hellip;</span>
             </div>
           ) : output ? (

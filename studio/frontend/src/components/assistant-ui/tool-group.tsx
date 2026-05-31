@@ -8,7 +8,7 @@ import {
   type FC,
   type PropsWithChildren,
 } from "react";
-import { ChevronDownIcon, LoaderIcon } from "lucide-react";
+import { ChevronDownIcon } from "lucide-react";
 import { Wrench01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { cva, type VariantProps } from "class-variance-authority";
@@ -19,6 +19,7 @@ import {
 } from "@/components/ui/collapsible";
 import { useCollapseScrollLock } from "@/hooks/use-collapse-scroll-lock";
 import { cn } from "@/lib/utils";
+import { ToolCallSpinner } from "@/components/assistant-ui/tool-call-spinner";
 
 const ANIMATION_DURATION = 200;
 
@@ -120,10 +121,7 @@ function ToolGroupTrigger({
       {...props}
     >
       {active ? (
-        <LoaderIcon
-          data-slot="tool-group-trigger-loader"
-          className="aui-tool-group-trigger-loader size-4 shrink-0 animate-spin"
-        />
+        <ToolCallSpinner className="aui-tool-group-trigger-loader" />
       ) : (
         <HugeiconsIcon
           icon={Wrench01Icon}

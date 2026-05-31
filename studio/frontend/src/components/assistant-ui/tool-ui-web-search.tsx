@@ -4,7 +4,7 @@
 "use client";
 
 import { type ToolCallMessagePartComponent, useAuiState } from "@assistant-ui/react";
-import { GlobeIcon, LoaderIcon } from "lucide-react";
+import { GlobeIcon } from "lucide-react";
 import { memo, useEffect, useState } from "react";
 import { Source, SourceIcon, SourceTitle } from "./sources";
 import {
@@ -116,8 +116,7 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
       />
       <ToolFallbackContent>
         {isRunning ? (
-          <div className="flex items-center gap-2 text-sm text-muted-foreground">
-            <LoaderIcon className="size-3.5 animate-spin" />
+          <div className="flex items-center text-sm text-muted-foreground">
             <span>
               {isUrlFetch
                 ? <>Reading {displayDomain || "page"}&hellip;</>

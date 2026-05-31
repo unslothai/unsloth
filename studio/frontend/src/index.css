@@ -1270,3 +1270,21 @@
 		animation-iteration-count: infinite !important;
 	}
 }
+
+/*
+ * Tool-call chevron visibility:
+ *  - A solo tool call (not wrapped in a multi-tool group) always shows its
+ *    collapsible chevron.
+ *  - When the tool call is part of a multi-tool group (.aui-tool-group-root),
+ *    the chevron stays hidden and only reveals on hover / keyboard focus.
+ */
+.aui-tool-fallback-trigger-chevron {
+  opacity: 1;
+}
+.aui-tool-group-root .aui-tool-fallback-trigger-chevron {
+  opacity: 0;
+}
+.aui-tool-group-root .aui-tool-fallback-trigger:hover .aui-tool-fallback-trigger-chevron,
+.aui-tool-group-root .aui-tool-fallback-trigger:focus-visible .aui-tool-fallback-trigger-chevron {
+  opacity: 1;
+}
