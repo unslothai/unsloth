@@ -186,6 +186,43 @@ def _find_run_py() -> Optional[Path]:
     return None
 
 
+_RUN_MODULE = None
+
+
+def _load_run_module():
+    """Import studio.backend.run without relying on package resolution.
+
+    `studio update` can leave a partial ``site-packages/studio/backend/``
+    tree (plugin build artefacts only). That shadowed tree wins over an
+    editable install and breaks ``from studio.backend.run import ...``.
+    Loading by file path sidesteps the conflict.
+    """
+    global _RUN_MODULE
+    if _RUN_MODULE is not None:
+        return _RUN_MODULE
+
+    run_py = _find_run_py()
+    if run_py is None:
+        raise ImportError(
+            "Could not find studio/backend/run.py. Re-run: unsloth studio setup"
+        )
+
+    loaded = sys.modules.get("studio.backend.run")
+    loaded_path = Path(getattr(loaded, "__file__", "")).resolve()
+    if loaded is not None and loaded_path == run_py.resolve():
+        _RUN_MODULE = loaded
+        return _RUN_MODULE
+
+    spec = importlib.util.spec_from_file_location("studio.backend.run", run_py)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Could not load studio backend from {run_py}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["studio.backend.run"] = module
+    spec.loader.exec_module(module)
+    _RUN_MODULE = module
+    return _RUN_MODULE
+
+
 def _find_setup_script() -> Optional[Path]:
     """Find studio/setup.sh or studio/setup.ps1.
 
@@ -686,12 +723,13 @@ def studio_default(
             typer.echo("Studio not set up. Run install.sh first.")
             raise typer.Exit(1)
 
-    from studio.backend.run import run_server
+    run_mod = _load_run_module()
+    run_server = run_mod.run_server
 
     if not silent:
-        from studio.backend.run import _resolve_external_ip
-
-        display_host = _resolve_external_ip() if host == "0.0.0.0" else host
+        display_host = (
+            run_mod._resolve_external_ip() if host == "0.0.0.0" else host
+        )
         typer.echo(f"Starting Unsloth Studio on http://{display_host}:{port}")
 
     run_kwargs = dict(
@@ -705,21 +743,17 @@ def studio_default(
         run_kwargs["frontend_path"] = frontend
     run_server(**run_kwargs)
 
-    from studio.backend.run import _shutdown_event
-
     try:
-        if _shutdown_event is not None:
+        if run_mod._shutdown_event is not None:
             # Event.wait() with no timeout blocks at C-level on Linux
             # and swallows SIGINT; loop with a 1s timeout instead.
-            while not _shutdown_event.is_set():
-                _shutdown_event.wait(timeout = 1)
+            while not run_mod._shutdown_event.is_set():
+                run_mod._shutdown_event.wait(timeout = 1)
         else:
             while True:
                 time.sleep(1)
     except KeyboardInterrupt:
-        from studio.backend.run import _graceful_shutdown, _server
-
-        _graceful_shutdown(_server)
+        run_mod._graceful_shutdown(run_mod._server)
         typer.echo("\nShutting down...")
 
 
@@ -1017,7 +1051,8 @@ def run(
             os.execvp(str(studio_bin), args)
 
     # ── 2. Start server (always suppress built-in banner) ─────────────
-    from studio.backend.run import run_server, _resolve_external_ip
+    run_mod = _load_run_module()
+    run_server = run_mod.run_server
 
     run_kwargs = dict(host = host, port = port, silent = True, llama_parallel_slots = parallel)
     if frontend is not None:
@@ -1064,7 +1099,7 @@ def run(
     display_variant = f" ({gguf_variant})" if gguf_variant else ""
 
     # 6. Print banner.
-    display_host = _resolve_external_ip() if host == "0.0.0.0" else host
+    display_host = run_mod._resolve_external_ip() if host == "0.0.0.0" else host
     base_url = f"http://{display_host}:{actual_port}"
     sdk_base_url = f"{base_url}/v1"
 
@@ -1133,17 +1168,15 @@ def run(
         typer.secho(_tool_notice, fg = _tool_notice_fg, bold = True)
 
     # 7. Wait for Ctrl+C.
-    from studio.backend.run import _shutdown_event, _graceful_shutdown, _server
-
     try:
-        if _shutdown_event is not None:
-            while not _shutdown_event.is_set():
-                _shutdown_event.wait(timeout = 1)
+        if run_mod._shutdown_event is not None:
+            while not run_mod._shutdown_event.is_set():
+                run_mod._shutdown_event.wait(timeout = 1)
         else:
             while True:
                 time.sleep(1)
     except KeyboardInterrupt:
-        _graceful_shutdown(_server)
+        run_mod._graceful_shutdown(run_mod._server)
         typer.echo("\nShutting down...")
 
 
