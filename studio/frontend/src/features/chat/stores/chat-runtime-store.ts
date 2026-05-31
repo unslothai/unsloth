@@ -29,6 +29,7 @@ export const CHAT_CODE_TOOLS_ENABLED_KEY = "unsloth_chat_code_tools_enabled";
 export const CHAT_IMAGE_TOOLS_ENABLED_KEY = "unsloth_chat_image_tools_enabled";
 export const CHAT_MCP_ENABLED_KEY = "unsloth_chat_mcp_enabled";
 export const CHAT_CONFIRM_TOOL_CALLS_KEY = "unsloth_chat_confirm_tool_calls";
+export const CHAT_BYPASS_PERMISSIONS_KEY = "unsloth_chat_bypass_permissions";
 export const CHAT_WEB_FETCH_TOOLS_ENABLED_KEY =
   "unsloth_chat_web_fetch_tools_enabled";
 
@@ -308,6 +309,12 @@ type ChatRuntimeStore = {
    */
   confirmToolCalls: boolean;
   /**
+   * Bypass Permissions: when on, tool calls run with no confirmation gate
+   * AND the python/terminal execution sandbox is disabled on the backend
+   * (secrets are still stripped). Takes precedence over confirmToolCalls.
+   */
+  bypassPermissions: boolean;
+  /**
    * Per-session set of tool names the user chose to auto-approve via
    * "Always allow". Keyed by thread/session id so allowing a tool in one
    * chat does not silently auto-approve it in another. Not persisted
@@ -391,6 +398,7 @@ type ChatRuntimeStore = {
   setImageToolsEnabled: (enabled: boolean) => void;
   setMcpEnabledForChat: (enabled: boolean) => void;
   setConfirmToolCalls: (enabled: boolean) => void;
+  setBypassPermissions: (enabled: boolean) => void;
   allowToolAlways: (sessionId: string, toolName: string) => void;
   setToolConfirmation: (
     toolCallId: string,
@@ -650,6 +658,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   imageToolsEnabled: loadBool(CHAT_IMAGE_TOOLS_ENABLED_KEY, false),
   mcpEnabledForChat: loadBool(CHAT_MCP_ENABLED_KEY, false),
   confirmToolCalls: loadBool(CHAT_CONFIRM_TOOL_CALLS_KEY, false),
+  bypassPermissions: loadBool(CHAT_BYPASS_PERMISSIONS_KEY, false),
   alwaysAllowToolsBySession: new Map<string, Set<string>>(),
   toolConfirmations: {},
   webFetchToolsEnabled: loadBool(CHAT_WEB_FETCH_TOOLS_ENABLED_KEY, false),
@@ -937,6 +946,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     set(() => {
       saveBool(CHAT_CONFIRM_TOOL_CALLS_KEY, confirmToolCalls);
       return { confirmToolCalls };
+    }),
+  setBypassPermissions: (bypassPermissions) =>
+    set(() => {
+      saveBool(CHAT_BYPASS_PERMISSIONS_KEY, bypassPermissions);
+      return { bypassPermissions };
     }),
   allowToolAlways: (sessionId, toolName) =>
     set((state) => {

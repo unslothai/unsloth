@@ -1305,6 +1305,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         imageToolsEnabled,
         mcpEnabledForChat,
         confirmToolCalls,
+        bypassPermissions,
         webFetchToolsEnabled,
       } = runtime;
       const externalSelection = parseExternalModelId(params.checkpoint);
@@ -2102,7 +2103,10 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                     ...(codeToolsEnabled ? ["python", "terminal"] : []),
                   ],
                   mcp_enabled: mcpEnabledForChat,
-                  confirm_tool_calls: confirmToolCalls,
+                  // Bypass Permissions wins: never request the confirm gate
+                  // while bypassing, and tell the backend to drop the sandbox.
+                  confirm_tool_calls: confirmToolCalls && !bypassPermissions,
+                  bypass_permissions: bypassPermissions,
                   auto_heal_tool_calls:
                     useChatRuntimeStore.getState().autoHealToolCalls,
                   max_tool_calls_per_message:

@@ -2811,7 +2811,11 @@ async def openai_chat_completions(
                     if payload.tool_call_timeout is not None
                     else 300,
                     session_id = payload.session_id,
-                    confirm_tool_calls = bool(payload.confirm_tool_calls),
+                    # Bypass Permissions takes precedence over the confirm gate:
+                    # never prompt while bypassing.
+                    confirm_tool_calls = bool(payload.confirm_tool_calls)
+                    and not bool(payload.bypass_permissions),
+                    bypass_permissions = bool(payload.bypass_permissions),
                 )
 
             _tool_sentinel = object()
@@ -3332,7 +3336,11 @@ async def openai_chat_completions(
                 else 300,
                 session_id = payload.session_id,
                 use_adapter = payload.use_adapter,
-                confirm_tool_calls = bool(payload.confirm_tool_calls),
+                # Bypass Permissions takes precedence over the confirm gate:
+                # never prompt while bypassing.
+                confirm_tool_calls = bool(payload.confirm_tool_calls)
+                and not bool(payload.bypass_permissions),
+                bypass_permissions = bool(payload.bypass_permissions),
             )
 
         _sf_tool_sentinel = object()
@@ -5013,6 +5021,7 @@ async def anthropic_messages(
                 auto_heal_tool_calls = True,
                 tool_call_timeout = 300,
                 session_id = payload.session_id,
+                bypass_permissions = bool(payload.bypass_permissions),
             )
 
         if payload.stream:

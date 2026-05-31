@@ -332,6 +332,65 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
     return env
 
 
+# Credential env vars dropped even in bypass mode so tool code cannot read the
+# operator's keys. Over-strips on purpose (a benign var is harmless to lose).
+_BYPASS_ENV_SECRET_NAMES = frozenset(
+    {
+        "HF_TOKEN",
+        "HF_HUB_TOKEN",
+        "HUGGING_FACE_HUB_TOKEN",
+        "HUGGINGFACE_TOKEN",
+        "HUGGINGFACEHUB_API_TOKEN",
+        "WANDB_API_KEY",
+        "GH_TOKEN",
+        "GITHUB_TOKEN",
+        "OPENAI_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "GEMINI_API_KEY",
+        "GOOGLE_API_KEY",
+        "GROQ_API_KEY",
+        "OPENROUTER_API_KEY",
+        "REPLICATE_API_TOKEN",
+        "COHERE_API_KEY",
+        "MISTRAL_API_KEY",
+        "NGC_API_KEY",
+        "KAGGLE_KEY",
+        "LD_PRELOAD",
+    }
+)
+_BYPASS_ENV_SECRET_PREFIXES = ("AWS_", "AZURE_", "GOOGLE_", "GCP_", "GCLOUD_", "DYLD_")
+_BYPASS_ENV_SECRET_MARKERS = (
+    "TOKEN",
+    "API_KEY",
+    "APIKEY",
+    "SECRET",
+    "PASSWORD",
+    "PASSWD",
+    "CREDENTIAL",
+    "PRIVATE_KEY",
+)
+
+
+def _is_secret_env_name(name: str) -> bool:
+    """True if an env var name looks like it carries a credential."""
+    upper = name.upper()
+    if upper in _BYPASS_ENV_SECRET_NAMES:
+        return True
+    if any(upper.startswith(p) for p in _BYPASS_ENV_SECRET_PREFIXES):
+        return True
+    return any(marker in upper for marker in _BYPASS_ENV_SECRET_MARKERS)
+
+
+def _build_bypass_env(workdir: str) -> dict[str, str]:
+    """Env for bypass exec: full host env (unrestricted) minus credential vars,
+    with HOME/TMPDIR repointed at the workdir so SDKs cannot read cached creds.
+    """
+    env = {k: v for k, v in os.environ.items() if not _is_secret_env_name(k)}
+    env["HOME"] = workdir
+    env["TMPDIR"] = workdir
+    return env
+
+
 def _sandbox_preexec():
     """Best-effort sandbox setup for sandboxed subprocesses.
 
@@ -404,6 +463,18 @@ def _sandbox_preexec():
             _resource.setrlimit(_resource.RLIMIT_NOFILE, (target, target))
         except (ValueError, OSError, AttributeError):
             pass
+
+
+def _bypass_preexec():
+    """Minimal pre-exec for bypass exec: os.setsid() only.
+
+    Required, not a restriction: _kill_process_tree does killpg(getpgid(child)),
+    so without a new session a timeout/cancel would kill the Studio server too.
+    """
+    try:
+        os.setsid()
+    except OSError:
+        pass
 
 
 def _get_shell_cmd(command: str) -> list[str]:
@@ -614,12 +685,16 @@ def execute_tool(
     cancel_event = None,
     timeout: int | None = _TIMEOUT_UNSET,
     session_id: str | None = None,
+    disable_sandbox: bool = False,
 ) -> str:
     """Execute a tool by name with the given arguments. Returns result as a string.
 
     ``timeout``: int sets per-call limit in seconds, ``None`` means no limit,
     unset (default) uses ``_EXEC_TIMEOUT`` (300 s).
     ``session_id``: optional thread/session ID for per-conversation sandbox isolation.
+    ``disable_sandbox``: Bypass Permissions; run python/terminal without the
+    safety checks, blocklist, or resource caps (secrets still stripped). Only
+    affects local code tools; web_search / MCP are unchanged.
     """
     logger.info(
         f"execute_tool: name={name}, session_id={session_id}, timeout={timeout}"
@@ -654,11 +729,19 @@ def execute_tool(
         )
     if name == "python":
         return _python_exec(
-            arguments.get("code", ""), cancel_event, effective_timeout, session_id
+            arguments.get("code", ""),
+            cancel_event,
+            effective_timeout,
+            session_id,
+            disable_sandbox = disable_sandbox,
         )
     if name == "terminal":
         return _bash_exec(
-            arguments.get("command", ""), cancel_event, effective_timeout, session_id
+            arguments.get("command", ""),
+            cancel_event,
+            effective_timeout,
+            session_id,
+            disable_sandbox = disable_sandbox,
         )
     return f"Unknown tool: {name}"
 
@@ -1994,15 +2077,21 @@ def _python_exec(
     cancel_event = None,
     timeout: int = _EXEC_TIMEOUT,
     session_id: str | None = None,
+    disable_sandbox: bool = False,
 ) -> str:
-    """Execute Python code in a subprocess sandbox."""
+    """Execute Python code in a subprocess sandbox.
+
+    disable_sandbox (Bypass Permissions): skip the safety analysis and rlimit
+    pre-exec, and use the host env minus secrets.
+    """
     if not code or not code.strip():
         return "No code provided."
 
-    # Validate imports and code safety
-    error = _check_code_safety(code)
-    if error:
-        return error
+    # Validate imports and code safety (skipped when the sandbox is disabled)
+    if not disable_sandbox:
+        error = _check_code_safety(code)
+        if error:
+            return error
 
     tmp_path = None
     workdir = _get_workdir(session_id)
@@ -2024,7 +2113,9 @@ def _python_exec(
         with os.fdopen(fd, "w") as f:
             f.write(code)
 
-        safe_env = _build_safe_env(workdir)
+        safe_env = (
+            _build_bypass_env(workdir) if disable_sandbox else _build_safe_env(workdir)
+        )
         popen_kwargs = dict(
             stdout = subprocess.PIPE,
             stderr = subprocess.STDOUT,
@@ -2033,7 +2124,9 @@ def _python_exec(
             env = safe_env,
         )
         if sys.platform != "win32":
-            popen_kwargs["preexec_fn"] = _sandbox_preexec
+            popen_kwargs["preexec_fn"] = (
+                _bypass_preexec if disable_sandbox else _sandbox_preexec
+            )
         else:
             popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
 
@@ -2101,19 +2194,27 @@ def _bash_exec(
     cancel_event = None,
     timeout: int = _EXEC_TIMEOUT,
     session_id: str | None = None,
+    disable_sandbox: bool = False,
 ) -> str:
-    """Execute a bash command in a subprocess sandbox."""
+    """Execute a bash command in a subprocess sandbox.
+
+    disable_sandbox (Bypass Permissions): skip the command blocklist and rlimit
+    pre-exec, and use the host env minus secrets.
+    """
     if not command or not command.strip():
         return "No command provided."
 
-    # Block dangerous commands (shlex + regex based)
-    blocked = _find_blocked_commands(command)
-    if blocked:
-        return f"Blocked command(s) for safety: {', '.join(sorted(blocked))}"
+    # Block dangerous commands (skipped when the sandbox is disabled)
+    if not disable_sandbox:
+        blocked = _find_blocked_commands(command)
+        if blocked:
+            return f"Blocked command(s) for safety: {', '.join(sorted(blocked))}"
 
     try:
         workdir = _get_workdir(session_id)
-        safe_env = _build_safe_env(workdir)
+        safe_env = (
+            _build_bypass_env(workdir) if disable_sandbox else _build_safe_env(workdir)
+        )
         popen_kwargs = dict(
             stdout = subprocess.PIPE,
             stderr = subprocess.STDOUT,
@@ -2122,7 +2223,9 @@ def _bash_exec(
             env = safe_env,
         )
         if sys.platform != "win32":
-            popen_kwargs["preexec_fn"] = _sandbox_preexec
+            popen_kwargs["preexec_fn"] = (
+                _bypass_preexec if disable_sandbox else _sandbox_preexec
+            )
         else:
             popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
 
