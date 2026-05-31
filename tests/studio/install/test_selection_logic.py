@@ -2020,8 +2020,10 @@ class TestPinnedBlackwellCudaFallback:
 
     def _win_host(self, driver, caps):
         return make_host(
-            system = "Windows", machine = "AMD64",
-            driver_cuda_version = driver, compute_caps = caps,
+            system = "Windows",
+            machine = "AMD64",
+            driver_cuda_version = driver,
+            compute_caps = caps,
         )
 
     def test_pin_offered_for_driver_13_1_blackwell(self):
@@ -2038,11 +2040,17 @@ class TestPinnedBlackwellCudaFallback:
         assert pin.runtime_sha256 and len(pin.runtime_sha256) == 64
 
     def test_pin_offered_for_driver_13_2(self):
-        assert _pinned_windows_cuda_fallback(self._win_host((13, 2), ["120"]), []) is not None
+        assert (
+            _pinned_windows_cuda_fallback(self._win_host((13, 2), ["120"]), [])
+            is not None
+        )
 
     def test_pin_offered_for_sm121_variant(self):
         # sm_121 is Blackwell-family and also needs toolkit >= 12.8.
-        assert _pinned_windows_cuda_fallback(self._win_host((13, 1), ["121"]), []) is not None
+        assert (
+            _pinned_windows_cuda_fallback(self._win_host((13, 1), ["121"]), [])
+            is not None
+        )
 
     def test_pin_uses_max_of_multi_gpu_caps(self):
         assert (
@@ -2057,18 +2065,24 @@ class TestPinnedBlackwellCudaFallback:
 
     def test_pin_not_offered_to_driver_13_0(self):
         # 13.0 cannot run the 13.1 build (forward minor); residual CPU gap.
-        assert _pinned_windows_cuda_fallback(self._win_host((13, 0), ["120"]), []) is None
+        assert (
+            _pinned_windows_cuda_fallback(self._win_host((13, 0), ["120"]), []) is None
+        )
 
     def test_pin_not_offered_below_floor(self):
-        assert _pinned_windows_cuda_fallback(self._win_host((12, 8), ["120"]), []) is None
+        assert (
+            _pinned_windows_cuda_fallback(self._win_host((12, 8), ["120"]), []) is None
+        )
 
     def test_pin_not_offered_without_driver(self):
         assert _pinned_windows_cuda_fallback(self._win_host(None, ["120"]), []) is None
 
     def test_pin_not_offered_on_linux(self):
         host = make_host(
-            system = "Linux", machine = "x86_64",
-            driver_cuda_version = (13, 1), compute_caps = ["120"],
+            system = "Linux",
+            machine = "x86_64",
+            driver_cuda_version = (13, 1),
+            compute_caps = ["120"],
         )
         assert _pinned_windows_cuda_fallback(host, []) is None
 
@@ -2124,10 +2138,14 @@ class TestDirectUpstreamBlackwellPin:
         mock_windows_runtime(monkeypatch, ["cuda13", "cuda12"])
         self._no_torch(monkeypatch)
         host = make_host(
-            system = "Windows", machine = "AMD64",
-            driver_cuda_version = (13, 1), compute_caps = ["120"],
+            system = "Windows",
+            machine = "AMD64",
+            driver_cuda_version = (13, 1),
+            compute_caps = ["120"],
         )
-        plan = direct_upstream_release_plan(self._release(), host, UPSTREAM_REPO, "latest")
+        plan = direct_upstream_release_plan(
+            self._release(), host, UPSTREAM_REPO, "latest"
+        )
         order = [(a.tag, a.runtime_line or a.install_kind) for a in plan.attempts]
         assert order == [
             ("b9360", "cuda13"),
@@ -2142,10 +2160,14 @@ class TestDirectUpstreamBlackwellPin:
         mock_windows_runtime(monkeypatch, ["cuda13", "cuda12"])
         self._no_torch(monkeypatch)
         host = make_host(
-            system = "Windows", machine = "AMD64",
-            driver_cuda_version = (13, 3), compute_caps = ["120"],
+            system = "Windows",
+            machine = "AMD64",
+            driver_cuda_version = (13, 3),
+            compute_caps = ["120"],
         )
-        plan = direct_upstream_release_plan(self._release(), host, UPSTREAM_REPO, "latest")
+        plan = direct_upstream_release_plan(
+            self._release(), host, UPSTREAM_REPO, "latest"
+        )
         assert "b9360" not in [a.tag for a in plan.attempts]
         assert plan.attempts[0].tag == self.TAG
         assert plan.attempts[0].runtime_line == "cuda13"
