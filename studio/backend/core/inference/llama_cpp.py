@@ -2574,18 +2574,23 @@ class LlamaCppBackend:
     # the patched stable-diffusion.cpp / ComfyUI-GGUF enums (LLM_ARCH_FLUX,
     # LLM_ARCH_QWEN_IMAGE, ...). Unsloth publishes FLUX and Qwen-Image GGUFs
     # under https://huggingface.co/collections/unsloth/unsloth-diffusion-ggufs.
-    _DIFFUSION_ARCHES = (
-        "qwen_image",
-        "flux",
-        "sd1",
-        "sdxl",
-        "sd3",
-        "aura",
-        "hidream",
-        "cosmos",
-        "ltxv",
-        "hyvid",
-        "wan",
+    # Matched exactly (not as a substring) so a chat arch merely containing a
+    # short token like "wan"/"sd1" (e.g. "taiwan") is not misrouted to Images.
+    _DIFFUSION_ARCHES = frozenset(
+        (
+            "qwen_image",
+            "flux",
+            "sd1",
+            "sdxl",
+            "sd3",
+            "aura",
+            "hidream",
+            "cosmos",
+            "ltxv",
+            "hyvid",
+            "wan",
+            "lumina2",
+        )
     )
 
     @staticmethod
@@ -2606,26 +2611,8 @@ class LlamaCppBackend:
         """
         lowered = (output or "").lower()
 
-        # "unknown model architecture: '<arch>'" -> llama.cpp cannot run
-        # this model type at all. Route known diffusion GGUFs to the Images
-        # page and give every other arch a precise "unsupported" message.
-        arch_match = re.search(r"unknown model architecture:\s*'([^']+)'", lowered)
-        if arch_match:
-            arch = arch_match.group(1)
-            if any(d in arch for d in LlamaCppBackend._DIFFUSION_ARCHES):
-                return (
-                    f"'{arch}' is a diffusion (image-generation) GGUF, which "
-                    "llama-server cannot run as a chat/completion model. Use "
-                    "Studio's Images page to generate with local diffusion "
-                    "GGUFs such as FLUX and Qwen-Image."
-                )
-            return (
-                f"llama.cpp does not support this GGUF's model architecture "
-                f"('{arch}'). The file is valid, but this model type cannot "
-                "be run with llama-server."
-            )
-
-        # Ollama-sourced GGUFs that llama.cpp rejects for compatibility.
+        # Detect Ollama source up front so the arch branch can keep the
+        # Ollama hint instead of the generic "unsupported arch" message.
         gguf = gguf_path or ""
         is_ollama = (
             ".studio_links" in gguf
@@ -2633,9 +2620,34 @@ class LlamaCppBackend:
             or os.sep + ".cache" + os.sep + "ollama" + os.sep in gguf
             or (model_identifier or "").startswith("ollama/")
         )
-        # Only show the Ollama-specific message when the server output
-        # indicates a GGUF compatibility issue, not for unrelated failures
-        # like OOM or missing binaries.
+
+        # "unknown model architecture: '<arch>'": diffusion -> Images page,
+        # Ollama -> Ollama hint, else a precise "unsupported" message. Exact
+        # match so chat archs are never misrouted.
+        arch_match = re.search(r"unknown model architecture:\s*'([^']+)'", lowered)
+        if arch_match:
+            arch = arch_match.group(1)
+            if arch in LlamaCppBackend._DIFFUSION_ARCHES:
+                return (
+                    f"'{arch}' is a diffusion (image-generation) GGUF, which "
+                    "llama-server cannot run as a chat/completion model. Use "
+                    "Studio's Images page to generate with local diffusion "
+                    "GGUFs such as FLUX and Qwen-Image."
+                )
+            if is_ollama:
+                return (
+                    "Some Ollama models do not work with llama.cpp. Try a "
+                    "different model, or use this model directly through "
+                    "Ollama instead."
+                )
+            return (
+                f"llama.cpp does not support this GGUF's model architecture "
+                f"('{arch}'). The file is valid, but this model type cannot "
+                "be run with llama-server."
+            )
+
+        # Other Ollama compat failures that do not name an arch. Only when
+        # the output shows a GGUF compat issue, not OOM / missing binaries.
         if is_ollama:
             gguf_compat_hints = (
                 "key not found",

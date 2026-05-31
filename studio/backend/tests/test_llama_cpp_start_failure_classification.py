@@ -27,7 +27,13 @@ if _BACKEND_DIR not in sys.path:
 _loggers_stub = _types.ModuleType("loggers")
 _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
 sys.modules.setdefault("loggers", _loggers_stub)
-sys.modules.setdefault("structlog", _types.ModuleType("structlog"))
+# Give the structlog stub a real get_logger: a bare ModuleType poisons
+# sys.modules for later tests that call structlog.get_logger at import time.
+_structlog_stub = _types.ModuleType("structlog")
+_structlog_stub.get_logger = lambda *a, **k: __import__("logging").getLogger("structlog")
+sys.modules.setdefault("structlog", _structlog_stub)
+if not hasattr(sys.modules["structlog"], "get_logger"):
+    sys.modules["structlog"].get_logger = _structlog_stub.get_logger
 
 from core.inference.llama_cpp import LlamaCppBackend  # noqa: E402
 
@@ -55,21 +61,8 @@ class TestDiffusionArchitectures:
         assert "out of memory" not in msg.lower()
         assert "enough memory" not in msg.lower()
 
-    @pytest.mark.parametrize(
-        "arch",
-        [
-            "flux",
-            "sd1",
-            "sdxl",
-            "sd3",
-            "aura",
-            "hidream",
-            "cosmos",
-            "ltxv",
-            "hyvid",
-            "wan",
-        ],
-    )
+    # Parametrize over the production set so new arches are auto-covered.
+    @pytest.mark.parametrize("arch", sorted(LlamaCppBackend._DIFFUSION_ARCHES))
     def test_every_diffusion_arch_is_recognised(self, arch):
         out = f"error loading model: unknown model architecture: '{arch}'"
         msg = _classify(out, f"/models/{arch}.gguf", f"local/{arch}")
@@ -88,13 +81,56 @@ class TestUnsupportedNonDiffusionArchitecture:
         assert "enough memory" not in msg.lower()
         assert "diffusion" not in msg.lower()
 
+    # Exact match: a chat arch merely containing a diffusion token (wan,
+    # sd1, flux, ...) must not be routed to the Images page.
+    @pytest.mark.parametrize(
+        "arch",
+        [
+            "taiwan",        # contains "wan"
+            "swan_llm",      # contains "wan"
+            "fluxion",       # contains "flux"
+            "sd1234",        # contains "sd1"
+            "sd3_chat",      # contains "sd3"
+            "aura2_text",    # contains "aura"
+            "cosmos_reason", # contains "cosmos"
+            "qwen_image_text",  # contains "qwen_image"
+        ],
+    )
+    def test_arch_containing_diffusion_token_is_not_misrouted(self, arch):
+        out = f"error loading model: unknown model architecture: '{arch}'"
+        msg = _classify(out, f"/models/{arch}.gguf", f"local/{arch}")
+        assert arch in msg
+        assert "does not support" in msg.lower()
+        assert "diffusion" not in msg.lower()
+        assert "Images page" not in msg
+
 
 class TestOllamaAndFallback:
+    _OLLAMA_GGUF = (
+        f"/home/u/.ollama{__import__('os').sep}ollama_links"
+        f"{__import__('os').sep}m.gguf"
+    )
+
     def test_ollama_compat_message_still_works(self):
         out = "llama_model_load: error loading model: key not found"
-        gguf = f"/home/u/.ollama{__import__('os').sep}ollama_links{__import__('os').sep}m.gguf"
-        msg = _classify(out, gguf, "ollama/llama3")
+        msg = _classify(out, self._OLLAMA_GGUF, "ollama/llama3")
         assert "Ollama" in msg
+
+    def test_ollama_unknown_arch_keeps_ollama_guidance(self):
+        # Ollama + non-diffusion unknown arch keeps the Ollama hint, not the
+        # generic llama.cpp "unsupported" message.
+        out = "error loading model: unknown model architecture: 'some_new_llm'"
+        msg = _classify(out, self._OLLAMA_GGUF, "ollama/some-new")
+        assert "Ollama" in msg
+        assert "directly through Ollama" in msg
+        assert "does not support" not in msg.lower()
+
+    def test_ollama_diffusion_arch_still_routes_to_images(self):
+        # Diffusion routing wins over the Ollama hint.
+        out = "error loading model: unknown model architecture: 'flux'"
+        msg = _classify(out, self._OLLAMA_GGUF, "ollama/flux")
+        assert "diffusion" in msg.lower()
+        assert "Images page" in msg
 
     def test_generic_oom_keeps_memory_message(self):
         msg = _classify(_OOM_OUT, "/models/big.gguf", "local/big")
