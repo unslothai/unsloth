@@ -2710,7 +2710,10 @@ class TestResolveSimpleMacosPin:
             return {
                 "tag_name": tag,
                 "assets": [
-                    {"name": name, "browser_download_url": f"https://example.com/{name}"}
+                    {
+                        "name": name,
+                        "browser_download_url": f"https://example.com/{name}",
+                    }
                 ],
             }
 
