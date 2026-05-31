@@ -57,11 +57,7 @@ def test_kb_takes_precedence_over_thread():
         captured["scope"] = scope
         return []
 
-    with patch.object(
-        tool.__import__("core.rag.retrieval", fromlist = ["retrieve_hybrid"]),
-        "retrieve_hybrid",
-        _stub_retrieve,
-    ):
+    with patch("core.rag.retrieval.retrieve_hybrid", _stub_retrieve):
         result = tool.search_knowledge_base(
             query = "x",
             scope_kb_id = "kb-abc",
@@ -82,11 +78,7 @@ def test_thread_scope_when_only_thread_set():
         captured["scope"] = scope
         return []
 
-    with patch.object(
-        tool.__import__("core.rag.retrieval", fromlist = ["retrieve_hybrid"]),
-        "retrieve_hybrid",
-        _stub_retrieve,
-    ):
+    with patch("core.rag.retrieval.retrieve_hybrid", _stub_retrieve):
         tool.search_knowledge_base(
             query = "x",
             scope_thread_id = "thread-xyz",
@@ -122,11 +114,11 @@ def test_format_hits_produces_fenced_chunks():
         },
     ]
     result = _format_hits_for_llm(hits)
-    assert '<chunk id="1" source="alpha.pdf" page="3" score="0.780"' in result
+    assert '<chunk id="1" source="alpha.pdf" page="3" chunk_index="12" tokens="42">' in result
     assert 'chunk_index="12"' in result
     assert 'tokens="42"' in result
     assert "first body\n</chunk>" in result
-    assert '<chunk id="2" source="beta.md" score="0.610">' in result
+    assert '<chunk id="2" source="beta.md">' in result
     # Blank line between blocks so the model can scan them.
     assert "</chunk>\n\n<chunk" in result
 
@@ -208,6 +200,7 @@ def test_execute_tool_dispatches_to_search_knowledge_base():
         reranker_model = None,
         default_top_k = 5,
         min_score = 0.0,
+        **kwargs,
     ):
         called["query"] = query
         called["top_k"] = top_k
