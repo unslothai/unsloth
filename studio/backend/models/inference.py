@@ -299,7 +299,11 @@ class InferenceStatusResponse(BaseModel):
     """Current inference backend status"""
 
     active_model: Optional[str] = Field(
-        None, description = "Currently active model identifier"
+        None, description = "Currently active model display identifier"
+    )
+    model_identifier: Optional[str] = Field(
+        None,
+        description = "Loadable identifier for the active model.",
     )
     is_vision: bool = Field(
         False, description = "Whether the active model is a vision model"
@@ -471,6 +475,40 @@ class InputDocumentContentPart(BaseModel):
     )
 
 
+class OpenAIReasoningContentPart(BaseModel):
+    """OpenAI Responses reasoning item paired with a tool output.
+
+    Reasoning models can require the previous ``reasoning`` output item
+    to be replayed immediately before an ``image_generation_call`` id
+    when manually managing Responses context. This part is OpenAI-only;
+    routes strip it for every other provider before proxying.
+    """
+
+    type: Literal["reasoning"]
+    id: str = Field(..., description = "OpenAI reasoning output item id.")
+    summary: list[dict[str, Any]] = Field(default_factory = list)
+    status: Optional[Literal["in_progress", "completed", "incomplete"]] = None
+
+
+class ImageGenerationCallContentPart(BaseModel):
+    """OpenAI Responses image_generation call reference.
+
+    OpenAI accepts prior ``image_generation_call`` items in the next
+    Responses ``input`` array so follow-up prompts can edit or refine a
+    generated image without resending the base64 payload. The frontend
+    forwards this as a synthetic assistant content part when building
+    the next OpenAI Responses request; ``external_provider`` translates
+    it back to the provider-specific top-level input item.
+    """
+
+    type: Literal["image_generation_call"]
+    id: str = Field(..., description = "OpenAI image_generation_call output item id.")
+    response_id: Optional[str] = Field(
+        None,
+        description = "OpenAI Responses response id to use as previous_response_id for follow-up edits.",
+    )
+
+
 class CompactionContentPart(BaseModel):
     """Anthropic server-side compaction state, attached to an assistant
     message for round-tripping on the next turn.
@@ -504,6 +542,8 @@ ContentPart = Annotated[
         Annotated[TextContentPart, Tag("text")],
         Annotated[ImageContentPart, Tag("image_url")],
         Annotated[InputDocumentContentPart, Tag("input_document")],
+        Annotated[OpenAIReasoningContentPart, Tag("reasoning")],
+        Annotated[ImageGenerationCallContentPart, Tag("image_generation_call")],
         Annotated[CompactionContentPart, Tag("compaction")],
     ],
     Discriminator(_content_part_discriminator),
@@ -540,6 +580,14 @@ class ChatMessage(BaseModel):
     name: Optional[str] = Field(
         None,
         description = "OpenAI tool-result messages: name of the tool whose result this is.",
+    )
+    extra_content: Optional[dict] = Field(
+        None,
+        description = (
+            "Provider-specific extra fields the translator may read. "
+            "Gemini reads `extra_content.google.thought_signature` "
+            "from assistant messages to replay text-part signatures."
+        ),
     )
 
     @model_validator(mode = "after")
@@ -668,6 +716,10 @@ class ChatCompletionRequest(BaseModel):
             "all local tools are enabled and no server-side tools are forwarded."
         ),
     )
+    mcp_enabled: Optional[bool] = Field(
+        None,
+        description = "[x-unsloth] When true, append tools from every enabled MCP server to this request's tool list.",
+    )
     auto_heal_tool_calls: Optional[bool] = Field(
         True,
         description = "[x-unsloth] Auto-detect and fix malformed tool calls from model output.",
@@ -712,17 +764,42 @@ class ChatCompletionRequest(BaseModel):
         None,
         description = "[x-unsloth] Override base URL for the external provider.",
     )
-    enable_prompt_caching: Optional[bool] = Field(
+    enable_prompt_caching: Optional[Union[bool, str]] = Field(
         None,
         description = (
             "[x-unsloth] Opt in to provider-side prompt caching. On Anthropic, "
-            "attaches cache_control={type:ephemeral} to the system block so the "
-            "static prefix is reused across turns. On OpenAI cloud, caching is "
-            "automatic for prompts >=1024 tokens and this flag is informational. "
-            "Ignored for every other provider (mistral, gemini, kimi, openrouter, "
-            "vllm, local, etc.). Treated as enabled when omitted."
+            "boolean true attaches cache_control={type:ephemeral} to the system "
+            "block so the static prefix is reused across turns. On OpenAI cloud, "
+            "caching is automatic for prompts >=1024 tokens and the boolean is "
+            "informational. On Gemini, pass a string cache resource name such "
+            "as `cachedContents/abc123` to attach `cachedContent` on the native "
+            "request (boolean true is a no-op on Gemini because creating the "
+            "cache requires a separate POST /cachedContents call). Ignored for "
+            "every other provider. Treated as enabled when omitted."
         ),
     )
+
+    @field_validator("enable_prompt_caching", mode = "before")
+    @classmethod
+    def _coerce_enable_prompt_caching(cls, value: Any) -> Any:
+        """Preserve the pre-PR coercion: the field used to be Optional[bool],
+        so callers historically sent JSON strings `"true"` / `"false"` and
+        Pydantic v1 coerced them. Widening to Optional[Union[bool, str]] for
+        Gemini cache resource names lets `"false"` slip through as a truthy
+        string. Coerce the canonical bool literals back so explicit opt-outs
+        stay opt-out."""
+        if isinstance(value, str):
+            lowered = value.strip().lower()
+            # Match Pydantic v1's BooleanField coercion table (yes/y/on/t/1
+            # and no/n/off/f/0) so opt-outs that used to parse still parse.
+            # Anything else is preserved as a string for Gemini's
+            # cachedContent resource path.
+            if lowered in ("true", "t", "1", "yes", "y", "on"):
+                return True
+            if lowered in ("false", "f", "0", "no", "n", "off"):
+                return False
+        return value
+
     prompt_cache_ttl: Optional[str] = Field(
         None,
         description = (
@@ -784,6 +861,16 @@ class ChatCompletionRequest(BaseModel):
             "`container_not_found` hint; the backend emits a synthetic "
             "`container_invalidated` _toolEvent so the next turn falls back "
             "to auto-create."
+        ),
+    )
+    fast_mode: Optional[bool] = Field(
+        None,
+        description = (
+            "[x-unsloth] Anthropic fast-mode toggle. On Claude Opus 4.6 / "
+            "4.7 adds the `fast-mode-2026-02-01` beta header and sends "
+            "`speed: 'fast'` for higher OTPS at premium pricing. Silently "
+            "ignored on every other model + provider. See "
+            "https://platform.claude.com/docs/en/build-with-claude/fast-mode"
         ),
     )
 
