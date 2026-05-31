@@ -3078,34 +3078,38 @@ def detect_host() -> HostInfo:
 
     # Detect an Intel GPU; gates the Vulkan prebuilt. Linux reads the DRM
     # sysfs vendor id (0x8086); Windows queries the WMI video controller list.
+    # Only probed when there is no usable NVIDIA and no ROCm GPU, since the
+    # Vulkan selection branches are gated the same way -- this keeps the probe
+    # (notably the Windows powershell call) off the NVIDIA/AMD path.
     has_intel_gpu = False
-    if is_linux:
-        for _vendor_file in glob.glob("/sys/class/drm/card*/device/vendor"):
-            try:
-                with open(_vendor_file) as _vf:
-                    if _vf.read().strip().lower() == "0x8086":
+    if not has_usable_nvidia and not has_rocm:
+        if is_linux:
+            for _vendor_file in glob.glob("/sys/class/drm/card*/device/vendor"):
+                try:
+                    with open(_vendor_file) as _vf:
+                        if _vf.read().strip().lower() == "0x8086":
+                            has_intel_gpu = True
+                            break
+                except OSError:
+                    continue
+        elif is_windows:
+            _ps = shutil.which("powershell") or shutil.which("pwsh")
+            if _ps:
+                try:
+                    _result = run_capture(
+                        [
+                            _ps,
+                            "-NoProfile",
+                            "-Command",
+                            "Get-CimInstance Win32_VideoController | "
+                            "Select-Object -ExpandProperty Name",
+                        ],
+                        timeout = 15,
+                    )
+                    if _result.returncode == 0 and "intel" in _result.stdout.lower():
                         has_intel_gpu = True
-                        break
-            except OSError:
-                continue
-    elif is_windows:
-        _ps = shutil.which("powershell") or shutil.which("pwsh")
-        if _ps:
-            try:
-                _result = run_capture(
-                    [
-                        _ps,
-                        "-NoProfile",
-                        "-Command",
-                        "Get-CimInstance Win32_VideoController | "
-                        "Select-Object -ExpandProperty Name",
-                    ],
-                    timeout = 15,
-                )
-                if _result.returncode == 0 and "intel" in _result.stdout.lower():
-                    has_intel_gpu = True
-            except Exception:
-                pass
+                except Exception:
+                    pass
 
     return HostInfo(
         system = system,
