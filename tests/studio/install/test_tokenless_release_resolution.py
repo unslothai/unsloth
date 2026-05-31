@@ -16,8 +16,10 @@ STUDIO_DIR = ROOT / "studio"
 if str(STUDIO_DIR) not in sys.path:
     sys.path.insert(0, str(STUDIO_DIR))
 
-import install_llama_prebuilt as MOD  # noqa: E402
+import install_llama_prebuilt as INSTALL_LLAMA_PREBUILT  # noqa: E402
 from install_llama_prebuilt import HostInfo  # noqa: E402
+
+MOD = INSTALL_LLAMA_PREBUILT
 
 
 def _host(**overrides) -> HostInfo:

@@ -1150,7 +1150,8 @@ def _resolve_latest_release_tag_via_redirect(repo: str) -> str | None:
     """
 
     class _NoFollowRedirect(urllib.request.HTTPRedirectHandler):
-        def redirect_request(self, *args, **kwargs):  # type: ignore[override]
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            # Never follow the redirect; read the tag from the 3xx Location.
             return None
 
     url = f"https://github.com/{repo}/releases/latest"
