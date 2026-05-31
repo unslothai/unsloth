@@ -768,12 +768,17 @@ async def load_model(
                 # invoked with (see the HF / local branches below), so
                 # both sides of the comparison key off the same string.
                 resolved_variant = config.gguf_variant
-                same_source = bool(
+                request_variant = (request.gguf_variant or "").lower()
+                stored_variant = (source[1] or "").lower() if source else ""
+                same_model = bool(
                     source
                     and source[0]
                     and source[0].lower() == model_identifier.lower()
-                    and (source[1] or "").lower() == (resolved_variant or "").lower()
                 )
+                explicit_variant_change = bool(
+                    request.gguf_variant and stored_variant and request_variant != stored_variant
+                )
+                same_source = same_model and not explicit_variant_change
                 if not same_source:
                     logger.info(
                         "Not inheriting llama_extra_args: stored args came "
