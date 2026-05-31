@@ -219,7 +219,7 @@ class MuonConfig:
     # Note: if TrainingArguments.adam_beta1/adam_beta2 are set, they override
     # adamw_betas. This matches Q-GaLore's convention and allows users to
     # set betas once in TrainingArguments for all optimizers.
-    adamw_eps: object = 1e-8
+    adamw_eps: object = _ADAMW_EPS_UNSET
     adamw_weight_decay: Optional[float] = None
     target_modules: Optional[List[str]] = None
     embedding_lr: Optional[float] = None
@@ -659,7 +659,7 @@ class UnslothTrainer(SFTTrainer):
             adamw_eps = config.adamw_eps
         else:
             adamw_eps = getattr(self.args, "adam_epsilon", 1e-8)
-        adamw_lr = config.adamw_lr or lr
+        adamw_lr = config.adamw_lr if config.adamw_lr is not None else lr
         adamw_kwargs = dict(lr=adamw_lr, betas=adamw_betas, eps=adamw_eps)
         if adamw_groups:
             adamw_optimizer = torch.optim.AdamW(adamw_groups, **adamw_kwargs)

@@ -189,7 +189,7 @@ def make_muon_param_groups(
         )
     if adamw_embedding_params:
         adamw_groups.append(
-            {"params": adamw_embedding_params, "lr": embedding_lr or adamw_lr, "weight_decay": 0.0}
+            {"params": adamw_embedding_params, "lr": embedding_lr if embedding_lr is not None else adamw_lr, "weight_decay": 0.0}
         )
 
     return muon_groups, adamw_groups

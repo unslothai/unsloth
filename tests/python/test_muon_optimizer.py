@@ -1365,3 +1365,85 @@ def test_load_state_dict_updates_chained_groups():
     assert chained2.param_groups[0]["lr"] == 5e-4, "Chained LR should reflect loaded state"
     assert chained2.param_groups[0]["weight_decay"] == 0.5, "Chained weight_decay should reflect loaded state"
     assert chained2.param_groups[1]["lr"] == 5e-4, "Chained AdamW group LR should reflect loaded state"
+
+
+# -- Tests: 8th-pass additions (MUON_REVIEW_7.md) ----------------------------
+# -- MT2: _ADAMW_EPS_UNSET sentinel behavior (M1 fix) --------------------
+
+
+def test_adamw_eps_falls_through_to_training_args():
+    """MuonConfig() without explicit adamw_eps must fall through to args.adam_epsilon."""
+    _skip_if_no_muon()
+
+    from unsloth.trainer import MuonConfig, UnslothTrainer, _MuonAdamWChained
+
+    model = torch.nn.Linear(4, 4)
+    args = MagicMock()
+    args.learning_rate = 1e-3
+    args.weight_decay = 0.1
+    args.adam_beta1 = 0.9
+    args.adam_beta2 = 0.999
+    args.adam_epsilon = 1e-6  # non-default value
+
+    trainer = UnslothTrainer.__new__(UnslothTrainer)
+    trainer.model = model
+    trainer.args = args
+    trainer.optimizer = None
+
+    config = MuonConfig()  # no explicit adamw_eps -> sentinel -> fall through to args
+    result = trainer._create_muon_optimizer(config)
+    assert isinstance(result, _MuonAdamWChained)
+    assert result.adamw.param_groups[0]["eps"] == 1e-6, \
+        f"Expected eps=1e-6 from args.adam_epsilon, got {result.adamw.param_groups[0]['eps']}"
+
+
+def test_adamw_eps_explicit_override():
+    """MuonConfig(adamw_eps=1e-7) must use 1e-7 regardless of args.adam_epsilon."""
+    _skip_if_no_muon()
+
+    from unsloth.trainer import MuonConfig, UnslothTrainer, _MuonAdamWChained
+
+    model = torch.nn.Linear(4, 4)
+    args = MagicMock()
+    args.learning_rate = 1e-3
+    args.weight_decay = 0.1
+    args.adam_beta1 = 0.9
+    args.adam_beta2 = 0.999
+    args.adam_epsilon = 1e-6  # should be ignored
+
+    trainer = UnslothTrainer.__new__(UnslothTrainer)
+    trainer.model = model
+    trainer.args = args
+    trainer.optimizer = None
+
+    config = MuonConfig(adamw_eps=1e-7)  # explicit value
+    result = trainer._create_muon_optimizer(config)
+    assert isinstance(result, _MuonAdamWChained)
+    assert result.adamw.param_groups[0]["eps"] == 1e-7, \
+        f"Expected eps=1e-7 from explicit config, got {result.adamw.param_groups[0]['eps']}"
+
+
+def test_adamw_eps_explicit_equals_default():
+    """MuonConfig(adamw_eps=1e-8) must use 1e-8 even if args.adam_epsilon differs."""
+    _skip_if_no_muon()
+
+    from unsloth.trainer import MuonConfig, UnslothTrainer, _MuonAdamWChained
+
+    model = torch.nn.Linear(4, 4)
+    args = MagicMock()
+    args.learning_rate = 1e-3
+    args.weight_decay = 0.1
+    args.adam_beta1 = 0.9
+    args.adam_beta2 = 0.999
+    args.adam_epsilon = 1e-6  # should be ignored
+
+    trainer = UnslothTrainer.__new__(UnslothTrainer)
+    trainer.model = model
+    trainer.args = args
+    trainer.optimizer = None
+
+    config = MuonConfig(adamw_eps=1e-8)  # explicitly chose 1e-8
+    result = trainer._create_muon_optimizer(config)
+    assert isinstance(result, _MuonAdamWChained)
+    assert result.adamw.param_groups[0]["eps"] == 1e-8, \
+        f"Expected eps=1e-8 from explicit config, got {result.adamw.param_groups[0]['eps']}"
