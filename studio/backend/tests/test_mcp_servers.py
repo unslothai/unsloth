@@ -1054,3 +1054,64 @@ def test_refresh_failure_records_cooloff(tmp_path, monkeypatch):
     res = asyncio.run(routes_mcp.refresh_mcp_server_tools("s1", current_subject = "u"))
     assert res.ok is False
     assert mcp_client.in_failure_cooloff("s1")
+
+
+def test_get_enabled_mcp_tools_drops_result_when_server_deleted_mid_probe(
+    tmp_path, monkeypatch
+):
+    """A delete landing while a probe is in flight must drop the now-orphan
+    result -- the `fresh is None` arm of the mid-probe TOCTOU guard. The
+    result is neither served nor cached under the since-removed id."""
+    import asyncio
+
+    _reset_db(tmp_path, monkeypatch)
+    from core.inference import mcp_client
+    from core.inference import tools as tools_mod
+
+    monkeypatch.setattr(mcp_client, "_tool_cache", {})
+    monkeypatch.setattr(mcp_client, "_probe_cooloff_until", {})
+    mcp_servers_db.create_server(
+        id = "s1", display_name = "A", url = "https://x/mcp", is_enabled = True
+    )
+
+    async def fake(url, headers = None, timeout = None, use_oauth = False):
+        # Simulate a DELETE landing while we await the probe.
+        mcp_servers_db.delete_server("s1")
+        return _one_tool()
+
+    monkeypatch.setattr(tools_mod, "list_tools_async", fake)
+
+    specs = asyncio.run(tools_mod.get_enabled_mcp_tools())
+    assert specs == []  # orphan result not served
+    assert mcp_client.get_cached_tools("s1") is None  # nor cached under a gone id
+
+
+def test_oauth_probe_failure_in_chat_path_uses_long_cooloff(tmp_path, monkeypatch):
+    """When an OAuth server fails discovery during a send, the chat path must
+    record the OAuth (long) cool-off, not the plain one -- otherwise its
+    multi-minute browser hang recurs every minute."""
+    import asyncio
+    import time
+
+    _reset_db(tmp_path, monkeypatch)
+    from core.inference import mcp_client
+    from core.inference import tools as tools_mod
+
+    monkeypatch.setattr(mcp_client, "_tool_cache", {})
+    monkeypatch.setattr(mcp_client, "_probe_cooloff_until", {})
+    mcp_servers_db.create_server(
+        id = "s1", display_name = "A", url = "https://x/mcp",
+        is_enabled = True, use_oauth = True,
+    )
+
+    async def boom(url, headers = None, timeout = None, use_oauth = False):
+        raise RuntimeError("oauth down")
+
+    monkeypatch.setattr(tools_mod, "list_tools_async", boom)
+
+    assert asyncio.run(tools_mod.get_enabled_mcp_tools()) == []
+    assert mcp_client.in_failure_cooloff("s1")
+    # The recorded window must exceed the plain cool-off, proving the OAuth
+    # branch (use_oauth=True) fired -- not the 60 s default.
+    remaining = mcp_client._probe_cooloff_until["s1"] - time.monotonic()
+    assert remaining > mcp_client.FAILED_PROBE_COOLOFF_SECONDS
