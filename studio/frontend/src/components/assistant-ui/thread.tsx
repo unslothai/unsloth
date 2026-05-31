@@ -699,8 +699,12 @@ const Composer: FC<{
           {...inputProps}
         />
         <ComposerRightControls
-          disabled={disabled || isComposing || hasPendingAttachments}
-          showSend={hasSendableContent}
+          disabled={
+            disabled ||
+            !hasSendableContent ||
+            isComposing ||
+            hasPendingAttachments
+          }
           shouldBlockSend={shouldBlockSend}
           menuSide={effectiveMenuSide}
         />
@@ -1053,18 +1057,6 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
   const activeLook = isEffort
     ? reasoningLockedOn || (effectiveReasoningVisualEnabled && !disabled)
     : reasoningLockedOn || (effectiveReasoningEnabled && !disabled);
-  const canDismissReasoning =
-    activeLook &&
-    !disabled &&
-    !reasoningLockedOn &&
-    effectiveSupportsReasoningOff;
-  const dismissReasoning = () => {
-    if (!canDismissReasoning) return;
-    setReasoningEnabled(false);
-    applyQwenThinkingParams(false);
-    setPreserveThinking(false);
-  };
-
   if (useDropdown) {
     return (
       <DropdownMenu>
@@ -1074,7 +1066,6 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
             disabled={disabled}
             className="unsloth-thinking-pill"
             data-active={activeLook ? "true" : "false"}
-            data-dismissible={canDismissReasoning ? "true" : undefined}
             aria-label={thinkEffortAriaLabel({
               modelLoaded,
               reasoningDisabled: disabled,
@@ -1086,21 +1077,6 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
               <span>{isEffort ? `Thinking · ${effortLabel}` : "Thinking"}</span>
             ) : null}
             <ArrowDownStandardIcon className="unsloth-thinking-chevron size-[15px]" />
-            {canDismissReasoning ? (
-              <XIcon
-                className="composer-pill-close unsloth-thinking-close"
-                aria-hidden={true}
-                onPointerDown={(event) => {
-                  event.preventDefault();
-                  event.stopPropagation();
-                  dismissReasoning();
-                }}
-                onClick={(event) => {
-                  event.preventDefault();
-                  event.stopPropagation();
-                }}
-              />
-            ) : null}
           </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent
@@ -1233,7 +1209,6 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
       }}
       className="unsloth-thinking-pill"
       data-active={activeLook ? "true" : "false"}
-      data-dismissible={canDismissReasoning ? "true" : undefined}
       aria-label={thinkToggleAriaLabel({
         reasoningLockedOn,
         modelLoaded,
@@ -1243,9 +1218,6 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
     >
       <ThinkIcon />
       {activeLook ? <span>Thinking</span> : null}
-      {canDismissReasoning ? (
-        <XIcon className="composer-pill-close" aria-hidden={true} />
-      ) : null}
     </button>
   );
 };
@@ -1727,10 +1699,9 @@ const ComposerToolsMenu: FC<{
 
 const ComposerRightControls: FC<{
   disabled?: boolean;
-  showSend?: boolean;
   shouldBlockSend?: () => boolean;
   menuSide?: "top" | "bottom";
-}> = ({ disabled, showSend, shouldBlockSend, menuSide }) => {
+}> = ({ disabled, shouldBlockSend, menuSide }) => {
   return (
     <div className="aui-composer-action-wrapper flex shrink-0 items-center gap-0.5">
       <ReasoningToggle side={menuSide} />
@@ -1758,29 +1729,27 @@ const ComposerRightControls: FC<{
           </TooltipIconButton>
         </ComposerPrimitive.StopDictation>
       </ComposerPrimitive.If>
-      {showSend ? (
-        <AuiIf condition={({ thread }) => !thread.isRunning}>
-          <ComposerPrimitive.Send asChild={true}>
-            <TooltipIconButton
-              tooltip="Send message"
-              side="bottom"
-              type="submit"
-              variant="default"
-              size="icon"
-              disabled={disabled}
-              onClick={(event) => {
-                if (shouldBlockSend?.()) {
-                  event.preventDefault();
-                }
-              }}
-              className="aui-composer-send composer-send-enter size-8 rounded-full disabled:bg-transparent disabled:text-foreground/40 disabled:opacity-100 disabled:pointer-events-none"
-              aria-label="Send message"
-            >
-              <ArrowUpIcon className="aui-composer-send-icon size-[22px] stroke-2" />
-            </TooltipIconButton>
-          </ComposerPrimitive.Send>
-        </AuiIf>
-      ) : null}
+      <AuiIf condition={({ thread }) => !thread.isRunning}>
+        <ComposerPrimitive.Send asChild={true}>
+          <TooltipIconButton
+            tooltip="Send message"
+            side="bottom"
+            type="submit"
+            variant="default"
+            size="icon"
+            disabled={disabled}
+            onClick={(event) => {
+              if (shouldBlockSend?.()) {
+                event.preventDefault();
+              }
+            }}
+            className="aui-composer-send composer-send-enter size-8 rounded-full disabled:bg-primary/35 disabled:text-primary-foreground/80 disabled:opacity-100 disabled:pointer-events-none"
+            aria-label="Send message"
+          >
+            <ArrowUpIcon className="aui-composer-send-icon size-[22px] stroke-2" />
+          </TooltipIconButton>
+        </ComposerPrimitive.Send>
+      </AuiIf>
       <AuiIf condition={({ thread }) => thread.isRunning}>
         <ComposerPrimitive.Cancel asChild={true}>
           <Button

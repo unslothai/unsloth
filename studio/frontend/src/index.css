@@ -900,19 +900,21 @@
   }
 
   .composer-pill-btn {
-    @apply flex h-6 cursor-pointer items-center gap-1 rounded-full pl-1 pr-2 py-0 text-[14px] font-medium leading-6 text-muted-foreground/75 transition-colors hover:bg-black/[0.06] dark:hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-40;
+    @apply flex h-6 cursor-pointer items-center gap-1 rounded-full pl-1 pr-2 py-0 text-[14px] font-medium leading-6 text-muted-foreground/75 transition-colors hover:bg-primary/10 dark:hover:bg-primary/15 disabled:cursor-not-allowed disabled:opacity-40;
   }
 
-  .composer-pill-btn:is(:hover, :focus-visible),
+  .composer-pill-btn:is(:hover, :focus-visible) {
+    background-color: color-mix(in oklch, var(--primary) 10%, transparent);
+    color: var(--foreground);
+  }
+
+  .dark .composer-pill-btn:is(:hover, :focus-visible) {
+    background-color: color-mix(in oklch, var(--primary) 15%, transparent);
+    color: var(--foreground);
+  }
+
   .composer-pill-btn[data-active="true"] {
-    background-color: rgba(0, 0, 0, 0.08);
-    color: var(--foreground);
-  }
-
-  .dark .composer-pill-btn:is(:hover, :focus-visible),
-  .dark .composer-pill-btn[data-active="true"] {
-    background-color: rgba(255, 255, 255, 0.08);
-    color: var(--foreground);
+    color: var(--primary);
   }
 
   .composer-pill-btn > span {
@@ -929,14 +931,15 @@
 
   .composer-pill-close {
     display: none;
+    order: -1;
   }
 
   .composer-pill-btn[data-active="true"]:not(:disabled):is(
       :hover,
       :focus-visible
     ) {
-    background-color: rgba(0, 0, 0, 0.14);
-    padding-right: 0.25rem;
+    background-color: color-mix(in oklch, var(--primary) 10%, transparent);
+    color: var(--primary);
   }
 
   .dark
@@ -944,7 +947,16 @@
       :hover,
       :focus-visible
     ) {
-    background-color: rgba(255, 255, 255, 0.14);
+    background-color: color-mix(in oklch, var(--primary) 15%, transparent);
+    color: var(--primary);
+  }
+
+  .composer-pill-btn[data-active="true"]:not(:disabled):is(
+      :hover,
+      :focus-visible
+    )
+    > svg:not(.composer-pill-close) {
+    display: none;
   }
 
   .composer-pill-btn[data-active="true"]:not(:disabled):is(
@@ -1106,7 +1118,7 @@
 
   /* Right-side Thinking pill (toggle or dropdown). */
   .unsloth-thinking-pill {
-    @apply inline-flex h-6 shrink-0 cursor-pointer items-center gap-1 rounded-full pl-1 pr-2 py-0 text-[14px] font-medium leading-6 text-muted-foreground/75 transition-colors hover:bg-black/[0.06] dark:hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-40;
+    @apply inline-flex h-6 shrink-0 cursor-pointer items-center gap-1 rounded-full pl-1 pr-2 py-0 text-[14px] font-medium leading-6 text-muted-foreground/75 transition-colors hover:bg-primary/10 dark:hover:bg-primary/15 disabled:cursor-not-allowed disabled:opacity-40;
   }
 
   .unsloth-thinking-pill > span {
@@ -1121,54 +1133,45 @@
     flex-shrink: 0;
   }
 
-  .unsloth-thinking-pill[data-active="true"],
-  .unsloth-thinking-pill[data-state="open"] {
-    background-color: rgba(0, 0, 0, 0.08);
-    color: var(--foreground);
+  .unsloth-thinking-pill[data-active="true"] {
+    color: var(--primary);
     /* See .unsloth-composer-plus: re-enable pointer-events on the open trigger. */
     pointer-events: auto;
     cursor: pointer;
   }
 
-  .dark .unsloth-thinking-pill[data-active="true"],
+  .unsloth-thinking-pill[data-state="open"] {
+    background-color: rgba(0, 0, 0, 0.08);
+    color: var(--foreground);
+    pointer-events: auto;
+    cursor: pointer;
+  }
+
+  .unsloth-thinking-pill[data-active="true"][data-state="open"] {
+    color: var(--primary);
+  }
+
   .dark .unsloth-thinking-pill[data-state="open"] {
     background-color: rgba(255, 255, 255, 0.08);
     color: var(--foreground);
   }
 
-  .unsloth-thinking-pill .composer-pill-close {
-    display: none;
-    width: 16px !important;
-    height: 16px !important;
-    flex-shrink: 0;
+  .dark .unsloth-thinking-pill[data-active="true"][data-state="open"] {
+    color: var(--primary);
   }
 
-  .unsloth-thinking-pill[data-dismissible="true"][data-active="true"]:not(
-      :disabled
-    ):is(:hover, :focus-visible) {
-    background-color: rgba(0, 0, 0, 0.14);
-    padding-right: 0.25rem;
+  .unsloth-thinking-pill:is(:hover, :focus-visible) {
+    background-color: color-mix(in oklch, var(--primary) 10%, transparent);
+    color: var(--foreground);
   }
 
-  .dark
-    .unsloth-thinking-pill[data-dismissible="true"][data-active="true"]:not(
-      :disabled
-    ):is(:hover, :focus-visible) {
-    background-color: rgba(255, 255, 255, 0.14);
+  .dark .unsloth-thinking-pill:is(:hover, :focus-visible) {
+    background-color: color-mix(in oklch, var(--primary) 15%, transparent);
+    color: var(--foreground);
   }
 
-  .unsloth-thinking-pill[data-dismissible="true"][data-active="true"]:not(
-      :disabled
-    ):is(:hover, :focus-visible)
-    .composer-pill-close {
-    display: inline-flex;
-  }
-
-  .unsloth-thinking-pill[data-dismissible="true"][data-active="true"]:not(
-      :disabled
-    ):is(:hover, :focus-visible)
-    .unsloth-thinking-chevron {
-    display: none;
+  .unsloth-thinking-pill[data-active="true"]:is(:hover, :focus-visible) {
+    color: var(--primary);
   }
 
   /* Smaller tick for selected Thinking options. */
