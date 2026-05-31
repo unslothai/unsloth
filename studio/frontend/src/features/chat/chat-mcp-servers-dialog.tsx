@@ -464,7 +464,7 @@ export function ChatMcpServersDialog({
             </div>
           </div>
         ) : (
-          <div className="flex flex-col gap-3">
+          <div className="flex min-w-0 flex-col gap-3">
             <div className="flex justify-end">
               <Button size="sm" onClick={startCreate}>
                 <HugeiconsIcon icon={PlusSignIcon} size={14} />
