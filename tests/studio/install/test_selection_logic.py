@@ -84,6 +84,7 @@ published_windows_cuda_attempts = INSTALL_LLAMA_PREBUILT.published_windows_cuda_
 _windows_cuda_attempt_covers_blackwell = (
     INSTALL_LLAMA_PREBUILT._windows_cuda_attempt_covers_blackwell
 )
+resolve_release_asset_choice = INSTALL_LLAMA_PREBUILT.resolve_release_asset_choice
 
 
 # ---------------------------------------------------------------------------
@@ -2310,6 +2311,95 @@ class TestPublishedWindowsCudaAttemptsDynamicMajor:
         )
         result = published_windows_cuda_attempts(host, release, None)
         assert result[0].runtime_line == "cuda12"
+
+
+# ===========================================================================
+# N.1e. resolve_release_asset_choice -- pin on the published install path
+# ===========================================================================
+
+
+class TestResolveReleaseAssetChoicePin:
+    """The published (non --simple-policy) install path reaches the same b9360
+    Blackwell pin as the simple path, with its verified hash threaded."""
+
+    TAG = "b8508"
+
+    def _release(self, minors_lines):
+        artifacts = [
+            make_artifact(
+                f"llama-{self.TAG}-bin-win-cuda-{minor}-x64.zip",
+                install_kind = "windows-cuda",
+                runtime_line = line,
+                max_sm = 120,
+            )
+            for minor, line in minors_lines
+        ]
+        assets = {}
+        for minor, _line in minors_lines:
+            assets[f"llama-{self.TAG}-bin-win-cuda-{minor}-x64.zip"] = (
+                f"https://example.com/llama-{minor}"
+            )
+            assets[f"cudart-llama-bin-win-cuda-{minor}-x64.zip"] = (
+                f"https://example.com/cudart-{minor}"
+            )
+        return make_release(artifacts, upstream_tag = self.TAG, assets = assets)
+
+    def _checksums(self, minors):
+        names = []
+        for minor in minors:
+            names.append(f"llama-{self.TAG}-bin-win-cuda-{minor}-x64.zip")
+            names.append(f"cudart-llama-bin-win-cuda-{minor}-x64.zip")
+        return make_checksums(names)
+
+    def _no_torch(self, monkeypatch):
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT,
+            "detect_torch_cuda_runtime_preference",
+            lambda host: CudaRuntimePreference(runtime_line = None, selection_log = []),
+        )
+
+    def test_pin_applied_on_published_path_for_13_1(self, monkeypatch):
+        mock_windows_runtime(monkeypatch, ["cuda13", "cuda12"])
+        self._no_torch(monkeypatch)
+        release = self._release([("13.3", "cuda13"), ("12.4", "cuda12")])
+        checksums = self._checksums(["12.4"])  # 13.3 gated off for a 13.1 driver
+        host = make_host(
+            system = "Windows", machine = "AMD64",
+            driver_cuda_version = (13, 1), compute_caps = ["120"],
+        )
+        result = resolve_release_asset_choice(host, self.TAG, release, checksums)
+        assert result[0].tag == "b9360"
+        assert result[0].name == "llama-b9360-bin-win-cuda-13.1-x64.zip"
+        # apply_approved_hashes threaded the pin's verified hash from the
+        # augmented checksums (the pin survives the approved-hash gate).
+        assert result[0].expected_sha256 and len(result[0].expected_sha256) == 64
+        assert result[0].runtime_sha256 and len(result[0].runtime_sha256) == 64
+        assert any(a.runtime_line == "cuda12" for a in result)
+
+    def test_pin_dormant_on_published_path_for_13_3(self, monkeypatch):
+        mock_windows_runtime(monkeypatch, ["cuda13", "cuda12"])
+        self._no_torch(monkeypatch)
+        release = self._release([("13.3", "cuda13"), ("12.4", "cuda12")])
+        checksums = self._checksums(["13.3", "12.4"])
+        host = make_host(
+            system = "Windows", machine = "AMD64",
+            driver_cuda_version = (13, 3), compute_caps = ["120"],
+        )
+        result = resolve_release_asset_choice(host, self.TAG, release, checksums)
+        assert "b9360" not in [a.tag for a in result]
+        assert result[0].name == f"llama-{self.TAG}-bin-win-cuda-13.3-x64.zip"
+
+    def test_pin_not_applied_for_non_blackwell(self, monkeypatch):
+        mock_windows_runtime(monkeypatch, ["cuda13", "cuda12"])
+        self._no_torch(monkeypatch)
+        release = self._release([("13.3", "cuda13"), ("12.4", "cuda12")])
+        checksums = self._checksums(["12.4"])
+        host = make_host(
+            system = "Windows", machine = "AMD64",
+            driver_cuda_version = (13, 1), compute_caps = ["89"],
+        )
+        result = resolve_release_asset_choice(host, self.TAG, release, checksums)
+        assert "b9360" not in [a.tag for a in result]
 
 
 # ===========================================================================

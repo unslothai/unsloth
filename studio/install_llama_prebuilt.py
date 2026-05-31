@@ -3359,6 +3359,44 @@ def _pinned_windows_cuda_fallback(
     )
 
 
+def _augment_checksums_with_pin(
+    checksums: ApprovedReleaseChecksums, pin: AssetChoice
+) -> ApprovedReleaseChecksums:
+    """Add the pin's own verified hashes to a copy of the approved checksums so
+    apply_approved_hashes keeps it on the published path (b9360 is not in the
+    release manifest)."""
+    artifacts = dict(checksums.artifacts)
+    if pin.expected_sha256:
+        artifacts[pin.name] = ApprovedArtifactHash(
+            asset_name = pin.name,
+            sha256 = pin.expected_sha256,
+            repo = pin.repo,
+            kind = "prebuilt",
+        )
+    if pin.runtime_name and pin.runtime_sha256:
+        artifacts[pin.runtime_name] = ApprovedArtifactHash(
+            asset_name = pin.runtime_name,
+            sha256 = pin.runtime_sha256,
+            repo = pin.repo,
+            kind = "prebuilt",
+        )
+    return dataclasses_replace(checksums, artifacts = artifacts)
+
+
+def _with_pinned_windows_cuda_fallback(
+    host: HostInfo,
+    attempts: list[AssetChoice],
+    checksums: ApprovedReleaseChecksums,
+) -> tuple[list[AssetChoice], ApprovedReleaseChecksums]:
+    """Insert the Blackwell pin ahead of the Windows CUDA attempts and keep it
+    through apply_approved_hashes, or return the inputs unchanged when dormant.
+    Gives the published install path the same GPU fallback as the simple path."""
+    pin = _pinned_windows_cuda_fallback(host, attempts)
+    if pin is None:
+        return attempts, checksums
+    return [pin, *attempts], _augment_checksums_with_pin(checksums, pin)
+
+
 def published_windows_cuda_attempts(
     host: HostInfo,
     release: PublishedReleaseBundle,
@@ -3980,18 +4018,23 @@ def resolve_release_asset_choice(
             torch_preference.selection_log,
         )
         if published_attempts:
+            pin_attempts, pin_checksums = _with_pinned_windows_cuda_fallback(
+                host, published_attempts, checksums
+            )
             try:
-                return apply_approved_hashes(published_attempts, checksums)
+                return apply_approved_hashes(pin_attempts, pin_checksums)
             except PrebuiltFallback as exc:
                 log(
                     "published Windows CUDA assets ignored for install planning: "
                     f"{release.repo}@{release.release_tag} ({exc})"
                 )
         upstream_assets = github_release_assets(UPSTREAM_REPO, llama_tag)
-        return apply_approved_hashes(
+        upstream_attempts, upstream_checksums = _with_pinned_windows_cuda_fallback(
+            host,
             resolve_windows_cuda_choices(host, llama_tag, upstream_assets),
             checksums,
         )
+        return apply_approved_hashes(upstream_attempts, upstream_checksums)
 
     published_choice: AssetChoice | None = None
     if host.is_windows and host.is_x86_64:
