@@ -193,10 +193,10 @@ _result=$(run_func "$_dir")
 assert_eq "ROCm 7.1 -> rocm7.1" "https://download.pytorch.org/whl/rocm7.1" "$_result"
 rm -rf "$_dir"
 
-# 11) ROCm 7.2 (no nvidia-smi) -> rocm7.1 (capped due to torch <2.11.0)
+# 11) ROCm 7.2 (no nvidia-smi) -> rocm7.2
 _dir=$(make_mock_amd_smi "7.2")
 _result=$(run_func "$_dir")
-assert_eq "ROCm 7.2 -> rocm7.1 (capped)" "https://download.pytorch.org/whl/rocm7.1" "$_result"
+assert_eq "ROCm 7.2 -> rocm7.2" "https://download.pytorch.org/whl/rocm7.2" "$_result"
 rm -rf "$_dir"
 
 # 12) Both nvidia-smi and amd-smi present -> CUDA takes precedence
@@ -231,10 +231,10 @@ _result=$(run_func "$_dir")
 assert_eq "ROCm 7.0 -> rocm7.0" "https://download.pytorch.org/whl/rocm7.0" "$_result"
 rm -rf "$_dir"
 
-# 17) ROCm 8.0 (future, no nvidia-smi) -> rocm7.1 (capped)
+# 17) ROCm 8.0 (future, no nvidia-smi) -> rocm7.2 (capped to latest known)
 _dir=$(make_mock_amd_smi "8.0")
 _result=$(run_func "$_dir")
-assert_eq "ROCm 8.0 -> rocm7.1 (capped)" "https://download.pytorch.org/whl/rocm7.1" "$_result"
+assert_eq "ROCm 8.0 -> rocm7.2 (capped)" "https://download.pytorch.org/whl/rocm7.2" "$_result"
 rm -rf "$_dir"
 
 # 18) Malformed amd-smi output (empty version field) -> cpu
