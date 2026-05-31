@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
+import { useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import { Copy01Icon, Tick02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -29,10 +30,13 @@ export type UpdateInstallSource =
   | "unknown";
 type UpdateInstallSourceState = UpdateInstallSource | "loading";
 
-function getStudioUpdateInstructionLine(shell: UpdateShell): string {
+function getStudioUpdateInstructionLine(
+  shell: UpdateShell,
+  t: ReturnType<typeof useT>,
+): string {
   return shell === "windows"
-    ? "Open PowerShell and run:"
-    : "Open Terminal and run:";
+    ? t("settings.about.update.openPowerShell")
+    : t("settings.about.update.openTerminal");
 }
 
 function isLocalInstallSource(
@@ -59,6 +63,7 @@ function CopyableCommand({
   command: string;
   copyLabel: string;
 }): ReactElement {
+  const t = useT();
   const [copied, setCopied] = useState(false);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -89,14 +94,26 @@ function CopyableCommand({
         value={command}
         className="min-w-0 flex-1 bg-transparent px-2 py-1.5 font-mono text-[11px] text-foreground outline-none"
         title={command}
-        aria-label={`${copyLabel} text`}
+        aria-label={t("settings.about.update.commandText", {
+          label: copyLabel,
+        })}
       />
       <button
         type="button"
         onClick={handleCopy}
         className="flex shrink-0 items-center justify-center border-l border-border px-2 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-        title={copied ? "Copied" : "Copy command"}
-        aria-label={copied ? `${copyLabel} copied` : `Copy ${copyLabel}`}
+        title={
+          copied
+            ? t("settings.about.update.copied")
+            : t("settings.about.update.copyCommand")
+        }
+        aria-label={
+          copied
+            ? t("settings.about.update.commandCopied", { label: copyLabel })
+            : t("settings.about.update.copyNamedCommand", {
+                label: copyLabel,
+              })
+        }
       >
         {copied ? (
           <HugeiconsIcon
@@ -123,7 +140,9 @@ export function UpdateStudioInstructions({
   installSource?: UpdateInstallSourceState | null;
   showTitle?: boolean;
 }): ReactElement {
-  const [shell, setShell] = useState<UpdateShell>(defaultShell);
+  const t = useT();
+  const [shellOverride, setShellOverride] = useState<UpdateShell | null>(null);
+  const shell = shellOverride ?? defaultShell;
   const prefersReducedMotion = useReducedMotion();
   const windows = shell === "windows";
   const localInstallSource = isLocalInstallSource(installSource);
@@ -144,10 +163,6 @@ export function UpdateStudioInstructions({
     ? { opacity: 1 }
     : { opacity: 0, y: -2 };
 
-  useEffect(() => {
-    setShell(defaultShell);
-  }, [defaultShell]);
-
   return (
     <div className={cn("flex flex-col gap-3", className)}>
       <div
@@ -158,13 +173,13 @@ export function UpdateStudioInstructions({
       >
         {showTitle ? (
           <p className="shrink-0 whitespace-nowrap text-sm font-semibold font-heading">
-            Update Unsloth Studio
+            {t("settings.about.update.title")}
           </p>
         ) : null}
         <div className="flex shrink-0 items-center gap-0.5 text-[11px]">
           <button
             type="button"
-            onClick={() => setShell("windows")}
+            onClick={() => setShellOverride("windows")}
             className={cn(
               "px-0.5 py-0.5 font-medium transition-colors",
               windows
@@ -178,7 +193,7 @@ export function UpdateStudioInstructions({
           <span className="text-border">/</span>
           <button
             type="button"
-            onClick={() => setShell("unix")}
+            onClick={() => setShellOverride("unix")}
             className={cn(
               "px-0.5 py-0.5 font-medium transition-colors",
               windows
@@ -193,31 +208,28 @@ export function UpdateStudioInstructions({
       </div>
       {loadingInstallSource ? (
         <p className="text-xs text-muted-foreground leading-relaxed">
-          Checking how Studio was installed…
+          {t("settings.about.update.checkingInstall")}
         </p>
       ) : localInstallSource ? (
         <>
           <p className="text-xs text-muted-foreground leading-relaxed">
-            Source or local install detected. To avoid replacing it with PyPI,
-            update from the checkout or source you originally installed from.
+            {t("settings.about.update.localInstallDetected")}
           </p>
           {checkoutInstallSource ? (
             <>
               <p className="text-xs text-muted-foreground leading-relaxed">
-                Pull latest changes from your Unsloth repo checkout, then update
-                Studio locally:
+                {t("settings.about.update.pullThenUpdate")}
               </p>
               <CopyableCommand
                 command={STUDIO_LOCAL_PULL_CMD}
-                copyLabel="git pull command"
+                copyLabel={t("settings.about.update.gitPullCommand")}
               />
               <CopyableCommand
                 command={STUDIO_LOCAL_UPDATE_CMD}
-                copyLabel="local update command"
+                copyLabel={t("settings.about.update.localUpdateCommand")}
               />
               <p className="text-xs text-muted-foreground leading-relaxed">
-                If the Studio update command is unavailable, run the local
-                installer from that checkout:
+                {t("settings.about.update.localInstallerFallback")}
               </p>
               <AnimatePresence mode="wait" initial={false}>
                 <motion.div
@@ -233,7 +245,7 @@ export function UpdateStudioInstructions({
                         ? STUDIO_LOCAL_FALLBACK_WINDOWS_CMD
                         : STUDIO_LOCAL_FALLBACK_UNIX_CMD
                     }
-                    copyLabel="local installer command"
+                    copyLabel={t("settings.about.update.localInstallerCommand")}
                   />
                 </motion.div>
               </AnimatePresence>
@@ -242,12 +254,10 @@ export function UpdateStudioInstructions({
           {packagedSourceInstall ? (
             <>
               <p className="text-xs text-muted-foreground leading-relaxed">
-                This looks like a source or VCS package install. Reinstall from
-                the original local path or Git URL you used.
+                {t("settings.about.update.sourceInstallDetected")}
               </p>
               <p className="text-xs text-muted-foreground leading-relaxed">
-                If you still have the Unsloth repo checkout, run the local
-                installer from that checkout:
+                {t("settings.about.update.repoCheckoutFallback")}
               </p>
               <AnimatePresence mode="wait" initial={false}>
                 <motion.div
@@ -263,39 +273,37 @@ export function UpdateStudioInstructions({
                         ? STUDIO_LOCAL_FALLBACK_WINDOWS_CMD
                         : STUDIO_LOCAL_FALLBACK_UNIX_CMD
                     }
-                    copyLabel="local installer command"
+                    copyLabel={t("settings.about.update.localInstallerCommand")}
                   />
                 </motion.div>
               </AnimatePresence>
             </>
           ) : null}
           <p className="text-xs text-muted-foreground leading-relaxed">
-            Restart Studio after updating for changes to take effect.
+            {t("settings.about.update.restartAfterUpdate")}
           </p>
         </>
       ) : unknownInstallSource ? (
         <>
           <p className="text-xs text-muted-foreground leading-relaxed">
-            Studio could not detect how it was installed. Check how you
-            installed Studio first, then choose the matching update path.
+            {t("settings.about.update.unknownInstall")}
           </p>
           <p className="text-xs text-muted-foreground leading-relaxed">
-            For curl or PyPI installs, run:
+            {t("settings.about.update.curlOrPypi")}
           </p>
           <CopyableCommand
             command={STUDIO_UPDATE_CMD}
-            copyLabel="update command"
+            copyLabel={t("settings.about.update.updateCommand")}
           />
           <p className="text-xs text-muted-foreground leading-relaxed">
-            For local checkout installs, update from that checkout instead and
-            use the local update command:
+            {t("settings.about.update.localCheckout")}
           </p>
           <CopyableCommand
             command={STUDIO_LOCAL_UPDATE_CMD}
-            copyLabel="local update command"
+            copyLabel={t("settings.about.update.localUpdateCommand")}
           />
           <p className="text-xs text-muted-foreground leading-relaxed">
-            Restart Studio after updating for changes to take effect.
+            {t("settings.about.update.restartAfterUpdate")}
           </p>
         </>
       ) : (
@@ -309,15 +317,15 @@ export function UpdateStudioInstructions({
               transition={fadeTransition}
               className="text-xs text-muted-foreground leading-relaxed"
             >
-              {getStudioUpdateInstructionLine(shell)}
+              {getStudioUpdateInstructionLine(shell, t)}
             </motion.p>
           </AnimatePresence>
           <CopyableCommand
             command={STUDIO_UPDATE_CMD}
-            copyLabel="update command"
+            copyLabel={t("settings.about.update.updateCommand")}
           />
           <p className="text-xs text-muted-foreground leading-relaxed">
-            If that fails or unsloth studio update is unavailable, run:
+            {t("settings.about.update.fallbackInstruction")}
           </p>
           <AnimatePresence mode="wait" initial={false}>
             <motion.div
@@ -333,12 +341,12 @@ export function UpdateStudioInstructions({
                     ? STUDIO_UPDATE_FALLBACK_WINDOWS_CMD
                     : STUDIO_UPDATE_FALLBACK_UNIX_CMD
                 }
-                copyLabel="fallback command"
+                copyLabel={t("settings.about.update.fallbackCommand")}
               />
             </motion.div>
           </AnimatePresence>
           <p className="text-xs text-muted-foreground leading-relaxed">
-            Restart Studio after updating for changes to take effect.
+            {t("settings.about.update.restartAfterUpdate")}
           </p>
         </>
       )}

@@ -271,7 +271,12 @@ def test_web_fetch_success_emits_tool_start_and_end(monkeypatch):
     assert start["type"] == "tool_start"
     assert start["tool_name"] == "web_fetch"
     assert start["tool_call_id"] == "srvtoolu_wf1"
-    assert start["arguments"] == {"url": "https://example.com/article"}
+    # `_server_tool: True` marks this as a provider-side synthetic
+    # tool card for the frontend's history serializer.
+    assert start["arguments"] == {
+        "url": "https://example.com/article",
+        "_server_tool": True,
+    }
     assert end["type"] == "tool_end"
     assert end["tool_call_id"] == "srvtoolu_wf1"
     # The source pill uses Title / URL / snippet as parseSourcesFromResult expects.
