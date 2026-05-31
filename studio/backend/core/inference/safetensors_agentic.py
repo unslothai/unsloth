@@ -317,7 +317,9 @@ def run_safetensors_tool_loop(
             )
 
             tc_key = tool_name + str(arguments)
-            is_disabled = bool(allowed_tool_names) and tool_name not in allowed_tool_names
+            is_disabled = (
+                bool(allowed_tool_names) and tool_name not in allowed_tool_names
+            )
             already_ran_ok = any(
                 k == tc_key and not err for k, err in tool_call_history
             )
@@ -326,7 +328,9 @@ def run_safetensors_tool_loop(
             # asking the user to approve it would be noise. Registering the
             # approval slot *before* tool_start closes the race where the
             # confirmation could arrive before the waiter exists.
-            needs_confirm = confirm_tool_calls and not is_disabled and not already_ran_ok
+            needs_confirm = (
+                confirm_tool_calls and not is_disabled and not already_ran_ok
+            )
             approval_id = new_approval_id() if needs_confirm else ""
             decision_slot = (
                 begin_tool_decision(session_id, approval_id) if needs_confirm else None

@@ -58,9 +58,7 @@ def begin_tool_decision(session_id, approval_id) -> dict:
     return slot
 
 
-def wait_tool_decision(
-    slot, approval_id, cancel_event = None, timeout = _DECISION_TIMEOUT
-):
+def wait_tool_decision(slot, approval_id, cancel_event = None, timeout = _DECISION_TIMEOUT):
     """Block on a slot from ``begin_tool_decision`` until the user decides.
 
     Returns ``"allow"`` or ``"deny"``. Falls back to ``"deny"`` if the wait

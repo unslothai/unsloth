@@ -36,7 +36,9 @@ class _FakeExecuteTool:
     def __init__(self):
         self.calls = []
 
-    def __call__(self, name, arguments, *, cancel_event = None, timeout = None, session_id = None):
+    def __call__(
+        self, name, arguments, *, cancel_event = None, timeout = None, session_id = None
+    ):
         self.calls.append((name, arguments))
         return f"RESULT[{name}]"
 

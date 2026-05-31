@@ -52,9 +52,7 @@ class _Waiter:
         kwargs = {"cancel_event": self.cancel_event}
         if self.timeout is not None:
             kwargs["timeout"] = self.timeout
-        self.result = request_tool_decision(
-            self.session_id, self.approval_id, **kwargs
-        )
+        self.result = request_tool_decision(self.session_id, self.approval_id, **kwargs)
 
     def start(self):
         self._thread.start()
@@ -209,7 +207,9 @@ def test_concurrent_distinct_calls_route_their_own_decisions():
     for i in range(n):
         aid = new_approval_id()
         waiters[aid] = _Waiter(f"s{i}", aid).start()
-    expected = {aid: ("allow" if i % 2 == 0 else "deny") for i, aid in enumerate(waiters)}
+    expected = {
+        aid: ("allow" if i % 2 == 0 else "deny") for i, aid in enumerate(waiters)
+    }
     for aid, decision in expected.items():
         assert resolve_tool_decision(aid, decision) is True
     for aid, w in waiters.items():
