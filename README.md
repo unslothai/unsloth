@@ -72,19 +72,19 @@ Unsloth Studio (Beta) works on **Windows, Linux, WSL** and **macOS**.
 ```bash
 curl -fsSL https://unsloth.ai/install.sh | sh
 ```
+Use the same command to update.
+
 #### Windows:
 ```powershell
 irm https://unsloth.ai/install.ps1 | iex
 ```
+Use the same command to update.
 
 #### Launch
 ```bash
 unsloth studio -p 8888
 ```
 For cloud or global access, add `-H 0.0.0.0`. By default, Unsloth is accessible only locally.
-
-#### Update
-To update, use the same install commands above so `curl -fsSL https://unsloth.ai/install.sh | sh` or `irm https://unsloth.ai/install.ps1 | iex`
 
 #### Docker
 Use our [Docker image](https://hub.docker.com/r/unsloth/unsloth) ```unsloth/unsloth``` container. Run:
