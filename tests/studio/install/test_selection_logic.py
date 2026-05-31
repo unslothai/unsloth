@@ -52,6 +52,9 @@ compatible_windows_runtime_lines = (
 runtime_line_from_cuda_version = INSTALL_LLAMA_PREBUILT.runtime_line_from_cuda_version
 apply_approved_hashes = INSTALL_LLAMA_PREBUILT.apply_approved_hashes
 linux_cuda_choice_from_release = INSTALL_LLAMA_PREBUILT.linux_cuda_choice_from_release
+parse_direct_linux_release_bundle = (
+    INSTALL_LLAMA_PREBUILT.parse_direct_linux_release_bundle
+)
 windows_cuda_attempts = INSTALL_LLAMA_PREBUILT.windows_cuda_attempts
 resolve_upstream_asset_choice = INSTALL_LLAMA_PREBUILT.resolve_upstream_asset_choice
 resolve_requested_install_tag = INSTALL_LLAMA_PREBUILT.resolve_requested_install_tag
@@ -74,6 +77,14 @@ windows_cuda_upstream_asset_names = (
     INSTALL_LLAMA_PREBUILT.windows_cuda_upstream_asset_names
 )
 env_int = INSTALL_LLAMA_PREBUILT.env_int
+direct_upstream_release_plan = INSTALL_LLAMA_PREBUILT.direct_upstream_release_plan
+_pinned_windows_cuda_fallback = INSTALL_LLAMA_PREBUILT._pinned_windows_cuda_fallback
+CudaRuntimePreference = INSTALL_LLAMA_PREBUILT.CudaRuntimePreference
+published_windows_cuda_attempts = INSTALL_LLAMA_PREBUILT.published_windows_cuda_attempts
+_windows_cuda_attempt_covers_blackwell = (
+    INSTALL_LLAMA_PREBUILT._windows_cuda_attempt_covers_blackwell
+)
+resolve_release_asset_choice = INSTALL_LLAMA_PREBUILT.resolve_release_asset_choice
 
 
 # ---------------------------------------------------------------------------
@@ -397,6 +408,44 @@ class TestCompatibleLinuxRuntimeLines:
         host = make_host(driver_cuda_version = (13, 0))
         assert compatible_linux_runtime_lines(host) == ["cuda13", "cuda12"]
 
+    def test_future_major_derives_lines(self):
+        # A future major (14.x) offers cuda14 first, then older majors.
+        host = make_host(driver_cuda_version = (14, 0))
+        assert compatible_linux_runtime_lines(host) == ["cuda14", "cuda13", "cuda12"]
+
+
+class TestParseDirectLinuxReleaseBundle:
+    def _release(self, *targets):
+        names = [f"app-bTEST-linux-x64-{t}.tar.gz" for t in targets]
+        return {
+            "tag_name": "bTEST",
+            "assets": [
+                {"name": n, "browser_download_url": "https://x/" + n} for n in names
+            ],
+        }
+
+    def _cuda_artifact(self, bundle):
+        return [a for a in bundle.artifacts if a.install_kind == "linux-cuda"][0]
+
+    def test_parses_known_cuda13_bundle(self):
+        bundle = parse_direct_linux_release_bundle(
+            "unslothai/llama.cpp", self._release("cuda13-newer")
+        )
+        assert bundle is not None
+        assert self._cuda_artifact(bundle).runtime_line == "cuda13"
+
+    def test_parses_future_cuda_major_with_forward_profile(self):
+        # A future major name parses and inherits the newest known major's
+        # coverage for the same class as a forward default.
+        bundle = parse_direct_linux_release_bundle(
+            "unslothai/llama.cpp", self._release("cuda14-newer")
+        )
+        assert bundle is not None
+        art = self._cuda_artifact(bundle)
+        assert art.runtime_line == "cuda14"
+        assert art.coverage_class == "newer"
+        assert art.max_sm == 120  # inherited from cuda13-newer
+
 
 # ===========================================================================
 # G. pick_windows_cuda_runtime + compatible_windows_runtime_lines
@@ -441,6 +490,10 @@ class TestCompatibleWindowsRuntimeLines:
     def test_driver_13_0_uses_cuda13_line(self):
         host = make_host(driver_cuda_version = (13, 0))
         assert compatible_windows_runtime_lines(host) == ["cuda13", "cuda12"]
+
+    def test_future_major_derives_lines(self):
+        host = make_host(driver_cuda_version = (14, 0))
+        assert compatible_windows_runtime_lines(host) == ["cuda14", "cuda13", "cuda12"]
 
 
 # ===========================================================================
@@ -1777,12 +1830,23 @@ class TestWindowsCudaAttempts:
         assert result[0].runtime_line == "cuda13"
         assert result[1].runtime_line == "cuda12"
 
-    def test_driver_13_0_cuda13_dlls_selects_cuda13_asset(self, monkeypatch):
+    def test_driver_below_published_minor_is_gated_to_cuda12(self, monkeypatch):
+        # A 13.0 driver cannot run a 13.1 build (forward minor), so it is gated
+        # out of cuda13 and falls back to the cuda12 build it can run, even when
+        # only the cuda13 runtime libs are detected.
         mock_windows_runtime(monkeypatch, ["cuda13"])
         host = make_host(system = "Windows", machine = "AMD64", driver_cuda_version = (13, 0))
         assets = self._upstream("13.1", "12.4")
         result = windows_cuda_attempts(host, self.TAG, assets, None)
-        assert len(result) == 1
+        assert result[0].runtime_line == "cuda12"
+        assert result[0].name == f"llama-{self.TAG}-bin-win-cuda-12.4-x64.zip"
+
+    def test_driver_at_published_minor_selects_cuda13(self, monkeypatch):
+        # A 13.1 driver matches the published 13.1 build exactly.
+        mock_windows_runtime(monkeypatch, ["cuda13", "cuda12"])
+        host = make_host(system = "Windows", machine = "AMD64", driver_cuda_version = (13, 1))
+        assets = self._upstream("13.1", "12.4")
+        result = windows_cuda_attempts(host, self.TAG, assets, None)
         assert result[0].runtime_line == "cuda13"
         assert result[0].name == f"llama-{self.TAG}-bin-win-cuda-13.1-x64.zip"
 
@@ -1884,6 +1948,464 @@ class TestWindowsCudaAttempts:
         for attempt in result:
             assert attempt.runtime_url is None
             assert attempt.runtime_name is None
+
+    def test_tracks_upstream_cuda13_minor_bump(self, monkeypatch):
+        # ggml-org bumped the published Windows cuda13 build 13.1 -> 13.3; the
+        # selector must follow it instead of the old hardcoded 13.1 (#5861).
+        mock_windows_runtime(monkeypatch, ["cuda13", "cuda12"])
+        host = make_host(system = "Windows", machine = "AMD64", driver_cuda_version = (13, 3))
+        assets = self._upstream("13.3", "12.4")
+        result = windows_cuda_attempts(host, self.TAG, assets, None)
+        assert result[0].runtime_line == "cuda13"
+        assert result[0].name == f"llama-{self.TAG}-bin-win-cuda-13.3-x64.zip"
+
+    def test_cuda13_minor_bump_pairs_matching_cudart(self, monkeypatch):
+        # The paired cudart bundle must track the same bumped minor.
+        mock_windows_runtime(monkeypatch, ["cuda13", "cuda12"])
+        host = make_host(system = "Windows", machine = "AMD64", driver_cuda_version = (13, 3))
+        assets = {
+            f"llama-{self.TAG}-bin-win-cuda-13.3-x64.zip": "https://example.com/llama-13.3",
+            "cudart-llama-bin-win-cuda-13.3-x64.zip": "https://example.com/cudart-13.3",
+            f"llama-{self.TAG}-bin-win-cuda-12.4-x64.zip": "https://example.com/llama-12.4",
+            "cudart-llama-bin-win-cuda-12.4-x64.zip": "https://example.com/cudart-12.4",
+        }
+        result = windows_cuda_attempts(host, self.TAG, assets, None)
+        assert result[0].name == f"llama-{self.TAG}-bin-win-cuda-13.3-x64.zip"
+        assert result[0].runtime_name == "cudart-llama-bin-win-cuda-13.3-x64.zip"
+
+    def test_driver_below_published_minor_does_not_get_newer_build(self, monkeypatch):
+        # ggml-org ships only cuda-13.3; a 13.1 driver cannot run it (forward
+        # minor), so it is gated to the cuda-12.4 build instead of an
+        # unguaranteed 13.3. A 13.3 driver still gets 13.3 (see other tests).
+        mock_windows_runtime(monkeypatch, ["cuda13", "cuda12"])
+        host = make_host(system = "Windows", machine = "AMD64", driver_cuda_version = (13, 1))
+        assets = self._upstream("13.3", "12.4")
+        result = windows_cuda_attempts(host, self.TAG, assets, None)
+        assert result[0].runtime_line == "cuda12"
+        assert result[0].name == f"llama-{self.TAG}-bin-win-cuda-12.4-x64.zip"
+
+    def test_tracks_future_cuda13_minor(self, monkeypatch):
+        # A later within-major bump (13.4) is tracked the same as 13.3.
+        mock_windows_runtime(monkeypatch, ["cuda13", "cuda12"])
+        host = make_host(system = "Windows", machine = "AMD64", driver_cuda_version = (13, 4))
+        assets = self._upstream("13.4", "12.4")
+        result = windows_cuda_attempts(host, self.TAG, assets, None)
+        assert result[0].name == f"llama-{self.TAG}-bin-win-cuda-13.4-x64.zip"
+
+    def test_new_cuda_major_selected_when_published(self, monkeypatch):
+        # A new CUDA major (14.x) driver picks the published cuda14 build.
+        mock_windows_runtime(monkeypatch, ["cuda14", "cuda13", "cuda12"])
+        host = make_host(system = "Windows", machine = "AMD64", driver_cuda_version = (14, 0))
+        assets = self._upstream("14.0", "13.3", "12.4")
+        result = windows_cuda_attempts(host, self.TAG, assets, None)
+        assert result[0].runtime_line == "cuda14"
+        assert result[0].name == f"llama-{self.TAG}-bin-win-cuda-14.0-x64.zip"
+
+    def test_new_cuda_major_degrades_to_published_cuda13(self, monkeypatch):
+        # A 14.x driver with no cuda14 build runs the newest published cuda13
+        # build via backward compatibility.
+        mock_windows_runtime(monkeypatch, ["cuda13", "cuda12"])
+        host = make_host(system = "Windows", machine = "AMD64", driver_cuda_version = (14, 0))
+        assets = self._upstream("13.3", "12.4")
+        result = windows_cuda_attempts(host, self.TAG, assets, None)
+        assert result[0].name == f"llama-{self.TAG}-bin-win-cuda-13.3-x64.zip"
+
+
+# ===========================================================================
+# N.1b. _pinned_windows_cuda_fallback -- pinned b9360 cuda-13.1 Blackwell fallback
+# ===========================================================================
+
+
+class TestPinnedBlackwellCudaFallback:
+    """A Blackwell host on a 13.1/13.2 driver, gated off the in-release 13.3
+    build, gets the pinned immutable b9360 cuda-13.1 GPU build instead of the
+    CPU-only cuda-12.4 drop. The pin is dormant for everyone else."""
+
+    TAG = "b8508"
+
+    def _win_host(self, driver, caps):
+        return make_host(
+            system = "Windows",
+            machine = "AMD64",
+            driver_cuda_version = driver,
+            compute_caps = caps,
+        )
+
+    def test_pin_offered_for_driver_13_1_blackwell(self):
+        pin = _pinned_windows_cuda_fallback(self._win_host((13, 1), ["120"]), [])
+        assert pin is not None
+        assert pin.tag == "b9360"
+        assert pin.runtime_line == "cuda13"
+        assert pin.name == "llama-b9360-bin-win-cuda-13.1-x64.zip"
+        assert pin.runtime_name == "cudart-llama-bin-win-cuda-13.1-x64.zip"
+        assert pin.url.endswith("/b9360/llama-b9360-bin-win-cuda-13.1-x64.zip")
+        assert pin.runtime_url.endswith("/b9360/cudart-llama-bin-win-cuda-13.1-x64.zip")
+        assert pin.install_kind == "windows-cuda"
+        assert pin.expected_sha256 and len(pin.expected_sha256) == 64
+        assert pin.runtime_sha256 and len(pin.runtime_sha256) == 64
+
+    def test_pin_offered_for_driver_13_2(self):
+        assert (
+            _pinned_windows_cuda_fallback(self._win_host((13, 2), ["120"]), [])
+            is not None
+        )
+
+    def test_pin_offered_for_sm121_variant(self):
+        # sm_121 is Blackwell-family and also needs toolkit >= 12.8.
+        assert (
+            _pinned_windows_cuda_fallback(self._win_host((13, 1), ["121"]), [])
+            is not None
+        )
+
+    def test_pin_uses_max_of_multi_gpu_caps(self):
+        assert (
+            _pinned_windows_cuda_fallback(self._win_host((13, 1), ["86", "120"]), [])
+            is not None
+        )
+
+    @pytest.mark.parametrize("sm", ["89", "90", "100"])
+    def test_pin_not_offered_to_non_blackwell(self, sm):
+        # Ada/Hopper run the cuda-12.4 build fine; the pin must not fire.
+        assert _pinned_windows_cuda_fallback(self._win_host((13, 1), [sm]), []) is None
+
+    def test_pin_not_offered_to_driver_13_0(self):
+        # 13.0 cannot run the 13.1 build (forward minor); residual CPU gap.
+        assert (
+            _pinned_windows_cuda_fallback(self._win_host((13, 0), ["120"]), []) is None
+        )
+
+    def test_pin_not_offered_below_floor(self):
+        assert (
+            _pinned_windows_cuda_fallback(self._win_host((12, 8), ["120"]), []) is None
+        )
+
+    def test_pin_not_offered_without_driver(self):
+        assert _pinned_windows_cuda_fallback(self._win_host(None, ["120"]), []) is None
+
+    def test_pin_not_offered_on_linux(self):
+        host = make_host(
+            system = "Linux",
+            machine = "x86_64",
+            driver_cuda_version = (13, 1),
+            compute_caps = ["120"],
+        )
+        assert _pinned_windows_cuda_fallback(host, []) is None
+
+    def test_pin_dormant_when_cuda13_attempt_present(self, monkeypatch):
+        # A runnable in-release cuda13 build makes the pin unnecessary.
+        mock_windows_runtime(monkeypatch, ["cuda13", "cuda12"])
+        host = self._win_host((13, 1), ["120"])
+        assets = {
+            f"llama-{self.TAG}-bin-win-cuda-13.1-x64.zip": "https://example.com/13.1",
+            f"llama-{self.TAG}-bin-win-cuda-12.4-x64.zip": "https://example.com/12.4",
+        }
+        existing = windows_cuda_attempts(host, self.TAG, assets, None)
+        assert any(a.runtime_line == "cuda13" for a in existing)
+        assert _pinned_windows_cuda_fallback(host, existing) is None
+
+    def _win_cuda_attempt(self, minor):
+        major = minor.split(".")[0]
+        return AssetChoice(
+            repo = UPSTREAM_REPO,
+            tag = self.TAG,
+            name = f"llama-{self.TAG}-bin-win-cuda-{minor}-x64.zip",
+            url = "https://example.com/x",
+            source_label = "upstream",
+            install_kind = "windows-cuda",
+            runtime_line = f"cuda{major}",
+        )
+
+    def test_pin_dormant_when_runnable_cuda14_present(self, monkeypatch):
+        # A future Blackwell host with an in-release cuda14 build (no cuda13)
+        # must not get the older b9360 13.1 pin ahead of the runnable cuda14.
+        mock_windows_runtime(monkeypatch, ["cuda14", "cuda12"])
+        host = self._win_host((14, 0), ["120"])
+        assets = {
+            f"llama-{self.TAG}-bin-win-cuda-14.0-x64.zip": "https://example.com/14.0",
+            f"llama-{self.TAG}-bin-win-cuda-12.4-x64.zip": "https://example.com/12.4",
+        }
+        existing = windows_cuda_attempts(host, self.TAG, assets, None)
+        assert any(a.runtime_line == "cuda14" for a in existing)
+        assert _pinned_windows_cuda_fallback(host, existing) is None
+
+    def test_pin_dormant_when_runnable_cuda12_8_present(self):
+        # A cuda-12.8 build also covers Blackwell, so the pin defers to it.
+        host = self._win_host((13, 1), ["120"])
+        existing = [self._win_cuda_attempt("12.8")]
+        assert _pinned_windows_cuda_fallback(host, existing) is None
+
+    def test_pin_fires_when_only_cuda12_4_present(self):
+        # cuda-12.4 does not cover Blackwell, so the pin still fires.
+        host = self._win_host((13, 1), ["120"])
+        existing = [self._win_cuda_attempt("12.4")]
+        assert _pinned_windows_cuda_fallback(host, existing) is not None
+
+    @pytest.mark.parametrize(
+        "minor, covers",
+        [
+            ("12.4", False),
+            ("12.8", True),
+            ("13.1", True),
+            ("13.3", True),
+            ("14.0", True),
+        ],
+    )
+    def test_attempt_covers_blackwell(self, minor, covers):
+        assert (
+            _windows_cuda_attempt_covers_blackwell(self._win_cuda_attempt(minor))
+            is covers
+        )
+
+    def test_attempt_covers_blackwell_ignores_non_cuda_kind(self):
+        cpu = AssetChoice(
+            repo = UPSTREAM_REPO,
+            tag = self.TAG,
+            name = f"llama-{self.TAG}-bin-win-cpu-x64.zip",
+            url = "https://example.com/x",
+            source_label = "upstream",
+            install_kind = "windows-cpu",
+        )
+        assert _windows_cuda_attempt_covers_blackwell(cpu) is False
+
+
+# ===========================================================================
+# N.1c. direct_upstream_release_plan -- pinned Blackwell fallback ordering
+# ===========================================================================
+
+
+class TestDirectUpstreamBlackwellPin:
+    """End to end: the pin lands ahead of cuda-12.4 on the simple/upstream path
+    a Blackwell Windows host actually uses, and stays absent once a runnable
+    in-release cuda13 build exists."""
+
+    TAG = "b9365"
+
+    def _release(self):
+        names = [
+            f"llama-{self.TAG}-bin-win-cuda-13.3-x64.zip",
+            "cudart-llama-bin-win-cuda-13.3-x64.zip",
+            f"llama-{self.TAG}-bin-win-cuda-12.4-x64.zip",
+            "cudart-llama-bin-win-cuda-12.4-x64.zip",
+            f"llama-{self.TAG}-bin-win-cpu-x64.zip",
+        ]
+        return {
+            "tag_name": self.TAG,
+            "assets": [
+                {"name": n, "browser_download_url": f"https://example.com/{n}"}
+                for n in names
+            ],
+        }
+
+    def _no_torch(self, monkeypatch):
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT,
+            "detect_torch_cuda_runtime_preference",
+            lambda host: CudaRuntimePreference(runtime_line = None, selection_log = []),
+        )
+
+    def test_blackwell_13_1_prepends_pin(self, monkeypatch):
+        mock_windows_runtime(monkeypatch, ["cuda13", "cuda12"])
+        self._no_torch(monkeypatch)
+        host = make_host(
+            system = "Windows",
+            machine = "AMD64",
+            driver_cuda_version = (13, 1),
+            compute_caps = ["120"],
+        )
+        plan = direct_upstream_release_plan(
+            self._release(), host, UPSTREAM_REPO, "latest"
+        )
+        order = [(a.tag, a.runtime_line or a.install_kind) for a in plan.attempts]
+        assert order == [
+            ("b9360", "cuda13"),
+            (self.TAG, "cuda12"),
+            (self.TAG, "windows-cpu"),
+        ]
+        assert plan.attempts[0].name == "llama-b9360-bin-win-cuda-13.1-x64.zip"
+        # Direct/upstream path stays unverified-by-manifest (no approved hashes).
+        assert plan.approved_checksums.artifacts == {}
+
+    def test_blackwell_13_3_no_pin(self, monkeypatch):
+        mock_windows_runtime(monkeypatch, ["cuda13", "cuda12"])
+        self._no_torch(monkeypatch)
+        host = make_host(
+            system = "Windows",
+            machine = "AMD64",
+            driver_cuda_version = (13, 3),
+            compute_caps = ["120"],
+        )
+        plan = direct_upstream_release_plan(
+            self._release(), host, UPSTREAM_REPO, "latest"
+        )
+        assert "b9360" not in [a.tag for a in plan.attempts]
+        assert plan.attempts[0].tag == self.TAG
+        assert plan.attempts[0].runtime_line == "cuda13"
+        assert plan.attempts[0].name == f"llama-{self.TAG}-bin-win-cuda-13.3-x64.zip"
+
+
+# ===========================================================================
+# N.1d. published_windows_cuda_attempts -- version-dynamic ordering seed
+# ===========================================================================
+
+
+class TestPublishedWindowsCudaAttemptsDynamicMajor:
+    """The published-path ordering seed is derived from the release's real
+    published minors, so a future CUDA major published here is selectable
+    instead of being hidden by a hardcoded cuda12/cuda13 seed."""
+
+    TAG = "b8508"
+
+    def _win_cuda_artifact(self, minor, runtime_line):
+        return make_artifact(
+            f"llama-{self.TAG}-bin-win-cuda-{minor}-x64.zip",
+            install_kind = "windows-cuda",
+            runtime_line = runtime_line,
+            max_sm = 120,
+        )
+
+    def _release(self, minors_lines):
+        artifacts = [self._win_cuda_artifact(m, line) for m, line in minors_lines]
+        return make_release(artifacts, upstream_tag = self.TAG)
+
+    def test_future_cuda14_published_is_selected(self, monkeypatch):
+        # With the dynamic seed a 14.x driver reaches a published cuda14 build;
+        # the old hardcoded cuda12/cuda13 seed would never order it (the cuda14
+        # line would be skipped for want of a 14.x asset in the seed).
+        mock_windows_runtime(monkeypatch, ["cuda14", "cuda13", "cuda12"])
+        release = self._release(
+            [("14.0", "cuda14"), ("13.3", "cuda13"), ("12.4", "cuda12")]
+        )
+        host = make_host(
+            system = "Windows",
+            machine = "AMD64",
+            driver_cuda_version = (14, 0),
+            compute_caps = ["120"],
+        )
+        result = published_windows_cuda_attempts(host, release, None)
+        assert result[0].runtime_line == "cuda14"
+        assert result[0].name == f"llama-{self.TAG}-bin-win-cuda-14.0-x64.zip"
+
+    def test_cuda13_minor_selected_for_13_3_driver(self, monkeypatch):
+        # Existing behavior unchanged: a 13.3 driver gets the real 13.3 build.
+        mock_windows_runtime(monkeypatch, ["cuda13", "cuda12"])
+        release = self._release([("13.3", "cuda13"), ("12.4", "cuda12")])
+        host = make_host(
+            system = "Windows",
+            machine = "AMD64",
+            driver_cuda_version = (13, 3),
+            compute_caps = ["120"],
+        )
+        result = published_windows_cuda_attempts(host, release, None)
+        assert result[0].runtime_line == "cuda13"
+        assert result[0].name == f"llama-{self.TAG}-bin-win-cuda-13.3-x64.zip"
+
+    def test_below_minor_driver_gated_to_cuda12(self, monkeypatch):
+        # A 13.1 driver is gated off a published 13.3 and falls to cuda12.
+        mock_windows_runtime(monkeypatch, ["cuda13", "cuda12"])
+        release = self._release([("13.3", "cuda13"), ("12.4", "cuda12")])
+        host = make_host(
+            system = "Windows",
+            machine = "AMD64",
+            driver_cuda_version = (13, 1),
+            compute_caps = ["120"],
+        )
+        result = published_windows_cuda_attempts(host, release, None)
+        assert result[0].runtime_line == "cuda12"
+
+
+# ===========================================================================
+# N.1e. resolve_release_asset_choice -- pin on the published install path
+# ===========================================================================
+
+
+class TestResolveReleaseAssetChoicePin:
+    """The published (non --simple-policy) install path reaches the same b9360
+    Blackwell pin as the simple path, with its verified hash threaded."""
+
+    TAG = "b8508"
+
+    def _release(self, minors_lines):
+        artifacts = [
+            make_artifact(
+                f"llama-{self.TAG}-bin-win-cuda-{minor}-x64.zip",
+                install_kind = "windows-cuda",
+                runtime_line = line,
+                max_sm = 120,
+            )
+            for minor, line in minors_lines
+        ]
+        assets = {}
+        for minor, _line in minors_lines:
+            assets[f"llama-{self.TAG}-bin-win-cuda-{minor}-x64.zip"] = (
+                f"https://example.com/llama-{minor}"
+            )
+            assets[f"cudart-llama-bin-win-cuda-{minor}-x64.zip"] = (
+                f"https://example.com/cudart-{minor}"
+            )
+        return make_release(artifacts, upstream_tag = self.TAG, assets = assets)
+
+    def _checksums(self, minors):
+        names = []
+        for minor in minors:
+            names.append(f"llama-{self.TAG}-bin-win-cuda-{minor}-x64.zip")
+            names.append(f"cudart-llama-bin-win-cuda-{minor}-x64.zip")
+        return make_checksums(names)
+
+    def _no_torch(self, monkeypatch):
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT,
+            "detect_torch_cuda_runtime_preference",
+            lambda host: CudaRuntimePreference(runtime_line = None, selection_log = []),
+        )
+
+    def test_pin_applied_on_published_path_for_13_1(self, monkeypatch):
+        mock_windows_runtime(monkeypatch, ["cuda13", "cuda12"])
+        self._no_torch(monkeypatch)
+        release = self._release([("13.3", "cuda13"), ("12.4", "cuda12")])
+        checksums = self._checksums(["12.4"])  # 13.3 gated off for a 13.1 driver
+        host = make_host(
+            system = "Windows",
+            machine = "AMD64",
+            driver_cuda_version = (13, 1),
+            compute_caps = ["120"],
+        )
+        result = resolve_release_asset_choice(host, self.TAG, release, checksums)
+        assert result[0].tag == "b9360"
+        assert result[0].name == "llama-b9360-bin-win-cuda-13.1-x64.zip"
+        # apply_approved_hashes threaded the pin's verified hash from the
+        # augmented checksums (the pin survives the approved-hash gate).
+        assert result[0].expected_sha256 and len(result[0].expected_sha256) == 64
+        assert result[0].runtime_sha256 and len(result[0].runtime_sha256) == 64
+        assert any(a.runtime_line == "cuda12" for a in result)
+
+    def test_pin_dormant_on_published_path_for_13_3(self, monkeypatch):
+        mock_windows_runtime(monkeypatch, ["cuda13", "cuda12"])
+        self._no_torch(monkeypatch)
+        release = self._release([("13.3", "cuda13"), ("12.4", "cuda12")])
+        checksums = self._checksums(["13.3", "12.4"])
+        host = make_host(
+            system = "Windows",
+            machine = "AMD64",
+            driver_cuda_version = (13, 3),
+            compute_caps = ["120"],
+        )
+        result = resolve_release_asset_choice(host, self.TAG, release, checksums)
+        assert "b9360" not in [a.tag for a in result]
+        assert result[0].name == f"llama-{self.TAG}-bin-win-cuda-13.3-x64.zip"
+
+    def test_pin_not_applied_for_non_blackwell(self, monkeypatch):
+        mock_windows_runtime(monkeypatch, ["cuda13", "cuda12"])
+        self._no_torch(monkeypatch)
+        release = self._release([("13.3", "cuda13"), ("12.4", "cuda12")])
+        checksums = self._checksums(["12.4"])
+        host = make_host(
+            system = "Windows",
+            machine = "AMD64",
+            driver_cuda_version = (13, 1),
+            compute_caps = ["89"],
+        )
+        result = resolve_release_asset_choice(host, self.TAG, release, checksums)
+        assert "b9360" not in [a.tag for a in result]
 
 
 # ===========================================================================

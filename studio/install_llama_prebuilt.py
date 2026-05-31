@@ -222,6 +222,71 @@ DIRECT_LINUX_BUNDLE_PROFILES: dict[str, dict[str, Any]] = {
     },
 }
 
+# Lowest CUDA major we ship prebuilts for, and the highest major we probe for
+# installed runtime libraries. Detection and runtime-line derivation are
+# generated per major so a new toolkit (cuda14, ...) needs no code change while
+# llama.cpp keeps the cudart64_<major>.dll / libcudart.so.<major> naming.
+_MIN_CUDA_MAJOR = 12
+_MAX_PROBE_CUDA_MAJOR = 19
+
+# Last ggml-org release whose Windows win-cuda-13 build is still sub-13.3
+# (cuda-13.1, b9360, 2026-05-27). Upstream bumped win-cuda-13 to 13.3 at b9365
+# and now ships only cuda-12.4 + cuda-13.3. cuda-12.4 predates Blackwell (ggml
+# compiles sm_120 only at toolkit >= 12.8), so a Blackwell host on a 13.1/13.2
+# driver is gated off 13.3 and would drop to a CPU-only 12.4 build. b9360 is
+# immutable, so we pin its cuda-13.1 build (plus paired cudart) as a GPU
+# fallback for exactly those hosts. See unslothai/unsloth#5887.
+_PINNED_BLACKWELL_FALLBACK_TAG = "b9360"
+_PINNED_BLACKWELL_FALLBACK_RUNTIME = "13.1"
+_PINNED_BLACKWELL_DRIVER_FLOOR = (13, 1)
+_BLACKWELL_MIN_SM = 120
+# ggml compiles Blackwell sm_120 only at toolkit >= 12.8, so an in-release
+# windows-cuda build at or above this already covers Blackwell and makes the
+# older pinned 13.1 fallback unnecessary (cuda-12.4 is below it).
+_BLACKWELL_MIN_TOOLKIT = (12, 8)
+_PINNED_BLACKWELL_LLAMA_SHA256 = (
+    "31ddb8b42d7ab4a47cab8c48c397519f580ca502df7e73f3ab396eacc16c8e8d"
+)
+_PINNED_BLACKWELL_CUDART_SHA256 = (
+    "f96935e7e385e3b2d0189239077c10fe8fd7e95690fea4afec455b1b6c7e3f18"
+)
+
+
+def _cuda_runtime_lines_for_major(major: int) -> list[str]:
+    """Runtime lines a driver of this CUDA major can use, newest major first
+    down to the minimum we ship. A driver runs its own major and any older one
+    (backward compatibility)."""
+    return [f"cuda{m}" for m in range(major, _MIN_CUDA_MAJOR - 1, -1)]
+
+
+def _resolve_linux_bundle_profile(bundle_profile: str) -> "dict[str, Any] | None":
+    """Profile (runtime line + sm coverage) for a linux-x64-cuda<major>-<class>
+    bundle. Known majors use their published coverage; an unknown future major
+    reuses the newest known major's coverage for the same class as a forward
+    default, with the post-build GPU smoke test as the backstop."""
+    known = DIRECT_LINUX_BUNDLE_PROFILES.get(bundle_profile)
+    if known is not None:
+        return known
+    m = re.fullmatch(
+        r"cuda(?P<major>\d+)-(?P<klass>older|newer|portable)", bundle_profile
+    )
+    if not m:
+        return None
+    base_key = max(
+        (
+            k
+            for k, v in DIRECT_LINUX_BUNDLE_PROFILES.items()
+            if v["coverage_class"] == m.group("klass")
+        ),
+        key = lambda k: int(re.match(r"cuda(\d+)-", k).group(1)),
+        default = None,
+    )
+    if base_key is None:
+        return None
+    profile = dict(DIRECT_LINUX_BUNDLE_PROFILES[base_key])
+    profile["runtime_line"] = f"cuda{m.group('major')}"
+    return profile
+
 
 @dataclass
 class HostInfo:
@@ -769,6 +834,26 @@ def windows_cuda_asset_aliases(
     return aliases
 
 
+def _published_windows_cuda_runtime(
+    upstream_assets: dict[str, str], major: int, driver: tuple[int, int] | None
+) -> str | None:
+    """Highest cuda-<major>.<minor> published upstream that `driver` can run by
+    default CUDA compatibility, i.e. (major, minor) <= driver. None if nothing
+    qualifies. Gating on the driver (not just the major) keeps a 13.3 build off
+    a driver that only advertises 13.1, where it would otherwise rely on the
+    unguaranteed minor-version-compatibility path."""
+    if driver is None:
+        return None
+    best: int | None = None
+    for name in upstream_assets:
+        m = re.search(r"-bin-win-cuda-(\d+)\.(\d+)-x64\.zip$", name)
+        if m and int(m.group(1)) == major:
+            minor = int(m.group(2))
+            if (major, minor) <= driver and (best is None or minor > best):
+                best = minor
+    return f"{major}.{best}" if best is not None else None
+
+
 def format_byte_count(num_bytes: float) -> str:
     units = ["B", "KiB", "MiB", "GiB", "TiB"]
     value = float(num_bytes)
@@ -1225,7 +1310,7 @@ def parse_direct_linux_release_bundle(
     inferred_labels: list[str] = []
 
     linux_asset_re = re.compile(
-        r"^app-(?P<label>.+)-(?P<target>linux-x64(?:-cpu)?|linux-x64-(?:cuda12|cuda13)-(?:older|newer|portable))\.tar\.gz$"
+        r"^app-(?P<label>.+)-(?P<target>linux-x64(?:-cpu)?|linux-x64-cuda\d+-(?:older|newer|portable))\.tar\.gz$"
     )
     for asset_name in sorted(assets):
         match = linux_asset_re.fullmatch(asset_name)
@@ -1250,7 +1335,7 @@ def parse_direct_linux_release_bundle(
             continue
 
         bundle_profile = target.removeprefix("linux-x64-")
-        profile = DIRECT_LINUX_BUNDLE_PROFILES.get(bundle_profile)
+        profile = _resolve_linux_bundle_profile(bundle_profile)
         if profile is None:
             continue
         artifacts.append(
@@ -1400,6 +1485,11 @@ def direct_upstream_release_plan(
                     torch_preference.selection_log,
                 )
             )
+            # Blackwell on a 13.1/13.2 driver: prefer the pinned cuda-13.1 GPU
+            # build over the CPU-only cuda-12.4 the in-release gating leaves.
+            pinned = _pinned_windows_cuda_fallback(host, attempts)
+            if pinned is not None:
+                attempts.insert(0, pinned)
         elif host.has_rocm:
             lemonade_choice = resolve_lemonade_rocm_choice(
                 host, "windows", "windows-hip", llama_tag = requested_tag
@@ -1767,8 +1857,8 @@ def linux_runtime_dirs_for_required_libraries(
 
 def detected_linux_runtime_lines() -> tuple[list[str], dict[str, list[str]]]:
     line_requirements = {
-        "cuda13": ["libcudart.so.13", "libcublas.so.13"],
-        "cuda12": ["libcudart.so.12", "libcublas.so.12"],
+        f"cuda{m}": [f"libcudart.so.{m}", f"libcublas.so.{m}"]
+        for m in range(_MAX_PROBE_CUDA_MAJOR, _MIN_CUDA_MAJOR - 1, -1)
     }
     detected: list[str] = []
     runtime_dirs: dict[str, list[str]] = {}
@@ -2966,17 +3056,21 @@ def compatible_linux_runtime_lines(host: HostInfo) -> list[str]:
     if not host.driver_cuda_version:
         return []
     major, _minor = host.driver_cuda_version
-    if major >= 13:
-        return ["cuda13", "cuda12"]
-    if major >= 12:
-        return ["cuda12"]
-    return []
+    if major < _MIN_CUDA_MAJOR:
+        return []
+    return _cuda_runtime_lines_for_major(major)
 
 
 def windows_runtime_line_info() -> dict[str, tuple[str, ...]]:
+    # Generated per CUDA major (newest first) so a new toolkit is detected
+    # without a code change while the cudart64_<major>.dll naming holds.
     return {
-        "cuda13": ("cudart64_13*.dll", "cublas64_13*.dll", "cublasLt64_13*.dll"),
-        "cuda12": ("cudart64_12*.dll", "cublas64_12*.dll", "cublasLt64_12*.dll"),
+        f"cuda{m}": (
+            f"cudart64_{m}*.dll",
+            f"cublas64_{m}*.dll",
+            f"cublasLt64_{m}*.dll",
+        )
+        for m in range(_MAX_PROBE_CUDA_MAJOR, _MIN_CUDA_MAJOR - 1, -1)
     }
 
 
@@ -2993,12 +3087,13 @@ def detected_windows_runtime_lines() -> tuple[list[str], dict[str, list[str]]]:
 
 
 def compatible_windows_runtime_lines(host: HostInfo) -> list[str]:
-    driver_runtime = pick_windows_cuda_runtime(host)
-    if driver_runtime == "13.1":
-        return ["cuda13", "cuda12"]
-    if driver_runtime == "12.4":
-        return ["cuda12"]
-    return []
+    if not host.driver_cuda_version:
+        return []
+    major, minor = host.driver_cuda_version
+    # cuda12 prebuilts need a 12.4+ driver; cuda13+ any minor of the major.
+    if major < _MIN_CUDA_MAJOR or (major == _MIN_CUDA_MAJOR and minor < 4):
+        return []
+    return _cuda_runtime_lines_for_major(major)
 
 
 def runtime_line_from_cuda_version(cuda_version: str | None) -> str | None:
@@ -3075,7 +3170,6 @@ def windows_cuda_attempts(
     selection_preamble: Iterable[str] = (),
 ) -> list[AssetChoice]:
     selection_log = list(selection_preamble)
-    runtime_by_line = {"cuda12": "12.4", "cuda13": "13.1"}
     driver_runtime = pick_windows_cuda_runtime(host)
     detected_runtime_lines, runtime_dirs = detected_windows_runtime_lines()
     compatible_runtime_lines = compatible_windows_runtime_lines(host)
@@ -3118,12 +3212,7 @@ def windows_cuda_attempts(
             selection_log.append(
                 "windows_cuda_selection: detected CUDA runtime DLLs were incompatible with the reported driver"
             )
-        fallback_runtime_lines = (
-            ["cuda13", "cuda12"]
-            if driver_runtime == "13.1"
-            else (["cuda12"] if driver_runtime == "12.4" else [])
-        )
-        normal_runtime_lines = fallback_runtime_lines
+        normal_runtime_lines = compatible_runtime_lines
 
     runtime_order: list[str] = []
     if preferred_runtime_line and preferred_runtime_line in normal_runtime_lines:
@@ -3147,6 +3236,13 @@ def windows_cuda_attempts(
         for runtime_line in normal_runtime_lines
         if runtime_line not in runtime_order
     )
+    # Keep every driver-compatible line reachable as a fallback, so a line gated
+    # out by the driver version still drops to an older major (cuda13 -> cuda12).
+    runtime_order.extend(
+        runtime_line
+        for runtime_line in compatible_runtime_lines
+        if runtime_line not in runtime_order
+    )
     selection_log.append(
         "windows_cuda_selection: normal_runtime_order="
         + (",".join(normal_runtime_lines) if normal_runtime_lines else "none")
@@ -3158,7 +3254,18 @@ def windows_cuda_attempts(
 
     attempts: list[AssetChoice] = []
     for runtime_line in runtime_order:
-        runtime = runtime_by_line[runtime_line]
+        major = int(runtime_line.removeprefix("cuda"))
+        # Track whatever minor llama.cpp actually ships for this major
+        # (cuda13 -> 13.1, 13.3, ...). Skip the line when the release has no
+        # matching asset instead of guessing a now-missing name.
+        runtime = _published_windows_cuda_runtime(
+            upstream_assets, major, host.driver_cuda_version
+        )
+        if runtime is None:
+            selection_log.append(
+                f"windows_cuda_selection: no driver-supported asset for {runtime_line}"
+            )
+            continue
         selected_name = None
         asset_url = None
         for candidate_name in windows_cuda_upstream_asset_names(llama_tag, runtime):
@@ -3213,6 +3320,110 @@ def windows_cuda_attempts(
     return attempts
 
 
+def _windows_cuda_attempt_covers_blackwell(attempt: AssetChoice) -> bool:
+    """True if an in-release windows-cuda attempt is built with a toolkit that
+    covers Blackwell sm_120 (>= 12.8), read from its asset name's CUDA minor."""
+    if attempt.install_kind != "windows-cuda":
+        return False
+    m = re.search(r"-bin-win-cuda-(\d+)\.(\d+)-x64\.zip$", attempt.name)
+    return (
+        m is not None and (int(m.group(1)), int(m.group(2))) >= _BLACKWELL_MIN_TOOLKIT
+    )
+
+
+def _pinned_windows_cuda_fallback(
+    host: HostInfo, existing_cuda_attempts: list[AssetChoice]
+) -> AssetChoice | None:
+    """Pinned GPU fallback for a Blackwell host the in-release build gates off.
+    Upstream stopped publishing a sub-13.3 Windows cuda13 build after b9360, and
+    cuda-12.4 cannot offload sm_120, so a 13.1/13.2 driver would land on CPU.
+    b9360's cuda-13.1 build is immutable and runs on those drivers. Returns None
+    (dormant) whenever the in-release selection already offers a Blackwell-capable
+    build (toolkit >= 12.8, e.g. a runnable cuda13/cuda14), so it self-disables
+    once upstream ships a driver-runnable build again.
+
+    The b9360 binary reuses the current release's source tree and convert scripts
+    and is recorded via binary_release_tag, the same binary/source split used for
+    the lemonade prebuilt."""
+    if not (host.is_windows and host.is_x86_64 and host.has_usable_nvidia):
+        return None
+    driver = host.driver_cuda_version
+    if driver is None or driver < _PINNED_BLACKWELL_DRIVER_FLOOR:
+        return None
+    caps = normalize_compute_caps(host.compute_caps)
+    if not caps or int(caps[-1]) < _BLACKWELL_MIN_SM:
+        return None
+    if any(
+        _windows_cuda_attempt_covers_blackwell(attempt)
+        for attempt in existing_cuda_attempts
+    ):
+        return None
+    tag = _PINNED_BLACKWELL_FALLBACK_TAG
+    runtime = _PINNED_BLACKWELL_FALLBACK_RUNTIME
+    base = (
+        f"https://github.com/{UPSTREAM_REPO}/releases/download/"
+        f"{urllib.parse.quote(tag, safe = '')}"
+    )
+    name = f"llama-{tag}-bin-win-cuda-{runtime}-x64.zip"
+    cudart_name = f"cudart-llama-bin-win-cuda-{runtime}-x64.zip"
+    return AssetChoice(
+        repo = UPSTREAM_REPO,
+        tag = tag,
+        name = name,
+        url = f"{base}/{name}",
+        source_label = "upstream",
+        install_kind = "windows-cuda",
+        runtime_line = "cuda13",
+        runtime_name = cudart_name,
+        runtime_url = f"{base}/{cudart_name}",
+        expected_sha256 = _PINNED_BLACKWELL_LLAMA_SHA256,
+        runtime_sha256 = _PINNED_BLACKWELL_CUDART_SHA256,
+        selection_log = [
+            f"windows_cuda_selection: pinned {tag} cuda-{runtime} Blackwell GPU "
+            f"fallback (in-release cuda13 gated off by driver "
+            f"{driver[0]}.{driver[1]})"
+        ],
+    )
+
+
+def _augment_checksums_with_pin(
+    checksums: ApprovedReleaseChecksums, pin: AssetChoice
+) -> ApprovedReleaseChecksums:
+    """Add the pin's own verified hashes to a copy of the approved checksums so
+    apply_approved_hashes keeps it on the published path (b9360 is not in the
+    release manifest)."""
+    artifacts = dict(checksums.artifacts)
+    if pin.expected_sha256:
+        artifacts[pin.name] = ApprovedArtifactHash(
+            asset_name = pin.name,
+            sha256 = pin.expected_sha256,
+            repo = pin.repo,
+            kind = "prebuilt",
+        )
+    if pin.runtime_name and pin.runtime_sha256:
+        artifacts[pin.runtime_name] = ApprovedArtifactHash(
+            asset_name = pin.runtime_name,
+            sha256 = pin.runtime_sha256,
+            repo = pin.repo,
+            kind = "prebuilt",
+        )
+    return dataclasses_replace(checksums, artifacts = artifacts)
+
+
+def _with_pinned_windows_cuda_fallback(
+    host: HostInfo,
+    attempts: list[AssetChoice],
+    checksums: ApprovedReleaseChecksums,
+) -> tuple[list[AssetChoice], ApprovedReleaseChecksums]:
+    """Insert the Blackwell pin ahead of the Windows CUDA attempts and keep it
+    through apply_approved_hashes, or return the inputs unchanged when dormant.
+    Gives the published install path the same GPU fallback as the simple path."""
+    pin = _pinned_windows_cuda_fallback(host, attempts)
+    if pin is None:
+        return attempts, checksums
+    return [pin, *attempts], _augment_checksums_with_pin(checksums, pin)
+
+
 def published_windows_cuda_attempts(
     host: HostInfo,
     release: PublishedReleaseBundle,
@@ -3220,13 +3431,26 @@ def published_windows_cuda_attempts(
     selection_preamble: Iterable[str] = (),
 ) -> list[AssetChoice]:
     selection_log = list(release.selection_log) + list(selection_preamble)
-    runtime_by_line = {"cuda12": "12.4", "cuda13": "13.1"}
+    # Seed the runtime-line ordering from the real published windows-cuda minors
+    # (their names encode the minor), so a future CUDA major published here is
+    # ordered too instead of a hardcoded cuda12/cuda13 pair. Keys mirror the
+    # upstream naming so windows_cuda_attempts can match them; fall back to the
+    # long-standing default when the release lists no windows-cuda asset.
+    published_minors: list[str] = []
+    for artifact in release.artifacts:
+        if artifact.install_kind != "windows-cuda":
+            continue
+        m = re.search(r"-bin-win-cuda-(\d+\.\d+)-x64\.zip$", artifact.asset_name)
+        if m:
+            published_minors.append(m.group(1))
+    if not published_minors:
+        published_minors = ["12.4", "13.1"]
     runtime_order = windows_cuda_attempts(
         host,
         release.upstream_tag,
         {
-            f"llama-{release.upstream_tag}-bin-win-cuda-{runtime}-x64.zip": "published"
-            for runtime in runtime_by_line.values()
+            f"llama-{release.upstream_tag}-bin-win-cuda-{minor}-x64.zip": "published"
+            for minor in published_minors
         },
         preferred_runtime_line,
         selection_log,
@@ -3255,11 +3479,20 @@ def published_windows_cuda_attempts(
             asset_url = release.assets.get(artifact.asset_name)
             if not asset_url:
                 continue
-            # See windows_cuda_attempts: pair the cudart bundle.
+            am = re.search(r"-bin-win-cuda-(\d+)\.(\d+)-x64\.zip$", artifact.asset_name)
+            # Gate the real published minor against the driver, so a published
+            # windows-cuda artifact can never bypass the driver-version gate.
+            if (
+                am is not None
+                and host.driver_cuda_version is not None
+                and (int(am.group(1)), int(am.group(2))) > host.driver_cuda_version
+            ):
+                continue
+            # See windows_cuda_attempts: pair the cudart bundle for the real minor.
             runtime_archive_name: str | None = None
             runtime_archive_url: str | None = None
-            if artifact.asset_name.startswith("llama-"):
-                runtime = runtime_by_line[runtime_line]
+            if am is not None and artifact.asset_name.startswith("llama-"):
+                runtime = f"{am.group(1)}.{am.group(2)}"
                 cudart_name = f"cudart-llama-bin-win-cuda-{runtime}-x64.zip"
                 cudart_url = release.assets.get(cudart_name)
                 if cudart_url and cudart_url != asset_url:
@@ -3812,18 +4045,23 @@ def resolve_release_asset_choice(
             torch_preference.selection_log,
         )
         if published_attempts:
+            pin_attempts, pin_checksums = _with_pinned_windows_cuda_fallback(
+                host, published_attempts, checksums
+            )
             try:
-                return apply_approved_hashes(published_attempts, checksums)
+                return apply_approved_hashes(pin_attempts, pin_checksums)
             except PrebuiltFallback as exc:
                 log(
                     "published Windows CUDA assets ignored for install planning: "
                     f"{release.repo}@{release.release_tag} ({exc})"
                 )
         upstream_assets = github_release_assets(UPSTREAM_REPO, llama_tag)
-        return apply_approved_hashes(
+        upstream_attempts, upstream_checksums = _with_pinned_windows_cuda_fallback(
+            host,
             resolve_windows_cuda_choices(host, llama_tag, upstream_assets),
             checksums,
         )
+        return apply_approved_hashes(upstream_attempts, upstream_checksums)
 
     published_choice: AssetChoice | None = None
     if host.is_windows and host.is_x86_64:
