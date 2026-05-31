@@ -7,7 +7,7 @@
 @import "streamdown/styles.css";
 @import "@fontsource-variable/figtree";
 @import "@fontsource-variable/space-grotesk";
-@import "@fontsource-variable/dm-sans/index.css";
+@import "@fontsource-variable/inter";
 @import "tw-shimmer";
 @plugin "@toolwind/corner-shape";
 @source "../node_modules/streamdown/dist/*.js";
@@ -58,17 +58,6 @@
 }
 
 
-/* Unlayered on purpose: the global `*` / `::-webkit-scrollbar` rules further
-   down this file are also unlayered, so layered rules can never beat them.
-   Keeping these unlayered lets specificity win, so the sidebar scrollbar
-   stays hidden so rows never shift on hover (Gemini-style). */
-.sidebar-scroll-fade {
-	scrollbar-width: none;
-}
-.sidebar-scroll-fade::-webkit-scrollbar {
-	width: 0;
-	height: 0;
-}
 
 @font-face {
 	font-family: "Hellix";
@@ -137,16 +126,18 @@
 	--chart-4: oklch(0.6926 0.1112 346.5775);
 	--chart-5: oklch(0.7497 0.1003 85.0057);
 	--radius: 1.1rem;
-	--sidebar: #f9faf9;
+	/* Match the page background so the sidebar reads as one surface with the
+	   content; the faint --sidebar-border on its right edge is the separator. */
+	--sidebar: oklch(1 0 0);
 	--sidebar-foreground: oklch(0.1281 0.0179 169.2764);
 	--sidebar-primary: #17b88b;
 	--sidebar-primary-foreground: oklch(1 0 0);
 	--sidebar-accent: oklch(0.96 0.0279 166.55);
 	--sidebar-accent-foreground: oklch(0.2868 0.0649 159.9823);
-	--sidebar-border: oklch(0.945 0.0101 164.8536);
+	--sidebar-border: oklch(0.92 0 0);
 	--sidebar-ring: #17b88b;
 	--destructive-foreground: oklch(1 0 0);
-	--font-sans: "DM Sans Variable", ui-sans-serif, sans-serif, system-ui;
+	--font-sans: "Inter Variable", ui-sans-serif, sans-serif, system-ui;
 	--font-heading: "Hellix", "Space Grotesk Variable", var(--font-sans);
 	--font-serif: Source Serif 4, serif;
 	--font-mono: JetBrains Mono, monospace;
@@ -176,7 +167,7 @@
 	/*    0px 0px 0px 0px hsl(0 0% 0% / 0),*/
 	/*    0px 8px 10px 0px hsl(0 0% 0% / 0);*/
 	/*--shadow-2xl: 0px 0px 0px 0px hsl(0 0% 0% / 0);*/
-	--tracking-normal: -0.01em;
+	--tracking-normal: 0em;
 
 	/* Hex (not OKLCH) so the rendered surface matches the design mockup pixel-for-pixel. */
 	--nav-fg: #383835;
@@ -257,7 +248,8 @@
 	--chart-3: oklch(0.7554 0.1285 197.339);
 	--chart-4: oklch(0.7503 0.1199 346.7805);
 	--chart-5: oklch(0.799 0.1196 84.6633);
-	--sidebar: #18181a;
+	/* Match the page background (dark); --sidebar-border is the right-edge separator. */
+	--sidebar: #1f2023;
 	--sidebar-foreground: #ececee;
 	--sidebar-primary: #17b88b;
 	--sidebar-primary-foreground: oklch(1 0 0);
@@ -267,7 +259,7 @@
 	--sidebar-ring: #17b88b;
 	--destructive-foreground: oklch(1 0 0);
 	--radius: 0.625rem;
-	--font-sans: "DM Sans Variable", ui-sans-serif, sans-serif, system-ui;
+	--font-sans: "Inter Variable", ui-sans-serif, sans-serif, system-ui;
 	--font-serif: Source Serif 4, serif;
 	--font-mono: JetBrains Mono, monospace;
 	--shadow-color: hsl(0 0% 0%);
@@ -317,7 +309,7 @@
 }
 
 @theme inline {
-	--font-sans: "DM Sans Variable", ui-sans-serif, sans-serif, system-ui;
+	--font-sans: "Inter Variable", ui-sans-serif, sans-serif, system-ui;
 	--font-heading: "Hellix", "Space Grotesk Variable", var(--font-sans);
 	--color-sidebar-ring: var(--sidebar-ring);
 	--color-sidebar-border: var(--sidebar-border);
@@ -361,8 +353,8 @@
 	--font-mono: JetBrains Mono, monospace;
 	--font-serif: Source Serif 4, serif;
 	--radius: 1.1rem;
-	--tracking-tighter: calc(var(--tracking-normal) - 0.05em);
-	--tracking-tight: calc(var(--tracking-normal) - 0.025em);
+	--tracking-tighter: 0em;
+	--tracking-tight: 0em;
 	--tracking-wide: calc(var(--tracking-normal) + 0.025em);
 	--tracking-wider: calc(var(--tracking-normal) + 0.05em);
 	--tracking-widest: calc(var(--tracking-normal) + 0.1em);
@@ -494,7 +486,7 @@
 	h5,
 	h6 {
 		font-family: var(--font-sans);
-		letter-spacing: -0.02em;
+		letter-spacing: 0;
 	}
 }
 
@@ -506,15 +498,14 @@
 	   on global antialiased font-smoothing to neutralize the bloom. */
 	.font-heading {
 		font-family: var(--font-heading);
-		letter-spacing: -0.01em;
+		letter-spacing: 0;
 	}
 
-	/* Dark mode loosens tracking to offset optical bloom on dark surfaces. */
 	.tracking-nav {
-		letter-spacing: 0.015em;
+		letter-spacing: 0;
 	}
 	.dark .tracking-nav {
-		letter-spacing: 0.03em;
+		letter-spacing: 0;
 	}
 
 	.nav-icon-btn {
@@ -530,9 +521,9 @@
 		height: var(--icon-size);
 	}
 
-	/* Pins DM Sans across themes; parent `font-heading` resolves to Geist in dark. */
+	/* Pins Inter across themes; parent `font-heading` resolves to Geist in dark. */
 	.nav-badge {
-		font-family: "DM Sans Variable", ui-sans-serif, system-ui, sans-serif;
+		font-family: "Inter Variable", ui-sans-serif, system-ui, sans-serif;
 	}
 
 	.sidebar-nav-btn {
@@ -594,9 +585,11 @@
 
 	.sidebar-sticky-label {
 		@apply rounded-none bg-sidebar pt-0 pb-[8px] pl-[18px] pr-4 text-[14.5px]! leading-[17px] font-medium normal-case focus-visible:ring-0! focus-visible:outline-none transition-shadow duration-150;
-		/* Muted section-header gray, matching Gemini's "Notebooks"/"Recents". */
-		color: #5f6368;
-		letter-spacing: 0.015em;
+		/* Muted section-header gray, matching Gemini's "Notebooks"/"Recents".
+		   Lightened from #5f6368 so the label reads as a header, clearly
+		   lighter than the near-black nav items. */
+		color: #80868b;
+		letter-spacing: 0;
 	}
 	.sidebar-sticky-label-following {
 		@apply pt-[21px];
@@ -605,7 +598,7 @@
 		/* Muted gray, clearly dimmer than the near-white nav items (#ececee) so
 		   "Train"/"Recents" read as section headers — like Gemini's dark mode. */
 		color: #9aa0a6;
-		letter-spacing: 0.03em;
+		letter-spacing: 0;
 	}
 	/* Neutral panel input surface — sidesteps the green cast on
 	   `--input` / `--border` (both have a small chroma at hue ~165 in
@@ -778,12 +771,12 @@
 		font-weight: 500;
 		font-size: 14.5px;
 		line-height: 19px;
-		letter-spacing: 0.015em;
+		letter-spacing: 0;
 		color: var(--nav-fg);
 	}
 	.dark .app-user-menu [data-slot="dropdown-menu-item"],
 	.dark .app-user-menu [data-slot="dropdown-menu-sub-trigger"] {
-		letter-spacing: 0.03em;
+		letter-spacing: 0;
 	}
 	.app-user-menu [data-slot="dropdown-menu-item"] svg,
 	.app-user-menu [data-slot="dropdown-menu-sub-trigger"] svg {
@@ -897,7 +890,7 @@
 	}
 
 	.composer-footer-note {
-		@apply mt-1.5 text-center text-[11px] tracking-[0.04em] text-muted-foreground;
+		@apply mt-1.5 text-center text-[11px] tracking-[0em] text-muted-foreground;
 		font-family: var(--font-sans);
 	}
 
@@ -1217,24 +1210,16 @@
 	background: #23252a;
 }
 
-[data-sidebar="content"] {
-	scrollbar-color: oklch(0.5 0 0 / 0.22) var(--sidebar);
-}
 
-.dark [data-sidebar="content"] {
-	scrollbar-color: oklch(0.72 0 0 / 0.25) var(--sidebar);
+/* Search list: re-enable the native scrollbar (CommandList defaults to no-scrollbar). */
+.cmd-native-scrollbar {
+	scrollbar-width: thin;
+	-ms-overflow-style: auto;
 }
-
-[data-sidebar="content"]::-webkit-scrollbar-track {
-	background: var(--sidebar);
-}
-
-[data-sidebar="content"]::-webkit-scrollbar-thumb {
-	background: oklch(0.5 0 0 / 0.22);
-}
-
-.dark [data-sidebar="content"]::-webkit-scrollbar-thumb {
-	background: oklch(0.72 0 0 / 0.25);
+.cmd-native-scrollbar::-webkit-scrollbar {
+	display: block;
+	width: 8px;
+	height: 8px;
 }
 
 /*---break---*/

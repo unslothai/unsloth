@@ -732,26 +732,31 @@ export function ChatSettingsPanel({
     }
   }, [open]);
 
+  const settingsScrollRef = useRef<HTMLDivElement>(null);
+
   const settingsContent = (
     <>
-      <div className="aui-thread-viewport relative h-full overflow-y-auto">
-      <div className="sticky top-0 z-10 flex h-[48px] items-start gap-2 bg-panel-surface pl-[18px] pr-[14px] pt-[11px]">
+      <div
+        ref={settingsScrollRef}
+        className="relative h-full overflow-y-auto"
+      >
+      <div className="sticky top-0 z-10 flex h-[48px] items-start gap-2 bg-panel-surface pl-[18px] pr-[16px] pt-[11px]">
         {isMobile ? (
-          <span className="flex h-[34px] flex-1 items-center text-[15px] font-semibold tracking-[-0.01em] dark:tracking-[0.015em] text-nav-fg">
-            Configuration
+          <span className="flex h-[34px] flex-1 items-center text-[15px] font-semibold tracking-[0em] dark:tracking-[0.015em] text-nav-fg">
+            Run settings
           </span>
         ) : (
           <>
-            <span className="flex h-[34px] flex-1 items-center text-[15px] font-semibold tracking-[-0.01em] dark:tracking-[0.015em] text-nav-fg">
-              Configuration
+            <span className="flex h-[34px] flex-1 items-center text-[15px] font-semibold tracking-[0em] dark:tracking-[0.015em] text-nav-fg">
+              Run settings
             </span>
             <Tooltip>
               <TooltipPrimitive.Trigger asChild>
                 <button
                   type="button"
                   onClick={() => onOpenChange?.(false)}
-                  className="flex h-[34px] w-[34px] items-center justify-center rounded-[12px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                  aria-label="Close configuration"
+                  className="flex h-[34px] w-[34px] cursor-pointer items-center justify-center rounded-[12px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  aria-label="Close run settings"
                 >
                   <HugeiconsIcon
                     icon={LayoutAlignRightIcon}
@@ -765,7 +770,7 @@ export function ChatSettingsPanel({
                 sideOffset={6}
                 className="tooltip-compact"
               >
-                Close configuration
+                Close run settings
               </TooltipContent>
             </Tooltip>
           </>
@@ -1381,10 +1386,7 @@ export function ChatSettingsPanel({
         ) : null}
 
         {!isExternalModel ? (
-          <CollapsibleSection
-            label="MCP Servers"
-            labelHref="https://github.com/unslothai/unsloth/pull/5852"
-          >
+          <CollapsibleSection label="MCP Servers">
             <McpServersSection />
           </CollapsibleSection>
         ) : null}
@@ -1453,7 +1455,7 @@ export function ChatSettingsPanel({
       <Sheet open={open} onOpenChange={onOpenChange}>
         <SheetContent side="right" className="w-[18rem] p-0 font-heading">
           <SheetHeader className="sr-only">
-            <SheetTitle>Configuration</SheetTitle>
+            <SheetTitle>Run settings</SheetTitle>
             <SheetDescription>Chat inference settings</SheetDescription>
           </SheetHeader>
           <div className="flex h-full flex-col">{settingsContent}</div>

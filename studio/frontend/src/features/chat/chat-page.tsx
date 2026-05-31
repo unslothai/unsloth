@@ -24,9 +24,9 @@ import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { isTauri } from "@/lib/api-base";
 import { cn } from "@/lib/utils";
 import {
-  CustomizeIcon,
   Folder02Icon,
   FolderAddIcon,
+  LayoutAlignRightIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate, useRouterState, useSearch } from "@tanstack/react-router";
@@ -786,11 +786,6 @@ function ProjectLanding({
                   </p>
                 </div>
                 <Button type="button" className="mt-1" disabled>
-                  <HugeiconsIcon
-                    icon={FolderAddIcon}
-                    strokeWidth={1.75}
-                    className="size-icon"
-                  />
                   Add sources
                 </Button>
                 <p className="text-[11px] text-muted-foreground">Coming soon</p>
@@ -1860,6 +1855,14 @@ export function ChatPage(): ReactElement {
       <GuidedTour {...tour.tourProps} />
       <div className="relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden">
         <NativeModelDropOverlay state={nativeModelDropState} />
+        {/* Bottom fade under the top bar so messages dissolve as they scroll
+            beneath it (Gemini / unsloth-sidebar style), instead of a hard cut. */}
+        {view.mode !== "compare" && (
+          <div
+            aria-hidden
+            className="pointer-events-none absolute left-0 right-[10px] top-[48px] z-20 h-6 bg-gradient-to-b from-background to-transparent"
+          />
+        )}
         <div
           className={cn(
             "absolute top-0 left-0 right-[10px] z-30 flex h-[48px] shrink-0 items-start pt-[11px] pr-2 bg-background",
@@ -1992,12 +1995,12 @@ export function ChatPage(): ReactElement {
                   <button
                     type="button"
                     onClick={() => setSettingsOpen(true)}
-                    className="flex h-[34px] w-[34px] items-center justify-center rounded-[12px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                    aria-label="Open configuration"
+                    className="flex h-[34px] w-[34px] translate-x-[2px] cursor-pointer items-center justify-center rounded-[12px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    aria-label="Open run settings"
                     data-tour="chat-settings"
                   >
                     <HugeiconsIcon
-                      icon={CustomizeIcon}
+                      icon={LayoutAlignRightIcon}
                       strokeWidth={1.75}
                       className="size-icon"
                     />
@@ -2008,7 +2011,7 @@ export function ChatPage(): ReactElement {
                   sideOffset={6}
                   className="tooltip-compact"
                 >
-                  Open configuration
+                  Open run settings
                 </TooltipContent>
               </Tooltip>
             )}

@@ -258,10 +258,20 @@ export function AppSidebar() {
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const [scrolled, setScrolled] = useState(false);
-  // Top mask appears once the list is scrolled away from the top edge.
+  // Bottom fade hides at the very bottom (and for short, non-scrolling lists)
+  // so the last row isn't washed out - Gemini-style.
+  const [canScrollDown, setCanScrollDown] = useState(false);
+  // Driven only from onScroll + a content-change effect below. Deliberately NO
+  // ResizeObserver: its callback-driven setState created a render loop (React
+  // #185). Both setters bail out when unchanged, so neither path can loop.
   const syncScrollState = (el: HTMLDivElement) => {
     const nextScrolled = el.scrollTop > 0;
     setScrolled((prev) => (prev === nextScrolled ? prev : nextScrolled));
+    const nextCanScrollDown =
+      el.scrollHeight - el.scrollTop - el.clientHeight > 1;
+    setCanScrollDown((prev) =>
+      prev === nextCanScrollDown ? prev : nextCanScrollDown,
+    );
   };
 
   const isRecipesRoute = pathname.startsWith("/data-recipes");
@@ -294,8 +304,28 @@ export function AppSidebar() {
     !chatOnly && isStudioRoute,
   );
   const activeJobId = useTrainingRuntimeStore((s) => s.jobId);
+  const currentRunViewActive = useTrainingRuntimeStore((s) => s.currentRunViewActive);
   const selectedHistoryRunId = useTrainingRuntimeStore((s) => s.selectedHistoryRunId);
   const setSelectedHistoryRunId = useTrainingRuntimeStore((s) => s.setSelectedHistoryRunId);
+
+  // Recompute the bottom-fade state on mount and whenever the list height can
+  // change (items load, sections collapse/expand, route switches the visible
+  // list) - onScroll never fires for short, non-scrolling lists. Guarded
+  // setState below means this can't loop even if a dep is a fresh reference.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const next = el.scrollHeight - el.scrollTop - el.clientHeight > 1;
+    setCanScrollDown((prev) => (prev === next ? prev : next));
+  }, [
+    recentChatItems.length,
+    runItems.length,
+    projects.length,
+    chatOpen,
+    trainOpen,
+    runsOpen,
+    isStudioRoute,
+  ]);
 
   const chatDisabled = isTrainingRunning;
 
@@ -652,7 +682,7 @@ export function AppSidebar() {
               alt="Unsloth"
               className="h-[34px] w-[34px] rounded-full object-cover"
             />
-            <span className="font-heading text-[21px] font-semibold tracking-[-0.01em] dark:tracking-[0.02em] leading-none text-black dark:text-white">
+            <span className="font-heading text-[21px] font-semibold tracking-[0em] dark:tracking-[0.02em] leading-none text-black dark:text-white">
               unsloth
             </span>
             <span className="nav-badge ml-0.5 inline-flex items-center justify-center rounded-full border border-nav-beta-border px-[5px] pt-[3px] pb-[2px] text-[8px] font-medium leading-none tracking-[0.04em] text-nav-fg-muted antialiased subpixel-antialiased shadow-[0_1px_2px_rgba(0,0,0,0.06)] dark:shadow-[0_1px_2px_rgba(0,0,0,0.35)]">
@@ -665,7 +695,7 @@ export function AppSidebar() {
                 <button
                   type="button"
                   onClick={togglePinned}
-                  className="inline-flex h-[33px] w-[32px] items-center justify-center rounded-[10px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  className="inline-flex h-[33px] w-[32px] cursor-pointer items-center justify-center rounded-[10px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   aria-label={t("shell.aria.closeSidebar")}
                 >
                   <HugeiconsIcon icon={LayoutAlignLeftIcon} strokeWidth={1.75} className="size-icon" />
@@ -690,7 +720,7 @@ export function AppSidebar() {
                 <button
                   type="button"
                   onClick={togglePinned}
-                  className="inline-flex h-[33px] w-[32px] items-center justify-center rounded-[10px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  className="inline-flex h-[33px] w-[32px] cursor-pointer items-center justify-center rounded-[10px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   aria-label={t("shell.aria.openSidebar")}
                 >
                   <HugeiconsIcon icon={LayoutAlignLeftIcon} strokeWidth={1.75} className="size-icon" />
@@ -727,9 +757,10 @@ export function AppSidebar() {
               icon={Search01Icon}
               label={t("shell.navigation.search")}
               active={false}
-              disabled={chatDisabled}
               onClick={() => {
-                if (chatDisabled) return;
+                // Search is read-only over chat history and never runs
+                // inference, so it stays available while training (unlike
+                // New chat, which is gated on `chatDisabled`).
                 useChatSearchStore.getState().open();
                 closeMobileIfOpen();
               }}
@@ -742,7 +773,9 @@ export function AppSidebar() {
         ref={scrollRef}
         onScroll={(e) => syncScrollState(e.currentTarget)}
         className={cn(
-          "sidebar-scroll-fade gap-0 overflow-y-auto overscroll-contain min-h-0",
+          // pb-2 keeps the last row's rounded highlight clear of the
+          // overflow clip edge so its bottom corners aren't shaved off.
+          "sidebar-scroll-fade gap-0 overflow-y-auto overscroll-contain min-h-0 pb-2",
           scrolled && "is-scrolled",
         )}
       >
@@ -837,7 +870,7 @@ export function AppSidebar() {
         {isStudioRoute && runItems.length > 0 && !chatOnly && (
           <Collapsible open={runsOpen} onOpenChange={setRunsOpen} asChild>
           <SidebarGroup className="group-data-[collapsible=icon]:hidden px-0 py-0">
-            <SidebarGroupLabel className={cn("sidebar-sticky-label", scrolled && "is-scrolled")} asChild>
+            <SidebarGroupLabel className={cn("sidebar-sticky-label sidebar-sticky-label-following", scrolled && "is-scrolled")} asChild>
               <CollapsibleTrigger className="cursor-pointer flex w-full items-center gap-1 group/sb-collap">
                 {t("shell.navigation.recents")}
                 <ChevronDown className="size-3.5 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg]" />
@@ -847,8 +880,16 @@ export function AppSidebar() {
               <SidebarGroupContent className="px-2">
                 <SidebarMenu>
                   {runItems.map((run) => {
+                    // An explicit sidebar selection wins. Otherwise highlight
+                    // the active job only while the "Current Run" tab is the
+                    // view - that covers a live run (it auto-switches there) and
+                    // a just-finished/errored run you're still viewing, while
+                    // keeping the Configure tab unhighlighted even though
+                    // `activeJobId` stays pinned to the last job.
                     const isActiveRun =
-                      selectedHistoryRunId === run.id || activeJobId === run.id;
+                      selectedHistoryRunId != null
+                        ? run.id === selectedHistoryRunId
+                        : currentRunViewActive && run.id === activeJobId;
                     return (
                       <SidebarMenuItem
                         key={run.id}
@@ -928,11 +969,16 @@ export function AppSidebar() {
       </SidebarContent>
 
       <SidebarFooter className="relative group-data-[collapsible=icon]:px-0">
-        {/* Static fade above the profile box. Sidebar-colour to transparent,
-            so it shows over list rows and stays invisible over empty space. */}
+        {/* Fade above the profile box, shown only while there's more list below
+            the fold; at the very bottom (or for short lists) it fades out so the
+            last row shows fully (Gemini-style). `right-2` keeps it clear of the
+            8px scrollbar gutter so the scrollbar isn't faded out. */}
         <div
           aria-hidden="true"
-          className="pointer-events-none absolute inset-x-0 bottom-full h-10 bg-gradient-to-t from-[var(--sidebar)] to-transparent"
+          className={cn(
+            "pointer-events-none absolute left-0 right-2 bottom-full h-10 bg-gradient-to-t from-[var(--sidebar)] to-transparent transition-opacity duration-200",
+            canScrollDown ? "opacity-100" : "opacity-0",
+          )}
         />
         <SidebarMenu>
           <SidebarMenuItem>
