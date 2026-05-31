@@ -11,8 +11,12 @@ from fastapi import APIRouter, Depends, HTTPException
 from auth.authentication import get_current_subject
 from core.inference.mcp_client import (
     clear_oauth_tokens_async,
+    is_stdio,
     list_tools_async,
     parse_server_headers,
+    parse_stdio_command,
+    probe_timeout,
+    stdio_mcp_enabled,
 )
 from models.mcp_servers import (
     McpServerCreate,
@@ -28,16 +32,22 @@ logger = structlog.get_logger(__name__)
 router = APIRouter()
 
 
-_PROBE_TIMEOUT_SECONDS = 8.0
-# When OAuth probes need to open a browser, wait long enough for the user to
-# sign in. Matches fastmcp's default OAuth callback_timeout (300 s) + slack.
-_OAUTH_PROBE_TIMEOUT_SECONDS = 305.0
-
-
 def _validate_url(url: str) -> str:
     trimmed = (url or "").strip()
     if not trimmed:
         raise HTTPException(status_code = 400, detail = "url must not be empty")
+    # When stdio is enabled on this host, a non-HTTP value is a local command.
+    # Reuse this field so stdio servers ride the existing CRUD/storage with no
+    # schema change. When stdio is disabled the value falls through to the
+    # http-only validation below, so non-HTTP input is just a bad URL (400).
+    if stdio_mcp_enabled() and is_stdio(trimmed):
+        try:
+            parts = parse_stdio_command(trimmed)
+        except ValueError as exc:
+            raise HTTPException(status_code = 400, detail = f"Invalid command: {exc}")
+        if not parts or not parts[0].strip():
+            raise HTTPException(status_code = 400, detail = "command must not be empty")
+        return trimmed
     parsed = urlparse(trimmed)
     if parsed.scheme not in ("http", "https"):
         raise HTTPException(
@@ -180,15 +190,19 @@ async def refresh_mcp_server_tools(
     server = mcp_servers_db.get_server(server_id)
     if not server:
         raise HTTPException(status_code = 404, detail = "MCP server not found")
+    # Refresh uses the stored address, so re-check the stdio gate here too: a
+    # stdio row from a desktop DB must not spawn on a hosted/network host.
+    if is_stdio(server["url"]) and not stdio_mcp_enabled():
+        raise HTTPException(
+            status_code = 400, detail = "stdio MCP servers are disabled on this host"
+        )
 
     use_oauth = bool(server.get("use_oauth"))
     try:
         tools = await list_tools_async(
             url = server["url"],
             headers = parse_server_headers(server),
-            timeout = _OAUTH_PROBE_TIMEOUT_SECONDS
-            if use_oauth
-            else _PROBE_TIMEOUT_SECONDS,
+            timeout = probe_timeout(server["url"], use_oauth),
             use_oauth = use_oauth,
         )
     except Exception as exc:  # noqa: BLE001 — surface transport+timeout errors to UI
@@ -212,9 +226,7 @@ async def test_mcp_server(
         tools = await list_tools_async(
             url = url,
             headers = headers,
-            timeout = _OAUTH_PROBE_TIMEOUT_SECONDS
-            if payload.use_oauth
-            else _PROBE_TIMEOUT_SECONDS,
+            timeout = probe_timeout(url, payload.use_oauth),
             use_oauth = payload.use_oauth,
         )
     except Exception as exc:  # noqa: BLE001

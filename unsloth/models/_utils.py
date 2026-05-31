@@ -1216,8 +1216,6 @@ if is_openai_available():
 
 # =============================================
 # Get Flash Attention v2 if Ampere (RTX 30xx, A100)
-import bitsandbytes as bnb
-
 from transformers import AutoTokenizer
 from transformers.utils.import_utils import _is_package_available
 
