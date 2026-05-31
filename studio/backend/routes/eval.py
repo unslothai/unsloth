@@ -11,12 +11,14 @@ from fastapi.responses import StreamingResponse
 from loggers import get_logger
 
 from auth.authentication import get_current_subject
+from eval.dataset import DatasetRef, sample_column_values
 from eval.jobs import EvalBusyError, EvalJobManager, build_eval_run_fn
 from eval.json_score.schema import (ArrayNode, LeafNode, Node, ObjectNode,
                                      normalize_schema)
 from eval.metrics.registry import list_metrics
-from models import (EvalProgress, EvalResultRow, EvalRunDetail, EvalRunSummary,
-                    EvalStartRequest, MetricInfo)
+from models import (EvalDatasetRef, EvalProgress, EvalResultRow, EvalRunDetail,
+                    EvalRunSummary, EvalStartRequest, MetricInfo)
+from pydantic import BaseModel
 from storage import studio_db
 
 logger = get_logger(__name__)
@@ -51,6 +53,76 @@ def _flatten_comparators(node: Node, prefix: str = "") -> list[dict]:
     if isinstance(node, LeafNode):
         return [{"path": prefix or "(value)", "comparator": node.comparator}]
     return []
+
+
+class InferSchemaRequest(BaseModel):
+    dataset: EvalDatasetRef
+    output_column: str
+    samples: int = 10
+
+
+@router.post("/infer-schema")
+async def infer_schema(payload: InferSchemaRequest,
+                       current_subject: str = Depends(get_current_subject)):
+    """Infer a JSON Schema from sample values of the dataset's output column,
+    so the user doesn't have to hand-write one for the json_document metric."""
+    ref = DatasetRef(
+        is_local=payload.dataset.is_local, path=payload.dataset.path,
+        name=payload.dataset.name, split=payload.dataset.split,
+        subset=payload.dataset.subset,
+    )
+    try:
+        values = sample_column_values(
+            ref, column=payload.output_column, limit=max(1, min(payload.samples, 50)),
+        )
+    except (ValueError, FileNotFoundError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    parsed: list = []
+    parse_errors = 0
+    for v in values:
+        if isinstance(v, (dict, list)):
+            parsed.append(v)
+            continue
+        if not isinstance(v, str):
+            parse_errors += 1
+            continue
+        try:
+            parsed.append(json.loads(v))
+        except (ValueError, TypeError):
+            try:
+                from json_repair import repair_json
+                r = repair_json(v, return_objects=True)
+                if isinstance(r, (dict, list)) and r:
+                    parsed.append(r)
+                else:
+                    parse_errors += 1
+            except Exception:
+                parse_errors += 1
+
+    if not parsed:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"No parseable JSON in column {payload.output_column!r} "
+                f"(checked {len(values)} sample(s))."
+            ),
+        )
+
+    try:
+        from genson import SchemaBuilder
+    except ImportError:
+        raise HTTPException(status_code=500, detail="genson is not installed")
+
+    builder = SchemaBuilder()
+    for sample in parsed:
+        builder.add_object(sample)
+    schema = builder.to_schema()
+    return {
+        "schema": schema,
+        "samples_used": len(parsed),
+        "parse_errors": parse_errors,
+    }
 
 
 @router.post("/schema-preview")

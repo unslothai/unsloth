@@ -41,6 +41,7 @@ scipy
 rapidfuzz
 python-dateutil
 json_repair
+genson
 tqdm
 psutil
 tyro

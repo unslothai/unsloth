@@ -21,7 +21,13 @@ import {
   ZapIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { listMetrics, type EvalStartRequest, type MetricInfo } from "../api/eval-api";
+import {
+  inferOutputSchema,
+  listMetrics,
+  type EvalStartRequest,
+  type MetricInfo,
+} from "../api/eval-api";
+import { Spinner } from "@/components/ui/spinner";
 import { MetricConfigFields } from "./metric-config-fields";
 import { SchemaComparatorPreview } from "./schema-comparator-preview";
 import { EvalModelFields } from "./eval-model-fields";
@@ -59,6 +65,39 @@ export function EvalConfigForm({
   const [metrics, setMetrics] = useState<MetricInfo[]>([]);
   const [formError, setFormError] = useState<string | null>(null);
   const [metricsError, setMetricsError] = useState<string | null>(null);
+  const [generatingSchema, setGeneratingSchema] = useState(false);
+  const [schemaGenError, setSchemaGenError] = useState<string | null>(null);
+
+  async function generateSchemaFromOutput() {
+    setSchemaGenError(null);
+    const dsRef = dataset.isLocal ? dataset.path : dataset.name;
+    if (!dsRef.trim() || !dataset.referenceColumn.trim()) {
+      setSchemaGenError("Pick a dataset and output column first.");
+      return;
+    }
+    setGeneratingSchema(true);
+    try {
+      const res = await inferOutputSchema({
+        dataset: {
+          is_local: dataset.isLocal,
+          name: dataset.isLocal ? null : dataset.name.trim(),
+          path: dataset.isLocal ? dataset.path.trim() : null,
+          split: dataset.split.trim() || "train",
+          subset: dataset.subset.trim() || null,
+        },
+        output_column: dataset.referenceColumn.trim(),
+        samples: 10,
+      });
+      setMetricConfig({
+        ...metricConfig,
+        schema: JSON.stringify(res.schema, null, 2),
+      });
+    } catch (e) {
+      setSchemaGenError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setGeneratingSchema(false);
+    }
+  }
 
   // On mount: load metrics. Only seed metricName/metricConfig if no metric is already persisted.
   useEffect(() => {
@@ -287,6 +326,37 @@ export function EvalConfigForm({
                 </SelectContent>
               </Select>
             </div>
+            {metricName === "json_document" && (
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  className="gap-1.5"
+                  disabled={
+                    generatingSchema ||
+                    !dataset.referenceColumn ||
+                    !(dataset.isLocal ? dataset.path : dataset.name)
+                  }
+                  onClick={() => {
+                    void generateSchemaFromOutput();
+                  }}
+                >
+                  {generatingSchema ? (
+                    <>
+                      <Spinner className="size-3.5" />
+                      Generating…
+                    </>
+                  ) : (
+                    "Generate schema from output column"
+                  )}
+                </Button>
+                {schemaGenError && (
+                  <span className="text-xs text-destructive">
+                    {schemaGenError}
+                  </span>
+                )}
+              </div>
+            )}
             {selectedMetric && (
               <MetricConfigFields
                 fields={selectedMetric.config_fields}

@@ -24,13 +24,8 @@ def _coerce(value: Any) -> Any:
     return str(value)
 
 
-def load_eval_examples(
-    ref: DatasetRef, *, input_col: str, reference_col: str, limit: Optional[int],
-) -> list[tuple[str, Any]]:
-    """Load (input, reference) pairs from an HF repo or a local file.
-
-    Returns the first `limit` rows (all rows when limit is None).
-    """
+def _load_dataset(ref: DatasetRef):
+    """Load the requested split from an HF repo or a local file/dir."""
     from datasets import load_dataset
 
     if ref.is_local:
@@ -45,36 +40,43 @@ def load_eval_examples(
             )
             parquet_files = sorted(parquet_dir.glob("*.parquet"))
             if parquet_files:
-                ds = load_dataset(
+                return load_dataset(
                     "parquet",
                     data_files=[str(p) for p in parquet_files],
                     split=ref.split,
                 )
-            else:
-                # Fall back to other supported file types in the top of `path`.
-                files: list[Path] = []
-                for ext, _ in (
-                    (".jsonl", "json"), (".json", "json"), (".csv", "csv"),
-                ):
-                    files.extend(sorted(path.glob(f"*{ext}")))
-                if not files:
-                    raise ValueError(
-                        f"No loadable files (parquet/json/jsonl/csv) under {path}"
-                    )
-                first_suffix = files[0].suffix.lower()
-                fmt = {".jsonl": "json", ".json": "json", ".csv": "csv"}[first_suffix]
-                ds = load_dataset(
-                    fmt, data_files=[str(p) for p in files], split=ref.split,
+            # Fall back to other supported file types in the top of `path`.
+            files: list[Path] = []
+            for ext, _ in (
+                (".jsonl", "json"), (".json", "json"), (".csv", "csv"),
+            ):
+                files.extend(sorted(path.glob(f"*{ext}")))
+            if not files:
+                raise ValueError(
+                    f"No loadable files (parquet/json/jsonl/csv) under {path}"
                 )
-        else:
-            suffix = path.suffix.lower()
-            fmt = {".jsonl": "json", ".json": "json", ".csv": "csv",
-                   ".parquet": "parquet"}.get(suffix)
-            if fmt is None:
-                raise ValueError(f"Unsupported local dataset file type: {suffix!r}")
-            ds = load_dataset(fmt, data_files=str(path), split=ref.split)
-    else:
-        ds = load_dataset(ref.name, ref.subset, split=ref.split)
+            first_suffix = files[0].suffix.lower()
+            fmt = {".jsonl": "json", ".json": "json", ".csv": "csv"}[first_suffix]
+            return load_dataset(
+                fmt, data_files=[str(p) for p in files], split=ref.split,
+            )
+        suffix = path.suffix.lower()
+        fmt = {".jsonl": "json", ".json": "json", ".csv": "csv",
+               ".parquet": "parquet"}.get(suffix)
+        if fmt is None:
+            raise ValueError(f"Unsupported local dataset file type: {suffix!r}")
+        return load_dataset(fmt, data_files=str(path), split=ref.split)
+    return load_dataset(ref.name, ref.subset, split=ref.split)
+
+
+def load_eval_examples(
+    ref: DatasetRef, *, input_col: str, reference_col: str, limit: Optional[int],
+) -> list[tuple[str, Any]]:
+    """Load (input, reference) pairs from an HF repo or a local file.
+
+    Returns the first `limit` rows (all rows when limit is None).
+    """
+    ds = _load_dataset(ref)
 
     cols = set(ds.column_names)
     for col in (input_col, reference_col):
@@ -90,3 +92,16 @@ def load_eval_examples(
          _coerce(row[reference_col]))
         for row in sliced
     ]
+
+
+def sample_column_values(
+    ref: DatasetRef, *, column: str, limit: int,
+) -> list[Any]:
+    """Return the first `limit` values of `column` — used by schema inference."""
+    ds = _load_dataset(ref)
+    if column not in set(ds.column_names):
+        raise ValueError(
+            f"column {column!r} not in dataset (have: {sorted(ds.column_names)})"
+        )
+    n = min(max(limit, 1), len(ds))
+    return [ds[i][column] for i in range(n)]

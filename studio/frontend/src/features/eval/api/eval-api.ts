@@ -132,6 +132,23 @@ export interface SchemaComparatorField {
   comparator: string;
 }
 
+/** Infer a JSON Schema from sample values of the dataset's output column,
+ *  so the user doesn't have to hand-write one for the json_document metric. */
+export async function inferOutputSchema(args: {
+  dataset: EvalDatasetRef;
+  output_column: string;
+  samples?: number;
+}): Promise<{ schema: unknown; samples_used: number; parse_errors: number }> {
+  const res = await authFetch("/api/eval/infer-schema", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ samples: 10, ...args }),
+  });
+  return parseJson<{ schema: unknown; samples_used: number; parse_errors: number }>(
+    res,
+  );
+}
+
 /** Preview which comparator each field resolves to for a schema (our
  *  field→comparator mapping OR a standard JSON Schema). */
 export async function previewSchemaComparators(
