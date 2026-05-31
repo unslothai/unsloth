@@ -5,6 +5,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import shlex
+import sys
 import time
 from typing import Any, Optional
 
@@ -14,15 +17,10 @@ logger = get_logger(__name__)
 
 MCP_TOOL_PREFIX = "mcp__"
 
-PROBE_TIMEOUT_SECONDS = 8.0
-# When OAuth probes need to open a browser, wait long enough for the user to
-# sign in. Matches fastmcp's default OAuth callback_timeout (300 s) + slack.
-OAUTH_PROBE_TIMEOUT_SECONDS = 305.0
-
 # A failed probe isn't cached (a recovered server must come back), but it's
 # recorded so a down server isn't re-probed -- and the chat send re-hung for
 # the full timeout -- on every message. Cool off for this long after a failure;
-# much longer for OAuth, whose probe can hang up to OAUTH_PROBE_TIMEOUT_SECONDS,
+# much longer for OAuth, whose probe can hang up to _OAUTH_PROBE_TIMEOUT,
 # so that hang doesn't recur every minute.
 FAILED_PROBE_COOLOFF_SECONDS = 60.0
 OAUTH_FAILED_PROBE_COOLOFF_SECONDS = 300.0
@@ -30,7 +28,55 @@ OAUTH_FAILED_PROBE_COOLOFF_SECONDS = 300.0
 _oauth_token_store = None
 
 
+def is_stdio(address: str) -> bool:
+    """A non-HTTP address is a local stdio command, e.g.
+    'npx -y @modelcontextprotocol/server-filesystem /path'."""
+    return not address.strip().lower().startswith(("http://", "https://"))
+
+
+def parse_stdio_command(address: str) -> list[str]:
+    """Split a stdio command line into argv. Shared by route validation and the
+    transport so both agree on quoting (notably Windows backslash paths)."""
+    posix = sys.platform != "win32"
+    parts = shlex.split(address, posix = posix)
+    if not posix:
+        # posix=False keeps backslash paths intact but also keeps the surrounding
+        # quotes on a token. Strip a matched pair so the argv reaches the
+        # subprocess clean ('"C:\\Program Files\\node"' -> C:\\Program Files\\node).
+        parts = [
+            p[1:-1] if len(p) >= 2 and p[0] == p[-1] and p[0] in "\"'" else p
+            for p in parts
+        ]
+    return parts
+
+
+def stdio_mcp_enabled() -> bool:
+    """stdio MCP servers spawn local processes as the backend user (and bypass
+    the python/terminal sandbox), so they are only allowed when the backend
+    host is the user's own machine. The Tauri desktop app sets
+    UNSLOTH_STUDIO_ALLOW_STDIO_MCP=1 (see main.py); advanced localhost /
+    self-hosted users can opt in with the same variable. It stays off for
+    Colab and any network (0.0.0.0) bind."""
+    return os.environ.get("UNSLOTH_STUDIO_ALLOW_STDIO_MCP") == "1"
+
+
+# Probe timeouts for discovering a server's tool list. OAuth needs minutes for
+# first-connect/expired-token browser sign-in; stdio allows for first-run
+# package download (e.g. `npx -y ...`); HTTP fails fast.
+_HTTP_PROBE_TIMEOUT = 8.0
+_OAUTH_PROBE_TIMEOUT = 305.0
+_STDIO_PROBE_TIMEOUT = 60.0
+
+
+def probe_timeout(address: str, use_oauth: bool) -> float:
+    if use_oauth:
+        return _OAUTH_PROBE_TIMEOUT
+    return _STDIO_PROBE_TIMEOUT if is_stdio(address) else _HTTP_PROBE_TIMEOUT
+
+
 def parse_server_headers(server: dict) -> Optional[dict]:
+    """Parsed headers_json. For stdio servers this dict is the process
+    environment instead of HTTP headers (see _client)."""
     raw = server.get("headers_json")
     if not raw:
         return None
@@ -77,6 +123,28 @@ async def clear_oauth_tokens_async(url: str) -> None:
 
 def _client(url: str, headers: Optional[dict], use_oauth: bool = False):
     from fastmcp import Client
+
+    if is_stdio(url):
+        # Belt-and-suspenders: never spawn unless stdio is enabled on this host.
+        if not stdio_mcp_enabled():
+            raise PermissionError("stdio MCP servers are disabled on this host")
+        from fastmcp.client.transports import StdioTransport
+
+        parts = parse_stdio_command(url)
+        if not parts:
+            raise ValueError(f"Empty stdio command: {url!r}")
+        # env vars ride the headers field (merged over the SDK's safe default env).
+        # keep_alive=False tears the subprocess down on exit, so a one-shot
+        # probe/tool call never leaves an orphan process.
+        return Client(
+            StdioTransport(
+                command = parts[0],
+                args = parts[1:],
+                env = headers or None,
+                keep_alive = False,
+            )
+        )
+
     from fastmcp.client.transports import SSETransport, StreamableHttpTransport
     from fastmcp.mcp_config import infer_transport_type_from_url
 
