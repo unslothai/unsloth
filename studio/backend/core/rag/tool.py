@@ -140,8 +140,6 @@ def search_knowledge_base(
     top_k: int | None = None,
     scope_kb_id: str | None = None,
     scope_thread_id: str | None = None,
-    enable_rerank: bool = False,
-    reranker_model: str | None = None,
     default_top_k: int = 5,
     min_score: float = 0.0,
     mode: Literal["bm25", "dense", "hybrid"] = "hybrid",
@@ -164,25 +162,19 @@ def search_knowledge_base(
     scope = kb_scope(scope_kb_id) if scope_kb_id else thread_scope(scope_thread_id)
     k = top_k if top_k is not None else default_top_k
 
-    if enable_rerank:
-        from utils.rag.config import RAG_RERANK_CANDIDATE_K
-
-        candidate_k = max(k, RAG_RERANK_CANDIDATE_K)
-    else:
-        candidate_k = k
+    candidate_k = k
 
     from core.rag.scope import resolve_scope_embedder
 
     scope_embedder = resolve_scope_embedder(scope)
 
     logger.info(
-        "search_knowledge_base: scope=%s embedder=%s mode=%s top_k=%d min_score=%.3f rerank=%s query=%r",
+        "search_knowledge_base: scope=%s embedder=%s mode=%s top_k=%d min_score=%.3f query=%r",
         scope,
         scope_embedder or "<default>",
         mode,
         k,
         min_score,
-        enable_rerank,
         query[:120],
     )
 
@@ -242,26 +234,7 @@ def search_knowledge_base(
         for row in rows:
             lookup[row["chunk_id"]] = dict(row)
 
-    if enable_rerank and hits:
-        from core.rag import reranker
-
-        pairs = [
-            (hit, lookup[hit.chunk_id]["text"])
-            for hit in hits
-            if hit.chunk_id in lookup
-        ]
-        try:
-            hits = reranker.rerank(
-                query.strip(),
-                pairs,
-                model_name = reranker_model,
-                top_k = k,
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("rerank failed in search_knowledge_base: %s", exc)
-            hits = hits[:k]
-    else:
-        hits = hits[:k]
+    hits = hits[:k]
 
     # Merge Hit metadata (score, dense_score, chunk_index) into the sqlite row so
     # the formatter sees one flat dict per chunk. Image-kind hits flow through so
