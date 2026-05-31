@@ -72,19 +72,19 @@ Unsloth Studio (Beta) works on **Windows, Linux, WSL** and **macOS**.
 ```bash
 curl -fsSL https://unsloth.ai/install.sh | sh
 ```
+Use the same command to update.
+
 #### Windows:
 ```powershell
 irm https://unsloth.ai/install.ps1 | iex
 ```
+Use the same command to update.
 
 #### Launch
 ```bash
 unsloth studio -p 8888
 ```
 For cloud or global access, add `-H 0.0.0.0`. By default, Unsloth is accessible only locally.
-
-#### Update
-To update, use the same install commands above or use `unsloth studio update`.
 
 #### Docker
 Use our [Docker image](https://hub.docker.com/r/unsloth/unsloth) ```unsloth/unsloth``` container. Run:
@@ -171,7 +171,9 @@ unsloth studio -p 8888
 ```
 Then to update :
 ```bash
-unsloth studio update
+cd unsloth && git pull
+./install.sh --local
+unsloth studio -p 8888
 ```
 
 #### Developer installs: Windows PowerShell:
@@ -184,7 +186,9 @@ unsloth studio -p 8888
 ```
 Then to update :
 ```bash
-unsloth studio update
+cd unsloth && git pull
+./install.sh --local
+unsloth studio -p 8888
 ```
 
 #### Nightly: MacOS, Linux, WSL:
@@ -202,7 +206,7 @@ unsloth studio -p 8888
 
 #### Nightly: Windows:
 Run in Windows Powershell:
-```bash
+```powershell
 git clone https://github.com/unslothai/unsloth.git
 cd unsloth
 git checkout nightly
@@ -214,6 +218,9 @@ Then to launch every time:
 ```bash
 unsloth studio -p 8888
 ```
+
+#### Advanced launch options
+Cap Studio's native CPU thread pools on high-core hosts: `UNSLOTH_CPU_THREADS=8 unsloth studio -p 8888`. Explicit `OMP_NUM_THREADS` / `MKL_NUM_THREADS` / `OPENBLAS_NUM_THREADS` / `NUMEXPR_NUM_THREADS` still take precedence.
 
 #### Uninstall
 The recommended way to fully remove Unsloth Studio is the matching uninstall script for your OS. It stops any running servers, removes the install dir, the launcher data dir, the desktop shortcut, and any platform-specific entries (macOS `.app` bundle + Launch Services on Mac; Start Menu, `HKCU\Software\Unsloth` registry key and user `PATH` entries on Windows):
