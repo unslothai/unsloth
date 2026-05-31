@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from .llama import *
+from .llama import _get_rope_theta
 from ._utils import __version__
 from unsloth_zoo.utils import _get_dtype, Version
 from unsloth_zoo.hf_utils import dtype_from_config
@@ -96,7 +97,9 @@ def GemmaDecoderLayer_fast_forward(
         self, "_flag_for_generation"
     ):  # past_key_value is not None:
         out_weight = torch.empty(
-            self.input_layernorm.weight.shape, dtype = torch.float32, device = "cuda:0"
+            self.input_layernorm.weight.shape,
+            dtype = torch.float32,
+            device = f"{DEVICE_TYPE_TORCH}:0",
         )
 
         # Self Attention
@@ -190,6 +193,7 @@ def GemmaModel_fast_forward_inference(
 
     bsz, q_len, hd = hidden_states.shape
     seq_len = past_key_values[0][0].shape[-2]
+    kv_seq_len = seq_len + 1
     if bsz != 1:
         attention_mask = _prepare_4d_causal_attention_mask_for_sdpa(
             attention_mask,
@@ -197,6 +201,12 @@ def GemmaModel_fast_forward_inference(
             hidden_states,
             seq_len,
         )
+        # Pre-convert to bool once for all layers (avoids per-layer .eq(0))
+        if attention_mask is not None and attention_mask.dtype != torch.bool:
+            attention_mask = attention_mask.eq(0)
+
+    # Compute rotary_seq_len once to avoid per-layer GPU-CPU sync from .item()
+    rotary_seq_len = max(kv_seq_len, int(position_ids.max().item()) + 1)
 
     next_decoder_cache = []
     for idx, decoder_layer in enumerate(self.model.layers):
@@ -216,6 +226,7 @@ def GemmaModel_fast_forward_inference(
             position_ids = position_ids,
             attention_mask = attention_mask,
             do_prefill = not hasattr(decoder_layer.self_attn, "paged_attention"),
+            rotary_seq_len = rotary_seq_len,
         )
         hidden_states += residual
 
@@ -256,9 +267,17 @@ class GemmaFixedRotaryEmbedding(torch.nn.Module):
         config = None,  # [TODO] Hack to pass in config - need to remove later
     ):
         super().__init__()
+        # In transformers 5.0+, RotaryEmbedding(config) passes config as first positional arg (dim)
+        if (
+            config is None
+            and dim is not None
+            and hasattr(dim, "max_position_embeddings")
+        ):
+            config = dim
+            dim = None
         if config is not None:
             # [TODO] Hack to pass in config - need to remove later
-            base = config.rope_theta
+            base = _get_rope_theta(config, default = base)
             partial_rotary_factor = (
                 config.partial_rotary_factor
                 if hasattr(config, "partial_rotary_factor")
@@ -433,10 +452,10 @@ class FastGemmaModel(FastLlamaModel):
         return
 
     @staticmethod
-    def post_patch(model, tokenizer):
+    def post_patch(model, tokenizer, correct_dtype = None):
         # Gemma does not downcast RoPE
         model, tokenizer = patch_model_and_tokenizer(
-            model, tokenizer, downcast_rope = False
+            model, tokenizer, downcast_rope = False, correct_dtype = correct_dtype
         )
 
         # Add 1 to weight

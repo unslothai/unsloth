@@ -48,6 +48,13 @@ BAD_MAPPINGS = {
 }
 
 
+def _get_torchao_fp8_config(fp8_mode):
+    # Import lazily so an optional, broken vLLM install does not break plain `import unsloth`.
+    from unsloth_zoo.vllm_utils import _get_torchao_fp8_config as _impl
+
+    return _impl(fp8_mode)
+
+
 def _get_env_int(keys):
     for key in keys:
         value = os.environ.get(key)
@@ -61,7 +68,10 @@ def _get_env_int(keys):
 
 
 def _infer_distributed_ranks():
-    if torch.distributed.is_available() and torch.distributed.is_initialized():
+    if (
+        torch.distributed.is_available()
+        and getattr(torch.distributed, "is_initialized", lambda: False)()
+    ):
         try:
             return torch.distributed.get_rank(), torch.distributed.get_world_size()
         except Exception:
@@ -117,6 +127,15 @@ def __get_model_name(
         else:
             if lower_model_name in FLOAT_TO_FP8_BLOCK_MAPPER:
                 return FLOAT_TO_FP8_BLOCK_MAPPER[lower_model_name]
+        # Mapper didn't find a pre-quantized model.
+        # For vllm >= 0.12.0, we can quantize the model to FP8 on the fly,
+        # so just return the original model name. Older vllm versions will
+        # fall through to offline quantization via _offline_quantize_to_fp8.
+        if importlib.util.find_spec("vllm") is not None:
+            import vllm
+
+            if Version(vllm.__version__) >= Version("0.12.0"):
+                return model_name
         return None
 
     elif not SUPPORTS_FOURBIT and lower_model_name in INT_TO_FLOAT_MAPPER:
@@ -146,7 +165,7 @@ def __get_model_name(
         # Support returning original full -bnb-4bit name if specified specifically
         # since we'll map it to the dynamic version instead
         if lower_model_name.endswith("-bnb-4bit"):
-            return lower_model_name
+            return model_name
 
         new_model_name = FLOAT_TO_INT_MAPPER[lower_model_name]
         # logger.warning_once(
@@ -182,17 +201,41 @@ def _get_new_mapper():
         return {}, {}, {}
 
 
-def get_model_name(model_name, load_in_4bit = True, load_in_fp8 = False):
-    assert load_in_fp8 in (True, False, "block")
-    new_model_name = __get_model_name(
+def _resolve_with_mappers(
+    model_name,
+    load_in_4bit,
+    load_in_fp8,
+    int_to_float,
+    float_to_int,
+    map_to_unsloth_16bit,
+):
+    return __get_model_name(
         model_name = model_name,
         load_in_4bit = load_in_4bit,
-        INT_TO_FLOAT_MAPPER = INT_TO_FLOAT_MAPPER,
-        FLOAT_TO_INT_MAPPER = FLOAT_TO_INT_MAPPER,
-        MAP_TO_UNSLOTH_16bit = MAP_TO_UNSLOTH_16bit,
+        INT_TO_FLOAT_MAPPER = int_to_float,
+        FLOAT_TO_INT_MAPPER = float_to_int,
+        MAP_TO_UNSLOTH_16bit = map_to_unsloth_16bit,
         load_in_fp8 = load_in_fp8,
         FLOAT_TO_FP8_BLOCK_MAPPER = FLOAT_TO_FP8_BLOCK_MAPPER,
         FLOAT_TO_FP8_ROW_MAPPER = FLOAT_TO_FP8_ROW_MAPPER,
+    )
+
+
+def get_model_name(
+    model_name,
+    load_in_4bit = True,
+    load_in_fp8 = False,
+    token = None,
+    trust_remote_code = False,
+):
+    assert load_in_fp8 in (True, False, "block")
+    new_model_name = _resolve_with_mappers(
+        model_name = model_name,
+        load_in_4bit = load_in_4bit,
+        load_in_fp8 = load_in_fp8,
+        int_to_float = INT_TO_FLOAT_MAPPER,
+        float_to_int = FLOAT_TO_INT_MAPPER,
+        map_to_unsloth_16bit = MAP_TO_UNSLOTH_16bit,
     )
     # In the rare case, we convert bad model names to other names
     # For eg too large dynamic quants or MoEs
@@ -212,15 +255,13 @@ def get_model_name(model_name, load_in_4bit = True, load_in_fp8 = False):
         NEW_INT_TO_FLOAT_MAPPER, NEW_FLOAT_TO_INT_MAPPER, NEW_MAP_TO_UNSLOTH_16bit = (
             _get_new_mapper()
         )
-        upgraded_model_name = __get_model_name(
+        upgraded_model_name = _resolve_with_mappers(
             model_name = model_name,
             load_in_4bit = load_in_4bit,
-            INT_TO_FLOAT_MAPPER = NEW_INT_TO_FLOAT_MAPPER,
-            FLOAT_TO_INT_MAPPER = NEW_FLOAT_TO_INT_MAPPER,
-            MAP_TO_UNSLOTH_16bit = NEW_MAP_TO_UNSLOTH_16bit,
             load_in_fp8 = load_in_fp8,
-            FLOAT_TO_FP8_BLOCK_MAPPER = FLOAT_TO_FP8_BLOCK_MAPPER,
-            FLOAT_TO_FP8_ROW_MAPPER = FLOAT_TO_FP8_ROW_MAPPER,
+            int_to_float = NEW_INT_TO_FLOAT_MAPPER,
+            float_to_int = NEW_FLOAT_TO_INT_MAPPER,
+            map_to_unsloth_16bit = NEW_MAP_TO_UNSLOTH_16bit,
         )
         if upgraded_model_name is not None:
             raise NotImplementedError(
@@ -229,34 +270,11 @@ def get_model_name(model_name, load_in_4bit = True, load_in_fp8 = False):
                 'pip install --upgrade --no-cache-dir "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git"\n'
                 'pip install --upgrade --no-cache-dir "git+https://github.com/unslothai/unsloth-zoo.git"\n'
             )
-    if load_in_fp8 != False:
-        # Handle on the fly TorchAO FP8 quantization
-        return new_model_name
-    return new_model_name if new_model_name is not None else model_name
 
+    if new_model_name is None:
+        new_model_name = model_name
 
-def _get_torchao_fp8_config(fp8_mode: str):
-    """
-    Return a `torchao.quantization.Float8DynamicActivationFloat8WeightConfig`
-    to be used for `load_in_fp8=True`.
-    """
-    from torchao.quantization import (
-        Float8DynamicActivationFloat8WeightConfig,
-        PerBlock,
-        PerRow,
-    )
-
-    if fp8_mode == "row":
-        granularity = PerRow()
-    elif fp8_mode == "block":
-        granularity = (PerBlock([1, 128]), PerBlock([128, 128]))
-    else:
-        raise ValueError("Unsloth: `load_in_fp8` supports only 'row' or 'block'")
-
-    return Float8DynamicActivationFloat8WeightConfig(
-        granularity = granularity,
-        activation_value_lb = 1e-12,
-    )
+    return new_model_name
 
 
 def _offline_quantize_to_fp8(model_name: str, fp8_mode: str) -> str:
@@ -264,9 +282,7 @@ def _offline_quantize_to_fp8(model_name: str, fp8_mode: str) -> str:
     Quantizes the model to fp8 using torchao and saving the quantized model to a
     temporary location. Return the path to the quantized model.
 
-    Note: Once on-the-fly quantization is added in vllm in
-    https://github.com/vllm-project/vllm/pull/26327, we should
-    dynamically quantize the model there instead:
+    Note: For vllm >= 0.12.0, we should dynamically quantize the model in vllm instead:
 
       llm = LLM(
         ...
@@ -333,11 +349,10 @@ def _tag_model_with_fp8_torchao_config(model: torch.nn.Module, fp8_mode: str):
 def _get_fp8_mode_and_check_settings(
     load_in_fp8: Union[bool, str],
     fast_inference: bool,
-    full_finetuning: bool,
-    load_in_4bit: bool,
-    load_in_8bit: bool,
-    load_in_16bit: bool,
-    use_exact_model_name: bool,
+    full_finetuning: bool = False,
+    load_in_4bit: bool = False,
+    load_in_8bit: bool = False,
+    load_in_16bit: bool = False,
 ) -> str:
     """
     Assuming `load_in_fp8` is enabled, raise appropriate errors on incompatible settings
@@ -361,10 +376,6 @@ def _get_fp8_mode_and_check_settings(
         raise ValueError(
             f"Unsloth: `load_in_fp8` can only be 'row' or 'block', got '{fp8_mode}'"
         )
-    if not fast_inference:
-        raise ValueError(
-            "Unsloth: `load_in_fp8` is only supported for `fast_inference` for now"
-        )
     if full_finetuning:
         raise ValueError(
             "Unsloth: `load_in_fp8` is not compatible with full finetuning"
@@ -373,8 +384,6 @@ def _get_fp8_mode_and_check_settings(
         raise ValueError(
             "Unsloth: `load_in_fp8` is not compatible with `load_in_4bit`, `load_in_8bit` or `load_in_16bit`",
         )
-    if use_exact_model_name:
-        raise ValueError("Unsloth: `load_in_fp8` requires `use_exact_model_name=False`")
 
     # Check if this is Hopper or above
     if not (

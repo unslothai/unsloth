@@ -1,0 +1,167 @@
+{
+  "recipe": {
+    "model_providers": [
+      {
+        "name": "provider_1",
+        "endpoint": "",
+        "provider_type": "openai",
+        "extra_headers": {},
+        "extra_body": {}
+      }
+    ],
+    "mcp_providers": [],
+    "model_configs": [
+      {
+        "alias": "provider_column",
+        "model": "",
+        "provider": "provider_1",
+        "inference_parameters": {
+          "temperature": 0.7
+        }
+      }
+    ],
+    "seed_config": {
+      "source": {
+        "seed_type": "unstructured",
+        "path": "",
+        "chunk_size": 1200,
+        "chunk_overlap": 200
+      },
+      "sampling_strategy": "ordered",
+      "selection_strategy": null
+    },
+    "tool_configs": [],
+    "columns": [
+      {
+        "column_type": "llm-structured",
+        "name": "llm_structured_1",
+        "drop": false,
+        "model_alias": "provider_column",
+        "prompt": "Given ONLY this chunk: {{ chunk_text }} generate one answerable question, answer, and exact supporting quote from chunk. If not answerable, skip.",
+        "with_trace": "none",
+        "extract_reasoning_content": false,
+        "output_format": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "question",
+            "answer",
+            "evidence_quote"
+          ],
+          "properties": {
+            "question": {
+              "type": "string"
+            },
+            "answer": {
+              "type": "string"
+            },
+            "evidence_quote": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    ],
+    "processors": []
+  },
+  "run": {
+    "rows": 5,
+    "preview": true,
+    "output_formats": [
+      "jsonl"
+    ]
+  },
+  "ui": {
+    "nodes": [
+      {
+        "id": "note_1",
+        "x": 474.6120044693708,
+        "y": 1229.5810476890458,
+        "width": 400,
+        "node_type": "markdown_note",
+        "name": "note_1",
+        "markdown": "This recipe uses **seed data** from external documents.\nInstead of starting from empty generation, we load real source text first.\n\nIn this flow, the seed source is **Unstructured Documents**:\n\n- Upload: `.pdf`, `.docx`, `.txt`\n- Text is extracted and split on client into chunks\n- Each chunk becomes a row-like seed record (`chunk_text`) that you can reference in prompts with `{{ chunk_text }} `",
+        "note_color": "#F3E8FF",
+        "note_opacity": "35"
+      },
+      {
+        "id": "note_2",
+        "x": 26.758540311329455,
+        "y": 963.3465578835235,
+        "width": 400,
+        "node_type": "markdown_note",
+        "name": "note_2",
+        "markdown": "##### Chunking settings:\n\n- **Chunk size**: how much text per chunk\n- **Chunk overlap**: shared text between neighboring chunks to preserve context\n\n##### Sampling settings:\n\n- **Ordered**: keep original document order\n- **Shuffle**: randomize chunk order\n- **Selection index / selection settings**: choose which part/subset of seed data to use",
+        "note_color": "#F3E8FF",
+        "note_opacity": "35"
+      },
+      {
+        "id": "note_3",
+        "x": 473.62551435180245,
+        "y": 741.5352258256931,
+        "width": 400,
+        "node_type": "markdown_note",
+        "name": "note_3",
+        "markdown": "- LLM prompt: `{{ chunk_text }}`\n- Expression block: combine/format values using `{{ chunk_text }}`\n- Processor templates: use `{{ chunk_text }}` during transforms\n\nTip:\n- Start with medium chunk size + small overlap.\n- Increase overlap only if answers lose context between chunks.",
+        "note_color": "#F3E8FF",
+        "note_opacity": "35"
+      },
+      {
+        "id": "seed",
+        "x": 484.36210245413577,
+        "y": 1059.99180558796,
+        "width": 400
+      },
+      {
+        "id": "provider_1",
+        "x": 960,
+        "y": 622,
+        "width": 400
+      },
+      {
+        "id": "provider_column",
+        "x": 960,
+        "y": 816,
+        "width": 400
+      },
+      {
+        "id": "llm_structured_1",
+        "x": 960,
+        "y": 1077,
+        "width": 400
+      }
+    ],
+    "edges": [
+      {
+        "from": "provider_1",
+        "to": "provider_column",
+        "type": "semantic",
+        "source_handle": "semantic-out-bottom",
+        "target_handle": "semantic-in-top"
+      },
+      {
+        "from": "provider_column",
+        "to": "llm_structured_1",
+        "type": "semantic",
+        "source_handle": "semantic-out-bottom",
+        "target_handle": "data-in-top"
+      },
+      {
+        "from": "llm_structured_1",
+        "to": "seed",
+        "type": "canvas",
+        "source_handle": "data-out-left",
+        "target_handle": "data-in-right"
+      }
+    ],
+    "layout_direction": "LR",
+    "seed_source_type": "unstructured",
+    "seed_columns": [],
+    "seed_drop_columns": [],
+    "seed_preview_rows": [],
+    "local_file_name": "",
+    "unstructured_file_name": "",
+    "unstructured_chunk_size": "1200",
+    "unstructured_chunk_overlap": "200"
+  }
+}

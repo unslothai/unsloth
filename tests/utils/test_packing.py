@@ -178,13 +178,29 @@ class _DummyModel(torch.nn.Module):
 class _DummyTrainer:
     def __init__(self):
         self.args = SimpleNamespace(remove_unused_columns = True)
-        self.data_collator = DataCollatorForLanguageModeling(
-            pad_token_id = 0,
-            completion_only_loss = False,
-            padding_free = True,
-            return_position_ids = False,
-            return_tensors = "pt",
-        )
+        collator_args = {
+            "pad_token_id": 0,
+            "completion_only_loss": False,
+            "return_tensors": "pt",
+        }
+        optional_flags = [
+            {"padding_free": True, "return_position_ids": False},
+            {"padding_free": True},
+            {},
+        ]
+        for extra in optional_flags:
+            try:
+                self.data_collator = DataCollatorForLanguageModeling(
+                    **collator_args, **extra
+                )
+                break
+            except TypeError:
+                continue
+        # Ensure attributes exist even if the constructor did not accept them
+        if not hasattr(self.data_collator, "padding_free"):
+            self.data_collator.padding_free = True
+        if not hasattr(self.data_collator, "return_position_ids"):
+            self.data_collator.return_position_ids = False
 
 
 class _PaddingFreeCollator:

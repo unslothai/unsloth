@@ -1,0 +1,47 @@
+# Model defaults for unsloth/Llama-3.2-1B-Instruct
+# Based on Llama3.2_(1B)-RAFT.ipynb
+# Also applies to: unsloth/Llama-3.2-1B-Instruct-unsloth-bnb-4bit, meta-llama/Llama-3.2-1B-Instruct, unsloth/Llama-3.2-1B-Instruct-bnb-4bit, RedHatAI/Llama-3.2-1B-Instruct-FP8, unsloth/Llama-3.2-1B-Instruct-FP8-Block, unsloth/Llama-3.2-1B-Instruct-FP8-Dynamic
+
+training:
+  trust_remote_code: false
+  max_seq_length: 2048
+  # num_epochs: 5
+  num_epochs: 0
+  learning_rate: 2e-5
+  batch_size: 1
+  gradient_accumulation_steps: 8
+  warmup_steps: 0
+  max_steps: 30
+  save_steps: 30
+  weight_decay: 0.001
+  random_seed: 3407
+  packing: false
+  train_on_completions: true
+  gradient_checkpointing: true
+  optim: "adamw_torch"
+  lr_scheduler_type: "cosine"
+
+lora:
+  lora_r: 16
+  lora_alpha: 16
+  lora_dropout: 0.0
+  target_modules:
+    - "q_proj"
+    - "k_proj"
+    - "v_proj"
+    - "o_proj"
+    - "gate_proj"
+    - "up_proj"
+    - "down_proj"
+  use_rslora: false
+  use_loftq: false
+
+logging:
+  enable_wandb: false
+  wandb_project: "llm-finetuning"
+  enable_tensorboard: false
+  tensorboard_dir: "runs"
+  log_frequency: 10
+
+inference:
+  trust_remote_code: false

@@ -21,23 +21,33 @@ from collections import deque
 import time
 import os
 
-os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
+_OFFLINE_VALS = {"1", "true", "yes", "on"}
+if not (
+    os.environ.get("HF_HUB_OFFLINE", "").strip().lower() in _OFFLINE_VALS
+    or os.environ.get("TRANSFORMERS_OFFLINE", "").strip().lower() in _OFFLINE_VALS
+):
+    os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
 import requests
 import torch
 import gc
 import time
 import re
-from unsloth_zoo.vllm_utils import (
-    load_vllm,
-    patch_vllm,
-    delete_vllm,
-)
 from unsloth_zoo.log import logger
 import numpy as np
 
 from .synthetic_configs import (
     synthetic_qa_config,
 )
+
+
+def _load_vllm_utils():
+    from unsloth_zoo.vllm_utils import (
+        load_vllm,
+        patch_vllm,
+        delete_vllm,
+    )
+
+    return load_vllm, patch_vllm, delete_vllm
 
 
 def terminate_tree(proc: subprocess.Popen, timeout = 15):
@@ -182,6 +192,8 @@ class SyntheticDataKit:
             model_name,
             token = token,
         )
+        load_vllm, patch_vllm, delete_vllm = _load_vllm_utils()
+        self._delete_vllm = delete_vllm
         patch_vllm(debug = False)
         engine_args = load_vllm(
             model_name = model_name,
@@ -364,7 +376,8 @@ class SyntheticDataKit:
             gc.collect()
 
         # Delete vLLM module as well
-        delete_vllm(llm = None)
+        if hasattr(self, "_delete_vllm"):
+            self._delete_vllm(llm = None)
 
     def __enter__(self):
         return self

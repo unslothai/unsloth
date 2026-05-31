@@ -20,21 +20,47 @@ __all__ = [
     "DEVICE_COUNT",
     "ALLOW_PREQUANTIZED_MODELS",
     "ALLOW_BITSANDBYTES",
+    "is_mlx_available",
 ]
 
-import torch
 import functools
 import inspect
+import os
 from unsloth_zoo.utils import Version
+
+
+def is_mlx_available():
+    try:
+        from unsloth_zoo.mlx import is_mlx_available as _is_mlx_available
+    except ImportError:
+        return False
+    return _is_mlx_available()
+
+
+_IS_MLX = is_mlx_available()
+
+if not _IS_MLX:
+    import torch
 
 
 @functools.cache
 def is_hip():
+    if _IS_MLX:
+        return False
     return bool(getattr(getattr(torch, "version", None), "hip", None))
 
 
 @functools.cache
 def get_device_type():
+    # Test-only CPU fallback. Short-circuits the detection chain so the
+    # rest of the function -- and every DEVICE_TYPE == "cuda" branch in
+    # the codebase -- behaves identically to a real CUDA host. The env
+    # var is read exactly once per process because get_device_type is
+    # @functools.cache'd, so production hosts pay no runtime cost.
+    if os.environ.get("UNSLOTH_ALLOW_CPU", "0") == "1":
+        return "cuda"
+    if _IS_MLX:
+        return "mlx"
     if hasattr(torch, "cuda") and torch.cuda.is_available():
         if is_hip():
             return "hip"
@@ -64,6 +90,8 @@ DEVICE_TYPE: str = get_device_type()
 DEVICE_TYPE_TORCH = DEVICE_TYPE
 if DEVICE_TYPE_TORCH == "hip":
     DEVICE_TYPE_TORCH = "cuda"
+elif DEVICE_TYPE_TORCH == "mlx":
+    DEVICE_TYPE_TORCH = "mps"
 
 
 @functools.cache
@@ -79,16 +107,19 @@ def get_device_count():
 DEVICE_COUNT: int = get_device_count()
 
 # 4-bit quantization requires a block size of 64
-# this is not supported on AMD Instinct GPUs currently
 # | Device Type     | Warp Size | Block Size |
 # |-----------------|-----------|------------|
-# | CUDA            |    32     |     64     |
-# | Radeon (Navi)   |    32     |     64     |
-# | Instinct (MI)   |    64     |    128     |
+# | CUDA            |    32     |     32     |
+# | Radeon (Navi)   |    32     |     32     |
+# | Instinct (MI)   |    64     |     32     |
 #
 # Since bitsandbytes 0.49.0, pre-quantized models with 64 blockwise now works
-# on Radeon GPUs, but not Instinct MI300x for eg [WIP]
+# on Radeon GPUs, but not Instinct MI300x for eg
 # See https://github.com/bitsandbytes-foundation/bitsandbytes/pull/1748
+#
+# Since bitsandbytes 0.49.2, blocksize=64 4-bit quantization is supported on
+# CDNA (MI Instinct / gfx9xx) GPUs as well
+# See https://github.com/bitsandbytes-foundation/bitsandbytes/pull/1856
 
 ALLOW_PREQUANTIZED_MODELS: bool = True
 # HSA_STATUS_ERROR_EXCEPTION checks - sometimes AMD fails for BnB
@@ -104,7 +135,9 @@ if DEVICE_TYPE == "hip":
         ALLOW_BITSANDBYTES = False
     if ALLOW_BITSANDBYTES:
         ALLOW_BITSANDBYTES = Version(bitsandbytes.__version__) > Version("0.48.2.dev0")
-        if Version(bitsandbytes.__version__) > Version("0.49.0"):
+        if Version(bitsandbytes.__version__) >= Version("0.49.2"):
+            pass
+        elif Version(bitsandbytes.__version__) >= Version("0.49.0"):
             try:
                 # Pre-quantized bitsandbytes models use blocksize 64, so we need to check the GPU
                 from bitsandbytes.cextension import ROCM_WARP_SIZE_64

@@ -301,6 +301,7 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
         vocab_size: int
         n_rows, vocab_size = logits.shape
         device = logits.device
+        labels = labels.to(device)
 
         div, mod = divmod(vocab_size, MAX_FUSED_SIZE)
         n_chunks: int = div + (mod != 0)
@@ -437,6 +438,7 @@ def fast_cross_entropy_loss(
     batch, seq_len, d = logits.shape
     assert labels.shape == (batch, seq_len)
 
+    device = logits.device
     loss = Fast_CrossEntropyLoss.apply(
         logits.view(batch * seq_len, d),
         labels.view(-1),
@@ -445,6 +447,8 @@ def fast_cross_entropy_loss(
     )
     if n_items is None:
         n_items = torch.count_nonzero(labels != -100)
+    if torch.is_tensor(n_items):
+        n_items = n_items.to(device)
     return loss.sum() / n_items
 
 
@@ -457,3 +461,18 @@ if (Version(torch.__version__) < Version("2.4.0")) and not hasattr(
 # Patch CE Losses in transformers
 def patch_loss_functions(torch_compile = True):
     _patch_loss_functions(fast_cross_entropy_loss, torch_compile = torch_compile)
+
+    # Defense-in-depth sweep for LOSS_MAPPING aliases still pointing at the
+    # stock ForCausalLMLoss (e.g. ForConditionalGeneration for Qwen3.5,
+    # CsmForConditionalGeneration). unsloth_zoo also does this; remove once
+    # the floor pin moves past unslothai/unsloth-zoo#656.
+    try:
+        import transformers.loss.loss_utils as _lu
+
+        _unsloth_loss = _lu.LOSS_MAPPING.get("ForCausalLM")
+        if _unsloth_loss is not None:
+            for _key, _fn in list(_lu.LOSS_MAPPING.items()):
+                if getattr(_fn, "__name__", "") == "ForCausalLMLoss":
+                    _lu.LOSS_MAPPING[_key] = _unsloth_loss
+    except (ImportError, AttributeError):
+        pass

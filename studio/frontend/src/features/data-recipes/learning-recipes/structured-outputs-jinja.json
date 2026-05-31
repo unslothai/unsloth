@@ -1,0 +1,365 @@
+{
+  "recipe": {
+    "model_providers": [
+      {
+        "name": "provider_column",
+        "endpoint": "",
+        "provider_type": "openai",
+        "extra_headers": {},
+        "extra_body": {}
+      }
+    ],
+    "mcp_providers": [],
+    "model_configs": [
+      {
+        "alias": "ministral",
+        "model": "",
+        "provider": "provider_column",
+        "inference_parameters": {
+          "temperature": 0.7
+        }
+      }
+    ],
+    "tool_configs": [],
+    "columns": [
+      {
+        "column_type": "sampler",
+        "name": "user",
+        "drop": true,
+        "sampler_type": "person_from_faker",
+        "params": {}
+      },
+      {
+        "column_type": "sampler",
+        "name": "platform",
+        "drop": false,
+        "sampler_type": "category",
+        "params": {
+          "values": [
+            "web",
+            "mobile",
+            "cli"
+          ]
+        }
+      },
+      {
+        "column_type": "sampler",
+        "name": "impact_scope",
+        "drop": false,
+        "sampler_type": "category",
+        "params": {
+          "values": [
+            "single_user",
+            "team",
+            "org_wide"
+          ]
+        }
+      },
+      {
+        "column_type": "expression",
+        "name": "user_first_name",
+        "drop": false,
+        "expr": "{{ user.first_name }}",
+        "dtype": "str"
+      },
+      {
+        "column_type": "expression",
+        "name": "user_full_name",
+        "drop": false,
+        "expr": "{{ user.first_name }} {{ user.last_name }}",
+        "dtype": "str"
+      },
+      {
+        "column_type": "llm-structured",
+        "name": "ticket",
+        "drop": false,
+        "model_alias": "ministral",
+        "prompt": "Create a realistic support ticket from {{ user_full_name }} using the {{ platform }} platform. Impact scope is {{ impact_scope }}.\n",
+        "with_trace": "none",
+        "extract_reasoning_content": false,
+        "output_format": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "issue_title",
+            "issue_summary",
+            "category",
+            "priority"
+          ],
+          "properties": {
+            "issue_title": {
+              "type": "string",
+              "description": "Short title of issue"
+            },
+            "issue_summary": {
+              "type": "string",
+              "description": "1-2 sentence summary"
+            },
+            "category": {
+              "type": "string",
+              "enum": [
+                "account",
+                "billing",
+                "api",
+                "infra"
+              ],
+              "description": "Issue category"
+            },
+            "priority": {
+              "type": "string",
+              "enum": [
+                "P1",
+                "P2",
+                "P3"
+              ],
+              "description": "Urgency level"
+            }
+          }
+        }
+      },
+      {
+        "column_type": "expression",
+        "name": "sla_target",
+        "drop": false,
+        "expr": "{% if impact_scope == 'org_wide' %}15m\n{% elif impact_scope == 'team' %}1h\n{% else %}4h\n{% endif %}",
+        "dtype": "str"
+      },
+      {
+        "column_type": "llm-structured",
+        "name": "agent_reply",
+        "drop": false,
+        "model_alias": "ministral",
+        "prompt": "Write a concise support reply for ticket '{{ ticket.issue_title }}'. Category: {{ ticket.category }}. Priority: {{ ticket.priority }}. SLA target: {{ sla_target }}. {% if ticket.priority == 'P1' %}Tone must be urgent and action-first.{% else %}Tone must be calm and instructional.{% endif %}",
+        "with_trace": "none",
+        "extract_reasoning_content": false,
+        "output_format": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "response",
+            "next_action"
+          ],
+          "properties": {
+            "response": {
+              "type": "string",
+              "description": "Support response to user"
+            },
+            "next_action": {
+              "type": "string",
+              "enum": [
+                "ask_logs",
+                "reset_credentials",
+                "escalate",
+                "provide_steps"
+              ],
+              "description": "Primary next action"
+            }
+          }
+        }
+      }
+    ],
+    "processors": []
+  },
+  "run": {
+    "rows": 5,
+    "preview": true,
+    "output_formats": [
+      "jsonl"
+    ]
+  },
+  "ui": {
+    "nodes": [
+      {
+        "id": "note_1",
+        "x": 990.3973509933774,
+        "y": 1487.5768211920529,
+        "width": 782,
+        "node_type": "markdown_note",
+        "name": "note_1",
+        "markdown": "## Expression columns \nAre like lightweight spreadsheet formulas.\nUse them when you want to transform existing columns quickly, without calling an LLM.\n\n### What you can do:\n\n- Use values from other columns: `{{ first_name }} {{ last_name }}`\n- Clean/format text: `{{ city | upper }}`, `{{ product_name | trim }}`\n- Conditional logic:\n  - `{% if order_total >= 100 %}VIP{% elif order_total >= 50 %}Standard{% else %}Starter{% endif %}`\n- Simple math:\n  - `{{ quantity * unit_price }}`\n  - `{{ (subtotal - discount) | round(2) }}`\n\n### Good rule:\n- If the value can be computed from existing data, use Expression first.\n- Use LLM only when you need true language generation.",
+        "note_color": "#CFFAFE",
+        "note_opacity": "35"
+      },
+      {
+        "id": "note_2",
+        "x": 3217.6543046357615,
+        "y": 2081.596026490066,
+        "width": 400,
+        "node_type": "markdown_note",
+        "name": "note_2",
+        "markdown": "### LLM Structured block\nGenerates JSON that matches your Output Format schema.\nThink of Output Format as a contract for what the model must return.\n\n#### Prompt tips:\n\n- Reference existing columns with Jinja: `{{ column_name }}`\n- You can reference nested values too: `{{ customer.first_name }}`\n- Be explicit about what each field should contain.\n\n#### Example prompt pattern:\n\n```text\nCreate a support ticket summary.\nCustomer: {{ customer_name }}\nIssue text: {{ issue_text }}\n\nReturn data for:\n- priority\n- short_title\n- resolution_steps\n```",
+        "note_color": "#CFFAFE",
+        "note_opacity": "35"
+      },
+      {
+        "id": "note_3",
+        "x": 2294.4516556291387,
+        "y": 2399.6099337748346,
+        "width": 638,
+        "node_type": "markdown_note",
+        "name": "note_3",
+        "markdown": "## Example output format shape (concept):\n\n```json\n{\n  \"type\": \"object\",\n  \"properties\": {\n    \"priority\": { \"type\": \"string\" },\n    \"short_title\": { \"type\": \"string\" },\n    \"resolution_steps\": { \"type\": \"array\", \"items\": { \"type\": \"string\" } }\n  },\n  \"required\": [\"priority\", \"short_title\", \"resolution_steps\"]\n}\n```",
+        "note_color": "#CFFAFE",
+        "note_opacity": "35"
+      },
+      {
+        "id": "note_4",
+        "x": 2544.684105960265,
+        "y": 1126.5490066225163,
+        "width": 399,
+        "node_type": "markdown_note",
+        "name": "note_4",
+        "markdown": "### Model provider & Config\nEvery LLM block needs a model alias.\nThat alias comes from a Model Config.\nModel Config points to a Model Provider.\n\n#### Minimum setup:\n\n1. Create **Model Provider**\n   - Set endpoint/provider type\n   - Prefer env var auth (`api_key_env`) over hardcoded keys\n\n2. Create **Model Config**\n   - Set alias (example: `model_1`)\n   - Set model id\n   - Link to provider\n   - Tune params (temperature, max_tokens, etc.)\n\n3. In each LLM block\n   - Set `model_alias` to that alias\n\nIf alias/provider link is missing, validation/run will fail.",
+        "note_color": "#CFFAFE",
+        "note_opacity": "35"
+      },
+      {
+        "id": "provider_column",
+        "x": 2542,
+        "y": 1696,
+        "width": 400
+      },
+      {
+        "id": "ministral",
+        "x": 2542,
+        "y": 1890,
+        "width": 400
+      },
+      {
+        "id": "user",
+        "x": 191,
+        "y": 2423,
+        "width": 400
+      },
+      {
+        "id": "platform",
+        "x": 858.0384105960266,
+        "y": 2286.5,
+        "width": 400
+      },
+      {
+        "id": "impact_scope",
+        "x": 1342,
+        "y": 2286.5,
+        "width": 400
+      },
+      {
+        "id": "user_first_name",
+        "x": 1822,
+        "y": 2505,
+        "width": 400
+      },
+      {
+        "id": "user_full_name",
+        "x": 1822,
+        "y": 1959,
+        "width": 400
+      },
+      {
+        "id": "ticket",
+        "x": 2302,
+        "y": 2286.5,
+        "width": 400
+      },
+      {
+        "id": "sla_target",
+        "x": 1822,
+        "y": 2232,
+        "width": 400
+      },
+      {
+        "id": "agent_reply",
+        "x": 2782,
+        "y": 2151,
+        "width": 400
+      }
+    ],
+    "edges": [
+      {
+        "from": "platform",
+        "to": "impact_scope",
+        "type": "canvas",
+        "source_handle": "data-out",
+        "target_handle": "data-in"
+      },
+      {
+        "from": "user",
+        "to": "user_first_name",
+        "type": "canvas",
+        "source_handle": "data-out",
+        "target_handle": "data-in"
+      },
+      {
+        "from": "user_full_name",
+        "to": "ticket",
+        "type": "canvas",
+        "source_handle": "data-out",
+        "target_handle": "data-in"
+      },
+      {
+        "from": "user",
+        "to": "platform",
+        "type": "canvas",
+        "source_handle": "data-out",
+        "target_handle": "data-in"
+      },
+      {
+        "from": "user",
+        "to": "user_full_name",
+        "type": "canvas",
+        "source_handle": "data-out",
+        "target_handle": "data-in"
+      },
+      {
+        "from": "user_first_name",
+        "to": "ticket",
+        "type": "canvas",
+        "source_handle": "data-out",
+        "target_handle": "data-in"
+      },
+      {
+        "from": "impact_scope",
+        "to": "sla_target",
+        "type": "canvas",
+        "source_handle": "data-out",
+        "target_handle": "data-in"
+      },
+      {
+        "from": "sla_target",
+        "to": "ticket",
+        "type": "canvas",
+        "source_handle": "data-out",
+        "target_handle": "data-in"
+      },
+      {
+        "from": "ticket",
+        "to": "agent_reply",
+        "type": "canvas",
+        "source_handle": "data-out",
+        "target_handle": "data-in"
+      },
+      {
+        "from": "provider_column",
+        "to": "ministral",
+        "type": "semantic",
+        "source_handle": "semantic-out-bottom",
+        "target_handle": "semantic-in-top"
+      },
+      {
+        "from": "ministral",
+        "to": "ticket",
+        "type": "semantic",
+        "source_handle": "semantic-out-bottom",
+        "target_handle": "data-in-top"
+      },
+      {
+        "from": "ministral",
+        "to": "agent_reply",
+        "type": "semantic",
+        "source_handle": "semantic-out-bottom",
+        "target_handle": "data-in-top"
+      }
+    ],
+    "layout_direction": "LR"
+  }
+}

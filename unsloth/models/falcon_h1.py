@@ -197,6 +197,7 @@ def FalconH1Attention_fast_forward_inference(
     position_ids,
     do_prefill = False,
     attention_mask = None,
+    **kwargs,
 ):
     """
     https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L406
@@ -265,7 +266,7 @@ def FalconH1Attention_fast_forward_inference(
 
         # Mistral Nemo 12b has weird dimensions
         if attention_size != hidden_size:
-            self.temp_O = torch.empty((1, bsz, hidden_size), dtype = dtype, device = device)
+            self.temp_O = torch.empty((bsz, 1, hidden_size), dtype = dtype, device = device)
         else:
             self.temp_O = self.temp_QA[1][:, :, :hidden_size]
 
@@ -292,7 +293,7 @@ def FalconH1Attention_fast_forward_inference(
 
     Qn = fast_linear_forward(self.q_proj, Xn, out = self.temp_QA[0])
     Kn = fast_linear_forward(self.k_proj, Xn, out = self.temp_KV[0])
-    Kn = Kn * self.config.key_multiplier
+    Kn.mul_(self.config.key_multiplier)
     Vn = fast_linear_forward(self.v_proj, Xn, out = self.temp_KV[1])
     Qn = Qn.view(
         bsz, 1, n_heads, head_dim
@@ -312,6 +313,9 @@ def FalconH1Attention_fast_forward_inference(
     # or else error
     self.rotary_emb.extend_rope_embedding(Vn, seq_len + 2)
     cos, sin = self.rotary_emb.get_cached(kv_seq_len, Qn.device.index)
+    # Transformers 5.x: position_ids may be [batch, full_seq_len]; slice to last
+    if position_ids.dim() >= 2 and position_ids.shape[-1] > 1:
+        position_ids = position_ids[:, -1:]
     cos = cos[position_ids].unsqueeze(1)
     sin = sin[position_ids].unsqueeze(1)
     h = self.half_head_dim
@@ -343,10 +347,11 @@ def FalconH1Attention_fast_forward_inference(
     # Handle sliding windows
     sliding_window = getattr(self.config, "sliding_window", None)
     if sliding_window is not None and kv_seq_len > sliding_window:
-        # From https://github.com/huggingface/transformers/blob/main/src/transformers/models/mistral/modeling_mistral.py#L193
-        slicing_tokens = 1 - sliding_window
-        Knn = Kn[:, :, slicing_tokens:, :]  # .contiguous()
-        Vnn = Vn[:, :, slicing_tokens:, :]  # .contiguous()
+        start = kv_seq_len - sliding_window
+        Knn = Kn[:, :, start:, :]  # .contiguous()
+        Vnn = Vn[:, :, start:, :]  # .contiguous()
+        if attention_mask is not None:
+            attention_mask = attention_mask[..., start:]
     else:
         Knn, Vnn = Kn, Vn
 
@@ -361,9 +366,6 @@ def FalconH1Attention_fast_forward_inference(
         )
         Knn = Knn.reshape(bsz, n_heads, cached_len, head_dim)
         Vnn = Vnn.reshape(bsz, n_heads, cached_len, head_dim)
-    # else:
-    #     Knn, Vnn = Knn, Vnn
-    # pass
 
     # Attention
     if bsz == 1:
@@ -372,7 +374,6 @@ def FalconH1Attention_fast_forward_inference(
         A = torch_matmul(
             Qn, Knn.transpose(2, 3), out = self.attention[:, :, :, :cached_len]
         )
-        # if attention_mask is not None: A += attention_mask # Must add attention_mask for batched
         A[:] = torch_nn_functional_softmax(
             A, dim = -1, dtype = torch.float32
         )  # .to(A.dtype)
@@ -533,11 +534,19 @@ def _FalconH1_fast_forward_inference(
         bsz, q_len, hd = X.shape
         assert q_len == 1
         # Get saved buffers to reduce memory movement
-        residual = torch.empty((bsz, q_len, hd), dtype = torch.float32, device = "cuda:0")
-        _XX = torch.empty((2, bsz, q_len, hd), dtype = torch.float32, device = "cuda:0")
+        residual = torch.empty(
+            (bsz, q_len, hd), dtype = torch.float32, device = f"{DEVICE_TYPE_TORCH}:0"
+        )
+        _XX = torch.empty(
+            (2, bsz, q_len, hd), dtype = torch.float32, device = f"{DEVICE_TYPE_TORCH}:0"
+        )
         XX, XX2 = _XX[0], _XX[1]
-        variance = torch.empty((bsz, q_len, 1), dtype = torch.float32, device = "cuda:0")
-        temp_mlp = torch.empty((2, bsz, 1, mlp_size), dtype = X.dtype, device = "cuda:0")
+        variance = torch.empty(
+            (bsz, q_len, 1), dtype = torch.float32, device = f"{DEVICE_TYPE_TORCH}:0"
+        )
+        temp_mlp = torch.empty(
+            (2, bsz, 1, mlp_size), dtype = X.dtype, device = f"{DEVICE_TYPE_TORCH}:0"
+        )
         temp_gate, temp_up = temp_mlp[0], temp_mlp[1]
         seq_len = past_key_values[0][0].shape[-2]
         if bsz != 1:

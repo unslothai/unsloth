@@ -1,0 +1,16 @@
+# Single-env pins for unsloth + studio + data-designer
+# Keep compatible with unsloth transformers bounds.
+transformers==4.57.6
+trl==0.23.1
+huggingface-hub==0.36.2
+
+# Studio stack
+datasets==4.3.0
+pyarrow==23.0.1
+
+# FastMCP/OpenEnv compat
+fastmcp>=3.0.2
+mcp>=1.24,<2
+websockets>=15.0.1
+
+pandas==2.3.3

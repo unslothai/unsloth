@@ -25,6 +25,7 @@ from ..utils.attention_dispatch import (
     AttentionConfig,
     AttentionContext,
     run_attention,
+    SDPA,
     select_attention_backend,
 )
 from .llama import (
@@ -115,7 +116,9 @@ def MistralAttention_fast_forward(
     use_varlen = (
         seq_info is not None and past_key_value is None and window_size == (-1, -1)
     )
-    backend = select_attention_backend(use_varlen)
+    backend = (
+        SDPA if attention_mask is not None else select_attention_backend(use_varlen)
+    )
     attention_config = AttentionConfig(
         backend = backend,
         n_kv_heads = n_kv_heads,
@@ -185,6 +188,16 @@ def MistralForCausalLM_fast_forward(
 
             # If attention_mask exists, it will be handled in the attention forward
 
+        elif self.training:
+            # During training, LlamaModel_fast_forward's DPO embed-masking
+            # block requires a 2D attention_mask (it does
+            # inputs_embeds *= attention_mask.unsqueeze(0).transpose(0, 1).transpose(1, 2)).
+            # Afterwards, LlamaModel_fast_forward sets attention_mask=None
+            # before the attention layers anyway, so leaving the 2D mask
+            # untouched here is safe and avoids converting to 4D (which would
+            # crash the DPO block).
+            pass
+
         else:
             # Not using xformers - need to create attention masks
             if (
@@ -216,13 +229,18 @@ def MistralForCausalLM_fast_forward(
                     bsz, 1, q_len, q_len
                 )
             else:
-                # attention_mask should be [bsz, 1, q_len, q_len] or broadcastable
-                # Add causal mask to existing attention mask
                 if attention_mask.dim() == 2:
-                    # [bsz, seq_len] -> [bsz, 1, 1, seq_len]
-                    attention_mask = attention_mask[:, None, None, :]
-                    attention_mask = attention_mask.expand(bsz, 1, q_len, q_len)
-                attention_mask = attention_mask + causal_mask_values[None, None, :, :]
+                    # Convert 0/1 padding mask to additive format: 1->0 (keep), 0->-inf (mask)
+                    padding_mask = torch.where(
+                        attention_mask[:, None, None, :].bool(),
+                        0.0,
+                        -torch.inf,
+                    )
+                    attention_mask = causal_mask_values[None, None, :, :] + padding_mask
+                else:
+                    attention_mask = (
+                        attention_mask + causal_mask_values[None, None, :, :]
+                    )
 
             attention_mask = attention_mask.to(
                 dtype = _get_dtype(dtype_from_config(self.config))
@@ -279,9 +297,18 @@ def MistralForCausalLM_fast_forward(
     if labels is not None:
         labels = labels.to(lm_head_device)
 
+    # Merge legacy / new spellings before branching so the decode-time
+    # last-token slice fires on the normal path too. Skip int max() if
+    # either is a tensor (HF selective-decode form).
+    if isinstance(num_logits_to_keep, torch.Tensor) or isinstance(
+        logits_to_keep, torch.Tensor
+    ):
+        num_logits_to_keep = 0
+    else:
+        num_logits_to_keep = max(num_logits_to_keep, logits_to_keep)
+
     # If we are in GRPO mode, return raw hidden states
     if os.environ.get("UNSLOTH_RETURN_HIDDEN_STATES", "0") == "1":
-        num_logits_to_keep = max(num_logits_to_keep, logits_to_keep)
         if num_logits_to_keep != 0:
             hidden_states = hidden_states[:, -num_logits_to_keep:, :]
         return CausalLMOutputWithPast(

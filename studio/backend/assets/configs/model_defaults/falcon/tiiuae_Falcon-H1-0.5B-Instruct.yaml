@@ -1,0 +1,47 @@
+# Model defaults for tiiuae/Falcon-H1-0.5B-Instruct
+# Based on Falcon_H1_(0.5B)-Alpaca.ipynb
+# Also applies to: tiiuae/Falcon-H1-0.5B-Instruct, unsloth/Falcon-H1-0.5B-Instruct
+
+training:
+  trust_remote_code: false
+  max_seq_length: 2048
+  # num_epochs: 4
+  num_epochs: 0
+  learning_rate: 2e-4
+  batch_size: 2
+  gradient_accumulation_steps: 8
+  warmup_steps: 5
+  max_steps: 30
+  save_steps: 30
+  weight_decay: 0.001
+  random_seed: 3407
+  packing: false
+  train_on_completions: true
+  gradient_checkpointing: false
+  optim: "adamw_8bit"
+  lr_scheduler_type: "linear"
+
+lora:
+  lora_r: 16
+  lora_alpha: 16
+  lora_dropout: 0.1
+  target_modules:
+    - "q_proj"
+    - "k_proj"
+    - "v_proj"
+    - "o_proj"
+    - "gate_proj"
+    - "up_proj"
+    - "down_proj"
+  use_rslora: false
+  use_loftq: false
+
+logging:
+  enable_wandb: false
+  wandb_project: "llm-finetuning"
+  enable_tensorboard: false
+  tensorboard_dir: "runs"
+  log_frequency: 10
+
+inference:
+  trust_remote_code: false

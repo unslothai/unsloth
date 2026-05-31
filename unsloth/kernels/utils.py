@@ -82,6 +82,34 @@ def is_cdna():
         "gfx940",
         "gfx941",
         "gfx942",
+        "gfx950",  # CDNA4 (MI350/MI355X)
+    )
+
+
+@functools.lru_cache(1)
+def is_rdna():
+    """Detect ROCm-supported RDNA consumer/workstation GPUs (RDNA2, RDNA3, RDNA3.5, RDNA4)."""
+    return is_hip() and triton.runtime.driver.active.get_current_target().arch in (
+        # RDNA2 (Navi 21-24)
+        "gfx1030",
+        "gfx1031",
+        "gfx1032",
+        "gfx1033",
+        "gfx1034",
+        "gfx1035",
+        "gfx1036",
+        # RDNA3 (Navi 31-33)
+        "gfx1100",
+        "gfx1101",
+        "gfx1102",
+        "gfx1103",
+        # RDNA3.5 (Strix Point / Strix Halo)
+        "gfx1150",
+        "gfx1151",
+        "gfx1152",
+        # RDNA4 (Navi 48-44)
+        "gfx1200",
+        "gfx1201",
     )
 
 
@@ -136,9 +164,19 @@ else:
 # INTEL GPU Specific Logic
 if DEVICE_TYPE == "xpu":
     _gpu_getCurrentRawStream = torch._C._xpu_getCurrentRawStream
+elif DEVICE_TYPE == "mlx":
+
+    def _gpu_getCurrentRawStream(_index = 0):
+        return 0
 # NVIDIA GPU Default Logic
-else:
+elif hasattr(torch._C, "_cuda_getCurrentRawStream"):
     _gpu_getCurrentRawStream = torch._C._cuda_getCurrentRawStream
+else:
+    # CPU-only torch wheel (no compiled CUDA backend). _get_tensor_stream
+    # is only invoked during real GPU work, so a no-op binding is safe.
+    def _gpu_getCurrentRawStream(_index = 0):
+        return 0
+
 
 c_void_p = ctypes.c_void_p
 
@@ -153,36 +191,54 @@ global XPU_STREAMS
 global WEIGHT_BUFFERS
 global ABSMAX_BUFFERS
 
-# INTEL GPU Specific Logic
+# DEVICE_COUNT == 0 = no visible accelerator (e.g. CPU-only CI runner).
+# The consumer functions below only index these arrays during real GPU
+# work, so empty containers are safe -- they just need to be defined so
+# the module imports cleanly.
 if DEVICE_TYPE == "xpu":
-    _XPU_STREAMS = {
-        (index := torch.xpu.device(i).idx): ctypes.c_void_p(
-            torch._C._xpu_getCurrentRawStream(index)
-        )
-        for i in range(DEVICE_COUNT)
-    }
-    XPU_STREAMS = [None] * (max(_XPU_STREAMS.keys()) + 1)
-    WEIGHT_BUFFERS = [None] * (max(_XPU_STREAMS.keys()) + 1)
-    ABSMAX_BUFFERS = [None] * (max(_XPU_STREAMS.keys()) + 1)
-    for k, v in _XPU_STREAMS.items():
-        XPU_STREAMS[k] = v
-    XPU_STREAMS = tuple(XPU_STREAMS)
-    del _XPU_STREAMS
+    if DEVICE_COUNT > 0:
+        _XPU_STREAMS = {
+            (index := torch.xpu.device(i).idx): ctypes.c_void_p(
+                torch._C._xpu_getCurrentRawStream(index)
+            )
+            for i in range(DEVICE_COUNT)
+        }
+        XPU_STREAMS = [None] * (max(_XPU_STREAMS.keys()) + 1)
+        WEIGHT_BUFFERS = [None] * (max(_XPU_STREAMS.keys()) + 1)
+        ABSMAX_BUFFERS = [None] * (max(_XPU_STREAMS.keys()) + 1)
+        for k, v in _XPU_STREAMS.items():
+            XPU_STREAMS[k] = v
+        XPU_STREAMS = tuple(XPU_STREAMS)
+        del _XPU_STREAMS
+    else:
+        XPU_STREAMS = ()
+        WEIGHT_BUFFERS = []
+        ABSMAX_BUFFERS = []
+elif DEVICE_TYPE == "mlx":
+    CUDA_STREAMS = ()
+    XPU_STREAMS = ()
+    WEIGHT_BUFFERS = []
+    ABSMAX_BUFFERS = []
 else:
     # NVIDIA GPU Default Logic
-    _CUDA_STREAMS = {
-        (index := torch.cuda.device(i).idx): ctypes.c_void_p(
-            torch._C._cuda_getCurrentRawStream(index)
-        )
-        for i in range(DEVICE_COUNT)
-    }
-    CUDA_STREAMS = [None] * (max(_CUDA_STREAMS.keys()) + 1)
-    WEIGHT_BUFFERS = [None] * (max(_CUDA_STREAMS.keys()) + 1)
-    ABSMAX_BUFFERS = [None] * (max(_CUDA_STREAMS.keys()) + 1)
-    for k, v in _CUDA_STREAMS.items():
-        CUDA_STREAMS[k] = v
-    CUDA_STREAMS = tuple(CUDA_STREAMS)
-    del _CUDA_STREAMS
+    if DEVICE_COUNT > 0:
+        _CUDA_STREAMS = {
+            (index := torch.cuda.device(i).idx): ctypes.c_void_p(
+                torch._C._cuda_getCurrentRawStream(index)
+            )
+            for i in range(DEVICE_COUNT)
+        }
+        CUDA_STREAMS = [None] * (max(_CUDA_STREAMS.keys()) + 1)
+        WEIGHT_BUFFERS = [None] * (max(_CUDA_STREAMS.keys()) + 1)
+        ABSMAX_BUFFERS = [None] * (max(_CUDA_STREAMS.keys()) + 1)
+        for k, v in _CUDA_STREAMS.items():
+            CUDA_STREAMS[k] = v
+        CUDA_STREAMS = tuple(CUDA_STREAMS)
+        del _CUDA_STREAMS
+    else:
+        CUDA_STREAMS = ()
+        WEIGHT_BUFFERS = []
+        ABSMAX_BUFFERS = []
 
 # Bitsandbytes operations (optional)
 ctypes_c_int = ctypes.c_int
@@ -403,7 +459,7 @@ if DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
             global ABSMAX_BUFFERS
             WEIGHT_BUFFER = WEIGHT_BUFFERS[device_index]
             ABSMAX_BUFFER = ABSMAX_BUFFERS[device_index]
-            if WEIGHT_BUFFER is None:
+            if WEIGHT_BUFFER is None or WEIGHT_BUFFER.dtype != dtype:
                 WEIGHT_BUFFERS[device_index] = WEIGHT_BUFFER = torch_empty(
                     size, dtype = dtype, device = device, requires_grad = False
                 )
@@ -513,7 +569,7 @@ elif DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM:
             global ABSMAX_BUFFERS
             WEIGHT_BUFFER = WEIGHT_BUFFERS[device_index]
             ABSMAX_BUFFER = ABSMAX_BUFFERS[device_index]
-            if WEIGHT_BUFFER is None:
+            if WEIGHT_BUFFER is None or WEIGHT_BUFFER.dtype != dtype:
                 WEIGHT_BUFFERS[device_index] = WEIGHT_BUFFER = torch_empty(
                     size, dtype = dtype, device = device, requires_grad = False
                 )

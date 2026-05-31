@@ -1,0 +1,42 @@
+# Model defaults for unsloth/embeddinggemma-300m
+# Based on EmbeddingGemma_(300M).py embedding notebook
+
+training:
+  max_seq_length: 1024
+  # num_epochs: 1
+  num_epochs: 0
+  learning_rate: 2e-5
+  batch_size: 64
+  gradient_accumulation_steps: 2
+  warmup_ratio: 0.03
+  max_steps: 30
+  save_steps: 30
+  weight_decay: 0.001
+  random_seed: 3407
+  packing: false
+  train_on_completions: false
+  gradient_checkpointing: "unsloth"
+  optim: "adamw_8bit"
+  lr_scheduler_type: "linear"
+
+lora:
+  lora_r: 32
+  lora_alpha: 64
+  lora_dropout: 0.0
+  target_modules:
+    - "q_proj"
+    - "k_proj"
+    - "v_proj"
+    - "o_proj"
+    - "gate_proj"
+    - "up_proj"
+    - "down_proj"
+  use_rslora: false
+  use_loftq: false
+
+logging:
+  enable_wandb: false
+  wandb_project: "embedding-finetuning"
+  enable_tensorboard: false
+  tensorboard_dir: "runs"
+  log_frequency: 5

@@ -14,11 +14,16 @@
 
 import logging
 
-from .loader import FastModel
-from ._utils import SUPPORTS_BFLOAT16
+from .loader import FastModel, DISABLE_SDPA_MODEL_NAMES
+from ._utils import (
+    SUPPORTS_BFLOAT16,
+    resolve_model_class,
+    resolve_encoder_attention_implementation,
+)
 import inspect
 import json
 import os
+import threading
 import types
 from huggingface_hub import hf_hub_download
 from typing import Optional
@@ -31,12 +36,14 @@ import transformers
 from packaging.version import Version
 import re
 from transformers import AutoModel, AutoConfig
-from transformers.models.auto.auto_factory import _get_model_class
 import tempfile
 from huggingface_hub import HfApi, get_token
 from ..save import unsloth_save_pretrained_torchao, unsloth_save_pretrained_gguf
 import contextlib
 import shutil
+
+
+_CREATE_TRANSFORMER_MODULE_LOCK = threading.RLock()
 
 
 def _save_pretrained_torchao(
@@ -63,7 +70,7 @@ def _save_pretrained_torchao(
     modules_path = os.path.join(save_directory, "modules.json")
     if os.path.exists(modules_path):
         try:
-            with open(modules_path, "r") as f:
+            with open(modules_path, "r", encoding = "utf-8") as f:
                 modules = json.load(f)
             for m in modules:
                 if m.get("type", "").endswith("Transformer"):
@@ -170,7 +177,7 @@ def _save_pretrained_gguf(
     modules_path = os.path.join(save_directory, "modules.json")
     if os.path.exists(modules_path):
         try:
-            with open(modules_path, "r") as f:
+            with open(modules_path, "r", encoding = "utf-8") as f:
                 modules = json.load(f)
             for m in modules:
                 if m.get("type", "").endswith("Transformer"):
@@ -288,7 +295,277 @@ def _save_pretrained_gguf(
     return result
 
 
+def _push_to_hub_gguf(
+    self,
+    repo_id,
+    tokenizer = None,
+    quantization_method = "fast_quantized",
+    first_conversion = None,
+    token = None,
+    private = None,
+    commit_message = "Upload GGUF SentenceTransformer model trained with Unsloth",
+    commit_description = "Upload GGUF model trained with Unsloth 2x faster",
+    max_shard_size = "5GB",
+    temporary_location = "_unsloth_temporary_saved_buffers",
+    maximum_memory_usage = 0.85,
+    create_pr = False,
+    revision = None,
+    tags = None,
+    **kwargs,
+):
+    """
+    Converts the SentenceTransformer model to GGUF format and pushes to the Hugging Face Hub.
+
+    This method:
+    1. Saves the model locally to a temporary directory in GGUF format.
+    2. Uploads the GGUF files, config, Ollama Modelfile, and README to the Hub.
+    3. Cleans up the temporary directory.
+
+    Args:
+        repo_id (str): The Hugging Face Hub repo ID (e.g., "username/model-name").
+        tokenizer: The tokenizer to save. Defaults to `self.tokenizer`.
+        quantization_method (str or list): GGUF quantization method(s). Can be a string or list of strings.
+            Choose from the following options:
+            * "not_quantized"  : Recommended. Fast conversion. Slow inference, big files.
+            * "fast_quantized" : Recommended. Fast conversion. OK inference, OK file size.
+            * "quantized"      : Recommended. Slow conversion. Fast inference, small files.
+            * "f32"     : Not recommended. Retains 100% accuracy, but super slow and memory hungry.
+            * "f16"     : Fastest conversion + retains 100% accuracy. Slow and memory hungry.
+            * "q8_0"    : Fast conversion. High resource use, but generally acceptable.
+            * "q4_k_m"  : Recommended. Uses Q6_K for half of the attention.wv and feed_forward.w2 tensors, else Q4_K
+            * "q5_k_m"  : Recommended. Uses Q6_K for half of the attention.wv and feed_forward.w2 tensors, else Q5_K
+            * "q2_k"    : Uses Q4_K for the attention.vw and feed_forward.w2 tensors, Q2_K for the other tensors.
+            * "q3_k_l"  : Uses Q5_K for the attention.wv, attention.wo, and feed_forward.w2 tensors, else Q3_K
+            * "q3_k_m"  : Uses Q4_K for the attention.wv, attention.wo, and feed_forward.w2 tensors, else Q3_K
+            * "q3_k_s"  : Uses Q3_K for all tensors
+            * "q4_0"    : Original quant method, 4-bit.
+            * "q4_1"    : Higher accuracy than q4_0 but not as high as q5_0. However has quicker inference than q5 models.
+            * "q4_k_s"  : Uses Q4_K for all tensors
+            * "q5_0"    : Higher accuracy, higher resource usage and slower inference.
+            * "q5_1"    : Even higher accuracy, resource usage and slower inference.
+            * "q5_k_s"  : Uses Q5_K for all tensors
+            * "q6_k"    : Uses Q8_K for all tensors
+        first_conversion (str, optional): The initial conversion format before quantization.
+        token (str, optional): Hugging Face token. Uses cached token if not provided.
+        private (bool, optional): Whether the repo should be private.
+        commit_message (str): Commit message for the upload.
+        commit_description (str): Commit description for the upload.
+        max_shard_size (str): Maximum shard size for saving.
+        temporary_location (str): Temp directory for intermediate files.
+        maximum_memory_usage (float): Max fraction of memory to use.
+        create_pr (bool): Whether to create a pull request instead of pushing directly.
+        revision (str, optional): Branch/revision to push to.
+        tags (list, optional): Additional tags for the repo.
+
+    Returns:
+        str: The full repo ID on Hugging Face Hub.
+    """
+    if token is None:
+        token = get_token()
+    if token is None:
+        raise ValueError(
+            "No HF token provided. Please provide a token or login with `huggingface-cli login`"
+        )
+
+    api = HfApi(token = token)
+
+    # Determine full repo_id
+    if "/" not in repo_id:
+        username = api.whoami()["name"]
+        full_repo_id = f"{username}/{repo_id}"
+    else:
+        full_repo_id = repo_id
+
+    model_name = full_repo_id.split("/")[-1]
+
+    # Create repo
+    try:
+        api.create_repo(
+            repo_id = full_repo_id,
+            private = private,
+            exist_ok = True,
+            repo_type = "model",
+        )
+    except Exception as e:
+        print(f"Unsloth Warning: Could not create repo: {e}")
+
+    # Save to temporary directory first
+    with tempfile.TemporaryDirectory(prefix = "unsloth_st_gguf_") as temp_dir:
+        print(f"Unsloth: Converting SentenceTransformer to GGUF format...")
+
+        # Call save_pretrained_gguf to do the local conversion
+        result = _save_pretrained_gguf(
+            self,
+            save_directory = temp_dir,
+            tokenizer = tokenizer,
+            quantization_method = quantization_method,
+            first_conversion = first_conversion,
+            push_to_hub = False,  # We handle upload ourselves
+            token = token,
+            max_shard_size = max_shard_size,
+            temporary_location = temporary_location,
+            maximum_memory_usage = maximum_memory_usage,
+        )
+
+        gguf_files = result.get("gguf_files", [])
+        modelfile_location = result.get("modelfile_location", None)
+        is_vlm = result.get("is_vlm", False)
+        fix_bos_token = result.get("fix_bos_token", False)
+
+        print(f"Unsloth: Uploading GGUF to https://huggingface.co/{full_repo_id}...")
+
+        # Upload GGUF files
+        for file_location in gguf_files:
+            if os.path.exists(file_location):
+                filename = os.path.basename(file_location)
+                print(f"  Uploading {filename}...")
+                api.upload_file(
+                    path_or_fileobj = file_location,
+                    path_in_repo = filename,
+                    repo_id = full_repo_id,
+                    repo_type = "model",
+                    commit_message = commit_message,
+                    commit_description = commit_description,
+                    create_pr = create_pr,
+                    revision = revision,
+                )
+
+        # Upload Modelfile if exists
+        if modelfile_location and os.path.exists(modelfile_location):
+            print("  Uploading Ollama Modelfile...")
+            api.upload_file(
+                path_or_fileobj = modelfile_location,
+                path_in_repo = "Modelfile",
+                repo_id = full_repo_id,
+                repo_type = "model",
+                commit_message = f"{commit_message} - Ollama Modelfile",
+                create_pr = create_pr,
+                revision = revision,
+            )
+
+        # Upload config.json if exists
+        config_path = os.path.join(temp_dir, "config.json")
+        if os.path.exists(config_path):
+            print("  Uploading config.json...")
+            api.upload_file(
+                path_or_fileobj = config_path,
+                path_in_repo = "config.json",
+                repo_id = full_repo_id,
+                repo_type = "model",
+                commit_message = f"{commit_message} - config",
+                create_pr = create_pr,
+                revision = revision,
+            )
+
+        # Create and upload README
+        gguf_basenames = [os.path.basename(f) for f in gguf_files if os.path.exists(f)]
+        readme_content = f"""---
+tags:
+- gguf
+- llama.cpp
+- unsloth
+- sentence-transformers
+{"- vision-language-model" if is_vlm else ""}
+---
+
+# {model_name} - GGUF
+
+This sentence-transformers model was finetuned and converted to GGUF format using [Unsloth](https://github.com/unslothai/unsloth).
+
+## Available Model files:
+"""
+        for fname in gguf_basenames:
+            readme_content += f"- `{fname}`\n"
+
+        if modelfile_location and os.path.exists(modelfile_location):
+            readme_content += "\n## Ollama\n"
+            readme_content += "An Ollama Modelfile is included for easy deployment.\n"
+
+        if fix_bos_token:
+            readme_content += "\n## Note\n"
+            readme_content += (
+                "The model's BOS token behavior was adjusted for GGUF compatibility.\n"
+            )
+
+        readme_content += (
+            "\nThis was trained 2x faster with [Unsloth](https://github.com/unslothai/unsloth)\n"
+            '[<img src="https://raw.githubusercontent.com/unslothai/unsloth/main/images/unsloth%20made%20with%20love.png" width="200"/>](https://github.com/unslothai/unsloth)\n'
+        )
+
+        readme_path = os.path.join(temp_dir, "README.md")
+        with open(readme_path, "w", encoding = "utf-8") as f:
+            f.write(readme_content)
+
+        api.upload_file(
+            path_or_fileobj = readme_path,
+            path_in_repo = "README.md",
+            repo_id = full_repo_id,
+            repo_type = "model",
+            commit_message = "Add README",
+            create_pr = create_pr,
+            revision = revision,
+        )
+
+    # Add tags
+    all_tags = ["gguf", "llama-cpp", "unsloth", "sentence-transformers"]
+    if is_vlm:
+        all_tags.append("vision-language-model")
+    if tags is not None:
+        if isinstance(tags, (list, tuple)):
+            all_tags.extend(tags)
+        else:
+            all_tags.append(tags)
+    try:
+        api.add_tags(repo_id = full_repo_id, tags = all_tags, repo_type = "model")
+    except:
+        pass
+
+    print(
+        f"Unsloth: Successfully uploaded GGUF to https://huggingface.co/{full_repo_id}"
+    )
+    return full_repo_id
+
+
 class FastSentenceTransformer(FastModel):
+    @staticmethod
+    def _save_base_config_for_processor_resume(config, output_path):
+        """
+        sentence-transformers >= 5.4 reloads Transformer modules through
+        AutoProcessor. Tokenizer-only checkpoint roots make AutoProcessor fall
+        back to AutoConfig, so PEFT adapter checkpoints still need the base
+        config.json next to adapter_config.json.
+        """
+        if config is None or not getattr(config, "model_type", None):
+            return
+        if hasattr(config, "save_pretrained"):
+            config.save_pretrained(output_path)
+        elif hasattr(config, "to_json_file"):
+            config_path = os.path.join(output_path, "config.json")
+            config.to_json_file(config_path)
+
+    @staticmethod
+    def _patch_transformer_module_save_config(transformer_module, base_config = None):
+        transformer_module._unsloth_st_managed = True
+        if base_config is not None and getattr(base_config, "model_type", None):
+            transformer_module._unsloth_base_config = base_config
+
+        if getattr(transformer_module, "_unsloth_save_config_patched", False):
+            return transformer_module
+
+        original_save = transformer_module.save
+
+        def _save_with_base_config(self, output_path, *args, **kwargs):
+            original_save(output_path, *args, **kwargs)
+            FastSentenceTransformer._save_base_config_for_processor_resume(
+                getattr(self, "_unsloth_base_config", None), output_path
+            )
+
+        transformer_module.save = types.MethodType(
+            _save_with_base_config, transformer_module
+        )
+        transformer_module._unsloth_save_config_patched = True
+        return transformer_module
+
     @staticmethod
     def _read_pooling_mode(model_name, token):
         """
@@ -304,7 +581,7 @@ class FastSentenceTransformer(FastModel):
                     model_name, "modules.json", token = token
                 )
 
-            with open(modules_json_path, "r") as f:
+            with open(modules_json_path, "r", encoding = "utf-8") as f:
                 modules_config = json.load(f)
 
             pooling_config_path = None
@@ -328,7 +605,7 @@ class FastSentenceTransformer(FastModel):
                         break
 
             if pooling_config_path:
-                with open(pooling_config_path, "r") as f:
+                with open(pooling_config_path, "r", encoding = "utf-8") as f:
                     pooling_config = json.load(f)
                     # from here:
                     # https://github.com/huggingface/sentence-transformers/blob/main/sentence_transformers/models/Pooling.py#L43
@@ -639,7 +916,7 @@ class FastSentenceTransformer(FastModel):
             if auto_model_class is None:
                 auto_model_class = AutoModel
             # try to resolve the class
-            model_class = _get_model_class(config, auto_model_class._model_mapping)
+            model_class = resolve_model_class(auto_model_class, config)
 
             if model_class:
                 sig = inspect.signature(model_class.__init__)
@@ -778,37 +1055,128 @@ class FastSentenceTransformer(FastModel):
         from sentence_transformers.models import Transformer
 
         # prevents sentence-transformers from loading the model a second time, thanks Etherl
-        original_from_pretrained = AutoModel.from_pretrained
+        # Also redirect AutoProcessor / AutoTokenizer so the Transformer.__init__
+        # picks up our pre-fixed tokenizer. On sentence-transformers >=5.4 the
+        # `tokenizer` attribute became a read-only @property backed by `self.processor`,
+        # so a post-init assignment raises AttributeError; redirecting the constructor's
+        # AutoProcessor.from_pretrained call sets self.processor correctly and keeps
+        # downstream state (input_formatter) consistent.
+        from transformers import AutoProcessor, AutoTokenizer
 
-        def return_existing_model(*args, **kwargs):
-            return model
+        def is_requested_model_name(args, kwargs):
+            requested = None
+            if args:
+                requested = args[0]
+            else:
+                requested = kwargs.get("pretrained_model_name_or_path")
+                if requested is None:
+                    requested = kwargs.get("model_name_or_path")
+            if requested is None:
+                return False
 
-        try:
-            # Temporarily redirect AutoModel loading to return our pre-loaded model
-            AutoModel.from_pretrained = return_existing_model
+            try:
+                requested = os.fspath(requested)
+                expected = os.fspath(model_name)
+            except (TypeError, ValueError) as exception:
+                logging.debug(
+                    "Unsloth: Could not normalize SentenceTransformer model path: %s",
+                    exception,
+                )
+                return False
+            if requested == expected:
+                return True
 
-            # Initialize Transformer
-            transformer_module = Transformer(
-                model_name,
-                max_seq_length = max_seq_length,
-                model_args = {"trust_remote_code": trust_remote_code},
-                config_args = {"trust_remote_code": trust_remote_code},
-            )
-        finally:
-            # Restore original functionality immediately
-            AutoModel.from_pretrained = original_from_pretrained
+            try:
+                if os.path.exists(requested) or os.path.exists(expected):
+                    return os.path.abspath(requested) == os.path.abspath(expected)
+            except (OSError, TypeError, ValueError) as exception:
+                logging.debug(
+                    "Unsloth: Could not compare SentenceTransformer model paths: %s",
+                    exception,
+                )
+            return False
 
-        transformer_module.tokenizer = tokenizer
+        with _CREATE_TRANSFORMER_MODULE_LOCK:
+            original_model_from_pretrained = AutoModel.from_pretrained
+            original_processor_from_pretrained = AutoProcessor.from_pretrained
+            original_tokenizer_from_pretrained = AutoTokenizer.from_pretrained
+
+            def return_existing_model(*args, **kwargs):
+                if is_requested_model_name(args, kwargs):
+                    return model
+                return original_model_from_pretrained(*args, **kwargs)
+
+            def return_existing_tokenizer(*args, **kwargs):
+                if is_requested_model_name(args, kwargs):
+                    return tokenizer
+                return original_tokenizer_from_pretrained(*args, **kwargs)
+
+            def return_existing_processor(*args, **kwargs):
+                if is_requested_model_name(args, kwargs):
+                    return tokenizer
+                return original_processor_from_pretrained(*args, **kwargs)
+
+            try:
+                # Temporarily redirect Auto* loading to return our pre-loaded objects
+                AutoModel.from_pretrained = return_existing_model
+                AutoProcessor.from_pretrained = return_existing_processor
+                AutoTokenizer.from_pretrained = return_existing_tokenizer
+
+                transformer_init_params = inspect.signature(
+                    Transformer.__init__
+                ).parameters
+                trust_remote_code_kwargs = {"trust_remote_code": trust_remote_code}
+                do_lower_case = getattr(tokenizer, "do_lower_case", False)
+                transformer_kwargs = {"max_seq_length": max_seq_length}
+                if "do_lower_case" in transformer_init_params:
+                    transformer_kwargs["do_lower_case"] = do_lower_case
+                if "model_kwargs" in transformer_init_params:
+                    transformer_kwargs["model_kwargs"] = trust_remote_code_kwargs.copy()
+                    transformer_kwargs["config_kwargs"] = (
+                        trust_remote_code_kwargs.copy()
+                    )
+                else:
+                    transformer_kwargs["model_args"] = trust_remote_code_kwargs.copy()
+                    transformer_kwargs["config_args"] = trust_remote_code_kwargs.copy()
+                if "processor_kwargs" in transformer_init_params:
+                    transformer_kwargs["processor_kwargs"] = (
+                        trust_remote_code_kwargs.copy()
+                    )
+                elif "tokenizer_args" in transformer_init_params:
+                    transformer_kwargs["tokenizer_args"] = (
+                        trust_remote_code_kwargs.copy()
+                    )
+
+                # Initialize Transformer
+                transformer_module = Transformer(model_name, **transformer_kwargs)
+            finally:
+                # Restore original functionality immediately
+                AutoModel.from_pretrained = original_model_from_pretrained
+                AutoProcessor.from_pretrained = original_processor_from_pretrained
+                AutoTokenizer.from_pretrained = original_tokenizer_from_pretrained
+
+        # On sentence-transformers >=5.4 `tokenizer` is a read-only property backed
+        # by `self.processor` (already wired via the redirect above). On older
+        # versions it's a regular attribute and the explicit assignment is required.
+        if not isinstance(
+            getattr(type(transformer_module), "tokenizer", None), property
+        ):
+            transformer_module.tokenizer = tokenizer
         transformer_module.do_lower_case = getattr(tokenizer, "do_lower_case", False)
 
         # sentence-transformers only passes along known keys to model.forward
+        preinit_model_forward_params = getattr(
+            transformer_module, "model_forward_params", set()
+        )
         model_forward_params = list(inspect.signature(model.forward).parameters)
         transformer_module.model_forward_params = set(model_forward_params) | {
             "input_ids",
             "attention_mask",
             "token_type_ids",
             "inputs_embeds",
+            "return_dict",
         }
+        transformer_module.model_forward_params |= preinit_model_forward_params
 
         # determine max_seq_length if not provided
         if max_seq_length is None:
@@ -822,13 +1190,43 @@ class FastSentenceTransformer(FastModel):
                 max_seq_length = 512
 
         transformer_module.max_seq_length = max_seq_length
-        transformer_module.config_keys = ["max_seq_length", "do_lower_case"]
+        config_keys = list(getattr(transformer_module, "config_keys", []) or [])
+        for config_key in ("max_seq_length", "do_lower_case"):
+            if config_key not in config_keys:
+                config_keys.append(config_key)
+        transformer_module.config_keys = config_keys
         transformer_module.save_in_root = True
+        FastSentenceTransformer._patch_transformer_module_save_config(
+            transformer_module, getattr(model, "config", None)
+        )
 
         if hasattr(model, "config"):
             model.config.tokenizer_class = tokenizer.__class__.__name__
 
         return transformer_module
+
+    @staticmethod
+    def _is_transformer_module_ref(class_ref):
+        if class_ref in {
+            "sentence_transformers.models.Transformer",
+            "sentence_transformers.models.transformer.Transformer",
+            "sentence_transformers.base.modules.transformer.Transformer",
+        }:
+            return True
+
+        try:
+            from sentence_transformers.models import Transformer
+            from sentence_transformers.util import import_from_string
+
+            module_class = import_from_string(class_ref)
+            return module_class is Transformer
+        except (ImportError, AttributeError, TypeError, ValueError) as exception:
+            logging.debug(
+                "Unsloth: Could not resolve SentenceTransformer module ref %r: %s",
+                class_ref,
+                exception,
+            )
+            return False
 
     @staticmethod
     def _load_modules(
@@ -862,7 +1260,7 @@ class FastSentenceTransformer(FastModel):
                     "name", str(module_config.get("idx", len(modules)))
                 )
 
-                if class_ref == "sentence_transformers.models.Transformer":
+                if FastSentenceTransformer._is_transformer_module_ref(class_ref):
                     transformer_module = (
                         FastSentenceTransformer._create_transformer_module(
                             model_name,
@@ -1065,7 +1463,10 @@ class FastSentenceTransformer(FastModel):
         if hasattr(model, "__getitem__"):
             inner_model = model[0].auto_model
             compiled = torch.compile(inner_model, mode = mode)
-            model[0].auto_model = compiled
+            if isinstance(getattr(type(model[0]), "auto_model", None), property):
+                model[0].model = compiled
+            else:
+                model[0].auto_model = compiled
             # Fix for accelerate unwrap_model bug:
             # When SentenceTransformer contains a compiled inner model,
             # accelerate checks has_compiled_regions() which returns True,
@@ -1215,23 +1616,18 @@ class FastSentenceTransformer(FastModel):
             ):
                 st_device = "cuda"
 
-            # Check if model supports SDPA (Scaled Dot Product Attention) for extra speedup
-            supports_sdpa = False
-            if config is not None:
-                try:
-                    model_class = _get_model_class(
-                        config, kwargs.get("auto_model", AutoModel)._model_mapping
-                    )
-                    supports_sdpa = getattr(model_class, "_supports_sdpa", False)
-                except:
-                    pass
-
             # Build model_kwargs for SentenceTransformer
             model_kwargs = {"torch_dtype": dtype}
 
-            # Enable SDPA if supported (1.2x extra speedup on top of torch.compile)
-            if supports_sdpa:
-                model_kwargs["attn_implementation"] = "sdpa"
+            encoder_attn_impl = resolve_encoder_attention_implementation(
+                kwargs.get("auto_model", AutoModel),
+                config,
+                model_type = model_type,
+                disable_sdpa_model_names = DISABLE_SDPA_MODEL_NAMES,
+            )
+            supports_sdpa = encoder_attn_impl == "sdpa"
+            if encoder_attn_impl is not None:
+                model_kwargs["attn_implementation"] = encoder_attn_impl
 
             # Print optimization status
             sdpa_str = " + SDPA" if supports_sdpa else ""
@@ -1290,6 +1686,9 @@ class FastSentenceTransformer(FastModel):
             st_model._dtype = dtype
             st_model._load_in_4bit = load_in_4bit
             st_model.no_modules = False
+            FastSentenceTransformer._patch_transformer_module_save_config(
+                st_model[0], getattr(st_model[0].auto_model, "config", None)
+            )
 
             # Add save methods
             def _save_pretrained_merged(self, save_directory, **save_kwargs):
@@ -1320,6 +1719,8 @@ class FastSentenceTransformer(FastModel):
             st_model.save_pretrained_gguf = types.MethodType(
                 _save_pretrained_gguf, st_model
             )
+
+            st_model.push_to_hub_gguf = types.MethodType(_push_to_hub_gguf, st_model)
 
             def _push_to_hub_merged(self, repo_id, **push_kwargs):
                 hub_token = push_kwargs.get("token", None) or get_token()
@@ -1523,6 +1924,8 @@ class FastSentenceTransformer(FastModel):
             _save_pretrained_gguf, st_model
         )
 
+        st_model.push_to_hub_gguf = types.MethodType(_push_to_hub_gguf, st_model)
+
         def _push_to_hub_merged(self, repo_id, **kwargs):
             token = kwargs.get("token", None) or get_token()
             if token is None:
@@ -1700,8 +2103,18 @@ class FastSentenceTransformer(FastModel):
                         "Unsloth: Re-enabling torch.compile since gradient checkpointing is not supported"
                     )
 
-                # Re-assign the peft model back to the transformer module
-                transformer_module.auto_model = peft_model
+                # Re-assign the peft model back to the transformer module.
+                # On sentence-transformers >=5.4 `auto_model` is a read-only property
+                # backed by `self.model`, so write to the backing attribute there.
+                if isinstance(
+                    getattr(type(transformer_module), "auto_model", None), property
+                ):
+                    transformer_module.model = peft_model
+                else:
+                    transformer_module.auto_model = peft_model
+                FastSentenceTransformer._patch_transformer_module_save_config(
+                    transformer_module, getattr(inner_model, "config", None)
+                )
 
                 # Store compile info for auto-compile at trainer time
                 # torch.compile is deferred until training starts so we can check max_steps
@@ -1747,8 +2160,18 @@ class FastSentenceTransformer(FastModel):
                 **kwargs,
             )
 
-            # re-assign the peft model back to the transformer module
-            transformer_module.auto_model = peft_model
+            # re-assign the peft model back to the transformer module.
+            # On sentence-transformers >=5.4 `auto_model` is a read-only property
+            # backed by `self.model`, so write to the backing attribute there.
+            if isinstance(
+                getattr(type(transformer_module), "auto_model", None), property
+            ):
+                transformer_module.model = peft_model
+            else:
+                transformer_module.auto_model = peft_model
+            FastSentenceTransformer._patch_transformer_module_save_config(
+                transformer_module, getattr(inner_model, "config", None)
+            )
             return model
         else:
             return FastModel.get_peft_model(
@@ -1845,9 +2268,151 @@ def _patch_sentence_transformer_trainer():
         # Call original __init__
         _original_init(self, *args, **kwargs)
 
+        # Disable mixed precision when FORCE_FLOAT32 is active (matches rl.py behavior)
+        if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1":
+            if hasattr(self, "args") and self.args is not None:
+                if self.args.fp16 or self.args.bf16:
+                    print(
+                        "Unsloth: Switching to float32 training since model cannot work with float16"
+                    )
+                    self.args.fp16 = False
+                    self.args.bf16 = False
+                    if hasattr(self.args, "bf16_full_eval"):
+                        self.args.bf16_full_eval = False
+                    if hasattr(self.args, "fp16_full_eval"):
+                        self.args.fp16_full_eval = False
+
     SentenceTransformerTrainer.__init__ = _patched_init
     SentenceTransformerTrainer._unsloth_auto_compile_patched = True
 
 
-# Auto-patch trainer on module import
+def _patch_st_trainer_load_from_checkpoint():
+    try:
+        from sentence_transformers import SentenceTransformerTrainer
+    except ImportError:
+        return
+    if getattr(
+        SentenceTransformerTrainer, "_unsloth_load_from_checkpoint_patched", False
+    ):
+        return
+    if not hasattr(SentenceTransformerTrainer, "_load_from_checkpoint"):
+        return
+
+    _original = SentenceTransformerTrainer._load_from_checkpoint
+
+    def _unsloth_load_from_checkpoint(self, checkpoint_path):
+        try:
+            from peft import PeftModel, load_peft_weights, set_peft_model_state_dict
+        except ImportError:
+            return _original(self, checkpoint_path)
+
+        try:
+            mod0 = self.model[0]
+        except (IndexError, TypeError):
+            return _original(self, checkpoint_path)
+
+        if isinstance(getattr(type(mod0), "auto_model", None), property):
+            inner = getattr(mod0, "model", None)
+        else:
+            inner = getattr(mod0, "auto_model", None)
+        inner = getattr(inner, "_orig_mod", inner)
+
+        if not isinstance(inner, PeftModel):
+            return _original(self, checkpoint_path)
+        if not getattr(mod0, "_unsloth_st_managed", False):
+            return _original(self, checkpoint_path)
+
+        if not any(
+            os.path.isfile(os.path.join(checkpoint_path, fn))
+            for fn in ("adapter_model.safetensors", "adapter_model.bin")
+        ):
+            return _original(self, checkpoint_path)
+
+        adapter_name = getattr(inner, "active_adapter", None)
+        if adapter_name is None and callable(getattr(inner, "active_adapters", None)):
+            adapter_name = inner.active_adapters()
+        if isinstance(adapter_name, (list, tuple, set)):
+            if len(adapter_name) != 1:
+                raise RuntimeError(
+                    "Unsloth: Cannot resume multiple active PEFT adapters."
+                )
+            adapter_name = next(iter(adapter_name))
+        adapter_name = adapter_name or "default"
+        if adapter_name not in getattr(inner, "peft_config", {}):
+            raise RuntimeError(f"Unsloth: PEFT adapter {adapter_name!r} is not loaded.")
+
+        load_result = set_peft_model_state_dict(
+            inner, load_peft_weights(checkpoint_path), adapter_name = adapter_name
+        )
+        unexpected = getattr(load_result, "unexpected_keys", []) or []
+        missing = [
+            x
+            for x in (getattr(load_result, "missing_keys", []) or [])
+            if f".{adapter_name}." in x or x.endswith(f".{adapter_name}")
+        ]
+        if unexpected or missing:
+            raise RuntimeError(
+                "Unsloth: PEFT checkpoint does not match the active adapter "
+                f"(missing={missing[:8]}, unexpected={unexpected[:8]})."
+            )
+
+        modules_json = os.path.join(checkpoint_path, "modules.json")
+        if not os.path.isfile(modules_json):
+            raise RuntimeError("Unsloth: PEFT checkpoint is missing modules.json.")
+        try:
+            with open(modules_json, "r") as f:
+                module_configs = json.load(f)
+        except Exception as e:
+            raise RuntimeError("Unsloth: Cannot parse checkpoint modules.json.") from e
+
+        root = os.path.abspath(os.fspath(checkpoint_path))
+        restored = set()
+        for entry in module_configs:
+            idx = int(entry.get("idx", -1))
+            if idx == 0:
+                continue
+            if idx < 0 or idx >= len(self.model):
+                raise RuntimeError(f"Unsloth: Bad module index in modules.json: {idx}.")
+            module = self.model[idx]
+            module_cls = type(module)
+            saved_type = entry.get("type", "")
+            if saved_type and not saved_type.endswith(f".{module_cls.__name__}"):
+                raise RuntimeError(f"Unsloth: Checkpoint module {idx} type mismatch.")
+            module_path = entry.get("path")
+            module_dir = os.path.abspath(
+                os.path.join(root, os.fspath(module_path or ""))
+            )
+            try:
+                inside_root = os.path.commonpath([root, module_dir]) == root
+            except ValueError:
+                inside_root = False
+            if not module_path or not inside_root or not os.path.isdir(module_dir):
+                raise RuntimeError(
+                    f"Unsloth: Bad checkpoint module path for index {idx}."
+                )
+            if not hasattr(module_cls, "load"):
+                raise RuntimeError(f"Unsloth: Module {idx} cannot be reloaded.")
+            fresh = module_cls.load(module_dir)
+            if not isinstance(fresh, module_cls):
+                raise RuntimeError(f"Unsloth: Module {idx} reload returned wrong type.")
+            # Parameterless modules (Pooling, Normalize) make
+            # next(module.parameters()) raise StopIteration; route through
+            # the SentenceTransformer's device property instead.
+            try:
+                fresh.to(self.model.device)
+            except AttributeError:
+                pass
+            self.model[idx] = fresh
+            restored.add(idx)
+        missing_idx = sorted(set(range(1, len(self.model))) - restored)
+        if missing_idx:
+            raise RuntimeError(
+                f"Unsloth: Checkpoint modules.json is incomplete (missing idx={missing_idx[:8]})."
+            )
+
+    SentenceTransformerTrainer._load_from_checkpoint = _unsloth_load_from_checkpoint
+    SentenceTransformerTrainer._unsloth_load_from_checkpoint_patched = True
+
+
 _patch_sentence_transformer_trainer()
+_patch_st_trainer_load_from_checkpoint()

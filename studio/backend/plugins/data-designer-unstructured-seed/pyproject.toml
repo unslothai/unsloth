@@ -1,0 +1,28 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "data-designer-unstructured-seed"
+version = "0.1.0"
+description = "Local Data Designer unstructured seed reader plugin"
+requires-python = ">=3.11"
+dependencies = [
+  "data-designer-engine>=0.5.4,<0.6",
+  "pandas>=2,<3",
+  "pymupdf>=1.24.0",
+  "pymupdf4llm>=0.0.17",
+  "mammoth>=1.8.0",
+]
+
+[project.entry-points."data_designer.plugins"]
+unstructured = "data_designer_unstructured_seed.plugin:unstructured_seed_plugin"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

@@ -24,8 +24,15 @@ import os
 import re
 import torch
 import inspect
+import linecache
 from collections import defaultdict
-from unsloth_zoo.rl_replacements import RL_REPLACEMENTS, left_pack_padding
+from unsloth_zoo.rl_replacements import (
+    RL_REPLACEMENTS,
+    left_pack_padding,
+    chunked_selective_log_softmax,
+    _unsloth_get_mm_token_id,
+    _unsloth_fix_mm_token_type_ids,
+)
 from unsloth_zoo.utils import Version
 from trl import __version__ as trl_version_raw
 from importlib.metadata import version as importlib_version
@@ -46,9 +53,32 @@ from ._utils import _get_inference_mode_context_manager
 RL_EXTRA_ARGS = defaultdict(list)
 RL_FUNCTIONS = defaultdict(list)
 RL_PRE_ITEMS = defaultdict(list)
+
+
+def _unsloth_clear_stateful_mrope(model):
+    modules = getattr(model, "modules", None)
+    if modules is None:
+        return False
+
+    cleared = False
+    for module in modules():
+        if hasattr(module, "compute_3d_position_ids") and hasattr(
+            module, "rope_deltas"
+        ):
+            module.rope_deltas = None
+            cleared = True
+    return cleared
+
+
 RL_CONFIG_CHANGES = defaultdict(list)
 RL_METRICS_CHANGES = defaultdict(list)
 RL_ADDITIONAL_FUNCTIONS = defaultdict(list)
+
+_DPO_VISION_KEYS = (
+    "pixel_position_ids",
+    "image_position_ids",
+    "mm_token_type_ids",
+)
 
 torch_compile_options = {
     "epilogue_fusion": True,
@@ -115,6 +145,272 @@ def dpo_trainer_fix_columns(call_args, extra_args):
 RL_EXTRA_ARGS["dpo_trainer"].append(dpo_trainer_fix_columns)
 
 
+def dpo_trainer_fix_data_collator(call_args, extra_args):
+    if (
+        "data_collator" in call_args
+        and "train_dataset" in call_args
+        and "processing_class" in call_args
+    ):
+        fix_collator = (
+            "if hasattr(train_dataset, 'column_names'):\n"
+            "    column_names = set(train_dataset.column_names)\n"
+            "    is_dpo_dataset = ({'chosen', 'rejected'}.issubset(column_names) or\n"
+            "                      {'prompt_input_ids', 'chosen_input_ids', 'rejected_input_ids'}.issubset(column_names))\n"
+            "    if is_dpo_dataset and isinstance(data_collator, TransformersDataCollatorForLanguageModeling):\n"
+            "        data_collator = None\n"
+            "    del is_dpo_dataset, column_names\n"
+        )
+        return fix_collator
+    return ""
+
+
+RL_EXTRA_ARGS["dpo_trainer"].append(dpo_trainer_fix_data_collator)
+
+
+def dpo_trainer_vision_process_row(
+    features,
+    processing_class,
+    max_prompt_length = None,
+    max_completion_length = None,
+    add_special_tokens = True,
+    is_chat = False,
+):
+    text = features.get("prompt", "")
+    images = features.get("images")
+    processor, tokenizer = processing_class, processing_class.tokenizer
+    processed_features = processor(
+        images = images,
+        text = text,
+        add_special_tokens = False,
+    )
+
+    prompt_input_ids = processed_features["input_ids"][0]
+    chosen_input_ids = tokenizer(features["chosen"], add_special_tokens = False)[
+        "input_ids"
+    ]
+    rejected_input_ids = tokenizer(features["rejected"], add_special_tokens = False)[
+        "input_ids"
+    ]
+
+    if add_special_tokens:
+        if tokenizer.bos_token_id is not None:
+            prompt_input_ids = [tokenizer.bos_token_id] + prompt_input_ids
+        if tokenizer.eos_token_id is not None:
+            prompt_input_ids = prompt_input_ids + [tokenizer.eos_token_id]
+    if not is_chat and tokenizer.eos_token_id is not None:
+        chosen_input_ids = chosen_input_ids + [tokenizer.eos_token_id]
+        rejected_input_ids = rejected_input_ids + [tokenizer.eos_token_id]
+
+    if max_prompt_length is not None:
+        prompt_input_ids = prompt_input_ids[-max_prompt_length:]
+    if max_completion_length is not None:
+        chosen_input_ids = chosen_input_ids[:max_completion_length]
+        rejected_input_ids = rejected_input_ids[:max_completion_length]
+
+    output = {
+        "prompt_input_ids": prompt_input_ids,
+        "chosen_input_ids": chosen_input_ids,
+        "rejected_input_ids": rejected_input_ids,
+    }
+    if "pixel_values" in processed_features:
+        output["pixel_values"] = processed_features["pixel_values"][0]
+    if "pixel_attention_mask" in processed_features:
+        output["pixel_attention_mask"] = processed_features["pixel_attention_mask"][0]
+    if "image_sizes" in processed_features:
+        output["image_sizes"] = processed_features["image_sizes"][0]
+    if "token_type_ids" in processed_features:
+        token_type_ids = processed_features["token_type_ids"][0]
+        if max_prompt_length is not None:
+            token_type_ids = token_type_ids[-max_prompt_length:]
+        output["token_type_ids"] = token_type_ids
+    if "pixel_position_ids" in processed_features:
+        output["pixel_position_ids"] = processed_features["pixel_position_ids"][0]
+    if "image_position_ids" in processed_features:
+        output["image_position_ids"] = processed_features["image_position_ids"][0]
+    if "mm_token_type_ids" in processed_features:
+        mm_token_type_ids = processed_features["mm_token_type_ids"][0]
+        if max_prompt_length is not None:
+            mm_token_type_ids = mm_token_type_ids[-max_prompt_length:]
+        output["mm_token_type_ids"] = mm_token_type_ids
+
+    return output
+
+
+def dpo_trainer_vision_signature_columns(function_name, function):
+    if function_name != "_set_signature_columns_if_needed":
+        return function
+
+    if all(_k in function for _k in _DPO_VISION_KEYS):
+        return function
+
+    _extra_columns = "".join(f'                "{_k}",\n' for _k in _DPO_VISION_KEYS)
+    new_function = function.replace(
+        '                "image_sizes",\n' '                "token_type_ids",\n',
+        f'                "image_sizes",\n'
+        f"{_extra_columns}"
+        f'                "token_type_ids",\n',
+    )
+    if new_function != function:
+        return new_function
+    return function.replace(
+        '                "image_sizes",\n' '                "ref_chosen_logps",\n',
+        f'                "image_sizes",\n'
+        f"{_extra_columns}"
+        f'                "ref_chosen_logps",\n',
+    )
+
+
+def dpo_trainer_concatenated_inputs(function_name, function):
+    if function_name != "concatenated_inputs":
+        return function
+
+    if all(_k in function for _k in _DPO_VISION_KEYS):
+        return function
+
+    _extra_inputs = "".join(
+        f'        if "{_k}" in batch:\n'
+        f'            output["{_k}"] = torch.cat((batch["{_k}"], batch["{_k}"]), dim=0)\n'
+        for _k in _DPO_VISION_KEYS
+    )
+
+    image_sizes_block = (
+        '        if "image_sizes" in batch:\n'
+        '            output["image_sizes"] = torch.cat([batch["image_sizes"], batch["image_sizes"]], dim=0)\n'
+    )
+    new_function = function.replace(
+        image_sizes_block + '        if "token_type_ids" in batch:\n',
+        image_sizes_block + _extra_inputs + '        if "token_type_ids" in batch:\n',
+    )
+    if new_function != function:
+        return new_function
+    if image_sizes_block in function:
+        return function.replace(image_sizes_block, image_sizes_block + _extra_inputs, 1)
+    return function
+
+
+def _dpo_trainer_extend_vision_model_kwargs(function):
+    if all(_k in function for _k in _DPO_VISION_KEYS):
+        return function
+
+    _extra_forward = "".join(
+        f'        if "{_k}" in concatenated_batch:\n'
+        f'            model_kwargs["{_k}"] = concatenated_batch["{_k}"]\n'
+        for _k in (
+            "pixel_values",
+            "pixel_attention_mask",
+            "image_sizes",
+            *_DPO_VISION_KEYS,
+        )
+    )
+
+    return function.replace(
+        '        if "pixel_values" in concatenated_batch:\n'
+        '            model_kwargs["pixel_values"] = concatenated_batch["pixel_values"]\n'
+        '        if "pixel_attention_mask" in concatenated_batch:\n'
+        '            model_kwargs["pixel_attention_mask"] = concatenated_batch["pixel_attention_mask"]\n'
+        '        if "image_sizes" in concatenated_batch:\n'
+        '            model_kwargs["image_sizes"] = concatenated_batch["image_sizes"]\n',
+        f"{_extra_forward}",
+    )
+
+
+def dpo_trainer_concatenated_forward(function_name, function):
+    if function_name != "concatenated_forward":
+        return function
+    return _dpo_trainer_extend_vision_model_kwargs(function)
+
+
+def dpo_trainer_compute_loss_liger(function_name, function):
+    if function_name != "_compute_loss_liger":
+        return function
+    return _dpo_trainer_extend_vision_model_kwargs(function)
+
+
+def dpo_trainer_data_collator_vision_keys(call_args, extra_args):
+    if "data_collator" not in call_args:
+        return ""
+
+    _vision_keys = str(_DPO_VISION_KEYS)
+    return (
+        "from trl.trainer.dpo_trainer import DataCollatorForPreference\n"
+        "if not hasattr(DataCollatorForPreference, '_unsloth_vision_keys_patch'):\n"
+        "    _old_dpo_collator_torch_call = DataCollatorForPreference.torch_call\n"
+        "\n"
+        "    def _unsloth_dpo_torch_call(self, examples):\n"
+        "        output = _old_dpo_collator_torch_call(self, examples)\n"
+        "        import torch as _unsloth_torch\n"
+        "        try:\n"
+        "            from trl.trainer.utils import pad as _unsloth_trl_pad\n"
+        "        except Exception:\n"
+        "            _unsloth_trl_pad = None\n"
+        "        for _k in " + _vision_keys + ":\n"
+        "            if not all(_k in example for example in examples):\n"
+        "                continue\n"
+        "            _is_position_key = _k.endswith('position_ids')\n"
+        "            _padding_value = -1 if _is_position_key else 0\n"
+        "            _padding_side = 'right' if _is_position_key else 'left'\n"
+        "            _values = [_unsloth_torch.as_tensor(example[_k]) for example in examples]\n"
+        "            try:\n"
+        "                if _unsloth_trl_pad is not None:\n"
+        "                    output[_k] = _unsloth_trl_pad(_values, padding_value=_padding_value, padding_side=_padding_side)\n"
+        "                else:\n"
+        "                    from torch.nn.utils.rnn import pad_sequence as _unsloth_pad_sequence\n"
+        "                    output[_k] = _unsloth_pad_sequence(_values, batch_first=True, padding_value=_padding_value)\n"
+        "            except Exception:\n"
+        "                from torch.nn.utils.rnn import pad_sequence as _unsloth_pad_sequence\n"
+        "                output[_k] = _unsloth_pad_sequence(_values, batch_first=True, padding_value=_padding_value)\n"
+        "        return output\n"
+        "\n"
+        "    DataCollatorForPreference.torch_call = _unsloth_dpo_torch_call\n"
+        "    DataCollatorForPreference._unsloth_vision_keys_patch = True\n"
+    )
+
+
+def dpo_trainer_prepare_dataset(function_name, function):
+    if function_name != "_prepare_dataset":
+        return function
+
+    legacy_call = "self.tokenize_row if not self.is_vision_model else self.process_row"
+    if legacy_call not in function:
+        return function
+
+    function = function.replace(
+        legacy_call,
+        "self.tokenize_row if not self.is_vision_model else dpo_trainer_vision_process_row",
+    )
+
+    legacy_tokenize_block = (
+        "            # Tokenize the dataset\n"
+        "            if isinstance(dataset, Dataset):  # `IterableDataset.map` does not support `desc`\n"
+        '                map_kwargs["desc"] = f"Tokenizing {dataset_name} dataset"\n'
+        "\n"
+        "            dataset = dataset.map(\n"
+        "                self.tokenize_row if not self.is_vision_model else dpo_trainer_vision_process_row,\n"
+    )
+    patched_tokenize_block = (
+        "            # Tokenize the dataset\n"
+        "            if isinstance(dataset, Dataset):  # `IterableDataset.map` does not support `desc`\n"
+        '                map_kwargs["desc"] = f"Tokenizing {dataset_name} dataset"\n'
+        "            if self.is_vision_model:\n"
+        '                map_kwargs.pop("num_proc", None)\n'
+        "\n"
+        "            dataset = dataset.map(\n"
+        "                self.tokenize_row if not self.is_vision_model else dpo_trainer_vision_process_row,\n"
+    )
+    if legacy_tokenize_block in function:
+        function = function.replace(legacy_tokenize_block, patched_tokenize_block, 1)
+    return function
+
+
+RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_prepare_dataset)
+RL_PRE_ITEMS["dpo_trainer"].append(inspect.getsource(dpo_trainer_vision_process_row))
+RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_vision_signature_columns)
+RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_concatenated_inputs)
+RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_concatenated_forward)
+RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_compute_loss_liger)
+RL_EXTRA_ARGS["dpo_trainer"].append(dpo_trainer_data_collator_vision_keys)
+
+
 # Fix tokenizer double BOS
 def sft_trainer_prepare_dataset(function_name, function):
     if (
@@ -148,11 +444,18 @@ def sft_trainer_prepare_dataset(function_name, function):
         "if 'tokenizer'          not in locals(): tokenizer = processing_class\n"
         "if 'formatting_func'    not in locals(): raise RuntimeError('Unsloth: Please file a bug report - `formatting_func` does not exist!')\n"
         "if 'dataset_text_field' not in locals() and 'args' in locals(): dataset_text_field = args.dataset_text_field\n"
-        "if 'dataset_text_field' not in locals(): raise RuntimeError('Unsloth: Please file a bug report - `dataset_text_field` does not exist!')\n"
-        "test_text = dataset[0][dataset_text_field] if (formatting_func is None and dataset_text_field is not None) else formatting_func(dataset[0])[0]\n"
+        "if 'dataset_text_field' not in locals(): dataset_text_field = None\n"
+        "if formatting_func is None and dataset_text_field is None and 'prompt' in dataset[0] and 'completion' in dataset[0]:\n"
+        "    test_text = (dataset[0]['prompt'] + dataset[0]['completion']) if (isinstance(dataset[0]['prompt'], str) and isinstance(dataset[0]['completion'], str)) else None\n"
+        "elif formatting_func is None and dataset_text_field is not None:\n"
+        "    test_text = dataset[0][dataset_text_field]\n"
+        "elif formatting_func is not None:\n"
+        "    test_text = formatting_func(dataset[0])[0]\n"
+        "else:\n"
+        "    test_text = None\n"
         "chat_template = getattr(tokenizer, 'chat_template', None)\n"
         "chat_template = '' if chat_template is None else chat_template\n"
-        "has_bos_token_already = (test_text.startswith(tokenizer.bos_token) or tokenizer.bos_token in chat_template) "
+        "has_bos_token_already = ((test_text is not None and test_text.startswith(tokenizer.bos_token)) or tokenizer.bos_token in chat_template) "
         "if getattr(tokenizer, 'bos_token', None) is not None else False\n"
         "if 'add_special_tokens' not in locals() and has_bos_token_already:\n"
         "    from functools import partial\n"
@@ -217,6 +520,92 @@ def sft_trainer_compute_loss(function_name, function):
 RL_FUNCTIONS["sft_trainer"].append(sft_trainer_compute_loss)
 
 
+# Use the underlying text tokenizer for ORPO row tokenization when a
+# multimodal processor is supplied as the processing class.
+def orpo_trainer_text_tokenizer(function_name, function):
+    if function_name == "build_tokenized_answer":
+        function = re.sub(
+            r"(?m)^([ \t]*)full_tokenized = self\.processing_class\(prompt \+ answer, add_special_tokens=False\)\n"
+            r'\1prompt_input_ids = self\.processing_class\(prompt, add_special_tokens=False\)\["input_ids"\]\n',
+            r'\1tokenizer = getattr(self.processing_class, "tokenizer", self.processing_class)'
+            "\n"
+            r"\1full_tokenized = tokenizer(prompt + answer, add_special_tokens=False)"
+            "\n"
+            r'\1prompt_input_ids = tokenizer(prompt, add_special_tokens=False)["input_ids"]'
+            "\n",
+            function,
+            count = 1,
+        )
+        return function
+
+    if function_name != "tokenize_row":
+        return function
+
+    if (
+        'tokenizer = getattr(self.processing_class, "tokenizer", self.processing_class)'
+        not in function
+    ):
+        new_function = re.sub(
+            r"(?m)^([ \t]*)batch = \{\}\n",
+            r"\1batch = {}"
+            "\n"
+            r'\1tokenizer = getattr(self.processing_class, "tokenizer", self.processing_class)'
+            "\n",
+            function,
+            count = 1,
+        )
+        if new_function == function:
+            return function
+        function = new_function
+    function = function.replace("self.processing_class(", "tokenizer(")
+    function = function.replace(
+        "self.processing_class.bos_token_id", "tokenizer.bos_token_id"
+    )
+    function = function.replace(
+        "self.processing_class.eos_token_id", "tokenizer.eos_token_id"
+    )
+    return function
+
+
+RL_FUNCTIONS["orpo_trainer"].append(orpo_trainer_text_tokenizer)
+
+
+# Resolve `processing_class.pad_token_id` through the underlying tokenizer when
+# a multimodal processor is supplied (processors lack `pad_token_id`). Without
+# this, ORPOTrainer.__init__ raises AttributeError on
+# `DPODataCollatorWithPadding(pad_token_id=processing_class.pad_token_id, ...)`
+# and on `self.padding_value = ... else processing_class.pad_token_id`.
+_PAD_FALLBACK = (
+    "(getattr(processing_class, 'pad_token_id', None) "
+    "if getattr(processing_class, 'pad_token_id', None) is not None "
+    "else getattr(getattr(processing_class, 'tokenizer', None), 'pad_token_id', None))"
+)
+
+
+def orpo_trainer_processor_pad_token(function_name, function):
+    if function_name != "__init__":
+        return function
+    if "processing_class.pad_token_id" not in function:
+        return function
+    return function.replace("processing_class.pad_token_id", _PAD_FALLBACK)
+
+
+RL_FUNCTIONS["orpo_trainer"].append(orpo_trainer_processor_pad_token)
+
+
+# Fix bare pop("push_to_hub_token") in compiled SFT/IterativeSFT trainer __init__
+# On transformers 5.0+, to_dict() no longer includes push_to_hub_token, so bare pop KeyErrors
+def sft_trainer_push_to_hub_token(function_name, function):
+    if function_name != "__init__":
+        return function
+    return function.replace(
+        'dict_args.pop("push_to_hub_token")', 'dict_args.pop("push_to_hub_token", None)'
+    )
+
+
+RL_FUNCTIONS["sft_trainer"].append(sft_trainer_push_to_hub_token)
+
+
 # Autocast precision for GRPO
 def grpo_trainer__prepare_inputs(function_name, function):
     if function_name != "_prepare_inputs":
@@ -241,21 +630,48 @@ def grpo_trainer__prepare_inputs(function_name, function):
 RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__prepare_inputs)
 
 
-# Remove collective RPC of reload weights from generate
-# trl added reload weights (potentially for quantized models), we don't need it for our use case (LoRA primarily)
+# Guard reload_weights and sync_weights - skip when fast inference LoRA shares weights with vLLM
 # https://github.com/huggingface/trl/commit/7856d3b1f6518601732f489883b341bb6dd36434#diff-964e6fd373aa93037604064cb2b822d7f8e2735e33f791065acf2c4c3552d393R1168-R1169
+def _guard_vllm_sync_reload_for_shared_weights(function):
+    # Guard reload_weights - only call when not sharing weights with vLLM
+    reload_weights_pattern = re.compile(
+        r"^(?P<indent>[ \t]*)self\.llm\.collective_rpc\(\s*(['\"])reload_weights\2\s*\)\s*$",
+        re.MULTILINE,
+    )
+
+    def replace_reload_weights_line(match):
+        indent = match.group("indent")
+        return (
+            f"{indent}if not getattr(self.llm, 'shared_weights', False):\n"
+            f'{indent}    self.llm.collective_rpc("reload_weights")\n'
+        )
+
+    function = reload_weights_pattern.sub(replace_reload_weights_line, function)
+
+    # Guard sync_weights - skip when sharing weights with vLLM
+    sync_weights_block = re.compile(
+        r"(?P<indent>[ \t]*)with profiling_context\(self,\s*(['\"])sync_weights\2\s*\):\n"
+        r"(?P=indent)[ \t]+self\.vllm_generation\.sync_weights\(\)\n",
+        re.MULTILINE,
+    )
+
+    def guard_sync_weights_block(match):
+        indent = match.group("indent")
+        return (
+            f"{indent}if not getattr(getattr(self.vllm_generation, 'llm', None), 'shared_weights', False):\n"
+            f"{indent}    with profiling_context(self, 'sync_weights'):\n"
+            f"{indent}        self.vllm_generation.sync_weights()\n"
+        )
+
+    function = sync_weights_block.sub(guard_sync_weights_block, function)
+    return function
+
+
 def grpo_trainer__generate_single_turn(function_name, function):
     if function_name != "_generate_single_turn":
         return function
 
-    # Remove the reload_weights collective RPC call from the generate function's source
-    # function = function.replace('self.llm.collective_rpc("reload_weights")', "")
-    # The regex below does the same thing but is more flexible and can handle single or double quotes
-    function = re.sub(
-        r"self\.llm\.collective_rpc\(\s*(['\"])reload_weights\1\s*\)",
-        "",
-        function,
-    )
+    function = _guard_vllm_sync_reload_for_shared_weights(function)
 
     # TRL 0.24.0-0.25.1 truncation regression fix
     #
@@ -280,10 +696,37 @@ def grpo_trainer__generate_single_turn(function_name, function):
     ]:
         function = re.sub(pattern, "", function)
 
+    string_to_find = (
+        "            generate_inputs = super()._prepare_inputs(generate_inputs)"
+    )
+    replacement_string = (
+        string_to_find
+        + """
+            if "mm_token_type_ids" in generate_inputs or "image_grid_thw" in generate_inputs:
+                mm_token_type_ids = _unsloth_fix_mm_token_type_ids(
+                    self.processing_class,
+                    generate_inputs["input_ids"],
+                    generate_inputs.get("mm_token_type_ids", None),
+                )
+                if mm_token_type_ids is not None:
+                    generate_inputs["mm_token_type_ids"] = mm_token_type_ids"""
+    )
+    function = function.replace(string_to_find, replacement_string)
+
     return function
 
 
 RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__generate_single_turn)
+
+
+def grpo_trainer__generate(function_name, function):
+    if function_name != "_generate":
+        return function
+
+    return _guard_vllm_sync_reload_for_shared_weights(function)
+
+
+RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__generate)
 
 
 # Fix incorrect special tokens handling and truncation in older TRL versions
@@ -316,7 +759,7 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
                 # Left pad prompt before calculation old and ref hidden states
                 left_pad_tokens_per_prompt = calculate_pad_tokens_in_prompt(prompt_completion_ids, logits_to_keep, self.processing_class.pad_token_id)
                 max_left_pad = torch.max(left_pad_tokens_per_prompt).item()
-        self.model.for_training()"""
+        self.model.for_training(use_gradient_checkpointing=getattr(self.args, 'gradient_checkpointing', True))"""
 
     function = function.replace(line_to_replace, replacement_lines)
 
@@ -342,8 +785,9 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
         re.DOTALL | re.MULTILINE,
     )
 
+    # sanitize_logprob is injected as a module-level function via RLTrainer_replacement
+    # template in rl.py (from RL_REPLACEMENTS), so just reference it directly here.
     replacement_text = (
-        r"\1from trl.scripts.vllm_serve import sanitize_logprob\n"
         r"\1all_logprobs = [\n"
         r"\1    [sanitize_logprob(next(iter(logprob.values()))) for logprob in output.logprobs]\n"
         r"\1    for outputs in all_outputs\n"
@@ -470,6 +914,18 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
         )
         function = function.replace(string_to_find, replacement_string)
 
+    _generate_return = """        ) = self._generate(prompts)"""
+    if _generate_return in function and "_unsloth_clear_stateful_mrope" not in function:
+        function = function.replace(
+            _generate_return,
+            _generate_return
+            + """
+
+        _unsloth_clear_stateful_mrope(
+            self.accelerator.unwrap_model(self.model, keep_fp32_wrapper = False)
+        )""",
+        )
+
     if "wake_up()" not in function:
         # Sleep functionality has been added to trl in v0.23.0. We do not want to redo this.
         # https://github.com/huggingface/trl/commit/edbe8234bc7e528f72ac76607de9d3e4753e2709
@@ -497,6 +953,54 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
             patched = patched[: match.start()] + wrapped + patched[match.end() :]
 
         function = patched
+
+    _mm_alignment = """
+        if "mm_token_type_ids" in forward_kwargs or "image_grid_thw" in forward_kwargs:
+            _mm_token_type_ids = _unsloth_fix_mm_token_type_ids(
+                self.processing_class,
+                prompt_completion_ids,
+                forward_kwargs.get("mm_token_type_ids", None),
+                completion_ids = completion_ids,
+            )
+            if _mm_token_type_ids is not None:
+                forward_kwargs["mm_token_type_ids"] = _mm_token_type_ids
+"""
+    _tool_image_marker = "        # For VLM tool images: build token type IDs from the full prompt_completion_ids."
+    if _tool_image_marker in function:
+        function = function.replace(
+            _tool_image_marker, _mm_alignment + "\n" + _tool_image_marker
+        )
+    else:
+        _tt_search = (
+            'if "token_type_ids" in forward_kwargs:\n'
+            '            token_type_ids = forward_kwargs["token_type_ids"]\n'
+            '            forward_kwargs["token_type_ids"] = torch.cat(\n'
+            "                [token_type_ids, token_type_ids.new_zeros(completion_ids.shape)], dim=1\n"
+            "            )"
+        )
+        function = function.replace(
+            _tt_search, _tt_search + "\n" + _mm_alignment.rstrip()
+        )
+
+    _save_search = (
+        'if "token_type_ids" in forward_kwargs:\n'
+        '            output["token_type_ids"] = forward_kwargs["token_type_ids"]'
+    )
+    if 'output["mm_token_type_ids"]' not in function:
+        _save_replace = (
+            _save_search + "\n"
+            '        if "mm_token_type_ids" in forward_kwargs:\n'
+            '            output["mm_token_type_ids"] = forward_kwargs["mm_token_type_ids"]'
+        )
+        function = function.replace(_save_search, _save_replace)
+
+    if re.search(r"\btool_mask\b", function) and 'output["tool_mask"]' not in function:
+        function = function.replace(
+            "        return output",
+            "        if tool_mask is not None:\n"
+            '            output["tool_mask"] = tool_mask\n'
+            "        return output",
+        )
 
     return function
 
@@ -670,6 +1174,14 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 kwargs.get("pixel_attention_mask", None),
                 kwargs.get("image_sizes", None),
             )
+            num_images = kwargs.get("num_images", None)
+            # Transformers 5.x needs token_type_ids/mm_token_type_ids for some vision models
+            token_type_ids = kwargs.get("token_type_ids", None)
+            mm_token_type_ids = kwargs.get("mm_token_type_ids", None)
+            if mm_token_type_ids is not None or image_grid_thw is not None:
+                mm_token_type_ids = _unsloth_fix_mm_token_type_ids(
+                    self.processing_class, input_ids, mm_token_type_ids
+                )
 
             unwrapped_model = self.accelerator.unwrap_model(
                 model, keep_fp32_wrapper = False
@@ -717,69 +1229,139 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             else:
                 max_left_pad = 0
 
-            # input_ids_chunks = torch.chunk(input_ids, chunks = B, dim = 0)
-            attention_mask_chunks = torch.chunk(attention_mask, chunks = B, dim = 0)
-
-            def chunk_optional(tensor, chunks):
-                if tensor is None:
-                    return [None] * chunks
-                return torch.chunk(tensor, chunks = chunks, dim = 0)
+            def slice_sample_axis(value, start, end):
+                if value is None:
+                    return None
+                return value[start:end]
 
             import math
 
             total_samples = input_ids.shape[0]
             batch_size = math.ceil(total_samples / B)
+            if isinstance(num_images, torch.Tensor):
+                num_images = num_images.detach().cpu().reshape(-1).tolist()
+            if (
+                image_grid_thw is not None
+                and pixel_values is not None
+                and num_images is not None
+            ):
+                rows_per_image = image_grid_thw.prod(dim = -1)
+                rows_per_sample = torch.split(rows_per_image, num_images)
+                rows_per_sample = torch.stack([s.sum() for s in rows_per_sample])
+                # why: cum_rows is indexed via .item() inside the per-chunk loop;
+                # keeping it on CPU avoids per-iteration GPU->CPU sync.
+                cum_rows = torch.cat(
+                    [
+                        torch.tensor([0], device = rows_per_sample.device),
+                        rows_per_sample.cumsum(0),
+                    ]
+                ).cpu()
+                cum_imgs = torch.tensor([0] + num_images).cumsum(0)
+            else:
+                cum_rows = None
+                cum_imgs = None
+
+            def _first_dim_len(value):
+                if value is None:
+                    return None
+                if hasattr(value, "shape"):
+                    return value.shape[0]
+                try:
+                    return len(value)
+                except TypeError:
+                    return None
+
+            total_images = sum(num_images) if num_images is not None else None
+            _image_sizes_n = _first_dim_len(image_sizes)
 
             input_ids_chunks = []
             attention_mask_chunks = []
             pixel_values_chunks = []
             image_grid_thw_chunks = []
             pixel_attention_mask_chunks = []
+            image_sizes_chunks = []
+            token_type_ids_chunks = []
+            mm_token_type_ids_chunks = []
 
             current_pixel_idx = 0
             # TRL 0.23.0 batching logic
             for start in range(0, total_samples, batch_size):
-                end = start + batch_size
+                end = min(start + batch_size, total_samples)
 
                 input_ids_chunks.append(input_ids[start:end])
                 attention_mask_chunks.append(attention_mask[start:end])
+                token_type_ids_chunks.append(
+                    slice_sample_axis(token_type_ids, start, end)
+                )
+                mm_token_type_ids_chunks.append(
+                    slice_sample_axis(mm_token_type_ids, start, end)
+                )
 
                 if image_grid_thw is not None and pixel_values is not None:
-                    grid_slice = image_grid_thw[start:end]
+                    if num_images is None:
+                        grid_slice = image_grid_thw[start:end]
+                        batch_pixel_count = grid_slice.prod(dim = -1).sum().item()
+                        start_pixel_idx = current_pixel_idx
+                        end_pixel_idx = current_pixel_idx + batch_pixel_count
+                        current_pixel_idx = end_pixel_idx
+                        img_start = img_end = None
+                    else:
+                        start_pixel_idx = cum_rows[start].item()
+                        end_pixel_idx = cum_rows[end].item()
+                        img_start = cum_imgs[start].item()
+                        img_end = cum_imgs[end].item()
+                        grid_slice = image_grid_thw[img_start:img_end]
                     image_grid_thw_chunks.append(grid_slice)
-
-                    batch_pixel_count = grid_slice.prod(dim = -1).sum().item()
-
-                    start_pixel_idx = current_pixel_idx
-                    end_pixel_idx = current_pixel_idx + batch_pixel_count
 
                     pixel_values_chunks.append(
                         pixel_values[start_pixel_idx:end_pixel_idx]
                     )
 
-                    if pixel_attention_mask is not None:
+                    if image_sizes is None:
+                        image_sizes_chunks.append(None)
+                    elif (
+                        num_images is not None
+                        and _image_sizes_n == total_images
+                        and img_start is not None
+                    ):
+                        image_sizes_chunks.append(image_sizes[img_start:img_end])
+                    else:
+                        image_sizes_chunks.append(
+                            slice_sample_axis(image_sizes, start, end)
+                        )
+
+                    if pixel_attention_mask is None:
+                        pixel_attention_mask_chunks.append(None)
+                    elif (
+                        num_images is not None
+                        and img_start is not None
+                        and pixel_attention_mask.shape[0] == image_grid_thw.shape[0]
+                    ):
+                        pixel_attention_mask_chunks.append(
+                            pixel_attention_mask[img_start:img_end]
+                        )
+                    elif (
+                        pixel_attention_mask.shape[0] == pixel_values.shape[0]
+                        and pixel_attention_mask.shape[0] != input_ids.shape[0]
+                    ):
                         pixel_attention_mask_chunks.append(
                             pixel_attention_mask[start_pixel_idx:end_pixel_idx]
                         )
                     else:
-                        pixel_attention_mask_chunks.append(None)
-
-                    current_pixel_idx = end_pixel_idx
+                        pixel_attention_mask_chunks.append(
+                            pixel_attention_mask[start:end]
+                        )
 
                 else:
                     pixel_values_chunks.append(None)
                     image_grid_thw_chunks.append(None)
                     pixel_attention_mask_chunks.append(None)
-
-            if image_sizes is not None and not isinstance(image_sizes, torch.Tensor):
-                image_sizes_chunks = [[size] for size in image_sizes]
-            else:
-                image_sizes_chunks = chunk_optional(image_sizes, B)
+                    image_sizes_chunks.append(
+                        slice_sample_axis(image_sizes, start, end)
+                    )
 
             temperature = self.temperature
-            logit_softcapping = getattr(model.config, "final_logit_softcapping", 0)
-            if logit_softcapping is None:
-                logit_softcapping = 0
+            logit_softcapping = _unsloth_get_final_logit_softcapping(model.config)
             logit_scale_multiply = getattr(model.config, "logit_scale", 0)
             if logit_scale_multiply is None:
                 logit_scale_multiply = 0
@@ -794,6 +1376,8 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 image_grid_thw_chunks,
                 pixel_attention_mask_chunks,
                 image_sizes_chunks,
+                token_type_ids_chunks,
+                mm_token_type_ids_chunks,
             )
             os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "1"
 
@@ -805,7 +1389,16 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     image_grid_thw_chunk,
                     pixel_attention_mask_chunk,
                     image_sizes_chunk,
+                    token_type_ids_chunk,
+                    mm_token_type_ids_chunk,
                 ) in zipped_inputs:
+                    _extra_vision_kwargs = {}
+                    if token_type_ids_chunk is not None:
+                        _extra_vision_kwargs["token_type_ids"] = token_type_ids_chunk
+                    if mm_token_type_ids_chunk is not None:
+                        _extra_vision_kwargs["mm_token_type_ids"] = (
+                            mm_token_type_ids_chunk
+                        )
                     with torch.amp.autocast(
                         device_type = "cuda", dtype = self._autocast_dtype
                     ):
@@ -817,6 +1410,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                 image_grid_thw = image_grid_thw_chunk,
                                 pixel_attention_mask = pixel_attention_mask_chunk,
                                 image_sizes = image_sizes_chunk,
+                                **_extra_vision_kwargs,
                             ).logits
 
                             completion_input_ids_chunk = input_ids_chunk[
@@ -826,6 +1420,18 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                 :, -(logits_to_keep + max_left_pad + 1) :, :
                             ]
                             logits_chunk = logits_chunk[:, :-1, :]
+                            logprobs_chunk = (
+                                chunked_hidden_states_selective_log_softmax(
+                                    logits_chunk,
+                                    lm_head,
+                                    completion_input_ids_chunk,
+                                    chunks = input_ids_chunk.shape[0] * multiplier,
+                                    logit_scale_multiply = logit_scale_multiply,
+                                    logit_scale_divide = logit_scale_divide,
+                                    logit_softcapping = logit_softcapping,
+                                    temperature = temperature,
+                                )
+                            )
                         else:
                             # Essentially, for VLMs we do not go via the optimized path in models/,
                             # so we don't encounter the Flash Attn left-padding issue.
@@ -837,23 +1443,34 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                 pixel_attention_mask = pixel_attention_mask_chunk,
                                 image_sizes = image_sizes_chunk,
                                 logits_to_keep = logits_to_keep + 1,
+                                **_extra_vision_kwargs,
                             ).logits
 
                             logits_chunk = logits_chunk[:, :-1, :]
                             completion_input_ids_chunk = input_ids_chunk[
                                 :, -logits_to_keep:
                             ]
-
-                        logprobs_chunk = chunked_hidden_states_selective_log_softmax(
-                            logits_chunk,
-                            lm_head,
-                            completion_input_ids_chunk,
-                            chunks = input_ids_chunk.shape[0] * multiplier,
-                            logit_scale_multiply = logit_scale_multiply,
-                            logit_scale_divide = logit_scale_divide,
-                            logit_softcapping = logit_softcapping,
-                            temperature = temperature,
-                        )
+                            # Guard: check if model returned hidden states or logits
+                            if logits_chunk.shape[-1] == lm_head.shape[1]:
+                                logprobs_chunk = (
+                                    chunked_hidden_states_selective_log_softmax(
+                                        logits_chunk,
+                                        lm_head,
+                                        completion_input_ids_chunk,
+                                        chunks = input_ids_chunk.shape[0] * multiplier,
+                                        logit_scale_multiply = logit_scale_multiply,
+                                        logit_scale_divide = logit_scale_divide,
+                                        logit_softcapping = logit_softcapping,
+                                        temperature = temperature,
+                                    )
+                                )
+                            else:
+                                # Model returned logits directly - scaling/softcapping already applied by model forward
+                                logprobs_chunk = chunked_selective_log_softmax(
+                                    logits_chunk,
+                                    completion_input_ids_chunk,
+                                    temperature,
+                                )
                     # This is needed to avoid race conditions with GPT OSS offload_embbed=True
                     # However, it seems that this line does not slow down or disrupt models.
                     device_synchronize()
@@ -887,11 +1504,41 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
 
 RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__get_per_token_logps_and_entropies)
 
+
+def _unsloth_get_final_logit_softcapping(config):
+    """Return final_logit_softcapping for a model config, falling back to the
+    nested text sub-config for composite models. Handles both:
+      - Gemma-4-style configs where the attribute lives on ``config.text_config``
+      - T5Gemma-style composite configs where the text sub-config is only
+        reachable via ``config.get_text_config()``
+    Returns 0 if unset, matching the previous behaviour.
+    """
+    softcap = getattr(config, "final_logit_softcapping", None)
+    if softcap is None:
+        text_cfg = getattr(config, "text_config", None)
+        if text_cfg is None:
+            get_text_config = getattr(config, "get_text_config", None)
+            if callable(get_text_config):
+                try:
+                    text_cfg = get_text_config()
+                except (TypeError, ValueError):
+                    text_cfg = None
+        if text_cfg is not None and text_cfg is not config:
+            softcap = getattr(text_cfg, "final_logit_softcapping", None)
+    return 0 if softcap is None else softcap
+
+
 grpo_compute_loss = RL_REPLACEMENTS["grpo_compute_loss"]
 grpo_compute_loss_slow = RL_REPLACEMENTS["grpo_compute_loss_slow"]
 UnslothEfficientGRPO = RL_REPLACEMENTS["UnslothEfficientGRPO"]
 grpo_accumulated_loss = RL_REPLACEMENTS["grpo_accumulated_loss"]
 grpo_update_SamplingParams = RL_REPLACEMENTS["grpo_update_SamplingParams"]
+RL_PRE_ITEMS["grpo_trainer"].append(
+    inspect.getsource(_unsloth_get_final_logit_softcapping)
+)
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_get_mm_token_id))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_fix_mm_token_type_ids))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_clear_stateful_mrope))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(grpo_compute_loss))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(UnslothEfficientGRPO))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(grpo_accumulated_loss))
@@ -927,14 +1574,26 @@ def grpo_trainer_compute_loss(function_name, function):
             inputs.get("pixel_attention_mask", None),
             inputs.get("image_sizes", None),
         )
+        num_images = inputs.get("num_images", None)
+        # Transformers 5.x needs token_type_ids/mm_token_type_ids for some vision models
+        token_type_ids = inputs.get("token_type_ids", None)
+        mm_token_type_ids = inputs.get("mm_token_type_ids", None)
         num_items_in_batch = inputs.get("num_items_in_batch", None)
         sampling_per_token_logps = inputs.get("sampling_per_token_logps", None)
+        tool_mask = inputs.get("tool_mask", None)
         current_gradient_accumulation_steps = self.current_gradient_accumulation_steps
         num_processes = self.accelerator.num_processes
 
         input_ids = torch.cat([prompt_ids, completion_ids], dim = 1)
         bsz, qlen = input_ids.shape
         attention_mask = torch.cat([prompt_mask, completion_mask], dim = 1)
+        if mm_token_type_ids is not None or image_grid_thw is not None:
+            mm_token_type_ids = _unsloth_fix_mm_token_type_ids(
+                self.processing_class,
+                input_ids,
+                mm_token_type_ids,
+                completion_ids = completion_ids,
+            )
         # attention_mask = None
         logits_to_keep = completion_ids.size(
             1
@@ -987,9 +1646,7 @@ def grpo_trainer_compute_loss(function_name, function):
         input_ids = input_ids[:, -logits_to_keep:]
 
         # Get logit softcapping and logit scale
-        logit_softcapping = getattr(model.config, "final_logit_softcapping", 0)  # Gemma
-        if logit_softcapping is None:
-            logit_softcapping = 0
+        logit_softcapping = _unsloth_get_final_logit_softcapping(model.config)  # Gemma
         logit_scale_multiply = getattr(model.config, "logit_scale", 0)  # Cohere
         if logit_scale_multiply is None:
             logit_scale_multiply = 0
@@ -999,17 +1656,125 @@ def grpo_trainer_compute_loss(function_name, function):
 
         max_left_pad = inputs.get("max_left_pad", 0)
         if per_token_logps is not None:
-            loss, completion_length, mean_kl, delta, flat_is_ratio, coef_1 = (
-                grpo_compute_loss_slow(
-                    ref_logps,
-                    per_token_logps,
-                    old_logps,
-                    input_ids,
+            loss_mask = completion_mask
+            if tool_mask is not None:
+                if tool_mask.shape != completion_mask.shape:
+                    raise ValueError(
+                        "tool_mask/env_mask must have the same shape as completion_mask"
+                    )
+                loss_mask = completion_mask * tool_mask.to(
+                    device = completion_mask.device,
+                    dtype = completion_mask.dtype,
+                )
+            (
+                loss,
+                completion_length,
+                mean_kl,
+                delta,
+                flat_is_ratio,
+                coef_1,
+                completion_mask,
+            ) = grpo_compute_loss_slow(
+                ref_logps,
+                per_token_logps,
+                old_logps,
+                sampling_per_token_logps,
+                input_ids,
+                loss_mask,
+                self.beta,
+                advantages,
+                pixel_values = pixel_values,
+                image_grid_thw = image_grid_thw,
+                loss_type = self.args.loss_type,
+                importance_sampling_level = self.importance_sampling_level,
+                epsilon_low = self.epsilon_low,
+                epsilon_high = self.epsilon_high,
+                max_completion_length = self.args.max_completion_length,
+                delta = self.args.delta,
+                temperature = self.args.temperature,
+                max_left_pad = max_left_pad,
+                logit_softcapping = logit_softcapping,
+                logit_scale_multiply = logit_scale_multiply,
+                logit_scale_divide = logit_scale_divide,
+                num_items_in_batch = num_items_in_batch,
+                current_gradient_accumulation_steps = current_gradient_accumulation_steps,
+                num_processes = num_processes,
+            )
+        else:
+
+            def _unsloth_requires_multi_image_zoo(value):
+                if value is None:
+                    return False
+                if isinstance(value, torch.Tensor):
+                    counts = value.detach().cpu().reshape(-1).tolist()
+                else:
+                    counts = list(value)
+                return any(int(n) != 1 for n in counts)
+
+            if _unsloth_requires_multi_image_zoo(num_images) and not getattr(
+                self, "_unsloth_grpo_zoo_checked", False
+            ):
+                _supports_num_images = (
+                    "num_images" in inspect.signature(grpo_accumulated_loss).parameters
+                )
+                if not _supports_num_images:
+                    try:
+                        _zoo_src = inspect.getsource(grpo_accumulated_loss)
+                    except (TypeError, OSError):
+                        _zoo_src = ""
+                    _supports_num_images = "num_images" in _zoo_src
+                if not _supports_num_images:
+                    raise RuntimeError(
+                        "Multi-image GRPO requires an unsloth_zoo build whose "
+                        "grpo_accumulated_loss handles num_images. Please upgrade "
+                        "unsloth_zoo (see https://github.com/unslothai/unsloth-zoo/pull/613)."
+                    )
+                self._unsloth_grpo_zoo_checked = True
+            if tool_mask is not None and not getattr(
+                self, "_unsloth_grpo_tool_mask_zoo_checked", False
+            ):
+                _supports_tool_mask = (
+                    "tool_mask" in inspect.signature(grpo_accumulated_loss).parameters
+                )
+                if not _supports_tool_mask:
+                    try:
+                        _zoo_src = inspect.getsource(grpo_accumulated_loss)
+                    except (TypeError, OSError):
+                        _zoo_src = ""
+                    _supports_tool_mask = "tool_mask" in _zoo_src
+                if not _supports_tool_mask:
+                    raise RuntimeError(
+                        "env_mask/tool_mask GRPO requires an unsloth_zoo build whose "
+                        "grpo_accumulated_loss handles tool_mask. Please upgrade "
+                        "unsloth_zoo."
+                    )
+                self._unsloth_grpo_tool_mask_zoo_checked = True
+            _grpo_accumulated_loss_kwargs = {}
+            if tool_mask is not None:
+                _grpo_accumulated_loss_kwargs["tool_mask"] = tool_mask
+            if hasattr(self.args, "loss_type"):
+                (
+                    loss,
+                    completion_length,
+                    mean_kl,
+                    delta,
+                    flat_is_ratio,
+                    coef_1,
                     completion_mask,
-                    self.beta,
-                    advantages,
+                ) = grpo_accumulated_loss(
+                    trainer = self,
+                    input_ids = _input_ids,
                     pixel_values = pixel_values,
                     image_grid_thw = image_grid_thw,
+                    pixel_attention_mask = pixel_attention_mask,
+                    image_sizes = image_sizes,
+                    num_images = num_images,
+                    logits_to_keep = logits_to_keep,
+                    completion_mask = completion_mask,
+                    advantages = advantages,
+                    old_logps = old_logps,
+                    ref_logps = ref_logps,
+                    n_chunks = self.args.unsloth_num_chunks,
                     loss_type = self.args.loss_type,
                     importance_sampling_level = self.importance_sampling_level,
                     epsilon_low = self.epsilon_low,
@@ -1021,60 +1786,41 @@ def grpo_trainer_compute_loss(function_name, function):
                     logit_softcapping = logit_softcapping,
                     logit_scale_multiply = logit_scale_multiply,
                     logit_scale_divide = logit_scale_divide,
+                    attention_mask = attention_mask,
                     num_items_in_batch = num_items_in_batch,
                     current_gradient_accumulation_steps = current_gradient_accumulation_steps,
                     num_processes = num_processes,
                     sampling_per_token_logps = sampling_per_token_logps,
+                    token_type_ids = token_type_ids,
+                    mm_token_type_ids = mm_token_type_ids,
+                    **_grpo_accumulated_loss_kwargs,
                 )
-            )
-        else:
-            if hasattr(self.args, "loss_type"):
-                loss, completion_length, mean_kl, delta, flat_is_ratio, coef_1 = (
+            else:
+                # to ensure backwards compatibility with trl 0.15.2 and maybe even 0.17
+                loss, completion_length, mean_kl, coef_1, completion_mask = (
                     grpo_accumulated_loss(
                         trainer = self,
                         input_ids = _input_ids,
                         pixel_values = pixel_values,
                         image_grid_thw = image_grid_thw,
+                        pixel_attention_mask = pixel_attention_mask,
+                        image_sizes = image_sizes,
+                        num_images = num_images,
                         logits_to_keep = logits_to_keep,
                         completion_mask = completion_mask,
                         advantages = advantages,
                         old_logps = old_logps,
                         ref_logps = ref_logps,
                         n_chunks = self.args.unsloth_num_chunks,
-                        loss_type = self.args.loss_type,
-                        importance_sampling_level = self.importance_sampling_level,
-                        epsilon_low = self.epsilon_low,
-                        epsilon_high = self.epsilon_high,
-                        max_completion_length = self.args.max_completion_length,
-                        delta = self.args.delta,
                         temperature = self.args.temperature,
-                        max_left_pad = max_left_pad,
                         logit_softcapping = logit_softcapping,
                         logit_scale_multiply = logit_scale_multiply,
                         logit_scale_divide = logit_scale_divide,
                         attention_mask = attention_mask,
-                        num_items_in_batch = num_items_in_batch,
-                        current_gradient_accumulation_steps = current_gradient_accumulation_steps,
-                        num_processes = num_processes,
-                        sampling_per_token_logps = sampling_per_token_logps,
+                        token_type_ids = token_type_ids,
+                        mm_token_type_ids = mm_token_type_ids,
+                        **_grpo_accumulated_loss_kwargs,
                     )
-                )
-            else:
-                # to ensure backwards compatibility with trl 0.15.2 and maybe even 0.17
-                loss, completion_length, mean_kl, coef_1 = grpo_accumulated_loss(
-                    trainer = self,
-                    input_ids = _input_ids,
-                    logits_to_keep = logits_to_keep,
-                    completion_mask = completion_mask,
-                    advantages = advantages,
-                    old_logps = old_logps,
-                    ref_logps = ref_logps,
-                    n_chunks = self.args.unsloth_num_chunks,
-                    temperature = self.args.temperature,
-                    logit_softcapping = logit_softcapping,
-                    logit_scale_multiply = logit_scale_multiply,
-                    logit_scale_divide = logit_scale_divide,
-                    attention_mask = attention_mask,
                 )
         if "train" in self._metrics:
             mode = "eval" if self.control.should_evaluate else "train"
@@ -1200,6 +1946,29 @@ def grpo_trainer_compute_loss(function_name, function):
 RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer_compute_loss)
 
 
+# Fix KTO shape mismatch when Unsloth model forward truncates input_ids
+# but labels aren't truncated. TRL 0.27.2+ _process_tokens only truncates
+# completions, not prompts -- so prompts exceeding max_seq_length cause the
+# model to produce shorter logits than the labels expect.
+def kto_trainer_get_batch_logps(function_name, function):
+    if function_name != "get_batch_logps":
+        return function
+    # The raise is inside an if block inside the method, so we need
+    # to preserve the exact indentation of the raise statement.
+    old = 'raise ValueError("Logits (batch and sequence length dim) and labels must have the same shape.")'
+    new = (
+        "# Unsloth: auto-truncate to shorter sequence length (model may have truncated input_ids)\n"
+        "            _min_len = min(logits.shape[1], labels.shape[1])\n"
+        "            logits = logits[:, :_min_len, :]\n"
+        "            labels = labels[:, :_min_len]"
+    )
+    function = function.replace(old, new)
+    return function
+
+
+RL_FUNCTIONS["kto_trainer"].append(kto_trainer_get_batch_logps)
+
+
 # https://github.com/huggingface/trl/blob/main/trl/trainer/grpo_trainer.py#L356
 # TRL warns if batch size is not a multiple of num_generations -> fix this.
 def grpo_trainer_fix_batch_size(RLTrainer_source, RLConfig_source):
@@ -1257,7 +2026,7 @@ RL_METRICS_CHANGES["grpo_trainer"].append(grpo_trainer_metrics)
 
 def openenv_vllm_reload_weights():
     # This function patches the trl openenv generate_rollout_completions function to:
-    # 1. Remove the reload_weights call (unsloth handles weight reloading)
+    # 1. Guard the reload_weights call (skip when sharing weights with vLLM)
     # 2. Fix wake_up call to be compatible with unsloth (remove tags to wake everything)
     #
     # The issue: TRL's wake_up(tags=["kv_cache"]) only wakes kv_cache, leaving is_sleeping=True
@@ -1274,19 +2043,60 @@ def openenv_vllm_reload_weights():
     try:
         import trl.experimental.openenv.utils as openenv_utils
         import trl.experimental.openenv as openenv
-    except ImportError as e:
+    except (ImportError, NameError, Exception) as e:
         logger.info(f"Unsloth: Failed to import trl openenv: {e}")
         logger.info(
             "Unsloth: trl.experimental.openenv not available — skipping RL openenv patches."
         )
         return
 
-    src = inspect.getsource(openenv_utils.generate_rollout_completions)
+    # trl 0.28 changed the function name yet again! Thanks trl :)
+    patch_target_name = "_generate_rollout_completions_colocate"
+    if hasattr(openenv_utils, patch_target_name):
+        patch_target = getattr(openenv_utils, patch_target_name)
+    else:
+        # Older TRL versions may keep sleep/wake logic in the public dispatcher.
+        patch_target_name = "generate_rollout_completions"
+        patch_target = getattr(openenv_utils, patch_target_name)
+
+    # TRL 0.29.1+ ships some openenv helpers as compiled bytecode without
+    # accessible source on disk; inspect.getsource raises OSError("could
+    # not get source code") in that case. Skip the source-rewrite patch
+    # rather than crash. The unmodified TRL openenv path will run, which
+    # means the duplicate `collective_rpc("reload_weights")` is NOT
+    # stripped (line 1800 below) and `wake_up(tags=["kv_cache"])` is NOT
+    # retagged to `wake_up()` (line 1804). Users who do not use openenv
+    # GRPO are unaffected; openenv GRPO users on this TRL build may see
+    # redundant reload_weights calls or partial wake_up behavior.
+    try:
+        src = inspect.getsource(patch_target)
+    except OSError as e:
+        logger.warning(
+            f"Unsloth: Could not retrieve source for trl openenv "
+            f"{patch_target_name} ({e}); skipping rewrite. The unmodified "
+            f"TRL openenv path will run, so the duplicate reload_weights "
+            f"strip and the wake_up tag rewrite are NOT applied. Open an "
+            f"issue if you see redundant reload_weights or partial wake_up "
+            f"on openenv GRPO with this TRL build."
+        )
+        return
     src = textwrap.dedent(src)
     original_src = src
 
-    # Remove the reload_weights call - unsloth handles this differently
-    src = re.sub(r'.*\.collective_rpc\("reload_weights"\).*\n?', "", src)
+    reload_weights_pattern = re.compile(
+        r"^(?P<indent>[ \t]*)(?P<obj>\S+)\.collective_rpc\(\s*(['\"])reload_weights\3\s*\)\s*$",
+        re.MULTILINE,
+    )
+
+    def replace_reload_weights(match):
+        indent = match.group("indent")
+        obj = match.group("obj")
+        return (
+            f"{indent}if not getattr({obj}, 'shared_weights', False):\n"
+            f'{indent}    {obj}.collective_rpc("reload_weights")\n'
+        )
+
+    src = reload_weights_pattern.sub(replace_reload_weights, src)
 
     # Change wake_up(tags=["kv_cache"]) to wake_up() - wake everything to set is_sleeping=False
     # This prevents double wake_up issues. Unsloth's allocator skips weights anyway.
@@ -1299,12 +2109,191 @@ def openenv_vllm_reload_weights():
     # Execute and explicitly assign to module
     local_ns = {}
     exec(compile(src, "<unsloth>", "exec"), openenv_utils.__dict__, local_ns)
-    patched_func = local_ns["generate_rollout_completions"]
+    patched_func = local_ns[patch_target_name]
 
-    # Patch both the utils module and the parent openenv module
-    openenv_utils.generate_rollout_completions = patched_func
-    openenv.generate_rollout_completions = patched_func
-    logger.info("Unsloth: Patched trl openenv generate_rollout_completions")
+    # Patch the target function in utils; if dispatcher was patched also update parent module alias.
+    setattr(openenv_utils, patch_target_name, patched_func)
+    if patch_target_name == "generate_rollout_completions":
+        openenv.generate_rollout_completions = patched_func
+    logger.info(f"Unsloth: Patched trl openenv {patch_target_name}")
 
 
 RL_ADDITIONAL_FUNCTIONS["openenv"].append(openenv_vllm_reload_weights)
+
+
+def vllm_generation_init_patch():
+    # trl moved vllm stuff to trl/generation/vllm_generation.py
+    # We need to patch it to not instantiate another vLLM instance if we already have one with fast_inference
+    # Edit the TRL source directly and install the patched function in the TRL module.
+    # https://github.com/huggingface/trl/commit/0eb66d8f2fc63b3d00d8dbc18f99c3f48750bd16
+    # This exists in trl versions 0.28.0 and above
+
+    if importlib.util.find_spec("trl") is None:
+        return
+    if Version(importlib_version("trl")) < Version("0.28.0"):
+        return
+
+    try:
+        import trl.generation.vllm_generation as vllm_generation
+    except (ImportError, NameError, Exception) as e:
+        logger.info(f"Unsloth: Failed to import trl.generation.vllm_generation: {e}")
+        return
+
+    def patch_vllm_generation_method(method_name, transform, marker, filename_suffix):
+        method = getattr(vllm_generation.VLLMGeneration, method_name, None)
+        if method is None:
+            logger.info(f"Unsloth: Could not find VLLMGeneration.{method_name}")
+            return False
+
+        try:
+            src = inspect.getsource(method)
+        except Exception as e:
+            logger.info(
+                f"Unsloth: Could not get source of VLLMGeneration.{method_name}: {e}"
+            )
+            return False
+
+        src = textwrap.dedent(src)
+        if marker in src:
+            return True
+
+        src = transform(src)
+        filename = f"<unsloth_trl_vllm_generation_{filename_suffix}_patch>"
+        source_lines = [line + "\n" for line in src.splitlines()]
+        linecache.cache[filename] = (
+            len(src),
+            None,
+            source_lines,
+            filename,
+        )
+
+        local_ns = {}
+        exec(compile(src, filename, "exec"), vllm_generation.__dict__, local_ns)
+        setattr(vllm_generation.VLLMGeneration, method_name, local_ns[method_name])
+        return True
+
+    # Patch init to remove vLLM.LLM instantiation
+    def patch_init_vllm(src):
+        pattern = re.compile(
+            r"(?P<llm_block>^(?P<indent>[ \t]*)self\.llm\s*=\s*LLM\s*\(\n(?:.*\n)*?^(?P=indent)\))",
+            re.MULTILINE,
+        )
+
+        def replace_llm_block(match):
+            indent = match.group("indent")
+            llm_block = textwrap.dedent(match.group("llm_block"))
+            return (
+                f"{indent}if hasattr(model, 'vllm_engine'):\n"
+                f"{indent}    # Unsloth already inits vLLM in fast inference mode. Do not redo :)\n"
+                f"{indent}    self.llm = model.vllm_engine\n"
+                f"{indent}    self.unsloth_fast_inference_lora = getattr(self.llm, 'shared_weights', False)\n"
+                f"{indent}    if getattr(self.llm, 'shared_weights', False) and hasattr(model, 'load_lora'):\n"
+                f"{indent}        self._unsloth_load_lora = model.load_lora\n"
+                f"{indent}else:\n" + textwrap.indent(llm_block, indent + "    ")
+            )
+
+        patched_src, num_replacements = pattern.subn(replace_llm_block, src, count = 1)
+        if num_replacements == 0:
+            raise RuntimeError(
+                "Unsloth: Warning - regex did not match, VLLMGeneration._init_vllm patch may have failed"
+            )
+        return patched_src
+
+    # has some sync_weights or reload rpc calls.
+    # we patched the grpo_trainer to strip them for prev versions
+    # Ref: grpo_trainer__generate_single_turn above around L270-280
+    def patch_sync_weights(src):
+        pattern = re.compile(
+            r"^(?P<def_line>def sync_weights\(self\):\n)(?P<body>(?:.*\n)*)",
+            re.MULTILINE,
+        )
+
+        def replace_sync_weights(match):
+            body = match.group("body")
+            # Chain getattr so server mode (where self.llm is not set) does
+            # not raise AttributeError before the default kicks in.
+            guard = (
+                "    if getattr(getattr(self, 'llm', None), 'shared_weights', False) or "
+                "getattr(self, 'unsloth_fast_inference_lora', False):\n"
+                "        # Unsloth fast inference LoRA shares weights with vLLM already.\n"
+                "        return\n\n"
+            )
+            return match.group("def_line") + guard + body
+
+        patched_src, num_replacements = pattern.subn(replace_sync_weights, src, count = 1)
+        if num_replacements == 0:
+            raise RuntimeError(
+                "Unsloth: Warning - regex did not match, VLLMGeneration.sync_weights patch may have failed"
+            )
+        return patched_src
+
+    def patch_generate(src):
+        pattern = re.compile(
+            r"^(?P<indent>[ \t]*)self\.llm\.collective_rpc\(\s*(['\"])reload_weights\2\s*\)\s*$",
+            re.MULTILINE,
+        )
+
+        def replace_reload_weights(match):
+            indent = match.group("indent")
+            # Chain getattr so server mode (no self.llm) is safe here too.
+            return (
+                f"{indent}if not (getattr(getattr(self, 'llm', None), 'shared_weights', False) or "
+                f"getattr(self, 'unsloth_fast_inference_lora', False)):\n"
+                f'{indent}    self.llm.collective_rpc("reload_weights")'
+            )
+
+        patched_src, num_replacements = pattern.subn(
+            replace_reload_weights, src, count = 1
+        )
+        if num_replacements == 0:
+            raise RuntimeError(
+                "Unsloth: Warning - regex did not match, VLLMGeneration.generate patch may have failed"
+            )
+
+        # Inject lora_request when sharing weights (vLLM needs the adapter)
+        lora_generate_pattern = re.compile(
+            r"(self\.llm\.generate\([^\)]+)\)",
+        )
+
+        def inject_lora_request(match):
+            return (
+                f"{match.group(1)}, lora_request="
+                f"self._unsloth_load_lora('vllm_gen_lora', load_tensors=True) "
+                f"if hasattr(self, '_unsloth_load_lora') else None)"
+            )
+
+        patched_src = lora_generate_pattern.sub(inject_lora_request, patched_src)
+        return patched_src
+
+    try:
+        init_patched = patch_vllm_generation_method(
+            "_init_vllm",
+            patch_init_vllm,
+            "self.unsloth_fast_inference_lora = getattr(self.llm, 'shared_weights', False)",
+            "init_vllm",
+        )
+        sync_patched = patch_vllm_generation_method(
+            "sync_weights",
+            patch_sync_weights,
+            "if getattr(getattr(self, 'llm', None), 'shared_weights', False) or getattr(self, 'unsloth_fast_inference_lora', False):",
+            "sync_weights",
+        )
+        generate_patched = patch_vllm_generation_method(
+            "generate",
+            patch_generate,
+            "if not (getattr(getattr(self, 'llm', None), 'shared_weights', False) or getattr(self, 'unsloth_fast_inference_lora', False)):",
+            "generate",
+        )
+    except RuntimeError as e:
+        logger.warning(str(e))
+        return
+
+    if init_patched:
+        logger.info("Unsloth: Patched trl VLLMGeneration._init_vllm")
+    if sync_patched:
+        logger.info("Unsloth: Patched trl VLLMGeneration.sync_weights")
+    if generate_patched:
+        logger.info("Unsloth: Patched trl VLLMGeneration.generate")
+
+
+RL_ADDITIONAL_FUNCTIONS["vllm_generation"].append(vllm_generation_init_patch)

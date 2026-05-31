@@ -1,0 +1,2 @@
+# Torch AO overrides (installed with --force-reinstall --no-cache-dir)
+torchao==0.14.0

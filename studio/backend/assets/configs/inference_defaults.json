@@ -1,0 +1,398 @@
+{
+  "_comment": "Per-model-family inference parameter defaults. Sources: (1) Ollama params blobs, (2) Existing Unsloth Studio YAML configs. Patterns ordered longest-match-first.",
+  "families": {
+    "qwen3.6": {
+      "temperature": 0.7,
+      "top_p": 0.8,
+      "top_k": 20,
+      "min_p": 0.0,
+      "repetition_penalty": 1.0,
+      "presence_penalty": 1.5
+    },
+    "qwen3.5": {
+      "temperature": 0.7,
+      "top_p": 0.8,
+      "top_k": 20,
+      "min_p": 0.0,
+      "repetition_penalty": 1.0,
+      "presence_penalty": 1.5
+    },
+    "qwen3-coder": {
+      "temperature": 0.7,
+      "top_p": 0.8,
+      "top_k": 20,
+      "min_p": 0.0,
+      "repetition_penalty": 1.0
+    },
+    "qwen3-next": {
+      "temperature": 0.7,
+      "top_p": 0.8,
+      "top_k": 20,
+      "min_p": 0.0,
+      "repetition_penalty": 1.0
+    },
+    "qwen3-vl": {
+      "temperature": 0.7,
+      "top_p": 0.8,
+      "top_k": 20,
+      "min_p": 0.0,
+      "repetition_penalty": 1.0
+    },
+    "qwen3": {
+      "temperature": 0.6,
+      "top_p": 0.95,
+      "top_k": 20,
+      "min_p": 0.0,
+      "repetition_penalty": 1.0
+    },
+    "qwen2.5-coder": {
+      "temperature": 1.5,
+      "top_p": 0.95,
+      "top_k": -1,
+      "min_p": 0.1,
+      "repetition_penalty": 1.0
+    },
+    "qwen2.5-vl": {
+      "temperature": 1.5,
+      "top_p": 0.95,
+      "top_k": -1,
+      "min_p": 0.1,
+      "repetition_penalty": 1.0
+    },
+    "qwen2.5-omni": {
+      "temperature": 0.7,
+      "top_p": 0.8,
+      "top_k": 20,
+      "min_p": 0.0,
+      "repetition_penalty": 1.0
+    },
+    "qwen2.5-math": {
+      "temperature": 0.7,
+      "top_p": 0.8,
+      "top_k": 20,
+      "min_p": 0.0,
+      "repetition_penalty": 1.0
+    },
+    "qwen2.5": {
+      "temperature": 0.7,
+      "top_p": 0.8,
+      "top_k": 20,
+      "min_p": 0.0,
+      "repetition_penalty": 1.0
+    },
+    "qwen2-vl": {
+      "temperature": 1.5,
+      "top_p": 0.95,
+      "top_k": -1,
+      "min_p": 0.1,
+      "repetition_penalty": 1.0
+    },
+    "qwen2": {
+      "temperature": 0.7,
+      "top_p": 0.8,
+      "top_k": 20,
+      "min_p": 0.0,
+      "repetition_penalty": 1.0
+    },
+    "qwq": {
+      "temperature": 0.6,
+      "top_p": 0.95,
+      "top_k": 40,
+      "min_p": 0.0,
+      "repetition_penalty": 1.0
+    },
+    "gemma-4": {
+      "temperature": 1.0,
+      "top_p": 0.95,
+      "top_k": 64,
+      "min_p": 0.0,
+      "repetition_penalty": 1.0,
+      "presence_penalty": 0.0
+    },
+    "gemma-3n": {
+      "temperature": 1.0,
+      "top_p": 0.95,
+      "top_k": 64,
+      "min_p": 0.0,
+      "repetition_penalty": 1.0
+    },
+    "gemma-3": {
+      "temperature": 1.0,
+      "top_p": 0.95,
+      "top_k": 64,
+      "min_p": 0.0,
+      "repetition_penalty": 1.0
+    },
+    "medgemma": {
+      "temperature": 1.0,
+      "top_p": 0.95,
+      "top_k": 64,
+      "min_p": 0.0,
+      "repetition_penalty": 1.0
+    },
+    "gemma-2": {
+      "temperature": 1.0,
+      "top_p": 0.95,
+      "top_k": 64,
+      "min_p": 0.0,
+      "repetition_penalty": 1.0
+    },
+    "llama-4": {
+      "temperature": 1.0,
+      "top_p": 0.9,
+      "top_k": -1,
+      "min_p": 0.01,
+      "repetition_penalty": 1.0
+    },
+    "llama-3.3": {
+      "temperature": 1.5,
+      "top_p": 0.95,
+      "top_k": -1,
+      "min_p": 0.1,
+      "repetition_penalty": 1.0
+    },
+    "llama-3.2": {
+      "temperature": 1.5,
+      "top_p": 0.95,
+      "top_k": -1,
+      "min_p": 0.1,
+      "repetition_penalty": 1.0
+    },
+    "llama-3.1": {
+      "temperature": 1.5,
+      "top_p": 0.95,
+      "top_k": -1,
+      "min_p": 0.1,
+      "repetition_penalty": 1.0
+    },
+    "llama-3": {
+      "temperature": 1.5,
+      "top_p": 0.95,
+      "top_k": -1,
+      "min_p": 0.1,
+      "repetition_penalty": 1.0
+    },
+    "phi-4": {
+      "temperature": 0.8,
+      "top_p": 0.95,
+      "top_k": -1,
+      "min_p": 0.0,
+      "repetition_penalty": 1.0
+    },
+    "phi-3": {
+      "temperature": 0.7,
+      "top_p": 0.9,
+      "top_k": -1,
+      "min_p": 0.01,
+      "repetition_penalty": 1.0
+    },
+    "mistral-nemo": {
+      "temperature": 0.7,
+      "top_p": 0.95,
+      "top_k": -1,
+      "min_p": 0.01,
+      "repetition_penalty": 1.0
+    },
+    "mistral-small": {
+      "temperature": 0.15,
+      "top_p": 0.95,
+      "top_k": -1,
+      "min_p": 0.01,
+      "repetition_penalty": 1.0
+    },
+    "mistral-large": {
+      "temperature": 0.7,
+      "top_p": 0.95,
+      "top_k": -1,
+      "min_p": 0.01,
+      "repetition_penalty": 1.0
+    },
+    "magistral": {
+      "temperature": 0.7,
+      "top_p": 0.95,
+      "top_k": -1,
+      "min_p": 0.01,
+      "repetition_penalty": 1.0
+    },
+    "ministral": {
+      "temperature": 0.15,
+      "top_p": 0.95,
+      "top_k": -1,
+      "min_p": 0.01,
+      "repetition_penalty": 1.0
+    },
+    "devstral": {
+      "temperature": 0.7,
+      "top_p": 0.95,
+      "top_k": -1,
+      "min_p": 0.01,
+      "repetition_penalty": 1.0
+    },
+    "pixtral": {
+      "temperature": 1.5,
+      "top_p": 0.95,
+      "top_k": -1,
+      "min_p": 0.1,
+      "repetition_penalty": 1.0
+    },
+    "deepseek-r1": {
+      "temperature": 0.6,
+      "top_p": 0.95,
+      "top_k": -1,
+      "min_p": 0.01,
+      "repetition_penalty": 1.0
+    },
+    "deepseek-v3": {
+      "temperature": 0.6,
+      "top_p": 0.95,
+      "top_k": -1,
+      "min_p": 0.01,
+      "repetition_penalty": 1.0
+    },
+    "deepseek-ocr": {
+      "temperature": 0.0,
+      "top_p": 0.95,
+      "top_k": -1,
+      "min_p": 0.01,
+      "repetition_penalty": 1.0
+    },
+    "glm-5": {
+      "temperature": 1.0,
+      "top_p": 0.95,
+      "top_k": -1,
+      "min_p": 0.01,
+      "repetition_penalty": 1.0
+    },
+    "glm-4": {
+      "temperature": 1.0,
+      "top_p": 0.95,
+      "top_k": -1,
+      "min_p": 0.01,
+      "repetition_penalty": 1.0
+    },
+    "nemotron": {
+      "temperature": 1.0,
+      "top_p": 1.0,
+      "top_k": -1,
+      "min_p": 0.01,
+      "repetition_penalty": 1.0
+    },
+    "minimax-m2.5": {
+      "temperature": 1.0,
+      "top_p": 0.95,
+      "top_k": 40,
+      "min_p": 0.01,
+      "repetition_penalty": 1.0
+    },
+    "minimax": {
+      "temperature": 1.0,
+      "top_p": 0.95,
+      "top_k": 40,
+      "min_p": 0.01,
+      "repetition_penalty": 1.0
+    },
+    "gpt-oss": {
+      "temperature": 1.0,
+      "top_p": 1.0,
+      "top_k": 0,
+      "min_p": 0.01,
+      "repetition_penalty": 1.0
+    },
+    "granite-4": {
+      "temperature": 0.0,
+      "top_p": 1.0,
+      "top_k": 0,
+      "min_p": 0.01,
+      "repetition_penalty": 1.0
+    },
+    "kimi-k2": {
+      "temperature": 0.6,
+      "top_p": 0.95,
+      "top_k": -1,
+      "min_p": 0.01,
+      "repetition_penalty": 1.0
+    },
+    "kimi": {
+      "temperature": 0.6,
+      "top_p": 0.95,
+      "top_k": -1,
+      "min_p": 0.01,
+      "repetition_penalty": 1.0
+    },
+    "lfm2": {
+      "temperature": 0.1,
+      "top_p": 0.1,
+      "top_k": 50,
+      "min_p": 0.15,
+      "repetition_penalty": 1.05
+    },
+    "smollm": {
+      "temperature": 0.7,
+      "top_p": 0.95,
+      "top_k": -1,
+      "min_p": 0.01,
+      "repetition_penalty": 1.0
+    },
+    "olmo": {
+      "temperature": 0.7,
+      "top_p": 0.95,
+      "top_k": -1,
+      "min_p": 0.01,
+      "repetition_penalty": 1.0
+    },
+    "falcon": {
+      "temperature": 0.7,
+      "top_p": 0.95,
+      "top_k": -1,
+      "min_p": 0.01,
+      "repetition_penalty": 1.0
+    },
+    "ernie": {
+      "temperature": 0.7,
+      "top_p": 0.95,
+      "top_k": -1,
+      "min_p": 0.01,
+      "repetition_penalty": 1.0
+    },
+    "seed": {
+      "temperature": 0.7,
+      "top_p": 0.95,
+      "top_k": -1,
+      "min_p": 0.01,
+      "repetition_penalty": 1.0
+    },
+    "grok": {
+      "temperature": 1.0,
+      "top_p": 0.95,
+      "top_k": -1,
+      "min_p": 0.01,
+      "repetition_penalty": 1.0
+    },
+    "mimo": {
+      "temperature": 0.7,
+      "top_p": 0.95,
+      "top_k": -1,
+      "min_p": 0.01,
+      "repetition_penalty": 1.0
+    }
+  },
+  "patterns": [
+    "qwen3.6", "qwen3.5",
+    "qwen3-coder", "qwen3-next", "qwen3-vl", "qwen3",
+    "qwen2.5-coder", "qwen2.5-vl", "qwen2.5-omni", "qwen2.5-math", "qwen2.5",
+    "qwen2-vl", "qwen2",
+    "qwq",
+    "gemma-4", "gemma-3n", "gemma-3", "medgemma", "gemma-2",
+    "llama-4", "llama-3.3", "llama-3.2", "llama-3.1", "llama-3",
+    "phi-4", "phi-3",
+    "mistral-nemo", "mistral-small", "mistral-large", "magistral", "ministral",
+    "devstral", "pixtral",
+    "deepseek-r1", "deepseek-v3", "deepseek-ocr",
+    "glm-5", "glm-4",
+    "nemotron",
+    "minimax-m2.5", "minimax",
+    "gpt-oss", "granite-4",
+    "kimi-k2", "kimi",
+    "lfm2", "smollm", "olmo", "falcon", "ernie", "seed", "grok", "mimo"
+  ]
+}

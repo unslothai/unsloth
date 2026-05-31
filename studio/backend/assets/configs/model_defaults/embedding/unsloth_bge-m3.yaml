@@ -1,0 +1,39 @@
+# Model defaults for unsloth/bge-m3
+# Based on BGE_M3.py embedding notebook
+
+training:
+  max_seq_length: 512
+  # num_epochs: 2
+  num_epochs: 0
+  learning_rate: 3e-5
+  batch_size: 256
+  gradient_accumulation_steps: 1
+  warmup_ratio: 0.03
+  max_steps: 30
+  save_steps: 30
+  weight_decay: 0.001
+  random_seed: 3407
+  packing: false
+  train_on_completions: false
+  gradient_checkpointing: false
+  optim: "adamw_8bit"
+  lr_scheduler_type: "constant_with_warmup"
+
+lora:
+  lora_r: 32
+  lora_alpha: 64
+  lora_dropout: 0.0
+  target_modules:
+    - "key"
+    - "query"
+    - "dense"
+    - "value"
+  use_rslora: false
+  use_loftq: false
+
+logging:
+  enable_wandb: false
+  wandb_project: "embedding-finetuning"
+  enable_tensorboard: false
+  tensorboard_dir: "runs"
+  log_frequency: 50

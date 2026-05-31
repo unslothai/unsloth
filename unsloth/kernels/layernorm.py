@@ -55,7 +55,9 @@ def layernorm_forward(
     # (X[0] - mean) == -mean so we need to mask it out
     XX = tl.where(mask, X_row - mean_X, 0)
     row_var = tl.sum(XX * XX, axis = 0) / n_cols
-    inv_var = tl.math.rsqrt(row_var + eps)
+    # Explicit float32 scalar to ensure correct type promotion on HIP/ROCm
+    eps_f32 = tl.full((), eps, tl.float32)
+    inv_var = tl.math.rsqrt(row_var + eps_f32)
     tl.store(r, inv_var)
     tl.store(mu, mean_X)
     output = (XX * inv_var) * W_row + b_row

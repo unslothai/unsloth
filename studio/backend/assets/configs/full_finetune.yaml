@@ -1,0 +1,42 @@
+model: unsloth/Qwen2.5-0.5B
+
+data:
+  dataset: tatsu-lab/alpaca
+  format_type: auto
+
+training:
+  training_type: full
+  max_seq_length: 2048
+  load_in_4bit: false
+  output_dir: outputs
+  num_epochs: 1
+  learning_rate: 2e-5
+  batch_size: 1
+  gradient_accumulation_steps: 4
+  warmup_steps: 5
+  max_steps: 0
+  save_steps: 0
+  weight_decay: 0.001
+  random_seed: 3407
+  packing: false
+  train_on_completions: false
+  gradient_checkpointing: "unsloth"
+
+lora:
+  lora_r: 64
+  lora_alpha: 16
+  lora_dropout: 0.0
+  target_modules: ""
+  vision_all_linear: false
+  use_rslora: false
+  use_loftq: false
+  finetune_vision_layers: true
+  finetune_language_layers: true
+  finetune_attention_modules: true
+  finetune_mlp_modules: true
+
+logging:
+  enable_wandb: false
+  wandb_project: unsloth-training
+  enable_tensorboard: false
+  tensorboard_dir: runs

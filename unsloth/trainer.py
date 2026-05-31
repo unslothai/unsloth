@@ -17,13 +17,15 @@ import os
 import psutil
 import warnings
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, List
 from functools import wraps
 
 import trl
 import inspect
 from trl import SFTTrainer
-from . import is_bfloat16_supported
+
+# why: bypass partially-initialised unsloth ns during _gpu_init load
+from .models._utils import is_bfloat16_supported
 from unsloth.utils import (
     configure_padding_free,
     configure_sample_packing,
@@ -46,6 +48,7 @@ __all__ = [
     "unsloth_train",
     "_patch_trl_trainer",
     "UnslothVisionDataCollator",
+    "QGaloreConfig",
 ]
 
 logger = logging.getLogger(__name__)
@@ -73,7 +76,7 @@ def _should_auto_padding_free(config) -> bool:
         or getattr(config, "packing", False)
     ):
         return False
-    return not getattr(config, "padding_free", False)
+    return getattr(config, "padding_free", None) is None
 
 
 def _disable_sample_packing(config):
@@ -130,10 +133,41 @@ except:
     from transformers import TrainingArguments
 
 
+@dataclass
+class QGaloreConfig:
+    """Configuration for Q-GaLore optimizer integration.
+
+    Pass an instance of this class to ``UnslothTrainingArguments`` (via
+    ``q_galore_config``) to enable Q-GaLore training.
+    """
+
+    rank: int = 256
+    update_proj_gap: int = 200
+    scale: float = 0.25
+    proj_quant: bool = True
+    proj_quant_group_size: int = -1
+    proj_quant_n_bit: int = 4
+    weight_quant: bool = False
+    stochastic_round: bool = True
+    weight_group_size: int = 128
+    cos_threshold: float = 0.4
+    gamma_proj: float = 2.0
+    queue_size: int = 5
+    target_modules: Optional[List[str]] = None
+
+
 class UnslothTrainingArguments(TrainingArguments):
-    def __init__(self, embedding_learning_rate: float = None, *args, **kwargs):
-        embedding_learning_rate = embedding_learning_rate
+    def __init__(
+        self,
+        embedding_learning_rate: float = None,
+        q_galore_config: Optional[QGaloreConfig] = None,
+        *args,
+        **kwargs,
+    ):
+        self.q_galore_config = q_galore_config
+        self.embedding_learning_rate = embedding_learning_rate
         super().__init__(*args, **kwargs)
+        self.embedding_learning_rate = embedding_learning_rate
 
 
 def _create_unsloth_optimizer(
@@ -181,6 +215,13 @@ def _create_unsloth_optimizer(
 
 class UnslothTrainer(SFTTrainer):
     def create_optimizer(self):
+        # --- Q-GaLore optimizer ---
+        q_galore_config = getattr(self.args, "q_galore_config", None)
+        if q_galore_config is not None and self.optimizer is None:
+            embedding_lr = getattr(self.args, "embedding_learning_rate", None)
+            return self._create_q_galore_optimizer(q_galore_config, embedding_lr)
+
+        # --- Embedding-LR optimizer ---
         embedding_learning_rate = getattr(self.args, "embedding_learning_rate", None)
         if embedding_learning_rate is None:
             return super().create_optimizer()
@@ -197,16 +238,159 @@ class UnslothTrainer(SFTTrainer):
             )
         return self.optimizer
 
+    def _create_q_galore_optimizer(self, config: "QGaloreConfig", embedding_lr = None):
+        """Build the Q-GaLore optimizer from a QGaloreConfig."""
+        from unsloth.optimizers.q_galore_adamw import (
+            QGaLoreAdamW8bit,
+            make_q_galore_param_groups,
+            install_weight_quant_hooks,
+        )
+
+        lr = self.args.learning_rate
+        weight_decay = self.args.weight_decay
+
+        param_groups = make_q_galore_param_groups(
+            self.model,
+            lr = lr,
+            weight_decay = weight_decay,
+            rank = config.rank,
+            update_proj_gap = config.update_proj_gap,
+            scale = config.scale,
+            proj_quant = config.proj_quant,
+            proj_quant_group_size = config.proj_quant_group_size,
+            proj_quant_n_bit = config.proj_quant_n_bit,
+            weight_quant = config.weight_quant,
+            stochastic_round = config.stochastic_round,
+            weight_group_size = config.weight_group_size,
+            cos_threshold = config.cos_threshold,
+            gamma_proj = config.gamma_proj,
+            queue_size = config.queue_size,
+            target_modules = config.target_modules,
+        )
+
+        # --- Split embedding params with custom LR (Fix #2) ---
+        if embedding_lr is not None:
+            # Build a fast param->name lookup (O(N) instead of O(N*M))
+            param_to_name = {id(p): name for name, p in self.model.named_parameters()}
+
+            new_groups = []
+            for group in param_groups:
+                if "rank" in group:
+                    # GaLore group — keep as-is (embeddings are never in here)
+                    new_groups.append(group)
+                    continue
+                # Non-GaLore group: split out embedding params
+                embed_params = []
+                other_params = []
+                for p in group["params"]:
+                    # Check if this param belongs to a modules_to_save embedding
+                    name = param_to_name.get(id(p))
+                    if name and name.endswith("modules_to_save.default.weight"):
+                        partial_name = name[: -len(".modules_to_save.default.weight")]
+                        partial_name = partial_name[partial_name.rfind(".") + 1 :]
+                        print(
+                            f"Unsloth: Setting lr = {embedding_lr:.2e} instead of {lr:.2e} for {partial_name}."
+                        )
+                        embed_params.append(p)
+                    else:
+                        other_params.append(p)
+                if other_params:
+                    other_group = dict(group)
+                    other_group["params"] = other_params
+                    new_groups.append(other_group)
+                if embed_params:
+                    embed_group = dict(group)
+                    embed_group["params"] = embed_params
+                    embed_group["lr"] = embedding_lr
+                    new_groups.append(embed_group)
+            param_groups = new_groups
+
+        # --- Forward optimizer hyperparameters (Fix #3) ---
+        self.optimizer = QGaLoreAdamW8bit(
+            param_groups,
+            lr = lr,
+            weight_decay = weight_decay,
+            betas = (self.args.adam_beta1, self.args.adam_beta2),
+            eps = self.args.adam_epsilon,
+        )
+
+        # Initialize INT8 weight quantization if enabled
+        if config.weight_quant:
+            QGaLoreAdamW8bit.init_weight_quantization(
+                self.model,
+                param_groups,
+                group_size = config.weight_group_size,
+                stochastic = config.stochastic_round,
+            )
+            # Forward pre-hooks dequantize INT8 weights to float before each
+            # forward pass, allowing the optimizer to free float weight memory
+            # between steps.
+            install_weight_quant_hooks(self.model)
+
+        n_galore = sum(len(g["params"]) for g in param_groups if "rank" in g)
+        n_other = sum(len(g["params"]) for g in param_groups if "rank" not in g)
+        print(
+            f"🦥 Unsloth: Q-GaLore enabled — "
+            f"{n_galore} GaLore params (rank={config.rank}), "
+            f"{n_other} standard params."
+        )
+
+        return self.optimizer
+
 
 # From `trl>=0.13.0`, they changed how to pass several params to the trainer
 # We need to patch to make the transition smooth
+def _resolve_trainer_params(trainer_class, init_fn):
+    """Resolve the real named parameters for a trainer __init__.
+
+    Some TRL trainers (e.g., ORPOTrainer in TRL 0.27.1) are thin wrappers
+    with only ``def __init__(self, *args, **kwargs)``.  For those, walk the
+    MRO and return the first parent class that has real named parameters.
+    """
+    params = inspect.signature(init_fn).parameters
+    named = {
+        k
+        for k, v in params.items()
+        if v.kind
+        in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+        and k != "self"
+    }
+    if named:
+        return set(params.keys())
+
+    # Thin wrapper detected - walk MRO for real signature
+    for cls in trainer_class.__mro__[1:]:
+        if cls is object:
+            continue
+        parent_init = cls.__dict__.get("__init__")
+        if parent_init is None:
+            continue
+        try:
+            parent_params = inspect.signature(parent_init).parameters
+            parent_named = {
+                k
+                for k, v in parent_params.items()
+                if v.kind
+                in (
+                    inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                    inspect.Parameter.KEYWORD_ONLY,
+                )
+                and k != "self"
+            }
+            if parent_named:
+                return set(parent_params.keys())
+        except (ValueError, TypeError):
+            continue
+    return set(params.keys())
+
+
 def _backwards_compatible_trainer(trainer_class, config_class):
     original_init = trainer_class.__init__
 
     @wraps(original_init)
     def new_init(self, *args, **kwargs):
         # All Trainer tokenizer are now called processing_class
-        trainer_params = set(inspect.signature(original_init).parameters.keys())
+        trainer_params = _resolve_trainer_params(trainer_class, original_init)
 
         if "processing_class" in trainer_params and "tokenizer" in kwargs:
             kwargs["processing_class"] = kwargs.pop("tokenizer")
@@ -348,6 +532,7 @@ def _patch_sft_trainer_auto_packing(trl_module):
             packing_active = True
             logger.info("Unsloth: Sample packing enabled for SFTTrainer instance.")
 
+        # Resolve padding_free: None (default) = auto-enable unless env-disabled or packing
         auto_padding_free_active = False
         padding_free_requested = getattr(config_arg, "padding_free", None) is True
         if not blocked:

@@ -806,7 +806,7 @@ TEMPLATE """<|system|>
 PARAMETER stop "<|system|>"
 PARAMETER stop "<|user|>"
 PARAMETER stop "<|assistant|>"
-PARAMETER "</s>"
+PARAMETER stop "</s>"
 SYSTEM """You are a helpful AI assistant."""
 '''
 
@@ -974,6 +974,7 @@ TEMPLATE """{{- range $i, $_ := .Messages }}
 
 
 OLLAMA_TEMPLATES["qwen-25"] = qwen25_ollama
+OLLAMA_TEMPLATES["qwen-2.5"] = qwen25_ollama
 OLLAMA_TEMPLATES["qwen-25-coder"] = qwen_25_coder_ollama
 OLLAMA_TEMPLATES["qwen-25-vl"] = qwen_25_vl_ollama
 OLLAMA_TEMPLATES["openthinker"] = openthinker_ollama
@@ -1197,6 +1198,21 @@ TEMPLATE """{{- range $i, $_ := .Messages }}
 
 OLLAMA_TEMPLATES["gemma-3n"] = gemma3n_ollama
 OLLAMA_TEMPLATES["gemma3n"] = gemma3n_ollama
+
+# =========================================== Gemma-4
+gemma4_ollama = '''
+FROM {__FILE_LOCATION__}
+TEMPLATE """{{- range $i, $_ := .Messages }}
+{{- $last := eq (len (slice $.Messages $i)) 1 }}
+<|turn>{{ .Role }}
+{{ .Content }}{{ if not $last }}<turn|>
+{{ end }}
+{{- end }}<turn|>
+<|turn>model
+"""
+'''
+OLLAMA_TEMPLATES["gemma-4"] = gemma4_ollama
+OLLAMA_TEMPLATES["gemma4"] = gemma4_ollama
 
 # =========================================== GPT-OSS
 
@@ -1959,6 +1975,23 @@ OLLAMA_TEMPLATE_TO_MODEL_MAPPER = {
         "unsloth/medgemma-27b-text-it",
         "google/medgemma-27b-text-it",
         "unsloth/medgemma-27b-text-it-bnb-4bit",
+    ),
+    "gemma4": (
+        "unsloth/gemma-4-E2B-it",
+        "unsloth/gemma-4-E2B-it-unsloth-bnb-4bit",
+        "google/gemma-4-E2B-it",
+        "unsloth/gemma-4-E2B",
+        "unsloth/gemma-4-E4B-it",
+        "unsloth/gemma-4-E4B-it-unsloth-bnb-4bit",
+        "google/gemma-4-E4B-it",
+        "unsloth/gemma-4-E4B",
+        "unsloth/gemma-4-31B-it",
+        "unsloth/gemma-4-31B-it-unsloth-bnb-4bit",
+        "google/gemma-4-31B-it",
+        "unsloth/gemma-4-31B",
+        "unsloth/gemma-4-26B-A4B-it",
+        "google/gemma-4-26B-A4B-it",
+        "unsloth/gemma-4-26B-A4B",
     ),
     "gemma3n": (
         "unsloth/gemma-3n-E4B-it-unsloth-bnb-4bit",

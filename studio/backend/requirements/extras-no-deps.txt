@@ -1,0 +1,20 @@
+# Audio extras (installed with --no-deps --no-cache-dir)
+descript-audio-codec
+descript-audiotools
+julius
+torchcodec==0.10.0
+snac
+
+# peft 0.19.0 causes export subprocess shutdown issues in Studio;
+# installing with --no-deps to avoid pulling in torch>=0.11.0
+peft==0.18.1
+
+# TRL and related packages
+trl==0.23.1
+git+https://github.com/meta-pytorch/OpenEnv.git
+# executorch>=1.0.1               # 41.5 MB - no imports in unsloth/zoo/studio
+torch-c-dlpack-ext
+sentence_transformers==5.2.0
+transformers==4.57.6
+pytorch_tokenizers
+kernels==0.12.1
