@@ -370,47 +370,60 @@ jobs:
       # ─────────────────────────────────────────────────────────────
       # OSV-Scanner: cross-ecosystem advisory DB (PyPI + npm + cargo)
       # ─────────────────────────────────────────────────────────────
+      - name: Download + verify OSV-Scanner
+        # Split out from the scan below so binary integrity is a HARD gate:
+        # a checksum mismatch (swapped release asset, the Trivy-style pivot
+        # this workflow refuses) fails the job instead of being swallowed by
+        # the scan step's continue-on-error. A download still failing after
+        # retries is transient, so we skip the scan rather than red-fail.
+        # SHA-256 verified BEFORE chmod +x / exec. Bump OSV_SHA256 in lockstep
+        # with OSV_VERSION (value from the release's osv-scanner_SHA256SUMS).
+        run: |
+          set -euo pipefail
+          OSV_VERSION="v2.0.2"
+          OSV_SHA256="3abcfd7126c453a00421487e721b296e0cb68085bd431d6cef60872774170fc8"
+          if ! curl --proto '=https' --tlsv1.2 -fsSL \
+            --retry 5 --retry-delay 3 --retry-connrefused --retry-all-errors \
+            -o /tmp/osv-scanner \
+            "https://github.com/google/osv-scanner/releases/download/${OSV_VERSION}/osv-scanner_linux_amd64"; then
+            echo "::warning::osv-scanner download failed after retries; skipping scan" >&2
+            rm -f /tmp/osv-scanner
+            exit 0   # transient availability: do not red-fail the job
+          fi
+          if ! echo "${OSV_SHA256}  /tmp/osv-scanner" | sha256sum -c -; then
+            echo "::error::osv-scanner checksum mismatch; refusing to execute" >&2
+            rm -f /tmp/osv-scanner
+            exit 1   # integrity failure: hard-fail
+          fi
+          chmod +x /tmp/osv-scanner
+          /tmp/osv-scanner --version
+
       - name: OSV-Scanner (PyPI + npm + cargo, cross-ecosystem advisories)
         # OSV's advisory feed is a superset of GitHub-Advisory + RustSec
         # + npm advisories; running it alongside the per-ecosystem audit
         # tools catches CVEs that haven't propagated to the per-ecosystem
         # DBs yet (e.g. langchain-core CVE-2025-68664 was on OSV before
         # GitHub Advisory). Single binary, one transitive resolver, all
-        # three lockfile types in one pass. Non-blocking until baselines
-        # close.
+        # three lockfile types in one pass. Binary is checksum-verified in
+        # the step above; only the advisory scan stays non-blocking until
+        # baselines close.
         continue-on-error: true
         run: |
           set +e
-          # OSV-Scanner ships a raw binary (no tarball) in v2.x. Fetch it
-          # with retries, then verify the SHA-256 against the pinned value
-          # BEFORE chmod +x / exec. A swapped release asset would otherwise
-          # drop an attacker-controlled binary onto a runner with repo read
-          # access -- exactly the Trivy-style pivot this workflow refuses.
-          # Bump OSV_SHA256 in lockstep with OSV_VERSION (value taken from
-          # the release's osv-scanner_SHA256SUMS asset).
-          OSV_VERSION="v2.0.2"
-          OSV_SHA256="3abcfd7126c453a00421487e721b296e0cb68085bd431d6cef60872774170fc8"
-          curl --proto '=https' --tlsv1.2 -fsSL \
-            --retry 5 --retry-delay 3 --retry-connrefused --retry-all-errors \
-            -o /tmp/osv-scanner \
-            "https://github.com/google/osv-scanner/releases/download/${OSV_VERSION}/osv-scanner_linux_amd64"
-          if ! echo "${OSV_SHA256}  /tmp/osv-scanner" | sha256sum -c -; then
-            echo "::error::osv-scanner checksum mismatch; refusing to execute" >&2
-            rm -f /tmp/osv-scanner
-            exit 1
+          if [ ! -x /tmp/osv-scanner ]; then
+            echo "osv-scanner unavailable this run; skipping scan" | tee logs-osv-scanner.txt
+          else
+            /tmp/osv-scanner scan source \
+              --lockfile=studio/frontend/package-lock.json \
+              --lockfile=studio/src-tauri/Cargo.lock \
+              --lockfile=requirements.txt:audit-reqs/unsloth-deps.txt \
+              --lockfile=requirements.txt:audit-reqs/studio.txt \
+              --lockfile=requirements.txt:audit-reqs/no-torch-runtime.txt \
+              --lockfile=requirements.txt:audit-reqs/overrides.txt \
+              --lockfile=requirements.txt:audit-reqs/extras.txt \
+              --lockfile=requirements.txt:audit-reqs/extras-no-deps.txt \
+              --format=table 2>&1 | tee logs-osv-scanner.txt
           fi
-          chmod +x /tmp/osv-scanner
-          /tmp/osv-scanner --version
-          /tmp/osv-scanner scan source \
-            --lockfile=studio/frontend/package-lock.json \
-            --lockfile=studio/src-tauri/Cargo.lock \
-            --lockfile=requirements.txt:audit-reqs/unsloth-deps.txt \
-            --lockfile=requirements.txt:audit-reqs/studio.txt \
-            --lockfile=requirements.txt:audit-reqs/no-torch-runtime.txt \
-            --lockfile=requirements.txt:audit-reqs/overrides.txt \
-            --lockfile=requirements.txt:audit-reqs/extras.txt \
-            --lockfile=requirements.txt:audit-reqs/extras-no-deps.txt \
-            --format=table 2>&1 | tee logs-osv-scanner.txt
           {
             echo "## OSV-Scanner (cross-ecosystem)"
             echo
