@@ -279,6 +279,20 @@ def resolve_cache_type_kv(
     return override if override is not None else fallback_cache_type_kv
 
 
+_MMPROJ_DISABLE_FLAGS: frozenset[str] = frozenset({"--no-mmproj"})
+
+
+def extra_args_disable_mmproj(args: Optional[Iterable[str]]) -> bool:
+    """True when pass-through args opt out of vision mmproj loading."""
+    if not args:
+        return False
+    for raw in args:
+        flag = _flag_name(str(raw))
+        if flag in _MMPROJ_DISABLE_FLAGS:
+            return True
+    return False
+
+
 def strip_shadowing_flags(
     args: Iterable[str],
     *,

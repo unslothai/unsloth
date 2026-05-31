@@ -34,6 +34,7 @@ parse_cache_override = _lsa.parse_cache_override
 parse_ctx_override = _lsa.parse_ctx_override
 resolve_cache_type_kv = _lsa.resolve_cache_type_kv
 strip_shadowing_flags = _lsa.strip_shadowing_flags
+extra_args_disable_mmproj = _lsa.extra_args_disable_mmproj
 validate_extra_args = _lsa.validate_extra_args
 
 
@@ -531,3 +532,13 @@ def test_strip_shadowing_flags_defaults_strip_everything():
         ["-c", "4096", "--cache-type-k", "q8_0", "--spec-default", "--jinja"]
     )
     assert out == []
+
+
+def test_extra_args_disable_mmproj_detects_flag():
+    assert extra_args_disable_mmproj(["--no-mmproj"]) is True
+    assert extra_args_disable_mmproj(["--threads", "12", "--no-mmproj"]) is True
+
+
+def test_extra_args_disable_mmproj_false_when_absent():
+    assert extra_args_disable_mmproj(None) is False
+    assert extra_args_disable_mmproj(["--threads", "12"]) is False
