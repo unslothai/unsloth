@@ -459,7 +459,14 @@ const Composer: FC<{
   // the field is empty (i.e. after a send).
   const draftKey = `chat-draft:${activeThreadId ?? "__new__"}`;
   useEffect(() => {
-    const draft = window.localStorage.getItem(draftKey);
+    let draft: string | null = null;
+    try {
+      draft = window.localStorage.getItem(draftKey);
+    } catch {
+      // localStorage can throw when unavailable (private mode, disabled
+      // cookies, blocked storage). Draft restore is best-effort; bail quietly.
+      return;
+    }
     if (!draft) return;
     const composer = aui.composer();
     if (composer.getState().isEditing) {
@@ -468,10 +475,14 @@ const Composer: FC<{
   }, [draftKey, aui]);
   useEffect(() => {
     const t = setTimeout(() => {
-      if (composerText.length > 0) {
-        window.localStorage.setItem(draftKey, composerText);
-      } else {
-        window.localStorage.removeItem(draftKey);
+      try {
+        if (composerText.length > 0) {
+          window.localStorage.setItem(draftKey, composerText);
+        } else {
+          window.localStorage.removeItem(draftKey);
+        }
+      } catch {
+        // Ignore write failures (quota exceeded, private mode, blocked storage).
       }
     }, 300);
     return () => clearTimeout(t);

@@ -35,7 +35,12 @@ export function groupThreads(
   const seenPairs = new Set<string>();
 
   for (const t of threads) {
-    if (t.archived !== archived) {
+    // Coerce archived to a boolean before comparing. Legacy threads (from the
+    // older browser-only Studio, or any record predating the archived field)
+    // can have archived === undefined or null; a raw `!== archived` comparison
+    // would drop those from BOTH the Recents (archived=false) and Archived
+    // (archived=true) lists, hiding existing chats. Treat missing as false.
+    if (Boolean(t.archived) !== archived) {
       continue;
     }
     if (t.pairId) {
