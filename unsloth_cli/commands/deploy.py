@@ -1,12 +1,19 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Launch Unsloth Studio on RunPod."""
+"""Launch Unsloth Studio on a cloud provider.
+
+This command layer is provider-agnostic: it talks only to the `Provider`
+contract (deploy/base.py) and checks capability flags, never a concrete cloud's
+internals. Provider-specific credentials/settings are declared by each provider
+(`option_schema`), resolved from --provider-opt / env / saved config here, and
+persisted so they're entered once. See deploy/provider.py to add a cloud.
+"""
 
 from __future__ import annotations
 
 import json
-import math
+import os
 import secrets
 import sys
 import time
@@ -16,9 +23,10 @@ from typing import Optional
 
 import typer
 
-from unsloth_cli.deploy import DeployError, Gpu, SshTarget
-from unsloth_cli.deploy import runpod_storage
-from unsloth_cli.deploy.provider import get_provider
+from unsloth_cli.deploy import DeployError, Gpu, SshTarget, StagedModel
+from unsloth_cli.deploy import store
+from unsloth_cli.deploy.base import NEEDED_FOR_LOCAL_MODEL, Provider
+from unsloth_cli.deploy.provider import PROVIDERS
 from unsloth_cli.deploy.studio_client import StudioClient
 
 
@@ -40,33 +48,26 @@ MODEL_SEARCH_DIRS = ("outputs", "lora_model", "merged_model", "model")
 
 DEFAULT_PROVIDER = "runpod"
 
-POD_UPLOADS_DIR = "/workspace/uploads"
-# Network volumes are datacenter-pinned and the pod can only schedule in the
-# volume's datacenter, so we don't hardcode one -- a fixed datacenter's stock
-# comes and goes. We place the volume where the chosen GPU has live capacity.
-VOLUME_HEADROOM_FACTOR = 1.3
-VOLUME_MIN_GB = 20
-
 
 deploy_app = typer.Typer(
-    help = "Launch Unsloth Studio on RunPod.",
+    help = "Launch Unsloth Studio on a cloud provider.",
     no_args_is_help = True,
 )
 
 
 @dataclass(frozen = True)
-class Pod:
-    """A running pod and the endpoints we reach it on."""
+class Instance:
+    """A running instance and the endpoints we reach it on."""
     id: str
     studio_url: str
-    ssh: SshTarget
+    ssh: Optional[SshTarget]
 
 
 @deploy_app.command("run")
 def run(
     provider_name: str = typer.Option(
         DEFAULT_PROVIDER, "--provider",
-        help = "Cloud provider to deploy to.",
+        help = f"Cloud provider to deploy to. Available: {', '.join(PROVIDERS)}.",
     ),
     gpu: Optional[str] = typer.Option(
         None, "--gpu", help = "Skip the picker; use this provider's GPU id.",
@@ -95,21 +96,13 @@ def run(
         None, "--hf-token", envvar = "HF_TOKEN",
         help = "Hugging Face token for gated repos. Only used with --model.",
     ),
-    datacenter: Optional[str] = typer.Option(
-        None, "--datacenter", envvar = "RUNPOD_DATACENTER",
-        help = "Datacenter for the network volume a local --model is uploaded to. "
-               "Default: auto-pick one with live capacity for the chosen GPU.",
-    ),
-    s3_access_key: Optional[str] = typer.Option(
-        None, "--s3-access-key", envvar = "RUNPOD_S3_ACCESS_KEY_ID",
-        help = "RunPod S3 access key (Settings > S3 API Keys). For local --model uploads.",
-    ),
-    s3_secret_key: Optional[str] = typer.Option(
-        None, "--s3-secret-key", envvar = "RUNPOD_S3_SECRET_ACCESS_KEY",
-        help = "RunPod S3 secret. Prefer the env var; CLI args show in `ps`.",
+    provider_opt: list[str] = typer.Option(
+        [], "--provider-opt",
+        help = "Provider-specific setting as key=value (repeatable), e.g. "
+               "--provider-opt datacenter=US-KS-2. See the provider's options.",
     ),
 ):
-    """Launch Unsloth Studio on RunPod."""
+    """Launch Unsloth Studio on the chosen provider."""
     if not admin_password:
         _fail("Set UNSLOTH_ADMIN_PASSWORD or pass --admin-password.", code = 2)
     if len(admin_password) < MIN_ADMIN_PASSWORD_LENGTH:
@@ -118,93 +111,188 @@ def run(
             code = 2,
         )
 
-    provider = _provider(provider_name)
+    provider_cls = _provider_cls(provider_name)
+    overrides = _parse_provider_opts(provider_opt)
 
     if model is None and not yes:
         model = _pick_model()
+    need_local = _is_local_model(model)
 
-    # A local model rides a RunPod network volume (uploaded over the S3 API),
-    # which needs S3 credentials. Check before we create a billing pod.
-    if _is_local_model(model) and not (s3_access_key and s3_secret_key):
+    # A local model needs the provider's storage capability; bail before we
+    # resolve creds or create anything billing.
+    if need_local and not provider_cls.supports_local_model:
         _fail(
-            "Uploading a local model needs RunPod S3 credentials.\n"
-            "Create them at https://www.runpod.io/console/user/settings (S3 API Keys), then:\n"
-            "    export RUNPOD_S3_ACCESS_KEY_ID=user_...\n"
-            "    export RUNPOD_S3_SECRET_ACCESS_KEY=rps_...",
+            f"{provider_name} can't upload a local model.\n"
+            "Pass a Hugging Face id with --model, or load from the Studio UI "
+            "after launch.",
             code = 2,
         )
 
+    provider = _authenticate(
+        provider_cls, overrides,
+        need_local = need_local, interactive = not yes, persist = True,
+    )
+
     chosen = _pick_gpu(provider, override = gpu, min_vram_gb = min_vram, yes = yes)
 
-    # A local model rides a datacenter-pinned network volume, and the pod can
-    # only start in that volume's datacenter -- so place it where the GPU has
-    # live capacity rather than a fixed default that may be sold out.
-    if _is_local_model(model):
-        datacenter = _resolve_datacenter(provider, chosen, datacenter)
-
     typer.echo("")
-    typer.echo(f"  GPU:     {chosen.name} ({chosen.vram_gb} GB) - ${chosen.cost_per_hour_usd:.3f}/hr")
+    typer.echo(f"  Provider: {provider.name}")
+    typer.echo(f"  GPU:      {chosen.name} ({chosen.vram_gb} GB) - ${chosen.cost_per_hour_usd:.3f}/hr")
     if model is not None:
-        typer.echo(f"  Model:   {model}")
-    if _is_local_model(model):
-        typer.echo(f"  Upload:  network volume in {datacenter} (S3)")
+        note = "  (local -- uploaded to provider storage after you confirm)" if need_local else ""
+        typer.echo(f"  Model:    {model}{note}")
     typer.echo("")
 
     if not yes and not typer.confirm("Continue?", default = False):
         typer.echo("Aborted.")
         raise typer.Exit(0)
 
+    # Stage a local model only after the user commits: creating the volume and
+    # uploading multi-GB weights costs time and money, so it must not run before
+    # the confirmation prompt.
+    staged: Optional[StagedModel] = None
+    if need_local:
+        staged = _stage_local_model(provider, Path(model).expanduser(), chosen)
+
     _deploy(
         provider,
         chosen,
         admin_password = admin_password,
         model = model,
+        staged = staged,
         gguf_variant = gguf_variant,
         hf_token = hf_token,
-        datacenter = datacenter,
-        s3_access_key = s3_access_key,
-        s3_secret_key = s3_secret_key,
     )
 
 
 @deploy_app.command("stop")
 def stop(
-    pod_id: str = typer.Argument(..., help = "Pod id (printed when deploy succeeds)."),
+    instance_id: str = typer.Argument(..., help = "Instance id (printed when deploy succeeds)."),
     provider_name: str = typer.Option(
-        DEFAULT_PROVIDER, "--provider", help = "Provider the pod runs on.",
+        DEFAULT_PROVIDER, "--provider", help = "Provider the instance runs on.",
     ),
-    keep_volume: bool = typer.Option(
-        False, "--keep-volume",
-        help = "Pause instead of terminating. Disk storage is still billed.",
+    pause: bool = typer.Option(
+        False, "--pause",
+        help = "Suspend instead of terminating (provider must support it; "
+               "attached storage may still bill).",
     ),
 ):
-    """Terminate the pod so billing stops. Pass --keep-volume to pause it instead."""
-    provider = _provider(provider_name)
+    """Terminate the instance so billing stops. Pass --pause to suspend it instead."""
+    provider = _authenticate(_provider_cls(provider_name), {}, interactive = False)
     try:
-        if keep_volume:
-            provider.stop_pod(pod_id)
-            typer.echo(f"Pod {pod_id} paused (volume preserved, still incurs disk billing).")
+        if pause:
+            if not provider.supports_pause:
+                _fail(f"{provider.name} can't pause an instance; omit --pause to terminate.", code = 2)
+            provider.pause(instance_id)
+            typer.echo(f"Instance {instance_id} paused (may still incur storage billing).")
         else:
-            provider.terminate_pod(pod_id)
-            typer.echo(f"Pod {pod_id} terminated.")
+            provider.terminate(instance_id)
+            typer.echo(f"Instance {instance_id} terminated.")
     except DeployError as e:
         _fail(str(e))
 
 
-@deploy_app.command("delete-volume")
-def delete_volume(
-    volume_id: str = typer.Argument(..., help = "Network volume id (printed when deploy uploads a local model)."),
+@deploy_app.command("delete-storage")
+def delete_storage(
+    storage_id: str = typer.Argument(..., help = "Storage id (printed when deploy uploads a local model)."),
     provider_name: str = typer.Option(
-        DEFAULT_PROVIDER, "--provider", help = "Provider the volume lives on.",
+        DEFAULT_PROVIDER, "--provider", help = "Provider the storage lives on.",
     ),
 ):
-    """Delete a network volume so its storage stops billing. Terminate the pod first."""
-    provider = _provider(provider_name)
+    """Delete storage created for a local-model upload so it stops billing. Terminate the instance first."""
+    provider = _authenticate(_provider_cls(provider_name), {}, interactive = False)
     try:
-        runpod_storage.delete_network_volume(provider, volume_id)
-        typer.echo(f"Network volume {volume_id} deleted.")
+        provider.delete_storage(storage_id)
+        typer.echo(f"Storage {storage_id} deleted.")
     except DeployError as e:
         _fail(str(e))
+
+
+# ---------------------------------------------------------------------------
+# Provider auth + options
+# ---------------------------------------------------------------------------
+
+
+def _provider_cls(name: str) -> type[Provider]:
+    if name not in PROVIDERS:
+        _fail(f"Unknown provider '{name}'. Available: {', '.join(PROVIDERS)}.", code = 2)
+    return PROVIDERS[name]
+
+
+def _parse_provider_opts(pairs: list[str]) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for pair in pairs:
+        if "=" not in pair:
+            _fail(f"--provider-opt expects key=value, got {pair!r}.", code = 2)
+        key, value = pair.split("=", 1)
+        out[key.strip()] = value.strip()
+    return out
+
+
+def _authenticate(
+    provider_cls: type[Provider],
+    overrides: dict[str, str],
+    *,
+    need_local: bool = False,
+    interactive: bool = False,
+    persist: bool = False,
+) -> Provider:
+    """Resolve the provider's declared options (--provider-opt > env > saved
+    config), prompting for any required ones that are still missing when
+    interactive, then authenticate. When `persist`, save the resolved values so
+    the next run needs no env vars -- only `run` does this, so lifecycle commands
+    like `stop` never write the credential file as a side effect."""
+    saved = store.load(provider_cls.name)
+    resolved: dict[str, str] = dict(saved)
+
+    for opt in provider_cls.option_schema():
+        if opt.needed_for == NEEDED_FOR_LOCAL_MODEL and not need_local:
+            continue
+        value = overrides.get(opt.key) or os.environ.get(opt.env) or saved.get(opt.key)
+        if not value and opt.required:
+            if interactive:
+                value = typer.prompt(opt.help, hide_input = opt.secret, default = "").strip()
+            if not value:
+                _fail(
+                    f"Missing {opt.env} -- {opt.help}.\n"
+                    f"Set the env var, pass --provider-opt {opt.key}=..., "
+                    "or run without --yes to be prompted.",
+                    code = 2,
+                )
+        if value:
+            resolved[opt.key] = value
+
+    provider = provider_cls()
+    try:
+        provider.auth(resolved)
+    except DeployError as e:
+        _fail(str(e))
+
+    if persist:
+        _persist_options(provider_cls, resolved, previously = saved)
+    return provider
+
+
+def _persist_options(
+    provider_cls: type[Provider], resolved: dict[str, str], *, previously: dict[str, str],
+) -> None:
+    """Save resolved options for reuse, noting it the first time something new is
+    stored so the user knows where their credentials now live."""
+    keys = {opt.key for opt in provider_cls.option_schema()}
+    to_save = {k: v for k, v in resolved.items() if k in keys}
+    if not to_save or to_save == previously:
+        return
+    try:
+        path = store.save(provider_cls.name, to_save)
+    except OSError:
+        return
+    if not previously:
+        typer.echo(f"  saved {provider_cls.name} settings to {path} (reused next time)")
+
+
+# ---------------------------------------------------------------------------
+# Model discovery + pickers
+# ---------------------------------------------------------------------------
 
 
 def _model_kind(p: Path) -> Optional[str]:
@@ -314,7 +402,7 @@ def _pick_model() -> Optional[str]:
 
 
 def _pick_gpu(
-    provider, *, override: Optional[str], min_vram_gb: int, yes: bool,
+    provider: Provider, *, override: Optional[str], min_vram_gb: int, yes: bool,
 ) -> Gpu:
     try:
         options = provider.list_gpus(min_vram_gb = min_vram_gb)
@@ -358,131 +446,114 @@ def _pick_gpu(
     return shown[idx]
 
 
-def _resolve_datacenter(provider, gpu: Gpu, requested: Optional[str]) -> str:
-    """Datacenter for the network volume (and therefore the pod). Honor an
-    explicit --datacenter; otherwise pick the one with the most capacity for
-    `gpu` right now, since a fixed default goes stale as stock moves."""
-    if requested:
-        return requested
-    if not hasattr(provider, "datacenters_for_gpu"):
-        _fail(f"{provider.name} can't auto-pick a datacenter; pass --datacenter.", code = 2)
+# ---------------------------------------------------------------------------
+# Deploy
+# ---------------------------------------------------------------------------
 
-    typer.echo(f"Finding a datacenter with capacity for {gpu.name}...")
+
+def _stage_local_model(provider: Provider, local: Path, gpu: Gpu) -> StagedModel:
+    """Hand the local model to the provider's storage. The provider prints its
+    own progress (volume creation, upload) through the `log` callback and cleans
+    up after itself on failure."""
     try:
-        ranked = provider.datacenters_for_gpu(gpu.id)
+        return provider.stage_local_model(local, gpu = gpu, log = typer.echo)
     except DeployError as e:
         _fail(str(e))
-    if not ranked:
-        _fail(
-            f"No datacenter currently has secure-cloud capacity for {gpu.name}.\n"
-            "Pick a different GPU (the picker shows stock) or retry shortly."
-        )
-
-    datacenter, stock = ranked[0]
-    typer.echo(f"  -> {datacenter} ({stock} stock)")
-    return datacenter
 
 
 def _deploy(
-    provider,
+    provider: Provider,
     gpu: Gpu,
     *,
     admin_password: str,
     model: Optional[str],
+    staged: Optional[StagedModel],
     gguf_variant: Optional[str],
     hf_token: Optional[str],
-    datacenter: Optional[str],
-    s3_access_key: Optional[str],
-    s3_secret_key: Optional[str],
 ) -> None:
-    # A local model is shipped ahead of the pod onto a network volume (over S3);
-    # an HF id -- or no model -- needs no volume and Studio pulls it directly.
-    load_model = model            # what Studio ends up loading: pod path or HF id
-    load_kwargs: dict = {}
-    network_volume_id: Optional[str] = None
+    # A staged local model loads from its on-storage path; an HF id (or no model)
+    # is pulled by Studio directly.
+    storage_id = staged.storage_id if staged else None
+    if staged is not None:
+        load_model: Optional[str] = staged.model_path
+    else:
+        load_model = model
 
-    if _is_local_model(model):
+    load_kwargs: dict = {}
+    if staged is not None and model is not None:
         local = Path(model).expanduser()
-        network_volume_id, load_model = _upload_to_volume(
-            provider, local,
-            datacenter = datacenter,
-            access_key = s3_access_key,
-            secret_key = s3_secret_key,
-        )
         if local.is_dir() and (local / "adapter_config.json").is_file():
             load_kwargs["is_lora"] = True
             typer.echo("  detected adapter_config.json, loading as LoRA adapter")
-
     if gguf_variant:
         load_kwargs["gguf_variant"] = gguf_variant
     if hf_token:
         load_kwargs["hf_token"] = hf_token
 
     name = f"unsloth-studio-{int(time.time())}"
-    typer.echo(f"Creating pod '{name}'...")
+    typer.echo(f"Creating instance '{name}'...")
     try:
-        pod_id = provider.create_pod(
+        instance_id = provider.create_instance(
             name = name,
-            gpu_id = gpu.id,
+            gpu = gpu,
             image = IMAGE_TAG,
-            ports = [f"{STUDIO_PORT}/http"],
-            ssh_port = SSH_PORT,
+            http_port = STUDIO_PORT,
+            ssh_port = SSH_PORT if provider.supports_ssh else None,
             disk_gb = DEFAULT_DISK_GB,
             env = {"UNSLOTH_ADMIN_PASSWORD": admin_password},
-            network_volume_id = network_volume_id,
-            data_center_id = datacenter if network_volume_id else None,
+            staged = staged,
         )
     except DeployError as e:
-        # Capacity in the chosen datacenter can vanish between the check and now.
-        # Delete the volume so it doesn't keep billing, then point at the fix.
-        if network_volume_id:
-            _delete_volume_quietly(provider, network_volume_id)
+        # Capacity can vanish between staging and launch. Delete the storage so it
+        # doesn't keep billing, then point at the fix.
+        if storage_id:
+            _delete_storage_quietly(provider, storage_id)
             _fail(
-                f"{e}\nStock in {datacenter} changed. Retry, pick a higher-stock "
-                "GPU (the picker shows stock), or set --datacenter."
+                f"{e}\nCapacity changed after upload. Retry, pick a higher-stock "
+                "GPU (the picker shows stock), or set the provider's placement."
             )
         _fail(str(e))
-    typer.echo(f"  pod id: {pod_id}")
+    typer.echo(f"  instance id: {instance_id}")
 
     try:
-        typer.echo("Waiting for pod to start...")
-        provider.wait_running(pod_id, timeout_s = POD_RUNNING_TIMEOUT_S)
+        typer.echo("Waiting for instance to start...")
+        provider.wait_ready(instance_id, timeout_s = POD_RUNNING_TIMEOUT_S)
     except DeployError as e:
         _fail(
             f"Deploy failed: {e}\n"
-            f"Pod {pod_id} may still be running and billing.\n"
-            f"Stop it with: unsloth deploy stop {pod_id}"
-            + _volume_billing_note(network_volume_id)
+            f"Instance {instance_id} may still be running and billing.\n"
+            f"Stop it with: unsloth deploy stop {instance_id}"
+            + _storage_billing_note(storage_id)
         )
 
-    pod = Pod(
-        id = pod_id,
-        studio_url = provider.endpoint_url(pod_id, http_port = STUDIO_PORT),
-        ssh = provider.get_ssh(pod_id),
+    instance = Instance(
+        id = instance_id,
+        studio_url = provider.endpoint_url(instance_id, http_port = STUDIO_PORT),
+        ssh = provider.get_ssh(instance_id) if provider.supports_ssh else None,
     )
 
     if load_model is None:
-        _print_studio_ready(pod, gpu, network_volume_id)
+        _print_studio_ready(instance, gpu, storage_id)
     else:
         _serve_model(
-            pod, gpu,
+            instance, gpu,
             bootstrap_password = admin_password,
             model = load_model,
             load_kwargs = load_kwargs,
-            network_volume_id = network_volume_id,
+            storage_id = storage_id,
         )
 
 
 def _serve_model(
-    pod: Pod,
+    instance: Instance,
     gpu: Gpu,
     *,
     bootstrap_password: str,
     model: str,
     load_kwargs: dict,
-    network_volume_id: Optional[str],
+    storage_id: Optional[str],
 ) -> None:
-    client = StudioClient(pod.studio_url)
+    client = StudioClient(instance.studio_url)
     rotated_password: Optional[str] = None
 
     try:
@@ -496,22 +567,22 @@ def _serve_model(
         rotated_password = new_password
         api_key, credential_note = _mint_credential(client)
 
-        typer.echo(f"Loading '{model}' on the pod (can take several minutes)...")
+        typer.echo(f"Loading '{model}' on the instance (can take several minutes)...")
         client.load_model(model_path = model, **load_kwargs)
 
         _print_inference_ready(
-            pod, gpu,
+            instance, gpu,
             api_key = api_key,
             credential_note = credential_note,
             model = model,
             admin_password = new_password,
-            network_volume_id = network_volume_id,
+            storage_id = storage_id,
         )
     except DeployError as e:
         _fail(_stop_hint(
-            e, pod.id,
+            e, instance.id,
             admin_password = rotated_password,
-            network_volume_id = network_volume_id,
+            storage_id = storage_id,
         ))
 
 
@@ -519,99 +590,32 @@ def _is_local_model(model: Optional[str]) -> bool:
     return model is not None and Path(model).expanduser().exists()
 
 
-def _volume_size_gb(local: Path) -> int:
-    """Volume size for a model: its on-disk size + headroom for what Studio
-    writes at runtime on the same /workspace volume."""
-    total = 0
-    if local.is_dir():
-        for p in local.rglob("*"):
-            if p.is_file():
-                try:
-                    total += p.stat().st_size
-                except OSError:
-                    pass
-    else:
-        total = local.stat().st_size
-    return max(VOLUME_MIN_GB, math.ceil(total / 1e9 * VOLUME_HEADROOM_FACTOR) + 5)
-
-
-def _delete_volume_quietly(provider, volume_id: Optional[str]) -> None:
-    if not volume_id:
+def _delete_storage_quietly(provider: Provider, storage_id: Optional[str]) -> None:
+    if not storage_id:
         return
     try:
-        runpod_storage.delete_network_volume(provider, volume_id)
+        provider.delete_storage(storage_id)
     except DeployError:
         typer.echo(
-            f"  warning: couldn't delete volume {volume_id}; "
-            f"remove it with: unsloth deploy delete-volume {volume_id}",
+            f"  warning: couldn't delete storage {storage_id}; "
+            f"remove it with: unsloth deploy delete-storage {storage_id}",
             err = True,
         )
 
 
-def _upload_to_volume(
-    provider,
-    local: Path,
-    *,
-    datacenter: str,
-    access_key: Optional[str],
-    secret_key: Optional[str],
-) -> tuple[str, str]:
-    """Create a network volume, upload `local` onto it over S3, and return
-    (volume_id, pod-side model path). No SSH, and nothing leaves RunPod."""
-    name = local.resolve().name or "model"
-    size_gb = _volume_size_gb(local)
-
-    typer.echo(f"Creating {size_gb} GB network volume in {datacenter}...")
-    try:
-        volume_id = runpod_storage.create_network_volume(
-            provider,
-            name = f"unsloth-{int(time.time())}",
-            size_gb = size_gb,
-            datacenter_id = datacenter,
-        )
-    except DeployError as e:
-        _fail(str(e))
-    typer.echo(f"  volume id: {volume_id}")
-
-    prefix = f"uploads/{name}"
-    typer.echo(f"Uploading {local} to the volume over S3 (stays in RunPod)...")
-    try:
-        runpod_storage.upload_path(
-            local,
-            volume_id = volume_id,
-            datacenter = datacenter,
-            access_key = access_key,
-            secret_key = secret_key,
-            prefix = prefix,
-        )
-    except DeployError as e:
-        _fail(_with_volume_note(str(e), volume_id))
-    return volume_id, f"{POD_UPLOADS_DIR}/{name}"
-
-
-def _volume_billing_note(volume_id: Optional[str]) -> str:
-    if not volume_id:
+def _storage_billing_note(storage_id: Optional[str]) -> str:
+    if not storage_id:
         return ""
     return (
-        f"\nNetwork volume {volume_id} also persists (storage billed). Delete it with:"
-        f"\n    unsloth deploy delete-volume {volume_id}"
-    )
-
-
-def _with_volume_note(msg: str, volume_id: Optional[str]) -> str:
-    if not volume_id:
-        return msg
-    return (
-        f"{msg}\n"
-        f"A network volume ({volume_id}) was created and is billing. Delete it with:\n"
-        f"    unsloth deploy delete-volume {volume_id}"
+        f"\nStorage {storage_id} also persists (billed). Delete it with:"
+        f"\n    unsloth deploy delete-storage {storage_id}"
     )
 
 
 def _mint_credential(client: StudioClient) -> tuple[str, str]:
     """Mint a permanent API key, falling back to the login JWT on older images
     that predate POST /api/auth/api-keys (they 404/405). Any other failure
-    propagates to the caller's stop-the-pod handler."""
+    propagates to the caller's stop-the-instance handler."""
     try:
         return client.create_api_key(name = f"deploy-{int(time.time())}"), ""
     except DeployError as e:
@@ -625,27 +629,28 @@ def _mint_credential(client: StudioClient) -> tuple[str, str]:
 
 
 def _print_studio_ready(
-    pod: Pod, gpu: Gpu, network_volume_id: Optional[str] = None,
+    instance: Instance, gpu: Gpu, storage_id: Optional[str] = None,
 ) -> None:
     typer.echo("")
-    typer.echo("Unsloth Studio pod is starting (Studio may take ~1 minute).")
-    typer.echo(f"  Studio:  {pod.studio_url}")
-    typer.echo(f"  SSH:     ssh {pod.ssh.user}@{pod.ssh.host} -p {pod.ssh.port}")
+    typer.echo("Unsloth Studio instance is starting (Studio may take ~1 minute).")
+    typer.echo(f"  Studio:  {instance.studio_url}")
+    if instance.ssh is not None:
+        typer.echo(f"  SSH:     ssh {instance.ssh.user}@{instance.ssh.host} -p {instance.ssh.port}")
     typer.echo("")
-    _print_stop_hint(pod, gpu, network_volume_id)
+    _print_stop_hint(instance, gpu, storage_id)
 
 
 def _print_inference_ready(
-    pod: Pod,
+    instance: Instance,
     gpu: Gpu,
     *,
     api_key: str,
     credential_note: str,
     model: str,
     admin_password: str,
-    network_volume_id: Optional[str] = None,
+    storage_id: Optional[str] = None,
 ) -> None:
-    base_url = f"{pod.studio_url}/v1"
+    base_url = f"{instance.studio_url}/v1"
     body = json.dumps({"model": model, "messages": [{"role": "user", "content": "hi"}]})
 
     typer.echo("")
@@ -655,7 +660,7 @@ def _print_inference_ready(
     if credential_note:
         typer.echo(credential_note)
     typer.echo(f"    model:     {model}")
-    typer.echo(f"    admin_pw:  {admin_password}   (Studio UI at {pod.studio_url})")
+    typer.echo(f"    admin_pw:  {admin_password}   (Studio UI at {instance.studio_url})")
     typer.echo("")
     typer.echo("  Test it:")
     typer.echo(f"    curl {base_url}/chat/completions \\")
@@ -663,26 +668,26 @@ def _print_inference_ready(
     typer.echo("      -H 'Content-Type: application/json' \\")
     typer.echo(f"      -d '{body}'")
     typer.echo("")
-    _print_stop_hint(pod, gpu, network_volume_id)
+    _print_stop_hint(instance, gpu, storage_id)
 
 
 def _print_stop_hint(
-    pod: Pod, gpu: Gpu, network_volume_id: Optional[str] = None,
+    instance: Instance, gpu: Gpu, storage_id: Optional[str] = None,
 ) -> None:
-    typer.echo(f"  STOP THIS POD WHEN DONE - billed at ${gpu.cost_per_hour_usd:.3f}/hr.")
-    typer.echo(f"      unsloth deploy stop {pod.id}")
-    if network_volume_id:
-        typer.echo(f"  Network volume {network_volume_id} persists (storage billed). Delete when done:")
-        typer.echo(f"      unsloth deploy delete-volume {network_volume_id}")
+    typer.echo(f"  STOP THIS INSTANCE WHEN DONE - billed at ${gpu.cost_per_hour_usd:.3f}/hr.")
+    typer.echo(f"      unsloth deploy stop {instance.id}")
+    if storage_id:
+        typer.echo(f"  Storage {storage_id} persists (billed). Delete when done:")
+        typer.echo(f"      unsloth deploy delete-storage {storage_id}")
     typer.echo("")
 
 
 def _stop_hint(
     err: DeployError,
-    pod_id: str,
+    instance_id: str,
     *,
     admin_password: Optional[str] = None,
-    network_volume_id: Optional[str] = None,
+    storage_id: Optional[str] = None,
 ) -> str:
     lines = [f"Deploy bootstrap failed: {err}"]
     if admin_password is not None:
@@ -691,20 +696,11 @@ def _stop_hint(
             "  (save it -- the original password no longer works for the Studio UI)."
         )
     lines += [
-        f"Pod {pod_id} is still running and billing.",
-        f"Stop it with: unsloth deploy stop {pod_id}",
+        f"Instance {instance_id} is still running and billing.",
+        f"Stop it with: unsloth deploy stop {instance_id}",
     ]
-    note = _volume_billing_note(network_volume_id)
+    note = _storage_billing_note(storage_id)
     return "\n".join(lines) + note
-
-
-def _provider(name: str):
-    try:
-        provider = get_provider(name)
-        provider.auth()
-    except DeployError as e:
-        _fail(str(e))
-    return provider
 
 
 def _fail(msg: str, code: int = 1):

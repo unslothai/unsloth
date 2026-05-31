@@ -62,7 +62,7 @@ app.command()(inference)
 app.command()(export)
 app.command("list-checkpoints")(list_checkpoints)
 app.add_typer(studio_app, name = "studio", help = "Unsloth Studio commands.")
-app.add_typer(deploy_app, name = "deploy", help = "Launch Unsloth Studio on RunPod.")
+app.add_typer(deploy_app, name = "deploy", help = "Launch Unsloth Studio on a cloud provider.")
 
 # Top-level `unsloth run` aliases `unsloth studio run`; same context
 # so unknown flags still pass through to llama-server.
