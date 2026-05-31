@@ -29,7 +29,7 @@ def _enable(monkeypatch):
 
 
 def _disable(monkeypatch):
-    monkeypatch.delenv("UNSLOTH_STUDIO_ALLOW_STDIO_MCP", raising=False)
+    monkeypatch.delenv("UNSLOTH_STUDIO_ALLOW_STDIO_MCP", raising = False)
 
 
 # ── transport stub + recorder ───────────────────────────────────────
@@ -39,7 +39,7 @@ class _FakeTool:
     def __init__(self, name):
         self._name = name
 
-    def model_dump(self, exclude_none=True):
+    def model_dump(self, exclude_none = True):
         return {"name": self._name, "description": f"{self._name} tool"}
 
 
@@ -83,7 +83,7 @@ def transport(monkeypatch):
     monkeypatch.setattr(
         mcp_client,
         "_client",
-        lambda url, headers, use_oauth=False: _RecordingClient(
+        lambda url, headers, use_oauth = False: _RecordingClient(
             url, headers, use_oauth, recorder
         ),
     )
@@ -234,15 +234,15 @@ def test_create_route_gate(tmp_path, monkeypatch, transport):
     import routes.mcp_servers as routes_mcp
 
     _reset_db(tmp_path, monkeypatch)
-    payload = McpServerCreate(display_name="FS", url="npx -y server /tmp")
+    payload = McpServerCreate(display_name = "FS", url = "npx -y server /tmp")
 
     _disable(monkeypatch)
     with pytest.raises(HTTPException) as exc:
-        asyncio.run(routes_mcp.create_mcp_server(payload, current_subject="u"))
+        asyncio.run(routes_mcp.create_mcp_server(payload, current_subject = "u"))
     assert exc.value.status_code == 400
 
     _enable(monkeypatch)
-    resp = asyncio.run(routes_mcp.create_mcp_server(payload, current_subject="u"))
+    resp = asyncio.run(routes_mcp.create_mcp_server(payload, current_subject = "u"))
     assert resp.url == "npx -y server /tmp"
 
 
@@ -254,12 +254,12 @@ def test_update_http_to_stdio_blocked_when_off(tmp_path, monkeypatch):
 
     _reset_db(tmp_path, monkeypatch)
     _disable(monkeypatch)
-    mcp_servers_db.create_server(id="s1", display_name="A", url="https://a/mcp")
+    mcp_servers_db.create_server(id = "s1", display_name = "A", url = "https://a/mcp")
     # editing url -> stdio command must 400 (http->stdio edit bypass closed)
     with pytest.raises(HTTPException) as exc:
         asyncio.run(
             routes_mcp.update_mcp_server(
-                "s1", McpServerUpdate(url="npx server"), current_subject="u"
+                "s1", McpServerUpdate(url = "npx server"), current_subject = "u"
             )
         )
     assert exc.value.status_code == 400
@@ -272,16 +272,16 @@ def test_test_route_gate(tmp_path, monkeypatch, transport):
     import routes.mcp_servers as routes_mcp
 
     _reset_db(tmp_path, monkeypatch)
-    req = McpServerTestRequest(url="npx -y server /tmp")
+    req = McpServerTestRequest(url = "npx -y server /tmp")
 
     _disable(monkeypatch)
     with pytest.raises(HTTPException) as exc:
-        asyncio.run(routes_mcp.test_mcp_server(req, current_subject="u"))
+        asyncio.run(routes_mcp.test_mcp_server(req, current_subject = "u"))
     assert exc.value.status_code == 400
     assert transport == []  # transport never opened
 
     _enable(monkeypatch)
-    res = asyncio.run(routes_mcp.test_mcp_server(req, current_subject="u"))
+    res = asyncio.run(routes_mcp.test_mcp_server(req, current_subject = "u"))
     assert res.ok and res.tool_count == 2
     assert len(transport) == 1
 
@@ -293,16 +293,18 @@ def test_refresh_route_gate(tmp_path, monkeypatch, transport):
 
     _reset_db(tmp_path, monkeypatch)
     # a stdio row as if carried over from a desktop DB
-    mcp_servers_db.create_server(id="stdio1", display_name="FS", url="npx server")
+    mcp_servers_db.create_server(id = "stdio1", display_name = "FS", url = "npx server")
 
     _disable(monkeypatch)
     with pytest.raises(HTTPException) as exc:
-        asyncio.run(routes_mcp.refresh_mcp_server_tools("stdio1", current_subject="u"))
+        asyncio.run(routes_mcp.refresh_mcp_server_tools("stdio1", current_subject = "u"))
     assert exc.value.status_code == 400
     assert transport == []
 
     _enable(monkeypatch)
-    res = asyncio.run(routes_mcp.refresh_mcp_server_tools("stdio1", current_subject="u"))
+    res = asyncio.run(
+        routes_mcp.refresh_mcp_server_tools("stdio1", current_subject = "u")
+    )
     assert res.ok and res.tool_count == 2
     assert len(transport) == 1
 
@@ -314,7 +316,7 @@ def test_discovery_gate(tmp_path, monkeypatch, transport):
 
     _reset_db(tmp_path, monkeypatch)
     mcp_servers_db.create_server(
-        id="stdio1", display_name="FS", url="npx server", is_enabled=True
+        id = "stdio1", display_name = "FS", url = "npx server", is_enabled = True
     )
 
     _disable(monkeypatch)
@@ -332,7 +334,7 @@ def test_execute_gate(tmp_path, monkeypatch, transport):
 
     _reset_db(tmp_path, monkeypatch)
     mcp_servers_db.create_server(
-        id="stdio1", display_name="FS", url="npx server", is_enabled=True
+        id = "stdio1", display_name = "FS", url = "npx server", is_enabled = True
     )
 
     _disable(monkeypatch)
@@ -355,11 +357,11 @@ def test_stdio_env_passed_through(tmp_path, monkeypatch, transport):
     _reset_db(tmp_path, monkeypatch)
     _enable(monkeypatch)
     mcp_servers_db.create_server(
-        id="stdio1",
-        display_name="FS",
-        url="npx server",
-        headers_json='{"API_KEY": "sk-test"}',
-        is_enabled=True,
+        id = "stdio1",
+        display_name = "FS",
+        url = "npx server",
+        headers_json = '{"API_KEY": "sk-test"}',
+        is_enabled = True,
     )
     execute_tool("mcp__stdio1__list_directory", {})
     assert transport[-1]["headers"] == {"API_KEY": "sk-test"}

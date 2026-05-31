@@ -174,8 +174,11 @@ async def update_mcp_server(
     # headers == HTTP headers (remote) or env vars (stdio). On a transport-type
     # switch with no new headers, drop the old ones so env secrets are not
     # re-sent as HTTP headers (or vice versa).
-    if "url" in changes and is_stdio(changes["url"]) != is_stdio(old["url"]) \
-            and "headers_json" not in changes:
+    if (
+        "url" in changes
+        and is_stdio(changes["url"]) != is_stdio(old["url"])
+        and "headers_json" not in changes
+    ):
         changes["headers_json"] = None
     # Clear persisted OAuth tokens when the URL changes or OAuth is
     # disabled; fastmcp keys tokens by URL and would otherwise let a
