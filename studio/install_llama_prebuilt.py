@@ -757,6 +757,22 @@ def windows_cuda_asset_aliases(
     return aliases
 
 
+def _published_windows_cuda_runtime(
+    upstream_assets: dict[str, str], major: int
+) -> str | None:
+    """Highest cuda-<major>.<minor> minor actually published upstream, so the
+    Windows selector follows ggml-org when they bump the minor (13.1 -> 13.3)
+    rather than requesting a now-missing asset name. None if nothing matches."""
+    best: int | None = None
+    for name in upstream_assets:
+        m = re.search(r"-bin-win-cuda-(\d+)\.(\d+)-x64\.zip$", name)
+        if m and int(m.group(1)) == major:
+            minor = int(m.group(2))
+            if best is None or minor > best:
+                best = minor
+    return f"{major}.{best}" if best is not None else None
+
+
 def format_byte_count(num_bytes: float) -> str:
     units = ["B", "KiB", "MiB", "GiB", "TiB"]
     value = float(num_bytes)
@@ -3135,7 +3151,13 @@ def windows_cuda_attempts(
 
     attempts: list[AssetChoice] = []
     for runtime_line in runtime_order:
-        runtime = runtime_by_line[runtime_line]
+        major = 13 if runtime_line == "cuda13" else 12
+        # Use the minor ggml-org actually ships (13.1 -> 13.3); the hardcoded
+        # default is only a fallback when upstream has no matching asset.
+        runtime = (
+            _published_windows_cuda_runtime(upstream_assets, major)
+            or runtime_by_line[runtime_line]
+        )
         selected_name = None
         asset_url = None
         for candidate_name in windows_cuda_upstream_asset_names(llama_tag, runtime):

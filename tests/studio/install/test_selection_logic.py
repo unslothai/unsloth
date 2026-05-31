@@ -1885,6 +1885,40 @@ class TestWindowsCudaAttempts:
             assert attempt.runtime_url is None
             assert attempt.runtime_name is None
 
+    def test_tracks_upstream_cuda13_minor_bump(self, monkeypatch):
+        # ggml-org bumped the published Windows cuda13 build 13.1 -> 13.3; the
+        # selector must follow it instead of the old hardcoded 13.1 (#5861).
+        mock_windows_runtime(monkeypatch, ["cuda13", "cuda12"])
+        host = make_host(system = "Windows", machine = "AMD64", driver_cuda_version = (13, 3))
+        assets = self._upstream("13.3", "12.4")
+        result = windows_cuda_attempts(host, self.TAG, assets, None)
+        assert result[0].runtime_line == "cuda13"
+        assert result[0].name == f"llama-{self.TAG}-bin-win-cuda-13.3-x64.zip"
+
+    def test_cuda13_minor_bump_pairs_matching_cudart(self, monkeypatch):
+        # The paired cudart bundle must track the same bumped minor.
+        mock_windows_runtime(monkeypatch, ["cuda13", "cuda12"])
+        host = make_host(system = "Windows", machine = "AMD64", driver_cuda_version = (13, 3))
+        assets = {
+            f"llama-{self.TAG}-bin-win-cuda-13.3-x64.zip": "https://example.com/llama-13.3",
+            "cudart-llama-bin-win-cuda-13.3-x64.zip": "https://example.com/cudart-13.3",
+            f"llama-{self.TAG}-bin-win-cuda-12.4-x64.zip": "https://example.com/llama-12.4",
+            "cudart-llama-bin-win-cuda-12.4-x64.zip": "https://example.com/cudart-12.4",
+        }
+        result = windows_cuda_attempts(host, self.TAG, assets, None)
+        assert result[0].name == f"llama-{self.TAG}-bin-win-cuda-13.3-x64.zip"
+        assert result[0].runtime_name == "cudart-llama-bin-win-cuda-13.3-x64.zip"
+
+    def test_cuda13_build_offered_across_same_major_driver(self, monkeypatch):
+        # Any 13.x driver gets the published cuda13 build (minor-version compat
+        # within the major), matching the existing 13.0 -> 13.1 behavior.
+        mock_windows_runtime(monkeypatch, ["cuda13", "cuda12"])
+        host = make_host(system = "Windows", machine = "AMD64", driver_cuda_version = (13, 1))
+        assets = self._upstream("13.3", "12.4")
+        result = windows_cuda_attempts(host, self.TAG, assets, None)
+        assert result[0].runtime_line == "cuda13"
+        assert result[0].name == f"llama-{self.TAG}-bin-win-cuda-13.3-x64.zip"
+
 
 # ===========================================================================
 # N.1. apply_approved_hashes -- runtime archive checksum threading
