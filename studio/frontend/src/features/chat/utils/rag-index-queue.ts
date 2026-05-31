@@ -3,12 +3,12 @@
 
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 
-/** Bounds how many documents index in parallel. Each RAG upload acquires a
- *  slot before it starts and releases it once its ingestion job finishes
- *  (complete/error/already-indexed), so bulk/folder uploads drain at the
- *  user-configured `ragIndexConcurrency` rate instead of spawning a
- *  subprocess per file all at once. Module-scoped singleton — shared across
- *  both composer surfaces. */
+/** Bounds how many documents index in parallel. Each RAG upload
+ *  acquires a slot before it starts and releases it once its ingestion
+ *  job finishes (complete/error/already-indexed), so bulk/folder uploads
+ *  drain at the user-configured `ragIndexConcurrency` rate instead of
+ *  spawning a subprocess per file at once. Module-scoped singleton,
+ *  shared across both composer surfaces. */
 
 let active = 0;
 const waiters: Array<() => void> = [];

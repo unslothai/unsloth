@@ -31,10 +31,10 @@ import "react-pdf/dist/Page/TextLayer.css";
 import type { PreviewPdfRegion, PreviewTarget } from "../api/rag-api";
 import { PreviewUnavailable } from "./preview-unavailable";
 
-// Configure pdfjs worker in the same module where react-pdf is used,
-// per the react-pdf README. `import.meta.url` resolves to the JS bundle
-// containing this module, and Vite (+ Tauri) rewrites the URL during
-// build so the worker is co-located with the chunk.
+// Configure the pdfjs worker in the same module as react-pdf, per its
+// README. `import.meta.url` resolves to this module's JS bundle, and
+// Vite (+ Tauri) rewrites the URL at build so the worker sits with the
+// chunk.
 pdfjs.GlobalWorkerOptions.workerSrc = new URL(
   "pdfjs-dist/build/pdf.worker.min.mjs",
   import.meta.url,
@@ -52,8 +52,8 @@ type PdfLightThemeStyle = CSSProperties & Record<`--${string}`, string>;
 
 const RESIZE_DEBOUNCE_MS = 100;
 const MIN_PDF_WIDTH = 280;
-// Body has p-2 (8px each side) + stable scrollbar gutter (~10px) + a tiny
-// breathing margin so the page render doesn't kiss the scrollbar.
+// Body p-2 (8px each side) + stable scrollbar gutter (~10px) + a small
+// margin so the page render doesn't kiss the scrollbar.
 const PDF_BODY_GUTTER_PX = 28;
 const PDF_THUMBNAIL_WIDTH = 64;
 
@@ -102,8 +102,8 @@ function markFirstMatch(text: string, needle: string): string | null {
   )}</mark>${escapeHtml(text.slice(end))}`;
 }
 
-// Keep text-layer highlighting opt-in. Citation snippets render in the card
-// below; using them here would mark common words across unrelated PDF text.
+// Keep text-layer highlighting opt-in. Citation snippets render in the
+// card below; using them here would mark common words across the PDF.
 function highlightPdfText(text: string, searchTerm: string): string {
   const trimmed = searchTerm.trim();
   if (trimmed.length < 2) {
@@ -132,9 +132,9 @@ interface PdfThumbnailProps {
   onSelect: (pageNumber: number) => void;
 }
 
-/** Lazy thumbnail rendered via IntersectionObserver — only mounts the
- *  inner <Page> when scrolled into view (or close to it), so large PDFs
- *  stay responsive even when the rail caps at 80 buttons. */
+/** Lazy thumbnail via IntersectionObserver — mounts the inner <Page>
+ *  only when scrolled near view, so large PDFs stay responsive even
+ *  with the rail capped at 80 buttons. */
 const PdfThumbnail: FC<PdfThumbnailProps> = ({
   pageNumber,
   active,
@@ -295,12 +295,11 @@ export const PreviewPdfView: FC<PreviewPdfViewProps> = ({ target, file }) => {
     setWidth(next);
   }, []);
 
-  // Callback ref instead of useRef + mount effect: the scroll container
-  // lives INSIDE <Document>, so it only enters the DOM after the PDF
-  // loads. Attaching the ResizeObserver the instant the node mounts
-  // (rather than on the component's mount effect, when the node is still
-  // absent) is what keeps the main page from rendering at width 0 — the
-  // thin white strip regression.
+  // Callback ref, not useRef + mount effect: the scroll container lives
+  // INSIDE <Document> and only enters the DOM after the PDF loads.
+  // Attaching the ResizeObserver the instant the node mounts (vs the
+  // component mount effect, when the node is still absent) keeps the main
+  // page from rendering at width 0 — the thin white strip regression.
   const attachContainer = useCallback(
     (node: HTMLDivElement | null) => {
       if (observerRef.current) {

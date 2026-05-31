@@ -28,7 +28,7 @@ def test_chunk_pages_splits_long_text():
     for chunk in chunks:
         assert (
             _wc_counter(chunk.text) <= 55
-        )  # max + small slack from atomic split granularity
+        )  # max + slack from atomic split granularity
 
 
 def test_chunk_pages_short_text_is_one_chunk():
@@ -70,7 +70,7 @@ def test_chunk_pages_no_empty_chunks():
 
 
 def test_chunk_pages_overlap_produces_repeated_tokens():
-    # Build a list of unique numbered sentences so we can detect overlap.
+    # Unique numbered sentences let us detect overlap.
     sentences = [f"sentence-{i}" for i in range(40)]
     text = " ".join(sentences)
     chunks = chunk_pages(
@@ -82,14 +82,13 @@ def test_chunk_pages_overlap_produces_repeated_tokens():
     if len(chunks) >= 2:
         first_tail_words = set(chunks[0].text.split()[-4:])
         second_head_words = set(chunks[1].text.split()[:4])
-        # At least one word should appear in both
+        # At least one shared word.
         assert first_tail_words & second_head_words
 
 
 def test_chunk_pages_splits_on_markdown_headings():
-    # Phase 3A: heading separators take priority over paragraph breaks
-    # so chunks start at section boundaries when the parser emits
-    # Markdown.
+    # Phase 3A: heading separators outrank paragraph breaks, so chunks
+    # start at section boundaries for Markdown.
     md = (
         "# First Section\n\n"
         + "alpha " * 30
@@ -104,7 +103,7 @@ def test_chunk_pages_splits_on_markdown_headings():
         overlap_tokens = 0,
         token_counter = _wc_counter,
     )
-    # We expect multiple chunks and at least one to begin at a heading.
+    # Expect multiple chunks, at least one starting at a heading.
     assert len(chunks) >= 2
     starts_at_heading = sum(
         1 for c in chunks if c.text.lstrip().startswith(("# ", "## "))

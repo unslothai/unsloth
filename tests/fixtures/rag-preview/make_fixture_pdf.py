@@ -19,8 +19,8 @@ def _compress(data: bytes) -> bytes:
 
 
 def _pdf() -> bytes:
-    # Minimal PDF 1.4 with one page, one text stream.
-    # Structure: header, catalog, pages, page, content stream, xref, trailer.
+    # Minimal one-page PDF 1.4: header, catalog, pages, page, content
+    # stream, xref, trailer.
     page_text = b"BT /F1 12 Tf 72 720 Td (RAG preview fixture - page 1) Tj ET"
     compressed = _compress(page_text)
     stream_len = len(compressed)

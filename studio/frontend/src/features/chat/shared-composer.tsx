@@ -520,10 +520,9 @@ export function SharedComposer({
   // Images pill is only ever lit on OpenAI cloud's Responses-API models
   // and Gemini Nano Banana family. No local tool runtime fallback.
   const showImagePill = supportsBuiltinImageGeneration;
-  // RAG retrieval runs entirely through the local search_knowledge_base
-  // tool, so it needs the tool-calling loop. No external-builtin RAG
-  // equivalent — gate purely on supportsTools (mirrors web/code when not
-  // backed by a provider builtin).
+  // RAG runs entirely through the local search_knowledge_base tool, so
+  // it needs the tool-calling loop. No external-builtin equivalent —
+  // gate purely on supportsTools (mirrors web/code without a builtin).
   const ragDisabled = !modelLoaded || !supportsTools;
   // Fetch pill: Anthropic-only (web_fetch_20250910 / web_fetch_20260209).
   const webFetchDisabled = !modelLoaded || !supportsBuiltinWebFetch;
@@ -581,13 +580,13 @@ export function SharedComposer({
   }, [aui]);
 
   // Composer "+" upload — routes to whichever scope the Retrieval
-  // dropdown currently points at (KB or thread). Keeps "what you see is
-  // what you upload to" so users don't get silent thread-vs-KB mismatches.
+  // dropdown points at (KB or thread). "What you see is what you upload
+  // to" avoids silent thread-vs-KB mismatches.
   const addDoc = useCallback(
     (file: File) => {
       const localChipId = crypto.randomUUID();
-      // Lifecycle state shared between the upload flow and the cancel thunk;
-      // the thunk closes over these `let`s so it sees the latest ids whenever
+      // Lifecycle state shared by the upload flow and cancel thunk; the
+      // thunk closes over these `let`s so it sees the latest ids whenever
       // the user cancels.
       const abort = new AbortController();
       let jobId: string | undefined;
@@ -621,8 +620,8 @@ export function SharedComposer({
         ...prev,
         { id: localChipId, file, status: "uploading" },
       ]);
-      // Register in the aggregate-progress store now (whole batch) so the
-      // single toast counts queued files too.
+      // Register in the aggregate-progress store now (whole batch) so
+      // the single toast counts queued files too.
       const indexProgress = useIndexProgressStore.getState();
       indexProgress.add(localChipId, file.name);
       indexProgress.setCancel(localChipId, async () => {
@@ -633,9 +632,9 @@ export function SharedComposer({
         removeChip();
       });
       void (async () => {
-        // Hold an indexing slot for the document's whole lifecycle so bulk /
-        // folder uploads drain at the configured concurrency. Released on
-        // every terminal path below.
+        // Hold an indexing slot for the doc's whole lifecycle so bulk /
+        // folder uploads drain at the configured concurrency. Released
+        // on every terminal path below.
         await acquireIndexSlot();
         slotAcquired = true;
         if (abort.signal.aborted) {
@@ -689,16 +688,16 @@ export function SharedComposer({
           documentId = did;
           jobId = jid;
           if (abort.signal.aborted) {
-            // Cancelled while uploading: the document now exists on the
-            // backend, so tear it down here.
+            // Cancelled mid-upload: the doc now exists on the backend,
+            // so tear it down here.
             releaseSlot();
             await cleanupBackend();
             removeChip();
             return;
           }
           if (alreadyIndexed) {
-            // Drop the just-added chip if this doc is already represented
-            // so the composer never shows the same document twice.
+            // Drop the just-added chip if this doc is already shown, so
+            // the composer never lists the same document twice.
             setPendingDocs((prev) => {
               const dupExists = prev.some(
                 (d) => d.id !== localChipId && d.documentId === did,

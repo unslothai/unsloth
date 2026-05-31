@@ -1775,11 +1775,9 @@ def install_python_stack() -> int:
         [sys.executable, str(SINGLE_ENV / "patch_metadata.py")],
     )
 
-    # 14. AMD ROCm: final torch repair.  Multiple install steps above can
-    #     pull in CUDA torch from PyPI (base packages, extras, overrides,
-    #     studio deps, etc.).  Running the repair as the very last step
-    #     ensures ROCm torch is in place at runtime, regardless of which
-    #     intermediate step clobbered it.
+    # 14. AMD ROCm: final torch repair. Earlier steps can pull in CUDA torch
+    #     from PyPI; running last ensures ROCm torch wins regardless of which
+    #     step clobbered it.
     if not IS_WINDOWS and not IS_MACOS and not NO_TORCH:
         _progress("ROCm torch (final)")
         _ensure_rocm_torch()

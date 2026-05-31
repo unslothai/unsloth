@@ -9,9 +9,9 @@ import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { useEffect, useRef, useState } from "react";
 import { useIndexProgressStore } from "../stores/index-progress-store";
 
-/** Single aggregate indexing toast (top-right). One entry per upload batch:
- *  "Indexing documents · 2/5 · 40%" while in flight, "RAG index ready" when
- *  the last document finishes. Replaces the old one-toast-per-file stack. */
+/** Single aggregate indexing toast (top-right), one per upload batch:
+ *  "Indexing documents · 2/5 · 40%" in flight, "RAG index ready" when the
+ *  last document finishes. Replaces the old one-toast-per-file stack. */
 
 const DISMISS_DELAY_MS = 4000;
 
@@ -40,8 +40,8 @@ export function IngestionToastStack() {
   const errored = items.filter((e) => e.status === "error").length;
   const totalChunks = items.reduce((sum, e) => sum + (e.chunks || 0), 0);
   const allDone = total > 0 && done === total;
-  // Overall progress: completed/errored files count as 1, in-flight files
-  // contribute their fractional progress. Smooth even for a handful of files.
+  // Overall progress: ready/errored files count as 1, in-flight files add
+  // their fraction. Smooth even for a handful of files.
   const overall =
     total === 0
       ? 0
@@ -52,8 +52,8 @@ export function IngestionToastStack() {
         ) / total;
   const pct = Math.round(overall * 100);
 
-  // Auto-dismiss once the whole batch is terminal; cancel if a new upload
-  // re-opens the batch (entries change back to not-all-done).
+  // Auto-dismiss once the batch is terminal; cancel the timer if a new
+  // upload re-opens it (entries change back to not-all-done).
   useEffect(() => {
     if (allDone) {
       if (dismissTimerRef.current === null) {
@@ -90,8 +90,8 @@ export function IngestionToastStack() {
       `${totalChunks} chunk${totalChunks === 1 ? "" : "s"} indexed` +
       (errored > 0 ? ` · ${errored} failed` : "");
   } else {
-    // Show the file currently being worked on (1-based), not the completed
-    // count — so a fresh batch reads "1/8" rather than "0/8".
+    // Show the in-progress file (1-based), not the completed count, so a
+    // fresh batch reads "1/8" rather than "0/8".
     const current = Math.min(total, done + 1);
     subtitle = `${current}/${total} · ${pct}%`;
   }

@@ -12,11 +12,10 @@ interface PreviewTextViewProps {
   target: PreviewTarget;
 }
 
-/** Fetch the original document bytes via authFetch so the bearer
- *  token rides in the Authorization header. `window.open(url)` and
- *  `<a download href=url>` cannot set custom headers, so handing
- *  them the raw `/file` URL gets a 401 (HTTPBearer-only backend —
- *  see D1.3). */
+/** Fetch the original document bytes via authFetch so the bearer token
+ *  rides in the Authorization header. `window.open(url)` / `<a download>`
+ *  can't set custom headers, so the raw `/file` URL gets a 401 on the
+ *  HTTPBearer-only backend (see D1.3). */
 async function fetchOriginalBlob(target: PreviewTarget): Promise<Blob> {
   const response = await authFetch(
     `/api/rag/documents/${encodeURIComponent(target.documentId)}/file`,
@@ -41,16 +40,14 @@ async function downloadOriginal(target: PreviewTarget): Promise<void> {
   const blob = await fetchOriginalBlob(target);
   const url = URL.createObjectURL(blob);
   clickDownloadUrl(url, target.filename);
-  // Defer revocation so the browser's download pipeline gets the bytes
-  // before the URL goes away.
+  // Defer revocation so the download pipeline gets the bytes first.
   setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
 async function openOriginalInNewTab(target: PreviewTarget): Promise<void> {
-  // Defense in depth: refuse to create an inline blob URL for the
-  // unsafe types even if a future caller forgets the gate. The
-  // browser would render an html-blob as live HTML in the new tab,
-  // which is the Risk #3 / contracts §2.3 trip.
+  // Defense in depth: refuse an inline blob URL for the unsafe types
+  // even if a caller forgets the gate. An html-blob would render as
+  // live HTML in the new tab — the Risk #3 / contracts §2.3 trip.
   if (!isInlineBlobAllowed(target.mediaKind)) {
     throw new Error(
       `Inline open not allowed for mediaKind "${target.mediaKind}" — use Download instead.`,
@@ -64,15 +61,15 @@ async function openOriginalInNewTab(target: PreviewTarget): Promise<void> {
 }
 
 /** Extracted-text / snippet preview used for:
- *  - `text` mediaKind (txt/md) — the snippet is the only inline
- *    rendering we trust, and the original is one click away.
- *  - `docx`, `html`, `unknown` — the original is NEVER rendered
- *    inline from an object URL (Risk #3); we show the cited chunk
- *    text plus a safe download/open action.
+ *  - `text` (txt/md) — snippet is the only inline rendering we trust;
+ *    the original is one click away.
+ *  - `docx` / `html` / `unknown` — original is NEVER rendered inline
+ *    from an object URL (Risk #3); show the cited chunk text plus a
+ *    safe download/open action.
  *
- *  When `chunk_id` was not supplied (document-row preview per
- *  contracts §1.3 + decision Q2), `snippet` is `null` and we show a
- *  metadata-only state instead of guessing a first chunk. */
+ *  When no `chunk_id` was supplied (document-row preview, contracts
+ *  §1.3 + Q2), `snippet` is null and we show a metadata-only state
+ *  instead of guessing a first chunk. */
 interface MatchRange {
   start: number;
   end: number;
@@ -186,15 +183,15 @@ const renderHighlightedSnippet = (
 };
 
 /** Extracted-text / snippet preview used for:
- *  - `text` mediaKind (txt/md) — the snippet is the only inline
- *    rendering we trust, and the original is one click away.
- *  - `docx`, `html`, `unknown` — the original is NEVER rendered
- *    inline from an object URL (Risk #3); we show the cited chunk
- *    text plus a safe download/open action.
+ *  - `text` (txt/md) — snippet is the only inline rendering we trust;
+ *    the original is one click away.
+ *  - `docx` / `html` / `unknown` — original is NEVER rendered inline
+ *    from an object URL (Risk #3); show the cited chunk text plus a
+ *    safe download/open action.
  *
- *  When `chunk_id` was not supplied (document-row preview per
- *  contracts §1.3 + decision Q2), `snippet` is `null` and we show a
- *  metadata-only state instead of guessing a first chunk. */
+ *  When no `chunk_id` was supplied (document-row preview, contracts
+ *  §1.3 + Q2), `snippet` is null and we show a metadata-only state
+ *  instead of guessing a first chunk. */
 export const PreviewTextView: FC<PreviewTextViewProps> = ({ target }) => {
   const snippet = target.snippet;
   const hasSnippet = snippet !== null && snippet.trim().length > 0;
@@ -203,15 +200,12 @@ export const PreviewTextView: FC<PreviewTextViewProps> = ({ target }) => {
     target.lineEnd !== null ||
     target.pageCharStart !== null ||
     target.pageCharEnd !== null;
-  // "Open original" creates a blob: URL of the original bytes and
-  // passes it to `window.open`. For `html` the new tab would render
-  // it as live HTML — exactly the Risk #3 / contracts §2.3 trip
-  // ("MUST refuse to create an inline object URL for mediaKind ==
-  // 'html' | 'docx' | 'unknown'"). For those types the only safe
-  // action is Download (backend already sets
-  // Content-Disposition: attachment for those Content-Types). The
-  // pdf/text/image allowlist is the same one the preview-store
-  // uses to decide whether to fetch the blob at all (§5.4). */
+  // "Open original" blobs the bytes and hands them to `window.open`. For
+  // html/docx/unknown the new tab would render live HTML — the Risk #3 /
+  // contracts §2.3 trip ("MUST refuse an inline object URL" for those
+  // kinds). Download is the only safe action there (backend sends
+  // Content-Disposition: attachment). The pdf/text/image allowlist is the
+  // same one preview-store uses to gate the blob fetch (§5.4).
   const canOpenInline = isInlineBlobAllowed(target.mediaKind);
 
   const handleDownload = useCallback(() => {
@@ -221,11 +215,10 @@ export const PreviewTextView: FC<PreviewTextViewProps> = ({ target }) => {
   }, [target]);
 
   const handleOpenExternal = useCallback(() => {
-    // Re-fetch through authFetch and hand the new tab a blob URL.
-    // `window.open(rawApiUrl)` would send the request WITHOUT the
-    // Authorization header (window.open can't set custom headers)
-    // and the HTTPBearer-protected /file route would respond 401.
-    // See D1.3 finding.
+    // Re-fetch via authFetch and hand the new tab a blob URL.
+    // `window.open(rawApiUrl)` would omit the Authorization header
+    // (window.open can't set custom headers), so the HTTPBearer-protected
+    // /file route would 401. See D1.3 finding.
     openOriginalInNewTab(target).catch(() => {
       // best-effort; the user can retry.
     });

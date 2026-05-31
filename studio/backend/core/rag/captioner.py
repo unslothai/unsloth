@@ -43,16 +43,14 @@ _PROMPT = (
     "body paragraphs."
 )
 _MAX_NEW_TOKENS = 200
-# Downscale large images so the base64 payload stays manageable; the chat
-# model's prefill cost scales with image-tile count, not pixel count, but
-# very large inputs still bloat the JSON body. 1600 px on the long side
-# matches PR #5351's chat-composer extractor.
+# Downscale large images to keep the base64 payload manageable; prefill cost
+# scales with tile count not pixels, but huge inputs still bloat the JSON body.
+# 1600 px on the long side matches PR #5351's chat-composer extractor.
 _MAX_IMAGE_SIZE = 1600
 _REQUEST_TIMEOUT_SECONDS = 120.0
 
-# Helper VLM (used when no vision-capable chat model is loaded).
-# Matches the model pre-cached by precache_helper_gguf() at studio
-# startup so the captioner doesn't have to wait on a fresh download.
+# Helper VLM (used when no vision-capable chat model is loaded). Matches the
+# model pre-cached by precache_helper_gguf() at startup to avoid a fresh download.
 _HELPER_REPO = "unsloth/gemma-4-E2B-it-GGUF"
 _HELPER_VARIANT = "UD-Q4_K_XL"
 _HELPER_MODEL_NAME = "helper"
@@ -80,11 +78,9 @@ def _load_helper_vlm() -> Optional[tuple[Any, str, str]]:
     try:
         from core.inference.llama_cpp import LlamaCppBackend
 
-        # kill_orphans=False is critical: the global singleton is
-        # already running the user's chat-model llama-server. Killing
-        # "orphans" here would reap that healthy chat process because
-        # the orphan-killer can't tell two LlamaCppBackend instances
-        # apart by PID ownership.
+        # kill_orphans=False is critical: the global singleton already runs the
+        # user's chat-model llama-server. Killing "orphans" here would reap that
+        # healthy process — the orphan-killer can't tell two backends apart by PID.
         backend = LlamaCppBackend(kill_orphans = False)
         logger.info(
             "RAG captioner: loading helper VLM as fallback",
@@ -127,10 +123,9 @@ def _post_one(client: Any, endpoint: str, model: str, blob: bytes) -> str:
         ],
         "max_tokens": _MAX_NEW_TOKENS,
         "temperature": 0.0,
-        # Reasoning models (gemma-4, qwen3-thinking, etc.) burn the whole
-        # token budget on <thinking> output and emit empty visible content
-        # — useless for a short image caption. Disable thinking for this
-        # request only; the user's chat sessions stay unaffected.
+        # Reasoning models (gemma-4, qwen3-thinking, etc.) spend the whole budget on
+        # <thinking> and emit empty visible content — useless for a short caption.
+        # Disable thinking for this request only; the user's chat sessions stay unaffected.
         "chat_template_kwargs": {"enable_thinking": False},
     }
     response = client.post(endpoint, json = payload)
@@ -202,8 +197,8 @@ def caption_images(
         )
         return out
     finally:
-        # Always tear down the helper if we spawned one. Chat VLM (when
-        # provided by the parent) is left alone — it's not ours to manage.
+        # Tear down the helper if we spawned one. The parent-provided chat VLM is
+        # left alone — it's not ours to manage.
         if helper_backend is not None:
             try:
                 helper_backend.unload_model()

@@ -36,8 +36,7 @@ export interface UploadResponse {
   document_id: string;
   job_id: string;
   filename: string;
-  /** True when an identical file was already indexed in this scope; no
-   *  new ingestion job was started and job_id is "". */
+  /** Identical file already indexed in this scope; no job started, job_id is "". */
   already_indexed?: boolean;
 }
 
@@ -396,16 +395,15 @@ export async function setRagDefaults(
   return parseJsonOrThrow<RagDefaults>(response);
 }
 
-/** Preload the configured embedder on the backend. Long-running (cold
- *  load can take 30s+). Fire-and-forget: failure is non-fatal because
- *  the first real query will lazy-load again. */
+/** Preload the configured embedder on the backend. Long-running (cold load
+ *  30s+). Fire-and-forget: failure is fine, the first query lazy-loads. */
 export async function warmupRagEmbedder(): Promise<void> {
   await authFetch("/api/rag/warmup", { method: "POST" });
 }
 
-/**  Download reranker weights into the HF cache. ~1.1 GB on first call;
- *   no-op when cached. Called when the user flips the reranker toggle so
- *   the download lands on an explicit action, not the first chat turn. */
+/**  Download reranker weights into the HF cache. ~1.1 GB on first call,
+ *   no-op when cached. Triggered by the reranker toggle so the download
+ *   happens on an explicit action, not the first chat turn. */
 export async function precacheRagReranker(): Promise<{
   ok: boolean;
   model: string;
@@ -433,17 +431,17 @@ export async function search(req: SearchRequest): Promise<SearchHit[]> {
 
 // --- Ingestion SSE ---
 
-/** Cancel an in-flight ingestion job. Best-effort: a 404/already-terminal job
- *  resolves without error so batch cancellation never throws on stale ids. */
+/** Cancel an in-flight ingestion job. Best-effort: a 404/terminal job
+ *  resolves without error so batch cancel never throws on stale ids. */
 export async function cancelJob(jobId: string): Promise<void> {
   await authFetch(`/api/rag/jobs/${encodeURIComponent(jobId)}/cancel`, {
     method: "POST",
   }).catch(() => {});
 }
 
-/** Subscribe to a job's SSE stream; returns an unsubscribe fn.
- *  Use the EventSource polyfill so the bearer token rides in an
- *  Authorization header instead of leaking through URL query params. */
+/** Subscribe to a job's SSE stream; returns an unsubscribe fn. Uses the
+ *  EventSource polyfill so the bearer token rides in an Authorization
+ *  header instead of leaking through URL query params. */
 export function subscribeToJobEvents(
   jobId: string,
   handlers: {
@@ -483,7 +481,7 @@ export function subscribeToJobEvents(
   };
 
   source.onerror = () => {
-    // Browser auto-reconnects unless we close; let the consumer decide instead.
+    // Browser auto-reconnects unless we close; let the consumer decide.
     source.close();
     handlers.onError?.(new Error("SSE connection lost"));
     handlers.onClose?.();
@@ -497,9 +495,9 @@ export function subscribeToJobEvents(
 
 // --- Preview target + blob ---
 
-/** Fetch the preview-target metadata for a document. When `chunkId` is
- *  provided it must belong to `documentId`; mismatch collapses to 404
- *  with the same "Document not found" body as missing/unauthorized. */
+/** Fetch preview-target metadata for a document. A provided `chunkId` must
+ *  belong to `documentId`; mismatch collapses to the same 404 / "Document
+ *  not found" body as missing/unauthorized. */
 export async function fetchPreviewTarget(
   documentId: string,
   chunkId?: string | null,
@@ -511,8 +509,8 @@ export async function fetchPreviewTarget(
   return parseJsonOrThrow<PreviewTarget>(response);
 }
 
-/** Mint a short-lived URL that PDF.js can range-load without putting
- *  the user's bearer token in a query string. */
+/** Mint a short-lived URL PDF.js can range-load without putting the
+ *  user's bearer token in a query string. */
 export async function fetchPreviewFileUrl(
   documentId: string,
   signal?: AbortSignal,
@@ -538,13 +536,10 @@ export async function backfillDocumentLocators(
   return parseJsonOrThrow<LocatorBackfillResult>(response);
 }
 
-/** Download the original uploaded file as a Blob via `authFetch` (so
- *  the bearer token rides in the Authorization header — never a query
- *  string). The caller (preview-store) creates and revokes the object
- *  URL so blob lifecycle stays in one place.
- *
- *  `signal` lets the caller abort the fetch when the user switches
- *  documents mid-load. */
+/** Download the original uploaded file as a Blob via `authFetch` (bearer
+ *  token in the Authorization header, never a query string). The caller
+ *  (preview-store) creates and revokes the object URL so blob lifecycle
+ *  stays in one place. `signal` aborts the fetch on document switch. */
 export async function fetchPreviewFileBlob(
   documentId: string,
   signal?: AbortSignal,

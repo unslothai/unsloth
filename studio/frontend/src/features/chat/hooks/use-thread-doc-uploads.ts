@@ -48,23 +48,23 @@ export interface UseThreadDocUploadsResult {
   isIndexing: boolean;
 }
 
-/** RAG upload from the composer "+" button. Routes to whichever source is
- *  currently selected in the Retrieval dropdown: KB → uploads to that KB;
- *  thread or off → uploads to (and lazy-initializes) the current chat
- *  thread, then flips source to "thread" on first ingest if it was "off". */
+/** RAG upload from the composer "+" button. Routes by the Retrieval
+ *  dropdown source: KB → that KB; thread/off → the current chat thread
+ *  (lazy-initialized), flipping source to "thread" on first ingest if
+ *  it was "off". */
 export function useThreadDocUploads(): UseThreadDocUploadsResult {
   const aui = useAui();
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const [pendingDocs, setPendingDocs] = useState<PendingDoc[]>([]);
-  // Track the scope key per chip so removeDoc can dispatch the right
-  // delete (KB docs vs thread docs use different scope keys in the store).
+  // Track scope key per chip so removeDoc dispatches the right delete
+  // (KB vs thread docs use different scope keys in the store).
   const [chipScopeKeys, setChipScopeKeys] = useState<Record<string, string>>(
     {},
   );
 
-  // Brand-new chats have no backend thread until the first message is sent.
-  // Initialize the current local thread to mint a remoteId so RAG uploads
-  // can attach before-send; the saved thread row gets created on first send.
+  // Brand-new chats have no backend thread until the first message.
+  // Initialize the local thread to mint a remoteId so RAG uploads can
+  // attach before-send; the saved row is created on first send.
   const ensureThreadId = useCallback(async (): Promise<string | null> => {
     const stored = useChatRuntimeStore.getState().activeThreadId;
     if (stored) return stored;
@@ -86,9 +86,9 @@ export function useThreadDocUploads(): UseThreadDocUploadsResult {
   const addDoc = useCallback(
     (file: File) => {
       const localChipId = crypto.randomUUID();
-      // Lifecycle state shared between the upload flow and the cancel thunk.
-      // The cancel thunk closes over these `let`s by reference, so it always
-      // sees the latest job/document ids no matter when the user cancels.
+      // Lifecycle state shared by the upload flow and cancel thunk. The
+      // thunk closes over these `let`s by reference, so it always sees
+      // the latest job/document ids whenever the user cancels.
       const abort = new AbortController();
       let jobId: string | undefined;
       let documentId: string | undefined;
@@ -110,9 +110,9 @@ export function useThreadDocUploads(): UseThreadDocUploadsResult {
           return rest;
         });
       };
-      // Stop the backend job (if started) and delete its document so the
-      // index resets. Idempotent: both a late in-flight abort and the toast
-      // cancel can reach here.
+      // Stop the backend job (if started) and delete its document to
+      // reset the index. Idempotent: both a late in-flight abort and the
+      // toast cancel can reach here.
       const cleanupBackend = async () => {
         if (cleaned) return;
         cleaned = true;
@@ -128,8 +128,8 @@ export function useThreadDocUploads(): UseThreadDocUploadsResult {
         ...prev,
         { id: localChipId, file, status: "uploading" },
       ]);
-      // Register in the aggregate-progress store now (synchronously, for the
-      // whole batch) so the single toast counts queued files too.
+      // Register in the aggregate-progress store now (synchronously, for
+      // the whole batch) so the single toast counts queued files too.
       const indexProgress = useIndexProgressStore.getState();
       indexProgress.add(localChipId, file.name);
       indexProgress.setCancel(localChipId, async () => {
@@ -141,7 +141,7 @@ export function useThreadDocUploads(): UseThreadDocUploadsResult {
       });
 
       void (async () => {
-        // Hold an indexing slot for this document's whole lifecycle so bulk /
+        // Hold an indexing slot for this doc's whole lifecycle so bulk /
         // folder uploads drain at the configured concurrency instead of
         // spawning every ingestion at once. Released on every terminal path.
         await acquireIndexSlot();
@@ -160,7 +160,7 @@ export function useThreadDocUploads(): UseThreadDocUploadsResult {
           scope = { kind: "kb", kbId: ragSource.kbId };
           scopeKey = `kb:${ragSource.kbId}`;
         } else {
-          // ragSource is "thread" or "off" — fall back to thread.
+          // ragSource is "thread" or "off" — use thread.
           const threadId = await ensureThreadId();
           if (abort.signal.aborted) {
             releaseSlot();
@@ -199,8 +199,8 @@ export function useThreadDocUploads(): UseThreadDocUploadsResult {
           documentId = did;
           jobId = jid;
           if (abort.signal.aborted) {
-            // Cancelled while the upload was in flight: the document now
-            // exists on the backend, so tear it down here.
+            // Cancelled mid-upload: the doc now exists on the backend,
+            // so tear it down here.
             releaseSlot();
             await cleanupBackend();
             removeChip();
@@ -208,9 +208,9 @@ export function useThreadDocUploads(): UseThreadDocUploadsResult {
           }
           if (alreadyIndexed) {
             // Identical file already in this scope — no re-index. If a
-            // chip for this document already exists, drop the one we just
-            // added so the composer doesn't show the same doc twice;
-            // otherwise mark this chip ready.
+            // chip for this doc already exists, drop the one we just
+            // added so the composer doesn't show it twice; otherwise mark
+            // this chip ready.
             setPendingDocs((prev) => {
               const dupExists = prev.some(
                 (d) => d.id !== localChipId && d.documentId === did,
@@ -253,8 +253,8 @@ export function useThreadDocUploads(): UseThreadDocUploadsResult {
                   ),
                 );
                 // First ingest in an off-source chat: flip to thread so
-                // the model has somewhere to search. KB uploads don't
-                // need this — source is already a KB.
+                // the model has somewhere to search. KB uploads skip this
+                // — source is already a KB.
                 if (
                   scope?.kind === "thread" &&
                   useChatRuntimeStore.getState().ragSource.kind === "off"

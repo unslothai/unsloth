@@ -151,9 +151,9 @@ def test_kb_doc_missing_kb_raises_404(tmp_path, monkeypatch):
     with studio_db.get_connection() as conn:
         _insert_kb(conn, kb_id, owner = "alice")
         _insert_kb_doc(conn, doc_id, kb_id)
-        # Delete the KB — ON DELETE CASCADE should also drop the doc.
+        # Delete the KB; cascade drops the doc too.
         conn.execute("DELETE FROM rag_knowledge_bases WHERE id = ?", (kb_id,))
-    # After cascade deletion the doc_id no longer exists → 404.
+    # doc_id is gone post-cascade → 404.
     with pytest.raises(HTTPException) as exc_info:
         document_for_subject_or_404(doc_id, "alice")
     assert exc_info.value.status_code == 404
@@ -177,7 +177,7 @@ def test_thread_doc_nonexistent_thread_raises_404(tmp_path, monkeypatch):
     """A missing thread_id does NOT silently grant access — it must be 404."""
     _reset_db(tmp_path, monkeypatch)
     doc_id, thread_id = _uid(), _uid()
-    # Insert doc with a thread_id that has no matching chat_threads row.
+    # Doc's thread_id has no matching chat_threads row.
     with studio_db.get_connection() as conn:
         conn.execute(
             """
@@ -250,7 +250,7 @@ def test_chunk_belongs_returns_false_for_wrong_doc(tmp_path, monkeypatch):
         _insert_kb_doc(conn, doc_a, kb_id, "a.pdf")
         _insert_kb_doc(conn, doc_b, kb_id, "b.pdf")
         _insert_chunk(conn, chunk_id, doc_a)
-    # chunk belongs to doc_a — probing with doc_b must return False
+    # chunk is doc_a's; probing doc_b → False.
     assert chunk_belongs_to_document(chunk_id, doc_b) is False
 
 

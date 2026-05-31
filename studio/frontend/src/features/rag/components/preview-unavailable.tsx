@@ -7,12 +7,12 @@ import type { FC } from "react";
 interface PreviewUnavailableProps {
   /** Filename if known; "Document" otherwise. */
   filename?: string;
-  /** One-line reason — pulled from the backend's error body when
-   *  available, otherwise a generic copy. */
+  /** One-line reason — from the backend's error body if available,
+   *  else a generic copy. */
   reason: string;
-  /** "missing" → deleted/404 case; "error" → other failures. The icon
-   *  + tone change so a stale citation reads as "no longer available"
-   *  rather than a transient blip. */
+  /** "missing" → deleted/404; "error" → other failures. Icon + tone
+   *  change so a stale citation reads as "no longer available" rather
+   *  than a transient blip. */
   variant?: "missing" | "error";
 }
 

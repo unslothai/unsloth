@@ -331,7 +331,7 @@ function getRightSlotSheetSnapshot(): boolean {
 }
 
 function noopRightSlotSheetSubscription(): void {
-  // No browser media-query subscription is needed during SSR/tests.
+  // No media-query subscription during SSR/tests.
 }
 
 function subscribeRightSlotSheet(callback: () => void): () => void {
@@ -519,7 +519,7 @@ export function ChatSettingsPanel({
   const ragDefaults = useRagStore((s) => s.defaults);
 
   // Load thread RAG settings once per threadId. Ref-guarded; keep
-  // `threadSettings` out of deps to avoid post-load update loops.
+  // `threadSettings` out of deps to avoid update loops.
   const threadSettingsLoadedRef = useRef<string | null>(null);
   useEffect(() => {
     if (
@@ -542,7 +542,7 @@ export function ChatSettingsPanel({
   const aui = useAui();
   // Brand-new chat has no backend thread yet — initialize the local
   // assistant-ui thread to mint a remoteId so per-thread RAG settings
-  // can be saved before the user sends a message or attaches a file.
+  // save before the user sends a message or attaches a file.
   const ensureThreadId = async (): Promise<string | null> => {
     const stored = useChatRuntimeStore.getState().activeThreadId;
     if (stored) return stored;
@@ -1703,9 +1703,9 @@ export function ChatSettingsPanel({
                     onCheckedChange={(next) => {
                       setEnableRerank(next);
                       if (!next) return;
-                      // First flip-on may have to download ~1.1 GB; the
-                      // toast covers the latency so the user doesn't think
-                      // the next query is hung waiting on the reranker.
+                      // First flip-on may download ~1.1 GB; the toast
+                      // covers the latency so the next query doesn't look
+                      // hung waiting on the reranker.
                       const toastId = toast.loading(
                         "Preparing reranker (one-time download)…",
                       );
@@ -1970,11 +1970,10 @@ export function ChatSettingsPanel({
     </>
   );
 
-  // Right-slot routing (decision Q6 / Risk #11): the same slot hosts
-  // EITHER the inference settings panel OR the document-preview panel,
-  // never both. Preview takes precedence when a target is open. The
-  // slot widens for preview because PDFs need more real estate than
-  // a 17rem settings strip.
+  // Right-slot routing (decision Q6 / Risk #11): the slot hosts EITHER
+  // the inference settings panel OR the document-preview panel, never
+  // both. Preview wins when a target is open, and the slot widens for
+  // it since PDFs need more room than a 17rem settings strip.
   const previewActive =
     previewTarget !== null ||
     previewStatus === "loading" ||
@@ -1995,8 +1994,8 @@ export function ChatSettingsPanel({
           if (next) {
             onOpenChange?.(true);
           } else {
-            // Closing the sheet from outside closes BOTH the preview
-            // and the settings — single right slot.
+            // Closing the sheet from outside closes BOTH preview and
+            // settings — single right slot.
             usePreviewStore.getState().close();
             onOpenChange?.(false);
           }

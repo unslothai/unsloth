@@ -382,18 +382,17 @@ interface DocumentSourcePart {
   type: "source";
   sourceType: "document";
   id: string;
-  /** Display alias of `citationId`. Kept so the existing sources.tsx
-   *  renderer keeps working; new code SHOULD use `citationId`. NEVER
-   *  sent to backend as the durable chunk_id. */
+  /** Display alias of `citationId`, kept for the existing sources.tsx
+   *  renderer; new code SHOULD use `citationId`. NEVER sent to backend
+   *  as the durable chunk_id. */
   chunkId: string;
   /** Visible model-citation id (the `[N]` reference). Display only. */
   citationId: string;
-  /** Durable `rag_documents.id` from tool XML `document_id=`. Null
-   *  when the source came from legacy XML lacking the attribute;
-   *  preview routing is gated off in that case. */
+  /** Durable `rag_documents.id` from tool XML `document_id=`. Null on
+   *  legacy XML lacking it; preview routing is gated off then. */
   documentId: string | null;
-  /** Durable `rag_chunks.id` from tool XML `chunk_id=`. Null on
-   *  legacy XML. Sent as `?chunk_id=` to `/preview-target`. */
+  /** Durable `rag_chunks.id` from tool XML `chunk_id=`. Null on legacy
+   *  XML. Sent as `?chunk_id=` to `/preview-target`. */
   backendChunkId: string | null;
   filename: string;
   page?: string;
@@ -405,10 +404,9 @@ interface DocumentSourcePart {
   text: string;
 }
 
-/** Pull every `[N]` token the model wrote in its reply.
- *  Naive: regex over the whole text. False positives (e.g. `[1]` inside a
- *  code fence or list marker) are tolerated — the worst case is a stray
- *  badge for an id that exists in the retrieval set. */
+/** Pull every `[N]` token the model wrote. Naive whole-text regex;
+ *  false positives (e.g. `[1]` in a code fence) are tolerated — worst
+ *  case is a stray badge for an id already in the retrieval set. */
 const CITATION_RE = /\[(\d+)\]/g;
 function extractCitedIds(text: string): Set<string> {
   const ids = new Set<string>();
@@ -482,11 +480,11 @@ function toDocumentSourcePart(
 }
 
 /** Build doc-shaped source parts for chunks the model cited.
- *  `allChunks` is the flat union of every search_knowledge_base tool
- *  result in this turn (deduped by id). If the model forgets literal
- *  `[N]` ids, fall back to retrieved chunks so source chips remain
- *  visible and previewable. Hallucinated `[99]` refs without a matching
- *  chunk are silently dropped. */
+ *  `allChunks` is the flat, id-deduped union of every
+ *  search_knowledge_base result this turn. If the model omits literal
+ *  `[N]` ids, fall back to retrieved chunks so chips stay visible and
+ *  previewable. Hallucinated `[99]` refs with no matching chunk are
+ *  silently dropped. */
 function buildDocumentSourceParts(
   allChunks: ParsedChunk[],
   citedIds: Set<string>,
@@ -1665,19 +1663,18 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         );
       }
 
-      // Temporary debug toggle: when false, the pre-fetch path is skipped
-      // entirely so retrieval only happens via the LLM-invoked
-      // search_knowledge_base tool. Flip back to true to restore the
-      // always-on grounding for external providers / non-tool models.
+      // Temporary debug toggle: when false, pre-fetch is skipped so
+      // retrieval only runs via the LLM-invoked search_knowledge_base
+      // tool. Flip back to true to restore always-on grounding for
+      // external providers / non-tool models.
       const ragPrefetchEnabled = false;
 
       const ragSource = runtime.ragSource;
       const ragToolEnabled = runtime.ragToolEnabled;
-      // Even when RAG is toggled on, the tool + system-prompt nudge are
-      // useless if the active scope has no indexed documents — the model
-      // would call the tool, get back "no chunks", and waste a turn. Do
-      // a lightweight scope-has-docs check up front and treat the empty
-      // scope as effectively "off" for this turn.
+      // Even with RAG on, the tool + prompt nudge are useless if the
+      // scope has no indexed docs — the model would call the tool, get
+      // "no chunks", and waste a turn. Do a lightweight scope-has-docs
+      // check up front and treat an empty scope as "off" for this turn.
       let ragScopeHasDocs = false;
       if (ragToolEnabled && ragSource.kind !== "off") {
         try {
@@ -1689,9 +1686,9 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             ragScopeHasDocs = docs.length > 0;
           }
         } catch (err) {
-          // If the doc-list endpoint is unreachable we err on the side
-          // of letting the tool through — better to attempt retrieval
-          // and surface an error than to silently skip RAG.
+          // If the doc-list endpoint is unreachable, let the tool
+          // through — better to attempt retrieval and surface an error
+          // than to silently skip RAG.
           console.warn("RAG scope-has-docs check failed:", err);
           ragScopeHasDocs = true;
         }
@@ -2346,12 +2343,12 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                       externalProvider.enablePromptCaching ?? true,
                   }
                 : {}),
-              // Anthropic-only: pass the cache TTL the user picked in
-              // Configuration → Provider. Omitted = inherit the default
-              // 5-minute pool. The backend's `_stream_anthropic` only
-              // attaches `cache_control.ttl` when the value is one of
-              // "5m" / "1h" (see external_provider.py near line 1375),
-              // so unknown values are a no-op end-to-end.
+              // Anthropic-only: pass the cache TTL picked in
+              // Configuration → Provider. Omitted = default 5-minute
+              // pool. The backend's `_stream_anthropic` only attaches
+              // `cache_control.ttl` for "5m" / "1h" (see
+              // external_provider.py near line 1375), so unknown values
+              // are a no-op end-to-end.
               ...(supportsProviderPromptCacheTtl(
                 externalProvider.providerType,
               ) &&
@@ -2417,7 +2414,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
               ? {
                   enable_tools: true,
                   enabled_tools: [
-                    // RAG goes first so the model sees it before any other
+                    // RAG first so the model sees it before any other
                     // tool when scanning the spec list.
                     ...(ragToolPathTaken ? ["search_knowledge_base"] : []),
                     ...(toolsEnabled ? ["web_search"] : []),
@@ -2443,10 +2440,10 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                   mcp_enabled: mcpEnabledForChat,
                   auto_heal_tool_calls:
                     useChatRuntimeStore.getState().autoHealToolCalls,
-                  // With RAG active the model only needs up to 3 retrieval
-                  // calls; cap low so it can't spiral into web search / fetch
-                  // after already answering from the documents. Off-RAG turns
-                  // keep the user's full budget.
+                  // With RAG active the model needs at most 3 retrieval
+                  // calls; cap low so it can't spiral into web search /
+                  // fetch after answering from the documents. Off-RAG
+                  // turns keep the user's full budget.
                   max_tool_calls_per_message: ragToolPathTaken
                     ? Math.min(
                         useChatRuntimeStore.getState().maxToolCallsPerMessage,
@@ -3046,10 +3043,10 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
           );
         });
 
-        // RAG: flatten chunks across every search_knowledge_base call this
-        // turn, then emit previewable doc-source chips for cited chunks.
-        // If the model omits literal [N] ids, show the retrieved chunks so
-        // the answer still has a visible citation/preview affordance.
+        // RAG: flatten chunks across every search_knowledge_base call
+        // this turn, then emit previewable doc-source chips for cited
+        // chunks. If the model omits literal [N] ids, show the retrieved
+        // chunks so the answer still has a citation/preview affordance.
         const ragChunks = toolCallParts.flatMap((tc) => {
           if (tc.toolName !== "search_knowledge_base" || !tc.result) {
             return [];
@@ -3064,10 +3061,10 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
               )
             : [];
 
-        // SDK's SourceMessagePart only types `sourceType: "url"` with a
-        // required `url` field. SourcesGroup branches on `sourceType` at
-        // runtime, so cast the doc-shaped parts through `unknown` rather
-        // than weakening the helper's strict typing.
+        // SDK's SourceMessagePart only types `sourceType: "url"` (with a
+        // required `url`). SourcesGroup branches on `sourceType` at
+        // runtime, so cast doc-shaped parts through `unknown` rather than
+        // weakening the helper's strict typing.
         const sourceParts = [
           ...urlSourceParts,
           ...(documentSourceParts as unknown as typeof urlSourceParts),

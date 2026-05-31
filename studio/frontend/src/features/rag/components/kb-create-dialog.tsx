@@ -81,7 +81,7 @@ export function KBCreateDialog({
     setSubmitting(false);
   };
 
-  // Forbid (multimodal, late); disable the other side when one is picked.
+  // Forbid (multimodal, late): disable each side when the other is picked.
   const lateDisabled = mode === "multimodal";
   const multimodalDisabled = chunkingStrategy === "late";
 

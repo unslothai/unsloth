@@ -1,13 +1,13 @@
 /**
  * Tests for preview-panel — HTML/DOCX/unknown must NEVER render inline (T5 / Risk #3).
  *
- * Acceptance criteria (contracts §5.4, PLAN.md T5, decisions Q7):
- * - mediaKind === "pdf" → react-pdf view is mounted (or loading indicator shown).
- * - mediaKind === "html" → text-view fallback shown, NO object/embed/iframe with blob URL.
- * - mediaKind === "docx" → text-view fallback shown, NO inline rendering.
- * - mediaKind === "unknown" → unavailable/download state, NOT inline.
- * - mediaKind === "text" → text/snippet view shown.
- * - Panel without a target renders nothing or unavailable state.
+ * Acceptance (contracts §5.4, PLAN.md T5, decisions Q7):
+ * - "pdf" → react-pdf view mounted (or loading indicator).
+ * - "html" → text-view fallback, NO object/embed/iframe with blob URL.
+ * - "docx" → text-view fallback, NO inline rendering.
+ * - "unknown" → unavailable/download state, NOT inline.
+ * - "text" → text/snippet view.
+ * - No target → nothing or unavailable state.
  */
 
 import {
@@ -31,9 +31,9 @@ const DOWNLOAD_BUTTON_NAME = /download/i;
 const LONG_CONTENT_TEXT = /Some long content/;
 
 // ── Mock preview store ────────────────────────────────────────────────
-// The real component uses per-field selectors: usePreviewStore((s) => s.target)
-// so the mock must handle the selector pattern.
-// vi.hoisted ensures the mock fn is initialised before vi.mock factory runs.
+// The component uses per-field selectors (usePreviewStore((s) => s.target)),
+// so the mock must handle the selector pattern. vi.hoisted ensures the
+// mock fn is initialised before the vi.mock factory runs.
 
 interface MockStoreState {
   target: PreviewTarget | null;
@@ -61,8 +61,8 @@ let mockState: MockStoreState = {
 
 const { mockAuthFetch, mockUsePreviewStore } = vi.hoisted(() => {
   // usePreviewStore is called two ways:
-  //   usePreviewStore((s) => s.field)  — selector form (React hook)
-  //   usePreviewStore.getState().close() — outside React (cleanup effect)
+  //   usePreviewStore((s) => s.field)  — selector (React hook)
+  //   usePreviewStore.getState().close() — outside React (cleanup)
   const fn = vi.fn((selector?: (s: MockStoreState) => unknown) => {
     if (typeof selector === "function") {
       return selector(mockState);
@@ -125,7 +125,7 @@ beforeEach(() => {
       return mockState;
     },
   );
-  // Restore getState after mockImplementation replaces the fn internals
+  // Restore getState; mockImplementation replaces the fn internals
   mockUsePreviewStore.getState = () => mockState;
 
   // Mock window.matchMedia globally for tests
@@ -282,7 +282,7 @@ describe("preview-panel inline rendering safety (contracts §5.4 / Risk #3)", ()
     );
     rerender(React.createElement(PreviewPanel, { open: false }));
 
-    // The useEffect for open=false should have called close()
+    // open=false useEffect should have called close()
     expect(closeFn).toHaveBeenCalled();
   });
 
@@ -333,7 +333,7 @@ describe("preview-panel inline rendering safety (contracts §5.4 / Risk #3)", ()
 
     render(React.createElement(PreviewPanel, { open: true }));
 
-    // Radix UI Sheet component should render dialog role in mobile viewports
+    // Radix Sheet renders dialog role in mobile viewports
     const dialog = screen.getByRole("dialog");
     expect(dialog).toBeInTheDocument();
     expect(dialog).toHaveClass("preview-sheet-content");
@@ -342,7 +342,7 @@ describe("preview-panel inline rendering safety (contracts §5.4 / Risk #3)", ()
 });
 
 // ── Pure-logic: inline allowlist (always green) ───────────────────────
-// Uses the real production isInlineBlobAllowed (D1.5 fix: no local copy).
+// Uses the real isInlineBlobAllowed (D1.5 fix: no local copy).
 
 describe("inline object URL allowlist (contracts §5.4, pure logic)", () => {
   const inlineSafe: PreviewMediaKind[] = ["pdf", "text", "image"];
@@ -384,7 +384,7 @@ describe("preview-panel stable scrollbars, sheets, layouts, and downloads", () =
 
     render(React.createElement(PreviewPanel, { open: true }));
 
-    // The snippet is rendered in a <pre> element. Check if it has overflow-auto
+    // Snippet renders in a <pre>; check it has overflow-auto
     const preElement = screen.getByText(LONG_CONTENT_TEXT);
     expect(preElement).toHaveClass("overflow-auto");
     expect(preElement).toHaveClass("flex-1");
@@ -510,7 +510,7 @@ describe("PreviewTextView precise highlights matching", () => {
       mediaKind: "text",
       filename: "notes.txt",
       snippet: "...\nAlphanumericDensity123456\n...",
-      lineStart: 999, // Trigger hasLocator without matching any specific line range
+      lineStart: 999, // hasLocator true, but matches no line range
     });
 
     render(React.createElement(PreviewPanel, { open: true }));

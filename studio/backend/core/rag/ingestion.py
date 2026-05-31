@@ -65,10 +65,9 @@ def _subprocess_worker(
     vlm_model: str | None = None,
     enable_captions: bool = True,
 ) -> None:
-    # Spawned subprocess: structlog isn't configured here (the parent's
-    # setup runs in the FastAPI process only), so configure it the same
-    # way so captioner / parser logs render as JSON like the rest, not
-    # structlog's default dev ConsoleRenderer.
+    # Spawned subprocess: structlog setup only ran in the parent's FastAPI
+    # process. Configure it here too so captioner/parser logs render as JSON,
+    # not structlog's default dev ConsoleRenderer.
     try:
         import os as _os
 
@@ -85,9 +84,8 @@ def _subprocess_worker(
         from core.rag.parsers import inline_image_captions, parse
 
         out_queue.put({"type": "progress", "stage": "parse", "progress": 0.05})
-        # Always extract images so we can caption + splice for both
-        # modes. Text mode uses the captions inline in markdown; multimodal
-        # additionally embeds the raw images as image-kind chunks.
+        # Always extract images to caption + splice for both modes. Text mode uses
+        # captions inline in markdown; multimodal also embeds raw images as image-kind chunks.
         parsed = parse(Path(stored_path), want_images = True)
         pages = parsed.pages
         if not pages and not parsed.images:
@@ -96,11 +94,9 @@ def _subprocess_worker(
             )
             return
 
-        # Caption figures once (chat VLM if available, else helper VLM
-        # fallback), then splice captions into the page markdown so the
-        # chunker indexes them like any other text. Multimodal mode also
-        # passes these same captions through to _stream_image_chunks
-        # below — no duplicate VLM calls per image.
+        # Caption figures once (chat VLM if available, else helper VLM), then splice
+        # captions into the page markdown so the chunker indexes them like any text.
+        # Multimodal reuses these captions in _stream_image_chunks below — no duplicate VLM calls.
         captions: list[str] = []
         if parsed.images and enable_captions:
             out_queue.put(
@@ -718,9 +714,8 @@ def _pump(
                         msg["vectors"],
                     )
                 except sqlite3.IntegrityError as exc:
-                    # rag_documents row was deleted mid-ingest (user removed
-                    # the chip / cleared the index). Fail the job cleanly
-                    # rather than crashing the pump thread.
+                    # rag_documents row deleted mid-ingest (chip removed / index
+                    # cleared). Fail the job cleanly rather than crashing the pump thread.
                     final_error = (
                         f"document was removed before ingestion finished ({exc})"
                     )
@@ -743,9 +738,8 @@ def _pump(
 
     finished_at = int(time.time())
     if state.cancelled:
-        # User cancelled mid-flight. The route-side deleteDocument removes the
-        # row, file, and chunk artifacts; here we just mark terminal and notify
-        # subscribers so the SSE stream closes cleanly.
+        # User cancelled mid-flight. Route-side deleteDocument removes the row, file,
+        # and chunk artifacts; here we just mark terminal and notify subscribers so the SSE closes.
         _update_document_row(state.document_id, status = "cancelled")
         _update_job_row(
             state.job_id,
@@ -806,10 +800,9 @@ def _probe_loaded_vlm() -> tuple[str | None, str | None]:
     unsloth in-process VLMs would need a different bridge.
     """
     try:
-        # The singleton getter lives in routes.inference, not the
-        # llama_cpp module. Importing from the wrong place silently
-        # returned None for every probe — captioner always fell back
-        # to the helper VLM even when the chat model was vision-capable.
+        # The singleton getter lives in routes.inference, not the llama_cpp module.
+        # The wrong import silently returned None for every probe, so the captioner
+        # always fell back to the helper VLM even when the chat model was vision-capable.
         from routes.inference import get_llama_cpp_backend
     except Exception as exc:
         logger.warning("RAG probe: get_llama_cpp_backend import failed", error = str(exc))
@@ -850,13 +843,11 @@ def enqueue_ingestion(
         or resolve_embedder(mode, chunking_strategy)
         or RAG_EMBEDDING_MODEL
     )
-    # Probe the loaded chat backend so the subprocess can route figure
-    # captioning to the user's own vision model (no extra VRAM). Runs
-    # for both modes — text mode splices captions into markdown, and
-    # multimodal mode additionally feeds them to the image-vector
-    # encoder. If no vision chat model is loaded, the subprocess falls
-    # back to the helper VLM (pre-cached at studio startup). Skipped
-    # entirely when captioning is disabled for this upload.
+    # Probe the loaded chat backend so the subprocess can caption figures with the
+    # user's own vision model (no extra VRAM). Runs for both modes — text splices
+    # captions into markdown, multimodal also feeds them to the image-vector encoder.
+    # No vision chat model loaded → falls back to the helper VLM (pre-cached at startup).
+    # Skipped when captioning is disabled for this upload.
     vlm_url: str | None = None
     vlm_model: str | None = None
     if enable_captions:

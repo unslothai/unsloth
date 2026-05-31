@@ -1153,8 +1153,8 @@ const RagToggle: FC = () => {
   const setRagSource = useChatRuntimeStore((s) => s.setRagSource);
   const supportsTools = useChatRuntimeStore((s) => s.supportsTools);
   // RAG runs through the local search_knowledge_base tool, so it's hidden
-  // entirely for external providers (whose request path doesn't execute
-  // local tools) and gated on tool-calling support otherwise.
+  // for external providers (no local-tool execution) and gated on
+  // tool-calling support otherwise.
   if (parseExternalModelId(checkpoint) !== null) return null;
   const disabled = !modelLoaded || !supportsTools;
   return (
@@ -1243,9 +1243,9 @@ const ToolStatusDisplay: FC = () => {
   );
 };
 
-// RAG-aware + button: picks doc formats and routes to ingest pipeline.
+// RAG-aware + button: picks doc formats and routes to the ingest pipeline.
 // A second button picks a whole folder (webkitdirectory) and routes every
-// compatible file through the same pipeline (which drains at the configured
+// compatible file through the same pipeline (drains at the configured
 // parallel-indexing rate).
 const RagDocAttachment: FC<{ onSelect: (file: File) => void }> = ({
   onSelect,
@@ -1274,8 +1274,8 @@ const RagDocAttachment: FC<{ onSelect: (file: File) => void }> = ({
       />
       <input
         // webkitdirectory isn't in React's input prop types; set it on the
-        // element directly so the picker selects a folder (returns every
-        // file recursively, which selectCompatible then filters).
+        // element directly so the picker selects a folder (returns every file
+        // recursively, which selectCompatible then filters).
         ref={(el) => {
           folderInputRef.current = el;
           if (el) el.setAttribute("webkitdirectory", "");

@@ -262,8 +262,8 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_rag_documents_thread_id ON rag_documents(thread_id)"
     )
-    # content_hash: sha256 of the uploaded bytes, used to skip re-indexing a
-    # file that already exists in the same scope (kb_id / thread_id).
+    # content_hash: sha256 of uploaded bytes; skips re-indexing a file already
+    # in the same scope (kb_id / thread_id).
     rag_documents_columns = {
         row[1] for row in conn.execute("PRAGMA table_info(rag_documents)").fetchall()
     }

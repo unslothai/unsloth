@@ -60,10 +60,10 @@ def _hit(
 def _parse_chunks(xml_output: str) -> list[dict]:
     """Parse <chunk ...> elements from the multi-block tool output."""
     chunks = []
-    # Each block is wrapped in <chunk ...>\n...\n</chunk>; parse directly.
+    # Blocks are <chunk ...>...</chunk>; parse directly.
     for match in re.finditer(r"<chunk\s([^>]*)>", xml_output):
         attrs_raw = match.group(1)
-        # Quick attribute parser for "key="value"" pairs.
+        # Parse "key="value"" pairs.
         attrs: dict = {}
         for m in re.finditer(r'(\w+)="([^"]*)"', attrs_raw):
             attrs[m.group(1)] = m.group(2)
@@ -92,7 +92,7 @@ def test_citation_id_is_sequential_counter_not_uuid():
     output = _format_hits_for_llm(hits, start_id = 0)
     chunks = _parse_chunks(output)
     visible_id = chunks[0]["id"]
-    # Must be a small integer string, NOT the UUID
+    # Small integer string, not the UUID.
     assert visible_id == "1", f"expected '1' got {visible_id!r}"
     assert visible_id != chunk_id
 
@@ -114,7 +114,7 @@ def test_citation_ids_are_globally_sequential_across_calls():
     assert chunks2[0]["id"] == "2"
     assert chunks2[1]["id"] == "3"
 
-    # No id overlap
+    # No id overlap.
     all_ids = {c["id"] for c in chunks1 + chunks2}
     assert len(all_ids) == 3
 
@@ -131,7 +131,7 @@ def test_same_filename_docs_have_distinct_document_ids():
     output = _format_hits_for_llm(hits)
     chunks = _parse_chunks(output)
     assert len(chunks) == 2
-    # Both use the same filename but MUST have distinct document_id values
+    # Same filename, distinct document_id values.
     assert chunks[0]["document_id"] != chunks[1]["document_id"]
     assert chunks[0]["document_id"] == doc_a
     assert chunks[1]["document_id"] == doc_b
@@ -213,10 +213,10 @@ def test_xml_special_chars_in_filename_escaped():
         )
     ]
     output = _format_hits_for_llm(hits)
-    # The output must parse cleanly (no unescaped < or " in attrs)
+    # Output parses cleanly (no unescaped < or " in attrs).
     chunks = _parse_chunks(output)
     assert len(chunks) == 1
-    # source attribute should have the filename escaped
+    # source attribute has the filename escaped.
     source_attr = chunks[0].get("source", "")
     assert "<" not in source_attr and '"' not in source_attr
 

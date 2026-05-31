@@ -45,10 +45,10 @@ export function KBDetailPanel({
   const [reconfigureOpen, setReconfigureOpen] = useState(false);
   const openPreview = usePreviewStore((s) => s.open);
 
-  // Route uploads through the shared aggregate indexing toast (same as the
-  // chat composer) so a multi-file upload shows ONE progress bar instead of a
-  // per-row spinner. The doc list refreshes via uploadDocument's own job
-  // subscription; here we only drive the toast + concurrency semaphore.
+  // Route uploads through the shared aggregate indexing toast (like the chat
+  // composer) so a multi-file upload shows ONE progress bar, not a per-row
+  // spinner. uploadDocument's own job subscription refreshes the doc list;
+  // here we only drive the toast + concurrency semaphore.
   const handleFiles = (files: File[]) => {
     const indexProgress = useIndexProgressStore.getState();
     const captionImages = useChatRuntimeStore.getState().ragCaptionImages;
@@ -170,9 +170,9 @@ export function KBDetailPanel({
                     <div
                       key={doc.id}
                       className={cn(
-                        // grid minmax(0,1fr)/auto (same as the Connections
-                        // rows) so the name column shrinks and the delete
-                        // button stays put — never widening the panel.
+                        // grid minmax(0,1fr)/auto (like the Connections rows)
+                        // so the name column shrinks and the delete button
+                        // stays put — never widening the panel.
                         "grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-lg border border-foreground/20 bg-muted px-3 py-1.5 text-xs",
                         previewable && "cursor-pointer hover:bg-muted/70",
                       )}

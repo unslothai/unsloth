@@ -127,7 +127,7 @@ def test_format_hits_produces_fenced_chunks():
     assert 'tokens="42"' in result
     assert "first body\n</chunk>" in result
     assert '<chunk id="2" source="beta.md" score="0.610">' in result
-    # Blocks separated by a blank line so the model can scan the list.
+    # Blank line between blocks so the model can scan them.
     assert "</chunk>\n\n<chunk" in result
 
 
@@ -188,8 +188,7 @@ def test_tool_spec_shape_is_openai_compatible():
     assert fn["name"] == "search_knowledge_base"
     assert "query" in fn["parameters"]["required"]
     assert "top_k" in fn["parameters"]["properties"]
-    # Description should hint at when to call so the LLM picks it up
-    # appropriately. Don't lock the exact wording.
+    # Description hints when to call; don't lock the exact wording.
     assert "documents" in fn["description"].lower()
 
 
@@ -263,5 +262,5 @@ def test_all_tools_includes_rag():
 
     names = [t["function"]["name"] for t in ALL_TOOLS]
     assert "search_knowledge_base" in names
-    assert "web_search" in names  # regression — we shouldn't have removed the others
+    assert "web_search" in names  # regression: others must stay
     assert "python" in names

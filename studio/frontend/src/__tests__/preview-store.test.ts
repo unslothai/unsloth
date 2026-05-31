@@ -2,13 +2,13 @@
  * Tests for preview-store object URL lifecycle (contracts §5, T4).
  *
  * Coverage:
- * - open() revokes previous object URL before assigning a new one.
+ * - open() revokes the previous object URL before assigning a new one.
  * - close() revokes any live object URL.
  * - Opening doc B while doc A is loaded revokes doc A's URL.
- * - PDFs use a signed range URL instead of a full blob download.
- * - Inline object URLs are created ONLY for safe non-PDF mediaKind (text/image).
- * - For unsafe mediaKind (html/docx/unknown) blob fetch is skipped; previewBlobUrl = null.
- * - isInlineBlobAllowed pure predicate matches contracts §5.4 allowlist.
+ * - PDFs use a signed range URL, not a full blob download.
+ * - Inline object URLs created ONLY for safe non-PDF kinds (text/image).
+ * - Unsafe kinds (html/docx/unknown) skip blob fetch; previewBlobUrl = null.
+ * - isInlineBlobAllowed matches the contracts §5.4 allowlist.
  * - __previewStoreInternals() verifies module-scoped cleanup.
  */
 
@@ -19,8 +19,8 @@ import type {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // ── Mock rag-api BEFORE importing the store ───────────────────────────
-// vi.hoisted ensures the mock refs are initialised before vi.mock factory
-// runs (vi.mock is hoisted to the top of the file by Vitest's transformer).
+// vi.hoisted initialises the mock refs before the vi.mock factory runs
+// (Vitest hoists vi.mock to the top of the file).
 
 const {
   mockFetchPreviewTarget,
@@ -75,7 +75,7 @@ beforeEach(() => {
   mockFetchPreviewTarget.mockReset();
   mockFetchPreviewFileBlob.mockReset();
   mockFetchPreviewFileUrl.mockReset();
-  // Reset store to idle between tests
+  // Reset store to idle per test
   usePreviewStore.getState().close();
 });
 

@@ -43,10 +43,10 @@ function readStored(key: string, fallback: number): number {
   }
 }
 
-/** Drag-to-resize hook for a right-anchored panel. The handle sits on
- *  the panel's LEFT edge — width grows as the pointer moves toward
- *  viewport x=0. Persists to localStorage and re-clamps on viewport
- *  changes so a wide panel cannot eclipse the host content. */
+/** Drag-to-resize hook for a right-anchored panel. The handle is on the
+ *  panel's LEFT edge, so width grows as the pointer moves toward x=0.
+ *  Persists to localStorage and re-clamps on viewport resize so a wide
+ *  panel cannot eclipse the host content. */
 export function useResizablePanelWidth({
   storageKey,
   defaultWidth,
@@ -78,8 +78,7 @@ export function useResizablePanelWidth({
     try {
       window.localStorage.setItem(storageKey, String(width));
     } catch {
-      // localStorage may be unavailable (private mode, quota); persist
-      // is best-effort.
+      // localStorage may be unavailable (private mode, quota); best-effort.
     }
   }, [width, storageKey, enabled]);
 

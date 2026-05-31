@@ -5,7 +5,7 @@ import { useEffect } from "react";
 import type { RagDocument } from "../api/rag-api";
 import { kbScopeKey, threadScopeKey, useRagStore } from "../stores/rag-store";
 
-// Stable sentinel: inline `[]` in the selector causes React error #185
+// Stable sentinel: inline `[]` in the selector triggers React error #185
 // (new ref each call → Zustand re-renders → infinite loop).
 const EMPTY_DOCS: RagDocument[] = [];
 

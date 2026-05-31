@@ -2712,8 +2712,8 @@ async def openai_chat_completions(
                 # MCP-only request: skip built-ins, leave room for MCP tools.
                 tools_to_use = []
             elif payload.enabled_tools is not None:
-                # Preserve client-supplied order so prioritised tools
-                # (e.g. search_knowledge_base when RAG is on) appear first.
+                # Preserve client order so prioritised tools (e.g. search_knowledge_base
+                # when RAG is on) appear first.
                 _by_name = {t["function"]["name"]: t for t in ALL_TOOLS}
                 tools_to_use = [
                     _by_name[name] for name in payload.enabled_tools if name in _by_name

@@ -101,11 +101,9 @@ def precache_helper_gguf():
         else:
             logger.warning(f"No GGUF matching variant '{variant}' in {repo}")
 
-        # If the repo also ships an mmproj (vision projection), grab it
-        # so the helper can be used as a vision-language model by the
-        # RAG captioner path. Preference order: F16 → BF16 → F32 → any.
-        # Best-effort — the LLM-assist path doesn't need vision, so a
-        # missing mmproj is fine and only logged.
+        # Grab an mmproj (vision projection) if the repo ships one, so the helper
+        # can serve as a VLM for the RAG captioner. Preference: F16 → BF16 → F32 → any.
+        # Best-effort — LLM-assist doesn't need vision, so a missing mmproj is fine and logged.
         mmproj_files = [
             f for f in files if "mmproj" in f.lower() and f.endswith(".gguf")
         ]
@@ -155,8 +153,8 @@ def _run_with_helper(prompt: str, max_tokens: int = 256) -> Optional[str]:
     try:
         from core.inference.llama_cpp import LlamaCppBackend
 
-        # kill_orphans=False so the helper backend doesn't reap the
-        # parent's chat-model llama-server while loading itself.
+        # kill_orphans=False so the helper doesn't reap the parent's chat-model
+        # llama-server while loading itself.
         backend = LlamaCppBackend(kill_orphans = False)
         logger.info(f"Loading helper model: {repo} ({variant})")
 

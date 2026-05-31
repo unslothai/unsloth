@@ -43,9 +43,8 @@ def document_for_subject_or_404(
       referenced thread actually exists in `chat_threads`. A missing
       thread row collapses to 404 so a non-existent thread cannot
       silently grant access through a dangling `thread_id`.
-      # TODO(thread-owner): once `chat_threads.owner_user_id` exists,
-      # join through it the same way KB documents do and drop the
-      # single-user invariant. Update the test
+      # TODO(thread-owner): once `chat_threads.owner_user_id` exists, join
+      # through it like KB docs and drop the single-user invariant. Update
       # `tests/test_rag_authorization.py::test_thread_doc_other_user_404`
       # to assert per-user isolation rather than thread existence.
 
@@ -83,9 +82,8 @@ def document_for_subject_or_404(
             return row
 
         if thread_id is not None:
-            # Single-user invariant (see TODO above). We require the
-            # thread row to exist; an unknown thread_id is treated as
-            # not-found, not as silent grant.
+            # Single-user invariant (see TODO above): require the thread row to
+            # exist; an unknown thread_id is not-found, not a silent grant.
             thread_row = conn.execute(
                 "SELECT id FROM chat_threads WHERE id = ?",
                 (thread_id,),
@@ -94,9 +92,8 @@ def document_for_subject_or_404(
                 raise HTTPException(status_code = 404, detail = _NOT_FOUND_DETAIL)
             return row
 
-        # Documents must belong to either a KB or a thread (DB CHECK
-        # constraint enforces XOR on insert); a row that satisfies
-        # neither is corrupt — treat as 404.
+        # Docs must belong to a KB or a thread (DB CHECK enforces XOR on insert);
+        # a row satisfying neither is corrupt — treat as 404.
         raise HTTPException(status_code = 404, detail = _NOT_FOUND_DETAIL)
 
 

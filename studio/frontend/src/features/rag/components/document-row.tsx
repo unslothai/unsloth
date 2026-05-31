@@ -34,9 +34,8 @@ export function DocumentRow({
 }: {
   doc: RagDocument;
   onDelete?: () => void;
-  /** Fired when the row body (not the delete button) is clicked.
-   *  Per decision Q9, callers should only pass this for completed
-   *  documents. */
+  /** Fired when the row body (not the delete button) is clicked. Per
+   *  decision Q9, callers pass this only for completed documents. */
   onPreview?: () => void;
   rightSlot?: React.ReactNode;
   className?: string;
@@ -45,10 +44,9 @@ export function DocumentRow({
 
   const handleRowClick = (e: MouseEvent<HTMLDivElement>) => {
     if (!onPreview) return;
-    // If a button/anchor/control was clicked (e.g. the delete icon),
-    // skip preview — let that handler win. Buttons inside this row
-    // additionally call stopPropagation, but this is defense in depth
-    // for any descendant Button that forgets to.
+    // Skip preview if a button/anchor/control was clicked (e.g. delete) —
+    // let that handler win. Those buttons also call stopPropagation; this
+    // is defense in depth for any descendant Button that forgets to.
     const target = e.target as HTMLElement | null;
     const interactive = target?.closest("button, a, [role=button]");
     if (interactive && interactive !== e.currentTarget) return;
@@ -108,8 +106,8 @@ export function DocumentRow({
           size="icon"
           aria-label="Delete document"
           onClick={(e) => {
-            // Stop propagation so the row's onClick (preview open)
-            // does not fire when the user is asking to delete.
+            // Stop propagation so the row's preview-open onClick
+            // doesn't fire on delete.
             e.stopPropagation();
             onDelete();
           }}

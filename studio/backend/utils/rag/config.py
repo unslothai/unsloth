@@ -31,20 +31,18 @@ RAG_EMBEDDING_MODEL: str = (
     or "BAAI/bge-small-en-v1.5"
 )
 
-# Default embedder per (mode, chunking). (multimodal, late) is unsupported
-# and rejected at KB-create time in routes/rag.py.
+# Default embedder per (mode, chunking). (multimodal, late) is rejected at
+# KB-create time in routes/rag.py.
 #
-# Text mode is the default; figures from PDFs are captioned at ingest by
-# the loaded chat VLM (or a helper gemma-3n fallback) and spliced into
-# the page markdown before chunking, so a single 384-d text embedder
-# handles all retrieval. Multimodal mode adds image-vector rows on top,
-# embedded by Qwen3-VL-Embedding-2B (2 B params, 2048-d, no CLIP text
-# cap — full 512-token chunks embed losslessly).
+# Text mode is the default: PDF figures are captioned at ingest (chat VLM or
+# helper gemma-3n fallback) and spliced into the page markdown before chunking,
+# so a single 384-d text embedder handles retrieval. Multimodal adds image-vector
+# rows on top via Qwen3-VL-Embedding-2B (2 B, 2048-d, no CLIP text cap — full
+# 512-token chunks embed losslessly).
 #
-# Alternative multimodal embedders left in tree for manual override:
-#   - "BAAI/BGE-VL-large" — smaller (~400 M / 768-d) but CLIP-family
-#     with a 77-token text cap; routed via `_BGEVLAdapter` in
-#     core/rag/embeddings.py.
+# Alternative multimodal embedders kept for manual override:
+#   - "BAAI/BGE-VL-large" — smaller (~400 M / 768-d) but CLIP-family with a
+#     77-token text cap; routed via `_BGEVLAdapter` in core/rag/embeddings.py.
 RAG_EMBEDDER_MATRIX: dict[tuple[str, str], str] = {
     ("text", "standard"): "BAAI/bge-small-en-v1.5",
     ("text", "late"): "nomic-ai/nomic-embed-text-v1.5",

@@ -34,7 +34,7 @@ def test_markdown_parser_preserves_headings(tmp_path):
     file.write_text("# Title\n\nBody text with **emphasis**.", encoding = "utf-8")
     result = parse(file)
     assert result.pages
-    # Markdown should pass through unchanged — heading marker preserved.
+    # Markdown passes through; heading marker preserved.
     assert "# Title" in result.pages[0].text
 
 
@@ -67,7 +67,7 @@ def test_html_parser_emits_markdown_headings(tmp_path):
     result = parse(file)
     assert result.pages
     md = result.pages[0].text
-    # markdownify converts <h1> → '# ', <h2> → '## '
+    # markdownify: <h1> → '# ', <h2> → '## '
     assert "# Main Title" in md
     assert "## Sub Section" in md
     assert "visible text" in md
@@ -91,8 +91,7 @@ def test_pdf_parser_extracts_pages(tmp_path):
     with open(file, "wb") as f:
         writer.write(f)
 
-    # Blank page yields no extractable text — should return empty pages
-    # without error.
+    # Blank page: no text, returns empty pages without error.
     result = parse(file)
     assert isinstance(result.pages, list)
     assert isinstance(result.images, list)
@@ -116,7 +115,7 @@ def test_docx_parser_emits_markdown_headings(tmp_path):
     result = parse(file)
     assert result.pages
     md = result.pages[0].text
-    # mammoth via _STYLE_MAP maps Heading 1/2 → h1/h2 → '# '/'## '.
+    # mammoth _STYLE_MAP: Heading 1/2 → h1/h2 → '# '/'## '.
     assert "# Top Level Heading" in md
     assert "## Sub Heading" in md
     assert "First paragraph" in md

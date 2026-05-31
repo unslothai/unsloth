@@ -27,10 +27,9 @@ import { PreviewTextView } from "./preview-text-view";
 import { PreviewUnavailable } from "./preview-unavailable";
 
 interface PreviewPanelProps {
-  /** Whether the panel is currently being shown in its host slot.
-   *  When the host hides the slot (e.g. the user closes both
-   *  settings and preview from the chat header), we run the close
-   *  side-effect so the blob URL is revoked. */
+  /** Whether the panel is shown in its host slot. When the host hides
+   *  the slot (e.g. closing both settings and preview from the chat
+   *  header), we run the close side-effect so the blob URL is revoked. */
   open: boolean;
   disableDrawer?: boolean;
 }
@@ -89,8 +88,8 @@ function renderPreviewBody({
   }
 
   if (status === "error") {
-    // Treat 404s as "document missing" so a stale citation reads
-    // like "no longer available" rather than a generic error.
+    // Treat 404s as "document missing" so a stale citation reads as
+    // "no longer available" rather than a generic error.
     const isMissing = (error ?? "").toLowerCase().includes("not found");
     return (
       <PreviewUnavailable
@@ -111,18 +110,18 @@ function renderPreviewBody({
       return <PreviewPdfView target={target} file={pdfFile} />;
     }
 
-    // text / image / docx / html / unknown — all routed through
-    // text-view. text gets the snippet rendered inline; docx/html
-    // /unknown skip inline-render entirely (contracts §5.4 + Risk #3).
+    // text/image/docx/html/unknown all route through text-view: text
+    // renders the snippet inline; docx/html/unknown skip inline-render
+    // entirely (contracts §5.4 + Risk #3).
     return <PreviewTextView target={target} />;
   }
 
   return null;
 }
 
-/** Body-only renderer. The host slot (desktop aside or mobile sheet)
- *  is owned by the host (chat-settings panel slot, kb-detail panel,
- *  etc.) — this component is purely the content of the right slot. */
+/** Body-only renderer. The host owns the slot (desktop aside or mobile
+ *  sheet — chat-settings panel slot, kb-detail panel, etc.); this is
+ *  purely the content of the right slot. */
 export const PreviewPanel: FC<PreviewPanelProps> = ({
   open,
   disableDrawer = false,
@@ -135,8 +134,8 @@ export const PreviewPanel: FC<PreviewPanelProps> = ({
   const close = usePreviewStore((s) => s.close);
   const isSqueezed = useIsViewportSqueezed() && !disableDrawer;
 
-  // Unmount + visibility cleanup: when the panel is hidden or
-  // unmounted, revoke the live object URL (contracts §5.5).
+  // Unmount + visibility cleanup: revoke the live object URL when the
+  // panel is hidden or unmounted (contracts §5.5).
   useEffect(() => {
     if (!open) {
       close();
@@ -144,7 +143,7 @@ export const PreviewPanel: FC<PreviewPanelProps> = ({
   }, [open, close]);
   useEffect(() => {
     return () => {
-      // Component truly unmounting (e.g. navigation away). Cleanup
+      // Component truly unmounting (e.g. navigation away); clean up
       // anything still live.
       usePreviewStore.getState().close();
     };

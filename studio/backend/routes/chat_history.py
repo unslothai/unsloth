@@ -230,8 +230,8 @@ async def delete_threads(
     payload: ChatDeleteRequest,
     current_subject: str = Depends(get_current_subject),
 ):
-    # rag_documents has no FK cascade to chat_threads, so purge their
-    # files + vectors + bm25 explicitly before deleting the threads.
+    # No FK cascade from rag_documents to chat_threads, so purge their files +
+    # vectors + bm25 explicitly before deleting the threads.
     purge_thread_documents(payload.ids)
     delete_chat_threads(payload.ids)
     return {"status": "deleted"}

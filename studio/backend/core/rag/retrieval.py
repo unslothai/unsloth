@@ -17,12 +17,10 @@ from utils.rag.config import (
 
 from . import bm25, embeddings, vector_store
 
-# Match "Figure 1", "Figure 1.2", "Figure B.1", "Table 4", "Fig. 5" anywhere
-# in the query. Used to inject a third retrieval source that directly looks
-# up chunks anchored by these references — dense vectors don't preserve
-# figure numbers, so without this an exact-numbered query gets out-ranked
-# by chunks describing other figures that share more vocabulary with the
-# question.
+# Match "Figure 1", "Figure 1.2", "Figure B.1", "Table 4", "Fig. 5" anywhere in
+# the query. Feeds a third retrieval source that looks up chunks anchored by these
+# refs — dense vectors don't preserve figure numbers, so without this an exact-numbered
+# query gets out-ranked by chunks describing other figures with more shared vocabulary.
 _FIGURE_REF_RE = re.compile(
     r"\b(Figure|Fig\.|Table|Tab\.)\s+([A-Z]?\.?\d+(?:\.\d+)?)\b",
     re.IGNORECASE,

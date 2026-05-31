@@ -18,7 +18,7 @@ def isolated_bm25_root(tmp_path, monkeypatch):
     from utils.paths import storage_roots
 
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
-    # Reset module-level cache between tests.
+    # Reset module cache between tests.
     from core.rag import bm25
 
     bm25._cache.clear()

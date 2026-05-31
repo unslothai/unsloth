@@ -18,9 +18,8 @@ from .retrieval import Hit
 
 logger = get_logger(__name__)
 
-# Reentrant: get_reranker() holds the lock while calling unload(), which
-# also enters `with _lock`. A plain Lock would deadlock the same thread on
-# the second acquisition; RLock allows re-entry from the holding thread.
+# Reentrant: get_reranker() holds the lock while calling unload(), which also
+# enters `with _lock`. A plain Lock would self-deadlock; RLock allows re-entry.
 _lock = threading.RLock()
 _model: Any | None = None
 _model_name: str | None = None
@@ -41,9 +40,8 @@ def _resolve_device() -> str:
 
 
 def _load(model_name: str) -> Any:
-    # Stderr print is unconditional so we can see this line even when
-    # structlog routing is misbehaving — diagnostics for a previously
-    # invisible hang.
+    # Unconditional stderr print so this shows even when structlog routing
+    # misbehaves — diagnostics for a previously invisible hang.
     print(
         f"[rag.reranker] _load entered: model={model_name}",
         file = sys.stderr,
@@ -107,8 +105,7 @@ def precache_reranker(model_name: str | None = None) -> None:
             elapsed_seconds = round(time.perf_counter() - started, 2),
         )
     except Exception as exc:  # noqa: BLE001
-        # Non-critical: the lazy loader will retry the download on first
-        # use. We log so the user can see what happened.
+        # Non-critical: the lazy loader retries the download on first use; log it.
         logger.warning(
             "RAG reranker precache failed; will download lazily",
             model = target,

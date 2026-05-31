@@ -7,10 +7,9 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-# Same shape as the chunker's figure-boundary regex but captures the
-# figure label (Figure / Fig. / Table / Tab.) AND the number so we can
-# attribute a VLM caption back to a specific figure on a multi-figure
-# page.
+# Same shape as the chunker's figure-boundary regex but also captures the label
+# (Figure / Fig. / Table / Tab.) AND number, so a VLM caption maps to a specific
+# figure on a multi-figure page.
 _FIGURE_LINE_RE = re.compile(
     r"^(?P<lead>\**)(?P<label>Figure|Fig\.|Table|Tab\.)\s+"
     r"(?P<num>[A-Z]?\.?\d+(?:\.\d+)?)(?P<trail>\**[\.:])",

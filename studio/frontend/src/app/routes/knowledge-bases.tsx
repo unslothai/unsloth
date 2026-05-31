@@ -7,8 +7,8 @@ import { useSettingsDialogStore } from "@/features/settings";
 import { requireAuth } from "../auth-guards";
 import { Route as rootRoute } from "./__root";
 
-// /knowledge-bases is a deep link to the settings modal's Knowledge
-// Bases tab. Open it, then redirect home. Mirrors /settings.
+// /knowledge-bases deep-links to the settings modal's Knowledge Bases
+// tab: open it, then redirect home. Mirrors /settings.
 export const Route = createRoute({
   getParentRoute: () => rootRoute,
   path: "/knowledge-bases",

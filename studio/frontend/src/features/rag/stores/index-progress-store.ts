@@ -3,11 +3,10 @@
 
 import { create } from "zustand";
 
-/** Tracks every document in the current upload batch so the toast can show
- *  ONE aggregate "Indexing documents" entry (with overall %) instead of a
- *  separate toast per file. Unlike the per-job rag-store map, entries are
- *  registered at addDoc time, so queued-but-not-yet-started files (held by
- *  the concurrency semaphore) are counted in the denominator too. */
+/** Tracks every document in the current upload batch so the toast shows ONE
+ *  aggregate "Indexing documents" entry (overall %) instead of one per file.
+ *  Unlike the per-job rag-store map, entries register at addDoc time, so
+ *  queued files held by the concurrency semaphore count in the denominator. */
 
 export type IndexEntryStatus = "queued" | "indexing" | "ready" | "error";
 
@@ -19,8 +18,8 @@ export interface IndexEntry {
   /** Chunks this file produced (from the job's complete event); 0 until done. */
   chunks: number;
   /** Tear down this upload and remove its document from the index. Registered
-   *  by the upload surface so the aggregate toast can cancel the whole batch
-   *  without owning the per-file job/SSE/semaphore handles. */
+   *  by the upload surface so the toast can cancel the whole batch without
+   *  owning the per-file job/SSE/semaphore handles. */
   cancel?: () => Promise<void> | void;
 }
 
@@ -64,8 +63,8 @@ export const useIndexProgressStore = create<IndexProgressState>((set, get) => ({
     patch(set, id, { status: "ready", progress: 1, chunks }),
   setError: (id) => patch(set, id, { status: "error" }),
   setCancel: (id, cancel) => patch(set, id, { cancel }),
-  // Cancel every file in the batch (running, queued, and already-finished) so
-  // the index returns to its pre-batch state, then drop all toast entries.
+  // Cancel every file in the batch (running, queued, finished) to restore the
+  // pre-batch index state, then drop all toast entries.
   cancelAll: async () => {
     const handles = Object.values(get().entries)
       .map((e) => e.cancel)

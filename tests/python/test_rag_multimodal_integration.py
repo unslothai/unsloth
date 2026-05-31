@@ -39,14 +39,13 @@ def test_multimodal_subprocess_emits_image_and_caption_chunks(
     pytest.importorskip("PIL")
     pytest.importorskip("torch")
 
-    # Use a tmp studio root so the ingest subprocess writes images
-    # somewhere isolated.
+    # tmp studio root isolates the subprocess's image writes.
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     monkeypatch.setenv("UNSLOTH_RAG_EMBEDDING_MODEL", "BAAI/BGE-VL-base")
     monkeypatch.setenv("UNSLOTH_RAG_CHUNK_SIZE", "200")
     monkeypatch.setenv("UNSLOTH_RAG_CHUNK_OVERLAP", "20")
 
-    # Reset module-level caches so the new env vars take effect.
+    # Reset module caches so the new env vars apply.
     import importlib
 
     import utils.rag.config as rag_config
@@ -57,7 +56,7 @@ def test_multimodal_subprocess_emits_image_and_caption_chunks(
     embeddings_module._model = None
     embeddings_module._model_name = None
 
-    # Generate a small PDF with text + one embedded image.
+    # Small PDF: text + one embedded image.
     from PIL import Image
 
     img = Image.new("RGB", (96, 64), (200, 100, 50))
@@ -83,7 +82,7 @@ def test_multimodal_subprocess_emits_image_and_caption_chunks(
     doc.save(str(pdf_path))
     doc.close()
 
-    # Drive the subprocess worker in-process with a regular queue.
+    # Drive the worker in-process via a regular queue.
     from core.rag.ingestion import _subprocess_worker
 
     out_queue: "queue_module.Queue[dict]" = queue_module.Queue()
@@ -99,19 +98,18 @@ def test_multimodal_subprocess_emits_image_and_caption_chunks(
         document_id = "test-doc-1",
     )
 
-    # Drain everything (the queue is in-process so order is stable).
+    # Drain all events (in-process queue, stable order).
     events: list[dict] = []
     while not out_queue.empty():
         events.append(out_queue.get_nowait())
 
-    # The worker must emit at least one chunks_batch and exactly one
-    # terminal complete/error event.
+    # Expect >=1 chunks_batch and exactly one terminal complete/error.
     assert any(e["type"] == "chunks_batch" for e in events)
     terminals = [e for e in events if e["type"] in ("complete", "error")]
     assert len(terminals) == 1, terminals
     assert terminals[0]["type"] == "complete"
 
-    # Collect all chunks across batches.
+    # Collect chunks across batches.
     all_chunks: list[dict] = []
     for e in events:
         if e["type"] == "chunks_batch":
@@ -120,12 +118,10 @@ def test_multimodal_subprocess_emits_image_and_caption_chunks(
     kinds = [c.get("kind") for c in all_chunks]
     assert "text" in kinds, "expected at least one text chunk"
     assert "image" in kinds, "expected at least one image chunk"
-    # The PDF has a paragraph immediately after the image, so caption
-    # pairing should fire.
+    # Paragraph right after the image triggers caption pairing.
     assert "caption" in kinds, "expected at least one caption chunk"
 
-    # Image chunks must carry a file path that exists on disk under
-    # the tmp studio root.
+    # Image chunks carry a path on disk under the tmp studio root.
     image_chunks = [c for c in all_chunks if c.get("kind") == "image"]
     for chunk in image_chunks:
         assert chunk.get("image_path"), chunk

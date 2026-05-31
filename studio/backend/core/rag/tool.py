@@ -17,10 +17,9 @@ from loggers import get_logger
 
 logger = get_logger(__name__)
 
-# Per-request chunk-id counter. Task-local (FastAPI runs each request in
-# its own asyncio task → its own Context). Lets the model cite chunks
-# unambiguously when multiple search_knowledge_base calls run in the
-# same chat turn: call 1 returns ids 1..N, call 2 returns N+1..N+M, etc.
+# Per-request chunk-id counter. Task-local (FastAPI runs each request in its own
+# asyncio task → its own Context). Keeps citation ids unique across multiple
+# search_knowledge_base calls in a turn: call 1 → 1..N, call 2 → N+1..N+M, etc.
 _chunk_id_counter: ContextVar[int] = ContextVar("rag_chunk_id_counter", default = 0)
 
 
@@ -93,11 +92,9 @@ def _format_hits_for_llm(hits: list[dict], start_id: int = 0) -> str:
             f'id="{index}"',
             f'source="{_xml_attr(hit.get("filename") or "unknown")}"',
         ]
-        # Durable backend ids — additive per contracts.md §3.1 (T3).
-        # ``id`` above stays as the visible citation id (used by the model
-        # as `[N]`); ``document_id`` + ``chunk_id`` are what the preview
-        # route consumes. Old XML without these attrs still parses on
-        # the frontend (hover-only), per contracts §3.2.
+        # Durable backend ids — additive per contracts.md §3.1 (T3). ``id`` stays
+        # the visible citation (model's `[N]`); ``document_id`` + ``chunk_id`` feed
+        # the preview route. Old XML without these still parses (hover-only) per §3.2.
         document_id = hit.get("document_id")
         if document_id:
             attrs.append(f'document_id="{_xml_attr(document_id)}"')
@@ -128,8 +125,8 @@ def _format_hits_for_llm(hits: list[dict], start_id: int = 0) -> str:
             attrs.append(f'kind="{_xml_attr(kind)}"')
         image_path = hit.get("image_path")
         if kind == "image" and image_path and document_id:
-            # Mirror routes/rag.py search-response shape so the frontend
-            # tool card can render the image inline via the same route.
+            # Mirror routes/rag.py search-response shape so the frontend tool card
+            # can render the image inline via the same route.
             image_url = f"/api/rag/images/{document_id}/{Path(image_path).name}"
             attrs.append(f'image_url="{_xml_attr(image_url)}"')
         text = (hit.get("text") or "").strip()
@@ -266,10 +263,9 @@ def search_knowledge_base(
     else:
         hits = hits[:k]
 
-    # Merge Hit-side metadata (score, dense_score, chunk_index) into the
-    # sqlite-side row so the formatter sees one flat dict per chunk.
-    # Image-kind hits flow through so the multimodal embedder's match
-    # can reach the LLM; their image_url lets the UI render the picture.
+    # Merge Hit metadata (score, dense_score, chunk_index) into the sqlite row so
+    # the formatter sees one flat dict per chunk. Image-kind hits flow through so
+    # the multimodal match reaches the LLM; their image_url lets the UI render it.
     formatted: list[dict] = []
     for hit in hits:
         row = lookup.get(hit.chunk_id)

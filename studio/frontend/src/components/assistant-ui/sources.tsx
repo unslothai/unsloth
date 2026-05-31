@@ -208,9 +208,8 @@ const DocumentSourceBadge: FC<{ source: DocSourceData }> = ({ source }) => {
   const metaParts: string[] = [];
   if (source.page) metaParts.push(`page ${source.page}`);
 
-  // Preview is clickable IFF both durable IDs are present (contracts
-  // §4.1 routing rule + Q3). Legacy sources fall through to a
-  // non-interactive badge with hover-only behavior.
+  // Clickable IFF both durable IDs are present (contracts §4.1 + Q3);
+  // legacy sources fall through to a non-interactive hover-only badge.
   const isClickable =
     source.documentId !== null && source.backendChunkId !== null;
   const openPreview = usePreviewStore((s) => s.open);
@@ -304,7 +303,7 @@ const SourcesGroup: FC = () => {
   const [visibleCount, setVisibleCount] = useState<number | null>(null);
   const [expanded, setExpanded] = useState(false);
 
-  // Extract source parts (both URL and document) from the message
+  // Extract URL and document source parts from the message
   const sources: SourceData[] = [];
   if (message.content) {
     for (const part of message.content) {

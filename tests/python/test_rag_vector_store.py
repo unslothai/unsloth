@@ -49,7 +49,7 @@ def test_upsert_and_search_returns_nearest_first(isolated_rag_db):
     results = vector_store.search(scope, [1.0, 0.0, 0.0, 0.0], top_k = 2)
     assert len(results) == 2
     assert results[0]["chunk_id"] == "p1"
-    # Cosine similarity converted to [0, 1]; closer = higher.
+    # Cosine mapped to [0, 1]; closer = higher.
     assert results[0]["score"] > results[1]["score"]
 
 

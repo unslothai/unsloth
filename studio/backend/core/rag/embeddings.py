@@ -92,11 +92,9 @@ class _BGEVLAdapter:
         for start in range(0, len(inputs), batch_size):
             batch = list(inputs[start : start + batch_size])
             if is_image:
-                # BGE-VL's internal data_process re-opens each item with
-                # Image.open(...), which needs a file-like (has .read())
-                # or a path — NOT a pre-opened PIL Image. Pass BytesIO so
-                # the model's own opener works. PIL Images get rebuffered
-                # via an in-memory PNG round-trip.
+                # BGE-VL's data_process re-opens each item via Image.open(...),
+                # which needs a file-like (.read()) or path — NOT a pre-opened PIL
+                # Image. Pass BytesIO; PIL Images get rebuffered via an in-memory PNG.
                 file_likes: list[Any] = []
                 for b in batch:
                     if isinstance(b, (bytes, bytearray)):

@@ -24,7 +24,7 @@ def test_html_parser_returns_images_when_requested(tmp_path):
     pytest.importorskip("markdownify")
     from core.rag.parsers import parse
 
-    # A tiny 1x1 transparent PNG.
+    # 1x1 transparent PNG.
     png_bytes = (
         b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
         b"\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\rIDATx\x9cc\xfc\xff"
@@ -57,12 +57,12 @@ def test_multimodal_late_combo_validator():
 
     from routes.rag import _validate_mode_combo
 
-    # Allowed combos return None.
+    # Allowed combos → None.
     assert _validate_mode_combo("text", "standard") is None
     assert _validate_mode_combo("text", "late") is None
     assert _validate_mode_combo("multimodal", "standard") is None
 
-    # Forbidden combo raises 400.
+    # Forbidden combo → 400.
     with pytest.raises(HTTPException) as excinfo:
         _validate_mode_combo("multimodal", "late")
     assert excinfo.value.status_code == 400
@@ -76,7 +76,7 @@ def test_rag_embedder_matrix_excludes_multimodal_late():
     assert ("text", "late") in RAG_EMBEDDER_MATRIX
     assert ("multimodal", "standard") in RAG_EMBEDDER_MATRIX
 
-    # Unknown combos fall back to the legacy default rather than KeyError.
+    # Unknown combos fall back to the legacy default, not KeyError.
     fallback = resolve_embedder("multimodal", "late")
     assert isinstance(fallback, str) and fallback
 
@@ -101,7 +101,7 @@ def test_multimodal_encode_image_returns_vector(tmp_path, monkeypatch):
     pytest.importorskip("sentence_transformers")
     pytest.importorskip("PIL")
     monkeypatch.setenv("UNSLOTH_RAG_EMBEDDING_MODEL", "BAAI/BGE-VL-base")
-    # Reset the embedder singleton so the env var takes effect.
+    # Reset the embedder singleton so the env var applies.
     from core.rag import embeddings as embeddings_module
 
     embeddings_module._model = None
@@ -121,7 +121,6 @@ def test_multimodal_encode_image_returns_vector(tmp_path, monkeypatch):
     dim = vectors[0].shape[0]
     assert dim > 0
 
-    # Text from the same model should also be `dim`-d — shared space is
-    # the whole point of multimodal embedders.
+    # Text shares the same dim — the point of a multimodal embedder.
     text_vec = embeddings_module.encode(["a red square"])[0]
     assert text_vec.shape[0] == dim

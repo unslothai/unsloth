@@ -10,13 +10,11 @@ from typing import Callable
 from .parsers import ParsedPage
 
 # Match "Figure 1:", "Figure 1.2:", "Fig. 3.", "Table 4:" etc. at line-start,
-# tolerating leading bold markers. Used to break chunks BEFORE such captions
-# so the caption ends up at the start of its own chunk — dense embeddings
-# pool over the whole chunk, so figure references buried at the end get
-# diluted by surrounding body text.
+# tolerating leading bold markers. Breaks chunks BEFORE such captions so the
+# caption starts its own chunk — dense embeddings pool over the whole chunk, so
+# figure refs buried at the end get diluted by surrounding body text.
 _FIGURE_BOUNDARY_RE = re.compile(
-    # Number forms covered: "1", "12", "1.2", "B.1" (appendix-style),
-    # tolerating bold wrappers around either the label or the number.
+    # Number forms: "1", "12", "1.2", "B.1" (appendix); bold wrappers tolerated.
     r"^\**(?:Figure|Fig\.|Table|Tab\.)\s+[A-Z]?\.?\d+(?:\.\d+)?\**[\.:]",
     re.MULTILINE | re.IGNORECASE,
 )

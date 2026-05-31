@@ -14,9 +14,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const SOURCE_EXCERPT_TEXT = /source excerpt/i;
 
-/** The thumbnail rail also renders mocked `<Page>` elements, so every
- *  test that targets the main render must scope through the
- *  `pdf-main-page` wrapper instead of taking the first `pdf-page`. */
+/** The thumbnail rail also renders mocked `<Page>` elements, so tests
+ *  targeting the main render scope through the `pdf-main-page` wrapper
+ *  instead of taking the first `pdf-page`. */
 async function findMainPdfPage(): Promise<HTMLElement> {
   const wrapper = await screen.findByTestId("pdf-main-page");
   return within(wrapper).getByTestId("pdf-page");
@@ -100,13 +100,13 @@ function target(overrides: Partial<PreviewTarget> = {}): PreviewTarget {
 beforeEach(() => {
   class ResizeObserverMock implements ResizeObserver {
     observe(_target: Element, _options?: ResizeObserverOptions) {
-      // jsdom has no layout observer; the component only needs the API shape.
+      // jsdom has no layout observer; only the API shape is needed.
     }
     unobserve(_target: Element) {
-      // jsdom has no layout observer; the component only needs the API shape.
+      // jsdom has no layout observer; only the API shape is needed.
     }
     disconnect() {
-      // jsdom has no layout observer; the component only needs the API shape.
+      // jsdom has no layout observer; only the API shape is needed.
     }
   }
   vi.stubGlobal("ResizeObserver", ResizeObserverMock);
@@ -155,9 +155,9 @@ describe("PreviewPdfView smoke", () => {
     expect(regionHighlight).toHaveClass("bg-primary/20");
     expect(regionHighlight).toHaveClass("ring-primary/60");
 
-    // Verify Tailwind v4 light-mode isolation reset wrapper. After the
-    // thumbnail-rail refactor, the light wrapper lives INSIDE the
-    // Document and directly wraps the main-page block.
+    // Verify Tailwind v4 light-mode isolation reset wrapper. Post
+    // thumbnail-rail refactor it lives INSIDE the Document, directly
+    // wrapping the main-page block.
     const wrapper = screen.getByTestId("pdf-main-page").parentElement;
     expect(wrapper).toHaveClass("light");
     expect(wrapper).toHaveClass("bg-white");
@@ -173,7 +173,7 @@ describe("PreviewPdfView smoke", () => {
     );
 
     // Source-excerpt card uses a neutral muted surface (no brand-coloured
-    // left rail) so it sits inside the panel without visually competing.
+    // left rail) so it doesn't visually compete in the panel.
     const excerptCard = screen.getByText(SOURCE_EXCERPT_TEXT).parentElement;
     expect(excerptCard).toHaveClass("border-border/60");
     expect(excerptCard).toHaveClass("bg-muted/30");
@@ -204,13 +204,13 @@ describe("PreviewPdfView smoke", () => {
         resizeCallbacks.push(callback);
       }
       observe(_target: Element, _options?: ResizeObserverOptions) {
-        // jsdom has no layout observer; the component only needs the API shape.
+        // jsdom has no layout observer; only the API shape is needed.
       }
       unobserve(_target: Element) {
-        // jsdom has no layout observer; the component only needs the API shape.
+        // jsdom has no layout observer; only the API shape is needed.
       }
       disconnect() {
-        // jsdom has no layout observer; the component only needs the API shape.
+        // jsdom has no layout observer; only the API shape is needed.
       }
     }
     vi.stubGlobal("ResizeObserver", FakeResizeObserver);
@@ -222,11 +222,11 @@ describe("PreviewPdfView smoke", () => {
       }),
     );
 
-    // Initial render sets width synchronously on mount. Let's capture the initial width.
+    // Initial render sets width synchronously on mount; capture it.
     const page = await findMainPdfPage();
     const initialWidth = Number(page.getAttribute("data-width"));
 
-    // Activate fake timers AFTER finding the elements to avoid findByTestId timeout
+    // Fake timers AFTER finding elements, to avoid findByTestId timeout
     vi.useFakeTimers();
 
     // Set up HTMLDivElement.prototype.clientWidth mock
@@ -242,7 +242,7 @@ describe("PreviewPdfView smoke", () => {
       configurable: true,
     });
 
-    // Now trigger resize callback after changing clientWidth
+    // Trigger resize callback after changing clientWidth
     clientWidthValue = 600;
     const resizeCallback = resizeCallbacks[0];
     if (!resizeCallback) {
@@ -250,23 +250,23 @@ describe("PreviewPdfView smoke", () => {
     }
     const resizeObserver: ResizeObserver = {
       observe() {
-        // The callback under test ignores the observer instance.
+        // The callback under test ignores the observer arg.
       },
       unobserve() {
-        // The callback under test ignores the observer instance.
+        // The callback under test ignores the observer arg.
       },
       disconnect() {
-        // The callback under test ignores the observer instance.
+        // The callback under test ignores the observer arg.
       },
     };
     resizeCallback([], resizeObserver);
 
-    // Width should NOT be updated immediately because of the 100ms debounce
+    // Width must NOT update immediately (100ms debounce)
     expect(Number(getMainPdfPage().getAttribute("data-width"))).toBe(
       initialWidth,
     );
 
-    // Fast-forward time by 100ms to trigger the debounced callback and flush updates
+    // Advance 100ms to fire the debounced callback and flush updates
     act(() => {
       vi.advanceTimersByTime(100);
       vi.runAllTimers();

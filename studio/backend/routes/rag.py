@@ -122,8 +122,7 @@ class UploadResponse(BaseModel):
     document_id: str
     job_id: str
     filename: str
-    # True when an identical file (same content hash) was already indexed
-    # in this scope, so no new ingestion job was started. job_id is "".
+    # Identical content hash already indexed in this scope; no job started, job_id "".
     already_indexed: bool = False
 
 
@@ -268,12 +267,10 @@ async def _save_upload(file: UploadFile) -> tuple[Path, str, int, str]:
     stored_path = upload_dir / stored_name
     max_bytes = RAG_MAX_UPLOAD_MB * 1024 * 1024
     written = 0
-    # Hash the bytes as they stream so we can dedup identical re-uploads
-    # within a scope without re-reading the file.
+    # Hash bytes while streaming to dedup identical re-uploads within a scope.
     hasher = hashlib.sha256()
-    # Route writes through anyio worker thread so the event loop stays free.
-    # Outer try/except cleans up partial files after async-with closes the fd
-    # (Windows refuses unlink on an open fd).
+    # anyio worker thread keeps the event loop free. Outer try/except cleans up
+    # partial files after the async-with closes the fd (Windows refuses unlink on an open fd).
     try:
         async with await anyio.open_file(stored_path, "wb") as f:
             while True:
@@ -313,11 +310,9 @@ def _start_ingestion(
 ) -> UploadResponse:
     document_id = str(uuid4())
     with get_connection() as conn:
-        # Dedup: if an identical file (same content hash) is already
-        # indexed in this scope, skip re-ingestion. Only a 'completed'
-        # row counts — a failed/in-flight prior attempt should be allowed
-        # to retry. Scope is the same kb_id or thread_id the upload
-        # targets (a file shared across two KBs is indexed in each).
+        # Dedup: skip re-ingestion if the same content hash is already indexed
+        # in this scope. Only 'completed' counts — failed/in-flight may retry.
+        # Scope is the target kb_id or thread_id (a file in two KBs indexes in each).
         if content_hash:
             if kb_id is not None:
                 existing = conn.execute(
@@ -334,8 +329,7 @@ def _start_ingestion(
                     (thread_id, content_hash),
                 ).fetchone()
             if existing is not None:
-                # Drop the redundant upload we just wrote to disk; the
-                # already-indexed copy stays the source of truth.
+                # Drop the redundant upload; the already-indexed copy is source of truth.
                 _unlink_if_under_uploads(stored_path)
                 return UploadResponse(
                     document_id = existing["id"],
@@ -508,8 +502,7 @@ def warmup_rag_embedder(
     try:
         embeddings.get_embedder(model_name)
     except Exception as exc:  # noqa: BLE001
-        # Log the detailed exception server-side; return a generic message
-        # so internal paths / stack info aren't exposed to the client.
+        # Log details server-side; return a generic message so paths/stack stay hidden.
         logger.warning("RAG warmup failed for %s: %s", model_name, exc)
         return {"ok": False, "model": model_name, "error": "Failed to load embedder"}
     return {"ok": True, "model": model_name}
@@ -532,8 +525,7 @@ def precache_rag_reranker(
     try:
         precache_reranker()
     except Exception as exc:  # noqa: BLE001
-        # Detailed exception logged server-side; client gets a generic
-        # message so internal paths / stack info aren't exposed.
+        # Log details server-side; client gets a generic message so paths/stack stay hidden.
         logger.warning(
             "RAG reranker precache failed",
             model = RAG_RERANKER_MODEL,
@@ -590,8 +582,7 @@ class UpdateThreadRagSettingsRequest(BaseModel):
     chunking_strategy: ChunkingStrategy | None = None
     mode: KBMode | None = None
     embedding_model: str | None = None
-    # Only consulted by reingest (not persisted as a thread setting); omit or
-    # None keeps captioning on.
+    # Reingest-only (not persisted); omit or None keeps captioning on.
     caption_images: bool | None = None
 
 
@@ -697,7 +688,7 @@ def _reingest_scope(
                 "SELECT id, stored_path FROM rag_documents WHERE thread_id = ?",
                 (thread_id,),
             ).fetchall()
-        # Drop rag_documents (chunks cascade); files on disk are reused below.
+        # Drop rag_documents (chunks cascade); disk files reused below.
         doc_ids = [r["id"] for r in rows]
         if doc_ids:
             placeholders = ",".join("?" for _ in doc_ids)
@@ -1168,10 +1159,9 @@ class LocatorBackfillResponse(BaseModel):
     pagesRefreshed: int
 
 
-# Extension allowlist for inline rendering / disposition. Anything not in
-# this map collapses to ("application/octet-stream", attachment, "unknown").
-# .html / .htm intentionally serve as text/plain attachment (decisions Q7 +
-# Risk #3) so an uploaded HTML cannot execute in the app origin.
+# Extension allowlist for inline rendering / disposition. Unlisted ext collapses
+# to ("application/octet-stream", attachment, "unknown"). .html / .htm serve as
+# text/plain attachment (decisions Q7 + Risk #3) so uploaded HTML can't execute in the app origin.
 _PREVIEW_EXT_MAP: dict[str, tuple[str, str, PreviewMediaKind]] = {
     ".pdf": ("application/pdf", "inline", "pdf"),
     ".txt": ("text/plain; charset=utf-8", "inline", "text"),
@@ -1318,8 +1308,8 @@ def _resolve_document_file_or_404(doc_row: Any, document_id: str) -> Path:
             root = rag_uploads_root(),
         )
     except ValueError as exc:
-        # Symlink escape / ``..`` / absolute outside root — collapse to
-        # "file not found" (the auth row exists, the bytes do not).
+        # Escape (symlink / ``..`` / absolute outside root) collapses to
+        # "file not found" — the auth row exists, the bytes do not.
         logger.warning(
             "RAG preview: stored_path escaped uploads root for doc %s: %s",
             document_id,
@@ -1410,9 +1400,8 @@ def _serve_document_file_row(
             headers = range_headers,
         )
 
-    # Starlette's FileResponse handles ordinary downloads efficiently. We
-    # still advertise Accept-Ranges so PDF.js can switch to explicit range
-    # requests via the signed URL path.
+    # FileResponse handles ordinary downloads; still advertise Accept-Ranges so
+    # PDF.js can switch to explicit range requests via the signed URL path.
     return FileResponse(
         path = str(resolved),
         media_type = content_type,
@@ -1451,8 +1440,7 @@ def get_document_preview_target(
     }
 
     if not chunk_id:
-        # Q2: document-row preview returns metadata only — frontend MUST
-        # NOT fall back to "first chunk".
+        # Q2: document-row preview is metadata-only — frontend MUST NOT fall back to "first chunk".
         return PreviewTargetResponse(
             **base,
             chunkId = None,
@@ -1469,14 +1457,11 @@ def get_document_preview_target(
             pdfRegions = [],
         )
 
-    # Single connection enforces membership AND fetches the row in one
-    # query. Splitting this into a separate `chunk_belongs_to_document`
-    # call would open a second SQLite connection and create a TOCTOU
-    # window — if the chunk is deleted between the two calls, the data
-    # fetch returns None and the route 500s on the next attribute access
-    # (devils-advocate D1.1). The cross-document case still collapses to
-    # the same 404 the auth helper emits — never 400 (would leak doc
-    # existence).
+    # One connection enforces membership AND fetches the row in a single query.
+    # A separate `chunk_belongs_to_document` call would open a second SQLite
+    # connection and open a TOCTOU window — if the chunk is deleted between the
+    # two calls, the fetch returns None and the route 500s (D1.1). Cross-document
+    # collapses to the same 404 — never 400 (would leak doc existence).
     with get_connection() as conn:
         chunk_row = conn.execute(
             """

@@ -2,10 +2,10 @@
  * Tests for chat-adapter XML parsing — contracts §3 / §4, T3.
  *
  * Coverage:
- * - New XML with document_id + chunk_id attributes → citationId, documentId, backendChunkId populated.
- * - Legacy XML without durable IDs → citationId populated, documentId/backendChunkId absent.
+ * - New XML (document_id + chunk_id) → citationId, documentId, backendChunkId set.
+ * - Legacy XML (no durable IDs) → citationId set, documentId/backendChunkId absent.
  * - Same visible [N] across turns does NOT imply same backendChunkId.
- * - Same filename in two chunks → distinct documentId values preserved.
+ * - Same filename in two chunks → distinct documentId values kept.
  * - Missing attributes degrade gracefully — no throw.
  * - citationId is always the visible "N" counter, never the UUID.
  */
@@ -36,7 +36,7 @@ The margin rose to 18%.
   });
 
   it("legacy XML without durable IDs leaves documentId and backendChunkId absent", () => {
-    // Old XML: no document_id, no chunk_id — hover-only, NOT preview-clickable (Q3).
+    // Old XML: no document_id/chunk_id — hover-only, not preview-clickable (Q3).
     const xml = `
 <chunk id="2" source="old-doc.pdf" page="3">
 Legacy chunk text.
@@ -115,7 +115,7 @@ Legacy chunk text.
   });
 
   it("XML entity encoding in source attribute is decoded", () => {
-    // &amp; should decode to & in the source attribute (decodeXml in parseChunks)
+    // &amp; should decode to & in source (decodeXml in parseChunks)
     const xml = `<chunk id="1" source="report &amp; summary.pdf" document_id="doc-1" chunk_id="ck-1">text</chunk>`;
     const parts: ParsedChunk[] = parseChunks(xml);
     expect(parts).toHaveLength(1);

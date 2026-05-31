@@ -14,9 +14,8 @@ from . import ParsedImage, ParsedPage, ParseResult
 logger = logging.getLogger(__name__)
 
 # pymupdf4llm wraps OCR'd vector-graphics text with these markers even when
-# `ignore_images=True`. Strip the whole block — the VLM captioner produces
-# a proper description for the figure, and the marker text just pollutes
-# the chunked body / shows up verbatim in citations.
+# `ignore_images=True`. Strip the whole block — the VLM captioner describes the
+# figure, and the marker text just pollutes the chunked body / citations.
 _PICTURE_TEXT_BLOCK_RE = re.compile(
     r"-{3,}\s*Start of picture text\s*-{3,}.*?-{3,}\s*End of picture text\s*-{3,}",
     re.DOTALL | re.IGNORECASE,

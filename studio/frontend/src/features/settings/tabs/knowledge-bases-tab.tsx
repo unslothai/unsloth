@@ -17,9 +17,8 @@ import { Add01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type CSSProperties, useState } from "react";
 
-// Height of the master-detail workspace, only rendered once a KB's upload or
-// files panel is open (or a preview is active) so the section stays compact
-// when just browsing the list.
+// Master-detail workspace height, applied only once a KB's upload/files panel
+// is open (or a preview is active) so the section stays compact while browsing.
 const KB_WORKSPACE_HEIGHT = "h-[360px]";
 
 export function KnowledgeBasesTab() {
@@ -41,10 +40,10 @@ export function KnowledgeBasesTab() {
   };
 
   const handlePanel = (kb: KnowledgeBase, panel: KBPanel) => {
-    // A stale preview from a previous selection would otherwise linger and
-    // force the workspace wider; clear it whenever the panel changes.
+    // Clear any stale preview from a prior selection; it would otherwise
+    // linger and force the workspace wider.
     closePreview();
-    // Re-clicking the active KB's active button collapses back to full width.
+    // Re-clicking the active button collapses back to full width.
     if (activeKb?.id === kb.id && activePanel === panel) {
       closePanel();
     } else {
@@ -71,9 +70,8 @@ export function KnowledgeBasesTab() {
   });
 
   return (
-    // pr-2.5 insets right-aligned counts (e.g. "3 total", "60 threads") from
-    // the scroll container's scrollbar, which overlays the content edge in
-    // webviews that don't honor scrollbar-gutter.
+    // pr-2.5 insets right-aligned counts (e.g. "3 total") from the scrollbar,
+    // which overlays the content edge in webviews ignoring scrollbar-gutter.
     <div className="flex min-w-0 flex-col gap-4 pr-2.5">
       <div>
         <h2 className="text-lg font-semibold">Knowledge bases</h2>
@@ -169,9 +167,9 @@ export function KnowledgeBasesTab() {
               </button>
               <div
                 className={cn(
-                  // shrink + min-w-0 + a width cap so the preview can never
-                  // push the workspace wider than the dialog (which clipped
-                  // the close button and right-aligned content).
+                  // shrink + min-w-0 + width cap so the preview can't push the
+                  // workspace wider than the dialog (clipping the close button
+                  // and right-aligned content).
                   "w-0 min-w-0 shrink overflow-hidden max-lg:hidden lg:w-[var(--preview-w)] lg:max-w-[60%]",
                   !previewResizing && "transition-[width] duration-200 ease-out",
                 )}

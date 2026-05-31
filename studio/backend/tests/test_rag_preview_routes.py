@@ -229,7 +229,7 @@ class TestPreviewTarget:
 
         assert resp.status_code == 200
         body = resp.json()
-        # All chunk fields MUST be null — UI must not guess a first chunk.
+        # All chunk fields null — no first-chunk guess.
         assert body["chunkId"] is None
         assert body["chunkIndex"] is None
         assert body["targetPage"] is None
@@ -288,19 +288,19 @@ class TestPreviewTarget:
 
         client = _make_client(app, "alice")
         try:
-            # Probe doc_b with chunk_a (which belongs to doc_a)
+            # Probe doc_b with chunk_a (belongs to doc_a)
             resp = client.get(
                 f"/api/rag/documents/{doc_b}/preview-target?chunk_id={chunk_a}"
             )
         finally:
             _clear_overrides(app)
-        # Must be 404, NOT 200 with doc_a's chunk data
+        # 404, not 200 with doc_a's chunk data
         assert resp.status_code == 404
 
     def test_unauthenticated_returns_401(self, app, db_env, monkeypatch):
         """No bearer token → 401."""
         monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(db_env))
-        # No override — let the real dependency raise
+        # No override: let the real dependency raise.
         client = TestClient(app, raise_server_exceptions = False)
         resp = client.get(f"/api/rag/documents/{_uid()}/preview-target")
         assert resp.status_code == 401
@@ -419,7 +419,7 @@ class TestFileRoute:
 
         assert resp.status_code == 200
         ct = resp.headers.get("content-type", "").lower()
-        # MUST NOT be text/html — must be text/plain
+        # Must be text/plain, not text/html.
         assert "text/html" not in ct, f"HTML executed inline! content-type={ct}"
         assert "text/plain" in ct
         disp = resp.headers.get("content-disposition", "").lower()
@@ -501,7 +501,7 @@ class TestFileRoute:
             _insert_kb(conn, kb_id)
             _insert_doc(conn, doc_id, kb_id, str(stored))
 
-        # Delete the file after inserting the row
+        # Delete the file after the row exists.
         stored.unlink()
 
         client = _make_client(app, "alice")
@@ -521,7 +521,7 @@ class TestFileRoute:
         doc_id, kb_id = _uid(), _uid()
         uploads = db_env / "rag" / "uploads"
         uploads.mkdir(parents = True, exist_ok = True)
-        # A legitimate-looking path that is outside the RAG uploads root
+        # A plausible path outside the RAG uploads root.
         outside = tmp_path / "etc" / "passwd"
         outside.parent.mkdir(parents = True, exist_ok = True)
         outside.write_bytes(b"root:x:0:0")
@@ -529,7 +529,7 @@ class TestFileRoute:
 
         with studio_db.get_connection() as conn:
             _insert_kb(conn, kb_id)
-            # Insert with stored_path pointing outside root
+            # stored_path points outside root.
             conn.execute(
                 "INSERT INTO rag_documents "
                 "(id, kb_id, thread_id, filename, content_type, stored_path, status, "
@@ -544,7 +544,7 @@ class TestFileRoute:
         finally:
             _clear_overrides(app)
 
-        # Must NOT serve the file — containment violation must return 404
+        # Containment violation: 404, never serve the file.
         assert resp.status_code == 404
 
     def test_nosniff_and_cache_headers_on_txt_file(self, app, db_env, monkeypatch):

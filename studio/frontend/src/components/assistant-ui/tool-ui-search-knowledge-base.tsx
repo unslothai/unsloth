@@ -19,8 +19,7 @@ import {
 } from "./tool-fallback";
 
 export interface ParsedChunk {
-  /** Visible citation id the model uses inside `[N]` references. Display
-   *  only; never sent to the backend as a chunk_id. */
+  /** Visible `[N]` citation id. Display only; never sent as a chunk_id. */
   id: string;
   source: string;
   page?: string;
@@ -34,13 +33,12 @@ export interface ParsedChunk {
   kind?: string;
   imageUrl?: string;
   text: string;
-  /** Durable `rag_documents.id`. Carries through when the tool XML
-   *  includes `document_id="..."`. Absent on legacy tool output. */
+  /** Durable `rag_documents.id` from tool XML `document_id=`. Absent on
+   *  legacy tool output. */
   documentId?: string;
-  /** Durable `rag_chunks.id`. Carries through when the tool XML
-   *  includes `chunk_id="..."`. Absent on legacy tool output. The
-   *  preview routing value sent as `?chunk_id=` to `/preview-target`;
-   *  never the same as the visible `id`. */
+  /** Durable `rag_chunks.id` from tool XML `chunk_id=`. Absent on legacy
+   *  output. Sent as `?chunk_id=` to `/preview-target`; never the
+   *  visible `id`. */
   backendChunkId?: string;
 }
 
@@ -95,8 +93,8 @@ export function parseChunks(raw: string): ParsedChunk[] {
   return out;
 }
 
-/** Fetch a backend image via the bearer-authed `authFetch`, expose it
- *  as a blob URL for `<img src>`. Cleans up the object URL on unmount. */
+/** Fetch a backend image via bearer-authed `authFetch`, expose it as a
+ *  blob URL for `<img src>`. Revokes the object URL on unmount. */
 function useAuthedImageUrl(path: string | undefined): string | undefined {
   const [url, setUrl] = useState<string | undefined>(undefined);
   useEffect(() => {

@@ -37,7 +37,7 @@ def test_spans_index_back_to_full_doc_text():
     assert chunks
     assert len(chunks) == len(char_spans)
     for chunk, (start, end) in zip(chunks, char_spans):
-        # The chunk text must be exactly the slice of full_doc it claims.
+        # Chunk text must equal the full_doc slice it claims.
         assert full_doc[start:end] == chunk.text
 
 
@@ -54,7 +54,7 @@ def test_chunks_inherit_page_number_by_overlap():
     )
     pages_seen = {c.page_number for c in chunks}
     assert pages_seen <= {1, 2}
-    # Both pages should contribute at least one chunk.
+    # Each page contributes at least one chunk.
     assert 1 in pages_seen
     assert 2 in pages_seen
 
@@ -72,7 +72,7 @@ def test_full_doc_joins_pages_with_blank_line_separator():
     )
     assert "first" in full_doc
     assert "second" in full_doc
-    # The two pages must be separated by exactly one blank line.
+    # Pages separated by exactly one blank line.
     assert "first\n\nsecond" in full_doc
 
 
@@ -80,7 +80,7 @@ def test_full_doc_joins_pages_with_blank_line_separator():
 def test_late_chunk_encode_returns_one_vector_per_span():
     pytest.importorskip("sentence_transformers")
     pytest.importorskip("torch")
-    # all-MiniLM-L6-v2 is ~80MB and embeds at 384 dims.
+    # all-MiniLM-L6-v2: ~80MB, 384 dims.
     import os
 
     os.environ.setdefault(
@@ -100,7 +100,7 @@ def test_late_chunk_encode_returns_one_vector_per_span():
         "# Results\n\n"
         "Accuracy improved by 12% over the baseline."
     )
-    # char_spans for three chunks — one per section, picked manually.
+    # char_spans: one per section, picked manually.
     char_spans = [
         (doc_text.index("The quick"), doc_text.index("\n\n# Methods")),
         (doc_text.index("We trained"), doc_text.index("\n\n# Results")),

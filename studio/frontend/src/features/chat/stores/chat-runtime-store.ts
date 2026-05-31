@@ -348,11 +348,11 @@ type ChatRuntimeStore = {
   // Cosine floor; 0 disables. Set > 0 to drop off-topic hits.
   ragMinScore: number;
   // Max documents indexed in parallel (bulk/folder uploads drain at this
-  // rate). 1 = sequential. Keeps many concurrent ingestion subprocesses
-  // from thrashing the GPU/CPU.
+  // rate). 1 = sequential. Keeps concurrent ingestion subprocesses from
+  // thrashing the GPU/CPU.
   ragIndexConcurrency: number;
-  // Caption figures/images during ingestion (default on). Off skips the VLM
-  // captioning pass for faster, text-only indexing.
+  // Caption figures/images during ingestion (default on). Off skips the
+  // VLM captioning pass for faster, text-only indexing.
   ragCaptionImages: boolean;
   hydratePersistedSettings: () => Promise<void>;
   setModelLoading: (loading: boolean) => void;
@@ -716,9 +716,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
             ),
             ...getHydratedSettingsState(settings, state, hydrationVersions),
           };
-          // After hydration, if RAG is explicitly on (persisted), warm
-          // the embedder so the first message doesn't pay the cold load
-          // inline. RAG is opt-in by default — no auto-enable migration.
+          // After hydration, if RAG is persisted on, warm the embedder
+          // so the first message doesn't pay the cold load inline. RAG
+          // is opt-in by default — no auto-enable migration.
           if (
             nextState.ragToolEnabled === true ||
             (nextState.ragToolEnabled === undefined && state.ragToolEnabled)
@@ -995,9 +995,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   setRagToolEnabled: (ragToolEnabled) =>
     set((state) => {
       saveBool(CHAT_RAG_TOOL_ENABLED_KEY, ragToolEnabled);
-      // Warmup on off→on transitions: kick the backend to preload the
-      // embedder so the user's first RAG-using message doesn't pay the
-      // cold-start (~30s for Qwen3-VL-Embedding-2B) inline. Fire-and-forget.
+      // Warmup on off→on: preload the embedder so the first RAG-using
+      // message doesn't pay the cold-start (~30s for
+      // Qwen3-VL-Embedding-2B) inline. Fire-and-forget.
       if (ragToolEnabled && !state.ragToolEnabled) {
         void import("@/features/rag/api/rag-api")
           .then((m) => m.warmupRagEmbedder())
