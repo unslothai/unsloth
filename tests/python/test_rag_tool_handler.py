@@ -114,7 +114,10 @@ def test_format_hits_produces_fenced_chunks():
         },
     ]
     result = _format_hits_for_llm(hits)
-    assert '<chunk id="1" source="alpha.pdf" page="3" chunk_index="12" tokens="42">' in result
+    assert (
+        '<chunk id="1" source="alpha.pdf" page="3" chunk_index="12" tokens="42">'
+        in result
+    )
     assert 'chunk_index="12"' in result
     assert 'tokens="42"' in result
     assert "first body\n</chunk>" in result
