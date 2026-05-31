@@ -9,6 +9,7 @@ import type { ChatModelAdapter } from "@assistant-ui/react";
 import {
   getExternalProviderApiKey,
   isCustomProviderType,
+  isExternalModelId,
   isPromptCacheTtl,
   loadExternalProviders,
   parseExternalModelId,
@@ -58,6 +59,7 @@ import {
 } from "../utils/parse-assistant-content";
 import {
   generateAudio,
+  getInferenceStatus,
   listCachedGguf,
   listCachedModels,
   listGgufVariants,
@@ -897,6 +899,25 @@ async function resolveUseAdapter(
   }
 }
 
+/**
+ * Adopt the model already loaded on the inference server (e.g. via
+ * ``unsloth studio run -m``) into the chat UI checkpoint without
+ * triggering a new /api/inference/load.
+ */
+async function tryAdoptServerActiveModel(): Promise<boolean> {
+  const store = useChatRuntimeStore.getState();
+  if (store.params.checkpoint || isExternalModelId(store.params.checkpoint)) {
+    return Boolean(store.params.checkpoint);
+  }
+  const status = await getInferenceStatus();
+  if (!status.active_model) {
+    return false;
+  }
+  const modelId = status.model_identifier ?? status.active_model;
+  store.setCheckpoint(modelId, status.gguf_variant);
+  return true;
+}
+
 /** Wait for an in-progress model load to finish (polls store every 500ms). */
 function waitForModelReady(abortSignal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -927,6 +948,10 @@ async function autoLoadSmallestModel(): Promise<{
   loaded: boolean;
   blockedByTrustRemoteCode: boolean;
 }> {
+  if (await tryAdoptServerActiveModel()) {
+    return { loaded: true, blockedByTrustRemoteCode: false };
+  }
+
   const store = useChatRuntimeStore.getState();
   const hfToken = store.hfToken || null;
   const trustRemoteCode = store.params.trustRemoteCode ?? false;
@@ -1270,14 +1295,16 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       }
 
       if (!useChatRuntimeStore.getState().params.checkpoint) {
-        // Auto-load the smallest downloaded model
-        let loaded: boolean;
-        let blockedByTrustRemoteCode: boolean;
-        try {
-          ({ loaded, blockedByTrustRemoteCode } = await autoLoadSmallestModel());
-        } catch (error) {
-          clearSelectedImageEditReference();
-          throw error;
+        // Prefer a model already loaded by the CLI/API before auto-loading.
+        let loaded = await tryAdoptServerActiveModel();
+        let blockedByTrustRemoteCode = false;
+        if (!loaded) {
+          try {
+            ({ loaded, blockedByTrustRemoteCode } = await autoLoadSmallestModel());
+          } catch (error) {
+            clearSelectedImageEditReference();
+            throw error;
+          }
         }
         if (!loaded) {
           toast.error(
