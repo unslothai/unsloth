@@ -371,7 +371,6 @@ def studio_default(
     host: str = typer.Option("127.0.0.1", "--host", "-H"),
     frontend: Optional[Path] = typer.Option(None, "--frontend", "-f"),
     silent: bool = typer.Option(False, "--silent", "-q"),
-<<<<<<< HEAD
     api_only: bool = typer.Option(
         False,
         "--api-only",
@@ -389,8 +388,6 @@ def studio_default(
             f"defaults to {_PARALLEL_DEFAULT_RUN}."
         ),
     ),
-=======
->>>>>>> 09566d730 (fix failed to start on docker)
 ):
     """Launch the Unsloth Studio server."""
     # Runs before every subcommand (run/setup/update/...).
