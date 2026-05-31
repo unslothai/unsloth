@@ -19,6 +19,16 @@ backend_dir = Path(__file__).parent
 if str(backend_dir) not in sys.path:
     sys.path.insert(0, str(backend_dir))
 
+from utils.cpu_threads import configure_cpu_threads
+
+try:
+    configure_cpu_threads()
+except ValueError as exc:
+    configured = os.environ.get("UNSLOTH_CPU_THREADS")
+    raise SystemExit(
+        f"Error: Invalid UNSLOTH_CPU_THREADS value {configured!r}: {exc}"
+    ) from None
+
 # Fix for Anaconda/conda-forge Python: seed platform._sys_version_cache before
 # any library imports that trigger attrs -> rich -> structlog -> platform crash.
 # See: https://github.com/python/cpython/issues/102396
@@ -643,7 +653,7 @@ def run_server(
     from threading import Thread, Event
     import uvicorn
 
-    from main import app, setup_frontend
+    from main import app, setup_frontend, _IS_COLAB
     from utils.paths import ensure_studio_directories
 
     # Create all standard directories on startup
@@ -727,14 +737,22 @@ def run_server(
                 ready_event.set()
 
     # server_header=False suppresses uvicorn's "Server: uvicorn"; SecurityHeadersMiddleware sets its own.
-    config = uvicorn.Config(
-        app,
+    config_kwargs = dict(
         host = host,
         port = port,
         log_level = "info",
         access_log = False,
         server_header = False,
     )
+    # Only in Colab: trust X-Forwarded-* from Colab's reverse proxy so the app
+    # sees the real https origin. forwarded_allow_ips="*" is fine inside Colab's
+    # single-user sandbox, but would be an unwanted security relaxation for a
+    # normal local/standalone Studio, so leave uvicorn's safe defaults
+    # (forwarded headers trusted from loopback only) in place there.
+    if _IS_COLAB:
+        config_kwargs["proxy_headers"] = True
+        config_kwargs["forwarded_allow_ips"] = "*"
+    config = uvicorn.Config(app, **config_kwargs)
     _server = _ReadyServer(config)
     _shutdown_event = Event()
 
@@ -756,14 +774,21 @@ def run_server(
 
     app.state.trigger_shutdown = _trigger_shutdown
 
-    # Run server in a daemon thread
+    # Run server in a daemon thread.
+    # Use an explicit new_event_loop() + run_until_complete() instead of
+    # asyncio.run() to avoid nest_asyncio's global patches to asyncio.run
+    # interfering when called from a thread while Colab/IPython already has
+    # a running loop on the main thread.
     def _run():
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
         try:
-            asyncio.run(_server.serve())
+            loop.run_until_complete(_server.serve())
         except BaseException as exc:
             startup_errors.append(exc)
             startup_failed.set()
         finally:
+            loop.close()
             if not ready_event.is_set():
                 startup_failed.set()
 
@@ -846,11 +871,33 @@ if __name__ == "__main__":
         action = "store_true",
         help = "API server only, no frontend (for Tauri)",
     )
+    # Mirror unsloth_cli/commands/studio.py's _PARALLEL_*. Default 1
+    # applies only to direct backend launches; `unsloth studio run`
+    # always passes its own value (4) explicitly.
+    _PARALLEL_MIN = 1
+    _PARALLEL_MAX = 64
+    _PARALLEL_DEFAULT_PLAIN = 1
+    parser.add_argument(
+        "--parallel",
+        "--n-parallel",
+        type = int,
+        default = _PARALLEL_DEFAULT_PLAIN,
+        help = (
+            f"llama-server parallel decode slots ({_PARALLEL_MIN}..{_PARALLEL_MAX}). "
+            f"Default {_PARALLEL_DEFAULT_PLAIN}; `unsloth studio run` uses 4."
+        ),
+    )
 
     args = parser.parse_args()
+    if not _PARALLEL_MIN <= args.parallel <= _PARALLEL_MAX:
+        parser.error(f"--parallel must be between {_PARALLEL_MIN} and {_PARALLEL_MAX}")
 
     kwargs = dict(
-        host = args.host, port = args.port, silent = args.silent, api_only = args.api_only
+        host = args.host,
+        port = args.port,
+        silent = args.silent,
+        api_only = args.api_only,
+        llama_parallel_slots = args.parallel,
     )
     if args.frontend is not None:
         kwargs["frontend_path"] = Path(args.frontend)

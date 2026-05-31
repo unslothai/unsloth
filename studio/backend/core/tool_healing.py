@@ -17,22 +17,25 @@ verifies it with AST comparison.
 import json
 import re
 
-# Pre-compiled patterns for tool XML stripping.
+# Pre-compiled patterns for tool XML stripping. Hyphen in the
+# function/parameter name char-class tracks OpenAI's allowed set so
+# MCP tool names with dashes (mcp__srv__list-issues) and parameter
+# names with dashes (`issue-number`) parse alongside the built-ins.
 _TOOL_CLOSED_PATS = [
     re.compile(r"<tool_call>.*?</tool_call>", re.DOTALL),
-    re.compile(r"<function=\w+>.*?</function>", re.DOTALL),
+    re.compile(r"<function=[\w-]+>.*?</function>", re.DOTALL),
 ]
 _TOOL_ALL_PATS = _TOOL_CLOSED_PATS + [
     re.compile(r"<tool_call>.*$", re.DOTALL),
-    re.compile(r"<function=\w+>.*$", re.DOTALL),
+    re.compile(r"<function=[\w-]+>.*$", re.DOTALL),
 ]
 
 # Pre-compiled patterns for tool-call XML parsing.
 _TC_JSON_START_RE = re.compile(r"<tool_call>\s*\{")
-_TC_FUNC_START_RE = re.compile(r"<function=(\w+)>\s*")
+_TC_FUNC_START_RE = re.compile(r"<function=([\w-]+)>\s*")
 _TC_END_TAG_RE = re.compile(r"</tool_call>")
 _TC_FUNC_CLOSE_RE = re.compile(r"\s*</function>\s*$")
-_TC_PARAM_START_RE = re.compile(r"<parameter=(\w+)>\s*")
+_TC_PARAM_START_RE = re.compile(r"<parameter=([\w-]+)>\s*")
 _TC_PARAM_CLOSE_RE = re.compile(r"\s*</parameter>\s*$")
 
 

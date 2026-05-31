@@ -101,6 +101,16 @@ const statusIconMap: Record<ToolStatus, ElementType> = {
   "requires-action": AlertCircleIcon,
 };
 
+const MCP_TOOL_PREFIX = "mcp__";
+
+function formatToolNameForDisplay(toolName: string): string {
+  if (!toolName.startsWith(MCP_TOOL_PREFIX)) return toolName;
+  const rest = toolName.slice(MCP_TOOL_PREFIX.length);
+  const sep = rest.indexOf("__");
+  if (sep <= 0) return toolName;
+  return `${rest.slice(0, sep)} · ${rest.slice(sep + 2)}`;
+}
+
 function ToolFallbackTrigger({
   toolName,
   status,
@@ -119,6 +129,7 @@ function ToolFallbackTrigger({
 
   const StatusIcon = statusIconMap[statusType];
   const label = isCancelled ? "Cancelled tool" : "Used tool";
+  const displayName = formatToolNameForDisplay(toolName);
 
   return (
     <CollapsibleTrigger
@@ -160,7 +171,7 @@ function ToolFallbackTrigger({
       >
         <span className="block truncate">
           {label}:{" "}
-          <span className="font-medium text-foreground/85">{toolName}</span>
+          <span className="font-medium text-foreground/85">{displayName}</span>
         </span>
         {isRunning && (
           <span
@@ -169,7 +180,7 @@ function ToolFallbackTrigger({
             className="aui-tool-fallback-trigger-shimmer shimmer pointer-events-none absolute inset-0 block truncate motion-reduce:animate-none"
           >
             {label}:{" "}
-            <span className="font-medium text-foreground/85">{toolName}</span>
+            <span className="font-medium text-foreground/85">{displayName}</span>
           </span>
         )}
       </span>

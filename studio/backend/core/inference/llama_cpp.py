@@ -17,6 +17,7 @@ import struct
 import structlog
 from loggers import get_logger
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -28,6 +29,12 @@ from urllib.parse import urlparse
 
 import httpx
 
+from core.inference.llama_server_args import (
+    parse_cache_override,
+    parse_ctx_override,
+    resolve_cache_type_kv,
+    resolve_requested_ctx,
+)
 from core.tool_healing import (
     _TC_END_TAG_RE,
     _TC_FUNC_CLOSE_RE,
@@ -959,9 +966,6 @@ class LlamaCppBackend:
         7.  llama-server on PATH                     (system install)
         8.  ./bin/llama-server                       (legacy: extracted binary)
         """
-        import os
-        import sys
-
         binary_name = "llama-server.exe" if sys.platform == "win32" else "llama-server"
 
         # 1. Env var — direct path to binary
@@ -1233,6 +1237,33 @@ class LlamaCppBackend:
         return total
 
     @staticmethod
+    def _amd_apu_wants_unified_memory() -> bool:
+        """True only for AMD unified-memory APUs (gfx1150/gfx1151), where
+        GGML_CUDA_ENABLE_UNIFIED_MEMORY lets llama.cpp use shared system RAM.
+        False for discrete AMD, NVIDIA, CPU and macOS (the env hurts discrete
+        GPUs). ROCm reuses torch.cuda.*; the gcnArchName suffix is stripped."""
+        try:
+            import torch
+
+            if getattr(torch.version, "hip", None) is None:
+                return False
+            if not (hasattr(torch, "cuda") and torch.cuda.is_available()):
+                return False
+            for _i in range(torch.cuda.device_count()):
+                try:
+                    _arch = (
+                        getattr(torch.cuda.get_device_properties(_i), "gcnArchName", "")
+                        or ""
+                    )
+                except Exception:
+                    continue
+                if _arch.split(":")[0].strip().lower() in {"gfx1150", "gfx1151"}:
+                    return True
+        except Exception:
+            return False
+        return False
+
+    @staticmethod
     def _get_gpu_free_memory() -> list[tuple[int, int]]:
         """Query free memory per GPU.
 
@@ -1249,8 +1280,6 @@ class LlamaCppBackend:
         Returns list of (gpu_index, free_mib) sorted by index. Empty
         list if no supported GPU is reachable.
         """
-        import os
-
         # ── NVIDIA via nvidia-smi ────────────────────────────────────
         try:
             result = subprocess.run(
@@ -2724,7 +2753,23 @@ class LlamaCppBackend:
                 # Select GPU(s) based on model size + estimated KV cache.
                 # Seed safe defaults before GPU probing so the except path
                 # still has valid state to publish.
-                effective_ctx = n_ctx if n_ctx > 0 else (self._context_length or 0)
+                ctx_override = parse_ctx_override(extra_args)
+                requested_ctx = resolve_requested_ctx(extra_args, n_ctx)
+                cache_override = parse_cache_override(extra_args)
+                cache_type_kv = resolve_cache_type_kv(extra_args, cache_type_kv)
+                if ctx_override is not None and ctx_override > 0:
+                    logger.info(
+                        f"User --ctx-size {ctx_override} honored; "
+                        "skipping auto-reduce"
+                    )
+                if cache_override is not None:
+                    logger.info(
+                        f"User --cache-type-k/-v {cache_override} "
+                        "honored for KV estimate"
+                    )
+                effective_ctx = (
+                    requested_ctx if requested_ctx > 0 else (self._context_length or 0)
+                )
                 max_available_ctx = self._context_length or effective_ctx
                 gpus: list[tuple[int, int]] = []
                 try:
@@ -2734,8 +2779,8 @@ class LlamaCppBackend:
                     # Resolve effective context: 0 means let llama-server use the
                     # model's native length.  Only expand to a known native length
                     # if metadata is available; otherwise preserve 0 as a sentinel.
-                    if n_ctx > 0:
-                        effective_ctx = n_ctx
+                    if requested_ctx > 0:
+                        effective_ctx = requested_ctx
                     elif self._context_length is not None:
                         effective_ctx = self._context_length
                     else:
@@ -2788,7 +2833,7 @@ class LlamaCppBackend:
                     #   since multi-GPU is slower and the user didn't ask for a
                     #   specific context length.
                     gpu_indices, use_fit = None, True
-                    explicit_ctx = n_ctx > 0
+                    explicit_ctx = requested_ctx > 0
 
                     if gpus and self._can_estimate_kv() and effective_ctx > 0:
                         # Compute the largest hardware-aware cap from the model's
@@ -2845,7 +2890,7 @@ class LlamaCppBackend:
                             gpu_indices, use_fit = self._select_gpus(
                                 requested_total, gpus
                             )
-                            # No silent shrink: effective_ctx stays == n_ctx.
+                            # No silent shrink: effective_ctx stays == requested_ctx.
                         else:
                             # Auto context: prefer fewer GPUs, cap context
                             # to fit. Same headroom threshold as
@@ -2934,7 +2979,7 @@ class LlamaCppBackend:
                 except Exception as e:
                     logger.warning(f"GPU selection failed ({e}), using --fit on")
                     gpu_indices, use_fit = None, True
-                    effective_ctx = n_ctx  # fall back to original
+                    effective_ctx = requested_ctx  # fall back to original
 
                 launch_mmproj_path = self._resolve_launch_mmproj_path(
                     model_path = model_path,
@@ -3136,6 +3181,14 @@ class LlamaCppBackend:
                 env = child_env_without_native_path_secret()
                 binary_dir = str(Path(binary).parent)
 
+                # AMD unified-memory APUs (gfx1150/gfx1151): let llama.cpp use
+                # shared system RAM. setdefault so a user value wins.
+                if self._amd_apu_wants_unified_memory():
+                    env.setdefault("GGML_CUDA_ENABLE_UNIFIED_MEMORY", "1")
+                    logger.info(
+                        "AMD unified-memory APU: set GGML_CUDA_ENABLE_UNIFIED_MEMORY=1"
+                    )
+
                 if sys.platform == "win32":
                     # See _build_windows_path_dirs for ordering. #5106.
                     path_dirs = self._build_windows_path_dirs(
@@ -3145,6 +3198,24 @@ class LlamaCppBackend:
                     )
                     existing_path = env.get("PATH", "")
                     env["PATH"] = ";".join(path_dirs) + ";" + existing_path
+
+                    # ROCm: the llama.cpp prebuilt bundles its own rocblas.dll
+                    # but NOT the Tensile kernel library files it needs
+                    # (rocblas/library/TensileLibrary*.dat + *.hsaco).  The
+                    # bundled DLL searches relative to its own location by
+                    # default (i.e. <binary_dir>/rocblas/library/) which does
+                    # not exist, causing a silent crash on the first GEMM.
+                    # ROCBLAS_TENSILE_LIBPATH overrides that search to point at
+                    # the ROCm installation where the kernel files actually are.
+                    _hip_path = os.environ.get(
+                        "HIP_PATH", os.environ.get("ROCM_PATH", "")
+                    )
+                    if _hip_path:
+                        _rocblas_lib = os.path.join(
+                            _hip_path, "bin", "rocblas", "library"
+                        )
+                        if os.path.isdir(_rocblas_lib):
+                            env.setdefault("ROCBLAS_TENSILE_LIBPATH", _rocblas_lib)
                 else:
                     # Linux: set LD_LIBRARY_PATH for shared libs next to the binary
                     # and CUDA runtime libs (libcudart, libcublas, etc.)
@@ -3853,10 +3924,6 @@ class LlamaCppBackend:
         Falls back to pgrep + /proc/<pid>/exe on Linux when psutil is
         not installed.
         """
-        import os
-        import signal
-        import sys
-
         try:
             # -- Build the ownership allowlist --------------------------------
             # Two kinds of matches:
@@ -5093,13 +5160,30 @@ class LlamaCppBackend:
                         _effective_timeout = (
                             None if tool_call_timeout >= 9999 else tool_call_timeout
                         )
-                        result = execute_tool(
-                            tool_name,
-                            arguments,
-                            cancel_event = cancel_event,
-                            timeout = _effective_timeout,
-                            session_id = session_id,
-                        )
+                        # Guard against the model emitting a tool not in the
+                        # per-request advertised set: filtered MCP names, a
+                        # built-in the caller opted out of, or a stale name
+                        # from a prior turn. Mirrors the safetensors loop's
+                        # allowed_tool_names check.
+                        _allowed = {
+                            (t.get("function") or {}).get("name")
+                            for t in (tools or [])
+                            if (t.get("function") or {}).get("name")
+                        }
+                        if _allowed and tool_name not in _allowed:
+                            result = (
+                                f"Error: tool '{tool_name}' is not enabled "
+                                "for this request. Use one of the enabled "
+                                "tools or provide a final answer."
+                            )
+                        else:
+                            result = execute_tool(
+                                tool_name,
+                                arguments,
+                                cancel_event = cancel_event,
+                                timeout = _effective_timeout,
+                                session_id = session_id,
+                            )
 
                     yield {
                         "type": "tool_end",
