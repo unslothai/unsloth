@@ -77,6 +77,9 @@ windows_cuda_upstream_asset_names = (
     INSTALL_LLAMA_PREBUILT.windows_cuda_upstream_asset_names
 )
 env_int = INSTALL_LLAMA_PREBUILT.env_int
+direct_upstream_release_plan = INSTALL_LLAMA_PREBUILT.direct_upstream_release_plan
+_pinned_windows_cuda_fallback = INSTALL_LLAMA_PREBUILT._pinned_windows_cuda_fallback
+CudaRuntimePreference = INSTALL_LLAMA_PREBUILT.CudaRuntimePreference
 
 
 # ---------------------------------------------------------------------------
@@ -2001,6 +2004,152 @@ class TestWindowsCudaAttempts:
         assets = self._upstream("13.3", "12.4")
         result = windows_cuda_attempts(host, self.TAG, assets, None)
         assert result[0].name == f"llama-{self.TAG}-bin-win-cuda-13.3-x64.zip"
+
+
+# ===========================================================================
+# N.1b. _pinned_windows_cuda_fallback -- pinned b9360 cuda-13.1 Blackwell fallback
+# ===========================================================================
+
+
+class TestPinnedBlackwellCudaFallback:
+    """A Blackwell host on a 13.1/13.2 driver, gated off the in-release 13.3
+    build, gets the pinned immutable b9360 cuda-13.1 GPU build instead of the
+    CPU-only cuda-12.4 drop. The pin is dormant for everyone else."""
+
+    TAG = "b8508"
+
+    def _win_host(self, driver, caps):
+        return make_host(
+            system = "Windows", machine = "AMD64",
+            driver_cuda_version = driver, compute_caps = caps,
+        )
+
+    def test_pin_offered_for_driver_13_1_blackwell(self):
+        pin = _pinned_windows_cuda_fallback(self._win_host((13, 1), ["120"]), [])
+        assert pin is not None
+        assert pin.tag == "b9360"
+        assert pin.runtime_line == "cuda13"
+        assert pin.name == "llama-b9360-bin-win-cuda-13.1-x64.zip"
+        assert pin.runtime_name == "cudart-llama-bin-win-cuda-13.1-x64.zip"
+        assert pin.url.endswith("/b9360/llama-b9360-bin-win-cuda-13.1-x64.zip")
+        assert pin.runtime_url.endswith("/b9360/cudart-llama-bin-win-cuda-13.1-x64.zip")
+        assert pin.install_kind == "windows-cuda"
+        assert pin.expected_sha256 and len(pin.expected_sha256) == 64
+        assert pin.runtime_sha256 and len(pin.runtime_sha256) == 64
+
+    def test_pin_offered_for_driver_13_2(self):
+        assert _pinned_windows_cuda_fallback(self._win_host((13, 2), ["120"]), []) is not None
+
+    def test_pin_offered_for_sm121_variant(self):
+        # sm_121 is Blackwell-family and also needs toolkit >= 12.8.
+        assert _pinned_windows_cuda_fallback(self._win_host((13, 1), ["121"]), []) is not None
+
+    def test_pin_uses_max_of_multi_gpu_caps(self):
+        assert (
+            _pinned_windows_cuda_fallback(self._win_host((13, 1), ["86", "120"]), [])
+            is not None
+        )
+
+    @pytest.mark.parametrize("sm", ["89", "90", "100"])
+    def test_pin_not_offered_to_non_blackwell(self, sm):
+        # Ada/Hopper run the cuda-12.4 build fine; the pin must not fire.
+        assert _pinned_windows_cuda_fallback(self._win_host((13, 1), [sm]), []) is None
+
+    def test_pin_not_offered_to_driver_13_0(self):
+        # 13.0 cannot run the 13.1 build (forward minor); residual CPU gap.
+        assert _pinned_windows_cuda_fallback(self._win_host((13, 0), ["120"]), []) is None
+
+    def test_pin_not_offered_below_floor(self):
+        assert _pinned_windows_cuda_fallback(self._win_host((12, 8), ["120"]), []) is None
+
+    def test_pin_not_offered_without_driver(self):
+        assert _pinned_windows_cuda_fallback(self._win_host(None, ["120"]), []) is None
+
+    def test_pin_not_offered_on_linux(self):
+        host = make_host(
+            system = "Linux", machine = "x86_64",
+            driver_cuda_version = (13, 1), compute_caps = ["120"],
+        )
+        assert _pinned_windows_cuda_fallback(host, []) is None
+
+    def test_pin_dormant_when_cuda13_attempt_present(self, monkeypatch):
+        # A runnable in-release cuda13 build makes the pin unnecessary.
+        mock_windows_runtime(monkeypatch, ["cuda13", "cuda12"])
+        host = self._win_host((13, 1), ["120"])
+        assets = {
+            f"llama-{self.TAG}-bin-win-cuda-13.1-x64.zip": "https://example.com/13.1",
+            f"llama-{self.TAG}-bin-win-cuda-12.4-x64.zip": "https://example.com/12.4",
+        }
+        existing = windows_cuda_attempts(host, self.TAG, assets, None)
+        assert any(a.runtime_line == "cuda13" for a in existing)
+        assert _pinned_windows_cuda_fallback(host, existing) is None
+
+
+# ===========================================================================
+# N.1c. direct_upstream_release_plan -- pinned Blackwell fallback ordering
+# ===========================================================================
+
+
+class TestDirectUpstreamBlackwellPin:
+    """End to end: the pin lands ahead of cuda-12.4 on the simple/upstream path
+    a Blackwell Windows host actually uses, and stays absent once a runnable
+    in-release cuda13 build exists."""
+
+    TAG = "b9365"
+
+    def _release(self):
+        names = [
+            f"llama-{self.TAG}-bin-win-cuda-13.3-x64.zip",
+            "cudart-llama-bin-win-cuda-13.3-x64.zip",
+            f"llama-{self.TAG}-bin-win-cuda-12.4-x64.zip",
+            "cudart-llama-bin-win-cuda-12.4-x64.zip",
+            f"llama-{self.TAG}-bin-win-cpu-x64.zip",
+        ]
+        return {
+            "tag_name": self.TAG,
+            "assets": [
+                {"name": n, "browser_download_url": f"https://example.com/{n}"}
+                for n in names
+            ],
+        }
+
+    def _no_torch(self, monkeypatch):
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT,
+            "detect_torch_cuda_runtime_preference",
+            lambda host: CudaRuntimePreference(runtime_line = None, selection_log = []),
+        )
+
+    def test_blackwell_13_1_prepends_pin(self, monkeypatch):
+        mock_windows_runtime(monkeypatch, ["cuda13", "cuda12"])
+        self._no_torch(monkeypatch)
+        host = make_host(
+            system = "Windows", machine = "AMD64",
+            driver_cuda_version = (13, 1), compute_caps = ["120"],
+        )
+        plan = direct_upstream_release_plan(self._release(), host, UPSTREAM_REPO, "latest")
+        order = [(a.tag, a.runtime_line or a.install_kind) for a in plan.attempts]
+        assert order == [
+            ("b9360", "cuda13"),
+            (self.TAG, "cuda12"),
+            (self.TAG, "windows-cpu"),
+        ]
+        assert plan.attempts[0].name == "llama-b9360-bin-win-cuda-13.1-x64.zip"
+        # Direct/upstream path stays unverified-by-manifest (no approved hashes).
+        assert plan.approved_checksums.artifacts == {}
+
+    def test_blackwell_13_3_no_pin(self, monkeypatch):
+        mock_windows_runtime(monkeypatch, ["cuda13", "cuda12"])
+        self._no_torch(monkeypatch)
+        host = make_host(
+            system = "Windows", machine = "AMD64",
+            driver_cuda_version = (13, 3), compute_caps = ["120"],
+        )
+        plan = direct_upstream_release_plan(self._release(), host, UPSTREAM_REPO, "latest")
+        assert "b9360" not in [a.tag for a in plan.attempts]
+        assert plan.attempts[0].tag == self.TAG
+        assert plan.attempts[0].runtime_line == "cuda13"
+        assert plan.attempts[0].name == f"llama-{self.TAG}-bin-win-cuda-13.3-x64.zip"
 
 
 # ===========================================================================

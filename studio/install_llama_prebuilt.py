@@ -220,6 +220,24 @@ DIRECT_LINUX_BUNDLE_PROFILES: dict[str, dict[str, Any]] = {
 _MIN_CUDA_MAJOR = 12
 _MAX_PROBE_CUDA_MAJOR = 19
 
+# Last ggml-org release whose Windows win-cuda-13 build is still sub-13.3
+# (cuda-13.1, b9360, 2026-05-27). Upstream bumped win-cuda-13 to 13.3 at b9365
+# and now ships only cuda-12.4 + cuda-13.3. cuda-12.4 predates Blackwell (ggml
+# compiles sm_120 only at toolkit >= 12.8), so a Blackwell host on a 13.1/13.2
+# driver is gated off 13.3 and would drop to a CPU-only 12.4 build. b9360 is
+# immutable, so we pin its cuda-13.1 build (plus paired cudart) as a GPU
+# fallback for exactly those hosts. See unslothai/unsloth#5887.
+_PINNED_BLACKWELL_FALLBACK_TAG = "b9360"
+_PINNED_BLACKWELL_FALLBACK_RUNTIME = "13.1"
+_PINNED_BLACKWELL_DRIVER_FLOOR = (13, 1)
+_BLACKWELL_MIN_SM = 120
+_PINNED_BLACKWELL_LLAMA_SHA256 = (
+    "31ddb8b42d7ab4a47cab8c48c397519f580ca502df7e73f3ab396eacc16c8e8d"
+)
+_PINNED_BLACKWELL_CUDART_SHA256 = (
+    "f96935e7e385e3b2d0189239077c10fe8fd7e95690fea4afec455b1b6c7e3f18"
+)
+
 
 def _cuda_runtime_lines_for_major(major: int) -> list[str]:
     """Runtime lines a driver of this CUDA major can use, newest major first
@@ -1451,6 +1469,11 @@ def direct_upstream_release_plan(
                     torch_preference.selection_log,
                 )
             )
+            # Blackwell on a 13.1/13.2 driver: prefer the pinned cuda-13.1 GPU
+            # build over the CPU-only cuda-12.4 the in-release gating leaves.
+            pinned = _pinned_windows_cuda_fallback(host, attempts)
+            if pinned is not None:
+                attempts.insert(0, pinned)
         elif host.has_rocm:
             lemonade_choice = resolve_lemonade_rocm_choice(
                 host, "windows", "windows-hip", llama_tag = requested_tag
@@ -3268,6 +3291,53 @@ def windows_cuda_attempts(
             )
         )
     return attempts
+
+
+def _pinned_windows_cuda_fallback(
+    host: HostInfo, existing_cuda_attempts: list[AssetChoice]
+) -> AssetChoice | None:
+    """Pinned GPU fallback for a Blackwell host the in-release cuda13 build gates
+    off. Upstream stopped publishing a sub-13.3 Windows cuda13 build after b9360,
+    and cuda-12.4 cannot offload sm_120, so a 13.1/13.2 driver would land on CPU.
+    b9360's cuda-13.1 build is immutable and runs on those drivers. Returns None
+    (dormant) whenever a runnable in-release cuda13 build is already present, so
+    it self-disables once upstream ships a driver-runnable build again."""
+    if not (host.is_windows and host.is_x86_64 and host.has_usable_nvidia):
+        return None
+    driver = host.driver_cuda_version
+    if driver is None or driver < _PINNED_BLACKWELL_DRIVER_FLOOR:
+        return None
+    caps = normalize_compute_caps(host.compute_caps)
+    if not caps or int(caps[-1]) < _BLACKWELL_MIN_SM:
+        return None
+    if any(attempt.runtime_line == "cuda13" for attempt in existing_cuda_attempts):
+        return None
+    tag = _PINNED_BLACKWELL_FALLBACK_TAG
+    runtime = _PINNED_BLACKWELL_FALLBACK_RUNTIME
+    base = (
+        f"https://github.com/{UPSTREAM_REPO}/releases/download/"
+        f"{urllib.parse.quote(tag, safe = '')}"
+    )
+    name = f"llama-{tag}-bin-win-cuda-{runtime}-x64.zip"
+    cudart_name = f"cudart-llama-bin-win-cuda-{runtime}-x64.zip"
+    return AssetChoice(
+        repo = UPSTREAM_REPO,
+        tag = tag,
+        name = name,
+        url = f"{base}/{name}",
+        source_label = "upstream",
+        install_kind = "windows-cuda",
+        runtime_line = "cuda13",
+        runtime_name = cudart_name,
+        runtime_url = f"{base}/{cudart_name}",
+        expected_sha256 = _PINNED_BLACKWELL_LLAMA_SHA256,
+        runtime_sha256 = _PINNED_BLACKWELL_CUDART_SHA256,
+        selection_log = [
+            f"windows_cuda_selection: pinned {tag} cuda-{runtime} Blackwell GPU "
+            f"fallback (in-release cuda13 gated off by driver "
+            f"{driver[0]}.{driver[1]})"
+        ],
+    )
 
 
 def published_windows_cuda_attempts(
