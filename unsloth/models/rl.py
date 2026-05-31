@@ -1036,6 +1036,12 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "dtype = getattr(model.config, 'dtype', None) or getattr(model.config, 'torch_dtype', None)\n"
             "if dtype is None: dtype = model.get_input_embeddings().weight.dtype\n"
             "from unsloth_zoo.utils import _get_dtype\n"
+            # device-aware bf16 check (CUDA/XPU/HIP), so V100/T4 never pick bf16
+            # but AMD/Intel are unaffected; fall back on older unsloth_zoo.
+            "try:\n"
+            "    from unsloth_zoo.device_type import device_is_bf16_supported as _bf16_supported\n"
+            "except Exception:\n"
+            "    _bf16_supported = torch.cuda.is_bf16_supported\n"
             "dtype = _get_dtype(dtype)\n"
             "float16 = dtype == torch.float16\n"
             "bfloat16 = dtype == torch.bfloat16\n"
@@ -1050,7 +1056,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "    # args.mixed_precision is a new argument which needs to be set now\n"
             "elif (not use_bf16 and not use_fp16) and mixed_precision_dtype == 'float32':\n"
             "    # Mixed precision training. bf16 only if the GPU supports it; V100/T4 use fp16.\n"
-            "    use_bf16_amp = (not float16) and torch.cuda.is_bf16_supported()\n"
+            "    use_bf16_amp = (not float16) and _bf16_supported()\n"
             "    args.fp16 = not use_bf16_amp\n"
             "    args.bf16 = use_bf16_amp\n"
             "    os.environ['ACCELERATE_MIXED_PRECISION'] = 'bf16' if use_bf16_amp else 'fp16'\n"

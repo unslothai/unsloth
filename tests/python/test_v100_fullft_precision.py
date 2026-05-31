@@ -58,8 +58,11 @@ def _decide(
     uz = types.ModuleType("unsloth_zoo")
     uzu = types.ModuleType("unsloth_zoo.utils")
     uzu._get_dtype = lambda x: x
+    uzd = types.ModuleType("unsloth_zoo.device_type")
+    uzd.device_is_bf16_supported = lambda: bf16_supported  # device-aware signal stub
     sys.modules.setdefault("unsloth_zoo", uz)
     sys.modules["unsloth_zoo.utils"] = uzu
+    sys.modules["unsloth_zoo.device_type"] = uzd
     for k in (
         "UNSLOTH_FORCE_FLOAT32",
         "UNSLOTH_ENABLE_FULL_FINETUNING",
