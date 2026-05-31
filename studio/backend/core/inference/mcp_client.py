@@ -116,15 +116,24 @@ def _client(url: str, headers: Optional[dict], use_oauth: bool = False):
     from fastmcp import Client
 
     if is_stdio(url):
+        # Belt-and-suspenders: never spawn unless stdio is enabled on this host.
+        if not stdio_mcp_enabled():
+            raise PermissionError("stdio MCP servers are disabled on this host")
         from fastmcp.client.transports import StdioTransport
 
         parts = parse_stdio_command(url)
         if not parts:
             raise ValueError(f"Empty stdio command: {url!r}")
-        # stdio env vars ride the (HTTP-only) headers field. The MCP SDK merges
-        # them over its default safe env (PATH etc.), so pass them through as-is.
+        # env vars ride the headers field (merged over the SDK's safe default env).
+        # keep_alive=False tears the subprocess down on exit, so a one-shot
+        # probe/tool call never leaves an orphan process.
         return Client(
-            StdioTransport(command = parts[0], args = parts[1:], env = headers or None)
+            StdioTransport(
+                command = parts[0],
+                args = parts[1:],
+                env = headers or None,
+                keep_alive = False,
+            )
         )
 
     from fastmcp.client.transports import SSETransport, StreamableHttpTransport
