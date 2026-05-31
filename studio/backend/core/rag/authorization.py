@@ -95,24 +95,3 @@ def document_for_subject_or_404(
         # Docs must belong to a KB or a thread (DB CHECK enforces XOR on insert);
         # a row satisfying neither is corrupt — treat as 404.
         raise HTTPException(status_code = 404, detail = _NOT_FOUND_DETAIL)
-
-
-def chunk_belongs_to_document(chunk_id: str, document_id: str) -> bool:
-    """True iff `chunk_id` exists in `rag_chunks` for `document_id`.
-
-    Used by `/preview-target?chunk_id=...` after the caller has
-    already established subject authorization for `document_id`. Does
-    NOT perform authorization itself: callers MUST call
-    `document_for_subject_or_404(document_id, ...)` first, otherwise a
-    valid `chunk_id` from another subject's document would leak via a
-    `True` return.
-    """
-    if not chunk_id or not document_id:
-        return False
-
-    with get_connection() as conn:
-        row = conn.execute(
-            "SELECT 1 FROM rag_chunks WHERE id = ? AND document_id = ?",
-            (chunk_id, document_id),
-        ).fetchone()
-    return row is not None

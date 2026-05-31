@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tests for document_for_subject_or_404 and chunk_belongs_to_document.
+"""Tests for document_for_subject_or_404.
 
 Authorization rules under test (contracts.md §1 / §2, Risk #1):
 
@@ -13,7 +13,6 @@ Authorization rules under test (contracts.md §1 / §2, Risk #1):
 - KB with NULL owner_user_id is NOT accessible (legacy row guard).
 - Both not-found and not-authorized return HTTP 404 with identical detail to
   prevent document-existence leaking.
-- chunk_belongs_to_document only returns True when chunk.document_id matches.
 """
 
 from __future__ import annotations
@@ -24,10 +23,7 @@ import pytest
 from fastapi import HTTPException
 
 import storage.studio_db as studio_db
-from core.rag.authorization import (
-    chunk_belongs_to_document,
-    document_for_subject_or_404,
-)
+from core.rag.authorization import document_for_subject_or_404
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────
@@ -85,16 +81,6 @@ def _insert_thread_doc(
         VALUES (?, NULL, ?, ?, ?, ?, 'completed', 0, 512, ?)
         """,
         (doc_id, thread_id, "note.txt", "text/plain", stored_path, 1_700_000_000),
-    )
-
-
-def _insert_chunk(conn, chunk_id: str, doc_id: str, chunk_index: int = 0) -> None:
-    conn.execute(
-        """
-        INSERT INTO rag_chunks (id, document_id, chunk_index, text, token_count)
-        VALUES (?, ?, ?, ?, ?)
-        """,
-        (chunk_id, doc_id, chunk_index, "some chunk text", 20),
     )
 
 
@@ -224,49 +210,3 @@ def test_empty_subject_raises_404(tmp_path, monkeypatch):
     with pytest.raises(HTTPException) as exc_info:
         document_for_subject_or_404(doc_id, "")
     assert exc_info.value.status_code == 404
-
-
-# ── chunk_belongs_to_document ─────────────────────────────────────────
-
-
-def test_chunk_belongs_returns_true_for_matching_doc(tmp_path, monkeypatch):
-    """chunk_belongs_to_document returns True when chunk.document_id matches."""
-    _reset_db(tmp_path, monkeypatch)
-    doc_id, kb_id, chunk_id = _uid(), _uid(), _uid()
-    with studio_db.get_connection() as conn:
-        _insert_kb(conn, kb_id, owner = "alice")
-        _insert_kb_doc(conn, doc_id, kb_id)
-        _insert_chunk(conn, chunk_id, doc_id)
-    assert chunk_belongs_to_document(chunk_id, doc_id) is True
-
-
-def test_chunk_belongs_returns_false_for_wrong_doc(tmp_path, monkeypatch):
-    """chunk_belongs_to_document returns False when chunk belongs to a different document."""
-    _reset_db(tmp_path, monkeypatch)
-    kb_id = _uid()
-    doc_a, doc_b, chunk_id = _uid(), _uid(), _uid()
-    with studio_db.get_connection() as conn:
-        _insert_kb(conn, kb_id, owner = "alice")
-        _insert_kb_doc(conn, doc_a, kb_id, "a.pdf")
-        _insert_kb_doc(conn, doc_b, kb_id, "b.pdf")
-        _insert_chunk(conn, chunk_id, doc_a)
-    # chunk is doc_a's; probing doc_b → False.
-    assert chunk_belongs_to_document(chunk_id, doc_b) is False
-
-
-def test_chunk_belongs_returns_false_for_missing_chunk(tmp_path, monkeypatch):
-    """chunk_belongs_to_document returns False for a nonexistent chunk_id."""
-    _reset_db(tmp_path, monkeypatch)
-    doc_id, kb_id = _uid(), _uid()
-    with studio_db.get_connection() as conn:
-        _insert_kb(conn, kb_id, owner = "alice")
-        _insert_kb_doc(conn, doc_id, kb_id)
-    assert chunk_belongs_to_document("ghost-chunk-id", doc_id) is False
-
-
-def test_chunk_belongs_returns_false_for_empty_inputs(tmp_path, monkeypatch):
-    """chunk_belongs_to_document returns False for empty inputs without DB access."""
-    _reset_db(tmp_path, monkeypatch)
-    assert chunk_belongs_to_document("", "some-doc") is False
-    assert chunk_belongs_to_document("some-chunk", "") is False
-    assert chunk_belongs_to_document("", "") is False

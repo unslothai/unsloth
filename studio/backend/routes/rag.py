@@ -1458,10 +1458,10 @@ def get_document_preview_target(
         )
 
     # One connection enforces membership AND fetches the row in a single query.
-    # A separate `chunk_belongs_to_document` call would open a second SQLite
-    # connection and open a TOCTOU window — if the chunk is deleted between the
-    # two calls, the fetch returns None and the route 500s (D1.1). Cross-document
-    # collapses to the same 404 — never 400 (would leak doc existence).
+    # A separate membership check would open a second SQLite connection and a
+    # TOCTOU window — if the chunk is deleted between the two calls, the fetch
+    # returns None and the route 500s (D1.1). Cross-document collapses to the
+    # same 404 — never 400 (would leak doc existence).
     with get_connection() as conn:
         chunk_row = conn.execute(
             """
