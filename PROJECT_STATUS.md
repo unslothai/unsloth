@@ -1,7 +1,7 @@
 # Project Status: Unsloth + Muon Integration
 
-## Current Round: 7
-## Global Status: READY_FOR_MERGE
+## Current Round: 8
+## Global Status: CHANGES_REQUESTED
 
 ## 1. Critical Blockers (Must fix to prevent runtime failure, crash, or serialization leakage)
 
@@ -13,14 +13,20 @@
 
 ## 3. Medium & Low-Severity Items (Refactoring, Debt, & Border Configurations)
 
-- [ ] **[R6 M5]** Muon + LoRA adapter training path is unvalidated (`unsloth/trainer.py:600-605`)
+- [ ] **[R6 M5]** Muon + LoRA adapter training path is unvalidated (`unsloth/trainer.py:608-613`)
   * **Note:** A warning is logged when `PeftModel` is detected, but no runtime guard prevents Muon from being applied to low-rank adapters. Muon's full-matrix orthogonalization dynamics on rank-deficient LoRA A/B matrices are uncharacterized. Not a crash risk — training quality is unknown.
 - [ ] **[R6 L4]** `_gpu_init` import chain prevents standalone use of `make_muon_param_groups` (`unsloth/__init__.py:147`)
   * **Note:** Importing via `unsloth.optimizers.muon` directly (bypassing `unsloth.__init__`) works, but the public `from unsloth import ...` path triggers `_gpu_init` which requires `unsloth_zoo`.
-- [ ] **[R2 M2]** PEFT `PeftModel` import executed at call time (`unsloth/trainer.py:600`)
-  * **Note:** `from peft import PeftModel` runs inside `_create_muon_optimizer` on every optimizer construction. Should be module-level import with try/except guard.
 
 ## 4. Historical Archive: Resolved & Verified Findings
+
+### Round 8 Resolutions
+- [x] **[R8] [H1]** Custom RMSNorm implementations always receive weight decay — **Fixed:** Added name-based fallback in `_classify_param_names` matching HF Trainer's `norm`/`layernorm`/`rmsnorm` regex pattern, catching all custom RMSNorm classes (LlamaRMSNorm, MistralRMSNorm, Qwen2RMSNorm, etc.) (`unsloth/optimizers/muon.py:82-90`)
+- [x] **[R8] [H2]** No type validation on `MuonConfig` numeric fields — **Fixed:** Added `isinstance` checks for `ns_steps` (int), `momentum`, `muon_eps`, `muon_lr_scale`, `muon_weight_decay`, and `adamw_weight_decay` (int/float) in `__post_init__` (`unsloth/trainer.py:229-254`)
+- [x] **[R8] [M1]** `PeftModel` import guard causes `TypeError` — **Fixed:** Changed `isinstance(self.model, PeftModel)` to `PeftModel is not None and isinstance(self.model, PeftModel)` (`unsloth/trainer.py:610`)
+- [x] **[R8] [M3]** No PyTorch version check at MuonConfig time — **Fixed:** Moved `hasattr(torch.optim, "Muon")` check to `MuonConfig.__post_init__` for early error detection; retained in `_create_muon_optimizer` as defense-in-depth (`unsloth/trainer.py:233-238`)
+- [x] **[R8] [M4]** Two configs set simultaneously is silent — **Fixed:** Added `logger.warning` when both `muon_config` and `q_galore_config` are set (`unsloth/trainer.py:556-559`)
+- [x] **[R8] [L2]** `ns_steps` accepts float instead of int — **Fixed:** Covered by H2 `isinstance(self.ns_steps, int)` check (`unsloth/trainer.py:229-233`)
 
 ### Round 7 Resolutions
 - [x] **[R7] [M1]** `_ADAMW_EPS_UNSET` sentinel default set to `1e-8` instead of sentinel, defeating the fallback — **Fixed:** Changed default from `1e-8` to `_ADAMW_EPS_UNSET`; verified with 3 new sentinel tests (`unsloth/trainer.py:222`)
@@ -103,8 +109,8 @@
 
 ## 5. Loop State Handoff (Directives for the Coder Agent)
 
-- **Active Codebase Focus:** All critical, high, and medium functional findings from seven review passes (R0–R6) have been resolved. Code is production-ready for single-GPU full-finetuning. Remaining items are minor (import hygiene, LoRA validation warning, test coverage for edge cases).
-- **Latest Input Telemetry Source:** `MUON_REVIEW_6.md` (cross-verified against current code state via grep/read)
+- **Active Codebase Focus:** All critical, high, and medium functional findings from eight review passes (R0–R7) have been resolved. Code is production-ready for single-GPU full-finetuning. Remaining items are minor (LoRA validation warning, test coverage for edge cases).
+- **Latest Input Telemetry Source:** `MUON_REVIEW_8.md` (cross-verified against current code state via grep/read)
 - **Inviolable Architecture Constraints:**
   1. Do NOT change the delegated architecture — `torch.optim.Muon` handles the optimizer math; Unsloth handles param routing and chaining.
   2. Do NOT add a Muon reimplementation — the delegation pattern is the correct design.

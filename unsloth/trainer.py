@@ -226,6 +226,35 @@ class MuonConfig:
 
     def __post_init__(self):
         import warnings as _warnings
+        if not hasattr(torch.optim, "Muon"):
+            raise ImportError(
+                f"MuonConfig requires PyTorch >= 2.9.0 (got {torch.__version__}). "
+                "torch.optim.Muon is not available in this version."
+            )
+        if not isinstance(self.ns_steps, int):
+            raise TypeError(
+                f"MuonConfig.ns_steps must be an int, got {type(self.ns_steps).__name__}."
+            )
+        if not isinstance(self.momentum, (int, float)):
+            raise TypeError(
+                f"MuonConfig.momentum must be a number, got {type(self.momentum).__name__}."
+            )
+        if not isinstance(self.muon_eps, (int, float)):
+            raise TypeError(
+                f"MuonConfig.muon_eps must be a number, got {type(self.muon_eps).__name__}."
+            )
+        if not isinstance(self.muon_lr_scale, (int, float)):
+            raise TypeError(
+                f"MuonConfig.muon_lr_scale must be a number, got {type(self.muon_lr_scale).__name__}."
+            )
+        if self.muon_weight_decay is not None and not isinstance(self.muon_weight_decay, (int, float)):
+            raise TypeError(
+                f"MuonConfig.muon_weight_decay must be a number, got {type(self.muon_weight_decay).__name__}."
+            )
+        if self.adamw_weight_decay is not None and not isinstance(self.adamw_weight_decay, (int, float)):
+            raise TypeError(
+                f"MuonConfig.adamw_weight_decay must be a number, got {type(self.adamw_weight_decay).__name__}."
+            )
         if self.ns_steps >= 100:
             raise ValueError(
                 f"MuonConfig.ns_steps must be < 100, got {self.ns_steps}. "
@@ -522,11 +551,18 @@ class UnslothTrainer(SFTTrainer):
     def create_optimizer(self):
         # --- Muon optimizer (checked first, before Q-GaLore) ---
         muon_config = getattr(self.args, "muon_config", None)
+        q_galore_config = getattr(self.args, "q_galore_config", None)
+
+        if muon_config is not None and q_galore_config is not None:
+            logger.warning(
+                "Unsloth: Both MuonConfig and QGaloreConfig are set. "
+                "Muon takes precedence over Q-GaLore."
+            )
+
         if muon_config is not None and self.optimizer is None:
             return self._create_muon_optimizer(muon_config)
 
         # --- Q-GaLore optimizer ---
-        q_galore_config = getattr(self.args, "q_galore_config", None)
         if q_galore_config is not None and self.optimizer is None:
             embedding_lr = getattr(self.args, "embedding_learning_rate", None)
             return self._create_q_galore_optimizer(q_galore_config, embedding_lr)
@@ -605,7 +641,7 @@ class UnslothTrainer(SFTTrainer):
             embedding_lr=embedding_lr,
         )
 
-        if isinstance(self.model, PeftModel):
+        if PeftModel is not None and isinstance(self.model, PeftModel):
             logger.warning(
                 "Unsloth Muon: PEFT/LoRA model detected. "
                 "Muon will be applied to 2D adapters. "

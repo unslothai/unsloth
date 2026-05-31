@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from __future__ import annotations
+import re as _re
 import torch
 from typing import Optional, List, Set
 
@@ -76,6 +77,15 @@ def _classify_param_names(model: torch.nn.Module) -> tuple[Set[str], Set[str]]:
                 no_decay_names.add(name)
         else:
             seen_tensors[ptr] = name
+
+    # Name-based fallback for custom norm classes that don't inherit from
+    # torch.nn.RMSNorm (e.g. LlamaRMSNorm, MistralRMSNorm, Qwen2RMSNorm,
+    # GemmaRMSNorm, Phi3RMSNorm, etc.).  Matches HuggingFace Trainer's
+    # convention of excluding norm weights from weight decay.
+    _norm_name_pattern = _re.compile(r"(?:layernorm|rmsnorm|norm)", _re.IGNORECASE)
+    for name, param in model.named_parameters():
+        if name not in no_decay_names and _norm_name_pattern.search(name.rsplit(".", 1)[0]):
+            no_decay_names.add(name)
 
     return embedding_names, no_decay_names
 
