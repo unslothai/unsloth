@@ -20,7 +20,7 @@ from typing import Any
 from uuid import uuid4
 
 from loggers import get_logger
-from storage.studio_db import get_connection
+from storage.studio_db import closing_connection
 from utils.rag.config import (
     RAG_CHUNK_OVERLAP,
     RAG_CHUNK_SIZE,
@@ -475,7 +475,7 @@ def _update_job_row(job_id: str, **fields: Any) -> None:
     keys = list(fields.keys())
     set_clause = ", ".join(f"{k} = ?" for k in keys)
     values = list(fields.values()) + [job_id]
-    with get_connection() as conn:
+    with closing_connection() as conn:
         conn.execute(f"UPDATE rag_ingestion_jobs SET {set_clause} WHERE id = ?", values)
         conn.commit()
 
@@ -486,7 +486,7 @@ def _update_document_row(document_id: str, **fields: Any) -> None:
     keys = list(fields.keys())
     set_clause = ", ".join(f"{k} = ?" for k in keys)
     values = list(fields.values()) + [document_id]
-    with get_connection() as conn:
+    with closing_connection() as conn:
         conn.execute(f"UPDATE rag_documents SET {set_clause} WHERE id = ?", values)
         conn.commit()
 
@@ -554,7 +554,7 @@ def _insert_chunks_and_collect_for_bm25(
         )
         if kind in ("text", "caption") and meta["text"]:
             bm25_rows.append({"id": chunk_id, "text": meta["text"]})
-    with get_connection() as conn:
+    with closing_connection() as conn:
         conn.executemany(
             """
             INSERT INTO rag_chunks
@@ -597,7 +597,7 @@ def _replace_document_pages(document_id: str, pages: list[dict]) -> None:
         )
         for page in pages
     ]
-    with get_connection() as conn:
+    with closing_connection() as conn:
         doc_row = conn.execute(
             "SELECT 1 FROM rag_documents WHERE id = ?",
             (document_id,),
@@ -639,7 +639,7 @@ def _all_scope_chunks(scope: str) -> list[dict]:
         bind = (thread_id,)
     else:
         return []
-    with get_connection() as conn:
+    with closing_connection() as conn:
         rows = conn.execute(sql, bind).fetchall()
     return [{"id": r["id"], "text": r["text"]} for r in rows]
 
@@ -866,7 +866,7 @@ def enqueue_ingestion(
     else:
         logger.info("RAG ingest: figure captioning disabled for this upload")
     job_id = str(uuid4())
-    with get_connection() as conn:
+    with closing_connection() as conn:
         conn.execute(
             """
             INSERT INTO rag_ingestion_jobs
@@ -961,7 +961,7 @@ def purge_thread_documents(thread_ids: list[str]) -> None:
 
     placeholders = ",".join("?" for _ in thread_ids)
     uploads_root = Path(os.path.realpath(rag_uploads_root()))
-    with get_connection() as conn:
+    with closing_connection() as conn:
         rows = conn.execute(
             f"SELECT stored_path FROM rag_documents WHERE thread_id IN ({placeholders})",
             thread_ids,
@@ -984,7 +984,7 @@ def purge_thread_documents(thread_ids: list[str]) -> None:
 
 def purge_all_thread_documents() -> None:
     """Drop every per-thread RAG artifact."""
-    with get_connection() as conn:
+    with closing_connection() as conn:
         rows = conn.execute(
             "SELECT DISTINCT thread_id FROM rag_documents WHERE thread_id IS NOT NULL"
         ).fetchall()

@@ -231,7 +231,13 @@ def retrieve_hybrid(
 
 
 def filter_by_min_score(hits: list[Hit], min_score: float) -> list[Hit]:
-    """Drop hits whose dense_score < min_score; BM25-only hits dropped too."""
+    """Apply the dense-similarity floor.
+
+    min_score is a cosine threshold, so it only gates hits that carry a
+    dense_score. BM25-only and figure-ref hits (dense_score is None) are matched
+    by a different signal that the cosine floor does not apply to, so they pass
+    through rather than being silently dropped when min_score is raised.
+    """
     if min_score <= 0.0:
         return hits
-    return [h for h in hits if h.dense_score is not None and h.dense_score >= min_score]
+    return [h for h in hits if h.dense_score is None or h.dense_score >= min_score]

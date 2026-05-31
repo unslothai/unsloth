@@ -16,7 +16,7 @@ import sqlite3
 
 from fastapi import HTTPException
 
-from storage.studio_db import get_connection
+from storage.studio_db import closing_connection
 
 _NOT_FOUND_DETAIL = "Document not found"
 
@@ -58,7 +58,7 @@ def document_for_subject_or_404(
     if not document_id or not current_subject:
         raise HTTPException(status_code = 404, detail = _NOT_FOUND_DETAIL)
 
-    with get_connection() as conn:
+    with closing_connection() as conn:
         row = conn.execute(
             "SELECT * FROM rag_documents WHERE id = ?",
             (document_id,),

@@ -159,7 +159,7 @@ def search_knowledge_base(
 
     from core.rag import retrieval
     from core.rag.vector_store import kb_scope, thread_scope
-    from storage.studio_db import get_connection
+    from storage.studio_db import closing_connection
 
     scope = kb_scope(scope_kb_id) if scope_kb_id else thread_scope(scope_thread_id)
     k = top_k if top_k is not None else default_top_k
@@ -225,7 +225,7 @@ def search_knowledge_base(
     lookup: dict[str, dict] = {}
     if chunk_ids:
         placeholders = ",".join("?" for _ in chunk_ids)
-        with get_connection() as conn:
+        with closing_connection() as conn:
             rows = conn.execute(
                 f"""
                 SELECT c.id AS chunk_id, c.text, c.page_number,

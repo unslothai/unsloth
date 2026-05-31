@@ -350,7 +350,6 @@ export function SharedComposer({
     return s.models.find((m) => m.id === checkpoint);
   });
   const aui = useAui();
-  const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const ragSource = useChatRuntimeStore((s) => s.ragSource);
   const setRagSource = useChatRuntimeStore((s) => s.setRagSource);
   const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
@@ -821,20 +820,19 @@ export function SharedComposer({
   }, []);
 
   const removePendingDoc = useCallback((id: string) => {
-    setPendingDocs((prev) => {
-      const doc = prev.find((d) => d.id === id);
-      if (doc?.documentId) {
-        void useRagStore
-          .getState()
-          .deleteDocument(
-            doc.documentId,
-            `thread:${activeThreadId ?? ""}`,
-          )
-          .catch(() => {});
-      }
-      return prev.filter((d) => d.id !== id);
-    });
-  }, [activeThreadId]);
+    // Route through the teardown thunk registered in addDoc: it aborts the
+    // upload, unsubscribes from the job SSE, releases the index slot, and
+    // deletes the backend doc with the scope key it closed over (kb vs
+    // thread). Deleting here directly leaked the slot and hardcoded the
+    // thread scope, mis-targeting KB-scoped docs. Also drop the toast entry.
+    const entry = useIndexProgressStore.getState().entries[id];
+    if (entry?.cancel) {
+      void entry.cancel();
+      useIndexProgressStore.getState().remove(id);
+      return;
+    }
+    setPendingDocs((prev) => prev.filter((d) => d.id !== id));
+  }, []);
 
   function clearStuckImeTimer() {
     if (stuckImeTimerRef.current) {

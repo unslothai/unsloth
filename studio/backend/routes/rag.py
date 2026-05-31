@@ -47,7 +47,7 @@ from core.rag.locators import backfill_document_locators
 from core.rag.vector_store import kb_scope, thread_scope
 from loggers import get_logger
 from storage.studio_db import (
-    get_connection,
+    closing_connection,
     list_chat_settings,
     upsert_chat_settings_merge,
 )
@@ -220,7 +220,7 @@ def _row_to_document(row: Any) -> DocumentResponse:
 
 
 def _kb_or_404(kb_id: str) -> Any:
-    with get_connection() as conn:
+    with closing_connection() as conn:
         row = conn.execute(
             "SELECT * FROM rag_knowledge_bases WHERE id = ?",
             (kb_id,),
@@ -231,7 +231,7 @@ def _kb_or_404(kb_id: str) -> Any:
 
 
 def _thread_or_404(thread_id: str) -> None:
-    with get_connection() as conn:
+    with closing_connection() as conn:
         row = conn.execute(
             "SELECT id FROM chat_threads WHERE id = ?",
             (thread_id,),
@@ -241,7 +241,7 @@ def _thread_or_404(thread_id: str) -> None:
 
 
 def _document_or_404(document_id: str) -> Any:
-    with get_connection() as conn:
+    with closing_connection() as conn:
         row = conn.execute(
             "SELECT * FROM rag_documents WHERE id = ?",
             (document_id,),
@@ -309,7 +309,7 @@ def _start_ingestion(
     content_hash: str | None = None,
 ) -> UploadResponse:
     document_id = str(uuid4())
-    with get_connection() as conn:
+    with closing_connection() as conn:
         # Dedup: skip re-ingestion if the same content hash is already indexed
         # in this scope. Only 'completed' counts — failed/in-flight may retry.
         # Scope is the target kb_id or thread_id (a file in two KBs indexes in each).
@@ -398,7 +398,7 @@ def create_knowledge_base(
         payload.mode, payload.chunking_strategy
     )
     created_at = _now_ms()
-    with get_connection() as conn:
+    with closing_connection() as conn:
         try:
             conn.execute(
                 """
@@ -439,7 +439,7 @@ def create_knowledge_base(
 def list_knowledge_bases(
     current_subject: str = Depends(get_current_subject),
 ) -> KBListResponse:
-    with get_connection() as conn:
+    with closing_connection() as conn:
         rows = conn.execute(
             "SELECT * FROM rag_knowledge_bases ORDER BY created_at DESC"
         ).fetchall()
@@ -677,7 +677,7 @@ def _reingest_scope(
 ) -> ReingestResponse:
     """Wipe scope artifacts and re-enqueue every document; metadata untouched."""
     scope = kb_scope(kb_id) if kb_id else thread_scope(thread_id)  # type: ignore[arg-type]
-    with get_connection() as conn:
+    with closing_connection() as conn:
         if kb_id:
             rows = conn.execute(
                 "SELECT id, stored_path FROM rag_documents WHERE kb_id = ?",
@@ -757,7 +757,7 @@ def reingest_knowledge_base(
         else resolve_embedder(new_mode, new_strategy)
     )
 
-    with get_connection() as conn:
+    with closing_connection() as conn:
         conn.execute(
             """
             UPDATE rag_knowledge_bases
@@ -825,7 +825,7 @@ def delete_knowledge_base(
     current_subject: str = Depends(get_current_subject),
 ) -> dict:
     _kb_or_404(kb_id)
-    with get_connection() as conn:
+    with closing_connection() as conn:
         doc_rows = conn.execute(
             "SELECT stored_path FROM rag_documents WHERE kb_id = ?",
             (kb_id,),
@@ -911,7 +911,7 @@ def list_kb_documents(
     current_subject: str = Depends(get_current_subject),
 ) -> DocumentListResponse:
     _kb_or_404(kb_id)
-    with get_connection() as conn:
+    with closing_connection() as conn:
         rows = conn.execute(
             "SELECT * FROM rag_documents WHERE kb_id = ? ORDER BY created_at DESC",
             (kb_id,),
@@ -924,7 +924,7 @@ def list_thread_documents(
     thread_id: str,
     current_subject: str = Depends(get_current_subject),
 ) -> DocumentListResponse:
-    with get_connection() as conn:
+    with closing_connection() as conn:
         rows = conn.execute(
             "SELECT * FROM rag_documents WHERE thread_id = ? ORDER BY created_at DESC",
             (thread_id,),
@@ -961,7 +961,7 @@ def delete_document(
 ) -> dict:
     row = _document_or_404(document_id)
     scope = kb_scope(row["kb_id"]) if row["kb_id"] else thread_scope(row["thread_id"])
-    with get_connection() as conn:
+    with closing_connection() as conn:
         conn.execute("DELETE FROM rag_documents WHERE id = ?", (document_id,))
         conn.commit()
     _unlink_if_under_uploads(Path(row["stored_path"]))
@@ -974,7 +974,7 @@ def list_thread_indexes(
     current_subject: str = Depends(get_current_subject),
 ) -> ThreadIndexListResponse:
     """List threads with >=1 RAG doc. LEFT JOIN keeps unpersisted threads (null title)."""
-    with get_connection() as conn:
+    with closing_connection() as conn:
         rows = conn.execute(
             """
             SELECT
@@ -1034,7 +1034,7 @@ async def job_events(
 ) -> StreamingResponse:
     state = ingestion.get_job_state(job_id)
     if state is None:
-        with get_connection() as conn:
+        with closing_connection() as conn:
             row = conn.execute(
                 "SELECT * FROM rag_ingestion_jobs WHERE id = ?",
                 (job_id,),
@@ -1462,7 +1462,7 @@ def get_document_preview_target(
     # TOCTOU window — if the chunk is deleted between the two calls, the fetch
     # returns None and the route 500s (D1.1). Cross-document collapses to the
     # same 404 — never 400 (would leak doc existence).
-    with get_connection() as conn:
+    with closing_connection() as conn:
         chunk_row = conn.execute(
             """
             SELECT id, chunk_index, page_number, text, kind, image_path,
@@ -1686,7 +1686,7 @@ def search(
     chunk_lookup: dict[str, dict] = {}
     if chunk_ids:
         placeholders = ",".join("?" for _ in chunk_ids)
-        with get_connection() as conn:
+        with closing_connection() as conn:
             rows = conn.execute(
                 f"""
                 SELECT c.id AS chunk_id, c.document_id, c.chunk_index, c.text,

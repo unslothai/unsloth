@@ -54,13 +54,7 @@ export interface UseThreadDocUploadsResult {
  *  it was "off". */
 export function useThreadDocUploads(): UseThreadDocUploadsResult {
   const aui = useAui();
-  const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const [pendingDocs, setPendingDocs] = useState<PendingDoc[]>([]);
-  // Track scope key per chip so removeDoc dispatches the right delete
-  // (KB vs thread docs use different scope keys in the store).
-  const [chipScopeKeys, setChipScopeKeys] = useState<Record<string, string>>(
-    {},
-  );
 
   // Brand-new chats have no backend thread until the first message.
   // Initialize the local thread to mint a remoteId so RAG uploads can
@@ -105,10 +99,6 @@ export function useThreadDocUploads(): UseThreadDocUploadsResult {
       };
       const removeChip = () => {
         setPendingDocs((prev) => prev.filter((d) => d.id !== localChipId));
-        setChipScopeKeys((m) => {
-          const { [localChipId]: _gone, ...rest } = m;
-          return rest;
-        });
       };
       // Stop the backend job (if started) and delete its document to
       // reset the index. Idempotent: both a late in-flight abort and the
@@ -186,7 +176,6 @@ export function useThreadDocUploads(): UseThreadDocUploadsResult {
           scope = { kind: "thread", threadId };
           scopeKey = `thread:${threadId}`;
         }
-        setChipScopeKeys((m) => ({ ...m, [localChipId]: scopeKey as string }));
         const uploadDocument = useRagStore.getState().uploadDocument;
         const captionImages =
           useChatRuntimeStore.getState().ragCaptionImages;
@@ -298,27 +287,21 @@ export function useThreadDocUploads(): UseThreadDocUploadsResult {
     [ensureThreadId],
   );
 
-  const removeDoc = useCallback(
-    (id: string) => {
-      setPendingDocs((prev) => {
-        const doc = prev.find((d) => d.id === id);
-        if (doc?.documentId) {
-          const scopeKey =
-            chipScopeKeys[id] ?? `thread:${activeThreadId ?? ""}`;
-          void useRagStore
-            .getState()
-            .deleteDocument(doc.documentId, scopeKey)
-            .catch(() => {});
-        }
-        return prev.filter((d) => d.id !== id);
-      });
-      setChipScopeKeys((m) => {
-        const { [id]: _gone, ...rest } = m;
-        return rest;
-      });
-    },
-    [activeThreadId, chipScopeKeys],
-  );
+  const removeDoc = useCallback((id: string) => {
+    // Route through the teardown thunk registered in addDoc: it aborts the
+    // upload, unsubscribes from the job SSE, releases the index slot, and
+    // deletes the backend doc using the scope key it closed over (kb vs
+    // thread). Deleting here directly leaked the slot and could target the
+    // wrong scope. Also drop the aggregate-toast entry for this file.
+    const entry = useIndexProgressStore.getState().entries[id];
+    if (entry?.cancel) {
+      void entry.cancel();
+      useIndexProgressStore.getState().remove(id);
+      return;
+    }
+    // Nothing was registered yet (no job/slot to release) — just drop the chip.
+    setPendingDocs((prev) => prev.filter((d) => d.id !== id));
+  }, []);
 
   const clearDocs = useCallback(() => setPendingDocs([]), []);
 

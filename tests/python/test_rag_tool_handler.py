@@ -53,7 +53,7 @@ def test_kb_takes_precedence_over_thread():
 
     captured = {}
 
-    def _stub_retrieve(scope, query, k):
+    def _stub_retrieve(scope, query, *args, **kwargs):
         captured["scope"] = scope
         return []
 
@@ -78,7 +78,7 @@ def test_thread_scope_when_only_thread_set():
 
     captured = {}
 
-    def _stub_retrieve(scope, query, k):
+    def _stub_retrieve(scope, query, *args, **kwargs):
         captured["scope"] = scope
         return []
 

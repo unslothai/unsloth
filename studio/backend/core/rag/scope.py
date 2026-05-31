@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from storage.studio_db import get_connection, list_chat_settings
+from storage.studio_db import closing_connection, list_chat_settings
 from utils.rag.config import resolve_embedder
 
 RAG_DEFAULTS_KEY = "rag.defaults"
@@ -19,7 +19,7 @@ def resolve_scope_embedder(scope: str) -> str | None:
     """KB → kb.embedding_model; thread → per-thread/defaults/matrix. None = use default."""
     if scope.startswith("kb_"):
         kb_id = scope[len("kb_") :]
-        with get_connection() as conn:
+        with closing_connection() as conn:
             row = conn.execute(
                 "SELECT embedding_model FROM rag_knowledge_bases WHERE id = ?",
                 (kb_id,),

@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from loggers import get_logger
-from storage.studio_db import get_connection
+from storage.studio_db import closing_connection
 
 from . import vector_store
 from .parsers import ParsedPage, parse
@@ -171,7 +171,7 @@ def _replace_document_pages(document_id: str, pages: list[ParsedPage]) -> None:
         )
         for index, page in enumerate(pages)
     ]
-    with get_connection() as conn:
+    with closing_connection() as conn:
         conn.execute(
             "DELETE FROM rag_document_pages WHERE document_id = ?", (document_id,)
         )
@@ -363,7 +363,7 @@ def backfill_document_locators(document_id: str, stored_path: Path) -> BackfillR
     pages = parsed.pages
     _replace_document_pages(document_id, pages)
 
-    with get_connection() as conn:
+    with closing_connection() as conn:
         doc_row = conn.execute(
             "SELECT kb_id, thread_id FROM rag_documents WHERE id = ?",
             (document_id,),
@@ -469,7 +469,7 @@ def backfill_document_locators(document_id: str, stored_path: Path) -> BackfillR
             }
 
     if sql_updates:
-        with get_connection() as conn:
+        with closing_connection() as conn:
             conn.executemany(
                 """
                 UPDATE rag_chunks

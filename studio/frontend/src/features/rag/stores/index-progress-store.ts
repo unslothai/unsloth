@@ -31,6 +31,7 @@ interface IndexProgressState {
   setReady: (id: string, chunks?: number) => void;
   setError: (id: string) => void;
   setCancel: (id: string, cancel: () => Promise<void> | void) => void;
+  remove: (id: string) => void;
   cancelAll: () => Promise<void>;
   clear: () => void;
 }
@@ -63,6 +64,13 @@ export const useIndexProgressStore = create<IndexProgressState>((set, get) => ({
     patch(set, id, { status: "ready", progress: 1, chunks }),
   setError: (id) => patch(set, id, { status: "error" }),
   setCancel: (id, cancel) => patch(set, id, { cancel }),
+  // Drop a single entry from the toast (e.g. the user removed one chip). The
+  // caller is responsible for tearing down that file's job/SSE/slot first.
+  remove: (id) =>
+    set((s) => {
+      const { [id]: _gone, ...rest } = s.entries;
+      return { entries: rest };
+    }),
   // Cancel every file in the batch (running, queued, finished) to restore the
   // pre-batch index state, then drop all toast entries.
   cancelAll: async () => {

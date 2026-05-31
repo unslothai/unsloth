@@ -16,9 +16,10 @@ def test_rrf_fuses_two_rankings():
     dense = [Hit("c", 0.9), Hit("b", 0.8), Hit("d", 0.5)]
     fused = _rrf_fuse([bm25, dense], rrf_k = 60, top_k = 3)
     ids = [h.chunk_id for h in fused]
-    # b ranks 2 in both -> highest fused score.
-    assert ids[0] == "b"
-    assert set(ids) == {"a", "b", "c"} or set(ids) == {"b", "c", "a"}
+    # c (bm25 rank2 1/63 + dense rank0 1/61 = 0.032266) narrowly beats
+    # b (rank1 in both = 2/62 = 0.032258); d falls outside top_k.
+    assert ids[0] == "c"
+    assert set(ids) == {"a", "b", "c"}
 
 
 def test_rrf_top_k_limits_output():

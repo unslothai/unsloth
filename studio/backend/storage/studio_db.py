@@ -16,6 +16,7 @@ import os
 import platform
 import sqlite3
 import threading
+from contextlib import contextmanager
 from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
@@ -381,6 +382,24 @@ def get_connection() -> sqlite3.Connection:
                     conn.close()
                     raise
     return conn
+
+
+@contextmanager
+def closing_connection():
+    """`get_connection()` that also closes the connection on exit.
+
+    Commits on success and rolls back on error like sqlite3's own context
+    manager, then always closes the connection. Use this instead of the bare
+    `with get_connection() as conn:` (which commits but never closes, leaning on
+    GC to release the handle) so connections are freed deterministically,
+    matching the explicit conn.close() convention used elsewhere in this module.
+    """
+    conn = get_connection()
+    try:
+        with conn:
+            yield conn
+    finally:
+        conn.close()
 
 
 def create_run(
