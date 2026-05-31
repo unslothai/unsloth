@@ -317,3 +317,114 @@ def test_linux_cpu_latest_prebuilt_via_redirect_when_rest_403(monkeypatch):
         "https://github.com/ggml-org/llama.cpp/releases/download/"
         "b9999/llama-b9999-bin-ubuntu-x64.tar.gz"
     )
+
+
+# --- negative paths: fail closed and asset precedence ----------------------
+
+
+def test_resolve_latest_tag_via_redirect_rejects_non_release_tag(monkeypatch):
+    class _Resp:
+        def __init__(self, location):
+            self.headers = {"Location": location}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def fake_build_opener(handler):
+        class _Op:
+            def open(self, request, timeout=None):
+                return _Resp(
+                    "https://github.com/ggml-org/llama.cpp/releases/tag/nightly"
+                )
+
+        return _Op()
+
+    monkeypatch.setattr(MOD.urllib.request, "build_opener", fake_build_opener)
+    # A non b1234 redirect target must fail closed to the REST/source path.
+    assert (
+        MOD._resolve_latest_release_tag_via_redirect("ggml-org/llama.cpp") is None
+    )
+
+
+def test_iter_release_payloads_both_paths_fail_raises(monkeypatch):
+    def boom(repo, max_pages=5):
+        raise RuntimeError("GitHub API returned 403")
+
+    monkeypatch.setattr(MOD, "github_releases", boom)
+    monkeypatch.setattr(
+        MOD, "_resolve_latest_release_tag_via_redirect", lambda repo: None
+    )
+    with pytest.raises(RuntimeError) as excinfo:
+        list(MOD.iter_release_payloads_by_time(MOD.UPSTREAM_REPO, "", "latest"))
+    message = str(excinfo.value)
+    assert "release redirect fallback" in message
+    assert "also failed" in message
+
+
+def test_iter_release_payloads_pinned_tag_never_uses_redirect(monkeypatch):
+    def missing(repo, tag):
+        raise urllib.error.HTTPError(
+            f"https://api.github.com/repos/{repo}/releases/tags/{tag}",
+            404,
+            "Not Found",
+            None,
+            None,
+        )
+
+    def listing_403(repo, max_pages=5):
+        raise RuntimeError("GitHub API returned 403")
+
+    monkeypatch.setattr(MOD, "github_release", missing)
+    monkeypatch.setattr(MOD, "github_releases", listing_403)
+    monkeypatch.setattr(
+        MOD,
+        "_resolve_latest_release_tag_via_redirect",
+        lambda repo: (_ for _ in ()).throw(AssertionError("redirect used")),
+    )
+    # A pinned tag is not "latest", so the redirect fast path must never run.
+    with pytest.raises(RuntimeError):
+        list(MOD.iter_release_payloads_by_time(MOD.UPSTREAM_REPO, "", "b1234"))
+
+
+def test_direct_release_real_asset_takes_precedence_over_redirect(monkeypatch):
+    host = _host(
+        system = "Darwin",
+        machine = "arm64",
+        is_windows = False,
+        is_linux = False,
+        is_macos = True,
+        is_x86_64 = False,
+        is_arm64 = True,
+    )
+    custom_url = "https://cdn.example.test/custom-macos-arm64.tar.gz"
+    release = {
+        "tag_name": "b1234",
+        "assets": [
+            {
+                "name": "llama-b1234-bin-macos-arm64.tar.gz",
+                "browser_download_url": custom_url,
+            }
+        ],
+    }
+    monkeypatch.setattr(MOD, "github_releases", lambda repo, max_pages=5: [release])
+    monkeypatch.setattr(
+        MOD,
+        "fetch_json",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("fetch_json used")),
+    )
+    monkeypatch.setattr(
+        MOD,
+        "_resolve_latest_release_tag_via_redirect",
+        lambda repo: (_ for _ in ()).throw(AssertionError("redirect used")),
+    )
+    plans = MOD.resolve_simple_install_release_plans(
+        "latest", host, "ggml-org/llama.cpp", ""
+    )
+    assert plans
+    attempt_urls = [a.url for p in plans for a in p.attempts]
+    # The real REST asset URL wins; the synthetic redirect URL is additive only.
+    assert custom_url in attempt_urls
+    assert all("releases/download/b1234" not in u for u in attempt_urls)
