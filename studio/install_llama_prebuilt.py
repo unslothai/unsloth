@@ -19,6 +19,7 @@ import re
 import shutil
 import site
 import socket
+import struct
 import subprocess
 import sys
 import tarfile
@@ -160,6 +161,14 @@ DEFAULT_MAX_PREBUILT_RELEASE_FALLBACKS = env_int(
     2,
     minimum = 1,
 )
+# Deeper macOS-only walk-back: upstream can ship a run of prebuilts built for a
+# newer macOS than the host, only caught at validate time, so an older host must
+# skip the whole run. Free on new hosts (first plan validates, extras unused).
+DEFAULT_MAX_MACOS_RELEASE_FALLBACKS = env_int(
+    "UNSLOTH_LLAMA_MAX_MACOS_RELEASE_FALLBACKS",
+    16,
+    minimum = 1,
+)
 FORCE_COMPILE_DEFAULT_REF = os.environ.get("UNSLOTH_LLAMA_FORCE_COMPILE_REF", "master")
 
 DIRECT_LINUX_BUNDLE_PROFILES: dict[str, dict[str, Any]] = {
@@ -231,6 +240,9 @@ class HostInfo:
     has_usable_nvidia: bool
     has_rocm: bool = False
     rocm_gfx_target: str | None = None
+    # (major, minor) from platform.mac_ver(); None off macOS or if unparseable.
+    # Skips a macos prebuilt whose minimum-OS exceeds this host.
+    macos_version: tuple[int, int] | None = None
 
 
 @dataclass
@@ -1528,6 +1540,14 @@ def resolve_simple_install_release_plans(
         requested_tag == "latest" and not published_release_tag
     )
     release_limit = max(1, max_release_fallbacks)
+    # macOS may need to walk past a run of too-new prebuilts. Only when the host
+    # version is known; otherwise keep the default (cannot tell up front).
+    if (
+        host.is_macos
+        and allow_older_release_fallback
+        and host.macos_version is not None
+    ):
+        release_limit = max(release_limit, DEFAULT_MAX_MACOS_RELEASE_FALLBACKS)
     plans: list[InstallReleasePlan] = []
     last_error: PrebuiltFallback | None = None
 
@@ -2750,6 +2770,8 @@ def detect_host() -> HostInfo:
     is_x86_64 = machine in {"x86_64", "amd64"}
     is_arm64 = machine in {"arm64", "aarch64"}
 
+    macos_version = parse_macos_version(platform.mac_ver()[0]) if is_macos else None
+
     nvidia_smi = shutil.which("nvidia-smi")
     driver_cuda_version = None
     compute_caps: list[str] = []
@@ -2925,6 +2947,7 @@ def detect_host() -> HostInfo:
         has_usable_nvidia = has_usable_nvidia,
         has_rocm = has_rocm,
         rocm_gfx_target = rocm_gfx_target,
+        macos_version = macos_version,
     )
 
 
@@ -4872,6 +4895,189 @@ def linux_runtime_dirs(binary_path: Path) -> list[str]:
     return linux_runtime_dirs_for_required_libraries(missing)
 
 
+# macOS prebuilt compatibility. Upstream macos prebuilts built on a newer macOS
+# (e.g. minos=26, referencing Metal-4 symbols) fail dyld load on macOS 14/15. We
+# read the host macOS version and each binary's minimum-OS so selection can skip
+# a too-new prebuilt and walk back to the newest release that runs on this host.
+# Mach-O constants (Apple mach-o/fat.h, mach-o/loader.h, mach/machine.h).
+_MACHO_FAT_MAGICS = {0xCAFEBABE, 0xCAFEBABF}  # universal binary (32/64-bit fat)
+_LC_VERSION_MIN_MACOSX = 0x24  # legacy min-macOS load command
+_LC_BUILD_VERSION = 0x32  # modern platform+minos+sdk load command
+_MACHO_PLATFORM_MACOS = 1  # LC_BUILD_VERSION platform id for macOS (iOS=2, ...)
+# CPU types (base | ABI64); used to pick the host slice in a fat binary.
+_CPU_TYPE_X86_64 = 0x01000007
+_CPU_TYPE_ARM64 = 0x0100000C
+
+
+def parse_macos_version(value: str | None) -> tuple[int, int] | None:
+    """Parse a macOS product version string into (major, minor).
+
+    Handles "14.7.1", "15.5", "26.0" and bare "26". Returns None when the
+    value is empty or cannot be parsed (callers then defer to runtime
+    validation rather than rejecting every prebuilt)."""
+    if not value:
+        return None
+    match = re.match(r"\s*(\d+)(?:\.(\d+))?", str(value))
+    if not match:
+        return None
+    return int(match.group(1)), int(match.group(2) or 0)
+
+
+def host_supports_macos_minos(host: HostInfo, minos: tuple[int, int] | None) -> bool:
+    """True if a prebuilt requiring `minos` can load on this host. Unknown host
+    version or unknown minos -> True: let runtime validation decide instead of
+    rejecting a binary we cannot reason about."""
+    if minos is None or host.macos_version is None:
+        return True
+    return host.macos_version >= minos
+
+
+def _macho_slice_minos(data: bytes, offset: int) -> tuple[int, int] | None:
+    """Minimum macOS for a single thin Mach-O at `offset`, via LC_BUILD_VERSION
+    (platform macOS) or the legacy LC_VERSION_MIN_MACOSX. None if absent."""
+    if offset + 4 > len(data):
+        return None
+    magic = struct.unpack_from(">I", data, offset)[0]
+    if magic in (0xFEEDFACE, 0xFEEDFACF):
+        endian, is64 = ">", magic == 0xFEEDFACF
+    elif magic in (0xCEFAEDFE, 0xCFFAEDFE):
+        endian, is64 = "<", magic == 0xCFFAEDFE
+    else:
+        return None
+    header_size = 32 if is64 else 28
+    if offset + header_size > len(data):
+        return None
+    ncmds = struct.unpack_from(endian + "I", data, offset + 16)[0]
+    cursor = offset + header_size
+    for _ in range(ncmds):
+        if cursor + 8 > len(data):
+            break
+        cmd, cmdsize = struct.unpack_from(endian + "II", data, cursor)
+        if cmdsize < 8:
+            break
+        if cmd == _LC_BUILD_VERSION and cursor + 16 <= len(data):
+            platform_id, minos = struct.unpack_from(endian + "II", data, cursor + 8)
+            if platform_id == _MACHO_PLATFORM_MACOS:
+                return (minos >> 16) & 0xFFFF, (minos >> 8) & 0xFF
+        elif cmd == _LC_VERSION_MIN_MACOSX and cursor + 12 <= len(data):
+            version = struct.unpack_from(endian + "I", data, cursor + 8)[0]
+            return (version >> 16) & 0xFFFF, (version >> 8) & 0xFF
+        cursor += cmdsize
+    return None
+
+
+def macho_minimum_macos(
+    path: Path, host: HostInfo | None = None
+) -> tuple[int, int] | None:
+    """Minimum macOS (major, minor) a Mach-O binary or dylib requires.
+
+    Pure-Python so it works on consumer Macs without the Xcode command line
+    tools (otool/vtool). For universal binaries it prefers the host-arch slice,
+    else the highest minos found. Returns None for non-Mach-O files or when no
+    version load command is present."""
+    try:
+        data = path.read_bytes()
+    except Exception:
+        return None
+    if len(data) < 8:
+        return None
+    magic = struct.unpack_from(">I", data, 0)[0]
+    if magic in _MACHO_FAT_MAGICS:
+        is64 = magic == 0xCAFEBABF
+        nfat = struct.unpack_from(">I", data, 4)[0]
+        entry = 8
+        slices: list[tuple[int, tuple[int, int]]] = []
+        for _ in range(nfat):
+            if is64:
+                if entry + 32 > len(data):
+                    break
+                cputype = struct.unpack_from(">I", data, entry)[0]
+                slice_offset = struct.unpack_from(">Q", data, entry + 8)[0]
+                entry += 32
+            else:
+                if entry + 20 > len(data):
+                    break
+                cputype = struct.unpack_from(">I", data, entry)[0]
+                slice_offset = struct.unpack_from(">I", data, entry + 8)[0]
+                entry += 20
+            minos = _macho_slice_minos(data, slice_offset)
+            if minos is not None:
+                slices.append((cputype, minos))
+        if not slices:
+            return None
+        if host is not None:
+            want = (
+                _CPU_TYPE_ARM64
+                if host.is_arm64
+                else (_CPU_TYPE_X86_64 if host.is_x86_64 else None)
+            )
+            for cputype, minos in slices:
+                if cputype == want:
+                    return minos
+        return max(minos for _cputype, minos in slices)
+    return _macho_slice_minos(data, 0)
+
+
+def looks_like_macos_incompatibility(text: str) -> bool:
+    """True when dyld output means a prebuilt needs a newer macOS than the host
+    (the runtime backstop for cases the static minos scan cannot read)."""
+    if not text:
+        return False
+    if "built for macOS" in text and "newer than running OS" in text:
+        return True
+    return "Symbol not found" in text and "MTLResidency" in text
+
+
+def macos_binary_minos_issues(
+    binaries: Iterable[Path],
+    install_dir: Path,
+    host: HostInfo,
+) -> list[str]:
+    """Issue strings for every installed Mach-O whose minimum macOS exceeds the
+    host. Scans the given executables plus every bundled .dylib next to them --
+    the dyld failure originates in libggml-metal.dylib, not the executable."""
+    candidates: list[Path] = list(binaries)
+    bin_dir = install_dir / "build" / "bin"
+    if bin_dir.is_dir():
+        candidates.extend(sorted(bin_dir.rglob("*.dylib")))
+
+    issues: list[str] = []
+    seen: set[Path] = set()
+    for path in candidates:
+        try:
+            resolved = path.resolve()
+        except Exception:
+            resolved = path
+        if resolved in seen or not path.exists():
+            continue
+        seen.add(resolved)
+        minos = macho_minimum_macos(path, host)
+        if minos is not None and not host_supports_macos_minos(host, minos):
+            issues.append(
+                f"{path.name}: built for macOS {minos[0]}.{minos[1]} > "
+                f"host macOS {host.macos_version[0]}.{host.macos_version[1]}"
+            )
+    return issues
+
+
+def preflight_macos_installed_binaries(
+    binaries: Iterable[Path],
+    install_dir: Path,
+    host: HostInfo,
+) -> None:
+    """Reject a macos prebuilt whose minimum-OS is newer than the host so the
+    release walk-back advances to the newest compatible release. No-op when the
+    host macOS version is unknown (runtime validation remains the backstop)."""
+    if not host.is_macos or host.macos_version is None:
+        return
+    issues = macos_binary_minos_issues(binaries, install_dir, host)
+    if issues:
+        raise PrebuiltFallback(
+            "macos prebuilt requires a newer macOS than this host:\n"
+            + "\n".join(issues)
+        )
+
+
 def preflight_linux_installed_binaries(
     binaries: Iterable[Path],
     install_dir: Path,
@@ -5030,10 +5236,17 @@ def validate_quantize(
         or not quantized_path.exists()
         or quantized_path.stat().st_size == 0
     ):
+        combined = result.stdout + ("\n" + result.stderr if result.stderr else "")
+        # Backstop for prebuilts the static minos scan could not read: a dyld
+        # "built for macOS N" / missing Metal symbol failure means this binary
+        # needs a newer macOS than the host, so fall back to an older release.
+        prefix = (
+            "macos prebuilt requires a newer macOS than this host: "
+            if looks_like_macos_incompatibility(combined)
+            else ""
+        )
         raise PrebuiltFallback(
-            "llama-quantize validation failed:\n"
-            + result.stdout
-            + ("\n" + result.stderr if result.stderr else "")
+            prefix + "llama-quantize validation failed:\n" + combined
         )
 
 
@@ -5451,6 +5664,14 @@ def resolve_install_release_plans(
         requested_tag == "latest" and not published_release_tag
     )
     release_limit = max(1, max_release_fallbacks)
+    # macOS may need to walk past a run of too-new prebuilts. Only when the host
+    # version is known; otherwise keep the default (cannot tell up front).
+    if (
+        host.is_macos
+        and allow_older_release_fallback
+        and host.macos_version is not None
+    ):
+        release_limit = max(release_limit, DEFAULT_MAX_MACOS_RELEASE_FALLBACKS)
     plans: list[InstallReleasePlan] = []
     last_error: PrebuiltFallback | None = None
 
@@ -5835,6 +6056,7 @@ def validate_prebuilt_choice(
         choice, host, install_dir, work_dir
     )
     preflight_linux_installed_binaries((server_path, quantize_path), install_dir, host)
+    preflight_macos_installed_binaries((server_path, quantize_path), install_dir, host)
     ensure_repo_shape(install_dir)
     write_prebuilt_metadata(
         install_dir,

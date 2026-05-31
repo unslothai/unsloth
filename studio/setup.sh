@@ -1084,6 +1084,15 @@ else
                 _IS_MACOS_ARM64=true
             fi
 
+            # macOS: pin a low deployment target so the source build loads on
+            # older macOS too (else a macOS 26 host stamps minos=26). Set before
+            # CPU_FALLBACK_CMAKE_ARGS copies CMAKE_ARGS so both paths inherit it.
+            if [ "$_HOST_SYSTEM" = "Darwin" ]; then
+                _MACOS_DEPLOYMENT_TARGET="${UNSLOTH_MACOS_DEPLOYMENT_TARGET:-13.3}"
+                CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_OSX_DEPLOYMENT_TARGET=${_MACOS_DEPLOYMENT_TARGET}"
+                export MACOSX_DEPLOYMENT_TARGET="${_MACOS_DEPLOYMENT_TARGET}"
+            fi
+
             if command -v ccache &>/dev/null; then
                 CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DCMAKE_CUDA_COMPILER_LAUNCHER=ccache"
             fi
