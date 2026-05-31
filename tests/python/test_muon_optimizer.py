@@ -385,8 +385,8 @@ def test_chained_state_dict_real_params():
 # -- Tests: _sync_lr ---------------------------------------------------------
 
 
-def test_sync_lr_propagates_from_chained_to_suboptimizers():
-    """LR set on chained param_groups must reach sub-optimizers after step()."""
+def test_identity_sharing_propagates_lr_to_muon_and_adamw():
+    """LR set on chained param_groups propagates via identity-sharing."""
     _skip_if_no_muon()
 
     p = torch.nn.Parameter(torch.randn(4, 4))
@@ -410,8 +410,8 @@ def test_sync_lr_propagates_from_chained_to_suboptimizers():
     assert adamw.param_groups[0]["lr"] == 1e-4, "AdamW LR not synced"
 
 
-def test_sync_lr_with_multiple_groups():
-    """_sync_lr handles >1 group per sub-optimizer with correct index offsets."""
+def test_identity_sharing_with_multiple_groups():
+    """Identity-sharing handles >1 group per sub-optimizer with correct index offsets."""
     _skip_if_no_muon()
 
     p = torch.nn.Parameter(torch.randn(4, 4))
@@ -445,8 +445,8 @@ def test_sync_lr_with_multiple_groups():
 # -- Tests: defaults ----------------------------------------------------------
 
 
-def test_chained_defaults_populated():
-    """_MuonAdamWChained defaults must contain Muon keys only (R10 L1 fix)."""
+def test_chained_defaults_contains_all_keys():
+    """Both Muon and AdamW keys must be accessible via optimizer.defaults."""
     from unsloth.trainer import _MuonAdamWChained
 
     muon = MagicMock()
@@ -457,10 +457,39 @@ def test_chained_defaults_populated():
     adamw.defaults = {"lr": 1e-4, "weight_decay": 0.0, "betas": (0.9, 0.999), "eps": 1e-8}
 
     chained = _MuonAdamWChained(muon, adamw)
-    # Only Muon defaults are passed, so defaults is Muon-only
-    assert chained.defaults["lr"] == 1e-3  # from Muon
+    # Muon keys must be present
     assert "momentum" in chained.defaults
-    assert "betas" not in chained.defaults, "AdamW-specific keys must not leak"
+    assert "eps" in chained.defaults
+    # AdamW keys must also be present (not just Muon keys)
+    assert "betas" in chained.defaults, "betas must be in defaults for downstream code"
+    assert chained.defaults.get("betas") == (0.9, 0.999), "betas must have correct value"
+    # AdamW wins on overlap
+    assert chained.defaults["lr"] == 1e-4
+
+
+# -- Tests: MT1 — _sync_lr independent of identity-sharing --------------------
+
+
+def test_sync_lr_independent_of_identity():
+    """_sync_lr must copy values when identity-sharing is broken."""
+    _skip_if_no_muon()
+
+    p = torch.nn.Parameter(torch.randn(4, 4))
+    q = torch.nn.Parameter(torch.randn(4))
+    muon = torch.optim.Muon([p], lr=1e-3, momentum=0.95, ns_steps=5)
+    adamw = torch.optim.AdamW([q], lr=1e-3)
+
+    from unsloth.trainer import _MuonAdamWChained
+    chained = _MuonAdamWChained(muon, adamw)
+
+    import copy
+    chained.param_groups = copy.deepcopy(chained.param_groups)
+
+    chained.param_groups[0]["lr"] = 5e-4
+    assert muon.param_groups[0]["lr"] != 5e-4, "Identity already broken"
+
+    chained._sync_lr()
+    assert muon.param_groups[0]["lr"] == 5e-4, "_sync_lr did not propagate lr"
 
 
 # -- Tests: embedding_lr -----------------------------------------------------
@@ -691,8 +720,9 @@ def test_empty_muon_group_params():
     assert len(muon_g) == 1
     assert len(muon_g[0]["params"]) == 0
 
-    # Should not raise
-    torch.optim.Muon(muon_g, lr=1e-3, momentum=0.95, ns_steps=5)
+    # Should not raise on construction or step
+    optimizer = torch.optim.Muon(muon_g, lr=1e-3, momentum=0.95, ns_steps=5)
+    optimizer.step()
 
 
 # -- Tests: MT3 — Empty AdamW group ------------------------------------------
@@ -834,8 +864,8 @@ def test_distributed_allowed_with_env_var(mock_init, mock_avail):
 # -- Tests: _sync_lr all hyperparams (H1) ------------------------------------
 
 
-def test_sync_lr_all_hyperparams():
-    """_sync_lr must propagate all hyperparams, not just lr."""
+def test_identity_sharing_propagates_weight_decay():
+    """Weight_decay set via identity-sharing must be visible in sub-optimizers."""
     _skip_if_no_muon()
 
     p = torch.nn.Parameter(torch.randn(4, 4))
@@ -857,6 +887,22 @@ def test_sync_lr_all_hyperparams():
 
     assert muon.param_groups[0]["weight_decay"] == 0.5, "Muon weight_decay not synced"
     assert adamw.param_groups[0]["weight_decay"] == 0.0, "AdamW weight_decay not synced"
+
+
+# -- Tests: MT3 — step with empty sub-optimizer ------------------------------
+
+
+def test_step_with_empty_suboptimizer():
+    """_MuonAdamWChained with muon=None must not crash on step()."""
+    _skip_if_no_muon()
+
+    from unsloth.trainer import _MuonAdamWChained
+
+    q = torch.nn.Parameter(torch.randn(4))
+    adamw = torch.optim.AdamW([q], lr=1e-3)
+    chained = _MuonAdamWChained(None, adamw)
+    q.grad = torch.randn_like(q)
+    chained.step()
 
 
 # -- Tests: surface API -------------------------------------------------------
@@ -1275,8 +1321,8 @@ def test_muon_config_default_step():
 # -- MT3: _sync_lr propagates ns_steps, ns_coefficients, adjust_lr_fn (H2 fix) ----
 
 
-def test_sync_lr_propagates_muon_keys():
-    """_sync_lr must propagate Muon-specific keys from chained to sub-optimizer."""
+def test_identity_sharing_propagates_muon_keys():
+    """Muon-specific keys propagate via identity-sharing."""
     _skip_if_no_muon()
 
     from unsloth.trainer import _MuonAdamWChained

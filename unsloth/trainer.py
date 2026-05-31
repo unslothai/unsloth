@@ -422,16 +422,30 @@ class _MuonAdamWChained(torch.optim.Optimizer):
         muon_defaults = muon.defaults if muon is not None else {}
         self._init_done = False
         super().__init__(all_groups, muon_defaults)
-        # Enforce identity-sharing contract: param_groups are the same objects
-        # as sub-optimizer groups.  If this assertion ever fails it means
-        # identity-sharing was broken and _sync_lr behaviour would change.
+        # Restore self.defaults with both Muon and AdamW keys, so downstream
+        # code (LR schedulers, callbacks, custom training loops) can inspect
+        # hyperparameters without them being polluted by the defaults-merge
+        # which would have leaked AdamW keys into Muon param groups.
+        self.defaults = {}
         if muon is not None:
-            n_muon = len(muon.param_groups)
-            for i in range(n_muon):
+            self.defaults.update(muon.defaults)
+        if adamw is not None:
+            self.defaults.update(adamw.defaults)
+        offset = len(muon.param_groups) if muon is not None else 0
+        if muon is not None:
+            for i in range(len(muon.param_groups)):
                 if self.param_groups[i] is not muon.param_groups[i]:
                     raise RuntimeError(
                         f"_MuonAdamWChained identity-sharing broken: "
                         f"group {i} is not the same object as muon.param_groups[{i}]. "
+                        "This can happen if param_groups were deep-copied or reassigned."
+                    )
+        if adamw is not None:
+            for i in range(len(adamw.param_groups)):
+                if self.param_groups[offset + i] is not adamw.param_groups[i]:
+                    raise RuntimeError(
+                        f"_MuonAdamWChained identity-sharing broken: "
+                        f"group {offset + i} is not the same object as adamw.param_groups[{i}]. "
                         "This can happen if param_groups were deep-copied or reassigned."
                     )
         self._init_done = True
@@ -484,12 +498,17 @@ class _MuonAdamWChained(torch.optim.Optimizer):
             self.muon.step()
             return
         was_enabled = torch.are_deterministic_algorithms_enabled()
-        if not was_enabled:
-            torch.use_deterministic_algorithms(True)
+        was_warn_only = torch.is_deterministic_algorithms_warn_only_enabled() if was_enabled else False
+        if not was_enabled or not was_warn_only:
+            torch.use_deterministic_algorithms(True, warn_only=False)
+        else:
+            torch.use_deterministic_algorithms(True, warn_only=True)
         try:
             self.muon.step()
         finally:
-            if not was_enabled:
+            if was_enabled:
+                torch.use_deterministic_algorithms(True, warn_only=was_warn_only)
+            else:
                 torch.use_deterministic_algorithms(False)
 
     def step(self, closure=None):
