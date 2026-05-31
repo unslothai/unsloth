@@ -336,7 +336,6 @@ class UnslothTrainingArguments(TrainingArguments):
         self.muon_config = muon_config
         self.embedding_learning_rate = embedding_learning_rate
         super().__init__(*args, **kwargs)
-        self.embedding_learning_rate = embedding_learning_rate
 
 
 def _create_unsloth_optimizer(
@@ -415,21 +414,14 @@ class _MuonAdamWChained(torch.optim.Optimizer):
             all_groups.extend(muon.param_groups)
         if adamw is not None:
             all_groups.extend(adamw.param_groups)
-        defaults = {}
-        if muon is not None:
-            defaults.update(muon.defaults)
-        if adamw is not None:
-            defaults.update(adamw.defaults)
+        # Use only Muon defaults to prevent AdamW-specific keys (e.g. amsgrad,
+        # betas, maximize, fused, capturable) from leaking into Muon param
+        # groups via add_param_group's defaults-fill in the parent constructor.
+        # AdamW groups are already fully constructed by their own __init__ and
+        # need no additional key filling.
+        muon_defaults = muon.defaults if muon is not None else {}
         self._init_done = False
-        super().__init__(all_groups, defaults)
-        # Strip AdamW-specific keys (betas, amsgrad, etc.) from Muon groups,
-        # preventing defaults-merge leakage from super().__init__.
-        if muon is not None:
-            n_muon = len(muon.param_groups)
-            adamw_only = set(self.ADAMW_SYNC_KEYS) - set(self.MUON_SYNC_KEYS)
-            for i in range(n_muon):
-                for k in adamw_only:
-                    self.param_groups[i].pop(k, None)
+        super().__init__(all_groups, muon_defaults)
         # Enforce identity-sharing contract: param_groups are the same objects
         # as sub-optimizer groups.  If this assertion ever fails it means
         # identity-sharing was broken and _sync_lr behaviour would change.
@@ -700,7 +692,6 @@ class UnslothTrainer(SFTTrainer):
             nesterov=config.nesterov,
             ns_steps=config.ns_steps,
             eps=config.muon_eps,
-            weight_decay=muon_weight_decay,
             ns_coefficients=config.ns_coefficients,
             adjust_lr_fn=config.adjust_lr_fn,
         )

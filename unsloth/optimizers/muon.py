@@ -141,8 +141,8 @@ def make_muon_param_groups(
     embedding_lr : float, optional
         Separate LR for embedding params. If set, creates a dedicated
         no-decay AdamW group for embeddings (always ``weight_decay=0.0``).
-        Otherwise embeddings fall into the decay group at the default
-        ``adamw_lr`` (still ``weight_decay=0.0``).
+        Otherwise embeddings get a dedicated no-decay AdamW group with
+        ``weight_decay=0.0`` at the default ``adamw_lr``.
 
     Returns
     -------

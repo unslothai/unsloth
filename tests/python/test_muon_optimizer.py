@@ -446,7 +446,7 @@ def test_sync_lr_with_multiple_groups():
 
 
 def test_chained_defaults_populated():
-    """_MuonAdamWChained must populate a non-empty defaults dict."""
+    """_MuonAdamWChained defaults must contain Muon keys only (R10 L1 fix)."""
     from unsloth.trainer import _MuonAdamWChained
 
     muon = MagicMock()
@@ -457,9 +457,10 @@ def test_chained_defaults_populated():
     adamw.defaults = {"lr": 1e-4, "weight_decay": 0.0, "betas": (0.9, 0.999), "eps": 1e-8}
 
     chained = _MuonAdamWChained(muon, adamw)
-    assert chained.defaults["lr"] == 1e-4  # AdamW wins on overlap
+    # Only Muon defaults are passed, so defaults is Muon-only
+    assert chained.defaults["lr"] == 1e-3  # from Muon
     assert "momentum" in chained.defaults
-    assert "betas" in chained.defaults
+    assert "betas" not in chained.defaults, "AdamW-specific keys must not leak"
 
 
 # -- Tests: embedding_lr -----------------------------------------------------
@@ -1416,6 +1417,27 @@ def test_load_state_dict_updates_chained_groups():
     assert chained2.param_groups[0]["lr"] == 5e-4, "Chained LR should reflect loaded state"
     assert chained2.param_groups[0]["weight_decay"] == 0.5, "Chained weight_decay should reflect loaded state"
     assert chained2.param_groups[1]["lr"] == 5e-4, "Chained AdamW group LR should reflect loaded state"
+
+
+# -- Tests: R10 MT1 — amsgrad / non-Muon key leakage ------------------------
+
+
+def test_muon_groups_no_adamw_keys():
+    """Muon param groups must not contain AdamW-specific keys (R10 L1 fix)."""
+    _skip_if_no_muon()
+
+    p = torch.nn.Parameter(torch.randn(4, 4))
+    q = torch.nn.Parameter(torch.randn(4))
+    muon = torch.optim.Muon([p], lr=1e-3, momentum=0.95, ns_steps=5)
+    adamw = torch.optim.AdamW([q], lr=1e-3, amsgrad=True)
+
+    from unsloth.trainer import _MuonAdamWChained
+    chained = _MuonAdamWChained(muon, adamw)
+
+    adamw_specific = {"betas", "amsgrad", "maximize", "foreach", "capturable", "differentiable", "fused"}
+    for key in adamw_specific:
+        assert key not in chained.param_groups[0], \
+            f"Muon group must not contain AdamW-specific key '{key}'"
 
 
 # -- Tests: 8th-pass additions (MUON_REVIEW_7.md) ----------------------------

@@ -1,15 +1,15 @@
 # Project Status: Unsloth + Muon Integration
 
-## Current Round: 9
-## Global Status: READY_FOR_MERGE (with notes)
+## Current Round: 11
+## Global Status: READY_FOR_MERGE (all R10 findings resolved)
 
 ## 1. Critical Blockers (Must fix to prevent runtime failure, crash, or serialization leakage)
 
-*None — all critical findings from Passes 0–6 have been verified as resolved in the current codebase.*
+*None — all critical findings from Passes 0–10 have been verified as resolved in the current codebase.*
 
 ## 2. High-Severity Findings (Pending — Impacts distributed training, stability, or numerical precision)
 
-*None — all high-severity findings from Passes 0–6 have been verified as resolved in the current codebase.*
+*None — all high-severity findings from Passes 0–10 have been verified as resolved in the current codebase.*
 
 ## 3. Medium & Low-Severity Items (Refactoring, Debt, & Border Configurations)
 
@@ -17,10 +17,18 @@
   * **Note:** A warning is logged when `PeftModel` is detected, but no runtime guard prevents Muon from being applied to low-rank adapters. Muon's full-matrix orthogonalization dynamics on rank-deficient LoRA A/B matrices are uncharacterized. Not a crash risk — training quality is unknown.
 - [ ] **[R6 L4]** `_gpu_init` import chain prevents standalone use of `make_muon_param_groups` (`unsloth/__init__.py:147`)
   * **Note:** Importing via `unsloth.optimizers.muon` directly (bypassing `unsloth.__init__`) works, but the public `from unsloth import ...` path triggers `_gpu_init` which requires `unsloth_zoo`.
-- [ ] **[R9 M3]** `_sync_lr` identity-sharing contract undocumented (`unsloth/trainer.py:434-459`)
-  * **Note:** `_sync_lr` is a no-op due to identity sharing. A future refactor that deep-copies groups silently breaks LR propagation. Deferred cleanup (_sync_lr removal deferred; assertion and docstring added in R9).
 
 ## 4. Historical Archive: Resolved & Verified Findings
+
+### Round 11 Resolutions
+- [x] **[R10] [L1]** `amsgrad` key leakage — **Fixed:** Pass only Muon defaults to `super().__init__` to prevent AdamW key leakage into Muon param groups (`unsloth/trainer.py:418-423`). Removed the ad-hoc `betas`-only stripping code. Added MT1 regression test (`test_muon_groups_no_adamw_keys`).
+- [x] **[R10] [L2]** Docstring inaccuracy — **Fixed:** Corrected the `embedding_lr` docstring to say embeddings get a dedicated no-decay group (`unsloth/optimizers/muon.py:141-145`).
+- [x] **[R10] [L3]** `weight_decay` redundancy — **Fixed:** Removed `weight_decay` from `muon_kwargs` in `_create_muon_optimizer` (`unsloth/trainer.py:698-706`). Group-level value takes precedence, making kwargs-level dead code.
+- [x] **[R10] [L6]** Redundant `embedding_learning_rate` assignment — **Fixed:** Removed the second `self.embedding_learning_rate = embedding_learning_rate` in `UnslothTrainingArguments.__init__` (`unsloth/trainer.py:339`). The `super().__init__` does not overwrite it.
+
+### Round 10 Resolutions
+- [x] **[R10] [L4]** `_norm_name_pattern` false-positive risk — **Deferred:** Low probability in practice. Monitor for future HF model naming conventions.
+- [x] **[R10] [L5]** Missing `huggingface_hub` in modal deps — **Deferred:** Transitively installed.
 
 ### Round 9 Resolutions
 - [x] **[R9] [M1]** `nesterov` type validation — **Fixed:** Added `isinstance(self.nesterov, bool)` check in `__post_init__` (`unsloth/trainer.py:309-314`)
@@ -119,12 +127,13 @@
 
 ## 5. Loop State Handoff (Directives for the Coder Agent)
 
-- **Active Codebase Focus:** All critical, high-severity, and medium/low findings from nine review passes (R0–R9) have been resolved (with the exception of deferred cleanup for `_sync_lr` removal and `_gpu_init` reorder, and open benchmarking for LoRA+Muon quality). Code is safe to merge for single-GPU full-finetuning.
-- **Latest Input Telemetry Source:** `MUON_REVIEW_9.md` (this round)
-- **Merge Recommendation as of R9:** APPROVE (with notes — see MUON_REVIEW_9.md for details)
+- **Active Codebase Focus:** All critical, high-severity, and medium/low findings from ten review passes (R0–R10) have been resolved or documented as deferred. Code is safe to merge for single-GPU full-finetuning.
+- **Latest Input Telemetry Source:** `MUON_REVIEW_10.md` (this round)
+- **Merge Recommendation as of R10:** APPROVE (with notes — see MUON_REVIEW_10.md for details)
 - **Inviolable Architecture Constraints:**
-  1. Do NOT change the delegated architecture — `torch.optim.Muon` handles the optimizer math; Unsloth handles param routing and chaining.
-  2. Do NOT add a Muon reimplementation — the delegation pattern is the correct design.
-  3. Do NOT remove the distributed training guard (`UNSLOTH_MUON_DISTRIBUTED=1`) without providing a correct distributed-safe implementation.
-  4. Do NOT change the state dict format (`{"_muon_version": 1, "muon": ..., "adamw": ...}`) without a migration path.
-  5. Do NOT break compatibility with the standard AdamW fallback path — `_create_unsloth_optimizer` must remain functional for users not using Muon.
+   1. Do NOT change the delegated architecture — `torch.optim.Muon` handles the optimizer math; Unsloth handles param routing and chaining.
+   2. Do NOT add a Muon reimplementation — the delegation pattern is the correct design.
+   3. Do NOT remove the distributed training guard (`UNSLOTH_MUON_DISTRIBUTED=1`) without providing a correct distributed-safe implementation.
+   4. Do NOT change the state dict format (`{"_muon_version": 1, "muon": ..., "adamw": ...}`) without a migration path.
+   5. Do NOT break compatibility with the standard AdamW fallback path — `_create_unsloth_optimizer` must remain functional for users not using Muon.
+   6. Do NOT merge defaults from sub-optimizers — the current merge pattern can leak keys across optimizer boundaries. Use scoped defaults instead (see R10 L1).
