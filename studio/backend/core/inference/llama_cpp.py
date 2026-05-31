@@ -1297,7 +1297,7 @@ class LlamaCppBackend:
         On a Vulkan build, the ggml Vulkan probe is authoritative so the
         returned indices are Vulkan ordinals (the space the GPU pin writes
         to ``GGML_VK_VISIBLE_DEVICES``). Otherwise ``nvidia-smi`` / torch
-        cover NVIDIA + AMD ROCm, with the Vulkan probe as a last resort.
+        cover NVIDIA + AMD ROCm.
 
         Returns list of (gpu_index, free_mib) sorted by index. Empty
         list if no supported GPU is reachable.
@@ -1305,10 +1305,7 @@ class LlamaCppBackend:
         binary = binary or LlamaCppBackend._find_llama_server_binary()
         if LlamaCppBackend._is_vulkan_backend(binary):
             return LlamaCppBackend._get_gpu_free_memory_vulkan(binary)
-        gpus = LlamaCppBackend._get_gpu_free_memory_nvidia_torch()
-        if gpus:
-            return gpus
-        return LlamaCppBackend._get_gpu_free_memory_vulkan(binary)
+        return LlamaCppBackend._get_gpu_free_memory_nvidia_torch()
 
     @staticmethod
     def _get_gpu_free_memory_nvidia_torch() -> list[tuple[int, int]]:
