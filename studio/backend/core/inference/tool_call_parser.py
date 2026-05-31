@@ -207,7 +207,7 @@ def _strip_mistral_reasoning(content: str) -> str:
     close = content.find(_MISTRAL_THINK_CLOSE, i + len(_MISTRAL_THINK_OPEN))
     if close == -1:
         return content[:i]
-    return content[:i] + content[close + len(_MISTRAL_THINK_CLOSE):]
+    return content[:i] + content[close + len(_MISTRAL_THINK_CLOSE) :]
 
 
 def _strip_mistral_closed_calls(text: str) -> str:
