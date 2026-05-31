@@ -8,7 +8,7 @@ import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { SettingsDialog, useSettingsDialogStore } from "@/features/settings";
 import { useTrainingUnloadGuard } from "@/features/training";
 import { useSidebarPin } from "@/hooks/use-sidebar-pin";
-import { useChatRuntimeStore } from "@/features/chat";
+import { clearNewChatDraft, useChatRuntimeStore } from "@/features/chat";
 import { useT, type TranslationKey } from "@/i18n";
 import {
   Outlet,
@@ -109,9 +109,10 @@ function RootLayout() {
         useSettingsDialogStore.getState().openDialog();
         return;
       }
-      // Cmd/Ctrl+Shift+O opens a new chat. 
+      // Cmd/Ctrl+Shift+O opens a new chat.
       if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.code === "KeyO") {
         e.preventDefault();
+        clearNewChatDraft(); // fresh chat starts empty, no bleed from the last one
         useChatRuntimeStore.getState().setActiveThreadId(null);
         void navigate({
           to: "/chat",

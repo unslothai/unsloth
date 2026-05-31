@@ -71,6 +71,7 @@ import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
 import {
   archiveChatItem,
   ChatSearchDialog,
+  clearNewChatDraft,
   deleteChatItem,
   renameChatItem,
   unarchiveChatItem,
@@ -408,6 +409,7 @@ export function AppSidebar() {
             onClick={(event) => {
               event.preventDefault();
               if (chatDisabled) return;
+              clearNewChatDraft();
               setActiveThreadId(null);
               closeMobileIfOpen();
               void navigate({
@@ -489,6 +491,7 @@ export function AppSidebar() {
               disabled={chatDisabled}
               onClick={() => {
                 if (chatDisabled) return;
+                clearNewChatDraft();
                 setActiveThreadId(null);
                 navigate({ to: "/chat", search: { new: createNavigationNonce() } });
                 closeMobileIfOpen();

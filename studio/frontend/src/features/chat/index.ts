@@ -24,6 +24,12 @@ export { setTrainingCompareHandoff } from "./lib/training-compare-handoff";
 export { clearAllChats, countAllChats } from "./utils/clear-all-chats";
 export { downloadChatExport } from "./utils/export-chat-history";
 export {
+  clearNewChatDraft,
+  composerDraftKey,
+  readComposerDraft,
+  writeComposerDraft,
+} from "./utils/composer-draft";
+export {
   archiveChatItem,
   deleteChatItem,
   renameChatItem,

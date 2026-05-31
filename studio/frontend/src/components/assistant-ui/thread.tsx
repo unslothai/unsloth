@@ -46,6 +46,11 @@ import { parseExternalModelId } from "@/features/chat/external-providers";
 import { getExternalReasoningCapabilities } from "@/features/chat/provider-capabilities";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { useExternalProvidersStore } from "@/features/chat/stores/external-providers-store";
+import {
+  composerDraftKey,
+  readComposerDraft,
+  writeComposerDraft,
+} from "@/features/chat/utils/composer-draft";
 import { deleteThreadMessage } from "@/features/chat/utils/delete-thread-message";
 import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
 import { isTauri } from "@/lib/api-base";
@@ -453,20 +458,12 @@ const Composer: FC<{
   const hasSendableContent =
     composerText.trim().length > 0 || hasAttachments || hasPendingAudio;
 
-  // Per-thread draft autosave. Restores any saved draft on mount, then
-  // mirrors composer text into localStorage (debounced) so a half-typed
-  // message survives a navigation away or a reload. Clears the slot once
-  // the field is empty (i.e. after a send).
-  const draftKey = `chat-draft:${activeThreadId ?? "__new__"}`;
+  // Per-thread draft autosave: restore on mount, then mirror composer text
+  // into localStorage (debounced) so a half-typed message survives a
+  // navigation or reload. Cleared once empty (i.e. after a send).
+  const draftKey = composerDraftKey(activeThreadId);
   useEffect(() => {
-    let draft: string | null = null;
-    try {
-      draft = window.localStorage.getItem(draftKey);
-    } catch {
-      // localStorage can throw when unavailable (private mode, disabled
-      // cookies, blocked storage). Draft restore is best-effort; bail quietly.
-      return;
-    }
+    const draft = readComposerDraft(draftKey);
     if (!draft) return;
     const composer = aui.composer();
     if (composer.getState().isEditing) {
@@ -474,17 +471,7 @@ const Composer: FC<{
     }
   }, [draftKey, aui]);
   useEffect(() => {
-    const t = setTimeout(() => {
-      try {
-        if (composerText.length > 0) {
-          window.localStorage.setItem(draftKey, composerText);
-        } else {
-          window.localStorage.removeItem(draftKey);
-        }
-      } catch {
-        // Ignore write failures (quota exceeded, private mode, blocked storage).
-      }
-    }, 300);
+    const t = setTimeout(() => writeComposerDraft(draftKey, composerText), 300);
     return () => clearTimeout(t);
   }, [composerText, draftKey]);
 

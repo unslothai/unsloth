@@ -15,6 +15,7 @@ import {
   listStoredChatThreadsWithMessages,
   updateStoredChatThread,
 } from "../utils/chat-history-storage";
+import { clearComposerDraft } from "../utils/composer-draft";
 import {
   markChatThreadsDeleted,
   removeChatThreadTombstones,
@@ -214,6 +215,9 @@ export async function deleteChatItem(
   // Stop any in-flight streams before deleting, so the model doesn't keep
   // generating against a thread that no longer exists.
   for (const id of threadIds) cancelIfRunning(id);
+
+  // Drop saved composer drafts so deleted threads leave no orphan keys.
+  for (const id of threadIds) clearComposerDraft(id);
 
   // Optimistic tombstone: hide immediately; roll back on backend error.
   markChatThreadsDeleted(threadIds);
