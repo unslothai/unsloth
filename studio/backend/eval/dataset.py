@@ -35,12 +35,44 @@ def load_eval_examples(
 
     if ref.is_local:
         path = Path(ref.path)
-        suffix = path.suffix.lower()
-        fmt = {".jsonl": "json", ".json": "json", ".csv": "csv",
-               ".parquet": "parquet"}.get(suffix)
-        if fmt is None:
-            raise ValueError(f"Unsupported local dataset file type: {suffix!r}")
-        ds = load_dataset(fmt, data_files=str(path), split=ref.split)
+        if path.is_dir():
+            # Directory of files (e.g. a Data Recipe output: recipe_xxx/
+            # parquet-files/*.parquet, or a folder of parquet/jsonl/csv).
+            parquet_dir = (
+                path / "parquet-files"
+                if (path / "parquet-files").exists()
+                else path
+            )
+            parquet_files = sorted(parquet_dir.glob("*.parquet"))
+            if parquet_files:
+                ds = load_dataset(
+                    "parquet",
+                    data_files=[str(p) for p in parquet_files],
+                    split=ref.split,
+                )
+            else:
+                # Fall back to other supported file types in the top of `path`.
+                files: list[Path] = []
+                for ext, _ in (
+                    (".jsonl", "json"), (".json", "json"), (".csv", "csv"),
+                ):
+                    files.extend(sorted(path.glob(f"*{ext}")))
+                if not files:
+                    raise ValueError(
+                        f"No loadable files (parquet/json/jsonl/csv) under {path}"
+                    )
+                first_suffix = files[0].suffix.lower()
+                fmt = {".jsonl": "json", ".json": "json", ".csv": "csv"}[first_suffix]
+                ds = load_dataset(
+                    fmt, data_files=[str(p) for p in files], split=ref.split,
+                )
+        else:
+            suffix = path.suffix.lower()
+            fmt = {".jsonl": "json", ".json": "json", ".csv": "csv",
+                   ".parquet": "parquet"}.get(suffix)
+            if fmt is None:
+                raise ValueError(f"Unsupported local dataset file type: {suffix!r}")
+            ds = load_dataset(fmt, data_files=str(path), split=ref.split)
     else:
         ds = load_dataset(ref.name, ref.subset, split=ref.split)
 

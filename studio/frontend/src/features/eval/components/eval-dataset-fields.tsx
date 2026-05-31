@@ -10,7 +10,6 @@ import {
   ComboboxList,
 } from "@/components/ui/combobox";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { InputGroupAddon } from "@/components/ui/input-group";
 import { Label } from "@/components/ui/label";
 import {
@@ -29,11 +28,13 @@ import {
   useInfiniteScroll,
 } from "@/hooks";
 import { uploadTrainingDataset } from "@/features/training";
-import { checkDatasetFormat } from "@/features/training/api/datasets-api";
 import {
-  Cancel01Icon,
+  checkDatasetFormat,
+  listLocalDatasets,
+} from "@/features/training/api/datasets-api";
+import type { LocalDatasetInfo } from "@/features/training/types/datasets";
+import {
   CloudUploadIcon,
-  FileAttachmentIcon,
   Search01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -73,6 +74,11 @@ export function EvalDatasetFields({
   const [detectError, setDetectError] = useState<string | null>(null);
   const [isUploading, setIsUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [localDatasets, setLocalDatasets] = useState<LocalDatasetInfo[]>([]);
+  const [isLoadingLocal, setIsLoadingLocal] = useState(true);
+  const [localDatasetsError, setLocalDatasetsError] = useState<string | null>(
+    null,
+  );
 
   const debouncedQuery = useDebouncedValue(searchQuery);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -195,6 +201,49 @@ export function EvalDatasetFields({
     return () => clearTimeout(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [value.isLocal, value.path, value.name, value.split, value.subset, hfToken]);
+
+  // Load locally-available datasets (Data Recipe outputs) on mount so the
+  // user can pick from a list — mirrors the training view's flow.
+  useEffect(() => {
+    let cancelled = false;
+    setIsLoadingLocal(true);
+    listLocalDatasets()
+      .then((r) => {
+        if (!cancelled) setLocalDatasets(r.datasets);
+      })
+      .catch((e) => {
+        if (!cancelled)
+          setLocalDatasetsError(e instanceof Error ? e.message : String(e));
+      })
+      .finally(() => {
+        if (!cancelled) setIsLoadingLocal(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Local options shown in the Select = recipe outputs, plus a synthetic
+  // "Uploaded:" entry when the current path was uploaded (and isn't in the
+  // recipe list) so the Select still displays it.
+  const localOptions = useMemo(() => {
+    const opts = localDatasets.slice();
+    if (
+      value.isLocal &&
+      value.path &&
+      !opts.find((d) => d.path === value.path)
+    ) {
+      opts.unshift({
+        id: "_uploaded_",
+        label: `Uploaded: ${value.path.split("/").pop() || value.path}`,
+        path: value.path,
+        rows: null,
+        updated_at: null,
+        metadata: null,
+      });
+    }
+    return opts;
+  }, [localDatasets, value.isLocal, value.path]);
 
   // Detected columns plus the current value (so a persisted/typed selection
   // still shows while detection is pending or if it isn't in the dataset).
@@ -347,62 +396,67 @@ export function EvalDatasetFields({
       {/* 2b. Local mode */}
       {value.isLocal && (
         <div className="flex flex-col gap-3">
-          {/* Path input */}
+          {/* Local datasets list (Data Recipe outputs + any uploaded file) */}
           <div className="flex flex-col gap-1.5">
             <Label className="text-xs font-medium text-muted-foreground">
-              Dataset path
+              Local dataset
             </Label>
-            <Input
-              value={value.path}
-              onChange={(e) => update({ path: e.target.value })}
-              placeholder="/path/to/data.jsonl"
-            />
+            <Select
+              value={value.path || undefined}
+              onValueChange={(p) => update({ path: p })}
+              disabled={isLoadingLocal && localOptions.length === 0}
+            >
+              <SelectTrigger className="w-full">
+                <SelectValue
+                  placeholder={
+                    isLoadingLocal
+                      ? "Loading local datasets…"
+                      : localOptions.length === 0
+                        ? "No local datasets — upload a file below"
+                        : "Select a local dataset…"
+                  }
+                />
+              </SelectTrigger>
+              <SelectContent>
+                {localOptions.map((d) => (
+                  <SelectItem key={d.path} value={d.path}>
+                    {d.label}
+                    {d.rows != null
+                      ? ` · ${d.rows.toLocaleString()} rows`
+                      : ""}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            {localDatasetsError && (
+              <p className="text-xs text-destructive">{localDatasetsError}</p>
+            )}
           </div>
 
-          {/* Upload area */}
-          {value.path ? (
-            <div className="flex items-center justify-between gap-2 rounded-lg border bg-muted/20 px-3.5 py-3">
-              <div className="flex items-center gap-1.5 overflow-hidden">
-                <HugeiconsIcon
-                  icon={FileAttachmentIcon}
-                  className="size-3.5 shrink-0 text-muted-foreground"
-                />
-                <span className="truncate font-mono text-xs">{value.path}</span>
-              </div>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-6 w-6 shrink-0 cursor-pointer p-0"
-                onClick={() => update({ path: "" })}
-              >
-                <HugeiconsIcon icon={Cancel01Icon} className="size-3.5" />
-              </Button>
-            </div>
-          ) : (
-            <button
-              type="button"
-              className="flex w-full cursor-pointer items-center gap-3 rounded-lg border border-dashed border-border bg-muted/20 px-3.5 py-3 text-left transition-colors hover:border-indigo-500/50 hover:bg-indigo-500/5 disabled:cursor-not-allowed disabled:opacity-60"
-              disabled={isUploading}
-              onClick={() => fileInputRef.current?.click()}
-            >
-              {isUploading ? (
-                <Spinner className="size-4 shrink-0 text-indigo-500" />
-              ) : (
-                <HugeiconsIcon
-                  icon={CloudUploadIcon}
-                  className="pointer-events-none size-4 shrink-0 text-indigo-500"
-                />
-              )}
-              <span className="pointer-events-none min-w-0">
-                <span className="block text-xs font-medium text-foreground">
-                  {isUploading ? "Uploading…" : "Drop a file or click to upload"}
-                </span>
-                <span className="mt-0.5 block truncate text-[10px] text-muted-foreground">
-                  CSV, JSONL, JSON, Parquet
-                </span>
+          {/* Upload — always available; uploaded files appear in the Select. */}
+          <button
+            type="button"
+            className="flex w-full cursor-pointer items-center gap-3 rounded-lg border border-dashed border-border bg-muted/20 px-3.5 py-3 text-left transition-colors hover:border-indigo-500/50 hover:bg-indigo-500/5 disabled:cursor-not-allowed disabled:opacity-60"
+            disabled={isUploading}
+            onClick={() => fileInputRef.current?.click()}
+          >
+            {isUploading ? (
+              <Spinner className="size-4 shrink-0 text-indigo-500" />
+            ) : (
+              <HugeiconsIcon
+                icon={CloudUploadIcon}
+                className="pointer-events-none size-4 shrink-0 text-indigo-500"
+              />
+            )}
+            <span className="pointer-events-none min-w-0">
+              <span className="block text-xs font-medium text-foreground">
+                {isUploading ? "Uploading…" : "Or upload a file"}
               </span>
-            </button>
-          )}
+              <span className="mt-0.5 block truncate text-[10px] text-muted-foreground">
+                CSV, JSONL, JSON, Parquet
+              </span>
+            </span>
+          </button>
 
           {uploadError && (
             <p className="text-xs text-destructive">{uploadError}</p>
