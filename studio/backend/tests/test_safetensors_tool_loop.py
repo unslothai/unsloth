@@ -358,6 +358,66 @@ class TestParserMultiFormat:
         text = '[TOOL_CALLS]add{"a":1}'
         assert strip_tool_markup(text, final = True) == ""
 
+    def test_mistral_call_id_form(self):
+        # Mistral Small 3.2: ``[TOOL_CALLS]name[CALL_ID]<id>[ARGS]{json}``.
+        # The ``[CALL_ID]`` segment must be skipped, not treated as a stop
+        # (llama.cpp test-chat.cpp:4785 parses this to one call).
+        import json
+
+        text = '[TOOL_CALLS]special_function[CALL_ID]123456789[ARGS]{"arg1": 1}'
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert result[0]["function"]["name"] == "special_function"
+        assert json.loads(result[0]["function"]["arguments"]) == {"arg1": 1}
+
+    def test_mistral_call_id_form_parallel(self):
+        text = (
+            '[TOOL_CALLS]special_function[CALL_ID]000000001[ARGS]{"arg1": 1}'
+            '[TOOL_CALLS]special_function_with_opt[CALL_ID]000000002'
+            '[ARGS]{"arg1": 1, "arg2": 2}'
+        )
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 2
+        assert result[0]["function"]["name"] == "special_function"
+        assert result[1]["function"]["name"] == "special_function_with_opt"
+
+    def test_mistral_call_id_form_stripped(self):
+        text = '[TOOL_CALLS]special_function[CALL_ID]123456789[ARGS]{"arg1": 1}'
+        assert strip_tool_markup(text, final = True) == ""
+
+    def test_mistral_think_reasoning_ignored(self):
+        # Magistral wraps reasoning in ``[THINK]...[/THINK]``. A ``[TOOL_CALLS]``
+        # inside the reasoning is chain-of-thought, not a real call; only the
+        # call after ``[/THINK]`` counts (llama.cpp test-chat.cpp:2285).
+        import json
+
+        text = (
+            "[THINK]Let me think about [TOOL_CALLS]fake[ARGS]{\"x\":1} "
+            "and more[/THINK][TOOL_CALLS]real_fn[ARGS]{\"y\":2}"
+        )
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert result[0]["function"]["name"] == "real_fn"
+        assert json.loads(result[0]["function"]["arguments"]) == {"y": 2}
+
+    def test_mistral_think_reasoning_no_real_call(self):
+        # Reasoning that merely mentions a tool call but does not emit one
+        # after ``[/THINK]`` yields no calls.
+        text = '[THINK]I might call [TOOL_CALLS]fake[ARGS]{"x":1}[/THINK]Done.'
+        assert parse_tool_calls_from_text(text) == []
+
+    def test_mistral_think_literal_in_argument_preserved(self):
+        # A literal ``[THINK]`` inside a real tool argument (after the call)
+        # must not be stripped or corrupt the parse.
+        import json
+
+        text = '[TOOL_CALLS]search[ARGS]{"q":"explain the [THINK] token"}'
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert json.loads(result[0]["function"]["arguments"]) == {
+            "q": "explain the [THINK] token"
+        }
+
     # ── Gemma 4 ───────────────────────────────────────────────────
 
     def test_gemma4_simple_call(self):
@@ -1572,6 +1632,18 @@ class TestParserRobustness:
         assert len(result) == 1
         assert result[0]["function"]["name"] == "get_weather"
         assert json.loads(result[0]["function"]["arguments"]) == {"city": "Tokyo"}
+
+    def test_function_attribute_form_has_tool_signal(self):
+        # The standalone ``<function name="...">`` attribute form must flip
+        # the streaming buffer; otherwise the end-of-turn safety-net parse in
+        # the agentic loop is gated off and the real call is dropped.
+        assert has_tool_signal('<function name="get_weather">') is True
+
+    def test_function_attribute_form_strip_markup(self):
+        # The attribute form must also be stripped from displayed text, like
+        # the legacy ``<function=...>`` form.
+        text = 'result <function name="g"><param name="c">X</param></function>'
+        assert strip_tool_markup(text, final = True) == "result"
 
     def test_llama3_chat_template_round_trip(self):
         # Meta's official Llama-3.x chat template prefixes every

@@ -31,6 +31,7 @@ from typing import Any
 TOOL_XML_SIGNALS = (
     "<tool_call>",
     "<function=",
+    '<function name="',
     "<|python_tag|>",
     "[TOOL_CALLS]",
     "<|tool_call>",
@@ -43,12 +44,12 @@ TOOL_XML_SIGNALS = (
 # (mcp__srv__list-issues) parse the same as the built-ins.
 _TOOL_CLOSED_PATS = [
     re.compile(r"<tool_call>.*?</tool_call>", re.DOTALL),
-    re.compile(r"<function=[\w-]+>.*?</function>", re.DOTALL),
+    re.compile(r'<function(?:=[\w.\-]+|\s+name="[\w.\-]+")>.*?</function>', re.DOTALL),
     re.compile(r"<\|tool_call>.*?<tool_call\|>", re.DOTALL),
 ]
 _TOOL_ALL_PATS = _TOOL_CLOSED_PATS + [
     re.compile(r"<tool_call>.*$", re.DOTALL),
-    re.compile(r"<function=[\w-]+>.*$", re.DOTALL),
+    re.compile(r'<function(?:=[\w.\-]+|\s+name="[\w.\-]+")>.*$', re.DOTALL),
     re.compile(r"<\|tool_call>.*$", re.DOTALL),
     re.compile(r"\[TOOL_CALLS\].*$", re.DOTALL),
     re.compile(r"<\|python_tag\|>.*$", re.DOTALL),
@@ -119,6 +120,14 @@ _LLAMA3_KV_RE = re.compile(
 # / Large 3).
 _MISTRAL_TRIGGER = "[TOOL_CALLS]"
 _MISTRAL_ARGS_MARKER = "[ARGS]"
+# Mistral Small 3.2 emits ``name[CALL_ID]<id>[ARGS]{json}``; the call-id
+# segment is absent on Ministral / Magistral. llama.cpp distinguishes the
+# two on the presence of ``[CALL_ID]`` (common/chat.cpp).
+_MISTRAL_CALL_ID_MARKER = "[CALL_ID]"
+# Magistral wraps reasoning in ``[THINK] ... [/THINK]`` before the answer.
+# A ``[TOOL_CALLS]`` inside that block is chain-of-thought, not a real call.
+_MISTRAL_THINK_OPEN = "[THINK]"
+_MISTRAL_THINK_CLOSE = "[/THINK]"
 _MISTRAL_V11_NAME_RE = re.compile(r"\s*([\w\.\-]+)\s*")
 
 # Gemma 4: ``<|tool_call>call:NAME{...}<tool_call|>``, ``<|"|>`` wraps strings.
@@ -157,6 +166,48 @@ def _balanced_bracket_end(text: str, start: int) -> int | None:
                     return i
         i += 1
     return None
+
+
+def _skip_mistral_call_id(text: str, pos: int) -> int:
+    """Skip an optional ``[CALL_ID]<id>`` segment (Mistral Small 3.2) at
+    ``pos``. Returns the position of the next meaningful token (``[ARGS]``
+    or ``{``), or ``pos`` unchanged when no ``[CALL_ID]`` is present."""
+    n = len(text)
+    i = pos
+    while i < n and text[i] in " \t\n\r":
+        i += 1
+    if not text.startswith(_MISTRAL_CALL_ID_MARKER, i):
+        return pos
+    i += len(_MISTRAL_CALL_ID_MARKER)
+    while i < n and text[i] in " \t\n\r":
+        i += 1
+    # The id is a short opaque token; stop at whitespace or the next marker.
+    while i < n and text[i] not in " \t\n\r[{":
+        i += 1
+    while i < n and text[i] in " \t\n\r":
+        i += 1
+    return i
+
+
+def _strip_mistral_reasoning(content: str) -> str:
+    """Drop a leading Magistral ``[THINK] ... [/THINK]`` reasoning block so a
+    ``[TOOL_CALLS]`` emitted *inside* the chain-of-thought is not mistaken for
+    a real call (llama.cpp parses reasoning separately; see test-chat.cpp).
+
+    Only a leading block is removed -- the reasoning prefix is always first,
+    so a literal ``[THINK]`` inside a later tool argument is left untouched.
+    An unclosed leading ``[THINK]`` (still streaming) means nothing has been
+    committed yet, so everything from it onward is dropped."""
+    i = 0
+    n = len(content)
+    while i < n and content[i] in " \t\n\r":
+        i += 1
+    if not content.startswith(_MISTRAL_THINK_OPEN, i):
+        return content
+    close = content.find(_MISTRAL_THINK_CLOSE, i + len(_MISTRAL_THINK_OPEN))
+    if close == -1:
+        return content[:i]
+    return content[:i] + content[close + len(_MISTRAL_THINK_CLOSE):]
 
 
 def _strip_mistral_closed_calls(text: str) -> str:
@@ -199,6 +250,7 @@ def _strip_mistral_closed_calls(text: str) -> str:
         i = name_match.end()
         while i < n and text[i] in " \t\n\r":
             i += 1
+        i = _skip_mistral_call_id(text, i)
         if text.startswith(_MISTRAL_ARGS_MARKER, i):
             i += len(_MISTRAL_ARGS_MARKER)
             while i < n and text[i] in " \t\n\r":
@@ -538,6 +590,7 @@ def _parse_mistral_tool_calls(content: str, *, id_offset: int) -> list[dict]:
     ``[TOOL_CALLS]{...}`` and v11+ ``[TOOL_CALLS]name{json}`` /
     ``[TOOL_CALLS]name[ARGS]{json}`` (parallel-friendly)."""
     out: list[dict] = []
+    content = _strip_mistral_reasoning(content)
     idx = content.find(_MISTRAL_TRIGGER)
     if idx < 0:
         return out
@@ -578,6 +631,7 @@ def _parse_mistral_tool_calls(content: str, *, id_offset: int) -> list[dict]:
             continue
         name = nm.group(1)
         after_name = nm.end()
+        after_name = _skip_mistral_call_id(content, after_name)
         if content.startswith(_MISTRAL_ARGS_MARKER, after_name):
             after_name += len(_MISTRAL_ARGS_MARKER)
         while after_name < len(content) and content[after_name] in " \t\n\r":
