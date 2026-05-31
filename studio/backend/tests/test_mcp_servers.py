@@ -962,6 +962,63 @@ def test_get_enabled_mcp_tools_skips_cache_when_config_changes_mid_probe(
     assert mcp_client.get_cached_tools("s1") is None  # ...nor cached
 
 
+def test_get_enabled_mcp_tools_no_cooloff_when_config_changes_mid_failed_probe(
+    tmp_path, monkeypatch
+):
+    """An edit landing while a probe of the OLD config is failing must not park
+    a cool-off on the now-fresh config -- else the re-pointed server the user
+    just fixed is needlessly skipped for the whole cool-off window."""
+    import asyncio
+
+    _reset_db(tmp_path, monkeypatch)
+    from core.inference import mcp_client
+    from core.inference import tools as tools_mod
+
+    monkeypatch.setattr(mcp_client, "_tool_cache", {})
+    monkeypatch.setattr(mcp_client, "_probe_cooloff_until", {})
+    mcp_servers_db.create_server(
+        id = "s1", display_name = "A", url = "https://old/mcp", is_enabled = True
+    )
+
+    async def fake(url, headers = None, timeout = None, use_oauth = False):
+        # The user re-points the server while the old endpoint's probe fails.
+        mcp_servers_db.update_server("s1", {"url": "https://new/mcp"})
+        raise RuntimeError("old endpoint down")
+
+    monkeypatch.setattr(tools_mod, "list_tools_async", fake)
+
+    assert asyncio.run(tools_mod.get_enabled_mcp_tools()) == []
+    # The failure was for the OLD config, so the new one must stay re-probable.
+    assert not mcp_client.in_failure_cooloff("s1")
+
+
+def test_get_enabled_mcp_tools_no_cooloff_when_server_deleted_mid_failed_probe(
+    tmp_path, monkeypatch
+):
+    """A delete landing while a probe fails must not leave an orphan cool-off
+    entry keyed by the since-removed server id."""
+    import asyncio
+
+    _reset_db(tmp_path, monkeypatch)
+    from core.inference import mcp_client
+    from core.inference import tools as tools_mod
+
+    monkeypatch.setattr(mcp_client, "_tool_cache", {})
+    monkeypatch.setattr(mcp_client, "_probe_cooloff_until", {})
+    mcp_servers_db.create_server(
+        id = "s1", display_name = "A", url = "https://x/mcp", is_enabled = True
+    )
+
+    async def fake(url, headers = None, timeout = None, use_oauth = False):
+        mcp_servers_db.delete_server("s1")
+        raise RuntimeError("down")
+
+    monkeypatch.setattr(tools_mod, "list_tools_async", fake)
+
+    assert asyncio.run(tools_mod.get_enabled_mcp_tools()) == []
+    assert "s1" not in mcp_client._probe_cooloff_until  # no orphan cool-off
+
+
 def test_get_enabled_mcp_tools_skips_failed_server_during_cooloff(
     tmp_path, monkeypatch
 ):

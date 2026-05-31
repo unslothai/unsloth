@@ -610,6 +610,14 @@ async def get_enabled_mcp_tools() -> list[dict]:
         # was removed mid-probe, else a stale tool list caches indefinitely.
         current = {s["id"]: s for s in mcp_servers_db.list_servers()}
         for server, payload in zip(uncached, results):
+            # Guard the failure branch too: a stale failure must not park a
+            # cool-off on the fresh config, or the server the user just fixed
+            # is skipped for the whole window.
+            fresh = current.get(server["id"])
+            if fresh is None or any(
+                fresh.get(k) != server.get(k) for k in TOOL_CACHE_INVALIDATING_FIELDS
+            ):
+                continue
             if isinstance(payload, BaseException):
                 logger.warning(
                     "MCP server '%s' (%s) discovery failed: %s",
@@ -619,12 +627,7 @@ async def get_enabled_mcp_tools() -> list[dict]:
                 )
                 # Failures aren't cached, but record one so a down server
                 # isn't re-probed every send during the cool-off.
-                record_probe_failure(server["id"], bool(server.get("use_oauth")))
-                continue
-            fresh = current.get(server["id"])
-            if fresh is None or any(
-                fresh.get(k) != server.get(k) for k in TOOL_CACHE_INVALIDATING_FIELDS
-            ):
+                record_probe_failure(server["id"], bool(fresh.get("use_oauth")))
                 continue
             cache_tools(server["id"], payload)
 
