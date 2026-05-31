@@ -6558,6 +6558,37 @@ def validate_prebuilt_attempts(
     raise PrebuiltFallback("no prebuilt bundle passed validation")
 
 
+def force_vulkan_requested() -> bool:
+    """Whether UNSLOTH_FORCE_VULKAN opts this host into the Vulkan llama.cpp
+    prebuilt instead of its detected CUDA/ROCm backend -- e.g. so an AMD user
+    can run the Vulkan build for inference. Scoped to the llama.cpp backend:
+    the torch/training stack is installed separately and still sees the real
+    GPU.
+    """
+    return os.environ.get("UNSLOTH_FORCE_VULKAN", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+
+def _vulkan_only_host(host: HostInfo) -> HostInfo:
+    """Rewrite ``host`` so the asset selectors take their Vulkan branch.
+
+    That branch fires on ``has_intel_gpu and not nvidia and not rocm``, so the
+    CUDA/ROCm flags are cleared and the integrated-GPU flag is raised. The
+    synthetic integrated-GPU flag never leaves install planning -- it only
+    routes the llama.cpp prebuilt choice, not the torch/training stack.
+    """
+    return dataclasses_replace(
+        host,
+        has_usable_nvidia = False,
+        has_physical_nvidia = False,
+        has_rocm = False,
+        has_intel_gpu = True,
+    )
+
+
 def install_prebuilt(
     install_dir: Path,
     llama_tag: str,
@@ -6570,6 +6601,24 @@ def install_prebuilt(
     host = detect_host()
     if override_has_rocm and not host.has_rocm:
         host = dataclasses_replace(host, has_rocm = True)
+    # UNSLOTH_FORCE_VULKAN installs the upstream ggml-org Vulkan prebuilt
+    # instead of the detected CUDA/ROCm backend. The unsloth published repo
+    # ships only CUDA/ROCm assets, hence UPSTREAM_REPO.
+    force_vulkan = False
+    if force_vulkan_requested():
+        if host.is_macos:
+            log(
+                "UNSLOTH_FORCE_VULKAN is set but ignored on macOS "
+                "(Metal is used; there is no Vulkan prebuilt)"
+            )
+        else:
+            log(
+                "UNSLOTH_FORCE_VULKAN is set; installing the upstream Vulkan "
+                "llama.cpp prebuilt instead of the detected GPU backend"
+            )
+            host = _vulkan_only_host(host)
+            published_repo = UPSTREAM_REPO
+            force_vulkan = True
     choice: AssetChoice | None = None
     try:
         with install_lock(install_lock_path(install_dir)):
@@ -6581,7 +6630,10 @@ def install_prebuilt(
                 log(
                     f"no existing llama.cpp install detected at {install_dir}; performing fresh prebuilt install"
                 )
-            if simple_policy:
+            if simple_policy or force_vulkan:
+                # The simple planner is the one that routes a non-unsloth repo
+                # (here UPSTREAM_REPO) through direct_upstream_release_plan,
+                # which carries the Vulkan asset branch.
                 requested_tag, release_plans = resolve_simple_install_release_plans(
                     llama_tag,
                     host,
