@@ -186,9 +186,13 @@ _DEEPSEEK_R1_CLOSE_RE = re.compile(r"```[\s\r\n]*" + re.escape(_DEEPSEEK_CALL_EN
 # is O(N^2) on adversarial truncated bodies.
 
 # GLM 4.5 / 4.6 / 4.7: ``<tool_call>NAME[\n]<arg_key>K</arg_key>...``.
-# GLM 4.7 strips the ``\n`` after the name, so lookahead allows either
-# ``\n`` or ``<arg_key>``. First-char ``[^\n<{]`` excludes Qwen.
-_GLM_TC_OPEN_RE = re.compile(r"<tool_call>\s*([^\n<{][^\n<]*?)\s*(?=\n|<arg_key>)")
+# GLM 4.7 strips the ``\n`` after the name, so the lookahead also allows
+# ``<arg_key>`` directly and ``</tool_call>`` for a zero-argument call
+# (``<tool_call>get_current_date</tool_call>``). First-char ``[^\n<{]``
+# excludes Qwen.
+_GLM_TC_OPEN_RE = re.compile(
+    r"<tool_call>\s*([^\n<{][^\n<]*?)\s*(?=\n|<arg_key>|</tool_call>)"
+)
 _GLM_TC_CLOSE = "</tool_call>"
 _GLM_ARG_PAIR_RE = re.compile(
     r"<arg_key>(.*?)</arg_key>\s*<arg_value>(.*?)</arg_value>",
@@ -1143,16 +1147,20 @@ def _parse_glm_tool_calls(content: str, *, id_offset: int) -> list[dict]:
         args: dict[str, Any] = {}
         for pair in _GLM_ARG_PAIR_RE.finditer(body):
             key = pair.group(1).strip()
-            raw_val = pair.group(2).strip()
-            # Only decode unambiguous JSON literals; arbitrary strings
-            # stay raw. Bare numerics / bool / null remain ambiguous.
+            raw_val = pair.group(2)
+            # The template emits non-strings via ``tojson`` and strings
+            # verbatim. Probe the stripped value for an unambiguous JSON
+            # literal; otherwise keep the value RAW so significant leading /
+            # trailing whitespace in string args (code, diffs) survives --
+            # matches vLLM glm4_moe, which never strips string values.
+            probe = raw_val.strip()
             if (
-                raw_val[:1] in '{["'
-                or raw_val in ("true", "false", "null")
-                or _GLM_JSON_NUMERIC_RE.fullmatch(raw_val)
+                probe[:1] in '{["'
+                or probe in ("true", "false", "null")
+                or _GLM_JSON_NUMERIC_RE.fullmatch(probe)
             ):
                 try:
-                    args[key] = json.loads(raw_val)
+                    args[key] = json.loads(probe)
                     continue
                 except (json.JSONDecodeError, ValueError):
                     pass
@@ -1191,21 +1199,26 @@ def _parse_kimi_tool_calls(content: str, *, id_offset: int) -> list[dict]:
     while True:
         section_start = content.find(_KIMI_SECTION_BEGIN, outer_pos)
         if section_start < 0:
-            return out
+            break
         scan_start = section_start + len(_KIMI_SECTION_BEGIN)
         section_end = content.find(_KIMI_SECTION_END, scan_start)
         scan_end = section_end if section_end >= 0 else len(content)
         body = content[scan_start:scan_end]
         # Truncated tail: parse what we have, then exit.
         if section_end < 0:
-            outer_pos = len(content)
-        else:
-            outer_pos = section_end + len(_KIMI_SECTION_END)
-
+            out.extend(_parse_kimi_section_body(body, id_offset = id_offset + len(out)))
+            return out
+        outer_pos = section_end + len(_KIMI_SECTION_END)
         out.extend(_parse_kimi_section_body(body, id_offset = id_offset + len(out)))
 
-        if section_end < 0:
-            return out
+    # llama.cpp treats the ``<|tool_calls_section_begin|>`` wrapper as
+    # optional -- Kimi K2 can emit a bare ``<|tool_call_begin|>`` call (e.g.
+    # straight after reasoning, without closing the section). If the section
+    # loop matched nothing but a bare call marker is present, parse the whole
+    # content as one section body so the call is not dropped.
+    if not out and _KIMI_CALL_BEGIN in content:
+        out.extend(_parse_kimi_section_body(content, id_offset = id_offset))
+    return out
 
 
 def _parse_kimi_section_body(body: str, *, id_offset: int) -> list[dict]:
@@ -1251,7 +1264,14 @@ def _parse_kimi_section_body(body: str, *, id_offset: int) -> list[dict]:
             continue
         brace_end = _balanced_brace_end(body, json_start)
         if brace_end is None:
-            break
+            # Malformed / truncated JSON for this call: skip it but keep
+            # parsing later calls instead of dropping the rest of the
+            # section (vLLM recovers subsequent calls).
+            nxt = body.find(_KIMI_CALL_BEGIN, json_start)
+            if nxt < 0:
+                break
+            pos = nxt
+            continue
         try:
             args = json.loads(body[json_start : brace_end + 1])
         except (json.JSONDecodeError, ValueError):

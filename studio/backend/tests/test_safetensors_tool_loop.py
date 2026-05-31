@@ -809,6 +809,46 @@ class TestParserGLM:
         )
         assert strip_tool_markup(text, final = True) == "before  after"
 
+    def test_glm_zero_arg_inline_call(self):
+        # GLM 4.7 emits a no-argument call inline as
+        # ``<tool_call>name</tool_call>`` (name followed straight by the
+        # close tag, no \n / <arg_key>). vLLM, SGLang and llama.cpp all
+        # parse this to a call with empty args; it must not be dropped.
+        import json as _json
+
+        text = "<tool_call>get_current_date</tool_call>"
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert result[0]["function"]["name"] == "get_current_date"
+        assert _json.loads(result[0]["function"]["arguments"]) == {}
+
+    def test_glm_zero_arg_call_in_parallel_batch(self):
+        # A no-arg call alongside a normal one must not make either vanish.
+        text = (
+            "<tool_call>get_current_date</tool_call>"
+            "<tool_call>get_weather\n<arg_key>city</arg_key>\n"
+            "<arg_value>Tokyo</arg_value></tool_call>"
+        )
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 2
+        assert result[0]["function"]["name"] == "get_current_date"
+        assert result[1]["function"]["name"] == "get_weather"
+
+    def test_glm_string_value_whitespace_preserved(self):
+        # The template emits string args verbatim, so significant leading /
+        # trailing whitespace (code, diffs) must survive. vLLM has an
+        # explicit regression test for this (string args are not stripped).
+        import json as _json
+
+        text = (
+            "<tool_call>run\n<arg_key>code</arg_key>\n"
+            "<arg_value>    indented code    </arg_value></tool_call>"
+        )
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        args = _json.loads(result[0]["function"]["arguments"])
+        assert args == {"code": "    indented code    "}
+
 
 class TestParserKimi:
     """Kimi K2 / Moonshot coverage. ASCII pipes only (NOT full-width).
@@ -901,6 +941,45 @@ class TestParserKimi:
     def test_kimi_signal_wakes_streaming(self):
         text = "<|tool_calls_section_begin|>..."
         assert has_tool_signal(text)
+
+    def test_kimi_call_without_section_wrapper(self):
+        # llama.cpp makes the ``<|tool_calls_section_begin|>`` wrapper
+        # optional -- Kimi K2 can emit a bare ``<|tool_call_begin|>`` call
+        # (e.g. straight after reasoning, without opening a section). It
+        # must still be parsed, not dropped.
+        import json as _json
+
+        text = (
+            "<|tool_call_begin|>functions.execute_command:0"
+            "<|tool_call_argument_begin|>"
+            '{"cmd":"ls"}'
+            "<|tool_call_end|>"
+        )
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert result[0]["function"]["name"] == "execute_command"
+        assert _json.loads(result[0]["function"]["arguments"]) == {"cmd": "ls"}
+
+    def test_kimi_malformed_json_recovers_later_calls(self):
+        # A call with malformed / truncated JSON must not drop the valid
+        # calls that follow it in the same section (the bad call is skipped,
+        # the good one is recovered).
+        import json as _json
+
+        text = (
+            "<|tool_calls_section_begin|>"
+            "<|tool_call_begin|>functions.a:0"
+            '<|tool_call_argument_begin|>{"city":"Beijing"'  # missing closing brace
+            "<|tool_call_end|>"
+            "<|tool_call_begin|>functions.b:1"
+            '<|tool_call_argument_begin|>{"city":"Shanghai"}'
+            "<|tool_call_end|>"
+            "<|tool_calls_section_end|>"
+        )
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert result[0]["function"]["name"] == "b"
+        assert _json.loads(result[0]["function"]["arguments"]) == {"city": "Shanghai"}
 
 
 class TestParserCrossFormatRouting:
