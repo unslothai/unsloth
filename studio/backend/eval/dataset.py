@@ -25,21 +25,62 @@ def _coerce(value: Any) -> Any:
 
 
 def _is_image_feature(feature: Any) -> bool:
-    """True when the HF Dataset feature is an Image (PIL.Image rows)."""
+    """True when the HF Dataset feature is the typed Image feature."""
     name = type(feature).__name__
     return name in ("Image", "ImageFeature") or "datasets.features.image" in str(
         type(feature).__module__
     )
 
 
+def _looks_like_image_dict(value: Any) -> bool:
+    """HF stores images as {bytes, path} structs when round-tripped via
+    parquet/JSON — detect that shape so we can treat the column as an image."""
+    return isinstance(value, dict) and bool(
+        value.get("bytes") or value.get("path")
+    )
+
+
+def _detect_image_input(ds, col: str) -> bool:
+    """Decide if `col` is an image column — by feature type, by probing the
+    first row's value structure, or by HF-storage convention."""
+    if _is_image_feature(ds.features.get(col)):
+        return True
+    if len(ds) == 0:
+        return False
+    return _looks_like_image_dict(ds[0].get(col))
+
+
+def _to_pil(value: Any) -> Any:
+    """Coerce HF-style image data (dict / bytes / path / PIL) to a PIL.Image."""
+    if value is None:
+        return None
+    # already a PIL.Image-like (duck-typed: has `.save` + `.mode`)
+    if hasattr(value, "save") and hasattr(value, "mode"):
+        return value
+    from io import BytesIO
+    from PIL import Image
+    if isinstance(value, dict):
+        b = value.get("bytes")
+        if b:
+            return Image.open(BytesIO(b))
+        p = value.get("path")
+        if p:
+            return Image.open(p)
+        return value
+    if isinstance(value, (bytes, bytearray)):
+        return Image.open(BytesIO(value))
+    if isinstance(value, str):
+        return Image.open(value)
+    return value
+
+
 def _coerce_input(value: Any, *, is_image: bool) -> Any:
     """Inputs: text columns -> str (so the model sees text); image columns
-    pass the PIL.Image (or whatever the HF features yields) through verbatim
-    for downstream multimodal generation."""
+    are turned into PIL.Image for the vision backend."""
     if value is None:
-        return "" if not is_image else None
+        return None if is_image else ""
     if is_image:
-        return value  # PIL.Image or similar — handed to the vision backend
+        return _to_pil(value)
     return str(value)
 
 
@@ -104,7 +145,7 @@ def load_eval_examples(
                 f"column {col!r} not in dataset (have: {sorted(cols)})"
             )
 
-    input_is_image = _is_image_feature(ds.features.get(input_col))
+    input_is_image = _detect_image_input(ds, input_col)
 
     n = len(ds) if limit is None else min(limit, len(ds))
     sliced = ds.select(range(n))

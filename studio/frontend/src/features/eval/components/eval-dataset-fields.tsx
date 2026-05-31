@@ -170,7 +170,20 @@ export function EvalDatasetFields({
       });
       const cols = res.columns ?? [];
       setDetectedColumns(cols);
-      setDetectedImageColumn(res.detected_image_column ?? null);
+      // Derive the image column robustly: the backend's detected_image_column
+      // isn't always set even when `is_image` is true (e.g. parquet recipes
+      // store images as {bytes, path} structs). Fall back to multimodal_columns,
+      // then a column-name heuristic.
+      let imageCol: string | null = res.detected_image_column ?? null;
+      if (!imageCol && res.is_image) {
+        const mm = res.multimodal_columns ?? [];
+        imageCol =
+          mm.find((c: string) => /image|img|photo|picture/i.test(c)) ??
+          (mm.length > 0 ? mm[0] : null) ??
+          cols.find((c) => /^(image|img|photo|picture)$/i.test(c)) ??
+          null;
+      }
+      setDetectedImageColumn(imageCol);
       setPreviewSample(res.preview_samples?.[0] ?? null);
       if (cols.length) {
         // Reconcile the mapping against the dataset's actual columns so a stale
