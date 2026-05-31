@@ -676,6 +676,25 @@ class TestLoopBasic:
         contents = [e for e in events if e["type"] == "content"]
         assert "sunny" in contents[-1]["text"].lower()
 
+    def test_llama3_bare_json_form_fires_tool(self):
+        # Llama-3.1 / 3.2 emit a bare-JSON tool call
+        # ``{"name":..,"parameters":..}`` with NO XML signal. The loop's
+        # safety-net parse must still fire the tool instead of treating the
+        # turn as "planned without calling tools" and re-prompting the model
+        # into giving up. Regression for the has_tool_signal gate that
+        # dropped these; GGUF's llama-server parses them natively.
+        loop, exec_fn = _make_loop(
+            turns = [
+                ['{"name": "web_search", "parameters": {"query": "weather in SF"}}'],
+                ["The weather is sunny."],
+            ],
+            exec_results = ["Sunny, 18C"],
+        )
+        events = _collect_events(loop)
+        assert exec_fn.calls == [("web_search", {"query": "weather in SF"})]
+        contents = [e for e in events if e["type"] == "content"]
+        assert "sunny" in contents[-1]["text"].lower()
+
     def test_mistral_pre_v11_form(self):
         # Pre-v11 Mistral emission: ``[TOOL_CALLS] [{...}]``.
         loop, exec_fn = _make_loop(

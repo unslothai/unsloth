@@ -277,13 +277,17 @@ def run_safetensors_tool_loop(
                 detect_state = _state_streaming
 
         if detect_state == _state_streaming:
-            # No tool detected mid-stream -- check for late tool XML.
-            safety_tc = None
-            if has_tool_signal(content_accum):
-                safety_tc = parse_tool_calls_from_text(
-                    content_accum,
-                    id_offset = next_call_id,
-                )
+            # No tool XML detected mid-stream -- run the parser anyway.
+            # The Llama-3.2 bare-JSON tool form ``{"name":..,"parameters":..}``
+            # carries no XML signal, so gating this on has_tool_signal()
+            # silently dropped real tool calls and re-prompted the model into
+            # giving up. parse_tool_calls_from_text is strict (it only fires
+            # on a valid tool-call shape), so plain answers stay untouched.
+            # This mirrors what llama-server already does for GGUF.
+            safety_tc = parse_tool_calls_from_text(
+                content_accum,
+                id_offset = next_call_id,
+            )
             if not safety_tc:
                 # Re-prompt only when the model planned without acting
                 # (intent signal present); direct answers like "4" or
