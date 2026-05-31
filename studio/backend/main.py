@@ -297,6 +297,11 @@ def _load_desktop_owner() -> dict[str, str] | None:
 
 _DESKTOP_OWNER = _load_desktop_owner()
 
+# The Tauri desktop app runs the backend on the owner's own machine, so local
+# stdio MCP servers are safe there. setdefault lets an explicit "0" opt out.
+if _DESKTOP_OWNER:
+    os.environ.setdefault("UNSLOTH_STUDIO_ALLOW_STDIO_MCP", "1")
+
 
 def _desktop_owner() -> dict[str, str] | None:
     return _DESKTOP_OWNER
