@@ -383,6 +383,7 @@ async def lifespan(app: FastAPI):
     # Fast RAG: warm the embedder at startup so the first upload's indexing does
     # not pay the cold model load. Background thread, like the precache above.
     if os.environ.get("UNSLOTH_RAG_FAST") == "1":
+
         def _warm_rag_embedder():
             try:
                 from core.rag import embeddings
