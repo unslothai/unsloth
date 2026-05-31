@@ -49,8 +49,7 @@ def _igpu_flags(base, lib, count: int) -> list[bool]:
             dev = base.ggml_backend_reg_dev_get(reg, i)
             if dev:
                 flags[i] = (
-                    base.ggml_backend_dev_type(dev)
-                    == _GGML_BACKEND_DEVICE_TYPE_IGPU
+                    base.ggml_backend_dev_type(dev) == _GGML_BACKEND_DEVICE_TYPE_IGPU
                 )
     except Exception:
         # iGPU detection is best-effort: any failure (missing symbol,

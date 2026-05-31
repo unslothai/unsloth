@@ -62,7 +62,9 @@ def _make_vulkan_install(tmp_path: Path) -> str:
     reader's ``is_vulkan_backend`` sibling-file check passes."""
     bindir = tmp_path / "build" / "bin"
     bindir.mkdir(parents = True)
-    binary = bindir / ("llama-server.exe" if sys.platform == "win32" else "llama-server")
+    binary = bindir / (
+        "llama-server.exe" if sys.platform == "win32" else "llama-server"
+    )
     binary.write_bytes(b"stub")
     (bindir / _vulkan_lib_filename()).write_bytes(b"stub")
     return str(binary)
