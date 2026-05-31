@@ -52,7 +52,9 @@ compatible_windows_runtime_lines = (
 runtime_line_from_cuda_version = INSTALL_LLAMA_PREBUILT.runtime_line_from_cuda_version
 apply_approved_hashes = INSTALL_LLAMA_PREBUILT.apply_approved_hashes
 linux_cuda_choice_from_release = INSTALL_LLAMA_PREBUILT.linux_cuda_choice_from_release
-parse_direct_linux_release_bundle = INSTALL_LLAMA_PREBUILT.parse_direct_linux_release_bundle
+parse_direct_linux_release_bundle = (
+    INSTALL_LLAMA_PREBUILT.parse_direct_linux_release_bundle
+)
 windows_cuda_attempts = INSTALL_LLAMA_PREBUILT.windows_cuda_attempts
 resolve_upstream_asset_choice = INSTALL_LLAMA_PREBUILT.resolve_upstream_asset_choice
 resolve_requested_install_tag = INSTALL_LLAMA_PREBUILT.resolve_requested_install_tag

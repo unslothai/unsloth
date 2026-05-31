@@ -236,12 +236,17 @@ def _resolve_linux_bundle_profile(bundle_profile: str) -> "dict[str, Any] | None
     known = DIRECT_LINUX_BUNDLE_PROFILES.get(bundle_profile)
     if known is not None:
         return known
-    m = re.fullmatch(r"cuda(?P<major>\d+)-(?P<klass>older|newer|portable)", bundle_profile)
+    m = re.fullmatch(
+        r"cuda(?P<major>\d+)-(?P<klass>older|newer|portable)", bundle_profile
+    )
     if not m:
         return None
     base_key = max(
-        (k for k, v in DIRECT_LINUX_BUNDLE_PROFILES.items()
-         if v["coverage_class"] == m.group("klass")),
+        (
+            k
+            for k, v in DIRECT_LINUX_BUNDLE_PROFILES.items()
+            if v["coverage_class"] == m.group("klass")
+        ),
         key = lambda k: int(re.match(r"cuda(\d+)-", k).group(1)),
         default = None,
     )
