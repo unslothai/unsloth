@@ -335,7 +335,7 @@ def test_resolve_latest_tag_via_redirect_rejects_non_release_tag(monkeypatch):
 
     def fake_build_opener(handler):
         class _Op:
-            def open(self, request, timeout=None):
+            def open(self, request, timeout = None):
                 return _Resp(
                     "https://github.com/ggml-org/llama.cpp/releases/tag/nightly"
                 )
@@ -344,13 +344,11 @@ def test_resolve_latest_tag_via_redirect_rejects_non_release_tag(monkeypatch):
 
     monkeypatch.setattr(MOD.urllib.request, "build_opener", fake_build_opener)
     # A non b1234 redirect target must fail closed to the REST/source path.
-    assert (
-        MOD._resolve_latest_release_tag_via_redirect("ggml-org/llama.cpp") is None
-    )
+    assert MOD._resolve_latest_release_tag_via_redirect("ggml-org/llama.cpp") is None
 
 
 def test_iter_release_payloads_both_paths_fail_raises(monkeypatch):
-    def boom(repo, max_pages=5):
+    def boom(repo, max_pages = 5):
         raise RuntimeError("GitHub API returned 403")
 
     monkeypatch.setattr(MOD, "github_releases", boom)
@@ -374,7 +372,7 @@ def test_iter_release_payloads_pinned_tag_never_uses_redirect(monkeypatch):
             None,
         )
 
-    def listing_403(repo, max_pages=5):
+    def listing_403(repo, max_pages = 5):
         raise RuntimeError("GitHub API returned 403")
 
     monkeypatch.setattr(MOD, "github_release", missing)
@@ -409,7 +407,7 @@ def test_direct_release_real_asset_takes_precedence_over_redirect(monkeypatch):
             }
         ],
     }
-    monkeypatch.setattr(MOD, "github_releases", lambda repo, max_pages=5: [release])
+    monkeypatch.setattr(MOD, "github_releases", lambda repo, max_pages = 5: [release])
     monkeypatch.setattr(
         MOD,
         "fetch_json",
