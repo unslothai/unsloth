@@ -616,6 +616,8 @@ class ChatMessage(BaseModel):
 class ThinkingConfig(BaseModel):
     """Anthropic-compatible thinking/reasoning configuration.
     Use type='disabled' to turn off thinking, or type='enabled' to turn it on.
+    Only type is read; extra fields (e.g. budget_tokens) are ignored, since
+    Studio sets provider thinking budgets itself.
     """
 
     type: Literal["disabled", "enabled"] = "disabled"
@@ -964,7 +966,8 @@ class ChatCompletionRequest(BaseModel):
         ``thinking: {type: 'enabled'}`` sets ``enable_thinking = True`` and
         ``thinking: {type: 'disabled'}`` sets ``enable_thinking = False``.
         ``enable_thinking`` takes precedence when both are provided so that
-        callers who already use the internal field are unaffected.
+        callers who already use the internal field are unaffected. Invalid
+        ``thinking`` shapes are rejected at validation time (422).
         """
         if self.thinking is not None and self.enable_thinking is None:
             self.enable_thinking = self.thinking.type == "enabled"
