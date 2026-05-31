@@ -1624,8 +1624,9 @@ def direct_upstream_release_plan(
 def pinned_macos_release_tag(host: HostInfo, repo: str) -> str | None:
     """Pin b9415 (the last upstream macOS build that loads below macOS 26) for a
     known pre-26 host on ggml-org upstream; return None to keep latest selection.
-    The unslothai/llama.cpp fork ships its own minos-13.3 prebuilts and needs no
-    pin, so this is a no-op there and for macOS 26+, unknown version, non-macOS."""
+    The unslothai/llama.cpp fork ships its own prebuilts (arm64 minos 14, x64
+    minos 13.3) and needs no pin, so this is a no-op there and for macOS 26+,
+    unknown version, non-macOS."""
     if repo != UPSTREAM_REPO:
         return None
     if not host.is_macos:
