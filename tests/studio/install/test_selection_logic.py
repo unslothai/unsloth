@@ -85,6 +85,10 @@ _windows_cuda_attempt_covers_blackwell = (
     INSTALL_LLAMA_PREBUILT._windows_cuda_attempt_covers_blackwell
 )
 resolve_release_asset_choice = INSTALL_LLAMA_PREBUILT.resolve_release_asset_choice
+pinned_macos_release_tag = INSTALL_LLAMA_PREBUILT.pinned_macos_release_tag
+resolve_simple_install_release_plans = (
+    INSTALL_LLAMA_PREBUILT.resolve_simple_install_release_plans
+)
 
 
 # ---------------------------------------------------------------------------
@@ -2631,3 +2635,123 @@ class TestResolveUpstreamAssetChoice:
         result = resolve_upstream_asset_choice(host, self.TAG)
         assert result.install_kind == "windows-cuda"
         assert result.name == cuda_name
+
+
+# ===========================================================================
+# N.2. Deterministic macOS prebuilt pin (b9415)
+# ===========================================================================
+
+
+def _macos_host(machine = "arm64", version = (15, 5)):
+    return make_host(
+        system = "Darwin",
+        machine = machine,
+        nvidia_smi = None,
+        driver_cuda_version = None,
+        compute_caps = [],
+        has_physical_nvidia = False,
+        has_usable_nvidia = False,
+        macos_version = version,
+    )
+
+
+class TestPinnedMacosReleaseTag:
+    """pinned_macos_release_tag: pin b9415 only for ggml-org upstream macOS hosts
+    below macOS 26; latest (None) for 26+, unknown version, the fork, non-macOS."""
+
+    def test_arm64_sequoia_pins_b9415(self):
+        host = _macos_host("arm64", (15, 5))
+        assert pinned_macos_release_tag(host, UPSTREAM_REPO) == "b9415"
+
+    def test_arm64_sonoma_pins_b9415(self):
+        host = _macos_host("arm64", (14, 7))
+        assert pinned_macos_release_tag(host, UPSTREAM_REPO) == "b9415"
+
+    def test_x64_ventura_13_3_pins_b9415(self):
+        # b9415's Intel slice is minos 13.3, so 13.3 Intel hosts still load it.
+        host = _macos_host("x86_64", (13, 3))
+        assert pinned_macos_release_tag(host, UPSTREAM_REPO) == "b9415"
+
+    def test_tahoe_26_0_takes_latest(self):
+        host = _macos_host("arm64", (26, 0))
+        assert pinned_macos_release_tag(host, UPSTREAM_REPO) is None
+
+    def test_tahoe_26_1_takes_latest(self):
+        host = _macos_host("arm64", (26, 1))
+        assert pinned_macos_release_tag(host, UPSTREAM_REPO) is None
+
+    def test_unknown_version_takes_latest(self):
+        host = _macos_host("arm64", None)
+        assert pinned_macos_release_tag(host, UPSTREAM_REPO) is None
+
+    def test_fork_repo_is_dormant(self):
+        # The unslothai/llama.cpp fork publishes its own minos-13.3 prebuilts.
+        host = _macos_host("arm64", (15, 5))
+        fork = INSTALL_LLAMA_PREBUILT.DEFAULT_PUBLISHED_REPO
+        assert pinned_macos_release_tag(host, fork) is None
+
+    def test_non_macos_host_is_dormant(self):
+        host = make_host(system = "Linux", machine = "x86_64")
+        assert pinned_macos_release_tag(host, UPSTREAM_REPO) is None
+
+
+class TestResolveSimpleMacosPin:
+    """End to end on the simple/upstream path macOS actually uses: a pre-26 host
+    deterministically resolves b9415 (no walk-back); a macOS 26 host takes the
+    latest release. Mirrors how setup.sh routes Darwin to ggml-org/llama.cpp."""
+
+    TAGS = ["b9442", "b9430", "b9428", "b9415"]  # newest-first feed
+
+    def _feed(self, monkeypatch):
+        calls = []
+
+        def _release(tag):
+            name = f"llama-{tag}-bin-macos-arm64.tar.gz"
+            return {
+                "tag_name": tag,
+                "assets": [
+                    {"name": name, "browser_download_url": f"https://example.com/{name}"}
+                ],
+            }
+
+        def fake_iter(repo, published_release_tag = "", requested_tag = ""):
+            calls.append((repo, published_release_tag, requested_tag))
+            # Emulate the real iterator: a specific tag yields only that release.
+            if requested_tag and requested_tag != "latest":
+                yield _release(requested_tag)
+                return
+            for tag in self.TAGS:
+                yield _release(tag)
+
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT, "iter_release_payloads_by_time", fake_iter
+        )
+        return calls
+
+    def test_pre26_host_pins_b9415_without_walkback(self, monkeypatch):
+        calls = self._feed(monkeypatch)
+        host = _macos_host("arm64", (15, 5))
+        requested_tag, plans = resolve_simple_install_release_plans(
+            "latest", host, "ggml-org/llama.cpp", ""
+        )
+        assert requested_tag == "b9415"
+        assert len(plans) == 1
+        assert plans[0].release_tag == "b9415"
+        assert plans[0].llama_tag == "b9415"
+        assert plans[0].attempts[0].install_kind == "macos-arm64"
+        assert plans[0].attempts[0].name == "llama-b9415-bin-macos-arm64.tar.gz"
+        # The pin overrode the requested tag before any release was fetched.
+        assert calls[0][2] == "b9415"
+        # Simple/upstream path stays unverified-by-manifest, exactly as before.
+        assert plans[0].approved_checksums.artifacts == {}
+
+    def test_tahoe_host_takes_latest_release(self, monkeypatch):
+        calls = self._feed(monkeypatch)
+        host = _macos_host("arm64", (26, 0))
+        requested_tag, plans = resolve_simple_install_release_plans(
+            "latest", host, "ggml-org/llama.cpp", ""
+        )
+        assert requested_tag == "latest"
+        assert plans[0].release_tag == "b9442"
+        # No pin: the iterator was asked for latest, not a specific tag.
+        assert calls[0][2] == "latest"
