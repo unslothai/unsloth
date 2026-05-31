@@ -158,7 +158,6 @@ def _subprocess_worker(
         out_queue.put({"type": "progress", "stage": "load_model", "progress": 0.1})
         from core.rag.embeddings import (
             get_embedder,
-            late_chunk_encode,
             token_counter,
         )
 
@@ -166,19 +165,6 @@ def _subprocess_worker(
         counter = token_counter(model_name)
         dim = int(model.get_sentence_embedding_dimension())
         out_queue.put({"type": "dim", "dim": dim})
-
-        if chunking_strategy == "late":
-            _run_late_chunking(
-                pages = pages,
-                stored_path = Path(stored_path),
-                chunk_size = chunk_size,
-                overlap = overlap,
-                counter = counter,
-                model_name = model_name,
-                late_chunk_encode = late_chunk_encode,
-                out_queue = out_queue,
-            )
-            return
 
         text_count = _run_standard_chunking(
             pages = pages,
@@ -380,67 +366,6 @@ def _stream_image_chunks(
     )
     out_queue.put({"type": "progress", "stage": "extract_images", "progress": 0.95})
     return len(out_chunks)
-
-
-def _run_late_chunking(
-    *,
-    pages,
-    stored_path,
-    chunk_size,
-    overlap,
-    counter,
-    model_name,
-    late_chunk_encode,
-    out_queue,
-) -> None:
-    """Chunk once, embed in one pass, ship all chunks in one chunks_batch."""
-    from core.rag.chunking import chunk_pages_with_spans
-    from core.rag.locators import pdf_regions_for_chunks
-
-    out_queue.put({"type": "progress", "stage": "chunk", "progress": 0.2})
-    full_doc, chunks, char_spans = chunk_pages_with_spans(
-        pages,
-        max_tokens = chunk_size,
-        overlap_tokens = overlap,
-        token_counter = counter,
-    )
-    if not chunks:
-        out_queue.put({"type": "error", "error": "chunker produced no chunks"})
-        return
-
-    out_queue.put({"type": "progress", "stage": "embed", "progress": 0.4})
-    vectors = late_chunk_encode(
-        full_doc,
-        char_spans,
-        model_name = model_name,
-        normalize = True,
-    )
-    pdf_regions = pdf_regions_for_chunks(stored_path, pages, chunks)
-
-    out_queue.put({"type": "progress", "stage": "embed", "progress": 0.9})
-    out_queue.put(
-        {
-            "type": "chunks_batch",
-            "first_index": 0,
-            "chunks": [
-                {
-                    "text": c.text,
-                    "token_count": c.token_count,
-                    "page_number": c.page_number,
-                    "source_page_index": c.source_page_index,
-                    "page_char_start": c.page_char_start,
-                    "page_char_end": c.page_char_end,
-                    "line_start": c.line_start,
-                    "line_end": c.line_end,
-                    "pdf_regions": pdf_regions[index],
-                    "kind": "text",
-                }
-                for index, c in enumerate(chunks)
-            ],
-            "vectors": [v.tolist() for v in vectors],
-        }
-    )
-    out_queue.put({"type": "complete", "num_chunks": len(chunks)})
 
 
 # --- Job manager (parent side) ---
