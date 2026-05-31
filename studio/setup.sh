@@ -762,7 +762,8 @@ _HOST_SYSTEM="$(uname -s 2>/dev/null || true)"
 _HOST_MACHINE="$(uname -m 2>/dev/null || true)"
 
 # Pick the release repo install_llama_prebuilt.py plans against.
-# unslothai/llama.cpp ships only Linux CUDA bundles, so CPU-only Linux
+# unslothai/llama.cpp ships the Linux CUDA bundles and the macOS arm64/x64
+# bundles (deployment target 13.3), so macOS routes there. CPU-only Linux
 # x86_64 routes to ggml-org for bin-ubuntu-x64.tar.gz. Anything with a
 # GPU tool installed stays on unslothai (CUDA bundle / ROCm source build).
 _LINUX_HAS_GPU=false
@@ -774,7 +775,7 @@ for _GPU_TOOL in nvidia-smi rocminfo amd-smi hipconfig hipinfo; do
 done
 
 if [ "$_HOST_SYSTEM" = "Darwin" ]; then
-    _HELPER_RELEASE_REPO="ggml-org/llama.cpp"
+    _HELPER_RELEASE_REPO="unslothai/llama.cpp"
 elif [ "$_HOST_SYSTEM" = "Linux" ] \
         && [ "$_HOST_MACHINE" = "x86_64" ] \
         && [ "$_LINUX_HAS_GPU" = false ]; then
@@ -852,8 +853,13 @@ else
         --install-dir "$LLAMA_CPP_DIR"
         --llama-tag "$_REQUESTED_LLAMA_TAG"
         --published-repo "$_HELPER_RELEASE_REPO"
-        --simple-policy
     )
+    # macOS consumes the fork's published manifest (arm64/x64 bundles); the
+    # simple filename-only policy ignores that manifest, so keep it for the
+    # non-macOS hosts that still resolve assets straight off upstream filenames.
+    if [ "$_HOST_SYSTEM" != "Darwin" ]; then
+        _PREBUILT_CMD+=(--simple-policy)
+    fi
     if [ -n "${UNSLOTH_LLAMA_RELEASE_TAG:-}" ]; then
         _PREBUILT_CMD+=(--published-release-tag "$UNSLOTH_LLAMA_RELEASE_TAG")
     fi
