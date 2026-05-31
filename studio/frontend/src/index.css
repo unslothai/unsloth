@@ -759,6 +759,17 @@
 		--tw-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
 	}
 
+	/* Model selector: pointer cursor on every clickable element. */
+	.unsloth-model-selector-trigger,
+	.unsloth-model-selector-menu button {
+		cursor: pointer;
+	}
+
+	.unsloth-model-selector-trigger:disabled,
+	.unsloth-model-selector-menu button:disabled {
+		cursor: not-allowed;
+	}
+
 	/* Chat search box: borderless, soft Gemini-style elevation. */
 	.chat-search-surface {
 		border: none;

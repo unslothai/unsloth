@@ -146,7 +146,7 @@ function ModelSelectorTrigger({
         type="button"
         data-tour={dataTour}
         className={cn(
-          "flex min-w-0 items-center gap-2 transition-colors",
+          "unsloth-model-selector-trigger flex min-w-0 items-center gap-2 transition-colors",
           variant === "outline" &&
           "rounded-[10px] border border-border/60 hover:bg-[#ececec] dark:hover:bg-[#2d2e32]",
           variant === "ghost" && "rounded-[10px] hover:bg-[#ececec] dark:hover:bg-[#2d2e32]",
@@ -246,7 +246,7 @@ function ModelSelectorContent({
       align="start"
       data-tour={dataTour}
       className={cn(
-        "menu-soft-surface ring-0 w-[min(440px,calc(100vw-1rem))] max-w-[calc(100vw-1rem)] min-w-0 gap-0 p-2",
+        "unsloth-model-selector-menu menu-soft-surface ring-0 w-[min(440px,calc(100vw-1rem))] max-w-[calc(100vw-1rem)] min-w-0 gap-0 p-2",
         className,
       )}
     >
