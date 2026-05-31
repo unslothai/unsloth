@@ -84,7 +84,7 @@ unsloth studio -p 8888
 For cloud or global access, add `-H 0.0.0.0`. By default, Unsloth is accessible only locally.
 
 #### Update
-To update, use the same install commands above or use `unsloth studio update`.
+To update, use the same install commands above so `curl -fsSL https://unsloth.ai/install.sh | sh` or `irm https://unsloth.ai/install.ps1 | iex`
 
 #### Docker
 Use our [Docker image](https://hub.docker.com/r/unsloth/unsloth) ```unsloth/unsloth``` container. Run:
@@ -171,7 +171,9 @@ unsloth studio -p 8888
 ```
 Then to update :
 ```bash
-unsloth studio update
+cd unsloth && git pull
+./install.sh --local
+unsloth studio -p 8888
 ```
 
 #### Developer installs: Windows PowerShell:
@@ -184,7 +186,9 @@ unsloth studio -p 8888
 ```
 Then to update :
 ```bash
-unsloth studio update
+cd unsloth && git pull
+./install.sh --local
+unsloth studio -p 8888
 ```
 
 #### Nightly: MacOS, Linux, WSL:
