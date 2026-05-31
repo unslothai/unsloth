@@ -202,6 +202,8 @@ def test_validate_url_allows_url_in_argument(monkeypatch):
 
 
 # ── P6: Data Recipe stdio path obeys the same host gate ─────────────
+# build_mcp_providers needs the data_designer plugin, which is only installed in
+# the Studio test job; skip there rather than fail the core matrix.
 
 _STDIO_RECIPE = {
     "mcp_providers": [
@@ -217,6 +219,7 @@ _STDIO_RECIPE = {
 
 
 def test_data_recipe_skips_stdio_when_disabled(monkeypatch):
+    pytest.importorskip("data_designer")
     _disable(monkeypatch)
     from core.data_recipe.service import build_mcp_providers
 
@@ -225,6 +228,7 @@ def test_data_recipe_skips_stdio_when_disabled(monkeypatch):
 
 
 def test_data_recipe_builds_stdio_when_enabled(monkeypatch):
+    pytest.importorskip("data_designer")
     _enable(monkeypatch)
     from core.data_recipe.service import build_mcp_providers
 
