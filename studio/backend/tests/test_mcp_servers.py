@@ -1100,8 +1100,11 @@ def test_oauth_probe_failure_in_chat_path_uses_long_cooloff(tmp_path, monkeypatc
     monkeypatch.setattr(mcp_client, "_tool_cache", {})
     monkeypatch.setattr(mcp_client, "_probe_cooloff_until", {})
     mcp_servers_db.create_server(
-        id = "s1", display_name = "A", url = "https://x/mcp",
-        is_enabled = True, use_oauth = True,
+        id = "s1",
+        display_name = "A",
+        url = "https://x/mcp",
+        is_enabled = True,
+        use_oauth = True,
     )
 
     async def boom(url, headers = None, timeout = None, use_oauth = False):
