@@ -373,7 +373,7 @@ class TestParserMultiFormat:
     def test_mistral_call_id_form_parallel(self):
         text = (
             '[TOOL_CALLS]special_function[CALL_ID]000000001[ARGS]{"arg1": 1}'
-            '[TOOL_CALLS]special_function_with_opt[CALL_ID]000000002'
+            "[TOOL_CALLS]special_function_with_opt[CALL_ID]000000002"
             '[ARGS]{"arg1": 1, "arg2": 2}'
         )
         result = parse_tool_calls_from_text(text)
@@ -392,8 +392,8 @@ class TestParserMultiFormat:
         import json
 
         text = (
-            "[THINK]Let me think about [TOOL_CALLS]fake[ARGS]{\"x\":1} "
-            "and more[/THINK][TOOL_CALLS]real_fn[ARGS]{\"y\":2}"
+            '[THINK]Let me think about [TOOL_CALLS]fake[ARGS]{"x":1} '
+            'and more[/THINK][TOOL_CALLS]real_fn[ARGS]{"y":2}'
         )
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
