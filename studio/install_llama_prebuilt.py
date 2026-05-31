@@ -801,17 +801,21 @@ def windows_cuda_asset_aliases(
 
 
 def _published_windows_cuda_runtime(
-    upstream_assets: dict[str, str], major: int
+    upstream_assets: dict[str, str], major: int, driver: tuple[int, int] | None
 ) -> str | None:
-    """Highest cuda-<major>.<minor> minor actually published upstream, so the
-    Windows selector follows ggml-org when they bump the minor (13.1 -> 13.3)
-    rather than requesting a now-missing asset name. None if nothing matches."""
+    """Highest cuda-<major>.<minor> published upstream that `driver` can run by
+    default CUDA compatibility, i.e. (major, minor) <= driver. None if nothing
+    qualifies. Gating on the driver (not just the major) keeps a 13.3 build off
+    a driver that only advertises 13.1, where it would otherwise rely on the
+    unguaranteed minor-version-compatibility path."""
+    if driver is None:
+        return None
     best: int | None = None
     for name in upstream_assets:
         m = re.search(r"-bin-win-cuda-(\d+)\.(\d+)-x64\.zip$", name)
         if m and int(m.group(1)) == major:
             minor = int(m.group(2))
-            if best is None or minor > best:
+            if (major, minor) <= driver and (best is None or minor > best):
                 best = minor
     return f"{major}.{best}" if best is not None else None
 
@@ -3182,6 +3186,13 @@ def windows_cuda_attempts(
         for runtime_line in normal_runtime_lines
         if runtime_line not in runtime_order
     )
+    # Keep every driver-compatible line reachable as a fallback, so a line gated
+    # out by the driver version still drops to an older major (cuda13 -> cuda12).
+    runtime_order.extend(
+        runtime_line
+        for runtime_line in compatible_runtime_lines
+        if runtime_line not in runtime_order
+    )
     selection_log.append(
         "windows_cuda_selection: normal_runtime_order="
         + (",".join(normal_runtime_lines) if normal_runtime_lines else "none")
@@ -3197,10 +3208,12 @@ def windows_cuda_attempts(
         # Track whatever minor llama.cpp actually ships for this major
         # (cuda13 -> 13.1, 13.3, ...). Skip the line when the release has no
         # matching asset instead of guessing a now-missing name.
-        runtime = _published_windows_cuda_runtime(upstream_assets, major)
+        runtime = _published_windows_cuda_runtime(
+            upstream_assets, major, host.driver_cuda_version
+        )
         if runtime is None:
             selection_log.append(
-                f"windows_cuda_selection: no upstream asset for {runtime_line}"
+                f"windows_cuda_selection: no driver-supported asset for {runtime_line}"
             )
             continue
         selected_name = None

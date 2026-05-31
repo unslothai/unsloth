@@ -1822,12 +1822,23 @@ class TestWindowsCudaAttempts:
         assert result[0].runtime_line == "cuda13"
         assert result[1].runtime_line == "cuda12"
 
-    def test_driver_13_0_cuda13_dlls_selects_cuda13_asset(self, monkeypatch):
+    def test_driver_below_published_minor_is_gated_to_cuda12(self, monkeypatch):
+        # A 13.0 driver cannot run a 13.1 build (forward minor), so it is gated
+        # out of cuda13 and falls back to the cuda12 build it can run, even when
+        # only the cuda13 runtime libs are detected.
         mock_windows_runtime(monkeypatch, ["cuda13"])
         host = make_host(system = "Windows", machine = "AMD64", driver_cuda_version = (13, 0))
         assets = self._upstream("13.1", "12.4")
         result = windows_cuda_attempts(host, self.TAG, assets, None)
-        assert len(result) == 1
+        assert result[0].runtime_line == "cuda12"
+        assert result[0].name == f"llama-{self.TAG}-bin-win-cuda-12.4-x64.zip"
+
+    def test_driver_at_published_minor_selects_cuda13(self, monkeypatch):
+        # A 13.1 driver matches the published 13.1 build exactly.
+        mock_windows_runtime(monkeypatch, ["cuda13", "cuda12"])
+        host = make_host(system = "Windows", machine = "AMD64", driver_cuda_version = (13, 1))
+        assets = self._upstream("13.1", "12.4")
+        result = windows_cuda_attempts(host, self.TAG, assets, None)
         assert result[0].runtime_line == "cuda13"
         assert result[0].name == f"llama-{self.TAG}-bin-win-cuda-13.1-x64.zip"
 
@@ -1954,15 +1965,16 @@ class TestWindowsCudaAttempts:
         assert result[0].name == f"llama-{self.TAG}-bin-win-cuda-13.3-x64.zip"
         assert result[0].runtime_name == "cudart-llama-bin-win-cuda-13.3-x64.zip"
 
-    def test_cuda13_build_offered_across_same_major_driver(self, monkeypatch):
-        # Any 13.x driver gets the published cuda13 build (minor-version compat
-        # within the major), matching the existing 13.0 -> 13.1 behavior.
+    def test_driver_below_published_minor_does_not_get_newer_build(self, monkeypatch):
+        # ggml-org ships only cuda-13.3; a 13.1 driver cannot run it (forward
+        # minor), so it is gated to the cuda-12.4 build instead of an
+        # unguaranteed 13.3. A 13.3 driver still gets 13.3 (see other tests).
         mock_windows_runtime(monkeypatch, ["cuda13", "cuda12"])
         host = make_host(system = "Windows", machine = "AMD64", driver_cuda_version = (13, 1))
         assets = self._upstream("13.3", "12.4")
         result = windows_cuda_attempts(host, self.TAG, assets, None)
-        assert result[0].runtime_line == "cuda13"
-        assert result[0].name == f"llama-{self.TAG}-bin-win-cuda-13.3-x64.zip"
+        assert result[0].runtime_line == "cuda12"
+        assert result[0].name == f"llama-{self.TAG}-bin-win-cuda-12.4-x64.zip"
 
     def test_tracks_future_cuda13_minor(self, monkeypatch):
         # A later within-major bump (13.4) is tracked the same as 13.3.
