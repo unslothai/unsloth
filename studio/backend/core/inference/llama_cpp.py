@@ -2591,6 +2591,105 @@ class LlamaCppBackend:
 
     # ── Lifecycle ─────────────────────────────────────────────────
 
+    # GGUF ``general.architecture`` values for diffusion / image models.
+    # llama.cpp proper has no such architectures, so loading one as a chat
+    # model dies with "unknown model architecture: '<arch>'". These match
+    # the patched stable-diffusion.cpp / ComfyUI-GGUF enums (LLM_ARCH_FLUX,
+    # LLM_ARCH_QWEN_IMAGE, ...). Unsloth publishes FLUX and Qwen-Image GGUFs
+    # under https://huggingface.co/collections/unsloth/unsloth-diffusion-ggufs.
+    # Matched exactly (not as a substring) so a chat arch merely containing a
+    # short token like "wan"/"sd1" (e.g. "taiwan") is not misrouted to Images.
+    _DIFFUSION_ARCHES = frozenset(
+        (
+            "qwen_image",
+            "flux",
+            "sd1",
+            "sdxl",
+            "sd3",
+            "aura",
+            "hidream",
+            "cosmos",
+            "ltxv",
+            "hyvid",
+            "wan",
+            "lumina2",
+        )
+    )
+
+    @staticmethod
+    def _classify_llama_start_failure(
+        output: str,
+        gguf_path: Optional[str],
+        model_identifier: Optional[str],
+    ) -> str:
+        """Explain *why* llama-server failed to start, from its output.
+
+        Several distinct failures all otherwise collapse into the same
+        opaque "invalid GGUF or out of memory" message. The worst case is
+        a diffusion / image GGUF (FLUX, Qwen-Image, ...) loaded as a chat
+        model: the file is perfectly valid and there is plenty of memory,
+        but llama.cpp has no such architecture, so the user is told to free
+        memory that was never the problem (issue #5842). Pick the most
+        specific message the captured output supports.
+        """
+        lowered = (output or "").lower()
+
+        # Detect Ollama source up front so the arch branch can keep the
+        # Ollama hint instead of the generic "unsupported arch" message.
+        gguf = gguf_path or ""
+        is_ollama = (
+            ".studio_links" in gguf
+            or os.sep + "ollama_links" + os.sep in gguf
+            or os.sep + ".cache" + os.sep + "ollama" + os.sep in gguf
+            or (model_identifier or "").startswith("ollama/")
+        )
+
+        # "unknown model architecture: '<arch>'": diffusion -> Images page,
+        # Ollama -> Ollama hint, else a precise "unsupported" message. Exact
+        # match so chat archs are never misrouted.
+        arch_match = re.search(r"unknown model architecture:\s*'([^']+)'", lowered)
+        if arch_match:
+            arch = arch_match.group(1)
+            if arch in LlamaCppBackend._DIFFUSION_ARCHES:
+                return (
+                    f"'{arch}' is a diffusion (image-generation) GGUF, which "
+                    "llama-server cannot run as a chat/completion model. Use "
+                    "Studio's Images page to generate with local diffusion "
+                    "GGUFs such as FLUX and Qwen-Image."
+                )
+            if is_ollama:
+                return (
+                    "Some Ollama models do not work with llama.cpp. Try a "
+                    "different model, or use this model directly through "
+                    "Ollama instead."
+                )
+            return (
+                f"llama.cpp does not support this GGUF's model architecture "
+                f"('{arch}'). The file is valid, but this model type cannot "
+                "be run with llama-server."
+            )
+
+        # Other Ollama compat failures that do not name an arch. Only when
+        # the output shows a GGUF compat issue, not OOM / missing binaries.
+        if is_ollama:
+            gguf_compat_hints = (
+                "key not found",
+                "unknown model architecture",
+                "failed to load model",
+            )
+            if any(h in lowered for h in gguf_compat_hints):
+                return (
+                    "Some Ollama models do not work with llama.cpp. Try a "
+                    "different model, or use this model directly through "
+                    "Ollama instead."
+                )
+
+        # Fallback: genuinely unknown failure (OOM, missing binary, ...).
+        return (
+            "llama-server failed to start. "
+            "Check that the GGUF file is valid and you have enough memory."
+        )
+
     def load_model(
         self,
         *,
@@ -3383,31 +3482,12 @@ class LlamaCppBackend:
                 # Wait for llama-server to become healthy
                 if not self._wait_for_health(timeout = 600.0):
                     self._kill_process()
-                    _gguf = gguf_path or ""
-                    _is_ollama = (
-                        ".studio_links" in _gguf
-                        or os.sep + "ollama_links" + os.sep in _gguf
-                        or os.sep + ".cache" + os.sep + "ollama" + os.sep in _gguf
-                        or (self._model_identifier or "").startswith("ollama/")
-                    )
-                    # Only show the Ollama-specific message when the server
-                    # output indicates a GGUF compatibility issue, not for
-                    # unrelated failures like OOM or missing binaries.
-                    if _is_ollama:
-                        _output = "\n".join(self._stdout_lines[-50:]).lower()
-                        _gguf_compat_hints = (
-                            "key not found",
-                            "unknown model architecture",
-                            "failed to load model",
-                        )
-                        if any(h in _output for h in _gguf_compat_hints):
-                            raise RuntimeError(
-                                "Some Ollama models do not work with llama.cpp. "
-                                "Try a different model, or use this model directly through Ollama instead."
-                            )
                     raise RuntimeError(
-                        "llama-server failed to start. "
-                        "Check that the GGUF file is valid and you have enough memory."
+                        self._classify_llama_start_failure(
+                            "\n".join(self._stdout_lines[-50:]),
+                            gguf_path,
+                            self._model_identifier,
+                        )
                     )
 
                 self._healthy = True
