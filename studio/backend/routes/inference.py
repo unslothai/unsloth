@@ -776,7 +776,9 @@ async def load_model(
                     and source[0].lower() == model_identifier.lower()
                 )
                 explicit_variant_change = bool(
-                    request.gguf_variant and stored_variant and request_variant != stored_variant
+                    request.gguf_variant
+                    and stored_variant
+                    and request_variant != stored_variant
                 )
                 same_source = same_model and not explicit_variant_change
                 if not same_source:
