@@ -728,16 +728,20 @@ def _install_grpo_lm_head_passthrough(model):
     if lm_head is None:
         get_output_embeddings = getattr(head, "get_output_embeddings", None)
         if callable(get_output_embeddings):
-            try: lm_head = get_output_embeddings()
-            except Exception: lm_head = None
+            try:
+                lm_head = get_output_embeddings()
+            except Exception:
+                lm_head = None
     if lm_head is None or getattr(lm_head, "_unsloth_grpo_passthrough", False):
         return False
 
     original_lm_head_forward = lm_head.forward
+
     def passthrough_forward(*args, **kwargs):
         if os.environ.get("UNSLOTH_RETURN_HIDDEN_STATES", "0") == "1":
             return args[0] if args else next(iter(kwargs.values()))
         return original_lm_head_forward(*args, **kwargs)
+
     lm_head.forward = passthrough_forward
     lm_head._unsloth_grpo_passthrough = True
     setattr(model, _UNSLOTH_RETURN_HIDDEN_STATES_SUPPORT_MARKER, True)
