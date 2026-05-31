@@ -1064,7 +1064,7 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
                       // Kimi's $web_search builtin forbids thinking, so
                       // enabling thinking flips the Search pill off.
                       if (isKimiExternal && toolsEnabled) {
-                        setToolsEnabled(false);
+                        setToolsEnabled(false, { persist: false });
                       }
                     }}
                   >
@@ -1092,7 +1092,7 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
                   // Preserve thinking cannot run without thinking.
                   if (!next) setPreserveThinking(false);
                   if (isKimiExternal && next && toolsEnabled) {
-                    setToolsEnabled(false);
+                    setToolsEnabled(false, { persist: false });
                   }
                 }}
               >
@@ -1151,7 +1151,7 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
         applyQwenThinkingParams(next);
         // Mutually exclusive with Search on Kimi (see dropdown branch).
         if (isKimiExternal && next && toolsEnabled) {
-          setToolsEnabled(false);
+          setToolsEnabled(false, { persist: false });
         }
       }}
       className="unsloth-thinking-pill"
@@ -1220,7 +1220,7 @@ const WebSearchToggle: FC = () => {
         // the two pills mutually exclusive so the visible state always
         // matches what the backend ends up sending.
         if (isKimiExternal) {
-          setReasoningEnabled(!next);
+          setReasoningEnabled(!next, { persist: false });
           applyQwenThinkingParams(!next);
         }
       }}
