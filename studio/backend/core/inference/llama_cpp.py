@@ -3116,12 +3116,26 @@ class LlamaCppBackend:
                     # Model fits on selected GPU(s) -- offload all layers
                     cmd.extend(["-ngl", "-1"])
 
-                # -1 = llama.cpp auto-detect (physical cores). Pass explicitly so we
-                # do not inherit llama-server's internal default, which has historically
-                # varied (hardware concurrency incl. hyperthreads on some builds).
-                cmd.extend(
-                    ["--threads", str(n_threads if n_threads is not None else -1)]
-                )
+                # Thread count for llama-server. Passing --threads -1 does NOT pin to
+                # physical cores: it delegates to llama.cpp's internal auto-detect, which
+                # on most Linux/SMT builds resolves to std::thread::hardware_concurrency()
+                # (every logical core, hyperthreads included). One worker per hyperthread
+                # oversubscribes the physical cores and *lowers* tokens/sec once any layers
+                # run on CPU (CPU offload, partial GPU offload, MoE experts on host).
+                # Compute the physical-core count ourselves and pass it explicitly; fall
+                # back to -1 (llama.cpp auto-detect) only when it cannot be determined, so
+                # this is never worse than before.
+                resolved_n_threads = n_threads
+                if resolved_n_threads is None:
+                    try:
+                        import psutil
+                        physical_cores = psutil.cpu_count(logical = False)
+                        resolved_n_threads = (
+                            physical_cores if physical_cores and physical_cores > 0 else -1
+                        )
+                    except Exception:
+                        resolved_n_threads = -1
+                cmd.extend(["--threads", str(resolved_n_threads)])
 
                 # Always enable Jinja chat template rendering for proper template support
                 cmd.extend(["--jinja"])
