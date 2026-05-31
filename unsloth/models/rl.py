@@ -1027,21 +1027,24 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "use_fp16 = getattr(args, 'fp16', False)\n"
             "if type(use_fp16) is not bool: use_fp16 = False\n"
             "force_float32 = False\n"
-            # FORCE_FLOAT32 models (Gemma3, gpt_oss, ...) cannot use float16; keep
-            # them in float32 even for full finetuning so V100/T4 never autocast to fp16.
-            "if os.environ.get('UNSLOTH_FORCE_FLOAT32', '0') == '1':\n"
-            "    print('Unsloth: Switching to float32 training since model cannot work with float16')\n"
-            "    force_float32 = True\n"
-            "mixed_precision_dtype = os.environ.get('UNSLOTH_MIXED_PRECISION', 'float32')\n"
-            "dtype = getattr(model.config, 'dtype', None) or getattr(model.config, 'torch_dtype', None)\n"
-            "if dtype is None: dtype = model.get_input_embeddings().weight.dtype\n"
-            "from unsloth_zoo.utils import _get_dtype\n"
             # device-aware bf16 check (CUDA/XPU/HIP), so V100/T4 never pick bf16
             # but AMD/Intel are unaffected; fall back on older unsloth_zoo.
             "try:\n"
             "    from unsloth_zoo.device_type import device_is_bf16_supported as _bf16_supported\n"
             "except Exception:\n"
             "    _bf16_supported = torch.cuda.is_bf16_supported\n"
+            # FORCE_FLOAT32 models (Gemma3, gpt_oss, ...) cannot use float16. On a GPU without
+            # bf16 (V100/T4) keep them in float32 so they never autocast to fp16. On a bf16 GPU,
+            # full finetuning can still use bf16 autocast (master weights stay float32), which is
+            # faster and uses less memory; LoRA/QLoRA keep float32 when forced.
+            "full_finetuning = os.environ.get('UNSLOTH_ENABLE_FULL_FINETUNING', '0') == '1'\n"
+            "if os.environ.get('UNSLOTH_FORCE_FLOAT32', '0') == '1' and not (full_finetuning and _bf16_supported()):\n"
+            "    print('Unsloth: Switching to float32 training since model cannot work with float16')\n"
+            "    force_float32 = True\n"
+            "mixed_precision_dtype = os.environ.get('UNSLOTH_MIXED_PRECISION', 'float32')\n"
+            "dtype = getattr(model.config, 'dtype', None) or getattr(model.config, 'torch_dtype', None)\n"
+            "if dtype is None: dtype = model.get_input_embeddings().weight.dtype\n"
+            "from unsloth_zoo.utils import _get_dtype\n"
             "dtype = _get_dtype(dtype)\n"
             "float16 = dtype == torch.float16\n"
             "bfloat16 = dtype == torch.bfloat16\n"
