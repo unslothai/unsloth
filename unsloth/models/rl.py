@@ -580,6 +580,31 @@ _UNSLOTH_GRPO_HIDDEN_STATES_WRAPPED_ATTR = "_unsloth_grpo_hidden_states_forward_
 _UNSLOTH_GRPO_HIDDEN_STATES_WARNING_ATTR = "_unsloth_grpo_hidden_states_warning_issued"
 
 
+def _grpo_owns_lm_head(module):
+    # Does this module apply lm_head itself (i.e. its forward emits `.logits`)?
+    if module is None:
+        return False
+    if getattr(module, "lm_head", None) is not None:
+        return True
+    get_output_embeddings = getattr(module, "get_output_embeddings", None)
+    if callable(get_output_embeddings):
+        try:
+            return get_output_embeddings() is not None
+        except Exception:
+            return False
+    return False
+
+
+def _grpo_causal_head(model):
+    # The module that owns lm_head / output embeddings (whose forward emits `.logits`).
+    get_base_model = getattr(model, "get_base_model", None)
+    if callable(get_base_model):
+        base_model = get_base_model()
+        if base_model is not None:
+            return base_model
+    return model
+
+
 def _grpo_hidden_states_wrap_target(model):
     if model is None:
         return None
@@ -588,10 +613,14 @@ def _grpo_hidden_states_wrap_target(model):
         base_model = get_base_model()
         if base_model is not None and base_model is not model:
             return base_model
-    for attr in ("base_model", "model"):
-        child = getattr(model, attr, None)
-        if child is not None and child is not model and hasattr(child, "forward"):
-            return child
+    # Only descend into a child when `model` does not own lm_head itself. GRPO consumes the
+    # `.logits` of the module that applies lm_head; wrapping the inner trunk (no lm_head) would
+    # let the outer forward re-apply lm_head and leak logits into the chunked log-softmax (#708).
+    if not _grpo_owns_lm_head(model):
+        for attr in ("base_model", "model"):
+            child = getattr(model, attr, None)
+            if child is not None and child is not model and hasattr(child, "forward"):
+                return child
     return model
 
 
@@ -686,11 +715,48 @@ def _replace_outputs_logits(outputs, hidden_states):
     )
 
 
+def _install_grpo_lm_head_passthrough(model):
+    # Preferred hidden-states path for a plain *ForCausalLM (e.g. full finetuning, where the model
+    # is not PEFT-wrapped, keeps the stock HF forward, and so has no RETURN_HIDDEN_STATES branch or
+    # support marker). Short-circuit lm_head to return its input (the hidden states) when
+    # UNSLOTH_RETURN_HIDDEN_STATES=1; the forward then yields `.logits == hidden`, which the GRPO
+    # log-prob path projects in chunks itself, and the full vocab projection is skipped. The lm_head
+    # weight is untouched, and the accelerate-managed top-level forward is not wrapped, so there is
+    # no bound-self collision. No-op when the flag is 0.
+    head = _grpo_causal_head(model)
+    lm_head = getattr(head, "lm_head", None)
+    if lm_head is None:
+        get_output_embeddings = getattr(head, "get_output_embeddings", None)
+        if callable(get_output_embeddings):
+            try: lm_head = get_output_embeddings()
+            except Exception: lm_head = None
+    if lm_head is None or getattr(lm_head, "_unsloth_grpo_passthrough", False):
+        return False
+
+    original_lm_head_forward = lm_head.forward
+    def passthrough_forward(*args, **kwargs):
+        if os.environ.get("UNSLOTH_RETURN_HIDDEN_STATES", "0") == "1":
+            return args[0] if args else next(iter(kwargs.values()))
+        return original_lm_head_forward(*args, **kwargs)
+    lm_head.forward = passthrough_forward
+    lm_head._unsloth_grpo_passthrough = True
+    setattr(model, _UNSLOTH_RETURN_HIDDEN_STATES_SUPPORT_MARKER, True)
+    setattr(head, _UNSLOTH_RETURN_HIDDEN_STATES_SUPPORT_MARKER, True)
+    return True
+
+
 def _install_grpo_hidden_states_forward_wrapper(model):
     if model is None or getattr(model, _UNSLOTH_GRPO_HIDDEN_STATES_WRAPPED_ATTR, False):
         return False
     if _model_supports_unsloth_return_hidden_states(model):
         return False
+
+    # Preferred: short-circuit lm_head (robust for a plain full-FT CausalLM, skips the vocab
+    # projection, and avoids wrapping the accelerate-managed top-level forward). Fall back to the
+    # forward wrapper only when no lm_head can be found.
+    if _install_grpo_lm_head_passthrough(model):
+        setattr(model, _UNSLOTH_GRPO_HIDDEN_STATES_WRAPPED_ATTR, True)
+        return True
 
     target_model = _grpo_hidden_states_wrap_target(model)
     if getattr(target_model, _UNSLOTH_GRPO_HIDDEN_STATES_WRAPPED_ATTR, False):
@@ -702,6 +768,10 @@ def _install_grpo_hidden_states_forward_wrapper(model):
     model_name = type(target_model).__name__
 
     def wrapped_forward(*args, **kwargs):
+        # Tolerate being invoked as a bound method: accelerate / nn.Module __call__ can inject
+        # `self` as the first positional arg once the wrapper lives on the outer CausalLM.
+        if len(args) > 0 and args[0] is target_model:
+            args = args[1:]
         if os.environ.get("UNSLOTH_RETURN_HIDDEN_STATES", "0") != "1":
             return original_forward(*args, **kwargs)
 
