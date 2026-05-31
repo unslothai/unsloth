@@ -51,7 +51,7 @@ export function ChatSearchDialog() {
     <CommandDialog
       open={isOpen}
       onOpenChange={setOpen}
-      className="shadow-border corner-squircle w-[635px] max-w-[calc(100%-2rem)] gap-0 p-0 sm:max-w-[635px]"
+      className="chat-search-surface corner-squircle w-[635px] max-w-[calc(100%-2rem)] gap-0 p-0 sm:max-w-[635px]"
       overlayClassName="bg-transparent"
     >
       <Command className="rounded-none p-0">

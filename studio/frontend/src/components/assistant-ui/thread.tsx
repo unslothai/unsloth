@@ -112,6 +112,7 @@ import {
   type CompositionEvent,
   type FC,
   type KeyboardEvent,
+  type ReactNode,
   useCallback,
   useEffect,
   useRef,
@@ -1168,6 +1169,14 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
   );
 };
 
+// Tool icon plus an X overlay the CSS reveals on hover when the pill is active.
+const PillGlyph: FC<{ children: ReactNode }> = ({ children }) => (
+  <span className="composer-pill-glyph">
+    {children}
+    <XIcon className="composer-pill-x" />
+  </span>
+);
+
 const WebSearchToggle: FC = () => {
   const modelLoaded = useChatRuntimeStore(
     (s) => !!s.params.checkpoint && !s.modelLoading,
@@ -1219,7 +1228,9 @@ const WebSearchToggle: FC = () => {
       data-active={toolsEnabled && !disabled ? "true" : "false"}
       aria-label={toolsEnabled ? "Disable web search" : "Enable web search"}
     >
-      <GlobeIcon className="size-3.5" />
+      <PillGlyph>
+        <GlobeIcon className="size-[15px]" />
+      </PillGlyph>
       <span>Search</span>
     </button>
   );
@@ -1255,11 +1266,13 @@ const CodeToolsToggle: FC = () => {
         codeToolsEnabled ? "Disable code execution" : "Enable code execution"
       }
     >
-      <HugeiconsIcon
-        icon={CodeIcon}
-        className="-mr-0.5 size-[18px]"
-        strokeWidth={2}
-      />
+      <PillGlyph>
+        <HugeiconsIcon
+          icon={CodeIcon}
+          className="-mr-0.5 size-[19px]"
+          strokeWidth={2}
+        />
+      </PillGlyph>
       <span>Code</span>
     </button>
   );
@@ -1297,7 +1310,9 @@ const ImagesToggle: FC = () => {
           : "Enable image generation"
       }
     >
-      <HugeiconsIcon icon={Image03Icon} className="size-3.5" strokeWidth={2} />
+      <PillGlyph>
+        <HugeiconsIcon icon={Image03Icon} className="size-3.5" strokeWidth={2} />
+      </PillGlyph>
       <span>Images</span>
     </button>
   );
@@ -1502,7 +1517,7 @@ const ComposerRightControls: FC<{
   menuSide?: "top" | "bottom";
 }> = ({ disabled, shouldBlockSend, menuSide }) => {
   return (
-    <div className="aui-composer-action-wrapper flex shrink-0 items-center gap-0.5">
+    <div className="aui-composer-action-wrapper flex shrink-0 items-center gap-1.5">
       <ReasoningToggle side={menuSide} />
       <ComposerPrimitive.If dictation={false}>
         <ComposerPrimitive.Dictate asChild={true}>
@@ -1510,9 +1525,9 @@ const ComposerRightControls: FC<{
             tooltip="Dictate"
             aria-label="Dictate"
             variant="ghost"
-            className="size-9 rounded-full text-foreground"
+            className="size-8 rounded-full text-foreground"
           >
-            <MicIcon className="size-[18px]" />
+            <MicIcon className="size-5" />
           </TooltipIconButton>
         </ComposerPrimitive.Dictate>
       </ComposerPrimitive.If>
@@ -1522,7 +1537,7 @@ const ComposerRightControls: FC<{
             tooltip="Stop dictation"
             aria-label="Stop dictation"
             variant="ghost"
-            className="size-9 rounded-full text-destructive"
+            className="size-8 rounded-full text-destructive"
           >
             <SquareIcon className="size-3 animate-pulse fill-current" />
           </TooltipIconButton>
@@ -1542,10 +1557,10 @@ const ComposerRightControls: FC<{
                 event.preventDefault();
               }
             }}
-            className="aui-composer-send size-9 rounded-full"
+            className="aui-composer-send ml-1.5 size-8 rounded-full"
             aria-label="Send message"
           >
-            <ArrowUpIcon className="aui-composer-send-icon size-[18px] stroke-[2.5px]" />
+            <ArrowUpIcon className="aui-composer-send-icon size-[21px] stroke-2" />
           </TooltipIconButton>
         </ComposerPrimitive.Send>
       </AuiIf>
@@ -1555,7 +1570,7 @@ const ComposerRightControls: FC<{
             type="button"
             variant="default"
             size="icon"
-            className="aui-composer-cancel size-9 rounded-full"
+            className="aui-composer-cancel ml-1.5 size-8 rounded-full"
             aria-label="Stop generating"
           >
             <SquareIcon className="aui-composer-cancel-icon size-3 fill-current" />

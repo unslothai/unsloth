@@ -759,6 +759,20 @@
 		--tw-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
 	}
 
+	/* Chat search box: borderless, soft Gemini-style elevation. */
+	.chat-search-surface {
+		border: none;
+		box-shadow:
+			0 1px 3px 0 rgba(0, 0, 0, 0.08),
+			0 4px 12px 0 rgba(0, 0, 0, 0.05);
+	}
+
+	.dark .chat-search-surface {
+		box-shadow:
+			0 1px 3px 0 rgba(0, 0, 0, 0.4),
+			0 6px 18px 0 rgba(0, 0, 0, 0.28);
+	}
+
 	.menu-soft-surface,
 	.menu-soft-surface-up {
 		--menu-soft-edge: rgba(0, 0, 0, 0.14);
@@ -795,11 +809,29 @@
 	}
 
 	.composer-pill-btn {
-		@apply flex cursor-pointer items-center gap-1.5 rounded-full px-1.5 py-1.5 text-[14px] font-medium text-muted-foreground/70 transition-colors hover:bg-primary/10 dark:hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-40;
+		@apply flex cursor-pointer items-center gap-1.5 rounded-full px-2 py-1.5 text-[14px] font-medium text-muted-foreground/70 transition-colors hover:bg-primary/10 dark:hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-40;
 	}
 
 	.composer-pill-btn[data-active="true"] {
 		color: var(--primary);
+	}
+
+	/* Icon slot sized to the icon so the hover-X swap never shifts the label. */
+	.composer-pill-glyph {
+		@apply relative inline-flex items-center justify-center transition-opacity;
+	}
+
+	.composer-pill-x {
+		@apply pointer-events-none absolute inset-0 m-auto size-3.5 opacity-0 transition-opacity;
+	}
+
+	/* Hovering an active pill swaps the icon for an X (click to turn off). */
+	.composer-pill-btn[data-active="true"]:hover .composer-pill-glyph > :not(.composer-pill-x) {
+		@apply opacity-0;
+	}
+
+	.composer-pill-btn[data-active="true"]:hover .composer-pill-x {
+		@apply opacity-100;
 	}
 
 	.composer-input {
@@ -817,7 +849,7 @@
 
 	/* Pill composer; own classes so compare-mode keeps its stacked layout. */
 	.unsloth-composer-surface {
-		@apply relative flex w-full flex-col rounded-[28px] bg-background dark:bg-card px-3 py-2.5 outline-none transition-shadow;
+		@apply relative flex w-full flex-col rounded-[32px] bg-background dark:bg-card px-3 py-3 outline-none transition-shadow;
 		font-family: var(--font-sans);
 		background-clip: padding-box;
 		/* Light-mode elevation matches Gemini's search box (Lumi level-1): a soft,
@@ -856,10 +888,10 @@
 	}
 
 	.unsloth-composer-left {
-		@apply flex shrink-0 items-center gap-0.5;
+		@apply flex shrink-0 items-center gap-1;
 		order: 1;
 		/* Pull the plus button closer to the composer edge. */
-		margin-left: -0.375rem;
+		margin-left: -0.25rem;
 	}
 
 	.unsloth-composer-line .unsloth-composer-input {
@@ -869,6 +901,8 @@
 	.unsloth-composer-line .aui-composer-action-wrapper {
 		order: 3;
 		margin-left: auto;
+		/* Inset the send circle from the edge, Gemini-style. */
+		margin-right: -0.125rem;
 	}
 
 	.unsloth-composer-line[data-expanded="true"] .unsloth-composer-input {
@@ -907,6 +941,17 @@
 		   trigger so the cursor and click-to-close work. */
 		pointer-events: auto;
 		cursor: pointer;
+	}
+
+	/* Open menu rotates the plus 45deg into an x. Slow ease-in-out for a smooth
+	   spin; keep it at 45deg so it never passes back through a "+". */
+	.unsloth-composer-plus svg {
+		transition: transform 480ms cubic-bezier(0.65, 0, 0.35, 1);
+		will-change: transform;
+	}
+
+	.unsloth-composer-plus[data-state="open"] svg {
+		transform: rotate(45deg);
 	}
 
 	/* Set Hellix explicitly; .aui-thread-root resets --font-heading to sans. */
@@ -1456,5 +1501,11 @@
 	.generated-image-loading-dot {
 		animation-duration: 1850ms !important;
 		animation-iteration-count: infinite !important;
+	}
+
+	/* Keep the plus/x morph animating under reduced motion (small rotation,
+	   like the spinners above). */
+	.unsloth-composer-plus svg {
+		transition-duration: 480ms !important;
 	}
 }

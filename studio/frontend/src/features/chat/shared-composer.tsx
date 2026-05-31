@@ -355,6 +355,16 @@ type CompareModelSelection = {
   ggufVariant?: string;
 };
 
+// Tool icon plus an X overlay the CSS reveals on hover when the pill is active.
+function PillGlyph({ children }: { children: ReactNode }) {
+  return (
+    <span className="composer-pill-glyph">
+      {children}
+      <XIcon className="composer-pill-x" />
+    </span>
+  );
+}
+
 export function SharedComposer({
   handlesRef,
   model1,
@@ -983,7 +993,7 @@ export function SharedComposer({
         dir="auto"
       />
       <div className="composer-action-wrapper">
-        <div className="flex items-center gap-0.5">
+        <div className="flex items-center gap-1">
           <input
             ref={fileInputRef}
             type="file"
@@ -1141,7 +1151,9 @@ export function SharedComposer({
             data-active={toolsEnabled && !searchDisabled ? "true" : "false"}
             aria-label={toolsEnabled ? "Disable web search" : "Enable web search"}
           >
-            <GlobeIcon className="size-3.5" />
+            <PillGlyph>
+              <GlobeIcon className="size-[15px]" />
+            </PillGlyph>
             <span>Search</span>
           </button>
           <button
@@ -1152,7 +1164,9 @@ export function SharedComposer({
             data-active={codeToolsEnabled && !codeDisabled ? "true" : "false"}
             aria-label={codeToolsEnabled ? "Disable code execution" : "Enable code execution"}
           >
-            <CodeToggleIcon className="size-3.5" />
+            <PillGlyph>
+              <CodeToggleIcon className="size-[15px]" />
+            </PillGlyph>
             <span>Code</span>
           </button>
           {/* Active in compare mode; click to exit back to single chat. */}
@@ -1163,7 +1177,9 @@ export function SharedComposer({
             data-active="true"
             aria-label="Exit compare chat"
           >
-            <Columns2Icon className="size-3.5" />
+            <PillGlyph>
+              <Columns2Icon className="size-[15px]" />
+            </PillGlyph>
             <span>Compare</span>
           </button>
           {showImagePill && (
@@ -1177,11 +1193,13 @@ export function SharedComposer({
                 imageToolsEnabled ? "Disable image generation" : "Enable image generation"
               }
             >
-              <HugeiconsIcon
-                icon={Image03Icon}
-                className="size-3.5"
-                strokeWidth={2}
-              />
+              <PillGlyph>
+                <HugeiconsIcon
+                  icon={Image03Icon}
+                  className="size-3.5"
+                  strokeWidth={2}
+                />
+              </PillGlyph>
               <span>Images</span>
             </button>
           )}
@@ -1198,7 +1216,9 @@ export function SharedComposer({
                 webFetchToolsEnabled ? "Disable URL fetch" : "Enable URL fetch"
               }
             >
-              <DownloadIcon className="size-3.5" />
+              <PillGlyph>
+                <DownloadIcon className="size-3.5" />
+              </PillGlyph>
               <span>Fetch</span>
             </button>
           )}
@@ -1430,7 +1450,7 @@ export function SharedComposer({
               disabled={!canSend}
               aria-label="Send message"
             >
-              <ArrowUpIcon className="size-4" />
+              <ArrowUpIcon className="size-[22px] stroke-2" />
             </TooltipIconButton>
           )}
         </div>
