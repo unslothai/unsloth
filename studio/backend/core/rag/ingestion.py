@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import multiprocessing as mp
+import os
 import queue as queue_module
 import sqlite3
 import threading
@@ -35,6 +36,35 @@ logger = get_logger(__name__)
 
 _CTX = mp.get_context("spawn")
 _QUEUE_TIMEOUT_SECONDS = 300
+
+
+def _fast_ingest() -> bool:
+    """Run ingestion in-process so the warm embedder singleton is reused instead
+    of a fresh spawn reloading the model on every upload."""
+    return os.environ.get("UNSLOTH_RAG_FAST") == "1"
+
+
+class _ThreadProc:
+    """Thread that mimics the mp.Process surface the pump/cancel paths use
+    (start / is_alive / join / terminate). Lets the existing queue-based worker
+    run in the warm main process under the fast flag. Threads cannot be
+    force-killed, so terminate() is a best-effort no-op (the route still deletes
+    the document's rows on cancel)."""
+
+    def __init__(self, target: Any, args: tuple) -> None:
+        self._t = threading.Thread(target = target, args = args, daemon = True)
+
+    def start(self) -> None:
+        self._t.start()
+
+    def is_alive(self) -> bool:
+        return self._t.is_alive()
+
+    def join(self, timeout: float | None = None) -> None:
+        self._t.join(timeout)
+
+    def terminate(self) -> None:
+        pass
 
 
 # --- Subprocess worker ---
@@ -751,8 +781,14 @@ def _pump(
         state.push_event({"type": "cancelled"})
         return
     if final_status == "completed":
-        full_scope_chunks = _all_scope_chunks(state.scope)
-        bm25.rebuild_index(state.scope, full_scope_chunks)
+        if _fast_ingest():
+            # Incremental: index only this document's chunks (O(N) total) instead
+            # of re-reading and rebuilding the whole scope. bm25_buffer holds the
+            # new document's {id, text} rows.
+            bm25.add_chunks(state.scope, bm25_buffer)
+        else:
+            full_scope_chunks = _all_scope_chunks(state.scope)
+            bm25.rebuild_index(state.scope, full_scope_chunks)
         _update_document_row(
             state.document_id,
             status = "completed",
@@ -881,26 +917,35 @@ def enqueue_ingestion(
     with _jobs_lock:
         _jobs[job_id] = state
 
-    out_queue = _CTX.Queue()
-    state.out_queue = out_queue
-    proc = _CTX.Process(
-        target = _subprocess_worker,
-        args = (
-            str(stored_path),
-            model_name,
-            RAG_CHUNK_SIZE,
-            RAG_CHUNK_OVERLAP,
-            RAG_EMBED_BATCH_SIZE,
-            out_queue,
-            chunking_strategy,
-            mode,
-            document_id,
-            vlm_url,
-            vlm_model,
-            enable_captions,
-        ),
-        daemon = True,
+    worker_args = (
+        str(stored_path),
+        model_name,
+        RAG_CHUNK_SIZE,
+        RAG_CHUNK_OVERLAP,
+        RAG_EMBED_BATCH_SIZE,
+        None,  # out_queue, filled below
+        chunking_strategy,
+        mode,
+        document_id,
+        vlm_url,
+        vlm_model,
+        enable_captions,
     )
+    if _fast_ingest():
+        # In-process: the worker's get_embedder() hits the warm startup singleton
+        # instead of a spawned interpreter reloading the model every upload.
+        out_queue = queue_module.Queue()
+        worker_args = worker_args[:5] + (out_queue,) + worker_args[6:]
+        proc: Any = _ThreadProc(target = _subprocess_worker, args = worker_args)
+    else:
+        out_queue = _CTX.Queue()
+        worker_args = worker_args[:5] + (out_queue,) + worker_args[6:]
+        proc = _CTX.Process(
+            target = _subprocess_worker,
+            args = worker_args,
+            daemon = True,
+        )
+    state.out_queue = out_queue
     proc.start()
     state.proc = proc
     pump_thread = threading.Thread(

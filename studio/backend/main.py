@@ -380,6 +380,22 @@ async def lifespan(app: FastAPI):
 
     threading.Thread(target = _precache, daemon = True).start()
 
+    # Fast RAG: warm the embedder at startup so the first upload's indexing does
+    # not pay the cold model load. Background thread, like the precache above.
+    if os.environ.get("UNSLOTH_RAG_FAST") == "1":
+        def _warm_rag_embedder():
+            try:
+                from core.rag import embeddings
+                from utils.rag.config import resolve_embedder
+
+                model_name = resolve_embedder("text", "standard")
+                embeddings.get_embedder(model_name)
+                logger.info("RAG fast: embedder warmed at startup (%s)", model_name)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("RAG fast: embedder warmup failed: %s", exc)
+
+        threading.Thread(target = _warm_rag_embedder, daemon = True).start()
+
     # Initialize RSA key pair for API key encryption (external providers)
     from core.inference.key_exchange import init_key_pair
 

@@ -9,6 +9,7 @@ Each scope dir holds the bm25s files + ids.json mapping row index → chunk_id.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import threading
 from pathlib import Path
@@ -21,6 +22,22 @@ logger = get_logger(__name__)
 
 _load_lock = threading.Lock()
 _cache: dict[str, tuple[Any, list[str]]] = {}
+
+
+def _fast() -> bool:
+    """Incremental SQLite FTS5 backend instead of the rebuild-on-change bm25s one."""
+    return os.environ.get("UNSLOTH_RAG_FAST") == "1"
+
+
+def add_chunks(scope: str, chunks: list[dict]) -> None:
+    """Incremental insert of one document's chunks (FTS5 fast path only)."""
+    if _fast():
+        from core.rag import bm25_fts
+
+        bm25_fts.add_chunks(scope, chunks)
+        return
+    # bm25s has no incremental insert; callers on the slow path use rebuild_index.
+    raise RuntimeError("add_chunks requires UNSLOTH_RAG_FAST=1")
 
 
 def _scope_dir(scope: str) -> Path:
@@ -41,6 +58,11 @@ def _evict(scope: str) -> None:
 
 def rebuild_index(scope: str, chunks: list[dict]) -> None:
     """Rebuild scope's BM25 from full chunk list. Empty list deletes the index."""
+    if _fast():
+        from core.rag import bm25_fts
+
+        bm25_fts.rebuild_index(scope, chunks)
+        return
     import bm25s
 
     base = _scope_dir(scope)
@@ -86,6 +108,10 @@ def _load(scope: str) -> tuple[Any, list[str]] | None:
 
 
 def search(scope: str, query: str, k: int) -> list[tuple[str, float]]:
+    if _fast():
+        from core.rag import bm25_fts
+
+        return bm25_fts.search(scope, query, k)
     import bm25s
 
     loaded = _load(scope)
@@ -105,6 +131,11 @@ def search(scope: str, query: str, k: int) -> list[tuple[str, float]]:
 
 
 def delete_scope(scope: str) -> None:
+    if _fast():
+        from core.rag import bm25_fts
+
+        bm25_fts.delete_scope(scope)
+        return
     base = _scope_dir(scope)
     if base.exists():
         shutil.rmtree(base, ignore_errors = True)
