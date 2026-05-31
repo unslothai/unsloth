@@ -245,22 +245,41 @@ export function useChatModelRuntime() {
     [],
   );
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (options?: { pollUntilActiveModel?: boolean }) => {
     setModelsError(null);
     try {
-      const [listRes, statusRes, lorasRes] = await Promise.all([
-        listModels(),
-        getInferenceStatus(),
-        listLoras(),
+      const listResPromise = listModels();
+      const lorasResPromise = listLoras();
+
+      let statusRes = await getInferenceStatus();
+      const selectedCheckpoint = useChatRuntimeStore.getState().params.checkpoint;
+      const isExternalSelectionActive = isExternalModelId(selectedCheckpoint);
+      if (
+        options?.pollUntilActiveModel &&
+        !statusRes.active_model &&
+        !selectedCheckpoint &&
+        !isExternalSelectionActive
+      ) {
+        const deadline = Date.now() + 60_000;
+        while (Date.now() < deadline && !statusRes.active_model) {
+          await new Promise((resolve) => setTimeout(resolve, 500));
+          statusRes = await getInferenceStatus();
+        }
+      }
+
+      const [listRes, lorasRes] = await Promise.all([
+        listResPromise,
+        lorasResPromise,
       ]);
 
       setModels(listRes.models.map(toChatModelSummary));
       setLoras(lorasRes.loras.map(toLoraSummary));
 
-      const selectedCheckpoint = useChatRuntimeStore.getState().params.checkpoint;
-      const isExternalSelectionActive = isExternalModelId(selectedCheckpoint);
       if (statusRes.active_model && !isExternalSelectionActive) {
-        setCheckpoint(statusRes.active_model, statusRes.gguf_variant);
+        setCheckpoint(
+          statusRes.model_identifier ?? statusRes.active_model,
+          statusRes.gguf_variant,
+        );
 
         // Apply inference defaults on reconnect (page refresh with model already loaded)
         if (statusRes.inference) {

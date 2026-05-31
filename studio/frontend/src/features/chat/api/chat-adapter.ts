@@ -918,22 +918,28 @@ async function tryAdoptServerActiveModel(): Promise<boolean> {
   return true;
 }
 
-/** Wait for an in-progress model load to finish (polls store every 500ms). */
-function waitForModelReady(abortSignal?: AbortSignal): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const check = () => {
-      if (abortSignal?.aborted) {
-        reject(new Error("Aborted"));
-        return;
-      }
-      if (!useChatRuntimeStore.getState().modelLoading) {
-        resolve();
-        return;
-      }
-      setTimeout(check, 500);
-    };
-    check();
-  });
+/** Wait for a model to be ready: UI-initiated loads or external CLI loads. */
+async function waitForModelReady(abortSignal?: AbortSignal): Promise<void> {
+  const deadline = Date.now() + 120_000;
+  while (true) {
+    if (abortSignal?.aborted) {
+      throw new Error("Aborted");
+    }
+    if (useChatRuntimeStore.getState().modelLoading) {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      continue;
+    }
+    if (useChatRuntimeStore.getState().params.checkpoint) {
+      return;
+    }
+    if (await tryAdoptServerActiveModel()) {
+      return;
+    }
+    if (Date.now() >= deadline) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
 }
 
 /**

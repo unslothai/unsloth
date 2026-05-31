@@ -1368,7 +1368,8 @@ export function ChatPage(): ReactElement {
 
   useEffect(() => {
     if (getTrainingCompareHandoff()) return;
-    void refresh();
+    const pollUntilActiveModel = !useChatRuntimeStore.getState().params.checkpoint;
+    void refresh(pollUntilActiveModel ? { pollUntilActiveModel: true } : undefined);
     refreshLocalModels();
   }, [refresh, refreshLocalModels]);
 
