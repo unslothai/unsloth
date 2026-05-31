@@ -3129,9 +3129,12 @@ class LlamaCppBackend:
                 if resolved_n_threads is None:
                     try:
                         import psutil
+
                         physical_cores = psutil.cpu_count(logical = False)
                         resolved_n_threads = (
-                            physical_cores if physical_cores and physical_cores > 0 else -1
+                            physical_cores
+                            if physical_cores and physical_cores > 0
+                            else -1
                         )
                     except Exception:
                         resolved_n_threads = -1
