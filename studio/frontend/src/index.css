@@ -832,9 +832,9 @@
 		@apply relative inline-flex items-center justify-center transition-opacity;
 	}
 
-	/* Fill the glyph so the X matches whatever icon it replaces (no size pop). */
+	/* Fixed size so every pill's X is identical, centered over the icon slot. */
 	.composer-pill-x {
-		@apply pointer-events-none absolute inset-0 size-full opacity-0 transition-opacity;
+		@apply pointer-events-none absolute inset-0 m-auto size-[15px] opacity-0 transition-opacity;
 	}
 
 	/* Hovering an active pill swaps the icon for an X (click to turn off). */
