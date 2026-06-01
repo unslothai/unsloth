@@ -356,7 +356,11 @@ def _hf_client_error_status(exc: Exception) -> Optional[int]:
     # Map HF client errors to their HTTP status so the UI shows "not found" /
     # "token required" instead of a generic 500.
     name = type(exc).__name__
-    if name in ("RepositoryNotFoundError", "RevisionNotFoundError", "EntryNotFoundError"):
+    if name in (
+        "RepositoryNotFoundError",
+        "RevisionNotFoundError",
+        "EntryNotFoundError",
+    ):
         return 404
     if name == "GatedRepoError":
         return 403
