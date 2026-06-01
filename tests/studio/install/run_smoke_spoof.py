@@ -27,10 +27,12 @@ INSTALLER = REPO / "studio" / "install_llama_prebuilt.py"
 FAKE = HERE / "fake_llama_server.py"
 IS_WIN = sys.platform == "win32"
 
-GPU_KIND = {
-    "win32": "windows-cuda",
-    "darwin": "macos-arm64",
-}.get(sys.platform, "linux-cuda")
+# Offload-required GPU kind for the rejection contract. install_kind is passed
+# explicitly, so the classifier / validate_server logic is exercised
+# independent of the (GPU-less) runner OS. macOS Metal is intentionally NOT
+# offload-required, so use a CUDA kind even on macOS to drive the CUDA/ROCm
+# rejection path; Metal's accept-CPU behavior is covered by the macOS-only case.
+GPU_REQ_KIND = "windows-cuda" if IS_WIN else "linux-cuda"
 CPU_KIND = {
     "win32": "windows-cpu",
     "darwin": "macos-cpu",
@@ -79,13 +81,25 @@ def main() -> int:
         probe.write_bytes(b"GGUF\x00fake")
 
         cases = [
-            ("cpu", GPU_KIND, 2, "CPU-only binary tagged GPU is rejected"),
-            ("offloaded_zero", GPU_KIND, 2, "offloaded 0/N tagged GPU is rejected"),
-            ("cuda", GPU_KIND, 0, "GPU binary tagged GPU is accepted"),
-            ("cuda_buffer", GPU_KIND, 0, "GPU buffer-format binary is accepted"),
+            ("cpu", GPU_REQ_KIND, 2, "CPU-only binary tagged GPU is rejected"),
+            ("offloaded_zero", GPU_REQ_KIND, 2, "offloaded 0/N tagged GPU is rejected"),
+            ("cuda", GPU_REQ_KIND, 0, "GPU binary tagged GPU is accepted"),
+            ("cuda_buffer", GPU_REQ_KIND, 0, "GPU buffer-format binary is accepted"),
             ("cpu", CPU_KIND, 0, "CPU binary tagged CPU is not gated"),
-            ("no_signal", GPU_KIND, 1, "no-signal GPU log is inconclusive (exit 1)"),
+            ("no_signal", GPU_REQ_KIND, 1, "no-signal GPU log is inconclusive (exit 1)"),
         ]
+        if sys.platform == "darwin":
+            # macOS Metal is not offload-required: a CPU-only Metal load is an
+            # unfixable environment limitation (headless / virtualized host), so
+            # the macos-arm64 prebuilt is accepted rather than rejected.
+            cases.append(
+                (
+                    "cpu",
+                    "macos-arm64",
+                    0,
+                    "macOS Metal CPU-only load is accepted (no rebuild remedy)",
+                )
+            )
         for mode, kind, expected, label in cases:
             rc = run_smoke(wrapper, probe, kind, mode)
             ok = rc == expected

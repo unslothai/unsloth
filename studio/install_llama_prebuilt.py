@@ -5664,12 +5664,26 @@ _OFFLOADING_COUNT_RE = re.compile(
     re.IGNORECASE,
 )
 
-# install_kind values that ship a real GPU backend and must offload to the GPU.
-# A binary launched with --n-gpu-layers 1 under one of these is held to the
-# GPU-offload check; CPU kinds (windows-cpu, linux-cpu, ...) are exempt.
+# install_kind values that ship a real GPU backend and are launched with
+# --n-gpu-layers 1 during validation, so a real Metal / CUDA / HIP backend is
+# loaded and a broken GPU dylib/DLL surfaces. CPU kinds (windows-cpu,
+# linux-cpu, ...) are exempt.
 _GPU_INSTALL_KINDS = frozenset(
     {"linux-cuda", "linux-rocm", "windows-cuda", "windows-hip", "macos-arm64"}
 )
+
+# Subset whose CPU-only load is a *fixable* fault -- a missing cudart64_* /
+# cublas64_* DLL, a PTX-only build on an older driver, or a HIP backend that
+# did not initialize -- that a different bundle or a source build can repair,
+# so validation rejects it to advance the resolver (#5807, #5106). macOS Metal
+# is excluded on purpose: on Apple Silicon the macos-arm64 prebuilt is already
+# the correct artifact, and a CPU-only load means Metal is unavailable in this
+# environment (a headless or virtualized host such as a CI runner), which no
+# rebuild can fix. Rejecting it would force a source build that also runs on
+# CPU and needlessly breaks the install. macOS is still launched with
+# --n-gpu-layers (it is in _GPU_INSTALL_KINDS) so a broken libggml-metal.dylib
+# still surfaces; it is only exempt from the CPU-only *rejection*.
+_GPU_OFFLOAD_REQUIRED_KINDS = _GPU_INSTALL_KINDS - frozenset({"macos-arm64"})
 
 
 def server_log_shows_gpu_offload(log_text: str) -> bool | None:
@@ -5810,6 +5824,7 @@ def validate_server(
         _gpu_kinds = _GPU_INSTALL_KINDS
         if install_kind is not None:
             _enable_gpu_layers = install_kind in _gpu_kinds
+            _require_gpu_offload = install_kind in _GPU_OFFLOAD_REQUIRED_KINDS
         else:
             # Older call sites that don't pass install_kind: keep ROCm
             # hosts in the GPU-validation path so an AMD-only Linux host
@@ -5820,6 +5835,10 @@ def validate_server(
                 or host.has_rocm
                 or (host.is_macos and host.is_arm64)
             )
+            # macOS Metal is exercised but never *required* (a CPU-only Metal
+            # load is an environment limitation, not a fixable binary fault;
+            # see _GPU_OFFLOAD_REQUIRED_KINDS).
+            _require_gpu_offload = host.has_usable_nvidia or host.has_rocm
         if _enable_gpu_layers:
             command.extend(["--n-gpu-layers", "1"])
 
@@ -5909,15 +5928,18 @@ def validate_server(
                         + ("\n" + response_body if response_body else "")
                     )
                 if completion_succeeded:
-                    # The server served a completion. When GPU offload was
-                    # requested, confirm the model actually landed on the GPU --
-                    # a binary whose GPU backend failed to load (CPU-only build,
-                    # unresolved cudart64_*/cublas64_* DLLs on Windows, or a
-                    # PTX-only build on an older driver) still serves HTTP 200
-                    # from CPU, and accepting it ships a silently CPU-only
-                    # install (#5807, #5106). Reject so the resolver advances to
-                    # the next bundle / source build instead of stopping here.
-                    if _enable_gpu_layers:
+                    # The server served a completion. When GPU offload is
+                    # *required* (CUDA / ROCm / HIP -- see
+                    # _GPU_OFFLOAD_REQUIRED_KINDS), confirm the model actually
+                    # landed on the GPU: a binary whose GPU backend failed to
+                    # load (CPU-only build, unresolved cudart64_*/cublas64_*
+                    # DLLs on Windows, or a PTX-only build on an older driver)
+                    # still serves HTTP 200 from CPU, and accepting it ships a
+                    # silently CPU-only install (#5807, #5106). Reject so the
+                    # resolver advances to the next bundle / source build. macOS
+                    # Metal is intentionally excluded: a CPU-only Metal load is
+                    # an unfixable environment limitation, not a bad binary.
+                    if _require_gpu_offload:
                         log_handle.flush()
                         offload = server_log_shows_gpu_offload(read_full_log(log_path))
                         if offload is False:
@@ -6736,7 +6758,10 @@ def existing_gpu_install_offloads(
     "reinstall/restart keeps the silently CPU-only binary" path (#5807): without
     it, a metadata match short-circuits the new offload validation entirely."""
     choice = plan.attempts[0]
-    if choice.install_kind not in _GPU_INSTALL_KINDS:
+    # Only re-validate kinds whose CPU-only load is a fixable fault. macOS Metal
+    # is exempt (a CPU-only load is unfixable, see _GPU_OFFLOAD_REQUIRED_KINDS),
+    # so it keeps the existing install without a per-restart smoke test.
+    if choice.install_kind not in _GPU_OFFLOAD_REQUIRED_KINDS:
         return True
     server_name = "llama-server.exe" if host.is_windows else "llama-server"
     try:
@@ -6804,12 +6829,15 @@ def install_prebuilt(
                     published_repo,
                     published_release_tag,
                 )
-            # Non-GPU match: keep the fast path (no probe download). A GPU match
-            # must still be smoke-tested below, so it does not short-circuit here.
+            # Non-(offload-required) match: keep the fast path (no probe
+            # download). A CUDA/ROCm/HIP match must still be smoke-tested below,
+            # so it does not short-circuit here; macOS Metal (not offload
+            # required) keeps the fast path.
             if (
                 release_plans
                 and existing_install_matches_plan(install_dir, host, release_plans[0])
-                and release_plans[0].attempts[0].install_kind not in _GPU_INSTALL_KINDS
+                and release_plans[0].attempts[0].install_kind
+                not in _GPU_OFFLOAD_REQUIRED_KINDS
             ):
                 current = release_plans[0]
                 log(
@@ -6905,9 +6933,9 @@ def install_prebuilt(
 
 def resolve_smoke_test_install_kind(host: HostInfo) -> str:
     """Best-effort install_kind for a post-build GPU smoke test, derived from
-    the host. setup.sh / setup.ps1 can override with --install-kind. GPU kinds
-    (in _GPU_INSTALL_KINDS) make the smoke test require real GPU offload; CPU
-    kinds skip that check."""
+    the host. setup.sh / setup.ps1 can override with --install-kind. Offload-
+    required kinds (in _GPU_OFFLOAD_REQUIRED_KINDS) make the smoke test require
+    real GPU offload; CPU kinds and macOS Metal skip that check."""
     if host.is_macos and host.is_arm64:
         return "macos-arm64"
     if host.has_rocm:
@@ -6944,9 +6972,11 @@ def smoke_test_server_binary(
         Path(install_dir).expanduser().resolve() if install_dir else server_path.parent
     )
     resolved_kind = install_kind or resolve_smoke_test_install_kind(host)
-    # For a GPU kind, the CLI contract is "0 = offload confirmed", so an
-    # inconclusive (no-signal) log must not pass -- require a positive signal.
-    require_signal = resolved_kind in _GPU_INSTALL_KINDS
+    # For an offload-required kind (CUDA/ROCm/HIP), the CLI contract is
+    # "0 = offload confirmed", so an inconclusive (no-signal) log must not pass
+    # -- require a positive signal. macOS Metal is exempt (see
+    # _GPU_OFFLOAD_REQUIRED_KINDS): it only needs to load and serve.
+    require_signal = resolved_kind in _GPU_OFFLOAD_REQUIRED_KINDS
     if probe:
         probe_path = Path(probe).expanduser().resolve()
         if not probe_path.exists():
@@ -7205,7 +7235,7 @@ def main() -> int:
             # build rather than downgrading it on uncertain evidence.
             log(f"smoke-test inconclusive: {exc}")
             return EXIT_ERROR
-        if resolved_kind in _GPU_INSTALL_KINDS:
+        if resolved_kind in _GPU_OFFLOAD_REQUIRED_KINDS:
             log(
                 f"smoke-test passed: {args.smoke_test} "
                 f"(install_kind={resolved_kind}) offloaded to the GPU"

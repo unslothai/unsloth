@@ -434,6 +434,40 @@ def test_rocm_cpu_only_rejected(patched_server, tmp_path):
         _run_validate(tmp_path, rocm_host(), "linux-rocm")
 
 
+def test_macos_metal_not_in_offload_required_kinds():
+    # macos-arm64 ships a GPU backend (Metal) and is launched with
+    # --n-gpu-layers, but a CPU-only Metal load is an unfixable environment
+    # limitation, so it must NOT be in the offload-required (reject) set.
+    assert "macos-arm64" in M._GPU_INSTALL_KINDS
+    assert "macos-arm64" not in M._GPU_OFFLOAD_REQUIRED_KINDS
+
+
+def test_macos_metal_cpu_only_not_rejected(patched_server, tmp_path):
+    # The macOS regression in #5858 CI: GitHub macOS runners have no usable
+    # Metal, so the macos-arm64 prebuilt loads on CPU. It must be accepted, not
+    # rejected into a source build that also runs on CPU and breaks the install.
+    patched_server(CPU_ONLY_DEVICE_INFO_LOG)
+    _run_validate(tmp_path, macos_arm_host(), "macos-arm64")  # no raise
+
+
+def test_smoke_test_macos_metal_cpu_only_passes(patched_server, tmp_path):
+    # The smoke-test CLI must also accept a CPU-only macOS Metal load (exit 0),
+    # so setup.sh does not pointlessly retry a CPU source build on a Mac.
+    patched_server(CPU_ONLY_DEVICE_INFO_LOG)
+    server = tmp_path / "llama-server"
+    server.write_text("#!/bin/sh\n")
+    probe = tmp_path / "probe.gguf"
+    probe.write_bytes(b"GGUF")
+    # No raise -> the CLI maps this to EXIT_SUCCESS.
+    smoke_test_server_binary(
+        str(server),
+        macos_arm_host(),
+        install_dir = str(tmp_path),
+        probe = str(probe),
+        install_kind = "macos-arm64",
+    )
+
+
 # -- 4. smoke_test_server_binary ---------------------------------------------
 
 
