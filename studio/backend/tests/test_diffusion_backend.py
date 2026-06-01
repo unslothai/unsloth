@@ -2181,18 +2181,14 @@ def test_materialize_gguf_embedding_parameters_dequantizes_logical_shape(monkeyp
 
     import core.inference.diffusion as d
 
-    fake_utils = types.ModuleType("diffusers.quantizers.gguf.utils")
     calls: list[Any] = []
 
-    def _fake_dequantize_gguf_tensor(weight):
+    def _fake_dequantize_gguf_parameter(weight, dtype = None):
         calls.append(weight)
-        return torch.arange(6, dtype = torch.float32).reshape(2, 3)
+        assert dtype is torch.bfloat16
+        return torch.arange(6, dtype = torch.bfloat16).reshape(2, 3)
 
-    fake_utils.dequantize_gguf_tensor = _fake_dequantize_gguf_tensor
-    monkeypatch.setitem(sys.modules, "diffusers", types.ModuleType("diffusers"))
-    monkeypatch.setitem(sys.modules, "diffusers.quantizers", types.ModuleType("diffusers.quantizers"))
-    monkeypatch.setitem(sys.modules, "diffusers.quantizers.gguf", types.ModuleType("diffusers.quantizers.gguf"))
-    monkeypatch.setitem(sys.modules, "diffusers.quantizers.gguf.utils", fake_utils)
+    monkeypatch.setattr(d, "_dequantize_diffusers_gguf_parameter", _fake_dequantize_gguf_parameter)
 
     root = torch.nn.Sequential(torch.nn.Embedding(2, 6))
     raw_weight = torch.nn.Parameter(torch.zeros(2, 6, dtype = torch.uint8), requires_grad = False)
@@ -2327,6 +2323,52 @@ def test_replace_gguf_embedding_parameters_wraps_lazy_module(monkeypatch):
         out,
         torch.tensor([[[40.0, 41.0], [20.0, 21.0], [40.0, 41.0]]]),
     )
+
+
+def test_replace_gguf_embedding_parameters_materializes_unknown_shape_with_shared_dequant(
+    monkeypatch,
+):
+    import torch
+
+    import core.inference.diffusion as d
+    import core.inference.gguf_text_encoder as g
+
+    calls: list[dict[str, Any]] = []
+
+    def fake_dequant(qweight, quant_type, *, dtype = None, logical_shape = None):
+        calls.append(
+            {
+                "qweight": qweight.clone(),
+                "quant_type": quant_type,
+                "dtype": dtype,
+                "logical_shape": logical_shape,
+            }
+        )
+        return torch.arange(6, dtype = dtype).reshape(2, 3)
+
+    monkeypatch.setattr(g, "_dequantize_gguf_bytes", fake_dequant)
+    embedding = torch.nn.Embedding(2, 6)
+    raw_weight = torch.nn.Parameter(
+        torch.arange(6, dtype = torch.uint8).reshape(2, 3),
+        requires_grad = False,
+    )
+    raw_weight.quant_type = "IQ1_M"
+    embedding.weight = raw_weight
+    root = torch.nn.Sequential(embedding)
+
+    assert d._replace_gguf_embedding_parameters(root, torch.float32, resident_device = "cpu") == 1
+
+    assert len(calls) == 1
+    torch.testing.assert_close(
+        calls[0]["qweight"],
+        torch.arange(6, dtype = torch.uint8).reshape(2, 3),
+    )
+    assert calls[0]["quant_type"] == "IQ1_M"
+    assert calls[0]["dtype"] is torch.float32
+    assert calls[0]["logical_shape"] is None
+    assert root[0].weight.shape == (2, 3)
+    assert root[0].weight.dtype is torch.float32
+    assert root[0].weight.requires_grad is False
 
 
 def test_replace_gguf_norm_parameters_wraps_lazy_layer_norm(monkeypatch):

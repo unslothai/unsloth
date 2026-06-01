@@ -5446,13 +5446,6 @@ def _materialize_gguf_embedding_parameters(root: Any, dtype: Any = None) -> int:
     import torch
 
     target_dtype = dtype if isinstance(dtype, torch.dtype) else None
-    try:
-        from diffusers.quantizers.gguf.utils import dequantize_gguf_tensor
-    except Exception as exc:  # pragma: no cover - only hit when deps are broken
-        dequantize_gguf_tensor = None
-        import_error = exc
-    else:
-        import_error = None
 
     materialized = 0
     for module in root.modules():
@@ -5461,14 +5454,7 @@ def _materialize_gguf_embedding_parameters(root: Any, dtype: Any = None) -> int:
         weight = getattr(module, "weight", None)
         if weight is None or not hasattr(weight, "quant_type"):
             continue
-        if dequantize_gguf_tensor is None:
-            raise RuntimeError(
-                "Diffusion GGUF embedding materialization requires "
-                "diffusers.quantizers.gguf.utils.dequantize_gguf_tensor."
-            ) from import_error
-        dense_weight = dequantize_gguf_tensor(weight)
-        if target_dtype is not None and dense_weight.is_floating_point():
-            dense_weight = dense_weight.to(dtype = target_dtype)
+        dense_weight = _dequantize_diffusers_gguf_parameter(weight, target_dtype)
         module.weight = torch.nn.Parameter(
             dense_weight.contiguous(),
             requires_grad = False,
@@ -5771,16 +5757,17 @@ def _dequantize_diffusers_gguf_parameter(weight: Any, dtype: Any = None) -> torc
     import torch
 
     try:
-        from diffusers.quantizers.gguf.utils import dequantize_gguf_tensor
+        from .gguf_text_encoder import _dequantize_gguf_bytes
     except Exception as exc:  # pragma: no cover - dependency guard
-        raise RuntimeError(
-            "Diffusion GGUF parameter materialization requires "
-            "diffusers.quantizers.gguf.utils.dequantize_gguf_tensor."
-        ) from exc
-    dense = dequantize_gguf_tensor(weight)
-    if isinstance(dtype, torch.dtype) and dense.is_floating_point():
-        dense = dense.to(dtype = dtype)
-    return dense.contiguous()
+        raise RuntimeError("Diffusion GGUF parameter materialization requires Studio GGUF helpers.") from exc
+
+    target_dtype = dtype if isinstance(dtype, torch.dtype) else None
+    return _dequantize_gguf_bytes(
+        _plain_tensor_from_gguf_parameter(weight),
+        getattr(weight, "quant_type"),
+        dtype = target_dtype,
+        logical_shape = _gguf_parameter_logical_shape(weight),
+    ).contiguous()
 
 
 def _replace_gguf_norm_parameters(
