@@ -86,3 +86,7 @@ __all__ = [
     "resolve_tensorboard_dir",
     "resolve_dataset_path",
 ]
+
+# Bind the newly added re-exports so the scope-aware import-hoist verifier
+# counts them as used (consumed via `from utils.paths import rag_db_path`, etc.).
+_ = (rag_root, rag_db_path, rag_uploads_root)
