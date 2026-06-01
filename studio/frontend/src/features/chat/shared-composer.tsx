@@ -1395,7 +1395,9 @@ export function SharedComposer({
                   effectiveReasoningEnabled,
                 })}
               >
-                <BulbIcon className="size-[15px]" />
+                <PillGlyph>
+                  <BulbIcon className="size-[15px]" />
+                </PillGlyph>
                 {thinkingActiveLook ? <span>Thinking</span> : null}
               </button>
             )

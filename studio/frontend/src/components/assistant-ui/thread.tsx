@@ -1165,7 +1165,9 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
         effectiveReasoningEnabled,
       })}
     >
-      <ThinkIcon />
+      <PillGlyph>
+        <ThinkIcon />
+      </PillGlyph>
       {activeLook ? <span>Thinking</span> : null}
     </button>
   );

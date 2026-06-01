@@ -838,11 +838,13 @@
 	}
 
 	/* Hovering an active pill swaps the icon for an X (click to turn off). */
-	.composer-pill-btn[data-active="true"]:hover .composer-pill-glyph > :not(.composer-pill-x) {
+	.composer-pill-btn[data-active="true"]:hover .composer-pill-glyph > :not(.composer-pill-x),
+	.unsloth-thinking-pill[data-active="true"]:hover .composer-pill-glyph > :not(.composer-pill-x) {
 		@apply opacity-0;
 	}
 
-	.composer-pill-btn[data-active="true"]:hover .composer-pill-x {
+	.composer-pill-btn[data-active="true"]:hover .composer-pill-x,
+	.unsloth-thinking-pill[data-active="true"]:hover .composer-pill-x {
 		@apply opacity-100;
 	}
 
@@ -974,7 +976,7 @@
 
 	/* Right-side Thinking pill (toggle or dropdown). */
 	.unsloth-thinking-pill {
-		@apply inline-flex shrink-0 cursor-pointer items-center gap-1 rounded-full px-2.5 py-1.5 text-[14px] font-medium text-muted-foreground transition-colors hover:bg-muted-foreground/10 disabled:cursor-not-allowed disabled:opacity-40;
+		@apply inline-flex shrink-0 cursor-pointer items-center gap-1 rounded-full px-2.5 py-1.5 text-[14px] font-medium text-muted-foreground transition-colors hover:bg-primary/10 dark:hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-40;
 	}
 
 	.unsloth-thinking-pill[data-active="true"] {
@@ -1024,6 +1026,14 @@
 
 	.unsloth-plus-menu [data-slot="dropdown-menu-label"] {
 		@apply pl-4 pr-3 py-1.5 text-[12px];
+	}
+
+	/* Light hover: neutral grey, not the green accent. */
+	.unsloth-plus-menu :is(
+			[data-slot="dropdown-menu-item"],
+			[data-slot="dropdown-menu-sub-trigger"]
+		):is(:hover, :focus, :focus-visible, [data-highlighted], [data-state="open"]) {
+		background-color: rgba(0, 0, 0, 0.06) !important;
 	}
 
 	/* Dark hover: the accent nearly matches the surface, so use a clear overlay. */
