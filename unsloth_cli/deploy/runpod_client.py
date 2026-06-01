@@ -314,9 +314,8 @@ class RunPod(Provider):
         log: Callable[[str], None] = lambda _msg: None,
     ) -> StagedModel:
         """Create a network volume, upload `local_path` onto it over S3, and
-        return the on-volume path the pod will load from. No SSH, and nothing
-        leaves RunPod. The pod that mounts this volume must be pinned to
-        `placement` (its datacenter)."""
+        return the on-volume path the pod loads from. The pod must be pinned to
+        the returned `placement` (the volume's datacenter)."""
         if not (self._s3_access_key and self._s3_secret_key):
             raise DeployError(
                 "Uploading a local model needs RunPod S3 credentials.\n"

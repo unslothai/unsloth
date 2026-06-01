@@ -3,11 +3,9 @@
 
 """Launch Unsloth Studio on a cloud provider.
 
-This command layer is provider-agnostic: it talks only to the `Provider`
-contract (deploy/base.py) and checks capability flags, never a concrete cloud's
-internals. Provider-specific credentials/settings are declared by each provider
-(`option_schema`), resolved from --provider-opt / env / saved config here, and
-persisted so they're entered once. See deploy/provider.py to add a cloud.
+Provider-agnostic: talks only to the `Provider` contract (deploy/base.py) and
+checks capability flags. Provider-specific settings are declared per provider
+(`option_schema`) and resolved from --provider-opt / env / saved config here.
 """
 
 from __future__ import annotations
@@ -237,11 +235,10 @@ def _authenticate(
     interactive: bool = False,
     persist: bool = False,
 ) -> Provider:
-    """Resolve the provider's declared options (--provider-opt > env > saved
-    config), prompting for any required ones that are still missing when
-    interactive, then authenticate. When `persist`, save the resolved values so
-    the next run needs no env vars -- only `run` does this, so lifecycle commands
-    like `stop` never write the credential file as a side effect."""
+    """Resolve the provider's options (--provider-opt > env > saved config),
+    prompting for missing required ones when interactive, then authenticate. With
+    `persist`, save them for reuse -- only `run` does this, so `stop` never writes
+    the credential file as a side effect."""
     saved = store.load(provider_cls.name)
     resolved: dict[str, str] = dict(saved)
 
@@ -276,8 +273,8 @@ def _authenticate(
 def _persist_options(
     provider_cls: type[Provider], resolved: dict[str, str], *, previously: dict[str, str],
 ) -> None:
-    """Save resolved options for reuse, noting it the first time something new is
-    stored so the user knows where their credentials now live."""
+    """Save resolved options for reuse, printing the file path the first time
+    anything is stored."""
     keys = {opt.key for opt in provider_cls.option_schema()}
     to_save = {k: v for k, v in resolved.items() if k in keys}
     if not to_save or to_save == previously:
@@ -287,7 +284,7 @@ def _persist_options(
     except OSError:
         return
     if not previously:
-        typer.echo(f"  saved {provider_cls.name} settings to {path} (reused next time)")
+        typer.echo(f"  saved {provider_cls.name} settings to {path}")
 
 
 # ---------------------------------------------------------------------------
@@ -452,9 +449,8 @@ def _pick_gpu(
 
 
 def _stage_local_model(provider: Provider, local: Path, gpu: Gpu) -> StagedModel:
-    """Hand the local model to the provider's storage. The provider prints its
-    own progress (volume creation, upload) through the `log` callback and cleans
-    up after itself on failure."""
+    """Hand the local model to the provider's storage, streaming its progress to
+    the console. The provider cleans up after itself on failure."""
     try:
         return provider.stage_local_model(local, gpu = gpu, log = typer.echo)
     except DeployError as e:

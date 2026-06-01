@@ -1,12 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Persisting provider credentials and settings so they're entered once.
+"""Persist provider credentials/settings so they're entered once.
 
-Each provider declares its options (see `base.Option`); the command layer
-resolves them from ``--provider-opt`` > env var > here, then writes the result
-back via `save`. The file holds API tokens and storage secrets, so it is written
-user-only (chmod 600). Settings are namespaced per provider:
+Saved per provider, user-only (chmod 600) since they hold tokens and secrets:
 
     {"runpod": {"api_key": "rpa_...", "datacenter": "US-KS-2"}}
 """
@@ -45,9 +42,7 @@ def save(provider_name: str, options: dict[str, str]) -> Path:
     path.parent.mkdir(parents = True, exist_ok = True)
     data = _read_all()
     data[provider_name] = {k: v for k, v in options.items() if v}
-    # The directory may hold secrets too; tighten it best-effort, then the file.
-    text = json.dumps(data, indent = 2, sort_keys = True)
-    path.write_text(text, encoding = "utf-8")
+    path.write_text(json.dumps(data, indent = 2, sort_keys = True), encoding = "utf-8")
     try:
         path.chmod(stat.S_IRUSR | stat.S_IWUSR)  # 0600 -- holds tokens/secrets
     except OSError:
