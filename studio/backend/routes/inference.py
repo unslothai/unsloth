@@ -239,6 +239,135 @@ router = APIRouter()
 studio_router = APIRouter()
 
 
+_ARTIFACT_PREVIEW_FRAME_ANCESTORS = "'self' tauri://localhost http://tauri.localhost"
+_ARTIFACT_PREVIEW_FRAME_STRICT_CSP = (
+    "default-src 'none'; "
+    "script-src 'unsafe-inline'; "
+    "style-src 'unsafe-inline'; "
+    "img-src data: blob:; "
+    "font-src data:; "
+    "media-src data: blob:; "
+    "connect-src 'none'; "
+    "object-src 'none'; "
+    "base-uri 'none'; "
+    "form-action 'none'; "
+    f"frame-ancestors {_ARTIFACT_PREVIEW_FRAME_ANCESTORS}; "
+    "sandbox allow-scripts"
+)
+_ARTIFACT_PREVIEW_FRAME_NETWORK_CSP = (
+    "default-src http: https: data: blob:; "
+    "script-src 'unsafe-inline' 'unsafe-eval' http: https: data: blob:; "
+    "script-src-elem 'unsafe-inline' http: https: data: blob:; "
+    "style-src 'unsafe-inline' http: https: data: blob:; "
+    "style-src-elem 'unsafe-inline' http: https: data: blob:; "
+    "img-src http: https: data: blob:; "
+    "font-src http: https: data: blob:; "
+    "media-src http: https: data: blob:; "
+    "connect-src http: https: ws: wss: data: blob:; "
+    "worker-src http: https: blob:; "
+    "object-src 'none'; "
+    "base-uri 'none'; "
+    "form-action 'none'; "
+    f"frame-ancestors {_ARTIFACT_PREVIEW_FRAME_ANCESTORS}; "
+    "sandbox allow-scripts"
+)
+_ARTIFACT_PREVIEW_FRAME_HTML = """<!doctype html>
+<html>
+  <head><meta charset=\"utf-8\" /></head>
+  <body>
+    <script>
+      (() => {
+        const createMemoryStorage = () => {
+          const data = new Map();
+          return {
+            get length() { return data.size; },
+            key: (index) => Array.from(data.keys())[index] ?? null,
+            getItem: (key) => data.has(String(key)) ? data.get(String(key)) : null,
+            setItem: (key, value) => data.set(String(key), String(value)),
+            removeItem: (key) => data.delete(String(key)),
+            clear: () => data.clear(),
+          };
+        };
+        const installStorageFallback = (name) => {
+          try {
+            void window[name];
+            return;
+          } catch {
+            // Opaque-origin sandboxed frames throw SecurityError for Web Storage.
+          }
+          try {
+            Object.defineProperty(window, name, {
+              value: createMemoryStorage(),
+              configurable: true,
+            });
+          } catch {
+            // Leave the sandbox failure contained in the artifact if the
+            // browser refuses to shadow the Web Storage accessor.
+          }
+        };
+        const installStorageFallbacks = () => {
+          installStorageFallback("localStorage");
+          installStorageFallback("sessionStorage");
+        };
+        const render = (html) => {
+          installStorageFallbacks();
+          document.open();
+          document.write(html);
+          document.close();
+        };
+        installStorageFallbacks();
+        window.addEventListener("message", (event) => {
+          const data = event.data;
+          if (!data || data.type !== "unsloth:artifact-html" || typeof data.html !== "string") return;
+          render(data.html);
+        });
+      })();
+    </script>
+  </body>
+</html>"""
+
+
+@studio_router.get("/artifact-preview-frame", include_in_schema = False)
+async def artifact_preview_frame(
+    request: Request,
+    allow_network: bool = False,
+    token: Optional[str] = None,
+):
+    """Serve the opaque sandbox shell used for client-side HTML artifacts."""
+
+    if allow_network:
+        auth_header = request.headers.get("authorization")
+        if auth_header and auth_header.lower().startswith("bearer "):
+            jwt_token = auth_header[7:]
+        elif token:
+            jwt_token = token
+        else:
+            raise HTTPException(
+                status_code = status.HTTP_401_UNAUTHORIZED,
+                detail = "Missing authentication token",
+            )
+        from fastapi.security import HTTPAuthorizationCredentials
+
+        creds = HTTPAuthorizationCredentials(scheme = "Bearer", credentials = jwt_token)
+        await get_current_subject(creds)
+
+    csp = (
+        _ARTIFACT_PREVIEW_FRAME_NETWORK_CSP
+        if allow_network
+        else _ARTIFACT_PREVIEW_FRAME_STRICT_CSP
+    )
+    return Response(
+        content = _ARTIFACT_PREVIEW_FRAME_HTML,
+        media_type = "text/html; charset=utf-8",
+        headers = {
+            "Cache-Control": "no-store",
+            "Content-Security-Policy": csp,
+            "Referrer-Policy": "no-referrer",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
 def _detect_safetensors_features(backend, chat_template: Optional[str]) -> dict:
     """Classify reasoning/tool capabilities via the GGUF classifier so
     flags match across backends. gpt-oss is overridden because Harmony
@@ -419,13 +548,24 @@ async def _await_cancel_then_close(cancel_event, resp) -> None:
         return
 
 
-# Appended to tool-use nudge to discourage plan-without-action
+# Appended to tool-use nudge to discourage plan-without-action.
+# Keep render_html guidance gated to turns where the artifact tool is actually
+# present in the tool schema; otherwise small local models can hallucinate a
+# missing tool call instead of following the fenced-HTML fallback prompt.
 _TOOL_ACTION_NUDGE = (
     " IMPORTANT: Always call tools directly -- never write code yourself."
     " Never describe what you plan to do -- just call the tool immediately."
-    " For any code request, call the python tool. For any factual question, call web_search."
-    " Do NOT output code blocks -- use the python tool instead."
+    " For non-artifact code requests, call the python tool when it is available."
+    " For factual questions that require current information, call web_search when it is available."
+    " Do NOT output raw code blocks when an enabled tool can satisfy the request."
 )
+_ARTIFACT_TOOL_ACTION_NUDGE = (
+    " For HTML, CSS, or JavaScript artifact requests, call render_html once when "
+    "it is available. After render_html succeeds, do not call it again in the "
+    "same response unless the user asks for changes. Future user requests for "
+    "new artifacts may call render_html once."
+)
+
 
 # RAG variant: when the chat has attached documents, relevant passages are
 # retrieved and injected before the model answers, so the action nudge must not
@@ -438,6 +578,11 @@ _TOOL_ACTION_NUDGE_RAG = (
     " them, and only call web_search when the documents do not contain the answer."
     " Do NOT output code blocks -- use the python tool instead."
 )
+
+
+def _tool_action_nudge(has_artifact: bool, rag_active: bool = False) -> str:
+    base = _TOOL_ACTION_NUDGE_RAG if rag_active else _TOOL_ACTION_NUDGE
+    return base + (_ARTIFACT_TOOL_ACTION_NUDGE if has_artifact else "")
 
 # Strip tool-call XML the speculative buffer in core/inference/llama_cpp.py
 # split across the visible/DRAIN boundary. Four leak shapes:
@@ -2718,6 +2863,7 @@ async def openai_chat_completions(
             _tool_names = {t["function"]["name"] for t in tools_to_use}
             _has_web = "web_search" in _tool_names
             _has_code = "python" in _tool_names or "terminal" in _tool_names
+            _has_artifact = "render_html" in _tool_names
 
             _date_line = f"The current date is {_date.today().isoformat()}."
 
@@ -2739,28 +2885,28 @@ async def openai_chat_completions(
                 "Use code execution for math, calculations, data processing, "
                 "or to parse and analyze information from tool results."
             )
+            _artifact_tips = (
+                "Use render_html for HTML, CSS, or JavaScript artifact requests "
+                "with one complete self-contained HTML document in the code argument. "
+                "Call it once, then do not call it again in the same response unless "
+                "the user asks for changes. Future user requests for new artifacts may "
+                "call render_html once."
+            )
 
-            if _has_web and _has_code:
+            _tool_tip_parts = []
+            if _has_web:
+                _tool_tip_parts.append(_web_tips)
+            if _has_code:
+                _tool_tip_parts.append(_code_tips)
+            if _has_artifact:
+                _tool_tip_parts.append(_artifact_tips)
+
+            if _tool_tip_parts:
                 _nudge = (
                     _date_line + " "
                     "You have access to tools. When appropriate, prefer using "
                     "tools rather than answering from memory. "
-                    + _web_tips
-                    + " "
-                    + _code_tips
-                )
-            elif _has_code:
-                _nudge = (
-                    _date_line + " "
-                    "You have access to tools. When appropriate, prefer using "
-                    "code execution rather than answering from memory. " + _code_tips
-                )
-            elif _has_web:
-                _nudge = (
-                    _date_line + " "
-                    "You have access to tools. When appropriate, prefer using "
-                    "web search for up-to-date or uncertain factual "
-                    "information rather than answering from memory. " + _web_tips
+                    + " ".join(_tool_tip_parts)
                 )
             else:
                 _nudge = ""
@@ -2782,7 +2928,7 @@ async def openai_chat_completions(
                 )
 
             if _nudge:
-                _nudge += _TOOL_ACTION_NUDGE_RAG if _rag_active else _TOOL_ACTION_NUDGE
+                _nudge += _tool_action_nudge(_has_artifact, _rag_active)
                 # Append nudge to system prompt (preserve user's prompt)
                 if system_prompt:
                     system_prompt = system_prompt.rstrip() + "\n\n" + _nudge
@@ -3266,6 +3412,7 @@ async def openai_chat_completions(
         _sf_tool_names = {t["function"]["name"] for t in _sf_tools_to_use}
         _sf_has_web = "web_search" in _sf_tool_names
         _sf_has_code = "python" in _sf_tool_names or "terminal" in _sf_tool_names
+        _sf_has_artifact = "render_html" in _sf_tool_names
 
         _sf_date_line = f"The current date is {_date.today().isoformat()}."
         _sf_model_size_b = _extract_model_size_b(model_name)
@@ -3284,28 +3431,28 @@ async def openai_chat_completions(
             "Use code execution for math, calculations, data processing, "
             "or to parse and analyze information from tool results."
         )
+        _sf_artifact_tips = (
+            "Use render_html for HTML, CSS, or JavaScript artifact requests "
+            "with one complete self-contained HTML document in the code argument. "
+            "Call it once, then do not call it again in the same response unless "
+            "the user asks for changes. Future user requests for new artifacts may "
+            "call render_html once."
+        )
 
-        if _sf_has_web and _sf_has_code:
+        _sf_tool_tip_parts = []
+        if _sf_has_web:
+            _sf_tool_tip_parts.append(_sf_web_tips)
+        if _sf_has_code:
+            _sf_tool_tip_parts.append(_sf_code_tips)
+        if _sf_has_artifact:
+            _sf_tool_tip_parts.append(_sf_artifact_tips)
+
+        if _sf_tool_tip_parts:
             _sf_nudge = (
                 _sf_date_line + " "
                 "You have access to tools. When appropriate, prefer using "
                 "tools rather than answering from memory. "
-                + _sf_web_tips
-                + " "
-                + _sf_code_tips
-            )
-        elif _sf_has_code:
-            _sf_nudge = (
-                _sf_date_line + " "
-                "You have access to tools. When appropriate, prefer using "
-                "code execution rather than answering from memory. " + _sf_code_tips
-            )
-        elif _sf_has_web:
-            _sf_nudge = (
-                _sf_date_line + " "
-                "You have access to tools. When appropriate, prefer using "
-                "web search for up-to-date or uncertain factual "
-                "information rather than answering from memory. " + _sf_web_tips
+                + " ".join(_sf_tool_tip_parts)
             )
         else:
             _sf_nudge = ""
@@ -3328,7 +3475,7 @@ async def openai_chat_completions(
 
         _sf_system_prompt = system_prompt
         if _sf_nudge:
-            _sf_nudge += _TOOL_ACTION_NUDGE_RAG if _sf_rag_active else _TOOL_ACTION_NUDGE
+            _sf_nudge += _tool_action_nudge(_sf_has_artifact, _sf_rag_active)
             if _sf_system_prompt:
                 _sf_system_prompt = _sf_system_prompt.rstrip() + "\n\n" + _sf_nudge
             else:
@@ -4976,6 +5123,7 @@ async def anthropic_messages(
         _tool_names = {t["function"]["name"] for t in openai_tools}
         _has_web = "web_search" in _tool_names
         _has_code = "python" in _tool_names or "terminal" in _tool_names
+        _has_artifact = "render_html" in _tool_names
 
         _date_line = f"The current date is {_date.today().isoformat()}."
         _model_size_b = _extract_model_size_b(model_name)
@@ -4994,34 +5142,33 @@ async def anthropic_messages(
             "Use code execution for math, calculations, data processing, "
             "or to parse and analyze information from tool results."
         )
+        _artifact_tips = (
+            "Use render_html for HTML, CSS, or JavaScript artifact requests "
+            "with one complete self-contained HTML document in the code argument. "
+            "Call it once, then do not call it again in the same response unless "
+            "the user asks for changes. Future user requests for new artifacts may "
+            "call render_html once."
+        )
 
-        if _has_web and _has_code:
+        _tool_tip_parts = []
+        if _has_web:
+            _tool_tip_parts.append(_web_tips)
+        if _has_code:
+            _tool_tip_parts.append(_code_tips)
+        if _has_artifact:
+            _tool_tip_parts.append(_artifact_tips)
+
+        if _tool_tip_parts:
             _nudge = (
                 _date_line + " "
                 "You have access to tools. When appropriate, prefer using "
-                "tools rather than answering from memory. "
-                + _web_tips
-                + " "
-                + _code_tips
-            )
-        elif _has_code:
-            _nudge = (
-                _date_line + " "
-                "You have access to tools. When appropriate, prefer using "
-                "code execution rather than answering from memory. " + _code_tips
-            )
-        elif _has_web:
-            _nudge = (
-                _date_line + " "
-                "You have access to tools. When appropriate, prefer using "
-                "web search for up-to-date or uncertain factual "
-                "information rather than answering from memory. " + _web_tips
+                "tools rather than answering from memory. " + " ".join(_tool_tip_parts)
             )
         else:
             _nudge = ""
 
         if _nudge:
-            _nudge += _TOOL_ACTION_NUDGE
+            _nudge += _tool_action_nudge(_has_artifact)
             # Inject into system prompt
             if openai_messages and openai_messages[0].get("role") == "system":
                 openai_messages[0]["content"] = (
@@ -5211,6 +5358,7 @@ async def _anthropic_tool_non_streaming(run_gen, message_id, model_name):
     baseline, not against turn N's final length.
     """
     content_blocks: list = []
+    tool_blocks_by_id: dict[str, AnthropicResponseToolUseBlock] = {}
     usage = {}
     prev_text = ""
 
@@ -5229,13 +5377,25 @@ async def _anthropic_tool_non_streaming(run_gen, message_id, model_name):
                 else:
                     content_blocks.append(AnthropicResponseTextBlock(text = new))
         elif etype == "tool_start":
-            content_blocks.append(
-                AnthropicResponseToolUseBlock(
-                    id = event["tool_call_id"],
-                    name = event["tool_name"],
-                    input = event.get("arguments", {}),
-                )
+            tool_call_id = event["tool_call_id"]
+            arguments = event.get("arguments", {})
+            existing_tool_block = (
+                tool_blocks_by_id.get(tool_call_id) if tool_call_id else None
             )
+            if existing_tool_block is not None:
+                if arguments or not existing_tool_block.input:
+                    existing_tool_block.input = arguments
+                if event.get("tool_name") and not existing_tool_block.name:
+                    existing_tool_block.name = event["tool_name"]
+            else:
+                tool_block = AnthropicResponseToolUseBlock(
+                    id = tool_call_id,
+                    name = event["tool_name"],
+                    input = arguments,
+                )
+                if tool_call_id:
+                    tool_blocks_by_id[tool_call_id] = tool_block
+                content_blocks.append(tool_block)
         elif etype == "tool_end":
             prev_text = ""
         elif etype == "metadata":

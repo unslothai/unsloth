@@ -518,6 +518,34 @@ TERMINAL_TOOL = {
     },
 }
 
+RENDER_HTML_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "render_html",
+        "description": (
+            "Render a self-contained HTML/CSS/JavaScript artifact for the user. "
+            "Call this at most once per assistant response unless the user "
+            "explicitly asks for changes in that response. Future user requests "
+            "for new artifacts may call render_html once. Put the entire document "
+            "in code, including any CSS in <style> tags and JavaScript in <script> tags."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "code": {
+                    "type": "string",
+                    "description": "A complete self-contained HTML document.",
+                },
+                "title": {
+                    "type": "string",
+                    "description": "Short display title for the artifact.",
+                },
+            },
+            "required": ["code"],
+        },
+    },
+}
+
 # RAG retrieval tool. Spec duplicated here (not imported from core.rag.tool) so
 # the tool registry never pulls in the RAG stack; dispatch imports it lazily.
 SEARCH_KNOWLEDGE_BASE_TOOL = {
@@ -546,7 +574,13 @@ SEARCH_KNOWLEDGE_BASE_TOOL = {
     },
 }
 
-ALL_TOOLS = [WEB_SEARCH_TOOL, PYTHON_TOOL, TERMINAL_TOOL, SEARCH_KNOWLEDGE_BASE_TOOL]
+ALL_TOOLS = [
+    WEB_SEARCH_TOOL,
+    PYTHON_TOOL,
+    TERMINAL_TOOL,
+    RENDER_HTML_TOOL,
+    SEARCH_KNOWLEDGE_BASE_TOOL,
+]
 
 
 # OpenAI's function.name regex: ^[a-zA-Z0-9_-]{1,64}$ -- enforced before
@@ -640,6 +674,25 @@ async def get_enabled_mcp_tools() -> list[dict]:
 _TIMEOUT_UNSET = object()
 
 
+def _render_html_result(arguments: dict) -> str:
+    code = arguments.get("code")
+    if not isinstance(code, str) or not code.strip():
+        return "Error: render_html requires a non-empty code string."
+    title = arguments.get("title")
+    if isinstance(title, str) and title.strip():
+        safe_title = title.strip()[:120]
+        return (
+            f"Rendered HTML artifact: {safe_title}. Do not call render_html "
+            "again in this response unless the user asks for changes. For a later "
+            "user request for a new artifact, call render_html once."
+        )
+    return (
+        "Rendered HTML artifact. Do not call render_html again in this response "
+        "unless the user asks for changes. For a later user request for a new "
+        "artifact, call render_html once."
+    )
+
+
 def execute_tool(
     name: str,
     arguments: dict,
@@ -662,6 +715,8 @@ def execute_tool(
     effective_timeout = _EXEC_TIMEOUT if timeout is _TIMEOUT_UNSET else timeout
     if name == "search_knowledge_base":
         return _search_knowledge_base(arguments, rag_scope)
+    if name == "render_html":
+        return _render_html_result(arguments)
     if name.startswith(MCP_TOOL_PREFIX):
         try:
             _, server_id, tool_name = name.split("__", 2)

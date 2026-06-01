@@ -83,7 +83,6 @@ import {
   toPresetParams,
 } from "./presets/preset-policy";
 import {
-  EXTERNAL_MAX_OUTPUT_TOKENS,
   type ProviderCapabilities,
   getExternalMaxOutputTokens,
   getExternalMinOutputTokens,
@@ -439,16 +438,6 @@ export function ChatSettingsPanel({
     (s) => s.modelRequiresTrustRemoteCode,
   );
   const currentCheckpoint = params.checkpoint;
-  const currentModelIsMultimodal = useChatRuntimeStore((s) => {
-    if (s.loadedIsMultimodal) return true;
-    const m = s.models.find((m) => m.id === currentCheckpoint);
-    return (
-      Boolean(m?.isVision) ||
-      Boolean(m?.isAudio) ||
-      Boolean(m?.hasAudioInput) ||
-      m?.audioType === "audio_vlm"
-    );
-  });
   const ggufContextLength = useChatRuntimeStore((s) => s.ggufContextLength);
   const ggufMaxContextLength = useChatRuntimeStore(
     (s) => s.ggufMaxContextLength,
