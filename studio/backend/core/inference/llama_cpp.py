@@ -4316,7 +4316,7 @@ class LlamaCppBackend:
             if isinstance(timeout_ext, dict):
                 timeout_ext["read"] = read_timeout_s
         except Exception:
-            logger.debug("Could not lower response read timeout", exc_info=True)
+            logger.debug("Could not lower response read timeout", exc_info = True)
 
     @staticmethod
     @contextlib.contextmanager

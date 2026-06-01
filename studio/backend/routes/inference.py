@@ -6140,7 +6140,7 @@ async def _openai_passthrough_stream(
                     "error": {
                         "message": _friendly_error(
                             e,
-                            timeout_phase=(
+                            timeout_phase = (
                                 "stream" if first_chunk_seen else "first_token"
                             ),
                         ),
