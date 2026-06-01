@@ -250,6 +250,35 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         aliases = ("flux2-dev", "flux-2-dev", "flux.2.dev"),
     ),
     DiffusionFamily(
+        name = "flux.1-kontext",
+        pipeline_class = "FluxKontextPipeline",
+        transformer_class = "FluxTransformer2DModel",
+        base_repo = "black-forest-labs/FLUX.1-Kontext-dev",
+        requires_image_input = True,
+        aliases = (
+            "flux1-kontext",
+            "flux1-kontext-dev",
+            "flux-1-kontext",
+            "flux-1-kontext-dev",
+            "flux.1.kontext",
+            "flux.1.kontext.dev",
+        ),
+    ),
+    DiffusionFamily(
+        name = "flux.1-schnell",
+        pipeline_class = "FluxPipeline",
+        transformer_class = "FluxTransformer2DModel",
+        base_repo = "black-forest-labs/FLUX.1-schnell",
+        default_steps = 4,
+        default_guidance_scale = 0.0,
+        aliases = (
+            "flux1-schnell",
+            "flux-1-schnell",
+            "flux.1.schnell",
+            "flux-schnell",
+        ),
+    ),
+    DiffusionFamily(
         name = "flux.1",
         pipeline_class = "FluxPipeline",
         transformer_class = "FluxTransformer2DModel",
@@ -631,6 +660,7 @@ class _DiffusionGGUFKeySignature:
 
 _DIFFUSION_GGUF_IMAGE_ARCHITECTURES = frozenset(
     {
+        "ernie_image",
         "flux",
         "qwen_image",
         "sd3",
@@ -646,14 +676,26 @@ _DIFFUSION_GGUF_SIGNATURES: tuple[_DiffusionGGUFKeySignature, ...] = (
         name = "flux_comfy",
         architecture = "flux",
         layout = "comfy",
-        family_hints = ("flux.1", "flux.2", "flux.2-klein"),
+        family_hints = (
+            "flux.1",
+            "flux.1-kontext",
+            "flux.1-schnell",
+            "flux.2",
+            "flux.2-klein",
+        ),
         required = ("double_blocks.0.img_attn.proj.weight",),
     ),
     _DiffusionGGUFKeySignature(
         name = "flux_diffusers",
         architecture = "flux",
         layout = "diffusers",
-        family_hints = ("flux.1", "flux.2", "flux.2-klein"),
+        family_hints = (
+            "flux.1",
+            "flux.1-kontext",
+            "flux.1-schnell",
+            "flux.2",
+            "flux.2-klein",
+        ),
         required = ("transformer_blocks.0.attn.norm_added_k.weight",),
     ),
     _DiffusionGGUFKeySignature(
@@ -662,6 +704,17 @@ _DIFFUSION_GGUF_SIGNATURES: tuple[_DiffusionGGUFKeySignature, ...] = (
         layout = "comfy",
         family_hints = ("z-image", "z-image-turbo"),
         required = ("noise_refiner.0.attention.norm_k.weight",),
+    ),
+    _DiffusionGGUFKeySignature(
+        name = "ernie_image",
+        architecture = "ernie_image",
+        layout = "diffusers",
+        family_hints = ("ernie-image", "ernie-image-turbo"),
+        required = (
+            "adaLN_modulation.1.weight",
+            "layers.0.self_attention.to_q.weight",
+            "layers.0.self_attention.to_out.0.weight",
+        ),
     ),
     _DiffusionGGUFKeySignature(
         name = "sd3_comfy",
@@ -706,7 +759,13 @@ _DIFFUSION_GGUF_SIGNATURES: tuple[_DiffusionGGUFKeySignature, ...] = (
 
 
 _GGUF_ARCHITECTURE_FAMILY_HINTS: dict[str, tuple[str, ...]] = {
-    "flux": ("flux.1", "flux.2", "flux.2-klein"),
+    "flux": (
+        "flux.1",
+        "flux.1-kontext",
+        "flux.1-schnell",
+        "flux.2",
+        "flux.2-klein",
+    ),
     "qwen_image": (
         "qwen-image",
         "qwen-image-2512",
@@ -718,6 +777,7 @@ _GGUF_ARCHITECTURE_FAMILY_HINTS: dict[str, tuple[str, ...]] = {
     "sd3": ("stable-diffusion-3",),
     "sdxl": ("stable-diffusion-xl",),
     "z_image": ("z-image", "z-image-turbo"),
+    "ernie_image": ("ernie-image", "ernie-image-turbo"),
     "wan": ("wan2-2-t2v",),
     "ltxv": ("ltx2-3-distilled",),
 }
@@ -773,6 +833,32 @@ def _inspect_diffusion_gguf_tensor_names(
                 warnings.append(
                     f"architecture_conflict:metadata={architecture},signature={signature_arch}"
                 )
+        if len(unique_signature_arches) == 1 and unique_signature_arches[0] != architecture:
+            signature_arch = unique_signature_arches[0]
+            should_prefer_signature = (
+                architecture == "wan"
+                and signature_arch == "ernie_image"
+            ) or architecture not in _DIFFUSION_GGUF_IMAGE_ARCHITECTURES
+            if should_prefer_signature:
+                metadata_hints = _GGUF_ARCHITECTURE_FAMILY_HINTS.get(architecture, ())
+                if metadata_hints:
+                    family_hints = [
+                        hint
+                        for hint in family_hints
+                        if hint not in metadata_hints
+                    ]
+                architecture = signature_arch
+                family_hints.extend(
+                    _GGUF_ARCHITECTURE_FAMILY_HINTS.get(architecture, ())
+                )
+            else:
+                signature_hints = _GGUF_ARCHITECTURE_FAMILY_HINTS.get(signature_arch, ())
+                if signature_hints:
+                    family_hints = [
+                        hint
+                        for hint in family_hints
+                        if hint not in signature_hints
+                    ]
 
     unique_layouts = tuple(dict.fromkeys(layouts))
     layout = unique_layouts[0] if len(unique_layouts) == 1 else None
@@ -889,6 +975,24 @@ _DIFFUSION_VARIANT_BY_FAMILY_AND_ID: dict[tuple[str, str], DiffusionVariant] = {
 
 _CURATED_UNSLOTH_DIFFUSION_GGUFS: tuple[CuratedDiffusionGGUF, ...] = (
     CuratedDiffusionGGUF(
+        repo_id = "unsloth/FLUX.1-Kontext-dev-GGUF",
+        family = "flux.1-kontext",
+        base_repo = "black-forest-labs/FLUX.1-Kontext-dev",
+        filename_prefixes = ("flux1-kontext-dev-",),
+    ),
+    CuratedDiffusionGGUF(
+        repo_id = "unsloth/FLUX.1-dev-GGUF",
+        family = "flux.1",
+        base_repo = "black-forest-labs/FLUX.1-dev",
+        filename_prefixes = ("flux1-dev-",),
+    ),
+    CuratedDiffusionGGUF(
+        repo_id = "unsloth/FLUX.1-schnell-GGUF",
+        family = "flux.1-schnell",
+        base_repo = "black-forest-labs/FLUX.1-schnell",
+        filename_prefixes = ("flux1-schnell-",),
+    ),
+    CuratedDiffusionGGUF(
         repo_id = "unsloth/FLUX.2-dev-GGUF",
         family = "flux.2",
         base_repo = "black-forest-labs/FLUX.2-dev",
@@ -941,6 +1045,30 @@ _CURATED_UNSLOTH_DIFFUSION_GGUFS: tuple[CuratedDiffusionGGUF, ...] = (
         filename_prefixes = ("ernie-image-turbo-",),
     ),
     CuratedDiffusionGGUF(
+        repo_id = "unsloth/ERNIE-Image-GGUF",
+        family = "ernie-image",
+        base_repo = "baidu/ERNIE-Image",
+        filename_prefixes = ("ernie-image-",),
+    ),
+    CuratedDiffusionGGUF(
+        repo_id = "unsloth/Qwen-Image-GGUF",
+        family = "qwen-image",
+        base_repo = "Qwen/Qwen-Image",
+        filename_prefixes = ("qwen-image-",),
+    ),
+    CuratedDiffusionGGUF(
+        repo_id = "unsloth/Qwen-Image-Edit-GGUF",
+        family = "qwen-image-edit",
+        base_repo = "Qwen/Qwen-Image-Edit",
+        filename_prefixes = ("qwen-image-edit-",),
+    ),
+    CuratedDiffusionGGUF(
+        repo_id = "unsloth/Qwen-Image-Edit-2509-GGUF",
+        family = "qwen-image-edit-2509",
+        base_repo = "Qwen/Qwen-Image-Edit-2509",
+        filename_prefixes = ("qwen-image-edit-2509-",),
+    ),
+    CuratedDiffusionGGUF(
         repo_id = "unsloth/Qwen-Image-2512-GGUF",
         family = "qwen-image-2512",
         base_repo = "Qwen/Qwen-Image-2512",
@@ -951,6 +1079,12 @@ _CURATED_UNSLOTH_DIFFUSION_GGUFS: tuple[CuratedDiffusionGGUF, ...] = (
         family = "qwen-image-edit-2511",
         base_repo = "Qwen/Qwen-Image-Edit-2511",
         filename_prefixes = ("qwen-image-edit-2511-",),
+    ),
+    CuratedDiffusionGGUF(
+        repo_id = "unsloth/Qwen-Image-Layered-GGUF",
+        family = "qwen-image-layered",
+        base_repo = "Qwen/Qwen-Image-Layered",
+        filename_prefixes = ("qwen-image-layered-",),
     ),
 )
 
@@ -2040,6 +2174,56 @@ def _guard_peft_optional_bitsandbytes() -> None:
             setattr(module, "is_bnb_4bit_available", lambda: False)
 
 
+def _guard_transformers_tokenizers_backend() -> None:
+    """Provide ERNIE compatibility shims for current Transformers builds."""
+
+    try:
+        import transformers
+        from transformers import PreTrainedTokenizerFast
+    except Exception:
+        return
+    if "TokenizersBackend" not in getattr(transformers, "__dict__", {}):
+
+        class TokenizersBackend(PreTrainedTokenizerFast):
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                extra_special_tokens = kwargs.pop("extra_special_tokens", None)
+                if isinstance(extra_special_tokens, list):
+                    existing = list(kwargs.get("additional_special_tokens") or [])
+                    kwargs["additional_special_tokens"] = list(
+                        dict.fromkeys(existing + extra_special_tokens)
+                    )
+                elif extra_special_tokens is not None:
+                    kwargs["extra_special_tokens"] = extra_special_tokens
+                super().__init__(*args, **kwargs)
+
+        TokenizersBackend.__name__ = "TokenizersBackend"
+        TokenizersBackend.__qualname__ = "TokenizersBackend"
+        TokenizersBackend.__module__ = "transformers"
+        transformers.TokenizersBackend = TokenizersBackend
+    try:
+        from transformers import MinistralConfig
+        from transformers.models.auto.configuration_auto import CONFIG_MAPPING
+
+        CONFIG_MAPPING["ministral3"]
+    except KeyError:
+        CONFIG_MAPPING.register("ministral3", MinistralConfig)
+    except Exception:
+        return
+
+
+def _transformers_tokenizers_backend_cls() -> Any:
+    _guard_transformers_tokenizers_backend()
+    import transformers
+
+    tokenizer_cls = getattr(transformers, "__dict__", {}).get("TokenizersBackend")
+    if tokenizer_cls is None:
+        raise RuntimeError(
+            "ERNIE tokenizers require a Transformers TokenizersBackend "
+            "compatibility class, but Studio could not install the fallback."
+        )
+    return tokenizer_cls
+
+
 def _normalize_diffusion_offload_policy(value: Optional[str]) -> Optional[str]:
     if value is None:
         return None
@@ -2535,6 +2719,7 @@ class DiffusionBackend:
                 "Studio torch runtime (re-run setup.sh / install.ps1) "
                 "before loading an image model."
             )
+        _guard_transformers_tokenizers_backend()
 
         fam = detect_family(repo_id, override_family = family_override)
         if fam is None:
@@ -2546,7 +2731,9 @@ class DiffusionBackend:
             raise RuntimeError(
                 f"Could not infer a diffusion family for '{_display_repo_id(repo_id)}'. "
                 "Pass family_override = 'flux.2-klein' / 'flux.2' / "
-                "'flux.1' / 'qwen-image' / 'qwen-image-2512' / "
+                "'flux.1-kontext' / 'flux.1-schnell' / 'flux.1' / "
+                "'qwen-image' / 'qwen-image-2512' / "
+                "'qwen-image-edit' / 'qwen-image-edit-2509' / "
                 "'qwen-image-edit-2511' / 'qwen-image-layered' / "
                 "'z-image' / 'z-image-turbo' / 'ernie-image' / "
                 "'ernie-image-turbo' / 'ltx2-3-distilled' / "
@@ -3245,8 +3432,35 @@ class DiffusionBackend:
                     pipe_kwargs["transformer"] = transformer
                 if text_encoder is not None:
                     pipe_kwargs[text_encoder_component_name] = text_encoder
+                if (
+                    fam.name.startswith("ernie-image")
+                    and getattr(diffusers, "__version__", "") != "fake"
+                ):
+                    tokenizers_backend_cls = _transformers_tokenizers_backend_cls()
+                    pipe_kwargs["tokenizer"] = (
+                        tokenizers_backend_cls.from_pretrained(
+                            effective_base,
+                            subfolder = "tokenizer",
+                            token = hf_token,
+                        )
+                    )
                 if prompt_enhancer is not None:
                     pipe_kwargs["pe"] = prompt_enhancer
+                    if (
+                        fam.name.startswith("ernie-image")
+                        and getattr(diffusers, "__version__", "") != "fake"
+                    ):
+                        tokenizers_backend_cls = _transformers_tokenizers_backend_cls()
+                        pipe_kwargs["pe_tokenizer"] = (
+                            tokenizers_backend_cls.from_pretrained(
+                                effective_base,
+                                subfolder = "pe_tokenizer",
+                                token = hf_token,
+                            )
+                        )
+                elif fam.name.startswith("ernie-image"):
+                    pipe_kwargs["pe"] = None
+                    pipe_kwargs["pe_tokenizer"] = None
                 pipe_kwargs.update(extra_components)
                 if hf_token:
                     pipe_kwargs["token"] = hf_token

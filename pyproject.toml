@@ -91,12 +91,10 @@ huggingfacenotorch = [
     # 4.57.6 on the supported install path.
     "huggingface_hub>=0.34.0",
     "hf_transfer",
-    # Studio Images page depends on Flux2KleinPipeline /
-    # Flux2Pipeline, both shipped in diffusers>=0.37.0. Floor was
-    # missing here so a `pip install unsloth[huggingfacenotorch]`
-    # could resolve to 0.36.0 and fail at runtime when the default
-    # curated FLUX.2 klein model loads.
-    "diffusers>=0.37.0",
+    # Studio Images page depends on Flux2KleinPipeline / Flux2Pipeline
+    # and the curated ERNIE image family. Flux2 shipped in
+    # diffusers>=0.37.0; ErnieImagePipeline shipped in diffusers>=0.38.0.
+    "diffusers>=0.38.0",
     # diffusers.GGUFQuantizationConfig + from_single_file rely on
     # the standalone gguf package at runtime. Floor at 0.10.0 to
     # match the diffusers requirement; older gguf releases raise

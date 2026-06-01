@@ -57,13 +57,13 @@ peft>=0.18.0,!=0.11.0
 # install ends with no huggingface_hub at all and the new
 # diffusion / chat GGUF paths fail with ModuleNotFoundError.
 # Verified live on B200: hub 0.36.2 + transformers 4.57.6 +
-# diffusers 0.37.1 imports Flux2KleinPipeline cleanly and runs
-# end-to-end image generation.
+# diffusers 0.38.0 imports Flux2KleinPipeline / ErnieImagePipeline
+# cleanly and runs end-to-end image generation.
 huggingface_hub>=0.34.0
 hf_transfer
-# Floor 0.37.0 introduces Flux2KleinPipeline + Flux2Pipeline which the
-# Studio Images page imports for the default curated picker.
-diffusers>=0.37.0
+# Floor 0.37.0 introduces Flux2KleinPipeline + Flux2Pipeline; floor
+# 0.38.0 adds ErnieImagePipeline for the curated ERNIE image GGUFs.
+diffusers>=0.38.0
 # Required by diffusers.GGUFQuantizationConfig (used by the Images page
 # to load FLUX.2 / FLUX.1 / Qwen-Image GGUFs from the Hub). Floor at
 # 0.10.0 to match the diffusers requirement; older gguf releases raise

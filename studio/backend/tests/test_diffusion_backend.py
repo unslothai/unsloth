@@ -93,6 +93,20 @@ def test_detect_family_flux1():
     assert fam.pipeline_class == "FluxPipeline"
 
 
+def test_detect_family_flux1_variants():
+    from core.inference.diffusion import detect_family
+
+    cases = {
+        "unsloth/FLUX.1-Kontext-dev-GGUF": ("flux.1-kontext", "FluxKontextPipeline"),
+        "unsloth/FLUX.1-schnell-GGUF": ("flux.1-schnell", "FluxPipeline"),
+    }
+    for repo, (family, pipeline) in cases.items():
+        fam = detect_family(repo)
+        assert fam is not None, repo
+        assert fam.name == family
+        assert fam.pipeline_class == pipeline
+
+
 def test_detect_family_qwen_image():
     from core.inference.diffusion import detect_family
 
@@ -969,6 +983,7 @@ def _install_fake_diffusers(monkeypatch, *, raise_on_pipeline = False):
     fake.Flux2Transformer2DModel = _FakeTransformer
     fake.Flux2Pipeline = _FakePipeline
     fake.FluxPipeline = _FakePipeline
+    fake.FluxKontextPipeline = _FakePipeline
     fake.FluxTransformer2DModel = _FakeTransformer
     fake.QwenImagePipeline = _FakePipeline
     fake.QwenImageTransformer2DModel = _FakeTransformer
@@ -1084,6 +1099,27 @@ def test_load_model_ernie_gguf_uses_state_dict_fallback(monkeypatch):
     ("repo_id", "filename", "family", "base_repo", "variant"),
     [
         (
+            "unsloth/FLUX.1-Kontext-dev-GGUF",
+            "flux1-kontext-dev-Q4_K_M.gguf",
+            "flux.1-kontext",
+            "black-forest-labs/FLUX.1-Kontext-dev",
+            None,
+        ),
+        (
+            "unsloth/FLUX.1-dev-GGUF",
+            "flux1-dev-Q4_K_M.gguf",
+            "flux.1",
+            "black-forest-labs/FLUX.1-dev",
+            None,
+        ),
+        (
+            "unsloth/FLUX.1-schnell-GGUF",
+            "flux1-schnell-Q4_K_M.gguf",
+            "flux.1-schnell",
+            "black-forest-labs/FLUX.1-schnell",
+            None,
+        ),
+        (
             "unsloth/FLUX.2-dev-GGUF",
             "flux2-dev-Q4_K_M.gguf",
             "flux.2",
@@ -1140,6 +1176,34 @@ def test_load_model_ernie_gguf_uses_state_dict_fallback(monkeypatch):
             None,
         ),
         (
+            "unsloth/ERNIE-Image-GGUF",
+            "ernie-image-UD-Q4_K_M.gguf",
+            "ernie-image",
+            "baidu/ERNIE-Image",
+            None,
+        ),
+        (
+            "unsloth/Qwen-Image-GGUF",
+            "qwen-image-Q4_K_M.gguf",
+            "qwen-image",
+            "Qwen/Qwen-Image",
+            None,
+        ),
+        (
+            "unsloth/Qwen-Image-Edit-GGUF",
+            "qwen-image-edit-Q4_K_M.gguf",
+            "qwen-image-edit",
+            "Qwen/Qwen-Image-Edit",
+            None,
+        ),
+        (
+            "unsloth/Qwen-Image-Edit-2509-GGUF",
+            "qwen-image-edit-2509-Q4_K_M.gguf",
+            "qwen-image-edit-2509",
+            "Qwen/Qwen-Image-Edit-2509",
+            None,
+        ),
+        (
             "unsloth/Qwen-Image-2512-GGUF",
             "qwen-image-2512-Q4_K_M.gguf",
             "qwen-image-2512",
@@ -1151,6 +1215,13 @@ def test_load_model_ernie_gguf_uses_state_dict_fallback(monkeypatch):
             "qwen-image-edit-2511-Q4_K_M.gguf",
             "qwen-image-edit-2511",
             "Qwen/Qwen-Image-Edit-2511",
+            None,
+        ),
+        (
+            "unsloth/Qwen-Image-Layered-GGUF",
+            "qwen-image-layered-Q4_K_M.gguf",
+            "qwen-image-layered",
+            "Qwen/Qwen-Image-Layered",
             None,
         ),
     ],
@@ -1204,15 +1275,50 @@ def test_curated_unsloth_diffusion_gguf_manifest_covers_all_quant_filenames():
     )
     extra_suffixes_by_repo = {
         "unsloth/FLUX.2-dev-GGUF": ("Q3_K_L.gguf",),
+        "unsloth/Qwen-Image-GGUF": ("Q3_K_L.gguf",),
+        "unsloth/Qwen-Image-Edit-GGUF": ("Q3_K_L.gguf",),
+        "unsloth/Qwen-Image-Edit-2509-GGUF": ("Q3_K_L.gguf",),
         "unsloth/Qwen-Image-Edit-2511-GGUF": ("Q3_K_L.gguf",),
-        "unsloth/Z-Image-GGUF": ("Q3_K_L.gguf",),
+        "unsloth/Qwen-Image-Layered-GGUF": ("Q3_K_L.gguf",),
         "unsloth/ERNIE-Image-Turbo-GGUF": (
             "UD-Q2_K.gguf",
             "UD-Q3_K_M.gguf",
             "UD-Q4_K_M.gguf",
             "UD-Q5_K_M.gguf",
         ),
+        "unsloth/ERNIE-Image-GGUF": (
+            "UD-Q2_K.gguf",
+            "UD-Q3_K_M.gguf",
+            "UD-Q4_K_M.gguf",
+            "UD-Q5_K_M.gguf",
+        ),
+        "unsloth/Z-Image-GGUF": ("Q3_K_L.gguf",),
     }
+    expected_repos = {
+        "unsloth/FLUX.1-Kontext-dev-GGUF",
+        "unsloth/FLUX.1-dev-GGUF",
+        "unsloth/FLUX.1-schnell-GGUF",
+        "unsloth/FLUX.2-dev-GGUF",
+        "unsloth/FLUX.2-klein-4B-GGUF",
+        "unsloth/FLUX.2-klein-9B-GGUF",
+        "unsloth/FLUX.2-klein-base-4B-GGUF",
+        "unsloth/FLUX.2-klein-base-9B-GGUF",
+        "unsloth/Z-Image-GGUF",
+        "unsloth/Z-Image-Turbo-GGUF",
+        "unsloth/ERNIE-Image-Turbo-GGUF",
+        "unsloth/ERNIE-Image-GGUF",
+        "unsloth/Qwen-Image-GGUF",
+        "unsloth/Qwen-Image-Edit-GGUF",
+        "unsloth/Qwen-Image-Edit-2509-GGUF",
+        "unsloth/Qwen-Image-2512-GGUF",
+        "unsloth/Qwen-Image-Edit-2511-GGUF",
+        "unsloth/Qwen-Image-Layered-GGUF",
+    }
+
+    assert {
+        spec.repo_id
+        for spec in _CURATED_UNSLOTH_DIFFUSION_GGUFS
+    } == expected_repos
 
     checked = 0
     for spec in _CURATED_UNSLOTH_DIFFUSION_GGUFS:
@@ -1222,7 +1328,7 @@ def test_curated_unsloth_diffusion_gguf_manifest_covers_all_quant_filenames():
                 checked += 1
                 assert _filename_matches_curated_diffusion_gguf(spec, prefix + suffix)
 
-    assert checked == 157
+    assert checked == 285
 
 
 def test_load_model_ernie_can_replace_text_encoder_and_prompt_enhancer_ggufs(monkeypatch):
@@ -3065,6 +3171,30 @@ def test_diffusion_gguf_inspection_detects_layout_conflict():
     assert any(warning.startswith("layout_conflict") for warning in inspection.warnings)
 
 
+def test_diffusion_gguf_inspection_ernie_signature_overrides_wan_metadata():
+    from core.inference.diffusion import _inspect_diffusion_gguf_tensor_names
+
+    inspection = _inspect_diffusion_gguf_tensor_names(
+        {
+            "adaLN_modulation.1.weight",
+            "layers.0.self_attention.to_q.weight",
+            "layers.0.self_attention.to_out.0.weight",
+        },
+        metadata = {"general.architecture": "wan"},
+    )
+
+    assert inspection.architecture == "ernie_image"
+    assert inspection.layout == "diffusers"
+    assert "ernie_image" in inspection.matched_signatures
+    assert "ernie-image" in inspection.family_hints
+    assert "ernie-image-turbo" in inspection.family_hints
+    assert "wan2-2-t2v" not in inspection.family_hints
+    assert (
+        "architecture_conflict:metadata=wan,signature=ernie_image"
+        in inspection.warnings
+    )
+
+
 def test_resolve_flux2_klein_uses_gguf_metadata_variant_hint():
     from core.inference.diffusion import (
         DiffusionGGUFInspection,
@@ -3735,7 +3865,7 @@ def test_generate_image_keeps_negative_prompt_on_supporting_pipe(monkeypatch):
 
     backend._pipe = _NegOK()
     backend._device = "cpu"
-    backend._family = d._FAMILIES[2]  # flux.1 supports negative_prompt
+    backend._family = next(f for f in d._FAMILIES if f.name == "flux.1")
     backend._repo_id = "stub/stub"
 
     backend.generate_image(
@@ -3787,7 +3917,7 @@ def test_generate_image_forwards_true_cfg_scale_when_supported(monkeypatch):
 
     backend._pipe = _QwenLikePipe()
     backend._device = "cpu"
-    backend._family = d._FAMILIES[2]
+    backend._family = next(f for f in d._FAMILIES if f.name == "flux.1")
     backend._repo_id = "stub/stub"
 
     backend.generate_image(
@@ -3839,7 +3969,7 @@ def test_generate_image_skips_true_cfg_scale_without_negative_prompt(monkeypatch
 
     backend._pipe = _QwenLikePipe()
     backend._device = "cpu"
-    backend._family = d._FAMILIES[2]
+    backend._family = next(f for f in d._FAMILIES if f.name == "flux.1")
     backend._repo_id = "stub/stub"
 
     backend.generate_image(
