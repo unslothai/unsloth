@@ -70,12 +70,15 @@ export function ThreadDocumentsBar({ threadId }: { threadId: string | null }) {
     return pending;
   }, [aui, effectiveThreadId, setActiveThreadId]);
 
-  // Open the picker only once the thread id is ready, so the upload scope is
-  // live when onChange fires; otherwise a fast first selection uploads into a
-  // null scope and silently attaches nothing.
-  const handleAddDocs = useCallback(async () => {
-    const id = await ensureThreadId();
-    if (id) fileInputRef.current?.click();
+  // Open the picker synchronously so the click's user activation survives.
+  // Awaiting thread-id materialization before .click() drops the activation, so
+  // the browser blocks the first picker open (it took a second click). The id is
+  // only needed to upload, not to open the picker, so kick off materialization
+  // here and await it in onChange (the OS file dialog lasts far longer than the
+  // init, so the scope is live by the time files come back).
+  const handleAddDocs = useCallback(() => {
+    void ensureThreadId();
+    fileInputRef.current?.click();
   }, [ensureThreadId]);
 
   // Only for the thread-document source; KB sources are managed in the KB dialog.
@@ -85,7 +88,7 @@ export function ThreadDocumentsBar({ threadId }: { threadId: string | null }) {
     <div className="mb-2 flex w-full flex-row items-start gap-1.5 px-1.5 pt-0.5 pb-1">
       <button
         type="button"
-        onClick={() => void handleAddDocs()}
+        onClick={handleAddDocs}
         disabled={uploading}
         className="composer-pill-btn shrink-0"
         aria-label="Attach documents to this thread"
@@ -101,8 +104,14 @@ export function ThreadDocumentsBar({ threadId }: { threadId: string | null }) {
         accept={RAG_UPLOAD_ACCEPT}
         className="hidden"
         onChange={(e) => {
-          if (e.target.files?.length) void upload(e.target.files);
+          const files = Array.from(e.target.files ?? []);
           e.target.value = "";
+          if (files.length === 0) return;
+          // Wait for the thread id before uploading so the scope is live (it has
+          // already resolved by the time the file dialog closes).
+          void ensureThreadId().then((id) => {
+            if (id) void upload(files);
+          });
         }}
       />
       {/* Cap the chip area so a large set scrolls instead of overflowing the
