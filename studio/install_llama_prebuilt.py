@@ -176,6 +176,10 @@ _PINNED_MACOS_FALLBACK_TAG = "b9415"
 _PINNED_MACOS_LATEST_FLOOR = (26, 0)
 FORCE_COMPILE_DEFAULT_REF = os.environ.get("UNSLOTH_LLAMA_FORCE_COMPILE_REF", "master")
 
+# sm_103 (B300 / GB300 Blackwell Ultra) is not built natively but runs on the
+# bundled base compute_100 PTX, which the driver JIT-compiles forward to sm_103.
+# It is listed in every bundle that ships the sm_100 build (the "newer" and
+# "portable" classes) so those hosts get a prebuilt instead of a source compile.
 DIRECT_LINUX_BUNDLE_PROFILES: dict[str, dict[str, Any]] = {
     "cuda12-older": {
         "runtime_line": "cuda12",
@@ -188,7 +192,7 @@ DIRECT_LINUX_BUNDLE_PROFILES: dict[str, dict[str, Any]] = {
     "cuda12-newer": {
         "runtime_line": "cuda12",
         "coverage_class": "newer",
-        "supported_sms": ["86", "89", "90", "100", "120"],
+        "supported_sms": ["86", "89", "90", "100", "103", "120"],
         "min_sm": 86,
         "max_sm": 120,
         "rank": 20,
@@ -196,7 +200,7 @@ DIRECT_LINUX_BUNDLE_PROFILES: dict[str, dict[str, Any]] = {
     "cuda12-portable": {
         "runtime_line": "cuda12",
         "coverage_class": "portable",
-        "supported_sms": ["70", "75", "80", "86", "89", "90", "100", "120"],
+        "supported_sms": ["70", "75", "80", "86", "89", "90", "100", "103", "120"],
         "min_sm": 70,
         "max_sm": 120,
         "rank": 30,
@@ -212,7 +216,7 @@ DIRECT_LINUX_BUNDLE_PROFILES: dict[str, dict[str, Any]] = {
     "cuda13-newer": {
         "runtime_line": "cuda13",
         "coverage_class": "newer",
-        "supported_sms": ["86", "89", "90", "100", "120"],
+        "supported_sms": ["86", "89", "90", "100", "103", "120"],
         "min_sm": 86,
         "max_sm": 120,
         "rank": 50,
@@ -220,7 +224,7 @@ DIRECT_LINUX_BUNDLE_PROFILES: dict[str, dict[str, Any]] = {
     "cuda13-portable": {
         "runtime_line": "cuda13",
         "coverage_class": "portable",
-        "supported_sms": ["75", "80", "86", "89", "90", "100", "120"],
+        "supported_sms": ["75", "80", "86", "89", "90", "100", "103", "120"],
         "min_sm": 75,
         "max_sm": 120,
         "rank": 60,

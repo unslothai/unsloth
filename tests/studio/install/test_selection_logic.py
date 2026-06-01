@@ -1252,6 +1252,76 @@ class TestLinuxCudaChoiceFromRelease:
         assert result is None
 
 
+def make_profile_artifact(asset_name, profile_name, **overrides):
+    profile = INSTALL_LLAMA_PREBUILT.DIRECT_LINUX_BUNDLE_PROFILES[profile_name]
+    defaults = dict(
+        runtime_line = profile["runtime_line"],
+        coverage_class = profile["coverage_class"],
+        supported_sms = [str(value) for value in profile["supported_sms"]],
+        min_sm = int(profile["min_sm"]),
+        max_sm = int(profile["max_sm"]),
+        bundle_profile = profile_name,
+        rank = int(profile["rank"]),
+    )
+    defaults.update(overrides)
+    return make_artifact(asset_name, **defaults)
+
+
+class TestBlackwellUltraSm103Coverage:
+    """sm_103 (B300 / GB300) runs on the bundled base compute_100 PTX via JIT."""
+
+    def test_profiles_list_sm103_wherever_sm100_is_shipped(self):
+        for name, profile in INSTALL_LLAMA_PREBUILT.DIRECT_LINUX_BUNDLE_PROFILES.items():
+            sms = {str(value) for value in profile["supported_sms"]}
+            if "100" in sms:
+                assert "103" in sms, name
+            else:
+                assert "103" not in sms, name
+
+    def test_b300_selects_cuda13_newer_prebuilt(self, monkeypatch):
+        mock_linux_runtime(monkeypatch, ["cuda13"])
+        host = make_host(compute_caps = ["103"], driver_cuda_version = (13, 0))
+        art = make_profile_artifact("cuda13-newer.tar.gz", "cuda13-newer")
+        release = make_release([art])
+        result = linux_cuda_choice_from_release(host, release)
+        assert result is not None
+        assert result.primary.name == "cuda13-newer.tar.gz"
+
+    def test_b300_selects_cuda12_newer_prebuilt(self, monkeypatch):
+        mock_linux_runtime(monkeypatch, ["cuda12"])
+        host = make_host(compute_caps = ["103"], driver_cuda_version = (12, 8))
+        art = make_profile_artifact("cuda12-newer.tar.gz", "cuda12-newer")
+        release = make_release([art])
+        result = linux_cuda_choice_from_release(host, release)
+        assert result is not None
+        assert result.primary.name == "cuda12-newer.tar.gz"
+
+    def test_b300_reported_as_decimal_normalizes_and_matches(self, monkeypatch):
+        mock_linux_runtime(monkeypatch, ["cuda13"])
+        host = make_host(compute_caps = ["10.3"], driver_cuda_version = (13, 0))
+        art = make_profile_artifact("cuda13-portable.tar.gz", "cuda13-portable")
+        release = make_release([art])
+        result = linux_cuda_choice_from_release(host, release)
+        assert result is not None
+
+    def test_b300_falls_back_to_portable_when_only_portable_present(self, monkeypatch):
+        mock_linux_runtime(monkeypatch, ["cuda13"])
+        host = make_host(compute_caps = ["103"], driver_cuda_version = (13, 0))
+        art = make_profile_artifact("cuda13-portable.tar.gz", "cuda13-portable")
+        release = make_release([art])
+        result = linux_cuda_choice_from_release(host, release)
+        assert result is not None
+        assert result.primary.name == "cuda13-portable.tar.gz"
+
+    def test_older_bundle_still_rejects_b300(self, monkeypatch):
+        mock_linux_runtime(monkeypatch, ["cuda13"])
+        host = make_host(compute_caps = ["103"], driver_cuda_version = (13, 0))
+        art = make_profile_artifact("cuda13-older.tar.gz", "cuda13-older")
+        release = make_release([art])
+        result = linux_cuda_choice_from_release(host, release)
+        assert result is None
+
+
 # ===========================================================================
 # L. resolve_install_attempts
 # ===========================================================================
