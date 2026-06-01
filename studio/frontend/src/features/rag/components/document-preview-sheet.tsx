@@ -21,6 +21,7 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 import { getDocumentFileUrl, getPreviewTarget } from "../api/rag-api";
 import type { PdfRegion, PreviewTarget } from "../types/rag";
 import { useDocumentPreviewStore } from "./preview-store";
@@ -76,6 +77,14 @@ function PdfPreview({
   const [page, setPage] = useState(initialPage);
   const [scale, setScale] = useState(1);
   const [error, setError] = useState<string | null>(null);
+  const [grabbing, setGrabbing] = useState(false);
+  const [scrollable, setScrollable] = useState(false);
+  const panRef = useRef<{
+    x: number;
+    y: number;
+    left: number;
+    top: number;
+  } | null>(null);
 
   // Reset to the cited page when a new citation reuses this viewer.
   useEffect(() => setPage(initialPage), [initialPage, fileUrl]);
@@ -121,6 +130,60 @@ function PdfPreview({
     [],
   );
 
+  // Does the page overflow the panel (so panning/scrolling does anything)?
+  // Re-checked on layout changes and once the canvas finishes rendering.
+  const recheckScrollable = useCallback(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    setScrollable(
+      el.scrollWidth > el.clientWidth + 1 ||
+        el.scrollHeight > el.clientHeight + 1,
+    );
+  }, []);
+
+  useEffect(() => {
+    recheckScrollable();
+  }, [recheckScrollable, width, scale, page, numPages]);
+
+  // Grab-to-pan: hold and drag to move an overflowing page. Listen on window so
+  // the drag keeps tracking when the cursor leaves the panel.
+  useEffect(() => {
+    if (!grabbing) return;
+    const onMove = (e: MouseEvent) => {
+      const el = containerRef.current;
+      const start = panRef.current;
+      if (!el || !start) return;
+      el.scrollLeft = start.left - (e.clientX - start.x);
+      el.scrollTop = start.top - (e.clientY - start.y);
+    };
+    const onUp = () => {
+      setGrabbing(false);
+      panRef.current = null;
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+  }, [grabbing]);
+
+  const onPanStart = useCallback(
+    (e: React.MouseEvent) => {
+      const el = containerRef.current;
+      if (!el || e.button !== 0 || !scrollable) return;
+      panRef.current = {
+        x: e.clientX,
+        y: e.clientY,
+        left: el.scrollLeft,
+        top: el.scrollTop,
+      };
+      setGrabbing(true);
+      e.preventDefault(); // stop canvas image-drag / selection
+    },
+    [scrollable],
+  );
+
   // Only regions on the current page.
   const pageRegions = regions.filter(
     (r) => r.pageNumber === page || r.pageIndex === page - 1,
@@ -138,7 +201,15 @@ function PdfPreview({
     <div className="flex h-full flex-col">
       <div
         ref={containerRef}
-        className="flex-1 overflow-auto bg-muted/30 px-4 py-3"
+        onMouseDown={onPanStart}
+        className={cn(
+          "flex-1 overflow-auto bg-muted/30 px-4 py-3",
+          grabbing
+            ? "cursor-grabbing select-none"
+            : scrollable
+              ? "cursor-grab"
+              : "",
+        )}
       >
         <Document
           file={fileUrl}
@@ -160,6 +231,7 @@ function PdfPreview({
                   width={(width - 8) * scale}
                   renderTextLayer={false}
                   renderAnnotationLayer={false}
+                  onRenderSuccess={recheckScrollable}
                 />
                 <RegionOverlay regions={pageRegions} />
               </div>
