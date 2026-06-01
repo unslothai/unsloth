@@ -1350,6 +1350,7 @@ def _apply_diffusion_lora(
         kwargs["weight_name"] = lora_weight_name
     if hf_token:
         kwargs["token"] = hf_token
+    _guard_peft_optional_bitsandbytes()
     load_lora(lora_repo, **kwargs)
     set_adapters = getattr(pipe, "set_adapters", None)
     if callable(set_adapters):
@@ -2004,6 +2005,39 @@ def _guard_diffusers_optional_bitsandbytes() -> None:
     sys.modules[
         "diffusers.quantizers.bitsandbytes.bnb_quantizer"
     ] = bnb_quantizer_stub
+
+
+def _guard_peft_optional_bitsandbytes() -> None:
+    try:
+        with (
+            warnings.catch_warnings(),
+            contextlib.redirect_stdout(io.StringIO()),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            warnings.simplefilter("ignore")
+            import bitsandbytes  # noqa: F401
+        return
+    except Exception:
+        pass
+
+    try:
+        import peft.import_utils as peft_import_utils
+    except Exception:
+        return
+
+    peft_import_utils.is_bnb_available = lambda: False
+    peft_import_utils.is_bnb_4bit_available = lambda: False
+    for module_name in (
+        "peft.tuners.lora.model",
+        "peft.tuners.adalora.model",
+        "peft.tuners.ia3.model",
+        "peft.tuners.oft.model",
+        "peft.tuners.vera.model",
+    ):
+        module = sys.modules.get(module_name)
+        if module is not None:
+            setattr(module, "is_bnb_available", lambda: False)
+            setattr(module, "is_bnb_4bit_available", lambda: False)
 
 
 def _normalize_diffusion_offload_policy(value: Optional[str]) -> Optional[str]:

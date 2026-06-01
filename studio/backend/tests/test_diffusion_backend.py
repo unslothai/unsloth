@@ -835,6 +835,41 @@ def test_guard_diffusers_optional_bitsandbytes_stubs_failed_import(monkeypatch):
         ].replace_with_bnb_linear()
 
 
+def test_guard_peft_optional_bitsandbytes_marks_bnb_unavailable(monkeypatch):
+    import builtins
+    import sys
+    import core.inference.diffusion as d
+
+    original_import = builtins.__import__
+    fake_peft = types.ModuleType("peft")
+    fake_peft.__path__ = []
+    fake_import_utils = types.ModuleType("peft.import_utils")
+    fake_import_utils.is_bnb_available = lambda: True
+    fake_import_utils.is_bnb_4bit_available = lambda: True
+    fake_lora_model = types.ModuleType("peft.tuners.lora.model")
+    fake_lora_model.is_bnb_available = lambda: True
+    fake_lora_model.is_bnb_4bit_available = lambda: True
+
+    monkeypatch.setitem(sys.modules, "peft", fake_peft)
+    monkeypatch.setitem(sys.modules, "peft.import_utils", fake_import_utils)
+    monkeypatch.setitem(sys.modules, "peft.tuners.lora.model", fake_lora_model)
+    monkeypatch.delitem(sys.modules, "bitsandbytes", raising = False)
+
+    def _fake_import(name, globals = None, locals = None, fromlist = (), level = 0):
+        if name == "bitsandbytes":
+            raise RuntimeError("broken optional bnb")
+        return original_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", _fake_import)
+
+    d._guard_peft_optional_bitsandbytes()
+
+    assert fake_import_utils.is_bnb_available() is False
+    assert fake_import_utils.is_bnb_4bit_available() is False
+    assert fake_lora_model.is_bnb_available() is False
+    assert fake_lora_model.is_bnb_4bit_available() is False
+
+
 # ── load_model (with monkey-patched diffusers) ──────────────────
 
 
