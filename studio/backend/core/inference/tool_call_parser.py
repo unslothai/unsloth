@@ -82,6 +82,10 @@ _TOOL_ALL_PATS = _TOOL_CLOSED_PATS + [
     # Kimi K2 envelope truncated.
     re.compile(r"<\|tool_calls_section_begin\|>.*$", re.DOTALL),
     re.compile(r"<\|tool_call_begin\|>.*$", re.DOTALL),
+    # Gemma 4 wrapper-less ``call:NAME{...}`` (skip_special_tokens stripped
+    # the ``<|tool_call>`` markers). Bounded to a single brace level so it
+    # cleans the common query/command leak without eating unrelated prose.
+    re.compile(r"(?<!\w)call:[\w\.\-]+\{[^{}]*\}", re.DOTALL),
 ]
 
 
@@ -217,6 +221,13 @@ _GEMMA_TC_RE = re.compile(r"<\|tool_call>\s*call\s*:\s*([\w\.\-]+)\s*\{")
 _GEMMA_STR_BEGIN = '<|"|>'
 _GEMMA_STR_END = '<|"|>'
 _GEMMA_TC_END = "<tool_call|>"
+
+# skip_special_tokens strips the ``<|tool_call>`` / ``<tool_call|>`` wrapper and
+# the ``<|"|>`` string markers, so a streamed Gemma-4 tool call arrives as a
+# bare ``call:NAME{k:v, ...}`` with unquoted values. Match that here; the
+# ``(?<!\w)`` guard avoids catching words like ``recall:``.
+_GEMMA_BARE_TC_RE = re.compile(r"(?<!\w)call\s*:\s*([\w\.\-]+)\s*\{")
+_GEMMA_KEY_RE = re.compile(r"\s*([\w\.\-]+)\s*:")
 
 
 def _balanced_bracket_end(text: str, start: int) -> int | None:
@@ -827,7 +838,12 @@ def _consume_mistral_call(obj_text: str, out: list[dict], id_offset: int) -> Non
 
 
 def _parse_gemma_tool_calls(content: str, *, id_offset: int) -> list[dict]:
-    """Gemma 4: ``<|tool_call>call:NAME{k:<|"|>v<|"|>, ...}<tool_call|>``."""
+    """Gemma 4: ``<|tool_call>call:NAME{k:<|"|>v<|"|>, ...}<tool_call|>``.
+
+    Also handles the ``skip_special_tokens`` stream where the ``<|tool_call>``
+    wrapper and ``<|"|>`` string markers were stripped, leaving a bare
+    ``call:NAME{k:v, ...}`` with unquoted values.
+    """
     out: list[dict] = []
     for m in _GEMMA_TC_RE.finditer(content):
         name = m.group(1)
@@ -840,6 +856,31 @@ def _parse_gemma_tool_calls(content: str, *, id_offset: int) -> list[dict]:
         body = content[body_start + 1 : end]
         try:
             args = _gemma_parse_mapping_body(body)
+        except Exception:
+            args = {}
+        out.append(
+            {
+                "id": f"call_{id_offset + len(out)}",
+                "type": "function",
+                "function": {"name": name, "arguments": json.dumps(args)},
+            }
+        )
+    if out:
+        return out
+
+    # Wrapper-less form (special tokens stripped from the stream). Skip when
+    # the wrapped markers are present so we never double-parse the same call.
+    if "<|tool_call>" in content or _GEMMA_STR_BEGIN in content:
+        return out
+    for m in _GEMMA_BARE_TC_RE.finditer(content):
+        name = m.group(1)
+        body_start = m.end() - 1
+        end = _balanced_brace_end(content, body_start)
+        if end is None:
+            continue
+        body = content[body_start + 1 : end]
+        try:
+            args = _gemma_parse_stripped_body(body)
         except Exception:
             args = {}
         out.append(
@@ -972,6 +1013,68 @@ def _gemma_parse_value(text: str, i: int):
     except ValueError:
         pass
     return raw, end
+
+
+def _gemma_coerce_scalar(raw: str) -> Any:
+    """Coerce an unquoted Gemma value to bool/int/float/None, else keep str.
+
+    Surrounding matching quotes are stripped first (a stuck model may emit the
+    same value sometimes quoted, sometimes not; normalising lets the agentic
+    loop's duplicate-call collapse recognise them as identical).
+    """
+    raw = raw.strip()
+    if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in "\"'":
+        return raw[1:-1]
+    if raw == "true":
+        return True
+    if raw == "false":
+        return False
+    if raw == "null":
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        pass
+    try:
+        return float(raw)
+    except ValueError:
+        pass
+    return raw
+
+
+def _gemma_parse_stripped_body(body: str) -> dict[str, Any]:
+    """Parse a quote-less Gemma arg body ``key:value, key2:value2``.
+
+    Used for the ``skip_special_tokens`` stream where the ``<|"|>`` string
+    markers were removed. Each value runs until the next top-level ``, key:``
+    boundary (or the end), tracking ``{}``/``[]``/``()`` depth, so commas and
+    braces inside a ``code`` or ``command`` value are preserved instead of
+    truncating at the first comma.
+    """
+    out: dict[str, Any] = {}
+    i, n = 0, len(body)
+    while i < n:
+        m = _GEMMA_KEY_RE.match(body, i)
+        if not m:
+            break
+        key = m.group(1)
+        i = m.end()
+        vstart = i
+        depth = 0
+        while i < n:
+            ch = body[i]
+            if ch in "{[(":
+                depth += 1
+            elif ch in "}])":
+                if depth > 0:
+                    depth -= 1
+            elif ch == "," and depth == 0 and _GEMMA_KEY_RE.match(body, i + 1):
+                break
+            i += 1
+        out[key] = _gemma_coerce_scalar(body[vstart:i])
+        if i < n and body[i] == ",":
+            i += 1
+    return out
 
 
 def _gemma_parse_mapping_body(body: str) -> dict[str, Any]:

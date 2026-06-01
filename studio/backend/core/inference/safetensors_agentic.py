@@ -61,6 +61,12 @@ _REPROMPT_INSTRUCTION = (
     "Call web_search or python immediately."
 )
 
+# Without a grammar constraint a small model can loop, emitting the same tool
+# call dozens of times in one turn (llama-server's lazy grammar prevents this
+# on the GGUF side). Collapse exact-duplicate calls within a turn and cap the
+# number kept so one runaway turn cannot fan out into many tool executions.
+_MAX_TOOL_CALLS_PER_TURN = 8
+
 
 def _status_for_tool(tool_name: str, arguments: dict) -> str:
     """Return a human-readable status line matching the GGUF path."""
@@ -348,12 +354,37 @@ def run_safetensors_tool_loop(
             yield {"type": "status", "text": ""}
             return
 
+        # Collapse exact-duplicate tool calls emitted in a single turn (a
+        # runaway model can repeat one call many times) and cap the count, so
+        # one turn cannot fan out into dozens of identical executions/events.
+        if tool_calls:
+            seen_keys: set = set()
+            deduped: list = []
+            for _tc in tool_calls:
+                _fn = _tc.get("function", {}) or {}
+                _key = (_fn.get("name", ""), str(_fn.get("arguments", "")))
+                if _key in seen_keys:
+                    continue
+                seen_keys.add(_key)
+                deduped.append(_tc)
+                if len(deduped) >= _MAX_TOOL_CALLS_PER_TURN:
+                    break
+            if len(deduped) != len(tool_calls):
+                logger.info(
+                    "Safetensors: collapsed %d repeated tool call(s) in one "
+                    "turn to %d",
+                    len(tool_calls),
+                    len(deduped),
+                )
+            tool_calls = deduped
+
         assistant_msg: dict = {"role": "assistant", "content": content_text}
         if tool_calls:
             assistant_msg["tool_calls"] = tool_calls
             next_call_id += len(tool_calls)
         conversation.append(assistant_msg)
 
+        executed_new = False
         for tc in tool_calls or []:
             func = tc.get("function", {}) or {}
             tool_name = func.get("name", "") or ""
@@ -383,6 +414,11 @@ def run_safetensors_tool_loop(
                     k == tc_key and not err for k, err in tool_call_history
                 )
                 if already_ran_ok:
+                    # Repeat of a call that already succeeded -- nudge but do
+                    # not re-run it, and (crucially) do not count it as
+                    # progress, so a model looping on one call is forced to a
+                    # final answer below. llama-server's grammar prevents this
+                    # loop on the GGUF side.
                     result = DUPLICATE_CALL_NUDGE
                 else:
                     eff_timeout = (
@@ -396,6 +432,7 @@ def run_safetensors_tool_loop(
                             timeout = eff_timeout,
                             session_id = session_id,
                         )
+                        executed_new = True
                     except Exception as exc:
                         logger.exception("Tool %s raised: %s", tool_name, exc)
                         result = f"Error: tool raised an exception: {exc}"
@@ -430,6 +467,17 @@ def run_safetensors_tool_loop(
             if tool_call_id:
                 tool_msg["tool_call_id"] = tool_call_id
             conversation.append(tool_msg)
+
+        # A turn whose calls were all repeats of ones that already ran means
+        # the model is looping without progress. Force a final plain answer
+        # rather than burn the rest of the tool budget on the same call.
+        if tool_calls and not executed_new and not final_attempt_done:
+            final_attempt_done = True
+            conversation.append(
+                {"role": "user", "content": BUDGET_EXHAUSTED_NUDGE}
+            )
+            yield {"type": "status", "text": ""}
+            continue
 
         # Clear the status badge before the next turn.
         yield {"type": "status", "text": ""}

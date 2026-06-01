@@ -494,6 +494,64 @@ class TestParserMultiFormat:
         text = "<|tool_call>call:foo{x:1}<tool_call|>"
         assert strip_tool_markup(text, final = True) == ""
 
+    # ── Gemma 4 wrapper-less (skip_special_tokens stripped) ───────────
+
+    def test_gemma4_bare_stripped_call(self):
+        # skip_special_tokens removes <|tool_call>/<tool_call|> and <|"|>,
+        # leaving a bare call:NAME{...} with an unquoted value.
+        import json
+
+        text = "call:web_search{query:weather in San Francisco right now}"
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert result[0]["function"]["name"] == "web_search"
+        args = json.loads(result[0]["function"]["arguments"])
+        assert args == {"query": "weather in San Francisco right now"}
+
+    def test_gemma4_bare_code_with_commas(self):
+        # A code value with commas must not truncate at the first comma.
+        import json
+
+        text = (
+            "call:python{code:def f(n):\n    a, b = 0, 1\n"
+            "    for _ in range(2, n+1):\n        a, b = b, a + b\n"
+            "    return b\n\nprint(f(30))}"
+        )
+        result = parse_tool_calls_from_text(text)
+        assert result[0]["function"]["name"] == "python"
+        code = json.loads(result[0]["function"]["arguments"])["code"]
+        assert "a, b = 0, 1" in code and "print(f(30))" in code
+
+    def test_gemma4_bare_quotes_normalized(self):
+        # The same value quoted vs unquoted must parse identically so the
+        # agentic loop can collapse a looping model's repeated calls.
+        import json
+
+        a = parse_tool_calls_from_text('call:web_search{query:"foo bar"}')
+        b = parse_tool_calls_from_text("call:web_search{query:foo bar}")
+        assert json.loads(a[0]["function"]["arguments"]) == {"query": "foo bar"}
+        assert json.loads(a[0]["function"]["arguments"]) == json.loads(
+            b[0]["function"]["arguments"]
+        )
+
+    def test_gemma4_bare_multi_arg(self):
+        import json
+
+        text = "call:web_search{query:pytorch latest, url:https://pytorch.org}"
+        result = parse_tool_calls_from_text(text)
+        args = json.loads(result[0]["function"]["arguments"])
+        assert args == {"query": "pytorch latest", "url": "https://pytorch.org"}
+
+    def test_gemma4_bare_not_matched_in_prose(self):
+        # A word ending in "call:" must not trigger a bare tool call.
+        text = "I will recall:that the function{ } is helpful."
+        result = parse_tool_calls_from_text(text)
+        assert result == []
+
+    def test_gemma4_bare_strip_markup_final(self):
+        text = "Here you go: call:web_search{query:weather today}"
+        assert "call:web_search" not in strip_tool_markup(text, final = True)
+
     # ── Cross-format sentinels ────────────────────────────────────
 
     def test_all_markers_in_tool_xml_signals(self):
