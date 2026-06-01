@@ -11,9 +11,17 @@ shared process, no new Studio route, and the chat extra-args denylist does not
 apply (the command is built here directly).
 
 Device is ``auto`` by default: it offloads to the GPU when one is present (like
-Studio's chat server; NVIDIA via CUDA or Apple via Metal) and falls back to CPU
-if that start fails. Detection is torch-free, so the backend never imports
-torch. ``RAG_EMBED_DEVICE=cpu``/``gpu`` forces the choice.
+Studio's chat server; NVIDIA/ROCm or Apple Metal) and falls back to CPU if that
+start fails. GPU detection reuses the chat backend's own static probes
+(``_get_gpu_free_memory`` + ``is_apple_silicon``), so the common NVIDIA path
+needs no torch. ``RAG_EMBED_DEVICE=cpu``/``gpu`` forces the choice.
+
+Reuse policy: only llama_cpp's *static* helpers are called directly
+(``_find_llama_server_binary``, ``_find_free_port``, ``_get_gpu_free_memory``) --
+they need no chat instance. The instance-coupled bits (download, health-poll,
+kill, subprocess env) are kept as small local copies on purpose: constructing a
+``LlamaCppBackend`` would run its ``__init__`` (which reaps llama-servers) and
+bind to chat state, so we never instantiate it here.
 
 Coupling note: the chat backend's ``_kill_orphaned_servers()`` reaps *any*
 Studio llama-server by binary path, so loading a chat model kills this embed
@@ -142,13 +150,17 @@ class LlamaServerBackend:
         self._model_path = hf_hub_download(repo_id = repo, filename = filename, token = token)
         return self._model_path
 
-    # ── Device selection (torch-free) ────────────────────────────
+    # ── Device selection ─────────────────────────────────────────
+
+    # Free VRAM (MiB) a GPU must have for the embedder (tiny weights plus the
+    # llama.cpp CUDA context); below this, auto stays on CPU to avoid an OOM.
+    _MIN_GPU_FREE_MIB = 1024
 
     def _use_gpu(self) -> bool:
-        """Whether to offload to GPU. ``RAG_EMBED_DEVICE`` is ``auto`` (default,
-        use the GPU when one is present, like Studio's chat server), ``gpu``, or
-        ``cpu``. Detection is torch-free so the backend stays no-torch. A sticky
-        CPU fallback (set after an auto GPU start fails) wins over auto."""
+        """Whether to offload to GPU. ``RAG_EMBED_DEVICE`` is ``auto`` (default;
+        use a GPU when present, like Studio's chat server), ``gpu``, or ``cpu``.
+        A sticky CPU fallback (set after an auto GPU start fails) wins over
+        auto."""
         dev = config.EMBED_DEVICE.lower()
         if dev == "gpu":
             return True
@@ -158,27 +170,18 @@ class LlamaServerBackend:
 
     @staticmethod
     def _gpu_available() -> bool:
-        """Torch-free GPU probe matching what the bundled llama.cpp can offload
-        to: Apple Metal on Apple Silicon, or an NVIDIA GPU via nvidia-smi."""
-        import platform
-        import shutil
+        """GPU presence via Studio's own probes (no torch import on the common
+        NVIDIA path): Apple Metal, or an NVIDIA/ROCm GPU with enough free VRAM.
+        Reuses the chat backend's static ``_get_gpu_free_memory`` (nvidia-smi
+        first, honoring CUDA_VISIBLE_DEVICES) instead of re-detecting hardware."""
+        from utils.hardware import is_apple_silicon
 
-        if platform.system() == "Darwin" and platform.machine() in ("arm64", "aarch64"):
+        if is_apple_silicon():
             return True  # bundled mac build offloads to Metal
-        smi = shutil.which("nvidia-smi")
-        if smi:
-            try:
-                out = subprocess.run(
-                    [smi, "-L"],
-                    capture_output = True,
-                    text = True,
-                    timeout = 10,
-                    **windows_hidden_subprocess_kwargs(),
-                )
-                return out.returncode == 0 and "GPU " in out.stdout
-            except Exception:  # noqa: BLE001 - no GPU / smi unusable -> CPU
-                return False
-        return False
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        gpus = LlamaCppBackend._get_gpu_free_memory()  # [(idx, free_mib)], honors CVD
+        return any(free >= LlamaServerBackend._MIN_GPU_FREE_MIB for _, free in gpus)
 
     # ── Subprocess command / env ─────────────────────────────────
 
@@ -200,8 +203,8 @@ class LlamaServerBackend:
             "--pooling",
             "cls",
         ]
-        # 99 offloads every layer (the model is tiny); 0 keeps it on CPU.
-        cmd += ["-ngl", "99" if use_gpu else "0"]
+        # -1 offloads every layer (matches the chat server); 0 keeps it on CPU.
+        cmd += ["-ngl", "-1" if use_gpu else "0"]
         return cmd
 
     def _build_env(self, binary: str, *, use_gpu: bool) -> dict[str, str]:

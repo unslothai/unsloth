@@ -115,7 +115,7 @@ def test_build_cmd_cpu_flags():
 def test_build_cmd_gpu_offloads():
     b = LlamaServerBackend()
     cmd = b._build_cmd("/bin/llama-server", "/m/bge.gguf", 1, use_gpu = True)
-    assert cmd[cmd.index("-ngl") + 1] == "99"
+    assert cmd[cmd.index("-ngl") + 1] == "-1"  # offload all, matching the chat server
 
 
 def test_build_env_cpu_hides_gpus():
@@ -163,6 +163,33 @@ def test_use_gpu_sticky_cpu_fallback(monkeypatch):
     )
     b._force_cpu = True  # a prior GPU start failed
     assert b._use_gpu() is False
+
+
+def test_gpu_available_reuses_studio_probe(monkeypatch):
+    import utils.hardware as uh
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    monkeypatch.setattr(uh, "is_apple_silicon", lambda: False)
+    # Ample free VRAM -> GPU; nearly full -> CPU; none -> CPU.
+    monkeypatch.setattr(
+        LlamaCppBackend, "_get_gpu_free_memory", staticmethod(lambda: [(0, 40000)])
+    )
+    assert LlamaServerBackend._gpu_available() is True
+    monkeypatch.setattr(
+        LlamaCppBackend, "_get_gpu_free_memory", staticmethod(lambda: [(0, 100)])
+    )
+    assert LlamaServerBackend._gpu_available() is False
+    monkeypatch.setattr(
+        LlamaCppBackend, "_get_gpu_free_memory", staticmethod(lambda: [])
+    )
+    assert LlamaServerBackend._gpu_available() is False
+
+
+def test_gpu_available_apple_metal(monkeypatch):
+    import utils.hardware as uh
+
+    monkeypatch.setattr(uh, "is_apple_silicon", lambda: True)
+    assert LlamaServerBackend._gpu_available() is True
 
 
 # ── Spawn / readiness ────────────────────────────────────────────
