@@ -86,17 +86,25 @@ def is_gguf_filename(filename: str) -> bool:
     return filename.lower().endswith(".gguf")
 
 
+# Cap recursive walks so a huge or system path cannot run unbounded.
+_MAX_LOCAL_SCAN_ENTRIES = 100_000
+
+
 def iter_gguf_files(directory: Path, recursive: bool = False):
     if not directory.is_dir():
         return
     if recursive:
+        seen = 0
         # os.walk skips unreadable subdirs instead of raising (e.g. /proc).
-        for dirpath, _dirnames, filenames in os.walk(
+        for dirpath, dirnames, filenames in os.walk(
             directory, onerror = lambda _e: None
         ):
             for name in filenames:
                 if is_gguf_filename(name):
                     yield Path(dirpath) / name
+            seen += len(dirnames) + len(filenames)
+            if seen > _MAX_LOCAL_SCAN_ENTRIES:
+                return
         return
     try:
         entries = list(directory.iterdir())
