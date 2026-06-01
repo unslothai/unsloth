@@ -750,9 +750,7 @@ class TestAnthropicToolNonStreaming:
                 "result": "Rendered HTML artifact.",
             }
 
-        response = asyncio.run(
-            _anthropic_tool_non_streaming(_run_gen, "msg_1", "m")
-        )
+        response = asyncio.run(_anthropic_tool_non_streaming(_run_gen, "msg_1", "m"))
         body = json.loads(response.body)
         tool_blocks = [
             block for block in body["content"] if block["type"] == "tool_use"
