@@ -24,7 +24,7 @@ import threading
 
 from storage import rag_db
 
-from . import chunking, config, embeddings, parsers, store
+from . import captioner, chunking, config, embeddings, parsers, store
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +99,21 @@ def _run(
     try:
         _progress(conn, job_id, "parsing", 0.1)
         pages = parsers.parse(stored_path)
+        if config.CAPTION_IMAGES and stored_path.lower().endswith(".pdf"):
+            # Caption rendered figure regions with the loaded vision model and
+            # splice the captions into the page text so the normal chunker
+            # indexes them. No-ops gracefully when no vision model is available.
+            try:
+                figures = parsers.render_pdf_figures(
+                    stored_path, max_figures = config.CAPTION_MAX_IMAGES
+                )
+            except Exception:
+                logger.warning("figure rendering failed for job %s", job_id, exc_info=True)
+                figures = []
+            if figures:
+                _progress(conn, job_id, "captioning", 0.2)
+                captions = captioner.caption_images(figures)
+                pages = captioner.splice_captions(pages, captions)
 
         _progress(conn, job_id, "chunking", 0.3)
         count = embeddings.token_counter(model_name)

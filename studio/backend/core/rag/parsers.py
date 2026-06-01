@@ -108,6 +108,93 @@ def _pdf(path: str, want_images: bool) -> tuple[list[Page], list[ParsedImage]]:
 
 
 # --------------------------------------------------------------------------
+# PDF figure rendering (for captioning)
+# --------------------------------------------------------------------------
+def _merge_rects(boxes: list) -> list:
+    """Union overlapping rectangles (largest-first) into figure regions."""
+    import pymupdf
+
+    rects = [pymupdf.Rect(b) for b in boxes]
+    rects = [r for r in rects if r.width > 5 and r.height > 5]
+    merged: list = []
+    for box in sorted(rects, key = lambda r: -r.get_area()):
+        placed = False
+        for m in merged:
+            if m.intersects(box):
+                m |= box
+                placed = True
+                break
+        if not placed:
+            merged.append(+box)
+    return merged
+
+
+def render_pdf_figures(
+    path: str,
+    *,
+    dpi: int = 130,
+    min_area_frac: float = 0.04,
+    min_side: float = 40.0,
+    max_figures: int = 8,
+) -> list[ParsedImage]:
+    """Detect figure regions and render each to a PNG for captioning.
+
+    Academic figures are usually vector drawings, so raw raster extraction
+    yields fragments/masks. Instead we cluster vector drawings
+    (``page.cluster_drawings``) and raster placements (``page.get_image_info``)
+    into bounding boxes, keep the ones covering a meaningful slice of the page,
+    and render them. ``ParsedImage.image_bytes`` holds the rendered PNG. Any
+    failure yields an empty list, never an exception.
+    """
+    try:
+        import pymupdf
+    except Exception:
+        return []
+
+    out: list[ParsedImage] = []
+    try:
+        doc = pymupdf.open(path)
+    except Exception:
+        return []
+    try:
+        for i, page in enumerate(doc):
+            boxes: list = []
+            try:
+                boxes.extend(info["bbox"] for info in page.get_image_info())
+            except Exception:
+                pass
+            try:
+                boxes.extend(page.cluster_drawings())
+            except Exception:
+                pass
+            if not boxes:
+                continue
+            page_area = page.rect.width * page.rect.height
+            for box in _merge_rects(boxes):
+                if (
+                    box.get_area() >= min_area_frac * page_area
+                    and box.width >= min_side
+                    and box.height >= min_side
+                ):
+                    try:
+                        pix = page.get_pixmap(dpi = dpi, clip = box)
+                        out.append(
+                            ParsedImage(
+                                image_bytes = pix.tobytes("png"),
+                                page_number = i + 1,
+                                xref = 0,
+                            )
+                        )
+                    except Exception:
+                        continue
+                    if len(out) >= max_figures:
+                        return out
+        return out
+    finally:
+        doc.close()
+
+
+# --------------------------------------------------------------------------
 # DOCX (python-docx)
 # --------------------------------------------------------------------------
 def _docx(path: str) -> list[Page]:

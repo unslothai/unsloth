@@ -19,3 +19,12 @@ MIN_SCORE = float(os.environ.get("RAG_MIN_SCORE", "0.0"))
 
 # File extensions accepted for upload / ingestion.
 UPLOAD_EXTS = {".pdf", ".txt", ".md", ".markdown", ".docx", ".html", ".htm"}
+
+# Multimodal image captioning. When enabled AND the loaded chat model is
+# vision-capable, embedded figures are captioned and the caption text is
+# spliced into the page so the normal text path indexes it (no separate image
+# vector space). Off by default to keep indexing fast; each caption is a vision
+# model call. CAPTION_MAX_IMAGES bounds per-document cost.
+CAPTION_IMAGES = os.environ.get("RAG_CAPTION_IMAGES", "0") == "1"
+CAPTION_MAX_IMAGES = int(os.environ.get("RAG_CAPTION_MAX_IMAGES", "8"))
+CAPTION_TIMEOUT_S = float(os.environ.get("RAG_CAPTION_TIMEOUT_S", "30"))
