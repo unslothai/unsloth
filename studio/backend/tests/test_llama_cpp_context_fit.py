@@ -640,3 +640,19 @@ class TestClassifyGpuOffload:
             ]
         )
         assert inst._classify_gpu_offload(True, [(0, 22805)]) is True
+
+    def test_offloading_zero_repeating_does_not_mask_zero_total(self):
+        inst = self._backend(
+            [
+                "llm_load_tensors: offloading 0 repeating layers to GPU",
+                "llm_load_tensors: offloaded 0/33 layers to GPU",
+                "llm_load_tensors: CPU model buffer size = 7338.64 MiB",
+            ]
+        )
+        assert inst._classify_gpu_offload(True, [(0, 22805)]) is False
+
+    def test_hip_model_buffer_is_gpu(self):
+        inst = self._backend(
+            ["load_tensors:   HIP0 model buffer size = 21000.0 MiB"]
+        )
+        assert inst._classify_gpu_offload(True, [(0, 22805)]) is True

@@ -65,7 +65,18 @@ logger = get_logger(__name__)
 # #5106 / #5830). Robust across llama.cpp log formats (the "model buffer size"
 # lines were dropped in recent builds): buffer-size markers, "offloaded N/M
 # layers to GPU", and the "device_info:" enumeration.
-_GPU_BUFFER_MARKERS = ("CUDA", "ROCm", "Metal", "Vulkan", "OpenCL", "SYCL")
+_GPU_BUFFER_MARKERS = (
+    "CUDA",
+    "ROCm",
+    "ROCM",
+    "HIP",
+    "Metal",
+    "Vulkan",
+    "OpenCL",
+    "SYCL",
+    "MUSA",
+    "CANN",
+)
 _DEVICE_ROW_RE = re.compile(
     r"-\s*(?P<dev>(?:CUDA|ROCm|ROCM|HIP|Metal|Vulkan|SYCL|OpenCL|MUSA|CANN|CPU)\w*)\s*:",
     re.IGNORECASE,
@@ -84,40 +95,49 @@ _GPU_DEVICE_PREFIXES = (
 _OFFLOADED_LAYERS_RE = re.compile(
     r"offloaded\s+(\d+)\s*/\s*(\d+)\s+layers?\s+to\s+gpu", re.IGNORECASE
 )
+_OFFLOADING_COUNT_RE = re.compile(
+    r"offloading\s+(\d+)\s+(?:repeating\s+|non-repeating\s+)?layers?\s+to\s+gpu",
+    re.IGNORECASE,
+)
 
 
 def classify_gpu_offload_lines(lines: list[str]) -> Optional[bool]:
     """True if the model landed on a GPU, False if it stayed on CPU despite GPU
-    intent, None when the log has no usable signal. Priority: buffer-size lines,
-    then offloaded-layers count, then device_info enumeration."""
-    # Exclude host-pinned buffers ("CUDA_Host" ...): CPU RAM the GPU backend
-    # pinned, not device memory, so they must not read as GPU offload.
-    saw_buffer_line = False
+    intent, None when the log has no usable signal. Priority: explicit
+    offloaded-layer counts (authoritative), then GPU model-buffer lines, then
+    device_info enumeration."""
+    # Signal 1: explicit offloaded counts win over everything (a KV/compute
+    # buffer can be on the GPU while 0 model layers are offloaded). Any counted
+    # line N>0 => True; all 0 => False (scan all; a draft model can log 0/k
+    # before the main model's 33/33). Uncounted "offloading output layer to GPU"
+    # is only a weak positive when no counted line exists.
+    saw_zero_count = False
+    saw_uncounted_offloading = False
     for line in lines:
-        if "buffer size" not in line:
+        match = _OFFLOADED_LAYERS_RE.search(line) or _OFFLOADING_COUNT_RE.search(line)
+        if match:
+            if int(match.group(1)) > 0:
+                return True
+            saw_zero_count = True
             continue
+        low = line.lower()
+        if "offloading" in low and "to gpu" in low:
+            saw_uncounted_offloading = True
+    if saw_zero_count:
+        return False
+    if saw_uncounted_offloading:
+        return True
+
+    # Signal 2: GPU marker on a *model* buffer (exclude host-pinned _Host).
+    saw_model_buffer = False
+    for line in lines:
+        if "model buffer size" not in line:
+            continue
+        saw_model_buffer = True
         if "_Host" not in line and any(
             marker in line for marker in _GPU_BUFFER_MARKERS
         ):
             return True
-        if "model buffer size" in line:
-            saw_buffer_line = True
-
-    # Accept if any "offloaded N/M" has N>0 (a draft model can log 0/k before
-    # the main model's 33/33); CPU-only only when every offloaded line is zero.
-    saw_offloaded = False
-    for line in lines:
-        match = _OFFLOADED_LAYERS_RE.search(line)
-        if match:
-            saw_offloaded = True
-            if int(match.group(1)) > 0:
-                return True
-            continue
-        low = line.lower()
-        if "offloading" in low and "to gpu" in low:
-            return True
-    if saw_offloaded:
-        return False
 
     after_device_info = False
     saw_device_row = False
@@ -135,7 +155,7 @@ def classify_gpu_offload_lines(lines: list[str]) -> Optional[bool]:
         if any(dev.startswith(prefix) for prefix in _GPU_DEVICE_PREFIXES):
             return True
 
-    if saw_buffer_line or saw_device_row:
+    if saw_model_buffer or saw_device_row:
         return False
     return None
 

@@ -216,15 +216,38 @@ def test_signal2_offloaded_zero_beats_device_info():
     assert server_log_shows_gpu_offload(log) is False
 
 
-def test_gpu_buffer_size_without_model_word():
-    # A GPU-marked buffer line that omits the word "model" (e.g. KV/compute or
-    # a future format) must still count as GPU offload, even when a CPU
-    # "model buffer size" line is present (broadened signal 1).
+def test_kv_buffer_on_gpu_with_cpu_model_is_not_offload():
+    # A GPU KV/compute buffer while the model weights sit on CPU is still CPU
+    # inference; only a GPU *model* buffer counts as offload.
     log = (
         "load_tensors:   CUDA0 KV buffer size = 100.0 MiB\n"
         "load_tensors:   CPU_Mapped model buffer size = 0.6 MiB\n"
     )
+    assert server_log_shows_gpu_offload(log) is False
+
+
+def test_offloading_zero_repeating_does_not_mask_zero_total():
+    # Real CPU-only shape: a planning line says "offloading 0 repeating layers"
+    # before the definitive "offloaded 0/33". The count must decide -> False.
+    log = (
+        "llm_load_tensors: offloading 0 repeating layers to GPU\n"
+        "llm_load_tensors: offloaded 0/33 layers to GPU\n"
+        "llm_load_tensors: CPU model buffer size = 7338.64 MiB\n"
+    )
+    assert server_log_shows_gpu_offload(log) is False
+
+
+def test_uncounted_offloading_output_layer_is_gpu():
+    # The uncounted "offloading output layer to GPU" phrasing (no number, no
+    # later zero count) is a weak positive.
+    log = "llm_load_tensors: offloading output layer to GPU\n"
     assert server_log_shows_gpu_offload(log) is True
+
+
+def test_hip_musa_cann_model_buffer_is_gpu():
+    for marker in ("HIP0", "MUSA0", "CANN0"):
+        log = f"load_tensors:   {marker} model buffer size = 21000.0 MiB\n"
+        assert server_log_shows_gpu_offload(log) is True, marker
 
 
 def test_device_row_case_insensitive():

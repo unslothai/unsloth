@@ -5604,7 +5604,18 @@ def validate_quantize(
 # llama.cpp). CUDA0 / ROCm0 / Metal / Vulkan0 / OpenCL0 / SYCL0 / HIP0 / MUSA0
 # / CANN0 are GPU; CPU / CPU_Mapped are not. Kept broad so a single helper
 # covers every backend Studio ships.
-_GPU_MODEL_BUFFER_MARKERS = ("CUDA", "ROCm", "Metal", "Vulkan", "OpenCL", "SYCL")
+_GPU_MODEL_BUFFER_MARKERS = (
+    "CUDA",
+    "ROCm",
+    "ROCM",
+    "HIP",
+    "Metal",
+    "Vulkan",
+    "OpenCL",
+    "SYCL",
+    "MUSA",
+    "CANN",
+)
 
 # A device_info row looks like "<ts> I   - CUDA0   : NVIDIA B200 (...)" or
 # "<ts> I   - CPU : ...". Matched on the "- <backend> :" shape (the leading
@@ -5630,9 +5641,17 @@ _GPU_DEVICE_PREFIXES = (
     "cann",
 )
 
-# "load_tensors: offloaded 33/33 layers to GPU" (or "offloading ... to GPU").
+# "load_tensors: offloaded 33/33 layers to GPU".
 _OFFLOADED_LAYERS_RE = re.compile(
     r"offloaded\s+(\d+)\s*/\s*(\d+)\s+layers?\s+to\s+gpu", re.IGNORECASE
+)
+# "offloading 0 repeating layers to GPU" / "offloading 1 non-repeating ...".
+# A counted form, so a zero here is a definite CPU-only signal (it usually
+# precedes "offloaded 0/N"); kept separate from the uncounted
+# "offloading output layer to GPU" phrasing, which carries no number.
+_OFFLOADING_COUNT_RE = re.compile(
+    r"offloading\s+(\d+)\s+(?:repeating\s+|non-repeating\s+)?layers?\s+to\s+gpu",
+    re.IGNORECASE,
 )
 
 # install_kind values that ship a real GPU backend and must offload to the GPU.
@@ -5649,9 +5668,12 @@ def server_log_shows_gpu_offload(log_text: str) -> bool | None:
     Robust across llama.cpp log formats (the "model buffer size" lines were
     dropped in recent builds), in priority order:
 
-    1. ``<backend> model buffer size = N`` lines -- GPU marker => True
-       (older llama.cpp).
-    2. ``offloaded N/M layers to GPU`` -- N>0 => True, 0/M => False.
+    1. ``offloaded N/M layers to GPU`` / ``offloading N ... layers to GPU`` --
+       the explicit layer count is authoritative: N>0 => True, all 0 => False.
+       It must win over auxiliary GPU buffers (a KV/compute buffer can sit on
+       the GPU while 0 model layers are offloaded -- still CPU inference).
+    2. ``<backend> model buffer size = N`` lines -- a GPU marker on a *model*
+       buffer (not host-pinned ``CUDA_Host``) => True (older llama.cpp).
     3. ``device_info:`` enumeration -- a GPU device row (``- CUDA0 :`` etc.)
        => True; only a ``- CPU :`` row => False. This is the version-stable
        signal and matches how the CPU-only-binary bug is diagnosed in the
@@ -5663,41 +5685,43 @@ def server_log_shows_gpu_offload(log_text: str) -> bool | None:
     """
     lines = log_text.splitlines()
 
-    # Signal 1: per-backend buffer-size lines. A GPU marker on ANY "buffer
-    # size" line (model / KV / compute) means the GPU holds part of the model
-    # -- accept. Exclude host-pinned buffers ("CUDA_Host" / "ROCm_Host" ...):
-    # those are CPU RAM the GPU backend pinned, not device memory, so a binary
-    # that pins host memory but offloads no weights must not read as GPU. Only
-    # the model-buffer location decides CPU-only (KV/compute CPU buffers exist
-    # even on GPU runs), so the False determination keys on "model buffer size".
-    saw_buffer_line = False
+    # Signal 1: explicit offloaded-layers counts (authoritative). Any counted
+    # line with N>0 => True; if every counted line is 0 => False (a draft model
+    # can log "offloaded 0/k" before the main model's "offloaded 33/33", so scan
+    # all before deciding). The uncounted "offloading output layer to GPU"
+    # phrasing carries no number, so it is only a weak positive used when no
+    # counted line exists at all.
+    saw_zero_count = False
+    saw_uncounted_offloading = False
     for line in lines:
-        if "buffer size" not in line:
+        match = _OFFLOADED_LAYERS_RE.search(line) or _OFFLOADING_COUNT_RE.search(line)
+        if match:
+            if int(match.group(1)) > 0:
+                return True
+            saw_zero_count = True
             continue
+        low = line.lower()
+        if "offloading" in low and "to gpu" in low:
+            saw_uncounted_offloading = True
+    if saw_zero_count:
+        return False
+    if saw_uncounted_offloading:
+        return True
+
+    # Signal 2: per-backend model-buffer lines. A GPU marker on a *model* buffer
+    # means model weights live on the GPU. Exclude host-pinned buffers
+    # ("CUDA_Host" / "ROCm_Host" ...): those are CPU RAM the GPU backend pinned,
+    # not device memory. KV/compute buffers are ignored here -- they can be on
+    # the GPU even when all weights are on CPU.
+    saw_model_buffer = False
+    for line in lines:
+        if "model buffer size" not in line:
+            continue
+        saw_model_buffer = True
         if "_Host" not in line and any(
             marker in line for marker in _GPU_MODEL_BUFFER_MARKERS
         ):
             return True
-        if "model buffer size" in line:
-            saw_buffer_line = True
-
-    # Signal 2: explicit offloaded-layers count. Scan every "offloaded N/M"
-    # line and accept if any has N>0 (a draft/speculative model can log
-    # "offloaded 0/k" before the main model's "offloaded 33/33"); only when all
-    # offloaded lines are zero is it CPU-only.
-    saw_offloaded = False
-    for line in lines:
-        match = _OFFLOADED_LAYERS_RE.search(line)
-        if match:
-            saw_offloaded = True
-            if int(match.group(1)) > 0:
-                return True
-            continue
-        low = line.lower()
-        if "offloading" in low and "to gpu" in low:
-            return True
-    if saw_offloaded:
-        return False
 
     # Signal 3: device_info enumeration. Only trust device rows once the
     # "device_info:" header has appeared, so the compiled-backend system_info
@@ -5718,7 +5742,7 @@ def server_log_shows_gpu_offload(log_text: str) -> bool | None:
         if any(dev.startswith(prefix) for prefix in _GPU_DEVICE_PREFIXES):
             return True
 
-    if saw_buffer_line or saw_device_row:
+    if saw_model_buffer or saw_device_row:
         # We had a concrete signal, but every buffer/device was CPU.
         return False
     return None
