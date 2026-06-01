@@ -56,7 +56,9 @@ def _classify_param_names(model: torch.nn.Module) -> tuple[Set[str], Set[str]]:
         if isinstance(module, torch.nn.Embedding):
             for param_name, _ in module.named_parameters():
                 embedding_names.add(f"{mod_prefix}{param_name}")
-        elif isinstance(module, NORM_CLASSES) or "norm" in type(module).__name__.lower():
+        elif (
+            isinstance(module, NORM_CLASSES) or "norm" in type(module).__name__.lower()
+        ):
             for param_name, _ in module.named_parameters():
                 no_decay_names.add(f"{mod_prefix}{param_name}")
 
@@ -66,14 +68,18 @@ def _classify_param_names(model: torch.nn.Module) -> tuple[Set[str], Set[str]]:
     for name, _ in model.named_parameters():
         if "modules_to_save." not in name:
             continue
-        parent_name = name.rsplit(".modules_to_save", 1)[0] if ".modules_to_save" in name else ""
+        parent_name = (
+            name.rsplit(".modules_to_save", 1)[0] if ".modules_to_save" in name else ""
+        )
         try:
             parent = model.get_submodule(parent_name)
         except (AttributeError, KeyError):
             continue
         if isinstance(parent, torch.nn.Embedding):
             embedding_names.add(name)
-        elif isinstance(parent, NORM_CLASSES) or "norm" in type(parent).__name__.lower():
+        elif (
+            isinstance(parent, NORM_CLASSES) or "norm" in type(parent).__name__.lower()
+        ):
             no_decay_names.add(name)
 
     # Detect tied embeddings (e.g. lm_head.weight aliased to embed_tokens.weight).
