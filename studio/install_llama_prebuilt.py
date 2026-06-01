@@ -3085,6 +3085,46 @@ def detect_host() -> HostInfo:
     )
 
 
+def _normalize_forwarded_gfx(value: str | None) -> str | None:
+    """Extract a single gfx token from a forwarded --rocm-gfx / env value.
+    setup.sh/setup.ps1 already picked the active GPU, so take the token as-is
+    without re-applying visible-device selection. Ignore anything malformed."""
+    if not value:
+        return None
+    m = re.search(r"gfx[1-9][0-9a-z]{2,3}", value.lower())
+    return m.group(0) if m else None
+
+
+def _apply_host_overrides(
+    host: HostInfo,
+    *,
+    override_has_rocm: bool = False,
+    override_rocm_gfx: str | None = None,
+    force_cpu: bool = False,
+) -> HostInfo:
+    """Fold setup.sh/setup.ps1's forwarded detection into the host profile.
+    A forwarded gfx (--rocm-gfx or UNSLOTH_ROCM_GFX_ARCH) is authoritative and
+    implies ROCm: the installer's own hipinfo/amd-smi probe can miss the arch on
+    amd-smi-only hosts or when setup inferred it from the GPU name, leaving
+    rocm_gfx_target None and no lemonade prebuilt selected. force_cpu is the
+    opposite explicit signal (arm64 Linux GPU host whose source build failed):
+    drop GPU attributes so the CPU prebuilt for this OS/arch is selected."""
+    if force_cpu:
+        return dataclasses_replace(
+            host,
+            has_usable_nvidia = False,
+            has_physical_nvidia = False,
+            has_rocm = False,
+            rocm_gfx_target = None,
+        )
+    gfx = _normalize_forwarded_gfx(override_rocm_gfx)
+    if gfx:
+        return dataclasses_replace(host, has_rocm = True, rocm_gfx_target = gfx)
+    if override_has_rocm and not host.has_rocm:
+        return dataclasses_replace(host, has_rocm = True)
+    return host
+
+
 def pick_windows_cuda_runtime(host: HostInfo) -> str | None:
     if not host.driver_cuda_version:
         return None
@@ -6460,22 +6500,16 @@ def install_prebuilt(
     *,
     simple_policy: bool = False,
     override_has_rocm: bool = False,
+    override_rocm_gfx: str | None = None,
     force_cpu: bool = False,
 ) -> None:
     host = detect_host()
-    if override_has_rocm and not host.has_rocm:
-        host = dataclasses_replace(host, has_rocm = True)
-    if force_cpu:
-        # Explicit CPU fallback: drop GPU attributes so the CPU prebuilt for this
-        # OS/arch is selected. setup.sh uses this for arm64 Linux GPU hosts whose
-        # source build failed, where no arm64 CUDA prebuilt exists anywhere.
-        host = dataclasses_replace(
-            host,
-            has_usable_nvidia = False,
-            has_physical_nvidia = False,
-            has_rocm = False,
-            rocm_gfx_target = None,
-        )
+    host = _apply_host_overrides(
+        host,
+        override_has_rocm = override_has_rocm,
+        override_rocm_gfx = override_rocm_gfx,
+        force_cpu = force_cpu,
+    )
     choice: AssetChoice | None = None
     try:
         with install_lock(install_lock_path(install_dir)):
@@ -6621,6 +6655,16 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--rocm-gfx",
+        default = os.environ.get("UNSLOTH_ROCM_GFX_ARCH"),
+        help = (
+            "Forward the AMD gfx target (e.g. gfx1151) that setup.ps1/setup.sh "
+            "resolved, so the lemonade HIP prebuilt is selected even when the "
+            "installer's own hipinfo/amd-smi probe cannot report it. Implies "
+            "--has-rocm. Defaults to the UNSLOTH_ROCM_GFX_ARCH environment variable."
+        ),
+    )
+    parser.add_argument(
         "--cpu-fallback",
         action = "store_true",
         default = False,
@@ -6751,6 +6795,7 @@ def main() -> int:
         published_release_tag = args.published_release_tag or "",
         simple_policy = args.simple_policy,
         override_has_rocm = args.has_rocm,
+        override_rocm_gfx = args.rocm_gfx,
         force_cpu = args.cpu_fallback,
     )
     return EXIT_SUCCESS
