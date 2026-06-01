@@ -1273,7 +1273,7 @@ export function SharedComposer({
               aria-label={ragEnabled ? "Disable retrieval" : "Enable retrieval"}
             >
               <LibraryBigIcon className="size-3.5" />
-              <span>Docs</span>
+              <span>RAG</span>
             </button>
           )}
           <button

@@ -92,7 +92,7 @@ export function ThreadDocumentsBar({ threadId }: { threadId: string | null }) {
         title="Attach documents for retrieval"
       >
         <PaperclipIcon className="size-3.5" />
-        <span>Add docs</span>
+        <span>Add Files</span>
       </button>
       <input
         ref={fileInputRef}
