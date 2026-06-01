@@ -108,6 +108,7 @@ def test_build_cmd_cpu_flags():
     cmd = b._build_cmd("/bin/llama-server", "/m/bge.gguf", 9999, use_gpu = False)
     assert "--embedding" in cmd
     assert cmd[cmd.index("--pooling") + 1] == "cls"
+    assert cmd[cmd.index("--fit") + 1] == "off"  # deterministic, no auto-resize
     assert cmd[cmd.index("-ngl") + 1] == "0"  # CPU keeps everything off the GPU
     assert cmd[cmd.index("--port") + 1] == "9999"
 

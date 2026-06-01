@@ -191,6 +191,8 @@ class LlamaServerBackend:
         # No --embd-normalize: it isn't in every llama-server build and we
         # normalize in Python anyway, so the `normalize` flag matches the
         # sentence-transformers path regardless of the server default.
+        # --fit off keeps the launch deterministic: don't auto-resize context or
+        # offload to fill device memory (the tiny embedder needs neither).
         cmd = [
             binary,
             "-m",
@@ -202,6 +204,8 @@ class LlamaServerBackend:
             "--embedding",
             "--pooling",
             "cls",
+            "--fit",
+            "off",
         ]
         # -1 offloads every layer (matches the chat server); 0 keeps it on CPU.
         cmd += ["-ngl", "-1" if use_gpu else "0"]
