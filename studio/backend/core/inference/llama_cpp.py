@@ -395,6 +395,15 @@ _TOOL_TEMPLATE_MARKERS = (
     "'role' == 'tool'",
     'message.role == "tool"',
     "message.role == 'tool'",
+    # DeepSeek-style: subscripted access + tool_calls field checks.
+    # DeepSeek's chat template has no top-level ``{% if tools %}`` block
+    # and uses ``message['role'] == 'tool'`` plus ``message['tool_calls']
+    # is defined`` to gate the emission.
+    "message['role'] == 'tool'",
+    'message["role"] == "tool"',
+    "message['tool_calls']",
+    'message["tool_calls"]',
+    "tool_calls is defined",
 )
 
 

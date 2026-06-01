@@ -203,6 +203,89 @@ def test_detect_safetensors_features_gemma4_template_keeps_tools_on():
     assert flags["supports_tools"] is True
 
 
+# DeepSeek V3 / V3.1 / R1 emit ``<｜tool▁calls▁begin｜>...`` blocks.
+# Note the full-width pipe (U+FF5C) and lower-1/8-block (U+2581).
+DEEPSEEK_TEMPLATE = """
+{%- if tools %}
+  {%- for tool in tools %}
+    {{- tool | tojson }}
+  {%- endfor %}
+{%- endif %}
+{%- for message in messages %}
+  {%- if message.role == 'assistant' and message.tool_calls %}
+    {%- for tc in message.tool_calls %}
+      {{- '<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>' + tc.function.name +
+          '<｜tool▁sep｜>' + tc.function.arguments + '<｜tool▁call▁end｜>' }}
+    {%- endfor %}
+  {%- endif %}
+{%- endfor %}
+"""
+
+
+def test_detect_safetensors_features_deepseek_template_keeps_tools_on():
+    """DeepSeek emits ``<｜tool▁calls▁begin｜>...``; parser now supports it."""
+    from routes.inference import _detect_safetensors_features
+
+    backend = SimpleNamespace(active_model_name = "unsloth/DeepSeek-V3.1")
+    flags = _detect_safetensors_features(backend, DEEPSEEK_TEMPLATE)
+    assert flags["supports_tools"] is True
+
+
+# GLM 4.5 / 4.6 / 4.7 emit ``<tool_call>NAME\n<arg_key>...<arg_value>...
+# </tool_call>``. Shares the outer ``<tool_call>`` marker with Qwen but
+# the per-arg ``<arg_key>`` is unique to GLM, so the gate uses it as
+# the disambiguation signal.
+GLM_TEMPLATE = """
+{%- if tools %}
+  For each function call, output the function name and arguments within
+  the following XML format:
+  <tool_call>{function-name}
+  <arg_key>{arg-key}</arg_key>
+  <arg_value>{arg-value}</arg_value>
+  </tool_call>
+  {%- for tool in tools %}
+    {{- tool | tojson }}
+  {%- endfor %}
+{%- endif %}
+"""
+
+
+def test_detect_safetensors_features_glm_template_keeps_tools_on():
+    """GLM 4.x emits ``<tool_call>NAME\\n<arg_key>...``; parser handles it."""
+    from routes.inference import _detect_safetensors_features
+
+    backend = SimpleNamespace(active_model_name = "unsloth/GLM-4.6")
+    flags = _detect_safetensors_features(backend, GLM_TEMPLATE)
+    assert flags["supports_tools"] is True
+
+
+# Kimi K2 / Moonshot uses ``<|tool_calls_section_begin|>...`` blocks
+# with ``functions.NAME:IDX`` as the per-call id.
+KIMI_TEMPLATE = """
+{%- if tools %}
+  <|im_system|>tool_declare<|im_middle|>{{ tools | tojson }}<|im_end|>
+{%- endif %}
+{%- for message in messages %}
+  {%- if message.role == 'assistant' and message.tool_calls %}
+    <|tool_calls_section_begin|>
+    {%- for tc in message.tool_calls %}
+      <|tool_call_begin|>{{ tc.id }}<|tool_call_argument_begin|>{{ tc.function.arguments | tojson }}<|tool_call_end|>
+    {%- endfor %}
+    <|tool_calls_section_end|>
+  {%- endif %}
+{%- endfor %}
+"""
+
+
+def test_detect_safetensors_features_kimi_template_keeps_tools_on():
+    """Kimi K2 emits ``<|tool_calls_section_begin|>...``; parser handles it."""
+    from routes.inference import _detect_safetensors_features
+
+    backend = SimpleNamespace(active_model_name = "unsloth/Kimi-K2-Instruct")
+    flags = _detect_safetensors_features(backend, KIMI_TEMPLATE)
+    assert flags["supports_tools"] is True
+
+
 LLAMA3_2_BARE_JSON_TEMPLATE = """
 {%- if tools %}
   {{- 'Given the following functions, respond with JSON for a function call.' }}
