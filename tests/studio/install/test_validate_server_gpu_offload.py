@@ -234,7 +234,9 @@ def test_device_row_case_insensitive():
 
 def test_crlf_log_parses_identically():
     # Windows logs use CRLF; classification must not change.
-    assert server_log_shows_gpu_offload(CUDA_DEVICE_INFO_LOG.replace("\n", "\r\n")) is True
+    assert (
+        server_log_shows_gpu_offload(CUDA_DEVICE_INFO_LOG.replace("\n", "\r\n")) is True
+    )
     assert (
         server_log_shows_gpu_offload(CPU_ONLY_DEVICE_INFO_LOG.replace("\n", "\r\n"))
         is False

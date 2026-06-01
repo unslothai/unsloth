@@ -55,7 +55,7 @@ LOGS = {
 }
 
 
-def _arg(name, default=None):
+def _arg(name, default = None):
     argv = sys.argv
     for i, token in enumerate(argv):
         if token == name and i + 1 < len(argv):

@@ -602,13 +602,15 @@ class TestClassifyGpuOffload:
 
     def test_offloaded_layers_count_decides(self):
         assert (
-            self._backend(["load_tensors: offloaded 33/33 layers to GPU"])
-            ._classify_gpu_offload(True, [(0, 22805)])
+            self._backend(
+                ["load_tensors: offloaded 33/33 layers to GPU"]
+            )._classify_gpu_offload(True, [(0, 22805)])
             is True
         )
         assert (
-            self._backend(["load_tensors: offloaded 0/33 layers to GPU"])
-            ._classify_gpu_offload(True, [(0, 22805)])
+            self._backend(
+                ["load_tensors: offloaded 0/33 layers to GPU"]
+            )._classify_gpu_offload(True, [(0, 22805)])
             is False
         )
 

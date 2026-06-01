@@ -49,18 +49,21 @@ def make_wrapper(workdir: Path) -> Path:
 
 
 def run_smoke(wrapper: Path, probe: Path, install_kind: str, mode: str) -> int:
-    env = dict(os.environ, FAKE_LLAMA_MODE=mode)
+    env = dict(os.environ, FAKE_LLAMA_MODE = mode)
     proc = subprocess.run(
         [
             sys.executable,
             str(INSTALLER),
-            "--smoke-test", str(wrapper),
-            "--probe", str(probe),
-            "--install-kind", install_kind,
+            "--smoke-test",
+            str(wrapper),
+            "--probe",
+            str(probe),
+            "--install-kind",
+            install_kind,
         ],
-        env=env,
-        capture_output=True,
-        text=True,
+        env = env,
+        capture_output = True,
+        text = True,
     )
     sys.stdout.write(proc.stdout)
     sys.stderr.write(proc.stderr)
@@ -86,7 +89,9 @@ def main() -> int:
         for mode, kind, expected, label in cases:
             rc = run_smoke(wrapper, probe, kind, mode)
             ok = rc == expected
-            print(f"[{'PASS' if ok else 'FAIL'}] {label}: mode={mode} kind={kind} exit={rc} (want {expected})")
+            print(
+                f"[{'PASS' if ok else 'FAIL'}] {label}: mode={mode} kind={kind} exit={rc} (want {expected})"
+            )
             if not ok:
                 failures.append(label)
 

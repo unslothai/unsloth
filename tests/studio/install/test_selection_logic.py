@@ -2374,7 +2374,10 @@ class TestGpuHostNoSilentCpuFallback:
         self._no_torch(monkeypatch)
         host = make_host(compute_caps = ["120"], driver_cuda_version = (13, 0))
         plan = direct_linux_release_plan(
-            self._linux_release("cuda13-newer", "cpu"), host, "unslothai/llama.cpp", "latest"
+            self._linux_release("cuda13-newer", "cpu"),
+            host,
+            "unslothai/llama.cpp",
+            "latest",
         )
         kinds = [a.install_kind for a in plan.attempts]
         assert "linux-cuda" in kinds
@@ -2403,7 +2406,10 @@ class TestGpuHostNoSilentCpuFallback:
             compute_caps = [],
         )
         plan = direct_linux_release_plan(
-            self._linux_release("cuda13-newer", "cpu"), host, "unslothai/llama.cpp", "latest"
+            self._linux_release("cuda13-newer", "cpu"),
+            host,
+            "unslothai/llama.cpp",
+            "latest",
         )
         assert [a.install_kind for a in plan.attempts] == ["linux-cpu"]
 
