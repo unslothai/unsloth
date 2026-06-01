@@ -966,6 +966,13 @@ def _dequantize_gguf_bytes(
         if data.numel() % 2 != 0:
             raise RuntimeError("BF16 GGUF tensor has an odd byte count.")
         dequant = (data.reshape(-1).view(torch.int16).to(torch.int32) << 16).view(torch.float32)
+        if logical_shape is None:
+            quant_shape_from_byte_shape = getattr(gguf, "quant_shape_from_byte_shape", None)
+            if callable(quant_shape_from_byte_shape):
+                logical_shape = tuple(
+                    int(dim)
+                    for dim in quant_shape_from_byte_shape(tuple(qweight.shape), quant_type)
+                )
         if logical_shape is not None:
             dequant = dequant.reshape(logical_shape)
         return dequant.to(dtype = dtype) if dtype is not None else dequant

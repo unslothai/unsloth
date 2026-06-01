@@ -628,6 +628,11 @@ def test_dequantize_bf16_gguf_bytes_without_diffusers_import(monkeypatch):
     class _FakeGGUF:
         GGMLQuantizationType = _FakeQuantTypes
 
+        @staticmethod
+        def quant_shape_from_byte_shape(shape, quant_type):
+            assert quant_type == _FakeQuantTypes.BF16
+            return (*shape[:-1], shape[-1] // 2)
+
     original_import = builtins.__import__
 
     def guarded_import(name, *args, **kwargs):
@@ -651,6 +656,17 @@ def test_dequantize_bf16_gguf_bytes_without_diffusers_import(monkeypatch):
     torch.testing.assert_close(
         decoded.float(),
         torch.tensor([1.0, -1.0], dtype = torch.float32),
+    )
+
+    decoded_matrix = g._dequantize_gguf_bytes(
+        raw.reshape(1, 4),
+        _FakeQuantTypes.BF16,
+    )
+
+    assert decoded_matrix.shape == (1, 2)
+    torch.testing.assert_close(
+        decoded_matrix,
+        torch.tensor([[1.0, -1.0]], dtype = torch.float32),
     )
 
 
