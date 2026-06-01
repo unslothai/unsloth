@@ -725,6 +725,58 @@ def test_dequantize_unknown_quant_falls_back_to_native_gguf(monkeypatch):
     )
 
 
+def test_dequantize_torch_quant_caches_diffusers_tables(monkeypatch):
+    import builtins
+
+    import core.inference.gguf_text_encoder as g
+
+    class _FakeQuantTypes:
+        F32 = "F32"
+        F16 = "F16"
+        BF16 = "BF16"
+        Q4_K = "Q4_K"
+
+    class _FakeGGUF:
+        GGMLQuantizationType = _FakeQuantTypes
+
+    fake_utils = types.ModuleType("diffusers.quantizers.gguf.utils")
+    fake_utils.GGML_QUANT_SIZES = {_FakeQuantTypes.Q4_K: (2, 4)}
+    fake_utils.dequantize_functions = {
+        _FakeQuantTypes.Q4_K: lambda blocks, block_size, type_size, dtype = None: torch.ones(
+            (blocks.shape[0], block_size),
+            dtype = dtype,
+        )
+    }
+
+    monkeypatch.setitem(sys.modules, "diffusers", types.ModuleType("diffusers"))
+    monkeypatch.setitem(sys.modules, "diffusers.quantizers", types.ModuleType("diffusers.quantizers"))
+    monkeypatch.setitem(sys.modules, "diffusers.quantizers.gguf", types.ModuleType("diffusers.quantizers.gguf"))
+    monkeypatch.setitem(sys.modules, "diffusers.quantizers.gguf.utils", fake_utils)
+    monkeypatch.setattr(g, "_require_gguf", lambda: _FakeGGUF)
+    monkeypatch.setattr(g, "_DIFFUSERS_GGUF_DEQUANT_TABLES", None)
+    g._TORCH_GGUF_DEQUANT_TYPES_CACHE.clear()
+
+    import_count = 0
+    original_import = builtins.__import__
+
+    def counting_import(name, *args, **kwargs):
+        nonlocal import_count
+        if name == "diffusers.quantizers.gguf.utils":
+            import_count += 1
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", counting_import)
+    raw = torch.zeros((1, 4), dtype = torch.uint8)
+
+    first = g._dequantize_gguf_bytes(raw, _FakeQuantTypes.Q4_K, dtype = torch.float32)
+    second = g._dequantize_gguf_bytes(raw, _FakeQuantTypes.Q4_K, dtype = torch.float32)
+
+    assert import_count == 1
+    assert len(g._TORCH_GGUF_DEQUANT_TYPES_CACHE) == 1
+    torch.testing.assert_close(first, torch.ones((1, 2)))
+    torch.testing.assert_close(second, torch.ones((1, 2)))
+
+
 @pytest.mark.parametrize(
     "quant_name",
     ["IQ1_M", "IQ1_S", "IQ2_S", "IQ2_XS", "IQ2_XXS", "IQ3_S", "IQ3_XXS"],

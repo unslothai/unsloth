@@ -93,6 +93,22 @@ _SUPPORTED_LAZY_TEXT_ARCHITECTURES = frozenset(
     }
 )
 _TEXT_ARCHITECTURES_REQUIRING_MMPROJ = frozenset({"qwen2vl"})
+_TORCH_GGUF_DEQUANT_TYPE_NAMES = (
+    "Q8_0",
+    "Q5_1",
+    "Q5_0",
+    "Q4_1",
+    "Q4_0",
+    "Q6_K",
+    "Q5_K",
+    "Q4_K",
+    "Q3_K",
+    "Q2_K",
+    "IQ4_NL",
+    "IQ4_XS",
+)
+_TORCH_GGUF_DEQUANT_TYPES_CACHE: dict[int, frozenset[Any]] = {}
+_DIFFUSERS_GGUF_DEQUANT_TABLES: tuple[Any, Any] | bool | None = None
 
 
 def _normalize_resident_device(device: torch.device | str | None) -> torch.device | None:
@@ -757,6 +773,42 @@ def _require_gguf():
     return gguf
 
 
+def _torch_gguf_dequant_types(gguf: Any) -> frozenset[Any]:
+    enum_cls = gguf.GGMLQuantizationType
+    cache_key = id(enum_cls)
+    cached = _TORCH_GGUF_DEQUANT_TYPES_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+    quant_types = frozenset(
+        qtype
+        for qtype in (
+            getattr(enum_cls, name, None)
+            for name in _TORCH_GGUF_DEQUANT_TYPE_NAMES
+        )
+        if qtype is not None
+    )
+    _TORCH_GGUF_DEQUANT_TYPES_CACHE[cache_key] = quant_types
+    return quant_types
+
+
+def _diffusers_gguf_dequant_tables() -> tuple[Any, Any] | None:
+    global _DIFFUSERS_GGUF_DEQUANT_TABLES
+
+    if _DIFFUSERS_GGUF_DEQUANT_TABLES is False:
+        return None
+    if _DIFFUSERS_GGUF_DEQUANT_TABLES is None:
+        try:
+            from diffusers.quantizers.gguf.utils import (
+                GGML_QUANT_SIZES,
+                dequantize_functions,
+            )
+        except Exception:
+            _DIFFUSERS_GGUF_DEQUANT_TABLES = False
+            return None
+        _DIFFUSERS_GGUF_DEQUANT_TABLES = (GGML_QUANT_SIZES, dequantize_functions)
+    return _DIFFUSERS_GGUF_DEQUANT_TABLES
+
+
 def _qwen2_5_vl_model_class():
     try:
         from transformers import Qwen2_5_VLForConditionalGeneration
@@ -977,35 +1029,12 @@ def _dequantize_gguf_bytes(
             dequant = dequant.reshape(logical_shape)
         return dequant.to(dtype = dtype) if dtype is not None else dequant
 
-    torch_dequant_types = {
-        getattr(gguf.GGMLQuantizationType, name, None)
-        for name in (
-            "Q8_0",
-            "Q5_1",
-            "Q5_0",
-            "Q4_1",
-            "Q4_0",
-            "Q6_K",
-            "Q5_K",
-            "Q4_K",
-            "Q3_K",
-            "Q2_K",
-            "IQ4_NL",
-            "IQ4_XS",
-        )
-    }
-    torch_dequant_types.discard(None)
     dequantize_function = None
-    if quant_type in torch_dequant_types:
-        try:
-            from diffusers.quantizers.gguf.utils import (
-                GGML_QUANT_SIZES,
-                dequantize_functions,
-            )
-
-            dequantize_function = dequantize_functions[quant_type]
-        except Exception:
-            dequantize_function = None
+    if quant_type in _torch_gguf_dequant_types(gguf):
+        dequant_tables = _diffusers_gguf_dequant_tables()
+        if dequant_tables is not None:
+            GGML_QUANT_SIZES, dequantize_functions = dequant_tables
+            dequantize_function = dequantize_functions.get(quant_type)
     if dequantize_function is not None:
         block_size, type_size = GGML_QUANT_SIZES[quant_type]
         shape = logical_shape or (*qweight.shape[:-1], qweight.shape[-1] // type_size * block_size)
