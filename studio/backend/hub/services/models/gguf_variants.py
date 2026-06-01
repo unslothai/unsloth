@@ -352,6 +352,21 @@ def delete_variant_incomplete_blobs_result(
     return VariantIncompleteDeleteResult(deleted = deleted, unresolved = False)
 
 
+def _hf_client_error_status(exc: Exception) -> Optional[int]:
+    # Map HF client errors to their HTTP status so the UI shows "not found" /
+    # "token required" instead of a generic 500.
+    name = type(exc).__name__
+    if name in ("RepositoryNotFoundError", "RevisionNotFoundError", "EntryNotFoundError"):
+        return 404
+    if name == "GatedRepoError":
+        return 403
+    # HfHubHTTPError subclasses carry the upstream response status.
+    code = getattr(getattr(exc, "response", None), "status_code", None)
+    if isinstance(code, int) and 400 <= code < 500:
+        return code
+    return None
+
+
 async def get_gguf_variants_response(
     repo_id: str,
     prefer_local_cache: bool = False,
@@ -663,13 +678,13 @@ async def get_gguf_variants_response(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(
-            "Error listing GGUF variants for %s: %s",
-            repo_id,
-            download_registry.scrub_secrets(str(e), hf_token = hf_token),
-        )
+        scrubbed = download_registry.scrub_secrets(str(e), hf_token = hf_token)
+        # Client-side HF error (missing repo, gated, bad token): pass the status through.
+        status = _hf_client_error_status(e)
+        if status is not None:
+            raise HTTPException(status_code = status, detail = scrubbed)
+        logger.error("Error listing GGUF variants for %s: %s", repo_id, scrubbed)
         raise HTTPException(
             status_code = 500,
-            detail = "Failed to list GGUF variants: "
-            + download_registry.scrub_secrets(str(e), hf_token = hf_token),
+            detail = "Failed to list GGUF variants: " + scrubbed,
         )
