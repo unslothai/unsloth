@@ -297,6 +297,11 @@ def _load_desktop_owner() -> dict[str, str] | None:
 
 _DESKTOP_OWNER = _load_desktop_owner()
 
+# The Tauri desktop app runs the backend on the owner's own machine, so local
+# stdio MCP servers are safe there. setdefault lets an explicit "0" opt out.
+if _DESKTOP_OWNER:
+    os.environ.setdefault("UNSLOTH_STUDIO_ALLOW_STDIO_MCP", "1")
+
 
 def _desktop_owner() -> dict[str, str] | None:
     return _DESKTOP_OWNER
@@ -430,6 +435,7 @@ from starlette.requests import Request as _StarletteRequest  # noqa: E402
 
 
 _CSP_SCRIPT_NONCE_HEADER = "x-internal-script-nonce"
+_ARTIFACT_PREVIEW_FRAME_PATH = "/api/inference/artifact-preview-frame"
 
 
 # /content is Colab's working directory — more reliable than env vars which
@@ -483,6 +489,7 @@ def _build_csp(script_nonce: "str | None" = None) -> str:
         "style-src 'self' 'unsafe-inline'; "
         f"{script_src}; "
         "font-src 'self' data:; "
+        "frame-src 'self'; "
         f"frame-ancestors {frame_ancestors}; "
         "form-action 'self'; "
         "base-uri 'self'"
@@ -501,13 +508,13 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers.setdefault("Content-Security-Policy", _build_csp(nonce))
         # Omit X-Frame-Options in Colab — CSP frame-ancestors handles it, and
         # DENY would block serve_kernel_port_as_iframe regardless of CSP.
-        if not _IS_COLAB:
+        if not _IS_COLAB and request.url.path != _ARTIFACT_PREVIEW_FRAME_PATH:
             response.headers.setdefault("X-Frame-Options", "DENY")
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         response.headers.setdefault("Referrer-Policy", "no-referrer")
         response.headers.setdefault(
             "Permissions-Policy",
-            "camera=(), microphone=(), geolocation=(), interest-cohort=()",
+            "camera=(), microphone=(), geolocation=()",
         )
         response.headers["server"] = "unsloth-studio"
         return response

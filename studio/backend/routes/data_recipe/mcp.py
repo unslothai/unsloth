@@ -36,8 +36,18 @@ def list_mcp_tools(payload: McpToolsListRequest) -> McpToolsListResponse:
     providers: list[McpToolsProviderResult] = []
     tool_to_providers: dict[str, list[str]] = defaultdict(list)
 
+    from core.inference.mcp_client import stdio_mcp_enabled
+
     for provider_payload in payload.mcp_providers:
         provider_name = str(provider_payload.get("name", "")).strip()
+        if provider_payload.get("provider_type") == "stdio" and not stdio_mcp_enabled():
+            providers.append(
+                McpToolsProviderResult(
+                    name = provider_name,
+                    error = "Local (stdio) MCP servers are disabled on this host.",
+                )
+            )
+            continue
         built = build_mcp_providers({"mcp_providers": [provider_payload]})
         if len(built) != 1:
             providers.append(
