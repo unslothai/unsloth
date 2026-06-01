@@ -33,6 +33,7 @@ import { CustomizeIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
+import type { PanelImperativeHandle } from "react-resizable-panels";
 import {
   type ReactElement,
   memo,
@@ -173,6 +174,10 @@ function messageHasImage(message: MessageRecord): boolean {
   return false;
 }
 
+const ARTIFACT_PANEL_DEFAULT_SIZE = "38%";
+const ARTIFACT_PANEL_TRANSITION_MS = 260;
+const ARTIFACT_SURFACE_POP_DELAY_MS = 150;
+
 const SingleContent = memo(function SingleContent({
   threadId,
   newThreadNonce,
@@ -188,6 +193,14 @@ const SingleContent = memo(function SingleContent({
 }): ReactElement {
   const openArtifact = useChatArtifactsStore((state) => state.openArtifact);
   const activeThreadId = useChatRuntimeStore((state) => state.activeThreadId);
+  const artifactPanelRef = useRef<PanelImperativeHandle | null>(null);
+  const hasInitializedArtifactPanelRef = useRef(false);
+  const [isArtifactLayoutAnimating, setIsArtifactLayoutAnimating] =
+    useState(false);
+  const [isArtifactPanelLayoutActive, setIsArtifactPanelLayoutActive] =
+    useState(false);
+  const [isArtifactSurfaceVisible, setIsArtifactSurfaceVisible] =
+    useState(false);
   const showArtifactPanel = Boolean(
     artifact &&
       artifactSurface === "panel" &&
@@ -196,6 +209,57 @@ const SingleContent = memo(function SingleContent({
         : Boolean(newThreadNonce) ||
           Boolean(artifact.threadId && artifact.threadId === activeThreadId)),
   );
+
+  const artifactLayoutActive = showArtifactPanel || isArtifactPanelLayoutActive;
+  const artifactPanelSettledOpen =
+    showArtifactPanel &&
+    isArtifactPanelLayoutActive &&
+    !isArtifactLayoutAnimating;
+
+  useEffect(() => {
+    const panel = artifactPanelRef.current;
+    if (!panel) return;
+
+    setIsArtifactSurfaceVisible(false);
+
+    if (!hasInitializedArtifactPanelRef.current) {
+      hasInitializedArtifactPanelRef.current = true;
+      if (!showArtifactPanel) {
+        panel.resize("0%");
+        return;
+      }
+    }
+
+    setIsArtifactPanelLayoutActive(true);
+    setIsArtifactLayoutAnimating(true);
+    let resizeFrameId = 0;
+    const prepFrameId = window.requestAnimationFrame(() => {
+      resizeFrameId = window.requestAnimationFrame(() => {
+        panel.resize(showArtifactPanel ? ARTIFACT_PANEL_DEFAULT_SIZE : "0%");
+      });
+    });
+    const surfaceTimerId = showArtifactPanel
+      ? window.setTimeout(() => {
+          setIsArtifactSurfaceVisible(true);
+        }, ARTIFACT_SURFACE_POP_DELAY_MS)
+      : 0;
+    const timeoutId = window.setTimeout(() => {
+      setIsArtifactLayoutAnimating(false);
+      if (!showArtifactPanel) {
+        setIsArtifactPanelLayoutActive(false);
+      }
+    }, ARTIFACT_PANEL_TRANSITION_MS + 60);
+    return () => {
+      window.cancelAnimationFrame(prepFrameId);
+      if (resizeFrameId) {
+        window.cancelAnimationFrame(resizeFrameId);
+      }
+      if (surfaceTimerId) {
+        window.clearTimeout(surfaceTimerId);
+      }
+      window.clearTimeout(timeoutId);
+    };
+  }, [showArtifactPanel]);
 
   const threadPane = (
     <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden">
@@ -209,33 +273,50 @@ const SingleContent = memo(function SingleContent({
       initialThreadId={threadId}
       newThreadNonce={newThreadNonce}
     >
-      {showArtifactPanel && artifact ? (
-        <ResizablePanelGroup
-          orientation="horizontal"
-          className="min-h-0 min-w-0 flex-1 basis-0 overflow-hidden"
+      <ResizablePanelGroup
+        orientation="horizontal"
+        data-artifact-layout-animating={
+          isArtifactLayoutAnimating ? "true" : "false"
+        }
+        className="chat-artifact-split min-h-0 min-w-0 flex-1 basis-0 overflow-hidden"
+      >
+        <ResizablePanel
+          id="chat-thread"
+          defaultSize="100%"
+          minSize={artifactLayoutActive ? "42%" : "100%"}
+          className="h-full min-h-0 min-w-0 overflow-hidden"
         >
-          <ResizablePanel
-            id="chat-thread"
-            defaultSize="62%"
-            minSize="42%"
-            className="h-full min-h-0 min-w-0 overflow-hidden"
+          <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
+            {threadPane}
+          </div>
+        </ResizablePanel>
+        <ResizableHandle
+          withHandle={false}
+          className={cn(
+            "relative z-30 -ml-1 -mr-4 w-5 bg-transparent transition-[width,margin] duration-[260ms] ease-[var(--ease-out-cubic)] hover:bg-transparent hover:shadow-none active:bg-transparent active:shadow-none focus-visible:bg-transparent focus-visible:shadow-none focus-visible:ring-0 focus-visible:ring-offset-0 focus-visible:outline-none",
+            !artifactLayoutActive && "pointer-events-none -ml-0 -mr-0 w-0",
+          )}
+        />
+        <ResizablePanel
+          panelRef={artifactPanelRef}
+          id="chat-artifact"
+          defaultSize="0%"
+          minSize={artifactPanelSettledOpen ? "30%" : "0%"}
+          maxSize={artifactLayoutActive ? "58%" : "0%"}
+          collapsible={true}
+          collapsedSize="0%"
+          className={cn(
+            "h-full min-h-0 min-w-0 overflow-visible",
+            !showArtifactPanel && "pointer-events-none",
+          )}
+        >
+          <div
+            data-artifact-surface-visible={
+              isArtifactSurfaceVisible ? "true" : "false"
+            }
+            className="chat-artifact-pop-surface flex h-full min-h-0 min-w-0 flex-col overflow-visible"
           >
-            <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
-              {threadPane}
-            </div>
-          </ResizablePanel>
-          <ResizableHandle
-            withHandle={false}
-            className="relative z-30 -ml-1 -mr-4 w-5 bg-transparent hover:bg-transparent hover:shadow-none active:bg-transparent active:shadow-none focus-visible:bg-transparent focus-visible:shadow-none focus-visible:ring-0 focus-visible:ring-offset-0 focus-visible:outline-none"
-          />
-          <ResizablePanel
-            id="chat-artifact"
-            defaultSize="38%"
-            minSize="30%"
-            maxSize="58%"
-            className="h-full min-h-0 min-w-0 overflow-hidden"
-          >
-            <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
+            {showArtifactPanel && artifact ? (
               <ArtifactSurface
                 artifact={artifact}
                 variant="panel"
@@ -244,12 +325,10 @@ const SingleContent = memo(function SingleContent({
                   openArtifact(artifact, { surface: "overlay" })
                 }
               />
-            </div>
-          </ResizablePanel>
-        </ResizablePanelGroup>
-      ) : (
-        threadPane
-      )}
+            ) : null}
+          </div>
+        </ResizablePanel>
+      </ResizablePanelGroup>
     </ChatRuntimeProvider>
   );
 });

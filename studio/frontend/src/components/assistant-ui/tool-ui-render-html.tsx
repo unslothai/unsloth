@@ -8,13 +8,13 @@ import {
   useChatArtifactsStore,
   useSelectedChatArtifact,
 } from "@/features/chat";
-import { BrowserIcon } from "@hugeicons/core-free-icons";
-import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type ToolCallMessagePartComponent,
   useAuiState,
   useToolArgsStatus,
 } from "@assistant-ui/react";
+import { BrowserIcon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { memo, useEffect } from "react";
 
 // Context7 assistant-ui docs: tool UIs can read streaming args via
@@ -23,6 +23,8 @@ type RenderHtmlArgs = Record<string, unknown> & {
   code?: string;
   title?: string;
 };
+
+const RENDER_HTML_SESSION_STARTED_AT = Date.now();
 
 const RenderHtmlToolUIImpl: ToolCallMessagePartComponent = ({
   args,
@@ -38,7 +40,6 @@ const RenderHtmlToolUIImpl: ToolCallMessagePartComponent = ({
     typeof parsedArgs.title === "string" ? parsedArgs.title : "HTML artifact";
   const isRunning = status?.type === "running";
   const codeIsStreaming = propStatus.code === "streaming";
-  const isGeneratingArtifact = isRunning || codeIsStreaming;
 
   // Surface the backend error when the tool call completed with invalid
   // args.  Backend success results start with "Rendered HTML artifact";
@@ -50,16 +51,41 @@ const RenderHtmlToolUIImpl: ToolCallMessagePartComponent = ({
       ? result
       : null;
   const messageId = useAuiState(({ message }) => message.id) ?? null;
+  const isMessageRunning = useAuiState(
+    ({ message }) => message.status?.type === "running",
+  );
+  const messageCreatedAtMs = useAuiState(({ message }) =>
+    message.createdAt instanceof Date ? message.createdAt.getTime() : null,
+  );
+  const isThreadRunning = useAuiState(({ thread }) => thread.isRunning);
+  const isLiveGeneratingArtifact =
+    isThreadRunning && isMessageRunning && (isRunning || codeIsStreaming);
+  const isStaleGeneratingArtifact =
+    !(isThreadRunning && isMessageRunning) && (isRunning || codeIsStreaming);
+  const messageCreatedThisSession =
+    messageCreatedAtMs != null &&
+    messageCreatedAtMs >= RENDER_HTML_SESSION_STARTED_AT - 1000;
+  const shouldAutoOpenArtifact =
+    (isLiveGeneratingArtifact && (hasCode || isRunning || codeIsStreaming)) ||
+    (hasCode && messageCreatedThisSession);
   const selectedArtifact = useSelectedChatArtifact();
   const closeArtifactSurface = useChatArtifactsStore(
     (state) => state.closeArtifactSurface,
   );
 
   useEffect(() => {
-    if (!errorText) return;
-    if (!messageId || !toolCallId) return;
-    if (selectedArtifact?.sourceToolCallId !== toolCallId) return;
-    if (selectedArtifact?.sourceMessageId !== messageId) return;
+    if (!errorText) {
+      return;
+    }
+    if (!(messageId && toolCallId)) {
+      return;
+    }
+    if (selectedArtifact?.sourceToolCallId !== toolCallId) {
+      return;
+    }
+    if (selectedArtifact?.sourceMessageId !== messageId) {
+      return;
+    }
     closeArtifactSurface();
   }, [
     closeArtifactSurface,
@@ -69,15 +95,15 @@ const RenderHtmlToolUIImpl: ToolCallMessagePartComponent = ({
     toolCallId,
   ]);
 
-  if (hasCode || (isGeneratingArtifact && !errorText)) {
+  if (hasCode || (isLiveGeneratingArtifact && !errorText)) {
     return (
       <ArtifactCard
         code={code}
         title={title}
         source="tool"
         sourceToolCallId={toolCallId}
-        autoOpen={true}
-        isStreaming={isGeneratingArtifact}
+        autoOpen={!errorText && shouldAutoOpenArtifact}
+        isStreaming={!errorText && isLiveGeneratingArtifact}
       />
     );
   }
@@ -92,17 +118,19 @@ const RenderHtmlToolUIImpl: ToolCallMessagePartComponent = ({
         />
         <span className="grid min-w-0 flex-1 gap-1">
           <span className="truncate text-sm font-medium leading-tight text-foreground">
-            {errorText ? "Artifact error" : "Generating artifact"}
+            {errorText
+              ? "Artifact error"
+              : isStaleGeneratingArtifact
+                ? "Artifact interrupted"
+                : "Artifact unavailable"}
           </span>
           <span className="truncate text-[11px] leading-none text-muted-foreground">
-            {errorText ?? "HTML artifact"}
+            {errorText ??
+              (isStaleGeneratingArtifact
+                ? "Refresh stopped this preview"
+                : "HTML artifact")}
           </span>
         </span>
-        {errorText ? null : (
-          <span className="shimmer shrink-0 rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary motion-reduce:animate-none">
-            Generating
-          </span>
-        )}
       </div>
     </div>
   );

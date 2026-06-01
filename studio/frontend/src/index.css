@@ -818,6 +818,38 @@
 		font-family: var(--font-sans);
 	}
 
+	.chat-artifact-split[data-artifact-layout-animating="true"] > [data-panel] {
+		transition:
+			flex-basis 260ms var(--ease-out-cubic),
+			flex-grow 260ms var(--ease-out-cubic),
+			flex-shrink 260ms var(--ease-out-cubic);
+		will-change: flex-basis, flex-grow;
+	}
+
+	.chat-artifact-pop-surface {
+		pointer-events: none;
+		opacity: 0;
+		transform: scale(0.965) translateY(8px);
+		transform-origin: center center;
+		transition:
+			opacity 180ms var(--ease-out-cubic),
+			transform 220ms var(--ease-out-cubic);
+		will-change: opacity, transform;
+	}
+
+	.chat-artifact-pop-surface[data-artifact-surface-visible="true"] {
+		pointer-events: auto;
+		opacity: 1;
+		transform: scale(1) translateY(0);
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		.chat-artifact-pop-surface {
+			transition: none;
+			transform: none;
+		}
+	}
+
 	.artifact-card-shimmer {
 		background: linear-gradient(
 			105deg,
@@ -832,15 +864,11 @@
 	}
 
 	.artifact-loading-line {
-		width: 62%;
-		background: linear-gradient(
-			90deg,
-			transparent,
-			color-mix(in oklch, var(--primary) 84%, transparent),
-			transparent
-		);
-		transform: translateX(-120%);
-		animation: artifact-loading-line 1.25s var(--ease-out-cubic) infinite;
+		width: 48%;
+		background: color-mix(in oklch, var(--primary) 88%, transparent);
+		transform: translate3d(-125%, 0, 0) scaleX(0.78);
+		transform-origin: center center;
+		animation: artifact-loading-line 1.7s linear infinite;
 	}
 
 	.artifact-panel-shell::before,
@@ -913,8 +941,23 @@
 	}
 
 	@keyframes artifact-loading-line {
-		to {
-			transform: translateX(180%);
+		0% {
+			transform: translate3d(-125%, 0, 0) scaleX(0.78);
+		}
+		35% {
+			transform: translate3d(-18%, 0, 0) scaleX(0.96);
+		}
+		62% {
+			transform: translate3d(72%, 0, 0) scaleX(1.12);
+		}
+		82% {
+			transform: translate3d(132%, 0, 0) scaleX(1.26);
+		}
+		94% {
+			transform: translate3d(188%, 0, 0) scaleX(1.36);
+		}
+		100% {
+			transform: translate3d(220%, 0, 0) scaleX(1.42);
 		}
 	}
 

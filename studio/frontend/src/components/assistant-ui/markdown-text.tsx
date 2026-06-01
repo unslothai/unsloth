@@ -7,7 +7,7 @@ import { ArtifactCard, useChatRuntimeStore } from "@/features/chat";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { preprocessLaTeX } from "@/lib/latex";
 import { openLink } from "@/lib/open-link";
-import { INTERNAL, useMessagePartText } from "@assistant-ui/react";
+import { INTERNAL, useAuiState, useMessagePartText } from "@assistant-ui/react";
 import { Copy01Icon, Tick02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { createMathPlugin } from "@streamdown/math";
@@ -55,6 +55,34 @@ type CodeFence = {
   language: string | null;
   source: string;
 };
+
+type ToolCallPartLike = {
+  type?: string;
+  toolName?: string;
+  args?: unknown;
+  result?: unknown;
+};
+
+function isRenderableRenderHtmlToolPart(part: unknown): boolean {
+  const toolPart = part as ToolCallPartLike;
+  if (toolPart.type !== "tool-call" || toolPart.toolName !== "render_html") {
+    return false;
+  }
+  if (
+    typeof toolPart.result === "string" &&
+    toolPart.result.startsWith("Error:")
+  ) {
+    return false;
+  }
+  if (
+    typeof toolPart.result === "string" &&
+    toolPart.result.startsWith("Rendered HTML artifact")
+  ) {
+    return true;
+  }
+  const args = toolPart.args as { code?: unknown } | undefined;
+  return typeof args?.code === "string" && args.code.trim().length > 0;
+}
 
 function getMermaidSource(blockContent: string): string | null {
   const source = blockContent.match(MERMAID_SOURCE_RE)?.[1]?.trim();
@@ -262,6 +290,9 @@ function StreamdownBlock(props: BlockProps) {
   const shouldCollapseHtmlArtifacts = useChatRuntimeStore(
     (state) => state.artifactsEnabled || state.collapseHtmlArtifacts,
   );
+  const messageHasRenderableRenderHtmlTool = useAuiState(({ message }) =>
+    message.parts.some(isRenderableRenderHtmlToolPart),
+  );
   const hasMermaidFence = props.content.includes("```mermaid");
   const mermaidSource = getMermaidSource(props.content);
   const codeFence = getCodeFence(props.content);
@@ -291,6 +322,7 @@ function StreamdownBlock(props: BlockProps) {
 
   if (
     shouldCollapseHtmlArtifacts &&
+    !messageHasRenderableRenderHtmlTool &&
     props.isIncomplete &&
     codeFence &&
     isHtmlFence(codeFence) &&
@@ -319,6 +351,7 @@ function StreamdownBlock(props: BlockProps) {
         : null;
     const htmlSource =
       shouldCollapseHtmlArtifacts &&
+      !messageHasRenderableRenderHtmlTool &&
       !props.isIncomplete &&
       isHtmlFence(codeFence) &&
       isFullHtmlDocument(codeFence.source)

@@ -65,10 +65,10 @@ function getFocusableElements(container: HTMLElement): HTMLElement[] {
 
 function ArtifactLoadingLine() {
   return (
-    <div className="absolute inset-x-0 bottom-0 h-[1.5px] overflow-hidden bg-border/55">
+    <div className="absolute inset-x-0 bottom-0 h-[2.5px] overflow-hidden bg-border/45">
       <span
         aria-hidden={true}
-        className="artifact-loading-line block h-full motion-reduce:hidden"
+        className="artifact-loading-line block h-full rounded-full motion-reduce:hidden"
       />
     </div>
   );
@@ -203,7 +203,7 @@ export function ArtifactSurface({
       className={cn(
         "relative flex min-h-0 flex-col border border-border bg-background",
         variant === "panel"
-          ? "artifact-panel-shell mx-2 mt-[72px] mb-[34px] h-[calc(100%_-_106px)] overflow-visible rounded-[28px] border-border/70 bg-card/95 [box-shadow:rgba(0,0,0,0.16)_0px_2px_8px_-2px]"
+          ? "artifact-panel-shell mx-2 mt-[72px] mb-8 h-[calc(100%_-_104px)] overflow-visible rounded-[28px] border-border/70 bg-card/95 [box-shadow:rgba(0,0,0,0.16)_0px_2px_8px_-2px]"
           : "h-[min(92vh,900px)] w-[min(96vw,1200px)] overflow-hidden rounded-2xl shadow-xl",
       )}
       aria-label={`${artifact.title} artifact`}

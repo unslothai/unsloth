@@ -4,9 +4,9 @@
 "use client";
 
 import { cn } from "@/lib/utils";
+import { useAuiState } from "@assistant-ui/react";
 import { LayoutTwoColumnIcon as Layout2ColumnIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useAuiState } from "@assistant-ui/react";
 import { useLayoutEffect, useMemo } from "react";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import {
@@ -75,15 +75,19 @@ export function ArtifactCard({
   const surface = artifactThreadId ? "panel" : "overlay";
 
   useLayoutEffect(() => {
-    if (!autoOpen) return;
-    if (!hasAutoOpenedArtifact(artifact.id)) {
-      rememberAutoOpenedArtifact(artifact.id);
-      openArtifact(artifact, { surface });
-      return;
-    }
     if (selectedArtifactId === artifact.id) {
       updateArtifact(artifact);
     }
+
+    if (!autoOpen) {
+      return;
+    }
+    if (hasAutoOpenedArtifact(artifact.id)) {
+      return;
+    }
+
+    rememberAutoOpenedArtifact(artifact.id);
+    openArtifact(artifact, { surface });
   }, [
     artifact,
     autoOpen,
