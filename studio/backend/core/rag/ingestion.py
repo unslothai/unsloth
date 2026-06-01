@@ -126,7 +126,9 @@ def _run(
 
                 regions = locators.pdf_regions_for_chunks(stored_path, pages, chunks)
             except Exception:
-                logger.warning("pdf region location failed for job %s", job_id, exc_info=True)
+                logger.warning(
+                    "pdf region location failed for job %s", job_id, exc_info = True
+                )
                 regions = None
 
         _progress(conn, job_id, "storing", 0.9)

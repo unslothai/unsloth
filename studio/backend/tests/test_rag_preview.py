@@ -31,7 +31,7 @@ def _make_pdf(path) -> None:
     )
     for _ in range(3):  # a few pages of the same distinctive text
         page = doc.new_page()
-        page.insert_text((72, 72), body, fontsize=11)
+        page.insert_text((72, 72), body, fontsize = 11)
     doc.save(str(path))
     doc.close()
 
@@ -41,7 +41,7 @@ def _ingest(home, pdf_path):
     from storage import rag_db
 
     conn = rag_db.get_connection()
-    kb_id = store.create_kb(conn, name="kb")
+    kb_id = store.create_kb(conn, name = "kb")
     conn.close()
     doc_id, job_id = ingestion.start_ingestion(
         store.kb_scope(kb_id), kb_id, None, "doc.pdf", str(pdf_path)
@@ -103,19 +103,23 @@ def test_preview_routes_and_signed_file(rag_home, stub_embeddings):
     kb_id, doc_id = _ingest(rag_home, pdf)
 
     app = FastAPI()
-    app.include_router(router, prefix="/api/rag")
+    app.include_router(router, prefix = "/api/rag")
     app.dependency_overrides[get_current_subject] = lambda: "tester"
     c = TestClient(app)
 
     res = c.post(
         "/api/rag/search",
-        json={"query": "masked language modeling next sentence", "kb_id": kb_id, "mode": "lexical"},
+        json = {
+            "query": "masked language modeling next sentence",
+            "kb_id": kb_id,
+            "mode": "lexical",
+        },
     ).json()["results"]
     assert res
     chunk_id = res[0]["chunkId"]
 
     pt = c.get(
-        f"/api/rag/documents/{doc_id}/preview-target", params={"chunk_id": chunk_id}
+        f"/api/rag/documents/{doc_id}/preview-target", params = {"chunk_id": chunk_id}
     ).json()
     assert pt["mediaKind"] == "pdf"
     assert pt["text"]
@@ -123,11 +127,15 @@ def test_preview_routes_and_signed_file(rag_home, stub_embeddings):
     url = c.get(f"/api/rag/documents/{doc_id}/file-url").json()["url"]
     full = c.get(url)
     assert full.status_code == 200 and full.content[:4] == b"%PDF"
-    rng = c.get(url, headers={"Range": "bytes=0-99"})
+    rng = c.get(url, headers = {"Range": "bytes=0-99"})
     assert rng.status_code in (200, 206)
-    assert c.get(
-        f"/api/rag/documents/{doc_id}/file-signed", params={"token": "bad.token.sig"}
-    ).status_code == 401
+    assert (
+        c.get(
+            f"/api/rag/documents/{doc_id}/file-signed",
+            params = {"token": "bad.token.sig"},
+        ).status_code
+        == 401
+    )
 
 
 def test_sign_verify_roundtrip(rag_home):
@@ -135,5 +143,7 @@ def test_sign_verify_roundtrip(rag_home):
 
     tok = rag_routes._sign_document("doc-123")
     assert rag_routes._verify_document_token(tok) == "doc-123"
-    assert rag_routes._verify_document_token("doc-123.0.deadbeef") is None  # expired/bad
+    assert (
+        rag_routes._verify_document_token("doc-123.0.deadbeef") is None
+    )  # expired/bad
     assert rag_routes._verify_document_token("garbage") is None

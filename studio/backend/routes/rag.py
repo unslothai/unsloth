@@ -414,7 +414,7 @@ def _verify_document_token(token: str) -> str | None:
 @router.get("/documents/{document_id}/preview-target")
 def preview_target(
     document_id: str,
-    chunk_id: str | None = Query(default=None),
+    chunk_id: str | None = Query(default = None),
     subject: str = Depends(get_current_subject),
 ) -> dict:
     """Resolve a citation to its source: filename, page, and highlight regions."""
@@ -423,7 +423,7 @@ def preview_target(
     try:
         doc = store.get_document(conn, document_id)
         if doc is None:
-            raise HTTPException(status_code=404, detail="Document not found")
+            raise HTTPException(status_code = 404, detail = "Document not found")
         ext = os.path.splitext(doc["filename"])[1].lower()
         out = {
             "documentId": document_id,
@@ -461,14 +461,14 @@ def document_file_url(
     try:
         doc = store.get_document(conn, document_id)
         if doc is None or not doc.get("stored_path"):
-            raise HTTPException(status_code=404, detail="Document file not available")
+            raise HTTPException(status_code = 404, detail = "Document file not available")
     finally:
         conn.close()
     token = _sign_document(document_id)
     return {"url": f"/api/rag/documents/{document_id}/file-signed?token={token}"}
 
 
-@router.get("/documents/{document_id}/file-signed", response_model=None)
+@router.get("/documents/{document_id}/file-signed", response_model = None)
 def document_file_signed(document_id: str, token: str = Query(...)) -> FileResponse:
     """Serve the source file given a valid signed token (no bearer required).
 
@@ -478,7 +478,7 @@ def document_file_signed(document_id: str, token: str = Query(...)) -> FileRespo
     _require_rag()
     signed_id = _verify_document_token(token)
     if signed_id != document_id:
-        raise HTTPException(status_code=401, detail="Invalid or expired token")
+        raise HTTPException(status_code = 401, detail = "Invalid or expired token")
     conn = rag_db.get_connection()
     try:
         doc = store.get_document(conn, document_id)
@@ -486,14 +486,14 @@ def document_file_signed(document_id: str, token: str = Query(...)) -> FileRespo
         conn.close()
     stored_path = (doc or {}).get("stored_path")
     if not doc or not stored_path or not os.path.isfile(stored_path):
-        raise HTTPException(status_code=404, detail="Document file not found")
+        raise HTTPException(status_code = 404, detail = "Document file not found")
     # Confine to the uploads root (defence in depth against path escapes).
     uploads = os.path.realpath(str(rag_uploads_root()))
     if not os.path.realpath(stored_path).startswith(uploads):
-        raise HTTPException(status_code=403, detail="Forbidden")
+        raise HTTPException(status_code = 403, detail = "Forbidden")
     ext = os.path.splitext(doc["filename"])[1].lower()
     return FileResponse(
         stored_path,
-        media_type=_CONTENT_TYPES.get(ext, "application/octet-stream"),
-        filename=doc["filename"],
+        media_type = _CONTENT_TYPES.get(ext, "application/octet-stream"),
+        filename = doc["filename"],
     )

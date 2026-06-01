@@ -127,7 +127,17 @@ def create_document(
     conn.execute(
         "INSERT INTO documents(id, scope, kb_id, thread_id, filename, sha256, status, "
         "stored_path, created_at) VALUES(?,?,?,?,?,?,?,?,?)",
-        (document_id, scope, kb_id, thread_id, filename, sha256, status, stored_path, _now()),
+        (
+            document_id,
+            scope,
+            kb_id,
+            thread_id,
+            filename,
+            sha256,
+            status,
+            stored_path,
+            _now(),
+        ),
     )
     conn.commit()
     return document_id
@@ -178,7 +188,7 @@ def add_chunks(
     document_id: str,
     chunks,
     vectors,
-    regions=None,
+    regions = None,
 ) -> None:
     """Incrementally index one document's chunks into chunks + FTS5 + vec0.
 

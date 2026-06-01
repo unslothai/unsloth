@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 
-@dataclass(frozen=True)
+@dataclass(frozen = True)
 class LocatorMatch:
     page_index: int
     page_number: int | None
@@ -57,7 +57,7 @@ def _normalized_occurrences(haystack: str, needle: str) -> int:
 
 def _region_anchor(page_text: str, match: LocatorMatch) -> str | None:
     """A 3-16 word phrase from the chunk's page span, used to locate it."""
-    segment = page_text[match.start:match.end]
+    segment = page_text[match.start : match.end]
     words = [w.strip(" \t\r\n*#`[]()") for w in segment.split()]
     words = [w for w in words if len(w) >= 2]
     if len(words) < 3:
@@ -66,7 +66,9 @@ def _region_anchor(page_text: str, match: LocatorMatch) -> str | None:
     return anchor if len(anchor) >= 12 else None
 
 
-def _regions_for_match(doc: Any, match: LocatorMatch, anchor: str) -> list[dict[str, Any]]:
+def _regions_for_match(
+    doc: Any, match: LocatorMatch, anchor: str
+) -> list[dict[str, Any]]:
     try:
         if match.page_index >= len(doc):
             return []
@@ -133,10 +135,10 @@ def pdf_regions_for_chunks(
                 regions.append([])
                 continue
             match = LocatorMatch(
-                page_index=int(page_index),
-                page_number=getattr(chunk, "page_number", None),
-                start=int(start),
-                end=int(end),
+                page_index = int(page_index),
+                page_number = getattr(chunk, "page_number", None),
+                start = int(start),
+                end = int(end),
             )
             anchor = _region_anchor(pages[page_index].text, match)
             if not anchor:
