@@ -96,9 +96,7 @@ def iter_gguf_files(directory: Path, recursive: bool = False):
     if recursive:
         seen = 0
         # os.walk skips unreadable subdirs instead of raising (e.g. /proc).
-        for dirpath, dirnames, filenames in os.walk(
-            directory, onerror = lambda _e: None
-        ):
+        for dirpath, dirnames, filenames in os.walk(directory, onerror = lambda _e: None):
             for name in filenames:
                 if is_gguf_filename(name):
                     yield Path(dirpath) / name
