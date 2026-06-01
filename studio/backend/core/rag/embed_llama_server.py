@@ -39,6 +39,14 @@ from . import config
 
 logger = logging.getLogger(__name__)
 
+# httpx transport errors meaning "the server is gone" -> trigger a respawn.
+_TRANSPORT_ERRORS = (
+    httpx.ConnectError,
+    httpx.ReadError,
+    httpx.RemoteProtocolError,
+    httpx.WriteError,
+)
+
 
 class LlamaServerBackend:
     """Manages a llama.cpp embedding subprocess and talks to it over HTTP."""
@@ -314,20 +322,14 @@ class LlamaServerBackend:
         deadline = time.monotonic() + timeout
         url = f"{self._base_url}/health"
         while time.monotonic() < deadline:
-            if self._process is None or self._process.poll() is not None:
+            if not self._process_alive():
                 code = None if self._process is None else self._process.returncode
                 logger.error("llama-server embedder exited early (code %s)", code)
                 return False
             try:
                 if httpx.get(url, timeout = 2.0).status_code == 200:
                     return True
-            except (
-                httpx.ConnectError,
-                httpx.TimeoutException,
-                httpx.ReadError,
-                httpx.RemoteProtocolError,
-                httpx.WriteError,
-            ):
+            except (*_TRANSPORT_ERRORS, httpx.TimeoutException):
                 pass
             time.sleep(interval)
         logger.error("llama-server embedder health check timed out after %ss", timeout)
@@ -395,12 +397,7 @@ class LlamaServerBackend:
                 resp = self._client.post(f"{self._base_url}{path}", json = payload)
                 resp.raise_for_status()
                 return resp.json()
-            except (
-                httpx.ConnectError,
-                httpx.ReadError,
-                httpx.RemoteProtocolError,
-                httpx.WriteError,
-            ) as e:
+            except _TRANSPORT_ERRORS as e:
                 last_exc = e
                 if attempt == 0:
                     self._restart()
