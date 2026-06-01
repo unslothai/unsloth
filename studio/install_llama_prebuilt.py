@@ -1661,6 +1661,15 @@ def resolve_simple_install_release_plans(
 ) -> tuple[str, list[InstallReleasePlan]]:
     repo = published_repo or DEFAULT_PUBLISHED_REPO
     requested_tag = normalized_requested_llama_tag(llama_tag)
+    # The unslothai/llama.cpp fork ships only linux-x64 bundles. An arm64 Linux
+    # host with a GPU (GH200/GB200/DGX Spark) routes here; it must not install an
+    # x64 binary, so fall back to a source build that targets the GPU rather than
+    # selecting the wrong arch (or silently dropping to a CPU arm64 build).
+    if host.is_linux and not host.is_x86_64 and repo == DEFAULT_PUBLISHED_REPO:
+        raise PrebuiltFallback(
+            f"{repo} ships only linux-x64 prebuilts; "
+            f"{host.machine or 'non-x64'} Linux falls back to source build"
+        )
     allow_older_release_fallback = (
         requested_tag == "latest" and not published_release_tag
     )
@@ -6451,10 +6460,22 @@ def install_prebuilt(
     *,
     simple_policy: bool = False,
     override_has_rocm: bool = False,
+    force_cpu: bool = False,
 ) -> None:
     host = detect_host()
     if override_has_rocm and not host.has_rocm:
         host = dataclasses_replace(host, has_rocm = True)
+    if force_cpu:
+        # Explicit CPU fallback: drop GPU attributes so the CPU prebuilt for this
+        # OS/arch is selected. setup.sh uses this for arm64 Linux GPU hosts whose
+        # source build failed, where no arm64 CUDA prebuilt exists anywhere.
+        host = dataclasses_replace(
+            host,
+            has_usable_nvidia = False,
+            has_physical_nvidia = False,
+            has_rocm = False,
+            rocm_gfx_target = None,
+        )
     choice: AssetChoice | None = None
     try:
         with install_lock(install_lock_path(install_dir)):
@@ -6599,6 +6620,16 @@ def parse_args() -> argparse.Namespace:
             "so the HIP llama.cpp prebuilt is selected even when hipinfo is not on PATH."
         ),
     )
+    parser.add_argument(
+        "--cpu-fallback",
+        action = "store_true",
+        default = False,
+        help = (
+            "Select the CPU prebuilt for this OS/arch even when a GPU is present. "
+            "setup.sh uses this as a last resort for arm64 Linux GPU hosts whose "
+            "source build failed (no arm64 CUDA prebuilt exists anywhere)."
+        ),
+    )
     resolve_group = parser.add_mutually_exclusive_group()
     resolve_group.add_argument(
         "--resolve-llama-tag",
@@ -6720,6 +6751,7 @@ def main() -> int:
         published_release_tag = args.published_release_tag or "",
         simple_policy = args.simple_policy,
         override_has_rocm = args.has_rocm,
+        force_cpu = args.cpu_fallback,
     )
     return EXIT_SUCCESS
 
