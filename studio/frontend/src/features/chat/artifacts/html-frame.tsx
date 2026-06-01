@@ -3,9 +3,11 @@
 
 "use client";
 
+import { getAuthToken } from "@/features/auth";
 import { apiUrl } from "@/lib/api-base";
 import { cn } from "@/lib/utils";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import { hashArtifactCode } from "./types";
 
 const HTML_FRAME_DEFAULT_HEIGHT = 400;
@@ -41,15 +43,22 @@ export function ArtifactHtmlFrame({
   fill?: boolean;
 }) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
+  const allowNetworkAccess = useChatRuntimeStore(
+    (state) => state.allowArtifactNetworkAccess,
+  );
   const [height, setHeight] = useState(HTML_FRAME_DEFAULT_HEIGHT);
   const artifactHtml = useMemo(() => buildArtifactSrcDoc(code), [code]);
-  const src = useMemo(
-    () =>
-      apiUrl(
-        `/api/inference/artifact-preview-frame?v=${encodeURIComponent(hashArtifactCode(code))}`,
-      ),
-    [code],
-  );
+  const src = useMemo(() => {
+    const query = new URLSearchParams({ v: hashArtifactCode(code) });
+    if (allowNetworkAccess) {
+      const token = getAuthToken();
+      if (token) {
+        query.set("allow_network", "1");
+        query.set("token", token);
+      }
+    }
+    return apiUrl(`/api/inference/artifact-preview-frame?${query.toString()}`);
+  }, [allowNetworkAccess, code]);
   const postArtifactHtml = useCallback(() => {
     // The sandboxed frame intentionally has an opaque origin ("null").
     // A wildcard target is required here;

@@ -19,7 +19,6 @@ import {
 } from "../external-providers";
 import { pickFriendlyContainerName } from "../lib/friendly-names";
 import {
-  EXTERNAL_MAX_OUTPUT_TOKENS,
   clampReasoningEffortToLevels,
   getExternalMaxOutputTokens,
   getExternalMinOutputTokens,
@@ -773,36 +772,6 @@ function toOpenAIMessages(message: RunMessage): SerializedMessage[] {
   }
 
   return toolResults.length > 0 ? [base, ...toolResults] : [base];
-}
-
-// Thin singular wrapper: returns only the first serialized message
-// (without tool_calls or tool follow-ups) so the OpenAI image-edit
-// replay path can map a thread to flat OpenAI chat messages without
-// pulling in tool history.
-function toOpenAIMessage(message: RunMessage): {
-  role: "system" | "user" | "assistant";
-  content: OpenAIMessageContent;
-} | null {
-  const serialized = toOpenAIMessages(message);
-  if (serialized.length === 0) return null;
-  const first = serialized[0];
-  if (
-    first.role !== "system" &&
-    first.role !== "user" &&
-    first.role !== "assistant"
-  ) {
-    return null;
-  }
-  if (first.content === null || first.content === undefined) {
-    return null;
-  }
-  if (typeof first.content === "string" && !first.content) {
-    return null;
-  }
-  return {
-    role: first.role,
-    content: first.content as OpenAIMessageContent,
-  };
 }
 
 function extractImageBase64(input: string): string | undefined {
@@ -1574,14 +1543,13 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       const hasOutboundImage = Boolean(imageBase64);
 
       // Keep render_html local-only and mirror the backend image-turn gate.
-      // GGUF/safetensors disable tool execution when an image is present, so
-      // image turns receive the fenced-html artifact fallback instead of being
-      // prompted to call a tool the backend will not expose.
+      // Artifacts are independent of Search/Code: if a local tool-capable
+      // model has Artifacts enabled, expose render_html even when no other
+      // tool pills are active.
       const renderHtmlToolEnabledForThisTurn = Boolean(
         !isExternalRequest &&
           supportsTools &&
           artifactsEnabled &&
-          (toolsEnabled || codeToolsEnabled) &&
           !hasOutboundImage,
       );
       const artifactInstruction = artifactsEnabled

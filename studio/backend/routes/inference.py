@@ -239,7 +239,7 @@ router = APIRouter()
 studio_router = APIRouter()
 
 
-_ARTIFACT_PREVIEW_FRAME_CSP = (
+_ARTIFACT_PREVIEW_FRAME_STRICT_CSP = (
     "default-src 'none'; "
     "script-src 'unsafe-inline'; "
     "style-src 'unsafe-inline'; "
@@ -247,6 +247,23 @@ _ARTIFACT_PREVIEW_FRAME_CSP = (
     "font-src data:; "
     "media-src data: blob:; "
     "connect-src 'none'; "
+    "object-src 'none'; "
+    "base-uri 'none'; "
+    "form-action 'none'; "
+    "frame-ancestors 'self'; "
+    "sandbox allow-scripts"
+)
+_ARTIFACT_PREVIEW_FRAME_NETWORK_CSP = (
+    "default-src http: https: data: blob:; "
+    "script-src 'unsafe-inline' 'unsafe-eval' http: https: data: blob:; "
+    "script-src-elem 'unsafe-inline' http: https: data: blob:; "
+    "style-src 'unsafe-inline' http: https: data: blob:; "
+    "style-src-elem 'unsafe-inline' http: https: data: blob:; "
+    "img-src http: https: data: blob:; "
+    "font-src http: https: data: blob:; "
+    "media-src http: https: data: blob:; "
+    "connect-src http: https: ws: wss: data: blob:; "
+    "worker-src http: https: blob:; "
     "object-src 'none'; "
     "base-uri 'none'; "
     "form-action 'none'; "
@@ -310,15 +327,40 @@ _ARTIFACT_PREVIEW_FRAME_HTML = """<!doctype html>
 
 
 @studio_router.get("/artifact-preview-frame", include_in_schema = False)
-async def artifact_preview_frame():
+async def artifact_preview_frame(
+    request: Request,
+    allow_network: bool = False,
+    token: Optional[str] = None,
+):
     """Serve the opaque sandbox shell used for client-side HTML artifacts."""
 
+    if allow_network:
+        auth_header = request.headers.get("authorization")
+        if auth_header and auth_header.lower().startswith("bearer "):
+            jwt_token = auth_header[7:]
+        elif token:
+            jwt_token = token
+        else:
+            raise HTTPException(
+                status_code = status.HTTP_401_UNAUTHORIZED,
+                detail = "Missing authentication token",
+            )
+        from fastapi.security import HTTPAuthorizationCredentials
+
+        creds = HTTPAuthorizationCredentials(scheme = "Bearer", credentials = jwt_token)
+        await get_current_subject(creds)
+
+    csp = (
+        _ARTIFACT_PREVIEW_FRAME_NETWORK_CSP
+        if allow_network
+        else _ARTIFACT_PREVIEW_FRAME_STRICT_CSP
+    )
     return Response(
         content = _ARTIFACT_PREVIEW_FRAME_HTML,
         media_type = "text/html; charset=utf-8",
         headers = {
             "Cache-Control": "no-store",
-            "Content-Security-Policy": _ARTIFACT_PREVIEW_FRAME_CSP,
+            "Content-Security-Policy": csp,
             "Referrer-Policy": "no-referrer",
             "X-Content-Type-Options": "nosniff",
             # SAMEORIGIN for browsers that ignore frame-ancestors; the

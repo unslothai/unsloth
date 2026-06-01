@@ -3,7 +3,7 @@
 
 "use client";
 
-import { ArtifactCard } from "@/features/chat";
+import { ArtifactCard, useChatRuntimeStore } from "@/features/chat";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { preprocessLaTeX } from "@/lib/latex";
 import { openLink } from "@/lib/open-link";
@@ -118,6 +118,11 @@ function isSvgFence(codeFence: CodeFence): boolean {
 function isHtmlFence(codeFence: CodeFence): boolean {
   const lang = codeFence.language?.toLowerCase() ?? "";
   return lang === "html" && !isSvgFence(codeFence);
+}
+
+function isFullHtmlDocument(source: string): boolean {
+  const trimmed = source.trimStart();
+  return /^<!doctype\s+html\b/i.test(trimmed) || /^<html[\s>]/i.test(trimmed);
 }
 
 const UNSAFE_SVG_RE =
@@ -254,6 +259,9 @@ function CodeBlockActions({
 }
 
 function StreamdownBlock(props: BlockProps) {
+  const shouldCollapseHtmlArtifacts = useChatRuntimeStore(
+    (state) => state.artifactsEnabled || state.collapseHtmlArtifacts,
+  );
   const hasMermaidFence = props.content.includes("```mermaid");
   const mermaidSource = getMermaidSource(props.content);
   const codeFence = getCodeFence(props.content);
@@ -281,7 +289,13 @@ function StreamdownBlock(props: BlockProps) {
     );
   }
 
-  if (props.isIncomplete && codeFence && isHtmlFence(codeFence)) {
+  if (
+    shouldCollapseHtmlArtifacts &&
+    props.isIncomplete &&
+    codeFence &&
+    isHtmlFence(codeFence) &&
+    isFullHtmlDocument(codeFence.source)
+  ) {
     return (
       <div className="my-4 flex h-48 items-center justify-center rounded-xl border border-border bg-muted/30 text-sm text-muted-foreground animate-pulse">
         Loading artifact preview...
@@ -304,7 +318,12 @@ function StreamdownBlock(props: BlockProps) {
         ? sanitizeSvg(codeFence.source)
         : null;
     const htmlSource =
-      !props.isIncomplete && isHtmlFence(codeFence) ? codeFence.source : null;
+      shouldCollapseHtmlArtifacts &&
+      !props.isIncomplete &&
+      isHtmlFence(codeFence) &&
+      isFullHtmlDocument(codeFence.source)
+        ? codeFence.source
+        : null;
     if (htmlSource) {
       return (
         <ArtifactCard code={htmlSource} title="HTML preview" source="fence" />
