@@ -28,6 +28,8 @@ from .storage_roots import (
     rag_root,
     rag_db_path,
     rag_uploads_root,
+    documents_root,
+    project_workspaces_root,
     tmp_root,
     seed_uploads_root,
     unstructured_seed_cache_root,
@@ -46,6 +48,10 @@ from .storage_roots import (
     resolve_tensorboard_dir,
     resolve_dataset_path,
 )
+
+# Re-export shim: name-load the project-path helpers so the import-hoist
+# safety net sees them used here, not just listed in __all__ as strings.
+_REEXPORTED = (documents_root, project_workspaces_root)
 
 __all__ = [
     "normalize_path",
@@ -68,6 +74,8 @@ __all__ = [
     "rag_root",
     "rag_db_path",
     "rag_uploads_root",
+    "documents_root",
+    "project_workspaces_root",
     "tmp_root",
     "seed_uploads_root",
     "unstructured_seed_cache_root",

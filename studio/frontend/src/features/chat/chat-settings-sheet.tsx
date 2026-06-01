@@ -58,7 +58,7 @@ import {
   LayoutAlignRightIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { ChevronDown } from "lucide-react";
+import { ChevronDown, ExternalLink } from "lucide-react";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { Fragment, type ReactNode } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -325,11 +325,19 @@ function saveCollapsibleOpen(label: string, open: boolean) {
 
 function CollapsibleSection({
   label,
+  labelHref,
   children,
   defaultOpen = false,
   first = false,
 }: {
   label: string;
+  /**
+   * When set, the label text becomes an external link (e.g. to the feature's
+   * GitHub PR) instead of part of the collapse toggle. The chevron still
+   * toggles open/close, so we render the two as siblings rather than nesting
+   * an <a> inside the <button> (invalid HTML).
+   */
+  labelHref?: string;
   children?: ReactNode;
   defaultOpen?: boolean;
   first?: boolean;
@@ -339,6 +347,17 @@ function CollapsibleSection({
     return Object.hasOwn(saved, label) ? saved[label] : defaultOpen;
   });
 
+  const toggle = () => {
+    const next = !open;
+    setOpen(next);
+    saveCollapsibleOpen(label, next);
+  };
+
+  const headerClasses = cn(
+    "flex w-full items-center justify-between text-[12px] font-medium normal-case tracking-[0.04em] text-nav-fg-muted transition-colors focus-visible:outline-none focus-visible:ring-0",
+    first ? "pt-4 pb-5" : "py-5",
+  );
+
   return (
     <div
       className={cn(
@@ -346,25 +365,42 @@ function CollapsibleSection({
           "border-t border-black/[0.13] dark:border-white/[0.09]",
       )}
     >
-      <button
-        type="button"
-        onClick={() => {
-          const next = !open;
-          setOpen(next);
-          saveCollapsibleOpen(label, next);
-        }}
-        className={cn(
-          "flex w-full cursor-pointer items-center justify-between text-[12px] font-medium normal-case tracking-[0.04em] text-nav-fg-muted transition-colors hover:text-nav-fg focus-visible:outline-none focus-visible:ring-0",
-          first ? "pt-4 pb-5" : "py-5",
-        )}
-      >
-        <span className="leading-none">{label}</span>
-        <span className="flex shrink-0 items-center leading-none">
-          <ChevronDown
-            className={cn("size-3.5", open ? "rotate-0" : "-rotate-90")}
-          />
-        </span>
-      </button>
+      {labelHref ? (
+        <div className={headerClasses}>
+          <a
+            href={labelHref}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex cursor-pointer items-center gap-1 leading-none transition-colors hover:text-nav-fg"
+          >
+            <span>{label}</span>
+            <ExternalLink className="size-3" />
+          </a>
+          <button
+            type="button"
+            onClick={toggle}
+            aria-label={open ? `Collapse ${label}` : `Expand ${label}`}
+            className="flex shrink-0 cursor-pointer items-center leading-none transition-colors hover:text-nav-fg"
+          >
+            <ChevronDown
+              className={cn("size-3.5", open ? "rotate-0" : "-rotate-90")}
+            />
+          </button>
+        </div>
+      ) : (
+        <button
+          type="button"
+          onClick={toggle}
+          className={cn("cursor-pointer hover:text-nav-fg", headerClasses)}
+        >
+          <span className="leading-none">{label}</span>
+          <span className="flex shrink-0 items-center leading-none">
+            <ChevronDown
+              className={cn("size-3.5", open ? "rotate-0" : "-rotate-90")}
+            />
+          </span>
+        </button>
+      )}
       {open && <div className="pb-7">{children}</div>}
     </div>
   );
@@ -684,26 +720,31 @@ export function ChatSettingsPanel({
     }
   }, [open]);
 
+  const settingsScrollRef = useRef<HTMLDivElement>(null);
+
   const settingsContent = (
     <>
-      <div className="aui-thread-viewport relative h-full overflow-y-auto">
-      <div className="sticky top-0 z-10 flex h-[48px] items-start gap-2 bg-panel-surface pl-[18px] pr-[14px] pt-[11px]">
+      <div
+        ref={settingsScrollRef}
+        className="relative h-full overflow-y-auto"
+      >
+      <div className="sticky top-0 z-10 flex h-[48px] items-start gap-2 bg-panel-surface pl-[18px] pr-[16px] pt-[11px]">
         {isMobile ? (
-          <span className="flex h-[34px] flex-1 items-center text-[15px] font-semibold tracking-[-0.01em] dark:tracking-[0.015em] text-nav-fg">
-            Configuration
+          <span className="flex h-[34px] flex-1 items-center text-[15px] font-semibold tracking-[0em] dark:tracking-[0.015em] text-nav-fg">
+            Run settings
           </span>
         ) : (
           <>
-            <span className="flex h-[34px] flex-1 items-center text-[15px] font-semibold tracking-[-0.01em] dark:tracking-[0.015em] text-nav-fg">
-              Configuration
+            <span className="flex h-[34px] flex-1 items-center text-[15px] font-semibold tracking-[0em] dark:tracking-[0.015em] text-nav-fg">
+              Run settings
             </span>
             <Tooltip>
               <TooltipPrimitive.Trigger asChild>
                 <button
                   type="button"
                   onClick={() => onOpenChange?.(false)}
-                  className="flex h-[34px] w-[34px] items-center justify-center rounded-[12px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                  aria-label="Close configuration"
+                  className="flex h-[34px] w-[34px] cursor-pointer items-center justify-center rounded-[12px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  aria-label="Close run settings"
                 >
                   <HugeiconsIcon
                     icon={LayoutAlignRightIcon}
@@ -717,7 +758,7 @@ export function ChatSettingsPanel({
                 sideOffset={6}
                 className="tooltip-compact"
               >
-                Close configuration
+                Close run settings
               </TooltipContent>
             </Tooltip>
           </>
@@ -1402,7 +1443,7 @@ export function ChatSettingsPanel({
       <Sheet open={open} onOpenChange={onOpenChange}>
         <SheetContent side="right" className="w-[18rem] p-0 font-heading">
           <SheetHeader className="sr-only">
-            <SheetTitle>Configuration</SheetTitle>
+            <SheetTitle>Run settings</SheetTitle>
             <SheetDescription>Chat inference settings</SheetDescription>
           </SheetHeader>
           <div className="flex h-full flex-col">{settingsContent}</div>

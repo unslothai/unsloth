@@ -399,7 +399,7 @@ const ThreadWelcome: FC<{
         <div className="aui-thread-welcome-message flex w-full flex-col justify-center gap-6 px-4">
           <div className="flex flex-col items-center gap-2 text-center">
             <img src={currentEmojiSrc} alt="Sloth mascot" className="size-20" />
-            <h1 className="aui-thread-welcome-message-inner fade-in slide-in-from-bottom-1 animate-in font-heading font-semibold text-2xl tracking-[-0.02em] duration-200">
+            <h1 className="aui-thread-welcome-message-inner fade-in slide-in-from-bottom-1 animate-in font-heading font-semibold text-2xl tracking-[0em] duration-200">
               Chat with your model
             </h1>
             <p className="aui-thread-welcome-message-inner fade-in slide-in-from-bottom-1 -mt-1 animate-in font-heading font-normal text-muted-foreground text-sm delay-75 duration-200">
@@ -413,14 +413,30 @@ const ThreadWelcome: FC<{
   );
 };
 
+export const ProjectComposer: FC<{
+  disabled?: boolean;
+  placeholder?: string;
+}> = ({ disabled, placeholder }) => {
+  return (
+    <GeneratedImageOverlayProvider>
+      <ComposerAnimated disabled={disabled} placeholder={placeholder} />
+    </GeneratedImageOverlayProvider>
+  );
+};
+
 const ComposerAnimated: FC<{
   disabled?: boolean;
+  placeholder?: string;
   threadId?: string | null;
-}> = ({ disabled, threadId }) => {
+}> = ({ disabled, placeholder, threadId }) => {
   return (
     <div className="relative mx-auto min-w-0 w-full max-w-(--thread-max-width)">
       <div className="relative z-10 w-full">
-        <Composer disabled={disabled} threadId={threadId} />
+        <Composer
+          disabled={disabled}
+          placeholder={placeholder}
+          threadId={threadId}
+        />
       </div>
     </div>
   );
@@ -452,8 +468,9 @@ const PendingAudioChip: FC = () => {
 
 const Composer: FC<{
   disabled?: boolean;
+  placeholder?: string;
   threadId?: string | null;
-}> = ({ disabled, threadId }) => {
+}> = ({ disabled, placeholder = "Send a message...", threadId }) => {
   const aui = useAui();
   const { overlay, closeOverlay } = useGeneratedImageOverlay();
   const setImageToolsEnabled = useChatRuntimeStore(
@@ -555,9 +572,7 @@ const Composer: FC<{
       <ThreadDocumentsBar threadId={referenceThreadId} />
       <ToolStatusDisplay />
       <ComposerPrimitive.Input
-        placeholder={
-          overlay ? "Type your edits for your image" : "Send a message..."
-        }
+        placeholder={overlay ? "Type your edits for your image" : placeholder}
         className="aui-composer-input composer-input"
         minRows={1}
         maxRows={12}
@@ -1001,8 +1016,8 @@ const PreserveThinkingToggle: FC = () => {
         disabled
           ? "cursor-not-allowed opacity-40"
           : preserveThinking
-            ? "text-primary hover:bg-primary/10 dark:hover:bg-white/[0.08]"
-            : "hover:bg-primary/10 dark:hover:bg-white/[0.08]",
+            ? "cursor-pointer text-primary hover:bg-primary/10 dark:hover:bg-white/[0.08]"
+            : "cursor-pointer hover:bg-primary/10 dark:hover:bg-white/[0.08]",
       )}
       aria-label={
         preserveThinking ? "Disable preserve think" : "Enable preserve think"
