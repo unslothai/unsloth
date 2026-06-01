@@ -239,9 +239,7 @@ router = APIRouter()
 studio_router = APIRouter()
 
 
-_ARTIFACT_PREVIEW_FRAME_ANCESTORS = (
-    "'self' tauri://localhost http://tauri.localhost"
-)
+_ARTIFACT_PREVIEW_FRAME_ANCESTORS = "'self' tauri://localhost http://tauri.localhost"
 _ARTIFACT_PREVIEW_FRAME_STRICT_CSP = (
     "default-src 'none'; "
     "script-src 'unsafe-inline'; "

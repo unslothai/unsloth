@@ -330,7 +330,9 @@ class TestLoopBasic:
         assert exec_fn.calls[0][0] == "render_html"
         assert "<!doctype html>" in exec_fn.calls[0][1]["code"]
 
-    def test_python_tool_containing_render_html_signal_does_not_emit_provisional_start(self):
+    def test_python_tool_containing_render_html_signal_does_not_emit_provisional_start(
+        self,
+    ):
         loop, exec_fn = _make_loop(
             turns = [
                 [
@@ -347,7 +349,9 @@ class TestLoopBasic:
 
         assert len(tool_starts) == 1
         assert tool_starts[0]["tool_name"] == "python"
-        assert exec_fn.calls == [("python", {"code": "print('<function=render_html>')"})]
+        assert exec_fn.calls == [
+            ("python", {"code": "print('<function=render_html>')"})
+        ]
 
     def test_render_html_success_blocks_second_artifact_call(self):
         exec_fn = FakeExecuteTool(["Rendered HTML artifact."])
