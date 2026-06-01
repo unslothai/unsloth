@@ -2398,10 +2398,13 @@ def test_load_gguf_checkpoint_no_copy_preserves_numpy_storage(monkeypatch):
         F32 = object()
         F16 = object()
         BF16 = object()
+        IQ1_M = object()
+        UNKNOWN = object()
 
     tensor_data = np.arange(12, dtype = np.uint8).reshape(3, 4)
     dense_data = np.arange(6, dtype = np.float32)
     f16_data = np.arange(6, dtype = np.float16)
+    native_iq_data = np.arange(56, dtype = np.uint8).reshape(1, 56)
 
     class _FakeField:
         def __init__(self, values):
@@ -2422,6 +2425,7 @@ def test_load_gguf_checkpoint_no_copy_preserves_numpy_storage(monkeypatch):
                 _FakeTensor("embed.weight", _QType.BF16, tensor_data, (6, 2)),
                 _FakeTensor("dense.weight", _QType.F32, dense_data, (6,)),
                 _FakeTensor("dense_f16.weight", _QType.F16, f16_data, (6,)),
+                _FakeTensor("native_iq.weight", _QType.IQ1_M, native_iq_data, (256,)),
             ]
 
         def get_field(self, name):
@@ -2431,6 +2435,8 @@ def test_load_gguf_checkpoint_no_copy_preserves_numpy_storage(monkeypatch):
                 return _FakeField([2, 3])
             if name == "comfy.gguf.orig_shape.dense_f16.weight":
                 return _FakeField([2, 3])
+            if name == "comfy.gguf.orig_shape.native_iq.weight":
+                return _FakeField([256])
             return None
 
     class _FakeGGUFParameter(torch.nn.Parameter):
@@ -2443,6 +2449,7 @@ def test_load_gguf_checkpoint_no_copy_preserves_numpy_storage(monkeypatch):
     fake_gguf = types.ModuleType("gguf")
     fake_gguf.GGUFReader = _FakeReader
     fake_gguf.GGMLQuantizationType = _QType
+    fake_gguf.quants = SimpleNamespace(_type_traits = {_QType.IQ1_M: object()})
 
     fake_utils = types.ModuleType("diffusers.quantizers.gguf.utils")
     fake_utils.GGUFParameter = _FakeGGUFParameter
@@ -2458,6 +2465,7 @@ def test_load_gguf_checkpoint_no_copy_preserves_numpy_storage(monkeypatch):
     weight = parsed["embed.weight"]
     dense = parsed["dense.weight"]
     dense_f16 = parsed["dense_f16.weight"]
+    native_iq = parsed["native_iq.weight"]
 
     assert isinstance(weight, _FakeGGUFParameter)
     assert weight.quant_type is _QType.BF16
@@ -2470,6 +2478,69 @@ def test_load_gguf_checkpoint_no_copy_preserves_numpy_storage(monkeypatch):
     assert dense_f16.shape == (2, 3)
     assert dense_f16.dtype is torch.float16
     assert dense_f16.data_ptr() == torch.from_numpy(f16_data).data_ptr()
+    assert isinstance(native_iq, _FakeGGUFParameter)
+    assert native_iq.quant_type is _QType.IQ1_M
+    assert native_iq.quant_shape == (256,)
+    assert native_iq.data_ptr() == torch.from_numpy(native_iq_data).data_ptr()
+
+
+def test_load_gguf_checkpoint_no_copy_rejects_unknown_native_quant(monkeypatch):
+    import numpy as np
+    import torch
+
+    import core.inference.diffusion as d
+
+    class _QType:
+        F32 = object()
+        F16 = object()
+        BF16 = object()
+        UNKNOWN = object()
+
+    class _FakeTensor:
+        def __init__(self, name, tensor_type, data, shape):
+            self.name = name
+            self.tensor_type = tensor_type
+            self.data = data
+            self.shape = shape
+
+    class _FakeReader:
+        def __init__(self, path):
+            self.tensors = [
+                _FakeTensor(
+                    "unsupported.weight",
+                    _QType.UNKNOWN,
+                    np.arange(8, dtype = np.uint8),
+                    (256,),
+                )
+            ]
+
+        def get_field(self, name):
+            return None
+
+    class _FakeGGUFParameter(torch.nn.Parameter):
+        def __new__(cls, data = None, requires_grad = False, quant_type = None):
+            data = torch.empty(0) if data is None else data
+            self = torch.Tensor._make_subclass(cls, data, requires_grad)
+            self.quant_type = quant_type
+            return self
+
+    fake_gguf = types.ModuleType("gguf")
+    fake_gguf.GGUFReader = _FakeReader
+    fake_gguf.GGMLQuantizationType = _QType
+    fake_gguf.quants = SimpleNamespace(_type_traits = {})
+
+    fake_utils = types.ModuleType("diffusers.quantizers.gguf.utils")
+    fake_utils.GGUFParameter = _FakeGGUFParameter
+    fake_utils.SUPPORTED_GGUF_QUANT_TYPES = {_QType.BF16}
+
+    monkeypatch.setitem(sys.modules, "gguf", fake_gguf)
+    monkeypatch.setitem(sys.modules, "diffusers", types.ModuleType("diffusers"))
+    monkeypatch.setitem(sys.modules, "diffusers.quantizers", types.ModuleType("diffusers.quantizers"))
+    monkeypatch.setitem(sys.modules, "diffusers.quantizers.gguf", types.ModuleType("diffusers.quantizers.gguf"))
+    monkeypatch.setitem(sys.modules, "diffusers.quantizers.gguf.utils", fake_utils)
+
+    with pytest.raises(ValueError, match = "unsupported.weight"):
+        d._load_gguf_checkpoint_no_copy("/tmp/fake.gguf")
 
 
 def test_load_model_text_encoder_gguf_rejects_unsupported_family_without_component(monkeypatch):

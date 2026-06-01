@@ -5238,6 +5238,12 @@ def _load_gguf_checkpoint_no_copy(gguf_checkpoint_path: str, return_tensors: boo
 
     reader = GGUFReader(gguf_checkpoint_path)
     parsed_parameters: dict[str, Any] = {}
+    native_dequant_types = set(
+        getattr(getattr(gguf, "quants", None), "_type_traits", {}).keys()
+    )
+    native_bf16 = getattr(gguf.GGMLQuantizationType, "BF16", None)
+    if native_bf16 is not None:
+        native_dequant_types.add(native_bf16)
     for tensor in reader.tensors:
         name = tensor.name
         quant_type = tensor.tensor_type
@@ -5248,7 +5254,11 @@ def _load_gguf_checkpoint_no_copy(gguf_checkpoint_path: str, return_tensors: boo
             gguf.GGMLQuantizationType.F32,
             gguf.GGMLQuantizationType.F16,
         )
-        if is_gguf_quant and quant_type not in SUPPORTED_GGUF_QUANT_TYPES:
+        if (
+            is_gguf_quant
+            and quant_type not in SUPPORTED_GGUF_QUANT_TYPES
+            and quant_type not in native_dequant_types
+        ):
             supported = "\n".join(str(qtype) for qtype in SUPPORTED_GGUF_QUANT_TYPES)
             raise ValueError(
                 f"{name} has a quantization type: {str(quant_type)} which is unsupported."
