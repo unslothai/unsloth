@@ -42,6 +42,12 @@ logger = get_logger(__name__)
 
 _EXEC_TIMEOUT = 300  # 5 minutes
 
+# Sentinel appended to the search_knowledge_base result to carry the citation
+# source-map to the chat UI. The inference loops strip everything from this
+# marker onward before feeding the tool result back to the model, so the model
+# only ever sees the clean ``<chunk>`` text (mirrors ``__IMAGES__:``).
+RAG_SOURCES_SENTINEL = "\n__RAG_SOURCES__:"
+
 # Pre-import modules used in _sandbox_preexec at module level so that
 # the preexec_fn closure does not trigger the import machinery in the
 # forked child (which can deadlock in multi-threaded servers).
@@ -714,19 +720,29 @@ def _search_knowledge_base(arguments: dict, rag_scope: dict | None) -> str:
 
         if not rag_db.RAG_AVAILABLE:
             return "Knowledge base search is unavailable on this server."
-        from core.rag.tool import search_knowledge_base
+        from core.rag.tool import search_knowledge_base_with_sources
     except Exception as exc:  # noqa: BLE001
         logger.warning("RAG tool unavailable: %s", exc)
         return "Knowledge base search is unavailable on this server."
 
     top_k = (arguments or {}).get("top_k") or scope.get("default_top_k")
-    return search_knowledge_base(
+    text, sources = search_knowledge_base_with_sources(
         query = str(query),
         scope_kb_id = scope.get("kb_id"),
         scope_thread_id = scope.get("thread_id"),
         top_k = top_k,
         min_score = float(scope.get("min_score") or 0.0),
     )
+    # Append the citation source-map after a sentinel so the chat UI can render
+    # clickable, region-linked citations. The inference loops strip everything
+    # from the sentinel onward before feeding the result back to the model
+    # (mirrors the ``__IMAGES__:`` convention), so the model only sees the clean
+    # ``<chunk>`` text.
+    if sources:
+        import json as _json
+
+        return text + RAG_SOURCES_SENTINEL + _json.dumps(sources, ensure_ascii = False)
+    return text
 
 
 _MAX_PAGE_CHARS = 16000  # limit fetched page text (after HTML-to-MD conversion)

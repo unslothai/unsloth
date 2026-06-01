@@ -76,6 +76,8 @@ def _format(rows, hits) -> tuple[str, list[dict]]:
                 "documentId": r["document_id"] if r else None,
                 "filename": filename,
                 "page": page,
+                "text": text,
+                "score": round(float(h.score), 4) if h.score is not None else None,
             }
         )
     return "\n\n".join(blocks), sources

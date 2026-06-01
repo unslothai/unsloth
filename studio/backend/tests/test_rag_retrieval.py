@@ -140,5 +140,40 @@ def test_tool_formats_chunks_and_sources(rag_conn, bow_embeddings, monkeypatch):
             "documentId": "d1",
             "filename": "paper.pdf",
             "page": 3,
+            "text": "body text here",
+            "score": 1.0,
         }
     ]
+
+
+def test_dispatcher_appends_sources_sentinel(rag_conn, bow_embeddings, monkeypatch):
+    """tools._search_knowledge_base appends the JSON source-map after the
+    sentinel, and the model-facing text before the sentinel is clean."""
+    import json
+
+    from core.inference import tools
+
+    _add_doc(rag_conn, "kb_a", "d1", "paper.pdf", "h1", "body text here", page = 3)
+    monkeypatch.setattr(
+        retrieval,
+        "retrieve_hybrid",
+        lambda conn, scope, q, **k: [retrieval.Hit("d1:0", 1.0)],
+    )
+    out = tools._search_knowledge_base({"query": "q"}, {"kb_id": "a"})
+    assert tools.RAG_SOURCES_SENTINEL in out
+    model_text, _, payload = out.partition(tools.RAG_SOURCES_SENTINEL)
+    # Model never sees the JSON.
+    assert "__RAG_SOURCES__" not in model_text
+    assert '<chunk id="1"' in model_text
+    sources = json.loads(payload)
+    assert sources[0]["documentId"] == "d1"
+    assert sources[0]["chunkId"] == "d1:0"
+    assert sources[0]["page"] == 3
+
+
+def test_dispatcher_no_sentinel_when_no_hits(rag_home, monkeypatch):
+    """No sentinel is appended when the search returns no sources."""
+    from core.inference import tools
+
+    out = tools._search_knowledge_base({"query": "hello"}, {"kb_id": "missing"})
+    assert tools.RAG_SOURCES_SENTINEL not in out

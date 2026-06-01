@@ -365,6 +365,14 @@ def run_safetensors_tool_loop(
             result_for_model = result
             if isinstance(result_for_model, str) and "__IMAGES__:" in result_for_model:
                 result_for_model = result_for_model.split("__IMAGES__:", 1)[0].rstrip()
+            # Strip the RAG citation source-map (kept for the UI via tool_end).
+            if (
+                isinstance(result_for_model, str)
+                and "__RAG_SOURCES__:" in result_for_model
+            ):
+                result_for_model = result_for_model.split("__RAG_SOURCES__:", 1)[
+                    0
+                ].rstrip()
             if is_error:
                 result_for_model = result_for_model + TOOL_ERROR_NUDGE
 
