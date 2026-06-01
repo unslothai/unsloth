@@ -468,7 +468,9 @@ def test_simple_linux_direct_release_honors_torch_cudart_preference(
             ["cuda13", "cuda12"],
             {
                 "cuda13": ["/usr/local/lib/python3.13/site-packages/nvidia/cu13/lib"],
-                "cuda12": ["/venv/lib/python3.13/site-packages/nvidia/cuda_runtime/lib"],
+                "cuda12": [
+                    "/venv/lib/python3.13/site-packages/nvidia/cuda_runtime/lib"
+                ],
             },
         ),
     )
@@ -507,9 +509,7 @@ def test_simple_linux_direct_release_honors_torch_cudart_preference(
     assert primary.runtime_line == "cuda12"
 
     # torch unavailable -> unchanged newest-major fallback (documents the residual).
-    assert (
-        first_asset_for_torch(None).name == "app-b9334-linux-x64-cuda13-newer.tar.gz"
-    )
+    assert first_asset_for_torch(None).name == "app-b9334-linux-x64-cuda13-newer.tar.gz"
 
 
 @pytest.mark.parametrize(
