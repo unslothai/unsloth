@@ -22,6 +22,11 @@ export { useChatModelRuntime } from "./hooks/use-chat-model-runtime";
 export { ChatSearchDialog } from "./components/chat-search-dialog";
 export { setTrainingCompareHandoff } from "./lib/training-compare-handoff";
 export { clearAllChats, countAllChats } from "./utils/clear-all-chats";
+export { ArtifactCard } from "./artifacts/artifact-card";
+export {
+  useChatArtifactsStore,
+  useSelectedChatArtifact,
+} from "./artifacts/store";
 export { downloadChatExport } from "./utils/export-chat-history";
 export {
   deleteChatItem,

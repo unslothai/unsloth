@@ -6,8 +6,10 @@ Unsloth Training Backend
 Integrates Unsloth training capabilities with the FastAPI backend
 """
 
+import gc
 import os
 import sys
+import types
 
 # Prevent tokenizer parallelism deadlocks when datasets uses multiprocessing fork
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -42,7 +44,10 @@ from utils.hardware import (
     get_visible_gpu_count,
 )
 
-torch._dynamo.config.recompile_limit = 64
+# recompile_limit was removed in some ROCm torch builds (e.g. pytorch.org/whl/rocm6.2).
+# Guard so training doesn't crash on RDNA2/RDNA3 with older ROCm torch wheels.
+if hasattr(torch._dynamo.config, "recompile_limit"):
+    torch._dynamo.config.recompile_limit = 64
 from unsloth import FastLanguageModel, FastVisionModel, is_bfloat16_supported
 from unsloth.chat_templates import get_chat_template
 
@@ -417,8 +422,6 @@ class UnslothTrainer:
         in sys.modules. When the next training run calls dataset.map(num_proc=N),
         forked child processes inherit this stale state and deadlock.
         """
-        import sys as _sys
-
         # Remove cloned audio repo paths from sys.path
         base_dir = os.path.dirname(os.path.abspath(__file__))
         audio_paths = [
@@ -433,15 +436,15 @@ class UnslothTrainer:
 
         removed_paths = []
         for path in audio_paths:
-            if path in _sys.path:
-                _sys.path.remove(path)
+            if path in sys.path:
+                sys.path.remove(path)
                 removed_paths.append(path)
 
         # Remove stale audio modules from sys.modules
         prefixes = ("snac", "whisper", "sparktts", "outetts")
-        removed_modules = [key for key in _sys.modules if key.startswith(prefixes)]
+        removed_modules = [key for key in sys.modules if key.startswith(prefixes)]
         for key in removed_modules:
-            del _sys.modules[key]
+            del sys.modules[key]
 
         if removed_paths or removed_modules:
             logger.info(
@@ -538,10 +541,9 @@ class UnslothTrainer:
             # clear_unsloth_compiled_cache() deletes the disk cache, but the flag
             # prevents re-compilation — leaving missing cache files. Reloading
             # restores original class definitions so Unsloth can re-compile cleanly.
-            import sys as _sys
             import importlib
 
-            for _key, _mod in list(_sys.modules.items()):
+            for _key, _mod in list(sys.modules.items()):
                 if "transformers.models." in _key and ".modeling_" in _key:
                     if hasattr(_mod, "__UNSLOTH_PATCHED__"):
                         try:
@@ -657,6 +659,23 @@ class UnslothTrainer:
                 f"Using device_map='{device_map}' ({get_visible_gpu_count()} GPU(s) visible)"
             )
 
+            # AMD ROCm hardware without native bfloat16 (e.g. RDNA2 / gfx103x)
+            # crashes with an LLVM error at the first bf16 kernel dispatch if
+            # dtype=None lets unsloth auto-pick bf16. Force float16 there so that
+            # path is never reached. NVIDIA keeps dtype=None so unsloth's own
+            # bf16/fp16/float32 auto-detection (including FORCE_FLOAT32 models) is
+            # honored -- older NVIDIA without bf16 (T4/V100) must NOT be coerced to
+            # float16 here, which the previous unconditional branch did wrongly.
+            # Derive ROCm inline (not hardware.IS_ROCM) because that flag is unset
+            # until detect_hardware() runs, which isn't guaranteed in this subprocess.
+            _is_rocm = (
+                bool(getattr(torch.version, "hip", None))
+                or "rocm" in torch.__version__.lower()
+            )
+            _auto_dtype = (
+                torch.float16 if (_is_rocm and not is_bfloat16_supported()) else None
+            )
+
             # Branch based on model type
             if self._audio_type == "csm":
                 # CSM: FastModel + auto_model=CsmForConditionalGeneration + load_in_4bit=False
@@ -666,7 +685,7 @@ class UnslothTrainer:
                 self.model, self.tokenizer = FastModel.from_pretrained(
                     model_name = model_name,
                     max_seq_length = max_seq_length,
-                    dtype = None,
+                    dtype = _auto_dtype,
                     auto_model = CsmForConditionalGeneration,
                     load_in_4bit = False,
                     device_map = device_map,
@@ -683,7 +702,7 @@ class UnslothTrainer:
 
                 self.model, self.tokenizer = FastModel.from_pretrained(
                     model_name = model_name,
-                    dtype = None,
+                    dtype = _auto_dtype,
                     load_in_4bit = False,
                     device_map = device_map,
                     full_finetuning = full_finetuning,
@@ -705,7 +724,7 @@ class UnslothTrainer:
                 self.model, self.tokenizer = FastLanguageModel.from_pretrained(
                     model_name = model_name,
                     max_seq_length = max_seq_length,
-                    dtype = None,
+                    dtype = _auto_dtype,
                     load_in_4bit = load_in_4bit,
                     device_map = device_map,
                     full_finetuning = full_finetuning,
@@ -777,7 +796,7 @@ class UnslothTrainer:
                 self.model, self.tokenizer = FastModel.from_pretrained(
                     model_name = model_name,
                     max_seq_length = max_seq_length,
-                    dtype = None,
+                    dtype = _auto_dtype,
                     load_in_4bit = load_in_4bit,
                     device_map = device_map,
                     full_finetuning = full_finetuning,
@@ -791,7 +810,7 @@ class UnslothTrainer:
                 self.model, self.tokenizer = FastVisionModel.from_pretrained(
                     model_name = model_name,
                     max_seq_length = max_seq_length,
-                    dtype = None,  # Auto-detect
+                    dtype = _auto_dtype,
                     load_in_4bit = load_in_4bit,
                     device_map = device_map,
                     full_finetuning = full_finetuning,
@@ -824,7 +843,7 @@ class UnslothTrainer:
                 self.model, self.tokenizer = FastLanguageModel.from_pretrained(
                     model_name = model_name,
                     max_seq_length = max_seq_length,
-                    dtype = None,  # Auto-detect
+                    dtype = _auto_dtype,
                     load_in_4bit = load_in_4bit,
                     device_map = device_map,
                     full_finetuning = full_finetuning,
@@ -1188,7 +1207,6 @@ class UnslothTrainer:
         We patch at both instance AND class level for maximum reliability,
         and strip non-TransformersKwargs params that Unsloth/PEFT inject.
         """
-        import types
         import torch
         import torch.nn as nn
         from transformers.models.csm.modeling_csm import (
@@ -1730,7 +1748,6 @@ class UnslothTrainer:
         logger.info("Freeing SNAC codec model from GPU...\n")
         snac_model.to("cpu")
         del snac_model
-        import gc
 
         gc.collect()
         torch.cuda.empty_cache()
@@ -1754,12 +1771,9 @@ class UnslothTrainer:
         Mirrors Spark_TTS_(0_5B).ipynb: encode audio with BiCodec (semantic + global tokens),
         format as special-token text strings for SFTTrainer with dataset_text_field="text".
         """
-        import sys
         import torch
         import numpy as np
         import torchaudio.transforms as T
-
-        import subprocess
 
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -1960,7 +1974,6 @@ class UnslothTrainer:
         audio_tokenizer.model.cpu()
         audio_tokenizer.feature_extractor.cpu()
         del audio_tokenizer
-        import gc
 
         gc.collect()
         torch.cuda.empty_cache()
@@ -1989,7 +2002,6 @@ class UnslothTrainer:
         OuteTTS AudioProcessor for speaker representations, PromptProcessor for
         training prompts. Outputs text strings for SFTTrainer with dataset_text_field="text".
         """
-        import sys
         import io
         import tempfile
         import torch
@@ -2173,7 +2185,6 @@ class UnslothTrainer:
         del whisper_model
         del audio_processor
         del prompt_processor
-        import gc
 
         gc.collect()
         torch.cuda.empty_cache()
@@ -3057,6 +3068,14 @@ class UnslothTrainer:
 
                     logger.info("Configuring DeepSeek OCR data collator...\n")
                     FastVisionModel.for_training(self.model)
+                    # DeepSeek OCR's (image_size, base_size, crop_mode) is a
+                    # coupled preset; changing image_size alone desyncs the
+                    # per-crop pixel grid from num_queries. Use Gundam.
+                    if training_args.get("vision_image_size") is not None:
+                        logger.info(
+                            "Vision image resize ignored for DeepSeek OCR "
+                            "(uses fixed Gundam preset).\n"
+                        )
                     data_collator = DeepSeekOCRDataCollator(
                         tokenizer = self.tokenizer,
                         model = self.model,
@@ -3123,7 +3142,21 @@ class UnslothTrainer:
                 from unsloth.trainer import UnslothVisionDataCollator
 
                 FastVisionModel.for_training(self.model)
-                data_collator = UnslothVisionDataCollator(self.model, self.tokenizer)
+                vision_image_size = training_args.get("vision_image_size")
+                if vision_image_size is None:
+                    data_collator = UnslothVisionDataCollator(
+                        self.model, self.tokenizer
+                    )
+                else:
+                    logger.info(
+                        f"Vision image resize: {vision_image_size} (max dimension)\n"
+                    )
+                    data_collator = UnslothVisionDataCollator(
+                        self.model,
+                        self.tokenizer,
+                        resize = vision_image_size,
+                        resize_dimension = "max",
+                    )
                 logger.info("Vision data collator configured\n")
 
             # ========== TRAINING CONFIGURATION ==========

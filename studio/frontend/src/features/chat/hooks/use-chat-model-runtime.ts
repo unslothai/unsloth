@@ -27,6 +27,7 @@ import {
   CHAT_REASONING_ENABLED_KEY,
   loadOptionalBool,
   type ReasoningEffort,
+  resolveToolsEnabledOnLoad,
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
 import {
@@ -698,14 +699,12 @@ export function useChatModelRuntime() {
               reasoningEffort: clampedReasoningEffort,
               supportsPreserveThinking: loadResponse.supports_preserve_thinking ?? false,
               supportsTools,
-              toolsEnabled:
-                reloadingSameModel && supportsTools
-                  ? stateBeforeUnload.toolsEnabled
-                  : supportsTools,
-              codeToolsEnabled:
-                reloadingSameModel && supportsTools
-                  ? stateBeforeUnload.codeToolsEnabled
-                  : supportsTools,
+              ...(reloadingSameModel && supportsTools
+                ? {
+                    toolsEnabled: stateBeforeUnload.toolsEnabled,
+                    codeToolsEnabled: stateBeforeUnload.codeToolsEnabled,
+                  }
+                : resolveToolsEnabledOnLoad(supportsTools)),
               kvCacheDtype: loadedKv,
               loadedKvCacheDtype: loadedKv,
               speculativeType: loadedSpec,
@@ -1119,15 +1118,15 @@ export function useChatModelRuntime() {
     ],
   );
 
-  const ejectModel = useCallback(async () => {
+  const ejectModel = useCallback(async (): Promise<boolean> => {
     if (!params.checkpoint) {
-      return;
+      return false;
     }
     setModelsError(null);
     if (isExternalModelId(params.checkpoint)) {
       clearCheckpoint();
       await refresh();
-      return;
+      return true;
     }
     try {
       async function performUnload(): Promise<void> {
@@ -1136,17 +1135,21 @@ export function useChatModelRuntime() {
         await refresh();
       }
 
-      await toast.promise(performUnload(), {
+      const unloadPromise = performUnload();
+      toast.promise(unloadPromise, {
         loading: "Unloading model",
         success: { message: "Model unloaded", duration: 1200 },
         error: (err) =>
           err instanceof Error ? err.message : "Failed to unload model",
         description: "Releases VRAM and resets inference state.",
       });
+      await unloadPromise;
+      return true;
     } catch (error) {
       const message =
         error instanceof Error ? error.message : "Failed to unload model";
       setModelsError(message);
+      return false;
     }
   }, [clearCheckpoint, params.checkpoint, refresh, setModelsError]);
 

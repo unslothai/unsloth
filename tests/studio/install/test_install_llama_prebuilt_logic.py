@@ -438,6 +438,80 @@ def test_simple_linux_direct_release_uses_published_source_checksums_for_branch(
     assert exact_source is True
 
 
+def test_simple_linux_direct_release_honors_torch_cudart_preference(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    # Regression: a Blackwell host (sm_120, driver 13.0) with BOTH cudart majors
+    # visible -- a stray cuda13 wheel plus torch's cuda12 -- must install the
+    # cuda12 build that matches the runtime torch, not the newest-major cuda13
+    # build (which loads no GPU and silently falls back to CPU).
+    release = {
+        "tag_name": "b9334",
+        "assets": [
+            {
+                "name": f"app-b9334-linux-x64-{profile}.tar.gz",
+                "browser_download_url": f"https://example.test/app-b9334-linux-x64-{profile}.tar.gz",
+            }
+            for profile in (
+                "cuda12-newer",
+                "cuda12-portable",
+                "cuda13-newer",
+                "cuda13-portable",
+            )
+        ],
+    }
+    # cuda13 detected first (newest-major order); both compatible with driver 13.0.
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "detected_linux_runtime_lines",
+        lambda: (
+            ["cuda13", "cuda12"],
+            {
+                "cuda13": ["/usr/local/lib/python3.13/site-packages/nvidia/cu13/lib"],
+                "cuda12": [
+                    "/venv/lib/python3.13/site-packages/nvidia/cuda_runtime/lib"
+                ],
+            },
+        ),
+    )
+    host = HostInfo(
+        system = "Linux",
+        machine = "x86_64",
+        is_windows = False,
+        is_linux = True,
+        is_macos = False,
+        is_x86_64 = True,
+        is_arm64 = False,
+        nvidia_smi = "nvidia-smi",
+        driver_cuda_version = (13, 0),
+        compute_caps = ["120"],
+        visible_cuda_devices = None,
+        has_physical_nvidia = True,
+        has_usable_nvidia = True,
+    )
+
+    def first_asset_for_torch(line):
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT,
+            "detect_torch_cuda_runtime_preference",
+            lambda h: INSTALL_LLAMA_PREBUILT.CudaRuntimePreference(
+                runtime_line = line, selection_log = []
+            ),
+        )
+        plan = INSTALL_LLAMA_PREBUILT.direct_linux_release_plan(
+            release, host, "unslothai/llama.cpp", "latest"
+        )
+        return plan.attempts[0]
+
+    # torch reports cuda12 (the cu128 runtime) -> install the cuda12 build.
+    primary = first_asset_for_torch("cuda12")
+    assert primary.name == "app-b9334-linux-x64-cuda12-newer.tar.gz"
+    assert primary.runtime_line == "cuda12"
+
+    # torch unavailable -> unchanged newest-major fallback (documents the residual).
+    assert first_asset_for_torch(None).name == "app-b9334-linux-x64-cuda13-newer.tar.gz"
+
+
 @pytest.mark.parametrize(
     "mutate, expected_match",
     [
@@ -2797,6 +2871,97 @@ def test_runtime_overlay_cannot_overwrite_main_archive_payload(
     )
     for name in ("cudart64_12.dll", "cublas64_12.dll", "cublasLt64_12.dll"):
         assert (release_dir / name).exists(), f"missing {name}"
+
+
+def test_linux_runtime_overlay_copies_llama_tool_impl_libraries(
+    tmp_path: Path,
+) -> None:
+    install_from_archives = INSTALL_LLAMA_PREBUILT.install_from_archives
+
+    work = tmp_path / "work"
+    install = tmp_path / "install"
+    archives = tmp_path / "archives"
+    work.mkdir()
+    install.mkdir()
+    archives.mkdir()
+
+    bundle = archives / "app-b9334-linux-x64-cuda13-newer.tar.gz"
+    with tarfile.open(bundle, "w:gz") as archive:
+        for name in (
+            "llama-cli",
+            "llama-server",
+            "llama-quantize",
+            "libllama-cli-impl.so",
+            "libllama-server-impl.so",
+            "libllama-quantize-impl.so",
+            "libllama-common.so",
+            "libllama.so",
+            "libggml.so",
+            "libggml-base.so",
+            "libmtmd.so",
+            "libggml-cpu-x64.so",
+            "libggml-cuda.so",
+        ):
+            payload = f"{name}\n".encode()
+            member = tarfile.TarInfo(name)
+            member.size = len(payload)
+            archive.addfile(member, io.BytesIO(payload))
+
+    import hashlib
+    import shutil as _shutil
+
+    bundle_sha = hashlib.sha256(bundle.read_bytes()).hexdigest()
+    choice = AssetChoice(
+        repo = "unslothai/llama.cpp",
+        tag = "b9334",
+        name = bundle.name,
+        url = f"https://example.com/{bundle.name}",
+        source_label = "published",
+        install_kind = "linux-cuda",
+        runtime_line = "cuda13",
+        expected_sha256 = bundle_sha,
+    )
+    host = HostInfo(
+        system = "Linux",
+        machine = "x86_64",
+        is_windows = False,
+        is_linux = True,
+        is_macos = False,
+        is_x86_64 = True,
+        is_arm64 = False,
+        nvidia_smi = None,
+        driver_cuda_version = (13, 0),
+        compute_caps = [],
+        visible_cuda_devices = None,
+        has_physical_nvidia = True,
+        has_usable_nvidia = True,
+    )
+
+    orig_download = INSTALL_LLAMA_PREBUILT.download_file_verified
+
+    def fake_download(url, target_path, *, expected_sha256 = None, label = None, **kw):
+        _shutil.copy2(bundle, target_path)
+        if expected_sha256:
+            actual = hashlib.sha256(Path(target_path).read_bytes()).hexdigest()
+            if actual != expected_sha256:
+                raise INSTALL_LLAMA_PREBUILT.PrebuiltFallback(
+                    f"sha256 mismatch on {label}"
+                )
+
+    INSTALL_LLAMA_PREBUILT.download_file_verified = fake_download
+    try:
+        install_from_archives(choice, host, install, work)
+    finally:
+        INSTALL_LLAMA_PREBUILT.download_file_verified = orig_download
+
+    runtime_dir = install / "build" / "bin"
+    for name in (
+        "libllama-cli-impl.so",
+        "libllama-server-impl.so",
+        "libllama-quantize-impl.so",
+    ):
+        assert (runtime_dir / name).exists(), f"missing {name}"
+    assert not (runtime_dir / "llama-cli").exists()
 
 
 def test_python_runtime_dirs_covers_cu13_and_library_bin(

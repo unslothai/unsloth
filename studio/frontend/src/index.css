@@ -818,6 +818,149 @@
 		font-family: var(--font-sans);
 	}
 
+	.chat-artifact-split[data-artifact-layout-animating="true"] > [data-panel] {
+		transition:
+			flex-basis 260ms var(--ease-out-cubic),
+			flex-grow 260ms var(--ease-out-cubic),
+			flex-shrink 260ms var(--ease-out-cubic);
+		will-change: flex-basis, flex-grow;
+	}
+
+	.chat-artifact-pop-surface {
+		pointer-events: none;
+		opacity: 0;
+		transform: scale(0.965) translateY(8px);
+		transform-origin: center center;
+		transition:
+			opacity 180ms var(--ease-out-cubic),
+			transform 220ms var(--ease-out-cubic);
+		will-change: opacity, transform;
+	}
+
+	.chat-artifact-pop-surface[data-artifact-surface-visible="true"] {
+		pointer-events: auto;
+		opacity: 1;
+		transform: scale(1) translateY(0);
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		.chat-artifact-pop-surface {
+			transition: none;
+			transform: none;
+		}
+	}
+
+	.artifact-card-shimmer {
+		background: linear-gradient(
+			105deg,
+			transparent 0%,
+			color-mix(in oklch, var(--muted-foreground) 4%, transparent) 40%,
+			color-mix(in oklch, var(--muted-foreground) 8%, transparent) 50%,
+			color-mix(in oklch, var(--muted-foreground) 4%, transparent) 60%,
+			transparent 100%
+		);
+		transform: translateX(-120%);
+		animation: artifact-card-shimmer 1.55s var(--ease-out-cubic) infinite;
+	}
+
+	.artifact-loading-line {
+		width: 48%;
+		background: color-mix(in oklch, var(--primary) 88%, transparent);
+		transform: translate3d(-125%, 0, 0) scaleX(0.78);
+		transform-origin: center center;
+		animation: artifact-loading-line 1.7s linear infinite;
+	}
+
+	.artifact-panel-shell::before,
+	.artifact-panel-shell::after {
+		content: "";
+		position: absolute;
+		z-index: 20;
+		pointer-events: none;
+		transition:
+			border-color 150ms var(--ease-out-cubic),
+			background-color 150ms var(--ease-out-cubic),
+			box-shadow 150ms var(--ease-out-cubic),
+			transform 150ms var(--ease-out-cubic);
+	}
+
+	.artifact-panel-shell::before {
+		inset: 0;
+		border: 2px solid transparent;
+		border-radius: inherit;
+		-webkit-mask: linear-gradient(90deg, #000 0 24px, transparent 24px);
+		mask: linear-gradient(90deg, #000 0 24px, transparent 24px);
+	}
+
+	.artifact-panel-shell::after {
+		top: 50%;
+		left: -2px;
+		height: 28px;
+		width: 4px;
+		border-radius: 999px;
+		background: transparent;
+		transform: translateY(-50%);
+	}
+
+	[data-slot="resizable-handle"]:hover
+		+ [data-slot="resizable-panel"]
+		.artifact-panel-shell::before,
+	[data-slot="resizable-handle"]:active
+		+ [data-slot="resizable-panel"]
+		.artifact-panel-shell::before,
+	[data-slot="resizable-handle"][data-resize-handle-state="hover"]
+		+ [data-slot="resizable-panel"]
+		.artifact-panel-shell::before,
+	[data-slot="resizable-handle"][data-resize-handle-state="drag"]
+		+ [data-slot="resizable-panel"]
+		.artifact-panel-shell::before {
+		border-color: color-mix(in oklch, var(--primary) 58%, var(--border));
+	}
+
+	[data-slot="resizable-handle"]:hover
+		+ [data-slot="resizable-panel"]
+		.artifact-panel-shell::after,
+	[data-slot="resizable-handle"]:active
+		+ [data-slot="resizable-panel"]
+		.artifact-panel-shell::after,
+	[data-slot="resizable-handle"][data-resize-handle-state="hover"]
+		+ [data-slot="resizable-panel"]
+		.artifact-panel-shell::after,
+	[data-slot="resizable-handle"][data-resize-handle-state="drag"]
+		+ [data-slot="resizable-panel"]
+		.artifact-panel-shell::after {
+		background: color-mix(in oklch, var(--primary) 58%, var(--border));
+		box-shadow: none;
+		transform: translateY(-50%) scaleY(1.06);
+	}
+
+	@keyframes artifact-card-shimmer {
+		to {
+			transform: translateX(120%);
+		}
+	}
+
+	@keyframes artifact-loading-line {
+		0% {
+			transform: translate3d(-125%, 0, 0) scaleX(0.78);
+		}
+		35% {
+			transform: translate3d(-18%, 0, 0) scaleX(0.96);
+		}
+		62% {
+			transform: translate3d(72%, 0, 0) scaleX(1.12);
+		}
+		82% {
+			transform: translate3d(132%, 0, 0) scaleX(1.26);
+		}
+		94% {
+			transform: translate3d(188%, 0, 0) scaleX(1.36);
+		}
+		100% {
+			transform: translate3d(220%, 0, 0) scaleX(1.42);
+		}
+	}
+
 	/* Fine-tuning Studio: equal default height, expandable when needed (md+) */
 	.min-h-studio-config-column {
 		@apply md:min-h-[470px];

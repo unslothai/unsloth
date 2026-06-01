@@ -887,12 +887,19 @@ shell.Run cmd, 0, False
     }
 
     # ── Check winget ──
+    # winget is only needed to install Python or uv. If both are
+    # already on PATH (Windows ARM64 GitHub-hosted runners, manual
+    # python.org + Astral uv installs, corporate locked-down hosts
+    # without the Store, etc.) the script can proceed without it.
+    # We defer the hard failure to the Python / uv install branches
+    # below, where winget is actually invoked.
     Write-TauriLog "STEP" "Checking system dependencies"
-    if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
-        step "winget" "not available" "Red"
-        substep "Install it from https://aka.ms/getwinget" "Yellow"
-        substep "or install Python $PythonVersion and uv manually, then re-run." "Yellow"
-        return (Exit-InstallFailure "winget is not available")
+    $script:WingetAvailable = [bool](Get-Command winget -ErrorAction SilentlyContinue)
+    if ($script:WingetAvailable) {
+        step "winget" "available"
+    } else {
+        step "winget" "not available -- will require Python + uv to be already installed" "Yellow"
+        substep "Get it from https://aka.ms/getwinget if Python / uv are not already on PATH." "Yellow"
     }
 
     # ── Helper: detect a working Python 3.11-3.13 on the system ──
@@ -969,10 +976,17 @@ shell.Run cmd, 0, False
     # Find-CompatiblePython returns @{ Version = "3.13"; Path = "C:\...\python.exe" } or $null.
     Write-TauriLog "STEP" "Installing Python"
     $DetectedPython = Find-CompatiblePython
+
     if ($DetectedPython) {
         step "python" "Python $($DetectedPython.Version) already installed"
     }
     if (-not $DetectedPython) {
+        if (-not $script:WingetAvailable) {
+            Write-Host "[ERROR] No compatible Python (3.11-3.13) found and winget is unavailable on this host." -ForegroundColor Red
+            Write-Host "        Install Python $PythonVersion from https://www.python.org/downloads/" -ForegroundColor Yellow
+            Write-Host "        and re-run this installer (make sure 'Add Python to PATH' is checked)." -ForegroundColor Yellow
+            return (Exit-InstallFailure "winget required to install Python on this host")
+        }
         substep "installing Python ${PythonVersion}..."
         $pythonPackageId = "Python.Python.$PythonVersion"
         # Temporarily lower ErrorActionPreference so that winget stderr
@@ -1024,14 +1038,19 @@ shell.Run cmd, 0, False
     Write-TauriLog "STEP" "Installing uv package manager"
     if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
         substep "installing uv package manager..."
-        $prevEAP = $ErrorActionPreference
-        $ErrorActionPreference = "Continue"
-        try { winget install --id=astral-sh.uv -e --accept-package-agreements --accept-source-agreements } catch {}
-        $ErrorActionPreference = $prevEAP
-        Refresh-SessionPath
-        # Fallback: if winget didn't put uv on PATH, try the PowerShell installer
+        if ($script:WingetAvailable) {
+            $prevEAP = $ErrorActionPreference
+            $ErrorActionPreference = "Continue"
+            try { winget install --id=astral-sh.uv -e --accept-package-agreements --accept-source-agreements } catch {}
+            $ErrorActionPreference = $prevEAP
+            Refresh-SessionPath
+        }
+        # Fallback: if winget is unavailable or didn't put uv on PATH,
+        # use Astral's official PowerShell installer. This is the only
+        # supported path on hosts without winget (Windows ARM64 runners,
+        # corporate machines without the Store, etc.).
         if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
-            substep "trying alternative uv installer..." "Yellow"
+            substep "installing uv via https://astral.sh/uv/install.ps1..." "Yellow"
             Invoke-Expression (Invoke-RestMethod -Uri "https://astral.sh/uv/install.ps1")
             Refresh-SessionPath
         }
@@ -1221,11 +1240,196 @@ shell.Run cmd, 0, False
             }
         }
     }
+    # ── AMD ROCm detection (Windows) — mirrors setup.ps1 ──
+    $HasROCm = $false
+    $HipSdkInstalled = $false   # HIP SDK binary found (independent of device accessibility)
+    $ROCmGpuLabel = $null
+    $ROCmVersion = $null
+    $ROCmGfxArch = $null
+    if (-not $HasNvidiaSmi) {
+        # hipinfo: PATH first, then HIP_PATH/ROCM_PATH bin fallback (mirrors NVIDIA smi path resolution).
+        # AMD HIP SDK sets HIP_PATH but may not add the bin dir to PATH depending on install type.
+        $hipinfoExe = Get-Command hipinfo -ErrorAction SilentlyContinue
+        if (-not $hipinfoExe) {
+            $hipRoot     = if ($env:HIP_PATH) { $env:HIP_PATH } elseif ($env:ROCM_PATH) { $env:ROCM_PATH } else { $null }
+            $hipEnvLabel = if ($env:HIP_PATH) { "HIP_PATH"    } else                    { "ROCM_PATH"    }
+            if ($hipRoot) {
+                $hipinfoCandidate = Join-Path $hipRoot "bin\hipinfo.exe"
+                if (Test-Path $hipinfoCandidate) {
+                    Write-Host "  [WARN] hipinfo not on PATH -- located via ${hipEnvLabel}: $hipinfoCandidate" -ForegroundColor Yellow
+                    Write-Host "         Add '$(Join-Path $hipRoot 'bin')' to your PATH to suppress this warning" -ForegroundColor Yellow
+                    Write-Host "         Quick fix: [Environment]::SetEnvironmentVariable('PATH',`$env:PATH+';$(Join-Path $hipRoot 'bin')','User')" -ForegroundColor Yellow
+                    $hipinfoExe = [PSCustomObject]@{ Source = $hipinfoCandidate }
+                } else {
+                    Write-Host "  [WARN] ${hipEnvLabel}=$hipRoot is set but hipinfo.exe not found at $hipinfoCandidate" -ForegroundColor Yellow
+                    Write-Host "         HIP SDK install may be incomplete -- re-install from:" -ForegroundColor Yellow
+                    Write-Host "         https://rocm.docs.amd.com/en/latest/deploy/windows/index.html" -ForegroundColor Yellow
+                }
+            }
+        }
+        if ($hipinfoExe) {
+            $HipSdkInstalled = $true   # binary found → SDK is installed regardless of device state
+            try {
+                $hipOut = & $hipinfoExe.Source 2>&1 | Out-String
+                if ($LASTEXITCODE -eq 0 -and $hipOut -match "(?i)gcnArchName") {
+                    $HasROCm = $true
+                    $_hipAllArches = @([regex]::Matches($hipOut, "(?im)^\s*gcnArchName\s*:\s*(\S+)") | ForEach-Object { ($_.Groups[1].Value -split ':')[0].Trim().ToLower() })
+                    $_hipVisIdx = if ($env:HIP_VISIBLE_DEVICES -match '^\d') { [int]($env:HIP_VISIBLE_DEVICES -split ',')[0] } elseif ($env:ROCR_VISIBLE_DEVICES -match '^\d') { [int]($env:ROCR_VISIBLE_DEVICES -split ',')[0] } else { 0 }
+                    if ($_hipAllArches.Count -gt 0) {
+                        $ROCmGfxArch  = if ($_hipVisIdx -lt $_hipAllArches.Count) { $_hipAllArches[$_hipVisIdx] } else { $_hipAllArches[0] }
+                        $ROCmGpuLabel = "AMD ROCm ($ROCmGfxArch)"
+                    } else {
+                        $ROCmGpuLabel = "AMD ROCm"
+                    }
+                } elseif ($LASTEXITCODE -ne 0) {
+                    # hipinfo ran but returned a HIP runtime error (e.g. "no ROCm-capable device detected")
+                    $firstLine = ($hipOut -split '\r?\n' | Where-Object { $_.Trim() } | Select-Object -First 1)
+                    Write-Host "  [WARN] hipinfo returned a HIP runtime error (exit $LASTEXITCODE)" -ForegroundColor Yellow
+                    Write-Host "         $firstLine" -ForegroundColor Yellow
+                    Write-Host "         Ensure ROCm drivers are installed: https://rocm.docs.amd.com/en/latest/deploy/windows/index.html" -ForegroundColor Yellow
+                }
+            } catch {}
+        }
+        if (-not $HasROCm) {
+            $amdSmiExe = Get-Command "amd-smi" -ErrorAction SilentlyContinue
+            if ($amdSmiExe) {
+                try {
+                    $smiOut = & $amdSmiExe.Source list 2>&1 | Out-String
+                    if ($LASTEXITCODE -eq 0 -and $smiOut -match "(?im)^GPU\s*[:\[]\s*\d") {
+                        $HasROCm = $true
+                        # Mirror the hipinfo path: collect all gfx tokens in enumeration
+                        # order and pick the runtime-visible one via HIP_VISIBLE_DEVICES.
+                        $_smiVisIdx = if ($env:HIP_VISIBLE_DEVICES -match '^\d') { [int]($env:HIP_VISIBLE_DEVICES -split ',')[0] } elseif ($env:ROCR_VISIBLE_DEVICES -match '^\d') { [int]($env:ROCR_VISIBLE_DEVICES -split ',')[0] } else { 0 }
+                        # Attempt 1: newer amd-smi versions embed the gfx arch in list output.
+                        $_smiGfxTokens = @([regex]::Matches($smiOut, "(?i)\b(gfx\d+[a-z]?)\b") | ForEach-Object { $_.Groups[1].Value.ToLower() })
+                        if ($_smiGfxTokens.Count -gt 0) {
+                            $ROCmGfxArch = if ($_smiVisIdx -lt $_smiGfxTokens.Count) { $_smiGfxTokens[$_smiVisIdx] } else { $_smiGfxTokens[0] }
+                            $ROCmGpuLabel = "AMD ROCm ($ROCmGfxArch)"
+                        } else {
+                            # Attempt 2: 'static --asic' exposes ASIC details on ROCm 6+,
+                            # including the GFX target needed for wheel index selection.
+                            $smiAsicOut = ""
+                            try { $smiAsicOut = & $amdSmiExe.Source static --asic 2>&1 | Out-String } catch {}
+                            $_asicGfxTokens = @([regex]::Matches($smiAsicOut, "(?i)\b(gfx\d+[a-z]?)\b") | ForEach-Object { $_.Groups[1].Value.ToLower() })
+                            if ($_asicGfxTokens.Count -gt 0) {
+                                $ROCmGfxArch = if ($_smiVisIdx -lt $_asicGfxTokens.Count) { $_asicGfxTokens[$_smiVisIdx] } else { $_asicGfxTokens[0] }
+                                $ROCmGpuLabel = "AMD ROCm ($ROCmGfxArch)"
+                            } elseif ($smiAsicOut -match "(?im)Market.?Name\s*[:\|]\s*([^\r\n]+)") {
+                                $ROCmGpuLabel = "AMD ROCm ($($Matches[1].Trim()))"
+                            } else {
+                                $ROCmGpuLabel = "AMD ROCm"
+                            }
+                        }
+                    }
+                } catch {}
+            }
+        }
+        if (-not $HasROCm) {
+            try {
+                $wmiGpu = Get-WmiObject Win32_VideoController -ErrorAction SilentlyContinue |
+                    Where-Object { $_.Name -match "AMD|Radeon" } |
+                    Select-Object -First 1
+                if ($wmiGpu) { $ROCmGpuLabel = $wmiGpu.Name }
+            } catch {}
+        }
+        # ── Arch resolution: env-var override → name inference ──────────────
+        # Covers users whose amd-smi is too old to report the GFX target and
+        # who don't have hipinfo (HIP-runtime-only, common on Strix Halo / iGPU).
+        if ($HasROCm -and -not $ROCmGfxArch) {
+            # 1. Manual override: set UNSLOTH_ROCM_GFX_ARCH=gfx1151 before running.
+            if ($env:UNSLOTH_ROCM_GFX_ARCH) {
+                $ROCmGfxArch = $env:UNSLOTH_ROCM_GFX_ARCH.Trim().ToLower()
+                $ROCmGpuLabel = "AMD ROCm ($ROCmGfxArch)"
+                substep "gfx arch from UNSLOTH_ROCM_GFX_ARCH env override: $ROCmGfxArch" "Cyan"
+            }
+            # 2. Best-effort name → arch lookup from marketing name (amd-smi / WMI).
+            elseif ($ROCmGpuLabel) {
+                $nameArchTable = @(
+                    @{ P = "9070 XT|9080";                                        A = "gfx1201" }  # RDNA 4
+                    @{ P = "9070|9060";                                            A = "gfx1200" }  # RDNA 4
+                    @{ P = "8060S|890M|Strix Halo|HX 37[05]|HX 38[05]|AI 9 HX";  A = "gfx1151" }  # RDNA 3.5 iGPU (Strix Halo / Radeon 8060S retail)
+                    @{ P = "880M|Strix Point|AI 9 36[05]|AI 7 35[05]|AI 5 34[05]"; A = "gfx1150" } # RDNA 3.5 iGPU (Strix Point)
+                    @{ P = "RX 7900|RX 7800|RX 7700(?! S)";                       A = "gfx1100" }  # RDNA 3 desktop
+                    @{ P = "RX 7600";                                              A = "gfx1102" }  # RDNA 3
+                    @{ P = "780M|760M|740M|Phoenix";                               A = "gfx1103" }  # RDNA 3 iGPU (Phoenix)
+                )
+                foreach ($row in $nameArchTable) {
+                    if ($ROCmGpuLabel -match $row.P) {
+                        $ROCmGfxArch = $row.A
+                        $ROCmGpuLabel = "AMD ROCm ($ROCmGfxArch)"
+                        substep "gfx arch inferred from GPU name: $ROCmGfxArch" "Cyan"
+                        substep "Tip: set UNSLOTH_ROCM_GFX_ARCH=$ROCmGfxArch to skip inference next time" "Cyan"
+                        break
+                    }
+                }
+            }
+        }
+        # Capture ROCm version for wheel selection (hipconfig, then amd-smi).
+        # Run whenever the HIP SDK binary is present, not just when the device is accessible --
+        # hipconfig --version works even when hipinfo reports no ROCm device (driver issue).
+        if ($HasROCm -or $HipSdkInstalled) {
+            $hipConfigExe = Get-Command hipconfig -ErrorAction SilentlyContinue
+            if (-not $hipConfigExe) {
+                $hipRoot = if ($env:HIP_PATH) { $env:HIP_PATH } elseif ($env:ROCM_PATH) { $env:ROCM_PATH } else { $null }
+                if ($hipRoot) {
+                    $hipConfigCandidate = Join-Path $hipRoot "bin\hipconfig.exe"
+                    if (Test-Path $hipConfigCandidate) {
+                        $hipConfigEnvLabel = if ($env:HIP_PATH) { "HIP_PATH" } else { "ROCM_PATH" }
+                        Write-Host "  [WARN] hipconfig not on PATH -- located via ${hipConfigEnvLabel}: $hipConfigCandidate" -ForegroundColor Yellow
+                        $hipConfigExe = [PSCustomObject]@{ Source = $hipConfigCandidate }
+                    }
+                }
+            }
+            if ($hipConfigExe) {
+                try {
+                    $hipVerOut = & $hipConfigExe.Source --version 2>&1 | Out-String
+                    if ($LASTEXITCODE -eq 0) {
+                        $hipVerLine = ($hipVerOut -split '\r?\n' | Where-Object { $_.Trim() } | Select-Object -First 1).Trim()
+                        if ($hipVerLine -match '(\d+\.\d+)') {
+                            $ROCmVersion     = $Matches[1]
+                            $ROCmVersionFull = $hipVerLine
+                        }
+                    }
+                } catch {}
+            }
+            if (-not $ROCmVersion) {
+                $amdSmiVer = Get-Command "amd-smi" -ErrorAction SilentlyContinue
+                if ($amdSmiVer) {
+                    try {
+                        $smiVerOut = & $amdSmiVer.Source version 2>&1 | Out-String
+                        if ($LASTEXITCODE -eq 0 -and $smiVerOut -match 'ROCm version:\s*(\d+\.\d+)') {
+                            $ROCmVersion = $Matches[1]
+                        }
+                    } catch {}
+                }
+            }
+        }
+    }
+
     if ($HasNvidiaSmi) {
         step "gpu" "NVIDIA GPU detected"
+    } elseif ($HasROCm) {
+        step "gpu" $ROCmGpuLabel
+        $hipSdkPath = if ($env:HIP_PATH) { $env:HIP_PATH } elseif ($env:ROCM_PATH) { $env:ROCM_PATH } else { "on system PATH" }
+        substep "HIP SDK: $hipSdkPath"
+        if ($ROCmVersionFull) { substep "hipconfig: $ROCmVersionFull" }
+    } elseif ($HipSdkInstalled -and $ROCmGpuLabel) {
+        # HIP SDK is installed but ROCm can't see the device (driver issue, not SDK issue)
+        $sdkVer = if ($ROCmVersionFull) { " (HIP $ROCmVersionFull)" } else { "" }
+        step "gpu" "AMD GPU detected -- not ROCm-accessible$sdkVer" "Yellow"
+        substep "Detected: $ROCmGpuLabel" "Yellow"
+        substep "[WARN] HIP SDK is installed but hipinfo reports no ROCm-capable device." "Yellow"
+        substep "       This is a driver issue, not an SDK issue." "Yellow"
+        substep "       Ensure the ROCm compute driver is installed alongside the display driver:" "Yellow"
+        substep "       https://rocm.docs.amd.com/en/latest/deploy/windows/index.html" "Yellow"
+    } elseif ($ROCmGpuLabel) {
+        step "gpu" "AMD GPU detected -- HIP SDK not found" "Yellow"
+        substep "Detected: $ROCmGpuLabel" "Yellow"
+        substep "Install the HIP SDK for ROCm GPU inference:" "Yellow"
+        substep "https://rocm.docs.amd.com/en/latest/deploy/windows/index.html" "Yellow"
     } else {
         step "gpu" "none (chat-only / GGUF)" "Yellow"
-        substep "Training and GPU inference require an NVIDIA GPU with drivers installed." "Yellow"
+        substep "Training and GPU inference require an NVIDIA or AMD ROCm GPU." "Yellow"
     }
 
     # ── Choose the correct PyTorch index URL based on driver CUDA version ──
@@ -1235,7 +1439,10 @@ shell.Run cmd, 0, False
         if (-not $NvidiaSmiExe) { return "$baseUrl/cpu" }
         try {
             $output = & $NvidiaSmiExe 2>&1 | Out-String
-            if ($output -match 'CUDA Version:\s+(\d+)\.(\d+)') {
+            # Newer NVIDIA drivers (e.g. 610.x on Windows) print
+            # "CUDA UMD Version: X.Y" instead of the legacy "CUDA Version: X.Y".
+            # Accept both spellings so we don't fall through to the cu126 default.
+            if ($output -match 'CUDA(?: UMD)? Version:\s+(\d+)\.(\d+)') {
                 $major = [int]$Matches[1]; $minor = [int]$Matches[2]
                 if ($major -ge 13)                    { return "$baseUrl/cu130" }
                 if ($major -eq 12 -and $minor -ge 8)  { return "$baseUrl/cu128" }
@@ -1249,14 +1456,73 @@ shell.Run cmd, 0, False
         return "$baseUrl/cu126"
     }
     $TorchIndexUrl = Get-TorchIndexUrl
-    $TorchIndexFamily = Get-TauriTorchIndexFamily $TorchIndexUrl
+
+    # ── GPU arch → newest compatible Windows ROCm wheel release ──
+    # Wheels bundle their own ROCm runtime; the installed HIP SDK version does
+    # not constrain which release to use.  Always picks the newest release that
+    # supports the GPU architecture.
+    # ── AMD Windows ROCm: arch-aware pip index (repo.amd.com) ──
+    # Wheels bundle their own ROCm runtime and support all Python versions.
+    # Override with UNSLOTH_ROCM_WINDOWS_MIRROR for air-gapped / mirror installs.
+    $ROCmIndexUrl = $null
+    $ROCmTorchFloor = $null
+    if ($HasROCm -and $TorchIndexUrl -like "*/cpu" -and -not $SkipTorch) {
+        $amdIndexBase = if ($env:UNSLOTH_ROCM_WINDOWS_MIRROR) { $env:UNSLOTH_ROCM_WINDOWS_MIRROR.TrimEnd('/') } else { "https://repo.amd.com/rocm/whl" }
+        $archFamilyMap = @{
+            "gfx1201" = "gfx120X-all"; "gfx1200" = "gfx120X-all"  # RDNA 4
+            "gfx1151" = "gfx1151";     "gfx1150" = "gfx1150"       # RDNA 3.5 (Strix Halo/Point)
+            "gfx1103" = "gfx110X-all"; "gfx1102" = "gfx110X-all"   # RDNA 3
+            "gfx1101" = "gfx110X-all"; "gfx1100" = "gfx110X-all"
+            "gfx90a"  = "gfx90a";      "gfx908"  = "gfx908"        # MI200/MI100
+        }
+        # gfx120X (RDNA 4) and gfx1151/gfx1150 (Strix) have a null-pointer bug in
+        # torch._C._grouped_mm on torch <2.11.0 (rocm7.12 and rocm7.1 respectively).
+        # TheRock issues #5284 and #3284. Force torch>=2.11.0 so pip never resolves
+        # to the broken 2.10.0 wheels even though they exist on the AMD index.
+        # The <2.12.0 ceiling matches the Linux install_python_stack.py constraint
+        # for the same arches: AMD actively publishes new versions on their index,
+        # so without a ceiling a future 2.12.0+rocmX.Y wheel would be pulled in
+        # automatically before it has been validated on these architectures.
+        # Bump the ceiling here (and in install_python_stack.py) when 2.12.x is
+        # confirmed working on gfx120X / Strix.
+        $torchFloorMap = @{
+            "gfx1201" = "torch>=2.11.0,<2.12.0"; "gfx1200" = "torch>=2.11.0,<2.12.0"
+            "gfx1151" = "torch>=2.11.0,<2.12.0"; "gfx1150" = "torch>=2.11.0,<2.12.0"
+        }
+        $archFamily = if ($ROCmGfxArch -and $archFamilyMap.ContainsKey($ROCmGfxArch)) { $archFamilyMap[$ROCmGfxArch] } else { $null }
+        if ($archFamily) {
+            $ROCmIndexUrl = "$amdIndexBase/$archFamily/"
+            $ROCmTorchFloor = if ($ROCmGfxArch -and $torchFloorMap.ContainsKey($ROCmGfxArch)) { $torchFloorMap[$ROCmGfxArch] } else { $null }
+            $archLabel = if ($ROCmGfxArch) { $ROCmGfxArch } else { "AMD GPU" }
+            substep "$archLabel -- AMD repo.amd.com index selected" "Cyan"
+            if ($ROCmTorchFloor) {
+                substep "  enforcing $ROCmTorchFloor (known _grouped_mm bug in older wheels)" "Cyan"
+            }
+        } elseif ($ROCmGfxArch) {
+            substep "AMD GPU ($ROCmGfxArch) not in supported arch list -- falling back to CPU-only PyTorch" "Yellow"
+        } else {
+            substep "AMD GPU detected but arch unknown -- falling back to CPU-only PyTorch" "Yellow"
+        }
+    }
+
+    if ($ROCmIndexUrl) {
+        $TorchIndexFamily = "rocm"
+    } else {
+        $TorchIndexFamily = Get-TauriTorchIndexFamily $TorchIndexUrl
+    }
     $GpuBranch = Get-TauriGpuBranch $TorchIndexFamily
     Write-TauriDiag -GpuBranch $GpuBranch -TorchIndexFamily $TorchIndexFamily -PythonVersionForDiag $DetectedPython.Version
 
     # ── Print CPU-only hint when no GPU detected ──
-    if (-not $SkipTorch -and $TorchIndexUrl -like "*/cpu") {
+    if (-not $SkipTorch -and -not $ROCmIndexUrl -and $TorchIndexUrl -like "*/cpu") {
         Write-Host ""
-        substep "No NVIDIA GPU detected." "Yellow"
+        if ($HipSdkInstalled -and -not $HasROCm) {
+            substep "Installing CPU-only PyTorch (HIP SDK found but GPU not ROCm-accessible)." "Yellow"
+        } elseif ($ROCmGpuLabel) {
+            substep "Installing CPU-only PyTorch (ROCm wheels require the HIP SDK)." "Yellow"
+        } else {
+            substep "No NVIDIA GPU detected." "Yellow"
+        }
         substep "Installing CPU-only PyTorch. If you only need GGUF chat/inference," "Yellow"
         substep "re-run with --no-torch for a faster, lighter install:" "Yellow"
         substep ".\install.ps1 --no-torch" "Yellow"
@@ -1300,7 +1566,7 @@ shell.Run cmd, 0, False
         if ($SkipTorch) {
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
-            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.5.8" unsloth-zoo }
+            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.5.9" unsloth-zoo }
             if ($baseInstallExit -eq 0) {
                 # Resolve pydantic WITH deps so pip pins pydantic-core
                 # to the matching version (no-torch-runtime.txt below
@@ -1314,7 +1580,7 @@ shell.Run cmd, 0, False
                 }
             }
         } else {
-            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.5.8" unsloth-zoo }
+            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.5.9" unsloth-zoo }
         }
         if ($baseInstallExit -ne 0) {
             Write-Host "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
@@ -1334,9 +1600,18 @@ shell.Run cmd, 0, False
                 return (Exit-InstallFailure "Failed to overlay unsloth-zoo (exit code $zooOverlayExit)" $zooOverlayExit)
             }
         }
-    } elseif ($TorchIndexUrl) {
+    } elseif ($TorchIndexUrl -or $ROCmIndexUrl) {
         if ($SkipTorch) {
             substep "skipping PyTorch (--no-torch flag set)." "Yellow"
+        } elseif ($ROCmIndexUrl) {
+            Write-TauriLog "STEP" "Installing PyTorch (AMD ROCm Windows)"
+            substep "installing PyTorch from $ROCmIndexUrl..."
+            $torchSpec = if ($ROCmTorchFloor) { $ROCmTorchFloor } else { "torch" }
+            $torchInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --force-reinstall --index-url $ROCmIndexUrl $torchSpec torchvision torchaudio }
+            if ($torchInstallExit -ne 0) {
+                Write-Host "[ERROR] Failed to install AMD ROCm PyTorch (exit code $torchInstallExit)" -ForegroundColor Red
+                return (Exit-InstallFailure "Failed to install AMD ROCm PyTorch (exit code $torchInstallExit)" $torchInstallExit)
+            }
         } else {
             Write-TauriLog "STEP" "Installing PyTorch"
             substep "installing PyTorch ($TorchIndexUrl)..."
@@ -1352,7 +1627,7 @@ shell.Run cmd, 0, False
         if ($SkipTorch) {
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
-            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "unsloth>=2026.5.8" unsloth-zoo }
+            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "unsloth>=2026.5.9" unsloth-zoo }
             if ($baseInstallExit -eq 0) {
                 # Same pydantic-with-deps trick as the migrated branch.
                 $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython pydantic }
@@ -1364,7 +1639,7 @@ shell.Run cmd, 0, False
                 }
             }
         } elseif ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --upgrade-package unsloth "unsloth>=2026.5.8" unsloth-zoo }
+            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --upgrade-package unsloth "unsloth>=2026.5.9" unsloth-zoo }
         } else {
             $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --upgrade-package unsloth -- "$PackageName" }
         }
@@ -1392,7 +1667,7 @@ shell.Run cmd, 0, False
         Write-TauriLog "STEP" "Installing unsloth"
         substep "installing unsloth (this may take a few minutes)..."
         if ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython unsloth-zoo "unsloth>=2026.5.8" --torch-backend=auto }
+            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython unsloth-zoo "unsloth>=2026.5.9" --torch-backend=auto }
             if ($baseInstallExit -ne 0) {
                 Write-Host "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to install unsloth (exit code $baseInstallExit)" $baseInstallExit)

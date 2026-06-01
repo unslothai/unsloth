@@ -581,6 +581,14 @@ class ChatMessage(BaseModel):
         None,
         description = "OpenAI tool-result messages: name of the tool whose result this is.",
     )
+    extra_content: Optional[dict] = Field(
+        None,
+        description = (
+            "Provider-specific extra fields the translator may read. "
+            "Gemini reads `extra_content.google.thought_signature` "
+            "from assistant messages to replay text-part signatures."
+        ),
+    )
 
     @model_validator(mode = "after")
     def _validate_role_shape(self) -> "ChatMessage":
@@ -701,12 +709,17 @@ class ChatCompletionRequest(BaseModel):
     enabled_tools: Optional[list[str]] = Field(
         None,
         description = (
-            "[x-unsloth] List of enabled tool names. Local GGUF models accept "
-            "['web_search', 'python', 'terminal']. External providers accept "
-            "['web_search', 'web_fetch', 'code_execution'] for Anthropic and "
-            "['web_search', 'code_execution'] for OpenAI Responses. If None, "
-            "all local tools are enabled and no server-side tools are forwarded."
+            "[x-unsloth] List of enabled tool names. Local GGUF/safetensors models "
+            "accept ['web_search', 'python', 'terminal', 'render_html']. External "
+            "providers accept ['web_search', 'web_fetch', 'code_execution'] for "
+            "Anthropic and ['web_search', 'code_execution', 'image_generation'] for "
+            "OpenAI Responses. If None, all local tools are enabled and no "
+            "server-side tools are forwarded."
         ),
+    )
+    mcp_enabled: Optional[bool] = Field(
+        None,
+        description = "[x-unsloth] When true, append tools from every enabled MCP server to this request's tool list.",
     )
     auto_heal_tool_calls: Optional[bool] = Field(
         True,
@@ -752,17 +765,42 @@ class ChatCompletionRequest(BaseModel):
         None,
         description = "[x-unsloth] Override base URL for the external provider.",
     )
-    enable_prompt_caching: Optional[bool] = Field(
+    enable_prompt_caching: Optional[Union[bool, str]] = Field(
         None,
         description = (
             "[x-unsloth] Opt in to provider-side prompt caching. On Anthropic, "
-            "attaches cache_control={type:ephemeral} to the system block so the "
-            "static prefix is reused across turns. On OpenAI cloud, caching is "
-            "automatic for prompts >=1024 tokens and this flag is informational. "
-            "Ignored for every other provider (mistral, gemini, kimi, openrouter, "
-            "vllm, local, etc.). Treated as enabled when omitted."
+            "boolean true attaches cache_control={type:ephemeral} to the system "
+            "block so the static prefix is reused across turns. On OpenAI cloud, "
+            "caching is automatic for prompts >=1024 tokens and the boolean is "
+            "informational. On Gemini, pass a string cache resource name such "
+            "as `cachedContents/abc123` to attach `cachedContent` on the native "
+            "request (boolean true is a no-op on Gemini because creating the "
+            "cache requires a separate POST /cachedContents call). Ignored for "
+            "every other provider. Treated as enabled when omitted."
         ),
     )
+
+    @field_validator("enable_prompt_caching", mode = "before")
+    @classmethod
+    def _coerce_enable_prompt_caching(cls, value: Any) -> Any:
+        """Preserve the pre-PR coercion: the field used to be Optional[bool],
+        so callers historically sent JSON strings `"true"` / `"false"` and
+        Pydantic v1 coerced them. Widening to Optional[Union[bool, str]] for
+        Gemini cache resource names lets `"false"` slip through as a truthy
+        string. Coerce the canonical bool literals back so explicit opt-outs
+        stay opt-out."""
+        if isinstance(value, str):
+            lowered = value.strip().lower()
+            # Match Pydantic v1's BooleanField coercion table (yes/y/on/t/1
+            # and no/n/off/f/0) so opt-outs that used to parse still parse.
+            # Anything else is preserved as a string for Gemini's
+            # cachedContent resource path.
+            if lowered in ("true", "t", "1", "yes", "y", "on"):
+                return True
+            if lowered in ("false", "f", "0", "no", "n", "off"):
+                return False
+        return value
+
     prompt_cache_ttl: Optional[str] = Field(
         None,
         description = (
