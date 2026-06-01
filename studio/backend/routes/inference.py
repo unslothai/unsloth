@@ -567,9 +567,8 @@ _ARTIFACT_TOOL_ACTION_NUDGE = (
 )
 
 
-# RAG variant: when the chat has attached documents, relevant passages are
-# retrieved and injected before the model answers, so the action nudge must not
-# tell it to web_search "any factual question" (that hijacked doc questions).
+# RAG variant: passages are retrieved and injected before answering, so don't
+# tell the model to web_search "any factual question" (that hijacked doc Qs).
 _TOOL_ACTION_NUDGE_RAG = (
     " IMPORTANT: Always call tools directly -- never write code yourself."
     " Never describe what you plan to do -- just call the tool immediately."

@@ -7,9 +7,9 @@ import { Suspense, lazy, useEffect, useState } from "react";
 
 import { useDocumentPreviewStore } from "./preview-store";
 
-// pdf.js / react-pdf are heavy (~0.5 MB gzip), and most chats never open a
-// preview. Defer the whole viewer chunk until the first citation click, then
-// keep it mounted so the open/close animation works on subsequent opens.
+// pdf.js / react-pdf are heavy (~0.5 MB gzip) and rarely used. Defer the viewer
+// chunk until the first citation click, then keep it mounted so the open/close
+// animation works on later opens.
 const DocumentPreviewSheet = lazy(() =>
   import("./document-preview-sheet").then((m) => ({
     default: m.DocumentPreviewSheet,

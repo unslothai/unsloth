@@ -3,10 +3,10 @@
 
 """Page-aware recursive-separator chunking with token overlap.
 
-Split on the coarsest separator that fits, recurse finer, then greedy-merge into
-<= max_tokens chunks with ``overlap`` tokens between neighbours. Each chunk also
+Split on the coarsest separator, recurse finer, then greedy-merge into
+<= max_tokens chunks with ``overlap`` tokens between neighbours. Each chunk
 records its ``[page_char_start, page_char_end)`` span and ``source_page_index``,
-which the locator pass uses to map chunks onto the PDF page for highlighting.
+used by the locator pass to map chunks onto the PDF page for highlighting.
 """
 
 from __future__ import annotations
@@ -35,14 +35,14 @@ def _split(
     text: str, seps: tuple[str, ...], max_tokens: int, count: TokenCounter
 ) -> list[str]:
     """Recursively split into pieces each <= max_tokens (best effort). Pieces
-    concatenate back to ``text`` exactly, so char offsets are a running length."""
+    rejoin to ``text`` exactly, so char offsets are a running length."""
     if count(text) <= max_tokens:
         return [text]
     for i, sep in enumerate(seps):
         parts = list(text) if sep == "" else text.split(sep)
         if len(parts) <= 1:
             continue
-        if sep:  # re-attach the separator we split on
+        if sep:  # re-attach the separator
             parts = [p + sep for p in parts[:-1]] + parts[-1:]
         out: list[str] = []
         for p in parts:
@@ -65,7 +65,7 @@ def _merge(
 ) -> list[tuple[str, int, int]]:
     """Greedy-merge pieces into <= max_tokens chunks with token overlap.
     ``starts[i]`` is ``pieces[i]``'s char offset in the page; returns
-    ``(chunk_text, char_start, char_end)`` spans into the source page."""
+    ``(chunk_text, char_start, char_end)`` spans into it."""
     chunks: list[tuple[str, int, int]] = []
     buf: list[str] = []
     buf_starts: list[int] = []
@@ -109,7 +109,7 @@ def chunk_pages(
     out: list[Chunk] = []
     for page_index, page in enumerate(pages):
         pieces = _split(page.text, SEPARATORS, max_tokens, count)
-        # _split is offset-preserving, so a running cursor gives exact offsets.
+        # _split preserves offsets, so a running cursor gives exact char offsets.
         starts: list[int] = []
         cursor = 0
         for piece in pieces:

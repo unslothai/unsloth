@@ -128,9 +128,8 @@ export const Thread: FC<{
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const threadId = targetThreadId ?? activeThreadId ?? null;
 
-  // Measured height of the floating composer dock. The conversation reserves
-  // this much at the bottom so a tall composer (e.g. a long document strip)
-  // never covers the last message.
+  // Measured composer-dock height; the conversation reserves this much at the
+  // bottom so a tall composer never covers the last message.
   const [dockHeight, setDockHeight] = useState(150);
 
   return (
@@ -172,9 +171,8 @@ export const Thread: FC<{
               }}
             />
 
-            {/* Bottom slack so the last message clears the floating composer.
-            Sized to the composer's measured height (--aui-dock-h), which grows
-            with the document strip, so a tall composer never covers the chat. */}
+            {/* Bottom slack (= --aui-dock-h) so the last message clears the
+            floating composer, even when the document strip makes it tall. */}
             <AuiIf condition={({ thread }) => hideWelcome || !thread.isEmpty}>
               <div
                 className={cn(
@@ -1152,8 +1150,8 @@ const RagToggle: FC = () => {
     (s) => !!s.params.checkpoint && !s.modelLoading,
   );
   const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
-  // search_knowledge_base is local-only; gate the pill on local tool support
-  // and a non-external checkpoint (mirror of the Code/Search local path).
+  // search_knowledge_base is local-only; gate the pill on local tool support +
+  // a non-external checkpoint (like the Code/Search pills).
   const supportsTools = useChatRuntimeStore((s) => s.supportsTools);
   const ragEnabled = useChatRuntimeStore((s) => s.ragEnabled);
   const setRagEnabled = useChatRuntimeStore((s) => s.setRagEnabled);

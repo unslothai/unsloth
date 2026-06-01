@@ -4,8 +4,8 @@
 """``search_knowledge_base`` LLM tool: scope resolution + hit formatting.
 
 KB scope wins over thread scope. Hits render as ``<chunk>`` blocks for the model
-plus a parallel citation source-map so the chat layer can show clickable
-sources. Opens/closes its own ``rag_db`` connection per call.
+plus a parallel citation source-map for clickable sources in the chat layer.
+Opens/closes its own ``rag_db`` connection per call.
 """
 
 from __future__ import annotations
@@ -88,8 +88,8 @@ def search_knowledge_base_with_sources(
     min_score: float = 0.0,
     model_name: str | None = None,
 ) -> tuple[str, list[dict]]:
-    """Hybrid search -> ``(rendered_text, citation_sources)``, the sources
-    aligned with the ``id`` of each rendered ``<chunk>`` block."""
+    """Hybrid search -> ``(rendered_text, citation_sources)``; sources align
+    with each rendered ``<chunk>`` block's ``id``."""
     if not query or not query.strip():
         return "Error: query is empty.", []
     scope = _resolve_scope(scope_kb_id, scope_thread_id)
@@ -130,10 +130,10 @@ def search_for_autoinject(
 ) -> tuple[str, list[dict]] | None:
     """Forced-retrieval variant for auto-injection.
 
-    Returns ``(rendered_text, sources)`` only when at least one hit's dense
-    (cosine) similarity clears ``min_dense_score``; otherwise ``None`` (inject
-    nothing). Gating on the dense score keeps weak lexical-only matches from
-    polluting unrelated answers (e.g. agriculture docs vs "capital of France").
+    Returns ``(rendered_text, sources)`` only when some hit's dense (cosine)
+    similarity clears ``min_dense_score``; else ``None`` (inject nothing). The
+    dense gate keeps weak lexical-only matches from polluting unrelated answers
+    (e.g. agriculture docs vs "capital of France").
     """
     if not query or not query.strip():
         return None

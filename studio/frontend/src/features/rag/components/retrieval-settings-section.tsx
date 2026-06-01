@@ -29,7 +29,7 @@ const MODE_LABEL: Record<RagMode, string> = {
 };
 
 /**
- * Retrieval settings (in the chat settings sheet): source (thread docs or a KB),
+ * Retrieval settings in the chat settings sheet: source (thread docs or a KB),
  * search backend, and passage count for search_knowledge_base.
  */
 export function RetrievalSettingsSection() {
@@ -58,8 +58,8 @@ export function RetrievalSettingsSection() {
     };
   }, [refreshTick]);
 
-  // If the selected KB disappears (deleted in the manager), fall back to
-  // the thread source so the request builder never sends a stale kb_id.
+  // If the selected KB was deleted, fall back to the thread source so the
+  // request builder never sends a stale kb_id.
   useEffect(() => {
     if (
       ragSource.type === "kb" &&

@@ -19,9 +19,9 @@ export interface TrackedDocument extends RagDocument {
 
 /**
  * Per-file identity for client-side dedup: name + size + last-modified. An
- * edited file (same name, different size/date) is treated as new; an identical
- * re-selection is skipped before any upload. The backend still dedups by
- * content hash as the authoritative cross-session check.
+ * edited file (same name, new size/date) counts as new; an identical
+ * re-selection is skipped pre-upload. The backend dedups by content hash as the
+ * authoritative cross-session check.
  */
 function fileSignature(file: File): string {
   return `${file.name}|${file.size}|${file.lastModified}`;
@@ -34,7 +34,7 @@ export type RagDocumentScope =
 type Lister = () => Promise<RagDocument[]>;
 
 /**
- * Manage one scope's documents (a KB or thread): list, upload, delete, and keep
+ * Manage one scope's documents (KB or thread): list, upload, delete, and keep
  * indexing status live via /jobs/{jobId}/events (SSE), polling getJob on error.
  */
 export function useRagDocuments(
@@ -44,15 +44,15 @@ export function useRagDocuments(
   const [documents, setDocuments] = useState<TrackedDocument[]>([]);
   const [loading, setLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
-  // Jobs we are already tracking (id -> abort) so we don't double-subscribe.
+  // Tracked jobs (id -> abort) so we don't double-subscribe.
   const trackedJobs = useRef<Map<string, AbortController>>(new Map());
-  // Live mirror of `documents` for synchronous dedup checks inside upload().
+  // Live mirror of `documents` for synchronous dedup checks in upload().
   const documentsRef = useRef<TrackedDocument[]>([]);
   useEffect(() => {
     documentsRef.current = documents;
   }, [documents]);
-  // Signatures of files attached this scope so an identical re-selection is
-  // skipped without an upload or a chip. Cleared when the scope changes.
+  // Signatures of files attached this scope, to skip identical re-selections.
+  // Cleared when the scope changes.
   const uploadedSigs = useRef<Set<string>>(new Set());
 
   const scopeKey = scope
@@ -80,7 +80,7 @@ export function useRagDocuments(
 
       const finish = (status: DocumentStatus, error?: string | null) => {
         if (status === "failed") {
-          // Don't leave a red "Failed" chip in the strip; drop it and warn.
+          // Drop the chip instead of showing a red "Failed" one; warn instead.
           setDocuments((rows) => rows.filter((row) => row.id !== documentId));
           toast.error(`Couldn't index ${filename}`, {
             description: error ?? "Indexing failed",
@@ -107,8 +107,8 @@ export function useRagDocuments(
               return;
             }
           }
-          // Stream ended without an explicit terminal frame: reconcile
-          // against the job's final state.
+          // Stream ended with no terminal frame: reconcile against the job's
+          // final state.
           const job = await getJob(jobId);
           finish(
             job.status === "completed"
@@ -123,7 +123,7 @@ export function useRagDocuments(
             trackedJobs.current.delete(jobId);
             return;
           }
-          // SSE unavailable: poll the job to a terminal state.
+          // SSE unavailable: poll to a terminal state.
           try {
             for (let i = 0; i < 600; i++) {
               if (controller.signal.aborted) break;
@@ -151,9 +151,9 @@ export function useRagDocuments(
     if (!scope) return;
     setLoading(true);
     try {
-      // Merge server truth with any locally-tracked progress so a refresh
-      // mid-index doesn't blow away a live "running %" chip. Failed documents
-      // are hidden from the strip (a toast warned at upload time).
+      // Merge server truth with locally-tracked progress so a refresh mid-index
+      // doesn't drop a live "running %" chip. Failed docs are hidden (a toast
+      // warned at upload time).
       const rows = (await lister()).filter((row) => row.status !== "failed");
       setDocuments((prev) =>
         rows.map((row) => {
@@ -172,7 +172,7 @@ export function useRagDocuments(
     }
   }, [scope, lister]);
 
-  // Reset + load when the scope changes. Abort any in-flight job streams.
+  // Reset + load on scope change. Abort any in-flight job streams.
   useEffect(() => {
     for (const controller of trackedJobs.current.values()) controller.abort();
     trackedJobs.current.clear();
@@ -187,9 +187,8 @@ export function useRagDocuments(
   }, [scopeKey]);
 
   // Upload one file: optimistic chip -> POST -> swap to the real id. If the
-  // backend deduped to an existing document, drop the optimistic chip so a
-  // duplicate never shows (never as a "Failed"/red chip). `seenIds` carries ids
-  // already present/added this batch.
+  // backend deduped to an existing document, drop the chip so no duplicate (and
+  // never a red "Failed") shows. `seenIds` holds ids present/added this batch.
   const uploadOne = useCallback(
     async (file: File, seenIds: Set<string>) => {
       if (!scope) return;
@@ -225,7 +224,7 @@ export function useRagDocuments(
         trackJob(result.jobId, result.documentId, result.filename || file.name);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        // Drop the chip rather than show a red "Failed" entry; warn via toast.
+        // Drop the chip instead of a red "Failed" entry; warn via toast.
         setDocuments((rows) => rows.filter((row) => row.id !== tempId));
         toast.error(`Couldn't upload ${file.name}`, { description: message });
       }
@@ -241,7 +240,7 @@ export function useRagDocuments(
       try {
         for (const file of Array.from(files)) {
           // Skip an identical re-selection (name + size + last-modified) before
-          // any upload or chip; an edited file with the same name still uploads.
+          // any upload or chip; an edited same-name file still uploads.
           if (uploadedSigs.current.has(fileSignature(file))) {
             toast.info(`${file.name} is already indexed - skipping`);
             continue;

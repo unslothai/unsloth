@@ -4,10 +4,10 @@
 """Map a chunk back to highlight rectangles on its page (computed at ingest).
 
 The chunk's leading phrase is anchored in the page word list
-(``get_text("words")`` -- the same extraction as the chunk text), so matching
+(``get_text("words")``, the same extraction as the chunk text), so matching
 survives ligatures and dehyphenation that glyph-exact ``search_for`` misses.
-Matched words union per line into rects, normalized to 0..1. No PyMuPDF, too
-short an anchor, or no unique match yields no regions (never a guessed one).
+Matched words union per line into rects, normalized to 0..1. Missing PyMuPDF, a
+too-short anchor, or no unique match yields no regions (never a guess).
 """
 
 from __future__ import annotations
@@ -17,8 +17,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-# Anchor: up to MAX interior words from the chunk's start, shrunk toward MIN
-# to recover a unique match.
+# Anchor: up to MAX interior words from the chunk's start, shrunk toward MIN to
+# recover a unique match.
 MAX_ANCHOR_WORDS = 12
 MIN_ANCHOR_WORDS = 4
 
@@ -32,15 +32,15 @@ class LocatorMatch:
 
 
 def _norm_token(token: str) -> str:
-    """Canonical form for matching: NFKC (decomposes ligatures), casefold,
-    strip surrounding punctuation/markdown. Returns "" for punctuation-only."""
+    """Canonical match form: NFKC (decomposes ligatures), casefold, strip
+    surrounding punctuation/markdown. "" for punctuation-only."""
     token = unicodedata.normalize("NFKC", token).casefold()
     return token.strip(" \t\r\n*#`[]()_.,;:!?\"'“”‘’-–—…|/\\")
 
 
 def _anchor_tokens(page_text: str, match: LocatorMatch) -> list[str]:
     """Normalized anchor tokens from the chunk's leading span. Drops the first
-    and last token (chunk boundaries often slice mid-word) when long enough."""
+    and last token (boundaries often slice mid-word) when long enough."""
     segment = page_text[match.start : match.end]
     raw = segment.split()
     if len(raw) >= MIN_ANCHOR_WORDS + 2:
@@ -50,7 +50,7 @@ def _anchor_tokens(page_text: str, match: LocatorMatch) -> list[str]:
 
 
 def _find_subsequences(haystack: list[str], needle: list[str]) -> list[int]:
-    """All start indices where ``needle`` occurs consecutively in ``haystack``."""
+    """Start indices where ``needle`` occurs consecutively in ``haystack``."""
     n, m = len(haystack), len(needle)
     if m == 0 or m > n:
         return []
@@ -63,10 +63,10 @@ def _find_subsequences(haystack: list[str], needle: list[str]) -> list[int]:
 
 
 def _locate(page_words: list, needle: list[str]) -> list[int] | None:
-    """Matched word indices for the best anchor, or None. Tries the full anchor,
-    then shorter prefixes, taking the first that matches exactly once; falls back
-    to the first hit if still ambiguous (the anchor is the chunk's own start)."""
-    # Index map skips punctuation-only words so they never break a phrase.
+    """Matched word indices for the best anchor, or None. Tries the full anchor
+    then shorter prefixes, taking the first matching exactly once; falls back to
+    the first hit if still ambiguous (the anchor is the chunk's own start)."""
+    # Skip punctuation-only words so they never break a phrase.
     tokens: list[str] = []
     idx_map: list[int] = []
     for j, w in enumerate(page_words):
@@ -153,7 +153,7 @@ def pdf_regions_for_chunks(
 ) -> list[list[dict[str, Any]]]:
     """Region rects per chunk (parallel to ``chunks``), keyed off each chunk's
     ``source_page_index`` / ``page_char_start`` / ``page_char_end``. Non-PDFs and
-    any failure yield empty lists, never an exception."""
+    failures yield empty lists, never an exception."""
     pdf_path = Path(pdf_path)
     if pdf_path.suffix.lower() != ".pdf":
         return [[] for _ in chunks]

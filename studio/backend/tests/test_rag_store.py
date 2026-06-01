@@ -3,7 +3,7 @@
 
 """Store tests: incremental writes, dedupe, delete, scope isolation, dense + lexical.
 
-Uses deterministic bag-of-words vectors (no model download). Each test gets an
+Deterministic bag-of-words vectors (no model download). Each test gets an
 isolated rag.db via the ``rag_conn`` fixture.
 """
 
@@ -66,7 +66,7 @@ def test_match_query_sanitizes_special_chars():
 
 def test_lexical_does_not_crash_on_punctuation(rag_conn):
     _add_doc(rag_conn, "kb_a", "d1", "f", "h1", ["alpha bravo"])
-    # Must not raise even with FTS operators in the query.
+    # Must not raise on FTS operators in the query.
     store.search_lexical(rag_conn, "kb_a", 'NEAR("x" AND', 5)
 
 
@@ -81,7 +81,7 @@ def test_dense_ranks_by_cosine(rag_conn):
 
 
 def test_dense_empty_before_any_ingest(rag_conn):
-    # No chunks_vec table yet -> search_dense returns [] rather than crashing.
+    # No chunks_vec table yet -> search_dense returns [], not a crash.
     assert store.search_dense(rag_conn, "kb_a", embed("alpha"), 10) == []
 
 

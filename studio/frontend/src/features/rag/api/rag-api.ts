@@ -44,7 +44,7 @@ async function ragRequest<T>(
 async function ragUpload(path: string, file: File): Promise<DocumentUploadResult> {
   const form = new FormData();
   form.append("file", file);
-  // No Content-Type header: the browser sets the multipart boundary itself.
+  // No Content-Type: browser sets the multipart boundary.
   const response = await authFetch(`${RAG_BASE}${path}`, {
     method: "POST",
     body: form,
@@ -145,8 +145,8 @@ export function getJob(jobId: string): Promise<IndexJob> {
 }
 
 /**
- * Stream a document job's indexing progress over SSE. Returns on `[DONE]`;
- * transport errors propagate so callers can fall back to polling getJob.
+ * Stream indexing progress over SSE. Returns on `[DONE]`; transport errors
+ * propagate so callers can fall back to polling getJob.
  */
 export async function* streamJobEvents(
   jobId: string,
@@ -187,7 +187,7 @@ export async function* streamJobEvents(
         try {
           yield JSON.parse(dataText) as JobEvent;
         } catch {
-          // Ignore unparseable frames; the [DONE] sentinel still ends the loop.
+          // Ignore unparseable frames; [DONE] still ends the loop.
         }
       }
       separatorIndex = buffer.search(/\r?\n\r?\n/);
@@ -208,7 +208,7 @@ export function getPreviewTarget(
   );
 }
 
-/** Mint a short-lived signed file URL (no bearer) so pdf.js can issue Range requests. */
+/** Mint a short-lived signed URL (no bearer) so pdf.js can issue Range requests. */
 export async function getDocumentFileUrl(documentId: string): Promise<string> {
   const data = await ragRequest<{ url: string }>(
     `/documents/${encodeURIComponent(documentId)}/file-url`,

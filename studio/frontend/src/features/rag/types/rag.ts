@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** Retrieval source the search_knowledge_base tool runs against. */
+/** Source the search_knowledge_base tool runs against. */
 export type RagSourceType = "kb" | "thread";
 
-/** Search backends the retriever can run a query through. */
+/** Backends the retriever can run a query through. */
 export type RagSearchMode = "hybrid" | "lexical" | "dense";
 
 export interface KnowledgeBase {
@@ -15,7 +15,7 @@ export interface KnowledgeBase {
   documentCount?: number;
 }
 
-/** Document index status. pending -> running -> completed | failed. */
+/** Index status: pending -> running -> completed | failed. */
 export type DocumentStatus = "pending" | "running" | "completed" | "failed";
 
 export interface RagDocument {
@@ -29,7 +29,7 @@ export interface RagDocument {
   createdAt?: string | null;
 }
 
-/** Response from a document upload (KB or per-thread). */
+/** Document upload response (KB or thread). */
 export interface DocumentUploadResult {
   documentId: string;
   jobId: string;
@@ -47,7 +47,7 @@ export interface IndexJob {
   error?: string | null;
 }
 
-/** A single SSE frame from /jobs/{jobId}/events (before the [DONE] sentinel). */
+/** One SSE frame from /jobs/{jobId}/events (before [DONE]). */
 export interface JobEvent {
   type: "progress" | "complete" | "error";
   stage?: string | null;
@@ -64,7 +64,7 @@ export interface RagSearchResult {
   text: string;
 }
 
-/** A chunk's highlight rect on a PDF page; coords normalized 0..1 (origin top-left). */
+/** A chunk's highlight rect on a PDF page; coords normalized 0..1, top-left origin. */
 export interface PdfRegion {
   pageIndex: number;
   pageNumber: number;
@@ -74,7 +74,7 @@ export interface PdfRegion {
   height: number;
 }
 
-/** Where a citation lives in its source: page + highlight rects (PDF) or chunk text. */
+/** Where a citation lives: page + highlight rects (PDF) or chunk text. */
 export interface PreviewTarget {
   documentId: string;
   filename: string;
@@ -84,7 +84,7 @@ export interface PreviewTarget {
   text?: string | null;
 }
 
-/** Retrieval scope sent on the chat request; set kb_id (KB) or thread_id (thread docs). */
+/** Retrieval scope on the chat request; set kb_id (KB) or thread_id (thread docs). */
 export interface RagScope {
   kb_id?: string;
   thread_id?: string;
@@ -93,5 +93,5 @@ export interface RagScope {
   mode: RagSearchMode;
 }
 
-/** Upload types the indexer accepts. */
+/** File types the indexer accepts. */
 export const RAG_UPLOAD_ACCEPT = ".pdf,.txt,.md,.markdown,.docx,.html,.htm";

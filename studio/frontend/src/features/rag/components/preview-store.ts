@@ -4,18 +4,18 @@
 import { create } from "zustand";
 
 /**
- * Global store for the shared document preview Sheet: a citation badge calls
- * `openPreview` with its document + chunk, and the Sheet resolves and renders
- * it. Global so any citation can open the one viewer without prop-drilling.
+ * Store for the shared preview Sheet: a citation badge calls `openPreview` with
+ * its document + chunk; the Sheet resolves and renders it. Global so any
+ * citation drives the one viewer without prop-drilling.
  */
 interface DocumentPreviewState {
   open: boolean;
   documentId: string | null;
-  /** Chunk to highlight; null opens the document at its first page. */
+  /** Chunk to highlight; null opens the document at page 1. */
   chunkId: string | null;
-  /** Filename for the header, shown before the target resolves. */
+  /** Header filename, shown until the target resolves. */
   filename: string | null;
-  /** Page hint for the header, shown before the target resolves. */
+  /** Header page hint, shown until the target resolves. */
   page: number | null;
   openPreview: (args: {
     documentId: string;

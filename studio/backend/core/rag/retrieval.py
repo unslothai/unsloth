@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Lexical (FTS5) + dense (vec0 cosine) retrieval fused with Reciprocal Rank
+"""Lexical (FTS5) + dense (vec0 cosine) retrieval fused via Reciprocal Rank
 Fusion. ``dense_score`` is carried so callers can apply a similarity floor.
-Every function takes a live ``conn`` and delegates the SQL to ``store``.
+Every function takes a live ``conn`` and delegates SQL to ``store``.
 """
 
 from __future__ import annotations
@@ -93,7 +93,7 @@ def retrieve_hybrid(
 
 
 def filter_min_score(hits: list[Hit], min_score: float) -> list[Hit]:
-    """Cosine floor: only gates hits carrying a dense_score; lexical-only pass."""
+    """Cosine floor; gates only hits with a dense_score (lexical-only pass)."""
     if min_score <= 0:
         return hits
     return [h for h in hits if h.dense_score is None or h.dense_score >= min_score]

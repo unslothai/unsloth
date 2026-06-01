@@ -2102,8 +2102,8 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
               ? {
                   enable_tools: true,
                   enabled_tools: [
-                    // search_knowledge_base goes FIRST so retrieval is the
-                    // model's primary tool when the RAG pill is on.
+                    // search_knowledge_base first so retrieval is the primary
+                    // tool when Docs is on.
                     ...(ragEnabled ? ["search_knowledge_base"] : []),
                     ...(toolsEnabled ? ["web_search"] : []),
                     ...(codeToolsEnabled ? ["python", "terminal"] : []),
@@ -2112,8 +2112,8 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                       : []),
                   ],
                   mcp_enabled: mcpEnabledForChat,
-                  // Retrieval scope for search_knowledge_base. thread_id =
-                  // this thread's own documents; kb_id = a selected KB.
+                  // Retrieval scope: thread_id = this thread's docs, kb_id = a
+                  // selected KB.
                   ...(ragEnabled
                     ? {
                         rag_scope: {

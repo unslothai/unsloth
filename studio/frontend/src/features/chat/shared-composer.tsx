@@ -525,8 +525,8 @@ export function SharedComposer({
   // Fetch pill: Anthropic-only (web_fetch_20250910 / web_fetch_20260209).
   const webFetchDisabled = !modelLoaded || !supportsBuiltinWebFetch;
   const showWebFetchPill = supportsBuiltinWebFetch;
-  // Docs (RAG) pill: local-only — search_knowledge_base needs the local
-  // tool runtime, so disable for external selections.
+  // Docs (RAG) pill is local-only: search_knowledge_base needs the local tool
+  // runtime, so it's off for external models.
   const ragDisabled = !modelLoaded || isExternalModel || !supportsTools;
   // Backwards-compatible alias for any other call site that may still
   // reference `toolsDisabled` (rare; both pills used it before).

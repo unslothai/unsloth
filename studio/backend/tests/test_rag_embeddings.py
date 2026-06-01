@@ -2,9 +2,8 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """Embedder concurrency: the fast tokenizer is not thread-safe, so encode and
-token counting must be serialized or concurrent ingestion threads panic with
-"Already borrowed". A fake model detects any overlap, so no model download is
-needed."""
+token counting must be serialized or concurrent ingest threads panic with
+"Already borrowed". A fake model detects any overlap, so no download is needed."""
 
 import os
 import threading
@@ -16,7 +15,7 @@ from core.rag import embeddings
 
 
 class _ConcurrencyProbe:
-    """Records whether two callers were ever inside the guarded body at once."""
+    """Records whether two callers were ever in the guarded body at once."""
 
     def __init__(self):
         self.inside = 0

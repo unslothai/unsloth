@@ -42,8 +42,8 @@ logger = get_logger(__name__)
 
 _EXEC_TIMEOUT = 300  # 5 minutes
 
-# Marks the citation source-map appended to the search_knowledge_base result for
-# the UI. The loops strip from here on before feeding the model (like __IMAGES__).
+# Separates the UI source-map from the search result; loops strip from here on
+# before the model sees it (like __IMAGES__).
 RAG_SOURCES_SENTINEL = "\n__RAG_SOURCES__:"
 
 # Pre-import modules used in _sandbox_preexec at module level so that
@@ -546,8 +546,8 @@ RENDER_HTML_TOOL = {
     },
 }
 
-# RAG retrieval tool. Spec duplicated here (not imported from core.rag.tool) so
-# the tool registry never pulls in the RAG stack; dispatch imports it lazily.
+# Spec duplicated here (not imported from core.rag.tool) so the registry never
+# pulls in the RAG stack; dispatch imports it lazily.
 SEARCH_KNOWLEDGE_BASE_TOOL = {
     "type": "function",
     "function": {
@@ -756,9 +756,9 @@ def execute_tool(
 
 
 def _search_knowledge_base(arguments: dict, rag_scope: dict | None) -> str:
-    """Dispatch the RAG search using the hidden per-request ``rag_scope`` (the
-    model supplies only ``query``/``top_k``). RAG is imported lazily, and a
-    missing sqlite-vec degrades to a friendly message."""
+    """Run the RAG search bound to the hidden per-request ``rag_scope`` (the model
+    supplies only ``query``/``top_k``). Lazy import; missing sqlite-vec degrades
+    to a friendly message."""
     scope = rag_scope or {}
     query = (arguments or {}).get("query", "")
     if not query or not str(query).strip():
@@ -781,8 +781,8 @@ def _search_knowledge_base(arguments: dict, rag_scope: dict | None) -> str:
         top_k = top_k,
         min_score = float(scope.get("min_score") or 0.0),
     )
-    # Append the source-map after the sentinel for the UI; the loops strip it
-    # before the model sees the result (see RAG_SOURCES_SENTINEL).
+    # Append the UI source-map after the sentinel; loops strip it before the
+    # model sees the result.
     if sources:
         import json as _json
 
@@ -791,12 +791,10 @@ def _search_knowledge_base(arguments: dict, rag_scope: dict | None) -> str:
 
 
 # ── Forced first-pass RAG retrieval (auto-inject) ───────────────────────────
-# When a chat carries a rag_scope (Docs on, with a KB/thread), retrieve once up
-# front so attached documents are ALWAYS consulted -- rather than leaving it to
-# the model, which tends to pick web_search for factual questions and skip the
-# knowledge base. Injection is gated on a cosine floor so unrelated documents
-# never pollute an answer. Reuses the model-driven tool pipeline: returns the
-# same tool_start/tool_end events and assistant/tool messages a real call emits.
+# With a rag_scope present, retrieve once up front so docs are always consulted
+# instead of trusting the model to pick search over web_search. Gated on a cosine
+# floor so unrelated docs don't pollute the answer. Emits the same events and
+# messages a real tool call would.
 _AUTOINJECT_DEFAULT_FLOOR = 0.55
 
 
@@ -841,10 +839,9 @@ def _last_user_text(conversation: list[dict]) -> str:
 def build_rag_autoinject(
     conversation: list[dict], rag_scope: dict | None
 ) -> dict | None:
-    """Pre-retrieve the user's latest turn against ``rag_scope`` and, when a hit
-    clears the cosine floor, return ``{"events": [...], "messages": [...]}`` to
-    splice into the agentic loop; otherwise ``None`` (inject nothing). Disabled
-    via ``RAG_AUTOINJECT=0``; floor via ``RAG_AUTOINJECT_MIN_SCORE``."""
+    """Pre-retrieve the latest user turn; if a hit clears the cosine floor return
+    ``{"events": [...], "messages": [...]}`` to splice into the loop, else ``None``.
+    Toggle via ``RAG_AUTOINJECT=0``; floor via ``RAG_AUTOINJECT_MIN_SCORE``."""
     if not rag_scope or not _autoinject_enabled():
         return None
     query = _last_user_text(conversation)

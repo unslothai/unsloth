@@ -22,17 +22,17 @@ import {
 } from "@/components/ui/hover-card";
 import { useDocumentPreviewStore } from "@/features/rag/components/preview-store";
 
-/** Sentinel the backend appends before the citation source-map JSON. */
+/** Sentinel before the citation source-map JSON. */
 const RAG_SOURCES_SENTINEL = "__RAG_SOURCES__:";
 
 interface Citation {
-  /** Stable key; chunkId when present, else a positional fallback. */
+  /** Stable key; chunkId if present, else positional fallback. */
   id: string;
   filename: string;
   page?: number | null;
   score?: number | null;
   text: string;
-  /** Set when the citation can open its source document in the viewer. */
+  /** Set when the citation can open its source in the viewer. */
   documentId?: string | null;
   chunkId?: string | null;
 }
@@ -42,9 +42,9 @@ function asNumber(value: unknown): number | null {
 }
 
 /**
- * Parse the source-map the server appends after the `__RAG_SOURCES__:` sentinel
- * (carries documentId/chunkId for the viewer). Null if absent, so the caller
- * falls back to the generic JSON shapes.
+ * Parse the source-map after the `__RAG_SOURCES__:` sentinel (carries
+ * documentId/chunkId for the viewer). Null if absent, so the caller falls back
+ * to the generic JSON shapes.
  */
 function parseSentinelSources(result: unknown): Citation[] | null {
   if (typeof result !== "string") return null;
@@ -77,8 +77,8 @@ function parseSentinelSources(result: unknown): Citation[] | null {
 }
 
 /**
- * Normalize a provider-shaped tool result: a JSON array, a `{results:[...]}`
- * envelope, or a plain string. Anything not mappable to {filename,text} falls
+ * Normalize a provider-shaped tool result: JSON array, `{results:[...]}`
+ * envelope, or plain string. Anything not mappable to {filename,text} falls
  * through to the raw-text branch.
  */
 function parseCitations(result: unknown): Citation[] {
@@ -138,9 +138,8 @@ function parseCitations(result: unknown): Citation[] {
 }
 
 /**
- * Citation badge: filename + page, chunk text in a hover popover. With a
- * documentId, clicking opens the source in the shared viewer (region-highlighted
- * for PDFs).
+ * Citation badge: filename + page, chunk text on hover. With a documentId,
+ * clicking opens the source in the shared viewer (region-highlighted for PDFs).
  */
 function CitationBadge({ citation, index }: { citation: Citation; index: number }) {
   const openPreview = useDocumentPreviewStore((s) => s.openPreview);
@@ -232,7 +231,7 @@ const KnowledgeBaseToolUIImpl: ToolCallMessagePartComponent = ({
   const isRunning = status?.type === "running";
   const citations = useMemo(() => parseCitations(result), [result]);
 
-  // Collapse once the model starts answering, mirroring WebSearchToolUI.
+  // Collapse once the model starts answering, like WebSearchToolUI.
   const hasText = useAuiState(({ message }) =>
     message.content.some(
       (p) =>

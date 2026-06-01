@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen = True)
 class Page:
-    """One unit of extracted text. ``page_number`` is 1-based (None if N/A)."""
+    """A unit of extracted text. ``page_number`` is 1-based (None if N/A)."""
 
     text: str
     page_number: int | None = None
@@ -30,7 +30,7 @@ class Page:
 
 @dataclass(frozen = True)
 class ParsedImage:
-    """A raster image embedded in a source document (PDF only, for now)."""
+    """A raster image embedded in a document (PDF only, for now)."""
 
     image_bytes: bytes
     page_number: int | None
@@ -45,7 +45,7 @@ def _page(text: str, page_number: int | None) -> Page:
 # HTML
 # --------------------------------------------------------------------------
 class _Stripper(HTMLParser):
-    """Collect visible text, skipping <script>/<style> contents."""
+    """Collect visible text, skipping <script>/<style>."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -139,9 +139,9 @@ def render_pdf_figures(
     """Detect figure regions and render each to a PNG for captioning.
 
     Academic figures are vector, so raw raster extraction yields fragments.
-    Instead we cluster vector drawings + raster placements into boxes, keep the
-    ones covering a meaningful slice of the page, and render them. Any failure
-    yields an empty list, never an exception.
+    Instead cluster vector drawings + raster placements into boxes, keep those
+    covering a meaningful slice of the page, and render them. Any failure yields
+    an empty list, never an exception.
     """
     try:
         import pymupdf
@@ -208,9 +208,9 @@ def _docx(path: str) -> list[Page]:
 def parse(path: str, *, want_images: bool = False):
     """Parse a file into pages by extension.
 
-    Returns ``list[Page]`` by default. When ``want_images=True`` returns
-    ``(list[Page], list[ParsedImage])``; only PDFs yield images, every other
-    format returns an empty image list. Raises ValueError on unsupported ext.
+    Returns ``list[Page]``, or ``(list[Page], list[ParsedImage])`` when
+    ``want_images=True``; only PDFs yield images (others give an empty list).
+    Raises ValueError on unsupported ext.
     """
     ext = os.path.splitext(path)[1].lower()
 

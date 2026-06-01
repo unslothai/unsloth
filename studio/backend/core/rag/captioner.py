@@ -1,13 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Caption figures with the already-loaded vision model and splice the text
-back into the page, so image content is searchable through the normal FTS5 +
-dense path (no second model, no image vector space).
+"""Caption figures with the loaded vision model and splice the text back into
+the page, making image content searchable via the normal FTS5 + dense path (no
+second model, no image vector space).
 
-Degrades to a no-op (never raises) when no vision model is loaded or a request
-fails. Gated by ``config.CAPTION_IMAGES`` (off by default) since each caption
-is a model call.
+No-op (never raises) without a vision model or on request failure. Gated by
+``config.CAPTION_IMAGES`` (off by default) since each caption is a model call.
 """
 
 from __future__ import annotations
@@ -27,7 +26,7 @@ _CAPTION_PROMPT = (
 
 
 def vision_endpoint() -> tuple[str, str] | None:
-    """``(base_url, model)`` for a loaded vision-capable GGUF model, else None.
+    """``(base_url, model)`` for a loaded vision GGUF model, else None.
     Imported lazily so the RAG core needs no inference stack."""
     try:
         from routes.inference import get_llama_cpp_backend
@@ -62,7 +61,7 @@ def _caption_one(
         "max_tokens": 200,
         "temperature": 0.2,
         "stream": False,
-        # Off, or thinking models burn the budget on reasoning and return "".
+        # Off: thinking models otherwise spend the budget reasoning, returning "".
         "chat_template_kwargs": {"enable_thinking": False},
     }
     try:
@@ -78,9 +77,9 @@ def _caption_one(
 def caption_images(
     images: list, *, endpoint: tuple[str, str] | None = None
 ) -> dict[int, list[str]]:
-    """Caption ``ParsedImage`` objects, grouped by 1-based page number. Returns
-    ``{}`` when disabled, no vision model is available, or there are no images.
-    ``endpoint`` is injectable for tests; bounded by ``CAPTION_MAX_IMAGES``."""
+    """Caption ``ParsedImage`` objects, keyed by 1-based page number. Returns
+    ``{}`` when disabled, no vision model, or no images. ``endpoint`` is
+    injectable for tests; bounded by ``CAPTION_MAX_IMAGES``."""
     if not config.CAPTION_IMAGES or not images:
         return {}
     ep = endpoint or vision_endpoint()
@@ -102,8 +101,8 @@ def caption_images(
 
 def splice_captions(pages: list, captions: dict[int, list[str]]) -> list:
     """Append captions to their page's text so the chunker indexes them.
-    Returns new ``Page`` objects (pages without captions unchanged); the marker
-    keeps figures attributable in retrieved chunks."""
+    Returns new ``Page`` objects (uncaptioned pages unchanged); the marker keeps
+    figures attributable in retrieved chunks."""
     if not captions:
         return pages
     from .parsers import Page

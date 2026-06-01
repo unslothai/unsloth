@@ -4,7 +4,7 @@
 """Unified SQLite store: relational chunks + FTS5 lexical + sqlite-vec dense.
 
 Module-level functions in the Studio idiom: each takes a ``conn`` the caller
-opens (``rag_db.get_connection()``) and closes. Inserts are incremental --
+opens (``rag_db.get_connection()``) and closes. Inserts are incremental:
 ``add_chunks`` appends one document's rows without rebuilding the scope, so the
 Nth upload costs O(its own chunks). Scope ("kb_<id>" / "thread_<id>") is a column
 on every table and the vec0 partition key.
@@ -34,7 +34,7 @@ def thread_scope(thread_id: str) -> str:
 
 
 def _f32(vector) -> bytes:
-    """Serialize a vector to packed little-endian float32 bytes for vec0."""
+    """Pack a vector into little-endian float32 bytes for vec0."""
     return struct.pack(f"{len(vector)}f", *(float(x) for x in vector))
 
 
@@ -47,7 +47,7 @@ _TOKEN = re.compile(r"\w+", re.UNICODE)
 
 def _match_query(query: str) -> str:
     """User text -> safe FTS5 OR-of-quoted-terms query. Quoting defuses FTS5
-    operators in the input; "" (no tokens) means "no lexical results"."""
+    operators in the input; "" (no tokens) means no lexical results."""
     toks = _TOKEN.findall(query.lower())
     return " OR ".join(f'"{t}"' for t in toks)
 
@@ -84,7 +84,7 @@ def get_kb(conn: sqlite3.Connection, kb_id: str) -> dict | None:
 
 
 def delete_kb(conn: sqlite3.Connection, kb_id: str) -> None:
-    """Delete a knowledge base and every document (and its chunks) under it."""
+    """Delete a knowledge base and every document (+ chunks) under it."""
     scope = kb_scope(kb_id)
     doc_ids = [
         r["id"]
@@ -181,7 +181,7 @@ def add_chunks(
     regions = None,
 ) -> None:
     """Incrementally index one document's chunks into chunks + FTS5 + vec0.
-    ``vectors`` parallels ``chunks``; ``regions`` (optional) parallels them too,
+    ``vectors`` parallels ``chunks``; optional ``regions`` parallels them too,
     storing per-chunk PDF highlight rects as JSON for citation preview."""
     if len(vectors):
         rag_db.ensure_vec(conn, len(vectors[0]))
@@ -219,7 +219,7 @@ def add_chunks(
 
 
 def delete_document(conn: sqlite3.Connection, document_id: str) -> None:
-    """Remove a document and all of its chunks (+ fts + vec rows) in one path."""
+    """Remove a document and all its chunks (+ fts + vec rows)."""
     ids = [
         r["id"]
         for r in conn.execute(
@@ -240,7 +240,7 @@ def delete_document(conn: sqlite3.Connection, document_id: str) -> None:
 # Retrieval primitives
 # --------------------------------------------------------------------------
 def search_lexical(conn: sqlite3.Connection, scope: str, query: str, k: int):
-    """BM25 lexical search. Returns [(chunk_id, score)] with higher = better."""
+    """BM25 lexical search. Returns [(chunk_id, score)], higher = better."""
     mq = _match_query(query)
     if not mq:
         return []
@@ -254,7 +254,7 @@ def search_lexical(conn: sqlite3.Connection, scope: str, query: str, k: int):
 
 
 def search_dense(conn: sqlite3.Connection, scope: str, vector, k: int):
-    """Cosine KNN over vec0. Returns [(chunk_id, similarity)] (1 - distance)."""
+    """Cosine KNN over vec0. Returns [(chunk_id, 1 - distance)]."""
     if not rag_db.vec_table_exists(conn):
         return []
     rows = conn.execute(
@@ -266,7 +266,7 @@ def search_dense(conn: sqlite3.Connection, scope: str, vector, k: int):
 
 
 def chunks_by_id(conn: sqlite3.Connection, ids) -> dict:
-    """Hydrate chunk rows (joined with their document filename) keyed by id."""
+    """Hydrate chunk rows (joined with document filename), keyed by id."""
     if not ids:
         return {}
     placeholders = ",".join("?" * len(ids))

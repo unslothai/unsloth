@@ -3,7 +3,7 @@
 
 """Dense embedder singleton: thread-safe lazy SentenceTransformer keyed by model
 name. ``token_counter`` reuses the model's tokenizer so chunk sizing matches the
-embedder; ``warm()`` primes the load off the request path at startup.
+embedder; ``warm()`` primes the load off the request path.
 """
 
 from __future__ import annotations
@@ -17,17 +17,16 @@ from . import config
 
 logger = logging.getLogger(__name__)
 
-# Rest at "false": an explicit value also suppresses the fast tokenizer's
-# "forked after parallelism" warning. encode() flips it to "true" only for the
-# duration of a batch tokenize (where rayon gives a large speedup) and restores
-# it, so we keep the speedup without the warning between calls.
+# Default "false" also silences the fast tokenizer's "forked after parallelism"
+# warning. encode() flips it to "true" only during a batch tokenize (rayon
+# speedup) and restores it, keeping the speedup without the warning.
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 _lock = threading.Lock()
-# Serializes the actual encode/tokenize calls. The HuggingFace fast tokenizer
-# uses interior mutability and is NOT thread-safe: concurrent ingestion threads
-# sharing this singleton otherwise panic with "Already borrowed". Loads and
-# compute use separate locks so a long encode never blocks a (rare) reload.
+# Serializes encode/tokenize: the HF fast tokenizer uses interior mutability and
+# is NOT thread-safe, so concurrent ingestion threads sharing this singleton
+# panic with "Already borrowed". Separate from _lock so a long encode never
+# blocks a (rare) reload.
 _compute_lock = threading.Lock()
 _model = None
 _name: str | None = None
@@ -63,10 +62,9 @@ def warm(model_name: str | None = None) -> None:
 
 
 def encode(texts: list[str], *, model_name: str | None = None, normalize: bool = True):
-    """Embed a batch of texts into an (N, dim) numpy array. Serialized so
-    concurrent ingestion threads don't trip the fast tokenizer's borrow check.
-    Rayon batch-tokenization parallelism is enabled only for this call (it's a
-    large speedup for the batch tokenize) and restored afterward."""
+    """Embed texts into an (N, dim) numpy array. Serialized so concurrent
+    ingestion threads don't trip the fast tokenizer's borrow check. Rayon
+    parallelism is enabled only for this call and restored afterward."""
     model = _get(model_name)
     with _compute_lock:
         os.environ["TOKENIZERS_PARALLELISM"] = "true"
@@ -87,9 +85,9 @@ def dim(model_name: str | None = None) -> int:
 
 
 def token_counter(model_name: str | None = None) -> Callable[[str], int]:
-    """Return a callable counting tokens with the model's own tokenizer. The
-    count is taken under the compute lock since the same fast tokenizer backs
-    both embedding and counting and is not safe across threads."""
+    """Callable counting tokens with the model's tokenizer. Counts under the
+    compute lock since the same fast tokenizer backs encode and is not
+    thread-safe."""
     tok = _get(model_name).tokenizer
 
     def _count(t: str) -> int:

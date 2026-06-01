@@ -5,9 +5,8 @@
 
 Same pattern as providers_db.py / studio_db.py (module-level functions, raw
 sqlite3, WAL, per-call connections, lazy schema), but every connection also
-loads the sqlite-vec extension (vec0 needs it per-connection). If it cannot
-load, RAG_AVAILABLE is False and get_connection() raises rather than the module
-failing to import.
+loads sqlite-vec (vec0 needs it per-connection). If it cannot load,
+RAG_AVAILABLE is False and get_connection() raises rather than failing import.
 
 One rag.db holds the ``documents`` / ``chunks`` model, the FTS5 lexical index
 (``chunks_fts``) and the sqlite-vec dense index (``chunks_vec``, created lazily
@@ -23,13 +22,13 @@ logger = logging.getLogger(__name__)
 
 from utils.paths import rag_db_path, ensure_dir
 
-# Optional sqlite-vec dep: importing it must never crash this module, which the
-# rest of Studio imports unconditionally.
+# Optional dep: importing it must never crash this module (Studio imports it
+# unconditionally).
 try:
     import sqlite_vec
 
     RAG_AVAILABLE = True
-except Exception as exc:  # noqa: BLE001 - any import failure means RAG is off
+except Exception as exc:  # noqa: BLE001 - any import failure disables RAG
     sqlite_vec = None
     RAG_AVAILABLE = False
     logger.warning("RAG unavailable: sqlite-vec could not be imported (%s)", exc)
@@ -42,7 +41,7 @@ _schema_ready = False
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
     """Create the RAG tables if absent (once per process). ``chunks_vec`` is
-    omitted here -- its column type needs the embedding dim, so ensure_vec()
+    skipped here -- its column type needs the embedding dim, so ensure_vec()
     creates it lazily at first ingest."""
     conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript(
@@ -108,7 +107,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
 
 
 def get_connection() -> sqlite3.Connection:
-    """Open rag.db (WAL + sqlite-vec loaded, schema created once). Raises a clear
+    """Open rag.db (WAL + sqlite-vec loaded, schema created once). Raises
     RuntimeError if the extension is unavailable."""
     global _schema_ready
     if not RAG_AVAILABLE:
@@ -150,7 +149,7 @@ def ensure_vec(conn: sqlite3.Connection, dim: int) -> None:
 
 
 def vec_table_exists(conn: sqlite3.Connection) -> bool:
-    """Return True if the dense ``chunks_vec`` table has been created yet."""
+    """True if the dense ``chunks_vec`` table exists yet."""
     row = conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='chunks_vec'"
     ).fetchone()

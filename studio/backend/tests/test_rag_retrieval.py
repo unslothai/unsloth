@@ -2,8 +2,8 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """Retrieval + tool tests: RRF fusion, min-score floor, scope precedence,
-chunk formatting and citation source-map. Uses a deterministic bag-of-words
-embedder so no model download is needed."""
+chunk formatting, citation source-map. Deterministic bag-of-words embedder,
+so no model download."""
 
 import math
 
@@ -23,7 +23,7 @@ def _embed(text):
 
 @pytest.fixture
 def bow_embeddings(monkeypatch):
-    """Bag-of-words embedder consistent with the vectors stored in the db."""
+    """Bag-of-words embedder matching the vectors stored in the db."""
     from core.rag import embeddings
 
     monkeypatch.setattr(
@@ -57,7 +57,7 @@ def _add_doc(conn, scope, doc_id, filename, sha, text, page = None):
 # RRF / hybrid
 # --------------------------------------------------------------------------
 def test_rrf_ranks_doc_in_both_lists_first():
-    # A chunk near the top of both rankings must beat one in only a single list.
+    # A chunk near the top of both rankings beats one in a single list.
     lexical = [
         retrieval.Hit("a", 1.0, lexical_score = 1.0),
         retrieval.Hit("b", 0.5, lexical_score = 0.5),
@@ -147,8 +147,8 @@ def test_tool_formats_chunks_and_sources(rag_conn, bow_embeddings, monkeypatch):
 
 
 def test_dispatcher_appends_sources_sentinel(rag_conn, bow_embeddings, monkeypatch):
-    """tools._search_knowledge_base appends the JSON source-map after the
-    sentinel, and the model-facing text before the sentinel is clean."""
+    """_search_knowledge_base appends the JSON source-map after the sentinel;
+    the model-facing text before the sentinel stays clean."""
     import json
 
     from core.inference import tools
@@ -172,11 +172,11 @@ def test_dispatcher_appends_sources_sentinel(rag_conn, bow_embeddings, monkeypat
 
 
 def test_dispatcher_no_sentinel_when_no_hits(rag_home, monkeypatch):
-    """No sentinel is appended when the search returns no sources."""
+    """No sentinel when the search returns no sources."""
     from core.inference import tools
 
-    # Stub retrieval so the test never reaches the real embedder (keeps it
-    # runnable in environments without sentence-transformers installed).
+    # Stub retrieval so the test never reaches the real embedder (runnable
+    # without sentence-transformers installed).
     monkeypatch.setattr(retrieval, "retrieve_hybrid", lambda conn, scope, q, **k: [])
     out = tools._search_knowledge_base({"query": "hello"}, {"kb_id": "missing"})
     assert tools.RAG_SOURCES_SENTINEL not in out
@@ -209,7 +209,7 @@ def test_search_for_autoinject_gates_on_dense_score(
         is None
     )
 
-    # Lexical-only hit (no dense score) does not trigger auto-injection.
+    # Lexical-only hit (no dense score) does not auto-inject.
     monkeypatch.setattr(retrieval, "retrieve_hybrid", _hits(1.0, key = "lexical_score"))
     assert (
         tool.search_for_autoinject(query = "q", scope_kb_id = "a", min_dense_score = 0.55)
@@ -224,7 +224,7 @@ def test_search_for_autoinject_empty_query_or_scope(rag_home):
 
 def test_build_rag_autoinject_emits_pipeline(monkeypatch):
     """Auto-inject yields the same tool card + citation source-map a real call
-    would, and the model-facing tool message has the sentinel stripped."""
+    would; the model-facing tool message has the sentinel stripped."""
     from core.inference import tools
     from storage import rag_db
 
@@ -245,7 +245,7 @@ def test_build_rag_autoinject_emits_pipeline(monkeypatch):
     te = next(e for e in out["events"] if e["type"] == "tool_end")
     assert te["tool_name"] == "search_knowledge_base"
     assert tools.RAG_SOURCES_SENTINEL in te["result"]
-    # assistant tool_call then a clean tool message (sentinel stripped).
+    # assistant tool_call, then a clean tool message (sentinel stripped).
     assert (
         out["messages"][0]["tool_calls"][0]["function"]["name"]
         == "search_knowledge_base"

@@ -3,11 +3,11 @@
 
 """HTTP API for the RAG engine.
 
-KB CRUD, per-KB/per-thread upload, ingestion progress over SSE, document
+KB CRUD, per-KB/per-thread upload, SSE ingestion progress, document
 list/delete, and a direct hybrid/lexical/dense search endpoint. All endpoints
-auth with ``get_current_subject`` (Studio is single-tenant, so the subject gates
-access rather than partitioning data). Without sqlite-vec the router still mounts
-but every endpoint returns 503, so ordinary chat is never affected.
+auth via ``get_current_subject`` (Studio is single-tenant: the subject gates
+access, it does not partition data). Without sqlite-vec the router still mounts
+but every endpoint returns 503, so chat is unaffected.
 """
 
 from __future__ import annotations
@@ -57,7 +57,7 @@ def _sanitize_filename(name: str) -> str:
 
 
 def _save_upload(file: UploadFile) -> tuple[str, str]:
-    """Persist an upload under the rag uploads root. Returns (stored_path, filename)."""
+    """Persist an upload under the uploads root. Returns (stored_path, filename)."""
     filename = _sanitize_filename(file.filename or "document")
     ext = os.path.splitext(filename)[1].lower()
     if ext not in config.UPLOAD_EXTS:
@@ -367,7 +367,7 @@ def search(payload: SearchRequest, subject: str = Depends(get_current_subject)) 
 # Document preview (citation -> source file + highlight regions)
 # ---------------------------------------------------------------------------
 # Short-lived signed token so pdf.js range requests fetch the file without a
-# bearer header. Secret is per-process: tokens only work on this running server.
+# bearer header. Per-process secret: tokens only work on this running server.
 _PREVIEW_SECRET = secrets.token_bytes(32)
 _PREVIEW_TTL = 600  # seconds
 
@@ -480,7 +480,7 @@ def document_file_signed(document_id: str, token: str = Query(...)) -> FileRespo
     stored_path = (doc or {}).get("stored_path")
     if not doc or not stored_path or not os.path.isfile(stored_path):
         raise HTTPException(status_code = 404, detail = "Document file not found")
-    # Confine to the uploads root (defence in depth).
+    # Confine to the uploads root (defense in depth).
     uploads = os.path.realpath(str(rag_uploads_root()))
     if not os.path.realpath(stored_path).startswith(uploads):
         raise HTTPException(status_code = 403, detail = "Forbidden")

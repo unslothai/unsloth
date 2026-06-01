@@ -22,10 +22,9 @@ export function ThreadDocumentsBar({ threadId }: { threadId: string | null }) {
   const aui = useAui();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // A fresh chat has no thread id until the first message. To let the user
-  // attach documents before sending, materialize the thread id on demand and
-  // keep it here; the first message reuses the same id (see append() in
-  // runtime-provider), so uploaded docs stay with the conversation.
+  // A fresh chat has no thread id until the first message. To attach docs before
+  // sending, materialize the id on demand; the first message reuses it (see
+  // append() in runtime-provider), so uploaded docs stay with the conversation.
   const [materializedId, setMaterializedId] = useState<string | null>(null);
   const effectiveThreadId = threadId ?? materializedId;
   useEffect(() => {
@@ -46,8 +45,8 @@ export function ThreadDocumentsBar({ threadId }: { threadId: string | null }) {
     lister,
   );
 
-  // Resolve the thread id, materializing it on first use. De-duped via a ref so
-  // a double-click can't start two threads.
+  // Resolve the thread id, materializing on first use. Ref-deduped so a
+  // double-click can't start two threads.
   const initPromiseRef = useRef<Promise<string | null> | null>(null);
   const ensureThreadId = useCallback((): Promise<string | null> => {
     if (effectiveThreadId) return Promise.resolve(effectiveThreadId);
@@ -71,16 +70,15 @@ export function ThreadDocumentsBar({ threadId }: { threadId: string | null }) {
     return pending;
   }, [aui, effectiveThreadId, setActiveThreadId]);
 
-  // Open the picker only after the thread id is ready, so the upload scope is
-  // live by the time onChange fires (otherwise a fast first selection uploads
-  // into a null scope and silently attaches nothing).
+  // Open the picker only once the thread id is ready, so the upload scope is
+  // live when onChange fires; otherwise a fast first selection uploads into a
+  // null scope and silently attaches nothing.
   const handleAddDocs = useCallback(async () => {
     const id = await ensureThreadId();
     if (id) fileInputRef.current?.click();
   }, [ensureThreadId]);
 
-  // Only surface for the thread-document source; KB sources are managed in
-  // the KB dialog, not per-thread.
+  // Only for the thread-document source; KB sources are managed in the KB dialog.
   if (!ragEnabled || ragSource.type !== "thread") return null;
 
   return (
@@ -107,8 +105,8 @@ export function ThreadDocumentsBar({ threadId }: { threadId: string | null }) {
           e.target.value = "";
         }}
       />
-      {/* Cap the chip area so a large document set scrolls instead of growing
-          up and over the conversation. */}
+      {/* Cap the chip area so a large set scrolls instead of overflowing the
+          conversation. */}
       <div className="flex max-h-24 flex-1 flex-row flex-wrap items-center gap-1.5 overflow-y-auto">
         {documents.map((doc) => (
           <DocumentStatusChip

@@ -2,8 +2,8 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """Multimodal captioning: gating, grouping, page splice, and that spliced
-caption text becomes retrievable through the normal text path. No network and
-no model: the caption call and the vision endpoint are stubbed."""
+captions become retrievable via the normal text path. No network or model:
+the caption call and vision endpoint are stubbed."""
 
 from __future__ import annotations
 
@@ -69,8 +69,7 @@ def test_splice_captions_noop_when_empty():
 
 
 def test_render_pdf_figures_detects_drawing(tmp_path):
-    """A large vector drawing is detected as a figure region and rendered to
-    a PNG. Non-figure files (no drawings) yield nothing."""
+    """A large vector drawing is detected as a figure region and rendered to PNG."""
     import pymupdf
 
     from core.rag.parsers import render_pdf_figures
@@ -78,7 +77,7 @@ def test_render_pdf_figures_detects_drawing(tmp_path):
     pdf = tmp_path / "fig.pdf"
     doc = pymupdf.open()
     page = doc.new_page()
-    # A big filled rectangle + some lines = a clusterable vector drawing.
+    # Filled rectangle + lines = a clusterable vector drawing.
     shape = page.new_shape()
     shape.draw_rect(pymupdf.Rect(60, 60, 540, 460))
     for i in range(8):
@@ -95,7 +94,7 @@ def test_render_pdf_figures_detects_drawing(tmp_path):
 
 
 def test_captioned_text_is_searchable(rag_home, stub_embeddings, monkeypatch):
-    """End to end: a spliced caption is chunked, stored and retrievable."""
+    """End to end: a spliced caption is chunked, stored, and retrievable."""
     from core.rag import retrieval, store
     from storage import rag_db
 

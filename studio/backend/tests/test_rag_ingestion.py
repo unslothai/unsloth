@@ -1,11 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Ingestion lifecycle tests: pending -> completed, SSE events, dedupe, delete.
+"""Ingestion lifecycle: pending -> completed, SSE events, dedupe, delete.
 
-Uses the ``stub_embeddings`` fixture so no sentence-transformers model is
-downloaded. There is also one optional test that exercises the real embedder,
-guarded by RAG_REAL_EMBEDDER=1.
+``stub_embeddings`` avoids a sentence-transformers download. One optional test
+exercises the real embedder, guarded by RAG_REAL_EMBEDDER=1.
 """
 
 import os
@@ -77,7 +76,7 @@ def test_ingestion_dedupe_by_hash(rag_home, stub_embeddings, tmp_path):
     _drain(job_id)
     _wait_completed(job_id)
 
-    # Re-uploading identical content returns the same doc id, no re-ingest.
+    # Re-uploading identical content returns the same doc id; no re-ingest.
     path2 = _write(tmp_path, "copy.txt", "alpha bravo charlie")
     doc_id2, job_id2 = ingestion.start_ingestion(scope, "K1", None, "copy.txt", path2)
     events = _drain(job_id2)

@@ -3,9 +3,9 @@
 
 """In-process threaded ingestion: parse -> chunk -> embed -> store.
 
-``start_ingestion`` returns ``(document_id, job_id)`` at once and runs the work
-on a daemon thread, pushing progress onto a per-job queue (``job_events`` streams
-it as SSE; ``get_job_status`` reads the persisted row). Documents are deduped by
+``start_ingestion`` returns ``(document_id, job_id)`` immediately and runs on a
+daemon thread, pushing progress onto a per-job queue (``job_events`` streams it
+as SSE; ``get_job_status`` reads the persisted row). Documents are deduped by
 content hash per scope; ``store.add_chunks`` is incremental and the embedder is
 the shared warm singleton (no subprocess).
 """
@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 _jobs: dict[str, "queue.Queue"] = {}
 _jobs_lock = threading.Lock()
 
-# Embedding batch size, to bound peak memory.
+# Embedding batch size; bounds peak memory.
 _EMBED_BATCH = 64
 
 
@@ -74,7 +74,7 @@ def _progress(conn, job_id: str, stage: str, progress: float) -> None:
 
 
 def _embed_all(texts: list[str], model_name: str | None):
-    """Embed texts in batches, returning a flat list of vectors."""
+    """Embed texts in batches into a flat list of vectors."""
     vectors: list = []
     for i in range(0, len(texts), _EMBED_BATCH):
         batch = texts[i : i + _EMBED_BATCH]
@@ -95,8 +95,8 @@ def _run(
         _progress(conn, job_id, "parsing", 0.1)
         pages = parsers.parse(stored_path)
         if config.CAPTION_IMAGES and stored_path.lower().endswith(".pdf"):
-            # Caption rendered figures and splice into the page text (no-op
-            # without a vision model).
+            # Caption rendered figures, splice into page text (no-op without a
+            # vision model).
             try:
                 figures = parsers.render_pdf_figures(
                     stored_path, max_figures = config.CAPTION_MAX_IMAGES
@@ -128,7 +128,7 @@ def _run(
         _progress(conn, job_id, "embedding", 0.5)
         vectors = _embed_all([c.text for c in chunks], model_name)
 
-        # Locate each chunk's highlight regions on its page (non-PDFs / failures
+        # Locate each chunk's highlight regions on its page (non-PDFs/failures
         # yield none, never fatal).
         regions = None
         if stored_path.lower().endswith(".pdf"):
@@ -172,7 +172,7 @@ def start_ingestion(
     *,
     model_name: str | None = None,
 ) -> tuple[str, str]:
-    """Create the document + job rows and spawn the worker thread, returning
+    """Create the document + job rows and spawn the worker, returning
     ``(document_id, job_id)``. A duplicate content hash in this scope returns the
     existing id with an already-completed job (no re-ingest)."""
     ext = os.path.splitext(stored_path)[1].lower()
@@ -245,7 +245,7 @@ def _new_job(
 
 
 def job_events(job_id: str):
-    """Generator of events for SSE; ends when the worker signals completion."""
+    """Yield job events for SSE; ends when the worker signals completion."""
     with _jobs_lock:
         q = _jobs.get(job_id)
     if q is None:

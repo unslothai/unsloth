@@ -14,7 +14,7 @@ const STATUS_LABEL: Record<DocumentStatus, string> = {
   failed: "Failed",
 };
 
-/** Compact status pill for a RAG document (spin / check / X), reused across lists. */
+/** Status pill for a RAG document (spin / check / X), reused across lists. */
 export function DocumentStatusChip({
   filename,
   status,

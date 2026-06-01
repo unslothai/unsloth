@@ -25,13 +25,13 @@ import { getDocumentFileUrl, getPreviewTarget } from "../api/rag-api";
 import type { PdfRegion, PreviewTarget } from "../types/rag";
 import { useDocumentPreviewStore } from "./preview-store";
 
-// Bundle + serve the pdf.js worker from the app origin (Vite dev, prod, Tauri).
+// Serve the pdf.js worker from the app origin (Vite dev, prod, Tauri).
 pdfjs.GlobalWorkerOptions.workerSrc = new URL(
   "pdfjs-dist/build/pdf.worker.min.mjs",
   import.meta.url,
 ).toString();
 
-/** Overlay rectangles for a page; coords are normalized 0..1 of the page box. */
+/** Highlight rects for a page; coords normalized 0..1 of the page box. */
 function RegionOverlay({ regions }: { regions: PdfRegion[] }) {
   if (regions.length === 0) return null;
   return (
@@ -52,8 +52,8 @@ function RegionOverlay({ regions }: { regions: PdfRegion[] }) {
   );
 }
 
-// Zoom is a multiplier on the fit-to-panel width: 1 = fit, >1 enlarges (and the
-// page scrolls), <1 shrinks. Stepped so the buttons and Ctrl/Cmd-wheel agree.
+// Zoom multiplies fit-to-panel width: 1 = fit, >1 enlarges (page scrolls), <1
+// shrinks. Stepped so buttons and Ctrl/Cmd-wheel agree.
 const ZOOM_MIN = 0.5;
 const ZOOM_MAX = 3;
 const ZOOM_STEP = 0.25;
@@ -77,13 +77,13 @@ function PdfPreview({
   const [scale, setScale] = useState(1);
   const [error, setError] = useState<string | null>(null);
 
-  // Reset to the cited page whenever a new citation opens this same viewer.
+  // Reset to the cited page when a new citation reuses this viewer.
   useEffect(() => setPage(initialPage), [initialPage, fileUrl]);
 
-  // Start each freshly opened document back at fit-to-panel.
+  // Reset each newly opened document to fit-to-panel.
   useEffect(() => setScale(1), [fileUrl]);
 
-  // Track the available width so the page scales to the panel.
+  // Track available width so the page scales to the panel.
   useLayoutEffect(() => {
     const el = containerRef.current;
     if (!el) return;
@@ -94,8 +94,8 @@ function PdfPreview({
     return () => ro.disconnect();
   }, []);
 
-  // Ctrl/Cmd + wheel zooms (native listener so preventDefault is honored -- a
-  // JSX onWheel is passive and cannot stop the browser's page zoom/scroll).
+  // Ctrl/Cmd + wheel zooms. Native listener so preventDefault is honored; a
+  // JSX onWheel is passive and can't stop the browser's page zoom/scroll.
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
@@ -121,7 +121,7 @@ function PdfPreview({
     [],
   );
 
-  // Show only the regions that live on the page currently in view.
+  // Only regions on the current page.
   const pageRegions = regions.filter(
     (r) => r.pageNumber === page || r.pageIndex === page - 1,
   );
@@ -151,7 +151,7 @@ function PdfPreview({
           }
         >
           {width > 0 && (
-            // min-w-fit lets the row grow past the panel when zoomed in so the
+            // min-w-fit lets the row grow past the panel when zoomed so the
             // centered page stays reachable on both sides while scrolling.
             <div className="flex min-w-fit justify-center">
               <div className="relative w-fit shadow-sm">
@@ -234,8 +234,8 @@ function PdfPreview({
 }
 
 /**
- * Shared document preview panel. `openPreview` points it at a document + chunk;
- * it resolves the page + highlight regions and renders the PDF (or chunk text).
+ * Shared preview panel. `openPreview` points it at a document + chunk; it
+ * resolves the page + highlight regions and renders the PDF (or chunk text).
  */
 export function DocumentPreviewSheet() {
   const { open, documentId, chunkId, filename, page, closePreview } =
