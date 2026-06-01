@@ -145,7 +145,9 @@ def search_for_autoinject(
     try:
         hits = retrieval.retrieve_hybrid(conn, scope, query, k = k, model_name = model_name)
         strong = [
-            h for h in hits if h.dense_score is not None and h.dense_score >= min_dense_score
+            h
+            for h in hits
+            if h.dense_score is not None and h.dense_score >= min_dense_score
         ][:k]
         if not strong:
             return None

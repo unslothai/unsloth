@@ -584,6 +584,7 @@ def _tool_action_nudge(has_artifact: bool, rag_active: bool = False) -> str:
     base = _TOOL_ACTION_NUDGE_RAG if rag_active else _TOOL_ACTION_NUDGE
     return base + (_ARTIFACT_TOOL_ACTION_NUDGE if has_artifact else "")
 
+
 # Strip tool-call XML the speculative buffer in core/inference/llama_cpp.py
 # split across the visible/DRAIN boundary. Four leak shapes:
 #   1. well-formed `<tool_call>...</tool_call>` / `<function=...>...</function>`

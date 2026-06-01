@@ -40,7 +40,7 @@ class _FakeModel:
 
     def encode(self, texts, **_kw):
         self._probe.enter()
-        return np.zeros((len(texts), 4), dtype=np.float32)
+        return np.zeros((len(texts), 4), dtype = np.float32)
 
 
 class _FakeTokenizer:
@@ -52,7 +52,7 @@ class _FakeTokenizer:
         return list(range(len(text.split())))
 
 
-def _hammer(fn, n=8):
+def _hammer(fn, n = 8):
     errors: list[Exception] = []
 
     def worker():
@@ -61,7 +61,7 @@ def _hammer(fn, n=8):
         except Exception as exc:  # noqa: BLE001
             errors.append(exc)
 
-    threads = [threading.Thread(target=worker) for _ in range(n)]
+    threads = [threading.Thread(target = worker) for _ in range(n)]
     for t in threads:
         t.start()
     for t in threads:
@@ -71,7 +71,7 @@ def _hammer(fn, n=8):
 
 def test_encode_is_serialized(monkeypatch):
     probe = _ConcurrencyProbe()
-    monkeypatch.setattr(embeddings, "_get", lambda model_name=None: _FakeModel(probe))
+    monkeypatch.setattr(embeddings, "_get", lambda model_name = None: _FakeModel(probe))
     errors = _hammer(lambda: embeddings.encode(["alpha beta", "gamma"]))
     assert errors == []
     assert probe.saw_overlap is False  # the compute lock serialized encode()
@@ -79,7 +79,7 @@ def test_encode_is_serialized(monkeypatch):
 
 def test_token_counter_is_serialized(monkeypatch):
     probe = _ConcurrencyProbe()
-    monkeypatch.setattr(embeddings, "_get", lambda model_name=None: _FakeModel(probe))
+    monkeypatch.setattr(embeddings, "_get", lambda model_name = None: _FakeModel(probe))
     count = embeddings.token_counter()
     errors = _hammer(lambda: count("one two three four"))
     assert errors == []
@@ -94,9 +94,9 @@ def test_encode_enables_parallelism_only_during_call(monkeypatch):
 
         def encode(self, texts, **_kw):
             seen["during"] = os.environ.get("TOKENIZERS_PARALLELISM")
-            return np.zeros((len(texts), 4), dtype=np.float32)
+            return np.zeros((len(texts), 4), dtype = np.float32)
 
-    monkeypatch.setattr(embeddings, "_get", lambda model_name=None: _M())
+    monkeypatch.setattr(embeddings, "_get", lambda model_name = None: _M())
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
     embeddings.encode(["alpha", "beta"])
     assert seen["during"] == "true"  # rayon batch tokenization enabled in-call

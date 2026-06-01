@@ -838,7 +838,9 @@ def _last_user_text(conversation: list[dict]) -> str:
     return ""
 
 
-def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> dict | None:
+def build_rag_autoinject(
+    conversation: list[dict], rag_scope: dict | None
+) -> dict | None:
     """Pre-retrieve the user's latest turn against ``rag_scope`` and, when a hit
     clears the cosine floor, return ``{"events": [...], "messages": [...]}`` to
     splice into the agentic loop; otherwise ``None`` (inject nothing). Disabled
@@ -913,7 +915,12 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
                 }
             ],
         },
-        {"role": "tool", "name": "search_knowledge_base", "tool_call_id": call_id, "content": text},
+        {
+            "role": "tool",
+            "name": "search_knowledge_base",
+            "tool_call_id": call_id,
+            "content": text,
+        },
     ]
     logger.info(
         "RAG auto-inject: %d passage(s) >= %.2f for %r", len(sources), floor, query[:80]

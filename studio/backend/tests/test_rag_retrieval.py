@@ -185,11 +185,15 @@ def test_dispatcher_no_sentinel_when_no_hits(rag_home, monkeypatch):
 # --------------------------------------------------------------------------
 # Forced first-pass auto-injection
 # --------------------------------------------------------------------------
-def test_search_for_autoinject_gates_on_dense_score(rag_conn, bow_embeddings, monkeypatch):
+def test_search_for_autoinject_gates_on_dense_score(
+    rag_conn, bow_embeddings, monkeypatch
+):
     _add_doc(rag_conn, "kb_a", "d1", "paper.pdf", "h1", "body text here", page = 3)
 
     def _hits(score, **kw):
-        return lambda conn, scope, q, **k: [retrieval.Hit("d1:0", 1.0, **{kw["key"]: score})]
+        return lambda conn, scope, q, **k: [
+            retrieval.Hit("d1:0", 1.0, **{kw["key"]: score})
+        ]
 
     # Strong dense hit -> injected.
     monkeypatch.setattr(retrieval, "retrieve_hybrid", _hits(0.8, key = "dense_score"))
@@ -200,11 +204,17 @@ def test_search_for_autoinject_gates_on_dense_score(rag_conn, bow_embeddings, mo
 
     # Dense below floor -> nothing injected.
     monkeypatch.setattr(retrieval, "retrieve_hybrid", _hits(0.30, key = "dense_score"))
-    assert tool.search_for_autoinject(query = "q", scope_kb_id = "a", min_dense_score = 0.55) is None
+    assert (
+        tool.search_for_autoinject(query = "q", scope_kb_id = "a", min_dense_score = 0.55)
+        is None
+    )
 
     # Lexical-only hit (no dense score) does not trigger auto-injection.
     monkeypatch.setattr(retrieval, "retrieve_hybrid", _hits(1.0, key = "lexical_score"))
-    assert tool.search_for_autoinject(query = "q", scope_kb_id = "a", min_dense_score = 0.55) is None
+    assert (
+        tool.search_for_autoinject(query = "q", scope_kb_id = "a", min_dense_score = 0.55)
+        is None
+    )
 
 
 def test_search_for_autoinject_empty_query_or_scope(rag_home):
@@ -222,7 +232,10 @@ def test_build_rag_autoinject_emits_pipeline(monkeypatch):
     monkeypatch.setattr(
         tool,
         "search_for_autoinject",
-        lambda **k: ('<chunk id="1" source="d.pdf">hi</chunk>', [{"citationId": 1, "filename": "d.pdf"}]),
+        lambda **k: (
+            '<chunk id="1" source="d.pdf">hi</chunk>',
+            [{"citationId": 1, "filename": "d.pdf"}],
+        ),
     )
     conv = [{"role": "user", "content": "When was DeepSeek V4 released?"}]
     out = tools.build_rag_autoinject(conv, {"thread_id": "t1"})
@@ -233,7 +246,10 @@ def test_build_rag_autoinject_emits_pipeline(monkeypatch):
     assert te["tool_name"] == "search_knowledge_base"
     assert tools.RAG_SOURCES_SENTINEL in te["result"]
     # assistant tool_call then a clean tool message (sentinel stripped).
-    assert out["messages"][0]["tool_calls"][0]["function"]["name"] == "search_knowledge_base"
+    assert (
+        out["messages"][0]["tool_calls"][0]["function"]["name"]
+        == "search_knowledge_base"
+    )
     assert "__RAG_SOURCES__" not in out["messages"][1]["content"]
 
 
@@ -243,14 +259,24 @@ def test_build_rag_autoinject_skips_without_hit(monkeypatch):
 
     monkeypatch.setattr(rag_db, "RAG_AVAILABLE", True, raising = False)
     monkeypatch.setattr(tool, "search_for_autoinject", lambda **k: None)
-    assert tools.build_rag_autoinject([{"role": "user", "content": "hi"}], {"thread_id": "t1"}) is None
+    assert (
+        tools.build_rag_autoinject(
+            [{"role": "user", "content": "hi"}], {"thread_id": "t1"}
+        )
+        is None
+    )
 
 
 def test_build_rag_autoinject_disabled_by_env(monkeypatch):
     from core.inference import tools
 
     monkeypatch.setenv("RAG_AUTOINJECT", "0")
-    assert tools.build_rag_autoinject([{"role": "user", "content": "hi"}], {"thread_id": "t1"}) is None
+    assert (
+        tools.build_rag_autoinject(
+            [{"role": "user", "content": "hi"}], {"thread_id": "t1"}
+        )
+        is None
+    )
     # No scope at all -> also a no-op.
     monkeypatch.delenv("RAG_AUTOINJECT", raising = False)
     assert tools.build_rag_autoinject([{"role": "user", "content": "hi"}], None) is None
