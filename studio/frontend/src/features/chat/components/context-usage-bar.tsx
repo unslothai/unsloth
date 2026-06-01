@@ -164,11 +164,11 @@ export const ContextUsageBar: FC<{
           ) : null}
           {fitReduced ? (
             <div className="mt-1 max-w-64 text-[11px] leading-snug text-amber-600/90 dark:text-amber-500/90">
-              llama-server reduced context from{" "}
+              llama-server reduced per-slot context from{" "}
               {formatTokenCountFull(requestedTotal as number)} to{" "}
               {formatTokenCountFull(total as number)} tokens to fit VRAM (
               <span className="font-medium">--fit</span>). The bar reflects the
-              effective limit.
+              effective per-slot limit.
             </div>
           ) : null}
         </div>

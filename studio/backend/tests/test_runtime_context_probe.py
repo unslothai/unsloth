@@ -61,7 +61,18 @@ def _backend(**kwargs):
     inst._stdout_lines = list(kwargs.get("stdout_lines", []))
     inst._launch_context_length = kwargs.get("launch_context_length")
     inst._effective_context_length = kwargs.get("effective_context_length")
+    inst._requested_context_length = kwargs.get("requested_context_length")
+    inst._launch_use_fit = kwargs.get("launch_use_fit")
+    inst._launch_n_parallel = kwargs.get("launch_n_parallel")
     return inst
+
+
+class TestExpectedPerSlotContext:
+    def test_splits_total_across_parallel_slots(self):
+        assert LlamaCppBackend._expected_per_slot_context(8192, 4) == 2048
+
+    def test_single_slot_uses_total(self):
+        assert LlamaCppBackend._expected_per_slot_context(8192, 1) == 8192
 
 
 class TestParseRuntimeNCtxFromStdout:
@@ -80,18 +91,50 @@ class TestParseRuntimeNCtxFromStdout:
         assert inst._parse_runtime_n_ctx_from_stdout() is None
 
 
-class TestRequestedContextLengthProperty:
-    def test_exposes_launch_when_fit_reduced(self):
-        inst = _backend(launch_context_length = 8192, effective_context_length = 2048)
+class TestApplyRuntimeContextProbe:
+    def test_parallel_split_without_fit_reduction(self):
+        inst = _backend()
+        inst._apply_runtime_context_probe(
+            2048,
+            launch_ctx = 8192,
+            use_fit = True,
+            n_parallel = 4,
+        )
+        assert inst._effective_context_length == 2048
+        assert inst.requested_context_length is None
+
+    def test_fit_reduced_single_slot(self):
+        inst = _backend()
+        inst._apply_runtime_context_probe(
+            2048,
+            launch_ctx = 8192,
+            use_fit = True,
+            n_parallel = 1,
+        )
+        assert inst._effective_context_length == 2048
         assert inst.requested_context_length == 8192
 
-    def test_none_when_launch_matches_runtime(self):
-        inst = _backend(launch_context_length = 8192, effective_context_length = 8192)
+    def test_fit_reduced_below_parallel_expectation(self):
+        inst = _backend()
+        inst._apply_runtime_context_probe(
+            1024,
+            launch_ctx = 8192,
+            use_fit = True,
+            n_parallel = 4,
+        )
+        assert inst._effective_context_length == 1024
+        assert inst.requested_context_length == 2048
+
+    def test_no_warning_without_fit(self):
+        inst = _backend()
+        inst._apply_runtime_context_probe(
+            2048,
+            launch_ctx = 8192,
+            use_fit = False,
+            n_parallel = 4,
+        )
         assert inst.requested_context_length is None
 
-    def test_none_when_launch_unset(self):
-        inst = _backend(effective_context_length = 2048)
-        assert inst.requested_context_length is None
 
 
 class TestProbeRuntimeContextLength:

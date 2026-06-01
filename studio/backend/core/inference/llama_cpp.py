@@ -631,6 +631,9 @@ class LlamaCppBackend:
         self._context_length: Optional[int] = None
         self._effective_context_length: Optional[int] = None
         self._launch_context_length: Optional[int] = None
+        self._launch_use_fit: Optional[bool] = None
+        self._launch_n_parallel: Optional[int] = None
+        self._requested_context_length: Optional[int] = None
         self._max_context_length: Optional[int] = None
         self._chat_template: Optional[str] = None
         self._chat_template_override: Optional[str] = None
@@ -757,14 +760,45 @@ class LlamaCppBackend:
 
     @property
     def requested_context_length(self) -> Optional[int]:
-        """Return the ``-c`` value passed at launch when ``--fit`` shrank runtime ctx."""
-        launch = self._launch_context_length
-        effective = self._effective_context_length
-        if launch is None or launch <= 0:
-            return None
-        if effective is not None and effective > 0 and launch != effective:
-            return launch
-        return None
+        """Per-slot context before ``--fit`` shrink; omitted when unchanged."""
+        return self._requested_context_length
+
+    @staticmethod
+    def _expected_per_slot_context(total_ctx: int, n_parallel: int) -> int:
+        """Split total ``-c`` across llama-server parallel slots."""
+        return max(1, total_ctx // max(1, n_parallel))
+
+    def _apply_runtime_context_probe(
+        self,
+        runtime_ctx: Optional[int],
+        *,
+        launch_ctx: Optional[int],
+        use_fit: bool,
+        n_parallel: int,
+    ) -> None:
+        """Sync effective/requested context from probed per-slot ``n_ctx``."""
+        slots = max(1, n_parallel)
+        if runtime_ctx is None or runtime_ctx <= 0:
+            return
+
+        self._effective_context_length = runtime_ctx
+        self._requested_context_length = None
+
+        if launch_ctx is None or launch_ctx <= 0:
+            return
+
+        expected_per_slot = self._expected_per_slot_context(launch_ctx, slots)
+        if use_fit and runtime_ctx < expected_per_slot:
+            logger.warning(
+                "llama-server per-slot context (%s) is below the launch "
+                "expectation (%s from -c %s / --parallel %s); --fit likely "
+                "reduced n_ctx",
+                runtime_ctx,
+                expected_per_slot,
+                launch_ctx,
+                slots,
+            )
+            self._requested_context_length = expected_per_slot
 
     @property
     def max_context_length(self) -> Optional[int]:
@@ -3493,6 +3527,8 @@ class LlamaCppBackend:
                 self._launch_context_length = (
                     effective_ctx if effective_ctx > 0 else None
                 )
+                self._launch_use_fit = use_fit
+                self._launch_n_parallel = max(1, n_parallel)
 
                 # Wait for llama-server to become healthy
                 if not self._wait_for_health(timeout = 600.0):
@@ -3508,20 +3544,12 @@ class LlamaCppBackend:
                 self._healthy = True
 
                 runtime_ctx = self._probe_runtime_context_length()
-                if runtime_ctx is not None and runtime_ctx > 0:
-                    launch_ctx = self._launch_context_length
-                    if (
-                        launch_ctx is not None
-                        and launch_ctx > 0
-                        and runtime_ctx != launch_ctx
-                    ):
-                        logger.warning(
-                            "llama-server runtime context (%s) is below launch "
-                            "-c (%s); --fit likely reduced n_ctx per slot",
-                            runtime_ctx,
-                            launch_ctx,
-                        )
-                    self._effective_context_length = runtime_ctx
+                self._apply_runtime_context_probe(
+                    runtime_ctx,
+                    launch_ctx = self._launch_context_length,
+                    use_fit = bool(use_fit),
+                    n_parallel = self._launch_n_parallel or 1,
+                )
 
                 # Commit caller intent only after _healthy=True so a
                 # failed startup can't poison the next inheritance check.
@@ -3936,6 +3964,9 @@ class LlamaCppBackend:
             self._context_length = None
             self._effective_context_length = None
             self._launch_context_length = None
+            self._launch_use_fit = None
+            self._launch_n_parallel = None
+            self._requested_context_length = None
             self._max_context_length = None
             self._chat_template = None
             self._chat_template_override = None

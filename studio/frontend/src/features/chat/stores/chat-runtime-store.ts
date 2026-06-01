@@ -245,7 +245,7 @@ type ChatRuntimeStore = {
   ggufContextLength: number | null;
   ggufMaxContextLength: number | null;
   ggufNativeContextLength: number | null;
-  /** Launch -c when llama-server --fit shrank runtime n_ctx below requested. */
+  /** Expected per-slot context before --fit shrank runtime n_ctx. */
   ggufRequestedContextLength: number | null;
   modelRequiresTrustRemoteCode: boolean;
   supportsReasoning: boolean;

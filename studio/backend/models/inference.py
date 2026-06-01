@@ -216,8 +216,8 @@ class LoadResponse(BaseModel):
     requested_context_length: Optional[int] = Field(
         None,
         description = (
-            "Launch ``-c`` value when llama-server ``--fit`` reduced runtime "
-            "``n_ctx`` below what was requested; omitted when they match"
+            "Expected per-slot context before ``--fit`` shrank runtime ``n_ctx`` "
+            "(``-c / --parallel``); omitted when effective matches that expectation"
         ),
     )
     supports_reasoning: bool = Field(
@@ -382,8 +382,8 @@ class InferenceStatusResponse(BaseModel):
     requested_context_length: Optional[int] = Field(
         None,
         description = (
-            "Launch ``-c`` value when runtime context was reduced by ``--fit``; "
-            "omitted when effective matches requested"
+            "Expected per-slot context before ``--fit`` shrank runtime ``n_ctx`` "
+            "(``-c / --parallel``); omitted when effective matches that expectation"
         ),
     )
     cache_type_kv: Optional[str] = Field(
