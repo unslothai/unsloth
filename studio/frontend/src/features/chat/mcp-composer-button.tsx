@@ -91,6 +91,7 @@ export function McpComposerButton() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [pendingUrl, setPendingUrl] = useState<string | null>(null);
+  const [hintKey, setHintKey] = useState<string | null>(null);
 
   // mcp_enabled only applies on the local tool-capable send path; grey out otherwise.
   const usable = modelLoaded && supportsTools;
@@ -173,7 +174,9 @@ export function McpComposerButton() {
   }
 
   // One dropdown row. Enabled rows get a green underlay and a tick that
-  // becomes an X on hover so a click removes them.
+  // becomes an X on hover so a click removes them. A hint shows as a tooltip
+  // driven by row hover; the tooltip anchor is pointer-events-none so the whole
+  // row stays clickable (a Radix TooltipTrigger would swallow the select).
   const renderRow = (opts: {
     key: string;
     label: string;
@@ -197,33 +200,43 @@ export function McpComposerButton() {
           disablesWebSearch: opts.disablesWebSearch,
         });
       }}
+      onPointerEnter={opts.hint ? () => setHintKey(opts.key) : undefined}
+      onPointerLeave={
+        opts.hint
+          ? () => setHintKey((k) => (k === opts.key ? null : k))
+          : undefined
+      }
       className={cn(
-        "group/mcp flex-col items-start gap-0.5",
+        "group/mcp relative flex items-center justify-between gap-2",
         opts.enabled &&
           "bg-emerald-500/10 data-[highlighted]:bg-emerald-500/20",
       )}
     >
-      <div className="flex w-full items-center justify-between gap-2">
-        <span className="truncate">{opts.label}</span>
-        {opts.enabled ? (
-          <span className="flex size-4 shrink-0 items-center justify-center text-emerald-600 dark:text-emerald-400">
-            <HugeiconsIcon
-              icon={Tick02Icon}
-              className="size-4 group-data-[highlighted]/mcp:hidden"
-              strokeWidth={2}
-            />
-            <HugeiconsIcon
-              icon={Cancel01Icon}
-              className="hidden size-4 text-foreground group-data-[highlighted]/mcp:block"
-              strokeWidth={2}
-            />
-          </span>
-        ) : null}
-      </div>
-      {opts.hint ? (
-        <span className="hidden text-[11px] leading-snug text-muted-foreground group-data-[highlighted]/mcp:block">
-          {opts.hint}
+      <span className="truncate">{opts.label}</span>
+      {opts.enabled ? (
+        <span className="flex size-4 shrink-0 items-center justify-center text-emerald-600 dark:text-emerald-400">
+          <HugeiconsIcon
+            icon={Tick02Icon}
+            className="size-4 group-data-[highlighted]/mcp:hidden"
+            strokeWidth={2}
+          />
+          <HugeiconsIcon
+            icon={Cancel01Icon}
+            className="hidden size-4 text-foreground group-data-[highlighted]/mcp:block"
+            strokeWidth={2}
+          />
         </span>
+      ) : null}
+      {opts.hint ? (
+        <Tooltip open={hintKey === opts.key}>
+          <TooltipTrigger asChild={true}>
+            <span
+              aria-hidden={true}
+              className="pointer-events-none absolute inset-y-0 right-0 w-0"
+            />
+          </TooltipTrigger>
+          <TooltipContent side="right">{opts.hint}</TooltipContent>
+        </Tooltip>
       ) : null}
     </DropdownMenuItem>
   );
