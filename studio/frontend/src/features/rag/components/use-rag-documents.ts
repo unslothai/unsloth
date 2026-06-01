@@ -17,6 +17,16 @@ export interface TrackedDocument extends RagDocument {
   progress?: number | null;
 }
 
+/**
+ * Per-file identity for client-side dedup: name + size + last-modified. An
+ * edited file (same name, different size/date) is treated as new; an identical
+ * re-selection is skipped before any upload. The backend still dedups by
+ * content hash as the authoritative cross-session check.
+ */
+function fileSignature(file: File): string {
+  return `${file.name}|${file.size}|${file.lastModified}`;
+}
+
 export type RagDocumentScope =
   | { type: "kb"; kbId: string }
   | { type: "thread"; threadId: string };
@@ -41,6 +51,9 @@ export function useRagDocuments(
   useEffect(() => {
     documentsRef.current = documents;
   }, [documents]);
+  // Signatures of files attached this scope so an identical re-selection is
+  // skipped without an upload or a chip. Cleared when the scope changes.
+  const uploadedSigs = useRef<Set<string>>(new Set());
 
   const scopeKey = scope
     ? scope.type === "kb"
@@ -154,6 +167,7 @@ export function useRagDocuments(
   useEffect(() => {
     for (const controller of trackedJobs.current.values()) controller.abort();
     trackedJobs.current.clear();
+    uploadedSigs.current.clear();
     setDocuments([]);
     if (scope) void refresh();
     return () => {
@@ -163,10 +177,10 @@ export function useRagDocuments(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scopeKey]);
 
-  // Upload one file: optimistic chip -> POST -> swap to the real id (or drop
-  // the chip if the backend deduped to an existing document). `seenIds` carries
-  // ids already present/added this batch so a content-hash dedup never shows a
-  // second chip.
+  // Upload one file: optimistic chip -> POST -> swap to the real id. If the
+  // backend deduped to an existing document, drop the optimistic chip so a
+  // duplicate never shows (never as a "Failed"/red chip). `seenIds` carries ids
+  // already present/added this batch.
   const uploadOne = useCallback(
     async (file: File, seenIds: Set<string>) => {
       if (!scope) return;
@@ -180,9 +194,10 @@ export function useRagDocuments(
           scope.type === "kb"
             ? await uploadKnowledgeBaseDocument(scope.kbId, file)
             : await uploadThreadDocument(scope.threadId, file);
+        uploadedSigs.current.add(fileSignature(file));
         if (seenIds.has(result.documentId)) {
           setDocuments((rows) => rows.filter((row) => row.id !== tempId));
-          toast.info(`${result.filename || file.name} is already attached`);
+          toast.info(`${result.filename || file.name} is already indexed - skipping`);
           return;
         }
         seenIds.add(result.documentId);
@@ -216,21 +231,15 @@ export function useRagDocuments(
     async (files: FileList | File[]) => {
       if (!scope) return;
       setUploading(true);
-      // Skip files already attached (by name) so the same file can't produce a
-      // duplicate chip; the backend also dedups by content hash.
-      const seenNames = new Set(
-        documentsRef.current
-          .filter((d) => !d.id.startsWith("pending_"))
-          .map((d) => d.filename),
-      );
       const seenIds = new Set(documentsRef.current.map((d) => d.id));
       try {
         for (const file of Array.from(files)) {
-          if (seenNames.has(file.name)) {
-            toast.info(`${file.name} is already attached`);
+          // Skip an identical re-selection (name + size + last-modified) before
+          // any upload or chip; an edited file with the same name still uploads.
+          if (uploadedSigs.current.has(fileSignature(file))) {
+            toast.info(`${file.name} is already indexed - skipping`);
             continue;
           }
-          seenNames.add(file.name);
           await uploadOne(file, seenIds);
         }
       } finally {
