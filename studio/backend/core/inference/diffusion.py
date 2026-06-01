@@ -118,6 +118,15 @@ class DiffusionVariant:
 
 
 @dataclass(frozen = True)
+class CuratedDiffusionGGUF:
+    repo_id: str
+    family: str
+    base_repo: str
+    filename_prefixes: tuple[str, ...]
+    variant: Optional[str] = None
+
+
+@dataclass(frozen = True)
 class DiffusionSamplingContract:
     family: Optional[str]
     media_kind: Optional[str]
@@ -875,6 +884,78 @@ _DIFFUSION_VARIANT_BY_FAMILY_AND_ID: dict[tuple[str, str], DiffusionVariant] = {
     for variant in _DIFFUSION_VARIANTS
 }
 
+_CURATED_UNSLOTH_DIFFUSION_GGUFS: tuple[CuratedDiffusionGGUF, ...] = (
+    CuratedDiffusionGGUF(
+        repo_id = "unsloth/FLUX.2-dev-GGUF",
+        family = "flux.2",
+        base_repo = "black-forest-labs/FLUX.2-dev",
+        filename_prefixes = ("flux2-dev-",),
+    ),
+    CuratedDiffusionGGUF(
+        repo_id = "unsloth/FLUX.2-klein-4B-GGUF",
+        family = "flux.2-klein",
+        base_repo = "black-forest-labs/FLUX.2-klein-4B",
+        filename_prefixes = ("flux-2-klein-4b-",),
+        variant = "distilled-4b",
+    ),
+    CuratedDiffusionGGUF(
+        repo_id = "unsloth/FLUX.2-klein-9B-GGUF",
+        family = "flux.2-klein",
+        base_repo = "black-forest-labs/FLUX.2-klein-9B",
+        filename_prefixes = ("flux-2-klein-9b-",),
+        variant = "distilled-9b",
+    ),
+    CuratedDiffusionGGUF(
+        repo_id = "unsloth/FLUX.2-klein-base-4B-GGUF",
+        family = "flux.2-klein",
+        base_repo = "black-forest-labs/FLUX.2-klein-base-4B",
+        filename_prefixes = ("flux-2-klein-base-4b-",),
+        variant = "base-4b",
+    ),
+    CuratedDiffusionGGUF(
+        repo_id = "unsloth/FLUX.2-klein-base-9B-GGUF",
+        family = "flux.2-klein",
+        base_repo = "black-forest-labs/FLUX.2-klein-base-9B",
+        filename_prefixes = ("flux-2-klein-base-9b-",),
+        variant = "base-9b",
+    ),
+    CuratedDiffusionGGUF(
+        repo_id = "unsloth/Z-Image-GGUF",
+        family = "z-image",
+        base_repo = "Tongyi-MAI/Z-Image",
+        filename_prefixes = ("z-image-",),
+    ),
+    CuratedDiffusionGGUF(
+        repo_id = "unsloth/Z-Image-Turbo-GGUF",
+        family = "z-image-turbo",
+        base_repo = "Tongyi-MAI/Z-Image-Turbo",
+        filename_prefixes = ("z-image-turbo-",),
+    ),
+    CuratedDiffusionGGUF(
+        repo_id = "unsloth/ERNIE-Image-Turbo-GGUF",
+        family = "ernie-image-turbo",
+        base_repo = "baidu/ERNIE-Image-Turbo",
+        filename_prefixes = ("ernie-image-turbo-",),
+    ),
+    CuratedDiffusionGGUF(
+        repo_id = "unsloth/Qwen-Image-2512-GGUF",
+        family = "qwen-image-2512",
+        base_repo = "Qwen/Qwen-Image-2512",
+        filename_prefixes = ("qwen-image-2512-",),
+    ),
+    CuratedDiffusionGGUF(
+        repo_id = "unsloth/Qwen-Image-Edit-2511-GGUF",
+        family = "qwen-image-edit-2511",
+        base_repo = "Qwen/Qwen-Image-Edit-2511",
+        filename_prefixes = ("qwen-image-edit-2511-",),
+    ),
+)
+
+_CURATED_UNSLOTH_DIFFUSION_GGUFS_BY_REPO: dict[str, CuratedDiffusionGGUF] = {
+    spec.repo_id.lower(): spec
+    for spec in _CURATED_UNSLOTH_DIFFUSION_GGUFS
+}
+
 
 def _contains_label(text: str, label: str) -> bool:
     return re.search(rf"(^|[^a-z0-9]){re.escape(label)}([^a-z0-9]|$)", text) is not None
@@ -947,6 +1028,21 @@ def _candidate_base_repo_message(family: str) -> str:
         for candidate in candidates
     )
     return f"base_repo candidates: {joined}."
+
+
+def _curated_unsloth_diffusion_gguf(repo_id: str) -> Optional[CuratedDiffusionGGUF]:
+    return _CURATED_UNSLOTH_DIFFUSION_GGUFS_BY_REPO.get(str(repo_id).lower())
+
+
+def _filename_matches_curated_diffusion_gguf(
+    spec: CuratedDiffusionGGUF,
+    gguf_filename: Optional[str],
+) -> bool:
+    leaf = _repo_leaf(gguf_filename or "").lower()
+    return bool(leaf) and any(
+        leaf.startswith(prefix.lower())
+        for prefix in spec.filename_prefixes
+    )
 
 
 def _variant_hint_matches_for_family(
@@ -1047,6 +1143,18 @@ def _resolve_diffusion_base_repo(
             base_repo = _expand_existing_local_path(base_repo),
             source = "explicit",
             confidence = "explicit",
+        )
+    curated = _curated_unsloth_diffusion_gguf(repo_id)
+    if (
+        curated is not None
+        and curated.family == fam.name
+        and _filename_matches_curated_diffusion_gguf(curated, gguf_filename)
+    ):
+        return DiffusionBaseRepoResolution(
+            base_repo = curated.base_repo,
+            source = "name_heuristic" if curated.variant else "family_default",
+            confidence = "heuristic",
+            variant = curated.variant,
         )
     if fam.name not in _DIFFUSION_VARIANTS_BY_FAMILY:
         return DiffusionBaseRepoResolution(

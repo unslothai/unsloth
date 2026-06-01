@@ -1013,6 +1013,105 @@ def test_load_model_ernie_gguf_uses_state_dict_fallback(monkeypatch):
     assert calls[0]["path"].endswith("ernie-image-turbo-UD-Q4_K_M.gguf")
 
 
+@pytest.mark.parametrize(
+    ("repo_id", "filename", "family", "base_repo", "variant"),
+    [
+        (
+            "unsloth/FLUX.2-dev-GGUF",
+            "flux2-dev-Q4_K_M.gguf",
+            "flux.2",
+            "black-forest-labs/FLUX.2-dev",
+            None,
+        ),
+        (
+            "unsloth/FLUX.2-klein-4B-GGUF",
+            "flux-2-klein-4b-Q4_K_M.gguf",
+            "flux.2-klein",
+            "black-forest-labs/FLUX.2-klein-4B",
+            "distilled-4b",
+        ),
+        (
+            "unsloth/FLUX.2-klein-9B-GGUF",
+            "flux-2-klein-9b-Q4_K_M.gguf",
+            "flux.2-klein",
+            "black-forest-labs/FLUX.2-klein-9B",
+            "distilled-9b",
+        ),
+        (
+            "unsloth/FLUX.2-klein-base-4B-GGUF",
+            "flux-2-klein-base-4b-Q4_K_M.gguf",
+            "flux.2-klein",
+            "black-forest-labs/FLUX.2-klein-base-4B",
+            "base-4b",
+        ),
+        (
+            "unsloth/FLUX.2-klein-base-9B-GGUF",
+            "flux-2-klein-base-9b-Q4_K_M.gguf",
+            "flux.2-klein",
+            "black-forest-labs/FLUX.2-klein-base-9B",
+            "base-9b",
+        ),
+        (
+            "unsloth/Z-Image-GGUF",
+            "z-image-Q4_K_M.gguf",
+            "z-image",
+            "Tongyi-MAI/Z-Image",
+            None,
+        ),
+        (
+            "unsloth/Z-Image-Turbo-GGUF",
+            "z-image-turbo-Q4_K_M.gguf",
+            "z-image-turbo",
+            "Tongyi-MAI/Z-Image-Turbo",
+            None,
+        ),
+        (
+            "unsloth/ERNIE-Image-Turbo-GGUF",
+            "ernie-image-turbo-UD-Q4_K_M.gguf",
+            "ernie-image-turbo",
+            "baidu/ERNIE-Image-Turbo",
+            None,
+        ),
+        (
+            "unsloth/Qwen-Image-2512-GGUF",
+            "qwen-image-2512-Q4_K_M.gguf",
+            "qwen-image-2512",
+            "Qwen/Qwen-Image-2512",
+            None,
+        ),
+        (
+            "unsloth/Qwen-Image-Edit-2511-GGUF",
+            "qwen-image-edit-2511-Q4_K_M.gguf",
+            "qwen-image-edit-2511",
+            "Qwen/Qwen-Image-Edit-2511",
+            None,
+        ),
+    ],
+)
+def test_load_model_curated_unsloth_diffusion_gguf_manifest(
+    monkeypatch,
+    repo_id,
+    filename,
+    family,
+    base_repo,
+    variant,
+):
+    _install_fake_diffusers(monkeypatch)
+    from core.inference.diffusion import get_diffusion_backend
+
+    backend = get_diffusion_backend()
+    status = backend.load_model(repo_id, gguf_filename = filename)
+
+    assert status["is_loaded"] is True
+    assert status["family"] == family
+    assert status["base_repo"] == base_repo
+    assert status["base_repo_variant"] == variant
+    assert status["gguf_filename"] == filename
+    assert status["sampling_contract"]["gguf"] is True
+    assert backend._pipe.base_repo == base_repo
+    assert backend._pipe.kwargs["transformer"].path.endswith(filename)
+
+
 def test_load_model_ernie_can_replace_text_encoder_and_prompt_enhancer_ggufs(monkeypatch):
     _install_fake_diffusers(monkeypatch)
 
@@ -3145,6 +3244,38 @@ def test_load_model_full_repo_does_not_substitute(monkeypatch):
     assert status["sampling_contract"]["base_repo_source"] == "full_repo"
     # And the fake pipeline records what we called from_pretrained with.
     assert backend._pipe.base_repo == "owner/FLUX.1-finetune-diffusers"
+
+
+@pytest.mark.parametrize(
+    ("repo_id", "family"),
+    [
+        ("black-forest-labs/FLUX.2-dev", "flux.2"),
+        ("black-forest-labs/FLUX.2-klein-4B", "flux.2-klein"),
+        ("black-forest-labs/FLUX.2-klein-base-4B", "flux.2-klein"),
+        ("Tongyi-MAI/Z-Image", "z-image"),
+        ("Tongyi-MAI/Z-Image-Turbo", "z-image-turbo"),
+        ("baidu/ERNIE-Image-Turbo", "ernie-image-turbo"),
+        ("Qwen/Qwen-Image-2512", "qwen-image-2512"),
+        ("Qwen/Qwen-Image-Edit-2511", "qwen-image-edit-2511"),
+    ],
+)
+def test_load_model_full_diffusers_transformer_pipeline_smoke(
+    monkeypatch,
+    repo_id,
+    family,
+):
+    _install_fake_diffusers(monkeypatch)
+    from core.inference.diffusion import get_diffusion_backend
+
+    backend = get_diffusion_backend()
+    status = backend.load_model(repo_id, family_override = family)
+
+    assert status["is_loaded"] is True
+    assert status["family"] == family
+    assert status["base_repo"] == repo_id
+    assert status["base_repo_source"] == "full_repo"
+    assert status["sampling_contract"]["gguf"] is False
+    assert backend._pipe.base_repo == repo_id
 
 
 def test_load_model_full_repo_applies_unfused_lora(monkeypatch):
