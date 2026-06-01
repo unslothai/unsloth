@@ -2,7 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
-import { CodeToggleIcon } from "@/components/assistant-ui/code-toggle-icon";
 import {
   thinkEffortAriaLabel,
   thinkToggleAriaLabel,
@@ -52,6 +51,8 @@ import { useNavigate } from "@tanstack/react-router";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { toast } from "@/lib/toast";
 import { ChatMcpServersDialog } from "./chat-mcp-servers-dialog";
+import { listMcpServers } from "./api/mcp-servers-api";
+import { usePillActivationOrder } from "./hooks/use-pill-activation-order";
 import { loadModel, validateModel } from "./api/chat-api";
 import {
   parseExternalModelId,
@@ -420,6 +421,35 @@ export function SharedComposer({
   const [dragging, setDragging] = useState(false);
   const [isComposing, setIsComposing] = useState(false);
   const [mcpOpen, setMcpOpen] = useState(false);
+  const mcpEnabledForChat = useChatRuntimeStore((s) => s.mcpEnabledForChat);
+  const setMcpEnabledForChat = useChatRuntimeStore(
+    (s) => s.setMcpEnabledForChat,
+  );
+  // Count of servers marked enabled; MCP toggles only when at least one exists.
+  const [mcpServerCount, setMcpServerCount] = useState(0);
+  const refreshMcpCount = useCallback(() => {
+    listMcpServers()
+      .then((rows) => {
+        const count = rows.filter((r) => r.is_enabled).length;
+        setMcpServerCount(count);
+        // Keep the toggle honest: with no enabled server, MCP can't be on.
+        if (count === 0 && useChatRuntimeStore.getState().mcpEnabledForChat) {
+          useChatRuntimeStore.getState().setMcpEnabledForChat(false);
+        }
+      })
+      .catch(() => setMcpServerCount(0));
+  }, []);
+  useEffect(() => {
+    refreshMcpCount();
+  }, [refreshMcpCount]);
+  const mcpActive = mcpEnabledForChat && mcpServerCount > 0;
+  const onMcpSelect = () => {
+    if (mcpServerCount > 0) {
+      setMcpEnabledForChat(!mcpEnabledForChat);
+    } else {
+      setMcpOpen(true);
+    }
+  };
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const composingRef = useRef(false);
   const stuckImeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -472,6 +502,11 @@ export function SharedComposer({
   );
   const artifactsEnabled = useChatRuntimeStore((s) => s.artifactsEnabled);
   const setArtifactsEnabled = useChatRuntimeStore((s) => s.setArtifactsEnabled);
+  // Canvas and MCP are opt-in pills; show them in the order they were toggled on.
+  const optInPillOrder = usePillActivationOrder({
+    canvas: artifactsEnabled,
+    mcp: mcpActive,
+  });
   const webFetchToolsEnabled = useChatRuntimeStore(
     (s) => s.webFetchToolsEnabled,
   );
@@ -1157,14 +1192,6 @@ export function SharedComposer({
                 {codeToolsEnabled ? <CheckIcon className="ml-auto" /> : null}
               </DropdownMenuItem>
               <DropdownMenuSeparator />
-              <DropdownMenuItem onSelect={() => setMcpOpen(true)}>
-                <HugeiconsIcon
-                  icon={McpServerIcon}
-                  strokeWidth={2}
-                  className="size-[1.175rem]!"
-                />
-                MCP
-              </DropdownMenuItem>
               <DropdownMenuItem
                 className={
                   artifactsEnabled ? "text-primary font-medium" : undefined
@@ -1178,6 +1205,18 @@ export function SharedComposer({
               <DropdownMenuItem>
                 <HugeiconsIcon icon={DatabaseIcon} strokeWidth={2} />
                 RAG
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                className={mcpActive ? "text-primary font-medium" : undefined}
+                onSelect={onMcpSelect}
+              >
+                <HugeiconsIcon
+                  icon={McpServerIcon}
+                  strokeWidth={2}
+                  className="size-[1.175rem]!"
+                />
+                MCP
+                {mcpActive ? <CheckIcon className="ml-auto" /> : null}
               </DropdownMenuItem>
               {/* Always active: this menu only renders in compare mode.
                   Ticked like Web search/Code; click toggles it off. */}
@@ -1208,7 +1247,13 @@ export function SharedComposer({
               </DropdownMenuSub>
             </DropdownMenuContent>
           </DropdownMenu>
-          <ChatMcpServersDialog open={mcpOpen} onOpenChange={setMcpOpen} />
+          <ChatMcpServersDialog
+            open={mcpOpen}
+            onOpenChange={(next) => {
+              setMcpOpen(next);
+              if (!next) refreshMcpCount();
+            }}
+          />
           <button
             type="button"
             disabled={searchDisabled}
@@ -1247,7 +1292,11 @@ export function SharedComposer({
             }
           >
             <PillGlyph>
-              <CodeToggleIcon className="size-[15px]" />
+              <HugeiconsIcon
+                icon={CodeIcon}
+                className="size-[19px]"
+                strokeWidth={2}
+              />
             </PillGlyph>
             <span>Code</span>
           </button>
@@ -1289,24 +1338,6 @@ export function SharedComposer({
               <span>Images</span>
             </button>
           )}
-          {artifactsEnabled && (
-            <button
-              type="button"
-              onClick={() => setArtifactsEnabled(false)}
-              className="composer-pill-btn"
-              data-active="true"
-              aria-label="Disable canvas"
-            >
-              <PillGlyph>
-                <HugeiconsIcon
-                  icon={PencilRulerIcon}
-                  className="size-3.5"
-                  strokeWidth={2}
-                />
-              </PillGlyph>
-              <span>Canvas</span>
-            </button>
-          )}
           {showWebFetchPill && (
             <button
               type="button"
@@ -1325,6 +1356,45 @@ export function SharedComposer({
               </PillGlyph>
               <span>Fetch</span>
             </button>
+          )}
+          {optInPillOrder.map((key) =>
+            key === "canvas" ? (
+              <button
+                key="canvas"
+                type="button"
+                onClick={() => setArtifactsEnabled(false)}
+                className="composer-pill-btn"
+                data-active="true"
+                aria-label="Disable canvas"
+              >
+                <PillGlyph>
+                  <HugeiconsIcon
+                    icon={PencilRulerIcon}
+                    className="size-[15.5px]"
+                    strokeWidth={2}
+                  />
+                </PillGlyph>
+                <span>Canvas</span>
+              </button>
+            ) : (
+              <button
+                key="mcp"
+                type="button"
+                onClick={() => setMcpEnabledForChat(false)}
+                className="composer-pill-btn"
+                data-active="true"
+                aria-label="Disable MCP"
+              >
+                <PillGlyph>
+                  <HugeiconsIcon
+                    icon={McpServerIcon}
+                    className="size-[17px]"
+                    strokeWidth={2}
+                  />
+                </PillGlyph>
+                <span>MCP</span>
+              </button>
+            ),
           )}
         </div>
         <div className="ml-auto flex items-center gap-1">

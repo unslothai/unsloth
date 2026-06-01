@@ -46,7 +46,9 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { sentAudioNames } from "@/features/chat/api/chat-adapter";
+import { listMcpServers } from "@/features/chat/api/mcp-servers-api";
 import { ChatMcpServersDialog } from "@/features/chat/chat-mcp-servers-dialog";
+import { usePillActivationOrder } from "@/features/chat/hooks/use-pill-activation-order";
 import { parseExternalModelId } from "@/features/chat/external-providers";
 import { getExternalReasoningCapabilities } from "@/features/chat/provider-capabilities";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
@@ -555,6 +557,13 @@ const Composer: FC<{
   const toolsEnabled = useChatRuntimeStore((s) => s.toolsEnabled);
   const codeToolsEnabled = useChatRuntimeStore((s) => s.codeToolsEnabled);
   const imageToolsEnabled = useChatRuntimeStore((s) => s.imageToolsEnabled);
+  const artifactsEnabled = useChatRuntimeStore((s) => s.artifactsEnabled);
+  const mcpEnabledForChat = useChatRuntimeStore((s) => s.mcpEnabledForChat);
+  // Canvas and MCP are opt-in pills; show them in the order they were toggled on.
+  const optInPillOrder = usePillActivationOrder({
+    canvas: artifactsEnabled,
+    mcp: mcpEnabledForChat,
+  });
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const setPendingImageEditReference = useChatRuntimeStore(
     (s) => s.setPendingImageEditReference,
@@ -603,7 +612,9 @@ const Composer: FC<{
     hasPendingAudio ||
     toolsEnabled ||
     codeToolsEnabled ||
-    imageToolsEnabled;
+    imageToolsEnabled ||
+    artifactsEnabled ||
+    mcpEnabledForChat;
   // react-textarea-autosize re-measures only on value change or window resize,
   // not on the width swap from expanding, so it keeps the taller height and
   // leaves a stray blank row. Nudge a resize whenever the input width changes.
@@ -729,7 +740,13 @@ const Composer: FC<{
               <WebSearchToggle />
               <CodeToolsToggle />
               <ImagesToggle />
-              <ArtifactsToggle />
+              {optInPillOrder.map((key) =>
+                key === "canvas" ? (
+                  <ArtifactsToggle key="canvas" />
+                ) : (
+                  <McpToggle key="mcp" />
+                ),
+              )}
             </>
           ) : null}
         </div>
@@ -1395,7 +1412,7 @@ const CodeToolsToggle: FC = () => {
       <PillGlyph>
         <HugeiconsIcon
           icon={CodeIcon}
-          className="-mr-0.5 size-[19px]"
+          className="size-[19px]"
           strokeWidth={2}
         />
       </PillGlyph>
@@ -1461,11 +1478,39 @@ const ArtifactsToggle: FC = () => {
       <PillGlyph>
         <HugeiconsIcon
           icon={PencilRulerIcon}
-          className="size-3.5"
+          className="size-[15.5px]"
           strokeWidth={2}
         />
       </PillGlyph>
       <span>Canvas</span>
+    </button>
+  );
+};
+
+const McpToggle: FC = () => {
+  const mcpEnabledForChat = useChatRuntimeStore((s) => s.mcpEnabledForChat);
+  const setMcpEnabledForChat = useChatRuntimeStore(
+    (s) => s.setMcpEnabledForChat,
+  );
+  // Like Canvas: the pill only shows once MCP is toggled on from the menu.
+  if (!mcpEnabledForChat) return null;
+
+  return (
+    <button
+      type="button"
+      onClick={() => setMcpEnabledForChat(false)}
+      className="composer-pill-btn"
+      data-active="true"
+      aria-label="Disable MCP"
+    >
+      <PillGlyph>
+        <HugeiconsIcon
+          icon={McpServerIcon}
+          className="size-[17px]"
+          strokeWidth={2}
+        />
+      </PillGlyph>
+      <span>MCP</span>
     </button>
   );
 };
@@ -1542,7 +1587,37 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
   const setCodeToolsEnabled = useChatRuntimeStore((s) => s.setCodeToolsEnabled);
   const artifactsEnabled = useChatRuntimeStore((s) => s.artifactsEnabled);
   const setArtifactsEnabled = useChatRuntimeStore((s) => s.setArtifactsEnabled);
+  const mcpEnabledForChat = useChatRuntimeStore((s) => s.mcpEnabledForChat);
+  const setMcpEnabledForChat = useChatRuntimeStore(
+    (s) => s.setMcpEnabledForChat,
+  );
   const [mcpOpen, setMcpOpen] = useState(false);
+  // Count of servers marked enabled in the manage dialog. MCP can only be
+  // turned on once at least one exists; otherwise the menu opens the dialog.
+  const [mcpServerCount, setMcpServerCount] = useState(0);
+  const refreshMcpCount = useCallback(() => {
+    listMcpServers()
+      .then((rows) => {
+        const count = rows.filter((r) => r.is_enabled).length;
+        setMcpServerCount(count);
+        // Keep the toggle honest: with no enabled server, MCP can't be on.
+        if (count === 0 && useChatRuntimeStore.getState().mcpEnabledForChat) {
+          useChatRuntimeStore.getState().setMcpEnabledForChat(false);
+        }
+      })
+      .catch(() => setMcpServerCount(0));
+  }, []);
+  useEffect(() => {
+    refreshMcpCount();
+  }, [refreshMcpCount]);
+  const mcpActive = mcpEnabledForChat && mcpServerCount > 0;
+  const onMcpSelect = () => {
+    if (mcpServerCount > 0) {
+      setMcpEnabledForChat(!mcpEnabledForChat);
+    } else {
+      setMcpOpen(true);
+    }
+  };
 
   const startCompare = useCallback(() => {
     const store = useChatRuntimeStore.getState();
@@ -1606,14 +1681,6 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
           {codeToolsEnabled ? <CheckIcon className="ml-auto" /> : null}
         </DropdownMenuItem>
         <DropdownMenuSeparator />
-        <DropdownMenuItem onSelect={() => setMcpOpen(true)}>
-          <HugeiconsIcon
-            icon={McpServerIcon}
-            strokeWidth={2}
-            className="size-[1.175rem]!"
-          />
-          MCP
-        </DropdownMenuItem>
         <DropdownMenuItem
           className={artifactsEnabled ? "text-primary font-medium" : undefined}
           onSelect={() => setArtifactsEnabled(!artifactsEnabled)}
@@ -1625,6 +1692,18 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
         <DropdownMenuItem>
           <HugeiconsIcon icon={DatabaseIcon} strokeWidth={2} />
           RAG
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          className={mcpActive ? "text-primary font-medium" : undefined}
+          onSelect={onMcpSelect}
+        >
+          <HugeiconsIcon
+            icon={McpServerIcon}
+            strokeWidth={2}
+            className="size-[1.175rem]!"
+          />
+          MCP
+          {mcpActive ? <CheckIcon className="ml-auto" /> : null}
         </DropdownMenuItem>
         <DropdownMenuItem onSelect={() => startCompare()}>
           <Columns2Icon />
@@ -1649,7 +1728,14 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
         </DropdownMenuSub>
       </DropdownMenuContent>
     </DropdownMenu>
-    <ChatMcpServersDialog open={mcpOpen} onOpenChange={setMcpOpen} />
+    <ChatMcpServersDialog
+      open={mcpOpen}
+      onOpenChange={(next) => {
+        setMcpOpen(next);
+        // Re-read the enabled count after the user manages servers.
+        if (!next) refreshMcpCount();
+      }}
+    />
     </>
   );
 };

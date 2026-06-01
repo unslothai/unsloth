@@ -827,9 +827,10 @@
 		color: var(--primary);
 	}
 
-	/* Icon slot sized to the icon so the hover-X swap never shifts the label. */
+	/* Fixed-width icon slot so every pill's icon occupies the same space and
+	   the labels line up on an even rhythm, regardless of icon size. */
 	.composer-pill-glyph {
-		@apply relative inline-flex items-center justify-center transition-opacity;
+		@apply relative inline-flex w-[19px] shrink-0 items-center justify-center transition-opacity;
 	}
 
 	/* Fixed size so every pill's X is identical, centered over the icon slot. */
