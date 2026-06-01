@@ -621,3 +621,22 @@ class TestClassifyGpuOffload:
             ["system_info: n_threads = 8 | CUDA : ARCHS = 1200 | CPU : AVX2 = 1"]
         )
         assert inst._classify_gpu_offload(True, [(0, 22805)]) is None
+
+    def test_cuda_host_buffer_is_not_gpu(self):
+        # CUDA_Host is host-pinned CPU RAM; weights on CPU_Mapped means CPU only.
+        inst = self._backend(
+            [
+                "load_tensors:   CUDA_Host model buffer size = 21000.0 MiB",
+                "load_tensors:   CPU_Mapped model buffer size =     0.6 MiB",
+            ]
+        )
+        assert inst._classify_gpu_offload(True, [(0, 22805)]) is False
+
+    def test_draft_zero_before_main_offload_is_gpu(self):
+        inst = self._backend(
+            [
+                "load_tensors: offloaded 0/2 layers to GPU",
+                "load_tensors: offloaded 33/33 layers to GPU",
+            ]
+        )
+        assert inst._classify_gpu_offload(True, [(0, 22805)]) is True

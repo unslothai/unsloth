@@ -90,22 +90,34 @@ def classify_gpu_offload_lines(lines: list[str]) -> Optional[bool]:
     """True if the model landed on a GPU, False if it stayed on CPU despite GPU
     intent, None when the log has no usable signal. Priority: buffer-size lines,
     then offloaded-layers count, then device_info enumeration."""
+    # Exclude host-pinned buffers ("CUDA_Host" ...): CPU RAM the GPU backend
+    # pinned, not device memory, so they must not read as GPU offload.
     saw_buffer_line = False
     for line in lines:
         if "buffer size" not in line:
             continue
-        if any(marker in line for marker in _GPU_BUFFER_MARKERS):
+        if "_Host" not in line and any(
+            marker in line for marker in _GPU_BUFFER_MARKERS
+        ):
             return True
         if "model buffer size" in line:
             saw_buffer_line = True
 
+    # Accept if any "offloaded N/M" has N>0 (a draft model can log 0/k before
+    # the main model's 33/33); CPU-only only when every offloaded line is zero.
+    saw_offloaded = False
     for line in lines:
         match = _OFFLOADED_LAYERS_RE.search(line)
         if match:
-            return int(match.group(1)) > 0
+            saw_offloaded = True
+            if int(match.group(1)) > 0:
+                return True
+            continue
         low = line.lower()
         if "offloading" in low and "to gpu" in low:
             return True
+    if saw_offloaded:
+        return False
 
     after_device_info = False
     saw_device_row = False

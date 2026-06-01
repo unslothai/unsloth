@@ -5665,26 +5665,39 @@ def server_log_shows_gpu_offload(log_text: str) -> bool | None:
 
     # Signal 1: per-backend buffer-size lines. A GPU marker on ANY "buffer
     # size" line (model / KV / compute) means the GPU holds part of the model
-    # -- accept. Only the model-buffer location decides CPU-only (KV/compute
-    # CPU buffers exist even on GPU runs), so the False determination keys on
-    # "model buffer size" alone.
+    # -- accept. Exclude host-pinned buffers ("CUDA_Host" / "ROCm_Host" ...):
+    # those are CPU RAM the GPU backend pinned, not device memory, so a binary
+    # that pins host memory but offloads no weights must not read as GPU. Only
+    # the model-buffer location decides CPU-only (KV/compute CPU buffers exist
+    # even on GPU runs), so the False determination keys on "model buffer size".
     saw_buffer_line = False
     for line in lines:
         if "buffer size" not in line:
             continue
-        if any(marker in line for marker in _GPU_MODEL_BUFFER_MARKERS):
+        if "_Host" not in line and any(
+            marker in line for marker in _GPU_MODEL_BUFFER_MARKERS
+        ):
             return True
         if "model buffer size" in line:
             saw_buffer_line = True
 
-    # Signal 2: explicit offloaded-layers count.
+    # Signal 2: explicit offloaded-layers count. Scan every "offloaded N/M"
+    # line and accept if any has N>0 (a draft/speculative model can log
+    # "offloaded 0/k" before the main model's "offloaded 33/33"); only when all
+    # offloaded lines are zero is it CPU-only.
+    saw_offloaded = False
     for line in lines:
         match = _OFFLOADED_LAYERS_RE.search(line)
         if match:
-            return int(match.group(1)) > 0
+            saw_offloaded = True
+            if int(match.group(1)) > 0:
+                return True
+            continue
         low = line.lower()
         if "offloading" in low and "to gpu" in low:
             return True
+    if saw_offloaded:
+        return False
 
     # Signal 3: device_info enumeration. Only trust device rows once the
     # "device_info:" header has appeared, so the compiled-backend system_info

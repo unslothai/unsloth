@@ -232,6 +232,32 @@ def test_device_row_case_insensitive():
     assert server_log_shows_gpu_offload(log) is True
 
 
+def test_cuda_host_buffer_is_not_gpu_offload():
+    # CUDA_Host is host-pinned CPU RAM, not device memory. A binary that pins
+    # host memory but loads weights on CPU must not pass as GPU offload.
+    log = (
+        "load_tensors:   CUDA_Host model buffer size = 21000.0 MiB\n"
+        "load_tensors:   CPU_Mapped model buffer size =     0.6 MiB\n"
+    )
+    assert server_log_shows_gpu_offload(log) is False
+    # A real device buffer alongside a CUDA_Host line still reads as GPU.
+    log_ok = (
+        "load_tensors:   CUDA_Host model buffer size = 100.0 MiB\n"
+        "load_tensors:   CUDA0 model buffer size = 21000.0 MiB\n"
+    )
+    assert server_log_shows_gpu_offload(log_ok) is True
+
+
+def test_draft_offloaded_zero_before_main_offload_is_gpu():
+    # Speculative decoding: a draft model logs "offloaded 0/2" before the main
+    # model's "offloaded 33/33". The N>0 line must win.
+    log = (
+        "load_tensors: offloaded 0/2 layers to GPU\n"
+        "load_tensors: offloaded 33/33 layers to GPU\n"
+    )
+    assert server_log_shows_gpu_offload(log) is True
+
+
 def test_crlf_log_parses_identically():
     # Windows logs use CRLF; classification must not change.
     assert (
