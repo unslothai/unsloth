@@ -638,6 +638,8 @@ def grpo_trainer__generate_single_turn(function_name, function):
 
     # Older TRL versions may directly reload vLLM weights here. Only skip that
     # when the attached engine explicitly advertises shared weights.
+
+
 def _guard_vllm_sync_reload_for_shared_weights(function):
     # Guard reload_weights - only call when not sharing weights with vLLM
     reload_weights_pattern = re.compile(
