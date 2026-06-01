@@ -10,6 +10,8 @@ import {
   ChevronRightIcon,
   FileTextIcon,
   LoaderIcon,
+  ZoomInIcon,
+  ZoomOutIcon,
 } from "lucide-react";
 
 import {
@@ -50,6 +52,15 @@ function RegionOverlay({ regions }: { regions: PdfRegion[] }) {
   );
 }
 
+// Zoom is a multiplier on the fit-to-panel width: 1 = fit, >1 enlarges (and the
+// page scrolls), <1 shrinks. Stepped so the buttons and Ctrl/Cmd-wheel agree.
+const ZOOM_MIN = 0.5;
+const ZOOM_MAX = 3;
+const ZOOM_STEP = 0.25;
+
+const clampZoom = (z: number) =>
+  Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, Number(z.toFixed(2))));
+
 function PdfPreview({
   fileUrl,
   initialPage,
@@ -63,10 +74,14 @@ function PdfPreview({
   const [width, setWidth] = useState(0);
   const [numPages, setNumPages] = useState(0);
   const [page, setPage] = useState(initialPage);
+  const [scale, setScale] = useState(1);
   const [error, setError] = useState<string | null>(null);
 
   // Reset to the cited page whenever a new citation opens this same viewer.
   useEffect(() => setPage(initialPage), [initialPage, fileUrl]);
+
+  // Start each freshly opened document back at fit-to-panel.
+  useEffect(() => setScale(1), [fileUrl]);
 
   // Track the available width so the page scales to the panel.
   useLayoutEffect(() => {
@@ -79,11 +94,30 @@ function PdfPreview({
     return () => ro.disconnect();
   }, []);
 
+  // Ctrl/Cmd + wheel zooms (native listener so preventDefault is honored -- a
+  // JSX onWheel is passive and cannot stop the browser's page zoom/scroll).
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      if (!(e.ctrlKey || e.metaKey)) return;
+      e.preventDefault();
+      setScale((s) => clampZoom(s - Math.sign(e.deltaY) * ZOOM_STEP));
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, []);
+
   const onLoad = useCallback(
     ({ numPages: n }: { numPages: number }) => {
       setNumPages(n);
       setPage((p) => Math.min(Math.max(p, 1), n));
     },
+    [],
+  );
+
+  const zoomBy = useCallback(
+    (delta: number) => setScale((s) => clampZoom(s + delta)),
     [],
   );
 
@@ -117,43 +151,84 @@ function PdfPreview({
           }
         >
           {width > 0 && (
-            <div className="relative mx-auto w-fit shadow-sm">
-              <Page
-                pageNumber={page}
-                width={width - 8}
-                renderTextLayer={false}
-                renderAnnotationLayer={false}
-              />
-              <RegionOverlay regions={pageRegions} />
+            // min-w-fit lets the row grow past the panel when zoomed in so the
+            // centered page stays reachable on both sides while scrolling.
+            <div className="flex min-w-fit justify-center">
+              <div className="relative w-fit shadow-sm">
+                <Page
+                  pageNumber={page}
+                  width={(width - 8) * scale}
+                  renderTextLayer={false}
+                  renderAnnotationLayer={false}
+                />
+                <RegionOverlay regions={pageRegions} />
+              </div>
             </div>
           )}
         </Document>
       </div>
-      {numPages > 1 && (
-        <div className="flex items-center justify-center gap-3 border-t px-4 py-2 text-xs">
+      <div className="grid grid-cols-[1fr_auto_1fr] items-center border-t px-3 py-2 text-xs">
+        <div className="flex items-center gap-0.5 justify-self-start">
           <Button
             variant="ghost"
             size="icon"
             className="size-7"
-            disabled={page <= 1}
-            onClick={() => setPage((p) => Math.max(1, p - 1))}
+            disabled={scale <= ZOOM_MIN}
+            onClick={() => zoomBy(-ZOOM_STEP)}
+            aria-label="Zoom out"
           >
-            <ChevronLeftIcon className="size-4" />
+            <ZoomOutIcon className="size-4" />
           </Button>
-          <span className="tabular-nums text-muted-foreground">
-            Page {page} / {numPages}
-          </span>
+          <button
+            type="button"
+            onClick={() => setScale(1)}
+            className="w-11 text-center tabular-nums text-muted-foreground hover:text-foreground"
+            aria-label="Reset zoom"
+          >
+            {Math.round(scale * 100)}%
+          </button>
           <Button
             variant="ghost"
             size="icon"
             className="size-7"
-            disabled={page >= numPages}
-            onClick={() => setPage((p) => Math.min(numPages, p + 1))}
+            disabled={scale >= ZOOM_MAX}
+            onClick={() => zoomBy(ZOOM_STEP)}
+            aria-label="Zoom in"
           >
-            <ChevronRightIcon className="size-4" />
+            <ZoomInIcon className="size-4" />
           </Button>
         </div>
-      )}
+        {numPages > 1 ? (
+          <div className="flex items-center gap-3 justify-self-center">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="size-7"
+              disabled={page <= 1}
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+              aria-label="Previous page"
+            >
+              <ChevronLeftIcon className="size-4" />
+            </Button>
+            <span className="tabular-nums text-muted-foreground">
+              Page {page} / {numPages}
+            </span>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="size-7"
+              disabled={page >= numPages}
+              onClick={() => setPage((p) => Math.min(numPages, p + 1))}
+              aria-label="Next page"
+            >
+              <ChevronRightIcon className="size-4" />
+            </Button>
+          </div>
+        ) : (
+          <span />
+        )}
+        <span aria-hidden />
+      </div>
     </div>
   );
 }
