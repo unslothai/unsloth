@@ -724,11 +724,12 @@ class ChatCompletionRequest(BaseModel):
     enabled_tools: Optional[list[str]] = Field(
         None,
         description = (
-            "[x-unsloth] List of enabled tool names. Local GGUF models accept "
-            "['web_search', 'python', 'terminal']. External providers accept "
-            "['web_search', 'web_fetch', 'code_execution'] for Anthropic and "
-            "['web_search', 'code_execution'] for OpenAI Responses. If None, "
-            "all local tools are enabled and no server-side tools are forwarded."
+            "[x-unsloth] List of enabled tool names. Local GGUF/safetensors models "
+            "accept ['web_search', 'python', 'terminal', 'render_html']. External "
+            "providers accept ['web_search', 'web_fetch', 'code_execution'] for "
+            "Anthropic and ['web_search', 'code_execution', 'image_generation'] for "
+            "OpenAI Responses. If None, all local tools are enabled and no "
+            "server-side tools are forwarded."
         ),
     )
     mcp_enabled: Optional[bool] = Field(

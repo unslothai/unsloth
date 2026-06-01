@@ -222,6 +222,7 @@ jobs:
           for s in \
               tests/sh/test_get_torch_index_url.sh \
               tests/sh/test_mac_intel_compat.sh \
+              tests/sh/test_nvcc_meets_llama_minimum.sh \
               tests/sh/test_tauri_install_exit_order.sh \
               tests/sh/test_torch_constraint.sh; do
               echo "::group::$s"

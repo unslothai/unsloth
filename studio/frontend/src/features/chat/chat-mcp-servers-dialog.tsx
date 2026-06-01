@@ -66,23 +66,40 @@ function headersToObject(rows: HeaderRow[]): Record<string, string> | undefined 
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
-function isValidUrl(url: string): boolean {
-  const trimmed = url.trim();
+// A non-HTTP address is a local stdio command. Case-insensitive to match the
+// backend's is_stdio(), so all layers split http-vs-command identically.
+function isHttpAddress(value: string): boolean {
+  const trimmed = value.trim().toLowerCase();
+  return trimmed.startsWith("http://") || trimmed.startsWith("https://");
+}
+
+function isValidAddress(value: string): boolean {
+  const trimmed = value.trim();
   if (!trimmed) return false;
-  try {
-    const parsed = new URL(trimmed);
-    return parsed.protocol === "http:" || parsed.protocol === "https:";
-  } catch {
-    return false;
+  if (isHttpAddress(trimmed)) {
+    try {
+      const parsed = new URL(trimmed);
+      return parsed.protocol === "http:" || parsed.protocol === "https:";
+    } catch {
+      return false;
+    }
   }
+  // Anything else is treated as a local command (stdio); the backend gates
+  // whether stdio servers are allowed on this host. Reject other URL schemes
+  // only when the command itself is a URL; "://" is fine inside an argument
+  // (e.g. a database connection string passed to the server).
+  return !trimmed.split(/\s+/)[0].includes("://");
 }
 
 function HeadersEditor({
   rows,
   onChange,
+  stdio,
 }: {
   rows: HeaderRow[];
   onChange: (rows: HeaderRow[]) => void;
+  // stdio servers reuse this editor for environment variables instead of headers.
+  stdio: boolean;
 }) {
   const update = (id: string, patch: Partial<HeaderRow>) =>
     onChange(rows.map((row) => (row.id === id ? { ...row, ...patch } : row)));
@@ -91,19 +108,41 @@ function HeadersEditor({
   const remove = (id: string) =>
     onChange(rows.filter((row) => row.id !== id));
 
+  const copy = stdio
+    ? {
+        label: "Environment variables",
+        add: "Add variable",
+        keyPlaceholder: "Variable name",
+        valuePlaceholder: "Variable value",
+        remove: "Remove variable",
+      }
+    : {
+        label: "Custom headers",
+        add: "Add header",
+        keyPlaceholder: "Header name",
+        valuePlaceholder: "Header value",
+        remove: "Remove header",
+      };
+
   return (
     <>
       <div className="flex items-center justify-between">
-        <Label className="text-sm">Custom headers</Label>
+        <Label className="text-sm">{copy.label}</Label>
         <Button type="button" variant="ghost" size="sm" onClick={add}>
           <HugeiconsIcon icon={PlusSignIcon} size={14} />
-          Add header
+          {copy.add}
         </Button>
       </div>
       {rows.length === 0 ? (
         <div className="text-xs text-muted-foreground">
-          Optional. Add an <code>Authorization</code> header here for servers
-          that require auth.
+          {stdio ? (
+            "Optional. Environment variables passed to the server process."
+          ) : (
+            <>
+              Optional. Add an <code>Authorization</code> header here for servers
+              that require auth.
+            </>
+          )}
         </div>
       ) : (
         <div className="flex flex-col gap-2">
@@ -111,12 +150,12 @@ function HeadersEditor({
             <div key={row.id} className="flex items-center gap-2">
               <Input
                 value={row.key}
-                placeholder="Header name"
+                placeholder={copy.keyPlaceholder}
                 onChange={(e) => update(row.id, { key: e.target.value })}
               />
               <Input
                 value={row.value}
-                placeholder="Header value"
+                placeholder={copy.valuePlaceholder}
                 onChange={(e) => update(row.id, { value: e.target.value })}
               />
               <Button
@@ -124,7 +163,7 @@ function HeadersEditor({
                 variant="ghost"
                 size="icon"
                 onClick={() => remove(row.id)}
-                aria-label="Remove header"
+                aria-label={copy.remove}
               >
                 <HugeiconsIcon icon={Delete02Icon} size={14} />
               </Button>
@@ -199,8 +238,8 @@ export function ChatMcpServersDialog({
 
   async function testConnection() {
     const trimmedUrl = form.url.trim();
-    if (!isValidUrl(trimmedUrl)) {
-      toast.error("Enter a valid http:// or https:// URL first");
+    if (!isValidAddress(trimmedUrl)) {
+      toast.error("Enter an http(s):// URL or a local command first");
       return;
     }
     setTesting(true);
@@ -236,11 +275,11 @@ export function ChatMcpServersDialog({
       return;
     }
     if (!trimmedUrl) {
-      toast.error("URL is required");
+      toast.error("URL or command is required");
       return;
     }
-    if (!isValidUrl(trimmedUrl)) {
-      toast.error("URL must start with http:// or https://");
+    if (!isValidAddress(trimmedUrl)) {
+      toast.error("Enter an http(s):// URL or a local command");
       return;
     }
     setSaving(true);
@@ -331,6 +370,9 @@ export function ChatMcpServersDialog({
   }
 
   const showForm = view.kind !== "list";
+  // A local stdio command uses env vars, not headers or OAuth.
+  const addressIsCommand =
+    form.url.trim() !== "" && !isHttpAddress(form.url);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -338,7 +380,7 @@ export function ChatMcpServersDialog({
         <DialogHeader>
           <DialogTitle>MCP Servers</DialogTitle>
           <DialogDescription>
-            Register remote MCP servers.
+            Register remote (HTTP) or local (stdio command) MCP servers.
           </DialogDescription>
         </DialogHeader>
 
@@ -356,40 +398,47 @@ export function ChatMcpServersDialog({
               />
             </div>
             <div className="grid gap-2">
-              <Label htmlFor="mcp-url">URL</Label>
+              <Label htmlFor="mcp-url">URL or command</Label>
               <Input
                 id="mcp-url"
                 value={form.url}
                 onChange={(e) =>
                   setForm((prev) => ({ ...prev, url: e.target.value }))
                 }
-                placeholder="https://example.com/mcp"
+                placeholder="https://example.com/mcp or npx -y @modelcontextprotocol/server-filesystem /tmp"
               />
+              <span className="text-xs text-muted-foreground">
+                An http(s) URL for a remote server, or a local command to run an
+                stdio server (desktop app only).
+              </span>
             </div>
 
-            <div className="flex items-start justify-between gap-3">
-              <div className="flex flex-col gap-0.5">
-                <Label className="text-sm" htmlFor="mcp-oauth">
-                  Use OAuth sign-in
-                </Label>
-                <span className="text-xs text-muted-foreground">
-                  For servers that require browser-based authentication
-                  (GitHub, Linear, etc.). A browser window will open on first
-                  connect.
-                </span>
+            {!addressIsCommand && (
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex flex-col gap-0.5">
+                  <Label className="text-sm" htmlFor="mcp-oauth">
+                    Use OAuth sign-in
+                  </Label>
+                  <span className="text-xs text-muted-foreground">
+                    For servers that require browser-based authentication
+                    (GitHub, Linear, etc.). A browser window will open on first
+                    connect.
+                  </span>
+                </div>
+                <Switch
+                  id="mcp-oauth"
+                  checked={form.useOauth}
+                  onCheckedChange={(useOauth) =>
+                    setForm((prev) => ({ ...prev, useOauth }))
+                  }
+                />
               </div>
-              <Switch
-                id="mcp-oauth"
-                checked={form.useOauth}
-                onCheckedChange={(useOauth) =>
-                  setForm((prev) => ({ ...prev, useOauth }))
-                }
-              />
-            </div>
+            )}
 
             <HeadersEditor
               rows={form.headers}
               onChange={(headers) => setForm((prev) => ({ ...prev, headers }))}
+              stdio={addressIsCommand}
             />
 
             <div className="flex items-center justify-between gap-2 pt-2">
@@ -415,7 +464,7 @@ export function ChatMcpServersDialog({
             </div>
           </div>
         ) : (
-          <div className="flex flex-col gap-3">
+          <div className="flex min-w-0 flex-col gap-3">
             <div className="flex justify-end">
               <Button size="sm" onClick={startCreate}>
                 <HugeiconsIcon icon={PlusSignIcon} size={14} />
