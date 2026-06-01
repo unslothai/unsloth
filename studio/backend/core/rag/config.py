@@ -31,10 +31,12 @@ CAPTION_TIMEOUT_S = float(os.environ.get("RAG_CAPTION_TIMEOUT_S", "30"))
 # backends changes the vectors, so the index must be rebuilt (see embeddings.py).
 EMBED_BACKEND = os.environ.get("RAG_EMBED_BACKEND", "sentence-transformers")
 # llama-server backend only (all ignored when EMBED_BACKEND=sentence-transformers).
+# F16 over Q8_0: on GPU and CPU it is both faster (no per-block dequant for this
+# tiny model) and exact vs fp32, for ~30MB more on disk.
 EMBED_GGUF_REPO = os.environ.get(
-    "RAG_EMBED_GGUF_REPO", "ggml-org/bge-small-en-v1.5-Q8_0-GGUF"
+    "RAG_EMBED_GGUF_REPO", "CompendiumLabs/bge-small-en-v1.5-gguf"
 )
-EMBED_GGUF_VARIANT = os.environ.get("RAG_EMBED_GGUF_VARIANT", "Q8_0")
+EMBED_GGUF_VARIANT = os.environ.get("RAG_EMBED_GGUF_VARIANT", "F16")
 EMBED_DEVICE = os.environ.get("RAG_EMBED_DEVICE", "auto")  # "auto" | "gpu" | "cpu"
 EMBED_HOST = os.environ.get("RAG_EMBED_HOST", "127.0.0.1")
 EMBED_PORT = int(os.environ.get("RAG_EMBED_PORT", "0"))  # 0 = auto-pick a free port
