@@ -240,6 +240,7 @@ from routes import (
     mcp_servers_router,
     models_router,
     providers_router,
+    rag_router,
     training_history_router,
     training_router,
 )
@@ -383,6 +384,23 @@ async def lifespan(app: FastAPI):
             pass  # non-critical
 
     threading.Thread(target = _precache, daemon = True).start()
+
+    # Warm the RAG text embedder so the first document upload does not pay the
+    # cold model load. Background + non-fatal: RAG (and the rest of Studio) work
+    # whether or not this succeeds.
+    def _warm_rag_embedder():
+        try:
+            from storage import rag_db
+
+            if not rag_db.RAG_AVAILABLE:
+                return
+            from core.rag import embeddings
+
+            embeddings.warm()
+        except Exception:
+            pass  # non-critical
+
+    threading.Thread(target = _warm_rag_embedder, daemon = True).start()
 
     # Initialize RSA key pair for API key encryption (external providers)
     from core.inference.key_exchange import init_key_pair
@@ -690,6 +708,7 @@ app.include_router(mcp_servers_router, prefix = "/api/mcp/servers", tags = ["mcp
 app.include_router(datasets_router, prefix = "/api/datasets", tags = ["datasets"])
 app.include_router(data_recipe_router, prefix = "/api/data-recipe", tags = ["data-recipe"])
 app.include_router(export_router, prefix = "/api/export", tags = ["export"])
+app.include_router(rag_router, prefix = "/api/rag", tags = ["rag"])
 app.include_router(
     training_history_router, prefix = "/api/train", tags = ["training-history"]
 )
