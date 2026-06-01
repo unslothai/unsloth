@@ -384,6 +384,7 @@ const CompareContent = memo(function CompareContent({
   projectId,
   models,
   loraModels,
+  externalModels,
   onFoldersChange,
   onModelsChange,
   deleteDisabled,
@@ -392,6 +393,7 @@ const CompareContent = memo(function CompareContent({
   projectId?: string | null;
   models: ModelOption[];
   loraModels: LoraModelOption[];
+  externalModels: ExternalModelOption[];
   onFoldersChange?: () => void;
   onModelsChange?: (deletedModel?: DeletedModelRef) => void;
   deleteDisabled?: boolean;
@@ -406,6 +408,7 @@ const CompareContent = memo(function CompareContent({
       projectId={projectId}
       models={models}
       loraModels={loraModels}
+      externalModels={externalModels}
       onFoldersChange={onFoldersChange}
       onModelsChange={onModelsChange}
       deleteDisabled={deleteDisabled}
@@ -582,6 +585,7 @@ const LoraCompareContent = memo(function LoraCompareContent({
 function GeneralCompareHeader({
   models,
   loraModels,
+  externalModels,
   value,
   onValueChange,
   onFoldersChange,
@@ -591,6 +595,7 @@ function GeneralCompareHeader({
 }: {
   models: ModelOption[];
   loraModels: LoraModelOption[];
+  externalModels: ExternalModelOption[];
   value: string;
   onValueChange: (
     id: string,
@@ -611,6 +616,7 @@ function GeneralCompareHeader({
       <ModelSelector
         models={models}
         loraModels={loraModels}
+        externalModels={externalModels}
         value={value}
         onValueChange={onValueChange}
         onFoldersChange={onFoldersChange}
@@ -629,6 +635,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
   projectId,
   models,
   loraModels,
+  externalModels,
   onFoldersChange,
   onModelsChange,
   deleteDisabled,
@@ -637,6 +644,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
   projectId?: string | null;
   models: ModelOption[];
   loraModels: LoraModelOption[];
+  externalModels: ExternalModelOption[];
   onFoldersChange?: () => void;
   onModelsChange?: (deletedModel?: DeletedModelRef) => void;
   deleteDisabled?: boolean;
@@ -719,6 +727,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
               side="left"
               models={models}
               loraModels={loraModels}
+              externalModels={externalModels}
               value={model1.id}
               onValueChange={(id, meta) =>
                 setModel1({
@@ -745,6 +754,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
               side="right"
               models={models}
               loraModels={loraModels}
+              externalModels={externalModels}
               value={model2.id}
               onValueChange={(id, meta) =>
                 setModel2({
@@ -2242,6 +2252,7 @@ export function ChatPage(): ReactElement {
             projectId={view.projectId}
             models={models}
             loraModels={loraModels}
+            externalModels={externalModels}
             onFoldersChange={refreshLocalModels}
             onModelsChange={refreshModelLists}
             deleteDisabled={modelOperationInProgress}
