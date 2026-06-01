@@ -128,6 +128,11 @@ def _pin_cpu_resident_gguf_tensors_enabled(pin_memory: bool | None = None) -> bo
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _eager_pin_cpu_resident_gguf_tensors_enabled() -> bool:
+    value = os.environ.get("UNSLOTH_STUDIO_GGUF_EAGER_PIN_CPU_RESIDENT", "")
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _pin_cpu_tensor_for_transfer(
     tensor: torch.Tensor,
     *,
@@ -873,15 +878,25 @@ class _LazyGGUFOffloadMixin:
                 continue
             if qbuffer.device != self._resident_device:
                 qbuffer = qbuffer.to(self._resident_device)
-            self._buffers[name] = _pin_cpu_tensor_for_transfer(
-                qbuffer,
-                pin_memory = getattr(self, "_pin_cpu_resident", None),
-            )
+            if _eager_pin_cpu_resident_gguf_tensors_enabled():
+                qbuffer = _pin_cpu_tensor_for_transfer(
+                    qbuffer,
+                    pin_memory = getattr(self, "_pin_cpu_resident", None),
+                )
+            self._buffers[name] = qbuffer
 
     def _compute_quant_buffer(self, name: str, target_device: torch.device) -> torch.Tensor:
         qbuffer = self._buffers[name]
         if qbuffer.device == target_device:
             return qbuffer
+        if qbuffer.device.type == "cpu" and target_device.type == "cuda":
+            pinned = _pin_cpu_tensor_for_transfer(
+                qbuffer,
+                pin_memory = getattr(self, "_pin_cpu_resident", None),
+            )
+            if pinned is not qbuffer:
+                self._buffers[name] = pinned
+                qbuffer = pinned
         return qbuffer.to(target_device, non_blocking = True)
 
     def _compute_qweight(self, target_device: torch.device) -> torch.Tensor:

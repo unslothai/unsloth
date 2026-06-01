@@ -2049,6 +2049,7 @@ def test_lazy_gguf_linear_can_pin_cpu_resident_quantized_weight(monkeypatch):
         return tensor
 
     monkeypatch.setattr(g, "_pin_cpu_tensor_for_transfer", fake_pin)
+    monkeypatch.setenv("UNSLOTH_STUDIO_GGUF_EAGER_PIN_CPU_RESIDENT", "1")
     layer = g.LazyGGUFLinear(
         torch.ones(2, 2, dtype = torch.uint8),
         "Q4",
@@ -2061,6 +2062,42 @@ def test_lazy_gguf_linear_can_pin_cpu_resident_quantized_weight(monkeypatch):
     assert pinned
     assert layer.qweight.device == torch.device("cpu")
     assert layer.qweight.dtype is torch.uint8
+
+
+def test_lazy_gguf_linear_defers_cpu_pin_until_cuda_transfer(monkeypatch):
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA is required to exercise lazy pinning on transfer.")
+
+    import core.inference.gguf_text_encoder as g
+
+    pinned: list[torch.Tensor] = []
+
+    def fake_pin(tensor, *, pin_memory = None):
+        pinned.append(tensor)
+        return tensor
+
+    monkeypatch.setattr(g, "_pin_cpu_tensor_for_transfer", fake_pin)
+    monkeypatch.setattr(
+        g,
+        "_dequantize_gguf_bytes",
+        lambda qweight, quant_type, *, dtype = None: torch.eye(2, device = qweight.device),
+    )
+    layer = g.LazyGGUFLinear(
+        torch.ones(2, 2, dtype = torch.uint8),
+        "Q4",
+        in_features = 2,
+        out_features = 2,
+        compute_dtype = torch.float32,
+        resident_device = "cpu",
+    )
+
+    assert pinned == []
+
+    out = layer(torch.tensor([[1.0, 2.0]], device = "cuda"))
+
+    assert pinned
+    assert layer.qweight.device == torch.device("cpu")
+    torch.testing.assert_close(out.cpu(), torch.tensor([[1.0, 2.0]]))
 
 
 def test_lazy_gguf_linear_without_resident_device_follows_module_apply():
