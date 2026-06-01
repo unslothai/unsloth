@@ -4,21 +4,33 @@
 """PDF region locators: map a chunk back to highlight rectangles on its page.
 
 Computed once at ingest from the live parse (no backfill, no persisted page
-text). For each chunk we take a short anchor phrase from its page span, confirm
-that phrase occurs exactly once on the rendered PDF page, and ask PyMuPDF for the
-rectangle(s) covering it -- normalized to 0..1 of the page so the frontend can
-draw highlights at any zoom. Conservative by design: no PyMuPDF, no anchor, or a
-non-unique match yields an empty region list rather than a guessed highlight.
+text). For each chunk we take a short anchor phrase from the start of its page
+span and locate it in the page's word list (``page.get_text("words")``), which
+shares the exact extraction source as the chunk text -- same ligatures, same
+hyphenation, same tokenization -- so matching is robust where a glyph-exact
+``page.search_for`` is not (it misses ligatures like ``ﬁ`` and dehyphenated
+words). Matched words are unioned per line into rectangles, normalized to 0..1
+of the page so the frontend can draw highlights at any zoom.
+
+Conservative by design: a missing PyMuPDF, too short an anchor, or an anchor
+that cannot be located uniquely yields an empty region list rather than a
+guessed highlight.
 """
 
 from __future__ import annotations
 
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+# Anchor sizing. We take up to MAX_ANCHOR_WORDS interior words from the chunk's
+# leading span and shrink toward MIN_ANCHOR_WORDS to recover a unique match.
+MAX_ANCHOR_WORDS = 12
+MIN_ANCHOR_WORDS = 4
 
-@dataclass(frozen = True)
+
+@dataclass(frozen=True)
 class LocatorMatch:
     page_index: int
     page_number: int | None
@@ -26,79 +38,127 @@ class LocatorMatch:
     end: int
 
 
-def _normalize_with_map(text: str) -> str:
-    """Casefold + collapse runs of whitespace to single spaces (trimmed)."""
-    chars: list[str] = []
-    last_space = False
-    for ch in text:
-        if ch.isspace():
-            if chars and not last_space:
-                chars.append(" ")
-            last_space = True
-            continue
-        chars.append(ch.casefold())
-        last_space = False
-    return "".join(chars).strip()
+def _norm_token(token: str) -> str:
+    """Canonical form for matching: NFKC (decomposes ligatures), casefold,
+    strip surrounding punctuation/markdown. Returns "" for punctuation-only."""
+    token = unicodedata.normalize("NFKC", token).casefold()
+    return token.strip(" \t\r\n*#`[]()_.,;:!?\"'“”‘’-–—…|/\\")
 
 
-def _normalized_occurrences(haystack: str, needle: str) -> int:
-    nh = _normalize_with_map(haystack)
-    nn = _normalize_with_map(needle)
-    if not nh or not nn:
-        return 0
-    count, cursor = 0, 0
-    while True:
-        idx = nh.find(nn, cursor)
-        if idx < 0:
-            return count
-        count += 1
-        cursor = idx + 1
+def _anchor_tokens(page_text: str, match: LocatorMatch) -> list[str]:
+    """Normalized anchor tokens from the start of the chunk's page span.
 
-
-def _region_anchor(page_text: str, match: LocatorMatch) -> str | None:
-    """A 3-16 word phrase from the chunk's page span, used to locate it."""
+    The first and last whitespace-delimited tokens are dropped when the span is
+    long enough, since a chunk boundary often slices through a word.
+    """
     segment = page_text[match.start : match.end]
-    words = [w.strip(" \t\r\n*#`[]()") for w in segment.split()]
-    words = [w for w in words if len(w) >= 2]
-    if len(words) < 3:
-        return None
-    anchor = " ".join(words[: min(16, len(words))])
-    return anchor if len(anchor) >= 12 else None
+    raw = segment.split()
+    if len(raw) >= MIN_ANCHOR_WORDS + 2:
+        raw = raw[1:-1]
+    tokens = [t for t in (_norm_token(w) for w in raw) if t]
+    return tokens[:MAX_ANCHOR_WORDS]
+
+
+def _find_subsequences(haystack: list[str], needle: list[str]) -> list[int]:
+    """All start indices where ``needle`` occurs consecutively in ``haystack``."""
+    n, m = len(haystack), len(needle)
+    if m == 0 or m > n:
+        return []
+    first = needle[0]
+    out: list[int] = []
+    for i in range(n - m + 1):
+        if haystack[i] == first and haystack[i : i + m] == needle:
+            out.append(i)
+    return out
+
+
+def _locate(page_words: list, needle: list[str]) -> list[int] | None:
+    """Return the matched word indices for the best anchor, or None.
+
+    Tries the full anchor first, then progressively shorter prefixes, accepting
+    the first length that matches exactly once. A still-ambiguous match falls
+    back to its first occurrence (the anchor was lifted from this chunk's own
+    leading span, so the first hit is almost always the chunk's location).
+    """
+    # Filtered tokens keep an index map back to the original word rects so
+    # punctuation-only words never break an otherwise-contiguous phrase.
+    tokens: list[str] = []
+    idx_map: list[int] = []
+    for j, w in enumerate(page_words):
+        t = _norm_token(w[4])
+        if t:
+            tokens.append(t)
+            idx_map.append(j)
+
+    ambiguous_first: list[int] | None = None
+    for size in range(len(needle), MIN_ANCHOR_WORDS - 1, -1):
+        sub = needle[:size]
+        hits = _find_subsequences(tokens, sub)
+        if len(hits) == 1:
+            p = hits[0]
+            return [idx_map[p + k] for k in range(size)]
+        if hits and ambiguous_first is None:
+            p = hits[0]
+            ambiguous_first = [idx_map[p + k] for k in range(size)]
+    return ambiguous_first
+
+
+def _rects_from_words(page_words: list, indices: list[int], pw: float, ph: float):
+    """Union matched words per (block, line) into normalized page rectangles."""
+    lines: dict[tuple, list[float]] = {}
+    for j in indices:
+        w = page_words[j]
+        x0, y0, x1, y1 = float(w[0]), float(w[1]), float(w[2]), float(w[3])
+        key = (w[5], w[6])  # block, line
+        box = lines.get(key)
+        if box is None:
+            lines[key] = [x0, y0, x1, y1]
+        else:
+            box[0], box[1] = min(box[0], x0), min(box[1], y0)
+            box[2], box[3] = max(box[2], x1), max(box[3], y1)
+
+    out: list[dict[str, Any]] = []
+    for x0, y0, x1, y1 in lines.values():
+        w = x1 - x0
+        h = y1 - y0
+        if w <= 0 or h <= 0:
+            continue
+        out.append(
+            {
+                "x": max(0.0, min(1.0, x0 / pw)),
+                "y": max(0.0, min(1.0, y0 / ph)),
+                "width": max(0.0, min(1.0, w / pw)),
+                "height": max(0.0, min(1.0, h / ph)),
+            }
+        )
+    return out
 
 
 def _regions_for_match(
-    doc: Any, match: LocatorMatch, anchor: str
+    doc: Any, page_text: str, match: LocatorMatch
 ) -> list[dict[str, Any]]:
     try:
-        if match.page_index >= len(doc):
+        if match.page_index < 0 or match.page_index >= len(doc):
+            return []
+        needle = _anchor_tokens(page_text, match)
+        if len(needle) < MIN_ANCHOR_WORDS:
             return []
         page = doc[match.page_index]
-        raw_text = page.get_text("text") or ""
-        # Only highlight when the anchor is unambiguous on the rendered page.
-        if _normalized_occurrences(raw_text, anchor) != 1:
+        page_words = page.get_text("words") or []
+        if not page_words:
             return []
-        rects = page.search_for(anchor) or []
+        indices = _locate(page_words, needle)
+        if not indices:
+            return []
         pw = float(page.rect.width)
         ph = float(page.rect.height)
         if pw <= 0 or ph <= 0:
             return []
-        out: list[dict[str, Any]] = []
-        for rect in rects:
-            w = max(0.0, float(rect.x1 - rect.x0))
-            h = max(0.0, float(rect.y1 - rect.y0))
-            if w <= 0 or h <= 0:
-                continue
-            out.append(
-                {
-                    "pageIndex": match.page_index,
-                    "pageNumber": match.page_number,
-                    "x": max(0.0, min(1.0, float(rect.x0) / pw)),
-                    "y": max(0.0, min(1.0, float(rect.y0) / ph)),
-                    "width": max(0.0, min(1.0, w / pw)),
-                    "height": max(0.0, min(1.0, h / ph)),
-                }
-            )
-        return out
+        rects = _rects_from_words(page_words, indices, pw, ph)
+        for r in rects:
+            r["pageIndex"] = match.page_index
+            r["pageNumber"] = match.page_number
+        return rects
     except Exception:
         return []
 
@@ -135,16 +195,12 @@ def pdf_regions_for_chunks(
                 regions.append([])
                 continue
             match = LocatorMatch(
-                page_index = int(page_index),
-                page_number = getattr(chunk, "page_number", None),
-                start = int(start),
-                end = int(end),
+                page_index=int(page_index),
+                page_number=getattr(chunk, "page_number", None),
+                start=int(start),
+                end=int(end),
             )
-            anchor = _region_anchor(pages[page_index].text, match)
-            if not anchor:
-                regions.append([])
-                continue
-            regions.append(_regions_for_match(doc, match, anchor))
+            regions.append(_regions_for_match(doc, pages[page_index].text, match))
         return regions
     finally:
         doc.close()
