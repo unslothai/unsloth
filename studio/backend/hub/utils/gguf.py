@@ -89,10 +89,23 @@ def is_gguf_filename(filename: str) -> bool:
 def iter_gguf_files(directory: Path, recursive: bool = False):
     if not directory.is_dir():
         return
-    iterator = directory.rglob("*") if recursive else directory.iterdir()
-    for file in iterator:
-        if file.is_file() and is_gguf_filename(file.name):
-            yield file
+    if recursive:
+        # os.walk skips unreadable subdirs instead of raising (e.g. /proc).
+        for dirpath, _dirnames, filenames in os.walk(directory, onerror = lambda _e: None):
+            for name in filenames:
+                if is_gguf_filename(name):
+                    yield Path(dirpath) / name
+        return
+    try:
+        entries = list(directory.iterdir())
+    except OSError:
+        return
+    for file in entries:
+        try:
+            if file.is_file() and is_gguf_filename(file.name):
+                yield file
+        except OSError:
+            continue
 
 
 def pick_best_gguf(filenames: list[str]) -> Optional[str]:

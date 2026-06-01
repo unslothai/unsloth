@@ -132,6 +132,9 @@ def add_scan_folder(path: str) -> dict:
         raise ValueError("Path must be a directory, not a file")
     if not os.access(normalized, os.R_OK | os.X_OK):
         raise ValueError("Path is not readable")
+    if os.path.dirname(normalized) == normalized:
+        # Registering a filesystem root would expose denied system dirs via browse.
+        raise ValueError("The filesystem root cannot be registered")
     if _contains_sensitive_path_component(normalized):
         raise ValueError("Credential or configuration directories are not allowed")
 
@@ -179,6 +182,9 @@ def add_scan_folder(path: str) -> dict:
 
 
 def remove_scan_folder(id: int) -> None:
+    # sqlite INTEGER is signed 64-bit; ids outside that range cannot exist.
+    if not -(2 ** 63) <= id < 2 ** 63:
+        return
     conn = get_connection()
     try:
         _ensure_schema(conn)
