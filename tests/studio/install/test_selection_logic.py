@@ -2853,9 +2853,7 @@ class TestCpuFallback:
             captured["host"] = host
             raise PrebuiltFallback("stop after capture")
 
-        monkeypatch.setattr(
-            INSTALL_LLAMA_PREBUILT, "detect_host", self._arm64_nvidia
-        )
+        monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "detect_host", self._arm64_nvidia)
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "resolve_simple_install_release_plans",
