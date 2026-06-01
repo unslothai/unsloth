@@ -884,9 +884,7 @@ def build_rag_autoinject(
         return None
 
     floor_override = rag_scope.get("autoinject_min_score")
-    floor = (
-        float(floor_override) if floor_override is not None else _autoinject_floor()
-    )
+    floor = float(floor_override) if floor_override is not None else _autoinject_floor()
     top_k = rag_scope.get("default_top_k")
     try:
         found = search_for_autoinject(

@@ -290,7 +290,9 @@ def test_retrieve_hybrid_mode_selects_backend(monkeypatch):
     rrf_k. Sub-functions are stubbed so no db/embedder is needed."""
     calls: list = []
     monkeypatch.setattr(
-        retrieval, "retrieve_lexical", lambda c, s, q, k = None: calls.append(("lex", k)) or []
+        retrieval,
+        "retrieve_lexical",
+        lambda c, s, q, k = None: calls.append(("lex", k)) or [],
     )
     monkeypatch.setattr(
         retrieval,
@@ -313,8 +315,14 @@ def test_retrieve_hybrid_mode_selects_backend(monkeypatch):
 
     calls.clear()
     retrieval.retrieve_hybrid(
-        None, "kb_a", "q", k = 5, mode = "hybrid",
-        rrf_k = 99, top_k_lexical = 7, top_k_dense = 8,
+        None,
+        "kb_a",
+        "q",
+        k = 5,
+        mode = "hybrid",
+        rrf_k = 99,
+        top_k_lexical = 7,
+        top_k_dense = 8,
     )
     assert ("lex", 7) in calls and ("dense", 8) in calls
     rrf = next(c for c in calls if c[0] == "rrf")
