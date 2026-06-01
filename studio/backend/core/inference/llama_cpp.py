@@ -4595,10 +4595,10 @@ class LlamaCppBackend:
 
         conversation = list(messages)
 
-        # Forced first-pass RAG: always consult attached documents up front so a
-        # doc question does not lose to web_search. Gated on a cosine floor in
+        # Forced first-pass RAG: consult attached docs up front so a doc question
+        # doesn't lose to web_search. Gated on a cosine floor in
         # build_rag_autoinject; emits the same tool card + citations a real call
-        # would, then the model answers from the spliced-in passages.
+        # would, then answers from the spliced-in passages.
         _auto = build_rag_autoinject(conversation, rag_scope)
         if _auto:
             for _ev in _auto["events"]:

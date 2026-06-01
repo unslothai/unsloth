@@ -3,9 +3,9 @@
 
 """``search_knowledge_base`` LLM tool: scope resolution + hit formatting.
 
-KB scope wins over thread scope. Hits render as ``<chunk>`` blocks for the model
+KB scope wins over thread scope. Hits render as ``<chunk>`` blocks for the model,
 plus a parallel citation source-map for clickable sources in the chat layer.
-Opens/closes its own ``rag_db`` connection per call.
+Each call opens and closes its own ``rag_db`` connection.
 """
 
 from __future__ import annotations
@@ -92,7 +92,7 @@ def search_knowledge_base_with_sources(
     top_k_lexical: int | None = None,
     top_k_dense: int | None = None,
 ) -> tuple[str, list[dict]]:
-    """Search -> ``(rendered_text, citation_sources)``; sources align with each
+    """Search -> ``(rendered_text, citation_sources)``; each source aligns with a
     rendered ``<chunk>`` block's ``id``. Retrieval knobs fall back to config."""
     if not query or not query.strip():
         return "Error: query is empty.", []
@@ -142,8 +142,8 @@ def search_for_autoinject(
 ) -> tuple[str, list[dict]] | None:
     """Forced-retrieval variant for auto-injection.
 
-    Returns ``(rendered_text, sources)`` only when some hit's dense (cosine)
-    similarity clears ``min_dense_score``; else ``None`` (inject nothing). The
+    Returns ``(rendered_text, sources)`` only if some hit's dense (cosine)
+    similarity clears ``min_dense_score``, else ``None`` (inject nothing). The
     dense gate keeps weak lexical-only matches from polluting unrelated answers
     (e.g. agriculture docs vs "capital of France").
     """

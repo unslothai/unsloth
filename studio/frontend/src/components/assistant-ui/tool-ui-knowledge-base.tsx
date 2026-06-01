@@ -42,9 +42,8 @@ function asNumber(value: unknown): number | null {
 }
 
 /**
- * Parse the source-map after the `__RAG_SOURCES__:` sentinel (carries
- * documentId/chunkId for the viewer). Null if absent, so the caller falls back
- * to the generic JSON shapes.
+ * Parse the source-map after the sentinel (carries documentId/chunkId for the
+ * viewer). Null if absent, so callers fall back to generic JSON shapes.
  */
 function parseSentinelSources(result: unknown): Citation[] | null {
   if (typeof result !== "string") return null;
@@ -77,9 +76,8 @@ function parseSentinelSources(result: unknown): Citation[] | null {
 }
 
 /**
- * Normalize a provider-shaped tool result: JSON array, `{results:[...]}`
- * envelope, or plain string. Anything not mappable to {filename,text} falls
- * through to the raw-text branch.
+ * Normalize a provider-shaped tool result (JSON array, `{results:[...]}`, or
+ * string) to Citations; unmappable input falls through to the raw-text branch.
  */
 function parseCitations(result: unknown): Citation[] {
   const sentinel = parseSentinelSources(result);
@@ -139,7 +137,7 @@ function parseCitations(result: unknown): Citation[] {
 
 /**
  * Citation badge: filename + page, chunk text on hover. With a documentId,
- * clicking opens the source in the shared viewer (region-highlighted for PDFs).
+ * clicking opens the source in the shared viewer (PDFs region-highlighted).
  */
 function CitationBadge({ citation, index }: { citation: Citation; index: number }) {
   const openPreview = useDocumentPreviewStore((s) => s.openPreview);

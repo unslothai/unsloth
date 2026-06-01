@@ -53,8 +53,8 @@ function RegionOverlay({ regions }: { regions: PdfRegion[] }) {
   );
 }
 
-// Zoom multiplies fit-to-panel width: 1 = fit, >1 enlarges (page scrolls), <1
-// shrinks. Stepped so the buttons and wheel agree.
+// Zoom multiplies fit-to-panel width: 1 = fit, >1 enlarges, <1 shrinks.
+// Stepped so buttons and wheel agree.
 const ZOOM_MIN = 0.5;
 const ZOOM_MAX = 3;
 const ZOOM_STEP = 0.25;
@@ -103,8 +103,8 @@ function PdfPreview({
     return () => ro.disconnect();
   }, []);
 
-  // Wheel zooms (scroll up = in, down = out); drag-to-pan moves a zoomed page.
-  // Native non-passive listener so preventDefault stops the panel from scrolling.
+  // Wheel zooms (up = in, down = out). Native non-passive listener so
+  // preventDefault stops the panel from scrolling.
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
@@ -129,8 +129,8 @@ function PdfPreview({
     [],
   );
 
-  // Does the page overflow the panel (so panning/scrolling does anything)?
-  // Re-checked on layout changes and once the canvas finishes rendering.
+  // Whether the page overflows the panel (so panning does anything).
+  // Re-checked on layout changes and after the canvas renders.
   const recheckScrollable = useCallback(() => {
     const el = containerRef.current;
     if (!el) return;
@@ -144,8 +144,8 @@ function PdfPreview({
     recheckScrollable();
   }, [recheckScrollable, width, scale, page, numPages]);
 
-  // Grab-to-pan: hold and drag to move an overflowing page. Listen on window so
-  // the drag keeps tracking when the cursor leaves the panel.
+  // Grab-to-pan an overflowing page. Listen on window so the drag keeps tracking
+  // when the cursor leaves the panel.
   useEffect(() => {
     if (!grabbing) return;
     const onMove = (e: MouseEvent) => {
@@ -222,7 +222,7 @@ function PdfPreview({
         >
           {width > 0 && (
             // min-w-fit lets the row grow past the panel when zoomed so the
-            // centered page stays reachable on both sides while scrolling.
+            // centered page stays reachable on both sides.
             <div className="flex min-w-fit justify-center">
               <div className="relative w-fit shadow-sm">
                 <Page
@@ -306,7 +306,7 @@ function PdfPreview({
 
 /**
  * Shared preview panel. `openPreview` points it at a document + chunk; it
- * resolves the page + highlight regions and renders the PDF (or chunk text).
+ * resolves the page + highlight regions and renders the PDF or chunk text.
  */
 export function DocumentPreviewSheet() {
   const { open, documentId, chunkId, filename, page, closePreview } =
@@ -354,7 +354,7 @@ export function DocumentPreviewSheet() {
       >
         <SheetHeader className="gap-1 border-b p-4">
           {/* pr-10 reserves room for the sheet's absolute close button so a long
-          filename + page label never run under it. */}
+          filename + page label never runs under it. */}
           <SheetTitle className="flex items-center gap-2 pr-10 text-sm">
             <FileTextIcon className="size-4 shrink-0" />
             <span className="min-w-0 truncate">{headerName}</span>

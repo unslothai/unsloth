@@ -6,8 +6,8 @@
 ``start_ingestion`` returns ``(document_id, job_id)`` immediately and runs on a
 daemon thread, pushing progress onto a per-job queue (``job_events`` streams it
 as SSE; ``get_job_status`` reads the persisted row). Documents are deduped by
-content hash per scope; ``store.add_chunks`` is incremental and the embedder is
-the shared warm singleton (no subprocess).
+content hash per scope; ``store.add_chunks`` is incremental, the embedder a
+shared warm singleton.
 """
 
 from __future__ import annotations
@@ -95,8 +95,7 @@ def _run(
         _progress(conn, job_id, "parsing", 0.1)
         pages = parsers.parse(stored_path)
         if config.CAPTION_IMAGES and stored_path.lower().endswith(".pdf"):
-            # Caption rendered figures, splice into page text (no-op without a
-            # vision model).
+            # Caption figures, splice into page text (no-op without vision model).
             try:
                 figures = parsers.render_pdf_figures(
                     stored_path, max_figures = config.CAPTION_MAX_IMAGES
@@ -128,8 +127,7 @@ def _run(
         _progress(conn, job_id, "embedding", 0.5)
         vectors = _embed_all([c.text for c in chunks], model_name)
 
-        # Locate each chunk's highlight regions on its page (non-PDFs/failures
-        # yield none, never fatal).
+        # Locate each chunk's highlight regions (non-PDFs/failures yield none).
         regions = None
         if stored_path.lower().endswith(".pdf"):
             try:

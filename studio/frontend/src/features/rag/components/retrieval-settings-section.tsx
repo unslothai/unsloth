@@ -85,8 +85,8 @@ function SliderRow({
 }
 
 /**
- * Retrieval settings in the chat settings sheet: source (thread docs or a KB),
- * search backend, and passage count for search_knowledge_base.
+ * Retrieval settings for search_knowledge_base: source (thread docs or a KB),
+ * search backend, and passage count.
  */
 export function RetrievalSettingsSection() {
   const ragSource = useChatRuntimeStore((s) => s.ragSource);
@@ -111,7 +111,7 @@ export function RetrievalSettingsSection() {
   const setRagTopKLexical = useChatRuntimeStore((s) => s.setRagTopKLexical);
   const ragTopKDense = useChatRuntimeStore((s) => s.ragTopKDense);
   const setRagTopKDense = useChatRuntimeStore((s) => s.setRagTopKDense);
-  // RRF + candidate pools only apply to hybrid; dim them in single-backend modes.
+  // RRF + candidate pools apply only to hybrid; dim them otherwise.
   const hybrid = ragMode === "hybrid";
 
   const [kbs, setKbs] = useState<KnowledgeBase[]>([]);
@@ -132,8 +132,8 @@ export function RetrievalSettingsSection() {
     };
   }, [refreshTick]);
 
-  // If the selected KB was deleted, fall back to the thread source so the
-  // request builder never sends a stale kb_id.
+  // If the selected KB was deleted, fall back to the thread source so we never
+  // send a stale kb_id.
   useEffect(() => {
     if (
       ragSource.type === "kb" &&

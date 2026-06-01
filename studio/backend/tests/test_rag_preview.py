@@ -3,10 +3,10 @@
 
 """PDF region locators + citation preview routes.
 
-A small PDF is built in-memory with PyMuPDF so the locator's
-``page.search_for`` runs against a real page, then ingested through the real
-threaded pipeline (stubbed embeddings for speed). Verifies chunks carry
-highlight regions and the preview-target / signed-file routes work.
+A small in-memory PyMuPDF PDF runs the locator's ``page.search_for`` against a
+real page, then is ingested through the real threaded pipeline (stubbed
+embeddings). Verifies chunks carry highlight regions and the
+preview-target / signed-file routes work.
 """
 
 from __future__ import annotations
@@ -150,8 +150,8 @@ def test_norm_token_decomposes_ligatures():
 
 
 def test_locator_handles_midword_anchor_and_locates_line():
-    """A chunk span that begins mid-word still locates: first/last tokens are
-    dropped and the matched words union into a rect on the right line."""
+    """A chunk span beginning mid-word still locates: first/last tokens are
+    dropped and matched words union into a rect on the right line."""
     import pymupdf
 
     from core.rag.locators import LocatorMatch, _regions_for_match
@@ -163,8 +163,7 @@ def test_locator_handles_midword_anchor_and_locates_line():
     )
     # Page text mirrors what the parser stores (get_text("text")).
     page_text = doc[0].get_text("text")
-    # Span starts mid-first-word ("lpha ...") and ends mid-last-word, so the
-    # trimming logic must recover the interior phrase.
+    # Span starts/ends mid-word, so trimming must recover the interior phrase.
     start = page_text.index("lpha")
     end = page_text.index("theta") + 3
     match = LocatorMatch(page_index = 0, page_number = 1, start = start, end = end)

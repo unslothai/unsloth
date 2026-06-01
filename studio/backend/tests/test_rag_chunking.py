@@ -41,8 +41,7 @@ def test_chunk_tracks_source_page_index():
 
 
 def test_chunk_char_offsets_locate_text_in_page():
-    # Each chunk's [page_char_start, page_char_end) must slice back to a span
-    # containing the chunk text (modulo whitespace stripping).
+    # Each chunk's char span must slice back to text containing it (modulo whitespace).
     page_text = "alpha bravo charlie delta echo foxtrot golf hotel " * 30
     pages = [_page(page_text, 1)]
     chunks = chunk_pages(pages, max_tokens = 16, overlap = 0, count = WORDS)

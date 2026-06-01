@@ -3,8 +3,8 @@
 
 """Ingestion lifecycle: pending -> completed, SSE events, dedupe, delete.
 
-``stub_embeddings`` avoids a sentence-transformers download. One optional test
-exercises the real embedder, guarded by RAG_REAL_EMBEDDER=1.
+``stub_embeddings`` avoids a download; one optional test uses the real
+embedder, guarded by RAG_REAL_EMBEDDER=1.
 """
 
 import os
@@ -63,7 +63,7 @@ def test_ingestion_lifecycle_pending_to_completed(rag_home, stub_embeddings, tmp
         doc = store.get_document(conn, doc_id)
         assert doc["status"] == "completed"
         assert doc["num_chunks"] > 0
-        # Chunks are searchable after ingestion.
+        # Chunks searchable after ingestion.
         assert store.search_lexical(conn, scope, "alpha", 10)
     finally:
         conn.close()

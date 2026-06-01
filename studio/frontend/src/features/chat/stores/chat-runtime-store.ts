@@ -399,10 +399,8 @@ type ChatRuntimeStore = {
   collapseHtmlArtifacts: boolean;
   allowArtifactNetworkAccess: boolean;
   mcpEnabledForChat: boolean;
-  /**
-   * RAG composer pill. When on, the local chat request gets search_knowledge_base
-   * plus a `rag_scope` resolved from `ragSource` / `ragMode` / `ragTopK`.
-   */
+  /** RAG composer pill: when on, the request gets search_knowledge_base plus a
+   * `rag_scope` from `ragSource`/`ragMode`/`ragTopK`. */
   ragEnabled: boolean;
   ragSource: RagSource;
   ragMode: RagMode;

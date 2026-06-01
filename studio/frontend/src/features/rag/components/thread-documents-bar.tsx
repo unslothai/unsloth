@@ -12,8 +12,8 @@ import { DocumentStatusChip } from "./document-status-chip";
 import { useRagDocuments } from "./use-rag-documents";
 
 /**
- * Per-thread document strip above the composer (Docs pill on, thread source).
- * Uploads attach to the thread; chips track indexing status live via SSE.
+ * Per-thread document strip above the composer. Uploads attach to the thread;
+ * chips track indexing status live via SSE.
  */
 export function ThreadDocumentsBar({ threadId }: { threadId: string | null }) {
   const ragEnabled = useChatRuntimeStore((s) => s.ragEnabled);
@@ -22,9 +22,9 @@ export function ThreadDocumentsBar({ threadId }: { threadId: string | null }) {
   const aui = useAui();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // A fresh chat has no thread id until the first message. To attach docs before
-  // sending, materialize the id on demand; the first message reuses it (see
-  // append() in runtime-provider), so uploaded docs stay with the conversation.
+  // A fresh chat has no thread id until the first message. Materialize one on
+  // demand so docs can attach before sending; the first message reuses it (see
+  // append() in runtime-provider), keeping docs with the conversation.
   const [materializedId, setMaterializedId] = useState<string | null>(null);
   const effectiveThreadId = threadId ?? materializedId;
   useEffect(() => {
@@ -70,18 +70,16 @@ export function ThreadDocumentsBar({ threadId }: { threadId: string | null }) {
     return pending;
   }, [aui, effectiveThreadId, setActiveThreadId]);
 
-  // Open the picker synchronously so the click's user activation survives.
-  // Awaiting thread-id materialization before .click() drops the activation, so
-  // the browser blocks the first picker open (it took a second click). The id is
-  // only needed to upload, not to open the picker, so kick off materialization
-  // here and await it in onChange (the OS file dialog lasts far longer than the
-  // init, so the scope is live by the time files come back).
+  // Open the picker synchronously so the click's user activation survives;
+  // awaiting thread-id materialization first drops it and the browser blocks the
+  // open. The id is only needed to upload, so kick off materialization here and
+  // await it in onChange (the file dialog outlives the init).
   const handleAddDocs = useCallback(() => {
     void ensureThreadId();
     fileInputRef.current?.click();
   }, [ensureThreadId]);
 
-  // Only for the thread-document source; KB sources are managed in the KB dialog.
+  // Thread-document source only; KB sources are managed in the KB dialog.
   if (!ragEnabled || ragSource.type !== "thread") return null;
 
   return (
@@ -107,15 +105,13 @@ export function ThreadDocumentsBar({ threadId }: { threadId: string | null }) {
           const files = Array.from(e.target.files ?? []);
           e.target.value = "";
           if (files.length === 0) return;
-          // Wait for the thread id before uploading so the scope is live (it has
-          // already resolved by the time the file dialog closes).
+          // Await the thread id so the scope is live (already resolved by now).
           void ensureThreadId().then((id) => {
             if (id) void upload(files);
           });
         }}
       />
-      {/* Cap the chip area so a large set scrolls instead of overflowing the
-          conversation. */}
+      {/* Cap the chip area so a large set scrolls instead of overflowing. */}
       <div className="flex max-h-24 flex-1 flex-row flex-wrap items-center gap-1.5 overflow-y-auto">
         {documents.map((doc) => (
           <DocumentStatusChip

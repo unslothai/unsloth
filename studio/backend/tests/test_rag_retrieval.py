@@ -3,7 +3,7 @@
 
 """Retrieval + tool tests: RRF fusion, min-score floor, scope precedence,
 chunk formatting, citation source-map. Deterministic bag-of-words embedder,
-so no model download."""
+no model download."""
 
 import math
 
@@ -147,8 +147,7 @@ def test_tool_formats_chunks_and_sources(rag_conn, bow_embeddings, monkeypatch):
 
 
 def test_dispatcher_appends_sources_sentinel(rag_conn, bow_embeddings, monkeypatch):
-    """_search_knowledge_base appends the JSON source-map after the sentinel;
-    the model-facing text before the sentinel stays clean."""
+    """JSON source-map is appended after the sentinel; model-facing text before it stays clean."""
     import json
 
     from core.inference import tools
@@ -175,8 +174,7 @@ def test_dispatcher_no_sentinel_when_no_hits(rag_home, monkeypatch):
     """No sentinel when the search returns no sources."""
     from core.inference import tools
 
-    # Stub retrieval so the test never reaches the real embedder (runnable
-    # without sentence-transformers installed).
+    # Stub retrieval so the test never reaches the real embedder.
     monkeypatch.setattr(retrieval, "retrieve_hybrid", lambda conn, scope, q, **k: [])
     out = tools._search_knowledge_base({"query": "hello"}, {"kb_id": "missing"})
     assert tools.RAG_SOURCES_SENTINEL not in out
@@ -223,8 +221,7 @@ def test_search_for_autoinject_empty_query_or_scope(rag_home):
 
 
 def test_build_rag_autoinject_emits_pipeline(monkeypatch):
-    """Auto-inject yields the same tool card + citation source-map a real call
-    would; the model-facing tool message has the sentinel stripped."""
+    """Auto-inject yields the same tool card + source-map a real call would; the model-facing tool message has the sentinel stripped."""
     from core.inference import tools
     from storage import rag_db
 
@@ -287,7 +284,7 @@ def test_build_rag_autoinject_disabled_by_env(monkeypatch):
 # --------------------------------------------------------------------------
 def test_retrieve_hybrid_mode_selects_backend(monkeypatch):
     """``mode`` runs only the chosen backend; hybrid threads candidate counts +
-    rrf_k. Sub-functions are stubbed so no db/embedder is needed."""
+    rrf_k. Sub-functions stubbed, so no db/embedder needed."""
     calls: list = []
     monkeypatch.setattr(
         retrieval,
@@ -359,7 +356,7 @@ def test_scope_overrides_reach_retrieval(monkeypatch):
     assert seen["top_k_lexical"] == 7 and seen["top_k_dense"] == 8
     assert seen["min_score"] == 0.4
     assert seen["top_k"] == 11
-    # An unknown mode falls back to hybrid rather than propagating garbage.
+    # Unknown mode falls back to hybrid, not propagating garbage.
     seen.clear()
     tools._search_knowledge_base({"query": "q"}, {"kb_id": "a", "mode": "bogus"})
     assert seen["mode"] == "hybrid"
@@ -367,7 +364,7 @@ def test_scope_overrides_reach_retrieval(monkeypatch):
 
 def test_build_rag_autoinject_scope_overrides_env(monkeypatch):
     """rag_scope wins over env: explicit enabled/floor + retrieval knobs flow,
-    and an explicit ``autoinject=False`` disables even with the env on."""
+    and ``autoinject=False`` disables even with env on."""
     from core.inference import tools
     from storage import rag_db
 

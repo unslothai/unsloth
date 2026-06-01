@@ -1,13 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Map a chunk back to highlight rectangles on its page (computed at ingest).
+"""Map a chunk to highlight rectangles on its page (computed at ingest).
 
 The chunk's leading phrase is anchored in the page word list
-(``get_text("words")``, the same extraction as the chunk text), so matching
-survives ligatures and dehyphenation that glyph-exact ``search_for`` misses.
-Matched words union per line into rects, normalized to 0..1. Missing PyMuPDF, a
-too-short anchor, or no unique match yields no regions (never a guess).
+(``get_text("words")``, same extraction as the chunk text), so matching survives
+ligatures and dehyphenation that glyph-exact ``search_for`` misses. Matched words
+union per line into rects normalized to 0..1. Missing PyMuPDF, a too-short
+anchor, or no unique match yields no regions (never a guess).
 """
 
 from __future__ import annotations
@@ -33,14 +33,14 @@ class LocatorMatch:
 
 def _norm_token(token: str) -> str:
     """Canonical match form: NFKC (decomposes ligatures), casefold, strip
-    surrounding punctuation/markdown. "" for punctuation-only."""
+    surrounding punctuation/markdown. "" if punctuation-only."""
     token = unicodedata.normalize("NFKC", token).casefold()
     return token.strip(" \t\r\n*#`[]()_.,;:!?\"'“”‘’-–—…|/\\")
 
 
 def _anchor_tokens(page_text: str, match: LocatorMatch) -> list[str]:
-    """Normalized anchor tokens from the chunk's leading span. Drops the first
-    and last token (boundaries often slice mid-word) when long enough."""
+    """Normalized anchor tokens from the chunk's leading span. Drops first and
+    last token (boundaries often slice mid-word) when long enough."""
     segment = page_text[match.start : match.end]
     raw = segment.split()
     if len(raw) >= MIN_ANCHOR_WORDS + 2:
@@ -64,8 +64,8 @@ def _find_subsequences(haystack: list[str], needle: list[str]) -> list[int]:
 
 def _locate(page_words: list, needle: list[str]) -> list[int] | None:
     """Matched word indices for the best anchor, or None. Tries the full anchor
-    then shorter prefixes, taking the first matching exactly once; falls back to
-    the first hit if still ambiguous (the anchor is the chunk's own start)."""
+    then shorter prefixes, taking the first that matches exactly once; falls back
+    to the first hit if still ambiguous (anchor is the chunk's own start)."""
     # Skip punctuation-only words so they never break a phrase.
     tokens: list[str] = []
     idx_map: list[int] = []

@@ -10,7 +10,7 @@ RAG_AVAILABLE is False and get_connection() raises rather than failing import.
 
 One rag.db holds the ``documents`` / ``chunks`` model, the FTS5 lexical index
 (``chunks_fts``) and the sqlite-vec dense index (``chunks_vec``, created lazily
-by ensure_vec once the embedding dim is known, since vec0 bakes it into the
+by ensure_vec once the embedding dim is known, since vec0 bakes the dim into the
 column type).
 """
 
@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 from utils.paths import rag_db_path, ensure_dir
 
-# Optional dep: importing it must never crash this module (Studio imports it
+# Optional dep: import must never crash this module (Studio imports it
 # unconditionally).
 try:
     import sqlite_vec
@@ -41,8 +41,8 @@ _schema_ready = False
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
     """Create the RAG tables if absent (once per process). ``chunks_vec`` is
-    skipped here -- its column type needs the embedding dim, so ensure_vec()
-    creates it lazily at first ingest."""
+    skipped: its column type needs the embedding dim, so ensure_vec() creates it
+    lazily at first ingest."""
     conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript(
         """

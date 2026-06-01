@@ -42,8 +42,7 @@ logger = get_logger(__name__)
 
 _EXEC_TIMEOUT = 300  # 5 minutes
 
-# Separates the UI source-map from the search result; loops strip from here on
-# before the model sees it (like __IMAGES__).
+# Splits the UI source-map from the result; loops strip from here on (like __IMAGES__).
 RAG_SOURCES_SENTINEL = "\n__RAG_SOURCES__:"
 
 # Pre-import modules used in _sandbox_preexec at module level so that
@@ -546,8 +545,8 @@ RENDER_HTML_TOOL = {
     },
 }
 
-# Spec duplicated here (not imported from core.rag.tool) so the registry never
-# pulls in the RAG stack; dispatch imports it lazily.
+# Spec duplicated (not imported from core.rag.tool) so the registry never pulls in
+# the RAG stack; dispatch imports it lazily.
 SEARCH_KNOWLEDGE_BASE_TOOL = {
     "type": "function",
     "function": {
@@ -801,8 +800,7 @@ def _search_knowledge_base(arguments: dict, rag_scope: dict | None) -> str:
         min_score = float(scope.get("min_score") or 0.0),
         **_scope_retrieval_kwargs(scope),
     )
-    # Append the UI source-map after the sentinel; loops strip it before the
-    # model sees the result.
+    # Append the UI source-map after the sentinel; loops strip it before the model.
     if sources:
         import json as _json
 
@@ -811,10 +809,10 @@ def _search_knowledge_base(arguments: dict, rag_scope: dict | None) -> str:
 
 
 # ── Forced first-pass RAG retrieval (auto-inject) ───────────────────────────
-# With a rag_scope present, retrieve once up front so docs are always consulted
-# instead of trusting the model to pick search over web_search. Gated on a cosine
-# floor so unrelated docs don't pollute the answer. Emits the same events and
-# messages a real tool call would.
+# With a rag_scope, retrieve once up front so docs are always consulted (rather
+# than trusting the model to pick search over web_search). Gated on a cosine floor
+# so unrelated docs don't pollute the answer; emits the same events/messages a
+# real tool call would.
 _AUTOINJECT_DEFAULT_FLOOR = 0.55
 
 

@@ -19,9 +19,8 @@ export interface TrackedDocument extends RagDocument {
 
 /**
  * Per-file identity for client-side dedup: name + size + last-modified. An
- * edited file (same name, new size/date) counts as new; an identical
- * re-selection is skipped pre-upload. The backend dedups by content hash as the
- * authoritative cross-session check.
+ * edited file counts as new; an identical re-selection is skipped pre-upload.
+ * The backend dedups by content hash as the authoritative check.
  */
 function fileSignature(file: File): string {
   return `${file.name}|${file.size}|${file.lastModified}`;
@@ -35,7 +34,7 @@ type Lister = () => Promise<RagDocument[]>;
 
 /**
  * Manage one scope's documents (KB or thread): list, upload, delete, and keep
- * indexing status live via /jobs/{jobId}/events (SSE), polling getJob on error.
+ * indexing status live via SSE, polling getJob on error.
  */
 export function useRagDocuments(
   scope: RagDocumentScope | null,
@@ -44,15 +43,15 @@ export function useRagDocuments(
   const [documents, setDocuments] = useState<TrackedDocument[]>([]);
   const [loading, setLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
-  // Tracked jobs (id -> abort) so we don't double-subscribe.
+  // Tracked jobs (id -> abort) to avoid double-subscribing.
   const trackedJobs = useRef<Map<string, AbortController>>(new Map());
   // Live mirror of `documents` for synchronous dedup checks in upload().
   const documentsRef = useRef<TrackedDocument[]>([]);
   useEffect(() => {
     documentsRef.current = documents;
   }, [documents]);
-  // Signatures of files attached this scope, to skip identical re-selections.
-  // Cleared when the scope changes.
+  // Signatures of files attached this scope, to skip identical re-selections;
+  // cleared on scope change.
   const uploadedSigs = useRef<Set<string>>(new Set());
 
   const scopeKey = scope
@@ -80,7 +79,7 @@ export function useRagDocuments(
 
       const finish = (status: DocumentStatus, error?: string | null) => {
         if (status === "failed") {
-          // Drop the chip instead of showing a red "Failed" one; warn instead.
+          // Drop the chip instead of a red "Failed" one; warn via toast.
           setDocuments((rows) => rows.filter((row) => row.id !== documentId));
           toast.error(`Couldn't index ${filename}`, {
             description: error ?? "Indexing failed",
@@ -107,8 +106,7 @@ export function useRagDocuments(
               return;
             }
           }
-          // Stream ended with no terminal frame: reconcile against the job's
-          // final state.
+          // Stream ended with no terminal frame: reconcile against final state.
           const job = await getJob(jobId);
           finish(
             job.status === "completed"
@@ -152,8 +150,8 @@ export function useRagDocuments(
     setLoading(true);
     try {
       // Merge server truth with locally-tracked progress so a refresh mid-index
-      // doesn't drop a live "running %" chip. Failed docs are hidden (a toast
-      // warned at upload time).
+      // keeps a live "running %" chip. Failed docs are hidden (toast warned at
+      // upload).
       const rows = (await lister()).filter((row) => row.status !== "failed");
       setDocuments((prev) =>
         rows.map((row) => {
@@ -172,7 +170,7 @@ export function useRagDocuments(
     }
   }, [scope, lister]);
 
-  // Reset + load on scope change. Abort any in-flight job streams.
+  // Reset + load on scope change; abort any in-flight job streams.
   useEffect(() => {
     for (const controller of trackedJobs.current.values()) controller.abort();
     trackedJobs.current.clear();
@@ -187,8 +185,8 @@ export function useRagDocuments(
   }, [scopeKey]);
 
   // Upload one file: optimistic chip -> POST -> swap to the real id. If the
-  // backend deduped to an existing document, drop the chip so no duplicate (and
-  // never a red "Failed") shows. `seenIds` holds ids present/added this batch.
+  // backend deduped to an existing document, drop the chip so no duplicate shows.
+  // `seenIds` holds ids present/added this batch.
   const uploadOne = useCallback(
     async (file: File, seenIds: Set<string>) => {
       if (!scope) return;
@@ -239,8 +237,8 @@ export function useRagDocuments(
       const seenIds = new Set(documentsRef.current.map((d) => d.id));
       try {
         for (const file of Array.from(files)) {
-          // Skip an identical re-selection (name + size + last-modified) before
-          // any upload or chip; an edited same-name file still uploads.
+          // Skip an identical re-selection before any upload or chip; an edited
+          // same-name file still uploads.
           if (uploadedSigs.current.has(fileSignature(file))) {
             toast.info(`${file.name} is already indexed - skipping`);
             continue;

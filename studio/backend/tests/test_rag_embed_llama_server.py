@@ -1,10 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""llama-server GGUF embedder backend. Every external boundary (binary, GGUF
-download, subprocess, HTTP) is mocked so no model or network is needed. Verifies
-backend selection, import isolation (no torch), the spawn command, readiness
-fail-loud, HTTP encode/tokenize parsing, and self-healing respawn."""
+"""llama-server GGUF embedder backend, every boundary (binary, download,
+subprocess, HTTP) mocked. Covers backend selection, import isolation (no torch),
+spawn command, readiness fail-loud, encode/tokenize parsing, self-healing."""
 
 import subprocess
 import sys

@@ -64,7 +64,7 @@ export interface RagSearchResult {
   text: string;
 }
 
-/** A chunk's highlight rect on a PDF page; coords normalized 0..1, top-left origin. */
+/** A chunk's highlight rect on a PDF page; coords 0..1, top-left origin. */
 export interface PdfRegion {
   pageIndex: number;
   pageNumber: number;
@@ -84,7 +84,7 @@ export interface PreviewTarget {
   text?: string | null;
 }
 
-/** Retrieval scope on the chat request; set kb_id (KB) or thread_id (thread docs). */
+/** Retrieval scope on the chat request; set kb_id or thread_id. */
 export interface RagScope {
   kb_id?: string;
   thread_id?: string;

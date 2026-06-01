@@ -44,7 +44,7 @@ async function ragRequest<T>(
 async function ragUpload(path: string, file: File): Promise<DocumentUploadResult> {
   const form = new FormData();
   form.append("file", file);
-  // No Content-Type: browser sets the multipart boundary.
+  // No Content-Type: let the browser set the multipart boundary.
   const response = await authFetch(`${RAG_BASE}${path}`, {
     method: "POST",
     body: form,

@@ -3,10 +3,10 @@
 
 """Document parsing -> list[Page], one dispatch with lazy optional deps.
 
-PDFs keep per-page boundaries (``page_number``); other formats (txt, md, docx,
-html) return a single page. ``parse(path, want_images=True)`` also returns
-embedded images. Heavy imports (PyMuPDF, python-docx) are lazy, so importing
-this module never fails on a missing dep.
+PDFs keep per-page boundaries (``page_number``); txt/md/docx/html return a single
+page. ``parse(path, want_images=True)`` also returns embedded images. Heavy
+imports (PyMuPDF, python-docx) are lazy, so importing this module never fails on
+a missing dep.
 """
 
 from __future__ import annotations
@@ -138,8 +138,8 @@ def render_pdf_figures(
 ) -> list[ParsedImage]:
     """Detect figure regions and render each to a PNG for captioning.
 
-    Academic figures are vector, so raw raster extraction yields fragments.
-    Instead cluster vector drawings + raster placements into boxes, keep those
+    Academic figures are vector, so raw raster extraction yields fragments;
+    instead cluster vector drawings + raster placements into boxes, keep those
     covering a meaningful slice of the page, and render them. Any failure yields
     an empty list, never an exception.
     """
@@ -209,8 +209,8 @@ def parse(path: str, *, want_images: bool = False):
     """Parse a file into pages by extension.
 
     Returns ``list[Page]``, or ``(list[Page], list[ParsedImage])`` when
-    ``want_images=True``; only PDFs yield images (others give an empty list).
-    Raises ValueError on unsupported ext.
+    ``want_images=True``; only PDFs yield images (others give []). Raises
+    ValueError on unsupported ext.
     """
     ext = os.path.splitext(path)[1].lower()
 

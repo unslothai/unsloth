@@ -3,9 +3,9 @@
 
 """RAG core package for Unsloth Studio.
 
-Callers import submodules lazily (``from core.rag import store``), so this
-package pulls in no heavy deps (sentence-transformers, torch, PyMuPDF). Keep it
-free of top-level submodule imports.
+Callers import submodules lazily (``from core.rag import store``) to avoid heavy
+deps (sentence-transformers, torch, PyMuPDF), so keep this free of top-level
+submodule imports.
 """
 
 __all__ = [

@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Embedder concurrency: the fast tokenizer is not thread-safe, so encode and
-token counting must be serialized or concurrent ingest threads panic with
-"Already borrowed". A fake model detects any overlap, so no download is needed."""
+"""Embedder concurrency: the fast tokenizer isn't thread-safe, so encode and
+token counting must be serialized (else concurrent threads panic "Already
+borrowed"). A fake model detects overlap, so no download is needed."""
 
 import os
 import threading
@@ -17,8 +17,7 @@ from core.rag import config, embeddings
 
 @pytest.fixture(autouse = True)
 def _pin_st_backend(monkeypatch):
-    # These tests patch the ST internals (_get), so force the ST backend
-    # regardless of the host's auto-selected default.
+    # Tests patch ST internals (_get), so force the ST backend over the host default.
     monkeypatch.setattr(config, "EMBED_BACKEND", "sentence-transformers")
     embeddings._reset_backend()
     yield
@@ -84,7 +83,7 @@ def test_encode_is_serialized(monkeypatch):
     monkeypatch.setattr(embeddings, "_get", lambda model_name = None: _FakeModel(probe))
     errors = _hammer(lambda: embeddings.encode(["alpha beta", "gamma"]))
     assert errors == []
-    assert probe.saw_overlap is False  # the compute lock serialized encode()
+    assert probe.saw_overlap is False  # compute lock serialized encode()
 
 
 def test_token_counter_is_serialized(monkeypatch):

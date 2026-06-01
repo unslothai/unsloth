@@ -3,10 +3,10 @@
 
 """Page-aware recursive-separator chunking with token overlap.
 
-Split on the coarsest separator, recurse finer, then greedy-merge into
-<= max_tokens chunks with ``overlap`` tokens between neighbours. Each chunk
-records its ``[page_char_start, page_char_end)`` span and ``source_page_index``,
-used by the locator pass to map chunks onto the PDF page for highlighting.
+Split coarsest-first, recurse finer, then greedy-merge into <= max_tokens chunks
+with ``overlap`` tokens between neighbours. Each chunk records its
+``[page_char_start, page_char_end)`` span and ``source_page_index``, used by the
+locator pass to highlight chunks on the PDF page.
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ def _split(
     text: str, seps: tuple[str, ...], max_tokens: int, count: TokenCounter
 ) -> list[str]:
     """Recursively split into pieces each <= max_tokens (best effort). Pieces
-    rejoin to ``text`` exactly, so char offsets are a running length."""
+    rejoin to ``text`` exactly, so offsets are a running length."""
     if count(text) <= max_tokens:
         return [text]
     for i, sep in enumerate(seps):
@@ -64,8 +64,8 @@ def _merge(
     count: TokenCounter,
 ) -> list[tuple[str, int, int]]:
     """Greedy-merge pieces into <= max_tokens chunks with token overlap.
-    ``starts[i]`` is ``pieces[i]``'s char offset in the page; returns
-    ``(chunk_text, char_start, char_end)`` spans into it."""
+    ``starts[i]`` is ``pieces[i]``'s page char offset; returns
+    ``(chunk_text, char_start, char_end)`` spans."""
     chunks: list[tuple[str, int, int]] = []
     buf: list[str] = []
     buf_starts: list[int] = []
@@ -109,7 +109,7 @@ def chunk_pages(
     out: list[Chunk] = []
     for page_index, page in enumerate(pages):
         pieces = _split(page.text, SEPARATORS, max_tokens, count)
-        # _split preserves offsets, so a running cursor gives exact char offsets.
+        # _split preserves offsets, so a running cursor gives exact offsets.
         starts: list[int] = []
         cursor = 0
         for piece in pieces:

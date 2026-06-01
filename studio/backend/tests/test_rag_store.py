@@ -3,8 +3,8 @@
 
 """Store tests: incremental writes, dedupe, delete, scope isolation, dense + lexical.
 
-Deterministic bag-of-words vectors (no model download). Each test gets an
-isolated rag.db via the ``rag_conn`` fixture.
+Deterministic bag-of-words vectors (no download); each test gets an isolated
+rag.db via the ``rag_conn`` fixture.
 """
 
 import math

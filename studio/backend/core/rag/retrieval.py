@@ -3,7 +3,7 @@
 
 """Lexical (FTS5) + dense (vec0 cosine) retrieval fused via Reciprocal Rank
 Fusion. ``dense_score`` is carried so callers can apply a similarity floor.
-Every function takes a live ``conn`` and delegates SQL to ``store``.
+Each function takes a live ``conn`` and delegates SQL to ``store``.
 """
 
 from __future__ import annotations
@@ -90,8 +90,8 @@ def retrieve_hybrid(
     top_k_dense: int | None = None,
 ) -> list[Hit]:
     """``mode`` picks the backend: lexical-only, dense-only, or RRF of both
-    (default). ``None`` params fall back to config so callers can override any
-    subset. Nullish (not truthy) checks so an explicit 0 is respected."""
+    (default). ``None`` params fall back to config; ``is not None`` checks honor
+    an explicit 0."""
     k = k if k is not None else config.TOP_K_HYBRID
     if mode == "lexical":
         return retrieve_lexical(conn, scope, query, k)

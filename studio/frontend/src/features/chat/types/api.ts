@@ -277,15 +277,10 @@ export interface OpenAIChatCompletionsRequest {
   preserve_thinking?: boolean | null;
   enable_tools?: boolean | null;
   enabled_tools?: string[];
-  /**
-   * Attach every enabled MCP server's tools to this turn's tool list.
-   * Only meaningful alongside `enable_tools` on local models.
-   */
+  /** Attach enabled MCP servers' tools to this turn. Local models + enable_tools only. */
   mcp_enabled?: boolean;
-  /**
-   * Scope for the local `search_knowledge_base` tool; set only when the RAG pill
-   * is on. Exactly one of `kb_id` (a KB) or `thread_id` (thread docs) is set.
-   */
+  /** Scope for the local `search_knowledge_base` tool (RAG pill on). Exactly one
+   * of `kb_id` (a KB) or `thread_id` (thread docs). */
   rag_scope?: {
     kb_id?: string;
     thread_id?: string;

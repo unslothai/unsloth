@@ -3,8 +3,8 @@
 
 """Unified SQLite store: relational chunks + FTS5 lexical + sqlite-vec dense.
 
-Module-level functions in the Studio idiom: each takes a ``conn`` the caller
-opens (``rag_db.get_connection()``) and closes. Inserts are incremental:
+Studio-idiom module-level functions: each takes a ``conn`` the caller opens
+(``rag_db.get_connection()``) and closes. Inserts are incremental --
 ``add_chunks`` appends one document's rows without rebuilding the scope, so the
 Nth upload costs O(its own chunks). Scope ("kb_<id>" / "thread_<id>") is a column
 on every table and the vec0 partition key.
@@ -46,8 +46,8 @@ _TOKEN = re.compile(r"\w+", re.UNICODE)
 
 
 def _match_query(query: str) -> str:
-    """User text -> safe FTS5 OR-of-quoted-terms query. Quoting defuses FTS5
-    operators in the input; "" (no tokens) means no lexical results."""
+    """User text -> safe FTS5 OR-of-quoted-terms query; quoting defuses FTS5
+    operators. "" (no tokens) means no lexical results."""
     toks = _TOKEN.findall(query.lower())
     return " OR ".join(f'"{t}"' for t in toks)
 
@@ -181,8 +181,8 @@ def add_chunks(
     regions = None,
 ) -> None:
     """Incrementally index one document's chunks into chunks + FTS5 + vec0.
-    ``vectors`` parallels ``chunks``; optional ``regions`` parallels them too,
-    storing per-chunk PDF highlight rects as JSON for citation preview."""
+    ``vectors`` parallels ``chunks``; optional ``regions`` (also parallel) holds
+    per-chunk PDF highlight rects, stored as JSON for citation preview."""
     if len(vectors):
         rag_db.ensure_vec(conn, len(vectors[0]))
     for i, (chunk, vector) in enumerate(zip(chunks, vectors)):

@@ -6,8 +6,8 @@
 KB CRUD, per-KB/per-thread upload, SSE ingestion progress, document
 list/delete, and a direct hybrid/lexical/dense search endpoint. All endpoints
 auth via ``get_current_subject`` (Studio is single-tenant: the subject gates
-access, it does not partition data). Without sqlite-vec the router still mounts
-but every endpoint returns 503, so chat is unaffected.
+access, not data partitioning). Without sqlite-vec the router still mounts but
+every endpoint returns 503, leaving chat unaffected.
 """
 
 from __future__ import annotations
@@ -367,7 +367,7 @@ def search(payload: SearchRequest, subject: str = Depends(get_current_subject)) 
 # Document preview (citation -> source file + highlight regions)
 # ---------------------------------------------------------------------------
 # Short-lived signed token so pdf.js range requests fetch the file without a
-# bearer header. Per-process secret: tokens only work on this running server.
+# bearer header. Per-process secret: tokens only work on this server instance.
 _PREVIEW_SECRET = secrets.token_bytes(32)
 _PREVIEW_TTL = 600  # seconds
 
