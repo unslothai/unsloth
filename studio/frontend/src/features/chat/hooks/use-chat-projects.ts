@@ -14,14 +14,16 @@ import {
 } from "../utils/chat-history-storage";
 import type { SidebarItem } from "./use-chat-sidebar-items";
 
+let cachedProjects: ProjectRecord[] = [];
+
 export function useChatProjects(): {
   projects: ProjectRecord[];
   isLoading: boolean;
   hasLoaded: boolean;
 } {
-  const [projects, setProjects] = useState<ProjectRecord[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
-  const [hasLoaded, setHasLoaded] = useState(false);
+  const [projects, setProjects] = useState<ProjectRecord[]>(cachedProjects);
+  const [isLoading, setIsLoading] = useState(cachedProjects.length === 0);
+  const [hasLoaded, setHasLoaded] = useState(cachedProjects.length > 0);
 
   useEffect(() => {
     let cancelled = false;
@@ -30,6 +32,7 @@ export function useChatProjects(): {
       if (!cancelled) setIsLoading(true);
       try {
         const next = await listStoredChatProjects({ includeArchived: false });
+        cachedProjects = next;
         if (!cancelled) setProjects(next);
       } catch (error) {
         if (isExpectedBackgroundChatStorageError(error)) {

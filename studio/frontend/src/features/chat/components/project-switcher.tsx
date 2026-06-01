@@ -29,6 +29,7 @@ export function ProjectSwitcher({
 }): ReactElement {
   const showLoadingRow = isLoading && projects.length === 0;
   const showEmptyRow = !isLoading && projects.length === 0;
+  const label = currentProject?.name ?? (isLoading ? "Project" : "Projects");
 
   return (
     <DropdownMenu>
@@ -38,7 +39,9 @@ export function ProjectSwitcher({
           aria-label={
             currentProject
               ? `Project: ${currentProject.name}. Switch project`
-              : "Pick a project"
+              : isLoading
+                ? "Loading project"
+                : "Pick a project"
           }
           className="-mx-1 flex h-[34px] shrink-0 items-center gap-1.5 rounded-[8px] px-1.5 leading-none transition-colors hover:bg-nav-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
@@ -48,7 +51,7 @@ export function ProjectSwitcher({
             className="size-icon shrink-0 text-foreground/70"
           />
           <span className="max-w-[150px] truncate font-medium text-foreground">
-            {currentProject ? currentProject.name : "Projects"}
+            {label}
           </span>
           <ChevronDown
             strokeWidth={1.75}

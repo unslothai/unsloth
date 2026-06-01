@@ -2114,7 +2114,7 @@ export function ChatPage(): ReactElement {
                 className="max-w-[62vw] !pr-3 sm:max-w-none !h-[34px]"
               />
             )}
-            {view.mode !== "compare" && currentProject && (
+            {view.mode !== "compare" && currentProjectId && (
               <nav
                 aria-label="Project location"
                 className="flex h-[34px] min-w-0 items-center gap-1.5 self-center text-[13.5px] tracking-nav text-muted-foreground"
