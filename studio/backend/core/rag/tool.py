@@ -119,6 +119,43 @@ def store_rows(conn, hits):
     return store.chunks_by_id(conn, [h.chunk_id for h in hits])
 
 
+def search_for_autoinject(
+    *,
+    query: str,
+    scope_kb_id: str | None = None,
+    scope_thread_id: str | None = None,
+    top_k: int | None = None,
+    min_dense_score: float = 0.55,
+    model_name: str | None = None,
+) -> tuple[str, list[dict]] | None:
+    """Forced-retrieval variant for auto-injection.
+
+    Returns ``(rendered_text, sources)`` only when at least one hit's dense
+    (cosine) similarity clears ``min_dense_score``; otherwise ``None`` (inject
+    nothing). Gating on the dense score keeps weak lexical-only matches from
+    polluting unrelated answers (e.g. agriculture docs vs "capital of France").
+    """
+    if not query or not query.strip():
+        return None
+    scope = _resolve_scope(scope_kb_id, scope_thread_id)
+    if scope is None:
+        return None
+    k = top_k or config.TOP_K_HYBRID
+    conn = rag_db.get_connection()
+    try:
+        hits = retrieval.retrieve_hybrid(conn, scope, query, k = k, model_name = model_name)
+        strong = [
+            h for h in hits if h.dense_score is not None and h.dense_score >= min_dense_score
+        ][:k]
+        if not strong:
+            return None
+        rows = store_rows(conn, strong)
+    finally:
+        conn.close()
+    text, sources = _format(rows, strong)
+    return (text, sources) if sources else None
+
+
 def search_knowledge_base(
     *,
     query: str,

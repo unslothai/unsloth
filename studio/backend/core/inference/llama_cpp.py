@@ -4587,12 +4587,23 @@ class LlamaCppBackend:
           {"type": "content", "text": "token"}            -- streamed content tokens (cumulative)
           {"type": "reasoning", "text": "token"}          -- streamed reasoning tokens (cumulative)
         """
-        from core.inference.tools import execute_tool
+        from core.inference.tools import build_rag_autoinject, execute_tool
 
         if not self.is_loaded:
             raise RuntimeError("llama-server is not loaded")
 
         conversation = list(messages)
+
+        # Forced first-pass RAG: always consult attached documents up front so a
+        # doc question does not lose to web_search. Gated on a cosine floor in
+        # build_rag_autoinject; emits the same tool card + citations a real call
+        # would, then the model answers from the spliced-in passages.
+        _auto = build_rag_autoinject(conversation, rag_scope)
+        if _auto:
+            for _ev in _auto["events"]:
+                yield _ev
+            conversation.extend(_auto["messages"])
+
         url = f"{self.base_url}/v1/chat/completions"
         _accumulated_completion_tokens = 0
         _accumulated_predicted_ms = 0.0

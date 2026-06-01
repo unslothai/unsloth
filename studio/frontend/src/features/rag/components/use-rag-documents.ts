@@ -36,6 +36,11 @@ export function useRagDocuments(
   const [uploading, setUploading] = useState(false);
   // Jobs we are already tracking (id -> abort) so we don't double-subscribe.
   const trackedJobs = useRef<Map<string, AbortController>>(new Map());
+  // Live mirror of `documents` for synchronous dedup checks inside upload().
+  const documentsRef = useRef<TrackedDocument[]>([]);
+  useEffect(() => {
+    documentsRef.current = documents;
+  }, [documents]);
 
   const scopeKey = scope
     ? scope.type === "kb"
@@ -158,64 +163,81 @@ export function useRagDocuments(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scopeKey]);
 
+  // Upload one file: optimistic chip -> POST -> swap to the real id (or drop
+  // the chip if the backend deduped to an existing document). `seenIds` carries
+  // ids already present/added this batch so a content-hash dedup never shows a
+  // second chip.
+  const uploadOne = useCallback(
+    async (file: File, seenIds: Set<string>) => {
+      if (!scope) return;
+      const tempId = `pending_${Math.random().toString(36).slice(2)}`;
+      setDocuments((rows) => [
+        ...rows,
+        { id: tempId, filename: file.name, status: "pending", progress: null },
+      ]);
+      try {
+        const result =
+          scope.type === "kb"
+            ? await uploadKnowledgeBaseDocument(scope.kbId, file)
+            : await uploadThreadDocument(scope.threadId, file);
+        if (seenIds.has(result.documentId)) {
+          setDocuments((rows) => rows.filter((row) => row.id !== tempId));
+          toast.info(`${result.filename || file.name} is already attached`);
+          return;
+        }
+        seenIds.add(result.documentId);
+        setDocuments((rows) =>
+          rows.map((row) =>
+            row.id === tempId
+              ? {
+                  ...row,
+                  id: result.documentId,
+                  filename: result.filename || row.filename,
+                  status: "running",
+                }
+              : row,
+          ),
+        );
+        trackJob(result.jobId, result.documentId);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        setDocuments((rows) =>
+          rows.map((row) =>
+            row.id === tempId ? { ...row, status: "failed", error: message } : row,
+          ),
+        );
+        toast.error(`Upload failed: ${file.name}`, { description: message });
+      }
+    },
+    [scope, trackJob],
+  );
+
   const upload = useCallback(
     async (files: FileList | File[]) => {
       if (!scope) return;
       setUploading(true);
+      // Skip files already attached (by name) so the same file can't produce a
+      // duplicate chip; the backend also dedups by content hash.
+      const seenNames = new Set(
+        documentsRef.current
+          .filter((d) => !d.id.startsWith("pending_"))
+          .map((d) => d.filename),
+      );
+      const seenIds = new Set(documentsRef.current.map((d) => d.id));
       try {
         for (const file of Array.from(files)) {
-          // Optimistic pending row so the chip shows immediately.
-          const tempId = `pending_${Math.random().toString(36).slice(2)}`;
-          setDocuments((rows) => [
-            ...rows,
-            {
-              id: tempId,
-              filename: file.name,
-              status: "pending",
-              progress: null,
-            },
-          ]);
-          try {
-            const result =
-              scope.type === "kb"
-                ? await uploadKnowledgeBaseDocument(scope.kbId, file)
-                : await uploadThreadDocument(scope.threadId, file);
-            // Swap the temp row for the real document id.
-            setDocuments((rows) =>
-              rows.map((row) =>
-                row.id === tempId
-                  ? {
-                      ...row,
-                      id: result.documentId,
-                      filename: result.filename || row.filename,
-                      status: "running",
-                    }
-                  : row,
-              ),
-            );
-            trackJob(result.jobId, result.documentId);
-          } catch (err) {
-            setDocuments((rows) =>
-              rows.map((row) =>
-                row.id === tempId
-                  ? {
-                      ...row,
-                      status: "failed",
-                      error: err instanceof Error ? err.message : String(err),
-                    }
-                  : row,
-              ),
-            );
-            toast.error(`Upload failed: ${file.name}`, {
-              description: err instanceof Error ? err.message : String(err),
-            });
+          if (seenNames.has(file.name)) {
+            toast.info(`${file.name} is already attached`);
+            continue;
           }
+          seenNames.add(file.name);
+          await uploadOne(file, seenIds);
         }
       } finally {
         setUploading(false);
       }
     },
-    [scope, trackJob],
+    [scope, uploadOne],
   );
 
   const remove = useCallback(

@@ -427,6 +427,18 @@ _TOOL_ACTION_NUDGE = (
     " Do NOT output code blocks -- use the python tool instead."
 )
 
+# RAG variant: when the chat has attached documents, relevant passages are
+# retrieved and injected before the model answers, so the action nudge must not
+# tell it to web_search "any factual question" (that hijacked doc questions).
+_TOOL_ACTION_NUDGE_RAG = (
+    " IMPORTANT: Always call tools directly -- never write code yourself."
+    " Never describe what you plan to do -- just call the tool immediately."
+    " For any code request, call the python tool."
+    " Prefer the attached documents: answer from the retrieved passages and cite"
+    " them, and only call web_search when the documents do not contain the answer."
+    " Do NOT output code blocks -- use the python tool instead."
+)
+
 # Strip tool-call XML the speculative buffer in core/inference/llama_cpp.py
 # split across the visible/DRAIN boundary. Four leak shapes:
 #   1. well-formed `<tool_call>...</tool_call>` / `<function=...>...</function>`
@@ -2753,14 +2765,15 @@ async def openai_chat_completions(
             else:
                 _nudge = ""
 
-            # Nudge the model to search attached documents instead of memory.
-            if "search_knowledge_base" in _tool_names and payload.rag_scope:
+            # Nudge the model to ground in attached documents instead of memory.
+            _rag_active = "search_knowledge_base" in _tool_names and payload.rag_scope
+            if _rag_active:
                 _rag_nudge = (
-                    "The user has attached documents to this conversation. For any "
-                    "question that could be answered by those documents, call "
-                    "search_knowledge_base first and base your answer on the returned "
-                    "passages, citing them. Do not answer from memory when the "
-                    "attached documents are relevant."
+                    "The user has attached documents to this conversation. Relevant "
+                    "passages are retrieved and provided to you automatically; base "
+                    "your answer on them and cite them. You can also call "
+                    "search_knowledge_base to look for more. Do not answer from "
+                    "memory when the attached documents are relevant."
                 )
                 _nudge = (
                     _date_line + " " + _rag_nudge
@@ -2769,7 +2782,7 @@ async def openai_chat_completions(
                 )
 
             if _nudge:
-                _nudge += _TOOL_ACTION_NUDGE
+                _nudge += _TOOL_ACTION_NUDGE_RAG if _rag_active else _TOOL_ACTION_NUDGE
                 # Append nudge to system prompt (preserve user's prompt)
                 if system_prompt:
                     system_prompt = system_prompt.rstrip() + "\n\n" + _nudge
@@ -3298,13 +3311,14 @@ async def openai_chat_completions(
             _sf_nudge = ""
 
         # RAG nudge, mirroring the GGUF path.
-        if "search_knowledge_base" in _sf_tool_names and payload.rag_scope:
+        _sf_rag_active = "search_knowledge_base" in _sf_tool_names and payload.rag_scope
+        if _sf_rag_active:
             _sf_rag_nudge = (
-                "The user has attached documents to this conversation. For any "
-                "question that could be answered by those documents, call "
-                "search_knowledge_base first and base your answer on the returned "
-                "passages, citing them. Do not answer from memory when the "
-                "attached documents are relevant."
+                "The user has attached documents to this conversation. Relevant "
+                "passages are retrieved and provided to you automatically; base "
+                "your answer on them and cite them. You can also call "
+                "search_knowledge_base to look for more. Do not answer from "
+                "memory when the attached documents are relevant."
             )
             _sf_nudge = (
                 _sf_date_line + " " + _sf_rag_nudge
@@ -3314,7 +3328,7 @@ async def openai_chat_completions(
 
         _sf_system_prompt = system_prompt
         if _sf_nudge:
-            _sf_nudge += _TOOL_ACTION_NUDGE
+            _sf_nudge += _TOOL_ACTION_NUDGE_RAG if _sf_rag_active else _TOOL_ACTION_NUDGE
             if _sf_system_prompt:
                 _sf_system_prompt = _sf_system_prompt.rstrip() + "\n\n" + _sf_nudge
             else:

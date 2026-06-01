@@ -135,6 +135,18 @@ def run_safetensors_tool_loop(
     * ``{"type": "tool_end", "tool_name", "tool_call_id", "result"}``
     """
     conversation = list(messages)
+
+    # Forced first-pass RAG (mirrors the GGUF loop): retrieve attached documents
+    # up front and splice the passages + citations in before the model answers,
+    # gated on a cosine floor. Keeps doc questions from losing to web_search.
+    from core.inference.tools import build_rag_autoinject
+
+    _auto = build_rag_autoinject(conversation, rag_scope)
+    if _auto:
+        for _ev in _auto["events"]:
+            yield _ev
+        conversation.extend(_auto["messages"])
+
     tool_call_history: list[tuple[str, bool]] = []
     final_attempt_done = False
     allowed_tool_names = {

@@ -735,6 +735,137 @@ def _search_knowledge_base(arguments: dict, rag_scope: dict | None) -> str:
     return text
 
 
+# ── Forced first-pass RAG retrieval (auto-inject) ───────────────────────────
+# When a chat carries a rag_scope (Docs on, with a KB/thread), retrieve once up
+# front so attached documents are ALWAYS consulted -- rather than leaving it to
+# the model, which tends to pick web_search for factual questions and skip the
+# knowledge base. Injection is gated on a cosine floor so unrelated documents
+# never pollute an answer. Reuses the model-driven tool pipeline: returns the
+# same tool_start/tool_end events and assistant/tool messages a real call emits.
+_AUTOINJECT_DEFAULT_FLOOR = 0.55
+
+
+def _autoinject_enabled() -> bool:
+    return os.environ.get("RAG_AUTOINJECT", "1").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "",
+    )
+
+
+def _autoinject_floor() -> float:
+    raw = os.environ.get("RAG_AUTOINJECT_MIN_SCORE")
+    if raw is not None:
+        try:
+            return float(raw)
+        except ValueError:
+            pass
+    return _AUTOINJECT_DEFAULT_FLOOR
+
+
+def _last_user_text(conversation: list[dict]) -> str:
+    """Plain text of the most recent user turn (text parts only)."""
+    for msg in reversed(conversation):
+        if msg.get("role") != "user":
+            continue
+        content = msg.get("content")
+        if isinstance(content, str):
+            return content.strip()
+        if isinstance(content, list):
+            parts = [
+                p.get("text", "")
+                for p in content
+                if isinstance(p, dict) and p.get("type") in ("text", "input_text")
+            ]
+            return " ".join(t for t in parts if t).strip()
+        return ""
+    return ""
+
+
+def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> dict | None:
+    """Pre-retrieve the user's latest turn against ``rag_scope`` and, when a hit
+    clears the cosine floor, return ``{"events": [...], "messages": [...]}`` to
+    splice into the agentic loop; otherwise ``None`` (inject nothing). Disabled
+    via ``RAG_AUTOINJECT=0``; floor via ``RAG_AUTOINJECT_MIN_SCORE``."""
+    if not rag_scope or not _autoinject_enabled():
+        return None
+    query = _last_user_text(conversation)
+    if not query:
+        return None
+    try:
+        from storage import rag_db
+
+        if not rag_db.RAG_AVAILABLE:
+            return None
+        from core.rag.tool import search_for_autoinject
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("RAG auto-inject unavailable: %s", exc)
+        return None
+
+    floor = _autoinject_floor()
+    top_k = rag_scope.get("default_top_k")
+    try:
+        found = search_for_autoinject(
+            query = query,
+            scope_kb_id = rag_scope.get("kb_id"),
+            scope_thread_id = rag_scope.get("thread_id"),
+            top_k = top_k,
+            min_dense_score = floor,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("RAG auto-inject retrieval failed: %s", exc)
+        return None
+    if not found:
+        logger.info("RAG auto-inject: no passage >= %.2f; skipping", floor)
+        return None
+
+    text, sources = found
+    import json as _json
+    import uuid as _uuid
+
+    call_id = "rag_auto_" + _uuid.uuid4().hex[:12]
+    args = {"query": query}
+    full_result = text + RAG_SOURCES_SENTINEL + _json.dumps(sources, ensure_ascii = False)
+    events = [
+        {"type": "status", "text": f"Searching documents: {query[:60]}"},
+        {
+            "type": "tool_start",
+            "tool_name": "search_knowledge_base",
+            "tool_call_id": call_id,
+            "arguments": args,
+        },
+        {
+            "type": "tool_end",
+            "tool_name": "search_knowledge_base",
+            "tool_call_id": call_id,
+            "result": full_result,
+        },
+        {"type": "status", "text": ""},
+    ]
+    messages = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": call_id,
+                    "type": "function",
+                    "function": {
+                        "name": "search_knowledge_base",
+                        "arguments": _json.dumps(args, ensure_ascii = False),
+                    },
+                }
+            ],
+        },
+        {"role": "tool", "name": "search_knowledge_base", "tool_call_id": call_id, "content": text},
+    ]
+    logger.info(
+        "RAG auto-inject: %d passage(s) >= %.2f for %r", len(sources), floor, query[:80]
+    )
+    return {"events": events, "messages": messages}
+
+
 _MAX_PAGE_CHARS = 16000  # limit fetched page text (after HTML-to-MD conversion)
 # Raw download cap.  Must be larger than _MAX_PAGE_CHARS because SSR pages
 # embed large <head> sections (CSS, JS, SVGs) that are stripped during
