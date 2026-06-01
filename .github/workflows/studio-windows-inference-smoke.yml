@@ -65,6 +65,18 @@ jobs:
         with:
           persist-credentials: false
 
+      # Fast GPU-free gate: parse setup.ps1 and run the Resolve-CudaToolkit unit
+      # test (deferred Windows CUDA Toolkit check) before the heavy GGUF smoke.
+      - name: setup.ps1 unit test (Resolve-CudaToolkit)
+        shell: pwsh
+        run: |
+          $errs = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path studio/setup.ps1).Path, [ref]$null, [ref]$errs)
+          if ($errs) { $errs | ForEach-Object { $_.ToString() }; exit 1 }
+          Write-Host "setup.ps1 parsed with no errors"
+          pwsh -NoProfile -File tests/studio/test_resolve_cuda_toolkit.ps1
+
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
         with:
           node-version: '22'
@@ -373,6 +385,8 @@ jobs:
 
       - name: Upload logs
         if: always()
+        # Diagnostic only: a transient artifact-service drop must not fail a green job.
+        continue-on-error: true
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: windows-openai-anthropic-log
@@ -801,6 +815,8 @@ jobs:
 
       - name: Upload logs
         if: always()
+        # Diagnostic only: a transient artifact-service drop must not fail a green job.
+        continue-on-error: true
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: windows-tool-calling-log
@@ -1199,6 +1215,8 @@ jobs:
 
       - name: Upload logs
         if: always()
+        # Diagnostic only: a transient artifact-service drop must not fail a green job.
+        continue-on-error: true
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: windows-json-images-log
