@@ -41,6 +41,11 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import {
+  CHAT_HISTORY_UPDATED_EVENT,
+  forkChatThread,
+  getForkCount,
+} from "@/features/chat/api/chat-api";
 import { sentAudioNames } from "@/features/chat/api/chat-adapter";
 import { parseExternalModelId } from "@/features/chat/external-providers";
 import { getExternalReasoningCapabilities } from "@/features/chat/provider-capabilities";
@@ -73,6 +78,7 @@ import {
   ChevronLeftIcon,
   ChevronRightIcon,
   DownloadIcon,
+  GitBranchIcon,
   GlobeIcon,
   HeadphonesIcon,
   LightbulbIcon,
@@ -103,6 +109,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { useNavigate } from "@tanstack/react-router";
 
 export const Thread: FC<{
   hideComposer?: boolean;
@@ -1335,6 +1342,102 @@ const AssistantMessage: FC = () => {
 
 const COPY_RESET_MS = 2000;
 
+const ForkCountBadge: FC = () => {
+  const aui = useAui();
+  const messageId = useAuiState(({ message }) => message.id);
+  const [count, setCount] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    const refresh = () => {
+      const remoteId = aui.threadListItem().getState().remoteId;
+      if (!remoteId) {
+        if (!cancelled) setCount(0);
+        return;
+      }
+      void getForkCount(remoteId, messageId)
+        .then((n) => {
+          if (!cancelled) setCount(n);
+        })
+        .catch(() => {
+          /* swallow: badge is non-critical */
+        });
+    };
+    refresh();
+    const handler = () => refresh();
+    window.addEventListener(CHAT_HISTORY_UPDATED_EVENT, handler);
+    return () => {
+      cancelled = true;
+      window.removeEventListener(CHAT_HISTORY_UPDATED_EVENT, handler);
+    };
+  }, [aui, messageId]);
+
+  if (count <= 0) return null;
+  return (
+    <span
+      className="mx-1 inline-flex items-center gap-1 rounded-sm bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary"
+      title={`${count} fork${count === 1 ? "" : "s"} from this message`}
+    >
+      <GitBranchIcon strokeWidth={1.75} className="size-3" />
+      {count}
+    </span>
+  );
+};
+
+const ForkMessageButton: FC = () => {
+  const aui = useAui();
+  const navigate = useNavigate();
+  const messageId = useAuiState(({ message }) => message.id);
+  const isRunning = useAuiState(({ thread }) => thread.isRunning);
+  const [pending, setPending] = useState(false);
+
+  const handleFork = async () => {
+    const remoteId = aui.threadListItem().getState().remoteId;
+    if (!remoteId) {
+      toast.error("Cannot fork an unsaved chat");
+      return;
+    }
+    setPending(true);
+    try {
+      const result = await forkChatThread(remoteId, {
+        messageId,
+        newThreadId: crypto.randomUUID(),
+        createdAt: Date.now(),
+      });
+      useChatRuntimeStore.getState().setActiveThreadId(result.thread.id);
+      navigate({
+        to: "/chat",
+        search: { thread: result.thread.id },
+        replace: false,
+      });
+      if (result.containerSnapshotWarning) {
+        toast.info("Fork created", {
+          description: result.containerSnapshotWarning,
+        });
+      } else {
+        toast.success("Fork created");
+      }
+    } catch (error) {
+      console.error("Failed to fork", error);
+      toast.error("Failed to fork", {
+        description: error instanceof Error ? error.message : undefined,
+      });
+    } finally {
+      setPending(false);
+    }
+  };
+
+  return (
+    <TooltipIconButton
+      tooltip="Fork from here"
+      disabled={isRunning || pending}
+      onClick={handleFork}
+    >
+      <GitBranchIcon strokeWidth={1.75} className="size-icon" />
+    </TooltipIconButton>
+  );
+};
+
 const DeleteMessageButton: FC = () => {
   const aui = useAui();
   const messageId = useAuiState(({ message }) => message.id);
@@ -1416,6 +1519,8 @@ const AssistantActionBar: FC = () => {
           <RefreshCwIcon strokeWidth={1.75} className="size-icon" />
         </TooltipIconButton>
       </ActionBarPrimitive.Reload>
+      <ForkCountBadge />
+      <ForkMessageButton />
       <DeleteMessageButton />
       <ActionBarMorePrimitive.Root>
         <ActionBarMorePrimitive.Trigger asChild={true}>
@@ -1500,6 +1605,8 @@ const UserActionBar: FC = () => {
           />
         </TooltipIconButton>
       </ActionBarPrimitive.Edit>
+      <ForkCountBadge />
+      <ForkMessageButton />
       <DeleteMessageButton />
     </ActionBarPrimitive.Root>
   );

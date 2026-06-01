@@ -342,6 +342,45 @@ export async function updateChatThread(
   return thread;
 }
 
+export interface ForkChatThreadResult {
+  thread: ThreadRecord;
+  messages: MessageRecord[];
+  containerSnapshotWarning: string | null;
+}
+
+export async function forkChatThread(
+  threadId: string,
+  args: { messageId: string; newThreadId: string; createdAt: number },
+): Promise<ForkChatThreadResult> {
+  const response = await authFetch(
+    `/api/chat/threads/${encodeURIComponent(threadId)}/fork`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(args),
+    },
+  );
+  const data = await parseJsonOrThrow<{
+    thread: ThreadRecord;
+    messages: MessageRecord[];
+    containerSnapshotWarning: string | null;
+  }>(response);
+  notifyChatHistoryUpdated();
+  return data;
+}
+
+export async function getForkCount(
+  threadId: string,
+  messageId: string,
+): Promise<number> {
+  const response = await authFetch(
+    `/api/chat/threads/${encodeURIComponent(threadId)}/messages/${encodeURIComponent(messageId)}/forks`,
+  );
+  if (response.status === 404) return 0;
+  const data = await parseJsonOrThrow<{ count: number }>(response);
+  return data.count;
+}
+
 export async function deleteChatThreads(threadIds: string[]): Promise<void> {
   if (threadIds.length === 0) return;
   const response = await authFetch("/api/chat/threads", {

@@ -107,3 +107,179 @@ def test_record_import_ledger_rejects_oversize_payload():
         chat_history.ChatImportLedgerRecordRequest(
             threadIds = [f"id-{i}" for i in range(10_001)],
         )
+
+
+# ---------------------------------------------------------------------------
+# /api/chat/threads/{id}/fork
+# ---------------------------------------------------------------------------
+
+
+def test_fork_thread_404_when_source_missing(monkeypatch):
+    monkeypatch.setattr(chat_history, "get_chat_thread", lambda _id: None)
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            chat_history.fork_thread(
+                thread_id = "missing",
+                payload = chat_history.ChatForkRequest(
+                    messageId = "m1",
+                    newThreadId = "new",
+                    createdAt = 1,
+                ),
+                current_subject = "test-user",
+            )
+        )
+    assert exc.value.status_code == 404
+
+
+def test_fork_thread_404_when_branch_message_missing(monkeypatch):
+    monkeypatch.setattr(
+        chat_history, "get_chat_thread", lambda _id: {"id": _id, "title": "T"}
+    )
+    monkeypatch.setattr(chat_history, "get_chat_message", lambda _t, _m: None)
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            chat_history.fork_thread(
+                thread_id = "src",
+                payload = chat_history.ChatForkRequest(
+                    messageId = "missing",
+                    newThreadId = "new",
+                    createdAt = 1,
+                ),
+                current_subject = "test-user",
+            )
+        )
+    assert exc.value.status_code == 404
+
+
+def test_fork_thread_happy_path(monkeypatch):
+    source = {
+        "id": "src",
+        "title": "Original",
+        "modelType": "base",
+        "modelId": "m",
+        "pairId": None,
+        "archived": False,
+        "createdAt": 1,
+        "openaiCodeExecContainerId": None,
+        "anthropicCodeExecContainerId": None,
+        "forkedFromThreadId": None,
+        "forkedFromMessageId": None,
+    }
+    forked = {
+        **source,
+        "id": "new",
+        "title": "fork · Original",
+        "createdAt": 2,
+        "forkedFromThreadId": "src",
+        "forkedFromMessageId": "m1",
+    }
+    monkeypatch.setattr(chat_history, "get_chat_thread", lambda _id: source)
+    monkeypatch.setattr(
+        chat_history,
+        "get_chat_message",
+        lambda _t, _m: {
+            "id": _m,
+            "threadId": _t,
+            "role": "user",
+            "content": [],
+            "createdAt": 1,
+        },
+    )
+    monkeypatch.setattr(chat_history, "fork_chat_thread", lambda **_: forked)
+    monkeypatch.setattr(
+        chat_history,
+        "list_chat_messages",
+        lambda _id: [
+            {
+                "id": "n1",
+                "threadId": "new",
+                "parentId": None,
+                "role": "user",
+                "content": [],
+                "createdAt": 1,
+            }
+        ],
+    )
+    response = asyncio.run(
+        chat_history.fork_thread(
+            thread_id = "src",
+            payload = chat_history.ChatForkRequest(
+                messageId = "m1",
+                newThreadId = "new",
+                createdAt = 2,
+            ),
+            current_subject = "test-user",
+        )
+    )
+    assert response.thread.id == "new"
+    assert response.thread.title == "fork · Original"
+    assert response.thread.forkedFromThreadId == "src"
+    assert response.thread.forkedFromMessageId == "m1"
+    assert len(response.messages) == 1
+    assert response.containerSnapshotWarning is None
+
+
+def test_fork_thread_warns_when_parent_had_container(monkeypatch):
+    source = {
+        "id": "src",
+        "title": "T",
+        "modelType": "base",
+        "modelId": "",
+        "pairId": None,
+        "archived": False,
+        "createdAt": 1,
+        "openaiCodeExecContainerId": "cnt_123",
+        "anthropicCodeExecContainerId": None,
+        "forkedFromThreadId": None,
+        "forkedFromMessageId": None,
+    }
+    monkeypatch.setattr(chat_history, "get_chat_thread", lambda _id: source)
+    monkeypatch.setattr(
+        chat_history,
+        "get_chat_message",
+        lambda _t, _m: {
+            "id": _m,
+            "threadId": _t,
+            "role": "user",
+            "content": [],
+            "createdAt": 1,
+        },
+    )
+    monkeypatch.setattr(
+        chat_history,
+        "fork_chat_thread",
+        lambda **_: {
+            **source,
+            "id": "new",
+            "title": "fork · T",
+            "forkedFromThreadId": "src",
+            "forkedFromMessageId": "m1",
+            "openaiCodeExecContainerId": None,
+        },
+    )
+    monkeypatch.setattr(chat_history, "list_chat_messages", lambda _id: [])
+    response = asyncio.run(
+        chat_history.fork_thread(
+            thread_id = "src",
+            payload = chat_history.ChatForkRequest(
+                messageId = "m1",
+                newThreadId = "new",
+                createdAt = 2,
+            ),
+            current_subject = "test-user",
+        )
+    )
+    assert response.containerSnapshotWarning is not None
+    assert "fresh" in response.containerSnapshotWarning.lower()
+
+
+def test_get_fork_count(monkeypatch):
+    monkeypatch.setattr(chat_history, "count_forks_for_message", lambda _t, _m: 3)
+    response = asyncio.run(
+        chat_history.get_fork_count(
+            thread_id = "t",
+            message_id = "m",
+            current_subject = "test-user",
+        )
+    )
+    assert response.count == 3
