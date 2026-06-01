@@ -2758,3 +2758,67 @@ class TestResolveSimpleMacosPin:
         assert plans[0].release_tag == "b9442"
         # No pin: the iterator was asked for latest, not a specific tag.
         assert calls[0][2] == "latest"
+
+
+# ===========================================================================
+# Linux arm64 + GPU must not install the x64-only fork bundle
+# ===========================================================================
+
+
+class TestLinuxArm64ForkFallsBackToSource:
+    """The unslothai/llama.cpp fork ships only linux-x64 bundles. An arm64
+    Linux host with a GPU (GH200/GB200/DGX Spark) routes to the fork and must
+    fall back to a source build instead of selecting an x64 binary."""
+
+    def test_arm64_nvidia_fork_raises_before_fetching_releases(self, monkeypatch):
+        # Guard fires before any release is fetched: poison the iterator to prove
+        # it is never called.
+        def _boom(*_a, **_k):
+            raise AssertionError("iterator must not run for arm64 fork hosts")
+
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT, "iter_release_payloads_by_time", _boom
+        )
+        host = make_host(system = "Linux", machine = "aarch64")
+        with pytest.raises(PrebuiltFallback, match = "linux-x64 prebuilts"):
+            resolve_simple_install_release_plans(
+                "latest", host, "unslothai/llama.cpp", ""
+            )
+
+    def test_x86_64_fork_is_not_blocked_by_the_arch_guard(self, monkeypatch):
+        # x64 host must pass the guard and reach the iterator (here empty, so it
+        # raises the generic message, not the arch one).
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT,
+            "iter_release_payloads_by_time",
+            lambda *_a, **_k: iter(()),
+        )
+        host = make_host(system = "Linux", machine = "x86_64")
+        with pytest.raises(PrebuiltFallback) as exc:
+            resolve_simple_install_release_plans(
+                "latest", host, "unslothai/llama.cpp", ""
+            )
+        assert "linux-x64 prebuilts" not in str(exc.value)
+
+    def test_arm64_cpu_on_ggml_org_is_not_blocked(self, monkeypatch):
+        # CPU-only arm64 routes to ggml-org (not the fork), so the guard must not
+        # fire; it reaches the iterator (empty here -> generic message).
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT,
+            "iter_release_payloads_by_time",
+            lambda *_a, **_k: iter(()),
+        )
+        host = make_host(
+            system = "Linux",
+            machine = "aarch64",
+            nvidia_smi = None,
+            driver_cuda_version = None,
+            compute_caps = [],
+            has_physical_nvidia = False,
+            has_usable_nvidia = False,
+        )
+        with pytest.raises(PrebuiltFallback) as exc:
+            resolve_simple_install_release_plans(
+                "latest", host, "ggml-org/llama.cpp", ""
+            )
+        assert "linux-x64 prebuilts" not in str(exc.value)

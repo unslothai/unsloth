@@ -1658,6 +1658,15 @@ def resolve_simple_install_release_plans(
 ) -> tuple[str, list[InstallReleasePlan]]:
     repo = published_repo or DEFAULT_PUBLISHED_REPO
     requested_tag = normalized_requested_llama_tag(llama_tag)
+    # The unslothai/llama.cpp fork ships only linux-x64 bundles. An arm64 Linux
+    # host with a GPU (GH200/GB200/DGX Spark) routes here; it must not install an
+    # x64 binary, so fall back to a source build that targets the GPU rather than
+    # selecting the wrong arch (or silently dropping to a CPU arm64 build).
+    if host.is_linux and not host.is_x86_64 and repo == DEFAULT_PUBLISHED_REPO:
+        raise PrebuiltFallback(
+            f"{repo} ships only linux-x64 prebuilts; "
+            f"{host.machine or 'non-x64'} Linux falls back to source build"
+        )
     allow_older_release_fallback = (
         requested_tag == "latest" and not published_release_tag
     )
