@@ -1088,24 +1088,28 @@ _CURATED_UNSLOTH_DIFFUSION_GGUFS: tuple[CuratedDiffusionGGUF, ...] = (
         family = "z-image",
         base_repo = "Tongyi-MAI/Z-Image",
         filename_prefixes = ("z-image-",),
+        recommended_offload_policy = DIFFUSION_OFFLOAD_POLICY_LESS_AGGRESSIVE,
     ),
     CuratedDiffusionGGUF(
         repo_id = "unsloth/Z-Image-Turbo-GGUF",
         family = "z-image-turbo",
         base_repo = "Tongyi-MAI/Z-Image-Turbo",
         filename_prefixes = ("z-image-turbo-",),
+        recommended_offload_policy = DIFFUSION_OFFLOAD_POLICY_LESS_AGGRESSIVE,
     ),
     CuratedDiffusionGGUF(
         repo_id = "unsloth/ERNIE-Image-Turbo-GGUF",
         family = "ernie-image-turbo",
         base_repo = "baidu/ERNIE-Image-Turbo",
         filename_prefixes = ("ernie-image-turbo-",),
+        recommended_offload_policy = DIFFUSION_OFFLOAD_POLICY_LESS_AGGRESSIVE,
     ),
     CuratedDiffusionGGUF(
         repo_id = "unsloth/ERNIE-Image-GGUF",
         family = "ernie-image",
         base_repo = "baidu/ERNIE-Image",
         filename_prefixes = ("ernie-image-",),
+        recommended_offload_policy = DIFFUSION_OFFLOAD_POLICY_LESS_AGGRESSIVE,
     ),
     CuratedDiffusionGGUF(
         repo_id = "unsloth/Qwen-Image-GGUF",

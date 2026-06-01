@@ -1463,6 +1463,18 @@ def test_curated_diffusion_presets_cover_manifest():
         "unsloth/Mistral-Small-3.2-24B-Instruct-2506-GGUF"
     )
     assert flux2["recommended_offload_policy"] == "less_aggressive"
+    assert by_repo["unsloth/Z-Image-GGUF"]["recommended_offload_policy"] == (
+        "less_aggressive"
+    )
+    assert by_repo["unsloth/Z-Image-Turbo-GGUF"]["recommended_offload_policy"] == (
+        "less_aggressive"
+    )
+    assert by_repo["unsloth/ERNIE-Image-GGUF"]["recommended_offload_policy"] == (
+        "less_aggressive"
+    )
+    assert by_repo["unsloth/ERNIE-Image-Turbo-GGUF"]["recommended_offload_policy"] == (
+        "less_aggressive"
+    )
 
 
 def test_resolve_diffusion_load_plan_expands_preset_component_swap():
@@ -1517,6 +1529,23 @@ def test_resolve_diffusion_load_plan_uses_flux2_dev_speed_policy():
     )
 
     assert plan["load_kwargs"]["offload_policy"] == "less_aggressive"
+
+
+def test_resolve_diffusion_load_plan_uses_fast_image_gguf_policies():
+    from core.inference.diffusion import resolve_diffusion_load_plan
+
+    for preset_id, quant in (
+        ("z-image", "Q4_K_M"),
+        ("z-image-turbo", "Q4_K_M"),
+        ("ernie-image", "UD-Q4_K_M"),
+        ("ernie-image-turbo", "UD-Q4_K_M"),
+    ):
+        plan = resolve_diffusion_load_plan(
+            preset_id = preset_id,
+            transformer_quant = quant,
+        )
+
+        assert plan["load_kwargs"]["offload_policy"] == "less_aggressive"
 
 
 def test_load_model_ernie_can_replace_text_encoder_and_prompt_enhancer_ggufs(monkeypatch):
