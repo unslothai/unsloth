@@ -53,6 +53,23 @@ from ._utils import _get_inference_mode_context_manager
 RL_EXTRA_ARGS = defaultdict(list)
 RL_FUNCTIONS = defaultdict(list)
 RL_PRE_ITEMS = defaultdict(list)
+
+
+def _unsloth_clear_stateful_mrope(model):
+    modules = getattr(model, "modules", None)
+    if modules is None:
+        return False
+
+    cleared = False
+    for module in modules():
+        if hasattr(module, "compute_3d_position_ids") and hasattr(
+            module, "rope_deltas"
+        ):
+            module.rope_deltas = None
+            cleared = True
+    return cleared
+
+
 RL_CONFIG_CHANGES = defaultdict(list)
 RL_METRICS_CHANGES = defaultdict(list)
 RL_ADDITIONAL_FUNCTIONS = defaultdict(list)
@@ -613,8 +630,7 @@ def grpo_trainer__prepare_inputs(function_name, function):
 RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__prepare_inputs)
 
 
-# Remove collective RPC of reload weights from generate
-# trl added reload weights (potentially for quantized models), we don't need it for our use case (LoRA primarily)
+# Guard reload_weights and sync_weights - skip when fast inference LoRA shares weights with vLLM
 # https://github.com/huggingface/trl/commit/7856d3b1f6518601732f489883b341bb6dd36434#diff-964e6fd373aa93037604064cb2b822d7f8e2735e33f791065acf2c4c3552d393R1168-R1169
 def grpo_trainer__generate_single_turn(function_name, function):
     if function_name != "_generate_single_turn":
@@ -622,6 +638,8 @@ def grpo_trainer__generate_single_turn(function_name, function):
 
     # Older TRL versions may directly reload vLLM weights here. Only skip that
     # when the attached engine explicitly advertises shared weights.
+def _guard_vllm_sync_reload_for_shared_weights(function):
+    # Guard reload_weights - only call when not sharing weights with vLLM
     reload_weights_pattern = re.compile(
         r"^(?P<indent>[ \t]*)self\.llm\.collective_rpc\(\s*(['\"])reload_weights\2\s*\)\s*$",
         re.MULTILINE,
@@ -646,7 +664,7 @@ def grpo_trainer__generate_single_turn(function_name, function):
         re.MULTILINE,
     )
 
-    def remove_sync_weights_block(match):
+    def guard_sync_weights_block(match):
         indent = match.group("indent")
         return (
             f"{indent}# Skip per-step sync only when Unsloth explicitly marked the\n"
@@ -656,7 +674,15 @@ def grpo_trainer__generate_single_turn(function_name, function):
             f"{indent}        self.vllm_generation.sync_weights()\n"
         )
 
-    function = sync_weights_block.sub(remove_sync_weights_block, function)
+    function = sync_weights_block.sub(guard_sync_weights_block, function)
+    return function
+
+
+def grpo_trainer__generate_single_turn(function_name, function):
+    if function_name != "_generate_single_turn":
+        return function
+
+    function = _guard_vllm_sync_reload_for_shared_weights(function)
 
     # TRL 0.24.0-0.25.1 truncation regression fix
     #
@@ -702,6 +728,16 @@ def grpo_trainer__generate_single_turn(function_name, function):
 
 
 RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__generate_single_turn)
+
+
+def grpo_trainer__generate(function_name, function):
+    if function_name != "_generate":
+        return function
+
+    return _guard_vllm_sync_reload_for_shared_weights(function)
+
+
+RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__generate)
 
 
 # Fix incorrect special tokens handling and truncation in older TRL versions
@@ -889,6 +925,18 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
         )
         function = function.replace(string_to_find, replacement_string)
 
+    _generate_return = """        ) = self._generate(prompts)"""
+    if _generate_return in function and "_unsloth_clear_stateful_mrope" not in function:
+        function = function.replace(
+            _generate_return,
+            _generate_return
+            + """
+
+        _unsloth_clear_stateful_mrope(
+            self.accelerator.unwrap_model(self.model, keep_fp32_wrapper = False)
+        )""",
+        )
+
     if "wake_up()" not in function:
         # Sleep functionality has been added to trl in v0.23.0. We do not want to redo this.
         # https://github.com/huggingface/trl/commit/edbe8234bc7e528f72ac76607de9d3e4753e2709
@@ -956,6 +1004,14 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
             '            output["mm_token_type_ids"] = forward_kwargs["mm_token_type_ids"]'
         )
         function = function.replace(_save_search, _save_replace)
+
+    if re.search(r"\btool_mask\b", function) and 'output["tool_mask"]' not in function:
+        function = function.replace(
+            "        return output",
+            "        if tool_mask is not None:\n"
+            '            output["tool_mask"] = tool_mask\n'
+            "        return output",
+        )
 
     return function
 
@@ -1493,6 +1549,7 @@ RL_PRE_ITEMS["grpo_trainer"].append(
 )
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_get_mm_token_id))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_fix_mm_token_type_ids))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_clear_stateful_mrope))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(grpo_compute_loss))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(UnslothEfficientGRPO))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(grpo_accumulated_loss))
@@ -1534,6 +1591,7 @@ def grpo_trainer_compute_loss(function_name, function):
         mm_token_type_ids = inputs.get("mm_token_type_ids", None)
         num_items_in_batch = inputs.get("num_items_in_batch", None)
         sampling_per_token_logps = inputs.get("sampling_per_token_logps", None)
+        tool_mask = inputs.get("tool_mask", None)
         current_gradient_accumulation_steps = self.current_gradient_accumulation_steps
         num_processes = self.accelerator.num_processes
 
@@ -1609,6 +1667,16 @@ def grpo_trainer_compute_loss(function_name, function):
 
         max_left_pad = inputs.get("max_left_pad", 0)
         if per_token_logps is not None:
+            loss_mask = completion_mask
+            if tool_mask is not None:
+                if tool_mask.shape != completion_mask.shape:
+                    raise ValueError(
+                        "tool_mask/env_mask must have the same shape as completion_mask"
+                    )
+                loss_mask = completion_mask * tool_mask.to(
+                    device = completion_mask.device,
+                    dtype = completion_mask.dtype,
+                )
             (
                 loss,
                 completion_length,
@@ -1623,7 +1691,7 @@ def grpo_trainer_compute_loss(function_name, function):
                 old_logps,
                 sampling_per_token_logps,
                 input_ids,
-                completion_mask,
+                loss_mask,
                 self.beta,
                 advantages,
                 pixel_values = pixel_values,
@@ -1673,6 +1741,28 @@ def grpo_trainer_compute_loss(function_name, function):
                         "unsloth_zoo (see https://github.com/unslothai/unsloth-zoo/pull/613)."
                     )
                 self._unsloth_grpo_zoo_checked = True
+            if tool_mask is not None and not getattr(
+                self, "_unsloth_grpo_tool_mask_zoo_checked", False
+            ):
+                _supports_tool_mask = (
+                    "tool_mask" in inspect.signature(grpo_accumulated_loss).parameters
+                )
+                if not _supports_tool_mask:
+                    try:
+                        _zoo_src = inspect.getsource(grpo_accumulated_loss)
+                    except (TypeError, OSError):
+                        _zoo_src = ""
+                    _supports_tool_mask = "tool_mask" in _zoo_src
+                if not _supports_tool_mask:
+                    raise RuntimeError(
+                        "env_mask/tool_mask GRPO requires an unsloth_zoo build whose "
+                        "grpo_accumulated_loss handles tool_mask. Please upgrade "
+                        "unsloth_zoo."
+                    )
+                self._unsloth_grpo_tool_mask_zoo_checked = True
+            _grpo_accumulated_loss_kwargs = {}
+            if tool_mask is not None:
+                _grpo_accumulated_loss_kwargs["tool_mask"] = tool_mask
             if hasattr(self.args, "loss_type"):
                 (
                     loss,
@@ -1714,6 +1804,7 @@ def grpo_trainer_compute_loss(function_name, function):
                     sampling_per_token_logps = sampling_per_token_logps,
                     token_type_ids = token_type_ids,
                     mm_token_type_ids = mm_token_type_ids,
+                    **_grpo_accumulated_loss_kwargs,
                 )
             else:
                 # to ensure backwards compatibility with trl 0.15.2 and maybe even 0.17
@@ -1739,6 +1830,7 @@ def grpo_trainer_compute_loss(function_name, function):
                         attention_mask = attention_mask,
                         token_type_ids = token_type_ids,
                         mm_token_type_ids = mm_token_type_ids,
+                        **_grpo_accumulated_loss_kwargs,
                     )
                 )
         if "train" in self._metrics:
@@ -1938,7 +2030,7 @@ RL_METRICS_CHANGES["grpo_trainer"].append(grpo_trainer_metrics)
 
 def openenv_vllm_reload_weights():
     # This function patches the trl openenv generate_rollout_completions function to:
-    # 1. Remove the reload_weights call (unsloth handles weight reloading)
+    # 1. Guard the reload_weights call (skip when sharing weights with vLLM)
     # 2. Fix wake_up call to be compatible with unsloth (remove tags to wake everything)
     #
     # The issue: TRL's wake_up(tags=["kv_cache"]) only wakes kv_cache, leaving is_sleeping=True
@@ -2002,11 +2094,10 @@ def openenv_vllm_reload_weights():
 
     def replace_reload_weights(match):
         indent = match.group("indent")
+        obj = match.group("obj")
         return (
-            f"{indent}if not getattr(trainer.vllm_generation.llm, 'shared_weights', False):\n"
-            f'{indent}    trainer.vllm_generation.llm.collective_rpc("reload_weights")\n'
-            f"{indent}else:\n"
-            f'{indent}    pass  # trainer.vllm_generation.llm.collective_rpc("reload_weights")\n'
+            f"{indent}if not getattr({obj}, 'shared_weights', False):\n"
+            f'{indent}    {obj}.collective_rpc("reload_weights")\n'
         )
 
     src = reload_weights_pattern.sub(replace_reload_weights, src)
@@ -2100,6 +2191,8 @@ def vllm_generation_init_patch():
                 f"{indent}    # Unsloth already inits vLLM in fast inference mode. Do not redo :)\n"
                 f"{indent}    self.llm = model.vllm_engine\n"
                 f"{indent}    self.unsloth_fast_inference_lora = getattr(self.llm, 'shared_weights', False)\n"
+                f"{indent}    if getattr(self.llm, 'shared_weights', False) and hasattr(model, 'load_lora'):\n"
+                f"{indent}        self._unsloth_load_lora = model.load_lora\n"
                 f"{indent}else:\n" + textwrap.indent(llm_block, indent + "    ")
             )
 
@@ -2121,8 +2214,11 @@ def vllm_generation_init_patch():
 
         def replace_sync_weights(match):
             body = match.group("body")
+            # Chain getattr so server mode (where self.llm is not set) does
+            # not raise AttributeError before the default kicks in.
             guard = (
-                "    if getattr(self.llm, 'shared_weights', False):\n"
+                "    if getattr(getattr(self, 'llm', None), 'shared_weights', False) or "
+                "getattr(self, 'unsloth_fast_inference_lora', False):\n"
                 "        # Unsloth fast inference LoRA shares weights with vLLM already.\n"
                 "        return\n\n"
             )
@@ -2143,11 +2239,11 @@ def vllm_generation_init_patch():
 
         def replace_reload_weights(match):
             indent = match.group("indent")
+            # Chain getattr so server mode (no self.llm) is safe here too.
             return (
-                f"{indent}if not getattr(self.llm, 'shared_weights', False):\n"
-                f'{indent}    self.llm.collective_rpc("reload_weights")\n'
-                f"{indent}else:\n"
-                f'{indent}    pass  # self.llm.collective_rpc("reload_weights")\n'
+                f"{indent}if not (getattr(getattr(self, 'llm', None), 'shared_weights', False) or "
+                f"getattr(self, 'unsloth_fast_inference_lora', False)):\n"
+                f'{indent}    self.llm.collective_rpc("reload_weights")'
             )
 
         patched_src, num_replacements = pattern.subn(
@@ -2157,6 +2253,20 @@ def vllm_generation_init_patch():
             raise RuntimeError(
                 "Unsloth: Warning - regex did not match, VLLMGeneration.generate patch may have failed"
             )
+
+        # Inject lora_request when sharing weights (vLLM needs the adapter)
+        lora_generate_pattern = re.compile(
+            r"(self\.llm\.generate\([^\)]+)\)",
+        )
+
+        def inject_lora_request(match):
+            return (
+                f"{match.group(1)}, lora_request="
+                f"self._unsloth_load_lora('vllm_gen_lora', load_tensors=True) "
+                f"if hasattr(self, '_unsloth_load_lora') else None)"
+            )
+
+        patched_src = lora_generate_pattern.sub(inject_lora_request, patched_src)
         return patched_src
 
     try:
@@ -2169,13 +2279,13 @@ def vllm_generation_init_patch():
         sync_patched = patch_vllm_generation_method(
             "sync_weights",
             patch_sync_weights,
-            "if getattr(self.llm, 'shared_weights', False):",
+            "if getattr(getattr(self, 'llm', None), 'shared_weights', False) or getattr(self, 'unsloth_fast_inference_lora', False):",
             "sync_weights",
         )
         generate_patched = patch_vllm_generation_method(
             "generate",
             patch_generate,
-            'if not getattr(self.llm, \'shared_weights\', False):',
+            "if not (getattr(getattr(self, 'llm', None), 'shared_weights', False) or getattr(self, 'unsloth_fast_inference_lora', False)):",
             "generate",
         )
     except RuntimeError as e:
