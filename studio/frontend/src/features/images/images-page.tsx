@@ -143,11 +143,18 @@ const CURATED_MODELS: Array<{
 
 const DEFAULT_PRESET = CURATED_MODELS[0];
 
+type DiffusionOffloadPolicySelection = "auto" | DiffusionOffloadPolicy;
+
 const OFFLOAD_POLICY_OPTIONS: Array<{
-  value: DiffusionOffloadPolicy;
+  value: DiffusionOffloadPolicySelection;
   label: string;
   description: string;
 }> = [
+  {
+    value: "auto",
+    label: "Auto",
+    description: "Use Studio's recommended policy for this model.",
+  },
   {
     value: "aggressive",
     label: "Aggressive",
@@ -192,7 +199,7 @@ export function ImagesPage() {
   const [customFamily, setCustomFamily] = useState<string>("auto");
   const [useCustom, setUseCustom] = useState(false);
   const [hfToken, setHfToken] = useState("");
-  const [offloadPolicy, setOffloadPolicy] = useState<DiffusionOffloadPolicy>("aggressive");
+  const [offloadPolicy, setOffloadPolicy] = useState<DiffusionOffloadPolicySelection>("auto");
 
   const [prompt, setPrompt] = useState("a tiny ginger sloth coding in a sunlit treehouse, photorealistic");
   const [negativePrompt, setNegativePrompt] = useState("");
@@ -300,7 +307,7 @@ export function ImagesPage() {
         text_encoder_gguf_component: textEncoderComponent,
         family,
         hf_token: hfToken.trim() || undefined,
-        offload_policy: offloadPolicy,
+        offload_policy: offloadPolicy === "auto" ? null : offloadPolicy,
       });
       setStatus(next);
       toast.success("Loaded image model", { description: next.repo_id ?? undefined });
@@ -582,7 +589,7 @@ export function ImagesPage() {
             <Label>VRAM policy</Label>
             <Select
               value={offloadPolicy}
-              onValueChange={(value) => setOffloadPolicy(value as DiffusionOffloadPolicy)}
+              onValueChange={(value) => setOffloadPolicy(value as DiffusionOffloadPolicySelection)}
             >
               <SelectTrigger>
                 <SelectValue />

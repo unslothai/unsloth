@@ -1548,6 +1548,27 @@ def test_resolve_diffusion_load_plan_uses_fast_image_gguf_policies():
         assert plan["load_kwargs"]["offload_policy"] == "less_aggressive"
 
 
+def test_curated_gguf_recommended_offload_policy_for_direct_loads():
+    import core.inference.diffusion as d
+
+    assert d._curated_gguf_recommended_offload_policy(
+        repo_id = "unsloth/Qwen-Image-GGUF",
+        gguf_filename = "qwen-image-Q4_K_M.gguf",
+    ) == "balanced"
+    assert d._curated_gguf_recommended_offload_policy(
+        repo_id = "unsloth/Z-Image-Turbo-GGUF",
+        gguf_filename = "z-image-turbo-Q4_K_M.gguf",
+    ) == "less_aggressive"
+    assert d._curated_gguf_recommended_offload_policy(
+        repo_id = "Qwen/Qwen-Image",
+        transformer_gguf_repo = "unsloth/Qwen-Image-GGUF",
+        transformer_gguf_filename = "qwen-image-Q4_K_M.gguf",
+    ) == "balanced"
+    assert d._curated_gguf_recommended_offload_policy(
+        repo_id = "Qwen/Qwen-Image",
+    ) is None
+
+
 def test_load_model_ernie_can_replace_text_encoder_and_prompt_enhancer_ggufs(monkeypatch):
     _install_fake_diffusers(monkeypatch)
 
@@ -1898,6 +1919,7 @@ def test_load_model_flux2_dev_text_encoder_gguf_cpu_resident_when_offloading(mon
         gguf_filename = "flux2-dev-Q4_K_M.gguf",
         text_encoder_gguf_filename = "Mistral-Small-3.2-24B-Instruct-2506-UD-Q4_K_XL.gguf",
         enable_model_cpu_offload = True,
+        offload_policy = "aggressive",
     )
 
     assert status["is_loaded"] is True
@@ -2184,6 +2206,42 @@ def test_load_model_offload_policy_aggressive(monkeypatch):
     assert not hasattr(backend._pipe, "device")
     transformer = backend._pipe.kwargs["transformer"]
     assert calls == [(transformer, "cpu", True)]
+
+
+def test_load_model_auto_uses_curated_gguf_policy(monkeypatch):
+    _install_fake_diffusers(monkeypatch)
+
+    import core.inference.diffusion as d
+    from core.inference.diffusion import get_diffusion_backend
+
+    calls: list[tuple[Any, str, bool | None]] = []
+
+    def _fake_patch(root, resident_device, *, pin_memory = None):
+        calls.append((root, resident_device, pin_memory))
+        return 123
+
+    monkeypatch.setattr(
+        d.DiffusionBackend,
+        "_pick_device_and_dtype",
+        lambda self: ("cuda", "fake_dtype"),
+    )
+    monkeypatch.setattr(d, "_patch_gguf_modules_for_resident_device", _fake_patch)
+
+    backend = get_diffusion_backend()
+    status = backend.load_model(
+        "unsloth/Z-Image-Turbo-GGUF",
+        gguf_filename = "z-image-turbo-Q4_K_M.gguf",
+        enable_model_cpu_offload = True,
+        offload_policy = None,
+    )
+
+    assert status["offload_policy"] == "less_aggressive"
+    assert status["gguf_quantized_cpu_resident"] is False
+    assert status["gguf_pin_cpu_resident"] is False
+    assert backend._cpu_offload_enabled is False
+    assert getattr(backend._pipe, "cpu_offload", False) is False
+    assert backend._pipe.device == "cuda"
+    assert calls == []
 
 
 def test_load_model_offload_policy_balanced(monkeypatch):

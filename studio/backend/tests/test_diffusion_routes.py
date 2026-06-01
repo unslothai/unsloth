@@ -505,7 +505,7 @@ def test_diffusion_load_plan_allows_preset_before_quant_selection(app_with_stub)
     assert body["load_kwargs"]["repo_id"] == "black-forest-labs/FLUX.2-dev"
     assert body["load_kwargs"]["transformer_gguf_repo"] == "unsloth/FLUX.2-dev-GGUF"
     assert body["load_kwargs"]["transformer_gguf_filename"] is None
-    assert body["load_kwargs"]["offload_policy"] == "balanced"
+    assert body["load_kwargs"]["offload_policy"] == "less_aggressive"
     assert body["preset"]["id"] == "flux.2-dev"
 
 

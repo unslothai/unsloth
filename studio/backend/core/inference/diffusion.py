@@ -1155,6 +1155,28 @@ _CURATED_UNSLOTH_DIFFUSION_GGUFS_BY_REPO: dict[str, CuratedDiffusionGGUF] = {
 }
 
 
+def _curated_gguf_recommended_offload_policy(
+    *,
+    repo_id: Optional[str] = None,
+    gguf_filename: Optional[str] = None,
+    transformer_gguf_repo: Optional[str] = None,
+    transformer_gguf_filename: Optional[str] = None,
+) -> Optional[str]:
+    """Return Studio's curated policy for recognized GGUF component loads."""
+
+    if transformer_gguf_repo and transformer_gguf_filename:
+        spec = _CURATED_UNSLOTH_DIFFUSION_GGUFS_BY_REPO.get(
+            str(transformer_gguf_repo).lower()
+        )
+        if spec is not None:
+            return spec.recommended_offload_policy
+    if repo_id and gguf_filename:
+        spec = _CURATED_UNSLOTH_DIFFUSION_GGUFS_BY_REPO.get(str(repo_id).lower())
+        if spec is not None:
+            return spec.recommended_offload_policy
+    return None
+
+
 def _preset_id_from_curated_diffusion_gguf(spec: CuratedDiffusionGGUF) -> str:
     leaf = _repo_leaf(spec.repo_id)
     if leaf.endswith("-gguf"):
@@ -3322,8 +3344,9 @@ class DiffusionBackend:
         offload hooks; ``less_aggressive`` keeps only text-encoder GGUF
         tensors CPU-resident while the diffusion transformer stays on
         GPU; ``none`` keeps the pipeline resident on the selected device
-        and does not force GGUF tensors to stay on CPU. The lower-level
-        booleans remain accepted for existing callers. When
+        and does not force GGUF tensors to stay on CPU. When omitted for
+        a curated Studio GGUF, the curated recommendation is used. The
+        lower-level booleans remain accepted for existing callers. When
         ``offload_policy`` is supplied, it owns those booleans.
 
         ``gguf_quantized_cpu_resident`` controls whether packed GGUF
@@ -3368,6 +3391,18 @@ class DiffusionBackend:
                 "loading an image model."
             ) from exc
         _guard_diffusers_optional_bitsandbytes()
+
+        if (
+            offload_policy is None
+            and gguf_quantized_cpu_resident is None
+            and gguf_pin_cpu_resident is None
+        ):
+            offload_policy = _curated_gguf_recommended_offload_policy(
+                repo_id = repo_id,
+                gguf_filename = gguf_filename,
+                transformer_gguf_repo = transformer_gguf_repo,
+                transformer_gguf_filename = transformer_gguf_filename,
+            )
 
         (
             resolved_offload_policy,
@@ -4372,11 +4407,18 @@ class DiffusionBackend:
                     self._dtype = str(dtype).replace("torch.", "")
                     self._cpu_offload_enabled = cpu_offload_enabled
                     self._offload_policy = resolved_offload_policy
-                    self._gguf_quantized_cpu_resident = bool(
-                        diffusion_gguf_resident_device is not None
-                        or text_encoder_resident_device is not None
+                    cpu_resident_gguf_modules = sum(
+                        int(prepared_gguf_module_counts.get(key, 0) or 0)
+                        for key in (
+                            "diffusion_cpu_resident_modules",
+                            "text_cpu_resident_modules",
+                            "prompt_enhancer_cpu_resident_modules",
+                        )
                     )
-                    self._gguf_pin_cpu_resident = bool(gguf_pin_cpu_resident_active)
+                    self._gguf_quantized_cpu_resident = cpu_resident_gguf_modules > 0
+                    self._gguf_pin_cpu_resident = bool(
+                        gguf_pin_cpu_resident_active and cpu_resident_gguf_modules > 0
+                    )
                     self._gguf_execution_backend = (
                         _detect_gguf_execution_backend(device)
                         if (
