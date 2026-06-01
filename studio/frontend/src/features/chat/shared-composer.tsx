@@ -87,6 +87,7 @@ export interface CompareHandle {
 
 const IMAGE_ACCEPT = "image/jpeg,image/png,image/webp,image/gif";
 const MAX_IMAGE_SIZE = 20 * 1024 * 1024;
+const COMPARE_APPEND_MESSAGE_TIMEOUT_MS = 10_000;
 
 function isNativeComposing(event: Event) {
   return "isComposing" in event && (event as InputEvent).isComposing === true;
@@ -296,7 +297,10 @@ export function RegisterCompareHandle({
           const poll = () => {
             timer = null;
             const messageId = findAppendedUserMessageId();
-            if (messageId || Date.now() - startedAt >= 1000) {
+            if (
+              messageId ||
+              Date.now() - startedAt >= COMPARE_APPEND_MESSAGE_TIMEOUT_MS
+            ) {
               finish(messageId);
               return;
             }
@@ -933,6 +937,13 @@ export function SharedComposer({
         handle1 ? handle1.appendMessage(content) : Promise.resolve(null),
         handle2 ? handle2.appendMessage(content) : Promise.resolve(null),
       ]);
+      if ((handle1 && !parentId1) || (handle2 && !parentId2)) {
+        toast.error("Compare failed", {
+          description:
+            "The prompt could not be added to both compare panes. Try sending it again.",
+        });
+        return;
+      }
 
       const name1 = model1?.id ? modelDisplayName(model1.id) : "";
       const name2 = model2?.id ? modelDisplayName(model2.id) : "";
