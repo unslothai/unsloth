@@ -218,6 +218,8 @@ class AnthropicStreamEmitter:
     def __init__(self) -> None:
         self.block_index: int = 0
         self._text_block_open: bool = False
+        self._open_tool_call_id: Optional[str] = None
+        self._open_tool_args_sent: bool = False
         self._prev_text: str = ""
         self._usage: dict = {}
 
@@ -263,8 +265,10 @@ class AnthropicStreamEmitter:
     def finish(self, stop_reason: str = "end_turn") -> list[str]:
         """Close any open block and emit message_delta + message_stop."""
         events = []
-        if self._text_block_open:
+        if self._text_block_open or self._open_tool_call_id is not None:
             events.append(self._close_block())
+            self._open_tool_call_id = None
+            self._open_tool_args_sent = False
         events.append(
             build_anthropic_sse_event(
                 "message_delta",
@@ -310,12 +314,26 @@ class AnthropicStreamEmitter:
         return events
 
     def _handle_tool_start(self, event: dict) -> list[str]:
+        tool_call_id = event.get("tool_call_id", "")
+        args = event.get("arguments", {})
+        if tool_call_id and self._open_tool_call_id == tool_call_id:
+            return self._tool_arguments_delta(args)
+
         events = []
-        # Close current text block if open
+        # Close current text block if open.
         if self._text_block_open:
             events.append(self._close_block())
-        # Open a tool_use block
+        # Defensive: if a replacement/different tool_start arrives while a
+        # tool_use block is open, close the stale block before starting another.
+        elif self._open_tool_call_id is not None:
+            events.append(self._close_block())
+            self._open_tool_call_id = None
+            self._open_tool_args_sent = False
+
+        # Open a tool_use block.
         self.block_index += 1
+        self._open_tool_call_id = tool_call_id
+        self._open_tool_args_sent = False
         events.append(
             build_anthropic_sse_event(
                 "content_block_start",
@@ -324,35 +342,43 @@ class AnthropicStreamEmitter:
                     "index": self.block_index,
                     "content_block": {
                         "type": "tool_use",
-                        "id": event.get("tool_call_id", ""),
+                        "id": tool_call_id,
                         "name": event.get("tool_name", ""),
                         "input": {},
                     },
                 },
             )
         )
-        # Emit the arguments as input_json_delta
-        args = event.get("arguments", {})
-        if args:
-            events.append(
-                build_anthropic_sse_event(
-                    "content_block_delta",
-                    {
-                        "type": "content_block_delta",
-                        "index": self.block_index,
-                        "delta": {
-                            "type": "input_json_delta",
-                            "partial_json": json.dumps(args),
-                        },
-                    },
-                )
-            )
+        events.extend(self._tool_arguments_delta(args))
         return events
+
+    def _tool_arguments_delta(self, args: dict) -> list[str]:
+        if not args:
+            return []
+        if self._open_tool_args_sent:
+            return []
+        self._open_tool_args_sent = True
+        return [
+            build_anthropic_sse_event(
+                "content_block_delta",
+                {
+                    "type": "content_block_delta",
+                    "index": self.block_index,
+                    "delta": {
+                        "type": "input_json_delta",
+                        "partial_json": json.dumps(args),
+                    },
+                },
+            )
+        ]
 
     def _handle_tool_end(self, event: dict) -> list[str]:
         events = []
-        # Close the tool_use block
-        events.append(self._close_block())
+        # Close the tool_use block.
+        if self._open_tool_call_id is not None or self._text_block_open:
+            events.append(self._close_block())
+        self._open_tool_call_id = None
+        self._open_tool_args_sent = False
         # Emit custom tool_result event (non-standard, ignored by SDKs)
         events.append(
             build_anthropic_sse_event(

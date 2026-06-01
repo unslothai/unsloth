@@ -24,6 +24,7 @@ import { useAui } from "@assistant-ui/react";
 import {
   ArrowUpIcon,
   DownloadIcon,
+  FileTextIcon,
   GlobeIcon,
   HeadphonesIcon,
   LightbulbIcon,
@@ -37,7 +38,10 @@ import { Image03Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { toast } from "@/lib/toast";
 import { loadModel, validateModel } from "./api/chat-api";
-import { parseExternalModelId, providerTypeSupportsVision } from "./external-providers";
+import {
+  parseExternalModelId,
+  providerTypeSupportsVision,
+} from "./external-providers";
 import { useExternalProvidersStore } from "./stores/external-providers-store";
 import {
   type ReasoningEffort,
@@ -102,7 +106,10 @@ function fileToBase64DataURL(file: File): Promise<string> {
   });
 }
 
-function formatReasoningEffortLabel(level: ReasoningEffort, modelId?: string): string {
+function formatReasoningEffortLabel(
+  level: ReasoningEffort,
+  modelId?: string,
+): string {
   if (level === "max") return "Max";
   if (level === "xhigh") {
     const normalized = modelId?.trim().toLowerCase() ?? "";
@@ -138,7 +145,12 @@ function useDictation(
   const start = useCallback(() => {
     const SpeechRecognitionAPI =
       typeof window !== "undefined" &&
-      (window.SpeechRecognition ?? (window as unknown as { webkitSpeechRecognition?: typeof SpeechRecognition }).webkitSpeechRecognition);
+      (window.SpeechRecognition ??
+        (
+          window as unknown as {
+            webkitSpeechRecognition?: typeof SpeechRecognition;
+          }
+        ).webkitSpeechRecognition);
     if (!SpeechRecognitionAPI) {
       return;
     }
@@ -184,7 +196,11 @@ function useDictation(
 
   const supported =
     typeof window !== "undefined" &&
-    !!(window.SpeechRecognition ?? (window as unknown as { webkitSpeechRecognition?: unknown }).webkitSpeechRecognition);
+    !!(
+      window.SpeechRecognition ??
+      (window as unknown as { webkitSpeechRecognition?: unknown })
+        .webkitSpeechRecognition
+    );
 
   return { isDictating, start, stop, supported };
 }
@@ -224,7 +240,9 @@ export function RegisterCompareHandle({
     currentHandles[name] = {
       // fixes occasional reorder on reload.
       append: (content) =>
-        aui.thread().append({ role: "user", content, createdAt: new Date() } as never),
+        aui
+          .thread()
+          .append({ role: "user", content, createdAt: new Date() } as never),
       appendMessage: (content) => {
         const thread = aui.thread();
         const beforeIds = new Set(
@@ -335,7 +353,8 @@ function PendingImageThumb({
     setSrc(url);
     return () => URL.revokeObjectURL(url);
   }, [file]);
-  if (!src) return <div className="size-14 animate-pulse rounded-[14px] bg-muted" />;
+  if (!src)
+    return <div className="size-14 animate-pulse rounded-[14px] bg-muted" />;
   return (
     <div className="relative size-14 shrink-0 overflow-hidden rounded-[14px] border border-foreground/20 bg-muted">
       <img src={src} alt={file.name} className="h-full w-full object-cover" />
@@ -370,7 +389,10 @@ export function SharedComposer({
   const [running, setRunning] = useState(false);
   const [comparing, setComparing] = useState(false);
   const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
-  const [pendingAudio, setPendingAudio] = useState<{ name: string; base64: string } | null>(null);
+  const [pendingAudio, setPendingAudio] = useState<{
+    name: string;
+    base64: string;
+  } | null>(null);
   const [dragging, setDragging] = useState(false);
   const [isComposing, setIsComposing] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -399,10 +421,16 @@ export function SharedComposer({
   const setReasoningEnabled = useChatRuntimeStore((s) => s.setReasoningEnabled);
   const reasoningStyle = useChatRuntimeStore((s) => s.reasoningStyle);
   const reasoningEffort = useChatRuntimeStore((s) => s.reasoningEffort);
-  const supportsReasoningOff = useChatRuntimeStore((s) => s.supportsReasoningOff);
-  const reasoningEffortLevels = useChatRuntimeStore((s) => s.reasoningEffortLevels);
+  const supportsReasoningOff = useChatRuntimeStore(
+    (s) => s.supportsReasoningOff,
+  );
+  const reasoningEffortLevels = useChatRuntimeStore(
+    (s) => s.reasoningEffortLevels,
+  );
   const setReasoningEffort = useChatRuntimeStore((s) => s.setReasoningEffort);
-  const supportsPreserveThinking = useChatRuntimeStore((s) => s.supportsPreserveThinking);
+  const supportsPreserveThinking = useChatRuntimeStore(
+    (s) => s.supportsPreserveThinking,
+  );
   const preserveThinking = useChatRuntimeStore((s) => s.preserveThinking);
   const setPreserveThinking = useChatRuntimeStore((s) => s.setPreserveThinking);
   const supportsTools = useChatRuntimeStore((s) => s.supportsTools);
@@ -417,6 +445,8 @@ export function SharedComposer({
   const setImageToolsEnabled = useChatRuntimeStore(
     (s) => s.setImageToolsEnabled,
   );
+  const artifactsEnabled = useChatRuntimeStore((s) => s.artifactsEnabled);
+  const setArtifactsEnabled = useChatRuntimeStore((s) => s.setArtifactsEnabled);
   const webFetchToolsEnabled = useChatRuntimeStore(
     (s) => s.webFetchToolsEnabled,
   );
@@ -548,6 +578,7 @@ export function SharedComposer({
   // Images pill is only ever lit on OpenAI cloud's Responses-API models
   // and Gemini Nano Banana family. No local tool runtime fallback.
   const showImagePill = supportsBuiltinImageGeneration;
+  const artifactDisabled = !modelLoaded;
   // Fetch pill: Anthropic-only (web_fetch_20250910 / web_fetch_20260209).
   const webFetchDisabled = !modelLoaded || !supportsBuiltinWebFetch;
   const showWebFetchPill = supportsBuiltinWebFetch;
@@ -555,11 +586,16 @@ export function SharedComposer({
   // reference `toolsDisabled` (rare; both pills used it before).
   const toolsDisabled = codeDisabled;
   const setPendingAudioStore = useChatRuntimeStore((s) => s.setPendingAudio);
-  const clearPendingAudioStore = useChatRuntimeStore((s) => s.clearPendingAudio);
-
-  const { isDictating, start: startDictation, stop: stopDictation, supported: dictationSupported } = useDictation(
-    setText,
+  const clearPendingAudioStore = useChatRuntimeStore(
+    (s) => s.clearPendingAudio,
   );
+
+  const {
+    isDictating,
+    start: startDictation,
+    stop: stopDictation,
+    supported: dictationSupported,
+  } = useDictation(setText);
 
   useEffect(() => {
     const id = setInterval(() => {
@@ -577,43 +613,48 @@ export function SharedComposer({
     ta.style.height = "auto";
     const styles = window.getComputedStyle(ta);
     const lineHeight = parseFloat(styles.lineHeight) || 20;
-    const paddingY = parseFloat(styles.paddingTop) + parseFloat(styles.paddingBottom);
-    const borderY = parseFloat(styles.borderTopWidth) + parseFloat(styles.borderBottomWidth);
+    const paddingY =
+      parseFloat(styles.paddingTop) + parseFloat(styles.paddingBottom);
+    const borderY =
+      parseFloat(styles.borderTopWidth) + parseFloat(styles.borderBottomWidth);
     const maxHeight = lineHeight * 6 + paddingY + borderY;
     const next = Math.min(ta.scrollHeight, maxHeight);
     ta.style.height = `${next}px`;
     ta.style.overflowY = ta.scrollHeight > maxHeight ? "auto" : "hidden";
   }, [text]);
 
-  const addFiles = useCallback((files: FileList | null) => {
-    if (!files?.length) return;
-    const next: PendingImage[] = [];
-    let droppedImageForUnavailable = false;
-    for (let i = 0; i < files.length; i++) {
-      const file = files[i];
-      if (!file) continue;
-      // Handle audio files
-      if (file.type.match(/^audio\//i) && file.size <= MAX_AUDIO_SIZE) {
-        fileToBase64(file).then((base64) => {
-          setPendingAudio({ name: file.name, base64 });
-          setPendingAudioStore(base64, file.name);
-        });
-        continue;
+  const addFiles = useCallback(
+    (files: FileList | null) => {
+      if (!files?.length) return;
+      const next: PendingImage[] = [];
+      let droppedImageForUnavailable = false;
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        if (!file) continue;
+        // Handle audio files
+        if (file.type.match(/^audio\//i) && file.size <= MAX_AUDIO_SIZE) {
+          fileToBase64(file).then((base64) => {
+            setPendingAudio({ name: file.name, base64 });
+            setPendingAudioStore(base64, file.name);
+          });
+          continue;
+        }
+        // Handle image files
+        if (!file.type.match(/^image\/(jpeg|png|webp|gif)$/i)) continue;
+        if (file.size > MAX_IMAGE_SIZE) continue;
+        if (attachUnavailableReason) {
+          droppedImageForUnavailable = true;
+          continue;
+        }
+        next.push({ id: crypto.randomUUID(), file });
       }
-      // Handle image files
-      if (!file.type.match(/^image\/(jpeg|png|webp|gif)$/i)) continue;
-      if (file.size > MAX_IMAGE_SIZE) continue;
-      if (attachUnavailableReason) {
-        droppedImageForUnavailable = true;
-        continue;
+      if (droppedImageForUnavailable && attachUnavailableReason) {
+        toast.error(attachUnavailableReason);
       }
-      next.push({ id: crypto.randomUUID(), file });
-    }
-    if (droppedImageForUnavailable && attachUnavailableReason) {
-      toast.error(attachUnavailableReason);
-    }
-    setPendingImages((prev) => [...prev, ...next]);
-  }, [setPendingAudioStore, attachUnavailableReason]);
+      setPendingImages((prev) => [...prev, ...next]);
+    },
+    [setPendingAudioStore, attachUnavailableReason],
+  );
 
   const removePendingImage = useCallback((id: string) => {
     setPendingImages((prev) => prev.filter((p) => p.id !== id));
@@ -671,12 +712,17 @@ export function SharedComposer({
     // LoraCompare and single-pane chats are unaffected.
     if (hasCompareHandles && !isGeneralizedCompare) {
       toast.error("Pick a model in each pane to compare", {
-        description: "Use the model dropdown above each pane, then send your prompt.",
+        description:
+          "Use the model dropdown above each pane, then send your prompt.",
       });
       return;
     }
 
-    if (pendingImages.length > 0 && !isGeneralizedCompare && imageUnavailableReason) {
+    if (
+      pendingImages.length > 0 &&
+      !isGeneralizedCompare &&
+      imageUnavailableReason
+    ) {
       // Single mode: the loaded model's runtime capability is known
       // here. Compare mode defers — each ensureModelLoaded below sets
       // loadedIsMultimodal for its side, and the chat-adapter's
@@ -714,8 +760,9 @@ export function SharedComposer({
       const maxSeqLength = store.params.maxSeqLength;
       const trustRemoteCode = store.params.trustRemoteCode ?? false;
       const chatTemplateOverride = store.chatTemplateOverride;
-      const effectiveChatTemplateOverride =
-        chatTemplateOverride?.trim() ? chatTemplateOverride : null;
+      const effectiveChatTemplateOverride = chatTemplateOverride?.trim()
+        ? chatTemplateOverride
+        : null;
 
       function modelDisplayName(id: string): string {
         const external = parseExternalModelId(id);
@@ -725,7 +772,9 @@ export function SharedComposer({
       }
 
       // Helper: load a model and update store checkpoint
-      async function ensureModelLoaded(sel: CompareModelSelection): Promise<string> {
+      async function ensureModelLoaded(
+        sel: CompareModelSelection,
+      ): Promise<string> {
         const external = parseExternalModelId(sel.id);
         if (external) {
           const externalStore = useExternalProvidersStore.getState();
@@ -738,7 +787,9 @@ export function SharedComposer({
             (p) => p.id === external.providerId,
           );
           if (!provider) {
-            throw new Error("Connection not found. Open Settings -> Connections and add it again.");
+            throw new Error(
+              "Connection not found. Open Settings -> Connections and add it again.",
+            );
           }
 
           const reasoningCaps = getExternalReasoningCapabilities(
@@ -754,11 +805,12 @@ export function SharedComposer({
             external.modelId,
             provider.baseUrl,
           );
-          const supportsBuiltinCodeExecution = providerSupportsBuiltinCodeExecution(
-            provider.providerType,
-            external.modelId,
-            provider.baseUrl,
-          );
+          const supportsBuiltinCodeExecution =
+            providerSupportsBuiltinCodeExecution(
+              provider.providerType,
+              external.modelId,
+              provider.baseUrl,
+            );
           const supportsBuiltinImageGeneration =
             providerSupportsBuiltinImageGeneration(
               provider.providerType,
@@ -796,7 +848,8 @@ export function SharedComposer({
         const currentStore = useChatRuntimeStore.getState();
         const isAlreadyActive =
           currentStore.params.checkpoint === sel.id &&
-          (currentStore.activeGgufVariant ?? null) === (sel.ggufVariant ?? null);
+          (currentStore.activeGgufVariant ?? null) ===
+            (sel.ggufVariant ?? null);
         if (!isAlreadyActive) {
           const validation = await validateModel({
             model_path: sel.id,
@@ -889,9 +942,17 @@ export function SharedComposer({
       try {
         // Side 1: load → generate → wait
         if (handle1 && model1?.id) {
-          toast("Loading Model 1…", { id: toastId, description: name1, duration: Infinity });
+          toast("Loading Model 1…", {
+            id: toastId,
+            description: name1,
+            duration: Infinity,
+          });
           const status1 = await ensureModelLoaded(model1);
-          toast("Generating with Model 1…", { id: toastId, description: `${name1} (${status1})`, duration: Infinity });
+          toast("Generating with Model 1…", {
+            id: toastId,
+            description: `${name1} (${status1})`,
+            duration: Infinity,
+          });
           const done = handle1.waitForRunEnd();
           handle1.startRun(parentId1);
           await done;
@@ -899,13 +960,22 @@ export function SharedComposer({
 
         // Side 2: load → generate → wait
         if (handle2 && model2?.id) {
-          const needsLoad = model2.id.toLowerCase() !== (model1?.id || "").toLowerCase()
-            || (model2.ggufVariant ?? "") !== (model1?.ggufVariant ?? "");
+          const needsLoad =
+            model2.id.toLowerCase() !== (model1?.id || "").toLowerCase() ||
+            (model2.ggufVariant ?? "") !== (model1?.ggufVariant ?? "");
           if (needsLoad) {
-            toast("Loading Model 2…", { id: toastId, description: name2, duration: Infinity });
+            toast("Loading Model 2…", {
+              id: toastId,
+              description: name2,
+              duration: Infinity,
+            });
           }
           const status2 = await ensureModelLoaded(model2);
-          toast("Generating with Model 2…", { id: toastId, description: `${name2} (${status2})`, duration: Infinity });
+          toast("Generating with Model 2…", {
+            id: toastId,
+            description: `${name2} (${status2})`,
+            duration: Infinity,
+          });
           const done = handle2.waitForRunEnd();
           handle2.startRun(parentId2);
           await done;
@@ -959,7 +1029,12 @@ export function SharedComposer({
     }
   }
 
-  const canSend = (text.trim().length > 0 || pendingImages.length > 0 || pendingAudio !== null) && !busy && !isComposing;
+  const canSend =
+    (text.trim().length > 0 ||
+      pendingImages.length > 0 ||
+      pendingAudio !== null) &&
+    !busy &&
+    !isComposing;
 
   return (
     <div
@@ -994,7 +1069,10 @@ export function SharedComposer({
               <span className="max-w-48 truncate">{pendingAudio.name}</span>
               <button
                 type="button"
-                onClick={() => { setPendingAudio(null); clearPendingAudioStore(); }}
+                onClick={() => {
+                  setPendingAudio(null);
+                  clearPendingAudioStore();
+                }}
                 className="flex size-4 items-center justify-center rounded-full hover:bg-destructive hover:text-destructive-foreground"
                 aria-label="Remove audio"
               >
@@ -1092,130 +1170,136 @@ export function SharedComposer({
           )}
           {showReasoningControl ? (
             effectiveReasoningStyle === "reasoning_effort" ? (
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild={true}>
-                <button
-                  type="button"
-                  disabled={reasoningDisabled}
-                  className={cn(
-                    "flex items-center gap-1.5 rounded-full px-1.5 py-1.5 text-[13px] font-medium text-muted-foreground/70 transition-colors",
-                    reasoningDisabled
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild={true}>
+                  <button
+                    type="button"
+                    disabled={reasoningDisabled}
+                    className={cn(
+                      "flex items-center gap-1.5 rounded-full px-1.5 py-1.5 text-[13px] font-medium text-muted-foreground/70 transition-colors",
+                      reasoningDisabled
+                        ? "cursor-not-allowed opacity-40"
+                        : effectiveReasoningVisualEnabled
+                          ? "text-primary hover:bg-primary/10 dark:hover:bg-white/[0.08]"
+                          : "hover:bg-primary/10 dark:hover:bg-white/[0.08]",
+                    )}
+                    aria-label={thinkEffortAriaLabel({
+                      modelLoaded,
+                      reasoningDisabled,
+                      reasoningEffort,
+                    })}
+                  >
+                    {effectiveReasoningVisualEnabled ? (
+                      <LightbulbIcon className="size-3.5" />
+                    ) : (
+                      <LightbulbOffIcon className="size-3.5" />
+                    )}
+                    <span>
+                      Think:{" "}
+                      {effectiveReasoningVisualEnabled
+                        ? formatReasoningEffortLabel(
+                            reasoningEffort,
+                            externalSelection?.modelId,
+                          )
+                        : formatReasoningDisabledLabel(
+                            effectiveSupportsReasoningOff,
+                            isExternalOpenAIReasoning,
+                            checkpoint,
+                          )}
+                    </span>
+                  </button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  {effectiveSupportsReasoningOff && (
+                    <DropdownMenuItem
+                      onSelect={() => {
+                        setReasoningEnabled(false);
+                        applyQwenThinkingParams(false);
+                      }}
+                    >
+                      {formatReasoningDisabledLabel(
+                        effectiveSupportsReasoningOff,
+                        isExternalOpenAIReasoning,
+                        checkpoint,
+                      )}
+                      {!effectiveReasoningVisualEnabled ? " \u2713" : ""}
+                    </DropdownMenuItem>
+                  )}
+                  {effectiveReasoningEffortLevels
+                    .filter((level) => level !== "none")
+                    .map((level) => (
+                      <DropdownMenuItem
+                        key={level}
+                        onSelect={() => {
+                          setReasoningEffort(level);
+                          setReasoningEnabled(true);
+                          applyQwenThinkingParams(true);
+                          // Mutual exclusion: turning thinking on for a
+                          // Kimi model forces the web_search builtin off.
+                          if (isKimiExternal && toolsEnabled) {
+                            setToolsEnabled(false, { persist: false });
+                          }
+                        }}
+                      >
+                        {formatReasoningEffortLabel(
+                          level,
+                          externalSelection?.modelId,
+                        )}
+                        {effectiveReasoningVisualEnabled &&
+                        reasoningEffort === level
+                          ? " \u2713"
+                          : ""}
+                      </DropdownMenuItem>
+                    ))}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            ) : (
+              <button
+                type="button"
+                disabled={reasoningDisabled || reasoningLockedOn}
+                aria-disabled={reasoningDisabled || reasoningLockedOn}
+                title={
+                  reasoningLockedOn
+                    ? "This model requires reasoning to stay on."
+                    : undefined
+                }
+                onClick={() => {
+                  if (reasoningLockedOn) return;
+                  const next = !reasoningEnabled;
+                  setReasoningEnabled(next);
+                  applyQwenThinkingParams(next);
+                  // Mutual exclusion: Kimi's $web_search builtin
+                  // requires thinking off, so turning thinking on flips
+                  // the Search pill off (and vice versa).
+                  if (isKimiExternal && next && toolsEnabled) {
+                    setToolsEnabled(false, { persist: false });
+                  }
+                }}
+                className={cn(
+                  "flex items-center gap-1.5 rounded-full px-1.5 py-1.5 text-[13px] font-medium text-muted-foreground/70 transition-colors",
+                  reasoningLockedOn
+                    ? "cursor-not-allowed text-primary"
+                    : reasoningDisabled
                       ? "cursor-not-allowed opacity-40"
-                      : effectiveReasoningVisualEnabled
+                      : effectiveReasoningEnabled
                         ? "text-primary hover:bg-primary/10 dark:hover:bg-white/[0.08]"
                         : "hover:bg-primary/10 dark:hover:bg-white/[0.08]",
-                  )}
-                  aria-label={thinkEffortAriaLabel({
-                    modelLoaded,
-                    reasoningDisabled,
-                    reasoningEffort,
-                  })}
-                >
-                  {effectiveReasoningVisualEnabled ? (
-                    <LightbulbIcon className="size-3.5" />
-                  ) : (
-                    <LightbulbOffIcon className="size-3.5" />
-                  )}
-                  <span>
-                    Think:{" "}
-                    {effectiveReasoningVisualEnabled
-                      ? formatReasoningEffortLabel(
-                          reasoningEffort,
-                          externalSelection?.modelId,
-                        )
-                      : formatReasoningDisabledLabel(
-                          effectiveSupportsReasoningOff,
-                          isExternalOpenAIReasoning,
-                          checkpoint,
-                        )}
-                  </span>
-                </button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                {effectiveSupportsReasoningOff && (
-                  <DropdownMenuItem
-                    onSelect={() => {
-                      setReasoningEnabled(false);
-                      applyQwenThinkingParams(false);
-                    }}
-                  >
-                    {formatReasoningDisabledLabel(
-                      effectiveSupportsReasoningOff,
-                      isExternalOpenAIReasoning,
-                      checkpoint,
-                    )}
-                    {!effectiveReasoningVisualEnabled ? " \u2713" : ""}
-                  </DropdownMenuItem>
                 )}
-                {effectiveReasoningEffortLevels
-                  .filter((level) => level !== "none")
-                  .map((level) => (
-                  <DropdownMenuItem
-                    key={level}
-                    onSelect={() => {
-                      setReasoningEffort(level);
-                      setReasoningEnabled(true);
-                      applyQwenThinkingParams(true);
-                      // Mutual exclusion: turning thinking on for a
-                      // Kimi model forces the web_search builtin off.
-                      if (isKimiExternal && toolsEnabled) {
-                        setToolsEnabled(false, { persist: false });
-                      }
-                    }}
-                  >
-                    {formatReasoningEffortLabel(level, externalSelection?.modelId)}
-                    {effectiveReasoningVisualEnabled && reasoningEffort === level ? " \u2713" : ""}
-                  </DropdownMenuItem>
-                ))}
-              </DropdownMenuContent>
-            </DropdownMenu>
-          ) : (
-            <button
-              type="button"
-              disabled={reasoningDisabled || reasoningLockedOn}
-              aria-disabled={reasoningDisabled || reasoningLockedOn}
-              title={
-                reasoningLockedOn
-                  ? "This model requires reasoning to stay on."
-                  : undefined
-              }
-              onClick={() => {
-                if (reasoningLockedOn) return;
-                const next = !reasoningEnabled;
-                setReasoningEnabled(next);
-                applyQwenThinkingParams(next);
-                // Mutual exclusion: Kimi's $web_search builtin
-                // requires thinking off, so turning thinking on flips
-                // the Search pill off (and vice versa).
-                if (isKimiExternal && next && toolsEnabled) {
-                  setToolsEnabled(false, { persist: false });
-                }
-              }}
-              className={cn(
-                "flex items-center gap-1.5 rounded-full px-1.5 py-1.5 text-[13px] font-medium text-muted-foreground/70 transition-colors",
-                reasoningLockedOn
-                  ? "cursor-not-allowed text-primary"
-                  : reasoningDisabled
-                    ? "cursor-not-allowed opacity-40"
-                    : effectiveReasoningEnabled
-                      ? "text-primary hover:bg-primary/10 dark:hover:bg-white/[0.08]"
-                      : "hover:bg-primary/10 dark:hover:bg-white/[0.08]",
-              )}
-              aria-label={thinkToggleAriaLabel({
-                reasoningLockedOn,
-                modelLoaded,
-                reasoningDisabled,
-                effectiveReasoningEnabled,
-              })}
-            >
-              {reasoningLockedOn ||
-              (effectiveReasoningEnabled && !reasoningDisabled) ? (
-                <LightbulbIcon className="size-3.5" />
-              ) : (
-                <LightbulbOffIcon className="size-3.5" />
-              )}
-              <span>Think</span>
-            </button>
+                aria-label={thinkToggleAriaLabel({
+                  reasoningLockedOn,
+                  modelLoaded,
+                  reasoningDisabled,
+                  effectiveReasoningEnabled,
+                })}
+              >
+                {reasoningLockedOn ||
+                (effectiveReasoningEnabled && !reasoningDisabled) ? (
+                  <LightbulbIcon className="size-3.5" />
+                ) : (
+                  <LightbulbOffIcon className="size-3.5" />
+                )}
+                <span>Think</span>
+              </button>
             )
           ) : null}
           {supportsPreserveThinking && (
@@ -1232,7 +1316,9 @@ export function SharedComposer({
                     : "hover:bg-primary/10 dark:hover:bg-white/[0.08]",
               )}
               aria-label={
-                preserveThinking ? "Disable preserve think" : "Enable preserve think"
+                preserveThinking
+                  ? "Disable preserve think"
+                  : "Enable preserve think"
               }
             >
               {preserveThinking && modelLoaded ? (
@@ -1261,7 +1347,9 @@ export function SharedComposer({
             }}
             className="composer-pill-btn"
             data-active={toolsEnabled && !searchDisabled ? "true" : "false"}
-            aria-label={toolsEnabled ? "Disable web search" : "Enable web search"}
+            aria-label={
+              toolsEnabled ? "Disable web search" : "Enable web search"
+            }
           >
             <GlobeIcon className="size-3.5" />
             <span>Search</span>
@@ -1272,7 +1360,11 @@ export function SharedComposer({
             onClick={() => setCodeToolsEnabled(!codeToolsEnabled)}
             className="composer-pill-btn"
             data-active={codeToolsEnabled && !codeDisabled ? "true" : "false"}
-            aria-label={codeToolsEnabled ? "Disable code execution" : "Enable code execution"}
+            aria-label={
+              codeToolsEnabled
+                ? "Disable code execution"
+                : "Enable code execution"
+            }
           >
             <CodeToggleIcon className="size-3.5" />
             <span>Code</span>
@@ -1283,9 +1375,13 @@ export function SharedComposer({
               disabled={imageDisabled}
               onClick={() => setImageToolsEnabled(!imageToolsEnabled)}
               className="composer-pill-btn"
-              data-active={imageToolsEnabled && !imageDisabled ? "true" : "false"}
+              data-active={
+                imageToolsEnabled && !imageDisabled ? "true" : "false"
+              }
               aria-label={
-                imageToolsEnabled ? "Disable image generation" : "Enable image generation"
+                imageToolsEnabled
+                  ? "Disable image generation"
+                  : "Enable image generation"
               }
             >
               <HugeiconsIcon
@@ -1296,6 +1392,21 @@ export function SharedComposer({
               <span>Images</span>
             </button>
           )}
+          <button
+            type="button"
+            disabled={artifactDisabled}
+            onClick={() => setArtifactsEnabled(!artifactsEnabled)}
+            className="composer-pill-btn"
+            data-active={
+              artifactsEnabled && !artifactDisabled ? "true" : "false"
+            }
+            aria-label={
+              artifactsEnabled ? "Disable artifacts" : "Enable artifacts"
+            }
+          >
+            <FileTextIcon className="size-3.5" />
+            <span>Artifacts</span>
+          </button>
           {showWebFetchPill && (
             <button
               type="button"
