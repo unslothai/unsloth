@@ -1664,7 +1664,7 @@ class DiffusionLoadRequest(BaseModel):
     lora_weight_name: Optional[str] = Field(
         None,
         max_length = 512,
-        description = "Optional LoRA weight filename inside lora_repo",
+        description = "Optional .safetensors LoRA weight filename inside lora_repo",
     )
     lora_adapter_name: Optional[str] = Field(
         None,
@@ -1770,6 +1770,13 @@ class DiffusionLoadRequest(BaseModel):
         # ``https://hf_xxxxx@huggingface.co/.../flux.gguf`` we drop
         # the embedded credential before it can leak.
         return _reject_embedded_hf_token(v, info.field_name)
+
+    @field_validator("lora_weight_name")
+    @classmethod
+    def _lora_weight_must_be_safetensors(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and not v.lower().endswith(".safetensors"):
+            raise ValueError("lora_weight_name must point to a .safetensors file")
+        return v
 
 
 # torch.Generator.manual_seed packs into signed int64; values outside

@@ -435,6 +435,23 @@ def test_load_forwards_lora_fields(app_with_stub):
     assert stub.calls[-1]["lora_fuse"] is True
 
 
+def test_load_rejects_non_safetensors_lora_weight(app_with_stub):
+    app, _ = app_with_stub
+    c = TestClient(app)
+
+    r = c.post(
+        "/api/inference/images/load",
+        json = {
+            "repo_id": "owner/FLUX.1-finetune-diffusers",
+            "family": "flux.1",
+            "lora_repo": "owner/my-flux-lora",
+            "lora_weight_name": "pytorch_lora_weights.bin",
+        },
+    )
+    assert r.status_code == 422, r.text
+    assert "safetensors" in repr(r.json()).lower()
+
+
 def test_load_forwards_offload_policy(app_with_stub):
     app, stub = app_with_stub
     c = TestClient(app)

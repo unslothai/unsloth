@@ -1334,7 +1334,15 @@ def _apply_diffusion_lora(
     scale = float(1.0 if lora_scale is None else lora_scale)
     if not (0.0 <= scale <= 10.0):
         raise ValueError("lora_scale must be in [0, 10].")
-    kwargs: dict[str, Any] = {"adapter_name": adapter_name}
+    if lora_weight_name and not str(lora_weight_name).lower().endswith(".safetensors"):
+        raise RuntimeError(
+            "Diffusers LoRA loading in Studio only accepts safetensors "
+            "weights. Choose a .safetensors LoRA file."
+        )
+    kwargs: dict[str, Any] = {
+        "adapter_name": adapter_name,
+        "use_safetensors": True,
+    }
     if lora_weight_name:
         kwargs["weight_name"] = lora_weight_name
     if hf_token:

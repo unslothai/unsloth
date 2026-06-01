@@ -1112,6 +1112,52 @@ def test_load_model_curated_unsloth_diffusion_gguf_manifest(
     assert backend._pipe.kwargs["transformer"].path.endswith(filename)
 
 
+def test_curated_unsloth_diffusion_gguf_manifest_covers_all_quant_filenames():
+    from core.inference.diffusion import (
+        _CURATED_UNSLOTH_DIFFUSION_GGUFS,
+        _filename_matches_curated_diffusion_gguf,
+    )
+
+    common_suffixes = (
+        "BF16.gguf",
+        "F16.gguf",
+        "Q2_K.gguf",
+        "Q3_K_M.gguf",
+        "Q3_K_S.gguf",
+        "Q4_0.gguf",
+        "Q4_1.gguf",
+        "Q4_K_M.gguf",
+        "Q4_K_S.gguf",
+        "Q5_0.gguf",
+        "Q5_1.gguf",
+        "Q5_K_M.gguf",
+        "Q5_K_S.gguf",
+        "Q6_K.gguf",
+        "Q8_0.gguf",
+    )
+    extra_suffixes_by_repo = {
+        "unsloth/FLUX.2-dev-GGUF": ("Q3_K_L.gguf",),
+        "unsloth/Qwen-Image-Edit-2511-GGUF": ("Q3_K_L.gguf",),
+        "unsloth/Z-Image-GGUF": ("Q3_K_L.gguf",),
+        "unsloth/ERNIE-Image-Turbo-GGUF": (
+            "UD-Q2_K.gguf",
+            "UD-Q3_K_M.gguf",
+            "UD-Q4_K_M.gguf",
+            "UD-Q5_K_M.gguf",
+        ),
+    }
+
+    checked = 0
+    for spec in _CURATED_UNSLOTH_DIFFUSION_GGUFS:
+        for prefix in spec.filename_prefixes:
+            suffixes = common_suffixes + extra_suffixes_by_repo.get(spec.repo_id, ())
+            for suffix in suffixes:
+                checked += 1
+                assert _filename_matches_curated_diffusion_gguf(spec, prefix + suffix)
+
+    assert checked == 157
+
+
 def test_load_model_ernie_can_replace_text_encoder_and_prompt_enhancer_ggufs(monkeypatch):
     _install_fake_diffusers(monkeypatch)
 
@@ -3304,6 +3350,7 @@ def test_load_model_full_repo_applies_unfused_lora(monkeypatch):
         {
             "repo": "owner/my-flux-lora",
             "adapter_name": "studio-style",
+            "use_safetensors": True,
             "weight_name": "pytorch_lora_weights.safetensors",
         }
     ]
@@ -3331,6 +3378,13 @@ def test_load_model_full_repo_can_fuse_lora(monkeypatch):
     )
 
     assert status["lora"]["fused"] is True
+    assert backend._pipe.lora_loads == [
+        {
+            "repo": "owner/my-flux-lora",
+            "adapter_name": "default",
+            "use_safetensors": True,
+        }
+    ]
     assert backend._pipe.fuse_calls == [
         {
             "lora_scale": 0.5,
@@ -3362,8 +3416,23 @@ def test_load_model_gguf_applies_unfused_lora(monkeypatch):
         {
             "repo": "owner/my-klein-lora",
             "adapter_name": "default",
+            "use_safetensors": True,
         }
     ]
+
+
+def test_load_model_rejects_non_safetensors_lora_weight(monkeypatch):
+    _install_fake_diffusers(monkeypatch)
+    from core.inference.diffusion import get_diffusion_backend
+
+    backend = get_diffusion_backend()
+    with pytest.raises(RuntimeError, match = "only accepts safetensors"):
+        backend.load_model(
+            "owner/FLUX.1-finetune-diffusers",
+            family_override = "flux.1",
+            lora_repo = "owner/my-flux-lora",
+            lora_weight_name = "pytorch_lora_weights.bin",
+        )
 
 
 def test_load_model_gguf_rejects_lora_fusion(monkeypatch):
