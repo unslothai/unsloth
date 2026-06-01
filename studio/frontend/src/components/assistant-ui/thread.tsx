@@ -174,6 +174,9 @@ export const Thread: FC<{
     if (isTauri) return;
     dragDepth.current = 0;
     setPageDragging(false);
+    // Compare panes hide this composer and use the shared composer's own
+    // dropzone, so don't capture drops into a hidden composer here.
+    if (hideComposer) return;
     // Drops on the composer box are handled by its own dropzone, which calls
     // preventDefault; skip those here so the file isn't added twice.
     if (e.defaultPrevented) return;
@@ -958,7 +961,6 @@ function useImeComposerInputHandlers() {
 
 // Audio upload row, only for audio-input models.
 const ComposerAudioMenuItem: FC = () => {
-  const audioInputRef = useRef<HTMLInputElement>(null);
   const setPendingAudio = useChatRuntimeStore((s) => s.setPendingAudio);
   const activeModel = useChatRuntimeStore((s) => {
     const checkpoint = s.params.checkpoint;
@@ -980,30 +982,37 @@ const ComposerAudioMenuItem: FC = () => {
     [setPendingAudio],
   );
 
+  // Build the input on document.body, not in the menu: selecting the item
+  // closes the dropdown, which would unmount a menu-rendered input before the
+  // OS picker returns and drop the file.
+  const pickAudio = useCallback(() => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = AUDIO_ACCEPT;
+    input.hidden = true;
+    document.body.appendChild(input);
+    input.onchange = () => {
+      const file = input.files?.[0];
+      if (file) handleAudioFile(file);
+      document.body.removeChild(input);
+    };
+    input.oncancel = () => {
+      if (!input.files || input.files.length === 0) {
+        document.body.removeChild(input);
+      }
+    };
+    input.click();
+  }, [handleAudioFile]);
+
   if (!activeModel?.hasAudioInput) {
     return null;
   }
 
   return (
-    <>
-      <input
-        ref={audioInputRef}
-        type="file"
-        accept={AUDIO_ACCEPT}
-        className="hidden"
-        onChange={(e) => {
-          const file = e.target.files?.[0];
-          if (file) {
-            handleAudioFile(file);
-          }
-          e.target.value = "";
-        }}
-      />
-      <DropdownMenuItem onSelect={() => audioInputRef.current?.click()}>
-        <HeadphonesIcon />
-        Upload audio
-      </DropdownMenuItem>
-    </>
+    <DropdownMenuItem onSelect={() => pickAudio()}>
+      <HeadphonesIcon />
+      Upload audio
+    </DropdownMenuItem>
   );
 };
 
