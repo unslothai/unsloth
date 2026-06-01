@@ -136,8 +136,13 @@ def test_inspect_text_encoder_gguf_reports_qwen2vl_mmproj(monkeypatch, tmp_path)
     text.touch()
     mmproj.touch()
     reader = object()
+    open_calls: list[tuple[Path, dict]] = []
 
-    monkeypatch.setattr(g, "_open_gguf_reader", lambda path: reader)
+    def fake_open_gguf_reader(path, **kwargs):
+        open_calls.append((path, kwargs))
+        return reader
+
+    monkeypatch.setattr(g, "_open_gguf_reader", fake_open_gguf_reader)
     monkeypatch.setattr(
         g,
         "_read_gguf_scalar_field",
@@ -155,6 +160,7 @@ def test_inspect_text_encoder_gguf_reports_qwen2vl_mmproj(monkeypatch, tmp_path)
     assert info.supported_by_lazy_loader is True
     assert info.requires_mmproj is True
     assert info.mmproj_path == mmproj
+    assert open_calls == [(text, {"tensors_only": True})]
 
 
 def test_gguf_tensor_logical_shape_prefers_comfy_orig_shape_metadata():
@@ -621,7 +627,14 @@ def test_replace_mistral_modules_keeps_quantized_linear_bias_lazy(monkeypatch, t
         ]
     )
     language_model = _LanguageModel()
+    open_calls: list[tuple[Path, dict]] = []
+
+    def fake_open_gguf_reader(path, **kwargs):
+        open_calls.append((path, kwargs))
+        return reader
+
     monkeypatch.setattr(g, "_require_gguf", lambda: _FakeGGUF)
+    monkeypatch.setattr(g, "_open_gguf_reader", fake_open_gguf_reader)
 
     def fake_dequant(qweight, quant_type, *, dtype = None, logical_shape = None):
         if quant_type == "QW":
@@ -641,6 +654,7 @@ def test_replace_mistral_modules_keeps_quantized_linear_bias_lazy(monkeypatch, t
 
     v_proj = language_model.layers[0].self_attn.v_proj
     assert got_reader is reader
+    assert open_calls == [(tmp_path / "mistral.gguf", {"tensors_only": True})]
     assert isinstance(v_proj, g.LazyGGUFLinear)
     assert v_proj.qweight.device == torch.device("cpu")
     assert v_proj.qbias.device == torch.device("cpu")

@@ -2807,8 +2807,9 @@ def test_load_model_text_encoder_gguf_rejects_wrong_builtin_family_with_detected
     monkeypatch,
     tmp_path,
 ):
-    _install_fake_diffusers(monkeypatch)
     import core.inference.gguf_text_encoder as g
+
+    _install_fake_diffusers(monkeypatch)
     from core.inference.diffusion import get_diffusion_backend
 
     text_repo = tmp_path / "text"

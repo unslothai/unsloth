@@ -438,7 +438,10 @@ def resolve_text_encoder_mmproj_gguf(path: str | Path) -> Path | None:
 
 def inspect_text_encoder_gguf(path: str | Path) -> TextEncoderGGUFInfo:
     gguf_path = Path(path)
-    reader = _open_gguf_reader(gguf_path)
+    try:
+        reader = _open_gguf_reader(gguf_path, tensors_only = True)
+    except TypeError:
+        reader = _open_gguf_reader(gguf_path)
     architecture = _read_gguf_scalar_field(reader, "general.architecture", str)
     model_type = _read_gguf_scalar_field(reader, "general.type", str)
     if isinstance(architecture, str):
@@ -2491,7 +2494,7 @@ def _replace_mistral_modules_with_lazy_gguf(
     resident_device: torch.device | str | None = None,
 ) -> Any:
     gguf = _require_gguf()
-    reader = gguf.GGUFReader(str(gguf_path))
+    reader = _open_gguf_reader(Path(gguf_path), tensors_only = True)
 
     config = language_model.config
     expected = set(language_model.state_dict().keys())
