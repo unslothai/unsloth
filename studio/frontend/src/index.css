@@ -823,9 +823,11 @@
 		@apply flex cursor-pointer items-center gap-1.5 rounded-full py-1.5 pl-2 pr-2.5 text-[14px] font-medium text-muted-foreground/70 transition-colors hover:bg-primary/10 dark:hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-40;
 	}
 
-	/* Icon-only (compact) pills have no trailing label, so keep them symmetric. */
+	/* Icon-only (compact) pills drop their label, so make the button a square
+	   and center the glyph; the rounded-full hover highlight then reads as a
+	   circle around the icon rather than a wide rounded rectangle. */
 	[data-pill-compact="true"] .composer-pill-btn:not([data-keep-label]) {
-		@apply pr-2;
+		@apply size-8 justify-center px-0;
 	}
 
 	.composer-pill-btn[data-active="true"] {
