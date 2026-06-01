@@ -8,9 +8,12 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Folder01Icon, Tick02Icon } from "@hugeicons/core-free-icons";
+import {
+  ArrowDown01Icon,
+  Folder01Icon,
+  Tick02Icon,
+} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { ChevronDown } from "lucide-react";
 import type { ReactElement } from "react";
 import type { ProjectRecord } from "../types";
 
@@ -43,21 +46,26 @@ export function ProjectSwitcher({
                 ? "Loading project"
                 : "Pick a project"
           }
-          className="-mx-1 flex h-[34px] shrink-0 items-center gap-1.5 rounded-[8px] px-1.5 leading-none transition-colors hover:bg-nav-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="-mx-1 flex h-[34px] shrink-0 items-center gap-2 rounded-[10px] px-1.5 transition-colors hover:bg-[#ececec] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:hover:bg-[#2d2e32]"
         >
           <HugeiconsIcon
             icon={Folder01Icon}
             strokeWidth={1.75}
             className="size-icon shrink-0 text-foreground/70"
           />
-          <span className="max-w-[150px] truncate font-medium text-foreground">
-            {label}
+          <span className="flex min-w-0 flex-1 items-baseline">
+            <span className="min-w-0 flex max-w-[150px] flex-1 items-baseline truncate font-heading text-[16px] font-medium leading-tight text-black dark:text-white">
+              {label}
+            </span>
           </span>
-          <ChevronDown
-            strokeWidth={1.75}
-            className="size-3.5 shrink-0 text-foreground/60"
-            aria-hidden={true}
-          />
+          <span className="flex size-4 shrink-0 items-center justify-center">
+            <HugeiconsIcon
+              icon={ArrowDown01Icon}
+              strokeWidth={1.75}
+              className="relative top-0.5 size-3.5 text-muted-foreground"
+              aria-hidden={true}
+            />
+          </span>
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent
