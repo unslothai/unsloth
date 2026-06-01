@@ -37,7 +37,9 @@ def _classify_param_names(model: torch.nn.Module) -> tuple[Set[str], Set[str]]:
     PEFT-wrapped copies (``modules_to_save``) and tied embeddings
     (e.g. ``lm_head.weight`` aliased to ``embed_tokens.weight``).
     """
-    if any(param.device == torch.device("meta") for _, param in model.named_parameters()):
+    if any(
+        param.device == torch.device("meta") for _, param in model.named_parameters()
+    ):
         raise RuntimeError(
             "Unsloth: model is on meta device. Materialize the model "
             "(e.g. via FastLanguageModel.from_pretrained) before calling "
@@ -90,15 +92,21 @@ def _classify_param_names(model: torch.nn.Module) -> tuple[Set[str], Set[str]]:
     # torch.nn.RMSNorm (e.g. LlamaRMSNorm, MistralRMSNorm, Qwen2RMSNorm,
     # GemmaRMSNorm, Phi3RMSNorm, etc.).  Matches HuggingFace Trainer's
     # convention of excluding norm weights from weight decay.
-    _norm_name_pattern = _re.compile(r"(?:layernorm|rmsnorm|rms_norm|^norm$|\.norm\b)", _re.IGNORECASE)
+    _norm_name_pattern = _re.compile(
+        r"(?:layernorm|rmsnorm|rms_norm|^norm$|\.norm\b)", _re.IGNORECASE
+    )
     for name, param in model.named_parameters():
-        if name not in no_decay_names and _norm_name_pattern.search(name.rsplit(".", 1)[0]):
+        if name not in no_decay_names and _norm_name_pattern.search(
+            name.rsplit(".", 1)[0]
+        ):
             no_decay_names.add(name)
 
     return embedding_names, no_decay_names
 
 
-def _is_muon_eligible(name: str, param: torch.Tensor, embedding_param_names: Set[str]) -> bool:
+def _is_muon_eligible(
+    name: str, param: torch.Tensor, embedding_param_names: Set[str]
+) -> bool:
     """Check if a parameter is eligible for Muon optimization.
 
     Muon only applies to 2D hidden-layer weight matrices. Embedding
@@ -159,7 +167,9 @@ def make_muon_param_groups(
         param-group dicts suitable for ``torch.optim.Muon`` and
         ``torch.optim.AdamW`` respectively.
     """
-    if any(param.device == torch.device("meta") for _, param in model.named_parameters()):
+    if any(
+        param.device == torch.device("meta") for _, param in model.named_parameters()
+    ):
         raise RuntimeError(
             "Unsloth: model is on meta device. Materialize the model "
             "(e.g. via FastLanguageModel.from_pretrained) before calling "
@@ -168,7 +178,9 @@ def make_muon_param_groups(
         )
 
     adamw_lr = adamw_lr if adamw_lr is not None else lr
-    adamw_weight_decay = adamw_weight_decay if adamw_weight_decay is not None else muon_weight_decay
+    adamw_weight_decay = (
+        adamw_weight_decay if adamw_weight_decay is not None else muon_weight_decay
+    )
 
     embedding_names, no_decay_names = _classify_param_names(model)
 
@@ -208,11 +220,21 @@ def make_muon_param_groups(
         else:
             adamw_decay_params.append(param)
 
-    muon_groups = [{"params": muon_params, "lr": lr * muon_lr_scale, "weight_decay": muon_weight_decay}]
+    muon_groups = [
+        {
+            "params": muon_params,
+            "lr": lr * muon_lr_scale,
+            "weight_decay": muon_weight_decay,
+        }
+    ]
     adamw_groups: list[dict] = []
     if adamw_decay_params:
         adamw_groups.append(
-            {"params": adamw_decay_params, "lr": adamw_lr, "weight_decay": adamw_weight_decay}
+            {
+                "params": adamw_decay_params,
+                "lr": adamw_lr,
+                "weight_decay": adamw_weight_decay,
+            }
         )
     if adamw_no_decay_params:
         adamw_groups.append(
@@ -220,7 +242,11 @@ def make_muon_param_groups(
         )
     if adamw_embedding_params:
         adamw_groups.append(
-            {"params": adamw_embedding_params, "lr": embedding_lr if embedding_lr is not None else adamw_lr, "weight_decay": 0.0}
+            {
+                "params": adamw_embedding_params,
+                "lr": embedding_lr if embedding_lr is not None else adamw_lr,
+                "weight_decay": 0.0,
+            }
         )
 
     return muon_groups, adamw_groups

@@ -224,6 +224,7 @@ class MuonConfig:
 
     def __post_init__(self):
         import warnings as _warnings
+
         if not hasattr(torch.optim, "Muon"):
             raise ImportError(
                 f"MuonConfig requires PyTorch >= 2.9.0 (got {torch.__version__}). "
@@ -245,11 +246,15 @@ class MuonConfig:
             raise TypeError(
                 f"MuonConfig.muon_lr_scale must be a number, got {type(self.muon_lr_scale).__name__}."
             )
-        if self.muon_weight_decay is not None and not isinstance(self.muon_weight_decay, (int, float)):
+        if self.muon_weight_decay is not None and not isinstance(
+            self.muon_weight_decay, (int, float)
+        ):
             raise TypeError(
                 f"MuonConfig.muon_weight_decay must be a number, got {type(self.muon_weight_decay).__name__}."
             )
-        if self.adamw_weight_decay is not None and not isinstance(self.adamw_weight_decay, (int, float)):
+        if self.adamw_weight_decay is not None and not isinstance(
+            self.adamw_weight_decay, (int, float)
+        ):
             raise TypeError(
                 f"MuonConfig.adamw_weight_decay must be a number, got {type(self.adamw_weight_decay).__name__}."
             )
@@ -267,7 +272,10 @@ class MuonConfig:
                 "Consider reducing ns_steps (default: 5) for better performance."
             )
         if self.ns_coefficients is not None:
-            if not isinstance(self.ns_coefficients, tuple) or len(self.ns_coefficients) != 3:
+            if (
+                not isinstance(self.ns_coefficients, tuple)
+                or len(self.ns_coefficients) != 3
+            ):
                 raise ValueError(
                     f"MuonConfig.ns_coefficients must be a tuple of 3 floats, "
                     f"got {self.ns_coefficients}."
@@ -282,9 +290,7 @@ class MuonConfig:
                 f"MuonConfig.momentum must be >= 0.0, got {self.momentum}."
             )
         if self.muon_eps <= 0.0:
-            raise ValueError(
-                f"MuonConfig.muon_eps must be > 0.0, got {self.muon_eps}."
-            )
+            raise ValueError(f"MuonConfig.muon_eps must be > 0.0, got {self.muon_eps}.")
         if self.muon_lr_scale <= 0.0:
             raise ValueError(
                 f"MuonConfig.muon_lr_scale must be > 0.0, got {self.muon_lr_scale}."
@@ -404,7 +410,7 @@ class _MuonAdamWChained(torch.optim.Optimizer):
     sub-optimizers directly.
     """
 
-    def __init__(self, muon, adamw, needs_deterministic=False):
+    def __init__(self, muon, adamw, needs_deterministic = False):
         self.muon = muon
         self.adamw = adamw
         self._needs_deterministic = needs_deterministic
@@ -473,20 +479,24 @@ class _MuonAdamWChained(torch.optim.Optimizer):
             self.muon.step()
             return
         was_enabled = torch.are_deterministic_algorithms_enabled()
-        was_warn_only = torch.is_deterministic_algorithms_warn_only_enabled() if was_enabled else False
+        was_warn_only = (
+            torch.is_deterministic_algorithms_warn_only_enabled()
+            if was_enabled
+            else False
+        )
         if not was_enabled or not was_warn_only:
-            torch.use_deterministic_algorithms(True, warn_only=False)
+            torch.use_deterministic_algorithms(True, warn_only = False)
         else:
-            torch.use_deterministic_algorithms(True, warn_only=True)
+            torch.use_deterministic_algorithms(True, warn_only = True)
         try:
             self.muon.step()
         finally:
             if was_enabled:
-                torch.use_deterministic_algorithms(True, warn_only=was_warn_only)
+                torch.use_deterministic_algorithms(True, warn_only = was_warn_only)
             else:
                 torch.use_deterministic_algorithms(False)
 
-    def step(self, closure=None):
+    def step(self, closure = None):
         self._assert_group_count_matches()
         if closure is not None:
             with torch.enable_grad():
@@ -498,11 +508,11 @@ class _MuonAdamWChained(torch.optim.Optimizer):
         if closure is not None:
             return loss
 
-    def zero_grad(self, set_to_none=True):
+    def zero_grad(self, set_to_none = True):
         if self.muon is not None:
-            self.muon.zero_grad(set_to_none=set_to_none)
+            self.muon.zero_grad(set_to_none = set_to_none)
         if self.adamw is not None:
-            self.adamw.zero_grad(set_to_none=set_to_none)
+            self.adamw.zero_grad(set_to_none = set_to_none)
 
     MUON_STATE_DICT_VERSION = 1
 
@@ -566,6 +576,7 @@ class _MuonAdamWChained(torch.optim.Optimizer):
             if sub is None:
                 return 0
             return sum(p.numel() for g in sub.param_groups for p in g["params"])
+
         muon_str = f"Muon({_param_count(self.muon)} elements)"
         adamw_str = f"AdamW({_param_count(self.adamw)} elements)"
         return f"{type(self).__name__}({muon_str}, {adamw_str})"
@@ -623,6 +634,7 @@ class UnslothTrainer(SFTTrainer):
             )
 
         import os as _os
+
         try:
             import torch.distributed as dist
         except ImportError:
@@ -656,8 +668,11 @@ class UnslothTrainer(SFTTrainer):
 
         lr = self.args.learning_rate
         weight_decay = self.args.weight_decay  # save original for AdamW fallback
-        embedding_lr = config.embedding_lr if config.embedding_lr is not None \
+        embedding_lr = (
+            config.embedding_lr
+            if config.embedding_lr is not None
             else getattr(self.args, "embedding_learning_rate", None)
+        )
         if embedding_lr is not None and embedding_lr == 0.0:
             logger.warning(
                 "Unsloth: embedding_lr=0.0 — embeddings will receive zero gradient updates. "
@@ -665,18 +680,26 @@ class UnslothTrainer(SFTTrainer):
                 "or set a positive value."
             )
 
-        muon_weight_decay = config.muon_weight_decay if config.muon_weight_decay is not None else weight_decay
-        adamw_weight_decay = config.adamw_weight_decay if config.adamw_weight_decay is not None else weight_decay
+        muon_weight_decay = (
+            config.muon_weight_decay
+            if config.muon_weight_decay is not None
+            else weight_decay
+        )
+        adamw_weight_decay = (
+            config.adamw_weight_decay
+            if config.adamw_weight_decay is not None
+            else weight_decay
+        )
 
         muon_groups, adamw_groups = make_muon_param_groups(
             self.model,
-            lr=lr,
-            muon_weight_decay=muon_weight_decay,
-            muon_lr_scale=config.muon_lr_scale,
-            adamw_lr=config.adamw_lr,
-            adamw_weight_decay=adamw_weight_decay,
-            target_modules=config.target_modules,
-            embedding_lr=embedding_lr,
+            lr = lr,
+            muon_weight_decay = muon_weight_decay,
+            muon_lr_scale = config.muon_lr_scale,
+            adamw_lr = config.adamw_lr,
+            adamw_weight_decay = adamw_weight_decay,
+            target_modules = config.target_modules,
+            embedding_lr = embedding_lr,
         )
 
         if PeftModel is not None and isinstance(self.model, PeftModel):
@@ -716,13 +739,13 @@ class UnslothTrainer(SFTTrainer):
         )
 
         muon_kwargs = dict(
-            momentum=config.momentum,
-            nesterov=config.nesterov,
-            ns_steps=config.ns_steps,
-            eps=config.muon_eps,
-            ns_coefficients=config.ns_coefficients,
-            adjust_lr_fn=config.adjust_lr_fn,
-            weight_decay=muon_weight_decay,
+            momentum = config.momentum,
+            nesterov = config.nesterov,
+            ns_steps = config.ns_steps,
+            eps = config.muon_eps,
+            ns_coefficients = config.ns_coefficients,
+            adjust_lr_fn = config.adjust_lr_fn,
+            weight_decay = muon_weight_decay,
         )
         # Filter None values — upstream torch.optim.Muon stores them verbatim in defaults,
         # then crashes in step() when iterating None (e.g. len(None) in _zeropower_via_newtonschulz).
@@ -752,14 +775,21 @@ class UnslothTrainer(SFTTrainer):
         else:
             adamw_eps = getattr(self.args, "adam_epsilon", 1e-8)
         adamw_lr = config.adamw_lr if config.adamw_lr is not None else lr
-        adamw_kwargs = dict(lr=adamw_lr, betas=adamw_betas, eps=adamw_eps, weight_decay=adamw_weight_decay)
+        adamw_kwargs = dict(
+            lr = adamw_lr,
+            betas = adamw_betas,
+            eps = adamw_eps,
+            weight_decay = adamw_weight_decay,
+        )
         if adamw_groups:
             adamw_optimizer = torch.optim.AdamW(adamw_groups, **adamw_kwargs)
         else:
             adamw_optimizer = None
 
         self.optimizer = _MuonAdamWChained(
-            muon_optimizer, adamw_optimizer, needs_deterministic=needs_deterministic,
+            muon_optimizer,
+            adamw_optimizer,
+            needs_deterministic = needs_deterministic,
         )
         return self.optimizer
 

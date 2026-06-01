@@ -1,13 +1,14 @@
 """Modal GPU validation for Muon optimizer integration.
 Run: modal run modal_validate_muon.py
 """
+
 import modal
 from pathlib import Path
 
 LOCAL_UNSLOTH = Path("/home/keypa/dev/unsloth")
 
 image = (
-    modal.Image.debian_slim(python_version="3.12")
+    modal.Image.debian_slim(python_version = "3.12")
     .pip_install(
         "torch==2.12.0",
         "transformers==5.5.0",
@@ -19,14 +20,14 @@ image = (
         "bitsandbytes==0.49.2",
         "sentencepiece",
         "unsloth_zoo==2026.5.4",
-        extra_index_url="https://download.pytorch.org/whl/cu124",
+        extra_index_url = "https://download.pytorch.org/whl/cu124",
     )
     # Copy local unsloth source into image, then install it
-    .add_local_dir(LOCAL_UNSLOTH, remote_path="/root/unsloth", copy=True)
+    .add_local_dir(LOCAL_UNSLOTH, remote_path = "/root/unsloth", copy = True)
     .run_commands("pip install /root/unsloth --no-deps")
 )
 
-app = modal.App("unsloth-muon-validation", image=image)
+app = modal.App("unsloth-muon-validation", image = image)
 
 VALIDATION_SCRIPT = r"""
 import os, sys
@@ -99,16 +100,17 @@ print(f"{'='*60}")
 
 
 @app.function(
-    gpu="a100-40gb:1",
-    timeout=1800,
-    volumes={"/output": modal.Volume.from_name("muon-output", create_if_missing=True)},
+    gpu = "a100-40gb:1",
+    timeout = 1800,
+    volumes = {"/output": modal.Volume.from_name("muon-output", create_if_missing = True)},
 )
 def validate_muon():
     import subprocess, sys
+
     subprocess.run(
         [sys.executable, "-c", VALIDATION_SCRIPT],
-        check=True,
-        cwd="/root",
+        check = True,
+        cwd = "/root",
     )
 
 

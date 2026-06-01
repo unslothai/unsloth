@@ -1,13 +1,14 @@
 """Muon vs AdamW benchmark on Modal (A100-40GB).
 Run: modal run modal_benchmark_muon.py
 """
+
 import modal
 from pathlib import Path
 
 LOCAL_UNSLOTH = Path("/home/keypa/dev/unsloth")
 
 image = (
-    modal.Image.debian_slim(python_version="3.12")
+    modal.Image.debian_slim(python_version = "3.12")
     .pip_install(
         "torch==2.12.0",
         "transformers==5.5.0",
@@ -19,13 +20,13 @@ image = (
         "bitsandbytes==0.49.2",
         "sentencepiece",
         "unsloth_zoo==2026.5.4",
-        extra_index_url="https://download.pytorch.org/whl/cu124",
+        extra_index_url = "https://download.pytorch.org/whl/cu124",
     )
-    .add_local_dir(LOCAL_UNSLOTH, remote_path="/root/unsloth", copy=True)
+    .add_local_dir(LOCAL_UNSLOTH, remote_path = "/root/unsloth", copy = True)
     .run_commands("pip install /root/unsloth --no-deps")
 )
 
-app = modal.App("unsloth-muon-benchmark", image=image)
+app = modal.App("unsloth-muon-benchmark", image = image)
 
 BENCHMARK_SCRIPT = r"""
 import os, sys, time, torch
@@ -151,15 +152,16 @@ print(f"{'='*72}")
 
 
 @app.function(
-    gpu="a100-40gb:1",
-    timeout=3600,
+    gpu = "a100-40gb:1",
+    timeout = 3600,
 )
 def benchmark_muon():
     import subprocess, sys
+
     subprocess.run(
         [sys.executable, "-c", BENCHMARK_SCRIPT],
-        check=True,
-        cwd="/root",
+        check = True,
+        cwd = "/root",
     )
 
 
