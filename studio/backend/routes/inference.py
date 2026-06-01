@@ -94,14 +94,41 @@ def _format_timeout_label(seconds: float) -> str:
     return f"{display} {unit}"
 
 
-def _friendly_error(exc: Exception) -> str:
+def _friendly_error(exc: Exception, timeout_phase: str = "first_token") -> str:
     """Extract a user-friendly message from known llama-server errors."""
-    if isinstance(exc, httpx.ReadTimeout):
+    if isinstance(exc, httpx.TimeoutException):
         timeout_label = _format_timeout_label(_DEFAULT_FIRST_TOKEN_TIMEOUT_S)
+        if isinstance(exc, httpx.ReadTimeout):
+            msg = str(exc).lower()
+            if timeout_phase == "stream" or "stopped producing tokens" in msg:
+                return (
+                    "The model stopped producing tokens before the response "
+                    "completed. Try stopping and retrying, or reduce max "
+                    "tokens if the generation repeatedly stalls."
+                )
+            return (
+                "The model is still processing the prompt but did not produce a "
+                f"first token within {timeout_label}. Try reducing context length, "
+                "using more GPU offload, or loading a smaller model."
+            )
+        if isinstance(exc, httpx.ConnectTimeout):
+            return (
+                f"Timed out connecting to the model server within {timeout_label}. "
+                "It may still be starting -- try again shortly."
+            )
+        if isinstance(exc, httpx.WriteTimeout):
+            return (
+                f"Timed out sending the request to the model server within {timeout_label}. "
+                "Try again, or shorten the request if it keeps happening."
+            )
+        if isinstance(exc, httpx.PoolTimeout):
+            return (
+                f"Timed out waiting for an available model-server connection within {timeout_label}. "
+                "Another generation may still be running -- stop it or try again shortly."
+            )
         return (
-            "The model is still processing the prompt but did not produce a "
-            f"first token within {timeout_label}. Try reducing context length, "
-            "using more GPU offload, or loading a smaller model."
+            f"The model server did not respond within {timeout_label}. "
+            "Try again shortly."
         )
     # httpx transport-layer failures reaching the managed llama-server —
     # raised by the async pass-through helpers that talk to llama-server
@@ -6082,6 +6109,7 @@ async def _openai_passthrough_stream(
             cancel_watcher = asyncio.create_task(
                 _await_cancel_then_close(cancel_event, resp)
             )
+            first_chunk_seen = False
             try:
                 lines_iter = resp.aiter_lines()
                 async for raw_line in lines_iter:
@@ -6097,6 +6125,7 @@ async def _openai_passthrough_stream(
                     # Relay verbatim to preserve llama-server's native id,
                     # finish_reason, delta.tool_calls, and usage chunks.
                     yield raw_line + "\n\n"
+                    first_chunk_seen = True
                     if raw_line[6:].strip() == "[DONE]":
                         break
             except (httpx.RemoteProtocolError, httpx.ReadError, httpx.CloseError):
@@ -6109,7 +6138,12 @@ async def _openai_passthrough_stream(
                 logger.error("openai passthrough stream error: %s", e)
                 err = {
                     "error": {
-                        "message": _friendly_error(e),
+                        "message": _friendly_error(
+                            e,
+                            timeout_phase=(
+                                "stream" if first_chunk_seen else "first_token"
+                            ),
+                        ),
                         "type": "server_error",
                     },
                 }

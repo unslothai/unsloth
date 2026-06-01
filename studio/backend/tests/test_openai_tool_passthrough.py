@@ -517,6 +517,24 @@ class TestFriendlyErrorHttpx:
         exc = httpx.ReadTimeout("timed out", request = self._req())
         assert "first token within 10 minutes" in _friendly_error(exc)
 
+    def test_read_timeout_after_stream_started_mapped_as_stall(self):
+        exc = httpx.ReadTimeout("timed out", request = self._req())
+        assert "stopped producing tokens" in _friendly_error(
+            exc, timeout_phase = "stream"
+        )
+
+    def test_timeout_siblings_are_not_reported_as_crashes(self):
+        timeout_types = (
+            httpx.ConnectTimeout,
+            httpx.WriteTimeout,
+            httpx.PoolTimeout,
+        )
+        for timeout_type in timeout_types:
+            exc = timeout_type("timed out", request = self._req())
+            message = _friendly_error(exc)
+            assert "Timed out" in message
+            assert "crashed" not in message
+
     def test_timeout_label_singular_plural(self):
         assert _format_timeout_label(1.0) == "1 second"
         assert _format_timeout_label(1.5) == "1.5 seconds"

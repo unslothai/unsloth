@@ -94,6 +94,7 @@ _MAX_REPROMPTS = 3
 # curl) sees responses silently truncated mid-sentence.
 _DEFAULT_MAX_TOKENS_FLOOR = 32768
 _DEFAULT_FIRST_TOKEN_TIMEOUT_S = 600.0  # 10 min
+_DEFAULT_STREAM_STALL_TIMEOUT_S = 120.0  # 2 min
 _REPROMPT_MAX_CHARS = 2000
 
 # ── Pre-compiled patterns for GGUF shard detection ───────────
@@ -4261,29 +4262,61 @@ class LlamaCppBackend:
     def _iter_text_cancellable(
         response: "httpx.Response",
         cancel_event: Optional[threading.Event] = None,
+        stall_timeout_s: float = _DEFAULT_STREAM_STALL_TIMEOUT_S,
     ) -> Generator[str, None, None]:
         """Iterate over an httpx streaming response with cancel support.
 
         Checks cancel_event between chunks and on ReadTimeout.  The
         cancel watcher in _stream_with_retry also calls response.close()
         on cancel, which unblocks iter_text() once the response exists.
-        During normal streaming llama-server sends tokens frequently,
-        so the cancel check between chunks is the primary mechanism.
+        After the first chunk, a ReadTimeout loop longer than
+        stall_timeout_s is treated as an inter-token stall instead of
+        being swallowed forever.
         """
         text_iter = response.iter_text()
+        started_at = time.monotonic()
+        last_chunk_at: Optional[float] = None
         while True:
             if cancel_event is not None and cancel_event.is_set():
                 response.close()
                 return
             try:
                 chunk = next(text_iter)
+                if chunk:
+                    last_chunk_at = time.monotonic()
                 yield chunk
             except StopIteration:
                 return
             except httpx.ReadTimeout:
-                # No data within the timeout window -- just loop back
-                # and re-check cancel_event.
+                now = time.monotonic()
+                if last_chunk_at is None:
+                    if now - started_at >= _DEFAULT_FIRST_TOKEN_TIMEOUT_S:
+                        raise
+                elif now - last_chunk_at >= stall_timeout_s:
+                    raise httpx.ReadTimeout(
+                        "The model stopped producing tokens mid-response."
+                    )
                 continue
+
+    @staticmethod
+    def _set_stream_read_timeout(
+        response: "httpx.Response", read_timeout_s: float
+    ) -> None:
+        """Shorten httpx's post-header read timeout for stream polling.
+
+        The request uses a long read timeout so llama-server can spend
+        several minutes in prefill before response headers arrive. httpx
+        stores that timeout on the request and also applies it to later
+        response-body reads, so after headers arrive we lower only the
+        read component. This restores frequent cancel/stall polling
+        during token streaming without reintroducing prefill retry storms.
+        """
+        try:
+            timeout_ext = response.request.extensions.get("timeout")
+            if isinstance(timeout_ext, dict):
+                timeout_ext["read"] = read_timeout_s
+        except Exception:
+            logger.debug("Could not lower response read timeout", exc_info=True)
 
     @staticmethod
     @contextlib.contextmanager
@@ -4366,6 +4399,7 @@ class LlamaCppBackend:
                 headers = headers,
             ) as response:
                 _response_ref[0] = response
+                LlamaCppBackend._set_stream_read_timeout(response, 0.5)
                 if cancel_event is not None and cancel_event.is_set():
                     raise GeneratorExit
                 yield response
