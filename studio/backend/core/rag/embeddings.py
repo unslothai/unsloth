@@ -43,7 +43,7 @@ def _get(model_name: str | None = None):
 
             device = "cuda" if _cuda() else "cpu"
             logger.info("loading embedding model %s on %s", name, device)
-            _model = SentenceTransformer(name, device=device)
+            _model = SentenceTransformer(name, device = device)
             _name = name
         return _model
 
@@ -57,9 +57,9 @@ def encode(texts: list[str], *, model_name: str | None = None, normalize: bool =
     """Embed a batch of texts into an (N, dim) numpy array."""
     return _get(model_name).encode(
         texts,
-        normalize_embeddings=normalize,
-        convert_to_numpy=True,
-        show_progress_bar=False,
+        normalize_embeddings = normalize,
+        convert_to_numpy = True,
+        show_progress_bar = False,
     )
 
 
@@ -71,4 +71,4 @@ def dim(model_name: str | None = None) -> int:
 def token_counter(model_name: str | None = None) -> Callable[[str], int]:
     """Return a callable counting tokens with the model's own tokenizer."""
     tok = _get(model_name).tokenizer
-    return lambda t: len(tok.encode(t, add_special_tokens=False))
+    return lambda t: len(tok.encode(t, add_special_tokens = False))

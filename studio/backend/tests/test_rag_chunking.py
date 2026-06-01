@@ -9,13 +9,13 @@ from core.rag.parsers import Page, parse_text
 WORDS = lambda t: len(t.split())  # noqa: E731
 
 
-def _page(text: str, page_number=None) -> Page:
-    return Page(text=text, page_number=page_number, char_count=len(text))
+def _page(text: str, page_number = None) -> Page:
+    return Page(text = text, page_number = page_number, char_count = len(text))
 
 
 def test_chunk_token_bounds_and_overlap():
     text = " ".join(f"w{i}" for i in range(300))
-    chunks = chunk_pages([_page(text)], max_tokens=128, overlap=24, count=WORDS)
+    chunks = chunk_pages([_page(text)], max_tokens = 128, overlap = 24, count = WORDS)
     assert len(chunks) >= 3
     assert all(c.token_count <= 128 for c in chunks)
     a, b = chunks[0].text.split(), chunks[1].text.split()
@@ -24,13 +24,15 @@ def test_chunk_token_bounds_and_overlap():
 
 
 def test_chunk_indices_are_sequential():
-    chunks = chunk_pages([_page("alpha. " * 200)], max_tokens=32, overlap=0, count=WORDS)
+    chunks = chunk_pages(
+        [_page("alpha. " * 200)], max_tokens = 32, overlap = 0, count = WORDS
+    )
     assert [c.chunk_index for c in chunks] == list(range(len(chunks)))
 
 
 def test_chunk_tracks_source_page_index():
     pages = [_page("alpha bravo " * 80, 1), _page("charlie delta " * 80, 2)]
-    chunks = chunk_pages(pages, max_tokens=32, overlap=0, count=WORDS)
+    chunks = chunk_pages(pages, max_tokens = 32, overlap = 0, count = WORDS)
     page0 = [c for c in chunks if c.source_page_index == 0]
     page1 = [c for c in chunks if c.source_page_index == 1]
     assert page0 and page1
@@ -43,16 +45,16 @@ def test_chunk_char_offsets_locate_text_in_page():
     # the source page containing the chunk text (modulo whitespace stripping).
     page_text = "alpha bravo charlie delta echo foxtrot golf hotel " * 30
     pages = [_page(page_text, 1)]
-    chunks = chunk_pages(pages, max_tokens=16, overlap=0, count=WORDS)
+    chunks = chunk_pages(pages, max_tokens = 16, overlap = 0, count = WORDS)
     assert len(chunks) > 1
     for c in chunks:
         assert 0 <= c.page_char_start < c.page_char_end <= len(page_text)
-        sliced = page_text[c.page_char_start:c.page_char_end]
+        sliced = page_text[c.page_char_start : c.page_char_end]
         assert c.text in sliced or sliced.strip() == c.text
 
 
 def test_empty_page_yields_no_chunks():
-    chunks = chunk_pages([_page("   \n  ")], max_tokens=32, overlap=0, count=WORDS)
+    chunks = chunk_pages([_page("   \n  ")], max_tokens = 32, overlap = 0, count = WORDS)
     assert chunks == []
 
 

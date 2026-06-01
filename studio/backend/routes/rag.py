@@ -41,8 +41,8 @@ router = APIRouter()
 def _require_rag() -> None:
     if not rag_db.RAG_AVAILABLE:
         raise HTTPException(
-            status_code=503,
-            detail="RAG is unavailable: the sqlite-vec extension could not be loaded.",
+            status_code = 503,
+            detail = "RAG is unavailable: the sqlite-vec extension could not be loaded.",
         )
 
 
@@ -61,8 +61,8 @@ def _save_upload(file: UploadFile) -> tuple[str, str]:
     ext = os.path.splitext(filename)[1].lower()
     if ext not in config.UPLOAD_EXTS:
         raise HTTPException(
-            status_code=400,
-            detail=f"Unsupported file type '{ext}'. Allowed: {sorted(config.UPLOAD_EXTS)}",
+            status_code = 400,
+            detail = f"Unsupported file type '{ext}'. Allowed: {sorted(config.UPLOAD_EXTS)}",
         )
     uploads = ensure_dir(rag_uploads_root())
     stored_path = str(uploads / f"{uuid.uuid4().hex}{ext}")
@@ -76,7 +76,7 @@ def _save_upload(file: UploadFile) -> tuple[str, str]:
             out.write(block)
     if size == 0:
         os.remove(stored_path)
-        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+        raise HTTPException(status_code = 400, detail = "Uploaded file is empty.")
     return stored_path, filename
 
 
@@ -97,12 +97,12 @@ def _doc_view(row: dict) -> dict:
 # Schemas
 # ---------------------------------------------------------------------------
 class CreateKbRequest(BaseModel):
-    name: str = Field(min_length=1, max_length=200)
+    name: str = Field(min_length = 1, max_length = 200)
     description: str | None = None
 
 
 class UpdateKbRequest(BaseModel):
-    name: str | None = Field(default=None, max_length=200)
+    name: str | None = Field(default = None, max_length = 200)
     description: str | None = None
 
 
@@ -110,7 +110,7 @@ class SearchRequest(BaseModel):
     query: str
     kb_id: str | None = None
     thread_id: str | None = None
-    top_k: int = Field(default=config.TOP_K_HYBRID, ge=1, le=50)
+    top_k: int = Field(default = config.TOP_K_HYBRID, ge = 1, le = 50)
     min_score: float = 0.0
     mode: str = "hybrid"  # hybrid | lexical | dense
 
@@ -150,9 +150,9 @@ def create_knowledge_base(
     try:
         kb_id = store.create_kb(
             conn,
-            name=payload.name.strip(),
-            description=(payload.description or None),
-            embedding_model=config.EMBEDDING_MODEL,
+            name = payload.name.strip(),
+            description = (payload.description or None),
+            embedding_model = config.EMBEDDING_MODEL,
         )
         return {"id": kb_id, "name": payload.name.strip()}
     finally:
@@ -167,7 +167,7 @@ def update_knowledge_base(
     conn = rag_db.get_connection()
     try:
         if store.get_kb(conn, kb_id) is None:
-            raise HTTPException(status_code=404, detail="Knowledge base not found")
+            raise HTTPException(status_code = 404, detail = "Knowledge base not found")
         sets, params = [], []
         if payload.name is not None:
             sets.append("name=?")
@@ -177,7 +177,9 @@ def update_knowledge_base(
             params.append(payload.description or None)
         if sets:
             params.append(kb_id)
-            conn.execute(f"UPDATE knowledge_bases SET {', '.join(sets)} WHERE id=?", params)
+            conn.execute(
+                f"UPDATE knowledge_bases SET {', '.join(sets)} WHERE id=?", params
+            )
             conn.commit()
         return {"ok": True}
     finally:
@@ -192,7 +194,7 @@ def delete_knowledge_base(
     conn = rag_db.get_connection()
     try:
         if store.get_kb(conn, kb_id) is None:
-            raise HTTPException(status_code=404, detail="Knowledge base not found")
+            raise HTTPException(status_code = 404, detail = "Knowledge base not found")
         store.delete_kb(conn, kb_id)
         return {"ok": True}
     finally:
@@ -212,7 +214,7 @@ async def upload_kb_document(
     conn = rag_db.get_connection()
     try:
         if store.get_kb(conn, kb_id) is None:
-            raise HTTPException(status_code=404, detail="Knowledge base not found")
+            raise HTTPException(status_code = 404, detail = "Knowledge base not found")
     finally:
         conn.close()
     stored_path, filename = _save_upload(file)
@@ -261,12 +263,14 @@ def list_thread_documents(
 
 
 @router.delete("/documents/{document_id}")
-def delete_document(document_id: str, subject: str = Depends(get_current_subject)) -> dict:
+def delete_document(
+    document_id: str, subject: str = Depends(get_current_subject)
+) -> dict:
     _require_rag()
     conn = rag_db.get_connection()
     try:
         if store.get_document(conn, document_id) is None:
-            raise HTTPException(status_code=404, detail="Document not found")
+            raise HTTPException(status_code = 404, detail = "Document not found")
         store.delete_document(conn, document_id)
         return {"ok": True}
     finally:
@@ -281,7 +285,7 @@ def job_status(job_id: str, subject: str = Depends(get_current_subject)) -> dict
     _require_rag()
     row = ingestion.get_job_status(job_id)
     if row is None:
-        raise HTTPException(status_code=404, detail="Job not found")
+        raise HTTPException(status_code = 404, detail = "Job not found")
     return {
         "id": row["id"],
         "documentId": row["document_id"],
@@ -293,7 +297,9 @@ def job_status(job_id: str, subject: str = Depends(get_current_subject)) -> dict
 
 
 @router.get("/jobs/{job_id}/events")
-def job_events(job_id: str, subject: str = Depends(get_current_subject)) -> StreamingResponse:
+def job_events(
+    job_id: str, subject: str = Depends(get_current_subject)
+) -> StreamingResponse:
     _require_rag()
 
     def gen():
@@ -306,8 +312,8 @@ def job_events(job_id: str, subject: str = Depends(get_current_subject)) -> Stre
 
     return StreamingResponse(
         gen(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        media_type = "text/event-stream",
+        headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
 
@@ -322,7 +328,7 @@ def search(payload: SearchRequest, subject: str = Depends(get_current_subject)) 
     elif payload.thread_id:
         scope = store.thread_scope(payload.thread_id)
     else:
-        raise HTTPException(status_code=400, detail="Provide kb_id or thread_id")
+        raise HTTPException(status_code = 400, detail = "Provide kb_id or thread_id")
 
     conn = rag_db.get_connection()
     try:
@@ -331,7 +337,9 @@ def search(payload: SearchRequest, subject: str = Depends(get_current_subject)) 
         elif payload.mode == "dense":
             hits = retrieval.retrieve_dense(conn, scope, payload.query, payload.top_k)
         else:
-            hits = retrieval.retrieve_hybrid(conn, scope, payload.query, k=payload.top_k)
+            hits = retrieval.retrieve_hybrid(
+                conn, scope, payload.query, k = payload.top_k
+            )
         hits = retrieval.filter_min_score(hits, payload.min_score)
         rows = store.chunks_by_id(conn, [h.chunk_id for h in hits])
         results = []

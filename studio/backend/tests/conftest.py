@@ -188,15 +188,15 @@ def stub_embeddings(monkeypatch):
         norm = math.sqrt(sum(x * x for x in raw)) or 1.0
         return [x / norm for x in raw]
 
-    def fake_encode(texts, *, model_name=None, normalize=True):
+    def fake_encode(texts, *, model_name = None, normalize = True):
         return [_vec(t) for t in texts]
 
     monkeypatch.setattr(embeddings, "encode", fake_encode)
-    monkeypatch.setattr(embeddings, "dim", lambda model_name=None: dim)
+    monkeypatch.setattr(embeddings, "dim", lambda model_name = None: dim)
     monkeypatch.setattr(
         embeddings,
         "token_counter",
-        lambda model_name=None: (lambda t: len(t.split())),
+        lambda model_name = None: (lambda t: len(t.split())),
     )
-    monkeypatch.setattr(embeddings, "warm", lambda model_name=None: None)
+    monkeypatch.setattr(embeddings, "warm", lambda model_name = None: None)
     return dim

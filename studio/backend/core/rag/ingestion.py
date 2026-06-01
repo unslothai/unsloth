@@ -74,7 +74,7 @@ def _set_job(
 
 
 def _progress(conn, job_id: str, stage: str, progress: float) -> None:
-    _set_job(conn, job_id, status="running", stage=stage, progress=progress)
+    _set_job(conn, job_id, status = "running", stage = stage, progress = progress)
     _emit(job_id, {"type": "progress", "stage": stage, "progress": progress})
 
 
@@ -82,8 +82,8 @@ def _embed_all(texts: list[str], model_name: str | None):
     """Embed texts in batches, returning a flat list of vectors."""
     vectors: list = []
     for i in range(0, len(texts), _EMBED_BATCH):
-        batch = texts[i:i + _EMBED_BATCH]
-        out = embeddings.encode(batch, model_name=model_name, normalize=True)
+        batch = texts[i : i + _EMBED_BATCH]
+        out = embeddings.encode(batch, model_name = model_name, normalize = True)
         vectors.extend(out)
     return vectors
 
@@ -104,13 +104,13 @@ def _run(
         count = embeddings.token_counter(model_name)
         chunks = chunking.chunk_pages(
             pages,
-            max_tokens=config.CHUNK_TOKENS,
-            overlap=config.CHUNK_OVERLAP,
-            count=count,
+            max_tokens = config.CHUNK_TOKENS,
+            overlap = config.CHUNK_OVERLAP,
+            count = count,
         )
         if not chunks:
-            store.set_document_status(conn, document_id, "completed", num_chunks=0)
-            _set_job(conn, job_id, status="completed", stage="done", progress=1.0)
+            store.set_document_status(conn, document_id, "completed", num_chunks = 0)
+            _set_job(conn, job_id, status = "completed", stage = "done", progress = 1.0)
             _emit(job_id, {"type": "complete", "num_chunks": 0})
             return
 
@@ -119,15 +119,17 @@ def _run(
 
         _progress(conn, job_id, "storing", 0.9)
         store.add_chunks(conn, scope, document_id, chunks, vectors)
-        store.set_document_status(conn, document_id, "completed", num_chunks=len(chunks))
+        store.set_document_status(
+            conn, document_id, "completed", num_chunks = len(chunks)
+        )
 
-        _set_job(conn, job_id, status="completed", stage="done", progress=1.0)
+        _set_job(conn, job_id, status = "completed", stage = "done", progress = 1.0)
         _emit(job_id, {"type": "complete", "num_chunks": len(chunks)})
     except Exception as exc:  # noqa: BLE001 - report any failure to the client
         logger.exception("ingestion job %s failed", job_id)
         try:
-            store.set_document_status(conn, document_id, "failed", error=str(exc))
-            _set_job(conn, job_id, status="failed", stage="error", error=str(exc))
+            store.set_document_status(conn, document_id, "failed", error = str(exc))
+            _set_job(conn, job_id, status = "failed", stage = "error", error = str(exc))
         except Exception:  # noqa: BLE001
             logger.exception("failed to record ingestion failure for job %s", job_id)
         _emit(job_id, {"type": "error", "stage": "error", "error": str(exc)})
@@ -160,7 +162,7 @@ def start_ingestion(
     try:
         existing = store.document_by_hash(conn, scope, sha)
         if existing is not None:
-            job_id = _new_job(conn, existing, scope, status="completed", progress=1.0)
+            job_id = _new_job(conn, existing, scope, status = "completed", progress = 1.0)
             with _jobs_lock:
                 _jobs[job_id] = queue.Queue()
             _emit(job_id, {"type": "complete", "num_chunks": 0, "deduped": True})
@@ -169,12 +171,12 @@ def start_ingestion(
 
         document_id = store.create_document(
             conn,
-            scope=scope,
-            filename=filename,
-            sha256=sha,
-            kb_id=kb_id,
-            thread_id=thread_id,
-            status="pending",
+            scope = scope,
+            filename = filename,
+            sha256 = sha,
+            kb_id = kb_id,
+            thread_id = thread_id,
+            status = "pending",
         )
         job_id = _new_job(conn, document_id, scope)
     finally:
@@ -183,9 +185,9 @@ def start_ingestion(
     with _jobs_lock:
         _jobs[job_id] = queue.Queue()
     threading.Thread(
-        target=_run,
-        args=(job_id, document_id, scope, stored_path, model_name),
-        daemon=True,
+        target = _run,
+        args = (job_id, document_id, scope, stored_path, model_name),
+        daemon = True,
     ).start()
     return document_id, job_id
 
@@ -205,8 +207,15 @@ def _new_job(
     conn.execute(
         "INSERT INTO ingestion_jobs(id, document_id, scope, status, stage, progress, created_at) "
         "VALUES(?,?,?,?,?,?,?)",
-        (job_id, document_id, scope, status, None, progress,
-         datetime.now(timezone.utc).isoformat()),
+        (
+            job_id,
+            document_id,
+            scope,
+            status,
+            None,
+            progress,
+            datetime.now(timezone.utc).isoformat(),
+        ),
     )
     conn.commit()
     return job_id

@@ -32,7 +32,7 @@ def retrieve_lexical(
 ) -> list[Hit]:
     k = k or config.TOP_K_LEXICAL
     return [
-        Hit(cid, s, lexical_score=s)
+        Hit(cid, s, lexical_score = s)
         for cid, s in store.search_lexical(conn, scope, query, k)
     ]
 
@@ -46,10 +46,9 @@ def retrieve_dense(
     model_name: str | None = None,
 ) -> list[Hit]:
     k = k or config.TOP_K_DENSE
-    vec = embeddings.encode([query], model_name=model_name, normalize=True)[0]
+    vec = embeddings.encode([query], model_name = model_name, normalize = True)[0]
     return [
-        Hit(cid, s, dense_score=s)
-        for cid, s in store.search_dense(conn, scope, vec, k)
+        Hit(cid, s, dense_score = s) for cid, s in store.search_dense(conn, scope, vec, k)
     ]
 
 
@@ -58,15 +57,25 @@ def _rrf(rankings: list[list[Hit]], rrf_k: int, top_k: int) -> list[Hit]:
     best: dict[str, Hit] = {}
     for ranking in rankings:
         for rank, hit in enumerate(ranking):
-            fused[hit.chunk_id] = fused.get(hit.chunk_id, 0.0) + 1.0 / (rrf_k + rank + 1)
+            fused[hit.chunk_id] = fused.get(hit.chunk_id, 0.0) + 1.0 / (
+                rrf_k + rank + 1
+            )
             cur = best.get(hit.chunk_id)
             if cur is None:
-                best[hit.chunk_id] = Hit(hit.chunk_id, 0.0, hit.lexical_score, hit.dense_score)
+                best[hit.chunk_id] = Hit(
+                    hit.chunk_id, 0.0, hit.lexical_score, hit.dense_score
+                )
             else:
-                cur.lexical_score = cur.lexical_score if cur.lexical_score is not None else hit.lexical_score
-                cur.dense_score = cur.dense_score if cur.dense_score is not None else hit.dense_score
+                cur.lexical_score = (
+                    cur.lexical_score
+                    if cur.lexical_score is not None
+                    else hit.lexical_score
+                )
+                cur.dense_score = (
+                    cur.dense_score if cur.dense_score is not None else hit.dense_score
+                )
     out: list[Hit] = []
-    for cid, s in sorted(fused.items(), key=lambda kv: kv[1], reverse=True)[:top_k]:
+    for cid, s in sorted(fused.items(), key = lambda kv: kv[1], reverse = True)[:top_k]:
         h = best[cid]
         h.score = s
         out.append(h)
@@ -82,7 +91,9 @@ def retrieve_hybrid(
     model_name: str | None = None,
 ) -> list[Hit]:
     lexical = retrieve_lexical(conn, scope, query, config.TOP_K_LEXICAL)
-    dense = retrieve_dense(conn, scope, query, config.TOP_K_DENSE, model_name=model_name)
+    dense = retrieve_dense(
+        conn, scope, query, config.TOP_K_DENSE, model_name = model_name
+    )
     return _rrf([lexical, dense], config.RRF_K, k or config.TOP_K_HYBRID)
 
 

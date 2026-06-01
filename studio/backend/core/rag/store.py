@@ -83,16 +83,12 @@ def create_kb(
 
 
 def list_kbs(conn: sqlite3.Connection) -> list[dict]:
-    rows = conn.execute(
-        "SELECT * FROM knowledge_bases ORDER BY created_at"
-    ).fetchall()
+    rows = conn.execute("SELECT * FROM knowledge_bases ORDER BY created_at").fetchall()
     return [dict(r) for r in rows]
 
 
 def get_kb(conn: sqlite3.Connection, kb_id: str) -> dict | None:
-    row = conn.execute(
-        "SELECT * FROM knowledge_bases WHERE id=?", (kb_id,)
-    ).fetchone()
+    row = conn.execute("SELECT * FROM knowledge_bases WHERE id=?", (kb_id,)).fetchone()
     return dict(row) if row else None
 
 
@@ -100,7 +96,8 @@ def delete_kb(conn: sqlite3.Connection, kb_id: str) -> None:
     """Delete a knowledge base and every document (and its chunks) under it."""
     scope = kb_scope(kb_id)
     doc_ids = [
-        r["id"] for r in conn.execute(
+        r["id"]
+        for r in conn.execute(
             "SELECT id FROM documents WHERE scope=?", (scope,)
         ).fetchall()
     ]
@@ -159,9 +156,7 @@ def list_documents(conn: sqlite3.Connection, scope: str) -> list[dict]:
 
 
 def get_document(conn: sqlite3.Connection, document_id: str) -> dict | None:
-    row = conn.execute(
-        "SELECT * FROM documents WHERE id=?", (document_id,)
-    ).fetchone()
+    row = conn.execute("SELECT * FROM documents WHERE id=?", (document_id,)).fetchone()
     return dict(row) if row else None
 
 
@@ -223,7 +218,8 @@ def add_chunks(
 def delete_document(conn: sqlite3.Connection, document_id: str) -> None:
     """Remove a document and all of its chunks (+ fts + vec rows) in one path."""
     ids = [
-        r["id"] for r in conn.execute(
+        r["id"]
+        for r in conn.execute(
             "SELECT id FROM chunks WHERE document_id=?", (document_id,)
         ).fetchall()
     ]

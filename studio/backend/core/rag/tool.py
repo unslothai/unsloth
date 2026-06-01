@@ -108,8 +108,8 @@ def search_knowledge_base_with_sources(
             conn,
             scope,
             query,
-            k=top_k or config.TOP_K_HYBRID,
-            model_name=model_name,
+            k = top_k or config.TOP_K_HYBRID,
+            model_name = model_name,
         )
         hits = retrieval.filter_min_score(hits, min_score)
         rows = store_rows(conn, hits)
@@ -137,11 +137,11 @@ def search_knowledge_base(
 ) -> str:
     """Text-only variant of :func:`search_knowledge_base_with_sources`."""
     text, _sources = search_knowledge_base_with_sources(
-        query=query,
-        scope_kb_id=scope_kb_id,
-        scope_thread_id=scope_thread_id,
-        top_k=top_k,
-        min_score=min_score,
-        model_name=model_name,
+        query = query,
+        scope_kb_id = scope_kb_id,
+        scope_thread_id = scope_thread_id,
+        top_k = top_k,
+        min_score = min_score,
+        model_name = model_name,
     )
     return text

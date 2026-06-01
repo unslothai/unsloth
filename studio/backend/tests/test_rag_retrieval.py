@@ -27,26 +27,29 @@ def bow_embeddings(monkeypatch):
     from core.rag import embeddings
 
     monkeypatch.setattr(
-        embeddings, "encode",
-        lambda texts, *, model_name=None, normalize=True: [_embed(t) for t in texts],
+        embeddings,
+        "encode",
+        lambda texts, *, model_name = None, normalize = True: [_embed(t) for t in texts],
     )
-    monkeypatch.setattr(embeddings, "dim", lambda model_name=None: len(VOCAB))
+    monkeypatch.setattr(embeddings, "dim", lambda model_name = None: len(VOCAB))
 
 
-def _chunk(text, index=0, page=None):
+def _chunk(text, index = 0, page = None):
     return Chunk(
-        text=text,
-        token_count=len(text.split()),
-        page_number=page,
-        source_page_index=0,
-        chunk_index=index,
-        page_char_start=0,
-        page_char_end=len(text),
+        text = text,
+        token_count = len(text.split()),
+        page_number = page,
+        source_page_index = 0,
+        chunk_index = index,
+        page_char_start = 0,
+        page_char_end = len(text),
     )
 
 
-def _add_doc(conn, scope, doc_id, filename, sha, text, page=None):
-    store.create_document(conn, scope=scope, filename=filename, sha256=sha, document_id=doc_id)
+def _add_doc(conn, scope, doc_id, filename, sha, text, page = None):
+    store.create_document(
+        conn, scope = scope, filename = filename, sha256 = sha, document_id = doc_id
+    )
     store.add_chunks(conn, scope, doc_id, [_chunk(text, 0, page)], [_embed(text)])
 
 
@@ -55,11 +58,15 @@ def _add_doc(conn, scope, doc_id, filename, sha, text, page=None):
 # --------------------------------------------------------------------------
 def test_rrf_ranks_doc_in_both_lists_first():
     # A chunk near the top of both rankings must beat one in only a single list.
-    lexical = [retrieval.Hit("a", 1.0, lexical_score=1.0),
-               retrieval.Hit("b", 0.5, lexical_score=0.5)]
-    dense = [retrieval.Hit("a", 0.9, dense_score=0.9),
-             retrieval.Hit("c", 0.8, dense_score=0.8)]
-    fused = retrieval._rrf([lexical, dense], rrf_k=60, top_k=10)
+    lexical = [
+        retrieval.Hit("a", 1.0, lexical_score = 1.0),
+        retrieval.Hit("b", 0.5, lexical_score = 0.5),
+    ]
+    dense = [
+        retrieval.Hit("a", 0.9, dense_score = 0.9),
+        retrieval.Hit("c", 0.8, dense_score = 0.8),
+    ]
+    fused = retrieval._rrf([lexical, dense], rrf_k = 60, top_k = 10)
     assert fused[0].chunk_id == "a"  # present in both rankings
     # carried scores survive fusion
     assert fused[0].lexical_score == 1.0 and fused[0].dense_score == 0.9
@@ -68,7 +75,7 @@ def test_rrf_ranks_doc_in_both_lists_first():
 def test_retrieve_hybrid_returns_relevant_chunk(rag_conn, bow_embeddings):
     _add_doc(rag_conn, "kb_a", "d1", "f1", "h1", "alpha bravo charlie")
     _add_doc(rag_conn, "kb_a", "d2", "f2", "h2", "golf hotel delta")
-    hits = retrieval.retrieve_hybrid(rag_conn, "kb_a", "alpha bravo", k=5)
+    hits = retrieval.retrieve_hybrid(rag_conn, "kb_a", "alpha bravo", k = 5)
     assert hits[0].chunk_id == "d1:0"
 
 
@@ -82,9 +89,9 @@ def test_retrieve_dense_round_trips(rag_conn, bow_embeddings):
 
 def test_filter_min_score_gates_dense_hits():
     hits = [
-        retrieval.Hit("a", 1.0, dense_score=0.9),
-        retrieval.Hit("b", 0.5, dense_score=0.2),
-        retrieval.Hit("c", 0.4, lexical_score=0.4),  # no dense_score -> kept
+        retrieval.Hit("a", 1.0, dense_score = 0.9),
+        retrieval.Hit("b", 0.5, dense_score = 0.2),
+        retrieval.Hit("c", 0.4, lexical_score = 0.4),  # no dense_score -> kept
     ]
     out = retrieval.filter_min_score(hits, 0.5)
     ids = {h.chunk_id for h in out}
@@ -103,26 +110,27 @@ def test_tool_kb_scope_wins_over_thread(rag_conn, bow_embeddings, monkeypatch):
         return []
 
     monkeypatch.setattr(retrieval, "retrieve_hybrid", fake)
-    tool.search_knowledge_base(query="q", scope_kb_id="K", scope_thread_id="T")
+    tool.search_knowledge_base(query = "q", scope_kb_id = "K", scope_thread_id = "T")
     assert seen["scope"] == "kb_K"
 
 
 def test_tool_empty_query_errors(rag_home):
-    assert tool.search_knowledge_base(query="   ").startswith("Error")
+    assert tool.search_knowledge_base(query = "   ").startswith("Error")
 
 
 def test_tool_missing_scope_message(rag_home):
-    out = tool.search_knowledge_base(query="hello")
+    out = tool.search_knowledge_base(query = "hello")
     assert "No documents" in out
 
 
 def test_tool_formats_chunks_and_sources(rag_conn, bow_embeddings, monkeypatch):
-    _add_doc(rag_conn, "kb_a", "d1", "paper.pdf", "h1", "body text here", page=3)
+    _add_doc(rag_conn, "kb_a", "d1", "paper.pdf", "h1", "body text here", page = 3)
     monkeypatch.setattr(
-        retrieval, "retrieve_hybrid",
+        retrieval,
+        "retrieve_hybrid",
         lambda conn, scope, q, **k: [retrieval.Hit("d1:0", 1.0)],
     )
-    text, sources = tool.search_knowledge_base_with_sources(query="q", scope_kb_id="a")
+    text, sources = tool.search_knowledge_base_with_sources(query = "q", scope_kb_id = "a")
     assert '<chunk id="1" source="paper.pdf" page="3">' in text
     assert "body text here" in text
     assert sources == [

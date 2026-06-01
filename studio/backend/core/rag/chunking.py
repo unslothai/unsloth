@@ -25,7 +25,7 @@ TokenCounter = Callable[[str], int]
 SEPARATORS = ("\n# ", "\n## ", "\n### ", "\n\n", "\n", ". ", " ", "")
 
 
-@dataclass(frozen=True)
+@dataclass(frozen = True)
 class Chunk:
     text: str
     token_count: int
@@ -36,7 +36,9 @@ class Chunk:
     page_char_end: int
 
 
-def _split(text: str, seps: tuple[str, ...], max_tokens: int, count: TokenCounter) -> list[str]:
+def _split(
+    text: str, seps: tuple[str, ...], max_tokens: int, count: TokenCounter
+) -> list[str]:
     """Recursively split text into pieces each <= max_tokens (best effort).
 
     Concatenating the returned pieces in order reproduces ``text`` exactly, so a
@@ -52,10 +54,14 @@ def _split(text: str, seps: tuple[str, ...], max_tokens: int, count: TokenCounte
             parts = [p + sep for p in parts[:-1]] + parts[-1:]
         out: list[str] = []
         for p in parts:
-            out.extend([p] if count(p) <= max_tokens else _split(p, seps[i + 1:], max_tokens, count))
+            out.extend(
+                [p]
+                if count(p) <= max_tokens
+                else _split(p, seps[i + 1 :], max_tokens, count)
+            )
         return [p for p in out if p]
     n = max(1, max_tokens * 4)
-    return [text[j:j + n] for j in range(0, len(text), n)]
+    return [text[j : j + n] for j in range(0, len(text), n)]
 
 
 def _merge(
@@ -121,16 +127,18 @@ def chunk_pages(
         for piece in pieces:
             starts.append(cursor)
             cursor += len(piece)
-        for text, char_start, char_end in _merge(pieces, starts, max_tokens, overlap, count):
+        for text, char_start, char_end in _merge(
+            pieces, starts, max_tokens, overlap, count
+        ):
             out.append(
                 Chunk(
-                    text=text,
-                    token_count=count(text),
-                    page_number=page.page_number,
-                    source_page_index=page_index,
-                    chunk_index=len(out),
-                    page_char_start=char_start,
-                    page_char_end=char_end,
+                    text = text,
+                    token_count = count(text),
+                    page_number = page.page_number,
+                    source_page_index = page_index,
+                    chunk_index = len(out),
+                    page_char_start = char_start,
+                    page_char_end = char_end,
                 )
             )
     return out
