@@ -176,6 +176,10 @@ _PINNED_MACOS_FALLBACK_TAG = "b9415"
 _PINNED_MACOS_LATEST_FLOOR = (26, 0)
 FORCE_COMPILE_DEFAULT_REF = os.environ.get("UNSLOTH_LLAMA_FORCE_COMPILE_REF", "master")
 
+# sm_103 (B300 / GB300 Blackwell Ultra) is not built natively but runs on the
+# bundled base compute_100 PTX, which the driver JIT-compiles forward to sm_103.
+# It is listed in every bundle that ships the sm_100 build (the "newer" and
+# "portable" classes) so those hosts get a prebuilt instead of a source compile.
 DIRECT_LINUX_BUNDLE_PROFILES: dict[str, dict[str, Any]] = {
     "cuda12-older": {
         "runtime_line": "cuda12",
@@ -188,7 +192,7 @@ DIRECT_LINUX_BUNDLE_PROFILES: dict[str, dict[str, Any]] = {
     "cuda12-newer": {
         "runtime_line": "cuda12",
         "coverage_class": "newer",
-        "supported_sms": ["86", "89", "90", "100", "120"],
+        "supported_sms": ["86", "89", "90", "100", "103", "120"],
         "min_sm": 86,
         "max_sm": 120,
         "rank": 20,
@@ -196,7 +200,7 @@ DIRECT_LINUX_BUNDLE_PROFILES: dict[str, dict[str, Any]] = {
     "cuda12-portable": {
         "runtime_line": "cuda12",
         "coverage_class": "portable",
-        "supported_sms": ["70", "75", "80", "86", "89", "90", "100", "120"],
+        "supported_sms": ["70", "75", "80", "86", "89", "90", "100", "103", "120"],
         "min_sm": 70,
         "max_sm": 120,
         "rank": 30,
@@ -212,7 +216,7 @@ DIRECT_LINUX_BUNDLE_PROFILES: dict[str, dict[str, Any]] = {
     "cuda13-newer": {
         "runtime_line": "cuda13",
         "coverage_class": "newer",
-        "supported_sms": ["86", "89", "90", "100", "120"],
+        "supported_sms": ["86", "89", "90", "100", "103", "120"],
         "min_sm": 86,
         "max_sm": 120,
         "rank": 50,
@@ -220,7 +224,7 @@ DIRECT_LINUX_BUNDLE_PROFILES: dict[str, dict[str, Any]] = {
     "cuda13-portable": {
         "runtime_line": "cuda13",
         "coverage_class": "portable",
-        "supported_sms": ["75", "80", "86", "89", "90", "100", "120"],
+        "supported_sms": ["75", "80", "86", "89", "90", "100", "103", "120"],
         "min_sm": 75,
         "max_sm": 120,
         "rank": 60,
@@ -237,13 +241,16 @@ _MAX_PROBE_CUDA_MAJOR = 19
 # Last ggml-org release whose Windows win-cuda-13 build is still sub-13.3
 # (cuda-13.1, b9360, 2026-05-27). Upstream bumped win-cuda-13 to 13.3 at b9365
 # and now ships only cuda-12.4 + cuda-13.3. cuda-12.4 predates Blackwell (ggml
-# compiles sm_120 only at toolkit >= 12.8), so a Blackwell host on a 13.1/13.2
+# compiles sm_120 only at toolkit >= 12.8), so a Blackwell host on a 13.0/13.1/13.2
 # driver is gated off 13.3 and would drop to a CPU-only 12.4 build. b9360 is
 # immutable, so we pin its cuda-13.1 build (plus paired cudart) as a GPU
 # fallback for exactly those hosts. See unslothai/unsloth#5887.
 _PINNED_BLACKWELL_FALLBACK_TAG = "b9360"
 _PINNED_BLACKWELL_FALLBACK_RUNTIME = "13.1"
-_PINNED_BLACKWELL_DRIVER_FLOOR = (13, 1)
+# Floor at 13.0: b9360 ships native sm_120a SASS (no PTX/JIT) and a bundled
+# cuda-13.1 cudart, both of which run on a CUDA 13.0 r580+ driver via CUDA
+# minor-version compatibility, so the mainstream 13.0 Blackwell branch is covered.
+_PINNED_BLACKWELL_DRIVER_FLOOR = (13, 0)
 _BLACKWELL_MIN_SM = 120
 # ggml compiles Blackwell sm_120 only at toolkit >= 12.8, so an in-release
 # windows-cuda build at or above this already covers Blackwell and makes the
@@ -1658,6 +1665,15 @@ def resolve_simple_install_release_plans(
 ) -> tuple[str, list[InstallReleasePlan]]:
     repo = published_repo or DEFAULT_PUBLISHED_REPO
     requested_tag = normalized_requested_llama_tag(llama_tag)
+    # The unslothai/llama.cpp fork ships only linux-x64 bundles. An arm64 Linux
+    # host with a GPU (GH200/GB200/DGX Spark) routes here; it must not install an
+    # x64 binary, so fall back to a source build that targets the GPU rather than
+    # selecting the wrong arch (or silently dropping to a CPU arm64 build).
+    if host.is_linux and not host.is_x86_64 and repo == DEFAULT_PUBLISHED_REPO:
+        raise PrebuiltFallback(
+            f"{repo} ships only linux-x64 prebuilts; "
+            f"{host.machine or 'non-x64'} Linux falls back to source build"
+        )
     allow_older_release_fallback = (
         requested_tag == "latest" and not published_release_tag
     )
@@ -3071,6 +3087,46 @@ def detect_host() -> HostInfo:
         rocm_gfx_target = rocm_gfx_target,
         macos_version = macos_version,
     )
+
+
+def _normalize_forwarded_gfx(value: str | None) -> str | None:
+    """Extract a single gfx token from a forwarded --rocm-gfx / env value.
+    setup.sh/setup.ps1 already picked the active GPU, so take the token as-is
+    without re-applying visible-device selection. Ignore anything malformed."""
+    if not value:
+        return None
+    m = re.search(r"gfx[1-9][0-9a-z]{2,3}", value.lower())
+    return m.group(0) if m else None
+
+
+def _apply_host_overrides(
+    host: HostInfo,
+    *,
+    override_has_rocm: bool = False,
+    override_rocm_gfx: str | None = None,
+    force_cpu: bool = False,
+) -> HostInfo:
+    """Fold setup.sh/setup.ps1's forwarded detection into the host profile.
+    A forwarded gfx (--rocm-gfx or UNSLOTH_ROCM_GFX_ARCH) is authoritative and
+    implies ROCm: the installer's own hipinfo/amd-smi probe can miss the arch on
+    amd-smi-only hosts or when setup inferred it from the GPU name, leaving
+    rocm_gfx_target None and no lemonade prebuilt selected. force_cpu is the
+    opposite explicit signal (arm64 Linux GPU host whose source build failed):
+    drop GPU attributes so the CPU prebuilt for this OS/arch is selected."""
+    if force_cpu:
+        return dataclasses_replace(
+            host,
+            has_usable_nvidia = False,
+            has_physical_nvidia = False,
+            has_rocm = False,
+            rocm_gfx_target = None,
+        )
+    gfx = _normalize_forwarded_gfx(override_rocm_gfx)
+    if gfx:
+        return dataclasses_replace(host, has_rocm = True, rocm_gfx_target = gfx)
+    if override_has_rocm and not host.has_rocm:
+        return dataclasses_replace(host, has_rocm = True)
+    return host
 
 
 def pick_windows_cuda_runtime(host: HostInfo) -> str | None:
@@ -6448,10 +6504,16 @@ def install_prebuilt(
     *,
     simple_policy: bool = False,
     override_has_rocm: bool = False,
+    override_rocm_gfx: str | None = None,
+    force_cpu: bool = False,
 ) -> None:
     host = detect_host()
-    if override_has_rocm and not host.has_rocm:
-        host = dataclasses_replace(host, has_rocm = True)
+    host = _apply_host_overrides(
+        host,
+        override_has_rocm = override_has_rocm,
+        override_rocm_gfx = override_rocm_gfx,
+        force_cpu = force_cpu,
+    )
     choice: AssetChoice | None = None
     try:
         with install_lock(install_lock_path(install_dir)):
@@ -6596,6 +6658,26 @@ def parse_args() -> argparse.Namespace:
             "so the HIP llama.cpp prebuilt is selected even when hipinfo is not on PATH."
         ),
     )
+    parser.add_argument(
+        "--rocm-gfx",
+        default = os.environ.get("UNSLOTH_ROCM_GFX_ARCH"),
+        help = (
+            "Forward the AMD gfx target (e.g. gfx1151) that setup.ps1/setup.sh "
+            "resolved, so the lemonade HIP prebuilt is selected even when the "
+            "installer's own hipinfo/amd-smi probe cannot report it. Implies "
+            "--has-rocm. Defaults to the UNSLOTH_ROCM_GFX_ARCH environment variable."
+        ),
+    )
+    parser.add_argument(
+        "--cpu-fallback",
+        action = "store_true",
+        default = False,
+        help = (
+            "Select the CPU prebuilt for this OS/arch even when a GPU is present. "
+            "setup.sh uses this as a last resort for arm64 Linux GPU hosts whose "
+            "source build failed (no arm64 CUDA prebuilt exists anywhere)."
+        ),
+    )
     resolve_group = parser.add_mutually_exclusive_group()
     resolve_group.add_argument(
         "--resolve-llama-tag",
@@ -6717,6 +6799,8 @@ def main() -> int:
         published_release_tag = args.published_release_tag or "",
         simple_policy = args.simple_policy,
         override_has_rocm = args.has_rocm,
+        override_rocm_gfx = args.rocm_gfx,
+        force_cpu = args.cpu_fallback,
     )
     return EXIT_SUCCESS
 

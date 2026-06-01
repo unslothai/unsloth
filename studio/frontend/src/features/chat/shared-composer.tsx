@@ -43,6 +43,7 @@ import {
   providerTypeSupportsVision,
 } from "./external-providers";
 import { useExternalProvidersStore } from "./stores/external-providers-store";
+import { McpComposerButton } from "./mcp-composer-button";
 import {
   type ReasoningEffort,
   useChatRuntimeStore,
@@ -1418,6 +1419,7 @@ export function SharedComposer({
             <FileTextIcon className="size-3.5" />
             <span>Artifacts</span>
           </button>
+          <McpComposerButton />
           {showWebFetchPill && (
             <button
               type="button"
