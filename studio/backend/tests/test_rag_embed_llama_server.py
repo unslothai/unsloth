@@ -119,10 +119,28 @@ def test_build_cmd_gpu_offloads():
     assert cmd[cmd.index("-ngl") + 1] == "-1"  # offload all, matching the chat server
 
 
+def test_build_cmd_tuning_flags():
+    b = LlamaServerBackend()
+    cmd = b._build_cmd("/bin/llama-server", "/m/bge.gguf", 8090, use_gpu = True)
+    assert cmd[cmd.index("--flash-attn") + 1] == "on"
+    assert cmd[cmd.index("--parallel") + 1] == "8"
+    # 16384 ctx / 8 slots = 2048 tokens/slot, above our max chunk -> no truncation.
+    assert cmd[cmd.index("--ctx-size") + 1] == "16384"
+    for flag in (
+        "--kv-unified",
+        "--no-warmup",
+        "--no-perf",
+        "--no-slots",
+        "--log-disable",
+    ):
+        assert flag in cmd
+
+
 def test_build_env_cpu_hides_gpus():
     b = LlamaServerBackend()
     env = b._build_env("/bin/llama-server", use_gpu = False)
     assert env["CUDA_VISIBLE_DEVICES"] == ""  # never contend with the chat model
+    assert env["LLAMA_SET_ROWS"] == "1"
 
 
 def test_build_env_gpu_inherits_devices(monkeypatch):

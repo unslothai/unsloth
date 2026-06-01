@@ -206,6 +206,21 @@ class LlamaServerBackend:
             "cls",
             "--fit",
             "off",
+            # Throughput + lean-footprint tuning for a dedicated embedder.
+            "--flash-attn",
+            "on",
+            # 8 slots let independent sequences embed concurrently. The 16384
+            # ctx splits to 2048 tokens/slot -- comfortably above our max chunk
+            # (RAG_CHUNK_TOKENS) so parallel sequences are never truncated.
+            "--parallel",
+            "8",
+            "--ctx-size",
+            "16384",
+            "--kv-unified",  # single shared KV cache across slots
+            "--no-warmup",  # skip the empty startup decode
+            "--no-perf",  # drop libllama perf timers
+            "--no-slots",  # no /slots monitoring endpoint
+            "--log-disable",  # quiet server logs
         ]
         # -1 offloads every layer (matches the chat server); 0 keeps it on CPU.
         cmd += ["-ngl", "-1" if use_gpu else "0"]
@@ -213,6 +228,8 @@ class LlamaServerBackend:
 
     def _build_env(self, binary: str, *, use_gpu: bool) -> dict[str, str]:
         env = child_env_without_native_path_secret()
+        # ggml set_rows fast path for the embedding decode.
+        env["LLAMA_SET_ROWS"] = "1"
         if use_gpu:
             # Inherit the ambient CUDA_VISIBLE_DEVICES Studio set; the prebuilt
             # binary needs the CUDA libs on its search path on Linux.
