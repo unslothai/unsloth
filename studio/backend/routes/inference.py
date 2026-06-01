@@ -2755,6 +2755,21 @@ async def openai_chat_completions(
             else:
                 _nudge = ""
 
+            # RAG is active when the request carries a scope and the retrieval
+            # tool survived selection. Nudge the model to actually search the
+            # attached documents rather than answering from memory.
+            if "search_knowledge_base" in _tool_names and payload.rag_scope:
+                _rag_nudge = (
+                    "The user has attached documents to this conversation. For any "
+                    "question that could be answered by those documents, call "
+                    "search_knowledge_base first and base your answer on the returned "
+                    "passages, citing them. Do not answer from memory when the "
+                    "attached documents are relevant."
+                )
+                _nudge = (
+                    _date_line + " " + _rag_nudge if not _nudge else _nudge + " " + _rag_nudge
+                )
+
             if _nudge:
                 _nudge += _TOOL_ACTION_NUDGE
                 # Append nudge to system prompt (preserve user's prompt)
@@ -3283,6 +3298,22 @@ async def openai_chat_completions(
             )
         else:
             _sf_nudge = ""
+
+        # RAG nudge: mirror the GGUF path so safetensors models also search
+        # attached documents instead of answering from memory.
+        if "search_knowledge_base" in _sf_tool_names and payload.rag_scope:
+            _sf_rag_nudge = (
+                "The user has attached documents to this conversation. For any "
+                "question that could be answered by those documents, call "
+                "search_knowledge_base first and base your answer on the returned "
+                "passages, citing them. Do not answer from memory when the "
+                "attached documents are relevant."
+            )
+            _sf_nudge = (
+                _sf_date_line + " " + _sf_rag_nudge
+                if not _sf_nudge
+                else _sf_nudge + " " + _sf_rag_nudge
+            )
 
         _sf_system_prompt = system_prompt
         if _sf_nudge:
