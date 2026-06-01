@@ -117,8 +117,20 @@ def _run(
         _progress(conn, job_id, "embedding", 0.5)
         vectors = _embed_all([c.text for c in chunks], model_name)
 
+        # PDF citation regions: locate each chunk on its rendered page once at
+        # ingest. Non-PDFs / failures yield empty lists (never fatal).
+        regions = None
+        if stored_path.lower().endswith(".pdf"):
+            try:
+                from . import locators
+
+                regions = locators.pdf_regions_for_chunks(stored_path, pages, chunks)
+            except Exception:
+                logger.warning("pdf region location failed for job %s", job_id, exc_info=True)
+                regions = None
+
         _progress(conn, job_id, "storing", 0.9)
-        store.add_chunks(conn, scope, document_id, chunks, vectors)
+        store.add_chunks(conn, scope, document_id, chunks, vectors, regions)
         store.set_document_status(
             conn, document_id, "completed", num_chunks = len(chunks)
         )
@@ -177,6 +189,7 @@ def start_ingestion(
             kb_id = kb_id,
             thread_id = thread_id,
             status = "pending",
+            stored_path = stored_path,
         )
         job_id = _new_job(conn, document_id, scope)
     finally:

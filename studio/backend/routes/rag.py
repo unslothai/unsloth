@@ -15,14 +15,18 @@ endpoint returns 503 with a clear message, so ordinary chat is never affected.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import logging
 import os
 import re
+import secrets
+import time
 import uuid
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from auth.authentication import get_current_subject
@@ -360,3 +364,136 @@ def search(payload: SearchRequest, subject: str = Depends(get_current_subject)) 
         return {"results": results}
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Document preview (citation -> source file + highlight regions)
+# ---------------------------------------------------------------------------
+# Short-lived signed token so pdf.js range requests can fetch the source file
+# without a bearer header (which it cannot attach to range sub-requests). The
+# secret is per-process; tokens are only valid against this running server.
+_PREVIEW_SECRET = secrets.token_bytes(32)
+_PREVIEW_TTL = 600  # seconds
+
+_CONTENT_TYPES = {
+    ".pdf": "application/pdf",
+    ".txt": "text/plain; charset=utf-8",
+    ".md": "text/markdown; charset=utf-8",
+    ".markdown": "text/markdown; charset=utf-8",
+    ".html": "text/html; charset=utf-8",
+    ".htm": "text/html; charset=utf-8",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+}
+
+
+def _sign_document(document_id: str) -> str:
+    exp = int(time.time()) + _PREVIEW_TTL
+    payload = f"{document_id}.{exp}"
+    sig = hmac.new(_PREVIEW_SECRET, payload.encode(), hashlib.sha256).hexdigest()
+    return f"{payload}.{sig}"
+
+
+def _verify_document_token(token: str) -> str | None:
+    try:
+        document_id, exp_s, sig = token.rsplit(".", 2)
+    except ValueError:
+        return None
+    expected = hmac.new(
+        _PREVIEW_SECRET, f"{document_id}.{exp_s}".encode(), hashlib.sha256
+    ).hexdigest()
+    if not hmac.compare_digest(sig, expected):
+        return None
+    try:
+        if int(exp_s) < int(time.time()):
+            return None
+    except ValueError:
+        return None
+    return document_id
+
+
+@router.get("/documents/{document_id}/preview-target")
+def preview_target(
+    document_id: str,
+    chunk_id: str | None = Query(default=None),
+    subject: str = Depends(get_current_subject),
+) -> dict:
+    """Resolve a citation to its source: filename, page, and highlight regions."""
+    _require_rag()
+    conn = rag_db.get_connection()
+    try:
+        doc = store.get_document(conn, document_id)
+        if doc is None:
+            raise HTTPException(status_code=404, detail="Document not found")
+        ext = os.path.splitext(doc["filename"])[1].lower()
+        out = {
+            "documentId": document_id,
+            "filename": doc["filename"],
+            "mediaKind": "pdf" if ext == ".pdf" else "text",
+            "targetPage": None,
+            "pdfRegions": [],
+            "text": None,
+        }
+        if chunk_id:
+            row = conn.execute(
+                "SELECT text, page_number, pdf_regions_json FROM chunks WHERE id=?",
+                (chunk_id,),
+            ).fetchone()
+            if row is not None:
+                out["text"] = row["text"]
+                out["targetPage"] = row["page_number"]
+                if row["pdf_regions_json"]:
+                    try:
+                        out["pdfRegions"] = json.loads(row["pdf_regions_json"])
+                    except Exception:
+                        out["pdfRegions"] = []
+        return out
+    finally:
+        conn.close()
+
+
+@router.get("/documents/{document_id}/file-url")
+def document_file_url(
+    document_id: str, subject: str = Depends(get_current_subject)
+) -> dict:
+    """Mint a short-lived signed URL for the source file (for pdf.js / preview)."""
+    _require_rag()
+    conn = rag_db.get_connection()
+    try:
+        doc = store.get_document(conn, document_id)
+        if doc is None or not doc.get("stored_path"):
+            raise HTTPException(status_code=404, detail="Document file not available")
+    finally:
+        conn.close()
+    token = _sign_document(document_id)
+    return {"url": f"/api/rag/documents/{document_id}/file-signed?token={token}"}
+
+
+@router.get("/documents/{document_id}/file-signed", response_model=None)
+def document_file_signed(document_id: str, token: str = Query(...)) -> FileResponse:
+    """Serve the source file given a valid signed token (no bearer required).
+
+    Intentionally unauthenticated-by-header: gated by the HMAC token so pdf.js
+    range requests work. Starlette's FileResponse handles HTTP Range (206).
+    """
+    _require_rag()
+    signed_id = _verify_document_token(token)
+    if signed_id != document_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+    conn = rag_db.get_connection()
+    try:
+        doc = store.get_document(conn, document_id)
+    finally:
+        conn.close()
+    stored_path = (doc or {}).get("stored_path")
+    if not doc or not stored_path or not os.path.isfile(stored_path):
+        raise HTTPException(status_code=404, detail="Document file not found")
+    # Confine to the uploads root (defence in depth against path escapes).
+    uploads = os.path.realpath(str(rag_uploads_root()))
+    if not os.path.realpath(stored_path).startswith(uploads):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    ext = os.path.splitext(doc["filename"])[1].lower()
+    return FileResponse(
+        stored_path,
+        media_type=_CONTENT_TYPES.get(ext, "application/octet-stream"),
+        filename=doc["filename"],
+    )

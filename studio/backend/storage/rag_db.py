@@ -76,6 +76,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             status TEXT NOT NULL DEFAULT 'pending',
             error TEXT,
             num_chunks INTEGER NOT NULL DEFAULT 0,
+            stored_path TEXT,
             created_at TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_documents_scope ON documents(scope);

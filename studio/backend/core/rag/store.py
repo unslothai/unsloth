@@ -18,6 +18,7 @@ there are no zero-score lexical hits to pollute fusion. Scope ("kb_<id>" /
 
 from __future__ import annotations
 
+import json
 import re
 import sqlite3
 import struct
@@ -119,13 +120,14 @@ def create_document(
     kb_id: str | None = None,
     thread_id: str | None = None,
     status: str = "pending",
+    stored_path: str | None = None,
     document_id: str | None = None,
 ) -> str:
     document_id = document_id or str(uuid.uuid4())
     conn.execute(
-        "INSERT INTO documents(id, scope, kb_id, thread_id, filename, sha256, status, created_at) "
-        "VALUES(?,?,?,?,?,?,?,?)",
-        (document_id, scope, kb_id, thread_id, filename, sha256, status, _now()),
+        "INSERT INTO documents(id, scope, kb_id, thread_id, filename, sha256, status, "
+        "stored_path, created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+        (document_id, scope, kb_id, thread_id, filename, sha256, status, stored_path, _now()),
     )
     conn.commit()
     return document_id
@@ -176,16 +178,21 @@ def add_chunks(
     document_id: str,
     chunks,
     vectors,
+    regions=None,
 ) -> None:
     """Incrementally index one document's chunks into chunks + FTS5 + vec0.
 
     ``chunks`` is a list of ``chunking.Chunk``; ``vectors`` is a parallel list
-    of embeddings. No whole-scope rebuild -> cost is O(chunks in this doc).
+    of embeddings. ``regions``, when given, is a parallel list of per-chunk PDF
+    highlight rectangles (from ``locators.pdf_regions_for_chunks``) stored as
+    JSON for citation preview. No whole-scope rebuild -> cost is O(chunks here).
     """
     if len(vectors):
         rag_db.ensure_vec(conn, len(vectors[0]))
-    for chunk, vector in zip(chunks, vectors):
+    for i, (chunk, vector) in enumerate(zip(chunks, vectors)):
         chunk_id = f"{document_id}:{chunk.chunk_index}"
+        chunk_regions = regions[i] if regions and i < len(regions) else None
+        regions_json = json.dumps(chunk_regions) if chunk_regions else None
         conn.execute(
             "INSERT OR REPLACE INTO chunks("
             "id, document_id, scope, chunk_index, text, page_number, "
@@ -201,7 +208,7 @@ def add_chunks(
                 chunk.source_page_index,
                 chunk.token_count,
                 getattr(chunk, "kind", "text"),
-                None,
+                regions_json,
             ),
         )
         conn.execute(
