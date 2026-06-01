@@ -2880,6 +2880,26 @@ def test_resolve_flux2_klein_uses_gguf_metadata_variant_hint():
     assert resolution.variant == "base-9b"
 
 
+def test_variant_resolver_exposes_flux2_klein_candidates():
+    from core.inference.diffusion import (
+        _candidate_base_repo_message,
+        _variant_from_text_for_family,
+    )
+
+    assert _variant_from_text_for_family(
+        "flux.2-klein",
+        "my-flux2-klein-base-9b-UD-Q4_K_XL.gguf",
+    ) == "base-9b"
+    assert _variant_from_text_for_family(
+        "z-image",
+        "z-image-turbo-Q4_K_M.gguf",
+    ) is None
+
+    candidates = _candidate_base_repo_message("flux.2-klein")
+    assert "black-forest-labs/FLUX.2-klein-4B (distilled 4B)" in candidates
+    assert "black-forest-labs/FLUX.2-klein-base-9B (base 9B)" in candidates
+
+
 def test_load_model_flux2_klein_uses_gguf_metadata_hint_after_local_inspection(
     monkeypatch,
     tmp_path,

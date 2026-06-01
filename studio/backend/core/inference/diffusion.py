@@ -42,7 +42,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from loggers import get_logger
 
@@ -107,6 +107,14 @@ class DiffusionBaseRepoResolution:
     confidence: str
     variant: Optional[str] = None
     warning: Optional[str] = None
+
+
+@dataclass(frozen = True)
+class DiffusionVariant:
+    family: str
+    variant: str
+    base_repo: str
+    description: str
 
 
 @dataclass(frozen = True)
@@ -761,8 +769,9 @@ def _inspect_diffusion_gguf_tensor_names(
 
     variant_hints: list[tuple[str, str]] = []
     for key, value in _metadata_string_values(metadata):
-        if variant := _flux2_klein_variant_from_text(value):
-            variant_hints.append((f"metadata:{key}", variant))
+        for family in _DIFFUSION_VARIANTS_BY_FAMILY:
+            if variant := _variant_from_text_for_family(family, value):
+                variant_hints.append((f"metadata:{key}", variant))
 
     return DiffusionGGUFInspection(
         architecture = architecture,
@@ -829,11 +838,41 @@ def _gguf_inspection_matches_family(
     return fam.name in inspection.family_hints
 
 
-_FLUX2_KLEIN_BASE_REPOS: dict[str, str] = {
-    "distilled-4b": "black-forest-labs/FLUX.2-klein-4B",
-    "distilled-9b": "black-forest-labs/FLUX.2-klein-9B",
-    "base-4b": "black-forest-labs/FLUX.2-klein-base-4B",
-    "base-9b": "black-forest-labs/FLUX.2-klein-base-9B",
+_DIFFUSION_VARIANTS: tuple[DiffusionVariant, ...] = (
+    DiffusionVariant(
+        family = "flux.2-klein",
+        variant = "distilled-4b",
+        base_repo = "black-forest-labs/FLUX.2-klein-4B",
+        description = "distilled 4B",
+    ),
+    DiffusionVariant(
+        family = "flux.2-klein",
+        variant = "distilled-9b",
+        base_repo = "black-forest-labs/FLUX.2-klein-9B",
+        description = "distilled 9B",
+    ),
+    DiffusionVariant(
+        family = "flux.2-klein",
+        variant = "base-4b",
+        base_repo = "black-forest-labs/FLUX.2-klein-base-4B",
+        description = "base 4B",
+    ),
+    DiffusionVariant(
+        family = "flux.2-klein",
+        variant = "base-9b",
+        base_repo = "black-forest-labs/FLUX.2-klein-base-9B",
+        description = "base 9B",
+    ),
+)
+
+_DIFFUSION_VARIANTS_BY_FAMILY: dict[str, tuple[DiffusionVariant, ...]] = {
+    family: tuple(variant for variant in _DIFFUSION_VARIANTS if variant.family == family)
+    for family in tuple(dict.fromkeys(variant.family for variant in _DIFFUSION_VARIANTS))
+}
+
+_DIFFUSION_VARIANT_BY_FAMILY_AND_ID: dict[tuple[str, str], DiffusionVariant] = {
+    (variant.family, variant.variant): variant
+    for variant in _DIFFUSION_VARIANTS
 }
 
 
@@ -876,12 +915,47 @@ def _flux2_klein_variant_from_text(text: str) -> Optional[str]:
     return None
 
 
-def _resolve_flux2_klein_base_repo_from_labels(
+_DIFFUSION_VARIANT_TEXT_DETECTORS: dict[str, Callable[[str], Optional[str]]] = {
+    "flux.2-klein": _flux2_klein_variant_from_text,
+}
+
+
+def _family_variant_display_name(family: str) -> str:
+    if family == "flux.2-klein":
+        return "FLUX.2 Klein"
+    return family
+
+
+def _variant_from_text_for_family(family: str, text: str) -> Optional[str]:
+    detector = _DIFFUSION_VARIANT_TEXT_DETECTORS.get(family)
+    if detector is None:
+        return None
+    variant = detector(text)
+    if variant is None:
+        return None
+    if (family, variant) not in _DIFFUSION_VARIANT_BY_FAMILY_AND_ID:
+        return None
+    return variant
+
+
+def _candidate_base_repo_message(family: str) -> str:
+    candidates = _DIFFUSION_VARIANTS_BY_FAMILY.get(family, ())
+    if not candidates:
+        return ""
+    joined = ", ".join(
+        f"{candidate.base_repo} ({candidate.description})"
+        for candidate in candidates
+    )
+    return f"base_repo candidates: {joined}."
+
+
+def _variant_hint_matches_for_family(
     *,
+    family: str,
     repo_id: str,
     gguf_filename: Optional[str],
     gguf_inspection: Optional[DiffusionGGUFInspection] = None,
-) -> DiffusionBaseRepoResolution:
+) -> list[tuple[str, str, str]]:
     labels = [
         ("repo/path", _repo_leaf(repo_id), "name_heuristic"),
         ("gguf_filename", _repo_leaf(gguf_filename or ""), "filename_heuristic"),
@@ -889,25 +963,37 @@ def _resolve_flux2_klein_base_repo_from_labels(
     matches = [
         (label_name, variant, source)
         for label_name, label, source in labels
-        if (variant := _flux2_klein_variant_from_text(label)) is not None
+        if (variant := _variant_from_text_for_family(family, label)) is not None
     ]
     if gguf_inspection is not None:
         matches.extend(
             (source, variant, "gguf_metadata")
             for source, variant in gguf_inspection.variant_hints
+            if (family, variant) in _DIFFUSION_VARIANT_BY_FAMILY_AND_ID
         )
-    variants = {variant for _, variant, _ in matches}
-    candidate_lines = (
-        "base_repo candidates: "
-        "black-forest-labs/FLUX.2-klein-4B (distilled 4B), "
-        "black-forest-labs/FLUX.2-klein-9B (distilled 9B), "
-        "black-forest-labs/FLUX.2-klein-base-4B (base 4B), "
-        "black-forest-labs/FLUX.2-klein-base-9B (base 9B)."
+    return matches
+
+
+def _resolve_variant_base_repo_from_hints(
+    *,
+    fam: DiffusionFamily,
+    repo_id: str,
+    gguf_filename: Optional[str],
+    gguf_inspection: Optional[DiffusionGGUFInspection] = None,
+) -> DiffusionBaseRepoResolution:
+    matches = _variant_hint_matches_for_family(
+        family = fam.name,
+        repo_id = repo_id,
+        gguf_filename = gguf_filename,
+        gguf_inspection = gguf_inspection,
     )
+    variants = {variant for _, variant, _ in matches}
+    candidate_lines = _candidate_base_repo_message(fam.name)
+    family_display = _family_variant_display_name(fam.name)
     if not variants:
         raise RuntimeError(
-            "Ambiguous FLUX.2 Klein GGUF: could not infer whether this is "
-            "distilled 4B, distilled 9B, base 4B, or base 9B from repo/path "
+            f"Ambiguous {family_display} GGUF: could not infer the model "
+            "variant from repo/path "
             f"'{_display_repo_id(repo_id)}' or GGUF filename "
             f"'{Path(gguf_filename or '').name}'. Pass base_repo explicitly. "
             f"{candidate_lines} If this is a finetune, use the original "
@@ -916,14 +1002,15 @@ def _resolve_flux2_klein_base_repo_from_labels(
     if len(variants) > 1:
         seen = ", ".join(f"{label}={variant}" for label, variant, _ in matches)
         raise RuntimeError(
-            "Conflicting FLUX.2 Klein GGUF variant hints: "
+            f"Conflicting {family_display} GGUF variant hints: "
             f"{seen}. Pass base_repo explicitly so Studio does not use the "
             f"wrong sampling contract. {candidate_lines}"
         )
     variant = next(iter(variants))
+    variant_config = _DIFFUSION_VARIANT_BY_FAMILY_AND_ID[(fam.name, variant)]
     source = matches[0][2]
     return DiffusionBaseRepoResolution(
-        base_repo = _FLUX2_KLEIN_BASE_REPOS[variant],
+        base_repo = variant_config.base_repo,
         source = source,
         confidence = "heuristic",
         variant = variant,
@@ -961,14 +1048,15 @@ def _resolve_diffusion_base_repo(
             source = "explicit",
             confidence = "explicit",
         )
-    if fam.name != "flux.2-klein":
+    if fam.name not in _DIFFUSION_VARIANTS_BY_FAMILY:
         return DiffusionBaseRepoResolution(
             base_repo = fam.base_repo,
             source = "family_default",
             confidence = "heuristic",
         )
 
-    return _resolve_flux2_klein_base_repo_from_labels(
+    return _resolve_variant_base_repo_from_hints(
+        fam = fam,
         repo_id = repo_id,
         gguf_filename = gguf_filename,
         gguf_inspection = gguf_inspection,
