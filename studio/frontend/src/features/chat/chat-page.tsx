@@ -47,6 +47,7 @@ import { ChatSettingsPanel } from "./chat-settings-sheet";
 import { CopyableErrorChip } from "@/components/ui/copyable-error-chip";
 import { ContextUsageBar } from "./components/context-usage-bar";
 import { ModelLoadInlineStatus } from "./components/model-load-status";
+import { ProjectSwitcher } from "./components/project-switcher";
 import {
   buildExternalModelId,
   isExternalModelId,
@@ -908,7 +909,7 @@ export function ChatPage(): ReactElement {
   const [currentProjectId, setCurrentProjectId] = useState<string | null>(
     search.project ?? null,
   );
-  const { projects } = useChatProjects();
+  const { projects, isLoading: projectsLoading } = useChatProjects();
   const currentProject = currentProjectId
     ? (projects.find((project) => project.id === currentProjectId) ?? null)
     : null;
@@ -918,12 +919,14 @@ export function ChatPage(): ReactElement {
   const currentChatTitle = activeThreadId
     ? currentProjectItems.find((item) => item.id === activeThreadId)?.title
     : undefined;
-  const openProjectLanding = useCallback(() => {
-    if (!currentProjectId) return;
-    useChatRuntimeStore.getState().setActiveThreadId(null);
-    useChatRuntimeStore.getState().setActiveProjectId(currentProjectId);
-    navigate({ to: "/chat", search: { project: currentProjectId } });
-  }, [currentProjectId, navigate]);
+  const openProjectLanding = useCallback(
+    (projectId: string) => {
+      useChatRuntimeStore.getState().setActiveThreadId(null);
+      useChatRuntimeStore.getState().setActiveProjectId(projectId);
+      navigate({ to: "/chat", search: { project: projectId } });
+    },
+    [navigate],
+  );
   const openProjectsList = useCallback(() => {
     navigate({ to: "/projects" });
   }, [navigate]);
@@ -1894,27 +1897,20 @@ export function ChatPage(): ReactElement {
                 className="max-w-[62vw] !pr-3 sm:max-w-none !h-[34px]"
               />
             )}
-            {currentProject && view.mode !== "compare" && (
+            {view.mode !== "compare" && (
               <nav
                 aria-label="Project location"
                 className="flex min-w-0 items-center gap-1.5 self-center text-[13.5px] tracking-nav text-muted-foreground"
               >
-                {activeThreadId ? (
+                <ProjectSwitcher
+                  currentProject={currentProject}
+                  projects={projects}
+                  isLoading={projectsLoading}
+                  onSelectProject={openProjectLanding}
+                  onViewAllProjects={openProjectsList}
+                />
+                {currentProject && activeThreadId ? (
                   <>
-                    <button
-                      type="button"
-                      onClick={openProjectLanding}
-                      className="flex shrink-0 items-center gap-1.5 rounded-[8px] -mx-1 px-1.5 py-0.5 transition-colors hover:bg-nav-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                    >
-                      <HugeiconsIcon
-                        icon={Folder02Icon}
-                        strokeWidth={1.75}
-                        className="size-icon shrink-0 text-foreground/70"
-                      />
-                      <span className="max-w-[150px] truncate font-medium text-foreground">
-                        {currentProject.name}
-                      </span>
-                    </button>
                     <span className="shrink-0" aria-hidden>
                       /
                     </span>
@@ -1922,20 +1918,7 @@ export function ChatPage(): ReactElement {
                       {currentChatTitle ?? "New chat"}
                     </span>
                   </>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={openProjectsList}
-                    className="flex shrink-0 items-center gap-1.5 rounded-[8px] -mx-1 px-1.5 py-0.5 transition-colors hover:bg-nav-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                  >
-                    <HugeiconsIcon
-                      icon={Folder02Icon}
-                      strokeWidth={1.75}
-                      className="size-icon shrink-0 text-foreground/70"
-                    />
-                    <span className="font-medium text-foreground">Projects</span>
-                  </button>
-                )}
+                ) : null}
               </nav>
             )}
             {pendingNativeModelIntent && view.mode !== "compare" ? (
