@@ -237,13 +237,16 @@ _MAX_PROBE_CUDA_MAJOR = 19
 # Last ggml-org release whose Windows win-cuda-13 build is still sub-13.3
 # (cuda-13.1, b9360, 2026-05-27). Upstream bumped win-cuda-13 to 13.3 at b9365
 # and now ships only cuda-12.4 + cuda-13.3. cuda-12.4 predates Blackwell (ggml
-# compiles sm_120 only at toolkit >= 12.8), so a Blackwell host on a 13.1/13.2
+# compiles sm_120 only at toolkit >= 12.8), so a Blackwell host on a 13.0/13.1/13.2
 # driver is gated off 13.3 and would drop to a CPU-only 12.4 build. b9360 is
 # immutable, so we pin its cuda-13.1 build (plus paired cudart) as a GPU
 # fallback for exactly those hosts. See unslothai/unsloth#5887.
 _PINNED_BLACKWELL_FALLBACK_TAG = "b9360"
 _PINNED_BLACKWELL_FALLBACK_RUNTIME = "13.1"
-_PINNED_BLACKWELL_DRIVER_FLOOR = (13, 1)
+# Floor at 13.0: b9360 ships native sm_120a SASS (no PTX/JIT) and a bundled
+# cuda-13.1 cudart, both of which run on a CUDA 13.0 r580+ driver via CUDA
+# minor-version compatibility, so the mainstream 13.0 Blackwell branch is covered.
+_PINNED_BLACKWELL_DRIVER_FLOOR = (13, 0)
 _BLACKWELL_MIN_SM = 120
 # ggml compiles Blackwell sm_120 only at toolkit >= 12.8, so an in-release
 # windows-cuda build at or above this already covers Blackwell and makes the
