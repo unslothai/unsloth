@@ -970,6 +970,9 @@
 	/* Right-side Thinking pill (toggle or dropdown). */
 	.unsloth-thinking-pill {
 		@apply inline-flex shrink-0 cursor-pointer items-center gap-1 rounded-full px-2.5 py-1.5 text-[14px] font-medium text-muted-foreground transition-colors hover:bg-primary/10 dark:hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-40;
+		/* Reserve a text line so the icon-only (inactive) pill matches the
+		   text pills' height instead of collapsing to the icon. */
+		min-height: calc(1lh + 0.75rem);
 	}
 
 	.unsloth-thinking-pill[data-active="true"] {
