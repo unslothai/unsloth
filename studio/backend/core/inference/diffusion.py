@@ -64,6 +64,10 @@ DIFFUSION_OFFLOAD_POLICIES = {
     DIFFUSION_OFFLOAD_POLICY_HYBRID,
 }
 DEFAULT_BALANCED_GGUF_CUDA_CACHE_MIB = 4096
+MID_BALANCED_GGUF_CUDA_CACHE_MIB = 2048
+MIN_BALANCED_GGUF_CUDA_CACHE_TOTAL_MIB = 24 * 1024
+MID_BALANCED_GGUF_CUDA_CACHE_TOTAL_MIB = 32 * 1024
+BALANCED_GGUF_CUDA_CACHE_HEADROOM_MIB = 8 * 1024
 
 
 # ─── Pipeline registry ────────────────────────────────────────────────
@@ -2617,19 +2621,46 @@ def _env_pin_cpu_resident_gguf() -> bool:
     )
 
 
-def _balanced_gguf_cuda_cache_bytes() -> int:
+def _balanced_gguf_cuda_cache_bytes(
+    *,
+    device: str | None = "cuda",
+    free_bytes: int | None = None,
+    total_bytes: int | None = None,
+) -> int:
     value = os.environ.get("UNSLOTH_STUDIO_GGUF_CUDA_CACHE_MIB")
     if value is None or not value.strip():
-        return DEFAULT_BALANCED_GGUF_CUDA_CACHE_MIB * 1024 * 1024
+        if device != "cuda":
+            return 0
+        if free_bytes is None or total_bytes is None:
+            try:
+                import torch
+
+                free_bytes, total_bytes = torch.cuda.mem_get_info()
+            except Exception:
+                return 0
+        free_mib = int(free_bytes) // (1024 * 1024)
+        total_mib = int(total_bytes) // (1024 * 1024)
+        if total_mib < MIN_BALANCED_GGUF_CUDA_CACHE_TOTAL_MIB:
+            return 0
+        cap_mib = (
+            MID_BALANCED_GGUF_CUDA_CACHE_MIB
+            if total_mib < MID_BALANCED_GGUF_CUDA_CACHE_TOTAL_MIB
+            else DEFAULT_BALANCED_GGUF_CUDA_CACHE_MIB
+        )
+        budget_mib = min(
+            cap_mib,
+            max(0, free_mib - BALANCED_GGUF_CUDA_CACHE_HEADROOM_MIB),
+        )
+        return budget_mib * 1024 * 1024
     try:
         mib = int(value.strip())
     except ValueError:
         logger.warning(
-            "Ignoring invalid UNSLOTH_STUDIO_GGUF_CUDA_CACHE_MIB=%r; using %d MiB.",
+            "Ignoring invalid UNSLOTH_STUDIO_GGUF_CUDA_CACHE_MIB=%r; disabling "
+            "the optional balanced GGUF CUDA cache.",
             value,
-            DEFAULT_BALANCED_GGUF_CUDA_CACHE_MIB,
         )
-        mib = DEFAULT_BALANCED_GGUF_CUDA_CACHE_MIB
+        mib = 0
     return max(0, mib) * 1024 * 1024
 
 
@@ -4050,7 +4081,7 @@ class DiffusionBackend:
                         and diffusion_gguf_resident_device == "cpu"
                         and device == "cuda"
                     ):
-                        cuda_cache_bytes = _balanced_gguf_cuda_cache_bytes()
+                        cuda_cache_bytes = _balanced_gguf_cuda_cache_bytes(device = device)
                         if cuda_cache_bytes > 0:
                             try:
                                 from .gguf_text_encoder import configure_lazy_gguf_cuda_cache

@@ -2066,6 +2066,58 @@ def test_resolve_diffusion_offload_policy_modes(monkeypatch):
     ) == (None, False, True, False)
 
 
+def test_balanced_gguf_cuda_cache_budget_is_automatic_and_headroom_aware(monkeypatch):
+    import core.inference.diffusion as d
+
+    monkeypatch.delenv("UNSLOTH_STUDIO_GGUF_CUDA_CACHE_MIB", raising = False)
+    gib = 1024**3
+
+    assert d._balanced_gguf_cuda_cache_bytes(
+        device = "cpu",
+        free_bytes = 64 * gib,
+        total_bytes = 64 * gib,
+    ) == 0
+    assert d._balanced_gguf_cuda_cache_bytes(
+        free_bytes = 16 * gib,
+        total_bytes = 16 * gib,
+    ) == 0
+    assert d._balanced_gguf_cuda_cache_bytes(
+        free_bytes = 30 * gib,
+        total_bytes = 24 * gib,
+    ) == 2 * gib
+    assert d._balanced_gguf_cuda_cache_bytes(
+        free_bytes = 64 * gib,
+        total_bytes = 64 * gib,
+    ) == 4 * gib
+    assert d._balanced_gguf_cuda_cache_bytes(
+        free_bytes = 10 * gib,
+        total_bytes = 64 * gib,
+    ) == 2 * gib
+
+
+def test_balanced_gguf_cuda_cache_budget_env_override(monkeypatch):
+    import core.inference.diffusion as d
+
+    gib = 1024**3
+    monkeypatch.setenv("UNSLOTH_STUDIO_GGUF_CUDA_CACHE_MIB", "0")
+    assert d._balanced_gguf_cuda_cache_bytes(
+        free_bytes = 64 * gib,
+        total_bytes = 64 * gib,
+    ) == 0
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_GGUF_CUDA_CACHE_MIB", "123")
+    assert d._balanced_gguf_cuda_cache_bytes(
+        free_bytes = 16 * gib,
+        total_bytes = 16 * gib,
+    ) == 123 * 1024 * 1024
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_GGUF_CUDA_CACHE_MIB", "bad")
+    assert d._balanced_gguf_cuda_cache_bytes(
+        free_bytes = 64 * gib,
+        total_bytes = 64 * gib,
+    ) == 0
+
+
 def test_load_model_offload_policy_aggressive(monkeypatch):
     _install_fake_diffusers(monkeypatch)
 
