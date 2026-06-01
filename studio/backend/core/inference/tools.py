@@ -755,6 +755,25 @@ def execute_tool(
     return f"Unknown tool: {name}"
 
 
+def _opt_int(v) -> int | None:
+    try:
+        return int(v) if v is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _scope_retrieval_kwargs(scope: dict) -> dict:
+    """Per-request retrieval overrides from rag_scope; absent keys stay None so
+    the retrieval layer falls back to config."""
+    mode = scope.get("mode")
+    return {
+        "mode": mode if mode in ("hybrid", "dense", "lexical") else "hybrid",
+        "rrf_k": _opt_int(scope.get("rrf_k")),
+        "top_k_lexical": _opt_int(scope.get("top_k_lexical")),
+        "top_k_dense": _opt_int(scope.get("top_k_dense")),
+    }
+
+
 def _search_knowledge_base(arguments: dict, rag_scope: dict | None) -> str:
     """Run the RAG search bound to the hidden per-request ``rag_scope`` (the model
     supplies only ``query``/``top_k``). Lazy import; missing sqlite-vec degrades
@@ -780,6 +799,7 @@ def _search_knowledge_base(arguments: dict, rag_scope: dict | None) -> str:
         scope_thread_id = scope.get("thread_id"),
         top_k = top_k,
         min_score = float(scope.get("min_score") or 0.0),
+        **_scope_retrieval_kwargs(scope),
     )
     # Append the UI source-map after the sentinel; loops strip it before the
     # model sees the result.
@@ -841,8 +861,14 @@ def build_rag_autoinject(
 ) -> dict | None:
     """Pre-retrieve the latest user turn; if a hit clears the cosine floor return
     ``{"events": [...], "messages": [...]}`` to splice into the loop, else ``None``.
-    Toggle via ``RAG_AUTOINJECT=0``; floor via ``RAG_AUTOINJECT_MIN_SCORE``."""
-    if not rag_scope or not _autoinject_enabled():
+    Toggle via ``rag_scope.autoinject`` (else env ``RAG_AUTOINJECT``); floor via
+    ``rag_scope.autoinject_min_score`` (else env ``RAG_AUTOINJECT_MIN_SCORE``)."""
+    if not rag_scope:
+        return None
+    enabled = rag_scope.get("autoinject")
+    if enabled is None:
+        enabled = _autoinject_enabled()
+    if not enabled:
         return None
     query = _last_user_text(conversation)
     if not query:
@@ -857,7 +883,10 @@ def build_rag_autoinject(
         logger.warning("RAG auto-inject unavailable: %s", exc)
         return None
 
-    floor = _autoinject_floor()
+    floor_override = rag_scope.get("autoinject_min_score")
+    floor = (
+        float(floor_override) if floor_override is not None else _autoinject_floor()
+    )
     top_k = rag_scope.get("default_top_k")
     try:
         found = search_for_autoinject(
@@ -866,6 +895,7 @@ def build_rag_autoinject(
             scope_thread_id = rag_scope.get("thread_id"),
             top_k = top_k,
             min_dense_score = floor,
+            **_scope_retrieval_kwargs(rag_scope),
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("RAG auto-inject retrieval failed: %s", exc)

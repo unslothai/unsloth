@@ -743,8 +743,10 @@ class ChatCompletionRequest(BaseModel):
         None,
         description = (
             "[x-unsloth] Hidden RAG retrieval scope for the search_knowledge_base "
-            "tool: {kb_id?, thread_id?, default_top_k?, min_score?, mode?}. The "
-            "model never sees this; the server resolves which documents to search."
+            "tool: {kb_id?, thread_id?, default_top_k?, min_score?, mode?, rrf_k?, "
+            "top_k_lexical?, top_k_dense?, autoinject?, autoinject_min_score?}. "
+            "Retrieval knobs fall back to server config when absent. The model "
+            "never sees this; the server resolves which documents to search."
         ),
     )
     cancel_id: Optional[str] = Field(

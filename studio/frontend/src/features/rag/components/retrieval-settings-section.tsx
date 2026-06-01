@@ -10,7 +10,15 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
+import { Switch } from "@/components/ui/switch";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
 import { Button } from "@/components/ui/button";
+import { ChevronDownIcon } from "lucide-react";
+import { cn } from "@/lib/utils";
 import {
   type RagMode,
   type RagSource,
@@ -28,6 +36,54 @@ const MODE_LABEL: Record<RagMode, string> = {
   lexical: "BM25 only",
 };
 
+/** Labeled slider with a value readout, matching the section's other rows. */
+function SliderRow({
+  label,
+  value,
+  min,
+  max,
+  step,
+  onChange,
+  disabled = false,
+  format = (v: number) => String(v),
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  onChange: (v: number) => void;
+  disabled?: boolean;
+  format?: (v: number) => string;
+}) {
+  return (
+    <div
+      className={cn(
+        "flex flex-col gap-2",
+        disabled && "pointer-events-none opacity-50",
+      )}
+    >
+      <div className="flex items-center justify-between">
+        <span className="text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
+          {label}
+        </span>
+        <span className="text-[13px] tabular-nums text-muted-foreground">
+          {format(value)}
+        </span>
+      </div>
+      <Slider
+        value={[value]}
+        min={min}
+        max={max}
+        step={step}
+        disabled={disabled}
+        onValueChange={([v]) => onChange(v)}
+        aria-label={label}
+      />
+    </div>
+  );
+}
+
 /**
  * Retrieval settings in the chat settings sheet: source (thread docs or a KB),
  * search backend, and passage count for search_knowledge_base.
@@ -39,6 +95,24 @@ export function RetrievalSettingsSection() {
   const setRagMode = useChatRuntimeStore((s) => s.setRagMode);
   const ragTopK = useChatRuntimeStore((s) => s.ragTopK);
   const setRagTopK = useChatRuntimeStore((s) => s.setRagTopK);
+  const ragAutoInject = useChatRuntimeStore((s) => s.ragAutoInject);
+  const setRagAutoInject = useChatRuntimeStore((s) => s.setRagAutoInject);
+  const ragAutoInjectMinScore = useChatRuntimeStore(
+    (s) => s.ragAutoInjectMinScore,
+  );
+  const setRagAutoInjectMinScore = useChatRuntimeStore(
+    (s) => s.setRagAutoInjectMinScore,
+  );
+  const ragMinScore = useChatRuntimeStore((s) => s.ragMinScore);
+  const setRagMinScore = useChatRuntimeStore((s) => s.setRagMinScore);
+  const ragRrfK = useChatRuntimeStore((s) => s.ragRrfK);
+  const setRagRrfK = useChatRuntimeStore((s) => s.setRagRrfK);
+  const ragTopKLexical = useChatRuntimeStore((s) => s.ragTopKLexical);
+  const setRagTopKLexical = useChatRuntimeStore((s) => s.setRagTopKLexical);
+  const ragTopKDense = useChatRuntimeStore((s) => s.ragTopKDense);
+  const setRagTopKDense = useChatRuntimeStore((s) => s.setRagTopKDense);
+  // RRF + candidate pools only apply to hybrid; dim them in single-backend modes.
+  const hybrid = ragMode === "hybrid";
 
   const [kbs, setKbs] = useState<KnowledgeBase[]>([]);
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -143,6 +217,79 @@ export function RetrievalSettingsSection() {
           aria-label="Number of passages to retrieve"
         />
       </div>
+
+      <div className="flex flex-col gap-3">
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex flex-col">
+            <span className="text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
+              Auto-retrieve documents
+            </span>
+            <span className="text-[12px] leading-[1.3] text-muted-foreground">
+              Always search attached documents before answering.
+            </span>
+          </div>
+          <Switch
+            checked={ragAutoInject}
+            onCheckedChange={setRagAutoInject}
+            aria-label="Auto-retrieve documents"
+          />
+        </div>
+        <SliderRow
+          label="Auto-retrieve threshold"
+          value={ragAutoInjectMinScore}
+          min={0}
+          max={1}
+          step={0.05}
+          disabled={!ragAutoInject}
+          onChange={setRagAutoInjectMinScore}
+          format={(v) => v.toFixed(2)}
+        />
+      </div>
+
+      <Collapsible className="flex flex-col gap-5">
+        <CollapsibleTrigger className="group flex items-center justify-between text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
+          Advanced
+          <ChevronDownIcon className="size-4 text-muted-foreground transition-transform group-data-[state=open]:rotate-180" />
+        </CollapsibleTrigger>
+        <CollapsibleContent className="flex flex-col gap-5">
+          <SliderRow
+            label="Minimum score"
+            value={ragMinScore}
+            min={0}
+            max={1}
+            step={0.05}
+            onChange={setRagMinScore}
+            format={(v) => v.toFixed(2)}
+          />
+          <SliderRow
+            label="Fusion constant (RRF k)"
+            value={ragRrfK}
+            min={1}
+            max={120}
+            step={1}
+            disabled={!hybrid}
+            onChange={setRagRrfK}
+          />
+          <SliderRow
+            label="Lexical candidates"
+            value={ragTopKLexical}
+            min={1}
+            max={100}
+            step={1}
+            disabled={!hybrid}
+            onChange={setRagTopKLexical}
+          />
+          <SliderRow
+            label="Dense candidates"
+            value={ragTopKDense}
+            min={1}
+            max={100}
+            step={1}
+            disabled={!hybrid}
+            onChange={setRagTopKDense}
+          />
+        </CollapsibleContent>
+      </Collapsible>
 
       <div className="flex justify-end">
         <Button

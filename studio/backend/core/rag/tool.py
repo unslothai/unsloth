@@ -87,9 +87,13 @@ def search_knowledge_base_with_sources(
     top_k: int | None = None,
     min_score: float = 0.0,
     model_name: str | None = None,
+    mode: str = "hybrid",
+    rrf_k: int | None = None,
+    top_k_lexical: int | None = None,
+    top_k_dense: int | None = None,
 ) -> tuple[str, list[dict]]:
-    """Hybrid search -> ``(rendered_text, citation_sources)``; sources align
-    with each rendered ``<chunk>`` block's ``id``."""
+    """Search -> ``(rendered_text, citation_sources)``; sources align with each
+    rendered ``<chunk>`` block's ``id``. Retrieval knobs fall back to config."""
     if not query or not query.strip():
         return "Error: query is empty.", []
     scope = _resolve_scope(scope_kb_id, scope_thread_id)
@@ -104,6 +108,10 @@ def search_knowledge_base_with_sources(
             query,
             k = top_k or config.TOP_K_HYBRID,
             model_name = model_name,
+            mode = mode,
+            rrf_k = rrf_k,
+            top_k_lexical = top_k_lexical,
+            top_k_dense = top_k_dense,
         )
         hits = retrieval.filter_min_score(hits, min_score)
         rows = store_rows(conn, hits)
@@ -127,6 +135,10 @@ def search_for_autoinject(
     top_k: int | None = None,
     min_dense_score: float = 0.55,
     model_name: str | None = None,
+    mode: str = "hybrid",
+    rrf_k: int | None = None,
+    top_k_lexical: int | None = None,
+    top_k_dense: int | None = None,
 ) -> tuple[str, list[dict]] | None:
     """Forced-retrieval variant for auto-injection.
 
@@ -143,7 +155,17 @@ def search_for_autoinject(
     k = top_k or config.TOP_K_HYBRID
     conn = rag_db.get_connection()
     try:
-        hits = retrieval.retrieve_hybrid(conn, scope, query, k = k, model_name = model_name)
+        hits = retrieval.retrieve_hybrid(
+            conn,
+            scope,
+            query,
+            k = k,
+            model_name = model_name,
+            mode = mode,
+            rrf_k = rrf_k,
+            top_k_lexical = top_k_lexical,
+            top_k_dense = top_k_dense,
+        )
         strong = [
             h
             for h in hits

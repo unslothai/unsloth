@@ -39,6 +39,13 @@ export const CHAT_RAG_ENABLED_KEY = "unsloth_chat_rag_enabled";
 export const CHAT_RAG_SOURCE_KEY = "unsloth_chat_rag_source";
 export const CHAT_RAG_MODE_KEY = "unsloth_chat_rag_mode";
 export const CHAT_RAG_TOP_K_KEY = "unsloth_chat_rag_top_k";
+export const CHAT_RAG_AUTOINJECT_KEY = "unsloth_chat_rag_autoinject";
+export const CHAT_RAG_AUTOINJECT_MIN_SCORE_KEY =
+  "unsloth_chat_rag_autoinject_min_score";
+export const CHAT_RAG_MIN_SCORE_KEY = "unsloth_chat_rag_min_score";
+export const CHAT_RAG_RRF_K_KEY = "unsloth_chat_rag_rrf_k";
+export const CHAT_RAG_TOP_K_LEXICAL_KEY = "unsloth_chat_rag_top_k_lexical";
+export const CHAT_RAG_TOP_K_DENSE_KEY = "unsloth_chat_rag_top_k_dense";
 
 /** search_knowledge_base source: `thread` (this thread's docs) or `kb` (`kbId`). */
 export type RagSource =
@@ -50,6 +57,13 @@ export type RagMode = "hybrid" | "lexical" | "dense";
 export const DEFAULT_RAG_SOURCE: RagSource = { type: "thread" };
 export const DEFAULT_RAG_MODE: RagMode = "hybrid";
 export const DEFAULT_RAG_TOP_K = 5;
+// Mirror the backend config.py defaults (RAG_AUTOINJECT / config.*).
+export const DEFAULT_RAG_AUTOINJECT = true;
+export const DEFAULT_RAG_AUTOINJECT_MIN_SCORE = 0.55;
+export const DEFAULT_RAG_MIN_SCORE = 0;
+export const DEFAULT_RAG_RRF_K = 60;
+export const DEFAULT_RAG_TOP_K_LEXICAL = 30;
+export const DEFAULT_RAG_TOP_K_DENSE = 30;
 
 function loadRagSource(): RagSource {
   if (typeof window === "undefined") return DEFAULT_RAG_SOURCE;
@@ -90,6 +104,25 @@ function loadRagTopK(): number {
     return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_RAG_TOP_K;
   } catch {
     return DEFAULT_RAG_TOP_K;
+  }
+}
+
+// Clamped numeric loader that preserves a stored 0 (unlike loadRagTopK, score
+// floors can legitimately be 0). Missing key -> fallback.
+function loadRagNumber(
+  key: string,
+  fallback: number,
+  { min, max, integer = false }: { min: number; max: number; integer?: boolean },
+): number {
+  if (typeof window === "undefined") return fallback;
+  try {
+    const raw = window.localStorage.getItem(key);
+    if (raw === null) return fallback;
+    const parsed = integer ? Number.parseInt(raw, 10) : Number.parseFloat(raw);
+    if (!Number.isFinite(parsed)) return fallback;
+    return Math.min(max, Math.max(min, parsed));
+  } catch {
+    return fallback;
   }
 }
 
@@ -374,6 +407,14 @@ type ChatRuntimeStore = {
   ragSource: RagSource;
   ragMode: RagMode;
   ragTopK: number;
+  // Query-time retrieval knobs sent in rag_scope; absent ones fall back to
+  // server config. autoInject = forced first-pass retrieval before answering.
+  ragAutoInject: boolean;
+  ragAutoInjectMinScore: number;
+  ragMinScore: number;
+  ragRrfK: number;
+  ragTopKLexical: number;
+  ragTopKDense: number;
   /**
    * Fetch pill state, independent of `toolsEnabled` (Search). Only
    * consulted when `providerSupportsBuiltinWebFetch` is true.
@@ -453,6 +494,12 @@ type ChatRuntimeStore = {
   setRagSource: (source: RagSource) => void;
   setRagMode: (mode: RagMode) => void;
   setRagTopK: (topK: number) => void;
+  setRagAutoInject: (enabled: boolean) => void;
+  setRagAutoInjectMinScore: (score: number) => void;
+  setRagMinScore: (score: number) => void;
+  setRagRrfK: (rrfK: number) => void;
+  setRagTopKLexical: (topK: number) => void;
+  setRagTopKDense: (topK: number) => void;
   setToolStatus: (status: string | null) => void;
   setGeneratingStatus: (status: string | null) => void;
   setAutoHealToolCalls: (enabled: boolean) => void;
@@ -718,6 +765,31 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   ragSource: loadRagSource(),
   ragMode: loadRagMode(),
   ragTopK: loadRagTopK(),
+  ragAutoInject: loadBool(CHAT_RAG_AUTOINJECT_KEY, DEFAULT_RAG_AUTOINJECT),
+  ragAutoInjectMinScore: loadRagNumber(
+    CHAT_RAG_AUTOINJECT_MIN_SCORE_KEY,
+    DEFAULT_RAG_AUTOINJECT_MIN_SCORE,
+    { min: 0, max: 1 },
+  ),
+  ragMinScore: loadRagNumber(CHAT_RAG_MIN_SCORE_KEY, DEFAULT_RAG_MIN_SCORE, {
+    min: 0,
+    max: 1,
+  }),
+  ragRrfK: loadRagNumber(CHAT_RAG_RRF_K_KEY, DEFAULT_RAG_RRF_K, {
+    min: 1,
+    max: 120,
+    integer: true,
+  }),
+  ragTopKLexical: loadRagNumber(
+    CHAT_RAG_TOP_K_LEXICAL_KEY,
+    DEFAULT_RAG_TOP_K_LEXICAL,
+    { min: 1, max: 100, integer: true },
+  ),
+  ragTopKDense: loadRagNumber(CHAT_RAG_TOP_K_DENSE_KEY, DEFAULT_RAG_TOP_K_DENSE, {
+    min: 1,
+    max: 100,
+    integer: true,
+  }),
   toolStatus: null,
   generatingStatus: null,
   autoHealToolCalls: true,
@@ -1059,6 +1131,39 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     set(() => {
       saveString(CHAT_RAG_TOP_K_KEY, String(ragTopK));
       return { ragTopK };
+    }),
+  setRagAutoInject: (ragAutoInject) =>
+    set(() => {
+      saveBool(CHAT_RAG_AUTOINJECT_KEY, ragAutoInject);
+      return { ragAutoInject };
+    }),
+  setRagAutoInjectMinScore: (ragAutoInjectMinScore) =>
+    set(() => {
+      saveString(
+        CHAT_RAG_AUTOINJECT_MIN_SCORE_KEY,
+        String(ragAutoInjectMinScore),
+      );
+      return { ragAutoInjectMinScore };
+    }),
+  setRagMinScore: (ragMinScore) =>
+    set(() => {
+      saveString(CHAT_RAG_MIN_SCORE_KEY, String(ragMinScore));
+      return { ragMinScore };
+    }),
+  setRagRrfK: (ragRrfK) =>
+    set(() => {
+      saveString(CHAT_RAG_RRF_K_KEY, String(ragRrfK));
+      return { ragRrfK };
+    }),
+  setRagTopKLexical: (ragTopKLexical) =>
+    set(() => {
+      saveString(CHAT_RAG_TOP_K_LEXICAL_KEY, String(ragTopKLexical));
+      return { ragTopKLexical };
+    }),
+  setRagTopKDense: (ragTopKDense) =>
+    set(() => {
+      saveString(CHAT_RAG_TOP_K_DENSE_KEY, String(ragTopKDense));
+      return { ragTopKDense };
     }),
   setToolStatus: (toolStatus) => set({ toolStatus }),
   setGeneratingStatus: (generatingStatus) => set({ generatingStatus }),

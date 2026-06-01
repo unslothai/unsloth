@@ -84,12 +84,25 @@ def retrieve_hybrid(
     *,
     k: int | None = None,
     model_name: str | None = None,
+    mode: str = "hybrid",
+    rrf_k: int | None = None,
+    top_k_lexical: int | None = None,
+    top_k_dense: int | None = None,
 ) -> list[Hit]:
-    lexical = retrieve_lexical(conn, scope, query, config.TOP_K_LEXICAL)
-    dense = retrieve_dense(
-        conn, scope, query, config.TOP_K_DENSE, model_name = model_name
-    )
-    return _rrf([lexical, dense], config.RRF_K, k or config.TOP_K_HYBRID)
+    """``mode`` picks the backend: lexical-only, dense-only, or RRF of both
+    (default). ``None`` params fall back to config so callers can override any
+    subset. Nullish (not truthy) checks so an explicit 0 is respected."""
+    k = k if k is not None else config.TOP_K_HYBRID
+    if mode == "lexical":
+        return retrieve_lexical(conn, scope, query, k)
+    if mode == "dense":
+        return retrieve_dense(conn, scope, query, k, model_name = model_name)
+    kl = top_k_lexical if top_k_lexical is not None else config.TOP_K_LEXICAL
+    kd = top_k_dense if top_k_dense is not None else config.TOP_K_DENSE
+    rk = rrf_k if rrf_k is not None else config.RRF_K
+    lexical = retrieve_lexical(conn, scope, query, kl)
+    dense = retrieve_dense(conn, scope, query, kd, model_name = model_name)
+    return _rrf([lexical, dense], rk, k)
 
 
 def filter_min_score(hits: list[Hit], min_score: float) -> list[Hit]:
