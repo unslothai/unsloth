@@ -52,6 +52,7 @@ from utils.subprocess_compat import (
     windows_hidden_subprocess_kwargs as _windows_hidden_subprocess_kwargs,
 )
 from core.inference.tool_call_parser import (
+    RENDER_HTML_REPEAT_NUDGE,
     parse_tool_calls_from_text as _shared_parse_tool_calls_from_text,
 )
 
@@ -4623,6 +4624,7 @@ class LlamaCppBackend:
         # a transient failure are allowed (only block when the previous
         # identical call succeeded).
         _tool_call_history: list[tuple[str, bool]] = []  # (key, failed)
+        _render_html_succeeded = False
 
         # ── Re-prompt on plan-without-action ─────────────────
         # When the model describes what it intends to do (forward-looking
@@ -4697,6 +4699,7 @@ class LlamaCppBackend:
                 _iter_timings = None
                 _stream_done = False
                 _last_emitted = ""
+                provisional_render_html_tool_call_ids = set()
 
                 stream_timeout = httpx.Timeout(
                     connect = 10,
@@ -4806,6 +4809,33 @@ class LlamaCppBackend:
                                                 tool_calls_acc[idx]["function"][
                                                     "arguments"
                                                 ] += func["arguments"]
+                                            current_name = tool_calls_acc[idx][
+                                                "function"
+                                            ].get("name", "")
+                                            fallback_id = f"call_{idx}"
+                                            current_id = tool_calls_acc[idx].get(
+                                                "id", fallback_id
+                                            )
+                                            already_started = (
+                                                current_id
+                                                in provisional_render_html_tool_call_ids
+                                            )
+                                            has_real_id = current_id != fallback_id
+                                            if (
+                                                current_name == "render_html"
+                                                and not _render_html_succeeded
+                                                and not already_started
+                                                and has_real_id
+                                            ):
+                                                provisional_render_html_tool_call_ids.add(
+                                                    current_id
+                                                )
+                                                yield {
+                                                    "type": "tool_start",
+                                                    "tool_name": "render_html",
+                                                    "tool_call_id": current_id,
+                                                    "arguments": {},
+                                                }
                                         continue
 
                                     # ── Reasoning tokens ──
@@ -4987,13 +5017,25 @@ class LlamaCppBackend:
                                     "content": _stripped,
                                 }
                             )
+                            available_tool_names = [
+                                tool.get("function", {}).get("name")
+                                for tool in tools
+                                if isinstance(tool, dict)
+                                and isinstance(tool.get("function"), dict)
+                            ]
+                            available_tool_names = [
+                                name for name in available_tool_names if name
+                            ]
+                            tool_hint = (
+                                " or ".join(available_tool_names) or "an available tool"
+                            )
                             conversation.append(
                                 {
                                     "role": "user",
                                     "content": (
                                         "STOP. Do NOT write code or explain. "
                                         "You MUST call a tool NOW. "
-                                        "Call web_search or python immediately."
+                                        f"Call {tool_hint} immediately."
                                     ),
                                 }
                             )
@@ -5165,7 +5207,12 @@ class LlamaCppBackend:
                             arguments = json.loads(raw_args)
                         except (json.JSONDecodeError, ValueError):
                             if auto_heal_tool_calls:
-                                arguments = {"query": raw_args}
+                                heal_key = {
+                                    "python": "code",
+                                    "terminal": "command",
+                                    "render_html": "code",
+                                }.get(tool_name, "query")
+                                arguments = {heal_key: raw_args}
                             else:
                                 arguments = {"raw": raw_args}
                     else:
@@ -5202,7 +5249,11 @@ class LlamaCppBackend:
                         )
                     else:
                         status_text = f"Calling: {tool_name}"
-                    yield {"type": "status", "text": status_text}
+                    _repeat_render_html = (
+                        tool_name == "render_html" and _render_html_succeeded
+                    )
+                    if not _repeat_render_html:
+                        yield {"type": "status", "text": status_text}
 
                     # ── Duplicate call detection ──────────────
                     # str(dict) is stable here: arguments always comes from
@@ -5222,13 +5273,16 @@ class LlamaCppBackend:
                         if (t.get("function") or {}).get("name")
                     }
                     _is_disabled = bool(_allowed) and tool_name not in _allowed
-                    # Only gate calls that would actually run: duplicate or
-                    # disabled calls are short-circuited below and never
-                    # execute, so prompting for them would be noise.
-                    # Registering the slot before tool_start closes the race
-                    # where the confirmation could arrive before the waiter.
+                    # Only gate calls that would actually run: duplicate,
+                    # disabled, or repeat render_html calls are short-circuited
+                    # below and never execute, so prompting for them would be
+                    # noise. Registering the slot before tool_start closes the
+                    # race where the confirmation could arrive before the waiter.
                     _needs_confirm = (
-                        confirm_tool_calls and not _is_duplicate and not _is_disabled
+                        confirm_tool_calls
+                        and not _is_duplicate
+                        and not _is_disabled
+                        and not _repeat_render_html
                     )
                     _approval_id = new_approval_id() if _needs_confirm else ""
                     _decision_slot = (
@@ -5237,17 +5291,20 @@ class LlamaCppBackend:
                         else None
                     )
 
-                    yield {
-                        "type": "tool_start",
-                        "tool_name": tool_name,
-                        "tool_call_id": tc.get("id", ""),
-                        "arguments": arguments,
-                        "approval_id": _approval_id,
-                        "awaiting_confirmation": _needs_confirm,
-                    }
+                    if not _repeat_render_html:
+                        yield {
+                            "type": "tool_start",
+                            "tool_name": tool_name,
+                            "tool_call_id": tc.get("id", ""),
+                            "arguments": arguments,
+                            "approval_id": _approval_id,
+                            "awaiting_confirmation": _needs_confirm,
+                        }
 
                     _denied = False
-                    if _is_duplicate:
+                    if _repeat_render_html:
+                        result = RENDER_HTML_REPEAT_NUDGE
+                    elif _is_duplicate:
                         result = (
                             "You already made this exact call. "
                             "Do not repeat the same tool call. "
@@ -5286,12 +5343,13 @@ class LlamaCppBackend:
                                 session_id = session_id,
                             )
 
-                    yield {
-                        "type": "tool_end",
-                        "tool_name": tool_name,
-                        "tool_call_id": tc.get("id", ""),
-                        "result": result,
-                    }
+                    if not _repeat_render_html:
+                        yield {
+                            "type": "tool_end",
+                            "tool_name": tool_name,
+                            "tool_call_id": tc.get("id", ""),
+                            "result": result,
+                        }
 
                     # Nudge model to try a different approach on errors
                     _error_prefixes = (
@@ -5308,9 +5366,12 @@ class LlamaCppBackend:
                         _error_prefixes
                     )
                     # A user-denied call never executed, so it must not count
-                    # toward duplicate detection — otherwise re-issuing and
-                    # approving the same call would be rejected as a duplicate.
+                    # toward duplicate detection (otherwise re-issuing and
+                    # approving the same call would be rejected as a duplicate)
+                    # nor mark render_html as succeeded.
                     if not _denied:
+                        if tool_name == "render_html" and not _is_error:
+                            _render_html_succeeded = True
                         _tool_call_history.append((_tc_key, _is_error))
                     # Strip image sentinel before feeding result to the LLM
                     # (the full result with sentinel is still yielded via

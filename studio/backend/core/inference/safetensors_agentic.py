@@ -18,6 +18,7 @@ cumulative text and dispatches them via ``core.inference.tools``.
 """
 
 import json
+import re
 import threading
 from typing import Callable, Generator, Optional
 from urllib.parse import urlparse
@@ -34,6 +35,7 @@ from state.tool_approvals import (
 from core.inference.tool_call_parser import (
     BUDGET_EXHAUSTED_NUDGE,
     DUPLICATE_CALL_NUDGE,
+    RENDER_HTML_REPEAT_NUDGE,
     TOOL_ERROR_NUDGE,
     TOOL_ERROR_PREFIXES,
     TOOL_XML_SIGNALS,
@@ -73,7 +75,34 @@ def _status_for_tool(tool_name: str, arguments: dict) -> str:
     return f"Calling: {tool_name}"
 
 
-_CANONICAL_HEAL_ARG = {"python": "code", "terminal": "command"}
+_CANONICAL_HEAL_ARG = {
+    "python": "code",
+    "terminal": "command",
+    "render_html": "code",
+}
+
+
+_FUNCTION_SIGNAL_RE = re.compile(r"<function=([\w-]+)>")
+_TOOL_CALL_NAME_RE = re.compile(r'"name"\s*:\s*"([\w-]+)"')
+
+
+def _detect_render_html_tool_start(content: str) -> bool:
+    """Return True when the first drained tool call is clearly render_html."""
+    function_match = _FUNCTION_SIGNAL_RE.search(content)
+    tool_call_index = content.find("<tool_call>")
+    if not function_match and tool_call_index < 0:
+        return False
+
+    if function_match and (
+        tool_call_index < 0 or function_match.start() < tool_call_index
+    ):
+        return function_match.group(1) == "render_html"
+
+    if tool_call_index >= 0:
+        name_match = _TOOL_CALL_NAME_RE.search(content[tool_call_index:])
+        return bool(name_match and name_match.group(1) == "render_html")
+
+    return False
 
 
 def _coerce_arguments(raw_args, *, heal: bool, tool_name: str = "") -> dict:
@@ -143,6 +172,7 @@ def run_safetensors_tool_loop(
     """
     conversation = list(messages)
     tool_call_history: list[tuple[str, bool]] = []
+    render_html_succeeded = False
     final_attempt_done = False
     allowed_tool_names = {
         (tool.get("function") or {}).get("name")
@@ -169,6 +199,8 @@ def run_safetensors_tool_loop(
         content_accum = ""
         cumulative_display = ""
         last_emitted = ""
+        provisional_render_html_started = False
+        provisional_render_html_id = f"call_{next_call_id}"
 
         gen = single_turn(conversation)
         prev_cumulative = ""
@@ -187,6 +219,18 @@ def run_safetensors_tool_loop(
             content_accum += delta
 
             if detect_state == _state_draining:
+                if (
+                    not render_html_succeeded
+                    and not provisional_render_html_started
+                    and _detect_render_html_tool_start(content_accum)
+                ):
+                    provisional_render_html_started = True
+                    yield {
+                        "type": "tool_start",
+                        "tool_name": "render_html",
+                        "tool_call_id": provisional_render_html_id,
+                        "arguments": {},
+                    }
                 continue
 
             if detect_state == _state_streaming:
@@ -204,6 +248,18 @@ def run_safetensors_tool_loop(
                         yield {"type": "content", "text": cleaned_before}
                     cumulative_display = candidate
                     detect_state = _state_draining
+                    if (
+                        not render_html_succeeded
+                        and not provisional_render_html_started
+                        and _detect_render_html_tool_start(content_accum)
+                    ):
+                        provisional_render_html_started = True
+                        yield {
+                            "type": "tool_start",
+                            "tool_name": "render_html",
+                            "tool_call_id": provisional_render_html_id,
+                            "arguments": {},
+                        }
                     continue
                 cumulative_display = candidate
                 cleaned = strip_tool_markup(cumulative_display)
@@ -230,6 +286,18 @@ def run_safetensors_tool_loop(
 
             if is_match:
                 detect_state = _state_draining
+                if (
+                    not render_html_succeeded
+                    and not provisional_render_html_started
+                    and _detect_render_html_tool_start(content_accum)
+                ):
+                    provisional_render_html_started = True
+                    yield {
+                        "type": "tool_start",
+                        "tool_name": "render_html",
+                        "tool_call_id": provisional_render_html_id,
+                        "arguments": {},
+                    }
             elif is_prefix and len(stripped) < _MAX_BUFFER_CHARS:
                 continue
             else:
@@ -290,6 +358,13 @@ def run_safetensors_tool_loop(
                 # literal "<tool_call>" prose is preserved.
                 if content_accum:
                     yield {"type": "content", "text": content_accum}
+                if provisional_render_html_started:
+                    yield {
+                        "type": "tool_end",
+                        "tool_name": "render_html",
+                        "tool_call_id": provisional_render_html_id,
+                        "result": "Error: render_html tool call could not be parsed.",
+                    }
                 yield {"type": "status", "text": ""}
                 return
             content_text = strip_tool_markup(content_accum, final = True)
@@ -323,31 +398,39 @@ def run_safetensors_tool_loop(
             already_ran_ok = any(
                 k == tc_key and not err for k, err in tool_call_history
             )
-            # Only gate calls that would actually run: a disabled or
-            # duplicate call is short-circuited below and never executes, so
-            # asking the user to approve it would be noise. Registering the
-            # approval slot *before* tool_start closes the race where the
-            # confirmation could arrive before the waiter exists.
+            repeat_render_html = tool_name == "render_html" and render_html_succeeded
+            # Only gate calls that would actually run: a disabled, duplicate,
+            # or repeat render_html call is short-circuited below and never
+            # executes, so asking the user to approve it would be noise.
+            # Registering the approval slot *before* tool_start closes the
+            # race where the confirmation could arrive before the waiter
+            # exists.
             needs_confirm = (
-                confirm_tool_calls and not is_disabled and not already_ran_ok
+                confirm_tool_calls
+                and not is_disabled
+                and not already_ran_ok
+                and not repeat_render_html
             )
             approval_id = new_approval_id() if needs_confirm else ""
             decision_slot = (
                 begin_tool_decision(session_id, approval_id) if needs_confirm else None
             )
 
-            yield {"type": "status", "text": _status_for_tool(tool_name, arguments)}
-            yield {
-                "type": "tool_start",
-                "tool_name": tool_name,
-                "tool_call_id": tc.get("id", ""),
-                "arguments": arguments,
-                "approval_id": approval_id,
-                "awaiting_confirmation": needs_confirm,
-            }
+            if not repeat_render_html:
+                yield {"type": "status", "text": _status_for_tool(tool_name, arguments)}
+                yield {
+                    "type": "tool_start",
+                    "tool_name": tool_name,
+                    "tool_call_id": tc.get("id", ""),
+                    "arguments": arguments,
+                    "approval_id": approval_id,
+                    "awaiting_confirmation": needs_confirm,
+                }
 
             denied = False
-            if is_disabled:
+            if repeat_render_html:
+                result = RENDER_HTML_REPEAT_NUDGE
+            elif is_disabled:
                 result = (
                     f"Error: tool '{tool_name}' is not enabled for this "
                     "request. Use one of the enabled tools or provide a "
@@ -381,20 +464,24 @@ def run_safetensors_tool_loop(
                         logger.exception("Tool %s raised: %s", tool_name, exc)
                         result = f"Error: tool raised an exception: {exc}"
 
-            yield {
-                "type": "tool_end",
-                "tool_name": tool_name,
-                "tool_call_id": tc.get("id", ""),
-                "result": result,
-            }
+            if not repeat_render_html:
+                yield {
+                    "type": "tool_end",
+                    "tool_name": tool_name,
+                    "tool_call_id": tc.get("id", ""),
+                    "result": result,
+                }
 
             is_error = isinstance(result, str) and result.lstrip().startswith(
                 TOOL_ERROR_PREFIXES
             )
             # A user-denied call never executed, so it must not count toward
-            # duplicate detection — otherwise re-issuing and approving the
-            # same call would be wrongly rejected as a duplicate.
+            # duplicate detection (otherwise re-issuing and approving the same
+            # call would be wrongly rejected as a duplicate) nor mark
+            # render_html as succeeded.
             if not denied:
+                if tool_name == "render_html" and not is_error:
+                    render_html_succeeded = True
                 tool_call_history.append((tc_key, is_error))
 
             # Strip frontend image sentinel from the model's view.
