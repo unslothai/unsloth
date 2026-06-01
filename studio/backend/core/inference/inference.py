@@ -273,7 +273,8 @@ class InferenceBackend:
             except Exception as exc:
                 logger.warning(
                     "Could not load native chat template for '%s': %s",
-                    self.active_model_name, exc,
+                    self.active_model_name,
+                    exc,
                 )
                 native_tpl = False
             model_info["native_chat_template"] = native_tpl
@@ -286,21 +287,26 @@ class InferenceBackend:
         try:
             tokenizer.chat_template = native_tpl
             with_tools = self._apply_chat_template_for_generation(
-                tokenizer, messages, tools=tools,
-                enable_thinking=enable_thinking,
-                reasoning_effort=reasoning_effort,
-                preserve_thinking=preserve_thinking,
+                tokenizer,
+                messages,
+                tools = tools,
+                enable_thinking = enable_thinking,
+                reasoning_effort = reasoning_effort,
+                preserve_thinking = preserve_thinking,
             )
             no_tools = self._apply_chat_template_for_generation(
-                tokenizer, messages, tools=None,
-                enable_thinking=enable_thinking,
-                reasoning_effort=reasoning_effort,
-                preserve_thinking=preserve_thinking,
+                tokenizer,
+                messages,
+                tools = None,
+                enable_thinking = enable_thinking,
+                reasoning_effort = reasoning_effort,
+                preserve_thinking = preserve_thinking,
             )
         except Exception as exc:
             logger.warning(
                 "Native-template tool render failed for '%s': %s",
-                self.active_model_name, exc,
+                self.active_model_name,
+                exc,
             )
             return None
         finally:

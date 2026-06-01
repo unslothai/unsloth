@@ -473,9 +473,7 @@ def run_safetensors_tool_loop(
         # rather than burn the rest of the tool budget on the same call.
         if tool_calls and not executed_new and not final_attempt_done:
             final_attempt_done = True
-            conversation.append(
-                {"role": "user", "content": BUDGET_EXHAUSTED_NUDGE}
-            )
+            conversation.append({"role": "user", "content": BUDGET_EXHAUSTED_NUDGE})
             yield {"type": "status", "text": ""}
             continue
 
