@@ -2822,3 +2822,103 @@ class TestLinuxArm64ForkFallsBackToSource:
                 "latest", host, "ggml-org/llama.cpp", ""
             )
         assert "linux-x64 prebuilts" not in str(exc.value)
+
+
+# ===========================================================================
+# arm64 Linux GPU: CPU prebuilt fallback after a failed source build (--cpu-fallback)
+# ===========================================================================
+
+
+class TestCpuFallback:
+    """--cpu-fallback drops GPU attributes so the CPU prebuilt for the host's
+    OS/arch is selected, letting an arm64 GPU host install ggml-org's arm64 CPU
+    build as a last resort when its source build produced no binary."""
+
+    _SETUP_SH = PACKAGE_ROOT / "studio" / "setup.sh"
+
+    def _arm64_nvidia(self):
+        return make_host(
+            system = "Linux",
+            machine = "aarch64",
+            driver_cuda_version = (13, 0),
+            compute_caps = ["90"],
+            has_physical_nvidia = True,
+            has_usable_nvidia = True,
+        )
+
+    def test_force_cpu_drops_gpu_attrs_before_planning(self, monkeypatch, tmp_path):
+        captured = {}
+
+        def _capture(llama_tag, host, *a, **k):
+            captured["host"] = host
+            raise PrebuiltFallback("stop after capture")
+
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT, "detect_host", self._arm64_nvidia
+        )
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT,
+            "resolve_simple_install_release_plans",
+            _capture,
+        )
+        # install_prebuilt exits EXIT_FALLBACK on PrebuiltFallback; we only care
+        # about the host it handed to the resolver before that.
+        with pytest.raises(SystemExit):
+            INSTALL_LLAMA_PREBUILT.install_prebuilt(
+                install_dir = tmp_path / "llama",
+                llama_tag = "latest",
+                published_repo = "ggml-org/llama.cpp",
+                published_release_tag = "",
+                simple_policy = True,
+                force_cpu = True,
+            )
+        host = captured["host"]
+        assert host.has_usable_nvidia is False
+        assert host.has_physical_nvidia is False
+        assert host.has_rocm is False
+        # Arch is preserved so the arm64 CPU bundle (not x64) is chosen.
+        assert host.is_arm64 is True
+
+    def test_cpu_forced_arm64_selects_ubuntu_arm64(self):
+        tag = "b9444"
+        release = {
+            "tag_name": tag,
+            "assets": [
+                {
+                    "name": f"llama-{tag}-bin-ubuntu-arm64.tar.gz",
+                    "browser_download_url": f"https://x/llama-{tag}-bin-ubuntu-arm64.tar.gz",
+                },
+                {
+                    "name": f"llama-{tag}-bin-ubuntu-x64.tar.gz",
+                    "browser_download_url": f"https://x/llama-{tag}-bin-ubuntu-x64.tar.gz",
+                },
+            ],
+        }
+        # A GPU arm64 host cannot pick the CPU arm64 bundle on its own.
+        with pytest.raises(PrebuiltFallback):
+            direct_upstream_release_plan(
+                release, self._arm64_nvidia(), "ggml-org/llama.cpp", "latest"
+            )
+        # force_cpu drops the GPU attributes, so the CPU arm64 bundle is selected.
+        cpu_host = make_host(
+            system = "Linux",
+            machine = "aarch64",
+            nvidia_smi = None,
+            driver_cuda_version = None,
+            compute_caps = [],
+            has_physical_nvidia = False,
+            has_usable_nvidia = False,
+        )
+        plan = direct_upstream_release_plan(
+            release, cpu_host, "ggml-org/llama.cpp", "latest"
+        )
+        assert plan.attempts[0].install_kind == "linux-arm64"
+        assert plan.attempts[0].name == f"llama-{tag}-bin-ubuntu-arm64.tar.gz"
+
+    def test_setup_sh_has_arm64_cpu_prebuilt_fallback(self):
+        source = self._SETUP_SH.read_text(encoding = "utf-8")
+        assert "--cpu-fallback" in source
+        # Fallback targets ggml-org (the only repo with an arm64 Linux build) and
+        # is gated on a degraded source build for arm64.
+        assert "ggml-org/llama.cpp" in source
+        assert "_LLAMA_CPP_DEGRADED" in source

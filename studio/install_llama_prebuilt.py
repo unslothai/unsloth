@@ -6457,10 +6457,22 @@ def install_prebuilt(
     *,
     simple_policy: bool = False,
     override_has_rocm: bool = False,
+    force_cpu: bool = False,
 ) -> None:
     host = detect_host()
     if override_has_rocm and not host.has_rocm:
         host = dataclasses_replace(host, has_rocm = True)
+    if force_cpu:
+        # Explicit CPU fallback: drop GPU attributes so the CPU prebuilt for this
+        # OS/arch is selected. setup.sh uses this for arm64 Linux GPU hosts whose
+        # source build failed, where no arm64 CUDA prebuilt exists anywhere.
+        host = dataclasses_replace(
+            host,
+            has_usable_nvidia = False,
+            has_physical_nvidia = False,
+            has_rocm = False,
+            rocm_gfx_target = None,
+        )
     choice: AssetChoice | None = None
     try:
         with install_lock(install_lock_path(install_dir)):
@@ -6605,6 +6617,16 @@ def parse_args() -> argparse.Namespace:
             "so the HIP llama.cpp prebuilt is selected even when hipinfo is not on PATH."
         ),
     )
+    parser.add_argument(
+        "--cpu-fallback",
+        action = "store_true",
+        default = False,
+        help = (
+            "Select the CPU prebuilt for this OS/arch even when a GPU is present. "
+            "setup.sh uses this as a last resort for arm64 Linux GPU hosts whose "
+            "source build failed (no arm64 CUDA prebuilt exists anywhere)."
+        ),
+    )
     resolve_group = parser.add_mutually_exclusive_group()
     resolve_group.add_argument(
         "--resolve-llama-tag",
@@ -6726,6 +6748,7 @@ def main() -> int:
         published_release_tag = args.published_release_tag or "",
         simple_policy = args.simple_policy,
         override_has_rocm = args.has_rocm,
+        force_cpu = args.cpu_fallback,
     )
     return EXIT_SUCCESS
 
