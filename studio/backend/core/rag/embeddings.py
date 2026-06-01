@@ -169,30 +169,47 @@ _ST_ALIASES = frozenset({"sentence-transformers", "sentence_transformers", "st"}
 _LLAMA_ALIASES = frozenset(
     {"llama-server", "llama_server", "llama", "llama.cpp", "llamacpp", "gguf"}
 )
+_AUTO_ALIASES = frozenset({"auto", ""})
+
+
+def _resolve_auto() -> str:
+    """Pick a backend for ``auto``: sentence-transformers when a CUDA/ROCm GPU is
+    present (torch fp16 wins bulk indexing there), else the torch-free GGUF
+    llama-server -- unless its binary is missing, then fall back to ST. Reuses the
+    chat backend's static probes (nvidia-smi first, so the GPU check stays
+    torch-free)."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    if LlamaCppBackend._get_gpu_free_memory():
+        return "sentence-transformers"
+    if LlamaCppBackend._find_llama_server_binary():
+        return "llama-server"
+    return "sentence-transformers"
 
 
 def _get_backend():
     """Return the process-wide embedding backend for ``config.EMBED_BACKEND``,
-    building it once. Re-reads config each call so tests can flip the env and get
-    a fresh backend; rebuilds only when the selected name changes."""
+    building it once. Cached by the raw config value so ``auto`` detection runs
+    only on a cache miss; rebuilds when the config changes (e.g. in tests)."""
     global _backend, _backend_key
-    key = (config.EMBED_BACKEND or "sentence-transformers").strip().lower()
+    raw = (config.EMBED_BACKEND or "auto").strip().lower()
     with _backend_lock:
-        if _backend is not None and _backend_key == key:
+        if _backend is not None and _backend_key == raw:
             return _backend
+        key = _resolve_auto() if raw in _AUTO_ALIASES else raw
         if key in _ST_ALIASES:
             _backend = _SentenceTransformersBackend()
         elif key in _LLAMA_ALIASES:
-            # Imported lazily so the default (ST) path never imports llama plumbing.
+            # Imported lazily so the ST path never imports llama plumbing.
             from .embed_llama_server import LlamaServerBackend
 
             _backend = LlamaServerBackend()
         else:
             raise ValueError(
-                f"Unknown RAG_EMBED_BACKEND={config.EMBED_BACKEND!r}; "
-                "expected 'sentence-transformers' or 'llama-server'"
+                f"Unknown RAG_EMBED_BACKEND={config.EMBED_BACKEND!r}; expected "
+                "'auto', 'sentence-transformers' or 'llama-server'"
             )
-        _backend_key = key
+        _backend_key = raw
         return _backend
 
 

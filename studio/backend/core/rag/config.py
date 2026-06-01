@@ -26,10 +26,11 @@ CAPTION_IMAGES = os.environ.get("RAG_CAPTION_IMAGES", "0") == "1"
 CAPTION_MAX_IMAGES = int(os.environ.get("RAG_CAPTION_MAX_IMAGES", "8"))
 CAPTION_TIMEOUT_S = float(os.environ.get("RAG_CAPTION_TIMEOUT_S", "30"))
 
-# Embedder backend. "sentence-transformers" (default) needs torch; "llama-server"
-# serves a GGUF embedder over HTTP via the bundled llama.cpp (no torch). Switching
-# backends changes the vectors, so the index must be rebuilt (see embeddings.py).
-EMBED_BACKEND = os.environ.get("RAG_EMBED_BACKEND", "sentence-transformers")
+# Embedder backend. "auto" (default) uses sentence-transformers when a CUDA/ROCm
+# GPU is present (torch fp16 is far faster for bulk indexing there) and otherwise
+# the torch-free GGUF llama-server. "sentence-transformers" / "llama-server" force
+# one. Switching backends changes the vectors, so the index must be rebuilt.
+EMBED_BACKEND = os.environ.get("RAG_EMBED_BACKEND", "auto")
 # llama-server backend only (all ignored when EMBED_BACKEND=sentence-transformers).
 # F16 over Q8_0: on GPU and CPU it is both faster (no per-block dequant for this
 # tiny model) and exact vs fp32, for ~30MB more on disk.

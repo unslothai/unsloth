@@ -10,8 +10,19 @@ import threading
 import time
 
 import numpy as np
+import pytest
 
-from core.rag import embeddings
+from core.rag import config, embeddings
+
+
+@pytest.fixture(autouse = True)
+def _pin_st_backend(monkeypatch):
+    # These tests patch the ST internals (_get), so force the ST backend
+    # regardless of the host's auto-selected default.
+    monkeypatch.setattr(config, "EMBED_BACKEND", "sentence-transformers")
+    embeddings._reset_backend()
+    yield
+    embeddings._reset_backend()
 
 
 class _ConcurrencyProbe:
