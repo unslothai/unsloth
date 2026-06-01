@@ -126,6 +126,11 @@ export const Thread: FC<{
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const threadId = targetThreadId ?? activeThreadId ?? null;
 
+  // Measured height of the floating composer dock. The conversation reserves
+  // this much at the bottom so a tall composer (e.g. a long document strip)
+  // never covers the last message.
+  const [dockHeight, setDockHeight] = useState(150);
+
   return (
     <GeneratedImageOverlayProvider key={threadId ?? "default"} threadId={threadId}>
       <ThreadPrimitive.Root
@@ -134,6 +139,7 @@ export const Thread: FC<{
           ["--thread-max-width" as string]: "48rem",
           ["--thread-content-max-width" as string]:
             "calc(var(--thread-max-width) - 1.5rem)",
+          ["--aui-dock-h" as string]: `${dockHeight}px`,
         }}
       >
         <IntentAwareScrollProvider value={autoScrollContext}>
@@ -164,13 +170,15 @@ export const Thread: FC<{
               }}
             />
 
-            {/* Bottom slack so the last message has breathing room above the
-            sticky scroll-to-bottom button (and the floating composer in
-            single mode). Without this, content would butt against the
-            sticky footer and feel cramped. */}
+            {/* Bottom slack so the last message clears the floating composer.
+            Sized to the composer's measured height (--aui-dock-h), which grows
+            with the document strip, so a tall composer never covers the chat. */}
             <AuiIf condition={({ thread }) => hideWelcome || !thread.isEmpty}>
               <div
-                className={cn("shrink-0", hideComposer ? "h-16" : "h-40")}
+                className={cn(
+                  "shrink-0",
+                  hideComposer ? "h-16" : "h-[calc(var(--aui-dock-h)_+_16px)]",
+                )}
                 aria-hidden={true}
               />
             </AuiIf>
@@ -179,8 +187,7 @@ export const Thread: FC<{
               <ThreadPrimitive.ViewportFooter
                 className={cn(
                   "aui-thread-viewport-footer pointer-events-none sticky z-20 flex w-full justify-center bg-transparent",
-                  // 150px (was 140px) to add a small gap above the composer
-                  hideComposer ? "bottom-3" : "bottom-[150px]",
+                  hideComposer ? "bottom-3" : "bottom-[calc(var(--aui-dock-h)_+_4px)]",
                 )}
               >
                 <ThreadScrollToBottom />
@@ -195,6 +202,7 @@ export const Thread: FC<{
               <ThreadComposerDock
                 disabled={isComposerAttachPending}
                 threadId={threadId}
+                onHeightChange={setDockHeight}
               />
             </AuiIf>
           )}
@@ -301,8 +309,21 @@ const GeneratedImageViewportOverlay: FC<{ hideComposer?: boolean }> = ({
 const ThreadComposerDock: FC<{
   disabled?: boolean;
   threadId?: string | null;
-}> = ({ disabled, threadId }) => {
+  onHeightChange?: (height: number) => void;
+}> = ({ disabled, threadId, onHeightChange }) => {
   const { overlay } = useGeneratedImageOverlay();
+  const contentRef = useRef<HTMLDivElement>(null);
+
+  // Report the composer's height so the viewport can reserve matching slack.
+  useEffect(() => {
+    const el = contentRef.current;
+    if (!el || !onHeightChange) return;
+    const report = () => onHeightChange(el.offsetHeight);
+    report();
+    const ro = new ResizeObserver(report);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [onHeightChange]);
 
   return (
     <div
@@ -315,7 +336,7 @@ const ThreadComposerDock: FC<{
         aria-hidden={true}
         className="absolute inset-x-0 bottom-0 top-[10px] bg-background"
       />
-      <div className="relative px-5 pb-2">
+      <div ref={contentRef} className="relative px-5 pb-2">
         <div className="pointer-events-auto mx-auto w-full max-w-(--thread-max-width)">
           <ComposerAnimated disabled={disabled} threadId={threadId} />
         </div>
