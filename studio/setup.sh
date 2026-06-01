@@ -857,6 +857,12 @@ else
     if [ -n "${UNSLOTH_LLAMA_RELEASE_TAG:-}" ]; then
         _PREBUILT_CMD+=(--published-release-tag "$UNSLOTH_LLAMA_RELEASE_TAG")
     fi
+    # Forward the gfx arch resolved above so the lemonade HIP prebuilt is picked
+    # even when the installer's own probe cannot report it (amd-smi-only hosts,
+    # name-inferred arch). Implies --has-rocm on the installer side.
+    if [ -n "${_setup_gfx:-}" ]; then
+        _PREBUILT_CMD+=(--rocm-gfx "$_setup_gfx")
+    fi
     _PREBUILT_LOG="$(mktemp)"
     set +e
     if _is_verbose; then
