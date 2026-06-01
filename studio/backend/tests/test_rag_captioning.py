@@ -12,12 +12,12 @@ from core.rag.parsers import Page, ParsedImage
 
 
 def _img(page):
-    return ParsedImage(image_bytes=b"\x89PNG fake", page_number=page, xref=page)
+    return ParsedImage(image_bytes = b"\x89PNG fake", page_number = page, xref = page)
 
 
 def test_caption_images_disabled_by_default(monkeypatch):
     monkeypatch.setattr(captioner.config, "CAPTION_IMAGES", False)
-    assert captioner.caption_images([_img(1)], endpoint=("http://x", "local")) == {}
+    assert captioner.caption_images([_img(1)], endpoint = ("http://x", "local")) == {}
 
 
 def test_caption_images_groups_by_page(monkeypatch):
@@ -27,9 +27,12 @@ def test_caption_images_groups_by_page(monkeypatch):
         captioner, "_caption_one", lambda base, model, b, t: "a chart of results"
     )
     out = captioner.caption_images(
-        [_img(1), _img(1), _img(3)], endpoint=("http://x", "local")
+        [_img(1), _img(1), _img(3)], endpoint = ("http://x", "local")
     )
-    assert out == {1: ["a chart of results", "a chart of results"], 3: ["a chart of results"]}
+    assert out == {
+        1: ["a chart of results", "a chart of results"],
+        3: ["a chart of results"],
+    }
 
 
 def test_caption_images_respects_cap(monkeypatch):
@@ -39,7 +42,9 @@ def test_caption_images_respects_cap(monkeypatch):
     monkeypatch.setattr(
         captioner, "_caption_one", lambda *a: (calls.append(1) or "cap")
     )
-    captioner.caption_images([_img(i) for i in range(5)], endpoint=("http://x", "local"))
+    captioner.caption_images(
+        [_img(i) for i in range(5)], endpoint = ("http://x", "local")
+    )
     assert len(calls) == 2
 
 
@@ -78,7 +83,7 @@ def test_render_pdf_figures_detects_drawing(tmp_path):
     shape.draw_rect(pymupdf.Rect(60, 60, 540, 460))
     for i in range(8):
         shape.draw_line((80, 80 + i * 40), (520, 80 + i * 40))
-    shape.finish(color=(0, 0, 0), fill=(0.8, 0.8, 0.9))
+    shape.finish(color = (0, 0, 0), fill = (0.8, 0.8, 0.9))
     shape.commit()
     doc.save(str(pdf))
     doc.close()
@@ -101,17 +106,17 @@ def test_captioned_text_is_searchable(rag_home, stub_embeddings, monkeypatch):
     from core.rag import chunking, embeddings
 
     chunks = chunking.chunk_pages(
-        pages, max_tokens=128, overlap=16, count=embeddings.token_counter(None)
+        pages, max_tokens = 128, overlap = 16, count = embeddings.token_counter(None)
     )
-    vecs = embeddings.encode([c.text for c in chunks], normalize=True)
+    vecs = embeddings.encode([c.text for c in chunks], normalize = True)
 
     conn = rag_db.get_connection()
     try:
-        kb_id = store.create_kb(conn, name="kb")
+        kb_id = store.create_kb(conn, name = "kb")
         scope = store.kb_scope(kb_id)
-        doc_id = store.create_document(conn, scope=scope, filename="d.pdf", sha256="h")
+        doc_id = store.create_document(conn, scope = scope, filename = "d.pdf", sha256 = "h")
         store.add_chunks(conn, scope, doc_id, chunks, vecs)
-        hits = retrieval.retrieve_lexical(conn, scope, "throughput quantizations", k=5)
+        hits = retrieval.retrieve_lexical(conn, scope, "throughput quantizations", k = 5)
     finally:
         conn.close()
     assert hits, "spliced caption text should be retrievable via lexical search"

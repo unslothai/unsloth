@@ -108,7 +108,9 @@ def _run(
                     stored_path, max_figures = config.CAPTION_MAX_IMAGES
                 )
             except Exception:
-                logger.warning("figure rendering failed for job %s", job_id, exc_info=True)
+                logger.warning(
+                    "figure rendering failed for job %s", job_id, exc_info = True
+                )
                 figures = []
             if figures:
                 _progress(conn, job_id, "captioning", 0.2)

@@ -41,14 +41,18 @@ def vision_endpoint() -> tuple[str, str] | None:
         from routes.inference import get_llama_cpp_backend
 
         backend = get_llama_cpp_backend()
-        if getattr(backend, "is_loaded", False) and getattr(backend, "is_vision", False):
+        if getattr(backend, "is_loaded", False) and getattr(
+            backend, "is_vision", False
+        ):
             return backend.base_url, "local"
     except Exception:  # noqa: BLE001 - never let discovery break ingestion
         return None
     return None
 
 
-def _caption_one(base_url: str, model: str, image_bytes: bytes, timeout: float) -> str | None:
+def _caption_one(
+    base_url: str, model: str, image_bytes: bytes, timeout: float
+) -> str | None:
     import httpx
 
     data_url = "data:image/png;base64," + base64.b64encode(image_bytes).decode("ascii")
@@ -71,16 +75,18 @@ def _caption_one(base_url: str, model: str, image_bytes: bytes, timeout: float) 
         "chat_template_kwargs": {"enable_thinking": False},
     }
     try:
-        r = httpx.post(f"{base_url}/v1/chat/completions", json=payload, timeout=timeout)
+        r = httpx.post(f"{base_url}/v1/chat/completions", json = payload, timeout = timeout)
         r.raise_for_status()
         text = r.json()["choices"][0]["message"]["content"]
         return text.strip() or None
     except Exception:  # noqa: BLE001 - a failed caption is non-fatal
-        logger.debug("caption request failed", exc_info=True)
+        logger.debug("caption request failed", exc_info = True)
         return None
 
 
-def caption_images(images: list, *, endpoint: tuple[str, str] | None = None) -> dict[int, list[str]]:
+def caption_images(
+    images: list, *, endpoint: tuple[str, str] | None = None
+) -> dict[int, list[str]]:
     """Caption ``ParsedImage`` objects, grouped by 1-based page number.
 
     ``endpoint`` may be injected (tests); otherwise the loaded vision model is
@@ -126,5 +132,5 @@ def splice_captions(pages: list, captions: dict[int, list[str]]) -> list:
             continue
         extra = "".join(f"\n\n[Figure on page {page.page_number}: {c}]" for c in caps)
         text = page.text + extra
-        out.append(Page(text=text, page_number=page.page_number, char_count=len(text)))
+        out.append(Page(text = text, page_number = page.page_number, char_count = len(text)))
     return out
