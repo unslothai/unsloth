@@ -44,6 +44,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { sentAudioNames } from "@/features/chat/api/chat-adapter";
 import { parseExternalModelId } from "@/features/chat/external-providers";
+import { McpComposerButton } from "@/features/chat/mcp-composer-button";
 import { getExternalReasoningCapabilities } from "@/features/chat/provider-capabilities";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { useExternalProvidersStore } from "@/features/chat/stores/external-providers-store";
@@ -1215,6 +1216,7 @@ const ComposerAction: FC<{
         <CodeToolsToggle />
         <ImagesToggle />
         <ArtifactsToggle />
+        <McpComposerButton />
       </div>
       <div className="flex items-center gap-1">
         <ComposerPrimitive.If dictation={false}>
