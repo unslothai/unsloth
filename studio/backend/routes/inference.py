@@ -562,7 +562,11 @@ _TOOL_ACTION_NUDGE = (
     " For factual questions that require current information, call web_search when it is available."
     " Do NOT output raw code blocks when an enabled tool can satisfy the request."
 )
-_ARTIFACT_TOOL_ACTION_NUDGE = " For HTML, CSS, or JavaScript artifact requests, call render_html when it is available."
+_ARTIFACT_TOOL_ACTION_NUDGE = (
+    " For HTML, CSS, or JavaScript artifact requests, call render_html once when "
+    "it is available. After render_html succeeds, do not call it again unless "
+    "the user asks for changes."
+)
 
 
 def _tool_action_nudge(has_artifact: bool) -> str:
@@ -2864,7 +2868,8 @@ async def openai_chat_completions(
             )
             _artifact_tips = (
                 "Use render_html for HTML, CSS, or JavaScript artifact requests "
-                "with one complete self-contained HTML document in the code argument."
+                "with one complete self-contained HTML document in the code argument. "
+                "Call it once, then do not call it again unless the user asks for changes."
             )
 
             _tool_tip_parts = []
@@ -3382,7 +3387,8 @@ async def openai_chat_completions(
         )
         _sf_artifact_tips = (
             "Use render_html for HTML, CSS, or JavaScript artifact requests "
-            "with one complete self-contained HTML document in the code argument."
+            "with one complete self-contained HTML document in the code argument. "
+            "Call it once, then do not call it again unless the user asks for changes."
         )
 
         _sf_tool_tip_parts = []
@@ -5073,7 +5079,8 @@ async def anthropic_messages(
         )
         _artifact_tips = (
             "Use render_html for HTML, CSS, or JavaScript artifact requests "
-            "with one complete self-contained HTML document in the code argument."
+            "with one complete self-contained HTML document in the code argument. "
+            "Call it once, then do not call it again unless the user asks for changes."
         )
 
         _tool_tip_parts = []

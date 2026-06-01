@@ -1554,7 +1554,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       );
       const artifactInstruction = artifactsEnabled
         ? renderHtmlToolEnabledForThisTurn
-          ? "When the user asks for an HTML, CSS, or JavaScript artifact, use the render_html tool with one complete self-contained HTML document in the code argument. Embed CSS and JavaScript inside the document."
+          ? "When the user asks for an HTML, CSS, or JavaScript artifact, call render_html once with one complete self-contained HTML document in the code argument. Embed CSS and JavaScript inside the document. After render_html succeeds, do not call it again unless the user asks for changes."
           : "When the user asks for an HTML, CSS, or JavaScript artifact, return one complete self-contained fenced html code block. Embed CSS and JavaScript inside the document. Do not emit tool-call syntax."
         : null;
       const effectiveDisabledToolGuard =
@@ -2208,13 +2208,25 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                     `${toolEvent.tool_name}_${Date.now()}`;
                   const toolArgs = (toolEvent.arguments ??
                     {}) as ToolCallMessagePart["args"];
-                  toolCallParts.push({
-                    type: "tool-call" as const,
-                    toolCallId: id,
-                    toolName: toolEvent.tool_name as string,
-                    argsText: JSON.stringify(toolArgs),
-                    args: toolArgs,
-                  });
+                  const idx = toolCallParts.findIndex(
+                    (p) => p.toolCallId === id,
+                  );
+                  if (idx !== -1) {
+                    toolCallParts[idx] = {
+                      ...toolCallParts[idx],
+                      toolName: toolEvent.tool_name as string,
+                      argsText: JSON.stringify(toolArgs),
+                      args: toolArgs,
+                    };
+                  } else {
+                    toolCallParts.push({
+                      type: "tool-call" as const,
+                      toolCallId: id,
+                      toolName: toolEvent.tool_name as string,
+                      argsText: JSON.stringify(toolArgs),
+                      args: toolArgs,
+                    });
+                  }
                 } else if (toolEvent.type === "tool_end") {
                   const id =
                     (toolEvent.tool_call_id as string) ||

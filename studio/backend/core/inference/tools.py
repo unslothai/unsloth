@@ -520,8 +520,9 @@ RENDER_HTML_TOOL = {
         "name": "render_html",
         "description": (
             "Render a self-contained HTML/CSS/JavaScript artifact for the user. "
-            "Put the entire document in code, including any CSS in <style> tags "
-            "and JavaScript in <script> tags."
+            "Call this at most once per assistant response unless the user "
+            "explicitly asks for changes. Put the entire document in code, "
+            "including any CSS in <style> tags and JavaScript in <script> tags."
         ),
         "parameters": {
             "type": "object",
@@ -641,8 +642,14 @@ def _render_html_result(arguments: dict) -> str:
     title = arguments.get("title")
     if isinstance(title, str) and title.strip():
         safe_title = title.strip()[:120]
-        return f"Rendered HTML artifact: {safe_title}"
-    return "Rendered HTML artifact."
+        return (
+            f"Rendered HTML artifact: {safe_title}. Do not call render_html "
+            "again unless the user asks for changes."
+        )
+    return (
+        "Rendered HTML artifact. Do not call render_html again unless the user "
+        "asks for changes."
+    )
 
 
 def execute_tool(

@@ -34,6 +34,7 @@ import pytest
 from core.inference import safetensors_agentic
 from core.inference.safetensors_agentic import (
     _coerce_arguments,
+    _detect_render_html_tool_start,
     run_safetensors_tool_loop,
 )
 from core.inference.tool_call_parser import (
@@ -117,6 +118,18 @@ class TestParser:
         assert has_tool_signal("blah <tool_call> x")
         assert has_tool_signal("hi <function=foo>...")
         assert not has_tool_signal("hello world")
+
+    def test_render_html_start_detector_uses_first_tool(self):
+        assert _detect_render_html_tool_start("<function=render_html>")
+        assert _detect_render_html_tool_start(
+            '<tool_call>{"name":"render_html","arguments":{"code":"<html>"}'
+        )
+        assert not _detect_render_html_tool_start(
+            "<function=python><parameter=code>'<function=render_html>'"
+        )
+        assert not _detect_render_html_tool_start(
+            '<tool_call>{"name":"python","arguments":{"code":"<function=render_html>"}}'
+        )
 
     def test_strip_markup_closed(self):
         text = "before <tool_call>{}</tool_call> after"
@@ -279,6 +292,100 @@ class TestLoopBasic:
         assert exec_fn.calls == [("python", {"code": "print(1)"})]
         contents = [e for e in events if e["type"] == "content"]
         assert "Result: 1" in contents[-1]["text"]
+
+    def test_render_html_emits_provisional_tool_start(self):
+        exec_fn = FakeExecuteTool(["Rendered HTML artifact."])
+        turn_iter = iter(
+            [
+                [
+                    "<function=render_html>",
+                    "<parameter=code><!doctype html><html>",
+                    "<body>Hi</body></html></parameter></function>",
+                ],
+                ["Done."],
+            ]
+        )
+
+        def _gen(_messages):
+            chunks = next(turn_iter)
+            acc = ""
+            for chunk in chunks:
+                acc += chunk
+                yield acc
+
+        loop = run_safetensors_tool_loop(
+            single_turn = _gen,
+            messages = [{"role": "user", "content": "make html"}],
+            tools = [{"type": "function", "function": {"name": "render_html"}}],
+            execute_tool = exec_fn,
+        )
+        events = _collect_events(loop)
+        tool_starts = [e for e in events if e["type"] == "tool_start"]
+
+        assert len(tool_starts) == 2
+        assert tool_starts[0]["tool_name"] == "render_html"
+        assert tool_starts[0]["arguments"] == {}
+        assert tool_starts[1]["tool_name"] == "render_html"
+        assert "<!doctype html>" in tool_starts[1]["arguments"]["code"]
+        assert exec_fn.calls[0][0] == "render_html"
+        assert "<!doctype html>" in exec_fn.calls[0][1]["code"]
+
+    def test_python_tool_containing_render_html_signal_does_not_emit_provisional_start(self):
+        loop, exec_fn = _make_loop(
+            turns = [
+                [
+                    "<function=python>",
+                    "<parameter=code>print('<function=render_html>')",
+                    "</parameter></function>",
+                ],
+                ["Done."],
+            ],
+            exec_results = ["ok"],
+        )
+        events = _collect_events(loop)
+        tool_starts = [e for e in events if e["type"] == "tool_start"]
+
+        assert len(tool_starts) == 1
+        assert tool_starts[0]["tool_name"] == "python"
+        assert exec_fn.calls == [("python", {"code": "print('<function=render_html>')"})]
+
+    def test_render_html_success_blocks_second_artifact_call(self):
+        exec_fn = FakeExecuteTool(["Rendered HTML artifact."])
+        turn_iter = iter(
+            [
+                [
+                    '<tool_call>{"name":"render_html",',
+                    '"arguments":{"code":"<html>one</html>"}}',
+                ],
+                [
+                    '<tool_call>{"name":"render_html",',
+                    '"arguments":{"code":"<html>two</html>"}}',
+                ],
+                ["Done."],
+            ]
+        )
+
+        def _gen(_messages):
+            chunks = next(turn_iter)
+            acc = ""
+            for chunk in chunks:
+                acc += chunk
+                yield acc
+
+        loop = run_safetensors_tool_loop(
+            single_turn = _gen,
+            messages = [{"role": "user", "content": "make html"}],
+            tools = [{"type": "function", "function": {"name": "render_html"}}],
+            execute_tool = exec_fn,
+        )
+        events = _collect_events(loop)
+        tool_starts = [e for e in events if e["type"] == "tool_start"]
+
+        assert exec_fn.calls == [("render_html", {"code": "<html>one</html>"})]
+        assert [e["arguments"] for e in tool_starts] == [
+            {},
+            {"code": "<html>one</html>"},
+        ]
 
     def test_truncated_unclosed_tool_call(self):
         loop, exec_fn = _make_loop(
