@@ -1,20 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""PDF region locators: map a chunk back to highlight rectangles on its page.
+"""Map a chunk back to highlight rectangles on its page (computed at ingest).
 
-Computed once at ingest from the live parse (no backfill, no persisted page
-text). For each chunk we take a short anchor phrase from the start of its page
-span and locate it in the page's word list (``page.get_text("words")``), which
-shares the exact extraction source as the chunk text -- same ligatures, same
-hyphenation, same tokenization -- so matching is robust where a glyph-exact
-``page.search_for`` is not (it misses ligatures like ``ﬁ`` and dehyphenated
-words). Matched words are unioned per line into rectangles, normalized to 0..1
-of the page so the frontend can draw highlights at any zoom.
-
-Conservative by design: a missing PyMuPDF, too short an anchor, or an anchor
-that cannot be located uniquely yields an empty region list rather than a
-guessed highlight.
+The chunk's leading phrase is anchored in the page word list
+(``get_text("words")`` -- the same extraction as the chunk text), so matching
+survives ligatures and dehyphenation that glyph-exact ``search_for`` misses.
+Matched words union per line into rects, normalized to 0..1. No PyMuPDF, too
+short an anchor, or no unique match yields no regions (never a guessed one).
 """
 
 from __future__ import annotations
@@ -24,8 +17,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-# Anchor sizing. We take up to MAX_ANCHOR_WORDS interior words from the chunk's
-# leading span and shrink toward MIN_ANCHOR_WORDS to recover a unique match.
+# Anchor: up to MAX interior words from the chunk's start, shrunk toward MIN
+# to recover a unique match.
 MAX_ANCHOR_WORDS = 12
 MIN_ANCHOR_WORDS = 4
 
@@ -46,11 +39,8 @@ def _norm_token(token: str) -> str:
 
 
 def _anchor_tokens(page_text: str, match: LocatorMatch) -> list[str]:
-    """Normalized anchor tokens from the start of the chunk's page span.
-
-    The first and last whitespace-delimited tokens are dropped when the span is
-    long enough, since a chunk boundary often slices through a word.
-    """
+    """Normalized anchor tokens from the chunk's leading span. Drops the first
+    and last token (chunk boundaries often slice mid-word) when long enough."""
     segment = page_text[match.start : match.end]
     raw = segment.split()
     if len(raw) >= MIN_ANCHOR_WORDS + 2:
@@ -73,15 +63,10 @@ def _find_subsequences(haystack: list[str], needle: list[str]) -> list[int]:
 
 
 def _locate(page_words: list, needle: list[str]) -> list[int] | None:
-    """Return the matched word indices for the best anchor, or None.
-
-    Tries the full anchor first, then progressively shorter prefixes, accepting
-    the first length that matches exactly once. A still-ambiguous match falls
-    back to its first occurrence (the anchor was lifted from this chunk's own
-    leading span, so the first hit is almost always the chunk's location).
-    """
-    # Filtered tokens keep an index map back to the original word rects so
-    # punctuation-only words never break an otherwise-contiguous phrase.
+    """Matched word indices for the best anchor, or None. Tries the full anchor,
+    then shorter prefixes, taking the first that matches exactly once; falls back
+    to the first hit if still ambiguous (the anchor is the chunk's own start)."""
+    # Index map skips punctuation-only words so they never break a phrase.
     tokens: list[str] = []
     idx_map: list[int] = []
     for j, w in enumerate(page_words):
@@ -166,12 +151,9 @@ def _regions_for_match(
 def pdf_regions_for_chunks(
     pdf_path: Path, pages: list, chunks: list
 ) -> list[list[dict[str, Any]]]:
-    """Region rectangles for each chunk (parallel to ``chunks``).
-
-    ``pages`` are the parsed ``Page`` objects; ``chunks`` carry
+    """Region rects per chunk (parallel to ``chunks``), keyed off each chunk's
     ``source_page_index`` / ``page_char_start`` / ``page_char_end``. Non-PDFs and
-    any failure return empty lists, never an exception.
-    """
+    any failure yield empty lists, never an exception."""
     pdf_path = Path(pdf_path)
     if pdf_path.suffix.lower() != ".pdf":
         return [[] for _ in chunks]

@@ -1,12 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Dense embedder singleton. Plain SentenceTransformer (no global patching).
-
-A thread-safe lazy load keyed by model name; ``token_counter`` reuses the
-model's own tokenizer so chunk sizing matches what the embedder actually sees.
-``warm()`` triggers the load so server startup can prime the model off the
-request path.
+"""Dense embedder singleton: thread-safe lazy SentenceTransformer keyed by model
+name. ``token_counter`` reuses the model's tokenizer so chunk sizing matches the
+embedder; ``warm()`` primes the load off the request path at startup.
 """
 
 from __future__ import annotations

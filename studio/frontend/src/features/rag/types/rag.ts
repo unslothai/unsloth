@@ -64,11 +64,7 @@ export interface RagSearchResult {
   text: string;
 }
 
-/**
- * A highlight rectangle for one chunk on a rendered PDF page. Coordinates are
- * normalized to 0..1 of the page's width/height (origin top-left), computed at
- * ingest time, so the viewer can scale them to any render size.
- */
+/** A chunk's highlight rect on a PDF page; coords normalized 0..1 (origin top-left). */
 export interface PdfRegion {
   pageIndex: number;
   pageNumber: number;
@@ -78,11 +74,7 @@ export interface PdfRegion {
   height: number;
 }
 
-/**
- * Resolves a citation (document + chunk) to where it lives in the source file:
- * the page to open and the rectangles to highlight (PDFs), or just the chunk
- * text (other formats). Returned by GET /documents/{id}/preview-target.
- */
+/** Where a citation lives in its source: page + highlight rects (PDF) or chunk text. */
 export interface PreviewTarget {
   documentId: string;
   filename: string;
@@ -92,11 +84,7 @@ export interface PreviewTarget {
   text?: string | null;
 }
 
-/**
- * rag_scope forwarded on the chat request when retrieval is enabled. Exactly
- * one of kb_id / thread_id is set: kb_id when a knowledge base is selected,
- * thread_id when the source is the current thread's own documents.
- */
+/** Retrieval scope sent on the chat request; set kb_id (KB) or thread_id (thread docs). */
 export interface RagScope {
   kb_id?: string;
   thread_id?: string;

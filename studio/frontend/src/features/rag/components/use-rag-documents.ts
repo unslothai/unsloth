@@ -24,10 +24,8 @@ export type RagDocumentScope =
 type Lister = () => Promise<RagDocument[]>;
 
 /**
- * Manage a document set for one scope (a KB or a thread): list, upload,
- * delete, and keep per-document indexing status fresh. While a job is in
- * flight it subscribes to /jobs/{jobId}/events (SSE) and falls back to
- * polling getJob on stream error. Returns the tracked rows + actions.
+ * Manage one scope's documents (a KB or thread): list, upload, delete, and keep
+ * indexing status live via /jobs/{jobId}/events (SSE), polling getJob on error.
  */
 export function useRagDocuments(
   scope: RagDocumentScope | null,

@@ -2681,9 +2681,7 @@ async def openai_chat_completions(
             else:
                 tools_to_use = ALL_TOOLS
 
-            # The RAG tool is only meaningful when the request carries a scope
-            # (a selected KB or thread documents). Drop it otherwise so the
-            # model is never offered a search over nothing.
+            # Drop the RAG tool without a scope: nothing to search over.
             if not payload.rag_scope:
                 tools_to_use = [
                     t
@@ -2755,9 +2753,7 @@ async def openai_chat_completions(
             else:
                 _nudge = ""
 
-            # RAG is active when the request carries a scope and the retrieval
-            # tool survived selection. Nudge the model to actually search the
-            # attached documents rather than answering from memory.
+            # Nudge the model to search attached documents instead of memory.
             if "search_knowledge_base" in _tool_names and payload.rag_scope:
                 _rag_nudge = (
                     "The user has attached documents to this conversation. For any "
@@ -3301,8 +3297,7 @@ async def openai_chat_completions(
         else:
             _sf_nudge = ""
 
-        # RAG nudge: mirror the GGUF path so safetensors models also search
-        # attached documents instead of answering from memory.
+        # RAG nudge, mirroring the GGUF path.
         if "search_knowledge_base" in _sf_tool_names and payload.rag_scope:
             _sf_rag_nudge = (
                 "The user has attached documents to this conversation. For any "
@@ -5043,8 +5038,7 @@ async def anthropic_messages(
                 auto_heal_tool_calls = True,
                 tool_call_timeout = 300,
                 session_id = payload.session_id,
-                # RAG is local-model only; the Anthropic request model has no
-                # rag_scope field, so default to None for this passthrough.
+                # Anthropic passthrough has no rag_scope field (RAG is local-only).
                 rag_scope = getattr(payload, "rag_scope", None),
             )
 

@@ -145,11 +145,8 @@ export function getJob(jobId: string): Promise<IndexJob> {
 }
 
 /**
- * Stream indexing progress for a document job. Mirrors
- * streamChatCompletions' reader loop: split on the SSE blank-line
- * separator, take `data:` lines, stop on the `[DONE]` sentinel. The
- * generator returns (rather than throwing) on `[DONE]`; transport errors
- * propagate so callers can fall back to polling getJob.
+ * Stream a document job's indexing progress over SSE. Returns on `[DONE]`;
+ * transport errors propagate so callers can fall back to polling getJob.
  */
 export async function* streamJobEvents(
   jobId: string,
@@ -200,10 +197,7 @@ export async function* streamJobEvents(
 
 // ── Preview (citation -> source location) ────────────────────
 
-/**
- * Resolve a citation to its source location: the page to open and the
- * highlight rectangles (PDFs) or chunk text (other formats).
- */
+/** Resolve a citation to its source: page + highlight rects (PDF) or chunk text. */
 export function getPreviewTarget(
   documentId: string,
   chunkId?: string,
@@ -214,10 +208,7 @@ export function getPreviewTarget(
   );
 }
 
-/**
- * Mint a short-lived signed URL for the source file. The returned path needs
- * no bearer token, so react-pdf / pdf.js can issue Range requests against it.
- */
+/** Mint a short-lived signed file URL (no bearer) so pdf.js can issue Range requests. */
 export async function getDocumentFileUrl(documentId: string): Promise<string> {
   const data = await ragRequest<{ url: string }>(
     `/documents/${encodeURIComponent(documentId)}/file-url`,

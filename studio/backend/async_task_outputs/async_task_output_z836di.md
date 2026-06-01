@@ -1,0 +1,11 @@
+- Decision: Treated PR `#5910` CI status as the source of truth because the span was a cron-fired CI check after a CI-fix push.
+- Decision: Verified CI was running against latest pushed commit before interpreting results, because stale check output could mislead.
+- Commands run: `gh pr checks 5910 2>&1 | grep -ivE "^\s*$" | grep -iE "Studio API|Frontend build|Tool calling|Source lint|Repo tests|^Core|\(Python|Backend" | head -30`; key output showed `(Python 3.10)`, `(Python 3.11)`, `(Python 3.12)`, `(Python 3.13)`, and `Analyze (python)` all `pending`, with Actions run links under `https://github.com/unslothai/unsloth/actions/runs/26733304740/...` and `https://github.com/unslothai/unsloth/actions/runs/26733302716`.
+- Commands run: `cd /mnt/disks/unslothai/ubuntu/unsloth/workspace_1/unsloth_rag_clean`; `git rev-parse --short HEAD` returned `d3e0896d`; `git rev-parse --short origin/studio-rag-clean` returned `d3e0896d`; confirmed local and remote branch heads match.
+- Commands run: checked Source lint run metadata for run `26733304692`; key output: `d3e0896dae01  status=completed`; no relevant failures found: `(none failing)`.
+- Commands run: `gh api repos/unslothai/unsloth/actions/runs/26733304692 --jq '"\(.name)  status=\(.status)  conclusion=\(.conclusion)  sha=\(.head_sha[0:8])"'`; key output: `Lint CI  status=completed  conclusion=success  sha=d3e0896d`.
+- Commands run: checked Source lint job specifically; key output: `Source lint (Python + shell + YAML + JSON + safety nets): completed/success`.
+- Completed: `Source lint` now passes on latest commit `d3e0896d`; the earlier import-hoist re-export CI failure is resolved.
+- Completed: Previously red Backend CI fixes were already pushed and are included in the fresh CI run: Anthropic `getattr`, `FakeExecuteTool` kwarg, dispatcher stub, and `test_desktop_auth` router stub.
+- Pending: `Backend CI (Python 3.10–3.13)`, `Studio API & Auth`, `Frontend build`, `Tool calling`, `Core`, and `Repo tests (CPU)` are still pending on the fresh run triggered by commit `d3e0896d`.
+- Pending: Scheduled check should verify Backend CI conclusion in about 20 minutes once jobs complete.

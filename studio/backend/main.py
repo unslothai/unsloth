@@ -385,9 +385,7 @@ async def lifespan(app: FastAPI):
 
     threading.Thread(target = _precache, daemon = True).start()
 
-    # Warm the RAG text embedder so the first document upload does not pay the
-    # cold model load. Background + non-fatal: RAG (and the rest of Studio) work
-    # whether or not this succeeds.
+    # Warm the RAG embedder so the first upload skips the cold load. Non-fatal.
     def _warm_rag_embedder():
         try:
             from storage import rag_db

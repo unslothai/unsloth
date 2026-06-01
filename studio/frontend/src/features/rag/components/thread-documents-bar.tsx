@@ -10,9 +10,8 @@ import { DocumentStatusChip } from "./document-status-chip";
 import { useRagDocuments } from "./use-rag-documents";
 
 /**
- * Per-thread document strip shown above the composer when the Docs pill is
- * on and the retrieval source is "this thread's documents". Uploads attach
- * to the current thread; chips track indexing status live via SSE.
+ * Per-thread document strip above the composer (Docs pill on, thread source).
+ * Uploads attach to the thread; chips track indexing status live via SSE.
  */
 export function ThreadDocumentsBar({ threadId }: { threadId: string | null }) {
   const ragEnabled = useChatRuntimeStore((s) => s.ragEnabled);

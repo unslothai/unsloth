@@ -29,10 +29,8 @@ const MODE_LABEL: Record<RagMode, string> = {
 };
 
 /**
- * Retrieval settings: pick where search_knowledge_base reads from (this
- * thread's own documents or a knowledge base), the search backend, and
- * the number of passages to retrieve. Lives in the chat settings sheet
- * next to Tools / MCP Servers.
+ * Retrieval settings (in the chat settings sheet): source (thread docs or a KB),
+ * search backend, and passage count for search_knowledge_base.
  */
 export function RetrievalSettingsSection() {
   const ragSource = useChatRuntimeStore((s) => s.ragSource);

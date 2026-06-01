@@ -3,13 +3,9 @@
 
 """``search_knowledge_base`` LLM tool: scope resolution + hit formatting.
 
-KB scope wins over thread scope. Hits render as ``<chunk>`` blocks the model can
-cite, and a parallel citation source-map (citationId -> document/page) is
-produced so the chat layer can surface clickable sources. The OpenAI-compatible
-tool spec is exported for the inference loop.
-
-This module opens and closes its own ``rag_db`` connection per call, so the
-chat layer can invoke it without managing the database lifecycle.
+KB scope wins over thread scope. Hits render as ``<chunk>`` blocks for the model
+plus a parallel citation source-map so the chat layer can show clickable
+sources. Opens/closes its own ``rag_db`` connection per call.
 """
 
 from __future__ import annotations
@@ -92,12 +88,8 @@ def search_knowledge_base_with_sources(
     min_score: float = 0.0,
     model_name: str | None = None,
 ) -> tuple[str, list[dict]]:
-    """Run a hybrid search and return ``(rendered_text, citation_sources)``.
-
-    ``citation_sources`` is a list of
-    ``{citationId, chunkId, documentId, filename, page}`` aligned with the
-    ``id`` attributes in the rendered ``<chunk>`` blocks.
-    """
+    """Hybrid search -> ``(rendered_text, citation_sources)``, the sources
+    aligned with the ``id`` of each rendered ``<chunk>`` block."""
     if not query or not query.strip():
         return "Error: query is empty.", []
     scope = _resolve_scope(scope_kb_id, scope_thread_id)
@@ -121,8 +113,7 @@ def search_knowledge_base_with_sources(
 
 
 def store_rows(conn, hits):
-    """Hydrate chunk rows for a list of hits (kept here to avoid a store import
-    cycle in callers that only need the tool)."""
+    """Hydrate chunk rows for a list of hits."""
     from . import store
 
     return store.chunks_by_id(conn, [h.chunk_id for h in hits])

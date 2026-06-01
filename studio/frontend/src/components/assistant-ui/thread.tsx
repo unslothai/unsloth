@@ -200,8 +200,7 @@ export const Thread: FC<{
           )}
         </IntentAwareScrollProvider>
       </ThreadPrimitive.Root>
-      {/* Single shared document preview, opened by citation badges. Lazily
-      loads the pdf.js viewer chunk on first open. */}
+      {/* Shared document preview, opened by citation badges; pdf.js loads lazily. */}
       <DocumentPreviewMount />
     </GeneratedImageOverlayProvider>
   );
@@ -1130,8 +1129,7 @@ const RagToggle: FC = () => {
     (s) => !!s.params.checkpoint && !s.modelLoading,
   );
   const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
-  // search_knowledge_base is a local tool runtime feature; external
-  // providers have no retriever, so gate the pill on local tool support
+  // search_knowledge_base is local-only; gate the pill on local tool support
   // and a non-external checkpoint (mirror of the Code/Search local path).
   const supportsTools = useChatRuntimeStore((s) => s.supportsTools);
   const ragEnabled = useChatRuntimeStore((s) => s.ragEnabled);

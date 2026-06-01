@@ -1,13 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Document parsing -> list[Page]. One module, one dispatch, lazy optional deps.
+"""Document parsing -> list[Page], one dispatch with lazy optional deps.
 
-PDFs keep per-page boundaries (``page_number``); single-flow formats (txt, md,
-docx, html) return a single page. ``parse(path, want_images=True)`` additionally
-returns embedded raster images so a later phase can render figure previews. All
-heavy optional imports (PyMuPDF, python-docx) are done lazily inside their
-branch so importing this module is cheap and never fails on a missing dep.
+PDFs keep per-page boundaries (``page_number``); other formats (txt, md, docx,
+html) return a single page. ``parse(path, want_images=True)`` also returns
+embedded images. Heavy imports (PyMuPDF, python-docx) are lazy, so importing
+this module never fails on a missing dep.
 """
 
 from __future__ import annotations
@@ -139,12 +138,10 @@ def render_pdf_figures(
 ) -> list[ParsedImage]:
     """Detect figure regions and render each to a PNG for captioning.
 
-    Academic figures are usually vector drawings, so raw raster extraction
-    yields fragments/masks. Instead we cluster vector drawings
-    (``page.cluster_drawings``) and raster placements (``page.get_image_info``)
-    into bounding boxes, keep the ones covering a meaningful slice of the page,
-    and render them. ``ParsedImage.image_bytes`` holds the rendered PNG. Any
-    failure yields an empty list, never an exception.
+    Academic figures are vector, so raw raster extraction yields fragments.
+    Instead we cluster vector drawings + raster placements into boxes, keep the
+    ones covering a meaningful slice of the page, and render them. Any failure
+    yields an empty list, never an exception.
     """
     try:
         import pymupdf

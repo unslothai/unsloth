@@ -3,17 +3,11 @@
 
 """Unified SQLite store: relational chunks + FTS5 lexical + sqlite-vec dense.
 
-Module-level functions in the Studio idiom: every function takes a ``conn`` that
-the caller obtains from ``storage.rag_db.get_connection()`` and is responsible
-for closing. The schema (documents / chunks / knowledge_bases / ingestion_jobs +
-chunks_fts) is created by ``rag_db._ensure_schema``; the dense ``chunks_vec``
-table is created lazily via ``ensure_vec`` once the embedding dim is known.
-
-Inserts are INCREMENTAL: ``add_chunks`` appends one document's rows to chunks,
-FTS5 and vec0 without rebuilding the rest of the scope, so the Nth upload costs
-O(its own chunks). FTS5 MATCH only returns documents containing query terms, so
-there are no zero-score lexical hits to pollute fusion. Scope ("kb_<id>" /
-"thread_<id>") is a column on every table and the vec0 partition key.
+Module-level functions in the Studio idiom: each takes a ``conn`` the caller
+opens (``rag_db.get_connection()``) and closes. Inserts are incremental --
+``add_chunks`` appends one document's rows without rebuilding the scope, so the
+Nth upload costs O(its own chunks). Scope ("kb_<id>" / "thread_<id>") is a column
+on every table and the vec0 partition key.
 """
 
 from __future__ import annotations
@@ -52,12 +46,8 @@ _TOKEN = re.compile(r"\w+", re.UNICODE)
 
 
 def _match_query(query: str) -> str:
-    """Turn arbitrary user text into a safe FTS5 OR-of-quoted-terms query.
-
-    Quoting each token defuses FTS5 operators (AND/OR/NEAR/quotes/parens) hidden
-    in user input. Returns "" when there are no word tokens; callers treat that
-    as "no lexical results" rather than running an empty MATCH.
-    """
+    """User text -> safe FTS5 OR-of-quoted-terms query. Quoting defuses FTS5
+    operators in the input; "" (no tokens) means "no lexical results"."""
     toks = _TOKEN.findall(query.lower())
     return " OR ".join(f'"{t}"' for t in toks)
 
@@ -191,12 +181,8 @@ def add_chunks(
     regions = None,
 ) -> None:
     """Incrementally index one document's chunks into chunks + FTS5 + vec0.
-
-    ``chunks`` is a list of ``chunking.Chunk``; ``vectors`` is a parallel list
-    of embeddings. ``regions``, when given, is a parallel list of per-chunk PDF
-    highlight rectangles (from ``locators.pdf_regions_for_chunks``) stored as
-    JSON for citation preview. No whole-scope rebuild -> cost is O(chunks here).
-    """
+    ``vectors`` parallels ``chunks``; ``regions`` (optional) parallels them too,
+    storing per-chunk PDF highlight rects as JSON for citation preview."""
     if len(vectors):
         rag_db.ensure_vec(conn, len(vectors[0]))
     for i, (chunk, vector) in enumerate(zip(chunks, vectors)):

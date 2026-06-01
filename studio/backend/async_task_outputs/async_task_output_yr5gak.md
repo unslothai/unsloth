@@ -1,0 +1,9 @@
+- User requested CI triage for PR `#5910` from `/mnt/disks/unslothai/ubuntu/unsloth/workspace_1/unsloth_rag_clean`; only inspect named checks.
+- Must run `cd /mnt/disks/unslothai/ubuntu/unsloth/workspace_1/unsloth_rag_clean && gh pr checks 5910`.
+- Failed relevant checks: investigate with `gh run view --job <id> --log-failed` or `gh api repos/unslothai/unsloth/actions/jobs/<id>/logs`.
+- Fix root cause on `studio-rag-clean`; run `cd studio/backend && PYTHONPATH=$(pwd) python -m pytest tests/test_rag_*.py -q`.
+- Then commit and push; rebase onto `origin/studio-rag-clean` first if `pre-commit.ci` pushed auto-fixes, keeping word-list locator implementation on conflicts.
+- Do not fix Source lint if only formatting unless red >30m; let `pre-commit.ci` handle it.
+- Ignore known-flaky Windows upload-artifact and base `datasets IterableDataset` import error.
+- Never broadly `pkill`; it causes `exit 144` and kills Studio on port `8950`.
+- Pending: no commands run in this span.

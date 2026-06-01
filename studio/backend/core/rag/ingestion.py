@@ -3,15 +3,11 @@
 
 """In-process threaded ingestion: parse -> chunk -> embed -> store.
 
-``start_ingestion`` returns ``(document_id, job_id)`` immediately and runs the
-heavy work on a daemon thread, pushing progress events onto a per-job in-memory
-queue. ``job_events`` is a generator over those events suitable for streaming as
-Server-Sent Events; ``get_job_status`` reads the persisted job row.
-
-Each document is keyed by content hash and deduped within its scope, so
-re-uploading the same file is a no-op. ``store.add_chunks`` is incremental, so
-the Nth upload never re-touches the first N-1. The embedder is the shared warm
-singleton in ``embeddings`` (no subprocess).
+``start_ingestion`` returns ``(document_id, job_id)`` at once and runs the work
+on a daemon thread, pushing progress onto a per-job queue (``job_events`` streams
+it as SSE; ``get_job_status`` reads the persisted row). Documents are deduped by
+content hash per scope; ``store.add_chunks`` is incremental and the embedder is
+the shared warm singleton (no subprocess).
 """
 
 from __future__ import annotations
@@ -28,12 +24,11 @@ from . import captioner, chunking, config, embeddings, parsers, store
 
 logger = logging.getLogger(__name__)
 
-# Per-job event queues. A queue is created in start_ingestion and drained by
-# job_events; the sentinel ``None`` marks the end of stream.
+# Per-job event queues, drained by job_events; ``None`` ends the stream.
 _jobs: dict[str, "queue.Queue"] = {}
 _jobs_lock = threading.Lock()
 
-# Batch size for embedding to bound peak memory on large documents.
+# Embedding batch size, to bound peak memory.
 _EMBED_BATCH = 64
 
 
@@ -100,9 +95,8 @@ def _run(
         _progress(conn, job_id, "parsing", 0.1)
         pages = parsers.parse(stored_path)
         if config.CAPTION_IMAGES and stored_path.lower().endswith(".pdf"):
-            # Caption rendered figure regions with the loaded vision model and
-            # splice the captions into the page text so the normal chunker
-            # indexes them. No-ops gracefully when no vision model is available.
+            # Caption rendered figures and splice into the page text (no-op
+            # without a vision model).
             try:
                 figures = parsers.render_pdf_figures(
                     stored_path, max_figures = config.CAPTION_MAX_IMAGES
@@ -134,8 +128,8 @@ def _run(
         _progress(conn, job_id, "embedding", 0.5)
         vectors = _embed_all([c.text for c in chunks], model_name)
 
-        # PDF citation regions: locate each chunk on its rendered page once at
-        # ingest. Non-PDFs / failures yield empty lists (never fatal).
+        # Locate each chunk's highlight regions on its page (non-PDFs / failures
+        # yield none, never fatal).
         regions = None
         if stored_path.lower().endswith(".pdf"):
             try:
@@ -178,12 +172,9 @@ def start_ingestion(
     *,
     model_name: str | None = None,
 ) -> tuple[str, str]:
-    """Create the document + job rows and spawn the worker thread.
-
-    Returns ``(document_id, job_id)``. If a document with the same content hash
-    already exists in this scope, returns its id and a job that is immediately
-    completed (no re-ingest).
-    """
+    """Create the document + job rows and spawn the worker thread, returning
+    ``(document_id, job_id)``. A duplicate content hash in this scope returns the
+    existing id with an already-completed job (no re-ingest)."""
     ext = os.path.splitext(stored_path)[1].lower()
     if ext not in config.UPLOAD_EXTS:
         raise ValueError(f"unsupported file type: {ext}")

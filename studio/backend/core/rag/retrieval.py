@@ -1,14 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Lexical + dense retrieval fused with Reciprocal Rank Fusion.
-
-Lexical hits come from FTS5 (already match-filtered, so no zero-score noise to
-dilute fusion). Dense hits come from vec0 cosine KNN. RRF blends the two
-rankings; ``dense_score`` is carried so callers can apply a similarity floor.
-
-Every function takes a live ``conn`` from ``storage.rag_db.get_connection()``
-and delegates the SQL to the ``store`` module.
+"""Lexical (FTS5) + dense (vec0 cosine) retrieval fused with Reciprocal Rank
+Fusion. ``dense_score`` is carried so callers can apply a similarity floor.
+Every function takes a live ``conn`` and delegates the SQL to ``store``.
 """
 
 from __future__ import annotations

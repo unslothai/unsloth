@@ -23,9 +23,7 @@ import { getDocumentFileUrl, getPreviewTarget } from "../api/rag-api";
 import type { PdfRegion, PreviewTarget } from "../types/rag";
 import { useDocumentPreviewStore } from "./preview-store";
 
-// Resolve the pdf.js worker through Vite's ?url asset handling so the worker
-// is bundled and served from the app origin (works under the Vite dev server,
-// the production build, and the Tauri webview alike).
+// Bundle + serve the pdf.js worker from the app origin (Vite dev, prod, Tauri).
 pdfjs.GlobalWorkerOptions.workerSrc = new URL(
   "pdfjs-dist/build/pdf.worker.min.mjs",
   import.meta.url,
@@ -161,10 +159,8 @@ function PdfPreview({
 }
 
 /**
- * Single shared document preview panel. Citation badges call
- * `useDocumentPreviewStore.openPreview` to point it at a document + chunk;
- * this resolves the page + highlight regions and renders the source PDF (or
- * the chunk text for non-PDF formats).
+ * Shared document preview panel. `openPreview` points it at a document + chunk;
+ * it resolves the page + highlight regions and renders the PDF (or chunk text).
  */
 export function DocumentPreviewSheet() {
   const { open, documentId, chunkId, filename, page, closePreview } =

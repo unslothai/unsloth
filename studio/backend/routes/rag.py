@@ -3,14 +3,11 @@
 
 """HTTP API for the RAG engine.
 
-Knowledge-base CRUD, document upload (per-KB and per-thread), ingestion job
-progress over Server-Sent Events, document listing/deletion, and a direct
-hybrid/lexical/dense search endpoint for the UI. All endpoints are authenticated
-with ``get_current_subject``. Studio stores RAG data globally per install (it is
-single-tenant), so the subject gates access rather than partitioning data.
-
-If the sqlite-vec extension is unavailable the router still mounts but every
-endpoint returns 503 with a clear message, so ordinary chat is never affected.
+KB CRUD, per-KB/per-thread upload, ingestion progress over SSE, document
+list/delete, and a direct hybrid/lexical/dense search endpoint. All endpoints
+auth with ``get_current_subject`` (Studio is single-tenant, so the subject gates
+access rather than partitioning data). Without sqlite-vec the router still mounts
+but every endpoint returns 503, so ordinary chat is never affected.
 """
 
 from __future__ import annotations
@@ -369,9 +366,8 @@ def search(payload: SearchRequest, subject: str = Depends(get_current_subject)) 
 # ---------------------------------------------------------------------------
 # Document preview (citation -> source file + highlight regions)
 # ---------------------------------------------------------------------------
-# Short-lived signed token so pdf.js range requests can fetch the source file
-# without a bearer header (which it cannot attach to range sub-requests). The
-# secret is per-process; tokens are only valid against this running server.
+# Short-lived signed token so pdf.js range requests fetch the file without a
+# bearer header. Secret is per-process: tokens only work on this running server.
 _PREVIEW_SECRET = secrets.token_bytes(32)
 _PREVIEW_TTL = 600  # seconds
 
@@ -470,11 +466,8 @@ def document_file_url(
 
 @router.get("/documents/{document_id}/file-signed", response_model = None)
 def document_file_signed(document_id: str, token: str = Query(...)) -> FileResponse:
-    """Serve the source file given a valid signed token (no bearer required).
-
-    Intentionally unauthenticated-by-header: gated by the HMAC token so pdf.js
-    range requests work. Starlette's FileResponse handles HTTP Range (206).
-    """
+    """Serve the source file, gated by the HMAC token (no bearer) so pdf.js
+    range requests work. FileResponse handles HTTP Range (206)."""
     _require_rag()
     signed_id = _verify_document_token(token)
     if signed_id != document_id:
@@ -487,7 +480,7 @@ def document_file_signed(document_id: str, token: str = Query(...)) -> FileRespo
     stored_path = (doc or {}).get("stored_path")
     if not doc or not stored_path or not os.path.isfile(stored_path):
         raise HTTPException(status_code = 404, detail = "Document file not found")
-    # Confine to the uploads root (defence in depth against path escapes).
+    # Confine to the uploads root (defence in depth).
     uploads = os.path.realpath(str(rag_uploads_root()))
     if not os.path.realpath(stored_path).startswith(uploads):
         raise HTTPException(status_code = 403, detail = "Forbidden")

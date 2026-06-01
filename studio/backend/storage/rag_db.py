@@ -1,24 +1,18 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-SQLite storage for the retrieval-augmented-generation (RAG) engine.
+"""SQLite storage for the RAG engine.
 
-Follows the same pattern as providers_db.py / studio_db.py -- module-level
-functions, raw sqlite3, WAL mode, per-call connections that the caller closes,
-and a lazy schema guarded by a threading.Lock + _schema_ready flag.
+Same pattern as providers_db.py / studio_db.py (module-level functions, raw
+sqlite3, WAL, per-call connections, lazy schema), but every connection also
+loads the sqlite-vec extension (vec0 needs it per-connection). If it cannot
+load, RAG_AVAILABLE is False and get_connection() raises rather than the module
+failing to import.
 
-Unlike the other stores this one ALSO loads the sqlite-vec extension on every
-connection (its vec0 virtual tables need the extension loaded per-connection).
-If the extension cannot be loaded the module degrades gracefully: RAG_AVAILABLE
-is set to False and get_connection() raises a clear RuntimeError instead of the
-whole module failing to import.
-
-The single rag.db file holds everything: a relational ``documents`` /
-``chunks`` model, an FTS5 lexical index (``chunks_fts``) and a sqlite-vec dense
-index (``chunks_vec``). The dense table is created lazily once the embedding
-dimension is known (see ensure_vec) because vec0 needs the dim baked into the
-column type.
+One rag.db holds the ``documents`` / ``chunks`` model, the FTS5 lexical index
+(``chunks_fts``) and the sqlite-vec dense index (``chunks_vec``, created lazily
+by ensure_vec once the embedding dim is known, since vec0 bakes it into the
+column type).
 """
 
 import logging
@@ -29,10 +23,8 @@ logger = logging.getLogger(__name__)
 
 from utils.paths import rag_db_path, ensure_dir
 
-# ---------------------------------------------------------------------------
-# Optional sqlite-vec dependency. Importing it must never crash this module:
-# the rest of Studio imports `storage.rag_db` unconditionally.
-# ---------------------------------------------------------------------------
+# Optional sqlite-vec dep: importing it must never crash this module, which the
+# rest of Studio imports unconditionally.
 try:
     import sqlite_vec
 
@@ -49,12 +41,9 @@ _schema_ready = False
 
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
-    """Create the RAG tables if they don't exist. Called once per process.
-
-    The dense vector table ``chunks_vec`` is intentionally NOT created here: its
-    column type needs the embedding dimension, which we only learn at the first
-    ingest. ensure_vec() creates it lazily and is a no-op afterwards.
-    """
+    """Create the RAG tables if absent (once per process). ``chunks_vec`` is
+    omitted here -- its column type needs the embedding dim, so ensure_vec()
+    creates it lazily at first ingest."""
     conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript(
         """
@@ -119,12 +108,8 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
 
 
 def get_connection() -> sqlite3.Connection:
-    """Open rag.db with WAL mode + sqlite-vec loaded, create tables once.
-
-    Every connection loads the sqlite-vec extension because vec0 virtual tables
-    require it per-connection. If the extension is unavailable a clear
-    RuntimeError is raised so callers can surface a useful message.
-    """
+    """Open rag.db (WAL + sqlite-vec loaded, schema created once). Raises a clear
+    RuntimeError if the extension is unavailable."""
     global _schema_ready
     if not RAG_AVAILABLE:
         raise RuntimeError(_RAG_UNAVAILABLE_MSG)
@@ -154,12 +139,8 @@ def get_connection() -> sqlite3.Connection:
 
 
 def ensure_vec(conn: sqlite3.Connection, dim: int) -> None:
-    """Create the dense ``chunks_vec`` table once the embedding dim is known.
-
-    vec0 bakes the dimension into the column type, so this cannot live in
-    _ensure_schema. Idempotent: ``IF NOT EXISTS`` makes repeat calls cheap, and
-    the dim is fixed for a given db (one embedding model per database).
-    """
+    """Create the dense ``chunks_vec`` table once the embedding dim is known
+    (vec0 bakes it into the column type). Idempotent; dim is fixed per db."""
     conn.execute(
         f"CREATE VIRTUAL TABLE IF NOT EXISTS chunks_vec USING vec0("
         f"scope TEXT partition key, "

@@ -14,11 +14,7 @@ const STATUS_LABEL: Record<DocumentStatus, string> = {
   failed: "Failed",
 };
 
-/**
- * Compact pill for a RAG document. `pending`/`running` spin; `completed`
- * shows a check, `failed` an X. Reused by the per-thread upload row and
- * the KB manager document list.
- */
+/** Compact status pill for a RAG document (spin / check / X), reused across lists. */
 export function DocumentStatusChip({
   filename,
   status,

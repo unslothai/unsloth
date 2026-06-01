@@ -35,11 +35,7 @@ export const CHAT_RAG_SOURCE_KEY = "unsloth_chat_rag_source";
 export const CHAT_RAG_MODE_KEY = "unsloth_chat_rag_mode";
 export const CHAT_RAG_TOP_K_KEY = "unsloth_chat_rag_top_k";
 
-/**
- * Retrieval source for the search_knowledge_base tool. `thread` runs the
- * search against the current chat thread's own uploaded documents; `kb`
- * runs it against the selected knowledge base (`kbId`).
- */
+/** search_knowledge_base source: `thread` (this thread's docs) or `kb` (`kbId`). */
 export type RagSource =
   | { type: "thread" }
   | { type: "kb"; kbId: string };
@@ -363,9 +359,8 @@ type ChatRuntimeStore = {
   imageToolsEnabled: boolean;
   mcpEnabledForChat: boolean;
   /**
-   * Retrieval (RAG) composer pill state. When on, the local-model chat
-   * request gets the search_knowledge_base tool plus a `rag_scope`
-   * resolved from `ragSource` / `ragMode` / `ragTopK`.
+   * RAG composer pill. When on, the local chat request gets search_knowledge_base
+   * plus a `rag_scope` resolved from `ragSource` / `ragMode` / `ragTopK`.
    */
   ragEnabled: boolean;
   ragSource: RagSource;

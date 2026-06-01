@@ -1,17 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Recursive-separator chunking with token overlap. Page-aware.
+"""Page-aware recursive-separator chunking with token overlap.
 
-Same shape as a LangChain recursive splitter: split on the coarsest separator
-that fits, recurse to finer ones, then greedy-merge pieces into <= max_tokens
-chunks carrying ``overlap`` tokens between neighbours.
-
-Beyond the base splitter we also record, for every chunk, the character
-``[page_char_start, page_char_end)`` span it occupies WITHIN its source page's
-text and the 0-based ``source_page_index`` into the pages list. A later locator
-pass uses those offsets to map a chunk back onto the rendered PDF page for
-citation highlighting.
+Split on the coarsest separator that fits, recurse finer, then greedy-merge into
+<= max_tokens chunks with ``overlap`` tokens between neighbours. Each chunk also
+records its ``[page_char_start, page_char_end)`` span and ``source_page_index``,
+which the locator pass uses to map chunks onto the PDF page for highlighting.
 """
 
 from __future__ import annotations
@@ -39,11 +34,8 @@ class Chunk:
 def _split(
     text: str, seps: tuple[str, ...], max_tokens: int, count: TokenCounter
 ) -> list[str]:
-    """Recursively split text into pieces each <= max_tokens (best effort).
-
-    Concatenating the returned pieces in order reproduces ``text`` exactly, so a
-    caller can recover each piece's char offset by running length.
-    """
+    """Recursively split into pieces each <= max_tokens (best effort). Pieces
+    concatenate back to ``text`` exactly, so char offsets are a running length."""
     if count(text) <= max_tokens:
         return [text]
     for i, sep in enumerate(seps):
@@ -72,11 +64,8 @@ def _merge(
     count: TokenCounter,
 ) -> list[tuple[str, int, int]]:
     """Greedy-merge pieces into <= max_tokens chunks with token overlap.
-
-    ``starts[i]`` is the char offset of ``pieces[i]`` in the page text. Returns a
-    list of ``(chunk_text, char_start, char_end)`` where the span covers the raw
-    (pre-strip) extent of the merged pieces in the source page.
-    """
+    ``starts[i]`` is ``pieces[i]``'s char offset in the page; returns
+    ``(chunk_text, char_start, char_end)`` spans into the source page."""
     chunks: list[tuple[str, int, int]] = []
     buf: list[str] = []
     buf_starts: list[int] = []
@@ -120,8 +109,7 @@ def chunk_pages(
     out: list[Chunk] = []
     for page_index, page in enumerate(pages):
         pieces = _split(page.text, SEPARATORS, max_tokens, count)
-        # Char offset of each piece in the page text. _split is offset-preserving
-        # (pieces concatenate back to page.text), so a running cursor is exact.
+        # _split is offset-preserving, so a running cursor gives exact offsets.
         starts: list[int] = []
         cursor = 0
         for piece in pieces:

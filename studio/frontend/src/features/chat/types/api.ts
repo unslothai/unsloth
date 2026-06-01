@@ -283,10 +283,8 @@ export interface OpenAIChatCompletionsRequest {
    */
   mcp_enabled?: boolean;
   /**
-   * Retrieval scope for the local-model `search_knowledge_base` tool. Set
-   * only when the RAG pill is on. Exactly one of `kb_id` / `thread_id` is
-   * populated: `kb_id` when a knowledge base is selected, `thread_id` for
-   * the current thread's own uploaded documents.
+   * Scope for the local `search_knowledge_base` tool; set only when the RAG pill
+   * is on. Exactly one of `kb_id` (a KB) or `thread_id` (thread docs) is set.
    */
   rag_scope?: {
     kb_id?: string;

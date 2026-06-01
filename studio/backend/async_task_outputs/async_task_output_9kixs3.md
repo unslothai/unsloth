@@ -1,0 +1,1 @@
+Continue making all code-section comments as succinct, short, and clear as possible. The latest tool already checked the rag_router comment and ran ruff on the integration files, with all checks passing, so do not re-run it. Next, inspect any remaining touched/comment-heavy files from the recent edits, shorten comments where needed, then verify only the relevant edited files.

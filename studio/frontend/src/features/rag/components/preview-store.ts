@@ -4,11 +4,9 @@
 import { create } from "zustand";
 
 /**
- * Drives the document preview Sheet. A citation badge calls `openPreview` with
- * the document + chunk it points at; the Sheet then resolves the target page
- * and highlight regions and renders the source PDF. Kept as a tiny global
- * store so any citation anywhere in the thread can open the single shared
- * viewer without prop-drilling.
+ * Global store for the shared document preview Sheet: a citation badge calls
+ * `openPreview` with its document + chunk, and the Sheet resolves and renders
+ * it. Global so any citation can open the one viewer without prop-drilling.
  */
 interface DocumentPreviewState {
   open: boolean;

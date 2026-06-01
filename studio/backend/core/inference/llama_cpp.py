@@ -5278,8 +5278,7 @@ class LlamaCppBackend:
                     _result_content = result
                     if "\n__IMAGES__:" in _result_content:
                         _result_content = _result_content.rsplit("\n__IMAGES__:", 1)[0]
-                    # Strip the RAG citation source-map (kept for the UI via the
-                    # tool_end event above) before the model sees the result.
+                    # Strip the RAG source-map (kept for the UI via tool_end above).
                     if "\n__RAG_SOURCES__:" in _result_content:
                         _result_content = _result_content.split(
                             "\n__RAG_SOURCES__:", 1

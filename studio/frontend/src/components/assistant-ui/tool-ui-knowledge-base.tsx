@@ -42,11 +42,9 @@ function asNumber(value: unknown): number | null {
 }
 
 /**
- * The local (server-side) tool path appends the citation source-map after a
- * sentinel: `<chunk ...>...__RAG_SOURCES__:[{chunkId,documentId,...}]`. Parse
- * those structured sources (which carry documentId/chunkId for the preview
- * viewer); return null if the sentinel isn't present so the caller can fall
- * back to the generic JSON shapes.
+ * Parse the source-map the server appends after the `__RAG_SOURCES__:` sentinel
+ * (carries documentId/chunkId for the viewer). Null if absent, so the caller
+ * falls back to the generic JSON shapes.
  */
 function parseSentinelSources(result: unknown): Citation[] | null {
   if (typeof result !== "string") return null;
@@ -79,10 +77,9 @@ function parseSentinelSources(result: unknown): Citation[] | null {
 }
 
 /**
- * The backend's search_knowledge_base tool result is provider-shaped. We
- * accept either a JSON array of result objects, a `{results:[...]}`
- * envelope, or a plain string (rendered as-is). Anything we can't map to
- * a {filename,text} pair falls through to the raw-text branch.
+ * Normalize a provider-shaped tool result: a JSON array, a `{results:[...]}`
+ * envelope, or a plain string. Anything not mappable to {filename,text} falls
+ * through to the raw-text branch.
  */
 function parseCitations(result: unknown): Citation[] {
   const sentinel = parseSentinelSources(result);
@@ -141,9 +138,9 @@ function parseCitations(result: unknown): Citation[] {
 }
 
 /**
- * Citation badge: filename + page, with the chunk text in a hover popover.
- * When the citation carries a documentId, clicking it opens the source in the
- * shared preview viewer (highlighting the cited region for PDFs).
+ * Citation badge: filename + page, chunk text in a hover popover. With a
+ * documentId, clicking opens the source in the shared viewer (region-highlighted
+ * for PDFs).
  */
 function CitationBadge({ citation, index }: { citation: Citation; index: number }) {
   const openPreview = useDocumentPreviewStore((s) => s.openPreview);

@@ -42,10 +42,8 @@ logger = get_logger(__name__)
 
 _EXEC_TIMEOUT = 300  # 5 minutes
 
-# Sentinel appended to the search_knowledge_base result to carry the citation
-# source-map to the chat UI. The inference loops strip everything from this
-# marker onward before feeding the tool result back to the model, so the model
-# only ever sees the clean ``<chunk>`` text (mirrors ``__IMAGES__:``).
+# Marks the citation source-map appended to the search_knowledge_base result for
+# the UI. The loops strip from here on before feeding the model (like __IMAGES__).
 RAG_SOURCES_SENTINEL = "\n__RAG_SOURCES__:"
 
 # Pre-import modules used in _sandbox_preexec at module level so that
@@ -520,9 +518,8 @@ TERMINAL_TOOL = {
     },
 }
 
-# RAG retrieval tool. The spec is duplicated here (rather than imported from
-# core.rag.tool) so importing the tool registry never pulls in the RAG stack;
-# execution imports core.rag lazily inside the dispatch branch.
+# RAG retrieval tool. Spec duplicated here (not imported from core.rag.tool) so
+# the tool registry never pulls in the RAG stack; dispatch imports it lazily.
 SEARCH_KNOWLEDGE_BASE_TOOL = {
     "type": "function",
     "function": {
@@ -656,8 +653,8 @@ def execute_tool(
     ``timeout``: int sets per-call limit in seconds, ``None`` means no limit,
     unset (default) uses ``_EXEC_TIMEOUT`` (300 s).
     ``session_id``: optional thread/session ID for per-conversation sandbox isolation.
-    ``rag_scope``: hidden per-request RAG context ``{kb_id?, thread_id?, default_top_k?,
-    min_score?, mode?}`` the model never sees; consumed by ``search_knowledge_base``.
+    ``rag_scope``: hidden per-request RAG context the model never sees; consumed
+    by ``search_knowledge_base``.
     """
     logger.info(
         f"execute_tool: name={name}, session_id={session_id}, timeout={timeout}"
@@ -704,13 +701,9 @@ def execute_tool(
 
 
 def _search_knowledge_base(arguments: dict, rag_scope: dict | None) -> str:
-    """Dispatch the RAG search tool using the hidden per-request ``rag_scope``.
-
-    The model only supplies ``query``/``top_k``; the scope (which KB or thread to
-    search) comes from the request, never from the model. RAG is imported lazily
-    so the tool registry never depends on the RAG stack, and a missing sqlite-vec
-    extension degrades to a friendly message instead of an error.
-    """
+    """Dispatch the RAG search using the hidden per-request ``rag_scope`` (the
+    model supplies only ``query``/``top_k``). RAG is imported lazily, and a
+    missing sqlite-vec degrades to a friendly message."""
     scope = rag_scope or {}
     query = (arguments or {}).get("query", "")
     if not query or not str(query).strip():
@@ -733,11 +726,8 @@ def _search_knowledge_base(arguments: dict, rag_scope: dict | None) -> str:
         top_k = top_k,
         min_score = float(scope.get("min_score") or 0.0),
     )
-    # Append the citation source-map after a sentinel so the chat UI can render
-    # clickable, region-linked citations. The inference loops strip everything
-    # from the sentinel onward before feeding the result back to the model
-    # (mirrors the ``__IMAGES__:`` convention), so the model only sees the clean
-    # ``<chunk>`` text.
+    # Append the source-map after the sentinel for the UI; the loops strip it
+    # before the model sees the result (see RAG_SOURCES_SENTINEL).
     if sources:
         import json as _json
 

@@ -1,18 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Multimodal image captioning for ingestion.
+"""Caption figures with the already-loaded vision model and splice the text
+back into the page, so image content is searchable through the normal FTS5 +
+dense path (no second model, no image vector space).
 
-Figures embedded in a document are captioned by the *already loaded* chat model
-when it is vision-capable, and the caption text is spliced back into the page so
-the normal text chunker indexes it. There is no separate image-embedding vector
-space and no second model: image content becomes searchable through the same
-FTS5 + dense path as everything else.
-
-Everything here degrades gracefully -- no loaded model, a non-vision model, or a
-failed request yields no captions and never raises, so ingestion proceeds
-unchanged. Captioning is gated by ``config.CAPTION_IMAGES`` (off by default) to
-keep indexing fast, since each caption is a vision-model call.
+Degrades to a no-op (never raises) when no vision model is loaded or a request
+fails. Gated by ``config.CAPTION_IMAGES`` (off by default) since each caption
+is a model call.
 """
 
 from __future__ import annotations
@@ -33,10 +28,7 @@ _CAPTION_PROMPT = (
 
 def vision_endpoint() -> tuple[str, str] | None:
     """``(base_url, model)`` for a loaded vision-capable GGUF model, else None.
-
-    Imported lazily to avoid a circular dependency on the inference routes and
-    to keep the RAG core importable without the inference stack.
-    """
+    Imported lazily so the RAG core needs no inference stack."""
     try:
         from routes.inference import get_llama_cpp_backend
 
@@ -70,8 +62,7 @@ def _caption_one(
         "max_tokens": 200,
         "temperature": 0.2,
         "stream": False,
-        # Thinking models otherwise spend the whole budget on reasoning and
-        # return empty content; we only want the caption.
+        # Off, or thinking models burn the budget on reasoning and return "".
         "chat_template_kwargs": {"enable_thinking": False},
     }
     try:
@@ -87,12 +78,9 @@ def _caption_one(
 def caption_images(
     images: list, *, endpoint: tuple[str, str] | None = None
 ) -> dict[int, list[str]]:
-    """Caption ``ParsedImage`` objects, grouped by 1-based page number.
-
-    ``endpoint`` may be injected (tests); otherwise the loaded vision model is
-    discovered. Returns ``{}`` when captioning is disabled, no vision model is
-    available, or there are no images. Bounded by ``config.CAPTION_MAX_IMAGES``.
-    """
+    """Caption ``ParsedImage`` objects, grouped by 1-based page number. Returns
+    ``{}`` when disabled, no vision model is available, or there are no images.
+    ``endpoint`` is injectable for tests; bounded by ``CAPTION_MAX_IMAGES``."""
     if not config.CAPTION_IMAGES or not images:
         return {}
     ep = endpoint or vision_endpoint()
@@ -113,13 +101,9 @@ def caption_images(
 
 
 def splice_captions(pages: list, captions: dict[int, list[str]]) -> list:
-    """Append captions to their page's text so the text chunker indexes them.
-
-    ``pages`` are ``parsers.Page`` (frozen) objects; returns new Page objects
-    with caption lines appended to the matching ``page_number``. Pages without
-    captions are returned unchanged. The appended marker keeps figures
-    attributable in retrieved chunks.
-    """
+    """Append captions to their page's text so the chunker indexes them.
+    Returns new ``Page`` objects (pages without captions unchanged); the marker
+    keeps figures attributable in retrieved chunks."""
     if not captions:
         return pages
     from .parsers import Page
