@@ -1458,8 +1458,9 @@ export function SharedComposer({
             ),
           )}
         </div>
-        {/* mr-0.5 matches the send button inset from the edge in normal chat. */}
-        <div className="ml-auto mr-0.5 flex items-center gap-1">
+        {/* mr-0.5 matches the send button inset from the edge in normal chat;
+            gap-1.5 matches its control spacing. */}
+        <div className="ml-auto mr-0.5 flex items-center gap-1.5">
           {showReasoningControl ? (
             isEffort || supportsPreserveThinking ? (
               <DropdownMenu>
@@ -1672,7 +1673,7 @@ export function SharedComposer({
               type="button"
               variant="default"
               size="icon"
-              className="size-8 rounded-full"
+              className="ml-1.5 size-8 rounded-full"
               onClick={stop}
             >
               <SquareIcon className="size-3 fill-current" />
@@ -1683,7 +1684,7 @@ export function SharedComposer({
               side="bottom"
               variant="default"
               size="icon"
-              className="size-8 rounded-full"
+              className="ml-1.5 size-8 rounded-full"
               onClick={send}
               disabled={!canSend}
               aria-label="Send message"
