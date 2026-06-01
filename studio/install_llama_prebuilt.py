@@ -1402,7 +1402,16 @@ def direct_linux_release_plan(
 
     attempts: list[AssetChoice] = []
     if host.has_usable_nvidia:
-        selection = linux_cuda_choice_from_release(host, bundle)
+        # Prefer the cudart major Studio loads at runtime (torch's bundled
+        # libcudart), not the newest detected on disk. Without this a stray
+        # cuda13 runtime outranks the torch cuda12 the binary links against.
+        torch_preference = detect_torch_cuda_runtime_preference(host)
+        selection = linux_cuda_choice_from_release(
+            host,
+            bundle,
+            preferred_runtime_line = torch_preference.runtime_line,
+            selection_preamble = torch_preference.selection_log,
+        )
         if selection is not None:
             attempts.extend(selection.attempts)
     if host.has_rocm and not host.has_usable_nvidia:
