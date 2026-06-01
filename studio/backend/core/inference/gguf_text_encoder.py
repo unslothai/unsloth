@@ -26,6 +26,7 @@ import os
 from pathlib import Path
 from typing import Any
 import re
+import struct
 import sys
 import warnings
 
@@ -230,6 +231,12 @@ def _module_and_leaf(root: nn.Module, name: str) -> tuple[nn.Module, str]:
     return module, parts[-1]
 
 
+def _read_gguf_u64_scalar(reader: Any, offset: int, gguf: Any) -> int:
+    endianess = getattr(reader, "endianess", gguf.GGUFEndian.LITTLE)
+    fmt = "<Q" if endianess == gguf.GGUFEndian.LITTLE else ">Q"
+    return int(struct.unpack_from(fmt, reader.data, offset)[0])
+
+
 def _skip_gguf_field_value(reader: Any, offset: int, raw_type: int, gguf: Any) -> int:
     """Return encoded GGUF field-value size without materializing arrays."""
 
@@ -253,6 +260,10 @@ def _skip_gguf_field_value(reader: Any, offset: int, raw_type: int, gguf: Any) -
     item_nptype = reader.gguf_scalar_to_np.get(item_type)
     if item_nptype is not None:
         return offs - offset + int(np.empty([], dtype = item_nptype).itemsize) * int(alen[0])
+    if item_type == gguf.GGUFValueType.STRING:
+        for _ in range(int(alen[0])):
+            offs += 8 + _read_gguf_u64_scalar(reader, offs, gguf)
+        return offs - offset
     for _ in range(int(alen[0])):
         offs += _skip_gguf_field_value(reader, offs, int(raw_itype[0]), gguf)
     return offs - offset
