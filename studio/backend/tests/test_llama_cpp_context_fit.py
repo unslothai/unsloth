@@ -652,7 +652,5 @@ class TestClassifyGpuOffload:
         assert inst._classify_gpu_offload(True, [(0, 22805)]) is False
 
     def test_hip_model_buffer_is_gpu(self):
-        inst = self._backend(
-            ["load_tensors:   HIP0 model buffer size = 21000.0 MiB"]
-        )
+        inst = self._backend(["load_tensors:   HIP0 model buffer size = 21000.0 MiB"])
         assert inst._classify_gpu_offload(True, [(0, 22805)]) is True

@@ -5919,9 +5919,7 @@ def validate_server(
                     # the next bundle / source build instead of stopping here.
                     if _enable_gpu_layers:
                         log_handle.flush()
-                        offload = server_log_shows_gpu_offload(
-                            read_full_log(log_path)
-                        )
+                        offload = server_log_shows_gpu_offload(read_full_log(log_path))
                         if offload is False:
                             raise GpuOffloadFailure(
                                 "llama-server served a completion but loaded the "
@@ -5943,8 +5941,7 @@ def validate_server(
                             raise PrebuiltFallback(
                                 "llama-server served a completion but its startup "
                                 "log carried no GPU-offload signal; smoke-test "
-                                "result is inconclusive:\n"
-                                + read_log_excerpt(log_path)
+                                "result is inconclusive:\n" + read_log_excerpt(log_path)
                             )
                     return
         finally:
