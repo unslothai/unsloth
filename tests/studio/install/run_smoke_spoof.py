@@ -86,7 +86,12 @@ def main() -> int:
             ("cuda", GPU_REQ_KIND, 0, "GPU binary tagged GPU is accepted"),
             ("cuda_buffer", GPU_REQ_KIND, 0, "GPU buffer-format binary is accepted"),
             ("cpu", CPU_KIND, 0, "CPU binary tagged CPU is not gated"),
-            ("no_signal", GPU_REQ_KIND, 1, "no-signal GPU log is inconclusive (exit 1)"),
+            (
+                "no_signal",
+                GPU_REQ_KIND,
+                1,
+                "no-signal GPU log is inconclusive (exit 1)",
+            ),
         ]
         if sys.platform == "darwin":
             # macOS Metal is not offload-required: a CPU-only Metal load is an
