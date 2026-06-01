@@ -11,7 +11,10 @@ from __future__ import annotations
 import logging
 import os
 import threading
+from functools import lru_cache
 from typing import Callable
+
+from utils.hardware.hardware import DeviceType, get_device
 
 from . import config
 
@@ -32,29 +35,33 @@ _model = None
 _name: str | None = None
 
 
-def _cuda() -> bool:
-    try:
-        import torch
+# Map Studio's detected backend (utils.hardware) to a torch/sentence-transformers
+# device string. MLX (Apple via the MLX framework, not torch) has no torch
+# device, so the torch-based embedder falls back to CPU there.
+_TORCH_DEVICE = {DeviceType.CUDA: "cuda", DeviceType.XPU: "xpu"}
+_GPU_DEVICES = frozenset({"cuda", "xpu"})
 
-        return torch.cuda.is_available()
-    except Exception:  # noqa: BLE001 - torch may be missing or broken
-        return False
+
+def _device() -> str:
+    """Embedder device from Studio's hardware detection (CUDA/XPU/CPU)."""
+    return _TORCH_DEVICE.get(get_device(), "cpu")
 
 
 def _get(model_name: str | None = None):
     """Return the cached SentenceTransformer, (re)loading if the name changed.
-    On CUDA the model runs in fp16 (``half()``) for a ~1.5x encode speedup at
-    negligible accuracy loss; CPU stays fp32 (half is unsupported/slow there)."""
+    On a GPU backend the model runs in fp16 (``half()``) for a ~1.5x encode
+    speedup at negligible accuracy loss; CPU stays fp32 (half is unsupported
+    there)."""
     global _model, _name
     name = model_name or config.EMBEDDING_MODEL
     with _lock:
         if _model is None or _name != name:
             from sentence_transformers import SentenceTransformer
 
-            device = "cuda" if _cuda() else "cpu"
+            device = _device()
             logger.info("loading embedding model %s on %s", name, device)
             _model = SentenceTransformer(name, device = device)
-            if device == "cuda":
+            if device in _GPU_DEVICES:
                 _model = _model.half()
             _name = name
         return _model
@@ -65,16 +72,24 @@ def warm(model_name: str | None = None) -> None:
     _get(model_name)
 
 
-def _inference_ctx():
-    """``torch.inference_mode()`` when torch is present, else a no-op context."""
+@lru_cache(maxsize = 1)
+def _inference_ctx_factory():
+    """Pick the encode context once (cached): ``torch.inference_mode`` if torch
+    is importable, else ``contextlib.nullcontext``. Returns the factory, not an
+    instance, so each call still gets a fresh single-use guard."""
     try:
         import torch
 
-        return torch.inference_mode()
+        return torch.inference_mode
     except Exception:  # noqa: BLE001 - torch may be missing or broken
         from contextlib import nullcontext
 
-        return nullcontext()
+        return nullcontext
+
+
+def _inference_ctx():
+    """Fresh inference (or no-op) context from the cached factory."""
+    return _inference_ctx_factory()()
 
 
 def encode(texts: list[str], *, model_name: str | None = None, normalize: bool = True):
