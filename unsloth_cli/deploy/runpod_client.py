@@ -154,7 +154,10 @@ class RunPod(Provider):
         out: dict[str, str] = {}
         for r in rows:
             band = (r.get("lowestPrice") or {}).get("stockStatus")
-            if band and r.get("id"):
+            # Only record bands that mean real capacity (High/Medium/Low). RunPod
+            # also returns out-of-stock statuses; recording those as a truthy stock
+            # makes `--yes` auto-pick a GPU that can't actually schedule.
+            if r.get("id") and band in STOCK_RANK:
                 out[r["id"]] = band
         return out
 
@@ -254,7 +257,13 @@ class RunPod(Provider):
         sdk = self._sdk()
         deadline = time.time() + timeout_s
         while time.time() < deadline:
-            pod = sdk.get_pod(instance_id) or {}
+            try:
+                pod = sdk.get_pod(instance_id) or {}
+            except Exception:
+                # A transient SDK/network blip mid-poll must not abort the wait and
+                # orphan a billing pod -- keep polling until the deadline.
+                time.sleep(POLL_INTERVAL_S)
+                continue
             status = pod.get("desiredStatus")
             if status in TERMINAL_STATUSES:
                 raise DeployError(f"Pod {instance_id} reached terminal status: {status}")
@@ -277,19 +286,10 @@ class RunPod(Provider):
         return SshTarget(user = instance_id, host = "ssh.runpod.io", port = 22)
 
     def endpoint_url(self, instance_id: str, http_port: int) -> str:
-        if self._sdk_mod is not None:
-            try:
-                pod = self._sdk().get_pod(instance_id) or {}
-                for p in (pod.get("runtime") or {}).get("ports") or []:
-                    if (
-                        p.get("privatePort") == http_port
-                        and p.get("isIpPublic")
-                        and p.get("ip")
-                        and p.get("publicPort")
-                    ):
-                        return f"http://{p['ip']}:{int(p['publicPort'])}"
-            except Exception:
-                pass
+        # Always the TLS proxy, never the pod's direct IP. The deploy bootstrap and
+        # the user's Studio login send the admin password over this URL, and RunPod
+        # exposes the direct pod IP over plaintext http only -- the proxy terminates
+        # TLS, so the credentials stay encrypted.
         return f"https://{instance_id}-{http_port}.proxy.runpod.net"
 
     def pause(self, instance_id: str) -> None:
@@ -326,7 +326,10 @@ class RunPod(Provider):
 
         datacenter = self._datacenter or self._auto_datacenter(gpu, log)
         size_gb = _volume_size_gb(local_path)
-        model_name = local_path.resolve().name or "model"
+        # Use the unresolved name so it matches what we upload (runpod_storage keys
+        # a single file under its own `local_path.name`); fall back to the resolved
+        # name for inputs like "." that have no trailing component.
+        model_name = local_path.name or local_path.resolve().name or "model"
 
         log(f"Creating {size_gb} GB network volume in {datacenter}...")
         volume_id = runpod_storage.create_network_volume(
@@ -337,7 +340,11 @@ class RunPod(Provider):
         )
         log(f"  volume id: {volume_id}")
 
-        prefix = f"uploads/{model_name}"
+        # A directory uploads as uploads/<name>/<relpath>; a single file uploads as
+        # uploads/<name> (its own basename is the relpath). Folding the name into
+        # the prefix for a file too would double-nest it (uploads/<name>/<name>),
+        # and Studio -- which loads /workspace/uploads/<name> -- wouldn't find it.
+        prefix = f"uploads/{model_name}" if local_path.is_dir() else "uploads"
         log(f"Uploading {local_path} to the volume over S3 (stays in RunPod)...")
         try:
             runpod_storage.upload_path(
@@ -348,8 +355,10 @@ class RunPod(Provider):
                 secret_key = self._s3_secret_key,
                 prefix = prefix,
             )
-        except DeployError:
-            # Don't leave an empty volume billing if the upload failed.
+        except BaseException:
+            # Any failure -- a DeployError, an unexpected exception, or a Ctrl-C
+            # mid-upload -- must not leave the (billing) volume behind, possibly
+            # holding a half-finished upload. Delete it, then re-raise.
             try:
                 runpod_storage.delete_network_volume(self, volume_id)
             except DeployError:
@@ -383,6 +392,10 @@ class RunPod(Provider):
     def _sdk(self):
         if self._sdk_mod is None:
             raise DeployError("RunPod is not authenticated. Call auth() first.")
+        # The runpod SDK reads its key from a module-level global, so a second
+        # authenticated instance would otherwise hijack this one's calls. Re-assert
+        # ours right before every use so each call runs under its own key.
+        self._sdk_mod.api_key = self._api_key
         return self._sdk_mod
 
 

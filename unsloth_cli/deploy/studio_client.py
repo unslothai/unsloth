@@ -83,7 +83,14 @@ class StudioClient:
             {"current_password": current, "new_password": new},
             auth = True,
         )
-        self._token = body["access_token"]
+        # The POST returning 2xx means the password is now changed server-side. If
+        # the body carries a re-issued token, adopt it; if it doesn't, keep the
+        # current one rather than raising KeyError -- raising here would strand the
+        # user on a billing instance whose admin password has already rotated,
+        # without the caller ever surfacing the new password.
+        token = body.get("access_token")
+        if token:
+            self._token = token
         return body
 
     def create_api_key(self, name: str) -> str:

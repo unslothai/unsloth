@@ -28,7 +28,7 @@ from unsloth_cli.deploy.provider import PROVIDERS
 from unsloth_cli.deploy.studio_client import StudioClient
 
 
-IMAGE_TAG = "ghcr.io/nilayyadav/unsloth-base:cu128"
+IMAGE_TAG = "ghcr.io/unslothai/unsloth-base:cu128"
 
 STUDIO_PORT = 8000
 SSH_PORT = 22
@@ -59,6 +59,7 @@ class Instance:
     id: str
     studio_url: str
     ssh: Optional[SshTarget]
+    provider_name: str
 
 
 @deploy_app.command("run")
@@ -243,10 +244,14 @@ def _authenticate(
     resolved: dict[str, str] = dict(saved)
 
     for opt in provider_cls.option_schema():
-        if opt.needed_for == NEEDED_FOR_LOCAL_MODEL and not need_local:
-            continue
+        # An option only needed to upload a local model isn't required when we
+        # aren't staging one -- so don't prompt or fail for it. But still resolve
+        # and persist any value the user supplied explicitly (env / --provider-opt
+        # / saved config), so a later local deploy reuses it instead of having it
+        # silently dropped here.
+        deferred = opt.needed_for == NEEDED_FOR_LOCAL_MODEL and not need_local
         value = overrides.get(opt.key) or os.environ.get(opt.env) or saved.get(opt.key)
-        if not value and opt.required:
+        if not value and opt.required and not deferred:
             if interactive:
                 value = typer.prompt(opt.help, hide_input = opt.secret, default = "").strip()
             if not value:
@@ -518,14 +523,15 @@ def _deploy(
         _fail(
             f"Deploy failed: {e}\n"
             f"Instance {instance_id} may still be running and billing.\n"
-            f"Stop it with: unsloth deploy stop {instance_id}"
-            + _storage_billing_note(storage_id)
+            f"Stop it with: {_deploy_cmd('stop', instance_id, provider.name)}"
+            + _storage_billing_note(storage_id, provider.name)
         )
 
     instance = Instance(
         id = instance_id,
         studio_url = provider.endpoint_url(instance_id, http_port = STUDIO_PORT),
         ssh = provider.get_ssh(instance_id) if provider.supports_ssh else None,
+        provider_name = provider.name,
     )
 
     if load_model is None:
@@ -577,6 +583,7 @@ def _serve_model(
     except DeployError as e:
         _fail(_stop_hint(
             e, instance.id,
+            provider_name = instance.provider_name,
             admin_password = rotated_password,
             storage_id = storage_id,
         ))
@@ -594,17 +601,17 @@ def _delete_storage_quietly(provider: Provider, storage_id: Optional[str]) -> No
     except DeployError:
         typer.echo(
             f"  warning: couldn't delete storage {storage_id}; "
-            f"remove it with: unsloth deploy delete-storage {storage_id}",
+            f"remove it with: {_deploy_cmd('delete-storage', storage_id, provider.name)}",
             err = True,
         )
 
 
-def _storage_billing_note(storage_id: Optional[str]) -> str:
+def _storage_billing_note(storage_id: Optional[str], provider_name: str) -> str:
     if not storage_id:
         return ""
     return (
         f"\nStorage {storage_id} also persists (billed). Delete it with:"
-        f"\n    unsloth deploy delete-storage {storage_id}"
+        f"\n    {_deploy_cmd('delete-storage', storage_id, provider_name)}"
     )
 
 
@@ -671,10 +678,10 @@ def _print_stop_hint(
     instance: Instance, gpu: Gpu, storage_id: Optional[str] = None,
 ) -> None:
     typer.echo(f"  STOP THIS INSTANCE WHEN DONE - billed at ${gpu.cost_per_hour_usd:.3f}/hr.")
-    typer.echo(f"      unsloth deploy stop {instance.id}")
+    typer.echo(f"      {_deploy_cmd('stop', instance.id, instance.provider_name)}")
     if storage_id:
         typer.echo(f"  Storage {storage_id} persists (billed). Delete when done:")
-        typer.echo(f"      unsloth deploy delete-storage {storage_id}")
+        typer.echo(f"      {_deploy_cmd('delete-storage', storage_id, instance.provider_name)}")
     typer.echo("")
 
 
@@ -682,6 +689,7 @@ def _stop_hint(
     err: DeployError,
     instance_id: str,
     *,
+    provider_name: str,
     admin_password: Optional[str] = None,
     storage_id: Optional[str] = None,
 ) -> str:
@@ -693,10 +701,18 @@ def _stop_hint(
         )
     lines += [
         f"Instance {instance_id} is still running and billing.",
-        f"Stop it with: unsloth deploy stop {instance_id}",
+        f"Stop it with: {_deploy_cmd('stop', instance_id, provider_name)}",
     ]
-    note = _storage_billing_note(storage_id)
+    note = _storage_billing_note(storage_id, provider_name)
     return "\n".join(lines) + note
+
+
+def _deploy_cmd(verb: str, arg: str, provider_name: str) -> str:
+    """A copy-pasteable `unsloth deploy <verb> <arg>` hint, carrying --provider
+    when the instance isn't on the default provider so the command targets the
+    right one (without it, stop/delete-storage would hit the default provider)."""
+    flag = "" if provider_name == DEFAULT_PROVIDER else f" --provider {provider_name}"
+    return f"unsloth deploy {verb}{flag} {arg}"
 
 
 def _fail(msg: str, code: int = 1):

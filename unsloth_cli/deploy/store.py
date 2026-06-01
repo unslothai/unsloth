@@ -42,9 +42,22 @@ def save(provider_name: str, options: dict[str, str]) -> Path:
     path.parent.mkdir(parents = True, exist_ok = True)
     data = _read_all()
     data[provider_name] = {k: v for k, v in options.items() if v}
-    path.write_text(json.dumps(data, indent = 2, sort_keys = True), encoding = "utf-8")
+    payload = json.dumps(data, indent = 2, sort_keys = True)
+
+    # Create the file 0600 from the start and rename it into place atomically.
+    # Writing the path directly and chmod-ing afterwards leaves a window where the
+    # tokens/secrets are world-readable under the default umask, and a crash
+    # mid-write could truncate the existing config.
+    tmp = path.with_name(path.name + ".tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, stat.S_IRUSR | stat.S_IWUSR)
     try:
-        path.chmod(stat.S_IRUSR | stat.S_IWUSR)  # 0600 -- holds tokens/secrets
+        with os.fdopen(fd, "w", encoding = "utf-8") as f:
+            f.write(payload)
+        os.replace(tmp, path)
     except OSError:
-        pass
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
     return path

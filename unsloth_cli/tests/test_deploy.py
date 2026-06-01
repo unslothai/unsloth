@@ -176,17 +176,21 @@ def test_wait_ready_waits_for_runtime(monkeypatch):
     p.wait_ready("pod-x", timeout_s = 30)  # returns without raising
 
 
-def test_endpoint_url_prefers_direct_ip_else_proxy(monkeypatch):
+def test_endpoint_url_uses_https_proxy_never_plaintext_ip(monkeypatch):
+    """The Studio URL must be the TLS proxy, never the pod's plaintext-http direct
+    IP: the deploy bootstrap and the user's login send the admin password over it."""
     from unsloth_cli.deploy.runpod_client import RunPod
-    # No SDK / no public port -> proxy hostname.
     assert RunPod().endpoint_url("podxyz", http_port = 8000) == "https://podxyz-8000.proxy.runpod.net"
 
+    # Even when the pod exposes a public direct IP, we still hand back the https proxy.
     fake_pod = {"runtime": {"ports": [
         {"privatePort": 8000, "publicPort": 18000, "ip": "1.2.3.4", "isIpPublic": True},
     ]}}
     _stub_runpod(monkeypatch, get_pod = lambda pid: fake_pod)
     p = RunPod(); p.auth({"api_key": "rpa_x"})
-    assert p.endpoint_url("podxyz", http_port = 8000) == "http://1.2.3.4:18000"
+    url = p.endpoint_url("podxyz", http_port = 8000)
+    assert url == "https://podxyz-8000.proxy.runpod.net"
+    assert url.startswith("https://")
 
 
 def test_stop_terminates_by_default_pause_suspends(monkeypatch):
@@ -730,6 +734,176 @@ def test_bootstrap_failure_after_rotation_surfaces_new_password(monkeypatch):
     assert rotated and rotated in combined
     assert "rotated to" in combined
     assert "unsloth deploy stop pod-late" in combined
+
+
+# ---------------------------------------------------------------------------
+# Review hardening: billing safety, lockout, credentials, provider hints
+# ---------------------------------------------------------------------------
+
+
+def test_wait_ready_tolerates_transient_poll_errors(monkeypatch):
+    """A transient get_pod error mid-poll must not abort the wait and orphan a
+    billing pod; we keep polling until it is actually running."""
+    from unsloth_cli.deploy.runpod_client import RunPod
+    seen = {"n": 0}
+
+    def flaky(pid):
+        seen["n"] += 1
+        if seen["n"] == 1:
+            raise RuntimeError("transient blip")
+        return {"desiredStatus": "RUNNING", "runtime": {"ports": []}}
+
+    _stub_runpod(monkeypatch, get_pod = flaky)
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    p = RunPod(); p.auth({"api_key": "rpa_x"})
+    p.wait_ready("pod-x", timeout_s = 30)  # returns without raising
+    assert seen["n"] >= 2
+
+
+def test_change_password_tolerates_missing_token(monkeypatch):
+    """change-password succeeding but returning no new token must not raise: a
+    KeyError here would strand the user on a billing pod whose admin password has
+    already rotated, without ever surfacing the new one."""
+    from unsloth_cli.deploy.studio_client import StudioClient
+    c = StudioClient("http://x")
+    c._token = "old"
+    monkeypatch.setattr(c, "_post", lambda *a, **k: {})  # 2xx, empty body
+    c.change_password(current = "a", new = "b")  # does not raise
+    assert c.token == "old"
+
+
+def test_stage_single_file_model_avoids_double_nesting(monkeypatch, tmp_path):
+    """A single-file model (e.g. a .gguf) must upload under uploads/<file> and load
+    from /workspace/uploads/<file> -- not uploads/<file>/<file>, which the pod
+    can't find."""
+    from unsloth_cli.deploy import runpod_storage
+    from unsloth_cli.deploy.runpod_client import RunPod
+
+    model = tmp_path / "model.gguf"
+    model.write_bytes(b"0" * 10)
+
+    uploads = []
+    _stub_runpod(monkeypatch)
+    monkeypatch.setattr(runpod_storage, "create_network_volume", lambda client, **kw: "vol-1")
+    monkeypatch.setattr(runpod_storage, "upload_path", lambda local_path, **kw: uploads.append(kw))
+
+    p = RunPod()
+    p.auth({
+        "api_key": "rpa_x", "s3_access_key": "user_x",
+        "s3_secret_key": "rps_y", "datacenter": "US-KS-2",
+    })
+    staged = p.stage_local_model(model, gpu = _gpu())
+    assert uploads[0]["prefix"] == "uploads"            # not "uploads/model.gguf"
+    assert staged.model_path == "/workspace/uploads/model.gguf"
+
+
+def test_stage_deletes_volume_when_upload_fails(monkeypatch, tmp_path):
+    """An upload failure (even a non-DeployError) must delete the just-created
+    network volume so it doesn't keep billing with a half-finished upload."""
+    from unsloth_cli.deploy import runpod_storage
+    from unsloth_cli.deploy.runpod_client import RunPod
+
+    model = tmp_path / "m"
+    model.mkdir()
+    (model / "adapter_config.json").write_text("{}")
+
+    deleted = []
+    _stub_runpod(monkeypatch)
+    monkeypatch.setattr(runpod_storage, "create_network_volume", lambda client, **kw: "vol-9")
+    monkeypatch.setattr(runpod_storage, "delete_network_volume", lambda client, vid: deleted.append(vid))
+
+    def boom(local_path, **kw):
+        raise RuntimeError("network died mid-upload")
+
+    monkeypatch.setattr(runpod_storage, "upload_path", boom)
+
+    p = RunPod()
+    p.auth({
+        "api_key": "rpa_x", "s3_access_key": "user_x",
+        "s3_secret_key": "rps_y", "datacenter": "US-KS-2",
+    })
+    with pytest.raises(RuntimeError):
+        p.stage_local_model(model, gpu = _gpu())
+    assert deleted == ["vol-9"]
+
+
+def test_saved_config_is_user_only(monkeypatch, tmp_path):
+    """The credential file holds tokens/secrets, so it must be 0600 with no
+    group/other access -- never world-readable, even briefly."""
+    import stat as _stat
+    from unsloth_cli.deploy import store
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    path = store.save("runpod", {"api_key": "rpa_secret"})
+    mode = _stat.S_IMODE(path.stat().st_mode)
+    assert mode == 0o600
+    assert not (mode & 0o077)
+
+
+def test_local_model_opts_persisted_even_without_local_model(monkeypatch):
+    """S3 creds supplied up front (env / --provider-opt) are saved for reuse even
+    on a non-local deploy, instead of being silently dropped at auth time."""
+    from unsloth_cli.commands import deploy
+    from unsloth_cli.deploy import store
+    from unsloth_cli.deploy.runpod_client import RunPod
+    _stub_with_catalog(monkeypatch)
+    monkeypatch.setenv("RUNPOD_API_KEY", "rpa_x")
+    monkeypatch.setenv("RUNPOD_S3_ACCESS_KEY_ID", "user_x")
+    monkeypatch.setenv("RUNPOD_S3_SECRET_ACCESS_KEY", "rps_y")
+    deploy._authenticate(RunPod, {}, need_local = False, interactive = False, persist = True)
+    saved = store.load("runpod")
+    assert saved.get("s3_access_key") == "user_x"
+    assert saved.get("s3_secret_key") == "rps_y"
+
+
+def test_pick_gpu_yes_skips_out_of_stock(monkeypatch):
+    """--yes must pick the cheapest GPU that actually has stock, not a cheaper
+    sold-out one (stock is None once out-of-stock bands are filtered)."""
+    from unsloth_cli.commands.deploy import _pick_gpu
+    from unsloth_cli.deploy import Gpu
+
+    class _P:
+        name = "runpod"
+        def list_gpus(self, min_vram_gb = 0):
+            return [
+                Gpu(id = "cheap-soldout", name = "c", vram_gb = 24, cost_per_hour_usd = 0.2, stock = None),
+                Gpu(id = "instock", name = "i", vram_gb = 24, cost_per_hour_usd = 0.4, stock = "High"),
+            ]
+
+    chosen = _pick_gpu(_P(), override = None, min_vram_gb = 24, yes = True)
+    assert chosen.id == "instock"
+
+
+def test_global_stock_drops_out_of_stock_bands(monkeypatch):
+    """RunPod returns out-of-stock statuses alongside High/Medium/Low; only the
+    real-capacity bands survive, so the picker shows 'none' for the rest and
+    --yes won't auto-pick them."""
+    from unsloth_cli.deploy.runpod_client import RunPod
+
+    rows = [
+        {"id": "A", "lowestPrice": {"stockStatus": "High"}},
+        {"id": "B", "lowestPrice": {"stockStatus": "Low"}},
+        {"id": "C", "lowestPrice": {"stockStatus": "Out of Stock"}},
+        {"id": "D", "lowestPrice": {"stockStatus": None}},
+    ]
+    api_mod = types.ModuleType("runpod.api")
+    graphql_mod = types.ModuleType("runpod.api.graphql")
+    graphql_mod.run_graphql_query = lambda q: {"data": {"gpuTypes": rows}}
+    _stub_runpod(monkeypatch)
+    monkeypatch.setitem(sys.modules, "runpod.api", api_mod)
+    monkeypatch.setitem(sys.modules, "runpod.api.graphql", graphql_mod)
+
+    p = RunPod(); p.auth({"api_key": "rpa_x"})
+    assert p._global_stock() == {"A": "High", "B": "Low"}
+
+
+def test_deploy_cmd_carries_nondefault_provider():
+    """Lifecycle hints must carry --provider for non-default providers so the
+    printed stop / delete-storage commands target the right cloud."""
+    from unsloth_cli.commands.deploy import DEFAULT_PROVIDER, _deploy_cmd
+    assert _deploy_cmd("stop", "pod-1", DEFAULT_PROVIDER) == "unsloth deploy stop pod-1"
+    assert _deploy_cmd("delete-storage", "vol-1", "modal") == (
+        "unsloth deploy delete-storage --provider modal vol-1"
+    )
 
 
 # A concrete minimal Provider implementation for capability tests. Defined at
