@@ -1611,7 +1611,12 @@ def direct_upstream_release_plan(
                     install_kind = "macos-x64",
                 )
             )
-    elif host.is_linux and host.is_x86_64 and not host.has_usable_nvidia:
+    elif (
+        host.is_linux
+        and host.is_x86_64
+        and not host.has_usable_nvidia
+        and not host.has_rocm
+    ):
         asset_name = f"llama-{release_tag}-bin-ubuntu-x64.tar.gz"
         asset_url = assets.get(asset_name)
         if asset_url:
@@ -1625,7 +1630,12 @@ def direct_upstream_release_plan(
                     install_kind = "linux-cpu",
                 )
             )
-    elif host.is_linux and host.is_arm64 and not host.has_usable_nvidia:
+    elif (
+        host.is_linux
+        and host.is_arm64
+        and not host.has_usable_nvidia
+        and not host.has_rocm
+    ):
         # Upstream ggml-org/llama.cpp ships llama-bNNNN-bin-ubuntu-arm64.tar.gz
         # (visible in the b9334 release manifest). Without this branch the
         # selector returned 0 attempts and the installer fell back to a
@@ -5766,6 +5776,7 @@ def validate_server(
     *,
     runtime_line: str | None = None,
     install_kind: str | None = None,
+    require_gpu_signal: bool = False,
 ) -> None:
     last_failure: PrebuiltFallback | None = None
     for port_attempt in range(1, SERVER_PORT_BIND_ATTEMPTS + 1):
@@ -5908,10 +5919,10 @@ def validate_server(
                     # the next bundle / source build instead of stopping here.
                     if _enable_gpu_layers:
                         log_handle.flush()
-                        if (
-                            server_log_shows_gpu_offload(read_full_log(log_path))
-                            is False
-                        ):
+                        offload = server_log_shows_gpu_offload(
+                            read_full_log(log_path)
+                        )
+                        if offload is False:
                             raise GpuOffloadFailure(
                                 "llama-server served a completion but loaded the "
                                 "model entirely on CPU despite GPU offload being "
@@ -5922,6 +5933,17 @@ def validate_server(
                                 "does not match the driver (PTX-only). Rejecting "
                                 "so a GPU-capable bundle is selected "
                                 "(unslothai/unsloth#5807, #5106):\n"
+                                + read_log_excerpt(log_path)
+                            )
+                        # No GPU signal: install validation stays conservative
+                        # (never reject on no evidence), but --smoke-test sets
+                        # require_gpu_signal so its "0 = offload confirmed"
+                        # contract does not pass an unproven log.
+                        if offload is None and require_gpu_signal:
+                            raise PrebuiltFallback(
+                                "llama-server served a completion but its startup "
+                                "log carried no GPU-offload signal; smoke-test "
+                                "result is inconclusive:\n"
                                 + read_log_excerpt(log_path)
                             )
                     return
@@ -6925,6 +6947,9 @@ def smoke_test_server_binary(
         Path(install_dir).expanduser().resolve() if install_dir else server_path.parent
     )
     resolved_kind = install_kind or resolve_smoke_test_install_kind(host)
+    # For a GPU kind, the CLI contract is "0 = offload confirmed", so an
+    # inconclusive (no-signal) log must not pass -- require a positive signal.
+    require_signal = resolved_kind in _GPU_INSTALL_KINDS
     if probe:
         probe_path = Path(probe).expanduser().resolve()
         if not probe_path.exists():
@@ -6935,6 +6960,7 @@ def smoke_test_server_binary(
             host,
             resolved_install_dir,
             install_kind = resolved_kind,
+            require_gpu_signal = require_signal,
         )
     else:
         with tempfile.TemporaryDirectory(prefix = "unsloth-llama-smoke-") as tmp:
@@ -6948,6 +6974,7 @@ def smoke_test_server_binary(
                 host,
                 resolved_install_dir,
                 install_kind = resolved_kind,
+                require_gpu_signal = require_signal,
             )
     return resolved_kind
 

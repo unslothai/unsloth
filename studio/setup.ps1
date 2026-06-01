@@ -2667,6 +2667,14 @@ if (-not $NeedLlamaSourceBuild) {
     substep "GGUF inference and export will not be available." "Yellow"
     substep "Install CMake from https://cmake.org/download/ and re-run setup." "Yellow"
     $script:LlamaCppDegraded = $true
+} elseif ($HasROCm -and -not $HasNvidiaSmi) {
+    # Windows has no HIP source-build path, so a ROCm host whose HIP prebuilt was
+    # missing or rejected must not silently CPU-source-build. Mark degraded so
+    # the CPU-prebuilt last resort below installs a clearly labelled CPU build
+    # instead of a "built" install that runs on CPU (#5807).
+    Write-Host ""
+    step "llama.cpp" "no usable HIP prebuilt and no Windows HIP source build; using CPU prebuilt" "Yellow"
+    $script:LlamaCppDegraded = $true
 } else {
     # A source build is committed here. The CUDA toolkit is only needed now, so
     # resolve (and winget-install if needed) it lazily, failing fast if no

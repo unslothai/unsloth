@@ -84,7 +84,7 @@ def main() -> int:
             ("cuda", GPU_KIND, 0, "GPU binary tagged GPU is accepted"),
             ("cuda_buffer", GPU_KIND, 0, "GPU buffer-format binary is accepted"),
             ("cpu", CPU_KIND, 0, "CPU binary tagged CPU is not gated"),
-            ("no_signal", GPU_KIND, 0, "no-signal log is not rejected"),
+            ("no_signal", GPU_KIND, 1, "no-signal GPU log is inconclusive (exit 1)"),
         ]
         for mode, kind, expected, label in cases:
             rc = run_smoke(wrapper, probe, kind, mode)

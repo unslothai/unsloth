@@ -408,9 +408,24 @@ def test_cpu_kind_not_gpu_gated(patched_server, tmp_path):
 
 
 def test_gpu_intent_no_signal_accepted(patched_server, tmp_path):
-    # No buffer/device signal -> conservative: do not reject on no evidence.
+    # No buffer/device signal -> conservative: do not reject on no evidence
+    # (plain install validation; require_gpu_signal defaults False).
     patched_server(NO_SIGNAL_LOG)
     _run_validate(tmp_path, nvidia_host(), "linux-cuda")  # no raise
+
+
+def test_smoke_test_no_signal_gpu_is_inconclusive(patched_server, tmp_path):
+    # The smoke-test CLI sets require_gpu_signal, so a no-signal GPU log is
+    # inconclusive (PrebuiltFallback -> EXIT_ERROR), not a silent pass.
+    patched_server(NO_SIGNAL_LOG)
+    server = tmp_path / "llama-server"
+    server.write_text("#!/bin/sh\n")
+    probe = tmp_path / "probe.gguf"
+    probe.write_bytes(b"GGUF")
+    with pytest.raises(PrebuiltFallback):
+        smoke_test_server_binary(
+            str(server), nvidia_host(), install_dir = str(tmp_path), probe = str(probe)
+        )
 
 
 def test_rocm_cpu_only_rejected(patched_server, tmp_path):
