@@ -38,8 +38,11 @@ import gc
 import io
 import os
 import re
+import sys
 import threading
 import time
+import types
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Optional
@@ -1947,6 +1950,62 @@ def _env_pin_cpu_resident_gguf() -> bool:
     )
 
 
+def _guard_diffusers_optional_bitsandbytes() -> None:
+    """Keep broken optional bitsandbytes installs from blocking diffusion.
+
+    Diffusers imports its bitsandbytes quantizer module while importing
+    generic model/LoRA utilities, even for dense and GGUF-only loads. A
+    mismatched local bitsandbytes wheel can therefore make every image
+    pipeline fail at import time. If importing bitsandbytes itself fails,
+    provide a tiny Diffusers quantizer-module stub so non-BnB loads keep
+    working; actual BnB quantizer use still raises a direct error.
+    """
+
+    if "diffusers.quantizers.bitsandbytes" in sys.modules:
+        return
+    try:
+        with (
+            warnings.catch_warnings(),
+            contextlib.redirect_stdout(io.StringIO()),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            warnings.simplefilter("ignore")
+            import bitsandbytes  # noqa: F401
+        return
+    except Exception as exc:
+        bnb_error = exc
+
+    def _raise_unavailable_bnb(*_args: Any, **_kwargs: Any) -> None:
+        raise RuntimeError(
+            "Diffusers bitsandbytes quantization is unavailable because "
+            f"bitsandbytes failed to import: {bnb_error}"
+        )
+
+    class _UnavailableBnBDiffusersQuantizer:
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            _raise_unavailable_bnb()
+
+    stub = types.ModuleType("diffusers.quantizers.bitsandbytes")
+    stub.__path__ = []
+    stub.BnB4BitDiffusersQuantizer = _UnavailableBnBDiffusersQuantizer
+    stub.BnB8BitDiffusersQuantizer = _UnavailableBnBDiffusersQuantizer
+    utils_stub = types.ModuleType("diffusers.quantizers.bitsandbytes.utils")
+    utils_stub.dequantize_and_replace = _raise_unavailable_bnb
+    utils_stub.dequantize_bnb_weight = _raise_unavailable_bnb
+    utils_stub.replace_with_bnb_linear = _raise_unavailable_bnb
+    utils_stub._check_bnb_status = lambda _module: (False, False, False)
+    bnb_quantizer_stub = types.ModuleType(
+        "diffusers.quantizers.bitsandbytes.bnb_quantizer"
+    )
+    bnb_quantizer_stub.BnB4BitDiffusersQuantizer = _UnavailableBnBDiffusersQuantizer
+    bnb_quantizer_stub.BnB8BitDiffusersQuantizer = _UnavailableBnBDiffusersQuantizer
+    sys.modules["diffusers.quantizers.bitsandbytes"] = stub
+    sys.modules["diffusers.quantizers.bitsandbytes.utils"] = utils_stub
+    sys.modules[
+        "diffusers.quantizers.bitsandbytes.bnb_quantizer"
+    ] = bnb_quantizer_stub
+
+
 def _normalize_diffusion_offload_policy(value: Optional[str]) -> Optional[str]:
     if value is None:
         return None
@@ -2403,6 +2462,7 @@ class DiffusionBackend:
                 "torch runtime (re-run setup.sh / install.ps1) before "
                 "loading an image model."
             ) from exc
+        _guard_diffusers_optional_bitsandbytes()
 
         (
             resolved_offload_policy,

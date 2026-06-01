@@ -803,6 +803,38 @@ def test_unload_clears_state(monkeypatch):
     assert s["family"] is None
 
 
+def test_guard_diffusers_optional_bitsandbytes_stubs_failed_import(monkeypatch):
+    import builtins
+    import sys
+    import core.inference.diffusion as d
+
+    original_import = builtins.__import__
+    monkeypatch.delitem(sys.modules, "diffusers.quantizers.bitsandbytes", raising = False)
+    monkeypatch.delitem(sys.modules, "bitsandbytes", raising = False)
+
+    def _fake_import(name, globals = None, locals = None, fromlist = (), level = 0):
+        if name == "bitsandbytes":
+            raise RuntimeError("broken optional bnb")
+        return original_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", _fake_import)
+
+    d._guard_diffusers_optional_bitsandbytes()
+
+    stub = sys.modules["diffusers.quantizers.bitsandbytes"]
+    assert hasattr(stub, "BnB4BitDiffusersQuantizer")
+    assert "diffusers.quantizers.bitsandbytes.utils" in sys.modules
+    assert sys.modules[
+        "diffusers.quantizers.bitsandbytes.utils"
+    ]._check_bnb_status(None) == (False, False, False)
+    with pytest.raises(RuntimeError, match = "bitsandbytes failed to import"):
+        stub.BnB4BitDiffusersQuantizer()
+    with pytest.raises(RuntimeError, match = "bitsandbytes failed to import"):
+        sys.modules[
+            "diffusers.quantizers.bitsandbytes.utils"
+        ].replace_with_bnb_linear()
+
+
 # ── load_model (with monkey-patched diffusers) ──────────────────
 
 
