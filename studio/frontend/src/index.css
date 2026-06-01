@@ -852,6 +852,13 @@
 		@apply pointer-events-none absolute inset-0 m-auto size-[19px] rounded-full bg-primary/15 p-[3px] opacity-0 transition-opacity dark:bg-white/[0.14];
 	}
 
+	/* Icon-only (compact) pills are too small for the circle, so show a bare x. */
+	[data-pill-compact="true"]
+		.composer-pill-btn:not([data-keep-label])
+		.composer-pill-x {
+		@apply size-[15px] bg-transparent p-0 dark:bg-transparent;
+	}
+
 	/* Hovering an active pill swaps the icon for an X (click to turn off). */
 	.composer-pill-btn[data-active="true"]:hover .composer-pill-glyph > :not(.composer-pill-x),
 	.unsloth-thinking-pill[data-active="true"]:hover .composer-pill-glyph > :not(.composer-pill-x) {
