@@ -1271,7 +1271,10 @@ class TestBlackwellUltraSm103Coverage:
     """sm_103 (B300 / GB300) runs on the bundled base compute_100 PTX via JIT."""
 
     def test_profiles_list_sm103_wherever_sm100_is_shipped(self):
-        for name, profile in INSTALL_LLAMA_PREBUILT.DIRECT_LINUX_BUNDLE_PROFILES.items():
+        for (
+            name,
+            profile,
+        ) in INSTALL_LLAMA_PREBUILT.DIRECT_LINUX_BUNDLE_PROFILES.items():
             sms = {str(value) for value in profile["supported_sms"]}
             if "100" in sms:
                 assert "103" in sms, name
