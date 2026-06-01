@@ -136,7 +136,6 @@ class TestApplyRuntimeContextProbe:
         assert inst.requested_context_length is None
 
 
-
 class TestProbeRuntimeContextLength:
     def test_prefers_slots_endpoint(self, monkeypatch):
         inst = _backend(
