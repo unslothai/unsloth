@@ -2707,7 +2707,10 @@ def _resolve_diffusion_offload_policy(
     if gguf_quantized_cpu_resident is None:
         gguf_quantized_cpu_resident = bool(enable_model_cpu_offload)
     if gguf_pin_cpu_resident is None:
-        gguf_pin_cpu_resident = _env_pin_cpu_resident_gguf()
+        gguf_pin_cpu_resident = bool(
+            gguf_quantized_cpu_resident
+            and enable_model_cpu_offload
+        ) or _env_pin_cpu_resident_gguf()
     return (
         None,
         bool(enable_model_cpu_offload),

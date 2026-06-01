@@ -1805,8 +1805,8 @@ def test_load_model_flux2_dev_text_encoder_gguf_cpu_resident_when_offloading(mon
     assert _FakeLazyTextEncoder.calls[-1]["resident_device"] == "cpu"
     assert backend._pipe.kwargs["text_encoder"].resident_device == "cpu"
     assert patch_calls == [
-        (backend._pipe.kwargs["transformer"], "cpu", False),
-        (backend._pipe.kwargs["text_encoder"], "cpu", False),
+        (backend._pipe.kwargs["transformer"], "cpu", True),
+        (backend._pipe.kwargs["text_encoder"], "cpu", True),
     ]
 
 
@@ -1916,7 +1916,7 @@ def test_load_model_diffusion_gguf_cpu_resident_when_offloading(monkeypatch):
 
     assert status["is_loaded"] is True
     transformer = backend._pipe.kwargs["transformer"]
-    assert calls == [(transformer, "cpu", False)]
+    assert calls == [(transformer, "cpu", True)]
 
 
 def test_load_model_diffusion_gguf_cpu_resident_without_full_cpu_offload(monkeypatch):
@@ -1987,7 +1987,13 @@ def test_resolve_diffusion_offload_policy_modes(monkeypatch):
         enable_model_cpu_offload = True,
         gguf_quantized_cpu_resident = None,
         gguf_pin_cpu_resident = None,
-    ) == (None, True, True, False)
+    ) == (None, True, True, True)
+    assert d._resolve_diffusion_offload_policy(
+        offload_policy = None,
+        enable_model_cpu_offload = False,
+        gguf_quantized_cpu_resident = True,
+        gguf_pin_cpu_resident = None,
+    ) == (None, False, True, False)
 
 
 def test_load_model_offload_policy_aggressive(monkeypatch):
