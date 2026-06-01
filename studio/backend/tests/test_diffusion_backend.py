@@ -760,6 +760,65 @@ def test_flux2_klein_embedded_guidance_patch_is_opt_in(monkeypatch):
     assert d._enable_flux2_klein_embedded_guidance(pipe, fam) is False
 
 
+def test_flux2_klein_batched_cfg_batches_cond_and_uncond(monkeypatch):
+    import torch
+    from core.inference import diffusion as d
+
+    fam = next(f for f in d._FAMILIES if f.name == "flux.2-klein")
+    calls: list[dict[str, torch.Tensor]] = []
+
+    class _Transformer:
+        def forward(self, **kwargs):
+            calls.append(kwargs)
+            return (kwargs["hidden_states"] + kwargs["encoder_hidden_states"],)
+
+    pipe = SimpleNamespace(
+        transformer = _Transformer(),
+        do_classifier_free_guidance = True,
+    )
+    monkeypatch.delenv("UNSLOTH_STUDIO_FLUX2_KLEIN_BATCHED_CFG", raising = False)
+
+    assert d._enable_flux2_klein_batched_cfg(pipe, fam) is True
+
+    common = {
+        "timestep": torch.ones((1,), dtype = torch.float32),
+        "txt_ids": torch.zeros((1, 2, 4), dtype = torch.float32),
+        "img_ids": torch.zeros((1, 2, 4), dtype = torch.float32),
+        "return_dict": False,
+    }
+    cond = pipe.transformer.forward(
+        hidden_states = torch.ones((1, 2, 3), dtype = torch.float32),
+        encoder_hidden_states = torch.full((1, 2, 3), 10.0),
+        guidance = None,
+        **common,
+    )[0]
+    cond_view = cond[:, :2]
+    uncond = pipe.transformer.forward(
+        hidden_states = torch.full((1, 2, 3), 2.0),
+        encoder_hidden_states = torch.full((1, 2, 3), 20.0),
+        guidance = None,
+        **common,
+    )[0]
+
+    assert len(calls) == 1
+    assert calls[0]["hidden_states"].shape[0] == 2
+    assert calls[0]["encoder_hidden_states"].shape[0] == 2
+    torch.testing.assert_close(cond_view, torch.full((1, 2, 3), 11.0))
+    torch.testing.assert_close(uncond, torch.full((1, 2, 3), 22.0))
+    guided = uncond + 4.0 * (cond_view - uncond)
+    torch.testing.assert_close(guided, torch.full((1, 2, 3), -22.0))
+
+
+def test_flux2_klein_batched_cfg_can_be_disabled(monkeypatch):
+    from core.inference import diffusion as d
+
+    fam = next(f for f in d._FAMILIES if f.name == "flux.2-klein")
+    pipe = SimpleNamespace(transformer = SimpleNamespace(forward = lambda **_: None))
+    monkeypatch.setenv("UNSLOTH_STUDIO_FLUX2_KLEIN_BATCHED_CFG", "0")
+
+    assert d._enable_flux2_klein_batched_cfg(pipe, fam) is False
+
+
 def test_aggressive_memory_policy_enables_vae_slicing_and_tiling():
     from core.inference import diffusion as d
 

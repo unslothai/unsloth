@@ -2472,6 +2472,88 @@ def _enable_flux2_klein_embedded_guidance(pipe: Any, fam: Optional[DiffusionFami
     return True
 
 
+def _env_flux2_klein_batched_cfg_enabled() -> bool:
+    value = os.environ.get("UNSLOTH_STUDIO_FLUX2_KLEIN_BATCHED_CFG")
+    if value is None:
+        return True
+    return value.strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _enable_flux2_klein_batched_cfg(pipe: Any, fam: Optional[DiffusionFamily]) -> bool:
+    """Batch Flux2 Klein CFG branches while preserving Diffusers' CFG formula."""
+
+    if fam is None or fam.name != "flux.2-klein":
+        return False
+    if not _env_flux2_klein_batched_cfg_enabled():
+        return False
+    transformer = getattr(pipe, "transformer", None)
+    original_forward = getattr(transformer, "forward", None)
+    if transformer is None or original_forward is None:
+        return False
+    if getattr(transformer, "_unsloth_flux2_klein_batched_cfg_patched", False):
+        setattr(pipe, "_unsloth_flux2_klein_batched_cfg", True)
+        return True
+
+    import torch
+
+    pending: dict[str, Any] = {}
+
+    def _batched_cfg_forward(*args: Any, **kwargs: Any) -> Any:
+        if (
+            args
+            or kwargs.get("guidance", None) is not None
+            or kwargs.get("return_dict", False)
+            or not getattr(pipe, "do_classifier_free_guidance", False)
+        ):
+            pending.clear()
+            return original_forward(*args, **kwargs)
+
+        hidden_states = kwargs.get("hidden_states")
+        timestep = kwargs.get("timestep")
+        encoder_hidden_states = kwargs.get("encoder_hidden_states")
+        txt_ids = kwargs.get("txt_ids")
+        img_ids = kwargs.get("img_ids")
+        required = (hidden_states, timestep, encoder_hidden_states, txt_ids, img_ids)
+        if not all(hasattr(value, "shape") for value in required):
+            pending.clear()
+            return original_forward(*args, **kwargs)
+
+        if not pending:
+            placeholder = torch.empty_like(hidden_states)
+            pending["kwargs"] = dict(kwargs)
+            pending["placeholder"] = placeholder
+            pending["batch"] = int(hidden_states.shape[0])
+            return (placeholder,)
+
+        previous_kwargs = pending.pop("kwargs")
+        placeholder = pending.pop("placeholder")
+        cond_batch = int(pending.pop("batch"))
+        if int(hidden_states.shape[0]) != cond_batch:
+            pending.clear()
+            return original_forward(*args, **kwargs)
+
+        batched_kwargs = dict(previous_kwargs)
+        for key in ("hidden_states", "timestep", "encoder_hidden_states", "txt_ids", "img_ids"):
+            batched_kwargs[key] = torch.cat([previous_kwargs[key], kwargs[key]], dim = 0)
+        batched_kwargs["guidance"] = None
+        batched_kwargs["return_dict"] = False
+        output = original_forward(**batched_kwargs)
+        if not isinstance(output, tuple) or not output:
+            return output
+        batched_noise = output[0]
+        cond_noise, uncond_noise = batched_noise.split(
+            [cond_batch, int(hidden_states.shape[0])],
+            dim = 0,
+        )
+        placeholder.copy_(cond_noise)
+        return (uncond_noise, *output[1:])
+
+    transformer.forward = _batched_cfg_forward
+    setattr(transformer, "_unsloth_flux2_klein_batched_cfg_patched", True)
+    setattr(pipe, "_unsloth_flux2_klein_batched_cfg", True)
+    return True
+
+
 def _apply_diffusion_memory_policy(pipe: Any, offload_policy: Optional[str]) -> None:
     """Apply small per-pipeline memory knobs for Studio's VRAM presets."""
 
@@ -4118,6 +4200,10 @@ class DiffusionBackend:
                     if _enable_flux2_klein_embedded_guidance(pipe, fam):
                         logger.info(
                             "Enabled single-pass embedded guidance for Flux2 Klein."
+                        )
+                    elif _enable_flux2_klein_batched_cfg(pipe, fam):
+                        logger.info(
+                            "Enabled batched classifier-free guidance for Flux2 Klein."
                         )
                     _apply_diffusion_memory_policy(pipe, resolved_offload_policy)
                 except Exception:
