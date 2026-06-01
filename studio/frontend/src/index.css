@@ -808,7 +808,7 @@
 	}
 
 	.chat-composer-surface {
-		@apply relative flex w-full flex-col rounded-[32px] bg-background dark:bg-card px-1 pt-2 outline-none transition-shadow;
+		@apply relative flex w-full flex-col rounded-[32px] bg-background dark:bg-card px-3 py-3 outline-none transition-shadow;
 		font-family: var(--font-sans);
 		background-clip: padding-box;
 		box-shadow: 0 2px 8px -2px rgba(27, 27, 31, 0.16);
@@ -825,6 +825,14 @@
 
 	.composer-pill-btn[data-active="true"] {
 		color: var(--primary);
+	}
+
+	/* With more than 4 tools on, drop pill labels to icons only to cut clutter.
+	   Compare keeps its label via data-keep-label. */
+	[data-pill-compact="true"]
+		.composer-pill-btn:not([data-keep-label])
+		> span:not(.composer-pill-glyph) {
+		display: none;
 	}
 
 	/* Fixed-width icon slot so every pill's icon occupies the same space and
@@ -850,11 +858,11 @@
 	}
 
 	.composer-input {
-		@apply mt-2 mb-1 mx-3 min-h-12 w-[calc(100%-1.5rem)] resize-none overflow-y-auto bg-transparent pl-2 pr-4 pt-2 pb-3 text-sm font-[450] outline-none placeholder:text-muted-foreground focus-visible:ring-0;
+		@apply mb-1 min-h-12 w-full resize-none overflow-y-auto bg-transparent pl-2 pr-4 pt-2 pb-3 text-sm font-[450] outline-none placeholder:text-muted-foreground focus-visible:ring-0;
 	}
 
 	.composer-action-wrapper {
-		@apply relative mx-2 mb-2 flex items-center justify-between;
+		@apply relative flex items-center justify-between;
 	}
 
 	.composer-footer-note {

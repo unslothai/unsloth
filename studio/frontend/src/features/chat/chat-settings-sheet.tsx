@@ -1551,7 +1551,12 @@ function McpServersSection() {
     listMcpServers()
       .then((rows) => {
         if (cancelled) return;
-        setEnabledServerCount(rows.filter((row) => row.is_enabled).length);
+        const count = rows.filter((row) => row.is_enabled).length;
+        setEnabledServerCount(count);
+        // No enabled server left: MCP can't stay on for chat.
+        if (count === 0 && useChatRuntimeStore.getState().mcpEnabledForChat) {
+          useChatRuntimeStore.getState().setMcpEnabledForChat(false);
+        }
       })
       .catch(() => {
         if (!cancelled) setEnabledServerCount(0);

@@ -557,6 +557,9 @@ const Composer: FC<{
   const toolsEnabled = useChatRuntimeStore((s) => s.toolsEnabled);
   const codeToolsEnabled = useChatRuntimeStore((s) => s.codeToolsEnabled);
   const imageToolsEnabled = useChatRuntimeStore((s) => s.imageToolsEnabled);
+  const supportsBuiltinImageGeneration = useChatRuntimeStore(
+    (s) => s.supportsBuiltinImageGeneration,
+  );
   const artifactsEnabled = useChatRuntimeStore((s) => s.artifactsEnabled);
   const mcpEnabledForChat = useChatRuntimeStore((s) => s.mcpEnabledForChat);
   // Canvas and MCP are opt-in pills; show them in the order they were toggled on.
@@ -564,6 +567,14 @@ const Composer: FC<{
     canvas: artifactsEnabled,
     mcp: mcpEnabledForChat,
   });
+  // With more than 4 pills showing, collapse them to icons only to cut clutter.
+  // Counts pills that appear, on or off (Search and Code always show here).
+  const pillsCompact =
+    2 +
+      (supportsBuiltinImageGeneration ? 1 : 0) +
+      (artifactsEnabled ? 1 : 0) +
+      (mcpEnabledForChat ? 1 : 0) >
+    4;
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const setPendingImageEditReference = useChatRuntimeStore(
     (s) => s.setPendingImageEditReference,
@@ -733,7 +744,10 @@ const Composer: FC<{
         className="unsloth-composer-line"
         data-expanded={composerExpanded ? "true" : "false"}
       >
-        <div className="unsloth-composer-left">
+        <div
+          className="unsloth-composer-left"
+          data-pill-compact={pillsCompact ? "true" : undefined}
+        >
           <ComposerToolsMenu side={effectiveMenuSide} />
           {composerExpanded ? (
             <>
@@ -1412,7 +1426,7 @@ const CodeToolsToggle: FC = () => {
       <PillGlyph>
         <HugeiconsIcon
           icon={CodeIcon}
-          className="size-[19px]"
+          className="size-[18.5px]"
           strokeWidth={2}
         />
       </PillGlyph>
@@ -1595,26 +1609,36 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
   // Count of servers marked enabled in the manage dialog. MCP can only be
   // turned on once at least one exists; otherwise the menu opens the dialog.
   const [mcpServerCount, setMcpServerCount] = useState(0);
-  const refreshMcpCount = useCallback(() => {
+  // Set when the dialog is opened to configure the first server, so closing
+  // it with a valid server turns MCP on automatically.
+  const enableMcpOnClose = useRef(false);
+  const syncMcp = useCallback(() => {
     listMcpServers()
       .then((rows) => {
         const count = rows.filter((r) => r.is_enabled).length;
         setMcpServerCount(count);
-        // Keep the toggle honest: with no enabled server, MCP can't be on.
-        if (count === 0 && useChatRuntimeStore.getState().mcpEnabledForChat) {
-          useChatRuntimeStore.getState().setMcpEnabledForChat(false);
+        const store = useChatRuntimeStore.getState();
+        // Just configured a server via the toggle flow: turn MCP on.
+        if (count > 0 && enableMcpOnClose.current) {
+          store.setMcpEnabledForChat(true);
         }
+        // No enabled server left: MCP can't stay on.
+        if (count === 0 && store.mcpEnabledForChat) {
+          store.setMcpEnabledForChat(false);
+        }
+        enableMcpOnClose.current = false;
       })
       .catch(() => setMcpServerCount(0));
   }, []);
   useEffect(() => {
-    refreshMcpCount();
-  }, [refreshMcpCount]);
+    syncMcp();
+  }, [syncMcp]);
   const mcpActive = mcpEnabledForChat && mcpServerCount > 0;
   const onMcpSelect = () => {
     if (mcpServerCount > 0) {
       setMcpEnabledForChat(!mcpEnabledForChat);
     } else {
+      enableMcpOnClose.current = true;
       setMcpOpen(true);
     }
   };
@@ -1633,7 +1657,7 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
 
   return (
     <>
-    <DropdownMenu>
+    <DropdownMenu onOpenChange={(open) => open && syncMcp()}>
       <DropdownMenuTrigger asChild={true}>
         <button
           type="button"
@@ -1732,8 +1756,8 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
       open={mcpOpen}
       onOpenChange={(next) => {
         setMcpOpen(next);
-        // Re-read the enabled count after the user manages servers.
-        if (!next) refreshMcpCount();
+        // Re-sync after the user manages servers (enable on add, off when none).
+        if (!next) syncMcp();
       }}
     />
     </>

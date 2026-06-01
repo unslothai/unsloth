@@ -427,26 +427,36 @@ export function SharedComposer({
   );
   // Count of servers marked enabled; MCP toggles only when at least one exists.
   const [mcpServerCount, setMcpServerCount] = useState(0);
-  const refreshMcpCount = useCallback(() => {
+  // Set when the dialog is opened to configure the first server, so closing
+  // it with a valid server turns MCP on automatically.
+  const enableMcpOnClose = useRef(false);
+  const syncMcp = useCallback(() => {
     listMcpServers()
       .then((rows) => {
         const count = rows.filter((r) => r.is_enabled).length;
         setMcpServerCount(count);
-        // Keep the toggle honest: with no enabled server, MCP can't be on.
-        if (count === 0 && useChatRuntimeStore.getState().mcpEnabledForChat) {
-          useChatRuntimeStore.getState().setMcpEnabledForChat(false);
+        const store = useChatRuntimeStore.getState();
+        // Just configured a server via the toggle flow: turn MCP on.
+        if (count > 0 && enableMcpOnClose.current) {
+          store.setMcpEnabledForChat(true);
         }
+        // No enabled server left: MCP can't stay on.
+        if (count === 0 && store.mcpEnabledForChat) {
+          store.setMcpEnabledForChat(false);
+        }
+        enableMcpOnClose.current = false;
       })
       .catch(() => setMcpServerCount(0));
   }, []);
   useEffect(() => {
-    refreshMcpCount();
-  }, [refreshMcpCount]);
+    syncMcp();
+  }, [syncMcp]);
   const mcpActive = mcpEnabledForChat && mcpServerCount > 0;
   const onMcpSelect = () => {
     if (mcpServerCount > 0) {
       setMcpEnabledForChat(!mcpEnabledForChat);
     } else {
+      enableMcpOnClose.current = true;
       setMcpOpen(true);
     }
   };
@@ -647,6 +657,15 @@ export function SharedComposer({
   // Fetch pill: Anthropic-only (web_fetch_20250910 / web_fetch_20260209).
   const webFetchDisabled = !modelLoaded || !supportsBuiltinWebFetch;
   const showWebFetchPill = supportsBuiltinWebFetch;
+  // With more than 4 pills showing, collapse them to icons only to cut clutter.
+  // Counts pills that appear, on or off (Compare, Search and Code always show).
+  const pillsCompact =
+    3 +
+      (showImagePill ? 1 : 0) +
+      (showWebFetchPill ? 1 : 0) +
+      (artifactsEnabled ? 1 : 0) +
+      (mcpActive ? 1 : 0) >
+    4;
   // Backwards-compatible alias for any other call site that may still
   // reference `toolsDisabled` (rare; both pills used it before).
   const toolsDisabled = codeDisabled;
@@ -1115,7 +1134,10 @@ export function SharedComposer({
         dir="auto"
       />
       <div className="composer-action-wrapper">
-        <div className="flex items-center gap-1">
+        <div
+          className="flex items-center gap-1"
+          data-pill-compact={pillsCompact ? "true" : undefined}
+        >
           <input
             ref={fileInputRef}
             type="file"
@@ -1139,7 +1161,7 @@ export function SharedComposer({
           />
           {/* Same + side menu as the single-chat composer (ComposerToolsMenu),
               wired to the compare composer's own file/audio inputs and tools. */}
-          <DropdownMenu>
+          <DropdownMenu onOpenChange={(open) => open && syncMcp()}>
             <DropdownMenuTrigger asChild={true}>
               <button
                 type="button"
@@ -1251,9 +1273,24 @@ export function SharedComposer({
             open={mcpOpen}
             onOpenChange={(next) => {
               setMcpOpen(next);
-              if (!next) refreshMcpCount();
+              // Re-sync after managing servers (enable on add, off when none).
+              if (!next) syncMcp();
             }}
           />
+          {/* Active in compare mode; sits first. Click to exit back to single chat. */}
+          <button
+            type="button"
+            onClick={handleExitCompare}
+            className="composer-pill-btn"
+            data-active="true"
+            data-keep-label="true"
+            aria-label="Exit compare chat"
+          >
+            <PillGlyph>
+              <Columns2Icon className="size-[14px]" />
+            </PillGlyph>
+            <span>Compare</span>
+          </button>
           <button
             type="button"
             disabled={searchDisabled}
@@ -1294,24 +1331,11 @@ export function SharedComposer({
             <PillGlyph>
               <HugeiconsIcon
                 icon={CodeIcon}
-                className="size-[19px]"
+                className="size-[18.5px]"
                 strokeWidth={2}
               />
             </PillGlyph>
             <span>Code</span>
-          </button>
-          {/* Active in compare mode; click to exit back to single chat. */}
-          <button
-            type="button"
-            onClick={handleExitCompare}
-            className="composer-pill-btn"
-            data-active="true"
-            aria-label="Exit compare chat"
-          >
-            <PillGlyph>
-              <Columns2Icon className="size-[15px]" />
-            </PillGlyph>
-            <span>Compare</span>
           </button>
           {showImagePill && (
             <button
@@ -1397,7 +1421,8 @@ export function SharedComposer({
             ),
           )}
         </div>
-        <div className="ml-auto flex items-center gap-1">
+        {/* mr-0.5 matches the send button inset from the edge in normal chat. */}
+        <div className="ml-auto mr-0.5 flex items-center gap-1">
           {showReasoningControl ? (
             isEffort || supportsPreserveThinking ? (
               <DropdownMenu>
