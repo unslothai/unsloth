@@ -73,13 +73,21 @@ export function useRagDocuments(
   );
 
   const trackJob = useCallback(
-    (jobId: string, documentId: string) => {
+    (jobId: string, documentId: string, filename: string) => {
       if (trackedJobs.current.has(jobId)) return;
       const controller = new AbortController();
       trackedJobs.current.set(jobId, controller);
 
       const finish = (status: DocumentStatus, error?: string | null) => {
-        patchDoc(documentId, { status, error: error ?? null, progress: 1 });
+        if (status === "failed") {
+          // Don't leave a red "Failed" chip in the strip; drop it and warn.
+          setDocuments((rows) => rows.filter((row) => row.id !== documentId));
+          toast.error(`Couldn't index ${filename}`, {
+            description: error ?? "Indexing failed",
+          });
+        } else {
+          patchDoc(documentId, { status, error: null, progress: 1 });
+        }
         trackedJobs.current.delete(jobId);
       };
 
@@ -144,8 +152,9 @@ export function useRagDocuments(
     setLoading(true);
     try {
       // Merge server truth with any locally-tracked progress so a refresh
-      // mid-index doesn't blow away a live "running %" chip.
-      const rows = await lister();
+      // mid-index doesn't blow away a live "running %" chip. Failed documents
+      // are hidden from the strip (a toast warned at upload time).
+      const rows = (await lister()).filter((row) => row.status !== "failed");
       setDocuments((prev) =>
         rows.map((row) => {
           const tracked = prev.find((p) => p.id === row.id);
@@ -213,15 +222,12 @@ export function useRagDocuments(
               : row,
           ),
         );
-        trackJob(result.jobId, result.documentId);
+        trackJob(result.jobId, result.documentId, result.filename || file.name);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        setDocuments((rows) =>
-          rows.map((row) =>
-            row.id === tempId ? { ...row, status: "failed", error: message } : row,
-          ),
-        );
-        toast.error(`Upload failed: ${file.name}`, { description: message });
+        // Drop the chip rather than show a red "Failed" entry; warn via toast.
+        setDocuments((rows) => rows.filter((row) => row.id !== tempId));
+        toast.error(`Couldn't upload ${file.name}`, { description: message });
       }
     },
     [scope, trackJob],
