@@ -389,6 +389,8 @@ def test_load_forwards_text_encoder_gguf_fields(app_with_stub):
         "op": "load",
         "repo_id": "unsloth/FLUX.2-dev-GGUF",
         "gguf_filename": "flux2-dev-Q4_K_M.gguf",
+        "transformer_gguf_repo": None,
+        "transformer_gguf_filename": None,
         "base_repo": "black-forest-labs/FLUX.2-dev",
         "text_encoder_gguf_repo": "unsloth/Mistral-Small-3.2-24B-Instruct-2506-GGUF",
         "text_encoder_gguf_filename": "Mistral-Small-3.2-24B-Instruct-2506-UD-Q4_K_XL.gguf",
@@ -408,6 +410,84 @@ def test_load_forwards_text_encoder_gguf_fields(app_with_stub):
         "gguf_pin_cpu_resident": True,
         "ignore_public_load_pending_workload": "diffusion",
     }
+
+
+def test_load_forwards_transformer_gguf_component_fields(app_with_stub):
+    app, stub = app_with_stub
+    c = TestClient(app)
+
+    r = c.post(
+        "/api/inference/images/load",
+        json = {
+            "repo_id": "black-forest-labs/FLUX.2-dev",
+            "transformer_gguf_repo": "unsloth/FLUX.2-dev-GGUF",
+            "transformer_gguf_filename": "flux2-dev-Q4_K_M.gguf",
+        },
+    )
+    assert r.status_code == 200, r.text
+
+    assert stub.calls[-1]["repo_id"] == "black-forest-labs/FLUX.2-dev"
+    assert stub.calls[-1]["gguf_filename"] is None
+    assert stub.calls[-1]["transformer_gguf_repo"] == "unsloth/FLUX.2-dev-GGUF"
+    assert stub.calls[-1]["transformer_gguf_filename"] == "flux2-dev-Q4_K_M.gguf"
+    assert stub.calls[-1]["base_repo"] is None
+
+
+def test_load_preset_expands_to_component_swap(app_with_stub):
+    app, stub = app_with_stub
+    c = TestClient(app)
+
+    r = c.post(
+        "/api/inference/images/load",
+        json = {
+            "preset_id": "flux.2-klein-base-4b",
+            "transformer_quant": "Q4_K_M",
+            "text_encoder_gguf_filename": "qwen3-4b-BF16.gguf",
+        },
+    )
+    assert r.status_code == 200, r.text
+
+    assert stub.calls[-1]["repo_id"] == "black-forest-labs/FLUX.2-klein-base-4B"
+    assert stub.calls[-1]["gguf_filename"] is None
+    assert stub.calls[-1]["transformer_gguf_repo"] == (
+        "unsloth/FLUX.2-klein-base-4B-GGUF"
+    )
+    assert stub.calls[-1]["transformer_gguf_filename"] == (
+        "flux-2-klein-base-4b-Q4_K_M.gguf"
+    )
+    assert stub.calls[-1]["text_encoder_gguf_repo"] == "unsloth/Qwen3-4B-GGUF"
+    assert stub.calls[-1]["text_encoder_gguf_filename"] == "qwen3-4b-BF16.gguf"
+    assert stub.calls[-1]["family_override"] == "flux.2-klein"
+    assert stub.calls[-1]["offload_policy"] == "balanced"
+
+
+def test_load_preset_rejects_unknown_quantless_load(app_with_stub):
+    app, _ = app_with_stub
+    c = TestClient(app)
+
+    r = c.post(
+        "/api/inference/images/load",
+        json = {"preset_id": "flux.2-dev"},
+    )
+
+    assert r.status_code == 400, r.text
+    assert "transformer_gguf_filename" in r.json()["detail"]
+
+
+def test_diffusion_presets_endpoint(app_with_stub):
+    app, _ = app_with_stub
+    c = TestClient(app)
+
+    r = c.get("/api/inference/images/presets")
+
+    assert r.status_code == 200, r.text
+    presets = r.json()["presets"]
+    assert any(
+        entry["id"] == "flux.2-dev"
+        and entry["pipeline_repo"] == "black-forest-labs/FLUX.2-dev"
+        and entry["transformer_gguf_repo"] == "unsloth/FLUX.2-dev-GGUF"
+        for entry in presets
+    )
 
 
 def test_load_forwards_lora_fields(app_with_stub):

@@ -118,6 +118,16 @@ class DiffusionVariant:
     variant: str
     base_repo: str
     description: str
+    default_steps: Optional[int] = None
+    default_guidance_scale: Optional[float] = None
+    default_call_kwargs: dict[str, Any] = field(default_factory = dict)
+
+
+@dataclass(frozen = True)
+class DiffusionSamplingDefaults:
+    default_steps: int
+    default_guidance_scale: float
+    default_call_kwargs: dict[str, Any] = field(default_factory = dict)
 
 
 @dataclass(frozen = True)
@@ -127,6 +137,18 @@ class CuratedDiffusionGGUF:
     base_repo: str
     filename_prefixes: tuple[str, ...]
     variant: Optional[str] = None
+
+
+@dataclass(frozen = True)
+class DiffusionLoadPreset:
+    id: str
+    display_name: str
+    family: str
+    pipeline_repo: str
+    transformer_gguf_repo: str
+    transformer_filename_prefixes: tuple[str, ...]
+    variant: Optional[str] = None
+    recommended_offload_policy: str = DIFFUSION_OFFLOAD_POLICY_BALANCED
 
 
 @dataclass(frozen = True)
@@ -239,6 +261,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # so this default only fires for "custom HF repo" mode.
         base_repo = "black-forest-labs/FLUX.2-klein-4B",
         default_steps = 4,
+        default_guidance_scale = 1.0,
         aliases = ("flux2-klein", "flux-2-klein", "flux.2.klein"),
     ),
     DiffusionFamily(
@@ -247,6 +270,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         transformer_class = "Flux2Transformer2DModel",
         base_repo = "black-forest-labs/FLUX.2-dev",
         default_steps = 50,
+        default_guidance_scale = 4.0,
         aliases = ("flux2-dev", "flux-2-dev", "flux.2.dev"),
     ),
     DiffusionFamily(
@@ -254,6 +278,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         pipeline_class = "FluxKontextPipeline",
         transformer_class = "FluxTransformer2DModel",
         base_repo = "black-forest-labs/FLUX.1-Kontext-dev",
+        default_steps = 28,
+        default_guidance_scale = 2.5,
         requires_image_input = True,
         aliases = (
             "flux1-kontext",
@@ -283,6 +309,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         pipeline_class = "FluxPipeline",
         transformer_class = "FluxTransformer2DModel",
         base_repo = "black-forest-labs/FLUX.1-dev",
+        default_steps = 50,
+        default_guidance_scale = 3.5,
         aliases = ("flux1-dev", "flux-1-dev", "flux.1.dev", "flux-dev"),
     ),
     DiffusionFamily(
@@ -305,6 +333,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         default_steps = 40,
         default_guidance_scale = 4.0,
         default_negative_prompt = " ",
+        default_call_kwargs = {"guidance_scale": 1.0},
         requires_image_input = True,
         aliases = ("qwenimageedit2511", "qwen_image_edit_2511", "qwen-image-edit-2511"),
     ),
@@ -314,9 +343,10 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         transformer_class = "QwenImageTransformer2DModel",
         base_repo = "Qwen/Qwen-Image-Edit-2509",
         guidance_kwarg = "true_cfg_scale",
-        default_steps = 50,
+        default_steps = 40,
         default_guidance_scale = 4.0,
         default_negative_prompt = " ",
+        default_call_kwargs = {"guidance_scale": 1.0},
         requires_image_input = True,
         aliases = ("qwenimageedit2509", "qwen_image_edit_2509", "qwen-image-edit-2509"),
     ),
@@ -341,6 +371,13 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         default_steps = 50,
         default_guidance_scale = 4.0,
         default_negative_prompt = " ",
+        default_width = 640,
+        default_height = 640,
+        default_call_kwargs = {
+            "layers": 4,
+            "cfg_normalize": True,
+            "use_en_prompt": True,
+        },
         requires_image_input = True,
         aliases = ("qwenimagelayered", "qwen_image_layered", "qwen-image-layered"),
     ),
@@ -371,6 +408,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         base_repo = "Tongyi-MAI/Z-Image",
         default_steps = 50,
         default_guidance_scale = 4.0,
+        default_call_kwargs = {"cfg_normalization": False},
         aliases = ("zimage", "z_image", "z-image"),
     ),
     DiffusionFamily(
@@ -400,6 +438,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         pipeline_class = "StableDiffusion3Pipeline",
         transformer_class = "SD3Transformer2DModel",
         base_repo = "stabilityai/stable-diffusion-3-medium-diffusers",
+        default_steps = 28,
+        default_guidance_scale = 7.0,
         # Intentionally NOT including "sd3.5" / "stable-diffusion-3.5"
         # here: the SD3.5 family uses a different transformer config and
         # base repo than SD3 Medium, and silently pairing SD3.5 GGUFs
@@ -476,6 +516,8 @@ _FULL_REPO_FAMILIES: tuple[DiffusionFamily, ...] = (
         pipeline_class = "StableDiffusionXLPipeline",
         transformer_class = "",
         base_repo = "stabilityai/stable-diffusion-xl-base-1.0",
+        default_steps = 40,
+        default_guidance_scale = 5.0,
         supports_gguf_single_file = False,
         aliases = ("sdxl",),
     ),
@@ -942,24 +984,32 @@ _DIFFUSION_VARIANTS: tuple[DiffusionVariant, ...] = (
         variant = "distilled-4b",
         base_repo = "black-forest-labs/FLUX.2-klein-4B",
         description = "distilled 4B",
+        default_steps = 4,
+        default_guidance_scale = 1.0,
     ),
     DiffusionVariant(
         family = "flux.2-klein",
         variant = "distilled-9b",
         base_repo = "black-forest-labs/FLUX.2-klein-9B",
         description = "distilled 9B",
+        default_steps = 4,
+        default_guidance_scale = 1.0,
     ),
     DiffusionVariant(
         family = "flux.2-klein",
         variant = "base-4b",
         base_repo = "black-forest-labs/FLUX.2-klein-base-4B",
         description = "base 4B",
+        default_steps = 50,
+        default_guidance_scale = 4.0,
     ),
     DiffusionVariant(
         family = "flux.2-klein",
         variant = "base-9b",
         base_repo = "black-forest-labs/FLUX.2-klein-base-9B",
         description = "base 9B",
+        default_steps = 50,
+        default_guidance_scale = 4.0,
     ),
 )
 
@@ -1091,6 +1141,61 @@ _CURATED_UNSLOTH_DIFFUSION_GGUFS: tuple[CuratedDiffusionGGUF, ...] = (
 _CURATED_UNSLOTH_DIFFUSION_GGUFS_BY_REPO: dict[str, CuratedDiffusionGGUF] = {
     spec.repo_id.lower(): spec
     for spec in _CURATED_UNSLOTH_DIFFUSION_GGUFS
+}
+
+
+def _preset_id_from_curated_diffusion_gguf(spec: CuratedDiffusionGGUF) -> str:
+    leaf = _repo_leaf(spec.repo_id)
+    if leaf.endswith("-gguf"):
+        leaf = leaf[:-5]
+    return leaf.replace("_", "-")
+
+
+def _title_from_preset_id(preset_id: str) -> str:
+    special = {
+        "flux": "FLUX",
+        "qwen": "Qwen",
+        "z": "Z",
+        "ernie": "ERNIE",
+        "sd3": "SD3",
+        "sdxl": "SDXL",
+    }
+    words = []
+    for raw in re.split(r"[-_.]+", preset_id):
+        if not raw:
+            continue
+        words.append(special.get(raw, raw.upper() if raw in {"gguf"} else raw.capitalize()))
+    return " ".join(words)
+
+
+def _diffusion_preset_from_curated_gguf(
+    spec: CuratedDiffusionGGUF,
+) -> DiffusionLoadPreset:
+    preset_id = _preset_id_from_curated_diffusion_gguf(spec)
+    return DiffusionLoadPreset(
+        id = preset_id,
+        display_name = _title_from_preset_id(preset_id),
+        family = spec.family,
+        pipeline_repo = spec.base_repo,
+        transformer_gguf_repo = spec.repo_id,
+        transformer_filename_prefixes = spec.filename_prefixes,
+        variant = spec.variant,
+    )
+
+
+_CURATED_DIFFUSION_PRESETS: tuple[DiffusionLoadPreset, ...] = tuple(
+    _diffusion_preset_from_curated_gguf(spec)
+    for spec in _CURATED_UNSLOTH_DIFFUSION_GGUFS
+)
+
+_CURATED_DIFFUSION_PRESETS_BY_ID: dict[str, DiffusionLoadPreset] = {
+    key: preset
+    for preset in _CURATED_DIFFUSION_PRESETS
+    for key in (
+        preset.id.lower(),
+        preset.transformer_gguf_repo.lower(),
+        _repo_leaf(preset.transformer_gguf_repo).lower(),
+    )
 }
 
 
@@ -1270,16 +1375,24 @@ def _resolve_diffusion_base_repo(
     """
 
     if not gguf_filename:
+        variant = None
+        if fam.name in _DIFFUSION_VARIANTS_BY_FAMILY:
+            variant = _variant_from_text_for_family(fam.name, _repo_leaf(repo_id))
         return DiffusionBaseRepoResolution(
             base_repo = _expand_existing_local_path(repo_id),
             source = "full_repo",
             confidence = "explicit",
+            variant = variant,
         )
     if base_repo:
+        variant = None
+        if fam.name in _DIFFUSION_VARIANTS_BY_FAMILY:
+            variant = _variant_from_text_for_family(fam.name, _repo_leaf(base_repo))
         return DiffusionBaseRepoResolution(
             base_repo = _expand_existing_local_path(base_repo),
             source = "explicit",
             confidence = "explicit",
+            variant = variant,
         )
     curated = _curated_unsloth_diffusion_gguf(repo_id)
     if (
@@ -1357,6 +1470,333 @@ def _pipeline_is_distilled(pipe: Any) -> Optional[bool]:
     return _optional_bool(getattr(config, "is_distilled", None))
 
 
+def _sampling_defaults_for_family(
+    fam: DiffusionFamily,
+    *,
+    base_repo_variant: Optional[str] = None,
+) -> DiffusionSamplingDefaults:
+    default_steps = fam.default_steps
+    default_guidance_scale = fam.default_guidance_scale
+    default_call_kwargs = dict(fam.default_call_kwargs)
+
+    if base_repo_variant is not None:
+        variant = _DIFFUSION_VARIANT_BY_FAMILY_AND_ID.get(
+            (fam.name, base_repo_variant)
+        )
+        if variant is not None:
+            if variant.default_steps is not None:
+                default_steps = variant.default_steps
+            if variant.default_guidance_scale is not None:
+                default_guidance_scale = variant.default_guidance_scale
+            default_call_kwargs.update(variant.default_call_kwargs)
+
+    return DiffusionSamplingDefaults(
+        default_steps = int(default_steps),
+        default_guidance_scale = float(default_guidance_scale),
+        default_call_kwargs = default_call_kwargs,
+    )
+
+
+def _family_by_name(name: str) -> Optional[DiffusionFamily]:
+    for fam in _FAMILIES + _FULL_REPO_FAMILIES:
+        if fam.name == name:
+            return fam
+    return None
+
+
+def _preset_default_text_encoder_gguf_repo(fam: DiffusionFamily) -> Optional[str]:
+    if (
+        fam.name.startswith("ernie-image")
+        or fam.name.startswith("qwen-image")
+        or fam.name.startswith("z-image")
+        or fam.name in {"flux.2", "flux.2-klein"}
+    ):
+        return _default_text_encoder_gguf_repo(fam)
+    return None
+
+
+def _public_diffusion_preset(preset: DiffusionLoadPreset) -> dict[str, Any]:
+    fam = _family_by_name(preset.family)
+    defaults = (
+        _sampling_defaults_for_family(fam, base_repo_variant = preset.variant)
+        if fam is not None
+        else None
+    )
+    return {
+        "id": preset.id,
+        "display_name": preset.display_name,
+        "family": preset.family,
+        "variant": preset.variant,
+        "pipeline_repo": preset.pipeline_repo,
+        "transformer_gguf_repo": preset.transformer_gguf_repo,
+        "transformer_filename_prefixes": list(preset.transformer_filename_prefixes),
+        "recommended_offload_policy": preset.recommended_offload_policy,
+        "default_steps": defaults.default_steps if defaults is not None else None,
+        "default_guidance_scale": (
+            defaults.default_guidance_scale if defaults is not None else None
+        ),
+        "default_call_kwargs": (
+            dict(defaults.default_call_kwargs) if defaults is not None else {}
+        ),
+        "default_width": fam.default_width if fam is not None else None,
+        "default_height": fam.default_height if fam is not None else None,
+        "requires_image_input": bool(fam.requires_image_input) if fam is not None else False,
+        "default_text_encoder_gguf_repo": (
+            _preset_default_text_encoder_gguf_repo(fam) if fam is not None else None
+        ),
+        "default_prompt_enhancer_gguf_repo": (
+            _default_prompt_enhancer_gguf_repo(fam) if fam is not None else None
+        ),
+    }
+
+
+def curated_diffusion_presets() -> list[dict[str, Any]]:
+    """Return Studio's first-class image presets.
+
+    A preset is only a load plan: it selects the normal Diffusers
+    pipeline repo and the compatible Unsloth transformer GGUF repo.
+    The caller still chooses the actual GGUF filename/quant, so adding
+    new quant files does not require backend code changes.
+    """
+
+    return [
+        _public_diffusion_preset(preset)
+        for preset in _CURATED_DIFFUSION_PRESETS
+    ]
+
+
+def _resolve_diffusion_preset(preset_id: str) -> DiffusionLoadPreset:
+    preset = _CURATED_DIFFUSION_PRESETS_BY_ID.get(str(preset_id).lower())
+    if preset is None:
+        known = ", ".join(preset.id for preset in _CURATED_DIFFUSION_PRESETS)
+        raise ValueError(
+            f"Unknown diffusion preset_id '{preset_id}'. Known presets: {known}."
+        )
+    return preset
+
+
+def _quant_label_to_gguf_filename(
+    preset: DiffusionLoadPreset,
+    quant: Optional[str],
+) -> Optional[str]:
+    if quant is None:
+        return None
+    label = str(quant).strip()
+    if not label:
+        return None
+    if "/" in label or "\\" in label:
+        raise ValueError("transformer_quant must be a quant label, not a path.")
+    if label.lower().endswith(".gguf"):
+        label = label[:-5]
+    if label.lower().endswith(".safetensors"):
+        raise ValueError("transformer_quant must name a GGUF quant, not safetensors.")
+    return f"{preset.transformer_filename_prefixes[0]}{label}.gguf"
+
+
+def resolve_diffusion_load_plan(
+    *,
+    preset_id: Optional[str] = None,
+    repo_id: Optional[str] = None,
+    gguf_filename: Optional[str] = None,
+    transformer_gguf_repo: Optional[str] = None,
+    transformer_gguf_filename: Optional[str] = None,
+    transformer_quant: Optional[str] = None,
+    base_repo: Optional[str] = None,
+    text_encoder_gguf_repo: Optional[str] = None,
+    text_encoder_gguf_filename: Optional[str] = None,
+    text_encoder_gguf_component: Optional[str] = None,
+    prompt_enhancer_gguf_repo: Optional[str] = None,
+    prompt_enhancer_gguf_filename: Optional[str] = None,
+    lora_repo: Optional[str] = None,
+    lora_weight_name: Optional[str] = None,
+    lora_adapter_name: Optional[str] = None,
+    lora_scale: Optional[float] = None,
+    lora_fuse: bool = False,
+    family_override: Optional[str] = None,
+    offload_policy: Optional[str] = None,
+    require_loadable: bool = False,
+) -> dict[str, Any]:
+    """Expand a Studio preset into concrete DiffusionBackend kwargs.
+
+    Direct repo loading remains generic. This helper only applies the
+    curated Studio opinion when ``preset_id`` is supplied: use the
+    preset's normal Diffusers pipeline repo, swap the transformer from
+    the paired GGUF repo, and fill known component repos when the caller
+    selected a text/prompt-enhancer GGUF filename.
+    """
+
+    if preset_id is None:
+        if not repo_id:
+            raise ValueError("repo_id is required when preset_id is not set.")
+        load_kwargs = {
+            "repo_id": repo_id,
+            "gguf_filename": gguf_filename,
+            "transformer_gguf_repo": transformer_gguf_repo,
+            "transformer_gguf_filename": transformer_gguf_filename,
+            "base_repo": base_repo,
+            "text_encoder_gguf_repo": text_encoder_gguf_repo,
+            "text_encoder_gguf_filename": text_encoder_gguf_filename,
+            "text_encoder_gguf_component": text_encoder_gguf_component,
+            "prompt_enhancer_gguf_repo": prompt_enhancer_gguf_repo,
+            "prompt_enhancer_gguf_filename": prompt_enhancer_gguf_filename,
+            "lora_repo": lora_repo,
+            "lora_weight_name": lora_weight_name,
+            "lora_adapter_name": lora_adapter_name,
+            "lora_scale": lora_scale,
+            "lora_fuse": lora_fuse,
+            "family_override": family_override,
+            "offload_policy": offload_policy,
+        }
+        return {
+            "preset": None,
+            "ready_to_load": True,
+            "load_kwargs": load_kwargs,
+            "component_sources": {},
+            "warnings": [],
+        }
+
+    preset = _resolve_diffusion_preset(preset_id)
+    fam = _family_by_name(preset.family)
+    if fam is None:
+        raise ValueError(
+            f"Diffusion preset '{preset_id}' references unknown family "
+            f"'{preset.family}'."
+        )
+
+    planned_repo_id = repo_id or preset.pipeline_repo
+    if base_repo and _expand_existing_local_path(base_repo) != _expand_existing_local_path(planned_repo_id):
+        raise ValueError(
+            "Preset loads use repo_id as the normal Diffusers pipeline repo. "
+            "Omit base_repo or set it to the same repo_id."
+        )
+
+    planned_transformer_repo = transformer_gguf_repo or preset.transformer_gguf_repo
+    planned_transformer_filename = (
+        transformer_gguf_filename
+        or gguf_filename
+        or _quant_label_to_gguf_filename(preset, transformer_quant)
+    )
+    if require_loadable and not planned_transformer_filename:
+        raise ValueError(
+            "Preset diffusion loads require transformer_gguf_filename, "
+            "gguf_filename, or transformer_quant."
+        )
+    if (
+        planned_transformer_filename
+        and planned_transformer_repo.lower() == preset.transformer_gguf_repo.lower()
+        and not any(
+            _repo_leaf(planned_transformer_filename).lower().startswith(prefix.lower())
+            for prefix in preset.transformer_filename_prefixes
+        )
+    ):
+        prefixes = ", ".join(preset.transformer_filename_prefixes)
+        raise ValueError(
+            f"GGUF filename '{planned_transformer_filename}' does not match "
+            f"preset '{preset.id}' prefixes: {prefixes}."
+        )
+
+    planned_text_repo = text_encoder_gguf_repo
+    if text_encoder_gguf_filename and not planned_text_repo:
+        planned_text_repo = _default_text_encoder_gguf_repo(fam)
+    planned_pe_repo = prompt_enhancer_gguf_repo
+    if prompt_enhancer_gguf_filename and not planned_pe_repo:
+        planned_pe_repo = _default_prompt_enhancer_gguf_repo(fam)
+    defaults = _sampling_defaults_for_family(fam, base_repo_variant = preset.variant)
+
+    load_kwargs = {
+        "repo_id": planned_repo_id,
+        "gguf_filename": None,
+        "transformer_gguf_repo": planned_transformer_repo,
+        "transformer_gguf_filename": planned_transformer_filename,
+        "base_repo": None,
+        "text_encoder_gguf_repo": planned_text_repo,
+        "text_encoder_gguf_filename": text_encoder_gguf_filename,
+        "text_encoder_gguf_component": text_encoder_gguf_component,
+        "prompt_enhancer_gguf_repo": planned_pe_repo,
+        "prompt_enhancer_gguf_filename": prompt_enhancer_gguf_filename,
+        "lora_repo": lora_repo,
+        "lora_weight_name": lora_weight_name,
+        "lora_adapter_name": lora_adapter_name,
+        "lora_scale": lora_scale,
+        "lora_fuse": lora_fuse,
+        "family_override": family_override or preset.family,
+        "offload_policy": offload_policy or preset.recommended_offload_policy,
+    }
+    ready_to_load = bool(planned_transformer_filename)
+    return {
+        "preset": _public_diffusion_preset(preset),
+        "ready_to_load": ready_to_load,
+        "load_kwargs": load_kwargs,
+        "component_sources": _build_diffusion_component_sources(
+            pipeline_repo = planned_repo_id,
+            diffusion_gguf_repo = planned_transformer_repo,
+            diffusion_gguf_filename = planned_transformer_filename,
+            text_encoder_gguf_repo = planned_text_repo,
+            text_encoder_gguf_filename = text_encoder_gguf_filename,
+            text_encoder_component = text_encoder_gguf_component,
+            prompt_enhancer_gguf_repo = planned_pe_repo,
+            prompt_enhancer_gguf_filename = prompt_enhancer_gguf_filename,
+            lora_state = None,
+        ),
+        "sampling_defaults": {
+            "num_inference_steps": defaults.default_steps,
+            "guidance_scale": defaults.default_guidance_scale,
+            "call_kwargs": dict(defaults.default_call_kwargs),
+            "width": fam.default_width,
+            "height": fam.default_height,
+        },
+        "warnings": [],
+    }
+
+
+def _pipe_call_default(pipe: Any, name: str) -> Any:
+    import inspect
+
+    try:
+        param = inspect.signature(pipe.__call__).parameters.get(name)
+    except (TypeError, ValueError):
+        return None
+    if param is None or param.default is inspect.Parameter.empty:
+        return None
+    return param.default
+
+
+def _guidance_kwarg_for_pipe(pipe: Any, fam: Optional[DiffusionFamily]) -> str:
+    if fam is not None and fam.name != "diffusers":
+        return fam.guidance_kwarg
+    if _pipe_accepts_kwarg(pipe, "guidance_scale"):
+        return "guidance_scale"
+    if _pipe_accepts_kwarg(pipe, "true_cfg_scale"):
+        return "true_cfg_scale"
+    return "guidance_scale"
+
+
+def _sampling_defaults_for_loaded_pipeline(
+    pipe: Any,
+    fam: Optional[DiffusionFamily],
+    *,
+    base_repo_variant: Optional[str] = None,
+) -> DiffusionSamplingDefaults:
+    if fam is not None and fam.name != "diffusers":
+        return _sampling_defaults_for_family(
+            fam,
+            base_repo_variant = base_repo_variant,
+        )
+
+    steps = _pipe_call_default(pipe, "num_inference_steps")
+    guidance_kwarg = _guidance_kwarg_for_pipe(pipe, fam)
+    guidance = _pipe_call_default(pipe, guidance_kwarg)
+    return DiffusionSamplingDefaults(
+        default_steps = int(steps) if isinstance(steps, int) else 24,
+        default_guidance_scale = (
+            float(guidance)
+            if isinstance(guidance, (int, float))
+            else 3.5
+        ),
+        default_call_kwargs = {},
+    )
+
+
 def _guidance_semantics(
     fam: Optional[DiffusionFamily],
     *,
@@ -1397,6 +1837,12 @@ def _build_sampling_contract(
     scheduler = getattr(pipe, "scheduler", None)
     scheduler_config = getattr(scheduler, "config", None)
     is_distilled = _pipeline_is_distilled(pipe)
+    defaults = _sampling_defaults_for_loaded_pipeline(
+        pipe,
+        fam,
+        base_repo_variant = base_repo_variant,
+    )
+    guidance_kwarg = _guidance_kwarg_for_pipe(pipe, fam)
     return DiffusionSamplingContract(
         family = fam.name,
         media_kind = fam.media_kind,
@@ -1410,9 +1856,9 @@ def _build_sampling_contract(
         scheduler_class = _optional_class_name(scheduler),
         scheduler_config_class = _optional_class_name(scheduler_config),
         pipeline_is_distilled = is_distilled,
-        guidance_kwarg = fam.guidance_kwarg,
-        default_guidance_scale = float(fam.default_guidance_scale),
-        default_steps = int(fam.default_steps),
+        guidance_kwarg = guidance_kwarg,
+        default_guidance_scale = defaults.default_guidance_scale,
+        default_steps = defaults.default_steps,
         guidance_semantics = _guidance_semantics(
             fam,
             is_distilled = is_distilled,
@@ -1422,7 +1868,7 @@ def _build_sampling_contract(
         default_height = int(fam.default_height),
         requires_image_input = bool(fam.requires_image_input),
         has_default_negative_prompt = fam.default_negative_prompt is not None,
-        default_call_kwargs = dict(fam.default_call_kwargs),
+        default_call_kwargs = defaults.default_call_kwargs,
     )
 
 
@@ -2270,6 +2716,70 @@ def _resolve_diffusion_offload_policy(
     )
 
 
+def _component_source_repo(repo: Optional[str]) -> Optional[str]:
+    return _display_repo_id(repo) if repo else None
+
+
+def _build_diffusion_component_sources(
+    *,
+    pipeline_repo: str,
+    diffusion_gguf_repo: Optional[str],
+    diffusion_gguf_filename: Optional[str],
+    text_encoder_gguf_repo: Optional[str],
+    text_encoder_gguf_filename: Optional[str],
+    text_encoder_component: Optional[str],
+    prompt_enhancer_gguf_repo: Optional[str],
+    prompt_enhancer_gguf_filename: Optional[str],
+    lora_state: Optional[DiffusionLoraState],
+) -> dict[str, Any]:
+    """Describe which repo owns each loaded pipeline component."""
+
+    sources: dict[str, Any] = {
+        "pipeline": {
+            "source": "repo",
+            "repo": _component_source_repo(pipeline_repo),
+        },
+        "scheduler": {
+            "source": "pipeline_repo",
+            "repo": _component_source_repo(pipeline_repo),
+        },
+        "vae": {
+            "source": "pipeline_repo",
+            "repo": _component_source_repo(pipeline_repo),
+        },
+        "tokenizers": {
+            "source": "pipeline_repo",
+            "repo": _component_source_repo(pipeline_repo),
+        },
+        "transformer": {
+            "source": "pipeline_repo",
+            "repo": _component_source_repo(pipeline_repo),
+        },
+    }
+    if diffusion_gguf_filename:
+        sources["transformer"] = {
+            "source": "gguf",
+            "repo": _component_source_repo(diffusion_gguf_repo),
+            "filename": Path(diffusion_gguf_filename).name,
+        }
+    if text_encoder_gguf_filename:
+        component = text_encoder_component or "text_encoder"
+        sources[component] = {
+            "source": "gguf",
+            "repo": _component_source_repo(text_encoder_gguf_repo),
+            "filename": Path(text_encoder_gguf_filename).name,
+        }
+    if prompt_enhancer_gguf_filename:
+        sources["pe"] = {
+            "source": "gguf",
+            "repo": _component_source_repo(prompt_enhancer_gguf_repo),
+            "filename": Path(prompt_enhancer_gguf_filename).name,
+        }
+    if lora_state is not None:
+        sources["lora"] = lora_state.as_public_dict()
+    return sources
+
+
 # ─── Backend ──────────────────────────────────────────────────────────
 
 
@@ -2306,6 +2816,7 @@ class DiffusionBackend:
         self._generate_lock = threading.Lock()
         self._family: Optional[DiffusionFamily] = None
         self._repo_id: Optional[str] = None
+        self._diffusion_gguf_repo: Optional[str] = None
         self._gguf_path: Optional[str] = None
         # Original ``gguf_filename`` the caller passed in, preserved
         # so delete guards can compare against subdirectory variants
@@ -2321,6 +2832,7 @@ class DiffusionBackend:
         self._prompt_enhancer_gguf_path: Optional[str] = None
         self._prompt_enhancer_gguf_filename: Optional[str] = None
         self._lora_state: Optional[DiffusionLoraState] = None
+        self._component_sources: dict[str, Any] = {}
         self._base_repo: Optional[str] = None
         self._base_repo_source: Optional[str] = None
         self._base_repo_confidence: Optional[str] = None
@@ -2354,6 +2866,7 @@ class DiffusionBackend:
         # in the finally block. The route layer reads them via
         # status() under _lock.
         self._pending_repo_id: Optional[str] = None
+        self._pending_diffusion_gguf_repo: Optional[str] = None
         self._pending_base_repo: Optional[str] = None
         self._pending_base_repo_source: Optional[str] = None
         self._pending_base_repo_confidence: Optional[str] = None
@@ -2403,6 +2916,7 @@ class DiffusionBackend:
             # during a swap so the panel shows the load target the
             # user just clicked.
             active_repo = self._repo_id
+            active_diffusion_gguf_repo = self._diffusion_gguf_repo
             active_base = self._base_repo
             active_base_source = self._base_repo_source
             active_base_confidence = self._base_repo_confidence
@@ -2415,7 +2929,11 @@ class DiffusionBackend:
             active_pe_repo = self._prompt_enhancer_gguf_repo
             active_pe_gguf = self._prompt_enhancer_gguf_filename
             active_lora_state = self._lora_state
+            active_component_sources = dict(self._component_sources)
             pending_repo = self._pending_repo_id if self._loading else None
+            pending_diffusion_gguf_repo = (
+                self._pending_diffusion_gguf_repo if self._loading else None
+            )
             pending_base = self._pending_base_repo if self._loading else None
             pending_base_source = self._pending_base_repo_source if self._loading else None
             pending_base_confidence = self._pending_base_repo_confidence if self._loading else None
@@ -2478,6 +2996,7 @@ class DiffusionBackend:
                 "is_loaded": self._pipe is not None,
                 "is_loading": self._loading,
                 "repo_id": _display_repo_id(pending_repo or active_repo),
+                "pipeline_repo": _display_repo_id(pending_base or active_base),
                 "family": ui_family,
                 "pipeline_class": ui_pipeline_class,
                 "media_kind": ui_media_kind,
@@ -2492,11 +3011,20 @@ class DiffusionBackend:
                     else None
                 ),
                 "gguf_filename": ui_gguf_basename,
+                "transformer_gguf_repo": _display_repo_id(
+                    pending_diffusion_gguf_repo or active_diffusion_gguf_repo
+                ),
+                "transformer_gguf_filename": ui_gguf_basename,
                 "text_encoder_gguf_repo": _display_repo_id(pending_te_repo or active_te_repo),
                 "text_encoder_gguf_filename": ui_te_gguf_basename,
                 "prompt_enhancer_gguf_repo": _display_repo_id(pending_pe_repo or active_pe_repo),
                 "prompt_enhancer_gguf_filename": ui_pe_gguf_basename,
                 "lora": active_lora_public,
+                "component_sources": (
+                    active_component_sources
+                    if active_component_sources and not pending_repo
+                    else None
+                ),
                 "gguf_quantized_cpu_resident": self._gguf_quantized_cpu_resident,
                 "gguf_pin_cpu_resident": self._gguf_pin_cpu_resident,
                 "offload_policy": self._offload_policy,
@@ -2518,6 +3046,7 @@ class DiffusionBackend:
                 payload.update(
                     {
                         "active_repo_id": active_repo,
+                        "active_diffusion_gguf_repo": active_diffusion_gguf_repo,
                         "active_base_repo": active_base,
                         "active_base_repo_source": active_base_source,
                         "active_base_repo_confidence": active_base_confidence,
@@ -2533,6 +3062,7 @@ class DiffusionBackend:
                             active_lora_state.weight_name if active_lora_state else None
                         ),
                         "pending_repo_id": pending_repo,
+                        "pending_diffusion_gguf_repo": pending_diffusion_gguf_repo,
                         "pending_base_repo": pending_base,
                         "pending_base_repo_source": pending_base_source,
                         "pending_base_repo_confidence": pending_base_confidence,
@@ -2553,9 +3083,24 @@ class DiffusionBackend:
         """Return generation defaults for the currently loaded family."""
         with self._lock:
             fam = self._family
+            pipe = self._pipe
+            base_repo_variant = self._base_repo_variant
+        defaults = (
+            _sampling_defaults_for_loaded_pipeline(
+                pipe,
+                fam,
+                base_repo_variant = base_repo_variant,
+            )
+            if pipe is not None
+            else None
+        )
         return {
-            "num_inference_steps": fam.default_steps if fam is not None else 24,
-            "guidance_scale": fam.default_guidance_scale if fam is not None else 3.5,
+            "num_inference_steps": (
+                defaults.default_steps if defaults is not None else 24
+            ),
+            "guidance_scale": (
+                defaults.default_guidance_scale if defaults is not None else 3.5
+            ),
             "width": fam.default_width if fam is not None else 1024,
             "height": fam.default_height if fam is not None else 1024,
         }
@@ -2597,6 +3142,8 @@ class DiffusionBackend:
         repo_id: str,
         *,
         gguf_filename: Optional[str] = None,
+        transformer_gguf_repo: Optional[str] = None,
+        transformer_gguf_filename: Optional[str] = None,
         base_repo: Optional[str] = None,
         text_encoder_gguf_repo: Optional[str] = None,
         text_encoder_gguf_filename: Optional[str] = None,
@@ -2721,7 +3268,50 @@ class DiffusionBackend:
             )
         _guard_transformers_tokenizers_backend()
 
-        fam = detect_family(repo_id, override_family = family_override)
+        if transformer_gguf_filename and gguf_filename and transformer_gguf_filename != gguf_filename:
+            raise ValueError(
+                "Use either gguf_filename or transformer_gguf_filename for the "
+                "diffusion transformer quant, not both with different values."
+            )
+        explicit_transformer_swap = bool(
+            transformer_gguf_repo or transformer_gguf_filename
+        )
+        diffusion_gguf_filename = transformer_gguf_filename or gguf_filename
+        diffusion_gguf_repo = transformer_gguf_repo
+        if explicit_transformer_swap:
+            if not diffusion_gguf_repo:
+                raise ValueError(
+                    "transformer_gguf_filename requires transformer_gguf_repo "
+                    "because repo_id is reserved for the normal Diffusers pipeline repo."
+                )
+            if not diffusion_gguf_filename:
+                raise ValueError(
+                    "transformer_gguf_repo requires transformer_gguf_filename."
+                )
+            if base_repo and _expand_existing_local_path(base_repo) != _expand_existing_local_path(repo_id):
+                raise ValueError(
+                    "When transformer_gguf_repo is set, repo_id is already the "
+                    "Diffusers pipeline repo. Omit base_repo or set it to the "
+                    "same repo_id."
+                )
+            pipeline_repo = repo_id
+        else:
+            diffusion_gguf_repo = repo_id if diffusion_gguf_filename else None
+            pipeline_repo = base_repo if diffusion_gguf_filename and base_repo else repo_id
+
+        family_probe_repo = pipeline_repo if explicit_transformer_swap else repo_id
+        fam = detect_family(family_probe_repo, override_family = family_override)
+        if fam is None and diffusion_gguf_filename and not explicit_transformer_swap:
+            fam = detect_family(repo_id, override_family = family_override)
+        if fam is None and not diffusion_gguf_filename and family_override is None:
+            fam = DiffusionFamily(
+                name = "diffusers",
+                pipeline_class = "DiffusionPipeline",
+                transformer_class = "",
+                base_repo = _expand_existing_local_path(pipeline_repo),
+                supports_gguf_single_file = False,
+                aliases = (),
+            )
         if fam is None:
             # Round 22 P2 #4: route the repo label through
             # ``_display_repo_id`` so a local absolute path that did
@@ -2729,7 +3319,7 @@ class DiffusionBackend:
             # filesystem layout via the error message / last_error
             # / 400 response body.
             raise RuntimeError(
-                f"Could not infer a diffusion family for '{_display_repo_id(repo_id)}'. "
+                f"Could not infer a diffusion family for '{_display_repo_id(pipeline_repo)}'. "
                 "Pass family_override = 'flux.2-klein' / 'flux.2' / "
                 "'flux.1-kontext' / 'flux.1-schnell' / 'flux.1' / "
                 "'qwen-image' / 'qwen-image-2512' / "
@@ -2784,16 +3374,23 @@ class DiffusionBackend:
                 # before _repo_id / _base_repo are populated on
                 # success.
                 self._pending_repo_id = repo_id
-                self._pending_base_repo = base_repo
-                self._pending_base_repo_source = "explicit" if base_repo else None
-                self._pending_base_repo_confidence = "explicit" if base_repo else None
+                self._pending_diffusion_gguf_repo = diffusion_gguf_repo
+                self._pending_base_repo = pipeline_repo
+                self._pending_base_repo_source = (
+                    "pipeline_repo" if explicit_transformer_swap else ("explicit" if base_repo else None)
+                )
+                self._pending_base_repo_confidence = (
+                    "explicit" if (explicit_transformer_swap or base_repo) else None
+                )
                 self._pending_base_repo_variant = None
                 self._pending_base_repo_warning = None
                 # Store the caller's full ``gguf_filename`` (e.g.
                 # ``BF16/model.gguf``) so the variant-aware delete
                 # guards have the subdirectory info. The UI side of
                 # status() still collapses to the basename for display.
-                self._pending_gguf_filename = gguf_filename if gguf_filename else None
+                self._pending_gguf_filename = (
+                    diffusion_gguf_filename if diffusion_gguf_filename else None
+                )
                 self._pending_text_encoder_gguf_repo = text_encoder_gguf_repo
                 self._pending_text_encoder_gguf_filename = text_encoder_gguf_filename
                 self._pending_prompt_enhancer_gguf_repo = prompt_enhancer_gguf_repo
@@ -2831,15 +3428,15 @@ class DiffusionBackend:
                 #      obvious curated GGUFs keep working, while ambiguous
                 #      Flux2 Klein fine-tunes fail before using the wrong
                 #      sampling contract.
-                if not gguf_filename:
+                if not diffusion_gguf_filename:
                     # Guard: a repo that ends in "-GGUF" (the unsloth
                     # convention) is GGUF-only and will 500 on
                     # from_pretrained; surface a clear error instead of
                     # letting diffusers raise a confusing model-index
                     # failure deep in the loader.
-                    if repo_id.lower().endswith("-gguf"):
+                    if pipeline_repo.lower().endswith("-gguf"):
                         raise RuntimeError(
-                            f"'{repo_id}' looks like a GGUF-only repo. "
+                            f"'{pipeline_repo}' looks like a GGUF-only repo. "
                             "Either provide gguf_filename to pick a quant, "
                             "or load a full diffusers repo (base_repo only "
                             "applies when picking a GGUF quant)."
@@ -2855,12 +3452,12 @@ class DiffusionBackend:
                 # selection waits until after the GGUF file is local so
                 # the resolver can use metadata and tensor-key signatures
                 # instead of failing on repo names alone.
-                if not gguf_filename or base_repo:
+                if not diffusion_gguf_filename or base_repo or explicit_transformer_swap:
                     base_resolution = _resolve_diffusion_base_repo(
                         fam = fam,
-                        repo_id = repo_id,
-                        gguf_filename = gguf_filename,
-                        base_repo = base_repo,
+                        repo_id = pipeline_repo,
+                        gguf_filename = None if explicit_transformer_swap else diffusion_gguf_filename,
+                        base_repo = None if explicit_transformer_swap else base_repo,
                     )
                     effective_base = base_resolution.base_repo
                     with self._lock:
@@ -2910,7 +3507,7 @@ class DiffusionBackend:
                         or text_encoder_resident_device == "cpu"
                     )
                 )
-                if gguf_filename:
+                if diffusion_gguf_filename:
                     if transformer_cls is None:
                         raise RuntimeError(
                             f"Family {fam.name} does not have a GGUF transformer "
@@ -2944,19 +3541,26 @@ class DiffusionBackend:
                     # BEFORE the file is opened, which also keeps the
                     # delete-ownership guards aligned with what was
                     # actually loaded.
-                    repo_id_path = Path(repo_id).expanduser()
-                    if repo_id_path.is_dir():
+                    diffusion_gguf_repo_path = Path(diffusion_gguf_repo or "").expanduser()
+                    if diffusion_gguf_repo_path.is_dir():
                         local_gguf_path = str(
-                            _resolve_local_gguf_child(repo_id_path, gguf_filename)
+                            _resolve_local_gguf_child(
+                                diffusion_gguf_repo_path,
+                                diffusion_gguf_filename,
+                            )
                         )
                     else:
                         local_gguf_path = hf_hub_download(
-                            repo_id = repo_id,
-                            filename = gguf_filename,
+                            repo_id = diffusion_gguf_repo,
+                            filename = diffusion_gguf_filename,
                             token = hf_token,
                         )
                     local_diffusion_gguf = Path(local_gguf_path)
-                    if local_diffusion_gguf.is_file() and base_repo is None:
+                    if (
+                        local_diffusion_gguf.is_file()
+                        and base_repo is None
+                        and not explicit_transformer_swap
+                    ):
                         diffusion_gguf_inspection = _inspect_diffusion_gguf_file(
                             local_diffusion_gguf
                         )
@@ -2977,8 +3581,8 @@ class DiffusionBackend:
                 if base_resolution is None:
                     base_resolution = _resolve_diffusion_base_repo(
                         fam = fam,
-                        repo_id = repo_id,
-                        gguf_filename = gguf_filename,
+                        repo_id = diffusion_gguf_repo or repo_id,
+                        gguf_filename = diffusion_gguf_filename,
                         base_repo = base_repo,
                         gguf_inspection = diffusion_gguf_inspection,
                     )
@@ -3137,7 +3741,7 @@ class DiffusionBackend:
                 # round-19 preflight and only fail AFTER the chat
                 # unload. Run the subfolder probe too so the
                 # second cheap failure mode is also caught early.
-                if gguf_filename and fam.transformer_class:
+                if diffusion_gguf_filename and fam.transformer_class:
                     _preflight_diffusers_subfolder_config(
                         effective_base,
                         "transformer",
@@ -3152,7 +3756,7 @@ class DiffusionBackend:
                 # front so the missing-dependency surface raises
                 # while the user's chat model is still resident.
                 quant_config = None
-                if gguf_filename:
+                if diffusion_gguf_filename:
                     try:
                         quant_config = diffusers.GGUFQuantizationConfig(
                             compute_dtype = dtype
@@ -3227,6 +3831,7 @@ class DiffusionBackend:
                         self._pipe = None
                         self._family = None
                         self._repo_id = None
+                        self._diffusion_gguf_repo = None
                         self._gguf_path = None
                         self._gguf_filename = None
                         self._text_encoder_gguf_repo = None
@@ -3236,6 +3841,7 @@ class DiffusionBackend:
                         self._prompt_enhancer_gguf_path = None
                         self._prompt_enhancer_gguf_filename = None
                         self._lora_state = None
+                        self._component_sources = {}
                         self._base_repo = None
                         self._base_repo_source = None
                         self._base_repo_confidence = None
@@ -3262,7 +3868,7 @@ class DiffusionBackend:
                     # an already-freed-but-cached arena.
                     _drain_cuda_cache()
 
-                if gguf_filename:
+                if diffusion_gguf_filename:
                     # ``quant_config`` was already constructed above
                     # (round 20 P1 #2 pre-release fail-fast).
                     if hasattr(transformer_cls, "from_single_file"):
@@ -3480,7 +4086,7 @@ class DiffusionBackend:
                             lora_scale = lora_scale,
                             lora_fuse = bool(lora_fuse),
                             hf_token = hf_token,
-                            gguf_filename = gguf_filename,
+                            gguf_filename = diffusion_gguf_filename,
                             uses_studio_lazy_gguf_modules = bool(
                                 prepared_gguf_module_counts.get("diffusion_linear_lazy")
                                 or text_encoder_gguf_filename
@@ -3534,11 +4140,16 @@ class DiffusionBackend:
                     self._pipe = pipe
                     self._family = fam
                     self._repo_id = repo_id
+                    self._diffusion_gguf_repo = (
+                        diffusion_gguf_repo if diffusion_gguf_filename else None
+                    )
                     self._gguf_path = local_gguf_path
                     # Preserve the full caller-supplied filename, not
                     # just the basename, so per-variant delete guards
                     # see ``BF16/model.gguf`` (round 14 P1 #4).
-                    self._gguf_filename = gguf_filename if gguf_filename else None
+                    self._gguf_filename = (
+                        diffusion_gguf_filename if diffusion_gguf_filename else None
+                    )
                     self._text_encoder_gguf_repo = effective_text_encoder_gguf_repo
                     self._text_encoder_gguf_path = local_text_encoder_gguf_path
                     self._text_encoder_gguf_filename = (
@@ -3552,6 +4163,21 @@ class DiffusionBackend:
                         else None
                     )
                     self._lora_state = lora_state
+                    self._component_sources = _build_diffusion_component_sources(
+                        pipeline_repo = effective_base,
+                        diffusion_gguf_repo = diffusion_gguf_repo,
+                        diffusion_gguf_filename = diffusion_gguf_filename,
+                        text_encoder_gguf_repo = effective_text_encoder_gguf_repo,
+                        text_encoder_gguf_filename = text_encoder_gguf_filename,
+                        text_encoder_component = (
+                            text_encoder_component_name
+                            if text_encoder_gguf_filename
+                            else None
+                        ),
+                        prompt_enhancer_gguf_repo = effective_prompt_enhancer_gguf_repo,
+                        prompt_enhancer_gguf_filename = prompt_enhancer_gguf_filename,
+                        lora_state = lora_state,
+                    )
                     self._base_repo = effective_base
                     self._base_repo_source = base_resolution.source
                     self._base_repo_confidence = base_resolution.confidence
@@ -3564,7 +4190,7 @@ class DiffusionBackend:
                         base_repo_source = base_resolution.source,
                         base_repo_confidence = base_resolution.confidence,
                         base_repo_variant = base_resolution.variant,
-                        gguf_filename = gguf_filename,
+                        gguf_filename = diffusion_gguf_filename,
                     )
                     self._device = device
                     self._dtype = str(dtype).replace("torch.", "")
@@ -3578,7 +4204,7 @@ class DiffusionBackend:
                     self._gguf_execution_backend = (
                         _detect_gguf_execution_backend(device)
                         if (
-                            gguf_filename
+                            diffusion_gguf_filename
                             or text_encoder_gguf_filename
                             or prompt_enhancer_gguf_filename
                         )
@@ -3597,6 +4223,7 @@ class DiffusionBackend:
                     # still clears on error / early raise paths.
                     self._loading = False
                     self._pending_repo_id = None
+                    self._pending_diffusion_gguf_repo = None
                     self._pending_base_repo = None
                     self._pending_base_repo_source = None
                     self._pending_base_repo_confidence = None
@@ -3740,6 +4367,7 @@ class DiffusionBackend:
                     # swap). Keeping pending alive after the load
                     # finishes would falsely block deletes forever.
                     self._pending_repo_id = None
+                    self._pending_diffusion_gguf_repo = None
                     self._pending_base_repo = None
                     self._pending_base_repo_source = None
                     self._pending_base_repo_confidence = None
@@ -3782,6 +4410,7 @@ class DiffusionBackend:
                 self._pipe = None
                 self._family = None
                 self._repo_id = None
+                self._diffusion_gguf_repo = None
                 self._gguf_path = None
                 self._gguf_filename = None
                 self._text_encoder_gguf_repo = None
@@ -3791,6 +4420,7 @@ class DiffusionBackend:
                 self._prompt_enhancer_gguf_path = None
                 self._prompt_enhancer_gguf_filename = None
                 self._lora_state = None
+                self._component_sources = {}
                 self._pending_lora_repo = None
                 self._pending_lora_weight_name = None
                 self._base_repo = None
@@ -4038,20 +4668,30 @@ class DiffusionBackend:
                 raise RuntimeError("No diffusion model is loaded.")
             pipe = self._pipe
             fam = self._family
+            base_repo_variant = self._base_repo_variant
             device = self._device or "cpu"
             cpu_offload_enabled = self._cpu_offload_enabled
             drain_cache_after_generation = (
                 bool(self._gguf_quantized_cpu_resident) and device == "cuda"
             )
+        defaults = (
+            _sampling_defaults_for_loaded_pipeline(
+                pipe,
+                fam,
+                base_repo_variant = base_repo_variant,
+            )
+            if fam is not None
+            else None
+        )
         resolved_steps = int(
             num_inference_steps
             if num_inference_steps is not None
-            else (fam.default_steps if fam is not None else 24)
+            else (defaults.default_steps if defaults is not None else 24)
         )
         resolved_guidance = float(
             guidance_scale
             if guidance_scale is not None
-            else (fam.default_guidance_scale if fam is not None else 3.5)
+            else (defaults.default_guidance_scale if defaults is not None else 3.5)
         )
         resolved_width = int(
             width if width is not None else (fam.default_width if fam is not None else 1024)
@@ -4112,8 +4752,14 @@ class DiffusionBackend:
             "width": resolved_width,
             "height": resolved_height,
         }
-        if fam is not None and fam.default_call_kwargs:
-            call_kwargs.update(fam.default_call_kwargs)
+        if defaults is not None and defaults.default_call_kwargs:
+            call_kwargs.update(
+                {
+                    key: value
+                    for key, value in defaults.default_call_kwargs.items()
+                    if _pipe_accepts_kwarg(pipe, key)
+                }
+            )
         if input_images:
             if _pipe_accepts_kwarg(pipe, "image"):
                 prepared_input_images = list(input_images)
@@ -4133,7 +4779,7 @@ class DiffusionBackend:
                 raise RuntimeError(
                     f"{type(pipe).__name__} does not accept image input."
                 )
-        guidance_kwarg = fam.guidance_kwarg if fam is not None else "guidance_scale"
+        guidance_kwarg = _guidance_kwarg_for_pipe(pipe, fam)
         if _pipe_accepts_kwarg(pipe, guidance_kwarg):
             call_kwargs[guidance_kwarg] = resolved_guidance
         elif _pipe_accepts_kwarg(pipe, "guidance_scale"):
@@ -4305,6 +4951,7 @@ class DiffusionBackend:
                     raise RuntimeError("No diffusion model is loaded.")
                 pipe = self._pipe
                 fam = self._family
+                base_repo_variant = self._base_repo_variant
                 device = self._device or "cpu"
                 cpu_offload_enabled = self._cpu_offload_enabled
             if fam is None or fam.media_kind != "video":
@@ -4313,15 +4960,20 @@ class DiffusionBackend:
                     "is not a video generation family."
                 )
 
+            defaults = _sampling_defaults_for_loaded_pipeline(
+                pipe,
+                fam,
+                base_repo_variant = base_repo_variant,
+            )
             resolved_steps = int(
                 num_inference_steps
                 if num_inference_steps is not None
-                else fam.default_steps
+                else defaults.default_steps
             )
             resolved_guidance = float(
                 guidance_scale
                 if guidance_scale is not None
-                else fam.default_guidance_scale
+                else defaults.default_guidance_scale
             )
             resolved_width = int(width if width is not None else fam.default_width)
             resolved_height = int(height if height is not None else fam.default_height)
@@ -4370,6 +5022,14 @@ class DiffusionBackend:
                 "height": resolved_height,
                 "num_frames": resolved_frames,
             }
+            if defaults.default_call_kwargs:
+                call_kwargs.update(
+                    {
+                        key: value
+                        for key, value in defaults.default_call_kwargs.items()
+                        if _pipe_accepts_kwarg(pipe, key)
+                    }
+                )
             call_kwargs.update(_video_family_call_defaults(fam))
             if _pipe_accepts_kwarg(pipe, "guidance_scale"):
                 call_kwargs["guidance_scale"] = resolved_guidance

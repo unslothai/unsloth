@@ -1756,6 +1756,10 @@ def _diffusion_owned_targets(diff_status: dict) -> list[tuple[str, str | None]]:
             diff_status.get("active_repo_id") or "",
             diff_status.get("active_gguf_filename"),
         ),
+        (
+            diff_status.get("active_diffusion_gguf_repo") or "",
+            diff_status.get("active_gguf_filename"),
+        ),
         (diff_status.get("active_base_repo") or "", None),
         (
             diff_status.get("active_text_encoder_gguf_repo") or "",
@@ -1768,6 +1772,10 @@ def _diffusion_owned_targets(diff_status: dict) -> list[tuple[str, str | None]]:
         (diff_status.get("active_lora_repo") or "", None),
         (
             diff_status.get("pending_repo_id") or "",
+            diff_status.get("pending_gguf_filename"),
+        ),
+        (
+            diff_status.get("pending_diffusion_gguf_repo") or "",
             diff_status.get("pending_gguf_filename"),
         ),
         (diff_status.get("pending_base_repo") or "", None),

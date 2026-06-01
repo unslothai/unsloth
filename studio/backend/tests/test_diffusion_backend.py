@@ -70,6 +70,7 @@ def test_detect_family_flux2_klein():
     # steps should match the official 4-step distilled settings.
     assert fam.base_repo == "black-forest-labs/FLUX.2-klein-4B"
     assert fam.default_steps == 4
+    assert fam.default_guidance_scale == 1.0
 
 
 def test_detect_family_flux2_dev_is_not_klein():
@@ -289,6 +290,7 @@ def test_status_shape_unloaded():
         "is_loaded",
         "is_loading",
         "repo_id",
+        "pipeline_repo",
         "family",
         "pipeline_class",
         "media_kind",
@@ -299,11 +301,14 @@ def test_status_shape_unloaded():
         "base_repo_warning",
         "sampling_contract",
         "gguf_filename",
+        "transformer_gguf_repo",
+        "transformer_gguf_filename",
         "text_encoder_gguf_repo",
         "text_encoder_gguf_filename",
         "prompt_enhancer_gguf_repo",
         "prompt_enhancer_gguf_filename",
         "lora",
+        "component_sources",
         "gguf_quantized_cpu_resident",
         "gguf_pin_cpu_resident",
         "offload_policy",
@@ -319,6 +324,7 @@ def test_status_shape_unloaded():
     # Guard-facing fields are gated behind include_internal=True.
     for guard_key in (
         "active_repo_id",
+        "active_diffusion_gguf_repo",
         "active_base_repo",
         "active_base_repo_source",
         "active_base_repo_confidence",
@@ -332,6 +338,7 @@ def test_status_shape_unloaded():
         "active_lora_repo",
         "active_lora_weight_name",
         "pending_repo_id",
+        "pending_diffusion_gguf_repo",
         "pending_base_repo",
         "pending_base_repo_source",
         "pending_base_repo_confidence",
@@ -352,6 +359,8 @@ def test_status_shape_unloaded():
 
     # Internal status() exposes the guard fields for delete/route use.
     s_internal = get_diffusion_backend().status(include_internal = True)
+    assert s_internal["active_diffusion_gguf_repo"] is None
+    assert s_internal["pending_diffusion_gguf_repo"] is None
     assert s_internal["active_gguf_filename"] is None
     assert s_internal["pending_gguf_filename"] is None
     assert s_internal["active_text_encoder_gguf_filename"] is None
@@ -979,6 +988,7 @@ def _install_fake_diffusers(monkeypatch, *, raise_on_pipeline = False):
             self.fuse_calls.append(kwargs)
 
     fake.GGUFQuantizationConfig = _FakeQuantConfig
+    fake.DiffusionPipeline = _FakePipeline
     fake.Flux2KleinPipeline = _FakePipeline
     fake.Flux2Transformer2DModel = _FakeTransformer
     fake.Flux2Pipeline = _FakePipeline
@@ -1331,6 +1341,73 @@ def test_curated_unsloth_diffusion_gguf_manifest_covers_all_quant_filenames():
     assert checked == 285
 
 
+def test_curated_diffusion_presets_cover_manifest():
+    from core.inference.diffusion import (
+        _CURATED_UNSLOTH_DIFFUSION_GGUFS,
+        curated_diffusion_presets,
+    )
+
+    presets = curated_diffusion_presets()
+    assert len(presets) == len(_CURATED_UNSLOTH_DIFFUSION_GGUFS)
+    by_repo = {entry["transformer_gguf_repo"]: entry for entry in presets}
+    assert set(by_repo) == {
+        spec.repo_id
+        for spec in _CURATED_UNSLOTH_DIFFUSION_GGUFS
+    }
+    flux2 = by_repo["unsloth/FLUX.2-dev-GGUF"]
+    assert flux2["id"] == "flux.2-dev"
+    assert flux2["pipeline_repo"] == "black-forest-labs/FLUX.2-dev"
+    assert flux2["default_steps"] == 50
+    assert flux2["default_guidance_scale"] == 4.0
+    assert flux2["default_text_encoder_gguf_repo"] == (
+        "unsloth/Mistral-Small-3.2-24B-Instruct-2506-GGUF"
+    )
+    assert flux2["recommended_offload_policy"] == "balanced"
+
+
+def test_resolve_diffusion_load_plan_expands_preset_component_swap():
+    from core.inference.diffusion import resolve_diffusion_load_plan
+
+    plan = resolve_diffusion_load_plan(
+        preset_id = "flux.2-klein-base-4b",
+        transformer_quant = "Q4_K_M",
+        text_encoder_gguf_filename = "qwen3-4b-BF16.gguf",
+        require_loadable = True,
+    )
+
+    assert plan["ready_to_load"] is True
+    assert plan["load_kwargs"]["repo_id"] == "black-forest-labs/FLUX.2-klein-base-4B"
+    assert plan["load_kwargs"]["gguf_filename"] is None
+    assert plan["load_kwargs"]["transformer_gguf_repo"] == (
+        "unsloth/FLUX.2-klein-base-4B-GGUF"
+    )
+    assert plan["load_kwargs"]["transformer_gguf_filename"] == (
+        "flux-2-klein-base-4b-Q4_K_M.gguf"
+    )
+    assert plan["load_kwargs"]["text_encoder_gguf_repo"] == (
+        "unsloth/Qwen3-4B-GGUF"
+    )
+    assert plan["load_kwargs"]["family_override"] == "flux.2-klein"
+    assert plan["load_kwargs"]["offload_policy"] == "balanced"
+    assert plan["sampling_defaults"]["num_inference_steps"] == 50
+    assert plan["sampling_defaults"]["guidance_scale"] == 4.0
+    assert plan["component_sources"]["transformer"] == {
+        "source": "gguf",
+        "repo": "unsloth/FLUX.2-klein-base-4B-GGUF",
+        "filename": "flux-2-klein-base-4b-Q4_K_M.gguf",
+    }
+
+
+def test_resolve_diffusion_load_plan_requires_quant_for_preset_load():
+    from core.inference.diffusion import resolve_diffusion_load_plan
+
+    with pytest.raises(ValueError, match = "require transformer_gguf_filename"):
+        resolve_diffusion_load_plan(
+            preset_id = "flux.2-dev",
+            require_loadable = True,
+        )
+
+
 def test_load_model_ernie_can_replace_text_encoder_and_prompt_enhancer_ggufs(monkeypatch):
     _install_fake_diffusers(monkeypatch)
 
@@ -1438,13 +1515,13 @@ def test_load_model_ernie_can_replace_text_encoder_and_prompt_enhancer_ggufs(mon
     ]
 
 
-def test_load_model_unknown_family(monkeypatch):
+def test_load_model_unknown_gguf_family_still_requires_family(monkeypatch):
     _install_fake_diffusers(monkeypatch)
     from core.inference.diffusion import get_diffusion_backend
 
     backend = get_diffusion_backend()
     with pytest.raises(RuntimeError, match = "Could not infer"):
-        backend.load_model("private/random-repo")
+        backend.load_model("private/random-repo", gguf_filename = "model.gguf")
 
 
 def test_load_model_gguf_path_happy(monkeypatch):
@@ -1474,7 +1551,67 @@ def test_load_model_gguf_path_happy(monkeypatch):
     assert contract["pipeline_is_distilled"] is True
     assert contract["guidance_semantics"] == "distilled_single_pass"
     assert contract["default_steps"] == 4
+    assert contract["default_guidance_scale"] == 1.0
     assert contract["scheduler_class"] == "_FakeScheduler"
+
+
+def test_load_model_pipeline_repo_with_transformer_gguf_component(monkeypatch):
+    _install_fake_diffusers(monkeypatch)
+    from core.inference.diffusion import get_diffusion_backend
+
+    backend = get_diffusion_backend()
+    status = backend.load_model(
+        "black-forest-labs/FLUX.2-klein-base-4B",
+        transformer_gguf_repo = "unsloth/FLUX.2-klein-base-4B-GGUF",
+        transformer_gguf_filename = "flux-2-klein-base-4b-Q4_K_M.gguf",
+        enable_model_cpu_offload = False,
+    )
+
+    assert status["is_loaded"] is True
+    assert status["repo_id"] == "black-forest-labs/FLUX.2-klein-base-4B"
+    assert status["pipeline_repo"] == "black-forest-labs/FLUX.2-klein-base-4B"
+    assert status["base_repo"] == "black-forest-labs/FLUX.2-klein-base-4B"
+    assert status["base_repo_source"] == "full_repo"
+    assert status["base_repo_variant"] == "base-4b"
+    assert status["gguf_filename"] == "flux-2-klein-base-4b-Q4_K_M.gguf"
+    assert status["transformer_gguf_repo"] == "unsloth/FLUX.2-klein-base-4B-GGUF"
+    assert status["transformer_gguf_filename"] == "flux-2-klein-base-4b-Q4_K_M.gguf"
+    assert status["sampling_contract"]["default_steps"] == 50
+    assert status["sampling_contract"]["default_guidance_scale"] == 4.0
+    assert status["component_sources"]["pipeline"]["repo"] == (
+        "black-forest-labs/FLUX.2-klein-base-4B"
+    )
+    assert status["component_sources"]["transformer"] == {
+        "source": "gguf",
+        "repo": "unsloth/FLUX.2-klein-base-4B-GGUF",
+        "filename": "flux-2-klein-base-4b-Q4_K_M.gguf",
+    }
+    internal = backend.status(include_internal = True)
+    assert internal["active_repo_id"] == "black-forest-labs/FLUX.2-klein-base-4B"
+    assert internal["active_diffusion_gguf_repo"] == (
+        "unsloth/FLUX.2-klein-base-4B-GGUF"
+    )
+
+
+def test_load_model_unknown_full_diffusers_repo_uses_generic_pipeline(monkeypatch):
+    _install_fake_diffusers(monkeypatch)
+    from core.inference.diffusion import get_diffusion_backend
+
+    backend = get_diffusion_backend()
+    status = backend.load_model(
+        "owner/new-diffusion-model",
+        enable_model_cpu_offload = False,
+    )
+
+    assert status["is_loaded"] is True
+    assert status["family"] == "diffusers"
+    assert status["pipeline_class"] == "DiffusionPipeline"
+    assert status["pipeline_repo"] == "owner/new-diffusion-model"
+    assert status["base_repo"] == "owner/new-diffusion-model"
+    assert status["component_sources"]["transformer"] == {
+        "source": "pipeline_repo",
+        "repo": "owner/new-diffusion-model",
+    }
 
 
 def test_load_model_flux2_dev_text_encoder_gguf(monkeypatch):
@@ -3378,6 +3515,8 @@ def test_smart_base_repo_picks_base_4b(monkeypatch):
     assert status["base_repo_variant"] == "base-4b"
     assert status["sampling_contract"]["pipeline_is_distilled"] is False
     assert status["sampling_contract"]["guidance_semantics"] == "classifier_free_guidance"
+    assert status["sampling_contract"]["default_steps"] == 50
+    assert status["sampling_contract"]["default_guidance_scale"] == 4.0
 
 
 def test_gguf_transformer_load_passes_config_subfolder_token(monkeypatch):
@@ -4584,6 +4723,98 @@ def test_generate_image_uses_family_sampling_defaults_when_omitted():
     assert pipe.last_kwargs["guidance_scale"] == 0.0
     assert pipe.last_kwargs["width"] == 1024
     assert pipe.last_kwargs["height"] == 1024
+
+
+def test_generate_image_uses_flux2_klein_variant_sampling_defaults():
+    import core.inference.diffusion as d
+
+    backend = d.DiffusionBackend()
+
+    class _FakeFlux2KleinPipe:
+        def __init__(self):
+            self.last_kwargs = None
+
+        def __call__(
+            self,
+            *,
+            prompt,
+            num_inference_steps,
+            guidance_scale,
+            width,
+            height,
+        ):
+            self.last_kwargs = {
+                "prompt": prompt,
+                "num_inference_steps": num_inference_steps,
+                "guidance_scale": guidance_scale,
+                "width": width,
+                "height": height,
+            }
+            from PIL import Image
+
+            return SimpleNamespace(images = [Image.new("RGB", (width, height))])
+
+    pipe = _FakeFlux2KleinPipe()
+    backend._pipe = pipe
+    backend._device = "cpu"
+    backend._family = d.detect_family("unsloth/FLUX.2-klein-base-4B-GGUF")
+    backend._base_repo_variant = "base-4b"
+
+    backend._generate_image_unlocked(prompt = "x")
+
+    assert pipe.last_kwargs["num_inference_steps"] == 50
+    assert pipe.last_kwargs["guidance_scale"] == 4.0
+
+
+def test_generate_image_uses_qwen_edit_plus_repo_defaults():
+    import core.inference.diffusion as d
+    from PIL import Image
+
+    backend = d.DiffusionBackend()
+
+    class _FakeQwenEditPlusPipe:
+        def __init__(self):
+            self.last_kwargs = None
+
+        def __call__(
+            self,
+            *,
+            image,
+            prompt,
+            negative_prompt,
+            true_cfg_scale,
+            guidance_scale,
+            num_inference_steps,
+            width,
+            height,
+        ):
+            self.last_kwargs = {
+                "image": image,
+                "prompt": prompt,
+                "negative_prompt": negative_prompt,
+                "true_cfg_scale": true_cfg_scale,
+                "guidance_scale": guidance_scale,
+                "num_inference_steps": num_inference_steps,
+                "width": width,
+                "height": height,
+            }
+            return SimpleNamespace(images = [Image.new("RGB", (width, height))])
+
+    pipe = _FakeQwenEditPlusPipe()
+    backend._pipe = pipe
+    backend._device = "cpu"
+    backend._family = d.detect_family("unsloth/Qwen-Image-Edit-2509-GGUF")
+
+    backend._generate_image_unlocked(
+        prompt = "change the sign",
+        input_images = [Image.new("RGB", (16, 16))],
+        width = 64,
+        height = 64,
+    )
+
+    assert pipe.last_kwargs["num_inference_steps"] == 40
+    assert pipe.last_kwargs["true_cfg_scale"] == 4.0
+    assert pipe.last_kwargs["guidance_scale"] == 1.0
 
 
 def test_generate_image_rejects_image_required_family():

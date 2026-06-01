@@ -2484,31 +2484,99 @@ async def diffusion_load(
         # boundary the chat load path uses so local-path repo_id /
         # base_repo cannot be probed without a frontend-issued grant.
         # Hub ids pass through.
+        planned_repo_id = payload.repo_id
+        planned_gguf_filename = payload.gguf_filename
+        planned_transformer_gguf_repo = payload.transformer_gguf_repo
+        planned_transformer_gguf_filename = payload.transformer_gguf_filename
+        planned_base_repo = payload.base_repo
+        planned_text_encoder_gguf_repo = payload.text_encoder_gguf_repo
+        planned_text_encoder_gguf_filename = payload.text_encoder_gguf_filename
+        planned_text_encoder_gguf_component = payload.text_encoder_gguf_component
+        planned_prompt_enhancer_gguf_repo = payload.prompt_enhancer_gguf_repo
+        planned_prompt_enhancer_gguf_filename = payload.prompt_enhancer_gguf_filename
+        planned_lora_repo = payload.lora_repo
+        planned_lora_weight_name = payload.lora_weight_name
+        planned_lora_adapter_name = payload.lora_adapter_name
+        planned_lora_scale = payload.lora_scale
+        planned_lora_fuse = payload.lora_fuse
+        planned_family = payload.family
+        planned_offload_policy = payload.offload_policy
+        if payload.preset_id:
+            try:
+                from core.inference.diffusion import resolve_diffusion_load_plan
+
+                load_plan = resolve_diffusion_load_plan(
+                    preset_id = payload.preset_id,
+                    repo_id = payload.repo_id,
+                    gguf_filename = payload.gguf_filename,
+                    transformer_gguf_repo = payload.transformer_gguf_repo,
+                    transformer_gguf_filename = payload.transformer_gguf_filename,
+                    transformer_quant = payload.transformer_quant,
+                    base_repo = payload.base_repo,
+                    text_encoder_gguf_repo = payload.text_encoder_gguf_repo,
+                    text_encoder_gguf_filename = payload.text_encoder_gguf_filename,
+                    text_encoder_gguf_component = payload.text_encoder_gguf_component,
+                    prompt_enhancer_gguf_repo = payload.prompt_enhancer_gguf_repo,
+                    prompt_enhancer_gguf_filename = payload.prompt_enhancer_gguf_filename,
+                    lora_repo = payload.lora_repo,
+                    lora_weight_name = payload.lora_weight_name,
+                    lora_adapter_name = payload.lora_adapter_name,
+                    lora_scale = payload.lora_scale,
+                    lora_fuse = payload.lora_fuse,
+                    family_override = payload.family,
+                    offload_policy = payload.offload_policy,
+                    require_loadable = True,
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code = 400, detail = str(exc)) from exc
+            load_kwargs = load_plan["load_kwargs"]
+            planned_repo_id = load_kwargs["repo_id"]
+            planned_gguf_filename = load_kwargs["gguf_filename"]
+            planned_transformer_gguf_repo = load_kwargs["transformer_gguf_repo"]
+            planned_transformer_gguf_filename = load_kwargs["transformer_gguf_filename"]
+            planned_base_repo = load_kwargs["base_repo"]
+            planned_text_encoder_gguf_repo = load_kwargs["text_encoder_gguf_repo"]
+            planned_text_encoder_gguf_filename = load_kwargs["text_encoder_gguf_filename"]
+            planned_text_encoder_gguf_component = load_kwargs["text_encoder_gguf_component"]
+            planned_prompt_enhancer_gguf_repo = load_kwargs["prompt_enhancer_gguf_repo"]
+            planned_prompt_enhancer_gguf_filename = load_kwargs["prompt_enhancer_gguf_filename"]
+            planned_lora_repo = load_kwargs["lora_repo"]
+            planned_lora_weight_name = load_kwargs["lora_weight_name"]
+            planned_lora_adapter_name = load_kwargs["lora_adapter_name"]
+            planned_lora_scale = load_kwargs["lora_scale"]
+            planned_lora_fuse = load_kwargs["lora_fuse"]
+            planned_family = load_kwargs["family_override"]
+            planned_offload_policy = load_kwargs["offload_policy"]
         resolved_repo_id = (
             _resolve_diffusion_repo_for_request(
-                payload.repo_id,
+                planned_repo_id,
                 payload.native_path_lease,
                 operation = "load-diffusion-model",
             )
-            or payload.repo_id
+            or planned_repo_id
         )
         resolved_base_repo = _resolve_diffusion_repo_for_request(
-            payload.base_repo,
+            planned_base_repo,
             payload.base_repo_native_path_lease,
             operation = "load-diffusion-model",
         )
+        resolved_transformer_gguf_repo = _resolve_diffusion_repo_for_request(
+            planned_transformer_gguf_repo,
+            payload.transformer_gguf_repo_native_path_lease,
+            operation = "load-diffusion-model",
+        )
         resolved_text_encoder_gguf_repo = _resolve_diffusion_repo_for_request(
-            payload.text_encoder_gguf_repo,
+            planned_text_encoder_gguf_repo,
             payload.text_encoder_gguf_repo_native_path_lease,
             operation = "load-diffusion-model",
         )
         resolved_prompt_enhancer_gguf_repo = _resolve_diffusion_repo_for_request(
-            payload.prompt_enhancer_gguf_repo,
+            planned_prompt_enhancer_gguf_repo,
             payload.prompt_enhancer_gguf_repo_native_path_lease,
             operation = "load-diffusion-model",
         )
         resolved_lora_repo = _resolve_diffusion_repo_for_request(
-            payload.lora_repo,
+            planned_lora_repo,
             payload.lora_repo_native_path_lease,
             operation = "load-diffusion-model",
         )
@@ -2532,22 +2600,24 @@ async def diffusion_load(
                 None,
                 lambda: backend.load_model(
                     repo_id = resolved_repo_id,
-                    gguf_filename = payload.gguf_filename,
+                    gguf_filename = planned_gguf_filename,
+                    transformer_gguf_repo = resolved_transformer_gguf_repo,
+                    transformer_gguf_filename = planned_transformer_gguf_filename,
                     base_repo = resolved_base_repo,
                     text_encoder_gguf_repo = resolved_text_encoder_gguf_repo,
-                    text_encoder_gguf_filename = payload.text_encoder_gguf_filename,
-                    text_encoder_gguf_component = payload.text_encoder_gguf_component,
+                    text_encoder_gguf_filename = planned_text_encoder_gguf_filename,
+                    text_encoder_gguf_component = planned_text_encoder_gguf_component,
                     prompt_enhancer_gguf_repo = resolved_prompt_enhancer_gguf_repo,
-                    prompt_enhancer_gguf_filename = payload.prompt_enhancer_gguf_filename,
+                    prompt_enhancer_gguf_filename = planned_prompt_enhancer_gguf_filename,
                     lora_repo = resolved_lora_repo,
-                    lora_weight_name = payload.lora_weight_name,
-                    lora_adapter_name = payload.lora_adapter_name,
-                    lora_scale = payload.lora_scale,
-                    lora_fuse = payload.lora_fuse,
-                    family_override = payload.family,
+                    lora_weight_name = planned_lora_weight_name,
+                    lora_adapter_name = planned_lora_adapter_name,
+                    lora_scale = planned_lora_scale,
+                    lora_fuse = planned_lora_fuse,
+                    family_override = planned_family,
                     hf_token = payload.hf_token,
                     enable_model_cpu_offload = payload.enable_model_cpu_offload,
-                    offload_policy = payload.offload_policy,
+                    offload_policy = planned_offload_policy,
                     gguf_quantized_cpu_resident = payload.gguf_quantized_cpu_resident,
                     gguf_pin_cpu_resident = payload.gguf_pin_cpu_resident,
                     # Round 38 P1: this route already published the
@@ -2641,6 +2711,16 @@ async def diffusion_status(
     """Return diffusion backend status (loaded, family, device, etc.)."""
     backend = _get_diffusion_backend()
     return backend.status()
+
+
+@studio_router.get("/images/presets")
+async def diffusion_presets(
+    current_subject: str = Depends(get_current_subject),
+):
+    """Return curated Studio diffusion presets without loading a model."""
+    from core.inference.diffusion import curated_diffusion_presets
+
+    return {"presets": curated_diffusion_presets()}
 
 
 @studio_router.post("/images/generate", response_model = DiffusionGenerateResponse)

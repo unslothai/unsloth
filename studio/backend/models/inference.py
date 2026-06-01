@@ -1563,14 +1563,23 @@ class DiffusionLoadRequest(BaseModel):
     # shipped yet (round 32 P1 #3 in the PR reviewer trail). The
     # 1024-char cap matches POSIX PATH_MAX so future local-path
     # support can flip on without re-validating the field width.
-    repo_id: str = Field(
-        ...,
+    preset_id: Optional[str] = Field(
+        None,
+        max_length = 128,
+        description = (
+            "Optional Studio diffusion preset id. When set, Studio expands it "
+            "to a normal Diffusers pipeline repo plus GGUF component swaps."
+        ),
+    )
+    repo_id: Optional[str] = Field(
+        None,
         min_length = 1,
         max_length = 1024,
         description = (
-            "HF repo id (owner/name). Local filesystem paths are reserved "
-            "for a future native-lease flow and currently rejected by the "
-            "route's _looks_like_local_diffusion_path guard."
+            "HF repo id (owner/name). Required unless preset_id is set. Local "
+            "filesystem paths are reserved for a future native-lease flow and "
+            "currently rejected by the route's _looks_like_local_diffusion_path "
+            "guard."
         ),
     )
     # Round 30 P1 #4: chat /api/inference/load gates native local paths
@@ -1588,7 +1597,38 @@ class DiffusionLoadRequest(BaseModel):
     gguf_filename: Optional[str] = Field(
         None,
         max_length = 512,
-        description = "GGUF filename inside repo_id (Q4_K_S, Q8_0, ...)",
+        description = (
+            "Legacy diffusion-transformer GGUF filename inside repo_id "
+            "(Q4_K_S, Q8_0, ...). Prefer transformer_gguf_repo + "
+            "transformer_gguf_filename when repo_id is the normal "
+            "Diffusers pipeline repo."
+        ),
+    )
+    transformer_gguf_repo: Optional[str] = Field(
+        None,
+        max_length = 1024,
+        description = (
+            "Optional HF repo id or leased local directory for a diffusion "
+            "transformer GGUF. When set, repo_id remains the normal Diffusers "
+            "pipeline repo and only the transformer component is replaced."
+        ),
+    )
+    transformer_gguf_filename: Optional[str] = Field(
+        None,
+        max_length = 512,
+        description = "GGUF filename for the optional diffusion transformer component",
+    )
+    transformer_quant: Optional[str] = Field(
+        None,
+        max_length = 64,
+        description = (
+            "Optional quant label for preset loads, e.g. Q4_K_M or UD-Q4_K_M. "
+            "Studio combines it with the preset's filename prefix."
+        ),
+    )
+    transformer_gguf_repo_native_path_lease: Optional[str] = Field(
+        None,
+        description = "Frontend-visible signed native path grant for a local transformer_gguf_repo",
     )
     base_repo: Optional[str] = Field(
         None,
@@ -1733,7 +1773,11 @@ class DiffusionLoadRequest(BaseModel):
 
     @field_validator(
         "repo_id",
+        "preset_id",
         "gguf_filename",
+        "transformer_gguf_repo",
+        "transformer_gguf_filename",
+        "transformer_quant",
         "base_repo",
         "text_encoder_gguf_repo",
         "text_encoder_gguf_filename",
@@ -1751,7 +1795,11 @@ class DiffusionLoadRequest(BaseModel):
 
     @field_validator(
         "repo_id",
+        "preset_id",
         "gguf_filename",
+        "transformer_gguf_repo",
+        "transformer_gguf_filename",
+        "transformer_quant",
         "base_repo",
         "text_encoder_gguf_repo",
         "text_encoder_gguf_filename",
@@ -1770,6 +1818,12 @@ class DiffusionLoadRequest(BaseModel):
         # ``https://hf_xxxxx@huggingface.co/.../flux.gguf`` we drop
         # the embedded credential before it can leak.
         return _reject_embedded_hf_token(v, info.field_name)
+
+    @model_validator(mode = "after")
+    def _requires_repo_or_preset(self):
+        if not self.repo_id and not self.preset_id:
+            raise ValueError("Either repo_id or preset_id is required")
+        return self
 
     @field_validator("lora_weight_name")
     @classmethod
