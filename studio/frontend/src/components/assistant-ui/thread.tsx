@@ -1053,7 +1053,7 @@ const BulbIcon: FC<{ className?: string }> = ({ className }) => (
 );
 
 // Same bulb in every state; greyed by the pill's muted color when off.
-const ThinkIcon: FC = () => <BulbIcon className="size-[15px]" />;
+const ThinkIcon: FC = () => <BulbIcon className="size-[15.5px]" />;
 
 const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
   side = "bottom",

@@ -1475,7 +1475,7 @@ export function SharedComposer({
                       reasoningEffort,
                     })}
                   >
-                    <BulbIcon className="size-[15px]" />
+                    <BulbIcon className="size-[15.5px]" />
                     {thinkingActiveLook ? (
                       <span>
                         {isEffort
@@ -1632,7 +1632,7 @@ export function SharedComposer({
                 })}
               >
                 <PillGlyph>
-                  <BulbIcon className="size-[15px]" />
+                  <BulbIcon className="size-[15.5px]" />
                 </PillGlyph>
                 {thinkingActiveLook ? <span>Thinking</span> : null}
               </button>
