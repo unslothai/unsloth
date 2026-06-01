@@ -808,7 +808,7 @@
 	}
 
 	.chat-composer-surface {
-		@apply relative flex w-full flex-col rounded-[24px] bg-background dark:bg-card px-1 pt-2 outline-none transition-shadow;
+		@apply relative flex w-full flex-col rounded-[32px] bg-background dark:bg-card px-1 pt-2 outline-none transition-shadow;
 		font-family: var(--font-sans);
 		background-clip: padding-box;
 		box-shadow: 0 2px 8px -2px rgba(27, 27, 31, 0.16);
@@ -867,11 +867,11 @@
 		font-family: var(--font-sans);
 		background-clip: padding-box;
 		/* Gemini search pill: soft, centered shadow, no downward offset. */
-		box-shadow: 0 0 20px 0 rgba(0, 0, 0, 0.04);
+		box-shadow: 0 0 20px 0 rgba(0, 0, 0, 0.09);
 	}
 
 	.unsloth-composer-surface:focus-within {
-		box-shadow: 0 0 20px 0 rgba(0, 0, 0, 0.04);
+		box-shadow: 0 0 20px 0 rgba(0, 0, 0, 0.09);
 	}
 
 	.dark .unsloth-composer-surface {
@@ -961,6 +961,15 @@
 		transform: rotate(45deg);
 	}
 
+	/* Keyboard focus shows a subtle brand ring, not the browser's blue outline;
+	   mouse clicks (no :focus-visible) stay ring-free. */
+	.composer-pill-btn:focus-visible,
+	.unsloth-thinking-pill:focus-visible,
+	.unsloth-composer-plus:focus-visible {
+		outline: none;
+		box-shadow: 0 0 0 2px color-mix(in oklab, var(--ring) 45%, transparent);
+	}
+
 	/* Set Hellix explicitly; .aui-thread-root resets --font-heading to sans. */
 	.unsloth-welcome-title {
 		font-family: "Hellix", "Space Grotesk Variable", var(--font-sans);
@@ -1044,6 +1053,20 @@
 			[data-slot="dropdown-menu-sub-trigger"]
 		):is(:hover, :focus, :focus-visible, [data-highlighted], [data-state="open"]) {
 		background-color: rgba(255, 255, 255, 0.08) !important;
+	}
+
+	/* Hover tints only the background; the item and every descendant (text, icons,
+	   labels) keep their resting color, overriding Radix's focus:**:text-accent-
+	   foreground. The active green rule above still wins via higher specificity. */
+	.unsloth-plus-menu :is(
+			[data-slot="dropdown-menu-item"],
+			[data-slot="dropdown-menu-sub-trigger"]
+		):is(:hover, :focus, :focus-visible, [data-highlighted], [data-state="open"]),
+	.unsloth-plus-menu :is(
+			[data-slot="dropdown-menu-item"],
+			[data-slot="dropdown-menu-sub-trigger"]
+		):is(:hover, :focus, :focus-visible, [data-highlighted], [data-state="open"]) * {
+		color: inherit !important;
 	}
 
 	.unsloth-plus-menu :is(

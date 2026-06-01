@@ -24,7 +24,9 @@ import {
   useAui,
   useAuiState,
 } from "@assistant-ui/react";
-import { FileText, PlusIcon, XIcon } from "lucide-react";
+import { File02Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
+import { PlusIcon, XIcon } from "lucide-react";
 import {
   type FC,
   type PropsWithChildren,
@@ -134,7 +136,11 @@ const AttachmentThumb: FC = () => {
 
   return (
     <div className="flex h-full w-full items-center justify-center">
-      <FileText className="size-6 text-muted-foreground" />
+      <HugeiconsIcon
+        icon={File02Icon}
+        strokeWidth={2}
+        className="size-6 text-muted-foreground"
+      />
     </div>
   );
 };

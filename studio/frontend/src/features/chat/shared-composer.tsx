@@ -32,12 +32,8 @@ import {
   CheckIcon,
   Columns2Icon,
   DownloadIcon,
-  FolderPlusIcon,
   GlobeIcon,
   HeadphonesIcon,
-  LibraryIcon,
-  MoreHorizontalIcon,
-  PlugIcon,
   PlusIcon,
   SquareIcon,
   XIcon,
@@ -46,14 +42,16 @@ import {
   AttachmentIcon,
   CodeIcon,
   DatabaseIcon,
-  File02Icon,
   Folder01Icon,
+  FolderAddIcon,
   Image03Icon,
+  McpServerIcon,
   PencilRulerIcon,
 } from "@hugeicons/core-free-icons";
 import { useNavigate } from "@tanstack/react-router";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { toast } from "@/lib/toast";
+import { ChatMcpServersDialog } from "./chat-mcp-servers-dialog";
 import { loadModel, validateModel } from "./api/chat-api";
 import { parseExternalModelId, providerTypeSupportsVision } from "./external-providers";
 import { useExternalProvidersStore } from "./stores/external-providers-store";
@@ -377,9 +375,6 @@ export function SharedComposer({
   onExitCompare?: () => void;
 }): ReactElement {
   const navigate = useNavigate();
-  const setSettingsPanelOpen = useChatRuntimeStore(
-    (s) => s.setSettingsPanelOpen,
-  );
   // Exit compare. Uses the parent's restore handler, or a fresh chat when
   // compare was opened by direct URL.
   const handleExitCompare = useCallback(() => {
@@ -396,6 +391,7 @@ export function SharedComposer({
   const [pendingAudio, setPendingAudio] = useState<{ name: string; base64: string } | null>(null);
   const [dragging, setDragging] = useState(false);
   const [isComposing, setIsComposing] = useState(false);
+  const [mcpOpen, setMcpOpen] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const composingRef = useRef(false);
   const stuckImeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -920,7 +916,7 @@ export function SharedComposer({
 
   return (
     <div
-      className={`chat-composer-surface ${dragging ? "border-ring bg-accent/50" : ""}`}
+      className="chat-composer-surface"
       onDragOver={(e) => {
         if (isTauri) return;
         e.preventDefault();
@@ -936,6 +932,17 @@ export function SharedComposer({
         addFiles(e.dataTransfer.files);
       }}
     >
+      {/* Gemini-style drop affordance, mirrored from the single composer. */}
+      <div
+        className={`pointer-events-none absolute inset-0 z-20 flex flex-col items-center justify-center gap-1 overflow-hidden rounded-[32px] bg-background/90 backdrop-blur-sm transition-opacity duration-150 dark:bg-card/90 ${dragging ? "opacity-100" : "opacity-0"}`}
+      >
+        <HugeiconsIcon
+          icon={AttachmentIcon}
+          strokeWidth={2}
+          className="size-6 text-primary"
+        />
+        <span className="text-sm font-medium text-primary">Drop files here</span>
+      </div>
       {(pendingImages.length > 0 || pendingAudio) && (
         <div className="mb-2 flex w-full flex-row flex-wrap items-center gap-2 px-1.5 pt-0.5 pb-1">
           {pendingImages.map(({ id, file }) => (
@@ -1039,24 +1046,6 @@ export function SharedComposer({
                 <HugeiconsIcon icon={AttachmentIcon} strokeWidth={2} />
                 Add photos &amp; files
               </DropdownMenuItem>
-              <DropdownMenuSub>
-                <DropdownMenuSubTrigger>
-                  <HugeiconsIcon icon={File02Icon} strokeWidth={2} />
-                  Recent files
-                </DropdownMenuSubTrigger>
-                <DropdownMenuSubContent className="unsloth-plus-menu w-[212px]">
-                  <DropdownMenuItem
-                    onSelect={() => fileInputRef.current?.click()}
-                  >
-                    <LibraryIcon />
-                    Add from library
-                  </DropdownMenuItem>
-                  <DropdownMenuLabel>Recents</DropdownMenuLabel>
-                  <DropdownMenuItem disabled={true}>
-                    No recent files
-                  </DropdownMenuItem>
-                </DropdownMenuSubContent>
-              </DropdownMenuSub>
               {activeModel?.hasAudioInput && (
                 <DropdownMenuItem
                   onSelect={() => audioInputRef.current?.click()}
@@ -1065,7 +1054,6 @@ export function SharedComposer({
                   Upload audio
                 </DropdownMenuItem>
               )}
-              <DropdownMenuSeparator />
               <DropdownMenuItem
                 className={toolsEnabled ? "text-primary font-medium" : undefined}
                 onSelect={() => setToolsEnabled(!toolsEnabled)}
@@ -1080,40 +1068,41 @@ export function SharedComposer({
                 }
                 onSelect={() => setCodeToolsEnabled(!codeToolsEnabled)}
               >
-                <HugeiconsIcon icon={CodeIcon} strokeWidth={2} />
+                <HugeiconsIcon
+                  icon={CodeIcon}
+                  strokeWidth={2}
+                  className="size-[1.175rem]!"
+                />
                 Code
                 {codeToolsEnabled ? <CheckIcon className="ml-auto" /> : null}
               </DropdownMenuItem>
-              <DropdownMenuItem onSelect={() => setSettingsPanelOpen(true)}>
-                <PlugIcon />
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onSelect={() => setMcpOpen(true)}>
+                <HugeiconsIcon
+                  icon={McpServerIcon}
+                  strokeWidth={2}
+                  className="size-[1.175rem]!"
+                />
                 MCP
               </DropdownMenuItem>
-              <DropdownMenuSub>
-                <DropdownMenuSubTrigger>
-                  <MoreHorizontalIcon />
-                  More
-                </DropdownMenuSubTrigger>
-                <DropdownMenuSubContent className="unsloth-plus-menu w-[200px]">
-                  <DropdownMenuItem>
-                    <HugeiconsIcon icon={PencilRulerIcon} strokeWidth={2} />
-                    Canvas
-                  </DropdownMenuItem>
-                  {/* Always active: this menu only renders in compare mode.
-                      Ticked like Web search/Code; click toggles it off. */}
-                  <DropdownMenuItem
-                    className="text-primary font-medium"
-                    onSelect={handleExitCompare}
-                  >
-                    <Columns2Icon />
-                    Compare chat
-                    <CheckIcon className="ml-auto" />
-                  </DropdownMenuItem>
-                  <DropdownMenuItem>
-                    <HugeiconsIcon icon={DatabaseIcon} strokeWidth={2} />
-                    RAG
-                  </DropdownMenuItem>
-                </DropdownMenuSubContent>
-              </DropdownMenuSub>
+              <DropdownMenuItem>
+                <HugeiconsIcon icon={PencilRulerIcon} strokeWidth={2} />
+                Canvas
+              </DropdownMenuItem>
+              <DropdownMenuItem>
+                <HugeiconsIcon icon={DatabaseIcon} strokeWidth={2} />
+                RAG
+              </DropdownMenuItem>
+              {/* Always active: this menu only renders in compare mode.
+                  Ticked like Web search/Code; click toggles it off. */}
+              <DropdownMenuItem
+                className="text-primary font-medium"
+                onSelect={handleExitCompare}
+              >
+                <Columns2Icon />
+                Compare chat
+                <CheckIcon className="ml-auto" />
+              </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuSub>
                 <DropdownMenuSubTrigger>
@@ -1122,7 +1111,7 @@ export function SharedComposer({
                 </DropdownMenuSubTrigger>
                 <DropdownMenuSubContent className="unsloth-plus-menu w-[200px]">
                   <DropdownMenuItem onSelect={() => openLink(PROJECTS_PR_URL)}>
-                    <FolderPlusIcon />
+                    <HugeiconsIcon icon={FolderAddIcon} strokeWidth={2} />
                     New project
                   </DropdownMenuItem>
                   <DropdownMenuLabel>Recents</DropdownMenuLabel>
@@ -1133,6 +1122,7 @@ export function SharedComposer({
               </DropdownMenuSub>
             </DropdownMenuContent>
           </DropdownMenu>
+          <ChatMcpServersDialog open={mcpOpen} onOpenChange={setMcpOpen} />
           <button
             type="button"
             disabled={searchDisabled}

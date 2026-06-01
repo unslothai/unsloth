@@ -45,11 +45,13 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { sentAudioNames } from "@/features/chat/api/chat-adapter";
+import { ChatMcpServersDialog } from "@/features/chat/chat-mcp-servers-dialog";
 import { parseExternalModelId } from "@/features/chat/external-providers";
 import { getExternalReasoningCapabilities } from "@/features/chat/provider-capabilities";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { useExternalProvidersStore } from "@/features/chat/stores/external-providers-store";
 import { deleteThreadMessage } from "@/features/chat/utils/delete-thread-message";
+import { useUserProfileStore } from "@/features/profile/stores/user-profile-store";
 import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
 import { isTauri } from "@/lib/api-base";
 import { AUDIO_ACCEPT, MAX_AUDIO_SIZE, fileToBase64 } from "@/lib/audio-utils";
@@ -78,9 +80,10 @@ import {
   DatabaseIcon,
   Delete02Icon,
   Edit03Icon,
-  File02Icon,
   Folder01Icon,
+  FolderAddIcon,
   Image03Icon,
+  McpServerIcon,
   PencilRulerIcon,
   Tick02Icon,
 } from "@hugeicons/core-free-icons";
@@ -94,12 +97,9 @@ import {
   ChevronRightIcon,
   Columns2Icon,
   DownloadIcon,
-  FolderPlusIcon,
   GlobeIcon,
   HeadphonesIcon,
-  LibraryIcon,
   MoreHorizontalIcon,
-  PlugIcon,
   PlusIcon,
   RefreshCwIcon,
   SquareIcon,
@@ -112,12 +112,19 @@ import {
   type CompositionEvent,
   type FC,
   type KeyboardEvent,
+  type DragEvent as ReactDragEvent,
   type ReactNode,
+  createContext,
   useCallback,
+  useContext,
   useEffect,
   useRef,
   useState,
 } from "react";
+
+// True while a file is dragged anywhere over the chat page (not just the
+// composer), so the composer can show its "Drop files here" affordance.
+const PageDragContext = createContext(false);
 
 export const Thread: FC<{
   hideComposer?: boolean;
@@ -137,8 +144,52 @@ export const Thread: FC<{
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const threadId = targetThreadId ?? activeThreadId ?? null;
 
+  // Page-wide drag-and-drop: dropping a file anywhere on the chat page (not
+  // just on the composer) attaches it and shows the composer drop affordance.
+  // The composer's own dropzone still handles drops on the box itself; its
+  // handler calls preventDefault, so the page handler skips them (no double-add).
+  const aui = useAui();
+  const [pageDragging, setPageDragging] = useState(false);
+  const dragDepth = useRef(0);
+  const hasFiles = (e: ReactDragEvent) =>
+    Array.from(e.dataTransfer?.types ?? []).includes("Files");
+  const onDragEnter = (e: ReactDragEvent) => {
+    if (isTauri || !hasFiles(e)) return;
+    dragDepth.current += 1;
+    setPageDragging(true);
+  };
+  const onDragOver = (e: ReactDragEvent) => {
+    if (isTauri || !hasFiles(e)) return;
+    e.preventDefault();
+  };
+  const onDragLeave = (e: ReactDragEvent) => {
+    if (isTauri || !hasFiles(e)) return;
+    dragDepth.current = Math.max(0, dragDepth.current - 1);
+    if (dragDepth.current === 0) setPageDragging(false);
+  };
+  const onDrop = (e: ReactDragEvent) => {
+    if (isTauri) return;
+    dragDepth.current = 0;
+    setPageDragging(false);
+    // Drops on the composer box are handled by its own dropzone, which calls
+    // preventDefault; skip those here so the file isn't added twice.
+    if (e.defaultPrevented) return;
+    const files = Array.from(e.dataTransfer.files);
+    if (files.length === 0) return;
+    e.preventDefault();
+    for (const file of files) {
+      aui
+        .composer()
+        .addAttachment(file)
+        .catch(() => {
+          // Adapter shows its own toast (e.g. "Load a model before adding images").
+        });
+    }
+  };
+
   return (
     <GeneratedImageOverlayProvider key={threadId ?? "default"} threadId={threadId}>
+      <PageDragContext.Provider value={pageDragging}>
       <ThreadPrimitive.Root
         className="aui-root aui-thread-root @container relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden"
         style={{
@@ -146,6 +197,10 @@ export const Thread: FC<{
           ["--thread-content-max-width" as string]:
             "calc(var(--thread-max-width) - 1.5rem)",
         }}
+        onDragEnter={onDragEnter}
+        onDragOver={onDragOver}
+        onDragLeave={onDragLeave}
+        onDrop={onDrop}
       >
         <IntentAwareScrollProvider value={autoScrollContext}>
           <ThreadPrimitive.Viewport
@@ -211,6 +266,7 @@ export const Thread: FC<{
           )}
         </IntentAwareScrollProvider>
       </ThreadPrimitive.Root>
+      </PageDragContext.Provider>
     </GeneratedImageOverlayProvider>
   );
 };
@@ -364,34 +420,79 @@ const ThreadScrollToBottom: FC = () => {
   );
 };
 
+const pickRandom = <T,>(arr: T[]): T =>
+  arr[Math.floor(Math.random() * arr.length)];
+
+// Each greeting carries the sloth picture that best fits it, so a given line
+// always shows the same mascot. Greeting varies by local time; name-bearing
+// lines drop the name when none is set.
+type Welcome = { text: string; sloth: string };
+const DEFAULT_WELCOME: Welcome = {
+  text: "What’s on your mind today?",
+  sloth: "sloth magnify final.png",
+};
+
+function buildWelcome(hour: number, name: string): Welcome {
+  const tail = name ? `, ${name}` : "";
+  const g = (text: string, sloth: string): Welcome => ({ text, sloth });
+  const base: Welcome[] = [
+    g(`Good to see you${tail}.`, "large sloth wave.png"),
+    g("Ready when you are.", "large sloth thumbs.png"),
+    DEFAULT_WELCOME,
+    g(name ? `How can I help, ${name}?` : "How can I help?", "sloth sir large.png"),
+  ];
+  if (hour >= 4 && hour < 9) {
+    const morning = g(name ? `Good morning, ${name}` : "Good morning", "large sloth drink.png");
+    return pickRandom([...base, morning]);
+  }
+  if (hour >= 17 && hour < 23) {
+    const evening: Welcome[] = [
+      g(name ? `Good evening, ${name}` : "Good evening", "sloth shy large.png"),
+      g(name ? `What’s on for tonight, ${name}?` : "What’s on for tonight?", "large sloth glasses.png"),
+    ];
+    // Lean toward an evening line, but a base greeting can still appear.
+    return pickRandom(Math.random() < 0.75 ? evening : base);
+  }
+  if (hour >= 23 || hour < 4) {
+    return pickRandom([
+      g(name ? `Night owl mode, ${name}?` : "Night owl mode?", "large sloth glasses.png"),
+      g(name ? `Late night ideas, ${name}?` : "Late night ideas?", "large sloth yay.png"),
+      g(name ? `Up late with an idea, ${name}?` : "Up late with an idea?", "large sloth heart.png"),
+      g(name ? `The night shift begins, ${name}` : "The night shift begins", "large sloth drink.png"),
+    ]);
+  }
+  return pickRandom(base);
+}
+
 const ThreadWelcome: FC<{
   hideComposer?: boolean;
   threadId?: string | null;
 }> = ({ hideComposer, threadId }) => {
-  const [currentEmoji, setCurrentEmoji] = useState("large sloth drink.png");
+  const displayName = useUserProfileStore((s) => s.displayName);
+  const [welcome, setWelcome] = useState<Welcome>(DEFAULT_WELCOME);
 
   useEffect(() => {
-    const hour = new Date().getHours();
-    if (hour >= 6 && hour < 12) setCurrentEmoji("large sloth drink.png");
-    else if (hour >= 12 && hour < 17)
-      setCurrentEmoji("sloth magnify final.png");
-    else if (hour >= 17 && hour < 21) setCurrentEmoji("sloth shy large.png");
-    else setCurrentEmoji("unsloth-gem.png");
-  }, []);
+    // First name only, for a natural greeting; blank falls back to no name.
+    const name = displayName.trim().split(/\s+/)[0] ?? "";
+    setWelcome(buildWelcome(new Date().getHours(), name));
+  }, [displayName]);
 
-  const currentEmojiSrc =
-    currentEmoji === "unsloth-gem.png"
-      ? `/${currentEmoji}`
-      : `/Sloth emojis/${currentEmoji}`;
+  const currentEmojiSrc = `/Sloth emojis/${welcome.sloth}`;
 
   return (
     <div className="aui-thread-welcome-root mx-auto my-auto flex w-full max-w-(--thread-max-width) grow flex-col">
       <div className="aui-thread-welcome-center flex w-full grow flex-col items-center justify-start pt-[calc(29vh_-_5px)]">
         <div className="aui-thread-welcome-message flex w-full flex-col justify-center gap-9 px-4">
-          <div className="flex flex-row items-center justify-center gap-3">
-            <img src={currentEmojiSrc} alt="Sloth mascot" className="size-9" />
+          {/* Shift left by half the icon+gap so the title centers over the
+              composer instead of sitting right of center. */}
+          <div className="flex -translate-x-6 flex-row items-center justify-center gap-3">
+            <img
+              src={currentEmojiSrc}
+              alt="Sloth mascot"
+              className="size-9 -translate-y-[2px]"
+            />
             <h1 className="aui-thread-welcome-message-inner unsloth-welcome-title fade-in slide-in-from-bottom-1 animate-in text-3xl tracking-[-0.02em] duration-200">
-              What&rsquo;s on your mind today?
+              {welcome.text}
             </h1>
           </div>
           {!hideComposer && <ComposerAnimated threadId={threadId} />}
@@ -445,6 +546,7 @@ const Composer: FC<{
   menuSide?: "top" | "bottom";
 }> = ({ disabled, threadId, menuSide }) => {
   const aui = useAui();
+  const pageDragging = useContext(PageDragContext);
   const { overlay, closeOverlay } = useGeneratedImageOverlay();
   const setImageToolsEnabled = useChatRuntimeStore(
     (s) => s.setImageToolsEnabled,
@@ -672,8 +774,26 @@ const Composer: FC<{
           {composerContent}
         </div>
       ) : (
-        <ComposerPrimitive.AttachmentDropzone className="aui-composer-attachment-dropzone unsloth-composer-surface data-[dragging=true]:border-ring data-[dragging=true]:bg-accent/50">
+        <ComposerPrimitive.AttachmentDropzone className="group/dropzone aui-composer-attachment-dropzone unsloth-composer-surface relative">
           {composerContent}
+          {/* Gemini-style drop affordance: shown only while a file is dragged
+              over the composer. Absolutely positioned + pointer-events-none so
+              the dashed outline adds no layout shift and the drop still lands. */}
+          <div
+            className={cn(
+              "aui-composer-drop-overlay pointer-events-none absolute inset-0 z-20 flex flex-col items-center justify-center gap-1 overflow-hidden rounded-[32px] bg-background/90 opacity-0 backdrop-blur-sm transition-opacity duration-150 group-data-[dragging=true]/dropzone:opacity-100 dark:bg-card/90",
+              pageDragging && "opacity-100",
+            )}
+          >
+            <HugeiconsIcon
+              icon={AttachmentIcon}
+              strokeWidth={2}
+              className="size-6 text-primary"
+            />
+            <span className="text-sm font-medium text-primary">
+              Drop files here
+            </span>
+          </div>
         </ComposerPrimitive.AttachmentDropzone>
       )}
     </ComposerPrimitive.Root>
@@ -1388,13 +1508,11 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
   side = "bottom",
 }) => {
   const navigate = useNavigate();
-  const setSettingsPanelOpen = useChatRuntimeStore(
-    (s) => s.setSettingsPanelOpen,
-  );
   const toolsEnabled = useChatRuntimeStore((s) => s.toolsEnabled);
   const setToolsEnabled = useChatRuntimeStore((s) => s.setToolsEnabled);
   const codeToolsEnabled = useChatRuntimeStore((s) => s.codeToolsEnabled);
   const setCodeToolsEnabled = useChatRuntimeStore((s) => s.setCodeToolsEnabled);
+  const [mcpOpen, setMcpOpen] = useState(false);
 
   const startCompare = useCallback(() => {
     const store = useChatRuntimeStore.getState();
@@ -1409,6 +1527,7 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
   }, [navigate]);
 
   return (
+    <>
     <DropdownMenu>
       <DropdownMenuTrigger asChild={true}>
         <button
@@ -1435,24 +1554,7 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
             Add photos &amp; files
           </DropdownMenuItem>
         </ComposerPrimitive.AddAttachment>
-        <DropdownMenuSub>
-          <DropdownMenuSubTrigger>
-            <HugeiconsIcon icon={File02Icon} strokeWidth={2} />
-            Recent files
-          </DropdownMenuSubTrigger>
-          <DropdownMenuSubContent className="unsloth-plus-menu w-[212px]">
-            <ComposerPrimitive.AddAttachment asChild={true}>
-              <DropdownMenuItem>
-                <LibraryIcon />
-                Add from library
-              </DropdownMenuItem>
-            </ComposerPrimitive.AddAttachment>
-            <DropdownMenuLabel>Recents</DropdownMenuLabel>
-            <DropdownMenuItem disabled={true}>No recent files</DropdownMenuItem>
-          </DropdownMenuSubContent>
-        </DropdownMenuSub>
         <ComposerAudioMenuItem />
-        <DropdownMenuSeparator />
         <DropdownMenuItem
           className={toolsEnabled ? "text-primary font-medium" : undefined}
           onSelect={() => setToolsEnabled(!toolsEnabled)}
@@ -1465,34 +1567,35 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
           className={codeToolsEnabled ? "text-primary font-medium" : undefined}
           onSelect={() => setCodeToolsEnabled(!codeToolsEnabled)}
         >
-          <HugeiconsIcon icon={CodeIcon} strokeWidth={2} />
+          <HugeiconsIcon
+            icon={CodeIcon}
+            strokeWidth={2}
+            className="size-[1.175rem]!"
+          />
           Code
           {codeToolsEnabled ? <CheckIcon className="ml-auto" /> : null}
         </DropdownMenuItem>
-        <DropdownMenuItem onSelect={() => setSettingsPanelOpen(true)}>
-          <PlugIcon />
+        <DropdownMenuSeparator />
+        <DropdownMenuItem onSelect={() => setMcpOpen(true)}>
+          <HugeiconsIcon
+            icon={McpServerIcon}
+            strokeWidth={2}
+            className="size-[1.175rem]!"
+          />
           MCP
         </DropdownMenuItem>
-        <DropdownMenuSub>
-          <DropdownMenuSubTrigger>
-            <MoreHorizontalIcon />
-            More
-          </DropdownMenuSubTrigger>
-          <DropdownMenuSubContent className="unsloth-plus-menu w-[200px]">
-            <DropdownMenuItem>
-              <HugeiconsIcon icon={PencilRulerIcon} strokeWidth={2} />
-              Canvas
-            </DropdownMenuItem>
-            <DropdownMenuItem onSelect={() => startCompare()}>
-              <Columns2Icon />
-              Compare chat
-            </DropdownMenuItem>
-            <DropdownMenuItem>
-              <HugeiconsIcon icon={DatabaseIcon} strokeWidth={2} />
-              RAG
-            </DropdownMenuItem>
-          </DropdownMenuSubContent>
-        </DropdownMenuSub>
+        <DropdownMenuItem>
+          <HugeiconsIcon icon={PencilRulerIcon} strokeWidth={2} />
+          Canvas
+        </DropdownMenuItem>
+        <DropdownMenuItem>
+          <HugeiconsIcon icon={DatabaseIcon} strokeWidth={2} />
+          RAG
+        </DropdownMenuItem>
+        <DropdownMenuItem onSelect={() => startCompare()}>
+          <Columns2Icon />
+          Compare chat
+        </DropdownMenuItem>
         <DropdownMenuSeparator />
         <DropdownMenuSub>
           <DropdownMenuSubTrigger>
@@ -1501,7 +1604,7 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
           </DropdownMenuSubTrigger>
           <DropdownMenuSubContent className="unsloth-plus-menu w-[200px]">
             <DropdownMenuItem onSelect={() => openLink(PROJECTS_PR_URL)}>
-              <FolderPlusIcon />
+              <HugeiconsIcon icon={FolderAddIcon} strokeWidth={2} />
               New project
             </DropdownMenuItem>
             <DropdownMenuLabel>Recents</DropdownMenuLabel>
@@ -1512,6 +1615,8 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
         </DropdownMenuSub>
       </DropdownMenuContent>
     </DropdownMenu>
+    <ChatMcpServersDialog open={mcpOpen} onOpenChange={setMcpOpen} />
+    </>
   );
 };
 
