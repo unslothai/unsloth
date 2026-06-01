@@ -165,6 +165,15 @@ export const en = {
     chat: {
       title: "Chat",
       description: "Manage your chat history stored on this device.",
+      artifacts: {
+        title: "Artifacts",
+        collapseHtmlBlocks: "Collapse HTML blocks",
+        collapseHtmlBlocksDescription:
+          "Artifacts mode collapses full HTML fallback automatically. Turn this on to also collapse full fenced HTML documents when Artifacts is off.",
+        allowNetworkAccess: "Allow artifact network access",
+        allowNetworkAccessDescription:
+          "Let artifact previews load scripts, styles, fonts, media, fetch, and WebSocket resources from HTTP(S) CDNs. Keep off for fully offline previews.",
+      },
       data: "Data",
       exportHistory: "Export chat history",
       exportHistoryDescription:

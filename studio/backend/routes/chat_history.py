@@ -166,6 +166,8 @@ class ChatSettingsPayload(BaseModel):
         Literal["none", "minimal", "low", "medium", "high", "max", "xhigh"]
     ] = None
     preserveThinking: Optional[bool] = None
+    collapseHtmlArtifacts: Optional[bool] = None
+    allowArtifactNetworkAccess: Optional[bool] = None
     autoHealToolCalls: Optional[bool] = None
     maxToolCallsPerMessage: Optional[int] = Field(default = None, ge = 1)
     toolCallTimeout: Optional[int] = Field(default = None, ge = 1)

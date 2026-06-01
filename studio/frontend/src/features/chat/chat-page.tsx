@@ -10,16 +10,23 @@ import {
   ModelSelector,
 } from "@/components/assistant-ui/model-selector";
 import { ProjectComposer, Thread } from "@/components/assistant-ui/thread";
+import {
+  ResizableHandle,
+  ResizablePanel,
+  ResizablePanelGroup,
+} from "@/components/ui/resizable";
 import { useSidebar } from "@/components/ui/sidebar";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent } from "@/components/ui/tooltip";
-import { NativeModelChip } from "@/features/native-intents/components/native-model-chip";
-import { NativeModelDropOverlay } from "@/features/native-intents/components/native-model-drop-overlay";
-import { useNativeIntentStore } from "@/features/native-intents/store";
-import type { NativeIntent } from "@/features/native-intents/types";
-import { useChooseNativeModel } from "@/features/native-intents/use-native-dialogs";
-import { useNativeModelDrop } from "@/features/native-intents/use-native-drop";
-import { useNativePathLeasesSupported } from "@/features/native-intents/use-native-readiness";
+import {
+  NativeModelChip,
+  NativeModelDropOverlay,
+  type NativeIntent,
+  useChooseNativeModel,
+  useNativeIntentStore,
+  useNativeModelDrop,
+  useNativePathLeasesSupported,
+} from "@/features/native-intents";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { isTauri } from "@/lib/api-base";
 import { cn } from "@/lib/utils";
@@ -31,6 +38,7 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate, useRouterState, useSearch } from "@tanstack/react-router";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
+import type { PanelImperativeHandle } from "react-resizable-panels";
 import {
   type CSSProperties,
   type ReactElement,
@@ -90,6 +98,13 @@ import {
 } from "./stores/chat-runtime-store";
 import { useExternalProvidersStore } from "./stores/external-providers-store";
 import { buildChatTourSteps } from "./tour";
+import { ArtifactSurface } from "./artifacts/artifact-surface";
+import {
+  clearAutoOpenedArtifacts,
+  useChatArtifactsStore,
+  useSelectedChatArtifact,
+} from "./artifacts/store";
+import type { ChatArtifact, ChatArtifactSurface } from "./artifacts/types";
 import type { ChatView, MessageRecord } from "./types";
 import {
   getStoredChatThread,
@@ -146,6 +161,12 @@ function pickBestLoraForBase(
   return partial ?? sorted[0] ?? null;
 }
 
+function isAssistantLocalThreadId(
+  threadId: string | null | undefined,
+): boolean {
+  return Boolean(threadId?.startsWith("__LOCALID_"));
+}
+
 function messageHasImage(message: MessageRecord): boolean {
   const contentParts = Array.isArray(message.content) ? message.content : [];
   if (contentParts.some((part) => part.type === "image")) {
@@ -165,15 +186,101 @@ function messageHasImage(message: MessageRecord): boolean {
   return false;
 }
 
+const ARTIFACT_PANEL_DEFAULT_SIZE = "38%";
+const ARTIFACT_PANEL_TRANSITION_MS = 260;
+const ARTIFACT_SURFACE_POP_DELAY_MS = 150;
+
 const SingleContent = memo(function SingleContent({
   threadId,
   newThreadNonce,
   projectId,
+  artifact,
+  artifactSurface,
+  onCloseArtifact,
 }: {
   threadId?: string;
   newThreadNonce?: string;
   projectId?: string | null;
+  artifact?: ChatArtifact | null;
+  artifactSurface: ChatArtifactSurface;
+  onCloseArtifact: () => void;
 }): ReactElement {
+  const openArtifact = useChatArtifactsStore((state) => state.openArtifact);
+  const activeThreadId = useChatRuntimeStore((state) => state.activeThreadId);
+  const artifactPanelRef = useRef<PanelImperativeHandle | null>(null);
+  const hasInitializedArtifactPanelRef = useRef(false);
+  const [isArtifactLayoutAnimating, setIsArtifactLayoutAnimating] =
+    useState(false);
+  const [isArtifactPanelLayoutActive, setIsArtifactPanelLayoutActive] =
+    useState(false);
+  const [isArtifactSurfaceVisible, setIsArtifactSurfaceVisible] =
+    useState(false);
+  const showArtifactPanel = Boolean(
+    artifact &&
+      artifactSurface === "panel" &&
+      (threadId
+        ? !artifact.threadId || artifact.threadId === threadId
+        : Boolean(newThreadNonce) ||
+          Boolean(artifact.threadId && artifact.threadId === activeThreadId)),
+  );
+
+  const artifactLayoutActive = showArtifactPanel || isArtifactPanelLayoutActive;
+  const artifactPanelSettledOpen =
+    showArtifactPanel &&
+    isArtifactPanelLayoutActive &&
+    !isArtifactLayoutAnimating;
+
+  useEffect(() => {
+    const panel = artifactPanelRef.current;
+    if (!panel) return;
+
+    setIsArtifactSurfaceVisible(false);
+
+    if (!hasInitializedArtifactPanelRef.current) {
+      hasInitializedArtifactPanelRef.current = true;
+      if (!showArtifactPanel) {
+        panel.resize("0%");
+        return;
+      }
+    }
+
+    setIsArtifactPanelLayoutActive(true);
+    setIsArtifactLayoutAnimating(true);
+    let resizeFrameId = 0;
+    const prepFrameId = window.requestAnimationFrame(() => {
+      resizeFrameId = window.requestAnimationFrame(() => {
+        panel.resize(showArtifactPanel ? ARTIFACT_PANEL_DEFAULT_SIZE : "0%");
+      });
+    });
+    const surfaceTimerId = showArtifactPanel
+      ? window.setTimeout(() => {
+          setIsArtifactSurfaceVisible(true);
+        }, ARTIFACT_SURFACE_POP_DELAY_MS)
+      : 0;
+    const timeoutId = window.setTimeout(() => {
+      setIsArtifactLayoutAnimating(false);
+      if (!showArtifactPanel) {
+        setIsArtifactPanelLayoutActive(false);
+      }
+    }, ARTIFACT_PANEL_TRANSITION_MS + 60);
+    return () => {
+      window.cancelAnimationFrame(prepFrameId);
+      if (resizeFrameId) {
+        window.cancelAnimationFrame(resizeFrameId);
+      }
+      if (surfaceTimerId) {
+        window.clearTimeout(surfaceTimerId);
+      }
+      window.clearTimeout(timeoutId);
+    };
+  }, [showArtifactPanel]);
+
+  const threadPane = (
+    <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden">
+      <Thread hideWelcome={Boolean(threadId)} targetThreadId={threadId} />
+    </div>
+  );
+
   return (
     <ChatRuntimeProvider
       modelType="base"
@@ -182,9 +289,62 @@ const SingleContent = memo(function SingleContent({
       projectId={projectId}
       listThreads={false}
     >
-      <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden">
-        <Thread hideWelcome={Boolean(threadId)} targetThreadId={threadId} />
-      </div>
+      <ResizablePanelGroup
+        orientation="horizontal"
+        data-artifact-layout-animating={
+          isArtifactLayoutAnimating ? "true" : "false"
+        }
+        className="chat-artifact-split min-h-0 min-w-0 flex-1 basis-0 overflow-hidden"
+      >
+        <ResizablePanel
+          id="chat-thread"
+          defaultSize="100%"
+          minSize={artifactLayoutActive ? "42%" : "100%"}
+          className="h-full min-h-0 min-w-0 overflow-hidden"
+        >
+          <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
+            {threadPane}
+          </div>
+        </ResizablePanel>
+        <ResizableHandle
+          withHandle={false}
+          className={cn(
+            "relative z-30 -ml-1 -mr-4 w-5 bg-transparent transition-[width,margin] duration-[260ms] ease-[var(--ease-out-cubic)] hover:bg-transparent hover:shadow-none active:bg-transparent active:shadow-none focus-visible:bg-transparent focus-visible:shadow-none focus-visible:ring-0 focus-visible:ring-offset-0 focus-visible:outline-none",
+            !artifactLayoutActive && "pointer-events-none -ml-0 -mr-0 w-0",
+          )}
+        />
+        <ResizablePanel
+          panelRef={artifactPanelRef}
+          id="chat-artifact"
+          defaultSize="0%"
+          minSize={artifactPanelSettledOpen ? "30%" : "0%"}
+          maxSize={artifactLayoutActive ? "58%" : "0%"}
+          collapsible={true}
+          collapsedSize="0%"
+          className={cn(
+            "h-full min-h-0 min-w-0 overflow-visible",
+            !showArtifactPanel && "pointer-events-none",
+          )}
+        >
+          <div
+            data-artifact-surface-visible={
+              isArtifactSurfaceVisible ? "true" : "false"
+            }
+            className="chat-artifact-pop-surface flex h-full min-h-0 min-w-0 flex-col overflow-visible"
+          >
+            {showArtifactPanel && artifact ? (
+              <ArtifactSurface
+                artifact={artifact}
+                variant="panel"
+                onClose={onCloseArtifact}
+                onOpenFullscreen={() =>
+                  openArtifact(artifact, { surface: "overlay" })
+                }
+              />
+            ) : null}
+          </div>
+        </ResizablePanel>
+      </ResizablePanelGroup>
     </ChatRuntimeProvider>
   );
 });
@@ -357,15 +517,17 @@ const LoraCompareContent = memo(function LoraCompareContent({
 
   useEffect(() => {
     let isActive = true;
-    listStoredChatThreads({ pairId }).then((threads) => {
-      if (!isActive) return;
-      setBaseThreadId(threads.find((t) => t.modelType === "base")?.id);
-      setLoraThreadId(threads.find((t) => t.modelType === "lora")?.id);
-    }).catch((error) => {
-      if (!isExpectedBackgroundChatStorageError(error)) {
-        throw error;
-      }
-    });
+    listStoredChatThreads({ pairId })
+      .then((threads) => {
+        if (!isActive) return;
+        setBaseThreadId(threads.find((t) => t.modelType === "base")?.id);
+        setLoraThreadId(threads.find((t) => t.modelType === "lora")?.id);
+      })
+      .catch((error) => {
+        if (!isExpectedBackgroundChatStorageError(error)) {
+          throw error;
+        }
+      });
     return () => {
       isActive = false;
     };
@@ -510,21 +672,25 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
 
   useEffect(() => {
     let isActive = true;
-    listStoredChatThreads({ pairId }).then((threads) => {
-      if (!isActive) return;
-      setModel1ThreadId(
-        threads.find((t) => t.modelType === "model1" || t.modelType === "base")
-          ?.id,
-      );
-      setModel2ThreadId(
-        threads.find((t) => t.modelType === "model2" || t.modelType === "lora")
-          ?.id,
-      );
-    }).catch((error) => {
-      if (!isExpectedBackgroundChatStorageError(error)) {
-        throw error;
-      }
-    });
+    listStoredChatThreads({ pairId })
+      .then((threads) => {
+        if (!isActive) return;
+        setModel1ThreadId(
+          threads.find(
+            (t) => t.modelType === "model1" || t.modelType === "base",
+          )?.id,
+        );
+        setModel2ThreadId(
+          threads.find(
+            (t) => t.modelType === "model2" || t.modelType === "lora",
+          )?.id,
+        );
+      })
+      .catch((error) => {
+        if (!isExpectedBackgroundChatStorageError(error)) {
+          throw error;
+        }
+      });
     return () => {
       isActive = false;
     };
@@ -905,6 +1071,7 @@ export function ChatPage(): ReactElement {
   const modelsError = useChatRuntimeStore((state) => state.modelsError);
   const modelLoading = useChatRuntimeStore((state) => state.modelLoading);
   const clearCheckpoint = useChatRuntimeStore((state) => state.clearCheckpoint);
+  const resetArtifacts = useChatArtifactsStore((state) => state.resetArtifacts);
   const activeThreadId = useChatRuntimeStore((state) => state.activeThreadId);
   const [currentProjectId, setCurrentProjectId] = useState<string | null>(
     search.project ?? null,
@@ -930,6 +1097,9 @@ export function ChatPage(): ReactElement {
   const openProjectsList = useCallback(() => {
     navigate({ to: "/projects" });
   }, [navigate]);
+  const persistedActiveThreadId = isAssistantLocalThreadId(activeThreadId)
+    ? null
+    : activeThreadId;
   const modelOperationInProgress = useChatRuntimeStore(
     (state) => state.modelLoading,
   );
@@ -944,9 +1114,9 @@ export function ChatPage(): ReactElement {
   } = useChatModelRuntime();
   const prevConnectionsEnabledRef = useRef(connectionsEnabled);
   useEffect(() => {
-    const turnedOff =
-      prevConnectionsEnabledRef.current && !connectionsEnabled;
+    const turnedOff = prevConnectionsEnabledRef.current && !connectionsEnabled;
     if (!connectionsEnabled && isExternalModelId(inferenceParams.checkpoint)) {
+      resetArtifacts();
       clearCheckpoint();
       if (turnedOff) {
         toast.info("Connections disabled", {
@@ -959,6 +1129,7 @@ export function ChatPage(): ReactElement {
     clearCheckpoint,
     connectionsEnabled,
     inferenceParams.checkpoint,
+    resetArtifacts,
   ]);
   const pendingNativeModelIntent = useNativeIntentStore(
     (state) => state.pendingModelIntent,
@@ -978,17 +1149,19 @@ export function ChatPage(): ReactElement {
   const reasoningEnabled = useChatRuntimeStore((s) => s.reasoningEnabled);
   const reasoningStyle = useChatRuntimeStore((s) => s.reasoningStyle);
   const reasoningEffort = useChatRuntimeStore((s) => s.reasoningEffort);
-  const supportsReasoningOff = useChatRuntimeStore((s) => s.supportsReasoningOff);
+  const supportsReasoningOff = useChatRuntimeStore(
+    (s) => s.supportsReasoningOff,
+  );
   const activeExternalProvider = useMemo(() => {
     const selection = parseExternalModelId(inferenceParams.checkpoint);
     if (!selection) return null;
     return (
-      externalProvidersForChat.find(
-        (p) => p.id === selection.providerId,
-      ) ?? null
+      externalProvidersForChat.find((p) => p.id === selection.providerId) ??
+      null
     );
   }, [externalProvidersForChat, inferenceParams.checkpoint]);
-  const activeExternalProviderType = activeExternalProvider?.providerType ?? null;
+  const activeExternalProviderType =
+    activeExternalProvider?.providerType ?? null;
   const activeProviderCapabilities = useMemo(() => {
     const selection = parseExternalModelId(inferenceParams.checkpoint);
     if (!selection) return null;
@@ -1104,7 +1277,9 @@ export function ChatPage(): ReactElement {
       (provider?.providerType === "anthropic" ||
         provider?.providerType === "openai");
     const storedToolsEnabled = loadOptionalBool(CHAT_TOOLS_ENABLED_KEY);
-    const storedCodeToolsEnabled = loadOptionalBool(CHAT_CODE_TOOLS_ENABLED_KEY);
+    const storedCodeToolsEnabled = loadOptionalBool(
+      CHAT_CODE_TOOLS_ENABLED_KEY,
+    );
     const storedImageToolsEnabled = loadOptionalBool(
       CHAT_IMAGE_TOOLS_ENABLED_KEY,
     );
@@ -1234,10 +1409,10 @@ export function ChatPage(): ReactElement {
         projectId: search.project,
       };
     }
-    if (activeThreadId && !activeThreadId.startsWith("__LOCALID_")) {
+    if (persistedActiveThreadId) {
       return {
         mode: "single",
-        threadId: activeThreadId,
+        threadId: persistedActiveThreadId,
         projectId: currentProjectId,
       };
     }
@@ -1247,9 +1422,40 @@ export function ChatPage(): ReactElement {
     search.compare,
     search.new,
     search.project,
-    activeThreadId,
+    persistedActiveThreadId,
     currentProjectId,
   ]);
+
+  const selectedArtifact = useSelectedChatArtifact();
+  const artifactSurface = useChatArtifactsStore((state) => state.surface);
+  const closeArtifactSurface = useChatArtifactsStore(
+    (state) => state.closeArtifactSurface,
+  );
+  const artifactViewKey =
+    view.mode === "single"
+      ? `single:${view.threadId ?? view.newThreadNonce ?? "new"}`
+      : view.mode === "compare"
+        ? `compare:${view.pairId}`
+        : `project:${view.projectId}`;
+
+  useEffect(() => {
+    clearAutoOpenedArtifacts();
+    closeArtifactSurface();
+  }, [artifactViewKey, closeArtifactSurface]);
+
+  useEffect(() => {
+    if (view.mode !== "single") return;
+    if (view.threadId || view.newThreadNonce || !selectedArtifact) return;
+    // view intentionally excludes __LOCALID_ threads (they fall through to
+    // { mode: "single" } with no threadId/nonce).  Don't close an artifact
+    // whose thread is the currently active local thread.
+    if (
+      selectedArtifact.threadId &&
+      selectedArtifact.threadId === activeThreadId
+    )
+      return;
+    closeArtifactSurface();
+  }, [activeThreadId, closeArtifactSurface, selectedArtifact, view]);
 
   const hasActiveModel = Boolean(inferenceParams.checkpoint);
   const loadNativeModelIntent = useCallback(
@@ -1384,11 +1590,12 @@ export function ChatPage(): ReactElement {
           selectedExternal?.modelId,
           selectedProvider?.baseUrl,
         );
-        const supportsBuiltinCodeExecution = providerSupportsBuiltinCodeExecution(
-          selectedProvider?.providerType,
-          selectedExternal?.modelId,
-          selectedProvider?.baseUrl,
-        );
+        const supportsBuiltinCodeExecution =
+          providerSupportsBuiltinCodeExecution(
+            selectedProvider?.providerType,
+            selectedExternal?.modelId,
+            selectedProvider?.baseUrl,
+          );
         const supportsBuiltinImageGeneration =
           providerSupportsBuiltinImageGeneration(
             selectedProvider?.providerType,
@@ -1519,8 +1726,12 @@ export function ChatPage(): ReactElement {
     ],
   );
   const handleEject = useCallback(() => {
-    void ejectModel();
-  }, [ejectModel]);
+    void (async () => {
+      if (await ejectModel()) {
+        resetArtifacts();
+      }
+    })();
+  }, [ejectModel, resetArtifacts]);
 
   const openModelSelector = useCallback(() => {
     setModelSelectorLocked(true);
@@ -1810,6 +2021,7 @@ export function ChatPage(): ReactElement {
 
   const tourSteps = useMemo(
     () =>
+      // eslint-disable-next-line react-hooks/refs -- buildChatTourSteps stores callbacks without invoking them during render.
       buildChatTourSteps({
         canCompare,
         openModelSelector,
@@ -1846,6 +2058,11 @@ export function ChatPage(): ReactElement {
     }, 0);
     return () => window.clearTimeout(timeoutId);
   }, [modelSelectorLocked, tour.open]);
+
+  const showArtifactOverlay = Boolean(
+    selectedArtifact &&
+      (view.mode === "compare" || artifactSurface === "overlay"),
+  );
 
   if (!isCurrentChatRoute) {
     return (
@@ -2010,10 +2227,13 @@ export function ChatPage(): ReactElement {
           />
         ) : view.mode === "single" ? (
           <SingleContent
-            key={view.threadId ?? "single"}
+            key={view.threadId ?? view.newThreadNonce ?? "single"}
             threadId={view.threadId}
             newThreadNonce={view.newThreadNonce}
             projectId={view.projectId}
+            artifact={selectedArtifact}
+            artifactSurface={artifactSurface}
+            onCloseArtifact={closeArtifactSurface}
           />
         ) : (
           <CompareContent
@@ -2027,6 +2247,14 @@ export function ChatPage(): ReactElement {
             deleteDisabled={modelOperationInProgress}
           />
         )}
+
+        {showArtifactOverlay && selectedArtifact ? (
+          <ArtifactSurface
+            artifact={selectedArtifact}
+            variant="overlay"
+            onClose={closeArtifactSurface}
+          />
+        ) : null}
       </div>
 
       <ChatSettingsPanel

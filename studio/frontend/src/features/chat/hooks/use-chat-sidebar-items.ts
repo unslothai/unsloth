@@ -4,6 +4,7 @@
 import { useEffect, useState } from "react";
 import { CHAT_HISTORY_UPDATED_EVENT } from "../api/chat-api";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
+import { useChatArtifactsStore } from "../artifacts/store";
 import type { ThreadRecord } from "../types";
 import {
   deleteStoredChatThreads,
@@ -173,6 +174,10 @@ export async function deleteChatItem(
   // Stop any in-flight streams before deleting, so the model doesn't keep
   // generating against a thread that no longer exists.
   for (const id of threadIds) cancelIfRunning(id);
+
+  const artifactStore = useChatArtifactsStore.getState();
+  for (const id of threadIds) artifactStore.clearArtifactsForThread(id);
+  artifactStore.clearOrphanedArtifacts();
 
   // Optimistic tombstone: hide immediately; roll back on backend error.
   markChatThreadsDeleted(threadIds);
