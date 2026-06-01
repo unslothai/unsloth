@@ -5293,6 +5293,7 @@ async def _anthropic_tool_non_streaming(run_gen, message_id, model_name):
     baseline, not against turn N's final length.
     """
     content_blocks: list = []
+    tool_blocks_by_id: dict[str, AnthropicResponseToolUseBlock] = {}
     usage = {}
     prev_text = ""
 
@@ -5311,13 +5312,25 @@ async def _anthropic_tool_non_streaming(run_gen, message_id, model_name):
                 else:
                     content_blocks.append(AnthropicResponseTextBlock(text = new))
         elif etype == "tool_start":
-            content_blocks.append(
-                AnthropicResponseToolUseBlock(
-                    id = event["tool_call_id"],
-                    name = event["tool_name"],
-                    input = event.get("arguments", {}),
-                )
+            tool_call_id = event["tool_call_id"]
+            arguments = event.get("arguments", {})
+            existing_tool_block = (
+                tool_blocks_by_id.get(tool_call_id) if tool_call_id else None
             )
+            if existing_tool_block is not None:
+                if arguments or not existing_tool_block.input:
+                    existing_tool_block.input = arguments
+                if event.get("tool_name") and not existing_tool_block.name:
+                    existing_tool_block.name = event["tool_name"]
+            else:
+                tool_block = AnthropicResponseToolUseBlock(
+                    id = tool_call_id,
+                    name = event["tool_name"],
+                    input = arguments,
+                )
+                if tool_call_id:
+                    tool_blocks_by_id[tool_call_id] = tool_block
+                content_blocks.append(tool_block)
         elif etype == "tool_end":
             prev_text = ""
         elif etype == "metadata":
