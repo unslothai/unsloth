@@ -35,7 +35,7 @@ EMBED_GGUF_REPO = os.environ.get(
     "RAG_EMBED_GGUF_REPO", "ggml-org/bge-small-en-v1.5-Q8_0-GGUF"
 )
 EMBED_GGUF_VARIANT = os.environ.get("RAG_EMBED_GGUF_VARIANT", "Q8_0")
-EMBED_DEVICE = os.environ.get("RAG_EMBED_DEVICE", "cpu")  # "cpu" or "gpu"
+EMBED_DEVICE = os.environ.get("RAG_EMBED_DEVICE", "auto")  # "auto" | "gpu" | "cpu"
 EMBED_HOST = os.environ.get("RAG_EMBED_HOST", "127.0.0.1")
 EMBED_PORT = int(os.environ.get("RAG_EMBED_PORT", "0"))  # 0 = auto-pick a free port
 EMBED_BATCH = int(os.environ.get("RAG_EMBED_BATCH", "64"))

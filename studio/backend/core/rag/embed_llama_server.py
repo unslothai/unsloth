@@ -10,6 +10,11 @@ isolated from the chat ``LlamaCppBackend`` / ``/v1/chat/completions`` proxy: no
 shared process, no new Studio route, and the chat extra-args denylist does not
 apply (the command is built here directly).
 
+Device is ``auto`` by default: it offloads to the GPU when one is present (like
+Studio's chat server; NVIDIA via CUDA or Apple via Metal) and falls back to CPU
+if that start fails. Detection is torch-free, so the backend never imports
+torch. ``RAG_EMBED_DEVICE=cpu``/``gpu`` forces the choice.
+
 Coupling note: the chat backend's ``_kill_orphaned_servers()`` reaps *any*
 Studio llama-server by binary path, so loading a chat model kills this embed
 server. We do not touch that reaper; instead every request first checks the
@@ -53,6 +58,9 @@ class LlamaServerBackend:
         self._dim_lock = threading.Lock()
         self._model_path: str | None = None
         self._binary: str | None = None
+        # Sticky after an auto GPU start fails (e.g. VRAM full): every later
+        # (re)spawn stays on CPU instead of retrying the GPU and failing again.
+        self._force_cpu = False
         # One pooled client for the life of the backend; requests pass full URLs
         # so a port change after a respawn needs no client rebuild.
         self._client = httpx.Client(timeout = config.EMBED_REQUEST_TIMEOUT_S)
@@ -134,9 +142,49 @@ class LlamaServerBackend:
         self._model_path = hf_hub_download(repo_id = repo, filename = filename, token = token)
         return self._model_path
 
+    # ── Device selection (torch-free) ────────────────────────────
+
+    def _use_gpu(self) -> bool:
+        """Whether to offload to GPU. ``RAG_EMBED_DEVICE`` is ``auto`` (default,
+        use the GPU when one is present, like Studio's chat server), ``gpu``, or
+        ``cpu``. Detection is torch-free so the backend stays no-torch. A sticky
+        CPU fallback (set after an auto GPU start fails) wins over auto."""
+        dev = config.EMBED_DEVICE.lower()
+        if dev == "gpu":
+            return True
+        if dev == "cpu" or self._force_cpu:
+            return False
+        return self._gpu_available()  # auto
+
+    @staticmethod
+    def _gpu_available() -> bool:
+        """Torch-free GPU probe matching what the bundled llama.cpp can offload
+        to: Apple Metal on Apple Silicon, or an NVIDIA GPU via nvidia-smi."""
+        import platform
+        import shutil
+
+        if platform.system() == "Darwin" and platform.machine() in ("arm64", "aarch64"):
+            return True  # bundled mac build offloads to Metal
+        smi = shutil.which("nvidia-smi")
+        if smi:
+            try:
+                out = subprocess.run(
+                    [smi, "-L"],
+                    capture_output = True,
+                    text = True,
+                    timeout = 10,
+                    **windows_hidden_subprocess_kwargs(),
+                )
+                return out.returncode == 0 and "GPU " in out.stdout
+            except Exception:  # noqa: BLE001 - no GPU / smi unusable -> CPU
+                return False
+        return False
+
     # ── Subprocess command / env ─────────────────────────────────
 
-    def _build_cmd(self, binary: str, model_path: str, port: int) -> list[str]:
+    def _build_cmd(
+        self, binary: str, model_path: str, port: int, *, use_gpu: bool
+    ) -> list[str]:
         # No --embd-normalize: it isn't in every llama-server build and we
         # normalize in Python anyway, so the `normalize` flag matches the
         # sentence-transformers path regardless of the server default.
@@ -152,17 +200,19 @@ class LlamaServerBackend:
             "--pooling",
             "cls",
         ]
-        ngl = "99" if config.EMBED_DEVICE.lower() == "gpu" else "0"
-        cmd += ["-ngl", ngl]
+        # 99 offloads every layer (the model is tiny); 0 keeps it on CPU.
+        cmd += ["-ngl", "99" if use_gpu else "0"]
         return cmd
 
-    def _build_env(self, binary: str) -> dict[str, str]:
+    def _build_env(self, binary: str, *, use_gpu: bool) -> dict[str, str]:
         env = child_env_without_native_path_secret()
-        if config.EMBED_DEVICE.lower() == "gpu":
+        if use_gpu:
+            # Inherit the ambient CUDA_VISIBLE_DEVICES Studio set; the prebuilt
+            # binary needs the CUDA libs on its search path on Linux.
             self._add_linux_cuda_libs(env, str(Path(binary).parent))
         else:
-            # Force CPU even if GPUs are visible, so the embedder never contends
-            # with the chat model for VRAM.
+            # Blank the device list so a CUDA-built binary stays on CPU without a
+            # spurious init error and never reserves VRAM beside the chat model.
             env["CUDA_VISIBLE_DEVICES"] = ""
         return env
 
@@ -215,13 +265,33 @@ class LlamaServerBackend:
             pass
 
     def _spawn(self) -> None:
-        """Start the embed server (caller holds the lifecycle lock)."""
+        """Start the embed server (caller holds the lifecycle lock). Tries the
+        GPU when ``auto`` selects it, falling back to CPU once if that start
+        fails (e.g. VRAM full); an explicit ``gpu``/``cpu`` choice never falls
+        back."""
+        use_gpu = self._use_gpu()
+        try:
+            self._spawn_once(use_gpu)
+        except RuntimeError:
+            auto = config.EMBED_DEVICE.lower() not in ("gpu", "cpu")
+            if use_gpu and auto:
+                logger.warning("embed server GPU start failed; falling back to CPU")
+                self._force_cpu = True
+                self._spawn_once(False)
+            else:
+                raise
+
+    def _spawn_once(self, use_gpu: bool) -> None:
         binary = self._resolve_binary()
         model_path = self._resolve_model_path()
         port = config.EMBED_PORT or self._find_free_port()
-        env = self._build_env(binary)
-        cmd = self._build_cmd(binary, model_path, port)
-        logger.info("starting llama-server embedder: %s", " ".join(cmd))
+        env = self._build_env(binary, use_gpu = use_gpu)
+        cmd = self._build_cmd(binary, model_path, port, use_gpu = use_gpu)
+        logger.info(
+            "starting llama-server embedder (%s): %s",
+            "gpu" if use_gpu else "cpu",
+            " ".join(cmd),
+        )
         self._stdout_lines = []
         proc = subprocess.Popen(
             cmd,

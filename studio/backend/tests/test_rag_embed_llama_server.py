@@ -105,30 +105,72 @@ def test_llama_backend_imports_no_torch():
 
 def test_build_cmd_cpu_flags():
     b = LlamaServerBackend()
-    cmd = b._build_cmd("/bin/llama-server", "/m/bge.gguf", 9999)
+    cmd = b._build_cmd("/bin/llama-server", "/m/bge.gguf", 9999, use_gpu = False)
     assert "--embedding" in cmd
     assert cmd[cmd.index("--pooling") + 1] == "cls"
-    assert cmd[cmd.index("-ngl") + 1] == "0"  # CPU default
+    assert cmd[cmd.index("-ngl") + 1] == "0"  # CPU keeps everything off the GPU
     assert cmd[cmd.index("--port") + 1] == "9999"
 
 
-def test_build_cmd_gpu_offloads(monkeypatch):
-    monkeypatch.setattr(config, "EMBED_DEVICE", "gpu")
+def test_build_cmd_gpu_offloads():
     b = LlamaServerBackend()
-    cmd = b._build_cmd("/bin/llama-server", "/m/bge.gguf", 1)
+    cmd = b._build_cmd("/bin/llama-server", "/m/bge.gguf", 1, use_gpu = True)
     assert cmd[cmd.index("-ngl") + 1] == "99"
 
 
 def test_build_env_cpu_hides_gpus():
     b = LlamaServerBackend()
-    env = b._build_env("/bin/llama-server")
+    env = b._build_env("/bin/llama-server", use_gpu = False)
     assert env["CUDA_VISIBLE_DEVICES"] == ""  # never contend with the chat model
+
+
+def test_build_env_gpu_inherits_devices(monkeypatch):
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,1")
+    b = LlamaServerBackend()
+    env = b._build_env("/bin/llama-server", use_gpu = True)
+    assert env.get("CUDA_VISIBLE_DEVICES") == "0,1"  # inherit Studio's selection
+
+
+# ── Device selection (torch-free) ────────────────────────────────
+
+
+def test_use_gpu_explicit_modes(monkeypatch):
+    b = LlamaServerBackend()
+    monkeypatch.setattr(config, "EMBED_DEVICE", "gpu")
+    assert b._use_gpu() is True
+    monkeypatch.setattr(config, "EMBED_DEVICE", "cpu")
+    assert b._use_gpu() is False
+
+
+def test_use_gpu_auto_follows_probe(monkeypatch):
+    b = LlamaServerBackend()
+    monkeypatch.setattr(config, "EMBED_DEVICE", "auto")
+    monkeypatch.setattr(
+        LlamaServerBackend, "_gpu_available", staticmethod(lambda: True)
+    )
+    assert b._use_gpu() is True
+    monkeypatch.setattr(
+        LlamaServerBackend, "_gpu_available", staticmethod(lambda: False)
+    )
+    assert b._use_gpu() is False
+
+
+def test_use_gpu_sticky_cpu_fallback(monkeypatch):
+    b = LlamaServerBackend()
+    monkeypatch.setattr(config, "EMBED_DEVICE", "auto")
+    monkeypatch.setattr(
+        LlamaServerBackend, "_gpu_available", staticmethod(lambda: True)
+    )
+    b._force_cpu = True  # a prior GPU start failed
+    assert b._use_gpu() is False
 
 
 # ── Spawn / readiness ────────────────────────────────────────────
 
 
 def _patch_spawn_deps(monkeypatch, proc, *, free_port = 54321):
+    # Force CPU so spawn never depends on the host having a GPU.
+    monkeypatch.setattr(config, "EMBED_DEVICE", "cpu")
     monkeypatch.setattr(
         LlamaServerBackend, "_resolve_binary", lambda self: "/bin/llama-server"
     )
@@ -166,6 +208,38 @@ def test_spawn_fails_loud_on_early_exit(monkeypatch):
     _patch_spawn_deps(monkeypatch, _FakeProc(alive = False, returncode = 1))
     with pytest.raises(RuntimeError, match = "failed to become healthy"):
         b._spawn()
+
+
+def test_spawn_auto_falls_back_to_cpu_on_gpu_failure(monkeypatch):
+    monkeypatch.setattr(config, "EMBED_DEVICE", "auto")
+    monkeypatch.setattr(
+        LlamaServerBackend, "_gpu_available", staticmethod(lambda: True)
+    )
+    b = LlamaServerBackend()
+    calls = []
+
+    def fake_spawn_once(use_gpu):
+        calls.append(use_gpu)
+        if use_gpu:
+            raise RuntimeError("CUDA out of memory")  # GPU start fails
+
+    monkeypatch.setattr(b, "_spawn_once", fake_spawn_once)
+    b._spawn()
+    assert calls == [True, False]  # tried GPU, then fell back to CPU
+    assert b._force_cpu is True  # sticky so respawns stay on CPU
+
+
+def test_spawn_explicit_gpu_does_not_fall_back(monkeypatch):
+    monkeypatch.setattr(config, "EMBED_DEVICE", "gpu")
+    b = LlamaServerBackend()
+
+    def fake_spawn_once(use_gpu):
+        raise RuntimeError("CUDA out of memory")
+
+    monkeypatch.setattr(b, "_spawn_once", fake_spawn_once)
+    with pytest.raises(RuntimeError, match = "out of memory"):
+        b._spawn()
+    assert b._force_cpu is False  # explicit gpu never silently downgrades
 
 
 # ── encode / dim / token_counter (HTTP mocked) ───────────────────
