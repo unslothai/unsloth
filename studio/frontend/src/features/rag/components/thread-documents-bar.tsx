@@ -46,21 +46,38 @@ export function ThreadDocumentsBar({ threadId }: { threadId: string | null }) {
     lister,
   );
 
-  // Open the picker synchronously to preserve the user gesture; materialize the
-  // thread id in parallel so the upload scope is live by the time onChange fires.
-  const handleAddDocs = useCallback(() => {
-    if (!effectiveThreadId) {
-      void aui
-        .threadListItem()
-        .initialize()
-        .then(({ remoteId }) => {
-          setMaterializedId(remoteId);
-          setActiveThreadId(remoteId);
-        })
-        .catch(() => toast.error("Couldn't start a chat for these documents"));
-    }
-    fileInputRef.current?.click();
+  // Resolve the thread id, materializing it on first use. De-duped via a ref so
+  // a double-click can't start two threads.
+  const initPromiseRef = useRef<Promise<string | null> | null>(null);
+  const ensureThreadId = useCallback((): Promise<string | null> => {
+    if (effectiveThreadId) return Promise.resolve(effectiveThreadId);
+    if (initPromiseRef.current) return initPromiseRef.current;
+    const pending = aui
+      .threadListItem()
+      .initialize()
+      .then(({ remoteId }) => {
+        setMaterializedId(remoteId);
+        setActiveThreadId(remoteId);
+        return remoteId;
+      })
+      .catch(() => {
+        toast.error("Couldn't start a chat for these documents");
+        return null;
+      })
+      .finally(() => {
+        initPromiseRef.current = null;
+      });
+    initPromiseRef.current = pending;
+    return pending;
   }, [aui, effectiveThreadId, setActiveThreadId]);
+
+  // Open the picker only after the thread id is ready, so the upload scope is
+  // live by the time onChange fires (otherwise a fast first selection uploads
+  // into a null scope and silently attaches nothing).
+  const handleAddDocs = useCallback(async () => {
+    const id = await ensureThreadId();
+    if (id) fileInputRef.current?.click();
+  }, [ensureThreadId]);
 
   // Only surface for the thread-document source; KB sources are managed in
   // the KB dialog, not per-thread.
@@ -70,7 +87,7 @@ export function ThreadDocumentsBar({ threadId }: { threadId: string | null }) {
     <div className="mb-2 flex w-full flex-row items-start gap-1.5 px-1.5 pt-0.5 pb-1">
       <button
         type="button"
-        onClick={handleAddDocs}
+        onClick={() => void handleAddDocs()}
         disabled={uploading}
         className="composer-pill-btn shrink-0"
         aria-label="Attach documents to this thread"
