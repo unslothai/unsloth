@@ -977,15 +977,35 @@ def _dequantize_gguf_bytes(
             dequant = dequant.reshape(logical_shape)
         return dequant.to(dtype = dtype) if dtype is not None else dequant
 
-    try:
-        from diffusers.quantizers.gguf.utils import (
-            GGML_QUANT_SIZES,
-            dequantize_functions,
+    torch_dequant_types = {
+        getattr(gguf.GGMLQuantizationType, name, None)
+        for name in (
+            "Q8_0",
+            "Q5_1",
+            "Q5_0",
+            "Q4_1",
+            "Q4_0",
+            "Q6_K",
+            "Q5_K",
+            "Q4_K",
+            "Q3_K",
+            "Q2_K",
+            "IQ4_NL",
+            "IQ4_XS",
         )
+    }
+    torch_dequant_types.discard(None)
+    dequantize_function = None
+    if quant_type in torch_dequant_types:
+        try:
+            from diffusers.quantizers.gguf.utils import (
+                GGML_QUANT_SIZES,
+                dequantize_functions,
+            )
 
-        dequantize_function = dequantize_functions[quant_type]
-    except Exception:
-        dequantize_function = None
+            dequantize_function = dequantize_functions[quant_type]
+        except Exception:
+            dequantize_function = None
     if dequantize_function is not None:
         block_size, type_size = GGML_QUANT_SIZES[quant_type]
         shape = logical_shape or (*qweight.shape[:-1], qweight.shape[-1] // type_size * block_size)

@@ -725,6 +725,41 @@ def test_dequantize_unknown_quant_falls_back_to_native_gguf(monkeypatch):
     )
 
 
+@pytest.mark.parametrize(
+    "quant_name",
+    ["IQ1_M", "IQ1_S", "IQ2_S", "IQ2_XS", "IQ2_XXS", "IQ3_S", "IQ3_XXS"],
+)
+def test_dequantize_unsloth_ud_iq_fallback_types_use_native_gguf(
+    monkeypatch,
+    quant_name,
+):
+    import builtins
+
+    gguf = pytest.importorskip("gguf")
+    import core.inference.gguf_text_encoder as g
+
+    quant_type = getattr(gguf.GGMLQuantizationType, quant_name, None)
+    if quant_type is None:
+        pytest.skip(f"Installed gguf runtime does not expose {quant_name}")
+    block_size, type_size = gguf.GGML_QUANT_SIZES[quant_type]
+    raw = torch.zeros((1, type_size), dtype = torch.uint8)
+
+    original_import = builtins.__import__
+
+    def guarded_import(name, *args, **kwargs):
+        if name.startswith("diffusers.quantizers"):
+            raise AssertionError(f"{quant_name} should use native gguf fallback directly")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", guarded_import)
+
+    decoded = g._dequantize_gguf_bytes(raw, quant_type, dtype = torch.float32)
+
+    assert decoded.shape == (1, block_size)
+    assert decoded.dtype is torch.float32
+    assert torch.isfinite(decoded).all()
+
+
 def test_replace_mapped_text_modules_materializes_dense_standalone_bias(
     monkeypatch,
     tmp_path,
