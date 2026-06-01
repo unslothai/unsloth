@@ -894,6 +894,14 @@
 		font-family: var(--font-sans);
 	}
 
+	.artifact-panel-shell {
+		box-shadow: 0 2px 8px -2px rgba(27, 27, 31, 0.16);
+	}
+
+	.dark .artifact-panel-shell {
+		box-shadow: none;
+	}
+
 	.chat-artifact-split[data-artifact-layout-animating="true"] > [data-panel] {
 		transition:
 			flex-basis 260ms var(--ease-out-cubic),
