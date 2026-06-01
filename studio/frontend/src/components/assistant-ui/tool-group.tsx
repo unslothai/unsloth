@@ -27,7 +27,7 @@ const toolGroupVariants = cva("aui-tool-group-root group/tool-group w-full", {
   variants: {
     variant: {
       outline: "corner-squircle rounded-lg border py-3",
-      ghost: "rounded-lg bg-muted/10 py-2",
+      ghost: "py-2",
       muted: "corner-squircle rounded-lg border border-muted-foreground/30 bg-muted/30 py-3",
     },
   },
