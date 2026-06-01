@@ -28,6 +28,7 @@ Edge cases under coverage:
 """
 
 import threading
+from typing import cast
 
 import pytest
 
@@ -97,6 +98,17 @@ class TestParser:
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
         assert "print('hi')" in result[0]["function"]["arguments"]
+
+    def test_function_signal_inside_parameter_is_literal(self):
+        text = (
+            "<function=python>"
+            "<parameter=code>print('<function=render_html>')</parameter>"
+            "</function>"
+        )
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert result[0]["function"]["name"] == "python"
+        assert "<function=render_html>" in result[0]["function"]["arguments"]
 
     def test_multiple_calls(self):
         text = (
@@ -706,6 +718,7 @@ class TestChatTemplateHelper:
         tok = self._Tok({"tools", "enable_thinking"})
         self.apply(tok, [], tools = [{}], enable_thinking = True)
         assert tok.call_count == 1
+        assert tok.last_kwargs is not None
         assert "tools" in tok.last_kwargs
         assert "enable_thinking" in tok.last_kwargs
 
@@ -892,7 +905,7 @@ class TestGptOssNameDetection:
 
     def test_empty_or_none_returns_false(self):
         assert is_gpt_oss_model_name("") is False
-        assert is_gpt_oss_model_name(None) is False
+        assert is_gpt_oss_model_name(cast(str, None)) is False
 
 
 if __name__ == "__main__":
