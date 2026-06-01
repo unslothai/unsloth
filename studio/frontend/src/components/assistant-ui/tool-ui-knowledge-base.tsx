@@ -20,6 +20,10 @@ import {
   HoverCardContent,
   HoverCardTrigger,
 } from "@/components/ui/hover-card";
+import { useDocumentPreviewStore } from "@/features/rag/components/preview-store";
+
+/** Sentinel the backend appends before the citation source-map JSON. */
+const RAG_SOURCES_SENTINEL = "__RAG_SOURCES__:";
 
 interface Citation {
   /** Stable key; chunkId when present, else a positional fallback. */
@@ -28,10 +32,50 @@ interface Citation {
   page?: number | null;
   score?: number | null;
   text: string;
+  /** Set when the citation can open its source document in the viewer. */
+  documentId?: string | null;
+  chunkId?: string | null;
 }
 
 function asNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+/**
+ * The local (server-side) tool path appends the citation source-map after a
+ * sentinel: `<chunk ...>...__RAG_SOURCES__:[{chunkId,documentId,...}]`. Parse
+ * those structured sources (which carry documentId/chunkId for the preview
+ * viewer); return null if the sentinel isn't present so the caller can fall
+ * back to the generic JSON shapes.
+ */
+function parseSentinelSources(result: unknown): Citation[] | null {
+  if (typeof result !== "string") return null;
+  const idx = result.indexOf(RAG_SOURCES_SENTINEL);
+  if (idx < 0) return null;
+  const payload = result.slice(idx + RAG_SOURCES_SENTINEL.length).trim();
+  let rows: unknown;
+  try {
+    rows = JSON.parse(payload);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(rows)) return [];
+  return rows.map((row, i) => {
+    const r = (row ?? {}) as Record<string, unknown>;
+    const documentId = typeof r.documentId === "string" ? r.documentId : null;
+    const chunkId = typeof r.chunkId === "string" ? r.chunkId : null;
+    const filename =
+      typeof r.filename === "string" ? r.filename : `Source ${i + 1}`;
+    return {
+      id: chunkId ?? `${filename}-${i}`,
+      filename,
+      page: asNumber(r.page),
+      score: asNumber(r.score),
+      text: typeof r.text === "string" ? r.text : "",
+      documentId,
+      chunkId,
+    };
+  });
 }
 
 /**
@@ -41,6 +85,9 @@ function asNumber(value: unknown): number | null {
  * a {filename,text} pair falls through to the raw-text branch.
  */
 function parseCitations(result: unknown): Citation[] {
+  const sentinel = parseSentinelSources(result);
+  if (sentinel !== null) return sentinel;
+
   let rows: unknown[] | null = null;
   if (Array.isArray(result)) {
     rows = result;
@@ -93,28 +140,55 @@ function parseCitations(result: unknown): Citation[] {
   return citations;
 }
 
-/** Citation badge: filename + page, with the chunk text in a hover popover. */
+/**
+ * Citation badge: filename + page, with the chunk text in a hover popover.
+ * When the citation carries a documentId, clicking it opens the source in the
+ * shared preview viewer (highlighting the cited region for PDFs).
+ */
 function CitationBadge({ citation, index }: { citation: Citation; index: number }) {
+  const openPreview = useDocumentPreviewStore((s) => s.openPreview);
+  const clickable = Boolean(citation.documentId);
   const label =
     citation.page != null
       ? `${citation.filename} · p.${citation.page}`
       : citation.filename;
+
+  const open = () => {
+    if (!citation.documentId) return;
+    openPreview({
+      documentId: citation.documentId,
+      chunkId: citation.chunkId,
+      filename: citation.filename,
+      page: citation.page,
+    });
+  };
+
+  const badge = (
+    <Badge
+      variant="outline"
+      size="sm"
+      className={`rounded-full inline-flex items-center gap-1.5 max-w-[15rem] ${
+        clickable
+          ? "cursor-pointer hover:bg-accent hover:text-accent-foreground transition-colors"
+          : "cursor-default"
+      }`}
+    >
+      <span className="tabular-nums text-muted-foreground">{index + 1}</span>
+      <FileTextIcon className="size-3 shrink-0" />
+      <span className="truncate">{label}</span>
+    </Badge>
+  );
+
   return (
     <HoverCard openDelay={0} closeDelay={0}>
       <HoverCardTrigger asChild>
-        <span className="inline-block">
-          <Badge
-            variant="outline"
-            size="sm"
-            className="cursor-default rounded-full inline-flex items-center gap-1.5 max-w-[15rem]"
-          >
-            <span className="tabular-nums text-muted-foreground">
-              {index + 1}
-            </span>
-            <FileTextIcon className="size-3 shrink-0" />
-            <span className="truncate">{label}</span>
-          </Badge>
-        </span>
+        {clickable ? (
+          <button type="button" onClick={open} className="inline-block">
+            {badge}
+          </button>
+        ) : (
+          <span className="inline-block">{badge}</span>
+        )}
       </HoverCardTrigger>
       <HoverCardContent
         side="top"
@@ -134,11 +208,18 @@ function CitationBadge({ citation, index }: { citation: Citation; index: number 
               {citation.text}
             </p>
           )}
-          {citation.score != null && (
-            <p className="text-[10px] tabular-nums text-muted-foreground/70">
-              score {citation.score.toFixed(3)}
-            </p>
-          )}
+          <div className="flex items-center justify-between gap-2">
+            {citation.score != null && (
+              <span className="text-[10px] tabular-nums text-muted-foreground/70">
+                score {citation.score.toFixed(3)}
+              </span>
+            )}
+            {clickable && (
+              <span className="ml-auto text-[10px] font-medium text-primary">
+                Click to view source
+              </span>
+            )}
+          </div>
         </div>
       </HoverCardContent>
     </HoverCard>

@@ -49,6 +49,7 @@ import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { useExternalProvidersStore } from "@/features/chat/stores/external-providers-store";
 import { deleteThreadMessage } from "@/features/chat/utils/delete-thread-message";
 import { ThreadDocumentsBar } from "@/features/rag/components/thread-documents-bar";
+import { DocumentPreviewMount } from "@/features/rag/components/document-preview-mount";
 import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
 import { isTauri } from "@/lib/api-base";
 import { AUDIO_ACCEPT, MAX_AUDIO_SIZE, fileToBase64 } from "@/lib/audio-utils";
@@ -199,6 +200,9 @@ export const Thread: FC<{
           )}
         </IntentAwareScrollProvider>
       </ThreadPrimitive.Root>
+      {/* Single shared document preview, opened by citation badges. Lazily
+      loads the pdf.js viewer chunk on first open. */}
+      <DocumentPreviewMount />
     </GeneratedImageOverlayProvider>
   );
 };

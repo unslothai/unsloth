@@ -8,6 +8,7 @@ import type {
   IndexJob,
   JobEvent,
   KnowledgeBase,
+  PreviewTarget,
   RagDocument,
   RagSearchMode,
   RagSearchResult,
@@ -195,6 +196,33 @@ export async function* streamJobEvents(
       separatorIndex = buffer.search(/\r?\n\r?\n/);
     }
   }
+}
+
+// ── Preview (citation -> source location) ────────────────────
+
+/**
+ * Resolve a citation to its source location: the page to open and the
+ * highlight rectangles (PDFs) or chunk text (other formats).
+ */
+export function getPreviewTarget(
+  documentId: string,
+  chunkId?: string,
+): Promise<PreviewTarget> {
+  const qs = chunkId ? `?chunk_id=${encodeURIComponent(chunkId)}` : "";
+  return ragRequest(
+    `/documents/${encodeURIComponent(documentId)}/preview-target${qs}`,
+  );
+}
+
+/**
+ * Mint a short-lived signed URL for the source file. The returned path needs
+ * no bearer token, so react-pdf / pdf.js can issue Range requests against it.
+ */
+export async function getDocumentFileUrl(documentId: string): Promise<string> {
+  const data = await ragRequest<{ url: string }>(
+    `/documents/${encodeURIComponent(documentId)}/file-url`,
+  );
+  return data.url;
 }
 
 // ── Search ───────────────────────────────────────────────────
