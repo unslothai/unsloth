@@ -2064,6 +2064,89 @@ def test_lazy_gguf_linear_can_pin_cpu_resident_quantized_weight(monkeypatch):
     assert layer.qweight.dtype is torch.uint8
 
 
+def test_lazy_gguf_cuda_cache_budget_tracks_reserved_bytes():
+    import core.inference.gguf_text_encoder as g
+
+    cache = g.LazyGGUFCudaCache(4)
+
+    assert cache.try_reserve(3) is True
+    assert cache.used_bytes == 3
+    assert cache.cached_tensors == 1
+    assert cache.try_reserve(2) is False
+
+    cache.release(3)
+
+    assert cache.used_bytes == 0
+    assert cache.cached_tensors == 0
+    assert cache.try_reserve(4) is True
+
+
+def test_configure_lazy_gguf_cuda_cache_assigns_shared_budget():
+    import core.inference.gguf_text_encoder as g
+
+    first = g.LazyGGUFLinear(
+        torch.ones(2, 2, dtype = torch.uint8),
+        "Q4",
+        in_features = 2,
+        out_features = 2,
+        compute_dtype = torch.float32,
+        resident_device = "cpu",
+    )
+    second = g.LazyGGUFLinear(
+        torch.ones(3, 2, dtype = torch.uint8),
+        "Q4",
+        in_features = 2,
+        out_features = 3,
+        compute_dtype = torch.float32,
+        resident_device = "cpu",
+    )
+    root = nn.Sequential(first, second)
+
+    stats = g.configure_lazy_gguf_cuda_cache(root, 1024)
+
+    assert stats == {
+        "modules": 2,
+        "budget_bytes": 1024,
+        "candidate_bytes": 10,
+        "selected_bytes": 10,
+    }
+    assert first._cuda_quant_cache_state is second._cuda_quant_cache_state
+    assert first._cuda_quant_cache_state.max_bytes == 1024
+
+
+def test_configure_lazy_gguf_cuda_cache_selects_largest_modules_within_budget():
+    import core.inference.gguf_text_encoder as g
+
+    small = g.LazyGGUFLinear(
+        torch.ones(2, 2, dtype = torch.uint8),
+        "Q4",
+        in_features = 2,
+        out_features = 2,
+        compute_dtype = torch.float32,
+        resident_device = "cpu",
+    )
+    large = g.LazyGGUFLinear(
+        torch.ones(3, 2, dtype = torch.uint8),
+        "Q4",
+        in_features = 2,
+        out_features = 3,
+        compute_dtype = torch.float32,
+        resident_device = "cpu",
+    )
+    root = nn.Sequential(small, large)
+
+    stats = g.configure_lazy_gguf_cuda_cache(root, 6)
+
+    assert stats == {
+        "modules": 1,
+        "budget_bytes": 6,
+        "candidate_bytes": 10,
+        "selected_bytes": 6,
+    }
+    assert not hasattr(small, "_cuda_quant_cache_state")
+    assert large._cuda_quant_cache_state.max_bytes == 6
+
+
 def test_lazy_gguf_linear_defers_cpu_pin_until_cuda_transfer(monkeypatch):
     if not torch.cuda.is_available():
         pytest.skip("CUDA is required to exercise lazy pinning on transfer.")
@@ -2098,6 +2181,47 @@ def test_lazy_gguf_linear_defers_cpu_pin_until_cuda_transfer(monkeypatch):
     assert pinned
     assert layer.qweight.device == torch.device("cpu")
     torch.testing.assert_close(out.cpu(), torch.tensor([[1.0, 2.0]]))
+
+
+def test_lazy_gguf_linear_reuses_cuda_cached_quant_buffer(monkeypatch):
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA is required to exercise CUDA qweight caching.")
+
+    import core.inference.gguf_text_encoder as g
+
+    pinned: list[torch.Tensor] = []
+
+    def fake_pin(tensor, *, pin_memory = None):
+        pinned.append(tensor)
+        return tensor
+
+    monkeypatch.setattr(g, "_pin_cpu_tensor_for_transfer", fake_pin)
+    monkeypatch.setattr(
+        g,
+        "_dequantize_gguf_bytes",
+        lambda qweight, quant_type, *, dtype = None: torch.eye(2, device = qweight.device),
+    )
+    layer = g.LazyGGUFLinear(
+        torch.ones(2, 2, dtype = torch.uint8),
+        "Q4",
+        in_features = 2,
+        out_features = 2,
+        compute_dtype = torch.float32,
+        resident_device = "cpu",
+    )
+    stats = g.configure_lazy_gguf_cuda_cache(layer, 1024)
+
+    first = layer(torch.tensor([[1.0, 2.0]], device = "cuda"))
+    second = layer(torch.tensor([[3.0, 4.0]], device = "cuda"))
+
+    assert stats["modules"] == 1
+    assert len(pinned) == 1
+    assert len(layer._cuda_quant_cache) == 1
+    cached = next(iter(layer._cuda_quant_cache.values()))
+    assert cached.device.type == "cuda"
+    assert layer.qweight.device == torch.device("cpu")
+    torch.testing.assert_close(first.cpu(), torch.tensor([[1.0, 2.0]]))
+    torch.testing.assert_close(second.cpu(), torch.tensor([[3.0, 4.0]]))
 
 
 def test_lazy_gguf_linear_without_resident_device_follows_module_apply():

@@ -155,6 +155,43 @@ def _pin_cpu_tensor_for_transfer(
         return tensor
 
 
+class LazyGGUFCudaCache:
+    """Bounded cache for packed GGUF tensors copied from CPU to CUDA.
+
+    Only the quantized byte buffers are cached. Dense dequantized weights
+    still remain temporary forward-pass tensors.
+    """
+
+    def __init__(self, max_bytes: int) -> None:
+        self.max_bytes = max(0, int(max_bytes))
+        self.used_bytes = 0
+        self.cached_tensors = 0
+
+    def try_reserve(self, nbytes: int) -> bool:
+        nbytes = int(nbytes)
+        if nbytes <= 0:
+            return True
+        if self.max_bytes <= 0:
+            return False
+        if self.used_bytes + nbytes > self.max_bytes:
+            return False
+        self.used_bytes += nbytes
+        self.cached_tensors += 1
+        return True
+
+    def release(self, nbytes: int) -> None:
+        nbytes = max(0, int(nbytes))
+        self.used_bytes = max(0, self.used_bytes - nbytes)
+        self.cached_tensors = max(0, self.cached_tensors - 1)
+
+
+def _cuda_cache_key(device: torch.device) -> tuple[str, int | None]:
+    index = device.index
+    if device.type == "cuda" and index is None and torch.cuda.is_available():
+        index = torch.cuda.current_device()
+    return (device.type, index)
+
+
 def _resident_tensor_needs_refresh(
     tensor: torch.Tensor,
     resident: torch.device,
@@ -868,6 +905,38 @@ def patch_gguf_text_encoder_for_resident_device(
 class _LazyGGUFOffloadMixin:
     _resident_device: torch.device | None
     _pin_cpu_resident: bool
+    _cuda_quant_cache: dict[tuple[str, str, int | None], torch.Tensor]
+    _cuda_quant_cache_state: LazyGGUFCudaCache | None
+
+    def _set_cuda_quant_cache(self, cache_state: LazyGGUFCudaCache | None) -> None:
+        self._cuda_quant_cache_state = cache_state
+        self._cuda_quant_cache = {}
+
+    def _maybe_cuda_cached_quant_buffer(
+        self,
+        name: str,
+        target_device: torch.device,
+        qbuffer: torch.Tensor,
+    ) -> torch.Tensor | None:
+        if target_device.type != "cuda" or qbuffer.device.type != "cpu":
+            return None
+        cache_state = getattr(self, "_cuda_quant_cache_state", None)
+        if cache_state is None:
+            return None
+        key = (name, *_cuda_cache_key(target_device))
+        cached = getattr(self, "_cuda_quant_cache", {}).get(key)
+        if cached is not None:
+            return cached
+        nbytes = qbuffer.numel() * qbuffer.element_size()
+        if not cache_state.try_reserve(nbytes):
+            return None
+        try:
+            cached = qbuffer.to(target_device, non_blocking = True)
+        except Exception:
+            cache_state.release(nbytes)
+            return None
+        self._cuda_quant_cache[key] = cached
+        return cached
 
     def _place_resident_qweight(self) -> None:
         if self._resident_device is None:
@@ -889,6 +958,11 @@ class _LazyGGUFOffloadMixin:
         qbuffer = self._buffers[name]
         if qbuffer.device == target_device:
             return qbuffer
+        cached = getattr(self, "_cuda_quant_cache", {}).get(
+            (name, *_cuda_cache_key(target_device))
+        )
+        if cached is not None:
+            return cached
         if qbuffer.device.type == "cpu" and target_device.type == "cuda":
             pinned = _pin_cpu_tensor_for_transfer(
                 qbuffer,
@@ -897,6 +971,9 @@ class _LazyGGUFOffloadMixin:
             if pinned is not qbuffer:
                 self._buffers[name] = pinned
                 qbuffer = pinned
+            cached = self._maybe_cuda_cached_quant_buffer(name, target_device, qbuffer)
+            if cached is not None:
+                return cached
         return qbuffer.to(target_device, non_blocking = True)
 
     def _compute_qweight(self, target_device: torch.device) -> torch.Tensor:
@@ -914,6 +991,54 @@ class _LazyGGUFOffloadMixin:
             self._buffers.update(qbuffers)
             self._place_resident_qweight()
         return result
+
+
+def configure_lazy_gguf_cuda_cache(root: Any, max_bytes: int) -> dict[str, int]:
+    cache_state = LazyGGUFCudaCache(max_bytes)
+    candidates: list[tuple[int, _LazyGGUFOffloadMixin]] = []
+    candidate_bytes = 0
+    if not hasattr(root, "modules"):
+        return {
+            "modules": 0,
+            "budget_bytes": cache_state.max_bytes,
+            "candidate_bytes": 0,
+            "selected_bytes": 0,
+        }
+    for module in root.modules():
+        if not isinstance(module, _LazyGGUFOffloadMixin):
+            continue
+        cpu_quant_buffers = [
+            buffer
+            for name, buffer in getattr(module, "_buffers", {}).items()
+            if name in {"qweight", "qbias"}
+            and isinstance(buffer, torch.Tensor)
+            and buffer.device.type == "cpu"
+        ]
+        if not cpu_quant_buffers:
+            continue
+        module_bytes = sum(
+            buffer.numel() * buffer.element_size()
+            for buffer in cpu_quant_buffers
+        )
+        candidates.append((int(module_bytes), module))
+        candidate_bytes += module_bytes
+
+    selected_modules = 0
+    selected_bytes = 0
+    for module_bytes, module in sorted(candidates, key = lambda item: item[0], reverse = True):
+        if module_bytes <= 0:
+            continue
+        if selected_bytes + module_bytes > cache_state.max_bytes:
+            continue
+        module._set_cuda_quant_cache(cache_state)
+        selected_modules += 1
+        selected_bytes += module_bytes
+    return {
+        "modules": selected_modules,
+        "budget_bytes": cache_state.max_bytes,
+        "candidate_bytes": int(candidate_bytes),
+        "selected_bytes": int(selected_bytes),
+    }
 
 
 def _require_gguf():

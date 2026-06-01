@@ -63,6 +63,7 @@ DIFFUSION_OFFLOAD_POLICIES = {
     DIFFUSION_OFFLOAD_POLICY_LESS_AGGRESSIVE,
     DIFFUSION_OFFLOAD_POLICY_HYBRID,
 }
+DEFAULT_BALANCED_GGUF_CUDA_CACHE_MIB = 4096
 
 
 # ─── Pipeline registry ────────────────────────────────────────────────
@@ -2616,6 +2617,22 @@ def _env_pin_cpu_resident_gguf() -> bool:
     )
 
 
+def _balanced_gguf_cuda_cache_bytes() -> int:
+    value = os.environ.get("UNSLOTH_STUDIO_GGUF_CUDA_CACHE_MIB")
+    if value is None or not value.strip():
+        return DEFAULT_BALANCED_GGUF_CUDA_CACHE_MIB * 1024 * 1024
+    try:
+        mib = int(value.strip())
+    except ValueError:
+        logger.warning(
+            "Ignoring invalid UNSLOTH_STUDIO_GGUF_CUDA_CACHE_MIB=%r; using %d MiB.",
+            value,
+            DEFAULT_BALANCED_GGUF_CUDA_CACHE_MIB,
+        )
+        mib = DEFAULT_BALANCED_GGUF_CUDA_CACHE_MIB
+    return max(0, mib) * 1024 * 1024
+
+
 def _guard_diffusers_optional_bitsandbytes() -> None:
     """Keep broken optional bitsandbytes installs from blocking diffusion.
 
@@ -4028,6 +4045,38 @@ class DiffusionBackend:
                                 "quantized weights.",
                                 patched_gguf_modules,
                             )
+                    if (
+                        resolved_offload_policy == DIFFUSION_OFFLOAD_POLICY_BALANCED
+                        and diffusion_gguf_resident_device == "cpu"
+                        and device == "cuda"
+                    ):
+                        cuda_cache_bytes = _balanced_gguf_cuda_cache_bytes()
+                        if cuda_cache_bytes > 0:
+                            try:
+                                from .gguf_text_encoder import configure_lazy_gguf_cuda_cache
+                            except Exception as exc:
+                                logger.debug(
+                                    "Skipping optional balanced GGUF CUDA cache: %s",
+                                    exc,
+                                )
+                            else:
+                                cache_stats = configure_lazy_gguf_cuda_cache(
+                                    transformer,
+                                    cuda_cache_bytes,
+                                )
+                                if cache_stats.get("modules", 0):
+                                    prepared_gguf_module_counts[
+                                        "diffusion_cuda_cache_modules"
+                                    ] = int(cache_stats["modules"])
+                                    prepared_gguf_module_counts[
+                                        "diffusion_cuda_cache_budget_mib"
+                                    ] = int(cache_stats["budget_bytes"] // (1024 * 1024))
+                                    logger.info(
+                                        "Configured balanced diffusion GGUF CUDA cache "
+                                        "for %d CPU-resident modules with budget %d MiB.",
+                                        cache_stats["modules"],
+                                        cache_stats["budget_bytes"] // (1024 * 1024),
+                                    )
                 if local_text_encoder_gguf_path:
                     from . import gguf_text_encoder as gguf_text_encoder_mod
 
