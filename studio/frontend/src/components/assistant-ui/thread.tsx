@@ -24,6 +24,7 @@ import { ToolFallback } from "@/components/assistant-ui/tool-fallback";
 import { ToolGroup } from "@/components/assistant-ui/tool-group";
 import { CodeExecutionToolUI } from "@/components/assistant-ui/tool-ui-code-execution";
 import { ImageGenerationToolUI } from "@/components/assistant-ui/tool-ui-image-generation";
+import { KnowledgeBaseToolUI } from "@/components/assistant-ui/tool-ui-knowledge-base";
 import { PythonToolUI } from "@/components/assistant-ui/tool-ui-python";
 import { TerminalToolUI } from "@/components/assistant-ui/tool-ui-terminal";
 import { WebSearchToolUI } from "@/components/assistant-ui/tool-ui-web-search";
@@ -47,6 +48,7 @@ import { getExternalReasoningCapabilities } from "@/features/chat/provider-capab
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { useExternalProvidersStore } from "@/features/chat/stores/external-providers-store";
 import { deleteThreadMessage } from "@/features/chat/utils/delete-thread-message";
+import { ThreadDocumentsBar } from "@/features/rag/components/thread-documents-bar";
 import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
 import { isTauri } from "@/lib/api-base";
 import { AUDIO_ACCEPT, MAX_AUDIO_SIZE, fileToBase64 } from "@/lib/audio-utils";
@@ -75,6 +77,7 @@ import {
   DownloadIcon,
   GlobeIcon,
   HeadphonesIcon,
+  LibraryBigIcon,
   LightbulbIcon,
   LightbulbOffIcon,
   MicIcon,
@@ -524,6 +527,7 @@ const Composer: FC<{
     <>
       <ComposerAttachments />
       <PendingAudioChip />
+      <ThreadDocumentsBar threadId={referenceThreadId} />
       <ToolStatusDisplay />
       <ComposerPrimitive.Input
         placeholder={
@@ -1117,6 +1121,35 @@ const ImagesToggle: FC = () => {
   );
 };
 
+const RagToggle: FC = () => {
+  const modelLoaded = useChatRuntimeStore(
+    (s) => !!s.params.checkpoint && !s.modelLoading,
+  );
+  const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
+  // search_knowledge_base is a local tool runtime feature; external
+  // providers have no retriever, so gate the pill on local tool support
+  // and a non-external checkpoint (mirror of the Code/Search local path).
+  const supportsTools = useChatRuntimeStore((s) => s.supportsTools);
+  const ragEnabled = useChatRuntimeStore((s) => s.ragEnabled);
+  const setRagEnabled = useChatRuntimeStore((s) => s.setRagEnabled);
+  const isExternal = parseExternalModelId(checkpoint) !== null;
+  const disabled = !modelLoaded || isExternal || !supportsTools;
+
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={() => setRagEnabled(!ragEnabled)}
+      className="composer-pill-btn"
+      data-active={ragEnabled && !disabled ? "true" : "false"}
+      aria-label={ragEnabled ? "Disable retrieval" : "Enable retrieval"}
+    >
+      <LibraryBigIcon className="size-3.5" />
+      <span>Docs</span>
+    </button>
+  );
+};
+
 const ToolStatusDisplay: FC = () => {
   const toolStatus = useChatRuntimeStore((s) => s.toolStatus);
   const isThreadRunning = useAuiState(({ thread }) => thread.isRunning);
@@ -1189,6 +1222,7 @@ const ComposerAction: FC<{
         <WebSearchToggle />
         <CodeToolsToggle />
         <ImagesToggle />
+        <RagToggle />
       </div>
       <div className="flex items-center gap-1">
         <ComposerPrimitive.If dictation={false}>
@@ -1312,6 +1346,7 @@ const AssistantMessage: FC = () => {
             tools: {
               by_name: {
                 web_search: WebSearchToolUI,
+                search_knowledge_base: KnowledgeBaseToolUI,
                 python: PythonToolUI,
                 terminal: TerminalToolUI,
                 code_execution: CodeExecutionToolUI,

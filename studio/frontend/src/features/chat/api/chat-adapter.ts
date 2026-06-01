@@ -1305,6 +1305,10 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         imageToolsEnabled,
         mcpEnabledForChat,
         webFetchToolsEnabled,
+        ragEnabled,
+        ragSource,
+        ragMode,
+        ragTopK,
       } = runtime;
       const externalSelection = parseExternalModelId(params.checkpoint);
       const isExternalRequest = externalSelection !== null;
@@ -2093,14 +2097,34 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             ...(supportsPreserveThinking
               ? { preserve_thinking: preserveThinking }
               : {}),
-            ...(supportsTools && (toolsEnabled || codeToolsEnabled || mcpEnabledForChat)
+            ...(supportsTools &&
+            (toolsEnabled || codeToolsEnabled || mcpEnabledForChat || ragEnabled)
               ? {
                   enable_tools: true,
                   enabled_tools: [
+                    // search_knowledge_base goes FIRST so retrieval is the
+                    // model's primary tool when the RAG pill is on.
+                    ...(ragEnabled ? ["search_knowledge_base"] : []),
                     ...(toolsEnabled ? ["web_search"] : []),
                     ...(codeToolsEnabled ? ["python", "terminal"] : []),
                   ],
                   mcp_enabled: mcpEnabledForChat,
+                  // Retrieval scope for search_knowledge_base. thread_id =
+                  // this thread's own documents; kb_id = a selected KB.
+                  ...(ragEnabled
+                    ? {
+                        rag_scope: {
+                          ...(ragSource.type === "kb"
+                            ? { kb_id: ragSource.kbId }
+                            : resolvedThreadId
+                              ? { thread_id: resolvedThreadId }
+                              : {}),
+                          default_top_k: ragTopK,
+                          min_score: 0,
+                          mode: ragMode,
+                        },
+                      }
+                    : {}),
                   auto_heal_tool_calls:
                     useChatRuntimeStore.getState().autoHealToolCalls,
                   max_tool_calls_per_message:

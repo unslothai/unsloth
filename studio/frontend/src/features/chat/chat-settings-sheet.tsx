@@ -93,6 +93,7 @@ import {
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import { ChatMcpServersDialog } from "./chat-mcp-servers-dialog";
 import { listMcpServers } from "./api/mcp-servers-api";
+import { RetrievalSettingsSection } from "@/features/rag/components/retrieval-settings-section";
 import type { InferenceParams } from "./types/runtime";
 
 export { defaultInferenceParams, type Preset } from "./presets/preset-policy";
@@ -1341,6 +1342,12 @@ export function ChatSettingsPanel({
               <MaxToolCallsSlider />
               <ToolCallTimeoutSlider />
             </div>
+          </CollapsibleSection>
+        ) : null}
+
+        {!isExternalModel ? (
+          <CollapsibleSection label="Retrieval">
+            <RetrievalSettingsSection />
           </CollapsibleSection>
         ) : null}
 

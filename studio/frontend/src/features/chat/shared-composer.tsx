@@ -26,6 +26,7 @@ import {
   DownloadIcon,
   GlobeIcon,
   HeadphonesIcon,
+  LibraryBigIcon,
   LightbulbIcon,
   LightbulbOffIcon,
   MicIcon,
@@ -356,6 +357,8 @@ export function SharedComposer({
   const setWebFetchToolsEnabled = useChatRuntimeStore(
     (s) => s.setWebFetchToolsEnabled,
   );
+  const ragEnabled = useChatRuntimeStore((s) => s.ragEnabled);
+  const setRagEnabled = useChatRuntimeStore((s) => s.setRagEnabled);
   const lastOpenRouterChosenModel = useChatRuntimeStore(
     (s) => s.lastOpenRouterChosenModel,
   );
@@ -484,6 +487,9 @@ export function SharedComposer({
   // Fetch pill: Anthropic-only (web_fetch_20250910 / web_fetch_20260209).
   const webFetchDisabled = !modelLoaded || !supportsBuiltinWebFetch;
   const showWebFetchPill = supportsBuiltinWebFetch;
+  // Docs (RAG) pill: local-only — search_knowledge_base needs the local
+  // tool runtime, so disable for external selections.
+  const ragDisabled = !modelLoaded || isExternalModel || !supportsTools;
   // Backwards-compatible alias for any other call site that may still
   // reference `toolsDisabled` (rare; both pills used it before).
   const toolsDisabled = codeDisabled;
@@ -1155,6 +1161,19 @@ export function SharedComposer({
                 strokeWidth={2}
               />
               <span>Images</span>
+            </button>
+          )}
+          {!isExternalModel && (
+            <button
+              type="button"
+              disabled={ragDisabled}
+              onClick={() => setRagEnabled(!ragEnabled)}
+              className="composer-pill-btn"
+              data-active={ragEnabled && !ragDisabled ? "true" : "false"}
+              aria-label={ragEnabled ? "Disable retrieval" : "Enable retrieval"}
+            >
+              <LibraryBigIcon className="size-3.5" />
+              <span>Docs</span>
             </button>
           )}
           {showWebFetchPill && (

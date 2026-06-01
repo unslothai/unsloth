@@ -30,6 +30,67 @@ export const CHAT_IMAGE_TOOLS_ENABLED_KEY = "unsloth_chat_image_tools_enabled";
 export const CHAT_MCP_ENABLED_KEY = "unsloth_chat_mcp_enabled";
 export const CHAT_WEB_FETCH_TOOLS_ENABLED_KEY =
   "unsloth_chat_web_fetch_tools_enabled";
+export const CHAT_RAG_ENABLED_KEY = "unsloth_chat_rag_enabled";
+export const CHAT_RAG_SOURCE_KEY = "unsloth_chat_rag_source";
+export const CHAT_RAG_MODE_KEY = "unsloth_chat_rag_mode";
+export const CHAT_RAG_TOP_K_KEY = "unsloth_chat_rag_top_k";
+
+/**
+ * Retrieval source for the search_knowledge_base tool. `thread` runs the
+ * search against the current chat thread's own uploaded documents; `kb`
+ * runs it against the selected knowledge base (`kbId`).
+ */
+export type RagSource =
+  | { type: "thread" }
+  | { type: "kb"; kbId: string };
+
+export type RagMode = "hybrid" | "lexical" | "dense";
+
+export const DEFAULT_RAG_SOURCE: RagSource = { type: "thread" };
+export const DEFAULT_RAG_MODE: RagMode = "hybrid";
+export const DEFAULT_RAG_TOP_K = 5;
+
+function loadRagSource(): RagSource {
+  if (typeof window === "undefined") return DEFAULT_RAG_SOURCE;
+  try {
+    const raw = window.localStorage.getItem(CHAT_RAG_SOURCE_KEY);
+    if (!raw) return DEFAULT_RAG_SOURCE;
+    const parsed = JSON.parse(raw) as RagSource;
+    if (parsed?.type === "kb" && typeof parsed.kbId === "string") {
+      return { type: "kb", kbId: parsed.kbId };
+    }
+    if (parsed?.type === "thread") return { type: "thread" };
+    return DEFAULT_RAG_SOURCE;
+  } catch {
+    return DEFAULT_RAG_SOURCE;
+  }
+}
+
+function saveRagSource(value: RagSource): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(CHAT_RAG_SOURCE_KEY, JSON.stringify(value));
+  } catch {
+    // ignore
+  }
+}
+
+function loadRagMode(): RagMode {
+  const raw = loadString(CHAT_RAG_MODE_KEY, DEFAULT_RAG_MODE);
+  return raw === "lexical" || raw === "dense" ? raw : "hybrid";
+}
+
+function loadRagTopK(): number {
+  if (typeof window === "undefined") return DEFAULT_RAG_TOP_K;
+  try {
+    const raw = window.localStorage.getItem(CHAT_RAG_TOP_K_KEY);
+    if (raw === null) return DEFAULT_RAG_TOP_K;
+    const parsed = Number.parseInt(raw, 10);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_RAG_TOP_K;
+  } catch {
+    return DEFAULT_RAG_TOP_K;
+  }
+}
 
 // External provider selection is encoded into `params.checkpoint` as
 // `external::<providerId>::<modelId>`. PersistedChatSettings deliberately
@@ -302,6 +363,15 @@ type ChatRuntimeStore = {
   imageToolsEnabled: boolean;
   mcpEnabledForChat: boolean;
   /**
+   * Retrieval (RAG) composer pill state. When on, the local-model chat
+   * request gets the search_knowledge_base tool plus a `rag_scope`
+   * resolved from `ragSource` / `ragMode` / `ragTopK`.
+   */
+  ragEnabled: boolean;
+  ragSource: RagSource;
+  ragMode: RagMode;
+  ragTopK: number;
+  /**
    * Fetch pill state, independent of `toolsEnabled` (Search). Only
    * consulted when `providerSupportsBuiltinWebFetch` is true.
    */
@@ -370,6 +440,10 @@ type ChatRuntimeStore = {
   setImageToolsEnabled: (enabled: boolean) => void;
   setMcpEnabledForChat: (enabled: boolean) => void;
   setWebFetchToolsEnabled: (enabled: boolean) => void;
+  setRagEnabled: (enabled: boolean, options?: { persist?: boolean }) => void;
+  setRagSource: (source: RagSource) => void;
+  setRagMode: (mode: RagMode) => void;
+  setRagTopK: (topK: number) => void;
   setToolStatus: (status: string | null) => void;
   setGeneratingStatus: (status: string | null) => void;
   setAutoHealToolCalls: (enabled: boolean) => void;
@@ -621,6 +695,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   imageToolsEnabled: loadBool(CHAT_IMAGE_TOOLS_ENABLED_KEY, false),
   mcpEnabledForChat: loadBool(CHAT_MCP_ENABLED_KEY, false),
   webFetchToolsEnabled: loadBool(CHAT_WEB_FETCH_TOOLS_ENABLED_KEY, false),
+  ragEnabled: loadBool(CHAT_RAG_ENABLED_KEY, false),
+  ragSource: loadRagSource(),
+  ragMode: loadRagMode(),
+  ragTopK: loadRagTopK(),
   toolStatus: null,
   generatingStatus: null,
   autoHealToolCalls: true,
@@ -836,6 +914,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       codeToolsEnabled: false,
       imageToolsEnabled: false,
       webFetchToolsEnabled: false,
+      // RAG source / mode / top_k are user preferences and survive model
+      // unload; only the per-session enable pill resets like the others.
+      ragEnabled: false,
       toolStatus: null,
       kvCacheDtype: null,
       loadedKvCacheDtype: null,
@@ -905,6 +986,28 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     set(() => {
       saveBool(CHAT_WEB_FETCH_TOOLS_ENABLED_KEY, webFetchToolsEnabled);
       return { webFetchToolsEnabled };
+    }),
+  setRagEnabled: (ragEnabled, options) =>
+    set(() => {
+      if (options?.persist !== false) {
+        saveBool(CHAT_RAG_ENABLED_KEY, ragEnabled);
+      }
+      return { ragEnabled };
+    }),
+  setRagSource: (ragSource) =>
+    set(() => {
+      saveRagSource(ragSource);
+      return { ragSource };
+    }),
+  setRagMode: (ragMode) =>
+    set(() => {
+      saveString(CHAT_RAG_MODE_KEY, ragMode);
+      return { ragMode };
+    }),
+  setRagTopK: (ragTopK) =>
+    set(() => {
+      saveString(CHAT_RAG_TOP_K_KEY, String(ragTopK));
+      return { ragTopK };
     }),
   setToolStatus: (toolStatus) => set({ toolStatus }),
   setGeneratingStatus: (generatingStatus) => set({ generatingStatus }),
