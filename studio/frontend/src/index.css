@@ -866,19 +866,12 @@
 		@apply relative flex w-full flex-col rounded-[32px] bg-background dark:bg-card px-3 py-3 outline-none transition-shadow;
 		font-family: var(--font-sans);
 		background-clip: padding-box;
-		/* Light-mode elevation matches Gemini's search box (Lumi level-1): a soft,
-		   diffuse ambient shadow rather than a tight drop shadow. */
-		box-shadow:
-			0 1px 2px 0 rgba(0, 0, 0, 0.04),
-			0 4px 12px 0 rgba(0, 0, 0, 0.08),
-			0 8px 24px 0 rgba(0, 0, 0, 0.06);
+		/* Gemini search pill: soft, centered shadow, no downward offset. */
+		box-shadow: 0 0 20px 0 rgba(0, 0, 0, 0.04);
 	}
 
 	.unsloth-composer-surface:focus-within {
-		box-shadow:
-			0 1px 2px 0 rgba(0, 0, 0, 0.04),
-			0 4px 12px 0 rgba(0, 0, 0, 0.08),
-			0 8px 24px 0 rgba(0, 0, 0, 0.06);
+		box-shadow: 0 0 20px 0 rgba(0, 0, 0, 0.04);
 	}
 
 	.dark .unsloth-composer-surface {
@@ -1026,6 +1019,12 @@
 
 	.unsloth-plus-menu [data-slot="dropdown-menu-label"] {
 		@apply pl-4 pr-3 py-1.5 text-[12px];
+	}
+
+	/* Active (green) items keep their primary text and icon color on hover. */
+	.unsloth-plus-menu [data-slot="dropdown-menu-item"].text-primary:is(:hover, :focus, :focus-visible, [data-highlighted]),
+	.unsloth-plus-menu [data-slot="dropdown-menu-item"].text-primary:is(:hover, :focus, :focus-visible, [data-highlighted]) svg {
+		color: var(--primary) !important;
 	}
 
 	/* Light hover: neutral grey, not the green accent. */
