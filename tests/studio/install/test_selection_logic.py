@@ -2021,7 +2021,7 @@ class TestWindowsCudaAttempts:
 
 
 class TestPinnedBlackwellCudaFallback:
-    """A Blackwell host on a 13.1/13.2 driver, gated off the in-release 13.3
+    """A Blackwell host on a 13.0/13.1/13.2 driver, gated off the in-release 13.3
     build, gets the pinned immutable b9360 cuda-13.1 GPU build instead of the
     CPU-only cuda-12.4 drop. The pin is dormant for everyone else."""
 
@@ -2072,15 +2072,19 @@ class TestPinnedBlackwellCudaFallback:
         # Ada/Hopper run the cuda-12.4 build fine; the pin must not fire.
         assert _pinned_windows_cuda_fallback(self._win_host((13, 1), [sm]), []) is None
 
-    def test_pin_not_offered_to_driver_13_0(self):
-        # 13.0 cannot run the 13.1 build (forward minor); residual CPU gap.
+    def test_pin_offered_for_driver_13_0(self):
+        # b9360 is native sm_120a SASS (no JIT) and ships a cuda-13.1 cudart,
+        # both of which run on a 13.0 r580+ driver via CUDA minor-version
+        # compatibility. 13.0 is the mainstream Blackwell branch, so it must fire.
         assert (
-            _pinned_windows_cuda_fallback(self._win_host((13, 0), ["120"]), []) is None
+            _pinned_windows_cuda_fallback(self._win_host((13, 0), ["120"]), [])
+            is not None
         )
 
     def test_pin_not_offered_below_floor(self):
+        # 12.x predates Blackwell entirely; the pin stays dormant below 13.0.
         assert (
-            _pinned_windows_cuda_fallback(self._win_host((12, 8), ["120"]), []) is None
+            _pinned_windows_cuda_fallback(self._win_host((12, 9), ["120"]), []) is None
         )
 
     def test_pin_not_offered_without_driver(self):
