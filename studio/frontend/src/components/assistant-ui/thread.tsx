@@ -24,6 +24,7 @@ import { ToolFallback } from "@/components/assistant-ui/tool-fallback";
 import { ToolGroup } from "@/components/assistant-ui/tool-group";
 import { CodeExecutionToolUI } from "@/components/assistant-ui/tool-ui-code-execution";
 import { ImageGenerationToolUI } from "@/components/assistant-ui/tool-ui-image-generation";
+import { RenderHtmlToolUI } from "@/components/assistant-ui/tool-ui-render-html";
 import { PythonToolUI } from "@/components/assistant-ui/tool-ui-python";
 import { TerminalToolUI } from "@/components/assistant-ui/tool-ui-terminal";
 import { WebSearchToolUI } from "@/components/assistant-ui/tool-ui-web-search";
@@ -43,6 +44,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { sentAudioNames } from "@/features/chat/api/chat-adapter";
 import { parseExternalModelId } from "@/features/chat/external-providers";
+import { McpComposerButton } from "@/features/chat/mcp-composer-button";
 import { getExternalReasoningCapabilities } from "@/features/chat/provider-capabilities";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { useExternalProvidersStore } from "@/features/chat/stores/external-providers-store";
@@ -73,6 +75,7 @@ import {
   ChevronLeftIcon,
   ChevronRightIcon,
   DownloadIcon,
+  FileTextIcon,
   GlobeIcon,
   HeadphonesIcon,
   LightbulbIcon,
@@ -1117,6 +1120,29 @@ const ImagesToggle: FC = () => {
   );
 };
 
+const ArtifactsToggle: FC = () => {
+  const modelLoaded = useChatRuntimeStore(
+    (s) => !!s.params.checkpoint && !s.modelLoading,
+  );
+  const artifactsEnabled = useChatRuntimeStore((s) => s.artifactsEnabled);
+  const setArtifactsEnabled = useChatRuntimeStore((s) => s.setArtifactsEnabled);
+  const disabled = !modelLoaded;
+
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={() => setArtifactsEnabled(!artifactsEnabled)}
+      className="composer-pill-btn"
+      data-active={artifactsEnabled && !disabled ? "true" : "false"}
+      aria-label={artifactsEnabled ? "Disable artifacts" : "Enable artifacts"}
+    >
+      <FileTextIcon className="size-3.5" />
+      <span>Artifacts</span>
+    </button>
+  );
+};
+
 const ToolStatusDisplay: FC = () => {
   const toolStatus = useChatRuntimeStore((s) => s.toolStatus);
   const isThreadRunning = useAuiState(({ thread }) => thread.isRunning);
@@ -1189,6 +1215,8 @@ const ComposerAction: FC<{
         <WebSearchToggle />
         <CodeToolsToggle />
         <ImagesToggle />
+        <ArtifactsToggle />
+        <McpComposerButton />
       </div>
       <div className="flex items-center gap-1">
         <ComposerPrimitive.If dictation={false}>
@@ -1316,6 +1344,7 @@ const AssistantMessage: FC = () => {
                 terminal: TerminalToolUI,
                 code_execution: CodeExecutionToolUI,
                 image_generation: ImageGenerationToolUI,
+                render_html: RenderHtmlToolUI,
               },
               Fallback: ToolFallback,
             },
