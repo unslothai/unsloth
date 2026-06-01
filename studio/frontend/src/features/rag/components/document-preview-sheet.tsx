@@ -353,9 +353,11 @@ export function DocumentPreviewSheet() {
         className="flex w-full flex-col gap-0 p-0 sm:max-w-[44rem]"
       >
         <SheetHeader className="gap-1 border-b p-4">
-          <SheetTitle className="flex items-center gap-2 text-sm">
+          {/* pr-10 reserves room for the sheet's absolute close button so a long
+          filename + page label never run under it. */}
+          <SheetTitle className="flex items-center gap-2 pr-10 text-sm">
             <FileTextIcon className="size-4 shrink-0" />
-            <span className="truncate">{headerName}</span>
+            <span className="min-w-0 truncate">{headerName}</span>
             {headerPage != null && (
               <span className="shrink-0 text-muted-foreground">
                 · page {headerPage}
