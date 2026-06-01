@@ -820,7 +820,12 @@
 	}
 
 	.composer-pill-btn {
-		@apply flex cursor-pointer items-center gap-1.5 rounded-full px-2 py-1.5 text-[14px] font-medium text-muted-foreground/70 transition-colors hover:bg-primary/10 dark:hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-40;
+		@apply flex cursor-pointer items-center gap-1.5 rounded-full py-1.5 pl-2 pr-2.5 text-[14px] font-medium text-muted-foreground/70 transition-colors hover:bg-primary/10 dark:hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-40;
+	}
+
+	/* Icon-only (compact) pills have no trailing label, so keep them symmetric. */
+	[data-pill-compact="true"] .composer-pill-btn:not([data-keep-label]) {
+		@apply pr-2;
 	}
 
 	.composer-pill-btn[data-active="true"] {
@@ -841,9 +846,10 @@
 		@apply relative inline-flex w-[19px] shrink-0 items-center justify-center transition-opacity;
 	}
 
-	/* Fixed size so every pill's X is identical, centered over the icon slot. */
+	/* On hover the icon swaps for an X inside a soft circle (ChatGPT-style),
+	   filling the icon slot so every pill's X is identical and centered. */
 	.composer-pill-x {
-		@apply pointer-events-none absolute inset-0 m-auto size-[15px] opacity-0 transition-opacity;
+		@apply pointer-events-none absolute inset-0 m-auto size-[19px] rounded-full bg-primary/15 p-[3px] opacity-0 transition-opacity dark:bg-white/[0.14];
 	}
 
 	/* Hovering an active pill swaps the icon for an X (click to turn off). */
