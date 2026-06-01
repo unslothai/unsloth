@@ -37,15 +37,13 @@ def _classify_param_names(model: torch.nn.Module) -> tuple[Set[str], Set[str]]:
     PEFT-wrapped copies (``modules_to_save``) and tied embeddings
     (e.g. ``lm_head.weight`` aliased to ``embed_tokens.weight``).
     """
-    for _, param in model.named_parameters():
-        if param.device == torch.device("meta"):
-            raise RuntimeError(
-                "Unsloth: model is on meta device. Materialize the model "
-                "(e.g. via FastLanguageModel.from_pretrained) before calling "
-                "_classify_param_names. Meta-device tensors all report "
-                "data_ptr() == 0, which breaks tied-weight detection."
-            )
-        break
+    if any(param.device == torch.device("meta") for _, param in model.named_parameters()):
+        raise RuntimeError(
+            "Unsloth: model is on meta device. Materialize the model "
+            "(e.g. via FastLanguageModel.from_pretrained) before calling "
+            "_classify_param_names. Meta-device tensors all report "
+            "data_ptr() == 0, which breaks tied-weight detection."
+        )
 
     embedding_names: Set[str] = set()
     no_decay_names: Set[str] = set()
@@ -161,15 +159,13 @@ def make_muon_param_groups(
         param-group dicts suitable for ``torch.optim.Muon`` and
         ``torch.optim.AdamW`` respectively.
     """
-    for _, param in model.named_parameters():
-        if param.device == torch.device("meta"):
-            raise RuntimeError(
-                "Unsloth: model is on meta device. Materialize the model "
-                "(e.g. via FastLanguageModel.from_pretrained) before calling "
-                "make_muon_param_groups. Meta-device tensors all report "
-                "data_ptr() == 0, which breaks tied-weight detection."
-            )
-        break
+    if any(param.device == torch.device("meta") for _, param in model.named_parameters()):
+        raise RuntimeError(
+            "Unsloth: model is on meta device. Materialize the model "
+            "(e.g. via FastLanguageModel.from_pretrained) before calling "
+            "make_muon_param_groups. Meta-device tensors all report "
+            "data_ptr() == 0, which breaks tied-weight detection."
+        )
 
     adamw_lr = adamw_lr if adamw_lr is not None else lr
     adamw_weight_decay = adamw_weight_decay if adamw_weight_decay is not None else muon_weight_decay

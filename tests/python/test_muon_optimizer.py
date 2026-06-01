@@ -1887,3 +1887,92 @@ def test_norm_name_pattern_catches_rms_norm():
     _, no_decay_names = _classify_param_names(model)
     assert "rms_norm.weight" in no_decay_names, \
         "rms_norm must be classified as no_decay via regex"
+
+
+# -- Tests: R15 M3 — Mixed-device meta guard ---------------------------------
+
+
+def test_mixed_device_raises_error():
+    """Mixed meta/real device model must raise RuntimeError."""
+    from unsloth.optimizers.muon import make_muon_param_groups
+    model = torch.nn.Sequential(
+        torch.nn.Linear(4, 4),
+        torch.nn.Linear(4, 4, device="meta"),
+    )
+    with pytest.raises(RuntimeError, match="meta"):
+        make_muon_param_groups(model, lr=1e-3, muon_weight_decay=0.0)
+
+
+def test_classify_param_names_mixed_device_raises_error():
+    """_classify_param_names with mixed meta/real device must raise RuntimeError."""
+    from unsloth.optimizers.muon import _classify_param_names
+    model = torch.nn.Sequential(
+        torch.nn.Linear(4, 4),
+        torch.nn.Linear(4, 4, device="meta"),
+    )
+    with pytest.raises(RuntimeError, match="meta"):
+        _classify_param_names(model)
+
+
+# -- Tests: R15 L3 — embedding_learning_rate survives super().__init__ --------
+
+
+def test_embedding_learning_rate_survives_super_init():
+    """embedding_learning_rate must persist through parent constructor."""
+    from unsloth.trainer import UnslothTrainingArguments
+    args = UnslothTrainingArguments(
+        embedding_learning_rate=5e-5,
+        output_dir="/tmp/test",
+    )
+    assert args.embedding_learning_rate == 5e-5
+
+
+# -- Tests: R15 L2 — defaults refreshed after load_state_dict ----------------
+
+
+def test_defaults_refreshed_after_load_state_dict():
+    """self.defaults must be refreshed after load_state_dict."""
+    _skip_if_no_muon()
+
+    from unsloth.trainer import _MuonAdamWChained
+
+    p = torch.nn.Parameter(torch.randn(4, 4))
+    q = torch.nn.Parameter(torch.randn(4))
+    muon = torch.optim.Muon([p], lr=1e-3, momentum=0.95, ns_steps=5)
+    adamw = torch.optim.AdamW([q], lr=1e-3)
+
+    chained = _MuonAdamWChained(muon, adamw)
+    original_defaults = dict(chained.defaults)
+
+    sd = chained.state_dict()
+    sd["muon"]["param_groups"][0]["lr"] = 5e-4
+
+    muon2 = torch.optim.Muon([torch.nn.Parameter(torch.randn(4, 4))], lr=1e-3, momentum=0.95, ns_steps=5)
+    adamw2 = torch.optim.AdamW([torch.nn.Parameter(torch.randn(4))], lr=1e-3)
+    chained2 = _MuonAdamWChained(muon2, adamw2)
+
+    chained2.load_state_dict(sd)
+    assert "momentum" in chained2.defaults
+    assert "betas" in chained2.defaults
+    assert chained2.defaults.get("lr") == original_defaults.get("lr")
+
+
+# -- Tests: R15 L1 — __repr__ element count ----------------------------------
+
+
+def test_repr_counts_elements():
+    """__repr__ must count elements, not tensors."""
+    _skip_if_no_muon()
+
+    from unsloth.trainer import _MuonAdamWChained
+
+    p = torch.nn.Parameter(torch.randn(4, 4))
+    q = torch.nn.Parameter(torch.randn(4))
+    muon = torch.optim.Muon([p], lr=1e-3, momentum=0.95, ns_steps=5)
+    adamw = torch.optim.AdamW([q], lr=1e-3)
+
+    chained = _MuonAdamWChained(muon, adamw)
+    rep = repr(chained)
+    assert "elements" in rep, f"__repr__ must say 'elements', got: {rep}"
+    assert "16 elements" in rep, f"Muon has 16 elements (4x4), got: {rep}"
+    assert "4 elements" in rep, f"AdamW has 4 elements (4), got: {rep}"

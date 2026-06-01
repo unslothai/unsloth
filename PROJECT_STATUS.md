@@ -1,19 +1,19 @@
 # Project Status: Unsloth + Muon Integration
 
-## Current Round: 14
-## Global Status: READY_FOR_MERGE (all R14 findings resolved)
+## Current Round: 15
+## Global Status: READY_FOR_MERGE (all R15 findings resolved)
 
 ## 1. Critical Blockers (Must fix to prevent runtime failure, crash, or serialization leakage)
 
-*None — all critical findings from Passes 0–14 have been verified as resolved in the current codebase.*
+*None — all critical findings from Passes 0–15 have been verified as resolved in the current codebase.*
 
 ## 2. High-Severity Findings (Pending — Impacts distributed training, stability, or numerical precision)
 
-*None — all high-severity findings from Passes 0–14 have been verified as resolved in the current codebase.*
+*None — all high-severity findings from Passes 0–15 have been verified as resolved in the current codebase.*
 
 ## 3. Medium & Low-Severity Items (Refactoring, Debt, & Border Configurations)
 
-- [ ] **[R14 M2]** Regex-based norm detection fragile and deferred for 7 rounds (`unsloth/optimizers/muon.py:85-88`) — Well-understood, minimal-fix, repeatedly deferred.
+- [ ] **[R14 M2]** Regex-based norm detection fragile and deferred for 8 rounds (`unsloth/optimizers/muon.py:85-88`) — Well-understood, minimal-fix, repeatedly deferred.
 - [ ] **[R14 L3]** TOCTOU race in `_assert_group_count_matches` (`unsloth/trainer.py:460-469`) — Theoretical thread-safety issue. Document as known limitation.
 - [ ] **[R6 M5]** Muon + LoRA adapter training path is unvalidated (`unsloth/trainer.py:644-649`)
   * **Note:** A warning is logged when `PeftModel` is detected, but no runtime guard prevents Muon from being applied to low-rank adapters. Muon's full-matrix orthogonalization dynamics on rank-deficient LoRA A/B matrices are uncharacterized. Not a crash risk — training quality is unknown.
@@ -21,8 +21,20 @@
   * **Note:** Importing via `unsloth.optimizers.muon` directly (bypassing `unsloth.__init__`) works, but the public `from unsloth import ...` path triggers `_gpu_init` which requires `unsloth_zoo`.
 - [ ] **[R11 M4]** `modal_validate_muon.py` model name may not resolve on HF Hub — **Deferred:** Use a known-good model revision. Validation infrastructure risk.
 - [ ] **[R11 L5]** No verification that `muon.defaults` contains expected keys — **Deferred:** Maintenance risk if upstream Muon changes defaults format.
+- [ ] **[R15 M2]** `torch.compile` compatibility untested — `_muon_step_deterministic` is a guaranteed graph break. Document as known limitation.
+- [ ] **[R15 N1]** Dead `requires_grad` check in `_is_muon_eligible` (`unsloth/optimizers/muon.py:109`) — `make_muon_param_groups` already filters `not param.requires_grad`. Carried from R14.
 
 ## 4. Historical Archive: Resolved & Verified Findings
+
+### Round 15 Resolutions
+- [x] **[R15] [M3]** Meta device check iterates all params — **Fixed:** `_classify_param_names` and `make_muon_param_groups` now use `any()` instead of only checking the first parameter. (`unsloth/optimizers/muon.py:40-46, 162-170`).
+- [x] **[R15] [M1]** QLoRA/4-bit quantization guard — **Fixed:** Added `Params4bit` detection in `_create_muon_optimizer` with warning about uncharacterized Muon behaviour on low-rank adapters. (`unsloth/trainer.py:684-697`).
+- [x] **[R15] [L1]** `__repr__` counts elements, not tensors — **Fixed:** Changed `len(g["params"])` to `sum(p.numel() for p in g["params"])` and label from "params" to "elements". (`unsloth/trainer.py:559-566`).
+- [x] **[R15] [L2]** `self.defaults` refreshed after `load_state_dict` — **Fixed:** Added defaults rebuild from sub-optimizer defaults after param_groups refresh. (`unsloth/trainer.py:548-552`).
+- [x] **[R15] [L3]** `embedding_learning_rate` regression test — **Added:** `test_embedding_learning_rate_survives_super_init` verifies value persists through parent constructor.
+- [x] **[R15] [MT3]** Mixed-device meta guard test — **Added:** `test_mixed_device_raises_error` and `test_classify_param_names_mixed_device_raises_error` verify RuntimeError on mixed meta/real models.
+- [x] **[R15] [MT5]** `state_dict` `defaults` consistency test — **Added:** `test_defaults_refreshed_after_load_state_dict` verifies defaults are refreshed.
+- [x] **[R15] [MT6]** `__repr__` element count test — **Added:** `test_repr_counts_elements` verifies element counts in repr output.
 
 ### Round 14 Resolutions
 - [x] **[R14] [C1]** Meta device guard — **Fixed:** `make_muon_param_groups` and `_classify_param_names` raise `RuntimeError` on meta device.

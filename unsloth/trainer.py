@@ -545,6 +545,11 @@ class _MuonAdamWChained(torch.optim.Optimizer):
         if self.adamw is not None:
             refreshed.extend(self.adamw.param_groups)
         self.param_groups = refreshed
+        self.defaults = {}
+        if self.muon is not None:
+            self.defaults.update(self.muon.defaults)
+        if self.adamw is not None:
+            self.defaults.update(self.adamw.defaults)
 
     def __getstate__(self):
         return self.state_dict()
@@ -560,9 +565,9 @@ class _MuonAdamWChained(torch.optim.Optimizer):
         def _param_count(sub):
             if sub is None:
                 return 0
-            return sum(len(g["params"]) for g in sub.param_groups)
-        muon_str = f"Muon({_param_count(self.muon)} params)"
-        adamw_str = f"AdamW({_param_count(self.adamw)} params)"
+            return sum(p.numel() for g in sub.param_groups for p in g["params"])
+        muon_str = f"Muon({_param_count(self.muon)} elements)"
+        adamw_str = f"AdamW({_param_count(self.adamw)} elements)"
         return f"{type(self).__name__}({muon_str}, {adamw_str})"
 
 
@@ -680,6 +685,21 @@ class UnslothTrainer(SFTTrainer):
                 "Muon will be applied to 2D adapters. "
                 "Results not guaranteed — use full_finetuning=True for expected behaviour."
             )
+
+        try:
+            from bitsandbytes.nn import Params4bit
+        except ImportError:
+            Params4bit = None
+        if Params4bit is not None:
+            for _, param in self.model.named_parameters():
+                if isinstance(param, Params4bit):
+                    logger.warning(
+                        "Unsloth Muon: 4-bit quantized model detected. "
+                        "Only LoRA adapters are trainable; base weights are frozen. "
+                        "Muon's orthogonalization on low-rank adapters is uncharacterized. "
+                        "Use full_finetuning=True for expected Muon behaviour."
+                    )
+                    break
 
         n_muon = sum(p.numel() for g in muon_groups for p in g["params"])
         n_adamw = sum(p.numel() for g in adamw_groups for p in g["params"])
