@@ -1,32 +1,21 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""GGUF embedder served over HTTP by the bundled llama.cpp (no torch).
+"""GGUF embedder over the bundled llama.cpp, served via HTTP (no torch).
 
-Opt-in via ``RAG_EMBED_BACKEND=llama-server``. Spawns a *dedicated*
-``llama-server --embedding`` subprocess on its own port and calls it over an
-OpenAI-compatible ``/v1/embeddings`` + ``/tokenize`` HTTP API. It is fully
-isolated from the chat ``LlamaCppBackend`` / ``/v1/chat/completions`` proxy: no
-shared process, no new Studio route, and the chat extra-args denylist does not
-apply (the command is built here directly).
+Opt-in (``RAG_EMBED_BACKEND=llama-server``). Runs a dedicated
+``llama-server --embedding`` subprocess on its own port and calls its
+OpenAI-style ``/v1/embeddings`` + ``/tokenize``. Fully isolated from the chat
+backend: separate process, no new Studio route, command built here directly.
 
-Device is ``auto`` by default: it offloads to the GPU when one is present (like
-Studio's chat server; NVIDIA/ROCm or Apple Metal) and falls back to CPU if that
-start fails. GPU detection reuses the chat backend's own static probes
-(``_get_gpu_free_memory`` + ``is_apple_silicon``), so the common NVIDIA path
-needs no torch. ``RAG_EMBED_DEVICE=cpu``/``gpu`` forces the choice.
+Device is ``auto`` (GPU when present -- NVIDIA/ROCm or Apple Metal -- else CPU,
+falling back to CPU if a GPU start fails); ``RAG_EMBED_DEVICE=cpu``/``gpu``
+forces it. GPU detection reuses llama_cpp's static probes, so it needs no torch.
 
-Reuse policy: only llama_cpp's *static* helpers are called directly
-(``_find_llama_server_binary``, ``_find_free_port``, ``_get_gpu_free_memory``) --
-they need no chat instance. The instance-coupled bits (download, health-poll,
-kill, subprocess env) are kept as small local copies on purpose: constructing a
-``LlamaCppBackend`` would run its ``__init__`` (which reaps llama-servers) and
-bind to chat state, so we never instantiate it here.
-
-Coupling note: the chat backend's ``_kill_orphaned_servers()`` reaps *any*
-Studio llama-server by binary path, so loading a chat model kills this embed
-server. We do not touch that reaper; instead every request first checks the
-process is alive and transparently re-spawns it if not (self-healing).
+We call only llama_cpp's *static* helpers; the instance-coupled bits (download,
+health, kill) are small local copies, since constructing a ``LlamaCppBackend``
+runs its ``__init__`` reaper and binds chat state. That reaper kills any Studio
+llama-server, so each request re-spawns ours if it died (self-heal).
 """
 
 from __future__ import annotations
@@ -66,11 +55,10 @@ class LlamaServerBackend:
         self._dim_lock = threading.Lock()
         self._model_path: str | None = None
         self._binary: str | None = None
-        # Sticky after an auto GPU start fails (e.g. VRAM full): every later
-        # (re)spawn stays on CPU instead of retrying the GPU and failing again.
+        # Sticky after an auto GPU start fails: later spawns stay on CPU.
         self._force_cpu = False
-        # One pooled client for the life of the backend; requests pass full URLs
-        # so a port change after a respawn needs no client rebuild.
+        # Pooled client; requests pass full URLs, so a respawn's new port needs
+        # no rebuild.
         self._client = httpx.Client(timeout = config.EMBED_REQUEST_TIMEOUT_S)
         atexit.register(self._shutdown)
 
@@ -83,8 +71,8 @@ class LlamaServerBackend:
     # ── Binary / model resolution ────────────────────────────────
 
     def _resolve_binary(self) -> str:
-        """Locate llama-server (reusing the chat backend's discovery) and verify
-        it supports embeddings. Cached; raises loudly if missing/unsupported."""
+        """Find llama-server (via the chat backend's discovery), verify it
+        supports embeddings, cache it. Raises if missing/unsupported."""
         if self._binary is not None:
             return self._binary
         from core.inference.llama_cpp import LlamaCppBackend
@@ -103,8 +91,8 @@ class LlamaServerBackend:
     @staticmethod
     @lru_cache(maxsize = 8)
     def _help_text(binary: str) -> str:
-        """`llama-server --help` (cached). Some builds exit non-zero on --help, so
-        capture both streams and ignore the return code."""
+        """`llama-server --help`, cached. Capture both streams, ignore exit code
+        (some builds exit non-zero on --help)."""
         try:
             proc = subprocess.run(
                 [binary, "--help"],
@@ -120,8 +108,7 @@ class LlamaServerBackend:
 
     def _assert_embedding_support(self, binary: str) -> None:
         help_text = self._help_text(binary)
-        # Empty help (e.g. --help unsupported) -> assume capable rather than
-        # blocking; a real missing flag still fails loudly at spawn.
+        # Empty help -> assume capable (a real missing flag still fails at spawn).
         if help_text and "--embedding" not in help_text:
             raise RuntimeError(
                 "the bundled llama-server build lacks --embedding support; "
@@ -129,8 +116,8 @@ class LlamaServerBackend:
             )
 
     def _resolve_model_path(self) -> str:
-        """Download (or hit cache for) the GGUF embedder and return its local
-        path. Picks the variant-matching, non-mmproj .gguf in the repo."""
+        """Download (or cache-hit) the GGUF embedder, returning its local path.
+        Picks the variant-matching, non-mmproj .gguf in the repo."""
         if self._model_path is not None:
             return self._model_path
         from huggingface_hub import hf_hub_download, list_repo_files
@@ -152,15 +139,12 @@ class LlamaServerBackend:
 
     # ── Device selection ─────────────────────────────────────────
 
-    # Free VRAM (MiB) a GPU must have for the embedder (tiny weights plus the
-    # llama.cpp CUDA context); below this, auto stays on CPU to avoid an OOM.
+    # Min free VRAM (MiB) for the embedder; below this, auto stays on CPU.
     _MIN_GPU_FREE_MIB = 1024
 
     def _use_gpu(self) -> bool:
-        """Whether to offload to GPU. ``RAG_EMBED_DEVICE`` is ``auto`` (default;
-        use a GPU when present, like Studio's chat server), ``gpu``, or ``cpu``.
-        A sticky CPU fallback (set after an auto GPU start fails) wins over
-        auto."""
+        """``RAG_EMBED_DEVICE``: ``gpu``/``cpu`` force it; ``auto`` uses a GPU when
+        present. A sticky CPU fallback (after an auto GPU start fails) wins."""
         dev = config.EMBED_DEVICE.lower()
         if dev == "gpu":
             return True
@@ -170,10 +154,9 @@ class LlamaServerBackend:
 
     @staticmethod
     def _gpu_available() -> bool:
-        """GPU presence via Studio's own probes (no torch import on the common
-        NVIDIA path): Apple Metal, or an NVIDIA/ROCm GPU with enough free VRAM.
-        Reuses the chat backend's static ``_get_gpu_free_memory`` (nvidia-smi
-        first, honoring CUDA_VISIBLE_DEVICES) instead of re-detecting hardware."""
+        """Apple Metal, or an NVIDIA/ROCm GPU with enough free VRAM. Reuses
+        llama_cpp's static ``_get_gpu_free_memory`` (nvidia-smi first, so the
+        common path needs no torch)."""
         from utils.hardware import is_apple_silicon
 
         if is_apple_silicon():
@@ -188,11 +171,9 @@ class LlamaServerBackend:
     def _build_cmd(
         self, binary: str, model_path: str, port: int, *, use_gpu: bool
     ) -> list[str]:
-        # No --embd-normalize: it isn't in every llama-server build and we
-        # normalize in Python anyway, so the `normalize` flag matches the
-        # sentence-transformers path regardless of the server default.
-        # --fit off keeps the launch deterministic: don't auto-resize context or
-        # offload to fill device memory (the tiny embedder needs neither).
+        # No --embd-normalize (not in every build; we normalize in Python to
+        # match the ST path). --fit off: don't auto-resize ctx/offload to fill
+        # device memory.
         cmd = [
             binary,
             "-m",
@@ -213,22 +194,18 @@ class LlamaServerBackend:
 
     def _build_env(self, binary: str, *, use_gpu: bool) -> dict[str, str]:
         env = child_env_without_native_path_secret()
-        # ggml set_rows fast path for the embedding decode.
-        env["LLAMA_SET_ROWS"] = "1"
+        env["LLAMA_SET_ROWS"] = "1"  # ggml set_rows fast path
         if use_gpu:
-            # Inherit the ambient CUDA_VISIBLE_DEVICES Studio set; the prebuilt
-            # binary needs the CUDA libs on its search path on Linux.
+            # Inherit Studio's CUDA_VISIBLE_DEVICES; put CUDA libs on the path.
             self._add_linux_cuda_libs(env, str(Path(binary).parent))
         else:
-            # Blank the device list so a CUDA-built binary stays on CPU without a
-            # spurious init error and never reserves VRAM beside the chat model.
+            # Blank devices so a CUDA build stays on CPU and reserves no VRAM.
             env["CUDA_VISIBLE_DEVICES"] = ""
         return env
 
     @staticmethod
     def _add_linux_cuda_libs(env: dict[str, str], binary_dir: str) -> None:
-        """Best-effort LD_LIBRARY_PATH so the prebuilt binary finds CUDA libs
-        (mirrors the chat backend's Linux setup, condensed)."""
+        """Best-effort LD_LIBRARY_PATH so the prebuilt binary finds CUDA libs."""
         import glob
         import platform
         import sys
@@ -274,10 +251,9 @@ class LlamaServerBackend:
             pass
 
     def _spawn(self) -> None:
-        """Start the embed server (caller holds the lifecycle lock). Tries the
-        GPU when ``auto`` selects it, falling back to CPU once if that start
-        fails (e.g. VRAM full); an explicit ``gpu``/``cpu`` choice never falls
-        back."""
+        """Start the embed server (caller holds the lifecycle lock). On ``auto``,
+        a failed GPU start falls back to CPU once; explicit ``gpu``/``cpu`` do
+        not."""
         use_gpu = self._use_gpu()
         try:
             self._spawn_once(use_gpu)
@@ -361,9 +337,8 @@ class LlamaServerBackend:
         return self._process is not None and self._process.poll() is None
 
     def _ensure_ready(self) -> None:
-        """Guarantee a live embed server, (re)spawning if needed. Double-checked
-        so the common (alive) path takes no lock; self-heals after the chat
-        backend's orphan reaper kills us."""
+        """Guarantee a live server, (re)spawning if needed. Double-checked so the
+        alive path takes no lock; self-heals after the chat reaper kills us."""
         if self._process_alive():
             return
         with self._lifecycle_lock:
@@ -411,8 +386,8 @@ class LlamaServerBackend:
     # ── HTTP requests (self-healing on a dropped connection) ─────
 
     def _post(self, path: str, payload: dict) -> dict:
-        """POST to the embed server, respawning once on a transport error (the
-        reaper may have killed us between the liveness check and the request)."""
+        """POST to the server, respawning once on a transport error (the reaper
+        may have killed us between the liveness check and the request)."""
         last_exc: Exception | None = None
         for attempt in range(2):
             self._ensure_ready()

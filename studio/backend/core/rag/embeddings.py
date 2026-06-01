@@ -1,20 +1,17 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Dense embedder facade. Public functions (``encode``, ``token_counter``,
-``dim``, ``warm``) dispatch to a process-wide backend chosen by
-``config.EMBED_BACKEND``:
+"""Dense embedder facade. ``encode``/``token_counter``/``dim``/``warm`` dispatch
+to a process-wide backend from ``config.EMBED_BACKEND`` (``auto`` picks by
+hardware; see ``_resolve_auto``):
 
-* ``sentence-transformers`` (default) -- thread-safe lazy SentenceTransformer
-  singleton keyed by model name; needs torch. ``token_counter`` reuses the
-  model's tokenizer so chunk sizing matches the embedder.
-* ``llama-server`` -- a GGUF embedder served over HTTP by the bundled
-  llama.cpp; no torch (see ``embed_llama_server``).
+* ``sentence-transformers`` -- lazy SentenceTransformer keyed by model; torch.
+* ``llama-server`` -- GGUF over the bundled llama.cpp; no torch (see
+  ``embed_llama_server``).
 
-Backends produce different vectors, so switching ``RAG_EMBED_BACKEND`` requires
-rebuilding the index (drop/re-create KBs, re-upload thread docs). Startup
-failure of the selected backend raises -- never a silent cross-backend fallback,
-which would corrupt retrieval by mixing vector spaces.
+Backends produce different vectors, so switching requires rebuilding the index.
+Startup failure raises -- never a silent cross-backend fallback, which would mix
+vector spaces.
 """
 
 from __future__ import annotations
@@ -31,24 +28,21 @@ from . import config
 
 logger = logging.getLogger(__name__)
 
-# Default "false" also silences the fast tokenizer's "forked after parallelism"
-# warning. encode() flips it to "true" only during a batch tokenize (rayon
-# speedup) and restores it, keeping the speedup without the warning.
+# "false" silences the fast tokenizer's fork warning; encode() flips it to
+# "true" only during a batch tokenize (rayon speedup) and restores it.
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 _lock = threading.Lock()
-# Serializes encode/tokenize: the HF fast tokenizer uses interior mutability and
-# is NOT thread-safe, so concurrent ingestion threads sharing this singleton
-# panic with "Already borrowed". Separate from _lock so a long encode never
-# blocks a (rare) reload.
+# Serializes encode/tokenize: the HF fast tokenizer isn't thread-safe (concurrent
+# ingest threads panic "Already borrowed"). Separate from _lock so a long encode
+# never blocks a reload.
 _compute_lock = threading.Lock()
 _model = None
 _name: str | None = None
 
 
-# Map Studio's detected backend (utils.hardware) to a torch/sentence-transformers
-# device string. MLX (Apple via the MLX framework, not torch) has no torch
-# device, so the torch-based embedder falls back to CPU there.
+# Studio device -> torch device string. MLX (Apple) has no torch device, so the
+# torch embedder uses CPU there.
 _TORCH_DEVICE = {DeviceType.CUDA: "cuda", DeviceType.XPU: "xpu"}
 _GPU_DEVICES = frozenset({"cuda", "xpu"})
 
@@ -59,10 +53,8 @@ def _device() -> str:
 
 
 def _get(model_name: str | None = None):
-    """Return the cached SentenceTransformer, (re)loading if the name changed.
-    On a GPU backend the model runs in fp16 (``half()``) for a ~1.5x encode
-    speedup at negligible accuracy loss; CPU stays fp32 (half is unsupported
-    there)."""
+    """Cached SentenceTransformer, (re)loading on a name change. fp16 (``half()``)
+    on GPU for a ~1.5x speedup at negligible accuracy loss; CPU stays fp32."""
     global _model, _name
     name = model_name or config.EMBEDDING_MODEL
     with _lock:
@@ -80,9 +72,8 @@ def _get(model_name: str | None = None):
 
 @lru_cache(maxsize = 1)
 def _inference_ctx_factory():
-    """Pick the encode context once (cached): ``torch.inference_mode`` if torch
-    is importable, else ``contextlib.nullcontext``. Returns the factory, not an
-    instance, so each call still gets a fresh single-use guard."""
+    """Cached: ``torch.inference_mode`` if torch imports, else ``nullcontext``.
+    Returns the factory so each call gets a fresh single-use guard."""
     try:
         import torch
 
@@ -101,10 +92,8 @@ def _inference_ctx():
 def _st_encode(
     texts: list[str], *, model_name: str | None = None, normalize: bool = True
 ):
-    """SentenceTransformers encode -> (N, dim) float32. Serialized so concurrent
-    ingestion threads don't trip the fast tokenizer's borrow check; runs under
-    inference_mode when torch is available. Rayon parallelism is enabled only for
-    this call and restored afterward."""
+    """ST encode -> (N, dim) float32. Serialized (fast-tokenizer borrow check),
+    under inference_mode when torch is present, with rayon enabled for the call."""
     model = _get(model_name)
     with _compute_lock:
         os.environ["TOKENIZERS_PARALLELISM"] = "true"
@@ -130,9 +119,8 @@ def _st_dim(model_name: str | None = None) -> int:
 
 
 def _st_token_counter(model_name: str | None = None) -> Callable[[str], int]:
-    """Callable counting tokens with the model's tokenizer. Counts under the
-    compute lock since the same fast tokenizer backs encode and is not
-    thread-safe."""
+    """Callable counting tokens with the model's tokenizer, under the compute
+    lock (the same fast tokenizer backs encode and isn't thread-safe)."""
     tok = _get(model_name).tokenizer
 
     def _count(t: str) -> int:
