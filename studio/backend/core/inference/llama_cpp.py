@@ -59,6 +59,75 @@ from core.inference.tool_call_parser import (
 logger = get_logger(__name__)
 
 
+# ── GPU-offload log classifier (shared shape with install_llama_prebuilt) ──
+# llama-server can serve HTTP 200 while running entirely on CPU; detect that so
+# Studio can warn instead of silently running a "GPU" model on CPU (#5807 /
+# #5106 / #5830). Robust across llama.cpp log formats (the "model buffer size"
+# lines were dropped in recent builds): buffer-size markers, "offloaded N/M
+# layers to GPU", and the "device_info:" enumeration.
+_GPU_BUFFER_MARKERS = ("CUDA", "ROCm", "Metal", "Vulkan", "OpenCL", "SYCL")
+_DEVICE_ROW_RE = re.compile(
+    r"-\s*(?P<dev>(?:CUDA|ROCm|ROCM|HIP|Metal|Vulkan|SYCL|OpenCL|MUSA|CANN|CPU)\w*)\s*:",
+    re.IGNORECASE,
+)
+_GPU_DEVICE_PREFIXES = (
+    "cuda",
+    "rocm",
+    "hip",
+    "metal",
+    "vulkan",
+    "sycl",
+    "opencl",
+    "musa",
+    "cann",
+)
+_OFFLOADED_LAYERS_RE = re.compile(
+    r"offloaded\s+(\d+)\s*/\s*(\d+)\s+layers?\s+to\s+gpu", re.IGNORECASE
+)
+
+
+def classify_gpu_offload_lines(lines: list[str]) -> Optional[bool]:
+    """True if the model landed on a GPU, False if it stayed on CPU despite GPU
+    intent, None when the log has no usable signal. Priority: buffer-size lines,
+    then offloaded-layers count, then device_info enumeration."""
+    saw_buffer_line = False
+    for line in lines:
+        if "buffer size" not in line:
+            continue
+        if any(marker in line for marker in _GPU_BUFFER_MARKERS):
+            return True
+        if "model buffer size" in line:
+            saw_buffer_line = True
+
+    for line in lines:
+        match = _OFFLOADED_LAYERS_RE.search(line)
+        if match:
+            return int(match.group(1)) > 0
+        low = line.lower()
+        if "offloading" in low and "to gpu" in low:
+            return True
+
+    after_device_info = False
+    saw_device_row = False
+    for line in lines:
+        if "device_info:" in line:
+            after_device_info = True
+            continue
+        if not after_device_info:
+            continue
+        match = _DEVICE_ROW_RE.search(line)
+        if not match:
+            continue
+        saw_device_row = True
+        dev = match.group("dev").lower()
+        if any(dev.startswith(prefix) for prefix in _GPU_DEVICE_PREFIXES):
+            return True
+
+    if saw_buffer_line or saw_device_row:
+        return False
+    return None
+
+
 # ── Pre-compiled patterns for plan-without-action re-prompt ──
 # Forward-looking intent signals that indicate the model is
 # describing what it *will* do rather than giving a final answer.
@@ -3865,27 +3934,14 @@ class LlamaCppBackend:
         expected_gpu: bool,
         detected_gpus: list[tuple[int, int]],
     ) -> Optional[bool]:
-        """True if a GPU model buffer was allocated, False if only CPU
-        buffers landed despite GPU intent, None when there's no signal
-        (no GPU detected, no buffer-size lines, etc.)."""
+        """True if the model landed on a GPU, False if only CPU buffers landed
+        despite GPU intent, None when there's no signal (no GPU detected, no
+        usable log lines, etc.). Delegates to the shared classifier so it tracks
+        current llama.cpp logs (device_info / offloaded-layers), which dropped
+        the older ``model buffer size`` lines this used to key on."""
         if not detected_gpus or not expected_gpu:
             return None
-        # llama-server logs one ``... model buffer size = N MiB`` line
-        # per backend buffer; CUDA0 / ROCm0 / Metal / Vulkan0 /
-        # OpenCL0 / SYCL0 are GPU, CPU / CPU_Mapped are not.
-        gpu_markers = ("CUDA", "ROCm", "Metal", "Vulkan", "OpenCL", "SYCL")
-        saw_buffer_line = False
-        saw_gpu_buffer = False
-        for line in self._stdout_lines:
-            if "model buffer size" not in line:
-                continue
-            saw_buffer_line = True
-            if any(marker in line for marker in gpu_markers):
-                saw_gpu_buffer = True
-                break
-        if not saw_buffer_line:
-            return None
-        return saw_gpu_buffer
+        return classify_gpu_offload_lines(self._stdout_lines)
 
     def unload_model(self) -> bool:
         """Terminate the llama-server subprocess and cancel any in-flight download."""

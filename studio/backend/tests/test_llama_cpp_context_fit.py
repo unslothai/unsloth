@@ -577,3 +577,45 @@ class TestClassifyGpuOffload:
             ]
         )
         assert inst._classify_gpu_offload(True, [(0, 22805)]) is True
+
+    def test_current_device_info_cuda_returns_true(self):
+        # Recent llama.cpp dropped the buffer lines and prints device_info.
+        inst = self._backend(
+            [
+                "0.00 I device_info:",
+                "0.01 I   - CUDA0 : NVIDIA GeForce RTX 5070 (12282 MiB free)",
+                "0.01 I   - CPU : AMD Ryzen 7 9700X (32000 MiB free)",
+            ]
+        )
+        assert inst._classify_gpu_offload(True, [(0, 12282)]) is True
+
+    def test_current_device_info_cpu_only_returns_false(self):
+        # The #5830 symptom: device_info shows only CPU, CUDA0 missing.
+        inst = self._backend(
+            [
+                "0.00 I device_info:",
+                "0.00 I   - CPU : AMD Ryzen 7 9700X (32000 MiB free)",
+                "0.00 I srv llama_server: model loaded",
+            ]
+        )
+        assert inst._classify_gpu_offload(True, [(0, 12282)]) is False
+
+    def test_offloaded_layers_count_decides(self):
+        assert (
+            self._backend(["load_tensors: offloaded 33/33 layers to GPU"])
+            ._classify_gpu_offload(True, [(0, 22805)])
+            is True
+        )
+        assert (
+            self._backend(["load_tensors: offloaded 0/33 layers to GPU"])
+            ._classify_gpu_offload(True, [(0, 22805)])
+            is False
+        )
+
+    def test_system_info_only_returns_none(self):
+        # A compiled CUDA backend advertised in system_info is not proof of an
+        # available device; without device_info/buffer/offload signal -> None.
+        inst = self._backend(
+            ["system_info: n_threads = 8 | CUDA : ARCHS = 1200 | CPU : AVX2 = 1"]
+        )
+        assert inst._classify_gpu_offload(True, [(0, 22805)]) is None

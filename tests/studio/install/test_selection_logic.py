@@ -78,6 +78,7 @@ windows_cuda_upstream_asset_names = (
 )
 env_int = INSTALL_LLAMA_PREBUILT.env_int
 direct_upstream_release_plan = INSTALL_LLAMA_PREBUILT.direct_upstream_release_plan
+direct_linux_release_plan = INSTALL_LLAMA_PREBUILT.direct_linux_release_plan
 _pinned_windows_cuda_fallback = INSTALL_LLAMA_PREBUILT._pinned_windows_cuda_fallback
 CudaRuntimePreference = INSTALL_LLAMA_PREBUILT.CudaRuntimePreference
 published_windows_cuda_attempts = INSTALL_LLAMA_PREBUILT.published_windows_cuda_attempts
@@ -2297,11 +2298,14 @@ class TestDirectUpstreamBlackwellPin:
             self._release(), host, UPSTREAM_REPO, "latest"
         )
         order = [(a.tag, a.runtime_line or a.install_kind) for a in plan.attempts]
+        # No windows-cpu tail: a GPU host must fall through to the source build
+        # when every CUDA bundle fails the offload check, not silently install
+        # the CPU bundle (#5807). The pin + cuda12 are the only attempts.
         assert order == [
             ("b9360", "cuda13"),
             (self.TAG, "cuda12"),
-            (self.TAG, "windows-cpu"),
         ]
+        assert all(a.install_kind != "windows-cpu" for a in plan.attempts)
         assert plan.attempts[0].name == "llama-b9360-bin-win-cuda-13.1-x64.zip"
         # Direct/upstream path stays unverified-by-manifest (no approved hashes).
         assert plan.approved_checksums.artifacts == {}
@@ -2322,6 +2326,120 @@ class TestDirectUpstreamBlackwellPin:
         assert plan.attempts[0].tag == self.TAG
         assert plan.attempts[0].runtime_line == "cuda13"
         assert plan.attempts[0].name == f"llama-{self.TAG}-bin-win-cuda-13.3-x64.zip"
+
+
+# ===========================================================================
+# N.1c2. simple-policy plans: a GPU host never gets a CPU bundle appended
+# (#5807). All GPU bundles failing must raise PrebuiltFallback so setup builds
+# from source for the native arch, not silently install a CPU-only "GPU" build.
+# ===========================================================================
+
+
+class TestGpuHostNoSilentCpuFallback:
+    LTAG = "bTEST"
+
+    def _linux_release(self, *targets):
+        names = [f"app-{self.LTAG}-linux-x64-{t}.tar.gz" for t in targets]
+        return {
+            "tag_name": self.LTAG,
+            "assets": [
+                {"name": n, "browser_download_url": "https://x/" + n} for n in names
+            ],
+        }
+
+    def _win_release(self):
+        names = [
+            "llama-b9999-bin-win-cuda-13.3-x64.zip",
+            "cudart-llama-bin-win-cuda-13.3-x64.zip",
+            "llama-b9999-bin-win-cpu-x64.zip",
+        ]
+        return {
+            "tag_name": "b9999",
+            "assets": [
+                {"name": n, "browser_download_url": "https://x/" + n} for n in names
+            ],
+        }
+
+    def _no_torch(self, monkeypatch):
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT,
+            "detect_torch_cuda_runtime_preference",
+            lambda host: CudaRuntimePreference(runtime_line = None, selection_log = []),
+        )
+
+    # -- Linux --------------------------------------------------------------
+
+    def test_linux_nvidia_host_has_no_cpu_attempt(self, monkeypatch):
+        mock_linux_runtime(monkeypatch, ["cuda13", "cuda12"])
+        self._no_torch(monkeypatch)
+        host = make_host(compute_caps = ["120"], driver_cuda_version = (13, 0))
+        plan = direct_linux_release_plan(
+            self._linux_release("cuda13-newer", "cpu"), host, "unslothai/llama.cpp", "latest"
+        )
+        kinds = [a.install_kind for a in plan.attempts]
+        assert "linux-cuda" in kinds
+        assert "linux-cpu" not in kinds
+
+    def test_linux_nvidia_unmatched_arch_raises_no_cpu(self, monkeypatch):
+        # GPU present but no CUDA bundle covers the arch: must raise (-> source
+        # build), not fall to the CPU bundle.
+        mock_linux_runtime(monkeypatch, ["cuda13", "cuda12"])
+        self._no_torch(monkeypatch)
+        host = make_host(compute_caps = ["50"], driver_cuda_version = (13, 0))
+        with pytest.raises(PrebuiltFallback):
+            direct_linux_release_plan(
+                self._linux_release("cuda13-newer", "cpu"),
+                host,
+                "unslothai/llama.cpp",
+                "latest",
+            )
+
+    def test_linux_cpu_host_keeps_cpu_attempt(self, monkeypatch):
+        mock_linux_runtime(monkeypatch, [])
+        host = make_host(
+            has_usable_nvidia = False,
+            has_physical_nvidia = False,
+            nvidia_smi = None,
+            compute_caps = [],
+        )
+        plan = direct_linux_release_plan(
+            self._linux_release("cuda13-newer", "cpu"), host, "unslothai/llama.cpp", "latest"
+        )
+        assert [a.install_kind for a in plan.attempts] == ["linux-cpu"]
+
+    # -- Windows ------------------------------------------------------------
+
+    def test_windows_nvidia_host_has_no_cpu_attempt(self, monkeypatch):
+        mock_windows_runtime(monkeypatch, ["cuda13"])
+        self._no_torch(monkeypatch)
+        host = make_host(
+            system = "Windows",
+            machine = "AMD64",
+            driver_cuda_version = (13, 3),
+            compute_caps = ["120"],
+        )
+        plan = direct_upstream_release_plan(
+            self._win_release(), host, UPSTREAM_REPO, "latest"
+        )
+        kinds = [a.install_kind for a in plan.attempts]
+        assert "windows-cuda" in kinds
+        assert "windows-cpu" not in kinds
+
+    def test_windows_cpu_host_keeps_cpu_attempt(self, monkeypatch):
+        mock_windows_runtime(monkeypatch, [])
+        host = make_host(
+            system = "Windows",
+            machine = "AMD64",
+            has_usable_nvidia = False,
+            has_physical_nvidia = False,
+            nvidia_smi = None,
+            driver_cuda_version = None,
+            compute_caps = [],
+        )
+        plan = direct_upstream_release_plan(
+            self._win_release(), host, UPSTREAM_REPO, "latest"
+        )
+        assert [a.install_kind for a in plan.attempts] == ["windows-cpu"]
 
 
 # ===========================================================================
