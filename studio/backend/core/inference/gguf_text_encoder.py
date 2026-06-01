@@ -19,14 +19,17 @@ implement Pixtral image inputs or prompt upsampling generation.
 
 from __future__ import annotations
 
+from collections import OrderedDict
 import copy
 from dataclasses import dataclass
 import os
 from pathlib import Path
 from typing import Any
 import re
+import sys
 import warnings
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -227,8 +230,129 @@ def _module_and_leaf(root: nn.Module, name: str) -> tuple[nn.Module, str]:
     return module, parts[-1]
 
 
-def _open_gguf_reader(path: Path) -> Any:
+def _skip_gguf_field_value(reader: Any, offset: int, raw_type: int, gguf: Any) -> int:
+    """Return encoded GGUF field-value size without materializing arrays."""
+
+    gtype = gguf.GGUFValueType(raw_type)
+    if gtype == gguf.GGUFValueType.STRING:
+        slen = reader._get(offset, np.uint64)
+        return int(slen.nbytes + int(slen[0]))
+
+    nptype = reader.gguf_scalar_to_np.get(gtype)
+    if nptype is not None:
+        return int(np.empty([], dtype = nptype).itemsize)
+
+    if gtype != gguf.GGUFValueType.ARRAY:
+        raise ValueError(f"Unknown/unhandled GGUF field type {gtype}")
+
+    raw_itype = reader._get(offset, np.uint32)
+    offs = offset + int(raw_itype.nbytes)
+    alen = reader._get(offs, np.uint64)
+    offs += int(alen.nbytes)
+    item_type = gguf.GGUFValueType(int(raw_itype[0]))
+    item_nptype = reader.gguf_scalar_to_np.get(item_type)
+    if item_nptype is not None:
+        return offs - offset + int(np.empty([], dtype = item_nptype).itemsize) * int(alen[0])
+    for _ in range(int(alen[0])):
+        offs += _skip_gguf_field_value(reader, offs, int(raw_itype[0]), gguf)
+    return offs - offset
+
+
+def _open_tensor_only_gguf_reader(path: Path, gguf: Any) -> Any:
+    """Open GGUF tensors while skipping large unused metadata arrays."""
+
+    reader = gguf.GGUFReader.__new__(gguf.GGUFReader)
+    reader.data = np.memmap(path, mode = "r")
+    offs = 0
+
+    if reader._get(offs, np.uint32, override_order = "<")[0] != gguf.GGUF_MAGIC:
+        raise ValueError("GGUF magic invalid")
+    offs += 4
+
+    temp_version = reader._get(offs, np.uint32)
+    if temp_version[0] & 65535 == 0:
+        reader.byte_order = "S"
+        temp_version = temp_version.view(temp_version.dtype.newbyteorder(reader.byte_order))
+    version = temp_version[0]
+    if version not in gguf.READER_SUPPORTED_VERSIONS:
+        raise ValueError(f"Sorry, file appears to be version {version} which we cannot handle")
+    if sys.byteorder == "little":
+        host_endian = gguf.GGUFEndian.LITTLE
+        swapped_endian = gguf.GGUFEndian.BIG
+    else:
+        host_endian = gguf.GGUFEndian.BIG
+        swapped_endian = gguf.GGUFEndian.LITTLE
+    reader.endianess = swapped_endian if reader.byte_order == "S" else host_endian
+    reader.fields = OrderedDict()
+    reader.tensors = []
+    offs += reader._push_field(
+        gguf.ReaderField(offs, "GGUF.version", [temp_version], [0], [gguf.GGUFValueType.UINT32])
+    )
+
+    temp_counts = reader._get(offs, np.uint64, 2)
+    offs += reader._push_field(
+        gguf.ReaderField(offs, "GGUF.tensor_count", [temp_counts[:1]], [0], [gguf.GGUFValueType.UINT64])
+    )
+    offs += reader._push_field(
+        gguf.ReaderField(offs, "GGUF.kv_count", [temp_counts[1:]], [0], [gguf.GGUFValueType.UINT64])
+    )
+    tensor_count, kv_count = temp_counts
+
+    retained_prefixes = ("comfy.gguf.orig_shape.",)
+    retained_names = {"general.alignment", "general.architecture", "general.type"}
+    for _ in range(int(kv_count)):
+        orig_offs = offs
+        kv_klen, kv_kdata = reader._get_str(offs)
+        offs += int(kv_klen.nbytes + kv_kdata.nbytes)
+        raw_kv_type = reader._get(offs, np.uint32)
+        offs += int(raw_kv_type.nbytes)
+        key = str(bytes(kv_kdata), encoding = "utf-8")
+        keep = key in retained_names or key.startswith(retained_prefixes)
+        if keep:
+            parts: list[Any] = [kv_klen, kv_kdata, raw_kv_type]
+            idxs_offs = len(parts)
+            field_size, field_parts, field_idxs, field_types = reader._get_field_parts(
+                offs,
+                int(raw_kv_type[0]),
+            )
+            parts += field_parts
+            reader._push_field(
+                gguf.ReaderField(
+                    orig_offs,
+                    key,
+                    parts,
+                    [idx + idxs_offs for idx in field_idxs],
+                    field_types,
+                ),
+                skip_sum = True,
+            )
+        else:
+            field_size = _skip_gguf_field_value(reader, offs, int(raw_kv_type[0]), gguf)
+        offs += field_size
+
+    offs, tensor_fields = reader._build_tensor_info(offs, int(tensor_count))
+    new_align = reader.fields.get("general.alignment")
+    if new_align is not None:
+        if new_align.types != [gguf.GGUFValueType.UINT32]:
+            raise ValueError("Bad type for general.alignment field")
+        reader.alignment = new_align.parts[-1][0]
+        if reader.alignment == 0 or (reader.alignment & (reader.alignment - 1)) != 0:
+            raise ValueError("Invalid alignment: must be a non-zero power of two")
+    padding = offs % reader.alignment
+    if padding != 0:
+        offs += reader.alignment - padding
+    reader.data_offset = offs
+    reader._build_tensors(offs, tensor_fields)
+    return reader
+
+
+def _open_gguf_reader(path: Path, *, tensors_only: bool = False) -> Any:
     gguf = _require_gguf()
+    if tensors_only:
+        try:
+            return _open_tensor_only_gguf_reader(path, gguf)
+        except Exception:
+            pass
     return gguf.GGUFReader(str(path))
 
 
@@ -2063,7 +2187,10 @@ def replace_mapped_text_modules_with_lazy_gguf(
     """
 
     gguf = _require_gguf()
-    reader = _open_gguf_reader(Path(gguf_path))
+    try:
+        reader = _open_gguf_reader(Path(gguf_path), tensors_only = True)
+    except TypeError:
+        reader = _open_gguf_reader(Path(gguf_path))
     expected = set(root.state_dict().keys())
     mapped: dict[str, tuple[Any, _GGUFNameTarget]] = {}
     for tensor in reader.tensors:

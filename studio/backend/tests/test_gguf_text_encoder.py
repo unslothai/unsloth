@@ -879,6 +879,40 @@ def test_dequantize_unsloth_ud_iq_fallback_types_use_native_gguf(
     assert torch.isfinite(decoded).all()
 
 
+def test_replace_mapped_text_modules_uses_tensor_only_reader(monkeypatch):
+    import core.inference.gguf_text_encoder as g
+
+    class _FakeQuantTypes:
+        F32 = "F32"
+        F16 = "F16"
+        BF16 = "BF16"
+
+    class _FakeGGUF:
+        GGMLQuantizationType = _FakeQuantTypes
+
+    reader = SimpleNamespace(tensors = [])
+    calls = []
+
+    def fake_open(path, *, tensors_only = False):
+        calls.append((path, tensors_only))
+        return reader
+
+    monkeypatch.setattr(g, "_require_gguf", lambda: _FakeGGUF)
+    monkeypatch.setattr(g, "_open_gguf_reader", fake_open)
+
+    got_reader, stats = g.replace_mapped_text_modules_with_lazy_gguf(
+        nn.Module(),
+        "text.gguf",
+        map_name = lambda name: g._GGUFNameTarget(name),
+        compute_dtype = torch.bfloat16,
+        resident_device = "cpu",
+    )
+
+    assert got_reader is reader
+    assert calls == [(Path("text.gguf"), True)]
+    assert stats.loaded == 0
+
+
 def test_replace_mapped_text_modules_materializes_dense_standalone_bias(
     monkeypatch,
     tmp_path,
