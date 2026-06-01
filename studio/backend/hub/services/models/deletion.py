@@ -81,7 +81,9 @@ def _path_exists_or_symlink(path: Path) -> bool:
         return False
 
 
-def _repo_file_matches(target_repo, predicate) -> list[tuple[Path, Optional[Path], str]]:
+def _repo_file_matches(
+    target_repo, predicate
+) -> list[tuple[Path, Optional[Path], str]]:
     matches: list[tuple[Path, Optional[Path], str]] = []
     for rev in getattr(target_repo, "revisions", ()):
         for f in getattr(rev, "files", ()):
@@ -275,17 +277,25 @@ def _llama_cpp_blocks_delete(repo_id: str, variant: Optional[str]) -> bool:
 
         backend = get_llama_cpp_backend()
     except Exception as e:
-        logger.debug(f"llama.cpp backend unavailable during delete guard for {repo_id}: {e}")
+        logger.debug(
+            f"llama.cpp backend unavailable during delete guard for {repo_id}: {e}"
+        )
         return False
     loaded_id = backend.model_identifier
     loaded_variant = getattr(backend, "hf_variant", None)
     if backend.is_active and not backend.is_loaded and loaded_id:
         return _loaded_repo_variant_blocks_delete(
-            loaded_id, repo_id, variant, loaded_variant,
+            loaded_id,
+            repo_id,
+            variant,
+            loaded_variant,
         )
     if backend.is_loaded and loaded_id:
         return _loaded_repo_variant_blocks_delete(
-            loaded_id, repo_id, variant, loaded_variant,
+            loaded_id,
+            repo_id,
+            variant,
+            loaded_variant,
         )
     return False
 
@@ -300,13 +310,17 @@ def _inference_backend_blocks_delete(repo_id: str) -> bool:
 
         backend = get_inference_backend()
     except Exception as e:
-        logger.debug(f"Inference backend unavailable during delete guard for {repo_id}: {e}")
+        logger.debug(
+            f"Inference backend unavailable during delete guard for {repo_id}: {e}"
+        )
         return False
     active_name = backend.active_model_name
     return bool(active_name) and _loaded_id_matches_repo(active_name, repo_id)
 
 
-async def delete_cached_model_response(repo_id: str, variant: Optional[str] = None, hf_token: Optional[str] = None):
+async def delete_cached_model_response(
+    repo_id: str, variant: Optional[str] = None, hf_token: Optional[str] = None
+):
     """Delete a cached model repo (or a specific GGUF variant) from the HF cache.
 
     When *variant* is provided, only the GGUF files matching that quant label
@@ -397,10 +411,9 @@ def _delete_cached_model_blocking(
 
         if not target_entries:
             if variant is None:
-                cache_purged = (
-                    purge_repo_cache_dirs("model", repo_id)
-                    or purge_partial_repo("model", repo_id)
-                )
+                cache_purged = purge_repo_cache_dirs(
+                    "model", repo_id
+                ) or purge_partial_repo("model", repo_id)
                 state_purged = (
                     download_manifest.purge_all_state_for_repo("model", repo_id) > 0
                 )
@@ -425,7 +438,9 @@ def _delete_cached_model_blocking(
                         ),
                     )
                 state_purged = download_manifest.purge_state(
-                    "model", repo_id, variant,
+                    "model",
+                    repo_id,
+                    variant,
                 )
                 if incomplete_result.deleted > 0 or state_purged:
                     return {

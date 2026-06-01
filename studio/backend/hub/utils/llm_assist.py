@@ -61,7 +61,9 @@ def _parse_json_response(text: str) -> Optional[dict[str, Any]]:
     return parsed if isinstance(parsed, dict) else None
 
 
-def _generate_with_backend(backend, messages: list[dict[str, str]], max_tokens: int) -> str:
+def _generate_with_backend(
+    backend, messages: list[dict[str, str]], max_tokens: int
+) -> str:
     cumulative = ""
     for chunk in backend.generate_chat_completion(
         messages = messages,
@@ -160,7 +162,9 @@ def _run_multi_pass_advisor(
         return None
 
     repo = os.environ.get("UNSLOTH_HELPER_MODEL_REPO", DEFAULT_HELPER_MODEL_REPO)
-    variant = os.environ.get("UNSLOTH_HELPER_MODEL_VARIANT", DEFAULT_HELPER_MODEL_VARIANT)
+    variant = os.environ.get(
+        "UNSLOTH_HELPER_MODEL_VARIANT", DEFAULT_HELPER_MODEL_VARIANT
+    )
     backend = None
     try:
         from core.inference.llama_cpp import LlamaCppBackend
@@ -317,7 +321,10 @@ def _run_multi_pass_advisor(
             for col, role in column_roles.items()
             if col in columns and role in {"user", "assistant", "system"}
         }
-        if "user" not in suggested_mapping.values() or "assistant" not in suggested_mapping.values():
+        if (
+            "user" not in suggested_mapping.values()
+            or "assistant" not in suggested_mapping.values()
+        ):
             return None
 
         dtype = str(pass1.get("dataset_type") or "other")

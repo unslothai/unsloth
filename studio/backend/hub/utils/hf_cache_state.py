@@ -74,11 +74,7 @@ def resolve_destructive_case_matches(
     exact = {candidate for candidate in values if candidate == target}
     if exact:
         return exact
-    folded = {
-        candidate
-        for candidate in values
-        if candidate.lower() == target.lower()
-    }
+    folded = {candidate for candidate in values if candidate.lower() == target.lower()}
     if len(folded) <= 1:
         return folded
     return None
@@ -118,7 +114,7 @@ def _windows_allocated_size(path: Path) -> Optional[int]:
         import ctypes
         from ctypes import wintypes
 
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)
         get_compressed_file_size = kernel32.GetCompressedFileSizeW
         get_compressed_file_size.argtypes = [
             wintypes.LPCWSTR,
@@ -185,8 +181,7 @@ def iter_destructive_repo_cache_dirs(repo_type: str, repo_id: str) -> Iterator[P
     for root in hf_cache_roots():
         try:
             entries = [
-                entry for entry in root.iterdir()
-                if entry.name.lower() == folded_target
+                entry for entry in root.iterdir() if entry.name.lower() == folded_target
             ]
         except OSError:
             continue

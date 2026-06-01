@@ -12,7 +12,11 @@ from pathlib import Path
 
 from fastapi import HTTPException, UploadFile
 
-from hub.schemas.datasets import LocalDatasetItem, LocalDatasetsResponse, UploadDatasetResponse
+from hub.schemas.datasets import (
+    LocalDatasetItem,
+    LocalDatasetsResponse,
+    UploadDatasetResponse,
+)
 from hub.utils.paths import dataset_uploads_root, ensure_dir, recipe_datasets_root
 
 # Recognized data-file extensions for the single-file fallback approach.
@@ -282,6 +286,7 @@ def _load_local_preview_slice(
         status_code = 400, detail = f"Unsupported file format: {dataset_path.suffix}"
     )
 
+
 def _sanitize_filename(filename: str) -> str:
     name = Path(filename).name.strip().replace("\x00", "")
     if not name:
@@ -335,6 +340,7 @@ async def upload_dataset_response(file: UploadFile) -> UploadDatasetResponse:
         raise HTTPException(status_code = 400, detail = "Empty upload payload")
 
     return UploadDatasetResponse(filename = filename, stored_path = str(stored_path))
+
 
 def list_local_datasets_response() -> LocalDatasetsResponse:
     return LocalDatasetsResponse(datasets = _build_local_dataset_items())

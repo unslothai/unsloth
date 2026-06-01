@@ -79,7 +79,8 @@ def preferred_mmproj_sibling(siblings: Sequence) -> Optional[object]:
         return None
     return next(
         (
-            s for s in candidates
+            s
+            for s in candidates
             if extract_quant_label(getattr(s, "rfilename")).upper() == "F16"
         ),
         candidates[0],
@@ -90,7 +91,8 @@ def build_gguf_variant_plans(siblings: Sequence) -> dict[str, GgufVariantPlan]:
     main: dict[str, list] = {}
     all_mmproj = mmproj_siblings(siblings)
     all_mmproj_filenames = frozenset(
-        getattr(s, "rfilename") for s in all_mmproj
+        getattr(s, "rfilename")
+        for s in all_mmproj
         if isinstance(getattr(s, "rfilename", None), str)
     )
     all_mmproj_hashes = frozenset(
@@ -113,7 +115,8 @@ def build_gguf_variant_plans(siblings: Sequence) -> dict[str, GgufVariantPlan]:
     plans: dict[str, GgufVariantPlan] = {}
     for quant, target_main_siblings in main.items():
         main_expected = tuple(
-            file for sibling in target_main_siblings
+            file
+            for sibling in target_main_siblings
             if (file := expected_file_from_sibling(sibling)) is not None
         )
         expected_files = (
@@ -139,17 +142,13 @@ def plan_from_expected_files(
 ) -> GgufVariantPlan:
     expected = tuple(expected_files)
     main_files = tuple(
-        file for file in expected
-        if is_main_gguf_variant_path(file.path, variant)
+        file for file in expected if is_main_gguf_variant_path(file.path, variant)
     )
     companion_files = tuple(
-        file for file in expected
-        if is_companion_gguf_path(file.path)
+        file for file in expected if is_companion_gguf_path(file.path)
     )
     main_hashes = frozenset(file.sha256 for file in main_files if file.sha256)
-    companion_hashes = frozenset(
-        file.sha256 for file in companion_files if file.sha256
-    )
+    companion_hashes = frozenset(file.sha256 for file in companion_files if file.sha256)
     required_hashes = frozenset(file.sha256 for file in expected if file.sha256)
     main_size = sum(max(0, int(file.size or 0)) for file in main_files)
     download_size = sum(max(0, int(file.size or 0)) for file in expected)
@@ -165,9 +164,7 @@ def plan_from_expected_files(
             else frozenset(file.path for file in companion_files)
         ),
         mmproj_hashes = (
-            all_mmproj_hashes
-            if all_mmproj_hashes is not None
-            else companion_hashes
+            all_mmproj_hashes if all_mmproj_hashes is not None else companion_hashes
         ),
         expected_files = expected,
         main_size_bytes = main_size,

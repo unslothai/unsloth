@@ -143,6 +143,7 @@ def _serialize_preview_rows(rows):
         for row in rows
     ]
 
+
 def _latest_cached_dataset_snapshot(
     repo_id: str,
     local_path: Optional[str] = None,
@@ -174,11 +175,7 @@ _SPLIT_ALIASES = {
 
 
 def _repo_file_label_tokens(path: str) -> set[str]:
-    return {
-        token
-        for token in re.split(r"[^a-z0-9]+", path.lower())
-        if token
-    }
+    return {token for token in re.split(r"[^a-z0-9]+", path.lower()) if token}
 
 
 def _repo_file_matches_label(path: str, label: str) -> bool:
@@ -204,20 +201,14 @@ def _select_tier1_repo_file(
     if not data_files:
         return None
     tabular_files = [
-        f
-        for f in data_files
-        if any(f.lower().endswith(ext) for ext in _TABULAR_EXTS)
+        f for f in data_files if any(f.lower().endswith(ext) for ext in _TABULAR_EXTS)
     ]
     candidates = tabular_files or data_files
     if subset:
-        candidates = [
-            f for f in candidates if _repo_file_matches_label(f, subset)
-        ]
+        candidates = [f for f in candidates if _repo_file_matches_label(f, subset)]
         if not candidates:
             return None
-    candidates = [
-        f for f in candidates if _repo_file_matches_split(f, train_split)
-    ]
+    candidates = [f for f in candidates if _repo_file_matches_split(f, train_split)]
     return candidates[0] if candidates else None
 
 
@@ -295,7 +286,10 @@ def _load_any_cached_hf_preview_slice(
         )
         return None
 
-def check_format_response(request: CheckFormatRequest, hf_token: Optional[str] = None) -> CheckFormatResponse:
+
+def check_format_response(
+    request: CheckFormatRequest, hf_token: Optional[str] = None
+) -> CheckFormatResponse:
     """
     Check if a dataset requires manual column mapping.
 
@@ -494,7 +488,10 @@ def check_format_response(request: CheckFormatRequest, hf_token: Optional[str] =
             + download_registry.scrub_secrets(str(e), hf_token = hf_token),
         )
 
-def ai_assist_mapping_response(request: AiAssistMappingRequest, hf_token: Optional[str] = None) -> AiAssistMappingResponse:
+
+def ai_assist_mapping_response(
+    request: AiAssistMappingRequest, hf_token: Optional[str] = None
+) -> AiAssistMappingResponse:
     """
     Run LLM-assisted dataset conversion advisor (user-triggered).
 

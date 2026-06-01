@@ -325,7 +325,9 @@ def _preflight_disk_space(
         if total_expected <= 0:
             return
         already_have = existing_blob_bytes(
-            repo_type, repo_id, frozenset(size_by_hash),
+            repo_type,
+            repo_id,
+            frozenset(size_by_hash),
         )
         remaining = max(0, total_expected - already_have)
         if remaining <= 0:
@@ -355,9 +357,7 @@ def _snapshot_download_plan(info) -> tuple[list[str], list]:
         snapshot_download_siblings,
     )
 
-    filenames = [
-        s.rfilename for s in info.siblings if isinstance(s.rfilename, str)
-    ]
+    filenames = [s.rfilename for s in info.siblings if isinstance(s.rfilename, str)]
     filtered = snapshot_download_siblings(info.siblings)
     expected_files = [
         ExpectedFile(
@@ -423,7 +423,11 @@ def _recover_manifest_after_download(
         Path(snapshot_path)
     )
     if fallback_files and download_manifest.write_manifest(
-        repo_type, repo_id, None, fallback_files, mode,
+        repo_type,
+        repo_id,
+        None,
+        fallback_files,
+        mode,
     ):
         print(
             f"{label}could not record the metadata manifest for {repo_id}, "
@@ -497,7 +501,9 @@ def _download_snapshot(repo_id: str, hf_token: str | None, mode: str) -> None:
             snapshot_path,
             mode,
             fetch_info = lambda: _model_info_with_retry(
-                repo_id, hf_token, files_metadata = True,
+                repo_id,
+                hf_token,
+                files_metadata = True,
             ),
             expected_files_from_info = lambda recovered: _snapshot_download_plan(
                 recovered
@@ -556,7 +562,11 @@ def _download_gguf_variant(
         main_blob_hashes = plan.main_hashes
         companion_blob_hashes = plan.companion_hashes
         download_manifest.write_manifest(
-            "model", repo_id, variant, expected_files, mode,
+            "model",
+            repo_id,
+            variant,
+            expected_files,
+            mode,
         )
     else:
         # Metadata unreachable (offline / gated / private). Resume the exact
@@ -574,7 +584,11 @@ def _download_gguf_variant(
         targets = list(plan.target_filenames)
         expected_files = list(plan.expected_files)
         download_manifest.write_manifest(
-            "model", repo_id, variant, expected_files, mode,
+            "model",
+            repo_id,
+            variant,
+            expected_files,
+            mode,
         )
         main_blob_hashes = plan.main_hashes
         companion_blob_hashes = plan.companion_hashes
@@ -680,7 +694,9 @@ def _download_dataset(repo_id: str, hf_token: str | None, mode: str) -> None:
             snapshot_path,
             mode,
             fetch_info = lambda: _dataset_info_with_retry(
-                repo_id, hf_token, files_metadata = True,
+                repo_id,
+                hf_token,
+                files_metadata = True,
             ),
             expected_files_from_info = _dataset_expected_files,
             label = "dataset ",

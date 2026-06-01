@@ -36,13 +36,14 @@ class GgufVariantDetail(BaseModel):
         False, description = "Whether this variant is already in the local HF cache"
     )
     partial: bool = Field(
-        False, description = "Whether this variant has an in-progress (.incomplete) blob in cache"
+        False,
+        description = "Whether this variant has an in-progress (.incomplete) blob in cache",
     )
     partial_transport: Optional[str] = Field(
         None,
         description = (
-            "Transport recorded for the partial state (\"http\" or "
-            "\"xet\"), or null if not partial / unknown. Frontend uses "
+            'Transport recorded for the partial state ("http" or '
+            '"xet"), or null if not partial / unknown. Frontend uses '
             "this to pick Resume (http) vs Redownload (xet) labels."
         ),
     )
@@ -130,8 +131,8 @@ class LocalModelInfo(BaseModel):
     partial_transport: Optional[str] = Field(
         None,
         description = (
-            "Transport recorded for the partial state (\"http\" or "
-            "\"xet\"), or null if not partial / unknown."
+            'Transport recorded for the partial state ("http" or '
+            '"xet"), or null if not partial / unknown.'
         ),
     )
 
@@ -173,9 +174,7 @@ class CachedRepoBase(BaseModel):
     model_format: ModelFormat = "unknown"
     runtime: ModelRuntime = "unknown"
     format_variant: Optional[str] = None
-    capabilities: LocalModelCapabilities = Field(
-        default_factory = LocalModelCapabilities
-    )
+    capabilities: LocalModelCapabilities = Field(default_factory = LocalModelCapabilities)
 
 
 class CachedGgufRepo(CachedRepoBase):

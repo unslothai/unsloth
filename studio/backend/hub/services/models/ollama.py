@@ -102,6 +102,7 @@ def _ollama_links_dir(ollama_dir: Path) -> Optional[Path]:
     again to the process temp dir when Studio's cache path exists but the
     current runtime cannot create children there (sandboxed/dev installs).
     """
+
     def _ensure_writable_dir(path: Path) -> Optional[Path]:
         try:
             path.mkdir(parents = True, exist_ok = True)
@@ -260,7 +261,9 @@ def _ollama_model_info_from_manifest(
                 model_type = cfg.get("model_type", "")
                 file_type = cfg.get("file_type", "")
             except (json.JSONDecodeError, OSError) as e:
-                logger.debug("Could not parse Ollama config blob %s: %s", config_blob, e)
+                logger.debug(
+                    "Could not parse Ollama config blob %s: %s", config_blob, e
+                )
 
     layers = manifest.get("layers") or []
     if not isinstance(layers, list):
@@ -433,7 +436,7 @@ def materialize_ollama_model_ref(ref: str) -> str:
     if not ref.startswith(_OLLAMA_MANIFEST_REF_PREFIX):
         raise ValueError("Not an Ollama manifest reference")
 
-    tag_file = Path(unquote(ref[len(_OLLAMA_MANIFEST_REF_PREFIX):]))
+    tag_file = Path(unquote(ref[len(_OLLAMA_MANIFEST_REF_PREFIX) :]))
 
     ollama_dir = _ollama_dir_for_manifest(tag_file)
     if ollama_dir is None:

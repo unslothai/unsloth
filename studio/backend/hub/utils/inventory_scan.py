@@ -147,6 +147,8 @@ def _compute_all_hf_cache_scans() -> list:
             except Exception as exc:
                 logger.warning("Could not scan HF cache %s: %s", extra, exc)
     return scans
+
+
 def token_fingerprint(hf_token: Optional[str]) -> str:
     """16-char SHA256 prefix used as a cache-key qualifier for gated repos.
 
@@ -500,11 +502,13 @@ def is_gguf_repo_partial(
     variants: set[str] = set(_completed_gguf_variants(snapshot_dir))
     if state_applies:
         for variant, _path in download_manifest.iter_variant_manifests(
-            "model", repo_id,
+            "model",
+            repo_id,
         ):
             variants.add(variant)
         for variant, _path in download_manifest.iter_variant_markers(
-            "model", repo_id,
+            "model",
+            repo_id,
         ):
             variants.add(variant)
     if not variants:
@@ -543,7 +547,9 @@ def partial_transport_for(
     if not _state_applies_to_repo_cache_dir(repo_cache_dir):
         return None
     marker_transport = download_manifest.read_cancel_marker_transport(
-        repo_type, repo_id, variant,
+        repo_type,
+        repo_id,
+        variant,
     )
     if marker_transport is not None:
         return marker_transport

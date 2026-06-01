@@ -69,6 +69,7 @@ def get_recommended_folders_response() -> dict:
 
     return {"folders": folders}
 
+
 # Heuristic ceiling on how many children to stat when checking whether a
 # directory "looks like" it contains models. Keeps the browser snappy
 # even when a directory has thousands of unrelated entries.
@@ -423,7 +424,10 @@ def _resolve_browse_target(path: Optional[str], allowed_roots: list[Path]) -> Pa
         ),
     )
 
-def browse_folders_response(path: Optional[str] = None, show_hidden: bool = False) -> BrowseFoldersResponse:
+
+def browse_folders_response(
+    path: Optional[str] = None, show_hidden: bool = False
+) -> BrowseFoldersResponse:
     """
     List immediate subdirectories of *path* for the Custom Folders picker.
 

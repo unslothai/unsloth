@@ -18,7 +18,11 @@ from fastapi import HTTPException
 from loggers import get_logger
 
 from hub.schemas.inventory import LocalModelInfo, LocalModelListResponse, ModelFormat
-from hub.storage.scan_folders import add_scan_folder, list_scan_folders, remove_scan_folder
+from hub.storage.scan_folders import (
+    add_scan_folder,
+    list_scan_folders,
+    remove_scan_folder,
+)
 from hub.utils import inventory_scan as hf_cache_scan
 from hub.utils.paths import (
     hf_default_cache_dir,
@@ -156,9 +160,7 @@ def _scan_models_dir(
         try:
             is_dir = child.is_dir()
             is_gguf_file = (
-                not is_dir
-                and child.suffix.lower() == ".gguf"
-                and child.is_file()
+                not is_dir and child.suffix.lower() == ".gguf" and child.is_file()
             )
             if not is_dir and not is_gguf_file:
                 continue
@@ -198,7 +200,9 @@ def _hf_repo_dir_has_content(repo_dir: Path) -> bool:
     return False
 
 
-def _scan_hf_cache(cache_dir: Path, *, entry_limit: int | None = None) -> List[LocalModelInfo]:
+def _scan_hf_cache(
+    cache_dir: Path, *, entry_limit: int | None = None
+) -> List[LocalModelInfo]:
     if not cache_dir.exists() or not cache_dir.is_dir():
         return []
 
@@ -231,11 +235,13 @@ def _scan_hf_cache(cache_dir: Path, *, entry_limit: int | None = None) -> List[L
     found: list[LocalModelInfo] = []
     for repo_dir, model_id, updated_at in discovered:
         snapshot_partial = hf_cache_scan.is_snapshot_partial(
-            "model", model_id, repo_dir,
+            "model",
+            model_id,
+            repo_dir,
         )
         gguf_partial = hf_cache_scan.is_gguf_repo_partial(model_id, repo_dir)
-        has_gguf_variant_state, gguf_variant_state_size = (
-            _gguf_variant_state_summary(model_id)
+        has_gguf_variant_state, gguf_variant_state_size = _gguf_variant_state_summary(
+            model_id
         )
         snapshot_partial_transport = (
             hf_cache_scan.partial_transport_for(
@@ -243,7 +249,8 @@ def _scan_hf_cache(cache_dir: Path, *, entry_limit: int | None = None) -> List[L
                 model_id,
                 repo_cache_dir = repo_dir,
             )
-            if snapshot_partial else None
+            if snapshot_partial
+            else None
         )
         resolved = hf_cache_scan.resolve_hf_cache_realpath(repo_dir)
         scan_path = Path(resolved) if resolved else repo_dir
@@ -319,7 +326,9 @@ def _scan_hf_cache(cache_dir: Path, *, entry_limit: int | None = None) -> List[L
     return found
 
 
-def _scan_lmstudio_dir(lm_dir: Path, *, entry_limit: int | None = None) -> List[LocalModelInfo]:
+def _scan_lmstudio_dir(
+    lm_dir: Path, *, entry_limit: int | None = None
+) -> List[LocalModelInfo]:
     """Scan an LM Studio models directory for model files.
 
     LM Studio uses a ``publisher/model-name`` folder structure containing
@@ -533,7 +542,9 @@ async def _collect_models_from_default_sources(
         and hf_default.resolve() != hf_cache_dir.resolve()
         and hf_default.resolve() != legacy_hf.resolve()
     ):
-        local_models += await _scan_source("default HF cache", _scan_hf_cache, hf_default)
+        local_models += await _scan_source(
+            "default HF cache", _scan_hf_cache, hf_default
+        )
 
     for lm_dir in lm_dirs:
         local_models += await _scan_source("LM Studio", _scan_lmstudio_dir, lm_dir)
@@ -558,10 +569,7 @@ def _scan_custom_folder(folder_path: Path) -> List[LocalModelInfo]:
             + _scan_lmstudio_dir(folder_path, entry_limit = _MAX_CUSTOM_FOLDER_ENTRIES)
         )
         if m.model_format in supported_formats
-        if not any(
-            p in (".studio_links", "ollama_links")
-            for p in Path(m.path).parts
-        )
+        if not any(p in (".studio_links", "ollama_links") for p in Path(m.path).parts)
     ]
     return generic[:_MAX_MODELS_PER_CUSTOM_FOLDER]
 
@@ -638,7 +646,9 @@ def _dedupe_local_models(local_models: List[LocalModelInfo]) -> list[LocalModelI
     )
 
 
-async def list_local_models_response(models_dir: str = "./models") -> LocalModelListResponse:
+async def list_local_models_response(
+    models_dir: str = "./models",
+) -> LocalModelListResponse:
     """List local model candidates from every supported on-device source."""
     hf_cache_dir = _resolve_hf_cache_dir()
     legacy_hf = legacy_hf_cache_dir()

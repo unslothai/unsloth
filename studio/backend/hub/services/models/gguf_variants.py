@@ -68,7 +68,9 @@ class VariantIncompleteDeleteResult(NamedTuple):
 
 
 def _variant_hash_cache_key(
-    repo_id: str, variant: str, hf_token: Optional[str],
+    repo_id: str,
+    variant: str,
+    hf_token: Optional[str],
 ) -> tuple[str, str, str]:
     return (
         repo_id.lower(),
@@ -88,7 +90,8 @@ def _variant_blob_hash_cache_key(
 
 
 def _variant_repo_cache_key(
-    repo_id: str, hf_token: Optional[str],
+    repo_id: str,
+    hf_token: Optional[str],
 ) -> tuple[str, str]:
     return (repo_id.lower(), hf_cache_scan.token_fingerprint(hf_token))
 
@@ -253,8 +256,12 @@ def _manifest_variant_blob_hashes(
 
 
 def _gguf_variant_blob_hashes(
-    repo_id: str, variant: str, hf_token: Optional[str] = None,
-    *, include_companions: bool = True, allow_remote: bool = True,
+    repo_id: str,
+    variant: str,
+    hf_token: Optional[str] = None,
+    *,
+    include_companions: bool = True,
+    allow_remote: bool = True,
 ) -> frozenset[str]:
     key = _variant_blob_hash_cache_key(
         repo_id,
@@ -340,7 +347,13 @@ def delete_variant_incomplete_blobs_result(
     return VariantIncompleteDeleteResult(deleted = deleted, unresolved = False)
 
 
-async def get_gguf_variants_response(repo_id: str, prefer_local_cache: bool = False, offline: bool = False, local_path: Optional[str] = None, hf_token: Optional[str] = None):
+async def get_gguf_variants_response(
+    repo_id: str,
+    prefer_local_cache: bool = False,
+    offline: bool = False,
+    local_path: Optional[str] = None,
+    hf_token: Optional[str] = None,
+):
     """
     List available GGUF quantization variants for a HuggingFace repo
     or a local directory (e.g. LM Studio model folder).
@@ -396,7 +409,8 @@ async def get_gguf_variants_response(repo_id: str, prefer_local_cache: bool = Fa
                         downloaded = False,
                         partial = True,
                         partial_transport = _partial_transport_for_variant(
-                            response_repo_id, v.quant,
+                            response_repo_id,
+                            v.quant,
                         ),
                     )
                     for v in variants
@@ -484,9 +498,7 @@ async def get_gguf_variants_response(repo_id: str, prefer_local_cache: bool = Fa
                     )
                     if _is_mmproj_filename(f.name):
                         continue
-                    cached_bytes_by_quant[q] = (
-                        cached_bytes_by_quant.get(q, 0) + size
-                    )
+                    cached_bytes_by_quant[q] = cached_bytes_by_quant.get(q, 0) + size
 
         requirements_by_quant = {
             v.quant.lower(): _variant_requirement_cache_get(
@@ -529,7 +541,8 @@ async def get_gguf_variants_response(repo_id: str, prefer_local_cache: bool = Fa
                 # Allow small rounding tolerance (symlinks vs real sizes)
                 return cached >= variant.size_bytes * 0.99
             if not _filenames_cached(
-                requirement.main_filenames, requirement.main_size_bytes,
+                requirement.main_filenames,
+                requirement.main_size_bytes,
             ):
                 return False
             # Vision repos package an mmproj adapter alongside each variant.
@@ -548,9 +561,13 @@ async def get_gguf_variants_response(repo_id: str, prefer_local_cache: bool = Fa
         partial_quants: set[str] = set()
         partial_quant_transports: dict[str, Optional[str]] = {}
         try:
-            incomplete_hashes = download_registry.incomplete_blob_hashes("model", repo_id)
+            incomplete_hashes = download_registry.incomplete_blob_hashes(
+                "model", repo_id
+            )
         except Exception as e:
-            logger.warning(f"Failed to compute partial GGUF variants for {repo_id}: {e}")
+            logger.warning(
+                f"Failed to compute partial GGUF variants for {repo_id}: {e}"
+            )
             incomplete_hashes = set()
         # Manifest + marker + main incomplete-blob check: catches variants whose
         # download was cancelled or whose expected shards are missing/undersized.
@@ -574,8 +591,11 @@ async def get_gguf_variants_response(repo_id: str, prefer_local_cache: bool = Fa
                     variant_blob_hashes = variant_hashes,
                 ):
                     partial_quants.add(variant.quant)
-                    partial_quant_transports[variant.quant] = _partial_transport_for_variant(
-                        repo_id, variant.quant,
+                    partial_quant_transports[variant.quant] = (
+                        _partial_transport_for_variant(
+                            repo_id,
+                            variant.quant,
+                        )
                     )
             except Exception as e:
                 logger.warning(
@@ -587,12 +607,9 @@ async def get_gguf_variants_response(repo_id: str, prefer_local_cache: bool = Fa
                 requirement = requirements_by_quant.get(variant.quant.lower())
                 if requirement is None:
                     continue
-                if (
-                    requirement.mmproj_hashes & incomplete_hashes
-                    and _filenames_cached(
-                        requirement.main_filenames,
-                        requirement.main_size_bytes,
-                    )
+                if requirement.mmproj_hashes & incomplete_hashes and _filenames_cached(
+                    requirement.main_filenames,
+                    requirement.main_size_bytes,
                 ):
                     partial_quants.add(variant.quant)
                     partial_quant_transports.setdefault(

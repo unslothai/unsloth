@@ -35,9 +35,7 @@ from hub.utils.paths import is_valid_repo_id as _is_valid_repo_id
 logger = get_logger(__name__)
 
 # (repo_id, hf_token) -> (expected_total_bytes, expected_blob_hashes)
-SnapshotMetadataResolver = Callable[
-    [str, Optional[str]], "tuple[int, frozenset[str]]"
-]
+SnapshotMetadataResolver = Callable[[str, Optional[str]], "tuple[int, frozenset[str]]"]
 
 
 def _empty_progress(expected_bytes: int) -> dict:
@@ -61,11 +59,7 @@ def _snapshot_complete_on_disk(
     completed_bytes: int,
     in_progress_bytes: int,
 ) -> bool:
-    if (
-        expected_total <= 0
-        or completed_bytes < expected_total
-        or in_progress_bytes > 0
-    ):
+    if expected_total <= 0 or completed_bytes < expected_total or in_progress_bytes > 0:
         return False
     snapshot_dir = latest_snapshot_dir(entry)
     if snapshot_dir is None:
@@ -123,7 +117,9 @@ def compute_snapshot_progress(
 
     readings: list[tuple[int, int, Optional[str], bool]] = []
     for entry in preferred_repo_cache_dirs(
-        repo_type, repo_id, force_active = force_active,
+        repo_type,
+        repo_id,
+        force_active = force_active,
     ):
         completed_bytes = 0
         in_progress_bytes = 0

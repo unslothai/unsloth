@@ -18,14 +18,14 @@ class _BaseModel:
     def model_dump(self):
         return dict(self.__dict__)
 
-    def model_copy(self, update=None):
+    def model_copy(self, update = None):
         data = self.model_dump()
         if update:
             data.update(update)
         return self.__class__(**data)
 
 
-def _field(default=..., **kwargs):
+def _field(default = ..., **kwargs):
     if "default_factory" in kwargs:
         return kwargs["default_factory"]()
     return None if default is ... else default
@@ -39,7 +39,7 @@ def _model_validator(*args, **kwargs):
 
 
 class _HTTPException(Exception):
-    def __init__(self, status_code: int, detail=None):
+    def __init__(self, status_code: int, detail = None):
         super().__init__(detail)
         self.status_code = status_code
         self.detail = detail
@@ -56,7 +56,7 @@ class _APIRouter:
         return lambda fn: fn
 
 
-def _fastapi_marker(default=None, *args, **kwargs):
+def _fastapi_marker(default = None, *args, **kwargs):
     return default
 
 

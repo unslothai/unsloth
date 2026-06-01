@@ -54,9 +54,7 @@ class DownloadJobStatus(BaseModel):
         ...,
         description = "Current download job state.",
     )
-    error: Optional[str] = Field(
-        None, description = "Error message if state == 'error'"
-    )
+    error: Optional[str] = Field(None, description = "Error message if state == 'error'")
     generation: int = Field(
         0,
         description = "Current run generation; an adopting client stores it so a later cancel is scoped to this exact run.",

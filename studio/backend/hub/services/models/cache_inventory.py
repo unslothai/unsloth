@@ -19,7 +19,10 @@ from loggers import get_logger
 from hub.schemas.inventory import ModelFormat
 from hub.utils import inventory_scan as hf_cache_scan
 from hub.utils import download_registry
-from hub.utils.snapshot_filters import snapshot_download_blob_hashes, snapshot_download_size
+from hub.utils.snapshot_filters import (
+    snapshot_download_blob_hashes,
+    snapshot_download_size,
+)
 from hub.services.models.common import (
     _capabilities_for_format,
     _classify_non_gguf_model_format,
@@ -48,7 +51,8 @@ _repo_size_cache_lock = threading.Lock()
 
 
 def get_repo_snapshot_metadata_cached(
-    repo_id: str, hf_token: Optional[str] = None,
+    repo_id: str,
+    hf_token: Optional[str] = None,
 ) -> tuple[int, frozenset[str]]:
     token_fp = hf_cache_scan.token_fingerprint(hf_token)
     cache_key = (repo_id, token_fp)
@@ -61,10 +65,7 @@ def get_repo_snapshot_metadata_cached(
                 return total, blob_hashes
             del _repo_size_cache[cache_key]
         neg_ts = _repo_size_neg_cache.get(cache_key)
-        if (
-            neg_ts is not None
-            and (time.monotonic() - neg_ts) < _REPO_SIZE_NEG_TTL
-        ):
+        if neg_ts is not None and (time.monotonic() - neg_ts) < _REPO_SIZE_NEG_TTL:
             return 0, frozenset()
     try:
         from huggingface_hub import HfApi
@@ -186,8 +187,8 @@ def _scan_cached_gguf() -> list[dict]:
                     continue
                 repo_id = repo_info.repo_id
                 total_size = _repo_gguf_size_bytes(repo_info)
-                has_variant_state, variant_state_size = (
-                    _gguf_variant_state_summary(repo_id)
+                has_variant_state, variant_state_size = _gguf_variant_state_summary(
+                    repo_id
                 )
                 if total_size == 0 and not has_variant_state:
                     continue
@@ -301,15 +302,18 @@ def _repo_non_gguf_model_payload(repo_info) -> _CachedNonGgufPayload:
                 has_checkpoint = True
                 _record_blob(checkpoint_blobs, f, rev_id, file_name)
 
-    model_format = _classify_non_gguf_model_format(
-        has_config = has_config,
-        has_adapter_config = has_adapter_config,
-        has_adapter_weights = has_adapter_weights,
-        has_safetensors = has_safetensors,
-        has_transformers_safetensors = has_transformers_safetensors,
-        has_checkpoint_weights = has_checkpoint,
-        trusted_hf_cache_repo = True,
-    ) or "unknown"
+    model_format = (
+        _classify_non_gguf_model_format(
+            has_config = has_config,
+            has_adapter_config = has_adapter_config,
+            has_adapter_weights = has_adapter_weights,
+            has_safetensors = has_safetensors,
+            has_transformers_safetensors = has_transformers_safetensors,
+            has_checkpoint_weights = has_checkpoint,
+            trusted_hf_cache_repo = True,
+        )
+        or "unknown"
+    )
     if model_format == "adapter":
         size_bytes = sum(adapter_blobs.values())
     elif model_format == "safetensors":
@@ -392,9 +396,7 @@ def _cached_model_local_metadata(repo_path: Path) -> dict:
     tags = card.get("tags")
     if isinstance(tags, list):
         clean_tags = [
-            tag.strip()
-            for tag in tags
-            if isinstance(tag, str) and tag.strip()
+            tag.strip() for tag in tags if isinstance(tag, str) and tag.strip()
         ]
         if clean_tags:
             result["tags"] = clean_tags
@@ -431,7 +433,9 @@ def _scan_cached_models() -> list[dict]:
                 existing = seen_lower.get(key)
                 repo_path = Path(repo_info.repo_path)
                 snapshot_partial = hf_cache_scan.is_snapshot_partial(
-                    "model", repo_id, repo_path,
+                    "model",
+                    repo_id,
+                    repo_path,
                 )
                 row = {
                     "repo_id": repo_id,
@@ -444,7 +448,8 @@ def _scan_cached_models() -> list[dict]:
                             repo_id,
                             repo_cache_dir = repo_path,
                         )
-                        if snapshot_partial else None
+                        if snapshot_partial
+                        else None
                     ),
                     **_cached_model_local_metadata(repo_path),
                 }
@@ -464,7 +469,10 @@ def _scan_cached_models() -> list[dict]:
     cached = sorted(seen_lower.values(), key = lambda c: c["repo_id"])
     logger.info(
         "Cached model scan: inspected=%d skipped_gguf=%d skipped_no_weights=%d returned=%d",
-        inspected, skipped_gguf, skipped_no_weights, len(cached),
+        inspected,
+        skipped_gguf,
+        skipped_no_weights,
+        len(cached),
     )
     return cached
 

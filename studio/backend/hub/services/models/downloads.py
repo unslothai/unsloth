@@ -51,7 +51,11 @@ def _job_status(
     variant: Optional[str] = None,
 ) -> DownloadJobStatus:
     state, error, generation = download_lifecycle.idle_status(
-        _registry, key, repo_type = "model", repo_id = repo_id, variant = variant,
+        _registry,
+        key,
+        repo_type = "model",
+        repo_id = repo_id,
+        variant = variant,
     )
     return DownloadJobStatus(state = state, error = error, generation = generation)
 
@@ -74,7 +78,9 @@ def _spawn_download_worker(
     )
 
 
-async def download_model_response(body: DownloadModelRequest, hf_token: Optional[str] = None):
+async def download_model_response(
+    body: DownloadModelRequest, hf_token: Optional[str] = None
+):
     """Start a background download for a HuggingFace model."""
     repo_id = body.repo_id.strip()
     if not _is_valid_repo_id(repo_id):
@@ -194,7 +200,8 @@ async def cancel_download_model_response(body: CancelDownloadRequest):
     repo_id = body.repo_id.strip()
     if not _is_valid_repo_id(repo_id):
         raise HTTPException(
-            status_code = 400, detail = f"Invalid repo_id: {repo_id!r}",
+            status_code = 400,
+            detail = f"Invalid repo_id: {repo_id!r}",
         )
     repo_id = resolve_cached_repo_id_case(repo_id, repo_type = "model")
     variant = (body.gguf_variant or "").strip() or None
@@ -218,7 +225,9 @@ async def cancel_download_model_response(body: CancelDownloadRequest):
     return {"job_key": key, "state": state}
 
 
-async def get_download_status_response(repo_id: str, gguf_variant: str = "") -> DownloadJobStatus:
+async def get_download_status_response(
+    repo_id: str, gguf_variant: str = ""
+) -> DownloadJobStatus:
     """Return the latest state of a background download job."""
     repo_id = repo_id.strip()
     if not _is_valid_repo_id(repo_id):
@@ -235,13 +244,13 @@ async def get_active_downloads_response(repo_id: str = "") -> ActiveDownloadsRes
     if repo_id and not _is_valid_repo_id(repo_id):
         return ActiveDownloadsResponse(downloads = [])
     canonical_repo_id = (
-        resolve_cached_repo_id_case(repo_id, repo_type = "model")
-        if repo_id
-        else None
+        resolve_cached_repo_id_case(repo_id, repo_type = "model") if repo_id else None
     )
     return ActiveDownloadsResponse(
         downloads = download_lifecycle.active_download_refs(
-            _registry, canonical_repo_id, with_variant = True,
+            _registry,
+            canonical_repo_id,
+            with_variant = True,
         )
     )
 
@@ -323,12 +332,19 @@ async def get_model_transport_status_response(
         return _variant_transport_status(repo_id, variant, hf_token)
     return {
         "has_partial": has_active_incomplete_blobs("model", repo_id),
-        "last_transport": download_registry.read_active_transport_marker("model", repo_id),
+        "last_transport": download_registry.read_active_transport_marker(
+            "model", repo_id
+        ),
         "resumable": download_registry.is_resumable_partial("model", repo_id),
     }
 
 
-async def get_gguf_download_progress_response(repo_id: str, variant: str = "", expected_bytes: int = 0, hf_token: Optional[str] = None) -> dict:
+async def get_gguf_download_progress_response(
+    repo_id: str,
+    variant: str = "",
+    expected_bytes: int = 0,
+    hf_token: Optional[str] = None,
+) -> dict:
     """Return download progress for a specific GGUF variant."""
     expected_total = max(expected_bytes, 0)
     progress_variant = variant.strip() or None
@@ -364,9 +380,7 @@ async def get_gguf_download_progress_response(repo_id: str, variant: str = "", e
             return (
                 sum(max(0, int(file.size or 0)) for file in manifest.expected_files),
                 frozenset(
-                    file.sha256
-                    for file in manifest.expected_files
-                    if file.sha256
+                    file.sha256 for file in manifest.expected_files if file.sha256
                 ),
             )
         return (
@@ -392,7 +406,9 @@ async def get_gguf_download_progress_response(repo_id: str, variant: str = "", e
     )
 
 
-async def get_download_progress_response(repo_id: str, expected_bytes: int = 0, hf_token: Optional[str] = None) -> dict:
+async def get_download_progress_response(
+    repo_id: str, expected_bytes: int = 0, hf_token: Optional[str] = None
+) -> dict:
     """Return download progress for any HuggingFace model repo.
 
     Checks the local HF cache for completed blobs and in-progress
@@ -412,5 +428,6 @@ async def get_download_progress_response(repo_id: str, expected_bytes: int = 0, 
         metadata_resolver = cache_inventory.get_repo_snapshot_metadata_cached,
         use_metadata_total_max = True,
     )
+
 
 registry = _registry

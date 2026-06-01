@@ -36,9 +36,7 @@ from hub.utils.snapshot_filters import (
 
 logger = get_logger(__name__)
 
-_dataset_size_cache: "OrderedDict[str, tuple[int, frozenset[str], bool, str, float]]" = (
-    OrderedDict()
-)
+_dataset_size_cache: "OrderedDict[str, tuple[int, frozenset[str], bool, str, float]]" = OrderedDict()
 _dataset_size_neg_cache: "OrderedDict[tuple[str, str], float]" = OrderedDict()
 _DATASET_SIZE_CACHE_MAX = 256
 _DATASET_SIZE_POS_TTL = 60.0
@@ -54,7 +52,8 @@ def _download_job_key(repo_id: str) -> str:
 
 
 def get_dataset_snapshot_metadata_cached(
-    repo_id: str, hf_token: Optional[str] = None,
+    repo_id: str,
+    hf_token: Optional[str] = None,
 ) -> tuple[int, frozenset[str]]:
     """Raw snapshot size + expected blob hashes for a dataset repo.
 
@@ -102,7 +101,13 @@ def get_dataset_snapshot_metadata_cached(
                 _dataset_size_neg_cache.popitem(last = False)
         return 0, frozenset()
     with _dataset_size_cache_lock:
-        _dataset_size_cache[repo_id] = (total, hashes, restricted, token_fp, time.monotonic())
+        _dataset_size_cache[repo_id] = (
+            total,
+            hashes,
+            restricted,
+            token_fp,
+            time.monotonic(),
+        )
         _dataset_size_cache.move_to_end(repo_id)
         _dataset_size_neg_cache.pop(cache_key, None)
         while len(_dataset_size_cache) > _DATASET_SIZE_CACHE_MAX:
@@ -110,7 +115,9 @@ def get_dataset_snapshot_metadata_cached(
     return total, hashes
 
 
-async def get_dataset_download_progress_response(repo_id: str, expected_bytes: int = 0, hf_token: Optional[str] = None) -> dict:
+async def get_dataset_download_progress_response(
+    repo_id: str, expected_bytes: int = 0, hf_token: Optional[str] = None
+) -> dict:
     """Return download progress for a HuggingFace dataset repo.
 
     Mirrors ``GET /api/hub/download-progress`` but scans the
@@ -132,21 +139,29 @@ async def get_dataset_download_progress_response(repo_id: str, expected_bytes: i
     )
 
 
-def _dataset_status(key: str, *, repo_id: Optional[str] = None) -> DatasetDownloadJobStatus:
+def _dataset_status(
+    key: str, *, repo_id: Optional[str] = None
+) -> DatasetDownloadJobStatus:
     state, error, generation = download_lifecycle.idle_status(
-        _registry, key, repo_type = "dataset", repo_id = repo_id, variant = None,
+        _registry,
+        key,
+        repo_type = "dataset",
+        repo_id = repo_id,
+        variant = None,
     )
     return DatasetDownloadJobStatus(state = state, error = error, generation = generation)
 
 
-async def download_dataset_response(body: DownloadDatasetRequest, hf_token: Optional[str] = None) -> dict:
+async def download_dataset_response(
+    body: DownloadDatasetRequest, hf_token: Optional[str] = None
+) -> dict:
     """Start a background download for a HuggingFace dataset."""
     repo_id = body.repo_id.strip()
     if not _is_valid_repo_id(repo_id):
         raise HTTPException(
             status_code = 400,
             detail = f"Invalid repo_id: {repo_id!r}",
-    )
+        )
     # Canonicalize so two different-cased paste-ins share one job + cache dir.
     repo_id = resolve_cached_repo_id_case(repo_id, repo_type = "dataset")
     key = _download_job_key(repo_id)
@@ -202,8 +217,9 @@ async def cancel_dataset_download_response(body: CancelDatasetDownloadRequest) -
     repo_id = body.repo_id.strip()
     if not _is_valid_repo_id(repo_id):
         raise HTTPException(
-            status_code = 400, detail = f"Invalid repo_id: {repo_id!r}",
-    )
+            status_code = 400,
+            detail = f"Invalid repo_id: {repo_id!r}",
+        )
     repo_id = resolve_cached_repo_id_case(repo_id, repo_type = "dataset")
     key = _download_job_key(repo_id)
 
@@ -220,7 +236,9 @@ async def cancel_dataset_download_response(body: CancelDatasetDownloadRequest) -
     return {"repo_id": repo_id, "state": state}
 
 
-async def get_dataset_download_status_response(repo_id: str) -> DatasetDownloadJobStatus:
+async def get_dataset_download_status_response(
+    repo_id: str,
+) -> DatasetDownloadJobStatus:
     """Return the latest state of a background dataset download job."""
     repo_id = repo_id.strip()
     if not _is_valid_repo_id(repo_id):
@@ -229,18 +247,20 @@ async def get_dataset_download_status_response(repo_id: str) -> DatasetDownloadJ
     return _dataset_status(_download_job_key(repo_id), repo_id = repo_id)
 
 
-async def get_active_dataset_downloads_response(repo_id: str = "") -> ActiveDownloadsResponse:
+async def get_active_dataset_downloads_response(
+    repo_id: str = "",
+) -> ActiveDownloadsResponse:
     repo_id = repo_id.strip()
     if repo_id and not _is_valid_repo_id(repo_id):
         return ActiveDownloadsResponse(downloads = [])
     canonical_repo_id = (
-        resolve_cached_repo_id_case(repo_id, repo_type = "dataset")
-        if repo_id
-        else None
+        resolve_cached_repo_id_case(repo_id, repo_type = "dataset") if repo_id else None
     )
     return ActiveDownloadsResponse(
         downloads = download_lifecycle.active_download_refs(
-            _registry, canonical_repo_id, with_variant = False,
+            _registry,
+            canonical_repo_id,
+            with_variant = False,
         )
     )
 
@@ -258,8 +278,11 @@ async def get_dataset_transport_status_response(repo_id: str) -> dict:
         return {"has_partial": False, "last_transport": None, "resumable": False}
     return {
         "has_partial": has_active_incomplete_blobs("dataset", repo_id),
-        "last_transport": download_registry.read_active_transport_marker("dataset", repo_id),
+        "last_transport": download_registry.read_active_transport_marker(
+            "dataset", repo_id
+        ),
         "resumable": download_registry.is_resumable_partial("dataset", repo_id),
     }
+
 
 registry = _registry

@@ -92,7 +92,9 @@ def get_download_transport_capabilities() -> DownloadTransportCapabilities:
         http = DownloadTransportCapability(available = True),
         xet = DownloadTransportCapability(
             available = xet_available,
-            reason = None if xet_available else "Xet transport is unavailable because hf_xet is not installed.",
+            reason = None
+            if xet_available
+            else "Xet transport is unavailable because hf_xet is not installed.",
         ),
     )
 
@@ -380,24 +382,21 @@ def _manifest_has_active_incomplete_blobs(
     if not getattr(manifest, "variant", None):
         return has_active_incomplete_blobs(repo_type, repo_id)
     expected_hashes = frozenset(
-        expected.sha256
-        for expected in manifest.expected_files
-        if expected.sha256
+        expected.sha256 for expected in manifest.expected_files if expected.sha256
     )
     if not expected_hashes:
         return has_active_incomplete_blobs(repo_type, repo_id)
     return bool(
-        incomplete_blob_hashes(repo_type, repo_id, active_only = True)
-        .intersection(expected_hashes)
+        incomplete_blob_hashes(repo_type, repo_id, active_only = True).intersection(
+            expected_hashes
+        )
     )
 
 
 def _marker_path(entry: Path, variant: Optional[str] = None) -> Path:
     if not variant:
         return entry / TRANSPORT_MARKER_NAME
-    digest = hashlib.sha256(
-        variant.strip().lower().encode("utf-8")
-    ).hexdigest()[:24]
+    digest = hashlib.sha256(variant.strip().lower().encode("utf-8")).hexdigest()[:24]
     return entry / f"{TRANSPORT_MARKER_NAME}.gguf-{digest}"
 
 
@@ -558,7 +557,9 @@ def scrub_secrets(text: str, *, hf_token: Optional[str] = None) -> str:
 
 
 def purge_empty_marker_dir(
-    repo_type: str, repo_id: str, variant: Optional[str] = None,
+    repo_type: str,
+    repo_id: str,
+    variant: Optional[str] = None,
 ) -> bool:
     """Remove the failed download's own transport marker from a marker-only dir.
 
@@ -628,10 +629,7 @@ def is_resumable_partial(
     next download attempt."""
     if not has_active_incomplete_blobs(repo_type, repo_id):
         return False
-    return (
-        read_active_transport_marker(repo_type, repo_id, variant)
-        == TRANSPORT_HTTP
-    )
+    return read_active_transport_marker(repo_type, repo_id, variant) == TRANSPORT_HTTP
 
 
 def incomplete_blob_hashes(
@@ -714,9 +712,7 @@ def existing_blob_bytes(
     return total
 
 
-JobState = Literal[
-    "idle", "running", "cancelling", "cancelled", "complete", "error"
-]
+JobState = Literal["idle", "running", "cancelling", "cancelled", "complete", "error"]
 
 TERMINAL_STATES = frozenset({"complete", "cancelled", "error"})
 _ACTIVE_STATES = frozenset({"running", "cancelling"})

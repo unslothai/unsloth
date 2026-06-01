@@ -148,16 +148,13 @@ def extract_quant_label(filename: str) -> str:
 
 def _apply_gguf_display_labels(variants: list[GgufVariantInfo]) -> None:
     unknown_variants = [
-        variant for variant in variants
-        if extract_quant_token(variant.filename) is None
+        variant for variant in variants if extract_quant_token(variant.filename) is None
     ]
     if not unknown_variants:
         return
     ambiguous = len(unknown_variants) > 1
     for variant in unknown_variants:
-        variant.display_label = (
-            f"GGUF · {variant.filename}" if ambiguous else "GGUF"
-        )
+        variant.display_label = f"GGUF · {variant.filename}" if ambiguous else "GGUF"
 
 
 def _env_offline() -> bool:

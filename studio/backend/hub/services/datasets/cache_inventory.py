@@ -111,9 +111,7 @@ def _prefer_dataset_cache_row(candidate: dict, existing: Optional[dict]) -> bool
     existing_partial = bool(existing.get("partial"))
     if candidate_partial != existing_partial:
         return not candidate_partial
-    return int(candidate.get("size_bytes") or 0) > int(
-        existing.get("size_bytes") or 0
-    )
+    return int(candidate.get("size_bytes") or 0) > int(existing.get("size_bytes") or 0)
 
 
 def _hub_dataset_snapshot_count(path: Path) -> int:
@@ -148,10 +146,9 @@ def _scan_hub_dataset_cache_dirs() -> list[dict]:
                 continue
             key = repo_id.lower()
             existing = seen_lower.get(key)
-            snapshot_partial = (
-                _hub_dataset_snapshot_count(entry) == 0
-                or hf_cache_scan.is_snapshot_partial("dataset", repo_id, entry)
-            )
+            snapshot_partial = _hub_dataset_snapshot_count(
+                entry
+            ) == 0 or hf_cache_scan.is_snapshot_partial("dataset", repo_id, entry)
             row = {
                 "repo_id": repo_id,
                 "size_bytes": size_bytes,
@@ -165,7 +162,8 @@ def _scan_hub_dataset_cache_dirs() -> list[dict]:
                         repo_id,
                         repo_cache_dir = entry,
                     )
-                    if snapshot_partial else None
+                    if snapshot_partial
+                    else None
                 ),
             }
             if _prefer_dataset_cache_row(row, existing):
@@ -323,7 +321,8 @@ def _scan_hf_dataset_caches() -> list[dict]:
                             repo_info.repo_id,
                             repo_cache_dir = cache_dir,
                         )
-                        if snapshot_partial else None
+                        if snapshot_partial
+                        else None
                     ),
                 }
                 if _prefer_dataset_cache_row(row, existing):
@@ -336,14 +335,11 @@ def _scan_hf_dataset_caches() -> list[dict]:
         existing = seen_lower.get(key)
         if _prefer_dataset_cache_row(row, existing):
             seen_lower[key] = row
-        elif (
-            existing is not None
-            and bool(existing.get("partial")) == bool(row.get("partial"))
+        elif existing is not None and bool(existing.get("partial")) == bool(
+            row.get("partial")
         ):
             existing["size_bytes"] = max(existing["size_bytes"], row["size_bytes"])
-            existing["cache_path"] = (
-                existing.get("cache_path") or row.get("cache_path")
-            )
+            existing["cache_path"] = existing.get("cache_path") or row.get("cache_path")
             if (
                 existing.get("partial")
                 and not existing.get("partial_transport")
@@ -365,7 +361,9 @@ def _scan_hf_dataset_caches() -> list[dict]:
                 existing["processed_cache"] = True
     logger.info(
         "Cached dataset scan: roots=%d inspected=%d returned=%d",
-        len(seen_roots) or len(scans), inspected, len(seen_lower),
+        len(seen_roots) or len(scans),
+        inspected,
+        len(seen_lower),
     )
     return sorted(seen_lower.values(), key = lambda c: c["repo_id"])
 
@@ -454,7 +452,9 @@ def _delete_cached_dataset_blocking(repo_id: str) -> dict:
     cache_purged = purge_repo_cache_dirs("dataset", repo_id)
     partial_purged = purge_partial_repo("dataset", repo_id)
     state_purged = download_manifest.purge_all_state_for_repo("dataset", repo_id) > 0
-    if not (deleted or processed_deleted or cache_purged or partial_purged or state_purged):
+    if not (
+        deleted or processed_deleted or cache_purged or partial_purged or state_purged
+    ):
         raise HTTPException(status_code = 404, detail = "Dataset not found in cache")
     return {"status": "deleted", "repo_id": repo_id}
 
@@ -469,7 +469,8 @@ def _delete_processed_dataset_cache(repo_id: str) -> tuple[bool, list[str]]:
     for root in _hf_datasets_cache_roots():
         try:
             entries = [
-                entry for entry in root.iterdir()
+                entry
+                for entry in root.iterdir()
                 if entry.is_dir() and entry.name.lower() == folded_target
             ]
         except OSError:

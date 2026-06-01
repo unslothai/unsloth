@@ -29,7 +29,9 @@ def resolve_transport(use_xet: bool) -> str:
     transport = (
         download_registry.TRANSPORT_XET if use_xet else download_registry.TRANSPORT_HTTP
     )
-    unavailable_reason = download_registry.download_transport_unavailable_reason(transport)
+    unavailable_reason = download_registry.download_transport_unavailable_reason(
+        transport
+    )
     if unavailable_reason is not None:
         raise HTTPException(status_code = 400, detail = unavailable_reason)
     return transport
@@ -253,12 +255,12 @@ def finalize_worker_exit(
         if repo_type and repo_id:
             try:
                 download_manifest.clear_cancel_marker(
-                    repo_type, repo_id, download_registry.variant_from_key(key),
+                    repo_type,
+                    repo_id,
+                    download_registry.variant_from_key(key),
                 )
             except Exception as exc:
-                logger.debug(
-                    f"clear_cancel_marker failed for {repo_id} (rc=0): {exc}"
-                )
+                logger.debug(f"clear_cancel_marker failed for {repo_id} (rc=0): {exc}")
     elif state == "cancelled":
         registry.set_job(key, "cancelled")
         logger.info(f"{log_prefix} cancelled by user: {label} (rc={rc})")
@@ -269,14 +271,17 @@ def finalize_worker_exit(
         download_registry.persist_cancel_marker(
             repo_type,
             repo_id,
-            metadata.variant if metadata is not None and metadata.variant
+            metadata.variant
+            if metadata is not None and metadata.variant
             else download_registry.variant_from_key(key),
             transport,
             logger = logger,
         )
     else:
         registry.set_job(
-            key, "error", stderr_text or f"worker exited with code {rc}",
+            key,
+            "error",
+            stderr_text or f"worker exited with code {rc}",
         )
         logger.error(
             f"{log_prefix} failed for {label} (rc={rc}): {stderr_text}",
@@ -339,7 +344,9 @@ def register_worker(
         )
         if registry.get_job(key).state in ("error", "cancelled"):
             download_registry.purge_empty_marker_dir(
-                repo_type, repo_id, download_registry.variant_from_key(key),
+                repo_type,
+                repo_id,
+                download_registry.variant_from_key(key),
             )
         hf_cache_scan.invalidate_hf_cache_scans()
 
@@ -443,8 +450,14 @@ def idle_status(
 ) -> tuple[DownloadJobState, Optional[str], int]:
     state = registry.get_job(key)
     generation = registry.current_generation(key)
-    if state.state == "idle" and repo_id and download_manifest.has_cancel_marker(
-        repo_type, repo_id, variant,
+    if (
+        state.state == "idle"
+        and repo_id
+        and download_manifest.has_cancel_marker(
+            repo_type,
+            repo_id,
+            variant,
+        )
     ):
         return ("cancelled", None, generation)
     return (state.state, state.error, generation)

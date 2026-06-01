@@ -104,9 +104,7 @@ def _entry_key(repo_type: RepoType, repo_id: str, variant: Optional[str]) -> str
     if _SAFE_VARIANT_FRAGMENT.fullmatch(normalized_variant):
         variant_fragment = normalized_variant
     else:
-        digest = hashlib.sha256(
-            normalized_variant.encode("utf-8")
-        ).hexdigest()[:32]
+        digest = hashlib.sha256(normalized_variant.encode("utf-8")).hexdigest()[:32]
         variant_fragment = f"sha256-{digest}"
     return f"{variant_filename_prefix(repo_type, repo_id)}{variant_fragment}"
 

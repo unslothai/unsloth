@@ -96,7 +96,9 @@ def browse_folders(
 
 @router.get("/gguf-variants", response_model = GgufVariantsResponse)
 async def get_gguf_variants(
-    repo_id: str = Query(..., description = "HuggingFace repo ID (e.g. 'unsloth/gemma-3-4b-it-GGUF')"),
+    repo_id: str = Query(
+        ..., description = "HuggingFace repo ID (e.g. 'unsloth/gemma-3-4b-it-GGUF')"
+    ),
     prefer_local_cache: bool = Query(False),
     offline: bool = Query(False),
     local_path: Optional[str] = Query(None),
@@ -132,7 +134,9 @@ async def cancel_download_model(
 @router.get("/download-status", response_model = DownloadJobStatus)
 async def get_download_status(
     repo_id: str = Query(..., description = "HuggingFace repo ID"),
-    gguf_variant: str = Query("", description = "Quantization variant (empty for safetensors)"),
+    gguf_variant: str = Query(
+        "", description = "Quantization variant (empty for safetensors)"
+    ),
     current_subject: str = Depends(get_current_subject),
 ):
     return await downloads.get_download_status_response(repo_id, gguf_variant)
@@ -149,7 +153,9 @@ async def get_active_downloads(
 @router.get("/transport-status", response_model = TransportStatusResponse)
 async def get_model_transport_status(
     repo_id: str = Query(..., description = "HuggingFace repo ID"),
-    gguf_variant: str = Query("", description = "Quantization variant (empty for safetensors)"),
+    gguf_variant: str = Query(
+        "", description = "Quantization variant (empty for safetensors)"
+    ),
     hf_token: Optional[str] = Depends(get_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):

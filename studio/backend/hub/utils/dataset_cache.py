@@ -111,7 +111,9 @@ def cached_dataset_candidates(
 
     def score(path: Path) -> tuple[int, int, str]:
         rel = _rel_lower(snapshot, path)
-        subset_match = bool(subset_lower and _matches_label(snapshot, path, subset_lower))
+        subset_match = bool(
+            subset_lower and _matches_label(snapshot, path, subset_lower)
+        )
         split_match = bool(split_lower and _matches_label(snapshot, path, split_lower))
         location_rank = 3
         if split_match and (not subset_lower or subset_match):
@@ -127,5 +129,3 @@ def cached_dataset_candidates(
         )
 
     return sorted(files, key = score)
-
-

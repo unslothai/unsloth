@@ -192,7 +192,8 @@ def read_manifest(
     if data.get("version") != _MANIFEST_VERSION:
         logger.debug(
             "Manifest %s has unknown version %r; ignoring.",
-            path, data.get("version"),
+            path,
+            data.get("version"),
         )
         return None
     raw_files = data.get("expected_files")
@@ -497,7 +498,7 @@ def iter_variant_manifests(
         stem = entry.name[: -len(".json")]
         if not stem.lower().startswith(prefix):
             continue
-        variant = stem[len(prefix):]
+        variant = stem[len(prefix) :]
         if variant:
             yield _variant_from_state_file(entry, variant), entry
 
@@ -523,6 +524,6 @@ def iter_variant_markers(
         stem = entry.name[: -len(".json")]
         if not stem.lower().startswith(prefix):
             continue
-        variant = stem[len(prefix):]
+        variant = stem[len(prefix) :]
         if variant:
             yield _variant_from_state_file(entry, variant), entry

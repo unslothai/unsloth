@@ -23,6 +23,7 @@ from hub.utils.paths import is_valid_repo_id as _is_valid_repo_id
 ModelType = Literal["text", "vision", "audio", "embeddings"]
 LocalModelSource = Literal["models_dir", "hf_cache", "lmstudio", "ollama", "custom"]
 
+
 def _safe_is_dir(path) -> bool:
     """``Path.is_dir()`` that returns ``False`` instead of raising.
 
@@ -37,7 +38,6 @@ def _safe_is_dir(path) -> bool:
         return Path(path).is_dir()
     except OSError:
         return False
-
 
 
 _LOCAL_CHECKPOINT_EXTENSIONS = (
@@ -262,9 +262,7 @@ def _is_transformers_bin_weight_name(name: str) -> bool:
     lower = _weight_basename(name)
     if not lower.endswith(".bin"):
         return False
-    return lower.startswith(
-        ("pytorch_model", "model", "consolidated", "adapter_model")
-    )
+    return lower.startswith(("pytorch_model", "model", "consolidated", "adapter_model"))
 
 
 def _is_checkpoint_weight_name(name: str) -> bool:
@@ -341,6 +339,7 @@ def _iter_gguf_paths(root: Path):
                     yield path
             except OSError:
                 continue
+
 
 def _iter_immediate_files(path: Path, *, include_symlinks: bool = False) -> list[Path]:
     if path.is_file():
@@ -431,9 +430,8 @@ def _clean_optional_string(value: object) -> Optional[str]:
 def _base_model_looks_local(value: str) -> bool:
     raw = value.strip()
     normalized = raw.replace("\\", "/")
-    if (
-        raw.startswith(("/", "./", "../", "~", "\\\\"))
-        or (len(raw) >= 3 and raw[1] == ":" and raw[0].isalpha())
+    if raw.startswith(("/", "./", "../", "~", "\\\\")) or (
+        len(raw) >= 3 and raw[1] == ":" and raw[0].isalpha()
     ):
         return True
     first = normalized.split("/", 1)[0].lower()
@@ -577,8 +575,7 @@ def _classify_local_path(
         for f in files
     )
     has_transformers_safetensors = any(
-        _is_transformers_safetensors_weight_file(f)
-        and not _is_adapter_weight_file(f)
+        _is_transformers_safetensors_weight_file(f) and not _is_adapter_weight_file(f)
         for f in files
     )
     has_checkpoint_weights = any(_is_checkpoint_weight_file(f) for f in files)
@@ -596,15 +593,12 @@ def _classify_local_path(
 
     if model_format is not None:
         if model_format == "adapter":
-            size_bytes = _sum_file_sizes(
-                f for f in files if _is_adapter_weight_file(f)
-            )
+            size_bytes = _sum_file_sizes(f for f in files if _is_adapter_weight_file(f))
         elif model_format == "safetensors":
             size_bytes = _sum_file_sizes(
                 f
                 for f in files
-                if f.suffix.lower() == ".safetensors"
-                and not _is_adapter_weight_file(f)
+                if f.suffix.lower() == ".safetensors" and not _is_adapter_weight_file(f)
             )
         else:
             size_bytes = _sum_file_sizes(
