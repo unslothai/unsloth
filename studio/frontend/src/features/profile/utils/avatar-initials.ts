@@ -7,7 +7,7 @@ export function initialsFromName(name: string): string {
   return trimmed[0]!.toUpperCase();
 }
 
-/** Default blue background for avatar fallback (readable white text). */
+/** Default Unsloth-green background for avatar fallback (readable white text). */
 export function avatarBgStyle(): { backgroundColor: string } {
-  return { backgroundColor: "hsl(217 58% 48%)" };
+  return { backgroundColor: "#14b789" };
 }

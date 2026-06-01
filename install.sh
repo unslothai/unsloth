@@ -1530,17 +1530,51 @@ if [ -x "$VENV_DIR/bin/python" ]; then
     : > "$VENV_DIR/.unsloth-studio-owned" 2>/dev/null || true
 fi
 
-# Guard against Python 3.13.8 torch import bug on Apple Silicon
-# (skip when the user explicitly chose a version via --python)
+# Guard against two independent Apple Silicon venv problems, in order:
+#   1. uv may create the venv from a cached x86_64 (Rosetta) Python when a
+#      same-version x86_64 build is already cached (often because uv itself
+#      is an x86_64 build). That venv reports x86_64 to wheel resolvers, and
+#      PyTorch ships no macOS wheels on the CPU index for any architecture,
+#      so the torch install can never resolve. Recreate it with an
+#      arch-explicit arm64 CPython.
+#   2. Python 3.13.8 has a known torch import bug.
+# The two are independent: a venv may be x86_64 and, once recreated, still
+# land on 3.13.8. So we re-inspect the interpreter between the checks instead
+# of chaining them with elif, guaranteeing both invariants hold on whatever
+# venv we end up with. Skip both when the user explicitly chose an interpreter
+# via --python.
 if [ -z "$_USER_PYTHON" ] && [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ]; then
-    _PY_VER=$("$VENV_DIR/bin/python" -c \
-        "import sys; print('{}.{}.{}'.format(*sys.version_info[:3]))" 2>/dev/null || echo "")
+    _inspect_venv() {
+        "$VENV_DIR/bin/python" -c \
+            "import platform, sys; print(platform.machine(), '{}.{}.{}'.format(*sys.version_info[:3]))" \
+            2>/dev/null || echo " "
+    }
+    _info=$(_inspect_venv)
+    _VENV_ARCH=${_info%% *}
+    _PY_VER=${_info##* }
+
+    if [ "$_VENV_ARCH" = "x86_64" ]; then
+        echo "  WARNING: venv was created with an x86_64 (Rosetta) Python on Apple Silicon."
+        echo "  Recreating venv with native arm64 Python ${PYTHON_VERSION}..."
+        rm -rf "$VENV_DIR"
+        run_install_cmd "recreate venv (arm64)" uv venv "$VENV_DIR" \
+            --python "cpython-${PYTHON_VERSION}-macos-aarch64-none"
+        if [ -x "$VENV_DIR/bin/python" ]; then
+            : > "$VENV_DIR/.unsloth-studio-owned" 2>/dev/null || true
+        fi
+        # Re-inspect: the recreated arm64 venv may still be 3.13.8.
+        _info=$(_inspect_venv)
+        _VENV_ARCH=${_info%% *}
+        _PY_VER=${_info##* }
+    fi
+
     if [ "$_PY_VER" = "3.13.8" ]; then
         echo "  WARNING: Python 3.13.8 has a known torch import bug."
         echo "  Recreating venv with Python 3.12..."
         rm -rf "$VENV_DIR"
         PYTHON_VERSION="3.12"
-        run_install_cmd "recreate venv" uv venv "$VENV_DIR" --python "$PYTHON_VERSION"
+        run_install_cmd "recreate venv" uv venv "$VENV_DIR" \
+            --python "cpython-${PYTHON_VERSION}-macos-aarch64-none"
         if [ -x "$VENV_DIR/bin/python" ]; then
             : > "$VENV_DIR/.unsloth-studio-owned" 2>/dev/null || true
         fi
@@ -2049,7 +2083,7 @@ if [ "$_MIGRATED" = true ]; then
         # to prevent transitive torch resolution.
         run_install_cmd "install unsloth (migrated no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "unsloth>=2026.5.8" unsloth-zoo
+            "unsloth>=2026.5.10" unsloth-zoo
         # Resolve pydantic WITH deps so pip pins pydantic-core to the
         # matching version (no-torch-runtime.txt below is --no-deps).
         # All transitive deps are torch-free.
@@ -2062,7 +2096,7 @@ if [ "$_MIGRATED" = true ]; then
     else
         run_install_cmd "install unsloth (migrated)" uv pip install --python "$_VENV_PY" \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "unsloth>=2026.5.8" unsloth-zoo
+            "unsloth>=2026.5.10" unsloth-zoo
     fi
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
         substep "overlaying local repo (editable)..."
@@ -2266,7 +2300,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
         # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
         run_install_cmd "install unsloth (no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --upgrade-package unsloth --upgrade-package unsloth-zoo \
-            "unsloth>=2026.5.8" unsloth-zoo
+            "unsloth>=2026.5.10" unsloth-zoo
         # Same pydantic-with-deps trick as the migrated branch.
         run_install_cmd "install pydantic (with deps for compatible core)" \
             uv pip install --python "$_VENV_PY" pydantic
@@ -2284,7 +2318,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
         fi
     elif [ "$STUDIO_LOCAL_INSTALL" = true ]; then
         run_install_cmd "install unsloth (local)" uv pip install --python "$_VENV_PY" \
-            --upgrade-package unsloth "unsloth>=2026.5.8" unsloth-zoo
+            --upgrade-package unsloth "unsloth>=2026.5.10" unsloth-zoo
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
         substep "overlaying unsloth-zoo from git main..."
@@ -2316,7 +2350,7 @@ else
     tauri_log "STEP" "Installing Unsloth"
     substep "installing unsloth (this may take a few minutes)..."
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
-        run_install_cmd "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" unsloth-zoo "unsloth>=2026.5.8" --torch-backend=auto
+        run_install_cmd "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" unsloth-zoo "unsloth>=2026.5.10" --torch-backend=auto
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
         substep "overlaying unsloth-zoo from git main..."

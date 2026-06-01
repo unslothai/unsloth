@@ -707,13 +707,13 @@ elif [ "$_setup_amd_detected" = true ]; then
     # Name-based arch inference when tools don't report gfx (mirrors setup.ps1 nameArchTable)
     elif [ -z "$_setup_gfx" ] && [ -n "$_setup_mkt" ]; then
         case "$_setup_mkt" in
-            *"9070 XT"*|*9080*)                                                     _setup_gfx="gfx1201" ;;  # RDNA 4
-            *9070*|*9060*)                                                          _setup_gfx="gfx1200" ;;  # RDNA 4
+            *"9070 XT"*|*9080*)                                                 _setup_gfx="gfx1201" ;;  # RDNA 4
+            *9070*|*9060*)                                                      _setup_gfx="gfx1200" ;;  # RDNA 4
             *"8060S"*|*"890M"*|*"Strix Halo"*|*"HX 37"*|*"HX 38"*|*"AI 9 HX"*)  _setup_gfx="gfx1151" ;;  # RDNA 3.5 iGPU
-            *"880M"*|*"Strix Point"*|*"AI 9 36"*|*"AI 7 35"*|*"AI 5 34"*)        _setup_gfx="gfx1150" ;;  # RDNA 3.5 iGPU
-            *"RX 7900"*|*"RX 7800"*|*"RX 7700"*)                                  _setup_gfx="gfx1100" ;;  # RDNA 3 desktop
-            *"RX 7600"*)                                                           _setup_gfx="gfx1102" ;;  # RDNA 3
-            *"780M"*|*"760M"*|*"740M"*|*"Phoenix"*)                               _setup_gfx="gfx1103" ;;  # RDNA 3 iGPU
+            *"880M"*|*"Strix Point"*|*"AI 9 36"*|*"AI 7 35"*|*"AI 5 34"*)       _setup_gfx="gfx1150" ;;  # RDNA 3.5 iGPU
+            *"RX 7900"*|*"RX 7800"*|*"RX 7700"*)                                _setup_gfx="gfx1100" ;;  # RDNA 3 desktop
+            *"RX 7600"*)                                                        _setup_gfx="gfx1102" ;;  # RDNA 3
+            *"780M"*|*"760M"*|*"740M"*|*"Phoenix"*)                             _setup_gfx="gfx1103" ;;  # RDNA 3 iGPU
         esac
         if [ -n "$_setup_gfx" ]; then
             substep "gfx arch inferred from GPU name: $_setup_gfx"
@@ -856,6 +856,16 @@ else
     )
     if [ -n "${UNSLOTH_LLAMA_RELEASE_TAG:-}" ]; then
         _PREBUILT_CMD+=(--published-release-tag "$UNSLOTH_LLAMA_RELEASE_TAG")
+    fi
+    # Forward the gfx arch resolved above so the lemonade HIP prebuilt is picked
+    # even when the installer's own probe cannot report it (amd-smi-only hosts,
+    # name-inferred arch). Implies --has-rocm on the installer side.
+    if [ -n "${_setup_gfx:-}" ]; then
+        _PREBUILT_CMD+=(--rocm-gfx "$_setup_gfx")
+    elif [ "$_setup_amd_detected" = true ]; then
+        # AMD was detected but gfx resolution failed; tell the installer ROCm is
+        # present so it can still attempt a prebuilt. Mirrors setup.ps1 behaviour.
+        _PREBUILT_CMD+=(--has-rocm)
     fi
     _PREBUILT_LOG="$(mktemp)"
     set +e
@@ -1082,6 +1092,15 @@ else
             _IS_MACOS_ARM64=false
             if [ "$_HOST_SYSTEM" = "Darwin" ] && { [ "$_HOST_MACHINE" = "arm64" ] || [ "$_HOST_MACHINE" = "aarch64" ]; }; then
                 _IS_MACOS_ARM64=true
+            fi
+
+            # macOS: pin a low deployment target so the source build loads on
+            # older macOS too (else a macOS 26 host stamps minos=26). Set before
+            # CPU_FALLBACK_CMAKE_ARGS copies CMAKE_ARGS so both paths inherit it.
+            if [ "$_HOST_SYSTEM" = "Darwin" ]; then
+                _MACOS_DEPLOYMENT_TARGET="${UNSLOTH_MACOS_DEPLOYMENT_TARGET:-13.3}"
+                CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_OSX_DEPLOYMENT_TARGET=${_MACOS_DEPLOYMENT_TARGET}"
+                export MACOSX_DEPLOYMENT_TARGET="${_MACOS_DEPLOYMENT_TARGET}"
             fi
 
             if command -v ccache &>/dev/null; then
@@ -1353,6 +1372,32 @@ else
     fi
 }
 fi  # end _SKIP_GGUF_BUILD check
+
+# ── arm64 Linux GPU: CPU prebuilt as a last resort ──
+# arm64 Linux with a GPU has no CUDA prebuilt anywhere (the unslothai fork is
+# x64 only; ggml-org ships no Linux CUDA build), so it source-builds for the
+# GPU above. If that produced no binary, install ggml-org's arm64 CPU prebuilt
+# instead of leaving the host without llama.cpp.
+if [ "$_LLAMA_CPP_DEGRADED" = true ] \
+        && [ "$_HOST_SYSTEM" = "Linux" ] \
+        && { [ "$_HOST_MACHINE" = "aarch64" ] || [ "$_HOST_MACHINE" = "arm64" ]; }; then
+    substep "GPU source build unavailable; trying ggml-org arm64 CPU prebuilt..."
+    _ARM64_CPU_CMD=(
+        python "$SCRIPT_DIR/install_llama_prebuilt.py"
+        --install-dir "$LLAMA_CPP_DIR"
+        --llama-tag "$_REQUESTED_LLAMA_TAG"
+        --published-repo "ggml-org/llama.cpp"
+        --simple-policy
+        --cpu-fallback
+    )
+    # Trust the installer's exit code: it validates the server before exiting 0,
+    # the same signal the primary prebuilt path above relies on.
+    if run_quiet_no_exit "arm64 CPU prebuilt" "${_ARM64_CPU_CMD[@]}"; then
+        step "llama.cpp" "arm64 CPU prebuilt installed (GPU build unavailable)" "$C_WARN"
+        _LLAMA_CPP_DEGRADED=false
+        print_installed_llama_prebuilt_release "$LLAMA_CPP_DIR"
+    fi
+fi
 
 # ── Footer ──
 if [ "$_LLAMA_ONLY" = "1" ]; then

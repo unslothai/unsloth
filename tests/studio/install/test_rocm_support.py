@@ -35,6 +35,8 @@ AssetChoice = prebuilt_mod.AssetChoice
 PrebuiltFallback = prebuilt_mod.PrebuiltFallback
 resolve_upstream_asset_choice = prebuilt_mod.resolve_upstream_asset_choice
 runtime_patterns_for_choice = prebuilt_mod.runtime_patterns_for_choice
+_apply_host_overrides = prebuilt_mod._apply_host_overrides
+_normalize_forwarded_gfx = prebuilt_mod._normalize_forwarded_gfx
 
 # install_python_stack.py
 _STACK_PATH = PACKAGE_ROOT / "studio" / "install_python_stack.py"
@@ -1096,6 +1098,12 @@ class TestLiveRegression:
 
 # Load worker.py module
 _WORKER_PATH = PACKAGE_ROOT / "studio" / "backend" / "core" / "training" / "worker.py"
+_EXPORT_WORKER_PATH = (
+    PACKAGE_ROOT / "studio" / "backend" / "core" / "export" / "worker.py"
+)
+# The torchao Windows-ROCm stub was de-duplicated out of the export/training
+# workers into a shared module; both workers now call into it.
+_TORCHAO_STUB_PATH = PACKAGE_ROOT / "studio" / "backend" / "core" / "_torchao_stub.py"
 # The wheel-probe subprocess was hoisted out of worker.py into wheel_utils
 # during the wheel-resolver refactor; the probe script literal lives there.
 _WHEEL_UTILS_PATH = PACKAGE_ROOT / "studio" / "backend" / "utils" / "wheel_utils.py"
@@ -1654,53 +1662,46 @@ class TestInstallBnbWindowsRocm:
     """Verify AMD Windows BNB wheel install helper."""
 
     def test_calls_pip_install_try_with_win_amd64_url(self):
-        """Should call pip_install_try with the win_amd64 wheel URL."""
+        """Should call pip_install_try with the win_amd64 wheel URL via plain pip."""
         with patch.object(stack_mod, "pip_install_try", return_value = True) as mock_pip:
             stack_mod._install_bnb_windows_rocm()
         assert mock_pip.call_count == 1
         call_args = str(mock_pip.call_args_list[0])
         assert "bitsandbytes" in call_args
         assert "win_amd64" in call_args
+        # Must force plain pip (uv mangles the bitsandbytes wheel) -- see
+        # https://unsloth.ai/docs/get-started/install/amd/amd-hackathon
+        assert mock_pip.call_args.kwargs.get("force_pip") is True
 
-    def test_sets_uv_skip_env_var_during_install(self):
-        """UV_SKIP_WHEEL_FILENAME_CHECK must be '1' when pip_install_try runs."""
+    def test_forces_plain_pip_not_uv(self):
+        """The bnb wheel must be installed with plain pip, never uv."""
+        with patch.object(stack_mod, "pip_install_try", return_value = True) as mock_pip:
+            stack_mod._install_bnb_windows_rocm()
+        assert mock_pip.call_args.kwargs.get("force_pip") is True
+
+    def test_does_not_touch_uv_skip_env_var(self):
+        """The UV_SKIP_WHEEL_FILENAME_CHECK hack is gone; the env must be untouched."""
         observed = {}
 
         def _capture(*args, **kwargs):
-            observed["val"] = os.environ.get("UV_SKIP_WHEEL_FILENAME_CHECK")
+            observed["during"] = os.environ.get("UV_SKIP_WHEEL_FILENAME_CHECK")
             return True
 
-        with patch.object(stack_mod, "pip_install_try", side_effect = _capture):
-            stack_mod._install_bnb_windows_rocm()
-        assert observed.get("val") == "1"
-
-    def test_restores_uv_skip_env_var_after_install(self):
-        """UV_SKIP_WHEEL_FILENAME_CHECK should be removed after install if it wasn't set before."""
         with patch.dict(os.environ, {}, clear = False):
             os.environ.pop("UV_SKIP_WHEEL_FILENAME_CHECK", None)
-            with patch.object(stack_mod, "pip_install_try", return_value = True):
+            with patch.object(stack_mod, "pip_install_try", side_effect = _capture):
                 stack_mod._install_bnb_windows_rocm()
+            assert observed.get("during") is None
             assert "UV_SKIP_WHEEL_FILENAME_CHECK" not in os.environ
 
-    def test_restores_previous_uv_skip_value(self):
-        """If UV_SKIP_WHEEL_FILENAME_CHECK was already set, restore it afterwards."""
-        with patch.dict(os.environ, {"UV_SKIP_WHEEL_FILENAME_CHECK": "0"}):
-            with patch.object(stack_mod, "pip_install_try", return_value = True):
-                stack_mod._install_bnb_windows_rocm()
-            assert os.environ.get("UV_SKIP_WHEEL_FILENAME_CHECK") == "0"
-
-    def test_restores_env_even_if_install_raises(self):
-        """UV_SKIP_WHEEL_FILENAME_CHECK must be cleaned up even on pip failure."""
+    def test_returns_false_on_pip_failure(self):
+        """A failed pip_install_try must surface as a False return, not BNB_ROCM_VERSION."""
         with patch.dict(os.environ, {}, clear = False):
-            os.environ.pop("UV_SKIP_WHEEL_FILENAME_CHECK", None)
-            with patch.object(
-                stack_mod, "pip_install_try", side_effect = RuntimeError("pip failed")
-            ):
-                try:
-                    stack_mod._install_bnb_windows_rocm()
-                except RuntimeError:
-                    pass
-            assert "UV_SKIP_WHEEL_FILENAME_CHECK" not in os.environ
+            os.environ.pop("BNB_ROCM_VERSION", None)
+            with patch.object(stack_mod, "pip_install_try", return_value = False):
+                result = stack_mod._install_bnb_windows_rocm()
+            assert result is False
+            assert "BNB_ROCM_VERSION" not in os.environ
 
     def test_no_op_when_win_amd64_url_missing(self):
         """Should be silent no-op if win_amd64 key absent from _BNB_ROCM_PRERELEASE_URLS."""
@@ -1906,24 +1907,34 @@ class TestWorkerWindowsRocmPatches:
         assert "offs_list" in source
         assert "offs.tolist()" in source
 
+    def test_worker_calls_shared_torchao_stub(self):
+        """worker.py must invoke the shared torchao stub entrypoint."""
+        source = _WORKER_PATH.read_text(encoding = "utf-8")
+        assert "install_torchao_windows_rocm_stub()" in source
+
+    def test_export_worker_calls_shared_torchao_stub(self):
+        """export/worker.py must invoke the same shared torchao stub entrypoint."""
+        source = _EXPORT_WORKER_PATH.read_text(encoding = "utf-8")
+        assert "install_torchao_windows_rocm_stub()" in source
+
     def test_torchao_stub_uses_stub_type_meta(self):
         """Torchao stub must use _StubTypeMeta so isinstance() returns False not TypeError."""
-        source = _WORKER_PATH.read_text(encoding = "utf-8")
+        source = _TORCHAO_STUB_PATH.read_text(encoding = "utf-8")
         assert "_StubTypeMeta" in source
 
     def test_stub_type_meta_has_instancecheck(self):
         """_StubTypeMeta must define __instancecheck__ returning False."""
-        source = _WORKER_PATH.read_text(encoding = "utf-8")
+        source = _TORCHAO_STUB_PATH.read_text(encoding = "utf-8")
         assert "__instancecheck__" in source
 
     def test_stub_subpackage_finder_registered(self):
         """_StubSubpackageFinder must be appended to sys.meta_path."""
-        source = _WORKER_PATH.read_text(encoding = "utf-8")
+        source = _TORCHAO_STUB_PATH.read_text(encoding = "utf-8")
         assert "sys.meta_path.append(_StubSubpackageFinder())" in source
 
     def test_torchao_key_submodules_pre_stubbed(self):
         """Key torchao submodules (dtypes, quantization) must be pre-stubbed."""
-        source = _WORKER_PATH.read_text(encoding = "utf-8")
+        source = _TORCHAO_STUB_PATH.read_text(encoding = "utf-8")
         assert "torchao.dtypes" in source
         assert "torchao.quantization" in source
 
@@ -2587,6 +2598,101 @@ class TestHipSdkInstalledButDeviceInaccessible:
         """install.ps1 CPU-only hint must say 'GPU not ROCm-accessible' not 'require the HIP SDK' when SDK found."""
         source = _INSTALL_PS1_PATH.read_text(encoding = "utf-8")
         assert "GPU not ROCm-accessible" in source
+
+
+# =============================================================================
+# TEST: --rocm-gfx forwarding -- setup.sh/setup.ps1 hand their resolved gfx arch
+# to install_llama_prebuilt.py so the lemonade HIP prebuilt is selected even when
+# the installer's own hipinfo/amd-smi probe cannot report it.
+# =============================================================================
+
+_SETUP_SH_PATH = PACKAGE_ROOT / "studio" / "setup.sh"
+
+
+class TestNormalizeForwardedGfx:
+    """A forwarded gfx string is reduced to a single clean gfx token."""
+
+    def test_plain_token(self):
+        assert _normalize_forwarded_gfx("gfx1151") == "gfx1151"
+
+    def test_uppercase_normalized(self):
+        assert _normalize_forwarded_gfx("GFX1151") == "gfx1151"
+
+    def test_extracts_from_noise(self):
+        assert _normalize_forwarded_gfx("gcnArchName: gfx942") == "gfx942"
+
+    def test_malformed_is_ignored(self):
+        assert _normalize_forwarded_gfx("not-a-gpu") is None
+
+    def test_empty_and_none(self):
+        assert _normalize_forwarded_gfx("") is None
+        assert _normalize_forwarded_gfx(None) is None
+
+
+class TestApplyHostOverrides:
+    """Forwarded ROCm detection is folded into the host profile correctly."""
+
+    def test_forwarded_gfx_fills_empty_probe(self):
+        # amd-smi-only / name-inferred host: installer probe found no gfx.
+        host = rocm_host(rocm_gfx_target = None)
+        out = _apply_host_overrides(host, override_rocm_gfx = "gfx1151")
+        assert out.has_rocm is True
+        assert out.rocm_gfx_target == "gfx1151"
+
+    def test_forwarded_gfx_implies_rocm(self):
+        # A CPU-looking host with a forwarded gfx is an AMD host.
+        out = _apply_host_overrides(cpu_host(), override_rocm_gfx = "gfx1200")
+        assert out.has_rocm is True
+        assert out.rocm_gfx_target == "gfx1200"
+
+    def test_forwarded_gfx_is_authoritative(self):
+        # setup already applied visible-device selection; its value wins.
+        host = rocm_host(rocm_gfx_target = "gfx1100")
+        out = _apply_host_overrides(host, override_rocm_gfx = "gfx1151")
+        assert out.rocm_gfx_target == "gfx1151"
+
+    def test_has_rocm_only_keeps_probe_gfx(self):
+        out = _apply_host_overrides(cpu_host(), override_has_rocm = True)
+        assert out.has_rocm is True
+        assert out.rocm_gfx_target is None
+
+    def test_malformed_forwarded_gfx_falls_back_to_has_rocm(self):
+        out = _apply_host_overrides(
+            cpu_host(), override_has_rocm = True, override_rocm_gfx = "junk"
+        )
+        assert out.has_rocm is True
+        assert out.rocm_gfx_target is None
+
+    def test_no_overrides_leaves_host_unchanged(self):
+        host = nvidia_host()
+        assert _apply_host_overrides(host) is host
+
+
+class TestRocmGfxForwarding:
+    """setup.sh / setup.ps1 forward their resolved gfx; the installer accepts it."""
+
+    def test_installer_exposes_rocm_gfx_arg(self):
+        source = _PREBUILT_PATH.read_text(encoding = "utf-8")
+        assert '"--rocm-gfx"' in source
+        # Defaults to the env override so a standalone run still works.
+        assert 'os.environ.get("UNSLOTH_ROCM_GFX_ARCH")' in source
+
+    def test_setup_sh_forwards_rocm_gfx(self):
+        source = _SETUP_SH_PATH.read_text(encoding = "utf-8")
+        assert "--rocm-gfx" in source
+        assert '"$_setup_gfx"' in source
+
+    def test_setup_sh_forwards_has_rocm(self):
+        # When AMD is detected but gfx resolution fails, setup.sh must still
+        # forward --has-rocm so the installer knows ROCm is present.
+        source = _SETUP_SH_PATH.read_text(encoding = "utf-8")
+        assert "--has-rocm" in source
+        assert "_setup_amd_detected" in source
+
+    def test_setup_ps1_forwards_rocm_gfx(self):
+        source = _SETUP_PS1_PATH.read_text(encoding = "utf-8")
+        assert "--rocm-gfx" in source
+        assert "$script:ROCmGfxArch" in source
 
 
 if __name__ == "__main__":
