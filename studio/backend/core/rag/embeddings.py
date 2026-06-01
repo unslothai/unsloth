@@ -17,6 +17,11 @@ from . import config
 logger = logging.getLogger(__name__)
 
 _lock = threading.Lock()
+# Serializes the actual encode/tokenize calls. The HuggingFace fast tokenizer
+# uses interior mutability and is NOT thread-safe: concurrent ingestion threads
+# sharing this singleton otherwise panic with "Already borrowed". Loads and
+# compute use separate locks so a long encode never blocks a (rare) reload.
+_compute_lock = threading.Lock()
 _model = None
 _name: str | None = None
 
@@ -51,13 +56,16 @@ def warm(model_name: str | None = None) -> None:
 
 
 def encode(texts: list[str], *, model_name: str | None = None, normalize: bool = True):
-    """Embed a batch of texts into an (N, dim) numpy array."""
-    return _get(model_name).encode(
-        texts,
-        normalize_embeddings = normalize,
-        convert_to_numpy = True,
-        show_progress_bar = False,
-    )
+    """Embed a batch of texts into an (N, dim) numpy array. Serialized so
+    concurrent ingestion threads don't trip the fast tokenizer's borrow check."""
+    model = _get(model_name)
+    with _compute_lock:
+        return model.encode(
+            texts,
+            normalize_embeddings = normalize,
+            convert_to_numpy = True,
+            show_progress_bar = False,
+        )
 
 
 def dim(model_name: str | None = None) -> int:
@@ -66,6 +74,13 @@ def dim(model_name: str | None = None) -> int:
 
 
 def token_counter(model_name: str | None = None) -> Callable[[str], int]:
-    """Return a callable counting tokens with the model's own tokenizer."""
+    """Return a callable counting tokens with the model's own tokenizer. The
+    count is taken under the compute lock since the same fast tokenizer backs
+    both embedding and counting and is not safe across threads."""
     tok = _get(model_name).tokenizer
-    return lambda t: len(tok.encode(t, add_special_tokens = False))
+
+    def _count(t: str) -> int:
+        with _compute_lock:
+            return len(tok.encode(t, add_special_tokens = False))
+
+    return _count
