@@ -2952,38 +2952,52 @@ if (-not $NeedLlamaSourceBuild) {
             $CmakeArgs += '-DLLAMA_CURL=OFF'
         }
         $CmakeArgs += '-DCMAKE_EXE_LINKER_FLAGS=/NODEFAULTLIB:LIBCMT'
-        # CUDA flags -- only if GPU available, otherwise explicitly disable
+        # CUDA flags -- only if GPU available, otherwise explicitly disable.
+        # $LlamaCudaBuild gates the post-build GPU smoke test and CUDA->CPU
+        # retry below.
+        $LlamaCudaBuild = $false
         if ($HasNvidiaSmi -and $NvccPath) {
-            $CmakeArgs += '-DGGML_CUDA=ON'
-            # Accept a host MSVC newer than nvcc's whitelist; a fresh toolkit
-            # (e.g. CUDA 13.3) otherwise aborts with "#error -- unsupported
-            # Microsoft Visual Studio version!". Mirrors the Linux fix. Via env
-            # (covers the configure probe + build), after Refresh-Environment, idempotent.
-            $nvccAllowFlag = '-allow-unsupported-compiler'
-            if ([string]::IsNullOrEmpty($env:NVCC_PREPEND_FLAGS)) {
-                $env:NVCC_PREPEND_FLAGS = $nvccAllowFlag
-            } elseif ($env:NVCC_PREPEND_FLAGS -notlike "*$nvccAllowFlag*") {
-                $env:NVCC_PREPEND_FLAGS = "$($env:NVCC_PREPEND_FLAGS) $nvccAllowFlag"
-            }
-            substep "NVCC_PREPEND_FLAGS = $env:NVCC_PREPEND_FLAGS"
-            $CmakeArgs += "-DCUDAToolkit_ROOT=$CudaToolkitRoot"
-            $CmakeArgs += "-DCUDA_TOOLKIT_ROOT_DIR=$CudaToolkitRoot"
-            $CmakeArgs += "-DCMAKE_CUDA_COMPILER=$NvccPath"
+            # Resolve a concrete CUDA architecture FIRST. A CUDA build with no
+            # -DCMAKE_CUDA_ARCHITECTURES is PTX-only and can fail at runtime on a
+            # driver older than the toolkit ("the provided PTX was compiled with
+            # an unsupported toolchain", #5854). If we cannot resolve a supported
+            # arch, build CPU-only instead of shipping a silently broken binary.
+            $cudaArchFlag = $null
             if ($CudaArch) {
-                # Validate nvcc actually supports this architecture
                 if (Test-NvccArchSupport -NvccExe $NvccPath -Arch $CudaArch) {
-                    $CmakeArgs += "-DCMAKE_CUDA_ARCHITECTURES=$CudaArch"
+                    $cudaArchFlag = "-DCMAKE_CUDA_ARCHITECTURES=$CudaArch"
                 } else {
-                    # GPU arch too new for this toolkit -- fall back to highest supported.
-                    # PTX forward-compatibility will JIT-compile for the actual GPU at runtime.
+                    # GPU arch too new for this toolkit -- fall back to highest
+                    # supported. PTX forward-compat will JIT for the real GPU.
                     $maxArch = Get-NvccMaxArch -NvccExe $NvccPath
                     if ($maxArch) {
-                        $CmakeArgs += "-DCMAKE_CUDA_ARCHITECTURES=$maxArch"
+                        $cudaArchFlag = "-DCMAKE_CUDA_ARCHITECTURES=$maxArch"
                         substep "GPU is sm_$CudaArch but nvcc only supports up to sm_$maxArch" "Yellow"
                         substep "Building with sm_$maxArch (PTX will JIT for your GPU at runtime)" "Yellow"
                     }
-                    # else: omit flag entirely, let cmake pick defaults
                 }
+            }
+            if ($cudaArchFlag) {
+                $CmakeArgs += '-DGGML_CUDA=ON'
+                # Accept a host MSVC newer than nvcc's whitelist; a fresh toolkit
+                # (e.g. CUDA 13.3) otherwise aborts with "#error -- unsupported
+                # Microsoft Visual Studio version!". Via env (covers the configure
+                # probe + build), after Refresh-Environment, idempotent.
+                $nvccAllowFlag = '-allow-unsupported-compiler'
+                if ([string]::IsNullOrEmpty($env:NVCC_PREPEND_FLAGS)) {
+                    $env:NVCC_PREPEND_FLAGS = $nvccAllowFlag
+                } elseif ($env:NVCC_PREPEND_FLAGS -notlike "*$nvccAllowFlag*") {
+                    $env:NVCC_PREPEND_FLAGS = "$($env:NVCC_PREPEND_FLAGS) $nvccAllowFlag"
+                }
+                substep "NVCC_PREPEND_FLAGS = $env:NVCC_PREPEND_FLAGS"
+                $CmakeArgs += "-DCUDAToolkit_ROOT=$CudaToolkitRoot"
+                $CmakeArgs += "-DCUDA_TOOLKIT_ROOT_DIR=$CudaToolkitRoot"
+                $CmakeArgs += "-DCMAKE_CUDA_COMPILER=$NvccPath"
+                $CmakeArgs += $cudaArchFlag
+                $LlamaCudaBuild = $true
+            } else {
+                substep "Could not resolve a supported CUDA architecture for this GPU/toolkit; building CPU-only to avoid a PTX-only binary that fails at runtime (#5854)" "Yellow"
+                $CmakeArgs += '-DGGML_CUDA=OFF'
             }
         } else {
             $CmakeArgs += '-DGGML_CUDA=OFF'
@@ -3022,6 +3036,60 @@ if (-not $NeedLlamaSourceBuild) {
             $BuildOk = $false
             $FailedStep = "cmake build (llama-server)"
             Write-LlamaFailureLog -Output $output
+        }
+    }
+
+    # -- Step C.5: GPU smoke test + CUDA->CPU fallback (#5807 / #5854) --
+    # A CUDA build whose runtime backend fails to initialize still links and
+    # serves HTTP 200, but only from CPU; and setup.ps1 previously had no CPU
+    # fallback when a CUDA build failed at all. Both gaps are closed here.
+    if ($LlamaCudaBuild -and $BuildOk) {
+        $builtServer = Join-Path $BuildDir "bin\Release\llama-server.exe"
+        if (-not (Test-Path -LiteralPath $builtServer)) {
+            $builtServer = Join-Path $BuildDir "bin\llama-server.exe"
+        }
+        if (Test-Path -LiteralPath $builtServer) {
+            Write-Host ""
+            Write-Host "--- GPU smoke test ---" -ForegroundColor Cyan
+            & python "$PSScriptRoot\install_llama_prebuilt.py" --smoke-test "$builtServer" --install-dir "$LlamaCppDir" 2>&1 | Out-String | Write-Host
+            $smokeExit = $LASTEXITCODE
+            if ($smokeExit -eq 2) {
+                substep "GPU build runs on CPU only (GPU backend failed to initialize)" "Yellow"
+                $BuildOk = $false
+                $FailedStep = "GPU smoke test (ran on CPU)"
+            } elseif ($smokeExit -ne 0) {
+                substep "GPU smoke test inconclusive (exit $smokeExit); keeping GPU build" "Yellow"
+            }
+        }
+    }
+
+    # If a CUDA build was attempted and configure/build/smoke-test left it
+    # unusable, retry once with CUDA disabled so the user still gets a working
+    # (if slower) CPU llama-server instead of nothing.
+    if ($LlamaCudaBuild -and -not $BuildOk) {
+        substep "CUDA build unusable at: $FailedStep; retrying CPU-only build..." "Yellow"
+        $CpuCmakeArgs = @($CmakeArgs | Where-Object {
+            $_ -ne '-DGGML_CUDA=ON' -and
+            $_ -notlike '-DCMAKE_CUDA_ARCHITECTURES=*' -and
+            $_ -notlike '-DCUDAToolkit_ROOT=*' -and
+            $_ -notlike '-DCUDA_TOOLKIT_ROOT_DIR=*' -and
+            $_ -notlike '-DCMAKE_CUDA_COMPILER=*'
+        })
+        $CpuCmakeArgs += '-DGGML_CUDA=OFF'
+        if (Test-Path -LiteralPath $BuildDir) { Remove-Item -LiteralPath $BuildDir -Recurse -Force }
+        $cpuConfigure = cmake @CpuCmakeArgs 2>&1 | Out-String
+        if ($LASTEXITCODE -eq 0) {
+            $cpuBuild = cmake --build $BuildDir --config Release --target llama-server -j $NumCpu 2>&1 | Out-String
+            if ($LASTEXITCODE -eq 0) {
+                $BuildOk = $true
+                $LlamaCudaBuild = $false
+                $FailedStep = $null
+                substep "CPU-only llama.cpp build succeeded" "Green"
+            } else {
+                Write-LlamaFailureLog -Output $cpuBuild
+            }
+        } else {
+            Write-LlamaFailureLog -Output $cpuConfigure
         }
     }
 
@@ -3080,6 +3148,35 @@ if (-not $NeedLlamaSourceBuild) {
             substep "To retry: delete $LlamaCppDir and re-run setup." "Yellow"
             $script:LlamaCppDegraded = $true
         }
+    }
+}
+
+# ─────────────────────────────────────────────
+# Windows GPU: CPU prebuilt as a last resort
+# ─────────────────────────────────────────────
+# A GPU host reaches the source build only when no GPU prebuilt offloads (the
+# CPU prebuilt is deliberately not offered to a GPU host so it does not short
+# circuit the source build, #5807). If that build produced no binary (no CUDA
+# toolkit, compile failure), install the CPU prebuilt via --cpu-fallback so the
+# host still gets a working (if slower) llama-server instead of nothing.
+if ($script:LlamaCppDegraded -and ($HasNvidiaSmi -or $HasROCm)) {
+    substep "GPU build unavailable; trying CPU prebuilt as a last resort..." "Yellow"
+    $lastResortArgs = @(
+        "$PSScriptRoot\install_llama_prebuilt.py",
+        "--install-dir", $OriginalLlamaCppDir,
+        "--llama-tag", $RequestedLlamaTag,
+        "--published-repo", $HelperReleaseRepo,
+        "--simple-policy",
+        "--cpu-fallback"
+    )
+    $prevEAPLast = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    & python @lastResortArgs 2>&1 | Out-String | Write-Host
+    $lastResortExit = $LASTEXITCODE
+    $ErrorActionPreference = $prevEAPLast
+    if ($lastResortExit -eq 0) {
+        step "llama.cpp" "CPU prebuilt installed (GPU unavailable; inference will run on CPU)" "Yellow"
+        $script:LlamaCppDegraded = $false
     }
 }
 

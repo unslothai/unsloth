@@ -1340,6 +1340,56 @@ else
             fi
         fi
 
+        # Map an install_llama_prebuilt.py --smoke-test exit code to a decision
+        # token. 2 (EXIT_FALLBACK) = definitively GPU-intended but CPU-only ->
+        # rebuild CPU; 0 = offload confirmed; anything else (1/EXIT_ERROR,
+        # signals) = inconclusive -> keep the GPU build rather than downgrade on
+        # uncertain evidence. Tiny + side-effect free so
+        # tests/sh/test_llama_gpu_smoke.sh can exercise it.
+        _classify_smoke_exit() {
+            case "$1" in
+                0) echo "ok" ;;
+                2) echo "cpu_only" ;;
+                *) echo "inconclusive" ;;
+            esac
+        }
+
+        # Post-build GPU smoke test (#5807 / #5854): a GPU build whose runtime
+        # backend fails to initialize still links and serves HTTP 200, but only
+        # from CPU. Confirm the fresh binary actually offloads to the GPU; if it
+        # ran on CPU only, retry a CPU build so the user gets a working (if
+        # slower) llama-server instead of a silently CPU-only "GPU" build.
+        # _gpu_fallback_label is empty for a pure CPU build (nothing to verify).
+        if [ "$BUILD_OK" = true ]; then
+            _SMOKE_LABEL="$(_gpu_fallback_label)"
+            if [ -n "$_SMOKE_LABEL" ] && [ -f "$_BUILD_TMP/build/bin/llama-server" ]; then
+                # if/else keeps set -e from aborting before we read the code.
+                if python "$SCRIPT_DIR/install_llama_prebuilt.py" \
+                        --smoke-test "$_BUILD_TMP/build/bin/llama-server" \
+                        --install-dir "$_BUILD_TMP" > "$_BUILD_TMP/gpu-smoke.log" 2>&1; then
+                    _SMOKE_RC=0
+                else
+                    _SMOKE_RC=$?
+                fi
+                case "$(_classify_smoke_exit "$_SMOKE_RC")" in
+                    cpu_only)
+                        substep "$_SMOKE_LABEL build runs on CPU only; retrying CPU build..." "$C_WARN"
+                        rm -rf "$_BUILD_TMP/build"
+                        if run_quiet_no_exit "cmake llama.cpp (cpu fallback)" cmake $CMAKE_GENERATOR_ARGS -S "$_BUILD_TMP" -B "$_BUILD_TMP/build" $CPU_FALLBACK_CMAKE_ARGS; then
+                            _BUILD_DESC="building (CPU fallback after $_SMOKE_LABEL smoke test ran on CPU)"
+                            GPU_BACKEND=""
+                            run_quiet_no_exit "build llama-server (cpu fallback)" cmake --build "$_BUILD_TMP/build" --config Release --target llama-server -j"$NCPU" || BUILD_OK=false
+                        else
+                            BUILD_OK=false
+                        fi
+                        ;;
+                    inconclusive)
+                        substep "GPU smoke test inconclusive (exit $_SMOKE_RC); keeping $_SMOKE_LABEL build" "$C_WARN"
+                        ;;
+                esac
+            fi
+        fi
+
         if [ "$BUILD_OK" = true ]; then
             run_quiet_no_exit "build llama-quantize" cmake --build "$_BUILD_TMP/build" --config Release --target llama-quantize -j"$NCPU" || true
         fi
@@ -1373,27 +1423,36 @@ else
 }
 fi  # end _SKIP_GGUF_BUILD check
 
-# ── arm64 Linux GPU: CPU prebuilt as a last resort ──
-# arm64 Linux with a GPU has no CUDA prebuilt anywhere (the unslothai fork is
-# x64 only; ggml-org ships no Linux CUDA build), so it source-builds for the
-# GPU above. If that produced no binary, install ggml-org's arm64 CPU prebuilt
-# instead of leaving the host without llama.cpp.
+# ── Linux GPU: CPU prebuilt as a last resort ──
+# A Linux GPU host reaches a source build when no GPU prebuilt offloads (the
+# CPU prebuilt is deliberately not offered to a GPU host so it does not short
+# circuit the source build -- #5807). If that build produced no binary (no
+# toolkit, compile failure), install a CPU prebuilt instead of leaving the host
+# without llama.cpp. arm64 has no CUDA prebuilt anywhere, so it always lands
+# here on a degraded GPU build; x86_64 only when its source build also failed.
+# Repo: ggml-org ships the arm64 CPU tarball; x86_64 uses the same published
+# repo as the primary path (the unslothai fork carries linux-x64-cpu).
 if [ "$_LLAMA_CPP_DEGRADED" = true ] \
         && [ "$_HOST_SYSTEM" = "Linux" ] \
-        && { [ "$_HOST_MACHINE" = "aarch64" ] || [ "$_HOST_MACHINE" = "arm64" ]; }; then
-    substep "GPU source build unavailable; trying ggml-org arm64 CPU prebuilt..."
-    _ARM64_CPU_CMD=(
+        && [ "$_LINUX_HAS_GPU" = true ]; then
+    if [ "$_HOST_MACHINE" = "aarch64" ] || [ "$_HOST_MACHINE" = "arm64" ]; then
+        _LASTRESORT_CPU_REPO="ggml-org/llama.cpp"
+    else
+        _LASTRESORT_CPU_REPO="$_HELPER_RELEASE_REPO"
+    fi
+    substep "GPU build unavailable; trying $_LASTRESORT_CPU_REPO CPU prebuilt as a last resort..."
+    _LASTRESORT_CPU_CMD=(
         python "$SCRIPT_DIR/install_llama_prebuilt.py"
         --install-dir "$LLAMA_CPP_DIR"
         --llama-tag "$_REQUESTED_LLAMA_TAG"
-        --published-repo "ggml-org/llama.cpp"
+        --published-repo "$_LASTRESORT_CPU_REPO"
         --simple-policy
         --cpu-fallback
     )
     # Trust the installer's exit code: it validates the server before exiting 0,
     # the same signal the primary prebuilt path above relies on.
-    if run_quiet_no_exit "arm64 CPU prebuilt" "${_ARM64_CPU_CMD[@]}"; then
-        step "llama.cpp" "arm64 CPU prebuilt installed (GPU build unavailable)" "$C_WARN"
+    if run_quiet_no_exit "CPU prebuilt (last resort)" "${_LASTRESORT_CPU_CMD[@]}"; then
+        step "llama.cpp" "CPU prebuilt installed (GPU unavailable; inference will run on CPU)" "$C_WARN"
         _LLAMA_CPP_DEGRADED=false
         print_installed_llama_prebuilt_release "$LLAMA_CPP_DIR"
     fi
