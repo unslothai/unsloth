@@ -1604,6 +1604,45 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
   const setMcpEnabledForChat = useChatRuntimeStore(
     (s) => s.setMcpEnabledForChat,
   );
+  // Capability gating, mirroring the visible pills so menu and pills agree on
+  // what a loaded model supports (a tool the backend drops must not look on).
+  const modelLoaded = useChatRuntimeStore(
+    (s) => !!s.params.checkpoint && !s.modelLoading,
+  );
+  const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
+  const supportsTools = useChatRuntimeStore((s) => s.supportsTools);
+  const supportsBuiltinWebSearch = useChatRuntimeStore(
+    (s) => s.supportsBuiltinWebSearch,
+  );
+  const supportsBuiltinCodeExecution = useChatRuntimeStore(
+    (s) => s.supportsBuiltinCodeExecution,
+  );
+  const supportsBuiltinImageGeneration = useChatRuntimeStore(
+    (s) => s.supportsBuiltinImageGeneration,
+  );
+  const imageToolsEnabled = useChatRuntimeStore((s) => s.imageToolsEnabled);
+  const setImageToolsEnabled = useChatRuntimeStore(
+    (s) => s.setImageToolsEnabled,
+  );
+  const setReasoningEnabled = useChatRuntimeStore((s) => s.setReasoningEnabled);
+  const connectionsEnabled = useExternalProvidersStore(
+    (s) => s.connectionsEnabled,
+  );
+  const externalProvidersAll = useExternalProvidersStore((s) => s.providers);
+  const externalProviders = connectionsEnabled ? externalProvidersAll : [];
+  const externalSelection = parseExternalModelId(checkpoint);
+  const selectedExternalProvider =
+    externalSelection != null
+      ? externalProviders.find((p) => p.id === externalSelection.providerId)
+      : undefined;
+  const isKimiExternal = selectedExternalProvider?.providerType === "kimi";
+  // Disable only when a loaded model lacks the capability; with no model the
+  // tool can still be pre-selected, matching the pill logic above.
+  const searchDisabled =
+    modelLoaded && !(supportsTools || supportsBuiltinWebSearch);
+  const codeDisabled =
+    modelLoaded && !(supportsTools || supportsBuiltinCodeExecution);
+  const imageDisabled = !modelLoaded;
   const [mcpOpen, setMcpOpen] = useState(false);
   // Count of servers marked enabled in the manage dialog. MCP can only be
   // turned on once at least one exists; otherwise the menu opens the dialog.
@@ -1684,15 +1723,35 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
         </ComposerPrimitive.AddAttachment>
         <ComposerAudioMenuItem />
         <DropdownMenuItem
-          className={toolsEnabled ? "text-primary font-medium" : undefined}
-          onSelect={() => setToolsEnabled(!toolsEnabled)}
+          disabled={searchDisabled}
+          className={
+            toolsEnabled && !searchDisabled
+              ? "text-primary font-medium"
+              : undefined
+          }
+          onSelect={() => {
+            const next = !toolsEnabled;
+            setToolsEnabled(next);
+            // Mirror the Search pill: Kimi forbids search + thinking together.
+            if (isKimiExternal) {
+              setReasoningEnabled(!next, { persist: false });
+              applyQwenThinkingParams(!next);
+            }
+          }}
         >
           <GlobeIcon />
           Web search
-          {toolsEnabled ? <CheckIcon className="ml-auto" /> : null}
+          {toolsEnabled && !searchDisabled ? (
+            <CheckIcon className="ml-auto" />
+          ) : null}
         </DropdownMenuItem>
         <DropdownMenuItem
-          className={codeToolsEnabled ? "text-primary font-medium" : undefined}
+          disabled={codeDisabled}
+          className={
+            codeToolsEnabled && !codeDisabled
+              ? "text-primary font-medium"
+              : undefined
+          }
           onSelect={() => setCodeToolsEnabled(!codeToolsEnabled)}
         >
           <HugeiconsIcon
@@ -1701,8 +1760,27 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
             className="size-[1.175rem]!"
           />
           Code
-          {codeToolsEnabled ? <CheckIcon className="ml-auto" /> : null}
+          {codeToolsEnabled && !codeDisabled ? (
+            <CheckIcon className="ml-auto" />
+          ) : null}
         </DropdownMenuItem>
+        {supportsBuiltinImageGeneration && (
+          <DropdownMenuItem
+            disabled={imageDisabled}
+            className={
+              imageToolsEnabled && !imageDisabled
+                ? "text-primary font-medium"
+                : undefined
+            }
+            onSelect={() => setImageToolsEnabled(!imageToolsEnabled)}
+          >
+            <HugeiconsIcon icon={Image03Icon} strokeWidth={2} />
+            Images
+            {imageToolsEnabled && !imageDisabled ? (
+              <CheckIcon className="ml-auto" />
+            ) : null}
+          </DropdownMenuItem>
+        )}
         <DropdownMenuSeparator />
         <DropdownMenuItem
           className={artifactsEnabled ? "text-primary font-medium" : undefined}

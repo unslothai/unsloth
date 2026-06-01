@@ -1192,16 +1192,34 @@ export function SharedComposer({
                 </DropdownMenuItem>
               )}
               <DropdownMenuItem
-                className={toolsEnabled ? "text-primary font-medium" : undefined}
-                onSelect={() => setToolsEnabled(!toolsEnabled)}
+                disabled={searchDisabled}
+                className={
+                  toolsEnabled && !searchDisabled
+                    ? "text-primary font-medium"
+                    : undefined
+                }
+                onSelect={() => {
+                  const next = !toolsEnabled;
+                  setToolsEnabled(next);
+                  // Mirror the Search pill: Kimi forbids search + thinking together.
+                  if (isKimiExternal) {
+                    setReasoningEnabled(!next, { persist: false });
+                    applyQwenThinkingParams(!next);
+                  }
+                }}
               >
                 <GlobeIcon />
                 Web search
-                {toolsEnabled ? <CheckIcon className="ml-auto" /> : null}
+                {toolsEnabled && !searchDisabled ? (
+                  <CheckIcon className="ml-auto" />
+                ) : null}
               </DropdownMenuItem>
               <DropdownMenuItem
+                disabled={codeDisabled}
                 className={
-                  codeToolsEnabled ? "text-primary font-medium" : undefined
+                  codeToolsEnabled && !codeDisabled
+                    ? "text-primary font-medium"
+                    : undefined
                 }
                 onSelect={() => setCodeToolsEnabled(!codeToolsEnabled)}
               >
@@ -1211,8 +1229,27 @@ export function SharedComposer({
                   className="size-[1.175rem]!"
                 />
                 Code
-                {codeToolsEnabled ? <CheckIcon className="ml-auto" /> : null}
+                {codeToolsEnabled && !codeDisabled ? (
+                  <CheckIcon className="ml-auto" />
+                ) : null}
               </DropdownMenuItem>
+              {showImagePill && (
+                <DropdownMenuItem
+                  disabled={imageDisabled}
+                  className={
+                    imageToolsEnabled && !imageDisabled
+                      ? "text-primary font-medium"
+                      : undefined
+                  }
+                  onSelect={() => setImageToolsEnabled(!imageToolsEnabled)}
+                >
+                  <HugeiconsIcon icon={Image03Icon} strokeWidth={2} />
+                  Images
+                  {imageToolsEnabled && !imageDisabled ? (
+                    <CheckIcon className="ml-auto" />
+                  ) : null}
+                </DropdownMenuItem>
+              )}
               <DropdownMenuSeparator />
               <DropdownMenuItem
                 className={
