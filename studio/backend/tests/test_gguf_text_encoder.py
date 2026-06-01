@@ -615,6 +615,108 @@ def test_replace_mistral_modules_keeps_quantized_linear_bias_lazy(monkeypatch, t
     torch.testing.assert_close(out, torch.tensor([[6.0, 9.0]]))
 
 
+def test_dequantize_bf16_gguf_bytes_without_diffusers_import(monkeypatch):
+    import builtins
+
+    import core.inference.gguf_text_encoder as g
+
+    class _FakeQuantTypes:
+        F32 = "F32"
+        F16 = "F16"
+        BF16 = "BF16"
+
+    class _FakeGGUF:
+        GGMLQuantizationType = _FakeQuantTypes
+
+    original_import = builtins.__import__
+
+    def guarded_import(name, *args, **kwargs):
+        if name.startswith("diffusers.quantizers"):
+            raise AssertionError("BF16 GGUF decode should not import diffusers quantizers")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(g, "_require_gguf", lambda: _FakeGGUF)
+    monkeypatch.setattr(builtins, "__import__", guarded_import)
+
+    raw = torch.tensor([0x80, 0x3F, 0x80, 0xBF], dtype = torch.uint8)
+
+    decoded = g._dequantize_gguf_bytes(
+        raw,
+        _FakeQuantTypes.BF16,
+        dtype = torch.bfloat16,
+        logical_shape = (2,),
+    )
+
+    assert decoded.dtype is torch.bfloat16
+    torch.testing.assert_close(
+        decoded.float(),
+        torch.tensor([1.0, -1.0], dtype = torch.float32),
+    )
+
+
+def test_replace_mapped_text_modules_materializes_dense_standalone_bias(
+    monkeypatch,
+    tmp_path,
+):
+    import core.inference.gguf_text_encoder as g
+
+    class _FakeQuantTypes:
+        F32 = "F32"
+        F16 = "F16"
+        BF16 = "BF16"
+
+    class _FakeTensor:
+        def __init__(self, name, tensor_type, data):
+            self.name = name
+            self.tensor_type = tensor_type
+            self.data = data
+            self.shape = tuple(reversed(tuple(data.shape)))
+
+    class _FakeGGUF:
+        GGMLQuantizationType = _FakeQuantTypes
+
+    with torch.device("meta"):
+        root = nn.Module()
+        root.proj = nn.Linear(2, 2, bias = True)
+
+    reader = SimpleNamespace(
+        tensors = [
+            _FakeTensor(
+                "proj.weight",
+                _FakeQuantTypes.F32,
+                torch.eye(2, dtype = torch.float32),
+            ),
+            _FakeTensor(
+                "proj.bias",
+                _FakeQuantTypes.F32,
+                torch.tensor([3.0, 4.0], dtype = torch.float32),
+            ),
+        ],
+        get_field = lambda name: None,
+    )
+
+    monkeypatch.setattr(g, "_require_gguf", lambda: _FakeGGUF)
+    monkeypatch.setattr(g, "_open_gguf_reader", lambda path: reader)
+
+    stats_reader, stats = g.replace_mapped_text_modules_with_lazy_gguf(
+        root,
+        tmp_path / "dense.gguf",
+        map_name = lambda name: g._GGUFNameTarget(name),
+        compute_dtype = torch.bfloat16,
+        resident_device = "cpu",
+    )
+
+    assert stats_reader is reader
+    assert stats.loaded == 2
+    assert stats.materialized == 2
+    assert stats.lazy_linear == 0
+    assert root.proj.weight.device == torch.device("cpu")
+    assert root.proj.bias.device == torch.device("cpu")
+    assert root.proj.weight.dtype is torch.bfloat16
+    assert root.proj.bias.dtype is torch.bfloat16
+    torch.testing.assert_close(root.proj.bias.float(), torch.tensor([3.0, 4.0]))
+
+
 def test_lazy_qwen2vl_text_encoder_uses_text_and_mmproj_replacements(
     monkeypatch,
     tmp_path,
@@ -1099,8 +1201,8 @@ def test_lazy_gguf_linear_dequantizes_during_forward(monkeypatch):
         calls += 1
         assert qweight.dtype is torch.uint8
         assert quant_type == "Q4"
-        assert dtype is torch.float32
-        return torch.tensor([[1.0, 2.0], [3.0, 4.0]], dtype = dtype)
+        assert dtype is None
+        return torch.tensor([[1.0, 2.0], [3.0, 4.0]], dtype = torch.float32)
 
     monkeypatch.setattr(g, "_dequantize_gguf_bytes", fake_dequant)
     layer = g.LazyGGUFLinear(

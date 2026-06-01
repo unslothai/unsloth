@@ -960,6 +960,16 @@ def _dequantize_gguf_bytes(
 ) -> torch.Tensor:
     """Dequantize a GGUF uint8 tensor without materializing at load time."""
 
+    gguf = _require_gguf()
+    if quant_type == _gguf_bfloat16_type(gguf):
+        data = qweight.view(torch.uint8)
+        if data.numel() % 2 != 0:
+            raise RuntimeError("BF16 GGUF tensor has an odd byte count.")
+        dequant = (data.reshape(-1).view(torch.int16).to(torch.int32) << 16).view(torch.float32)
+        if logical_shape is not None:
+            dequant = dequant.reshape(logical_shape)
+        return dequant.to(dtype = dtype) if dtype is not None else dequant
+
     from diffusers.quantizers.gguf.utils import (
         GGML_QUANT_SIZES,
         dequantize_functions,
@@ -1996,11 +2006,29 @@ def replace_mapped_text_modules_with_lazy_gguf(
     materialized = 0
 
     for hf_name, (tensor, target) in mapped.items():
-        if hf_name in loaded or hf_name.endswith(".bias"):
+        if hf_name in loaded:
             continue
 
         parent, leaf = _module_and_leaf(root, hf_name)
         qtype = tensor.tensor_type
+        if hf_name.endswith(".bias"):
+            if (
+                target.value_offset
+                or qtype in _gguf_full_precision_types(gguf)
+                or qtype == _gguf_bfloat16_type(gguf)
+            ):
+                value = _materialize_gguf_tensor(
+                    tensor,
+                    compute_dtype = compute_dtype,
+                    gguf = gguf,
+                    reader = reader,
+                )
+                value = _apply_gguf_target_value_transform(value, target)
+                setattr(parent, leaf, nn.Parameter(value, requires_grad = False))
+                loaded.add(hf_name)
+                materialized += 1
+            continue
+
         if qtype in _gguf_full_precision_types(gguf) or qtype == _gguf_bfloat16_type(gguf):
             value = _materialize_gguf_tensor(
                 tensor,
