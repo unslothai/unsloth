@@ -388,8 +388,10 @@ class LlamaServerBackend:
     # ── HTTP requests (self-healing on a dropped connection) ─────
 
     def _post(self, path: str, payload: dict) -> dict:
-        """POST to the server, respawning once on a transport error (the reaper
-        may have killed us between the liveness check and the request)."""
+        """POST to the server, restarting once and retrying on a dropped
+        connection (the reaper may have killed us between the liveness check and
+        the request) or a timeout (the bundled embedding build occasionally
+        wedges a request); a fresh server unsticks both."""
         last_exc: Exception | None = None
         for attempt in range(2):
             self._ensure_ready()
@@ -397,7 +399,7 @@ class LlamaServerBackend:
                 resp = self._client.post(f"{self._base_url}{path}", json = payload)
                 resp.raise_for_status()
                 return resp.json()
-            except _TRANSPORT_ERRORS as e:
+            except (*_TRANSPORT_ERRORS, httpx.TimeoutException) as e:
                 last_exc = e
                 if attempt == 0:
                     self._restart()

@@ -451,3 +451,39 @@ def test_post_restarts_once_on_connect_error(monkeypatch):
     out = b._post("/tokenize", {"content": "x"})
     assert out == {"tokens": [1]}
     assert restarts["n"] == 1  # one self-heal restart, then success
+
+
+def test_post_restarts_once_on_read_timeout(monkeypatch):
+    """A wedged request (ReadTimeout, not a dropped connection) also triggers a
+    single restart-and-retry -- the bundled embedding build can hang a request."""
+    import httpx
+
+    b = LlamaServerBackend()
+    b._port = 9000
+    monkeypatch.setattr(b, "_ensure_ready", lambda: None)
+    restarts = {"n": 0}
+    monkeypatch.setattr(
+        b, "_restart", lambda: restarts.__setitem__("n", restarts["n"] + 1)
+    )
+
+    attempts = {"n": 0}
+
+    class _Client:
+        def post(self, url, json):
+            attempts["n"] += 1
+            if attempts["n"] == 1:
+                raise httpx.ReadTimeout("timed out")
+
+            class _R:
+                def raise_for_status(self_inner):
+                    return None
+
+                def json(self_inner):
+                    return {"data": [{"index": 0, "embedding": [1.0, 0.0]}]}
+
+            return _R()
+
+    b._client = _Client()
+    out = b._post("/v1/embeddings", {"input": ["x"]})
+    assert out["data"][0]["embedding"] == [1.0, 0.0]
+    assert restarts["n"] == 1  # timeout self-heals like a transport error
