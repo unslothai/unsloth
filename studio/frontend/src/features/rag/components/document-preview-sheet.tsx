@@ -54,7 +54,7 @@ function RegionOverlay({ regions }: { regions: PdfRegion[] }) {
 }
 
 // Zoom multiplies fit-to-panel width: 1 = fit, >1 enlarges (page scrolls), <1
-// shrinks. Stepped so buttons and Ctrl/Cmd-wheel agree.
+// shrinks. Stepped so the buttons and wheel agree.
 const ZOOM_MIN = 0.5;
 const ZOOM_MAX = 3;
 const ZOOM_STEP = 0.25;
@@ -103,13 +103,12 @@ function PdfPreview({
     return () => ro.disconnect();
   }, []);
 
-  // Ctrl/Cmd + wheel zooms. Native listener so preventDefault is honored; a
-  // JSX onWheel is passive and can't stop the browser's page zoom/scroll.
+  // Wheel zooms (scroll up = in, down = out); drag-to-pan moves a zoomed page.
+  // Native non-passive listener so preventDefault stops the panel from scrolling.
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
     const onWheel = (e: WheelEvent) => {
-      if (!(e.ctrlKey || e.metaKey)) return;
       e.preventDefault();
       setScale((s) => clampZoom(s - Math.sign(e.deltaY) * ZOOM_STEP));
     };
