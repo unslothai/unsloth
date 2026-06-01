@@ -1765,6 +1765,7 @@ def _diffusion_owned_targets(diff_status: dict) -> list[tuple[str, str | None]]:
             diff_status.get("active_prompt_enhancer_gguf_repo") or "",
             diff_status.get("active_prompt_enhancer_gguf_filename"),
         ),
+        (diff_status.get("active_lora_repo") or "", None),
         (
             diff_status.get("pending_repo_id") or "",
             diff_status.get("pending_gguf_filename"),
@@ -1778,6 +1779,7 @@ def _diffusion_owned_targets(diff_status: dict) -> list[tuple[str, str | None]]:
             diff_status.get("pending_prompt_enhancer_gguf_repo") or "",
             diff_status.get("pending_prompt_enhancer_gguf_filename"),
         ),
+        (diff_status.get("pending_lora_repo") or "", None),
     ]
 
 

@@ -279,11 +279,17 @@ def test_status_shape_unloaded():
         "pipeline_class",
         "media_kind",
         "base_repo",
+        "base_repo_source",
+        "base_repo_confidence",
+        "base_repo_variant",
+        "base_repo_warning",
+        "sampling_contract",
         "gguf_filename",
         "text_encoder_gguf_repo",
         "text_encoder_gguf_filename",
         "prompt_enhancer_gguf_repo",
         "prompt_enhancer_gguf_filename",
+        "lora",
         "gguf_quantized_cpu_resident",
         "gguf_pin_cpu_resident",
         "offload_policy",
@@ -300,18 +306,30 @@ def test_status_shape_unloaded():
     for guard_key in (
         "active_repo_id",
         "active_base_repo",
+        "active_base_repo_source",
+        "active_base_repo_confidence",
+        "active_base_repo_variant",
+        "active_base_repo_warning",
         "active_gguf_filename",
         "active_text_encoder_gguf_repo",
         "active_text_encoder_gguf_filename",
         "active_prompt_enhancer_gguf_repo",
         "active_prompt_enhancer_gguf_filename",
+        "active_lora_repo",
+        "active_lora_weight_name",
         "pending_repo_id",
         "pending_base_repo",
+        "pending_base_repo_source",
+        "pending_base_repo_confidence",
+        "pending_base_repo_variant",
+        "pending_base_repo_warning",
         "pending_gguf_filename",
         "pending_text_encoder_gguf_repo",
         "pending_text_encoder_gguf_filename",
         "pending_prompt_enhancer_gguf_repo",
         "pending_prompt_enhancer_gguf_filename",
+        "pending_lora_repo",
+        "pending_lora_weight_name",
     ):
         assert guard_key not in s, f"public status() must not expose {guard_key}"
     assert s["is_loaded"] is False
@@ -326,6 +344,8 @@ def test_status_shape_unloaded():
     assert s_internal["pending_text_encoder_gguf_filename"] is None
     assert s_internal["active_prompt_enhancer_gguf_filename"] is None
     assert s_internal["pending_prompt_enhancer_gguf_filename"] is None
+    assert s_internal["active_lora_repo"] is None
+    assert s_internal["pending_lora_repo"] is None
 
 
 # ── encode_png_base64 ───────────────────────────────────────────
@@ -818,6 +838,13 @@ def _install_fake_diffusers(monkeypatch, *, raise_on_pipeline = False):
             inst.kwargs = kwargs
             return inst
 
+    class _FakeSchedulerConfig:
+        pass
+
+    class _FakeScheduler:
+        def __init__(self):
+            self.config = _FakeSchedulerConfig()
+
     class _FakePipeline:
         @classmethod
         def from_pretrained(cls, base_repo, **kwargs):
@@ -826,6 +853,17 @@ def _install_fake_diffusers(monkeypatch, *, raise_on_pipeline = False):
             inst = cls()
             inst.base_repo = base_repo
             inst.kwargs = kwargs
+            inst.scheduler = _FakeScheduler()
+            inst.lora_loads = []
+            inst.adapter_calls = []
+            inst.fuse_calls = []
+            inst.config = SimpleNamespace(
+                is_distilled = (
+                    isinstance(base_repo, str)
+                    and "FLUX.2-klein-" in base_repo
+                    and "base" not in base_repo.lower()
+                )
+            )
             return inst
 
         def __call__(self, **kwargs):
@@ -844,6 +882,20 @@ def _install_fake_diffusers(monkeypatch, *, raise_on_pipeline = False):
         def to(self, device):
             self.device = device
             return self
+
+        def load_lora_weights(self, repo, **kwargs):
+            self.lora_loads.append({"repo": repo, **kwargs})
+
+        def set_adapters(self, adapter_names, adapter_weights = None):
+            self.adapter_calls.append(
+                {
+                    "adapter_names": adapter_names,
+                    "adapter_weights": adapter_weights,
+                }
+            )
+
+        def fuse_lora(self, **kwargs):
+            self.fuse_calls.append(kwargs)
 
     fake.GGUFQuantizationConfig = _FakeQuantConfig
     fake.Flux2KleinPipeline = _FakePipeline
@@ -1093,7 +1145,18 @@ def test_load_model_gguf_path_happy(monkeypatch):
     # "FLUX.2-klein-4B-GGUF" repo name. The Base variant kicks in only
     # when "base" is part of the repo id.
     assert status["base_repo"] == "black-forest-labs/FLUX.2-klein-4B"
+    assert status["base_repo_source"] == "name_heuristic"
+    assert status["base_repo_confidence"] == "heuristic"
+    assert status["base_repo_variant"] == "distilled-4b"
     assert status["gguf_filename"] == "flux-2-klein-4b-Q4_K_S.gguf"
+    contract = status["sampling_contract"]
+    assert contract["family"] == "flux.2-klein"
+    assert contract["gguf"] is True
+    assert contract["base_repo_variant"] == "distilled-4b"
+    assert contract["pipeline_is_distilled"] is True
+    assert contract["guidance_semantics"] == "distilled_single_pass"
+    assert contract["default_steps"] == 4
+    assert contract["scheduler_class"] == "_FakeScheduler"
 
 
 def test_load_model_flux2_dev_text_encoder_gguf(monkeypatch):
@@ -2058,6 +2121,12 @@ def test_load_model_qwen_image_text_encoder_gguf_uses_qwen2vl_loader(
 
     assert status["is_loaded"] is True
     assert status["family"] == "qwen-image"
+    assert status["sampling_contract"]["guidance_kwarg"] == "true_cfg_scale"
+    assert (
+        status["sampling_contract"]["guidance_semantics"]
+        == "true_classifier_free_guidance"
+    )
+    assert status["sampling_contract"]["has_default_negative_prompt"] is True
     assert _FakeQwenTextEncoder.calls == [
         {
             "path": str(text_path),
@@ -2700,6 +2769,196 @@ def test_load_model_base_repo_override(monkeypatch):
         base_repo = "black-forest-labs/FLUX.2-klein-base-9B",
     )
     assert status["base_repo"] == "black-forest-labs/FLUX.2-klein-base-9B"
+    assert status["base_repo_source"] == "explicit"
+    assert status["base_repo_confidence"] == "explicit"
+
+
+def test_load_model_ambiguous_flux2_klein_gguf_requires_base_repo(monkeypatch):
+    _install_fake_diffusers(monkeypatch)
+    from core.inference.diffusion import get_diffusion_backend
+
+    backend = get_diffusion_backend()
+    with pytest.raises(RuntimeError, match = "base_repo candidates") as exc_info:
+        backend.load_model(
+            "owner/my-flux2-klein-finetune-GGUF",
+            gguf_filename = "model-Q4_K_M.gguf",
+        )
+    message = str(exc_info.value)
+    assert "black-forest-labs/FLUX.2-klein-4B" in message
+    assert "black-forest-labs/FLUX.2-klein-base-9B" in message
+    assert "original base repo" in message
+
+
+def test_load_model_flux2_klein_uses_filename_variant_hint(monkeypatch):
+    """Third-party finetune repos often have a generic repo name while
+    the quant filename carries the useful variant marker. Accept that
+    as a heuristic instead of forcing base_repo for every custom GGUF."""
+    _install_fake_diffusers(monkeypatch)
+    from core.inference.diffusion import get_diffusion_backend
+
+    backend = get_diffusion_backend()
+    status = backend.load_model(
+        "owner/my-flux2-klein-finetune-GGUF",
+        gguf_filename = "my-flux2-klein-base-9b-UD-Q4_K_XL.gguf",
+    )
+
+    assert status["base_repo"] == "black-forest-labs/FLUX.2-klein-base-9B"
+    assert status["base_repo_source"] == "filename_heuristic"
+    assert status["base_repo_confidence"] == "heuristic"
+    assert status["base_repo_variant"] == "base-9b"
+
+
+def test_load_model_flux2_klein_rejects_conflicting_variant_hints(monkeypatch):
+    _install_fake_diffusers(monkeypatch)
+    from core.inference.diffusion import get_diffusion_backend
+
+    backend = get_diffusion_backend()
+    with pytest.raises(RuntimeError, match = "Conflicting FLUX.2 Klein"):
+        backend.load_model(
+            "owner/my-flux2-klein-base-4b-GGUF",
+            gguf_filename = "my-flux2-klein-9b-UD-Q4_K_XL.gguf",
+        )
+
+
+def test_diffusion_gguf_inspection_detects_flux_comfy_signature():
+    from core.inference.diffusion import _inspect_diffusion_gguf_tensor_names
+
+    inspection = _inspect_diffusion_gguf_tensor_names(
+        {"double_blocks.0.img_attn.proj.weight", "other.weight"},
+        metadata = {"general.architecture": "flux"},
+    )
+
+    assert inspection.architecture == "flux"
+    assert inspection.layout == "comfy"
+    assert "flux_comfy" in inspection.matched_signatures
+    assert "flux.2-klein" in inspection.family_hints
+    assert inspection.warnings == ()
+
+
+def test_diffusion_gguf_inspection_detects_layout_conflict():
+    from core.inference.diffusion import _inspect_diffusion_gguf_tensor_names
+
+    inspection = _inspect_diffusion_gguf_tensor_names(
+        {
+            "double_blocks.0.img_attn.proj.weight",
+            "transformer_blocks.0.attn.norm_added_k.weight",
+        },
+        metadata = {"general.architecture": "flux"},
+    )
+
+    assert inspection.architecture == "flux"
+    assert inspection.layout is None
+    assert "flux_comfy" in inspection.matched_signatures
+    assert "flux_diffusers" in inspection.matched_signatures
+    assert any(warning.startswith("layout_conflict") for warning in inspection.warnings)
+
+
+def test_resolve_flux2_klein_uses_gguf_metadata_variant_hint():
+    from core.inference.diffusion import (
+        DiffusionGGUFInspection,
+        _resolve_diffusion_base_repo,
+        detect_family,
+    )
+
+    fam = detect_family("owner/my-flux2-klein-finetune-GGUF")
+    assert fam is not None
+    resolution = _resolve_diffusion_base_repo(
+        fam = fam,
+        repo_id = "owner/my-flux2-klein-finetune-GGUF",
+        gguf_filename = "model-Q4_K_M.gguf",
+        base_repo = None,
+        gguf_inspection = DiffusionGGUFInspection(
+            architecture = "flux",
+            layout = "comfy",
+            family_hints = ("flux.2-klein",),
+            variant_hints = (("metadata:general.name", "base-9b"),),
+        ),
+    )
+
+    assert resolution.base_repo == "black-forest-labs/FLUX.2-klein-base-9B"
+    assert resolution.source == "gguf_metadata"
+    assert resolution.variant == "base-9b"
+
+
+def test_load_model_flux2_klein_uses_gguf_metadata_hint_after_local_inspection(
+    monkeypatch,
+    tmp_path,
+):
+    _install_fake_diffusers(monkeypatch)
+    import core.inference.diffusion as d
+    from core.inference.diffusion import DiffusionGGUFInspection, get_diffusion_backend
+
+    repo_dir = tmp_path / "my-flux2-klein-finetune-GGUF"
+    repo_dir.mkdir()
+    (repo_dir / "model-Q4_K_M.gguf").write_bytes(b"fake")
+    monkeypatch.setattr(
+        d,
+        "_inspect_diffusion_gguf_file",
+        lambda _path: DiffusionGGUFInspection(
+            architecture = "flux",
+            layout = "comfy",
+            family_hints = ("flux.2-klein",),
+            variant_hints = (("metadata:general.name", "distilled-9b"),),
+        ),
+    )
+
+    backend = get_diffusion_backend()
+    status = backend.load_model(
+        str(repo_dir),
+        gguf_filename = "model-Q4_K_M.gguf",
+        family_override = "flux.2-klein",
+    )
+
+    assert status["base_repo"] == "black-forest-labs/FLUX.2-klein-9B"
+    assert status["base_repo_source"] == "gguf_metadata"
+    assert status["base_repo_variant"] == "distilled-9b"
+
+
+def test_load_model_rejects_gguf_family_mismatch_after_local_inspection(
+    monkeypatch,
+    tmp_path,
+):
+    _install_fake_diffusers(monkeypatch)
+    import core.inference.diffusion as d
+    from core.inference.diffusion import DiffusionGGUFInspection, get_diffusion_backend
+
+    repo_dir = tmp_path / "my-flux2-klein-finetune-GGUF"
+    repo_dir.mkdir()
+    (repo_dir / "model-Q4_K_M.gguf").write_bytes(b"fake")
+    monkeypatch.setattr(
+        d,
+        "_inspect_diffusion_gguf_file",
+        lambda _path: DiffusionGGUFInspection(
+            architecture = "z_image",
+            layout = "comfy",
+            family_hints = ("z-image", "z-image-turbo"),
+        ),
+    )
+
+    backend = get_diffusion_backend()
+    with pytest.raises(RuntimeError, match = "does not match the GGUF architecture"):
+        backend.load_model(
+            str(repo_dir),
+            gguf_filename = "model-Q4_K_M.gguf",
+            family_override = "flux.2-klein",
+        )
+
+
+def test_load_model_ambiguous_flux2_klein_gguf_accepts_explicit_base_repo(monkeypatch):
+    _install_fake_diffusers(monkeypatch)
+    from core.inference.diffusion import get_diffusion_backend
+
+    backend = get_diffusion_backend()
+    status = backend.load_model(
+        "owner/my-flux2-klein-finetune-GGUF",
+        gguf_filename = "model-Q4_K_M.gguf",
+        base_repo = "black-forest-labs/FLUX.2-klein-base-4B",
+    )
+
+    assert status["base_repo"] == "black-forest-labs/FLUX.2-klein-base-4B"
+    assert status["base_repo_source"] == "explicit"
+    assert status["base_repo_confidence"] == "explicit"
+    assert status["sampling_contract"]["guidance_semantics"] == "classifier_free_guidance"
 
 
 def test_load_model_gguf_only_repo_without_filename_errors(monkeypatch):
@@ -2726,6 +2985,9 @@ def test_smart_base_repo_picks_9b(monkeypatch):
         gguf_filename = "flux-2-klein-9b-Q4_K_S.gguf",
     )
     assert status["base_repo"] == "black-forest-labs/FLUX.2-klein-9B"
+    assert status["base_repo_source"] == "name_heuristic"
+    assert status["base_repo_confidence"] == "heuristic"
+    assert status["base_repo_variant"] == "distilled-9b"
 
 
 def test_smart_base_repo_picks_base_9b(monkeypatch):
@@ -2738,6 +3000,7 @@ def test_smart_base_repo_picks_base_9b(monkeypatch):
         gguf_filename = "flux-2-klein-base-9b-Q4_K_S.gguf",
     )
     assert status["base_repo"] == "black-forest-labs/FLUX.2-klein-base-9B"
+    assert status["base_repo_variant"] == "base-9b"
 
 
 def test_smart_base_repo_picks_base_4b(monkeypatch):
@@ -2750,6 +3013,9 @@ def test_smart_base_repo_picks_base_4b(monkeypatch):
         gguf_filename = "flux-2-klein-base-4b-Q4_K_S.gguf",
     )
     assert status["base_repo"] == "black-forest-labs/FLUX.2-klein-base-4B"
+    assert status["base_repo_variant"] == "base-4b"
+    assert status["sampling_contract"]["pipeline_is_distilled"] is False
+    assert status["sampling_contract"]["guidance_semantics"] == "classifier_free_guidance"
 
 
 def test_gguf_transformer_load_passes_config_subfolder_token(monkeypatch):
@@ -2852,9 +3118,138 @@ def test_load_model_full_repo_does_not_substitute(monkeypatch):
     )
     # base_repo must echo the user repo, not the family default.
     assert status["base_repo"] == "owner/FLUX.1-finetune-diffusers"
+    assert status["base_repo_source"] == "full_repo"
+    assert status["base_repo_confidence"] == "explicit"
     assert status["repo_id"] == "owner/FLUX.1-finetune-diffusers"
+    assert status["sampling_contract"]["gguf"] is False
+    assert status["sampling_contract"]["base_repo_source"] == "full_repo"
     # And the fake pipeline records what we called from_pretrained with.
     assert backend._pipe.base_repo == "owner/FLUX.1-finetune-diffusers"
+
+
+def test_load_model_full_repo_applies_unfused_lora(monkeypatch):
+    _install_fake_diffusers(monkeypatch)
+    from core.inference.diffusion import get_diffusion_backend
+
+    backend = get_diffusion_backend()
+    status = backend.load_model(
+        "owner/FLUX.1-finetune-diffusers",
+        family_override = "flux.1",
+        lora_repo = "owner/my-flux-lora",
+        lora_weight_name = "pytorch_lora_weights.safetensors",
+        lora_adapter_name = "studio-style",
+        lora_scale = 0.75,
+    )
+
+    assert status["is_loaded"] is True
+    assert status["lora"] == {
+        "repo": "owner/my-flux-lora",
+        "weight_name": "pytorch_lora_weights.safetensors",
+        "adapter_name": "studio-style",
+        "scale": 0.75,
+        "fused": False,
+    }
+    assert backend._pipe.lora_loads == [
+        {
+            "repo": "owner/my-flux-lora",
+            "adapter_name": "studio-style",
+            "weight_name": "pytorch_lora_weights.safetensors",
+        }
+    ]
+    assert backend._pipe.adapter_calls == [
+        {
+            "adapter_names": "studio-style",
+            "adapter_weights": 0.75,
+        }
+    ]
+    assert backend._pipe.fuse_calls == []
+
+
+def test_load_model_full_repo_can_fuse_lora(monkeypatch):
+    _install_fake_diffusers(monkeypatch)
+    from core.inference.diffusion import get_diffusion_backend
+
+    backend = get_diffusion_backend()
+    status = backend.load_model(
+        "owner/FLUX.1-finetune-diffusers",
+        family_override = "flux.1",
+        lora_repo = "owner/my-flux-lora",
+        lora_adapter_name = "default",
+        lora_scale = 0.5,
+        lora_fuse = True,
+    )
+
+    assert status["lora"]["fused"] is True
+    assert backend._pipe.fuse_calls == [
+        {
+            "lora_scale": 0.5,
+            "adapter_names": ["default"],
+        }
+    ]
+
+
+def test_load_model_gguf_applies_unfused_lora(monkeypatch):
+    _install_fake_diffusers(monkeypatch)
+    from core.inference.diffusion import get_diffusion_backend
+
+    backend = get_diffusion_backend()
+    status = backend.load_model(
+        "unsloth/FLUX.2-klein-4B-GGUF",
+        gguf_filename = "flux-2-klein-4b-Q4_K_S.gguf",
+        lora_repo = "owner/my-klein-lora",
+    )
+
+    assert status["is_loaded"] is True
+    assert status["lora"] == {
+        "repo": "owner/my-klein-lora",
+        "weight_name": None,
+        "adapter_name": "default",
+        "scale": 1.0,
+        "fused": False,
+    }
+    assert backend._pipe.lora_loads == [
+        {
+            "repo": "owner/my-klein-lora",
+            "adapter_name": "default",
+        }
+    ]
+
+
+def test_load_model_gguf_rejects_lora_fusion(monkeypatch):
+    _install_fake_diffusers(monkeypatch)
+    from core.inference.diffusion import get_diffusion_backend
+
+    backend = get_diffusion_backend()
+    with pytest.raises(RuntimeError, match = "Fusing LoRA into a GGUF"):
+        backend.load_model(
+            "unsloth/FLUX.2-klein-4B-GGUF",
+            gguf_filename = "flux-2-klein-4b-Q4_K_S.gguf",
+            lora_repo = "owner/my-klein-lora",
+            lora_fuse = True,
+        )
+    status = backend.status(include_internal = True)
+    assert status["is_loaded"] is False
+    assert status["active_lora_repo"] is None
+    assert status["pending_lora_repo"] is None
+
+
+def test_apply_lora_rejects_studio_lazy_gguf_modules():
+    from core.inference.diffusion import _apply_diffusion_lora
+
+    pipe = SimpleNamespace(load_lora_weights = lambda *_args, **_kwargs: None)
+
+    with pytest.raises(RuntimeError, match = "lazy quantized modules"):
+        _apply_diffusion_lora(
+            pipe,
+            lora_repo = "owner/my-klein-lora",
+            lora_weight_name = None,
+            lora_adapter_name = None,
+            lora_scale = None,
+            lora_fuse = False,
+            hf_token = None,
+            gguf_filename = "flux-2-klein-4b-Q4_K_S.gguf",
+            uses_studio_lazy_gguf_modules = True,
+        )
 
 
 def test_load_model_wan_full_repo_uses_fp32_vae(monkeypatch):
@@ -3255,27 +3650,47 @@ def test_load_publishes_pending_target_during_loading():
         backend._loading = True
         backend._pending_repo_id = "unsloth/FLUX.2-klein-4B-GGUF"
         backend._pending_base_repo = "black-forest-labs/FLUX.2-klein-4B"
+        backend._pending_base_repo_source = "name_heuristic"
+        backend._pending_base_repo_confidence = "heuristic"
+        backend._pending_base_repo_variant = "distilled-4b"
         backend._pending_gguf_filename = "flux-2-klein-4b-Q4_K_S.gguf"
         backend._pending_text_encoder_gguf_repo = "unsloth/Mistral-Small-3.2-24B-Instruct-2506-GGUF"
         backend._pending_text_encoder_gguf_filename = "Mistral-Small-3.2-24B-Instruct-2506-UD-Q4_K_XL.gguf"
+        backend._pending_lora_repo = "owner/my-klein-lora"
+        backend._pending_lora_weight_name = "adapter.safetensors"
 
     public = backend.status()
     assert public["is_loading"] is True
     assert public["repo_id"] == "unsloth/FLUX.2-klein-4B-GGUF"
     assert public["base_repo"] == "black-forest-labs/FLUX.2-klein-4B"
+    assert public["base_repo_source"] == "name_heuristic"
+    assert public["base_repo_confidence"] == "heuristic"
+    assert public["base_repo_variant"] == "distilled-4b"
     assert public["text_encoder_gguf_repo"] == "unsloth/Mistral-Small-3.2-24B-Instruct-2506-GGUF"
     assert public["text_encoder_gguf_filename"] == "Mistral-Small-3.2-24B-Instruct-2506-UD-Q4_K_XL.gguf"
+    assert public["lora"] == {
+        "repo": "owner/my-klein-lora",
+        "weight_name": "adapter.safetensors",
+        "adapter_name": None,
+        "scale": None,
+        "fused": None,
+    }
     # Guard-facing internal payload also reports the pending fields
     # under their dedicated keys.
     internal = backend.status(include_internal = True)
     assert internal["pending_repo_id"] == "unsloth/FLUX.2-klein-4B-GGUF"
     assert internal["pending_base_repo"] == "black-forest-labs/FLUX.2-klein-4B"
+    assert internal["pending_base_repo_source"] == "name_heuristic"
+    assert internal["pending_base_repo_confidence"] == "heuristic"
+    assert internal["pending_base_repo_variant"] == "distilled-4b"
     assert internal["pending_gguf_filename"] == "flux-2-klein-4b-Q4_K_S.gguf"
     assert internal["pending_text_encoder_gguf_repo"] == "unsloth/Mistral-Small-3.2-24B-Instruct-2506-GGUF"
     assert (
         internal["pending_text_encoder_gguf_filename"]
         == "Mistral-Small-3.2-24B-Instruct-2506-UD-Q4_K_XL.gguf"
     )
+    assert internal["pending_lora_repo"] == "owner/my-klein-lora"
+    assert internal["pending_lora_weight_name"] == "adapter.safetensors"
 
 
 def test_unload_waits_for_in_flight_generation(monkeypatch):
@@ -3512,6 +3927,7 @@ def test_load_model_accepts_relative_local_dir(monkeypatch, tmp_path):
     backend.load_model(
         repo_id = "exports/my-flux",
         gguf_filename = "model.gguf",
+        base_repo = "black-forest-labs/FLUX.2-klein-4B",
         family_override = "flux.2-klein",
         enable_model_cpu_offload = False,
     )

@@ -75,6 +75,8 @@ def test_diffusion_owned_targets_includes_lazy_text_encoder_gguf():
         "active_text_encoder_gguf_filename": "Mistral-Small-3.2-24B-Instruct-2506-UD-Q4_K_XL.gguf",
         "active_prompt_enhancer_gguf_repo": "Green-Sky/Ernie-Image-Prompt-Enhancer-Ministral-3B-GGUF",
         "active_prompt_enhancer_gguf_filename": "Ernie-Image-Prompt-Enhancer-Ministral-3.8B-Q4_K_M.gguf",
+        "active_lora_repo": "owner/flux-lora",
+        "active_lora_weight_name": "pytorch_lora_weights.safetensors",
         "pending_repo_id": None,
         "pending_gguf_filename": None,
         "pending_base_repo": None,
@@ -82,6 +84,8 @@ def test_diffusion_owned_targets_includes_lazy_text_encoder_gguf():
         "pending_text_encoder_gguf_filename": None,
         "pending_prompt_enhancer_gguf_repo": None,
         "pending_prompt_enhancer_gguf_filename": None,
+        "pending_lora_repo": "owner/pending-flux-lora",
+        "pending_lora_weight_name": None,
     }
 
     assert (
@@ -92,6 +96,8 @@ def test_diffusion_owned_targets_includes_lazy_text_encoder_gguf():
         "Green-Sky/Ernie-Image-Prompt-Enhancer-Ministral-3B-GGUF",
         "Ernie-Image-Prompt-Enhancer-Ministral-3.8B-Q4_K_M.gguf",
     ) in models_route._diffusion_owned_targets(status)
+    assert ("owner/flux-lora", None) in models_route._diffusion_owned_targets(status)
+    assert ("owner/pending-flux-lora", None) in models_route._diffusion_owned_targets(status)
 
 
 def test_list_cached_gguf_includes_non_suffix_repo_when_cache_contains_gguf(

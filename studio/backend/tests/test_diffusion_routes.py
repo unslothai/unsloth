@@ -93,6 +93,7 @@ class _FakeBackend:
             "text_encoder_gguf_filename": None,
             "prompt_enhancer_gguf_repo": None,
             "prompt_enhancer_gguf_filename": None,
+            "lora": None,
             "gguf_quantized_cpu_resident": False,
             "gguf_pin_cpu_resident": False,
             "offload_policy": None,
@@ -108,6 +109,8 @@ class _FakeBackend:
             "active_text_encoder_gguf_filename": None,
             "active_prompt_enhancer_gguf_repo": None,
             "active_prompt_enhancer_gguf_filename": None,
+            "active_lora_repo": None,
+            "active_lora_weight_name": None,
             "pending_repo_id": None,
             "pending_base_repo": None,
             "pending_gguf_filename": None,
@@ -115,6 +118,8 @@ class _FakeBackend:
             "pending_text_encoder_gguf_filename": None,
             "pending_prompt_enhancer_gguf_repo": None,
             "pending_prompt_enhancer_gguf_filename": None,
+            "pending_lora_repo": None,
+            "pending_lora_weight_name": None,
             "device": "cpu",
             "dtype": "torch.bfloat16",
             "loaded_at": 0,
@@ -390,14 +395,44 @@ def test_load_forwards_text_encoder_gguf_fields(app_with_stub):
         "text_encoder_gguf_component": None,
         "prompt_enhancer_gguf_repo": None,
         "prompt_enhancer_gguf_filename": None,
+        "lora_repo": None,
+        "lora_weight_name": None,
+        "lora_adapter_name": None,
+        "lora_scale": None,
+        "lora_fuse": False,
         "family_override": None,
         "hf_token": None,
-            "enable_model_cpu_offload": True,
-            "offload_policy": None,
-            "gguf_quantized_cpu_resident": True,
+        "enable_model_cpu_offload": True,
+        "offload_policy": None,
+        "gguf_quantized_cpu_resident": True,
         "gguf_pin_cpu_resident": True,
         "ignore_public_load_pending_workload": "diffusion",
     }
+
+
+def test_load_forwards_lora_fields(app_with_stub):
+    app, stub = app_with_stub
+    c = TestClient(app)
+
+    r = c.post(
+        "/api/inference/images/load",
+        json = {
+            "repo_id": "owner/FLUX.1-finetune-diffusers",
+            "family": "flux.1",
+            "lora_repo": "owner/my-flux-lora",
+            "lora_weight_name": "pytorch_lora_weights.safetensors",
+            "lora_adapter_name": "studio-style",
+            "lora_scale": 0.75,
+            "lora_fuse": True,
+        },
+    )
+    assert r.status_code == 200, r.text
+
+    assert stub.calls[-1]["lora_repo"] == "owner/my-flux-lora"
+    assert stub.calls[-1]["lora_weight_name"] == "pytorch_lora_weights.safetensors"
+    assert stub.calls[-1]["lora_adapter_name"] == "studio-style"
+    assert stub.calls[-1]["lora_scale"] == 0.75
+    assert stub.calls[-1]["lora_fuse"] is True
 
 
 def test_load_forwards_offload_policy(app_with_stub):
@@ -486,6 +521,15 @@ def test_load_rejects_embedded_hf_token(app_with_stub):
             "repo_id": "owner/repo",
             "gguf_filename": "x.gguf",
             "text_encoder_gguf_repo": "https://hf_abcdefghij0123456789@huggingface.co/base/repo",
+        },
+    )
+    assert r.status_code == 422, r.text
+    # LoRA identifiers are also reflected through status/log paths.
+    r = c.post(
+        "/api/inference/images/load",
+        json = {
+            "repo_id": "owner/repo",
+            "lora_repo": "https://hf_abcdefghij0123456789@huggingface.co/owner/lora",
         },
     )
     assert r.status_code == 422, r.text

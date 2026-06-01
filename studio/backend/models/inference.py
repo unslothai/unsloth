@@ -1649,6 +1649,41 @@ class DiffusionLoadRequest(BaseModel):
         None,
         description = "Frontend-visible signed native path grant for a local text_encoder_gguf_repo",
     )
+    lora_repo: Optional[str] = Field(
+        None,
+        max_length = 1024,
+        description = (
+            "Optional HF repo id or leased local directory for a Diffusers LoRA "
+            "adapter to attach to the loaded image pipeline."
+        ),
+    )
+    lora_repo_native_path_lease: Optional[str] = Field(
+        None,
+        description = "Frontend-visible signed native path grant for a local lora_repo",
+    )
+    lora_weight_name: Optional[str] = Field(
+        None,
+        max_length = 512,
+        description = "Optional LoRA weight filename inside lora_repo",
+    )
+    lora_adapter_name: Optional[str] = Field(
+        None,
+        max_length = 128,
+        description = "Optional Diffusers adapter name for the loaded LoRA",
+    )
+    lora_scale: Optional[float] = Field(
+        None,
+        ge = 0.0,
+        le = 10.0,
+        description = "Optional LoRA adapter scale. Defaults to 1.0.",
+    )
+    lora_fuse: bool = Field(
+        False,
+        description = (
+            "Fuse the LoRA into a non-GGUF Diffusers pipeline after loading. "
+            "Rejected for GGUF-backed pipelines."
+        ),
+    )
     family: Optional[str] = Field(
         None,
         max_length = 64,
@@ -1705,6 +1740,9 @@ class DiffusionLoadRequest(BaseModel):
         "text_encoder_gguf_component",
         "prompt_enhancer_gguf_repo",
         "prompt_enhancer_gguf_filename",
+        "lora_repo",
+        "lora_weight_name",
+        "lora_adapter_name",
         "family",
     )
     @classmethod
@@ -1719,6 +1757,9 @@ class DiffusionLoadRequest(BaseModel):
         "text_encoder_gguf_filename",
         "prompt_enhancer_gguf_repo",
         "prompt_enhancer_gguf_filename",
+        "lora_repo",
+        "lora_weight_name",
+        "lora_adapter_name",
     )
     @classmethod
     def _no_embedded_hf_tokens(cls, v, info):

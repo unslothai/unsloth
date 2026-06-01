@@ -100,6 +100,109 @@ class DiffusionFamily:
     aliases: tuple[str, ...] = field(default_factory = tuple)
 
 
+@dataclass(frozen = True)
+class DiffusionBaseRepoResolution:
+    base_repo: str
+    source: str
+    confidence: str
+    variant: Optional[str] = None
+    warning: Optional[str] = None
+
+
+@dataclass(frozen = True)
+class DiffusionSamplingContract:
+    family: Optional[str]
+    media_kind: Optional[str]
+    pipeline_class: Optional[str]
+    transformer_class: Optional[str]
+    base_repo: Optional[str]
+    base_repo_source: Optional[str]
+    base_repo_confidence: Optional[str]
+    base_repo_variant: Optional[str]
+    gguf: bool
+    scheduler_class: Optional[str]
+    scheduler_config_class: Optional[str]
+    pipeline_is_distilled: Optional[bool]
+    guidance_kwarg: str
+    default_guidance_scale: float
+    default_steps: int
+    guidance_semantics: str
+    default_width: int
+    default_height: int
+    requires_image_input: bool
+    has_default_negative_prompt: bool
+    default_call_kwargs: dict[str, Any]
+
+    def as_public_dict(self) -> dict[str, Any]:
+        return {
+            "family": self.family,
+            "media_kind": self.media_kind,
+            "pipeline_class": self.pipeline_class,
+            "transformer_class": self.transformer_class,
+            "base_repo": _display_repo_id(self.base_repo),
+            "base_repo_source": self.base_repo_source,
+            "base_repo_confidence": self.base_repo_confidence,
+            "base_repo_variant": self.base_repo_variant,
+            "gguf": self.gguf,
+            "scheduler_class": self.scheduler_class,
+            "scheduler_config_class": self.scheduler_config_class,
+            "pipeline_is_distilled": self.pipeline_is_distilled,
+            "guidance_kwarg": self.guidance_kwarg,
+            "default_guidance_scale": self.default_guidance_scale,
+            "default_steps": self.default_steps,
+            "guidance_semantics": self.guidance_semantics,
+            "default_width": self.default_width,
+            "default_height": self.default_height,
+            "requires_image_input": self.requires_image_input,
+            "has_default_negative_prompt": self.has_default_negative_prompt,
+            "default_call_kwargs": dict(self.default_call_kwargs),
+        }
+
+
+@dataclass(frozen = True)
+class DiffusionLoraState:
+    repo: str
+    weight_name: Optional[str]
+    adapter_name: str
+    scale: float
+    fused: bool
+
+    def as_public_dict(self) -> dict[str, Any]:
+        return {
+            "repo": _display_repo_id(self.repo),
+            "weight_name": self.weight_name,
+            "adapter_name": self.adapter_name,
+            "scale": self.scale,
+            "fused": self.fused,
+        }
+
+
+@dataclass(frozen = True)
+class DiffusionGGUFInspection:
+    """Lightweight GGUF identity signal used before choosing a base repo.
+
+    This deliberately does not try to be a ComfyUI clone. ComfyUI-GGUF
+    converts a GGUF into a Comfy state dict and then lets Comfy build a
+    native model from key/shape signatures. Studio still loads through
+    Diffusers, so this object only answers the questions we need before
+    calling ``from_pretrained``: what architecture/layout does the file
+    appear to use, which family variants are hinted, and are those hints
+    strong enough to select a companion repo safely.
+    """
+
+    architecture: Optional[str]
+    layout: Optional[str]
+    family_hints: tuple[str, ...] = ()
+    variant_hints: tuple[tuple[str, str], ...] = ()
+    metadata: dict[str, Any] = field(default_factory = dict)
+    matched_signatures: tuple[str, ...] = ()
+    tensor_count: int = 0
+    warnings: tuple[str, ...] = ()
+
+    def variant_values(self) -> tuple[str, ...]:
+        return tuple(dict.fromkeys(variant for _, variant in self.variant_hints))
+
+
 _FAMILIES: tuple[DiffusionFamily, ...] = (
     # The "9b" alias is checked first so a "flux-2-klein-9b" GGUF picks
     # the 9B companion repo instead of the 4B one when the user does not
@@ -491,14 +594,395 @@ def _load_text_encoder_gguf_from_plan(
     return loader.from_gguf(gguf_path, **common_kwargs)
 
 
+def _repo_leaf(value: str) -> str:
+    cleaned = (value or "").rstrip("/\\")
+    return re.split(r"[\\/]+", cleaned)[-1].lower() if cleaned else ""
+
+
+@dataclass(frozen = True)
+class _DiffusionGGUFKeySignature:
+    name: str
+    architecture: str
+    layout: str
+    family_hints: tuple[str, ...]
+    required: tuple[str, ...]
+    forbidden: tuple[str, ...] = ()
+
+
+_DIFFUSION_GGUF_IMAGE_ARCHITECTURES = frozenset(
+    {
+        "flux",
+        "qwen_image",
+        "sd3",
+        "sdxl",
+        "z_image",
+        "wan",
+        "ltxv",
+    }
+)
+
+_DIFFUSION_GGUF_SIGNATURES: tuple[_DiffusionGGUFKeySignature, ...] = (
+    _DiffusionGGUFKeySignature(
+        name = "flux_comfy",
+        architecture = "flux",
+        layout = "comfy",
+        family_hints = ("flux.1", "flux.2", "flux.2-klein"),
+        required = ("double_blocks.0.img_attn.proj.weight",),
+    ),
+    _DiffusionGGUFKeySignature(
+        name = "flux_diffusers",
+        architecture = "flux",
+        layout = "diffusers",
+        family_hints = ("flux.1", "flux.2", "flux.2-klein"),
+        required = ("transformer_blocks.0.attn.norm_added_k.weight",),
+    ),
+    _DiffusionGGUFKeySignature(
+        name = "z_image",
+        architecture = "z_image",
+        layout = "comfy",
+        family_hints = ("z-image", "z-image-turbo"),
+        required = ("noise_refiner.0.attention.norm_k.weight",),
+    ),
+    _DiffusionGGUFKeySignature(
+        name = "sd3_comfy",
+        architecture = "sd3",
+        layout = "comfy",
+        family_hints = ("stable-diffusion-3",),
+        required = ("joint_blocks.0.x_block.attn.qkv.weight",),
+    ),
+    _DiffusionGGUFKeySignature(
+        name = "sd3_diffusers",
+        architecture = "sd3",
+        layout = "diffusers",
+        family_hints = ("stable-diffusion-3",),
+        required = (
+            "transformer_blocks.0.attn.add_q_proj.weight",
+            "pos_embed.proj.weight",
+        ),
+    ),
+    _DiffusionGGUFKeySignature(
+        name = "sdxl_diffusers",
+        architecture = "sdxl",
+        layout = "diffusers_unet",
+        family_hints = ("stable-diffusion-xl",),
+        required = (
+            "down_blocks.0.downsamplers.0.conv.weight",
+            "add_embedding.linear_1.weight",
+        ),
+    ),
+    _DiffusionGGUFKeySignature(
+        name = "sdxl_comfy",
+        architecture = "sdxl",
+        layout = "comfy_ldm",
+        family_hints = ("stable-diffusion-xl",),
+        required = (
+            "input_blocks.3.0.op.weight",
+            "input_blocks.6.0.op.weight",
+            "output_blocks.2.2.conv.weight",
+            "output_blocks.5.2.conv.weight",
+        ),
+    ),
+)
+
+
+_GGUF_ARCHITECTURE_FAMILY_HINTS: dict[str, tuple[str, ...]] = {
+    "flux": ("flux.1", "flux.2", "flux.2-klein"),
+    "qwen_image": (
+        "qwen-image",
+        "qwen-image-2512",
+        "qwen-image-edit",
+        "qwen-image-edit-2509",
+        "qwen-image-edit-2511",
+        "qwen-image-layered",
+    ),
+    "sd3": ("stable-diffusion-3",),
+    "sdxl": ("stable-diffusion-xl",),
+    "z_image": ("z-image", "z-image-turbo"),
+    "wan": ("wan2-2-t2v",),
+    "ltxv": ("ltx2-3-distilled",),
+}
+
+
+def _metadata_string_values(metadata: dict[str, Any]) -> tuple[tuple[str, str], ...]:
+    values: list[tuple[str, str]] = []
+    for key, value in sorted(metadata.items()):
+        if isinstance(value, str) and value.strip():
+            values.append((key, value.strip()))
+    return tuple(values)
+
+
+def _inspect_diffusion_gguf_tensor_names(
+    tensor_names: set[str],
+    *,
+    metadata: Optional[dict[str, Any]] = None,
+) -> DiffusionGGUFInspection:
+    metadata = dict(metadata or {})
+    metadata_arch = metadata.get("general.architecture")
+    architecture = (
+        str(metadata_arch).strip().lower()
+        if isinstance(metadata_arch, str) and metadata_arch.strip()
+        else None
+    )
+    matched_signatures: list[str] = []
+    family_hints: list[str] = []
+    layouts: list[str] = []
+    signature_arches: list[str] = []
+    warnings: list[str] = []
+
+    if architecture in _GGUF_ARCHITECTURE_FAMILY_HINTS:
+        family_hints.extend(_GGUF_ARCHITECTURE_FAMILY_HINTS[architecture])
+    elif architecture and architecture not in _DIFFUSION_GGUF_IMAGE_ARCHITECTURES:
+        warnings.append(f"unrecognized_gguf_architecture:{architecture}")
+
+    for signature in _DIFFUSION_GGUF_SIGNATURES:
+        if not all(key in tensor_names for key in signature.required):
+            continue
+        if any(key in tensor_names for key in signature.forbidden):
+            continue
+        matched_signatures.append(signature.name)
+        layouts.append(signature.layout)
+        signature_arches.append(signature.architecture)
+        family_hints.extend(signature.family_hints)
+
+    unique_signature_arches = tuple(dict.fromkeys(signature_arches))
+    if architecture is None and len(unique_signature_arches) == 1:
+        architecture = unique_signature_arches[0]
+    elif architecture is not None:
+        for signature_arch in unique_signature_arches:
+            if signature_arch != architecture:
+                warnings.append(
+                    f"architecture_conflict:metadata={architecture},signature={signature_arch}"
+                )
+
+    unique_layouts = tuple(dict.fromkeys(layouts))
+    layout = unique_layouts[0] if len(unique_layouts) == 1 else None
+    if len(unique_layouts) > 1:
+        warnings.append("layout_conflict:" + ",".join(unique_layouts))
+
+    variant_hints: list[tuple[str, str]] = []
+    for key, value in _metadata_string_values(metadata):
+        if variant := _flux2_klein_variant_from_text(value):
+            variant_hints.append((f"metadata:{key}", variant))
+
+    return DiffusionGGUFInspection(
+        architecture = architecture,
+        layout = layout,
+        family_hints = tuple(dict.fromkeys(family_hints)),
+        variant_hints = tuple(dict.fromkeys(variant_hints)),
+        metadata = metadata,
+        matched_signatures = tuple(matched_signatures),
+        tensor_count = len(tensor_names),
+        warnings = tuple(dict.fromkeys(warnings)),
+    )
+
+
+def _read_diffusion_gguf_metadata(reader: Any) -> dict[str, Any]:
+    metadata: dict[str, Any] = {}
+    try:
+        field_names = list(getattr(reader, "fields", {}) or {})
+    except Exception:
+        return metadata
+    for field_name in field_names:
+        try:
+            field = reader.get_field(field_name)
+            field_types = getattr(field, "types", ())
+            if len(field_types) != 1:
+                continue
+            field_type = field_types[0]
+            # Avoid importing gguf enum names at module import time.
+            type_name = getattr(field_type, "name", str(field_type)).upper()
+            value = field.parts[field.data[-1]]
+            if type_name.endswith("STRING"):
+                metadata[field_name] = str(value, "utf-8")
+            elif type_name.endswith("INT32") or type_name.endswith("UINT32"):
+                metadata[field_name] = int(value.item())
+            elif type_name.endswith("F32") or type_name.endswith("FLOAT32"):
+                metadata[field_name] = float(value.item())
+            elif type_name.endswith("BOOL"):
+                metadata[field_name] = bool(value.item())
+        except Exception:
+            continue
+    return metadata
+
+
+def _inspect_diffusion_gguf_file(path: Path) -> DiffusionGGUFInspection:
+    try:
+        import gguf
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "Diffusion GGUF inspection requires the gguf runtime package. "
+            "Re-run Studio setup before loading an image GGUF."
+        ) from exc
+
+    reader = gguf.GGUFReader(str(path))
+    tensor_names = {str(tensor.name) for tensor in getattr(reader, "tensors", ())}
+    metadata = _read_diffusion_gguf_metadata(reader)
+    return _inspect_diffusion_gguf_tensor_names(tensor_names, metadata = metadata)
+
+
+def _gguf_inspection_matches_family(
+    inspection: Optional[DiffusionGGUFInspection],
+    fam: DiffusionFamily,
+) -> bool:
+    if inspection is None or not inspection.family_hints:
+        return True
+    return fam.name in inspection.family_hints
+
+
+_FLUX2_KLEIN_BASE_REPOS: dict[str, str] = {
+    "distilled-4b": "black-forest-labs/FLUX.2-klein-4B",
+    "distilled-9b": "black-forest-labs/FLUX.2-klein-9B",
+    "base-4b": "black-forest-labs/FLUX.2-klein-base-4B",
+    "base-9b": "black-forest-labs/FLUX.2-klein-base-9B",
+}
+
+
+def _contains_label(text: str, label: str) -> bool:
+    return re.search(rf"(^|[^a-z0-9]){re.escape(label)}([^a-z0-9]|$)", text) is not None
+
+
+def _flux2_klein_variant_from_text(text: str) -> Optional[str]:
+    """Infer the Flux2 Klein variant from one repo/file leaf.
+
+    The parser is intentionally conservative: it only looks at the
+    repo/file leaf (callers strip parent dirs first) and treats
+    ``base`` as a token so names like ``database`` do not accidentally
+    select a base model. GGUF filenames often carry the missing variant
+    clue for third-party finetunes, so this helper is used for both the
+    repo leaf and GGUF filename leaf.
+    """
+
+    value = text.lower()
+    is_9b = re.search(r"(^|[^a-z0-9])9b([^a-z0-9]|$)", value) is not None
+    is_4b = re.search(r"(^|[^a-z0-9])4b([^a-z0-9]|$)", value) is not None
+    is_base = (
+        _contains_label(value, "base")
+        or re.search(r"base[-_. ]?(4b|9b)", value) is not None
+    )
+    is_distilled = (
+        "distill" in value
+        or _contains_label(value, "schnell")
+    )
+    if is_9b and is_base:
+        return "base-9b"
+    if is_9b:
+        return "distilled-9b"
+    if is_4b and is_base:
+        return "base-4b"
+    if is_base:
+        return "base-4b"
+    if is_4b or is_distilled:
+        return "distilled-4b"
+    return None
+
+
+def _resolve_flux2_klein_base_repo_from_labels(
+    *,
+    repo_id: str,
+    gguf_filename: Optional[str],
+    gguf_inspection: Optional[DiffusionGGUFInspection] = None,
+) -> DiffusionBaseRepoResolution:
+    labels = [
+        ("repo/path", _repo_leaf(repo_id), "name_heuristic"),
+        ("gguf_filename", _repo_leaf(gguf_filename or ""), "filename_heuristic"),
+    ]
+    matches = [
+        (label_name, variant, source)
+        for label_name, label, source in labels
+        if (variant := _flux2_klein_variant_from_text(label)) is not None
+    ]
+    if gguf_inspection is not None:
+        matches.extend(
+            (source, variant, "gguf_metadata")
+            for source, variant in gguf_inspection.variant_hints
+        )
+    variants = {variant for _, variant, _ in matches}
+    candidate_lines = (
+        "base_repo candidates: "
+        "black-forest-labs/FLUX.2-klein-4B (distilled 4B), "
+        "black-forest-labs/FLUX.2-klein-9B (distilled 9B), "
+        "black-forest-labs/FLUX.2-klein-base-4B (base 4B), "
+        "black-forest-labs/FLUX.2-klein-base-9B (base 9B)."
+    )
+    if not variants:
+        raise RuntimeError(
+            "Ambiguous FLUX.2 Klein GGUF: could not infer whether this is "
+            "distilled 4B, distilled 9B, base 4B, or base 9B from repo/path "
+            f"'{_display_repo_id(repo_id)}' or GGUF filename "
+            f"'{Path(gguf_filename or '').name}'. Pass base_repo explicitly. "
+            f"{candidate_lines} If this is a finetune, use the original "
+            "base repo it was trained from."
+        )
+    if len(variants) > 1:
+        seen = ", ".join(f"{label}={variant}" for label, variant, _ in matches)
+        raise RuntimeError(
+            "Conflicting FLUX.2 Klein GGUF variant hints: "
+            f"{seen}. Pass base_repo explicitly so Studio does not use the "
+            f"wrong sampling contract. {candidate_lines}"
+        )
+    variant = next(iter(variants))
+    source = matches[0][2]
+    return DiffusionBaseRepoResolution(
+        base_repo = _FLUX2_KLEIN_BASE_REPOS[variant],
+        source = source,
+        confidence = "heuristic",
+        variant = variant,
+    )
+
+
+def _resolve_diffusion_base_repo(
+    *,
+    fam: DiffusionFamily,
+    repo_id: str,
+    gguf_filename: Optional[str],
+    base_repo: Optional[str],
+    gguf_inspection: Optional[DiffusionGGUFInspection] = None,
+) -> DiffusionBaseRepoResolution:
+    """Resolve the companion Diffusers repo for a diffusion load.
+
+    Name-based inference is kept as a compatibility fallback for curated
+    and obvious GGUF repos, but the returned metadata makes that decision
+    auditable. Flux2 Klein is intentionally stricter than the older
+    ``_smart_base_repo`` helper: base and distilled variants share a
+    family but require different sampling semantics, so ambiguous custom
+    fine-tunes must pass an explicit ``base_repo`` instead of silently
+    inheriting the distilled default.
+    """
+
+    if not gguf_filename:
+        return DiffusionBaseRepoResolution(
+            base_repo = _expand_existing_local_path(repo_id),
+            source = "full_repo",
+            confidence = "explicit",
+        )
+    if base_repo:
+        return DiffusionBaseRepoResolution(
+            base_repo = _expand_existing_local_path(base_repo),
+            source = "explicit",
+            confidence = "explicit",
+        )
+    if fam.name != "flux.2-klein":
+        return DiffusionBaseRepoResolution(
+            base_repo = fam.base_repo,
+            source = "family_default",
+            confidence = "heuristic",
+        )
+
+    return _resolve_flux2_klein_base_repo_from_labels(
+        repo_id = repo_id,
+        gguf_filename = gguf_filename,
+        gguf_inspection = gguf_inspection,
+    )
+
+
 def _smart_base_repo(fam: DiffusionFamily, repo_id: str) -> str:
     """Pick the best matching base diffusers repo for a given GGUF repo
     when the caller did not pass an explicit base_repo.
 
-    Currently only specialises the flux.2-klein family: a repo name
-    containing "9b" gets the 9B companion, "base-4b" / "base-9b" map
-    to the Base variants, everything else falls back to the family
-    default (Apache 2.0 distilled 4B).
+    Currently only specialises the flux.2-klein family: explicit
+    variant markers in the repo leaf choose the matching 4B / 9B and
+    base / distilled companion repo. Ambiguous names raise so callers
+    do not silently get the wrong sampling contract.
 
     Only the LAST segment of the repo id / path is inspected so a
     namespace or parent directory like ``baseorg/...`` or
@@ -508,21 +992,175 @@ def _smart_base_repo(fam: DiffusionFamily, repo_id: str) -> str:
     do not get scored as "base" via the parent directory either
     (round 13 P2 #13).
     """
-    if fam.name != "flux.2-klein":
-        return fam.base_repo
-    cleaned = (repo_id or "").rstrip("/\\")
-    last_segment = re.split(r"[\\/]+", cleaned)[-1].lower() if cleaned else ""
-    is_9b = "9b" in last_segment
-    is_base = "base" in last_segment
-    if is_9b and is_base:
-        return "black-forest-labs/FLUX.2-klein-base-9B"
-    if is_9b:
-        return "black-forest-labs/FLUX.2-klein-9B"
-    if is_base:
-        return "black-forest-labs/FLUX.2-klein-base-4B"
-    # Distilled 4B is the default for any flux-2-klein GGUF that does
-    # not advertise 9B or "base".
-    return "black-forest-labs/FLUX.2-klein-4B"
+    return _resolve_diffusion_base_repo(
+        fam = fam,
+        repo_id = repo_id,
+        gguf_filename = "model.gguf",
+        base_repo = None,
+        gguf_inspection = None,
+    ).base_repo
+
+
+def _optional_class_name(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    return type(value).__name__
+
+
+def _optional_bool(value: Any) -> Optional[bool]:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    return bool(value)
+
+
+def _pipeline_is_distilled(pipe: Any) -> Optional[bool]:
+    config = getattr(pipe, "config", None)
+    if config is None:
+        return None
+    if isinstance(config, dict):
+        return _optional_bool(config.get("is_distilled"))
+    return _optional_bool(getattr(config, "is_distilled", None))
+
+
+def _guidance_semantics(
+    fam: Optional[DiffusionFamily],
+    *,
+    is_distilled: Optional[bool],
+    base_repo_variant: Optional[str],
+) -> str:
+    if fam is None:
+        return "unknown"
+    if fam.guidance_kwarg == "true_cfg_scale":
+        return "true_classifier_free_guidance"
+    if fam.name == "flux.2-klein":
+        if is_distilled is True or (
+            base_repo_variant is not None and base_repo_variant.startswith("distilled")
+        ):
+            return "distilled_single_pass"
+        if is_distilled is False or (
+            base_repo_variant is not None and base_repo_variant.startswith("base")
+        ):
+            return "classifier_free_guidance"
+        return "flux2_klein_unknown_variant"
+    if fam.default_guidance_scale <= 1.0:
+        return "distilled_or_guidance_disabled"
+    return "guidance_scale"
+
+
+def _build_sampling_contract(
+    *,
+    pipe: Any,
+    fam: Optional[DiffusionFamily],
+    base_repo: Optional[str],
+    base_repo_source: Optional[str],
+    base_repo_confidence: Optional[str],
+    base_repo_variant: Optional[str],
+    gguf_filename: Optional[str],
+) -> Optional[DiffusionSamplingContract]:
+    if fam is None:
+        return None
+    scheduler = getattr(pipe, "scheduler", None)
+    scheduler_config = getattr(scheduler, "config", None)
+    is_distilled = _pipeline_is_distilled(pipe)
+    return DiffusionSamplingContract(
+        family = fam.name,
+        media_kind = fam.media_kind,
+        pipeline_class = fam.pipeline_class,
+        transformer_class = fam.transformer_class,
+        base_repo = base_repo,
+        base_repo_source = base_repo_source,
+        base_repo_confidence = base_repo_confidence,
+        base_repo_variant = base_repo_variant,
+        gguf = bool(gguf_filename),
+        scheduler_class = _optional_class_name(scheduler),
+        scheduler_config_class = _optional_class_name(scheduler_config),
+        pipeline_is_distilled = is_distilled,
+        guidance_kwarg = fam.guidance_kwarg,
+        default_guidance_scale = float(fam.default_guidance_scale),
+        default_steps = int(fam.default_steps),
+        guidance_semantics = _guidance_semantics(
+            fam,
+            is_distilled = is_distilled,
+            base_repo_variant = base_repo_variant,
+        ),
+        default_width = int(fam.default_width),
+        default_height = int(fam.default_height),
+        requires_image_input = bool(fam.requires_image_input),
+        has_default_negative_prompt = fam.default_negative_prompt is not None,
+        default_call_kwargs = dict(fam.default_call_kwargs),
+    )
+
+
+def _apply_diffusion_lora(
+    pipe: Any,
+    *,
+    lora_repo: str,
+    lora_weight_name: Optional[str],
+    lora_adapter_name: Optional[str],
+    lora_scale: Optional[float],
+    lora_fuse: bool,
+    hf_token: Optional[str],
+    gguf_filename: Optional[str],
+    uses_studio_lazy_gguf_modules: bool,
+) -> DiffusionLoraState:
+    """Attach a Diffusers LoRA adapter to a loaded pipeline.
+
+    This is intentionally a no-op unless the caller explicitly provides
+    a LoRA repo/path, so normal image loads keep the exact same execution
+    path. Unfused LoRA is attempted for both full and GGUF-backed
+    pipelines via Diffusers' own loader. Fusion is restricted to
+    non-GGUF loads because fusing into Studio's lazy/quantized GGUF
+    modules would mutate temporary dequantized weights rather than a
+    normal dense parameter tree.
+    """
+
+    if lora_fuse and gguf_filename:
+        raise RuntimeError(
+            "Fusing LoRA into a GGUF diffusion model is not supported. "
+            "Load the adapter unfused, or use a non-GGUF Diffusers model."
+        )
+    if gguf_filename and uses_studio_lazy_gguf_modules:
+        raise RuntimeError(
+            "LoRA adapters for this GGUF diffusion model are not supported in "
+            "the current low-VRAM path because Studio replaced Diffusers "
+            "GGUFLinear modules with lazy quantized modules that PEFT cannot "
+            "inject into. Use a non-GGUF Diffusers model for LoRA, or run a "
+            "Diffusers GGUF build that keeps upstream GGUFLinear modules."
+        )
+    load_lora = getattr(pipe, "load_lora_weights", None)
+    if not callable(load_lora):
+        raise RuntimeError(
+            f"{type(pipe).__name__} does not support Diffusers LoRA loading."
+        )
+    adapter_name = (lora_adapter_name or "default").strip() or "default"
+    scale = float(1.0 if lora_scale is None else lora_scale)
+    if not (0.0 <= scale <= 10.0):
+        raise ValueError("lora_scale must be in [0, 10].")
+    kwargs: dict[str, Any] = {"adapter_name": adapter_name}
+    if lora_weight_name:
+        kwargs["weight_name"] = lora_weight_name
+    if hf_token:
+        kwargs["token"] = hf_token
+    load_lora(lora_repo, **kwargs)
+    set_adapters = getattr(pipe, "set_adapters", None)
+    if callable(set_adapters):
+        set_adapters(adapter_name, adapter_weights = scale)
+    if lora_fuse:
+        fuse_lora = getattr(pipe, "fuse_lora", None)
+        if not callable(fuse_lora):
+            raise RuntimeError(
+                f"{type(pipe).__name__} does not support LoRA fusion."
+            )
+        fuse_lora(lora_scale = scale, adapter_names = [adapter_name])
+    return DiffusionLoraState(
+        repo = lora_repo,
+        weight_name = lora_weight_name,
+        adapter_name = adapter_name,
+        scale = scale,
+        fused = bool(lora_fuse),
+    )
 
 
 def _expand_existing_local_path(value: str) -> str:
@@ -1201,7 +1839,13 @@ class DiffusionBackend:
         self._prompt_enhancer_gguf_repo: Optional[str] = None
         self._prompt_enhancer_gguf_path: Optional[str] = None
         self._prompt_enhancer_gguf_filename: Optional[str] = None
+        self._lora_state: Optional[DiffusionLoraState] = None
         self._base_repo: Optional[str] = None
+        self._base_repo_source: Optional[str] = None
+        self._base_repo_confidence: Optional[str] = None
+        self._base_repo_variant: Optional[str] = None
+        self._base_repo_warning: Optional[str] = None
+        self._sampling_contract: Optional[DiffusionSamplingContract] = None
         self._device: Optional[str] = None
         self._dtype: Optional[str] = None
         # True when ``enable_model_cpu_offload()`` was applied on the
@@ -1230,11 +1874,17 @@ class DiffusionBackend:
         # status() under _lock.
         self._pending_repo_id: Optional[str] = None
         self._pending_base_repo: Optional[str] = None
+        self._pending_base_repo_source: Optional[str] = None
+        self._pending_base_repo_confidence: Optional[str] = None
+        self._pending_base_repo_variant: Optional[str] = None
+        self._pending_base_repo_warning: Optional[str] = None
         self._pending_gguf_filename: Optional[str] = None
         self._pending_text_encoder_gguf_repo: Optional[str] = None
         self._pending_text_encoder_gguf_filename: Optional[str] = None
         self._pending_prompt_enhancer_gguf_repo: Optional[str] = None
         self._pending_prompt_enhancer_gguf_filename: Optional[str] = None
+        self._pending_lora_repo: Optional[str] = None
+        self._pending_lora_weight_name: Optional[str] = None
 
     # ── lifecycle ─────────────────────────────────────────────────
 
@@ -1273,18 +1923,30 @@ class DiffusionBackend:
             # user just clicked.
             active_repo = self._repo_id
             active_base = self._base_repo
+            active_base_source = self._base_repo_source
+            active_base_confidence = self._base_repo_confidence
+            active_base_variant = self._base_repo_variant
+            active_base_warning = self._base_repo_warning
+            active_sampling_contract = self._sampling_contract
             active_gguf = self._gguf_filename
             active_te_repo = self._text_encoder_gguf_repo
             active_te_gguf = self._text_encoder_gguf_filename
             active_pe_repo = self._prompt_enhancer_gguf_repo
             active_pe_gguf = self._prompt_enhancer_gguf_filename
+            active_lora_state = self._lora_state
             pending_repo = self._pending_repo_id if self._loading else None
             pending_base = self._pending_base_repo if self._loading else None
+            pending_base_source = self._pending_base_repo_source if self._loading else None
+            pending_base_confidence = self._pending_base_repo_confidence if self._loading else None
+            pending_base_variant = self._pending_base_repo_variant if self._loading else None
+            pending_base_warning = self._pending_base_repo_warning if self._loading else None
             pending_gguf = self._pending_gguf_filename if self._loading else None
             pending_te_repo = self._pending_text_encoder_gguf_repo if self._loading else None
             pending_te_gguf = self._pending_text_encoder_gguf_filename if self._loading else None
             pending_pe_repo = self._pending_prompt_enhancer_gguf_repo if self._loading else None
             pending_pe_gguf = self._pending_prompt_enhancer_gguf_filename if self._loading else None
+            pending_lora_repo = self._pending_lora_repo if self._loading else None
+            pending_lora_weight_name = self._pending_lora_weight_name if self._loading else None
             # When a swap is in flight, the UI-facing repo_id /
             # base_repo / gguf_filename advertise the PENDING model
             # but ``self._family`` still points at the previously
@@ -1311,6 +1973,19 @@ class DiffusionBackend:
             ui_te_gguf_basename = Path(ui_te_gguf).name if ui_te_gguf else None
             ui_pe_gguf = pending_pe_gguf or active_pe_gguf
             ui_pe_gguf_basename = Path(ui_pe_gguf).name if ui_pe_gguf else None
+            active_lora_public = (
+                active_lora_state.as_public_dict()
+                if active_lora_state is not None
+                else None
+            )
+            if pending_lora_repo:
+                active_lora_public = {
+                    "repo": _display_repo_id(pending_lora_repo),
+                    "weight_name": pending_lora_weight_name,
+                    "adapter_name": None,
+                    "scale": None,
+                    "fused": None,
+                }
             # UI-facing ``repo_id`` / ``base_repo`` collapse absolute
             # local paths to their leaf name so ``/images/status``
             # does not leak the user's filesystem layout to other
@@ -1326,11 +2001,21 @@ class DiffusionBackend:
                 "pipeline_class": ui_pipeline_class,
                 "media_kind": ui_media_kind,
                 "base_repo": _display_repo_id(pending_base or active_base),
+                "base_repo_source": pending_base_source or active_base_source,
+                "base_repo_confidence": pending_base_confidence or active_base_confidence,
+                "base_repo_variant": pending_base_variant or active_base_variant,
+                "base_repo_warning": pending_base_warning or active_base_warning,
+                "sampling_contract": (
+                    active_sampling_contract.as_public_dict()
+                    if active_sampling_contract is not None and not pending_repo
+                    else None
+                ),
                 "gguf_filename": ui_gguf_basename,
                 "text_encoder_gguf_repo": _display_repo_id(pending_te_repo or active_te_repo),
                 "text_encoder_gguf_filename": ui_te_gguf_basename,
                 "prompt_enhancer_gguf_repo": _display_repo_id(pending_pe_repo or active_pe_repo),
                 "prompt_enhancer_gguf_filename": ui_pe_gguf_basename,
+                "lora": active_lora_public,
                 "gguf_quantized_cpu_resident": self._gguf_quantized_cpu_resident,
                 "gguf_pin_cpu_resident": self._gguf_pin_cpu_resident,
                 "offload_policy": self._offload_policy,
@@ -1353,18 +2038,32 @@ class DiffusionBackend:
                     {
                         "active_repo_id": active_repo,
                         "active_base_repo": active_base,
+                        "active_base_repo_source": active_base_source,
+                        "active_base_repo_confidence": active_base_confidence,
+                        "active_base_repo_variant": active_base_variant,
+                        "active_base_repo_warning": active_base_warning,
                         "active_gguf_filename": active_gguf,
                         "active_text_encoder_gguf_repo": active_te_repo,
                         "active_text_encoder_gguf_filename": active_te_gguf,
                         "active_prompt_enhancer_gguf_repo": active_pe_repo,
                         "active_prompt_enhancer_gguf_filename": active_pe_gguf,
+                        "active_lora_repo": active_lora_state.repo if active_lora_state else None,
+                        "active_lora_weight_name": (
+                            active_lora_state.weight_name if active_lora_state else None
+                        ),
                         "pending_repo_id": pending_repo,
                         "pending_base_repo": pending_base,
+                        "pending_base_repo_source": pending_base_source,
+                        "pending_base_repo_confidence": pending_base_confidence,
+                        "pending_base_repo_variant": pending_base_variant,
+                        "pending_base_repo_warning": pending_base_warning,
                         "pending_gguf_filename": pending_gguf,
                         "pending_text_encoder_gguf_repo": pending_te_repo,
                         "pending_text_encoder_gguf_filename": pending_te_gguf,
                         "pending_prompt_enhancer_gguf_repo": pending_pe_repo,
                         "pending_prompt_enhancer_gguf_filename": pending_pe_gguf,
+                        "pending_lora_repo": pending_lora_repo,
+                        "pending_lora_weight_name": pending_lora_weight_name,
                     }
                 )
             return payload
@@ -1423,6 +2122,11 @@ class DiffusionBackend:
         text_encoder_gguf_component: Optional[str] = None,
         prompt_enhancer_gguf_repo: Optional[str] = None,
         prompt_enhancer_gguf_filename: Optional[str] = None,
+        lora_repo: Optional[str] = None,
+        lora_weight_name: Optional[str] = None,
+        lora_adapter_name: Optional[str] = None,
+        lora_scale: Optional[float] = None,
+        lora_fuse: bool = False,
         hf_token: Optional[str] = None,
         family_override: Optional[str] = None,
         enable_model_cpu_offload: bool = True,
@@ -1464,6 +2168,13 @@ class DiffusionBackend:
         ``gguf_pin_cpu_resident`` pins CPU-resident packed GGUF tensors
         so host-to-device copies can use non-blocking transfer. When
         omitted, it follows UNSLOTH_STUDIO_GGUF_PIN_CPU_RESIDENT.
+
+        ``lora_repo`` optionally points at a Diffusers LoRA adapter repo
+        or local path. When provided, the adapter is attached after the
+        pipeline is constructed and before device placement/offload. LoRA
+        fusion is restricted to non-GGUF models; unfused adapters are
+        attempted for both full and GGUF-backed pipelines via Diffusers'
+        native loader.
 
         Raises ``RuntimeError`` on failure with a user-facing message.
         On a failed swap the previous pipeline is also released to
@@ -1589,6 +2300,10 @@ class DiffusionBackend:
                 # success.
                 self._pending_repo_id = repo_id
                 self._pending_base_repo = base_repo
+                self._pending_base_repo_source = "explicit" if base_repo else None
+                self._pending_base_repo_confidence = "explicit" if base_repo else None
+                self._pending_base_repo_variant = None
+                self._pending_base_repo_warning = None
                 # Store the caller's full ``gguf_filename`` (e.g.
                 # ``BF16/model.gguf``) so the variant-aware delete
                 # guards have the subdirectory info. The UI side of
@@ -1598,6 +2313,8 @@ class DiffusionBackend:
                 self._pending_text_encoder_gguf_filename = text_encoder_gguf_filename
                 self._pending_prompt_enhancer_gguf_repo = prompt_enhancer_gguf_repo
                 self._pending_prompt_enhancer_gguf_filename = prompt_enhancer_gguf_filename
+                self._pending_lora_repo = lora_repo
+                self._pending_lora_weight_name = lora_weight_name
             try:
                 pipeline_cls = getattr(diffusers, fam.pipeline_class, None)
                 if pipeline_cls is None:
@@ -1625,8 +2342,10 @@ class DiffusionBackend:
                 #      P2 #10).
                 #   2. otherwise prefer caller-supplied base_repo for
                 #      the missing VAE / text encoder components.
-                #   3. otherwise use the family + repo_id heuristic so
-                #      a 9B GGUF picks the 9B base, not the 4B fallback.
+                #   3. otherwise use the family + repo_id resolver so
+                #      obvious curated GGUFs keep working, while ambiguous
+                #      Flux2 Klein fine-tunes fail before using the wrong
+                #      sampling contract.
                 if not gguf_filename:
                     # Guard: a repo that ends in "-GGUF" (the unsloth
                     # convention) is GGUF-only and will 500 on
@@ -1640,50 +2359,38 @@ class DiffusionBackend:
                             "or load a full diffusers repo (base_repo only "
                             "applies when picking a GGUF quant)."
                         )
-                    # ``~/models/my-flux`` must be expanded so
-                    # diffusers' from_pretrained does not pass the
-                    # literal tilde through to ``os.path.isdir`` and
-                    # fall back to the Hub (round 14 P2 #11).
-                    effective_base = _expand_existing_local_path(repo_id)
+                    # The resolver below expands ``~/models/my-flux`` so
+                    # diffusers' from_pretrained does not pass the literal
+                    # tilde through to ``os.path.isdir`` and fall back to
+                    # the Hub (round 14 P2 #11).
+                base_resolution: Optional[DiffusionBaseRepoResolution] = None
+                effective_base: Optional[str] = None
+                # Full Diffusers repos and explicit GGUF companion repos
+                # can resolve immediately. Ambiguous GGUF companion
+                # selection waits until after the GGUF file is local so
+                # the resolver can use metadata and tensor-key signatures
+                # instead of failing on repo names alone.
+                if not gguf_filename or base_repo:
+                    base_resolution = _resolve_diffusion_base_repo(
+                        fam = fam,
+                        repo_id = repo_id,
+                        gguf_filename = gguf_filename,
+                        base_repo = base_repo,
+                    )
+                    effective_base = base_resolution.base_repo
                     with self._lock:
                         self._pending_base_repo = effective_base
-                elif base_repo:
-                    effective_base = _expand_existing_local_path(base_repo)
-                    # Refresh pending so delete guards see the actual
-                    # base, not just caller-supplied None.
-                    with self._lock:
-                        self._pending_base_repo = effective_base
-                else:
-                    effective_base = _smart_base_repo(fam, repo_id)
-                    with self._lock:
-                        self._pending_base_repo = effective_base
-                # ``repo_id`` / ``effective_base`` are user-supplied
-                # strings that can embed an ``hf_xxxxx`` token via a
-                # URL-style path (``https://hf_token@huggingface.co/...``).
-                # Scrub them BEFORE the logger formats the line so the
-                # token never reaches structured-log sinks (round 14
-                # P2 #9).
-                # Round 23 P2 #11: ``_redact_hf_tokens`` only scrubs
-                # ``hf_xxxxx`` substrings, so an absolute local
-                # path like ``/home/alice/private/FLUX.2-klein-GGUF``
-                # used to land in this log line verbatim. Route
-                # through ``_display_repo_id`` so the leaf is
-                # logged when the value is a filesystem path, with
-                # the token-redaction step inside that helper as a
-                # belt-and-braces defence.
-                logger.info(
-                    "Loading diffusion model %s (family=%s, device=%s, dtype=%s, base=%s)",
-                    _display_repo_id(repo_id),
-                    fam.name,
-                    device,
-                    dtype,
-                    _display_repo_id(effective_base),
-                )
+                        self._pending_base_repo_source = base_resolution.source
+                        self._pending_base_repo_confidence = base_resolution.confidence
+                        self._pending_base_repo_variant = base_resolution.variant
+                        self._pending_base_repo_warning = base_resolution.warning
 
                 transformer = None
                 local_gguf_path: Optional[str] = None
+                diffusion_gguf_inspection: Optional[DiffusionGGUFInspection] = None
                 text_encoder = None
                 prompt_enhancer = None
+                lora_state: Optional[DiffusionLoraState] = None
                 local_text_encoder_gguf_path: Optional[str] = None
                 effective_text_encoder_gguf_repo: Optional[str] = None
                 text_encoder_gguf_info: Any = None
@@ -1763,6 +2470,65 @@ class DiffusionBackend:
                             filename = gguf_filename,
                             token = hf_token,
                         )
+                    local_diffusion_gguf = Path(local_gguf_path)
+                    if local_diffusion_gguf.is_file() and base_repo is None:
+                        diffusion_gguf_inspection = _inspect_diffusion_gguf_file(
+                            local_diffusion_gguf
+                        )
+                        if not _gguf_inspection_matches_family(
+                            diffusion_gguf_inspection,
+                            fam,
+                        ):
+                            hints = ", ".join(diffusion_gguf_inspection.family_hints)
+                            raise RuntimeError(
+                                "The selected diffusion family does not match the "
+                                "GGUF architecture signals. Detected "
+                                f"architecture={diffusion_gguf_inspection.architecture or 'unknown'}, "
+                                f"layout={diffusion_gguf_inspection.layout or 'unknown'}, "
+                                f"family_hints=[{hints or 'none'}], but load requested "
+                                f"family={fam.name}."
+                            )
+
+                if base_resolution is None:
+                    base_resolution = _resolve_diffusion_base_repo(
+                        fam = fam,
+                        repo_id = repo_id,
+                        gguf_filename = gguf_filename,
+                        base_repo = base_repo,
+                        gguf_inspection = diffusion_gguf_inspection,
+                    )
+                    effective_base = base_resolution.base_repo
+                    with self._lock:
+                        self._pending_base_repo = effective_base
+                        self._pending_base_repo_source = base_resolution.source
+                        self._pending_base_repo_confidence = base_resolution.confidence
+                        self._pending_base_repo_variant = base_resolution.variant
+                        self._pending_base_repo_warning = base_resolution.warning
+
+                if effective_base is None:
+                    raise RuntimeError("Internal error: missing diffusion base repo.")
+                # ``repo_id`` / ``effective_base`` are user-supplied
+                # strings that can embed an ``hf_xxxxx`` token via a
+                # URL-style path (``https://hf_token@huggingface.co/...``).
+                # Scrub them BEFORE the logger formats the line so the
+                # token never reaches structured-log sinks (round 14
+                # P2 #9).
+                # Round 23 P2 #11: ``_redact_hf_tokens`` only scrubs
+                # ``hf_xxxxx`` substrings, so an absolute local
+                # path like ``/home/alice/private/FLUX.2-klein-GGUF``
+                # used to land in this log line verbatim. Route
+                # through ``_display_repo_id`` so the leaf is
+                # logged when the value is a filesystem path, with
+                # the token-redaction step inside that helper as a
+                # belt-and-braces defence.
+                logger.info(
+                    "Loading diffusion model %s (family=%s, device=%s, dtype=%s, base=%s)",
+                    _display_repo_id(repo_id),
+                    fam.name,
+                    device,
+                    dtype,
+                    _display_repo_id(effective_base),
+                )
                 if text_encoder_gguf_filename:
                     effective_text_encoder_gguf_repo = (
                         text_encoder_gguf_repo or _default_text_encoder_gguf_repo(fam)
@@ -1984,7 +2750,13 @@ class DiffusionBackend:
                         self._prompt_enhancer_gguf_repo = None
                         self._prompt_enhancer_gguf_path = None
                         self._prompt_enhancer_gguf_filename = None
+                        self._lora_state = None
                         self._base_repo = None
+                        self._base_repo_source = None
+                        self._base_repo_confidence = None
+                        self._base_repo_variant = None
+                        self._base_repo_warning = None
+                        self._sampling_contract = None
                         self._device = None
                         self._dtype = None
                         self._cpu_offload_enabled = False
@@ -2187,6 +2959,22 @@ class DiffusionBackend:
                 )
                 try:
                     pipe = pipeline_cls.from_pretrained(effective_base, **pipe_kwargs)
+                    if lora_repo:
+                        lora_state = _apply_diffusion_lora(
+                            pipe,
+                            lora_repo = lora_repo,
+                            lora_weight_name = lora_weight_name,
+                            lora_adapter_name = lora_adapter_name,
+                            lora_scale = lora_scale,
+                            lora_fuse = bool(lora_fuse),
+                            hf_token = hf_token,
+                            gguf_filename = gguf_filename,
+                            uses_studio_lazy_gguf_modules = bool(
+                                prepared_gguf_module_counts.get("diffusion_linear_lazy")
+                                or text_encoder_gguf_filename
+                                or prompt_enhancer_gguf_filename
+                            ),
+                        )
                     # Device placement / offload can ALSO raise after
                     # from_pretrained succeeded (OOM at the .to(device)
                     # copy, accelerate offload hook misconfigured, etc.).
@@ -2251,7 +3039,21 @@ class DiffusionBackend:
                         if prompt_enhancer_gguf_filename
                         else None
                     )
+                    self._lora_state = lora_state
                     self._base_repo = effective_base
+                    self._base_repo_source = base_resolution.source
+                    self._base_repo_confidence = base_resolution.confidence
+                    self._base_repo_variant = base_resolution.variant
+                    self._base_repo_warning = base_resolution.warning
+                    self._sampling_contract = _build_sampling_contract(
+                        pipe = pipe,
+                        fam = fam,
+                        base_repo = effective_base,
+                        base_repo_source = base_resolution.source,
+                        base_repo_confidence = base_resolution.confidence,
+                        base_repo_variant = base_resolution.variant,
+                        gguf_filename = gguf_filename,
+                    )
                     self._device = device
                     self._dtype = str(dtype).replace("torch.", "")
                     self._cpu_offload_enabled = cpu_offload_enabled
@@ -2284,11 +3086,17 @@ class DiffusionBackend:
                     self._loading = False
                     self._pending_repo_id = None
                     self._pending_base_repo = None
+                    self._pending_base_repo_source = None
+                    self._pending_base_repo_confidence = None
+                    self._pending_base_repo_variant = None
+                    self._pending_base_repo_warning = None
                     self._pending_gguf_filename = None
                     self._pending_text_encoder_gguf_repo = None
                     self._pending_text_encoder_gguf_filename = None
                     self._pending_prompt_enhancer_gguf_repo = None
                     self._pending_prompt_enhancer_gguf_filename = None
+                    self._pending_lora_repo = None
+                    self._pending_lora_weight_name = None
 
                 return self.status()
             except Exception as exc:
@@ -2391,6 +3199,8 @@ class DiffusionBackend:
                 exc_msg = _collapse_local(exc_msg, _locals.get("effective_prompt_enhancer_gguf_repo"))
                 exc_msg = _collapse_local(exc_msg, _locals.get("prompt_enhancer_gguf_filename"))
                 exc_msg = _collapse_local(exc_msg, _locals.get("local_prompt_enhancer_gguf_path"))
+                exc_msg = _collapse_local(exc_msg, _locals.get("lora_repo"))
+                exc_msg = _collapse_local(exc_msg, _locals.get("lora_weight_name"))
                 with self._lock:
                     self._last_error = exc_msg
                 # ``logger.exception`` would emit the raw exception
@@ -2419,11 +3229,17 @@ class DiffusionBackend:
                     # finishes would falsely block deletes forever.
                     self._pending_repo_id = None
                     self._pending_base_repo = None
+                    self._pending_base_repo_source = None
+                    self._pending_base_repo_confidence = None
+                    self._pending_base_repo_variant = None
+                    self._pending_base_repo_warning = None
                     self._pending_gguf_filename = None
                     self._pending_text_encoder_gguf_repo = None
                     self._pending_text_encoder_gguf_filename = None
                     self._pending_prompt_enhancer_gguf_repo = None
                     self._pending_prompt_enhancer_gguf_filename = None
+                    self._pending_lora_repo = None
+                    self._pending_lora_weight_name = None
                 # Round 32 P1 #3: clear the backend-side public-load
                 # pending publish if it was set. Skipped when the
                 # helper-busy snapshot raised (no publish to clear)
@@ -2462,7 +3278,15 @@ class DiffusionBackend:
                 self._prompt_enhancer_gguf_repo = None
                 self._prompt_enhancer_gguf_path = None
                 self._prompt_enhancer_gguf_filename = None
+                self._lora_state = None
+                self._pending_lora_repo = None
+                self._pending_lora_weight_name = None
                 self._base_repo = None
+                self._base_repo_source = None
+                self._base_repo_confidence = None
+                self._base_repo_variant = None
+                self._base_repo_warning = None
+                self._sampling_contract = None
                 self._device = None
                 self._dtype = None
                 self._cpu_offload_enabled = False
