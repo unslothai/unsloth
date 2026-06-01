@@ -42,7 +42,9 @@ def _cuda() -> bool:
 
 
 def _get(model_name: str | None = None):
-    """Return the cached SentenceTransformer, (re)loading if the name changed."""
+    """Return the cached SentenceTransformer, (re)loading if the name changed.
+    On CUDA the model runs in fp16 (``half()``) for a ~1.5x encode speedup at
+    negligible accuracy loss; CPU stays fp32 (half is unsupported/slow there)."""
     global _model, _name
     name = model_name or config.EMBEDDING_MODEL
     with _lock:
@@ -52,6 +54,8 @@ def _get(model_name: str | None = None):
             device = "cuda" if _cuda() else "cpu"
             logger.info("loading embedding model %s on %s", name, device)
             _model = SentenceTransformer(name, device = device)
+            if device == "cuda":
+                _model = _model.half()
             _name = name
         return _model
 
@@ -61,22 +65,40 @@ def warm(model_name: str | None = None) -> None:
     _get(model_name)
 
 
+def _inference_ctx():
+    """``torch.inference_mode()`` when torch is present, else a no-op context."""
+    try:
+        import torch
+
+        return torch.inference_mode()
+    except Exception:  # noqa: BLE001 - torch may be missing or broken
+        from contextlib import nullcontext
+
+        return nullcontext()
+
+
 def encode(texts: list[str], *, model_name: str | None = None, normalize: bool = True):
-    """Embed texts into an (N, dim) numpy array. Serialized so concurrent
-    ingestion threads don't trip the fast tokenizer's borrow check. Rayon
-    parallelism is enabled only for this call and restored afterward."""
+    """Embed texts into an (N, dim) float32 numpy array. Serialized so concurrent
+    ingestion threads don't trip the fast tokenizer's borrow check; runs under
+    inference_mode when torch is available. Rayon parallelism is enabled only for
+    this call and restored afterward."""
     model = _get(model_name)
     with _compute_lock:
         os.environ["TOKENIZERS_PARALLELISM"] = "true"
         try:
-            return model.encode(
-                texts,
-                normalize_embeddings = normalize,
-                convert_to_numpy = True,
-                show_progress_bar = False,
-            )
+            with _inference_ctx():
+                out = model.encode(
+                    texts,
+                    normalize_embeddings = normalize,
+                    convert_to_numpy = True,
+                    show_progress_bar = False,
+                )
         finally:
             os.environ["TOKENIZERS_PARALLELISM"] = "false"
+    # fp16 weights yield fp16 output; store float32 for sqlite-vec + stable cosine.
+    if hasattr(out, "astype"):
+        out = out.astype("float32", copy = False)
+    return out
 
 
 def dim(model_name: str | None = None) -> int:
