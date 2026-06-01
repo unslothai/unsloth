@@ -9,13 +9,14 @@ import {
   type ModelOption,
   ModelSelector,
 } from "@/components/assistant-ui/model-selector";
-import { Thread } from "@/components/assistant-ui/thread";
+import { ProjectComposer, Thread } from "@/components/assistant-ui/thread";
 import {
   ResizableHandle,
   ResizablePanel,
   ResizablePanelGroup,
 } from "@/components/ui/resizable";
 import { useSidebar } from "@/components/ui/sidebar";
+import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent } from "@/components/ui/tooltip";
 import {
   NativeModelChip,
@@ -29,12 +30,17 @@ import {
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { isTauri } from "@/lib/api-base";
 import { cn } from "@/lib/utils";
-import { CustomizeIcon } from "@hugeicons/core-free-icons";
+import {
+  Folder02Icon,
+  FolderAddIcon,
+  LayoutAlignRightIcon,
+} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useNavigate, useSearch } from "@tanstack/react-router";
+import { useNavigate, useRouterState, useSearch } from "@tanstack/react-router";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import type { PanelImperativeHandle } from "react-resizable-panels";
 import {
+  type CSSProperties,
   type ReactElement,
   memo,
   useCallback,
@@ -49,12 +55,18 @@ import { ChatSettingsPanel } from "./chat-settings-sheet";
 import { CopyableErrorChip } from "@/components/ui/copyable-error-chip";
 import { ContextUsageBar } from "./components/context-usage-bar";
 import { ModelLoadInlineStatus } from "./components/model-load-status";
+import { ProjectSwitcher } from "./components/project-switcher";
 import {
   buildExternalModelId,
   isExternalModelId,
   parseExternalModelId,
 } from "./external-providers";
 import { useChatModelRuntime } from "./hooks/use-chat-model-runtime";
+import { useChatProjects } from "./hooks/use-chat-projects";
+import {
+  type SidebarItem,
+  useChatSidebarItems,
+} from "./hooks/use-chat-sidebar-items";
 import {
   clearTrainingCompareHandoff,
   getTrainingCompareHandoff,
@@ -181,12 +193,14 @@ const ARTIFACT_SURFACE_POP_DELAY_MS = 150;
 const SingleContent = memo(function SingleContent({
   threadId,
   newThreadNonce,
+  projectId,
   artifact,
   artifactSurface,
   onCloseArtifact,
 }: {
   threadId?: string;
   newThreadNonce?: string;
+  projectId?: string | null;
   artifact?: ChatArtifact | null;
   artifactSurface: ChatArtifactSurface;
   onCloseArtifact: () => void;
@@ -272,6 +286,8 @@ const SingleContent = memo(function SingleContent({
       modelType="base"
       initialThreadId={threadId}
       newThreadNonce={newThreadNonce}
+      projectId={projectId}
+      listThreads={false}
     >
       <ResizablePanelGroup
         orientation="horizontal"
@@ -365,15 +381,19 @@ function useIsLoraCompare(): boolean {
 
 const CompareContent = memo(function CompareContent({
   pairId,
+  projectId,
   models,
   loraModels,
+  externalModels,
   onFoldersChange,
   onModelsChange,
   deleteDisabled,
 }: {
   pairId: string;
+  projectId?: string | null;
   models: ModelOption[];
   loraModels: LoraModelOption[];
+  externalModels: ExternalModelOption[];
   onFoldersChange?: () => void;
   onModelsChange?: (deletedModel?: DeletedModelRef) => void;
   deleteDisabled?: boolean;
@@ -381,12 +401,14 @@ const CompareContent = memo(function CompareContent({
   const isLoraCompare = useIsLoraCompare();
 
   return isLoraCompare ? (
-    <LoraCompareContent pairId={pairId} />
+    <LoraCompareContent pairId={pairId} projectId={projectId} />
   ) : (
     <GeneralCompareContent
       pairId={pairId}
+      projectId={projectId}
       models={models}
       loraModels={loraModels}
+      externalModels={externalModels}
       onFoldersChange={onFoldersChange}
       onModelsChange={onModelsChange}
       deleteDisabled={deleteDisabled}
@@ -408,6 +430,7 @@ const CompareContent = memo(function CompareContent({
 function ComparePane({
   modelType,
   pairId,
+  projectId,
   initialThreadId,
   handleName,
   header,
@@ -415,6 +438,7 @@ function ComparePane({
 }: {
   modelType: "base" | "lora" | "model1" | "model2";
   pairId: string;
+  projectId?: string | null;
   initialThreadId: string | undefined;
   handleName: string;
   header: ReactElement;
@@ -432,6 +456,7 @@ function ComparePane({
         <ChatRuntimeProvider
           modelType={modelType}
           pairId={pairId}
+          projectId={projectId}
           initialThreadId={initialThreadId}
           syncActiveThreadId={false}
         >
@@ -487,7 +512,8 @@ function CompareShell({
 /** Fast path: same model, adapter on/off, simultaneous generation. */
 const LoraCompareContent = memo(function LoraCompareContent({
   pairId,
-}: { pairId: string }): ReactElement {
+  projectId,
+}: { pairId: string; projectId?: string | null }): ReactElement {
   const handlesRef = useRef<Record<string, CompareHandle>>({});
   const [baseThreadId, setBaseThreadId] = useState<string>();
   const [loraThreadId, setLoraThreadId] = useState<string>();
@@ -519,6 +545,7 @@ const LoraCompareContent = memo(function LoraCompareContent({
         <ComparePane
           modelType="base"
           pairId={pairId}
+          projectId={projectId}
           initialThreadId={baseThreadId}
           handleName="base"
           header={
@@ -532,6 +559,7 @@ const LoraCompareContent = memo(function LoraCompareContent({
         <ComparePane
           modelType="lora"
           pairId={pairId}
+          projectId={projectId}
           initialThreadId={loraThreadId}
           handleName="lora"
           borderClassName="border-t border-border/60 md:border-t-0 md:border-l"
@@ -557,6 +585,7 @@ const LoraCompareContent = memo(function LoraCompareContent({
 function GeneralCompareHeader({
   models,
   loraModels,
+  externalModels,
   value,
   onValueChange,
   onFoldersChange,
@@ -566,6 +595,7 @@ function GeneralCompareHeader({
 }: {
   models: ModelOption[];
   loraModels: LoraModelOption[];
+  externalModels: ExternalModelOption[];
   value: string;
   onValueChange: (
     id: string,
@@ -586,6 +616,7 @@ function GeneralCompareHeader({
       <ModelSelector
         models={models}
         loraModels={loraModels}
+        externalModels={externalModels}
         value={value}
         onValueChange={onValueChange}
         onFoldersChange={onFoldersChange}
@@ -601,15 +632,19 @@ function GeneralCompareHeader({
 /** General path: any two models, sequential load → generate. */
 const GeneralCompareContent = memo(function GeneralCompareContent({
   pairId,
+  projectId,
   models,
   loraModels,
+  externalModels,
   onFoldersChange,
   onModelsChange,
   deleteDisabled,
 }: {
   pairId: string;
+  projectId?: string | null;
   models: ModelOption[];
   loraModels: LoraModelOption[];
+  externalModels: ExternalModelOption[];
   onFoldersChange?: () => void;
   onModelsChange?: (deletedModel?: DeletedModelRef) => void;
   deleteDisabled?: boolean;
@@ -684,6 +719,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
         <ComparePane
           modelType="model1"
           pairId={pairId}
+          projectId={projectId}
           initialThreadId={model1ThreadId}
           handleName="model1"
           header={
@@ -691,6 +727,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
               side="left"
               models={models}
               loraModels={loraModels}
+              externalModels={externalModels}
               value={model1.id}
               onValueChange={(id, meta) =>
                 setModel1({
@@ -708,6 +745,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
         <ComparePane
           modelType="model2"
           pairId={pairId}
+          projectId={projectId}
           initialThreadId={model2ThreadId}
           handleName="model2"
           borderClassName="border-t border-sidebar-border md:border-t-0 md:border-l"
@@ -716,6 +754,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
               side="right"
               models={models}
               loraModels={loraModels}
+              externalModels={externalModels}
               value={model2.id}
               onValueChange={(id, meta) =>
                 setModel2({
@@ -735,9 +774,248 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
   );
 });
 
+function formatProjectChatDate(timestamp: number): string {
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+  }).format(new Date(timestamp));
+}
+
+function extractMessageText(content: MessageRecord["content"]): string {
+  if (typeof content === "string") {
+    return content;
+  }
+  if (!Array.isArray(content)) {
+    return "";
+  }
+  return content
+    .map((part) => {
+      if (part.type === "text") {
+        return part.text;
+      }
+      if (part.type === "image") {
+        return "Image";
+      }
+      if (part.type === "audio") {
+        return "Audio";
+      }
+      return "";
+    })
+    .filter(Boolean)
+    .join(" ");
+}
+
+function ProjectLanding({
+  projectId,
+  projectName,
+  items,
+}: {
+  projectId: string;
+  projectName: string;
+  items: SidebarItem[];
+}): ReactElement {
+  const navigate = useNavigate();
+  const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
+  const initialActiveThreadRef = useRef<string | null>(null);
+  const [projectTab, setProjectTab] = useState<"chats" | "sources">("chats");
+  const [pendingNewThreadId, setPendingNewThreadId] = useState<string | null>(
+    null,
+  );
+  const [newThreadNonce, setNewThreadNonce] = useState(() =>
+    crypto.randomUUID(),
+  );
+  const [previews, setPreviews] = useState<
+    Record<string, { snippet: string; date: string }>
+  >({});
+
+  useEffect(() => {
+    initialActiveThreadRef.current =
+      useChatRuntimeStore.getState().activeThreadId;
+    useChatRuntimeStore.getState().setActiveThreadId(null);
+    useChatRuntimeStore.getState().setContextUsage(null);
+    setPendingNewThreadId(null);
+    setNewThreadNonce(crypto.randomUUID());
+  }, [projectId]);
+
+  useEffect(() => {
+    if (!activeThreadId) {
+      setPendingNewThreadId(null);
+      return;
+    }
+    if (activeThreadId === initialActiveThreadRef.current) {
+      return;
+    }
+    setPendingNewThreadId(activeThreadId);
+  }, [activeThreadId]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadPreviews(): Promise<void> {
+      const entries = await Promise.all(
+        items.map(async (item) => {
+          if (item.type !== "single") {
+            return [
+              item.id,
+              {
+                snippet: "Compare chat",
+                date: formatProjectChatDate(item.createdAt),
+              },
+            ] as const;
+          }
+          const messages = await listStoredChatMessages(item.id).catch(() => []);
+          const firstUserMessage =
+            messages.find((message) => message.role === "user") ?? messages[0];
+          return [
+            item.id,
+            {
+              snippet: firstUserMessage
+                ? extractMessageText(firstUserMessage.content)
+                : "",
+              date: formatProjectChatDate(item.createdAt),
+            },
+          ] as const;
+        }),
+      );
+      if (!cancelled) {
+        setPreviews(Object.fromEntries(entries));
+      }
+    }
+
+    void loadPreviews();
+    return () => {
+      cancelled = true;
+    };
+  }, [items]);
+
+  return (
+    <ChatRuntimeProvider
+      key={projectId}
+      projectId={projectId}
+      newThreadNonce={newThreadNonce}
+      listThreads={false}
+    >
+      {pendingNewThreadId ? (
+        <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden">
+          <Thread hideWelcome={true} targetThreadId={pendingNewThreadId} />
+        </div>
+      ) : (
+        <div
+          className="flex min-h-0 min-w-0 flex-1 basis-0 overflow-y-auto px-5"
+          style={
+            {
+              ["--thread-max-width" as string]: "48rem",
+            } as CSSProperties
+          }
+        >
+          <div className="mx-auto flex w-full max-w-[48rem] flex-col pt-[120px] pb-14">
+            <div className="mb-12 flex items-center gap-3">
+              <HugeiconsIcon
+                icon={Folder02Icon}
+                strokeWidth={1.75}
+                className="size-9 shrink-0 text-foreground"
+              />
+              <h1 className="truncate font-sans text-[30px] font-medium leading-tight tracking-normal text-foreground">
+                {projectName}
+              </h1>
+            </div>
+
+            <ProjectComposer
+              disabled={Boolean(pendingNewThreadId)}
+              placeholder={`New chat in ${projectName}`}
+            />
+
+            <div className="mt-9 flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setProjectTab("chats")}
+                data-active={projectTab === "chats"}
+                className="h-10 rounded-full border px-5 text-[14px] font-semibold transition-colors data-[active=true]:border-border data-[active=true]:bg-muted data-[active=true]:text-foreground data-[active=false]:border-transparent data-[active=false]:text-muted-foreground data-[active=false]:hover:bg-nav-surface-hover"
+              >
+                Chats
+              </button>
+              <button
+                type="button"
+                onClick={() => setProjectTab("sources")}
+                data-active={projectTab === "sources"}
+                className="h-10 rounded-full border px-5 text-[14px] font-semibold transition-colors data-[active=true]:border-border data-[active=true]:bg-muted data-[active=true]:text-foreground data-[active=false]:border-transparent data-[active=false]:text-muted-foreground data-[active=false]:hover:bg-nav-surface-hover"
+              >
+                Sources
+              </button>
+            </div>
+
+            {projectTab === "sources" ? (
+              <div className="mt-8 flex flex-col items-center justify-center gap-3 rounded-[16px] border border-dashed border-border/70 bg-muted/30 px-6 py-16 text-center">
+                <span className="flex size-12 items-center justify-center rounded-full bg-muted text-muted-foreground">
+                  <HugeiconsIcon
+                    icon={FolderAddIcon}
+                    strokeWidth={1.75}
+                    className="size-6"
+                  />
+                </span>
+                <div className="space-y-1">
+                  <p className="text-[15px] font-semibold text-foreground">
+                    Give this project context
+                  </p>
+                  <p className="max-w-sm text-sm text-muted-foreground">
+                    Upload PDFs, documents, or other text. The model can
+                    reference them in every chat in this project.
+                  </p>
+                </div>
+                <Button type="button" className="mt-1" disabled>
+                  Add sources
+                </Button>
+                <p className="text-[11px] text-muted-foreground">Coming soon</p>
+              </div>
+            ) : (
+            <div className="mt-8 flex flex-col gap-1">
+              {items.map((item) => {
+                const preview = previews[item.id];
+                return (
+                  <button
+                    key={`${item.type}:${item.id}`}
+                    type="button"
+                    onClick={() => {
+                      navigate({
+                        to: "/chat",
+                        search:
+                          item.type === "single"
+                            ? { thread: item.id, project: projectId }
+                            : { compare: item.id, project: projectId },
+                      });
+                    }}
+                    className="group flex min-h-[58px] w-full items-center gap-4 rounded-[10px] px-4 py-2 text-left transition-colors hover:bg-nav-surface-hover"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-[15px] font-semibold leading-5 text-foreground">
+                        {item.title}
+                      </div>
+                      {preview?.snippet ? (
+                        <div className="mt-0.5 truncate text-[14px] leading-5 text-muted-foreground">
+                          {preview.snippet}
+                        </div>
+                      ) : null}
+                    </div>
+                    <span className="shrink-0 text-[14px] text-muted-foreground">
+                      {preview?.date ?? formatProjectChatDate(item.createdAt)}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+            )}
+          </div>
+        </div>
+      )}
+    </ChatRuntimeProvider>
+  );
+}
+
 export function ChatPage(): ReactElement {
   const search = useSearch({ from: "/chat" });
   const navigate = useNavigate();
+  const pathname = useRouterState({ select: (s) => s.location.pathname });
+  const isCurrentChatRoute = pathname.startsWith("/chat");
 
   const settingsOpen = useChatRuntimeStore((s) => s.settingsPanelOpen);
   const setSettingsOpen = useChatRuntimeStore((s) => s.setSettingsPanelOpen);
@@ -769,7 +1047,9 @@ export function ChatPage(): ReactElement {
         });
         navigate({
           to: "/chat",
-          search: { new: crypto.randomUUID() },
+          search: search.project
+            ? { project: search.project }
+            : { new: crypto.randomUUID() },
           replace: true,
         });
       })
@@ -803,6 +1083,30 @@ export function ChatPage(): ReactElement {
   const clearCheckpoint = useChatRuntimeStore((state) => state.clearCheckpoint);
   const resetArtifacts = useChatArtifactsStore((state) => state.resetArtifacts);
   const activeThreadId = useChatRuntimeStore((state) => state.activeThreadId);
+  const [currentProjectId, setCurrentProjectId] = useState<string | null>(
+    search.project ?? null,
+  );
+  const { projects, isLoading: projectsLoading } = useChatProjects();
+  const currentProject = currentProjectId
+    ? (projects.find((project) => project.id === currentProjectId) ?? null)
+    : null;
+  const { items: currentProjectItems } = useChatSidebarItems({
+    projectId: currentProjectId ?? "__no_project_selected__",
+  });
+  const currentChatTitle = activeThreadId
+    ? currentProjectItems.find((item) => item.id === activeThreadId)?.title
+    : undefined;
+  const openProjectLanding = useCallback(
+    (projectId: string) => {
+      useChatRuntimeStore.getState().setActiveThreadId(null);
+      useChatRuntimeStore.getState().setActiveProjectId(projectId);
+      navigate({ to: "/chat", search: { project: projectId } });
+    },
+    [navigate],
+  );
+  const openProjectsList = useCallback(() => {
+    navigate({ to: "/projects" });
+  }, [navigate]);
   const persistedActiveThreadId = isAssistantLocalThreadId(activeThreadId)
     ? null
     : activeThreadId;
@@ -1043,25 +1347,94 @@ export function ChatPage(): ReactElement {
     return Boolean(inferenceParams.checkpoint) && !isExternalModel;
   }, [inferenceParams.checkpoint, isExternalModel]);
 
+  useEffect(() => {
+    let canceled = false;
+
+    async function resolveProjectId(): Promise<void> {
+      if (search.project) {
+        setCurrentProjectId(search.project);
+        useChatRuntimeStore.getState().setActiveProjectId(search.project);
+        return;
+      }
+
+      if (search.thread) {
+        const thread = await getStoredChatThread(search.thread).catch(() => null);
+        if (!canceled) {
+          const projectId = thread?.projectId ?? null;
+          setCurrentProjectId(projectId);
+          useChatRuntimeStore.getState().setActiveProjectId(projectId);
+        }
+        return;
+      }
+
+      if (search.compare) {
+        const threads = await listStoredChatThreads({
+          pairId: search.compare,
+          includeArchived: true,
+        }).catch(() => []);
+        if (!canceled) {
+          const projectId = threads[0]?.projectId ?? null;
+          setCurrentProjectId(projectId);
+          useChatRuntimeStore.getState().setActiveProjectId(projectId);
+        }
+        return;
+      }
+
+      setCurrentProjectId(null);
+      useChatRuntimeStore.getState().setActiveProjectId(null);
+    }
+
+    void resolveProjectId();
+    return () => {
+      canceled = true;
+    };
+  }, [search.compare, search.project, search.thread]);
+
   // Derive view from URL search params
   const view = useMemo<ChatView>(() => {
     if (search.compare) {
       return {
         mode: "compare",
         pairId: search.compare,
+        projectId: currentProjectId,
       };
     }
     if (search.thread) {
-      return { mode: "single", threadId: search.thread };
-    }
-    if (persistedActiveThreadId) {
-      return { mode: "single", threadId: persistedActiveThreadId };
+      return {
+        mode: "single",
+        threadId: search.thread,
+        projectId: currentProjectId,
+      };
     }
     if (search.new) {
-      return { mode: "single", newThreadNonce: search.new };
+      return {
+        mode: "single",
+        newThreadNonce: search.new,
+        projectId: currentProjectId,
+      };
     }
-    return { mode: "single" };
-  }, [search.thread, search.compare, search.new, persistedActiveThreadId]);
+    if (search.project) {
+      return {
+        mode: "project",
+        projectId: search.project,
+      };
+    }
+    if (persistedActiveThreadId) {
+      return {
+        mode: "single",
+        threadId: persistedActiveThreadId,
+        projectId: currentProjectId,
+      };
+    }
+    return { mode: "single", projectId: currentProjectId };
+  }, [
+    search.thread,
+    search.compare,
+    search.new,
+    search.project,
+    persistedActiveThreadId,
+    currentProjectId,
+  ]);
 
   const selectedArtifact = useSelectedChatArtifact();
   const artifactSurface = useChatArtifactsStore((state) => state.surface);
@@ -1071,7 +1444,9 @@ export function ChatPage(): ReactElement {
   const artifactViewKey =
     view.mode === "single"
       ? `single:${view.threadId ?? view.newThreadNonce ?? "new"}`
-      : `compare:${view.pairId}`;
+      : view.mode === "compare"
+        ? `compare:${view.pairId}`
+        : `project:${view.projectId}`;
 
   useEffect(() => {
     clearAutoOpenedArtifacts();
@@ -1400,8 +1775,14 @@ export function ChatPage(): ReactElement {
     viewBeforeCompareRef.current = { ...search };
     useChatRuntimeStore.getState().setActiveThreadId(null);
     useChatRuntimeStore.getState().setContextUsage(null);
-    navigate({ to: "/chat", search: { compare: crypto.randomUUID() } });
-  }, [navigate, search]);
+    navigate({
+      to: "/chat",
+      search: {
+        compare: crypto.randomUUID(),
+        ...(currentProjectId ? { project: currentProjectId } : {}),
+      },
+    });
+  }, [currentProjectId, navigate, search]);
 
   const exitCompare = useCallback(() => {
     const saved = viewBeforeCompareRef.current;
@@ -1693,11 +2074,25 @@ export function ChatPage(): ReactElement {
       (view.mode === "compare" || artifactSurface === "overlay"),
   );
 
+  if (!isCurrentChatRoute) {
+    return (
+      <div className="flex min-h-0 min-w-0 flex-1 basis-0 bg-background" />
+    );
+  }
+
   return (
     <div className="flex min-h-0 min-w-0 flex-1 basis-0 bg-background overflow-hidden">
       <GuidedTour {...tour.tourProps} />
       <div className="relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden">
         <NativeModelDropOverlay state={nativeModelDropState} />
+        {/* Bottom fade under the top bar so messages dissolve as they scroll
+            beneath it (Gemini / unsloth-sidebar style), instead of a hard cut. */}
+        {view.mode !== "compare" && (
+          <div
+            aria-hidden
+            className="pointer-events-none absolute left-0 right-[10px] top-[48px] z-20 h-6 bg-gradient-to-b from-background to-transparent"
+          />
+        )}
         <div
           className={cn(
             "absolute top-0 left-0 right-[10px] z-30 flex h-[48px] shrink-0 items-start pt-[11px] pr-2 bg-background",
@@ -1728,6 +2123,30 @@ export function ChatPage(): ReactElement {
                 showCloudIndicator={isExternalModel}
                 className="max-w-[62vw] !pr-3 sm:max-w-none !h-[34px]"
               />
+            )}
+            {view.mode !== "compare" && currentProjectId && (
+              <nav
+                aria-label="Project location"
+                className="flex h-[34px] min-w-0 items-center gap-1.5 self-center text-[13.5px] tracking-nav text-muted-foreground"
+              >
+                <ProjectSwitcher
+                  currentProject={currentProject}
+                  projects={projects}
+                  isLoading={projectsLoading}
+                  onSelectProject={openProjectLanding}
+                  onViewAllProjects={openProjectsList}
+                />
+                {currentProject && activeThreadId ? (
+                  <>
+                    <span className="shrink-0" aria-hidden>
+                      /
+                    </span>
+                    <span className="min-w-0 truncate">
+                      {currentChatTitle ?? "New chat"}
+                    </span>
+                  </>
+                ) : null}
+              </nav>
             )}
             {pendingNativeModelIntent && view.mode !== "compare" ? (
               <NativeModelChip
@@ -1786,12 +2205,12 @@ export function ChatPage(): ReactElement {
                   <button
                     type="button"
                     onClick={() => setSettingsOpen(true)}
-                    className="flex h-[34px] w-[34px] items-center justify-center rounded-[12px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                    aria-label="Open configuration"
+                    className="flex h-[34px] w-[34px] translate-x-[2px] cursor-pointer items-center justify-center rounded-[12px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    aria-label="Open run settings"
                     data-tour="chat-settings"
                   >
                     <HugeiconsIcon
-                      icon={CustomizeIcon}
+                      icon={LayoutAlignRightIcon}
                       strokeWidth={1.75}
                       className="size-icon"
                     />
@@ -1802,18 +2221,26 @@ export function ChatPage(): ReactElement {
                   sideOffset={6}
                   className="tooltip-compact"
                 >
-                  Open configuration
+                  Open run settings
                 </TooltipContent>
               </Tooltip>
             )}
           </div>
         </div>
 
-        {view.mode === "single" ? (
+        {view.mode === "project" ? (
+          <ProjectLanding
+            key={view.projectId}
+            projectId={view.projectId}
+            projectName={currentProject?.name ?? "Project"}
+            items={currentProjectItems}
+          />
+        ) : view.mode === "single" ? (
           <SingleContent
             key={view.threadId ?? view.newThreadNonce ?? "single"}
             threadId={view.threadId}
             newThreadNonce={view.newThreadNonce}
+            projectId={view.projectId}
             artifact={selectedArtifact}
             artifactSurface={artifactSurface}
             onCloseArtifact={closeArtifactSurface}
@@ -1822,8 +2249,10 @@ export function ChatPage(): ReactElement {
           <CompareContent
             key={view.pairId}
             pairId={view.pairId}
+            projectId={view.projectId}
             models={models}
             loraModels={loraModels}
+            externalModels={externalModels}
             onFoldersChange={refreshLocalModels}
             onModelsChange={refreshModelLists}
             deleteDisabled={modelOperationInProgress}
