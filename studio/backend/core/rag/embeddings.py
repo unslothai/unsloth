@@ -9,12 +9,19 @@ embedder; ``warm()`` primes the load off the request path at startup.
 from __future__ import annotations
 
 import logging
+import os
 import threading
 from typing import Callable
 
 from . import config
 
 logger = logging.getLogger(__name__)
+
+# Rest at "false": an explicit value also suppresses the fast tokenizer's
+# "forked after parallelism" warning. encode() flips it to "true" only for the
+# duration of a batch tokenize (where rayon gives a large speedup) and restores
+# it, so we keep the speedup without the warning between calls.
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 _lock = threading.Lock()
 # Serializes the actual encode/tokenize calls. The HuggingFace fast tokenizer
@@ -57,15 +64,21 @@ def warm(model_name: str | None = None) -> None:
 
 def encode(texts: list[str], *, model_name: str | None = None, normalize: bool = True):
     """Embed a batch of texts into an (N, dim) numpy array. Serialized so
-    concurrent ingestion threads don't trip the fast tokenizer's borrow check."""
+    concurrent ingestion threads don't trip the fast tokenizer's borrow check.
+    Rayon batch-tokenization parallelism is enabled only for this call (it's a
+    large speedup for the batch tokenize) and restored afterward."""
     model = _get(model_name)
     with _compute_lock:
-        return model.encode(
-            texts,
-            normalize_embeddings = normalize,
-            convert_to_numpy = True,
-            show_progress_bar = False,
-        )
+        os.environ["TOKENIZERS_PARALLELISM"] = "true"
+        try:
+            return model.encode(
+                texts,
+                normalize_embeddings = normalize,
+                convert_to_numpy = True,
+                show_progress_bar = False,
+            )
+        finally:
+            os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 
 def dim(model_name: str | None = None) -> int:

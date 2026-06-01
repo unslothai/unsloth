@@ -6,6 +6,7 @@ token counting must be serialized or concurrent ingestion threads panic with
 "Already borrowed". A fake model detects any overlap, so no model download is
 needed."""
 
+import os
 import threading
 import time
 
@@ -83,3 +84,20 @@ def test_token_counter_is_serialized(monkeypatch):
     errors = _hammer(lambda: count("one two three four"))
     assert errors == []
     assert probe.saw_overlap is False  # counting shares the tokenizer lock
+
+
+def test_encode_enables_parallelism_only_during_call(monkeypatch):
+    seen = {}
+
+    class _M:
+        tokenizer = None
+
+        def encode(self, texts, **_kw):
+            seen["during"] = os.environ.get("TOKENIZERS_PARALLELISM")
+            return np.zeros((len(texts), 4), dtype=np.float32)
+
+    monkeypatch.setattr(embeddings, "_get", lambda model_name=None: _M())
+    os.environ["TOKENIZERS_PARALLELISM"] = "false"
+    embeddings.encode(["alpha", "beta"])
+    assert seen["during"] == "true"  # rayon batch tokenization enabled in-call
+    assert os.environ.get("TOKENIZERS_PARALLELISM") == "false"  # restored after
