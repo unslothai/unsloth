@@ -2682,6 +2682,13 @@ class TestRocmGfxForwarding:
         assert "--rocm-gfx" in source
         assert '"$_setup_gfx"' in source
 
+    def test_setup_sh_forwards_has_rocm(self):
+        # When AMD is detected but gfx resolution fails, setup.sh must still
+        # forward --has-rocm so the installer knows ROCm is present.
+        source = _SETUP_SH_PATH.read_text(encoding = "utf-8")
+        assert "--has-rocm" in source
+        assert "_setup_amd_detected" in source
+
     def test_setup_ps1_forwards_rocm_gfx(self):
         source = _SETUP_PS1_PATH.read_text(encoding = "utf-8")
         assert "--rocm-gfx" in source
