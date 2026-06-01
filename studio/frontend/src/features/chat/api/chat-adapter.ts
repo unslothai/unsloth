@@ -1554,7 +1554,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       );
       const artifactInstruction = artifactsEnabled
         ? renderHtmlToolEnabledForThisTurn
-          ? "When the user asks for an HTML, CSS, or JavaScript artifact, call render_html once with one complete self-contained HTML document in the code argument. Embed CSS and JavaScript inside the document. After render_html succeeds, do not call it again unless the user asks for changes."
+          ? "When the user asks for an HTML, CSS, or JavaScript artifact, call render_html once with one complete self-contained HTML document in the code argument. Embed CSS and JavaScript inside the document. After render_html succeeds, do not call it again in the same response unless the user asks for changes. Future user requests for new artifacts may call render_html once."
           : "When the user asks for an HTML, CSS, or JavaScript artifact, return one complete self-contained fenced html code block. Embed CSS and JavaScript inside the document. Do not emit tool-call syntax."
         : null;
       const effectiveDisabledToolGuard =

@@ -521,8 +521,9 @@ RENDER_HTML_TOOL = {
         "description": (
             "Render a self-contained HTML/CSS/JavaScript artifact for the user. "
             "Call this at most once per assistant response unless the user "
-            "explicitly asks for changes. Put the entire document in code, "
-            "including any CSS in <style> tags and JavaScript in <script> tags."
+            "explicitly asks for changes in that response. Future user requests "
+            "for new artifacts may call render_html once. Put the entire document "
+            "in code, including any CSS in <style> tags and JavaScript in <script> tags."
         ),
         "parameters": {
             "type": "object",
@@ -644,11 +645,13 @@ def _render_html_result(arguments: dict) -> str:
         safe_title = title.strip()[:120]
         return (
             f"Rendered HTML artifact: {safe_title}. Do not call render_html "
-            "again unless the user asks for changes."
+            "again in this response unless the user asks for changes. For a later "
+            "user request for a new artifact, call render_html once."
         )
     return (
-        "Rendered HTML artifact. Do not call render_html again unless the user "
-        "asks for changes."
+        "Rendered HTML artifact. Do not call render_html again in this response "
+        "unless the user asks for changes. For a later user request for a new "
+        "artifact, call render_html once."
     )
 
 

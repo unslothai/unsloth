@@ -51,8 +51,8 @@ DUPLICATE_CALL_NUDGE = (
 
 RENDER_HTML_REPEAT_NUDGE = (
     "Error: render_html was already called for this response. Do not call "
-    "render_html again unless the user asks for changes. Provide the final "
-    "answer now."
+    "render_html again in this response unless the user asks for changes. "
+    "Provide the final answer now."
 )
 
 TOOL_ERROR_NUDGE = (

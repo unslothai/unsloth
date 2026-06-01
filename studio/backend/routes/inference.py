@@ -239,6 +239,9 @@ router = APIRouter()
 studio_router = APIRouter()
 
 
+_ARTIFACT_PREVIEW_FRAME_ANCESTORS = (
+    "'self' tauri://localhost http://tauri.localhost"
+)
 _ARTIFACT_PREVIEW_FRAME_STRICT_CSP = (
     "default-src 'none'; "
     "script-src 'unsafe-inline'; "
@@ -250,7 +253,7 @@ _ARTIFACT_PREVIEW_FRAME_STRICT_CSP = (
     "object-src 'none'; "
     "base-uri 'none'; "
     "form-action 'none'; "
-    "frame-ancestors 'self'; "
+    f"frame-ancestors {_ARTIFACT_PREVIEW_FRAME_ANCESTORS}; "
     "sandbox allow-scripts"
 )
 _ARTIFACT_PREVIEW_FRAME_NETWORK_CSP = (
@@ -267,7 +270,7 @@ _ARTIFACT_PREVIEW_FRAME_NETWORK_CSP = (
     "object-src 'none'; "
     "base-uri 'none'; "
     "form-action 'none'; "
-    "frame-ancestors 'self'; "
+    f"frame-ancestors {_ARTIFACT_PREVIEW_FRAME_ANCESTORS}; "
     "sandbox allow-scripts"
 )
 _ARTIFACT_PREVIEW_FRAME_HTML = """<!doctype html>
@@ -363,10 +366,6 @@ async def artifact_preview_frame(
             "Content-Security-Policy": csp,
             "Referrer-Policy": "no-referrer",
             "X-Content-Type-Options": "nosniff",
-            # SAMEORIGIN for browsers that ignore frame-ancestors; the
-            # SecurityHeadersMiddleware uses setdefault so this takes
-            # precedence over the global DENY.
-            "X-Frame-Options": "SAMEORIGIN",
         },
     )
 
@@ -564,8 +563,9 @@ _TOOL_ACTION_NUDGE = (
 )
 _ARTIFACT_TOOL_ACTION_NUDGE = (
     " For HTML, CSS, or JavaScript artifact requests, call render_html once when "
-    "it is available. After render_html succeeds, do not call it again unless "
-    "the user asks for changes."
+    "it is available. After render_html succeeds, do not call it again in the "
+    "same response unless the user asks for changes. Future user requests for "
+    "new artifacts may call render_html once."
 )
 
 
@@ -2869,7 +2869,9 @@ async def openai_chat_completions(
             _artifact_tips = (
                 "Use render_html for HTML, CSS, or JavaScript artifact requests "
                 "with one complete self-contained HTML document in the code argument. "
-                "Call it once, then do not call it again unless the user asks for changes."
+                "Call it once, then do not call it again in the same response unless "
+                "the user asks for changes. Future user requests for new artifacts may "
+                "call render_html once."
             )
 
             _tool_tip_parts = []
@@ -3388,7 +3390,9 @@ async def openai_chat_completions(
         _sf_artifact_tips = (
             "Use render_html for HTML, CSS, or JavaScript artifact requests "
             "with one complete self-contained HTML document in the code argument. "
-            "Call it once, then do not call it again unless the user asks for changes."
+            "Call it once, then do not call it again in the same response unless "
+            "the user asks for changes. Future user requests for new artifacts may "
+            "call render_html once."
         )
 
         _sf_tool_tip_parts = []
@@ -5080,7 +5084,9 @@ async def anthropic_messages(
         _artifact_tips = (
             "Use render_html for HTML, CSS, or JavaScript artifact requests "
             "with one complete self-contained HTML document in the code argument. "
-            "Call it once, then do not call it again unless the user asks for changes."
+            "Call it once, then do not call it again in the same response unless "
+            "the user asks for changes. Future user requests for new artifacts may "
+            "call render_html once."
         )
 
         _tool_tip_parts = []
