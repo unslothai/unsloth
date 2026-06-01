@@ -483,7 +483,11 @@ def check_format_response(
         scrubbed = download_registry.scrub_secrets(str(e), hf_token = hf_token)
         # Missing/gated/bad-token and malformed names are client errors, not 500s.
         status = hf_error_status(e)
-        if status is None and isinstance(e, OSError) and getattr(e, "errno", None) == errno.ENAMETOOLONG:
+        if (
+            status is None
+            and isinstance(e, OSError)
+            and getattr(e, "errno", None) == errno.ENAMETOOLONG
+        ):
             status, scrubbed = 400, "Invalid dataset name"
         elif status is None and isinstance(e, FileNotFoundError):
             # datasets raises DatasetNotFoundError (FileNotFoundError) for missing/gated.

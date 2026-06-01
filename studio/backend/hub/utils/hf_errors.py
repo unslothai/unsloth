@@ -11,7 +11,11 @@ from typing import Optional
 def hf_error_status(exc: Exception) -> Optional[int]:
     # Client-side HF errors should surface as 4xx, not a generic 500.
     name = type(exc).__name__
-    if name in ("RepositoryNotFoundError", "RevisionNotFoundError", "EntryNotFoundError"):
+    if name in (
+        "RepositoryNotFoundError",
+        "RevisionNotFoundError",
+        "EntryNotFoundError",
+    ):
         return 404
     if name == "GatedRepoError":
         return 403
