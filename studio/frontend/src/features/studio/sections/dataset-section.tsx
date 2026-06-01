@@ -68,6 +68,13 @@ import {
   useState,
 } from "react";
 import { toast } from "@/lib/toast";
+import {
+  formatUploadSize,
+  getCachedUploadLimitBytes,
+  getCachedUploadLimitLabel,
+  loadUploadLimitSettings,
+  subscribeUploadLimitSettings,
+} from "@/features/settings/api/upload-limit";
 import { useShallow } from "zustand/react/shallow";
 import { DocumentUploadRedirectDialog } from "./document-upload-redirect-dialog";
 
@@ -87,9 +94,6 @@ const TRAINING_UPLOAD_ACCEPT = TRAINING_UPLOAD_EXTENSIONS.join(",");
 const TRAINING_UPLOAD_LABEL = "CSV, JSONL, JSON, Parquet, PDF, DOCX, TXT";
 const TRAINING_DATASET_UPLOAD_LABEL = "CSV, JSONL, JSON, Parquet";
 const DOCUMENT_REDIRECT_LABEL = "PDF/DOCX/TXT open Learning Recipes";
-// sync: TRAINING_DATASET_UPLOAD_MAX_BYTES in studio/backend/routes/datasets.py
-const TRAINING_UPLOAD_MAX_BYTES = 500 * 1024 * 1024;
-const TRAINING_UPLOAD_MAX_LABEL = "500MB";
 const DOCUMENT_REDIRECT_EXTENSIONS = new Set([".pdf", ".docx", ".txt"]);
 
 const SEARCH_INPUT_REASONS = new Set([
@@ -105,10 +109,6 @@ function getFileExtension(fileName: string) {
   return extensionStart >= 0
     ? fileName.slice(extensionStart).toLowerCase()
     : "";
-}
-
-function formatUploadSize(bytes: number) {
-  return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
 }
 
 function isLikelyLocalDatasetRef(value: string) {
@@ -407,11 +407,50 @@ export function DatasetSection() {
 
   const [isUploading, setIsUploading] = useState(false);
   const [isDatasetDragOver, setIsDatasetDragOver] = useState(false);
+  const [uploadLimitBytes, setUploadLimitBytes] = useState(
+    getCachedUploadLimitBytes,
+  );
+  const [uploadLimitLabel, setUploadLimitLabel] = useState(
+    getCachedUploadLimitLabel,
+  );
   const [documentRedirectOpen, setDocumentRedirectOpen] = useState(false);
   const [redirectFileName, setRedirectFileName] = useState<string | null>(null);
 
+  useEffect(() => {
+    let cancelled = false;
+    const applyLimit = (settings: {
+      maxUploadSizeBytes: number;
+      maxUploadSizeLabel: string;
+    }) => {
+      setUploadLimitBytes(settings.maxUploadSizeBytes);
+      setUploadLimitLabel(settings.maxUploadSizeLabel);
+    };
+    const unsubscribe = subscribeUploadLimitSettings(applyLimit);
+    void loadUploadLimitSettings().then((settings) => {
+      if (!cancelled) applyLimit(settings);
+    }).catch(() => {});
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, []);
+
   const handleUploadButtonClick = () => {
     fileInputRef.current?.click();
+  };
+
+  const getLatestUploadLimit = async () => {
+    try {
+      const settings = await loadUploadLimitSettings();
+      setUploadLimitBytes(settings.maxUploadSizeBytes);
+      setUploadLimitLabel(settings.maxUploadSizeLabel);
+      return settings;
+    } catch {
+      return {
+        maxUploadSizeBytes: uploadLimitBytes,
+        maxUploadSizeLabel: uploadLimitLabel,
+      };
+    }
   };
 
   const handleFileUpload = async (
@@ -419,11 +458,12 @@ export function DatasetSection() {
     onSuccess: (storedPath: string) => void,
     successMessage: string,
   ) => {
-    if (file.size > TRAINING_UPLOAD_MAX_BYTES) {
+    const latestLimit = await getLatestUploadLimit();
+    if (file.size > latestLimit.maxUploadSizeBytes) {
       toast.error("File too large", {
         description: `${file.name} is ${formatUploadSize(
           file.size,
-        )}. Training uploads support up to ${TRAINING_UPLOAD_MAX_LABEL}.`,
+        )}. Training uploads support up to ${latestLimit.maxUploadSizeLabel}.`,
       });
       return;
     }
@@ -1135,7 +1175,7 @@ export function DatasetSection() {
                   </span>
                   <span className="mt-0.5 block truncate text-[10px] text-muted-foreground">
                     {TRAINING_DATASET_UPLOAD_LABEL} · up to{" "}
-                    {TRAINING_UPLOAD_MAX_LABEL}; {DOCUMENT_REDIRECT_LABEL}
+                    {uploadLimitLabel}; {DOCUMENT_REDIRECT_LABEL}
                   </span>
                 </span>
               </button>

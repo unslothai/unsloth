@@ -68,6 +68,7 @@ if str(backend_path) not in sys.path:
 
 # Import dataset utilities
 from utils.datasets import check_dataset_format
+from utils.upload_limits import get_upload_limit_bytes, get_upload_limit_label
 from auth.authentication import get_current_subject
 
 router = APIRouter()
@@ -139,9 +140,6 @@ _ARCHIVE_EXTS = (".tar", ".tar.gz", ".tgz", ".gz", ".zst", ".zip", ".txt")
 DATA_EXTS = _TABULAR_EXTS + _ARCHIVE_EXTS
 LOCAL_FILE_EXTS = (".json", ".jsonl", ".csv", ".parquet")
 LOCAL_UPLOAD_EXTS = {".csv", ".json", ".jsonl", ".parquet"}
-# sync: TRAINING_UPLOAD_MAX_BYTES in studio/frontend/src/features/studio/sections/dataset-section.tsx
-TRAINING_DATASET_UPLOAD_MAX_BYTES = 500 * 1024 * 1024
-TRAINING_DATASET_UPLOAD_MAX_LABEL = "500MB"
 LOCAL_DATASETS_ROOT = recipe_datasets_root()
 DATASET_UPLOAD_DIR = dataset_uploads_root()
 
@@ -339,21 +337,21 @@ async def upload_dataset(
     stored_path = DATASET_UPLOAD_DIR / stored_name
 
     # Stream file to disk in chunks to avoid holding entire file in memory.
-    # Keep a route-level cap below the global request-body cap so users get a
-    # clear training-dataset-specific error and oversized partial files are not
-    # left in the Studio uploads directory.
+    # Keep a route-level cap so users get a clear training-dataset-specific
+    # error and oversized partial files are not left in the Studio uploads directory.
+    upload_limit_bytes = get_upload_limit_bytes()
     total_bytes = 0
     upload_complete = False
     try:
         with open(stored_path, "wb") as f:
             while chunk := await file.read(1024 * 1024):
                 total_bytes += len(chunk)
-                if total_bytes > TRAINING_DATASET_UPLOAD_MAX_BYTES:
+                if total_bytes > upload_limit_bytes:
                     raise HTTPException(
                         status_code = 413,
                         detail = (
                             "Training dataset upload too large. "
-                            f"Maximum is {TRAINING_DATASET_UPLOAD_MAX_LABEL}."
+                            f"Maximum is {get_upload_limit_label()}."
                         ),
                     )
                 f.write(chunk)

@@ -124,6 +124,7 @@ from routes import (
     inference_studio_router,
     models_router,
     providers_router,
+    settings_router,
     training_history_router,
     training_router,
 )
@@ -359,11 +360,10 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 app.add_middleware(SecurityHeadersMiddleware)
 
 
-# Cap upload body on protected POSTs; default 500 MB, env-tunable.
+# Cap upload bodies on protected POSTs. The file-size limit is configurable in
+# Settings; the request-body guard adds transport overhead for multipart/base64.
 import json as _json_for_413  # noqa: E402
-
-
-_MAX_BODY_BYTES = int(os.environ.get("UNSLOTH_STUDIO_MAX_BODY_MB", "500")) * 1024 * 1024
+from utils.upload_limits import get_request_body_limit_bytes  # noqa: E402
 _BODY_PROTECTED_PREFIXES = (
     "/v1/chat/completions",
     "/v1/completions",
@@ -376,12 +376,12 @@ _BODY_PROTECTED_PREFIXES = (
 )
 
 
-async def _send_413(send, total_bytes: int) -> None:
+async def _send_413(send, total_bytes: int, max_bytes: int) -> None:
     payload = _json_for_413.dumps(
         {
             "detail": (
                 f"Request body too large "
-                f"({total_bytes:,} bytes; max {_MAX_BODY_BYTES:,})."
+                f"({total_bytes:,} bytes; max {max_bytes:,})."
             )
         },
     ).encode("utf-8")
@@ -401,9 +401,9 @@ async def _send_413(send, total_bytes: int) -> None:
 class MaxBodyMiddleware:
     """Reject oversized bodies on protected POST/PUT/PATCH; raw ASGI so chunked uploads cannot bypass the cap."""
 
-    def __init__(self, app, max_bytes: int, protected_prefixes: tuple):
+    def __init__(self, app, max_bytes_getter, protected_prefixes: tuple):
         self.app = app
-        self.max_bytes = max_bytes
+        self.max_bytes_getter = max_bytes_getter
         self.protected_prefixes = protected_prefixes
 
     async def __call__(self, scope, receive, send):
@@ -418,6 +418,7 @@ class MaxBodyMiddleware:
             await self.app(scope, receive, send)
             return
 
+        max_bytes = int(self.max_bytes_getter())
         declared = None
         for name, value in scope.get("headers", []):
             if name == b"content-length":
@@ -426,8 +427,8 @@ class MaxBodyMiddleware:
                 except (ValueError, UnicodeDecodeError):
                     declared = None
                 break
-        if declared is not None and declared > self.max_bytes:
-            await _send_413(send, declared)
+        if declared is not None and declared > max_bytes:
+            await _send_413(send, declared, max_bytes)
             return
 
         chunks: list = []
@@ -443,8 +444,8 @@ class MaxBodyMiddleware:
             body = msg.get("body", b"") or b""
             if body:
                 total += len(body)
-                if total > self.max_bytes:
-                    await _send_413(send, total)
+                if total > max_bytes:
+                    await _send_413(send, total, max_bytes)
                     return
                 chunks.append(body)
             if not msg.get("more_body", False):
@@ -468,7 +469,7 @@ class MaxBodyMiddleware:
 
 app.add_middleware(
     MaxBodyMiddleware,
-    max_bytes = _MAX_BODY_BYTES,
+    max_bytes_getter = get_request_body_limit_bytes,
     protected_prefixes = _BODY_PROTECTED_PREFIXES,
 )
 
@@ -524,6 +525,7 @@ app.include_router(inference_studio_router, prefix = "/api/inference", tags = ["
 # standard /v1/chat/completions path.
 app.include_router(inference_router, prefix = "/v1", tags = ["openai-compat"])
 app.include_router(providers_router, prefix = "/api/providers", tags = ["providers"])
+app.include_router(settings_router, prefix = "/api/settings", tags = ["settings"])
 app.include_router(datasets_router, prefix = "/api/datasets", tags = ["datasets"])
 app.include_router(data_recipe_router, prefix = "/api/data-recipe", tags = ["data-recipe"])
 app.include_router(export_router, prefix = "/api/export", tags = ["export"])

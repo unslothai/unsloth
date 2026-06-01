@@ -15,6 +15,12 @@ import { Switch } from "@/components/ui/switch";
 import { usePlatformStore } from "@/config/env";
 import { resetOnboardingDone } from "@/features/auth";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
+import {
+  DEFAULT_UPLOAD_LIMIT_MB,
+  loadUploadLimitSettings,
+  updateUploadLimitSettings,
+  type UploadLimitSettings,
+} from "@/features/settings/api/upload-limit";
 import { useSettingsDialogStore } from "@/features/settings";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
@@ -104,6 +110,14 @@ export function GeneralTab() {
   const [draftToken, setDraftToken] = useState(hfToken ?? "");
   const [showToken, setShowToken] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [uploadLimit, setUploadLimit] = useState<UploadLimitSettings | null>(
+    null,
+  );
+  const [draftUploadLimit, setDraftUploadLimit] = useState(
+    String(DEFAULT_UPLOAD_LIMIT_MB),
+  );
+  const [uploadLimitError, setUploadLimitError] = useState<string | null>(null);
+  const [isSavingUploadLimit, setIsSavingUploadLimit] = useState(false);
 
   const draftRef = useRef(draftToken);
   useEffect(() => {
@@ -127,6 +141,52 @@ export function GeneralTab() {
     const trimmed = draftToken.trim();
     if (trimmed !== draftToken) setDraftToken(trimmed);
     if (trimmed !== hfToken) setHfToken(trimmed);
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+    void loadUploadLimitSettings()
+      .then((settings) => {
+        if (cancelled) return;
+        setUploadLimit(settings);
+        setDraftUploadLimit(String(settings.maxUploadSizeMb));
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        setUploadLimitError(
+          error instanceof Error ? error.message : "Failed to load upload limit.",
+        );
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const saveUploadLimit = async () => {
+    const parsed = Number(draftUploadLimit);
+    if (!Number.isInteger(parsed)) {
+      setUploadLimitError("Enter a whole number of MB.");
+      return;
+    }
+    const min = uploadLimit?.minUploadSizeMb ?? 1;
+    const max = uploadLimit?.maxAllowedUploadSizeMb ?? 8192;
+    if (parsed < min || parsed > max) {
+      setUploadLimitError(`Enter a value from ${min} to ${max} MB.`);
+      return;
+    }
+    setIsSavingUploadLimit(true);
+    setUploadLimitError(null);
+    try {
+      const settings = await updateUploadLimitSettings(parsed);
+      setUploadLimit(settings);
+      setDraftUploadLimit(String(settings.maxUploadSizeMb));
+    } catch (error) {
+      setUploadLimitError(
+        error instanceof Error ? error.message : "Failed to save upload limit.",
+      );
+    } finally {
+      setIsSavingUploadLimit(false);
+    }
   };
 
   return (
@@ -174,6 +234,41 @@ export function GeneralTab() {
         </SettingsRow>
       </SettingsSection>
 
+      <SettingsSection title="Uploads">
+        <SettingsRow
+          label="Max upload size"
+          description={`Applies to training dataset uploads and Learning Recipes files. Default is ${uploadLimit?.defaultUploadSizeMb ?? DEFAULT_UPLOAD_LIMIT_MB} MB.`}
+        >
+          <div className="flex flex-col items-end gap-1">
+            <div className="flex items-center gap-2">
+              <Input
+                type="number"
+                min={uploadLimit?.minUploadSizeMb ?? 1}
+                max={uploadLimit?.maxAllowedUploadSizeMb ?? 8192}
+                step={1}
+                value={draftUploadLimit}
+                onChange={(event) => setDraftUploadLimit(event.target.value)}
+                className="h-8 w-24"
+              />
+              <span className="text-xs text-muted-foreground">MB</span>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={isSavingUploadLimit}
+                onClick={() => void saveUploadLimit()}
+              >
+                {isSavingUploadLimit ? "Saving..." : "Save"}
+              </Button>
+            </div>
+            {uploadLimitError ? (
+              <span className="max-w-[260px] text-right text-xs text-destructive">
+                {uploadLimitError}
+              </span>
+            ) : null}
+          </div>
+        </SettingsRow>
+      </SettingsSection>
+
       {!chatOnly && (
         <SettingsSection title="Getting started">
           <SettingsRow
@@ -199,7 +294,7 @@ export function GeneralTab() {
         <SettingsRow
           destructive
           label="Reset all local preferences"
-          description="Clears local-only preferences. Chats, API access, and DB-backed chat settings are not affected."
+          description="Clears local-only preferences. Chats, API access, and DB-backed settings are not affected."
         >
           <Button
             variant="outline"
@@ -218,7 +313,7 @@ export function GeneralTab() {
             <DialogTitle>Reset all local preferences?</DialogTitle>
             <DialogDescription>
               This clears local-only preferences, then reloads Studio. Chats,
-              API access, and DB-backed chat settings are not affected.
+              API access, and DB-backed settings are not affected.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>

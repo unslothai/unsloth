@@ -1,11 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { CloudUploadIcon, Cancel01Icon, Loading03Icon, CheckmarkCircle02Icon, Alert02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { loadUploadLimitSettings } from "@/features/settings/api/upload-limit";
 import { uploadUnstructuredFile, removeUnstructuredFile } from "../../api";
 
 const ACCEPTED_EXTENSIONS = [".txt", ".pdf", ".docx", ".md"];
-const MAX_FILE_SIZE = 500 * 1024 * 1024;
-const MAX_TOTAL_SIZE = 500 * 1024 * 1024;
 
 type FileEntry = {
   id: string;
@@ -19,6 +18,8 @@ type FileEntry = {
 type UnstructuredDropZoneProps = {
   blockId: string;
   files: FileEntry[];
+  maxUploadBytes: number;
+  maxUploadLabel: string;
   onFilesChange: (files: FileEntry[] | ((prev: FileEntry[]) => FileEntry[])) => void;
   disabled?: boolean;
 };
@@ -37,6 +38,8 @@ function isValidExtension(name: string): boolean {
 export function UnstructuredDropZone({
   blockId,
   files,
+  maxUploadBytes,
+  maxUploadLabel,
   onFilesChange,
   disabled,
 }: UnstructuredDropZoneProps) {
@@ -52,9 +55,15 @@ export function UnstructuredDropZone({
 
   const handleFiles = useCallback(
     async (newFiles: File[]) => {
+      let latestMaxUploadBytes = maxUploadBytes;
+      try {
+        latestMaxUploadBytes = (await loadUploadLimitSettings()).maxUploadSizeBytes;
+      } catch {
+        // Keep the current prop fallback if settings cannot be loaded.
+      }
       const valid = newFiles.filter((f) => {
         if (!isValidExtension(f.name)) return false;
-        if (f.size > MAX_FILE_SIZE) return false;
+        if (f.size > latestMaxUploadBytes) return false;
         return true;
       });
 
@@ -62,7 +71,7 @@ export function UnstructuredDropZone({
 
       const addedSize = valid.reduce((s, f) => s + f.size, 0);
       const currentTotal = filesRef.current.reduce((sum, f) => sum + f.size, 0);
-      if (currentTotal + addedSize > MAX_TOTAL_SIZE) return;
+      if (currentTotal + addedSize > latestMaxUploadBytes) return;
 
       const entries: FileEntry[] = valid.map((f) => ({
         id: "",
@@ -108,7 +117,7 @@ export function UnstructuredDropZone({
       }
 
     },
-    [blockId, onFilesChange],
+    [blockId, maxUploadBytes, onFilesChange],
   );
 
   const deletedIdsRef = useRef(new Set<string>());
@@ -182,7 +191,7 @@ export function UnstructuredDropZone({
           Drop files here or click to browse
         </p>
         <p className="text-muted-foreground/60 mt-1 text-xs">
-          PDF, DOCX, TXT, MD up to 500MB total
+          PDF, DOCX, TXT, MD up to {maxUploadLabel} total
         </p>
       </div>
 
@@ -232,7 +241,7 @@ export function UnstructuredDropZone({
           ))}
           <div className="text-muted-foreground flex justify-between px-1 text-xs">
             <span>{successFiles.length} file{successFiles.length !== 1 ? "s" : ""} uploaded</span>
-            <span>{formatSize(totalSize)} / 500MB</span>
+            <span>{formatSize(totalSize)} / {maxUploadLabel}</span>
           </div>
         </div>
       )}

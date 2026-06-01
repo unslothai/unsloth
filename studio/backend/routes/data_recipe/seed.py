@@ -31,6 +31,7 @@ except ImportError:
     resolve_chunking = None
 from core.data_recipe.jsonable import to_preview_jsonable
 from utils.paths import ensure_dir, seed_uploads_root, unstructured_uploads_root
+from utils.upload_limits import get_upload_limit_bytes, get_upload_limit_label
 
 from models.data_recipe import (
     SeedInspectRequest,
@@ -47,9 +48,6 @@ LOCAL_UPLOAD_EXTS = {".csv", ".json", ".jsonl"}
 UNSTRUCTURED_ALLOWED_EXTS = {".pdf", ".docx", ".txt", ".md"}
 SEED_UPLOAD_DIR = seed_uploads_root()
 UNSTRUCTURED_UPLOAD_ROOT = unstructured_uploads_root()
-MAX_FILE_SIZE = 500 * 1024 * 1024  # 500MB
-MAX_TOTAL_SIZE = 500 * 1024 * 1024  # 500MB
-
 _SAFE_ID_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
 
 
@@ -446,17 +444,19 @@ async def upload_unstructured_file(
     if size_bytes == 0:
         raise HTTPException(400, "Empty file not allowed")
 
-    if size_bytes > MAX_FILE_SIZE:
+    upload_limit_bytes = get_upload_limit_bytes()
+    if size_bytes > upload_limit_bytes:
         raise HTTPException(
-            413, f"File too large ({size_bytes} bytes). Maximum is 500MB."
+            413,
+            f"File too large ({size_bytes} bytes). Maximum is {get_upload_limit_label()}.",
         )
 
     block_dir = UNSTRUCTURED_UPLOAD_ROOT / block_id
     ensure_dir(block_dir)
     current_total = _get_block_total_size(block_dir, file_ids = tracked_ids)
-    if current_total + size_bytes > MAX_TOTAL_SIZE:
+    if current_total + size_bytes > upload_limit_bytes:
         raise HTTPException(
-            413, f"Total upload limit ({MAX_TOTAL_SIZE // (1024 * 1024)}MB) exceeded"
+            413, f"Total upload limit ({get_upload_limit_label()}) exceeded"
         )
 
     file_id = uuid4().hex
@@ -594,8 +594,11 @@ def inspect_seed_upload(payload: SeedInspectUploadRequest) -> SeedInspectRespons
     file_bytes = _decode_base64_payload(payload.content_base64)
     if not file_bytes:
         raise HTTPException(status_code = 400, detail = "empty upload payload")
-    if len(file_bytes) > MAX_FILE_SIZE:
-        raise HTTPException(status_code = 413, detail = "file too large (max 500MB)")
+    if len(file_bytes) > get_upload_limit_bytes():
+        raise HTTPException(
+            status_code = 413,
+            detail = f"file too large (max {get_upload_limit_label()})",
+        )
 
     ensure_dir(SEED_UPLOAD_DIR)
     stored_name = f"{uuid4().hex}_{filename}"
