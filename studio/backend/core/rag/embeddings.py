@@ -1,9 +1,20 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Dense embedder singleton: thread-safe lazy SentenceTransformer keyed by model
-name. ``token_counter`` reuses the model's tokenizer so chunk sizing matches the
-embedder; ``warm()`` primes the load off the request path.
+"""Dense embedder facade. Public functions (``encode``, ``token_counter``,
+``dim``, ``warm``) dispatch to a process-wide backend chosen by
+``config.EMBED_BACKEND``:
+
+* ``sentence-transformers`` (default) -- thread-safe lazy SentenceTransformer
+  singleton keyed by model name; needs torch. ``token_counter`` reuses the
+  model's tokenizer so chunk sizing matches the embedder.
+* ``llama-server`` -- a GGUF embedder served over HTTP by the bundled
+  llama.cpp; no torch (see ``embed_llama_server``).
+
+Backends produce different vectors, so switching ``RAG_EMBED_BACKEND`` requires
+rebuilding the index (drop/re-create KBs, re-upload thread docs). Startup
+failure of the selected backend raises -- never a silent cross-backend fallback,
+which would corrupt retrieval by mixing vector spaces.
 """
 
 from __future__ import annotations
@@ -67,11 +78,6 @@ def _get(model_name: str | None = None):
         return _model
 
 
-def warm(model_name: str | None = None) -> None:
-    """Eagerly load the embedder so the first real request isn't slow."""
-    _get(model_name)
-
-
 @lru_cache(maxsize = 1)
 def _inference_ctx_factory():
     """Pick the encode context once (cached): ``torch.inference_mode`` if torch
@@ -92,8 +98,10 @@ def _inference_ctx():
     return _inference_ctx_factory()()
 
 
-def encode(texts: list[str], *, model_name: str | None = None, normalize: bool = True):
-    """Embed texts into an (N, dim) float32 numpy array. Serialized so concurrent
+def _st_encode(
+    texts: list[str], *, model_name: str | None = None, normalize: bool = True
+):
+    """SentenceTransformers encode -> (N, dim) float32. Serialized so concurrent
     ingestion threads don't trip the fast tokenizer's borrow check; runs under
     inference_mode when torch is available. Rayon parallelism is enabled only for
     this call and restored afterward."""
@@ -116,12 +124,12 @@ def encode(texts: list[str], *, model_name: str | None = None, normalize: bool =
     return out
 
 
-def dim(model_name: str | None = None) -> int:
-    """Embedding dimension for the (loaded) model."""
+def _st_dim(model_name: str | None = None) -> int:
+    """SentenceTransformers embedding dimension for the (loaded) model."""
     return _get(model_name).get_sentence_embedding_dimension()
 
 
-def token_counter(model_name: str | None = None) -> Callable[[str], int]:
+def _st_token_counter(model_name: str | None = None) -> Callable[[str], int]:
     """Callable counting tokens with the model's tokenizer. Counts under the
     compute lock since the same fast tokenizer backs encode and is not
     thread-safe."""
@@ -132,3 +140,88 @@ def token_counter(model_name: str | None = None) -> Callable[[str], int]:
             return len(tok.encode(t, add_special_tokens = False))
 
     return _count
+
+
+class _SentenceTransformersBackend:
+    """Default backend: delegates to the module-level ST helpers above so the
+    existing ``_get`` monkeypatch in tests keeps working."""
+
+    def encode(self, texts, *, model_name = None, normalize = True):
+        return _st_encode(texts, model_name = model_name, normalize = normalize)
+
+    def token_counter(self, *, model_name = None):
+        return _st_token_counter(model_name)
+
+    def dim(self, *, model_name = None):
+        return _st_dim(model_name)
+
+    def warm(self, *, model_name = None):
+        _get(model_name)
+
+
+# ── Backend selection ─────────────────────────────────────────────
+
+_backend_lock = threading.Lock()
+_backend = None
+_backend_key: str | None = None
+
+_ST_ALIASES = frozenset({"sentence-transformers", "sentence_transformers", "st"})
+_LLAMA_ALIASES = frozenset(
+    {"llama-server", "llama_server", "llama", "llama.cpp", "llamacpp", "gguf"}
+)
+
+
+def _get_backend():
+    """Return the process-wide embedding backend for ``config.EMBED_BACKEND``,
+    building it once. Re-reads config each call so tests can flip the env and get
+    a fresh backend; rebuilds only when the selected name changes."""
+    global _backend, _backend_key
+    key = (config.EMBED_BACKEND or "sentence-transformers").strip().lower()
+    with _backend_lock:
+        if _backend is not None and _backend_key == key:
+            return _backend
+        if key in _ST_ALIASES:
+            _backend = _SentenceTransformersBackend()
+        elif key in _LLAMA_ALIASES:
+            # Imported lazily so the default (ST) path never imports llama plumbing.
+            from .embed_llama_server import LlamaServerBackend
+
+            _backend = LlamaServerBackend()
+        else:
+            raise ValueError(
+                f"Unknown RAG_EMBED_BACKEND={config.EMBED_BACKEND!r}; "
+                "expected 'sentence-transformers' or 'llama-server'"
+            )
+        _backend_key = key
+        return _backend
+
+
+def _reset_backend() -> None:
+    """Drop the cached backend (test teardown / explicit re-init)."""
+    global _backend, _backend_key
+    with _backend_lock:
+        _backend = None
+        _backend_key = None
+
+
+# ── Public API (dispatches to the selected backend) ───────────────
+
+
+def warm(model_name: str | None = None) -> None:
+    """Eagerly load the embedder so the first real request isn't slow."""
+    _get_backend().warm(model_name = model_name)
+
+
+def encode(texts: list[str], *, model_name: str | None = None, normalize: bool = True):
+    """Embed texts into an (N, dim) float32 numpy array."""
+    return _get_backend().encode(texts, model_name = model_name, normalize = normalize)
+
+
+def dim(model_name: str | None = None) -> int:
+    """Embedding dimension for the (loaded) model."""
+    return _get_backend().dim(model_name = model_name)
+
+
+def token_counter(model_name: str | None = None) -> Callable[[str], int]:
+    """Callable counting tokens with the embedder's own tokenizer."""
+    return _get_backend().token_counter(model_name = model_name)
