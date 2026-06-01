@@ -2767,7 +2767,9 @@ async def openai_chat_completions(
                     "attached documents are relevant."
                 )
                 _nudge = (
-                    _date_line + " " + _rag_nudge if not _nudge else _nudge + " " + _rag_nudge
+                    _date_line + " " + _rag_nudge
+                    if not _nudge
+                    else _nudge + " " + _rag_nudge
                 )
 
             if _nudge:

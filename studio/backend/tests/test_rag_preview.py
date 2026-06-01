@@ -158,14 +158,16 @@ def test_locator_handles_midword_anchor_and_locates_line():
 
     doc = pymupdf.open()
     page = doc.new_page()
-    page.insert_text((72, 200), "alpha beta gamma delta epsilon zeta eta theta", fontsize=12)
+    page.insert_text(
+        (72, 200), "alpha beta gamma delta epsilon zeta eta theta", fontsize = 12
+    )
     # Page text mirrors what the parser stores (get_text("text")).
     page_text = doc[0].get_text("text")
     # Simulate a chunk span that starts mid-first-word ("lpha ...") and ends
     # mid-last-word so the trimming logic must recover the interior phrase.
     start = page_text.index("lpha")
     end = page_text.index("theta") + 3
-    match = LocatorMatch(page_index=0, page_number=1, start=start, end=end)
+    match = LocatorMatch(page_index = 0, page_number = 1, start = start, end = end)
     rects = _regions_for_match(doc, page_text, match)
     doc.close()
 
