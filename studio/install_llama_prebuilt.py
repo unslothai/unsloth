@@ -6704,6 +6704,44 @@ def validate_prebuilt_attempts(
     raise PrebuiltFallback("no prebuilt bundle passed validation")
 
 
+def existing_gpu_install_offloads(
+    install_dir: Path,
+    host: HostInfo,
+    plan: InstallReleasePlan,
+    probe_path: Path,
+) -> bool:
+    """For a GPU plan whose metadata matches the existing install, smoke-test
+    the already-installed llama-server's offload before reusing it. Returns True
+    to keep the existing install (non-GPU kind, passed, or inconclusive) and
+    False on a definite CPU-only load so the caller reinstalls. This closes the
+    "reinstall/restart keeps the silently CPU-only binary" path (#5807): without
+    it, a metadata match short-circuits the new offload validation entirely."""
+    choice = plan.attempts[0]
+    if choice.install_kind not in _GPU_INSTALL_KINDS:
+        return True
+    server_name = "llama-server.exe" if host.is_windows else "llama-server"
+    try:
+        server_path = discover_installed_executable(install_dir, server_name)
+    except PrebuiltFallback:
+        return True
+    try:
+        validate_server(
+            server_path,
+            probe_path,
+            host,
+            install_dir,
+            runtime_line = choice.runtime_line,
+            install_kind = choice.install_kind,
+        )
+    except GpuOffloadFailure:
+        return False
+    except PrebuiltFallback:
+        # Inconclusive (failed to start, etc.): keep the existing install rather
+        # than reinstall on uncertain evidence.
+        return True
+    return True
+
+
 def install_prebuilt(
     install_dir: Path,
     llama_tag: str,
@@ -6747,8 +6785,12 @@ def install_prebuilt(
                     published_repo,
                     published_release_tag,
                 )
-            if release_plans and existing_install_matches_plan(
-                install_dir, host, release_plans[0]
+            # Non-GPU match: keep the fast path (no probe download). A GPU match
+            # must still be smoke-tested below, so it does not short-circuit here.
+            if (
+                release_plans
+                and existing_install_matches_plan(install_dir, host, release_plans[0])
+                and release_plans[0].attempts[0].install_kind not in _GPU_INSTALL_KINDS
             ):
                 current = release_plans[0]
                 log(
@@ -6765,9 +6807,27 @@ def install_prebuilt(
                 release_count = len(release_plans)
                 for release_index, plan in enumerate(release_plans):
                     choice = plan.attempts[0]
-                    if existing_install_matches_plan(install_dir, host, plan):
+                    # A metadata match used to skip straight to reuse; now a
+                    # matching GPU install is smoke-tested first so a previously
+                    # installed CPU-only "GPU" binary is rebuilt instead of kept
+                    # forever across reruns/restarts (#5807).
+                    matched = existing_install_matches_plan(install_dir, host, plan)
+                    existing_install_dir: Path | None = install_dir
+                    if matched and not existing_gpu_install_offloads(
+                        install_dir, host, plan, probe_path
+                    ):
                         log(
-                            "existing llama.cpp install already matches fallback release "
+                            "existing GPU llama.cpp install served a completion but "
+                            "loaded the model on CPU; reinstalling to recover GPU "
+                            "offload (unslothai/unsloth#5807)"
+                        )
+                        matched = False
+                        # Don't let validate_prebuilt_attempts short-circuit on
+                        # the same bad install we just rejected.
+                        existing_install_dir = None
+                    if matched:
+                        log(
+                            "existing llama.cpp install already matches release "
                             f"{plan.release_tag} upstream_tag={plan.llama_tag}; skipping reinstall"
                         )
                         return
@@ -6788,7 +6848,7 @@ def install_prebuilt(
                             release_tag = plan.release_tag,
                             approved_checksums = plan.approved_checksums,
                             initial_fallback_used = release_index > 0,
-                            existing_install_dir = install_dir,
+                            existing_install_dir = existing_install_dir,
                         )
                     except ExistingInstallSatisfied:
                         return

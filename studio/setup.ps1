@@ -2633,6 +2633,16 @@ if (Test-Path -LiteralPath $LlamaServerBin) {
             Write-Host "   Existing llama-server was built with CUDA but no GPU detected -- rebuilding" -ForegroundColor Yellow
             $NeedRebuild = $true
         }
+        # The cache check catches a CPU build on a GPU host; this catches a CUDA
+        # build that still loads on CPU at runtime (PTX / runtime-init failure,
+        # #5807). Smoke-test before reusing it on a GPU host.
+        if (-not $NeedRebuild -and $HasNvidiaSmi -and $cachedCuda) {
+            & python "$PSScriptRoot\install_llama_prebuilt.py" --smoke-test "$LlamaServerBin" --install-dir "$LlamaCppDir" --install-kind "windows-cuda" 2>&1 | Out-String | Write-Host
+            if ($LASTEXITCODE -eq 2) {
+                Write-Host "   Existing CUDA llama-server runs on CPU only -- rebuilding" -ForegroundColor Yellow
+                $NeedRebuild = $true
+            }
+        }
     }
 }
 

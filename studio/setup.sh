@@ -919,12 +919,41 @@ if [ "$_NEED_LLAMA_SOURCE_BUILD" = true ] && \
    [ -z "$_LLAMA_PR" ] && \
    [ -x "$LLAMA_CPP_DIR/build/bin/llama-server" ] && \
    [ -x "$LLAMA_CPP_DIR/build/bin/llama-quantize" ]; then
-    step "llama.cpp" "existing source build found; skipping rebuild"
-    ln -sf build/bin/llama-quantize "$LLAMA_CPP_DIR/llama-quantize"
-    if [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
-        : > "$LLAMA_CPP_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
+    _REUSE_SOURCE=true
+    # On a GPU host, smoke-test the existing source binary first so a stale
+    # CPU-only build (e.g. an earlier no-toolkit fallback) is rebuilt instead of
+    # silently reused on a GPU host (#5807). Exit 2 = ran on CPU -> rebuild;
+    # anything else keeps the build (never downgrade on uncertain evidence).
+    _REUSE_KIND=""
+    if [ "$_HOST_SYSTEM" = "Darwin" ] && { [ "$_HOST_MACHINE" = "arm64" ] || [ "$_HOST_MACHINE" = "aarch64" ]; }; then
+        _REUSE_KIND="macos-arm64"
+    elif command -v nvidia-smi >/dev/null 2>&1; then
+        _REUSE_KIND="linux-cuda"
+    elif [ "$_LINUX_HAS_GPU" = true ]; then
+        _REUSE_KIND="linux-rocm"
     fi
-    _NEED_LLAMA_SOURCE_BUILD=false
+    if [ -n "$_REUSE_KIND" ]; then
+        if python "$SCRIPT_DIR/install_llama_prebuilt.py" \
+                --smoke-test "$LLAMA_CPP_DIR/build/bin/llama-server" \
+                --install-dir "$LLAMA_CPP_DIR" \
+                --install-kind "$_REUSE_KIND" > "$LLAMA_CPP_DIR/gpu-smoke-existing.log" 2>&1; then
+            _REUSE_RC=0
+        else
+            _REUSE_RC=$?
+        fi
+        if [ "$_REUSE_RC" -eq 2 ]; then
+            substep "existing source build runs on CPU only; rebuilding for GPU..." "$C_WARN"
+            _REUSE_SOURCE=false
+        fi
+    fi
+    if [ "$_REUSE_SOURCE" = true ]; then
+        step "llama.cpp" "existing source build found; skipping rebuild"
+        ln -sf build/bin/llama-quantize "$LLAMA_CPP_DIR/llama-quantize"
+        if [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
+            : > "$LLAMA_CPP_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
+        fi
+        _NEED_LLAMA_SOURCE_BUILD=false
+    fi
 fi
 
 # ── 8. WSL: pre-install GGUF build dependencies for fallback source builds ──

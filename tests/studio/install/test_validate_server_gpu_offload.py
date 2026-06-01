@@ -499,3 +499,84 @@ def test_main_smoke_exit_error_on_inconclusive(monkeypatch):
 
     rc = _run_main_smoke(monkeypatch, impl)
     assert rc == M.EXIT_ERROR  # 1 -> setup scripts keep the GPU build
+
+
+# -- 6. existing_gpu_install_offloads: re-validate a matching install (#5807) --
+
+
+def _gpu_plan(install_kind = "linux-cuda"):
+    choice = M.AssetChoice(
+        repo = "unslothai/llama.cpp",
+        tag = "b9001",
+        name = "app-b9001-linux-x64-cuda13-newer.tar.gz",
+        url = "https://example.com/x",
+        source_label = "published",
+        install_kind = install_kind,
+    )
+    return M.InstallReleasePlan(
+        requested_tag = "latest",
+        llama_tag = "b9001",
+        release_tag = "rel",
+        attempts = [choice],
+        approved_checksums = M.ApprovedReleaseChecksums(
+            repo = "unslothai/llama.cpp", release_tag = "rel", upstream_tag = "b9001",
+            artifacts = {},
+        ),
+    )
+
+
+def _with_server(tmp_path):
+    server = tmp_path / "llama-server"
+    server.write_text("#!/bin/sh\n")
+    probe = tmp_path / "probe.gguf"
+    probe.write_bytes(b"GGUF")
+    return probe
+
+
+def test_existing_cpu_kind_install_is_kept(tmp_path):
+    # A non-GPU existing install is never offload-gated.
+    probe = _with_server(tmp_path)
+    assert M.existing_gpu_install_offloads(
+        tmp_path, nvidia_host(), _gpu_plan("linux-cpu"), probe
+    ) is True
+
+
+def test_existing_gpu_install_cpu_only_triggers_reinstall(monkeypatch, tmp_path):
+    probe = _with_server(tmp_path)
+
+    def fake_validate(*a, **k):
+        raise M.GpuOffloadFailure("loaded the model entirely on CPU")
+
+    monkeypatch.setattr(M, "validate_server", fake_validate)
+    assert M.existing_gpu_install_offloads(
+        tmp_path, nvidia_host(), _gpu_plan("linux-cuda"), probe
+    ) is False
+
+
+def test_existing_gpu_install_offloading_is_kept(monkeypatch, tmp_path):
+    probe = _with_server(tmp_path)
+    monkeypatch.setattr(M, "validate_server", lambda *a, **k: None)
+    assert M.existing_gpu_install_offloads(
+        tmp_path, nvidia_host(), _gpu_plan("linux-cuda"), probe
+    ) is True
+
+
+def test_existing_gpu_install_inconclusive_is_kept(monkeypatch, tmp_path):
+    probe = _with_server(tmp_path)
+
+    def fake_validate(*a, **k):
+        raise PrebuiltFallback("llama-server exited during startup")
+
+    monkeypatch.setattr(M, "validate_server", fake_validate)
+    assert M.existing_gpu_install_offloads(
+        tmp_path, nvidia_host(), _gpu_plan("linux-cuda"), probe
+    ) is True
+
+
+def test_existing_gpu_install_no_binary_is_kept(tmp_path):
+    # No llama-server present -> let the normal flow reinstall, don't crash.
+    probe = tmp_path / "probe.gguf"
+    probe.write_bytes(b"GGUF")
+    assert M.existing_gpu_install_offloads(
+        tmp_path, nvidia_host(), _gpu_plan("linux-cuda"), probe
+    ) is True
