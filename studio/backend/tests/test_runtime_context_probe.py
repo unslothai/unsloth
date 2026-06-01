@@ -67,7 +67,7 @@ def _backend(**kwargs):
 class TestParseRuntimeNCtxFromStdout:
     def test_parses_first_slot_line(self):
         inst = _backend(
-            stdout_lines=[
+            stdout_lines = [
                 "INFO starting",
                 "new slot, n_ctx = 2048",
                 "new slot, n_ctx = 4096",
@@ -76,28 +76,28 @@ class TestParseRuntimeNCtxFromStdout:
         assert inst._parse_runtime_n_ctx_from_stdout() == 2048
 
     def test_returns_none_when_missing(self):
-        inst = _backend(stdout_lines=["INFO starting"])
+        inst = _backend(stdout_lines = ["INFO starting"])
         assert inst._parse_runtime_n_ctx_from_stdout() is None
 
 
 class TestRequestedContextLengthProperty:
     def test_exposes_launch_when_fit_reduced(self):
-        inst = _backend(launch_context_length=8192, effective_context_length=2048)
+        inst = _backend(launch_context_length = 8192, effective_context_length = 2048)
         assert inst.requested_context_length == 8192
 
     def test_none_when_launch_matches_runtime(self):
-        inst = _backend(launch_context_length=8192, effective_context_length=8192)
+        inst = _backend(launch_context_length = 8192, effective_context_length = 8192)
         assert inst.requested_context_length is None
 
     def test_none_when_launch_unset(self):
-        inst = _backend(effective_context_length=2048)
+        inst = _backend(effective_context_length = 2048)
         assert inst.requested_context_length is None
 
 
 class TestProbeRuntimeContextLength:
     def test_prefers_slots_endpoint(self, monkeypatch):
         inst = _backend(
-            stdout_lines=["new slot, n_ctx = 9999"],
+            stdout_lines = ["new slot, n_ctx = 9999"],
         )
 
         class _Resp:
@@ -131,7 +131,7 @@ class TestProbeRuntimeContextLength:
         assert inst._probe_runtime_context_length() == 3072
 
     def test_falls_back_to_stdout(self, monkeypatch):
-        inst = _backend(stdout_lines=["new slot, n_ctx = 1024"])
+        inst = _backend(stdout_lines = ["new slot, n_ctx = 1024"])
 
         def fake_get(url, timeout):
             raise RuntimeError("offline")
@@ -140,5 +140,5 @@ class TestProbeRuntimeContextLength:
         assert inst._probe_runtime_context_length() == 1024
 
     def test_returns_none_without_port(self):
-        inst = _backend(port=None)
+        inst = _backend(port = None)
         assert inst._probe_runtime_context_length() is None
