@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from __future__ import annotations
+from collections import defaultdict
 import re as _re
 import torch
 from typing import Optional, List, Set
@@ -55,7 +56,7 @@ def _classify_param_names(model: torch.nn.Module) -> tuple[Set[str], Set[str]]:
         if isinstance(module, torch.nn.Embedding):
             for param_name, _ in module.named_parameters():
                 embedding_names.add(f"{mod_prefix}{param_name}")
-        elif isinstance(module, NORM_CLASSES):
+        elif isinstance(module, NORM_CLASSES) or "norm" in type(module).__name__.lower():
             for param_name, _ in module.named_parameters():
                 no_decay_names.add(f"{mod_prefix}{param_name}")
 
@@ -65,28 +66,28 @@ def _classify_param_names(model: torch.nn.Module) -> tuple[Set[str], Set[str]]:
     for name, _ in model.named_parameters():
         if "modules_to_save." not in name:
             continue
-        parent_name = name.rsplit(".modules_to_save", 1)[0]
+        parent_name = name.rsplit(".modules_to_save", 1)[0] if ".modules_to_save" in name else ""
         try:
             parent = model.get_submodule(parent_name)
         except (AttributeError, KeyError):
             continue
         if isinstance(parent, torch.nn.Embedding):
             embedding_names.add(name)
-        elif isinstance(parent, NORM_CLASSES):
+        elif isinstance(parent, NORM_CLASSES) or "norm" in type(parent).__name__.lower():
             no_decay_names.add(name)
 
     # Detect tied embeddings (e.g. lm_head.weight aliased to embed_tokens.weight).
-    seen_tensors: dict[int, str] = {}
+    # Group by data_ptr first to be order-independent — if lm_head.weight is
+    # processed before embed_tokens.weight, the alias status still propagates.
+    ptr_to_names: dict[int, list[str]] = defaultdict(list)
     for name, param in model.named_parameters():
-        ptr = param.data_ptr()
-        if ptr in seen_tensors:
-            first_name = seen_tensors[ptr]
-            if first_name in embedding_names:
-                embedding_names.add(name)
-            if first_name in no_decay_names:
-                no_decay_names.add(name)
-        else:
-            seen_tensors[ptr] = name
+        ptr_to_names[param.data_ptr()].append(name)
+    for ptr, names in ptr_to_names.items():
+        if len(names) > 1:
+            if any(n in embedding_names for n in names):
+                embedding_names.update(names)
+            if any(n in no_decay_names for n in names):
+                no_decay_names.update(names)
 
     # Name-based fallback for custom norm classes that don't inherit from
     # torch.nn.RMSNorm (e.g. LlamaRMSNorm, MistralRMSNorm, Qwen2RMSNorm,
