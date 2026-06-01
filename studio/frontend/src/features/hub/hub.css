@@ -1,0 +1,741 @@
+/* SPDX-License-Identifier: AGPL-3.0-only */
+/* Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0 */
+
+/* Hub feature CSS.
+
+   Lives with the Hub feature module so the styling stays bundled with the
+   Hub. Wired into the build via a single @import in studio/frontend/src/index.css.
+
+   Format/status color tokens are defined at :root and :root.dark so Tailwind
+   utilities like `bg-format-gguf` or `text-status-success` resolve everywhere
+   the Hub UI is rendered. Rule bodies are scoped to .hub-page or hub-prefixed
+   classes so they do not bleed into chat, train or settings surfaces. */
+
+:root {
+	--format-gguf: #60a5fa;
+	--format-checkpoint: #f472b6;
+	--format-adapter: #8b5cf6;
+	--status-warning: #eab308;
+	--status-danger: #ef4444;
+	--status-success: #11b686;
+}
+
+.dark {
+	--format-gguf: #60a5fa;
+	--format-checkpoint: #f472b6;
+	--format-adapter: #a78bfa;
+	--status-warning: #fbbf24;
+	--status-danger: #ef4444;
+	--status-success: #11b686;
+}
+
+@theme inline {
+	--color-format-gguf: var(--format-gguf);
+	--color-format-checkpoint: var(--format-checkpoint);
+	--color-format-adapter: var(--format-adapter);
+	--color-status-warning: var(--status-warning);
+	--color-status-danger: var(--status-danger);
+	--color-status-success: var(--status-success);
+}
+
+@layer base {
+	/* Filled-control surface — Hub search, Hub filter triggers, Train
+	   number/text inputs, Train Selects, picker search bars. The same
+	   visual identity the Hub search has always had:
+	     - Resting: subtle 3% bg + 5% border
+	     - Hover / open: 5% bg + 8% border
+	     - Focus: 4% bg + 15% border (no solid colour swap)
+	     - box-shadow: none on focus to neutralise shadcn's
+	       focus-visible green ring (--ring is the brand primary).
+	   `!important` is used on focus box-shadow only — Tailwind's
+	   `focus-visible:ring-…` utility composes via `--tw-ring-shadow`
+	   into the final box-shadow at the same specificity as ours, and
+	   without bumping ours we'd lose the cascade tie inconsistently
+	   depending on which utility was applied last to the element. */
+	.field-soft {
+		background-color: color-mix(in srgb, var(--foreground) 3%, transparent);
+		border: 1px solid color-mix(in srgb, var(--foreground) 5%, transparent);
+		box-shadow: none;
+		transition:
+			background-color 160ms ease,
+			border-color 160ms ease;
+	}
+
+	.field-soft:hover,
+	.field-soft[data-state="open"] {
+		background-color: color-mix(in srgb, var(--foreground) 5%, transparent);
+		border-color: color-mix(in srgb, var(--foreground) 8%, transparent);
+	}
+
+	.field-soft:focus,
+	.field-soft:focus-visible,
+	.field-soft:focus-within {
+		background-color: color-mix(in srgb, var(--foreground) 4%, transparent);
+		border-color: color-mix(in srgb, var(--foreground) 15%, transparent) !important;
+		box-shadow: none !important;
+		outline: none;
+	}
+
+	.dark .field-soft {
+		background-color: color-mix(in srgb, var(--foreground) 4%, transparent);
+		border-color: color-mix(in srgb, var(--foreground) 6%, transparent);
+	}
+
+	.dark .field-soft:hover,
+	.dark .field-soft[data-state="open"] {
+		background-color: color-mix(in srgb, var(--foreground) 5%, transparent);
+		border-color: color-mix(in srgb, var(--foreground) 8%, transparent);
+	}
+
+	.dark .field-soft:focus,
+	.dark .field-soft:focus-visible,
+	.dark .field-soft:focus-within {
+		background-color: color-mix(in srgb, var(--foreground) 7%, transparent);
+		border-color: color-mix(in srgb, var(--foreground) 15%, transparent) !important;
+	}
+
+	.hub-page .elevated-card {
+		border: 1px solid color-mix(in srgb, var(--foreground) 5%, transparent);
+		border-radius: 20px;
+		box-shadow:
+			0 12px 48px -8px color-mix(in srgb, var(--foreground) 8%, transparent),
+			0 0 100px 20px color-mix(in srgb, var(--foreground) 3%, transparent);
+	}
+
+	@media (min-width: 640px) {
+		.hub-page .elevated-card {
+			border-radius: 28px;
+		}
+	}
+
+	@media (min-width: 1024px) {
+		.hub-page .elevated-card {
+			border-radius: 32px;
+		}
+	}
+
+	html.dark .hub-page .elevated-card {
+		border-color: transparent;
+		box-shadow: none;
+	}
+
+	.hub-page .page-title-halo {
+		text-shadow:
+			0 0 24px #e4e3df,
+			0 0 56px #ebeae6,
+			0 0 96px #efeeea;
+	}
+
+	html.dark .hub-page .page-title-halo {
+		text-shadow: none;
+	}
+
+	html:not(.dark) .hub-page {
+		background-color: var(--background);
+	}
+
+	html:not(.dark) .hub-page > div > section .border-b,
+	html:not(.dark) .hub-page > div > section .border-r,
+	html:not(.dark) .hub-page > div > section .border-t.border-border {
+		border-color: color-mix(in srgb, var(--foreground) 6%, transparent);
+	}
+
+	html:not(.dark) .hub-page .hub-side-surface {
+		background-color: var(--background);
+	}
+
+	html:not(.dark) .hub-page .hub-tag-soft,
+	html:not(.dark) .hub-page .hub-tag-meta {
+		background-color: transparent;
+		transition:
+			background-color 160ms ease,
+			border-color 160ms ease;
+	}
+
+	html:not(.dark) .hub-page .hub-tag-soft:hover,
+	html:not(.dark) .hub-page .hub-tag-meta:hover {
+		background-color: color-mix(in srgb, var(--foreground) 4%, transparent);
+	}
+
+	html.dark .hub-page {
+		background-color: var(--background);
+	}
+
+	html.dark .hub-page > div > section [class*="bg-card"],
+	html.dark .hub-page > div > section [class*="bg-background"] {
+		background-color: var(--popover);
+	}
+
+	html.dark .hub-page > div > section .border-b,
+	html.dark .hub-page > div > section .border-r,
+	html.dark .hub-page > div > section .border-t.border-border {
+		border-color: color-mix(in srgb, var(--foreground) 5%, transparent);
+	}
+
+	html.dark .hub-page .hub-side-surface {
+		background-color: transparent;
+	}
+
+	html.dark .hub-page .hub-tag-soft,
+	html.dark .hub-page .hub-tag-meta {
+		background-color: transparent;
+		transition:
+			background-color 160ms ease,
+			border-color 160ms ease;
+	}
+
+	html.dark .hub-page .hub-tag-soft {
+		color: var(--muted-foreground);
+	}
+
+	html.dark .hub-page .hub-tag-meta {
+		color: var(--muted-foreground);
+	}
+
+	html.dark .hub-page .hub-tag-soft:hover,
+	html.dark .hub-page .hub-tag-meta:hover {
+		background-color: color-mix(in srgb, var(--foreground) 4%, transparent);
+	}
+
+	.hub-menu-instant {
+		animation: none !important;
+		--tw-translate-x: 0px !important;
+		--tw-translate-y: 0px !important;
+		translate: 0 0 !important;
+		user-select: none;
+		-webkit-user-select: none;
+	}
+
+	.hub-menu-instant [data-slot="select-item"]:focus,
+	.hub-menu-instant [data-slot="select-item"][data-highlighted],
+	.hub-menu-instant [role="option"][data-highlighted] {
+		background-color: color-mix(in srgb, var(--foreground) 6%, transparent);
+		color: var(--foreground);
+	}
+
+	html.dark .hub-menu-instant [data-slot="select-item"]:focus,
+	html.dark .hub-menu-instant [data-slot="select-item"][data-highlighted],
+	html.dark .hub-menu-instant [role="option"][data-highlighted] {
+		background-color: color-mix(in srgb, var(--foreground) 8%, transparent);
+		color: var(--foreground);
+	}
+
+	html.dark .hub-menu-instant {
+		background-color: #2e2f31 !important;
+	}
+
+	.hub-menu-instant *,
+	.hub-menu-trigger,
+	.hub-menu-trigger * {
+		user-select: none;
+		-webkit-user-select: none;
+	}
+
+	html:not(.dark) .hub-page .hub-tab-toggle {
+		background-color: color-mix(in srgb, var(--foreground) 5%, transparent);
+		border: 0;
+		box-shadow: none;
+	}
+
+	html.dark .hub-page .hub-tab-toggle {
+		background-color: color-mix(in srgb, var(--foreground) 4.5%, transparent);
+		border: 0;
+		box-shadow: none;
+	}
+
+	html:not(.dark) .hub-page .hub-tab-toggle-pill {
+		background-color: var(--background);
+		border: 0;
+		box-shadow:
+			0 1px 2px color-mix(in srgb, var(--foreground) 8%, transparent),
+			0 4px 10px -3px color-mix(in srgb, var(--foreground) 6%, transparent);
+	}
+
+	html.dark .hub-page .hub-tab-toggle-pill {
+		background-color: color-mix(in srgb, var(--foreground) 10%, transparent);
+		border: 0;
+		box-shadow:
+			0 1px 2px rgba(0, 0, 0, 0.14),
+			0 4px 10px -3px rgba(0, 0, 0, 0.1);
+	}
+
+	html:not(.dark) .hub-page .catalog-row {
+		background-color: transparent;
+		border-color: transparent;
+		box-shadow: none;
+		transition: background-color 160ms ease;
+	}
+
+	html:not(.dark) .hub-page .catalog-row:hover {
+		background-color: color-mix(in srgb, var(--foreground) 3.5%, transparent);
+	}
+
+	html:not(.dark) .hub-page .catalog-row[data-selected="true"] {
+		background-color: color-mix(in srgb, var(--foreground) 6%, transparent);
+	}
+
+	/* Currently-loaded checkpoint: a brand-green left stripe plus a faint
+	   green wash, orthogonal to the neutral selected tint so a row that is
+	   both loaded and selected still reads as loaded. */
+	html:not(.dark) .hub-page .catalog-row[data-active="true"] {
+		background-color: color-mix(in srgb, var(--status-success) 7%, transparent);
+		box-shadow: inset 2px 0 0 0 var(--primary);
+	}
+
+	html.dark .hub-page .catalog-row {
+		background-color: transparent;
+		border-color: transparent;
+		box-shadow: none;
+		transition: background-color 160ms ease;
+	}
+
+	html.dark .hub-page .catalog-row:hover {
+		background-color: color-mix(in srgb, var(--foreground) 3.5%, transparent);
+	}
+
+	html.dark .hub-page .catalog-row[data-selected="true"] {
+		background-color: color-mix(in srgb, var(--foreground) 7%, transparent);
+	}
+
+	html.dark .hub-page .catalog-row[data-active="true"] {
+		background-color: color-mix(in srgb, var(--status-success) 12%, transparent);
+		box-shadow: inset 2px 0 0 0 var(--primary);
+	}
+}
+
+@layer utilities {
+	.hub-tag-soft,
+	.hub-tag-meta {
+		@apply min-h-[26px] rounded-[11px] bg-muted/70 ring-1 ring-inset;
+		--tw-ring-color: color-mix(in srgb, var(--foreground) 3.5%, transparent);
+	}
+
+	.dark .hub-tag-soft,
+	.dark .hub-tag-meta {
+		@apply bg-white/[0.05] ring-white/[0.035];
+	}
+	.hub-download-card {
+		@apply flex w-full flex-col gap-2 rounded-[22px] p-2;
+		background-color: color-mix(in srgb, var(--foreground) 3%, transparent);
+		border: 1px solid color-mix(in srgb, var(--foreground) 5.5%, transparent);
+		box-shadow: none;
+	}
+
+	.dark .hub-download-card {
+		background-color: color-mix(in srgb, var(--foreground) 3.5%, transparent);
+		border: 1px solid color-mix(in srgb, var(--foreground) 5.5%, transparent);
+		box-shadow: none;
+	}
+
+	.hub-download-panel {
+		border-radius: 20px;
+		background-color: var(--popover);
+		border: 1px solid color-mix(in srgb, var(--foreground) 6%, transparent);
+		box-shadow:
+			0 1px 2px color-mix(in srgb, var(--foreground) 7%, transparent),
+			0 18px 48px -12px color-mix(in srgb, var(--foreground) 22%, transparent);
+	}
+
+	.dark .hub-download-panel {
+		border-color: color-mix(in srgb, var(--foreground) 8%, transparent);
+		box-shadow:
+			0 1px 2px rgba(0, 0, 0, 0.4),
+			0 20px 56px -12px rgba(0, 0, 0, 0.6);
+	}
+
+	.hub-download-fab {
+		position: relative;
+		display: inline-flex;
+		width: 2.75rem;
+		height: 2.75rem;
+		cursor: pointer;
+		align-items: center;
+		justify-content: center;
+		border-radius: 9999px;
+		color: var(--muted-foreground);
+		background-color: var(--popover);
+		border: 1px solid color-mix(in srgb, var(--foreground) 6%, transparent);
+		box-shadow:
+			0 1px 2px color-mix(in srgb, var(--foreground) 7%, transparent),
+			0 12px 32px -10px color-mix(in srgb, var(--foreground) 22%, transparent);
+		transition:
+			color 150ms ease,
+			background-color 150ms ease,
+			box-shadow 150ms ease,
+			transform 150ms ease;
+	}
+
+	.hub-download-fab:hover {
+		color: var(--foreground);
+		transform: translateY(-1px);
+		box-shadow:
+			0 2px 4px color-mix(in srgb, var(--foreground) 8%, transparent),
+			0 16px 40px -10px color-mix(in srgb, var(--foreground) 26%, transparent);
+	}
+
+	.dark .hub-download-fab {
+		border-color: color-mix(in srgb, var(--foreground) 8%, transparent);
+		box-shadow:
+			0 1px 2px rgba(0, 0, 0, 0.4),
+			0 14px 36px -10px rgba(0, 0, 0, 0.6);
+	}
+
+	.dark .hub-download-fab:hover {
+		box-shadow:
+			0 2px 4px rgba(0, 0, 0, 0.45),
+			0 18px 44px -10px rgba(0, 0, 0, 0.65);
+	}
+
+	.hub-download-fab-badge {
+		position: absolute;
+		top: -3px;
+		right: -3px;
+		display: inline-flex;
+		min-width: 1.125rem;
+		height: 1.125rem;
+		align-items: center;
+		justify-content: center;
+		border-radius: 9999px;
+		padding-inline: 0.3125rem;
+		background-color: var(--status-success);
+		color: var(--primary-foreground);
+		font-size: 10.5px;
+		font-weight: 600;
+		line-height: 1;
+		font-variant-numeric: tabular-nums;
+		border: 2px solid var(--popover);
+	}
+}
+
+@layer base {
+	.hub-avatar-tile {
+		box-shadow: 0 0 0 0.5px color-mix(in srgb, var(--foreground) 6%, transparent);
+	}
+
+	.dark .hub-avatar-tile {
+		box-shadow: 0 0 0 0.5px color-mix(in srgb, var(--foreground) 8%, transparent);
+	}
+
+	/* Verified badge: solid badge shape with a check-shaped hole punched
+	   through, so whatever sits behind shows through the check. The badge
+	   fill follows currentColor (so `text-primary` makes it Unsloth green;
+	   any text-* utility recolors it). Use as: `<span class="hub-verified-badge
+	   size-4 text-primary" />`. */
+	.hub-verified-badge {
+		display: inline-block;
+		background-color: currentColor;
+		mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><defs><mask id='c'><rect width='24' height='24' fill='white'/><path d='m8.75 12.5 2.5 2.5 4.25-5.25' stroke='black' stroke-width='1.85' stroke-linecap='round' stroke-linejoin='round' fill='none'/></mask></defs><path d='M8.603 3.799A4.49 4.49 0 0 1 12 2.25c1.357 0 2.573.6 3.397 1.549a4.49 4.49 0 0 1 3.498 1.307 4.491 4.491 0 0 1 1.307 3.497A4.49 4.49 0 0 1 21.75 12a4.49 4.49 0 0 1-1.549 3.397 4.491 4.491 0 0 1-1.307 3.497 4.491 4.491 0 0 1-3.497 1.307A4.49 4.49 0 0 1 12 21.75a4.49 4.49 0 0 1-3.397-1.549 4.49 4.49 0 0 1-3.498-1.306 4.491 4.491 0 0 1-1.307-3.498A4.49 4.49 0 0 1 2.25 12c0-1.357.6-2.573 1.549-3.397a4.49 4.49 0 0 1 1.307-3.497 4.49 4.49 0 0 1 3.497-1.307Z' fill='white' mask='url(%23c)'/></svg>") center / contain no-repeat;
+		-webkit-mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><defs><mask id='c'><rect width='24' height='24' fill='white'/><path d='m8.75 12.5 2.5 2.5 4.25-5.25' stroke='black' stroke-width='1.85' stroke-linecap='round' stroke-linejoin='round' fill='none'/></mask></defs><path d='M8.603 3.799A4.49 4.49 0 0 1 12 2.25c1.357 0 2.573.6 3.397 1.549a4.49 4.49 0 0 1 3.498 1.307 4.491 4.491 0 0 1 1.307 3.497A4.49 4.49 0 0 1 21.75 12a4.49 4.49 0 0 1-1.549 3.397 4.491 4.491 0 0 1-1.307 3.497 4.491 4.491 0 0 1-3.497 1.307A4.49 4.49 0 0 1 12 21.75a4.49 4.49 0 0 1-3.397-1.549 4.49 4.49 0 0 1-3.498-1.306 4.491 4.491 0 0 1-1.307-3.498A4.49 4.49 0 0 1 2.25 12c0-1.357.6-2.573 1.549-3.397a4.49 4.49 0 0 1 1.307-3.497 4.49 4.49 0 0 1 3.497-1.307Z' fill='white' mask='url(%23c)'/></svg>") center / contain no-repeat;
+	}
+
+
+	@keyframes hub-loading-sweep {
+		0% {
+			opacity: 0;
+			transform: translate3d(-120%, 0, 0);
+		}
+
+		16% {
+			opacity: 0.92;
+		}
+
+		78% {
+			opacity: 0.92;
+		}
+
+		100% {
+			opacity: 0;
+			transform: translate3d(520%, 0, 0);
+		}
+	}
+
+	.hub-loading-bar {
+		pointer-events: none;
+		position: relative;
+		overflow: hidden;
+		width: 100%;
+		height: 3px;
+	}
+
+	.hub-loading-bar::after {
+		content: "";
+		display: none;
+		position: absolute;
+		inset-block: 0;
+		left: 0;
+		width: 36%;
+		background: linear-gradient(90deg,
+				transparent,
+				color-mix(in srgb, var(--foreground) 20%, transparent),
+				color-mix(in srgb, var(--foreground) 58%, transparent),
+				color-mix(in srgb, var(--foreground) 20%, transparent),
+				transparent);
+		will-change: opacity, transform;
+	}
+
+	html.dark .hub-loading-bar::after {
+		background: linear-gradient(90deg,
+				transparent,
+				color-mix(in srgb, var(--foreground) 22%, transparent),
+				color-mix(in srgb, var(--foreground) 60%, transparent),
+				color-mix(in srgb, var(--foreground) 22%, transparent),
+				transparent);
+	}
+
+	.hub-loading-bar[data-active="true"]::after {
+		display: block;
+		animation: hub-loading-sweep 3s cubic-bezier(0.22, 0.72, 0.18, 1) infinite;
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		.hub-loading-bar[data-active="true"]::after {
+			animation-duration: 3s !important;
+			animation-iteration-count: infinite !important;
+		}
+	}
+
+	/* README markdown can be thousands of nodes. Keep its paint/layout work
+	   scoped so unrelated overlays, like the sidebar account menu, do less
+	   route-wide recalculation while the Hub is open. */
+	.hub-readme-prose {
+		content-visibility: auto;
+		contain-intrinsic-size: auto 640px;
+	}
+
+	.hub-readme-prose > * {
+		content-visibility: auto;
+		contain-intrinsic-size: auto 140px;
+	}
+
+	.hub-readme-prose :is(p, div):has(> a:nth-of-type(2) > img) {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 0.5rem;
+	}
+
+	.hub-readme-prose :is(p, div):has(> a:nth-of-type(2) > img) > br {
+		display: none;
+	}
+
+	.hub-readme-prose :is(p, div):has(> a:nth-of-type(2) > img) > a {
+		display: inline-flex;
+		align-items: center;
+	}
+
+	.hub-readme-prose :is(p, div):has(> a:nth-of-type(2) > img) img {
+		margin-block: 0;
+	}
+
+	/* Inspector action pills (Download / Run / Train / Cancel) for the hub
+	   inspector card. Centralized so all three sections (GGUF, safetensors,
+	   datasets) stay in lock-step on type scale, padding, hover surface, and
+	   the 16px icon size — mirrors the pattern used for `.sidebar-nav-btn`.
+	   Width and disabled tint are layered inline by callers (some buttons
+	   are w-24 in a pair, some are w-28 standalone). Raw CSS rather than
+	   @apply so the cascade is explicit and predictable. */
+	.hub-action-btn {
+		display: inline-flex;
+		height: 2.25rem;
+		cursor: pointer;
+		align-items: center;
+		justify-content: center;
+		gap: 0.5rem;
+		white-space: nowrap;
+		border-radius: 9999px;
+		background-color: transparent;
+		padding-left: 0.75rem;
+		padding-right: 0.75rem;
+		font-size: 13px;
+		font-weight: 500;
+		line-height: 18px;
+		letter-spacing: -0.025em;
+		color: var(--foreground);
+		transition: color 150ms, background-color 150ms;
+	}
+
+	.hub-action-btn:hover:not(:disabled) {
+		background-color: color-mix(in srgb, var(--foreground) 4%, transparent);
+	}
+
+	.dark .hub-action-btn:hover:not(:disabled) {
+		background-color: color-mix(in srgb, var(--foreground) 5%, transparent);
+	}
+
+	.hub-action-btn:disabled {
+		cursor: not-allowed;
+	}
+
+	/* Every glyph inside a hub action button — explicit icon, spinner, or
+	   embedded SVG — locks to 16px so swapping icons or replacing the
+	   spinner can't drift the layout. */
+	.hub-action-btn svg {
+		width: 1rem;
+		height: 1rem;
+		flex-shrink: 0;
+	}
+
+	/* Primary "Run" action — confirms loading/running a model. Pill shape
+	   (rounded-full) so it reads as the unmistakable CTA in a row of
+	   ghost actions and matches the live-model status-success token used
+	   elsewhere in the app. Same h-9 geometry, 13px
+	   medium type, tracking-tight, and 16px icon slot as .hub-action-btn
+	   so the height aligns with adjacent ghost buttons. */
+	.hub-run-action-btn {
+		display: inline-flex;
+		height: 2.25rem;
+		cursor: pointer;
+		align-items: center;
+		justify-content: center;
+		gap: 0.4rem;
+		white-space: nowrap;
+		border-radius: 9999px;
+		background-color: var(--status-success);
+		padding-left: 1rem;
+		padding-right: 1rem;
+		font-size: 13px;
+		font-weight: 600;
+		line-height: 18px;
+		letter-spacing: -0.025em;
+		color: var(--primary-foreground);
+		transition: background-color 150ms, transform 150ms;
+		box-shadow:
+			inset 0 1px 0 color-mix(in srgb, var(--primary-foreground) 18%, transparent),
+			0 1px 2px color-mix(in srgb, var(--status-success) 22%, transparent);
+	}
+
+	.hub-run-action-btn:hover:not(:disabled) {
+		background-color: color-mix(in srgb, var(--status-success) 88%, black);
+	}
+
+	.hub-run-action-btn:active:not(:disabled) {
+		transform: scale(0.98);
+	}
+
+	.hub-run-action-btn:disabled {
+		cursor: not-allowed;
+		opacity: 0.5;
+	}
+
+	.hub-run-action-btn svg {
+		width: 0.9rem;
+		height: 0.9rem;
+		flex-shrink: 0;
+	}
+
+	/* Spinner-default / cancel-on-hover swap inside `.hub-action-btn`.
+	   Two glyphs occupy the same 16×16 slot; the button's :hover toggles
+	   their opacities so the percentage label beside them never shifts. */
+	.hub-cta-indicator {
+		position: relative;
+		display: inline-flex;
+		width: 1rem;
+		height: 1rem;
+		flex-shrink: 0;
+		align-items: center;
+		justify-content: center;
+	}
+
+	.hub-cta-indicator-spinner,
+	.hub-cta-indicator-cancel {
+		transition: opacity 150ms;
+	}
+
+	.hub-cta-indicator-cancel {
+		position: absolute;
+		opacity: 0;
+	}
+
+	.hub-action-btn:hover .hub-cta-indicator-spinner {
+		opacity: 0;
+	}
+
+	.hub-action-btn:hover .hub-cta-indicator-cancel {
+		opacity: 1;
+	}
+
+	/* Hover-revealed inline action overlay (used for the row-end trash on
+	   downloaded models and datasets in the inspector). Wrapper 28×28 with a
+	   16px glyph — same icon size as `.hub-action-btn` so the destructive
+	   affordance reads consistently with the primary actions. Relies on a
+	   `.group/dl` ancestor for the hover scope (the Hub download row). */
+	.hub-row-action {
+		position: absolute;
+		right: 0.25rem;
+		top: 50%;
+		display: inline-flex;
+		width: 1.75rem;
+		height: 1.75rem;
+		transform: translateY(-50%);
+		align-items: center;
+		justify-content: center;
+		border-radius: 8px;
+		color: var(--muted-foreground);
+		opacity: 0;
+		cursor: pointer;
+		transition: opacity 150ms, color 150ms;
+	}
+
+	.group\/dl:hover .hub-row-action,
+	.hub-row-action:focus-visible {
+		opacity: 1;
+	}
+
+	.hub-row-action:hover {
+		color: rgb(225 29 72);
+	}
+
+	.dark .hub-row-action:hover {
+		color: rgb(251 113 133);
+	}
+
+	.hub-row-action svg {
+		width: 1rem;
+		height: 1rem;
+		flex-shrink: 0;
+	}
+}
+
+@layer base {
+	.hub-page .field-trigger.field-filter {
+		color: var(--muted-foreground);
+		font-weight: 400;
+		padding-top: 0.25rem;
+		padding-bottom: 0.25rem;
+		line-height: 1.25rem;
+	}
+
+	.hub-page .field-trigger.field-filter:hover {
+		color: var(--foreground);
+	}
+}
+
+html:not(.dark) .hub-page [data-hub-scroll="true"] {
+	scrollbar-color: oklch(0.5 0 0 / 0.22) transparent;
+}
+
+html.dark .hub-page [data-hub-scroll="true"] {
+	scrollbar-color: oklch(0.55 0 0 / 0.16) transparent;
+}
+
+html:not(.dark) .hub-page [data-hub-scroll="true"]::-webkit-scrollbar-thumb {
+	background: oklch(0.5 0 0 / 0.22);
+}
+
+html.dark .hub-page [data-hub-scroll="true"]::-webkit-scrollbar-thumb {
+	background: oklch(0.55 0 0 / 0.16);
+}
+
+/* While a modal dialog is open (delete confirmation, transport-mode swap, the
+   folder manager) Radix locks the background: it sets body[data-scroll-locked]
+   and body { pointer-events: none }. A few Hub affordances (the cached-size
+   chip, the row delete button) opt back into pointer events with
+   `pointer-events-auto` so they can sit above the row's full-bleed click
+   overlay. That opt-in must NOT survive an open modal, or hovering the
+   background fires their tooltips behind the dialog. Re-disable only those
+   opt-ins while the scroll lock is active; everything else is already blocked
+   by the body-level rule, and the dialog's own portaled content never carries
+   this class. */
+body[data-scroll-locked] .hub-modal-pe-guard {
+	pointer-events: none !important;
+}

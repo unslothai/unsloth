@@ -33,6 +33,7 @@ export const en = {
       newChat: "New Chat",
       compare: "Compare",
       search: "Search",
+      hub: "Hub",
       train: "Train",
       recipes: "Recipes",
       export: "Export",

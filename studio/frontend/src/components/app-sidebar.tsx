@@ -44,6 +44,7 @@ import {
   ChefHatIcon,
   ColumnInsertIcon,
   CursorInfo02Icon,
+  DashboardCircleIcon,
   Delete02Icon,
   DownloadSquare01Icon,
   Edit03Icon,
@@ -494,6 +495,18 @@ export function AppSidebar() {
       <SidebarGroup data-tour="navbar" className="group-data-[collapsible=icon]:px-0 px-2 pt-[9px] pb-[20px] shrink-0">
         <SidebarGroupContent>
           <SidebarMenu>
+            <NavItem
+              icon={DashboardCircleIcon}
+              label={t("shell.navigation.hub")}
+              active={pathname === "/hub" || pathname.startsWith("/hub/")}
+              disabled={chatOnly}
+              onClick={() => {
+                if (chatOnly) return;
+                navigate({ to: "/hub" });
+                closeMobileIfOpen();
+              }}
+            />
+
             <NavItem
               icon={TestTubeOutlineIcon}
               label={t("shell.navigation.train")}

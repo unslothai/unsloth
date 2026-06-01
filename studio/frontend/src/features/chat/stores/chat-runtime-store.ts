@@ -233,6 +233,22 @@ function saveString(key: string, value: string): void {
   }
 }
 
+function notifyHfTokenChanged(value: string): void {
+  if (!canUseStorage()) return;
+  try {
+    window.dispatchEvent(
+      new StorageEvent("storage", {
+        key: HF_TOKEN_KEY,
+        newValue: value,
+        storageArea: window.localStorage,
+        url: window.location.href,
+      }),
+    );
+  } catch {
+    // ignore
+  }
+}
+
 type ChatRuntimeStore = {
   settingsHydrated: boolean;
   params: InferenceParams;
@@ -776,11 +792,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       setScalarSettingVersion("autoTitle", autoTitle, state.autoTitle);
       return { autoTitle };
     }),
-  setHfToken: (hfToken) =>
-    set(() => {
-      saveString(HF_TOKEN_KEY, hfToken);
-      return { hfToken };
-    }),
+  setHfToken: (hfToken) => {
+    saveString(HF_TOKEN_KEY, hfToken);
+    set({ hfToken });
+    notifyHfTokenChanged(hfToken);
+  },
   setModelsError: (modelsError) => set({ modelsError }),
   setCheckpoint: (modelId, ggufVariant) =>
     set((state) => {

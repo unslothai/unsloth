@@ -12,6 +12,7 @@ import { Route as exportRoute } from "./routes/export";
 import { Route as gridTestRoute } from "./routes/grid-test";
 import { Route as indexRoute } from "./routes/index";
 import { Route as loginRoute } from "./routes/login";
+import { Route as hubRoute } from "./routes/hub";
 import { Route as onboardingRoute } from "./routes/onboarding";
 import { Route as changePasswordRoute } from "./routes/change-password";
 import { Route as settingsRoute } from "./routes/settings";
@@ -23,6 +24,7 @@ const routeTree = rootRoute.addChildren([
   loginRoute,
   changePasswordRoute,
   gridTestRoute,
+  hubRoute,
   settingsRoute,
   studioRoute,
   chatRoute,

@@ -33,6 +33,7 @@ export const zhCN = {
       newChat: "新聊天",
       compare: "对比",
       search: "搜索",
+      hub: "Hub",
       train: "训练",
       recipes: "配方",
       export: "导出",

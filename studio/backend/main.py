@@ -243,6 +243,16 @@ from routes import (
     training_history_router,
     training_router,
 )
+from hub.routes import (
+    inventory_router as hub_inventory_router,
+    datasets_router as hub_datasets_router,
+)
+from hub.schemas.downloads import TransportCapabilities
+from hub.utils.download_registry import (
+    get_download_transport_capabilities,
+    reap_orphan_workers as reap_hub_orphan_workers,
+    terminate_active_downloads as terminate_hub_downloads,
+)
 from auth import storage
 from auth.authentication import get_current_subject
 from utils.hardware import (
@@ -321,6 +331,10 @@ async def lifespan(app: FastAPI):
 
     # Detect hardware first — sets DEVICE global used everywhere
     detect_hardware()
+
+    # Reap any download workers orphaned by a previous hard crash/restart
+    # before new downloads can start. Self-contained and never raises.
+    reap_hub_orphan_workers()
 
     # llama.cpp probes: capability (MTP support) + freshness (release age).
     # Both cached; freshness has a 24h disk TTL.
@@ -404,6 +418,7 @@ async def lifespan(app: FastAPI):
         app.state.bootstrap_password = storage.get_bootstrap_password()
     yield
     # Cleanup
+    terminate_hub_downloads()
     _hw_module.DEVICE = None
     clear_unsloth_compiled_cache()
 
@@ -428,8 +443,10 @@ logger = LogConfig.setup_logging(
 app.add_middleware(LoggingMiddleware)
 
 
-# Citation favicons load from www.google.com/s2/favicons; *.gstatic.com is
-# kept for legacy web-search faviconV2 paths. Everything else is same-origin.
+# Images and media may load from any https origin so third-party model-card
+# assets render (HF LFS/XET CDNs, shields/badge hosts, GitHub-hosted images,
+# audio/video samples). This mirrors the desktop CSP in tauri.conf.json. They
+# cannot execute code; scripts, frames, and connect-src stay same-origin + HF.
 from starlette.middleware.base import BaseHTTPMiddleware  # noqa: E402
 from starlette.requests import Request as _StarletteRequest  # noqa: E402
 
@@ -482,9 +499,8 @@ def _build_csp(script_nonce: "str | None" = None) -> str:
 
     return (
         "default-src 'self'; "
-        "img-src 'self' data: blob: https://t0.gstatic.com "
-        "https://t1.gstatic.com https://t2.gstatic.com "
-        "https://t3.gstatic.com https://www.google.com; "
+        "img-src 'self' data: blob: https:; "
+        "media-src 'self' data: blob: https:; "
         f"connect-src {connect_src}; "
         "style-src 'self' 'unsafe-inline'; "
         f"{script_src}; "
@@ -534,6 +550,7 @@ _BODY_PROTECTED_PREFIXES = (
     "/api/inference",
     "/api/data-recipe",
     "/api/datasets",
+    "/api/hub",
     "/api/chat",
     "/api/train",
     "/api/export",
@@ -695,6 +712,8 @@ app.include_router(export_router, prefix = "/api/export", tags = ["export"])
 app.include_router(
     training_history_router, prefix = "/api/train", tags = ["training-history"]
 )
+app.include_router(hub_inventory_router, prefix = "/api/hub", tags = ["hub"])
+app.include_router(hub_datasets_router, prefix = "/api/hub/datasets", tags = ["hub"])
 
 
 # ============ Health and System Endpoints ============
@@ -764,6 +783,26 @@ def studio_install_source(_current_subject: str = Depends(get_current_subject)):
 def studio_update_status(_current_subject: str = Depends(get_current_subject)):
     """Return source-aware manual update status for browser-served Studio."""
     return get_studio_update_status(UNSLOTH_VERSION)
+
+
+@app.get(
+    "/api/studio/download-transport-capabilities",
+    response_model = TransportCapabilities,
+)
+def studio_download_transport_capabilities(
+    _current_subject: str = Depends(get_current_subject),
+):
+    caps = get_download_transport_capabilities()
+    return {
+        "http": {
+            "available": caps.http.available,
+            "reason": caps.http.reason,
+        },
+        "xet": {
+            "available": caps.xet.available,
+            "reason": caps.xet.reason,
+        },
+    }
 
 
 @app.post("/api/shutdown")

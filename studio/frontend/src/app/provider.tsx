@@ -10,6 +10,7 @@ import {
 } from "@/components/tauri/window-titlebar";
 import { Toaster } from "@/components/ui/sonner";
 import { WebUpdateBanner } from "@/components/web/update-banner";
+import { DownloadManagerPanel } from "@/features/hub/download-manager";
 import { getTauriAuthFailure, tauriAutoAuth } from "@/features/auth";
 import { NativeIntentDrain } from "@/features/native-intents/native-intent-drain";
 import { useTauriBackend, type BackendStatus } from "@/hooks/use-tauri-backend";
@@ -235,6 +236,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
     return (
       <>
         {children}
+        <DownloadManagerPanel />
         <WebUpdateBanner enabled={!WEB_UPDATE_HIDDEN_ROUTES.has(pathname)} />
       </>
     );
@@ -252,6 +254,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
       <TauriUpdateLayer isExternalServer={isExternalServer} />
       <NativeIntentDrain />
       {children}
+      <DownloadManagerPanel />
     </>
   ) : (
     <StartupScreen

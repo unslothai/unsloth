@@ -196,27 +196,22 @@ class TestSecurityHeadersMiddleware:
         nonced = main_module._build_csp("XYZ")
         assert "script-src 'self' 'nonce-XYZ';" in nonced
 
-    def test_img_src_allows_google_favicons(self, main_module):
-        # sources.tsx fetches https://www.google.com/s2/favicons?... ; without
-        # this allowlist entry citation favicons fall back to gray initials.
+    def test_img_and_media_allow_https_sources(self, main_module):
+        # Model-card READMEs and citation favicons pull images/media from many
+        # https origins (HF LFS/XET CDNs, shields/badge hosts, GitHub-hosted
+        # assets, audio/video samples). img-src/media-src allow any https source
+        # so they render; this mirrors the desktop CSP in tauri.conf.json.
         csp = main_module._build_csp()
-        img_directive = next(
-            chunk.strip()
+        directives = {
+            chunk.strip().split()[0]: chunk.strip().split()
             for chunk in csp.split(";")
-            if chunk.strip().startswith("img-src ")
-        )
-        # Tokenise and compare with `==` so CodeQL's URL-substring rule does
-        # not read directive-string `in` membership as URL sanitisation.
-        img_sources = img_directive.split()
-        assert any(src == "https://www.google.com" for src in img_sources)
-        # Pre-existing favicon CDNs stay allowed.
-        for host in (
-            "https://t0.gstatic.com",
-            "https://t1.gstatic.com",
-            "https://t2.gstatic.com",
-            "https://t3.gstatic.com",
-        ):
-            assert any(src == host for src in img_sources)
+            if chunk.strip()
+        }
+        for name in ("img-src", "media-src"):
+            assert name in directives, f"missing {name} directive"
+            # Tokenise and compare with `==` so CodeQL's URL-substring rule does
+            # not read directive-string `in` membership as URL sanitisation.
+            assert any(src == "https:" for src in directives[name])
 
 
 # =====================================================================

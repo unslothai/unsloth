@@ -5,6 +5,7 @@
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
 @import "streamdown/styles.css";
+@import "./features/hub/hub.css";
 @import "@fontsource-variable/figtree";
 @import "@fontsource-variable/space-grotesk";
 @import "@fontsource-variable/inter";
