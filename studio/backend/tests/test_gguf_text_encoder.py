@@ -34,6 +34,42 @@ if "loggers" not in sys.modules:
         get_logger = lambda *a, **k: logging.getLogger("loggers.stub"),
     )
 
+_OBSERVED_UNSLOTH_GGUF_QUANT_NAMES = (
+    "BF16",
+    "F16",
+    "F32",
+    "IQ1_M",
+    "IQ1_S",
+    "IQ2_S",
+    "IQ2_XS",
+    "IQ2_XXS",
+    "IQ3_S",
+    "IQ3_XXS",
+    "IQ4_NL",
+    "IQ4_XS",
+    "Q2_K",
+    "Q3_K",
+    "Q4_0",
+    "Q4_1",
+    "Q4_K",
+    "Q5_0",
+    "Q5_1",
+    "Q5_K",
+    "Q6_K",
+    "Q8_0",
+)
+_OBSERVED_NATIVE_FALLBACK_QUANT_NAMES = frozenset(
+    {
+        "IQ1_M",
+        "IQ1_S",
+        "IQ2_S",
+        "IQ2_XS",
+        "IQ2_XXS",
+        "IQ3_S",
+        "IQ3_XXS",
+    }
+)
+
 
 class _TinyLanguageModel(nn.Module):
     def __init__(self, config: PretrainedConfig) -> None:
@@ -775,6 +811,37 @@ def test_dequantize_torch_quant_caches_diffusers_tables(monkeypatch):
     assert len(g._TORCH_GGUF_DEQUANT_TYPES_CACHE) == 1
     torch.testing.assert_close(first, torch.ones((1, 2)))
     torch.testing.assert_close(second, torch.ones((1, 2)))
+
+
+def test_observed_unsloth_quant_names_have_text_dequant_route():
+    gguf = pytest.importorskip("gguf")
+    import core.inference.gguf_text_encoder as g
+
+    enum_cls = gguf.GGMLQuantizationType
+    torch_route_types = g._torch_gguf_dequant_types(gguf)
+    native_route_types = set(getattr(getattr(gguf, "quants", None), "_type_traits", {}).keys())
+
+    missing: list[str] = []
+    unrouted: list[str] = []
+    for quant_name in _OBSERVED_UNSLOTH_GGUF_QUANT_NAMES:
+        quant_type = getattr(enum_cls, quant_name, None)
+        if quant_type is None:
+            missing.append(quant_name)
+            continue
+        if quant_name in {"F16", "F32"}:
+            continue
+        if quant_name == "BF16":
+            assert quant_type == g._gguf_bfloat16_type(gguf)
+            continue
+        if quant_name in _OBSERVED_NATIVE_FALLBACK_QUANT_NAMES:
+            if quant_type not in native_route_types:
+                unrouted.append(quant_name)
+            continue
+        if quant_type not in torch_route_types:
+            unrouted.append(quant_name)
+
+    assert missing == []
+    assert unrouted == []
 
 
 @pytest.mark.parametrize(

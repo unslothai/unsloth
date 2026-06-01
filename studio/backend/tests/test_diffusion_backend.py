@@ -39,6 +39,47 @@ if "loggers" not in sys.modules:
         get_logger = lambda *a, **k: logging.getLogger("loggers.stub"),
     )
 
+_OBSERVED_UNSLOTH_GGUF_QUANT_NAMES = (
+    "BF16",
+    "F16",
+    "F32",
+    "IQ1_M",
+    "IQ1_S",
+    "IQ2_S",
+    "IQ2_XS",
+    "IQ2_XXS",
+    "IQ3_S",
+    "IQ3_XXS",
+    "IQ4_NL",
+    "IQ4_XS",
+    "Q2_K",
+    "Q3_K",
+    "Q4_0",
+    "Q4_1",
+    "Q4_K",
+    "Q5_0",
+    "Q5_1",
+    "Q5_K",
+    "Q6_K",
+    "Q8_0",
+)
+_OBSERVED_NATIVE_FALLBACK_QUANT_NAMES = frozenset(
+    {
+        "IQ1_M",
+        "IQ1_S",
+        "IQ2_S",
+        "IQ2_XS",
+        "IQ2_XXS",
+        "IQ3_S",
+        "IQ3_XXS",
+    }
+)
+_OBSERVED_DIFFUSERS_GGUF_QUANT_NAMES = frozenset(_OBSERVED_UNSLOTH_GGUF_QUANT_NAMES) - {
+    "F16",
+    "F32",
+    *_OBSERVED_NATIVE_FALLBACK_QUANT_NAMES,
+}
+
 
 # ── module under test ────────────────────────────────────────────
 
@@ -2524,6 +2565,105 @@ def test_load_gguf_checkpoint_no_copy_preserves_numpy_storage(monkeypatch):
     assert native_iq.quant_type is _QType.IQ1_M
     assert native_iq.quant_shape == (256,)
     assert native_iq.data_ptr() == torch.from_numpy(native_iq_data).data_ptr()
+
+
+def test_load_gguf_checkpoint_no_copy_accepts_observed_unsloth_quant_types(monkeypatch):
+    import numpy as np
+    import torch
+
+    import core.inference.diffusion as d
+
+    _QType = type(
+        "_QType",
+        (),
+        {quant_name: object() for quant_name in _OBSERVED_UNSLOTH_GGUF_QUANT_NAMES},
+    )
+    quant_by_name = {
+        quant_name: getattr(_QType, quant_name)
+        for quant_name in _OBSERVED_UNSLOTH_GGUF_QUANT_NAMES
+    }
+
+    class _FakeField:
+        def __init__(self, values):
+            self.parts = [np.array([value], dtype = np.int32) for value in values]
+            self.data = list(range(len(values)))
+
+    class _FakeTensor:
+        def __init__(self, name, tensor_type, data, shape):
+            self.name = name
+            self.tensor_type = tensor_type
+            self.data = data
+            self.shape = shape
+
+    class _FakeReader:
+        def __init__(self, path):
+            self.path = path
+            self.tensors = []
+            for quant_name, quant_type in quant_by_name.items():
+                if quant_name == "F32":
+                    data = np.array([1.0], dtype = np.float32)
+                elif quant_name == "F16":
+                    data = np.array([1.0], dtype = np.float16)
+                else:
+                    data = np.zeros((1, 8), dtype = np.uint8)
+                self.tensors.append(
+                    _FakeTensor(
+                        f"{quant_name}.weight",
+                        quant_type,
+                        data,
+                        data.shape,
+                    )
+                )
+
+        def get_field(self, name):
+            if not name.startswith("comfy.gguf.orig_shape."):
+                return None
+            return _FakeField([1, 1])
+
+    class _FakeGGUFParameter(torch.nn.Parameter):
+        def __new__(cls, data = None, requires_grad = False, quant_type = None):
+            data = torch.empty(0) if data is None else data
+            self = torch.Tensor._make_subclass(cls, data, requires_grad)
+            self.quant_type = quant_type
+            return self
+
+    fake_gguf = types.ModuleType("gguf")
+    fake_gguf.GGUFReader = _FakeReader
+    fake_gguf.GGMLQuantizationType = _QType
+    fake_gguf.quants = SimpleNamespace(
+        _type_traits = {
+            quant_by_name[quant_name]: object()
+            for quant_name in _OBSERVED_NATIVE_FALLBACK_QUANT_NAMES
+        }
+    )
+
+    fake_utils = types.ModuleType("diffusers.quantizers.gguf.utils")
+    fake_utils.GGUFParameter = _FakeGGUFParameter
+    fake_utils.SUPPORTED_GGUF_QUANT_TYPES = {
+        quant_by_name[quant_name]
+        for quant_name in _OBSERVED_DIFFUSERS_GGUF_QUANT_NAMES
+    }
+
+    monkeypatch.setitem(sys.modules, "gguf", fake_gguf)
+    monkeypatch.setitem(sys.modules, "diffusers", types.ModuleType("diffusers"))
+    monkeypatch.setitem(sys.modules, "diffusers.quantizers", types.ModuleType("diffusers.quantizers"))
+    monkeypatch.setitem(sys.modules, "diffusers.quantizers.gguf", types.ModuleType("diffusers.quantizers.gguf"))
+    monkeypatch.setitem(sys.modules, "diffusers.quantizers.gguf.utils", fake_utils)
+
+    parsed = d._load_gguf_checkpoint_no_copy("/tmp/fake.gguf")
+
+    assert set(parsed) == {
+        f"{quant_name}.weight"
+        for quant_name in _OBSERVED_UNSLOTH_GGUF_QUANT_NAMES
+    }
+    for quant_name, quant_type in quant_by_name.items():
+        weight = parsed[f"{quant_name}.weight"]
+        if quant_name in {"F16", "F32"}:
+            assert not isinstance(weight, _FakeGGUFParameter)
+            continue
+        assert isinstance(weight, _FakeGGUFParameter)
+        assert weight.quant_type is quant_type
+        assert weight.quant_shape == (1, 1)
 
 
 def test_load_gguf_checkpoint_no_copy_rejects_unknown_native_quant(monkeypatch):
