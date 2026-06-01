@@ -1,0 +1,65 @@
+# Cross-platform GPU-offload validation smoke (no GPU required).
+#
+# Reproduces the silent CPU-only GGUF bug (#5807 / #5106 / #5830) with a fake
+# llama-server that "starts and serves HTTP 200" while its log reports CPU-only
+# or GPU offload, and asserts install_llama_prebuilt.py --smoke-test rejects the
+# CPU-only-tagged-GPU case (exit 2) and accepts the GPU case (exit 0). Runs on
+# GPU-less Windows / macOS / Linux runners, which is why this regressed
+# untested. Also runs the pure-Python selection + classifier unit tests.
+
+name: Studio GPU Offload Smoke
+
+on:
+  pull_request:
+    paths:
+      - 'studio/install_llama_prebuilt.py'
+      - 'studio/setup.sh'
+      - 'studio/setup.ps1'
+      - 'studio/backend/core/inference/llama_cpp.py'
+      - 'tests/studio/install/**'
+      - 'tests/sh/test_llama_gpu_smoke.sh'
+      - '.github/workflows/studio-gpu-offload-smoke.yml'
+  push:
+    branches: [main, pip]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  gpu-offload-spoof:
+    name: GPU-offload spoof (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install pytest
+        run: python -m pip install --upgrade pip pytest
+
+      - name: GPU-offload spoof (end to end, real subprocess + HTTP)
+        run: python tests/studio/install/run_smoke_spoof.py
+
+      - name: Selection + classifier unit tests
+        run: >
+          python -m pytest
+          tests/studio/install/test_validate_server_gpu_offload.py
+          tests/studio/install/test_selection_logic.py
+          tests/studio/install/test_gpu_offload_spoof.py
+          -q
+
+      - name: setup.sh smoke-exit classifier (POSIX)
+        if: runner.os != 'Windows'
+        run: bash tests/sh/test_llama_gpu_smoke.sh
