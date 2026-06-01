@@ -105,6 +105,7 @@ def run_safetensors_tool_loop(
     max_tool_iterations: int = 25,
     tool_call_timeout: int = 300,
     session_id: Optional[str] = None,
+    rag_scope: Optional[dict] = None,
 ) -> Generator[dict, None, None]:
     """Drive an agentic tool loop on top of a cumulative-text generator.
 
@@ -340,6 +341,7 @@ def run_safetensors_tool_loop(
                             cancel_event = cancel_event,
                             timeout = eff_timeout,
                             session_id = session_id,
+                            rag_scope = rag_scope,
                         )
                     except Exception as exc:
                         logger.exception("Tool %s raised: %s", tool_name, exc)

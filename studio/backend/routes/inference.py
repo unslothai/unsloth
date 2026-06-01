@@ -2681,6 +2681,16 @@ async def openai_chat_completions(
             else:
                 tools_to_use = ALL_TOOLS
 
+            # The RAG tool is only meaningful when the request carries a scope
+            # (a selected KB or thread documents). Drop it otherwise so the
+            # model is never offered a search over nothing.
+            if not payload.rag_scope:
+                tools_to_use = [
+                    t
+                    for t in tools_to_use
+                    if t["function"]["name"] != "search_knowledge_base"
+                ]
+
             if _mcp_allowed:
                 tools_to_use = tools_to_use + await get_enabled_mcp_tools()
 
@@ -2790,6 +2800,7 @@ async def openai_chat_completions(
                     if payload.tool_call_timeout is not None
                     else 300,
                     session_id = payload.session_id,
+                    rag_scope = payload.rag_scope,
                 )
 
             _tool_sentinel = object()
@@ -3208,6 +3219,14 @@ async def openai_chat_completions(
         else:
             _sf_tools_to_use = ALL_TOOLS
 
+        # Drop the RAG tool unless the request carries a retrieval scope.
+        if not payload.rag_scope:
+            _sf_tools_to_use = [
+                t
+                for t in _sf_tools_to_use
+                if t["function"]["name"] != "search_knowledge_base"
+            ]
+
         if _sf_mcp_allowed:
             _sf_tools_to_use = _sf_tools_to_use + await get_enabled_mcp_tools()
 
@@ -3309,6 +3328,7 @@ async def openai_chat_completions(
                 if payload.tool_call_timeout is not None
                 else 300,
                 session_id = payload.session_id,
+                rag_scope = payload.rag_scope,
                 use_adapter = payload.use_adapter,
             )
 
@@ -4990,6 +5010,7 @@ async def anthropic_messages(
                 auto_heal_tool_calls = True,
                 tool_call_timeout = 300,
                 session_id = payload.session_id,
+                rag_scope = payload.rag_scope,
             )
 
         if payload.stream:

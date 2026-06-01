@@ -514,7 +514,36 @@ TERMINAL_TOOL = {
     },
 }
 
-ALL_TOOLS = [WEB_SEARCH_TOOL, PYTHON_TOOL, TERMINAL_TOOL]
+# RAG retrieval tool. The spec is duplicated here (rather than imported from
+# core.rag.tool) so importing the tool registry never pulls in the RAG stack;
+# execution imports core.rag lazily inside the dispatch branch.
+SEARCH_KNOWLEDGE_BASE_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "search_knowledge_base",
+        "description": (
+            "Search the user's uploaded documents and knowledge bases for "
+            "relevant passages. Use this whenever the question may be answered "
+            "by the attached documents, then cite the returned chunks."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Natural-language search query.",
+                },
+                "top_k": {
+                    "type": "integer",
+                    "description": "Max chunks to return.",
+                },
+            },
+            "required": ["query"],
+        },
+    },
+}
+
+ALL_TOOLS = [WEB_SEARCH_TOOL, PYTHON_TOOL, TERMINAL_TOOL, SEARCH_KNOWLEDGE_BASE_TOOL]
 
 
 # OpenAI's function.name regex: ^[a-zA-Z0-9_-]{1,64}$ -- enforced before
@@ -614,17 +643,22 @@ def execute_tool(
     cancel_event = None,
     timeout: int | None = _TIMEOUT_UNSET,
     session_id: str | None = None,
+    rag_scope: dict | None = None,
 ) -> str:
     """Execute a tool by name with the given arguments. Returns result as a string.
 
     ``timeout``: int sets per-call limit in seconds, ``None`` means no limit,
     unset (default) uses ``_EXEC_TIMEOUT`` (300 s).
     ``session_id``: optional thread/session ID for per-conversation sandbox isolation.
+    ``rag_scope``: hidden per-request RAG context ``{kb_id?, thread_id?, default_top_k?,
+    min_score?, mode?}`` the model never sees; consumed by ``search_knowledge_base``.
     """
     logger.info(
         f"execute_tool: name={name}, session_id={session_id}, timeout={timeout}"
     )
     effective_timeout = _EXEC_TIMEOUT if timeout is _TIMEOUT_UNSET else timeout
+    if name == "search_knowledge_base":
+        return _search_knowledge_base(arguments, rag_scope)
     if name.startswith(MCP_TOOL_PREFIX):
         try:
             _, server_id, tool_name = name.split("__", 2)
@@ -661,6 +695,38 @@ def execute_tool(
             arguments.get("command", ""), cancel_event, effective_timeout, session_id
         )
     return f"Unknown tool: {name}"
+
+
+def _search_knowledge_base(arguments: dict, rag_scope: dict | None) -> str:
+    """Dispatch the RAG search tool using the hidden per-request ``rag_scope``.
+
+    The model only supplies ``query``/``top_k``; the scope (which KB or thread to
+    search) comes from the request, never from the model. RAG is imported lazily
+    so the tool registry never depends on the RAG stack, and a missing sqlite-vec
+    extension degrades to a friendly message instead of an error.
+    """
+    scope = rag_scope or {}
+    query = (arguments or {}).get("query", "")
+    if not query or not str(query).strip():
+        return "Error: query is empty."
+    try:
+        from storage import rag_db
+
+        if not rag_db.RAG_AVAILABLE:
+            return "Knowledge base search is unavailable on this server."
+        from core.rag.tool import search_knowledge_base
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("RAG tool unavailable: %s", exc)
+        return "Knowledge base search is unavailable on this server."
+
+    top_k = (arguments or {}).get("top_k") or scope.get("default_top_k")
+    return search_knowledge_base(
+        query = str(query),
+        scope_kb_id = scope.get("kb_id"),
+        scope_thread_id = scope.get("thread_id"),
+        top_k = top_k,
+        min_score = float(scope.get("min_score") or 0.0),
+    )
 
 
 _MAX_PAGE_CHARS = 16000  # limit fetched page text (after HTML-to-MD conversion)
