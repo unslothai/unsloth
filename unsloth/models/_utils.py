@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2026.5.8"
+__version__ = "2026.5.9"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -1216,8 +1216,6 @@ if is_openai_available():
 
 # =============================================
 # Get Flash Attention v2 if Ampere (RTX 30xx, A100)
-import bitsandbytes as bnb
-
 from transformers import AutoTokenizer
 from transformers.utils.import_utils import _is_package_available
 
