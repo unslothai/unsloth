@@ -862,6 +862,10 @@ else
     # name-inferred arch). Implies --has-rocm on the installer side.
     if [ -n "${_setup_gfx:-}" ]; then
         _PREBUILT_CMD+=(--rocm-gfx "$_setup_gfx")
+    elif [ "$_setup_amd_detected" = true ]; then
+        # AMD was detected but gfx resolution failed; tell the installer ROCm is
+        # present so it can still attempt a prebuilt. Mirrors setup.ps1 behaviour.
+        _PREBUILT_CMD+=(--has-rocm)
     fi
     _PREBUILT_LOG="$(mktemp)"
     set +e
