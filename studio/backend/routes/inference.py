@@ -5043,7 +5043,9 @@ async def anthropic_messages(
                 auto_heal_tool_calls = True,
                 tool_call_timeout = 300,
                 session_id = payload.session_id,
-                rag_scope = payload.rag_scope,
+                # RAG is local-model only; the Anthropic request model has no
+                # rag_scope field, so default to None for this passthrough.
+                rag_scope = getattr(payload, "rag_scope", None),
             )
 
         if payload.stream:

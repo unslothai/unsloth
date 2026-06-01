@@ -440,6 +440,7 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
         mcp_servers_router = APIRouter(),
         models_router = APIRouter(),
         providers_router = APIRouter(),
+        rag_router = APIRouter(),
         training_history_router = APIRouter(),
         training_router = APIRouter(),
     )

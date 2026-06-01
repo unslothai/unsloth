@@ -175,5 +175,8 @@ def test_dispatcher_no_sentinel_when_no_hits(rag_home, monkeypatch):
     """No sentinel is appended when the search returns no sources."""
     from core.inference import tools
 
+    # Stub retrieval so the test never reaches the real embedder (keeps it
+    # runnable in environments without sentence-transformers installed).
+    monkeypatch.setattr(retrieval, "retrieve_hybrid", lambda conn, scope, q, **k: [])
     out = tools._search_knowledge_base({"query": "hello"}, {"kb_id": "missing"})
     assert tools.RAG_SOURCES_SENTINEL not in out
