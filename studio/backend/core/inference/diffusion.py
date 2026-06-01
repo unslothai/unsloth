@@ -6114,6 +6114,38 @@ def _clear_diffusion_backend_pending() -> None:
         pass
 
 
+_MISSING_BACKEND = object()
+
+
+def _existing_runtime_backend(
+    module_names: tuple[str, ...],
+    *,
+    singleton_name: str,
+    getter_name: str,
+) -> Any:
+    """Return an already-created Studio runtime backend, if one exists.
+
+    Diffusion loads need to release active GPU owners, but merely
+    checking that state should not create training/export/chat
+    orchestrators. Those constructors can start subprocess-side setup
+    and cache/model-list work that is unrelated to image loading.
+    """
+
+    for module_name in module_names:
+        module = sys.modules.get(module_name)
+        if module is None:
+            continue
+        backend = getattr(module, singleton_name, _MISSING_BACKEND)
+        if backend is not _MISSING_BACKEND:
+            if backend is not None:
+                return backend
+            continue
+        getter = getattr(module, getter_name, None)
+        if callable(getter) and not hasattr(module, "__path__"):
+            return getter()
+    return None
+
+
 def _release_chat_backend_for_diffusion(*, check_helper_advisor: bool = True) -> None:
     """Unload any running chat backend before a diffusion load.
 
@@ -6144,12 +6176,14 @@ def _release_chat_backend_for_diffusion(*, check_helper_advisor: bool = True) ->
     #    True (mid-download / startup) OR loading_model_identifier is
     #    populated (HF GGUF download in progress, before is_active /
     #    is_loaded flip). The last case is what round 13 P1 #8 flagged.
-    try:
-        from routes.inference import get_llama_cpp_backend  # type: ignore
-    except Exception as exc:
-        logger.debug("llama-server unavailable before diffusion load: %s", exc)
+    backend = _existing_runtime_backend(
+        ("routes.inference",),
+        singleton_name = "_llama_cpp_backend",
+        getter_name = "get_llama_cpp_backend",
+    )
+    if backend is None:
+        logger.debug("llama-server backend is not initialized before diffusion load")
     else:
-        backend = get_llama_cpp_backend()
         is_loaded = bool(getattr(backend, "is_loaded", False))
         is_active = bool(getattr(backend, "is_active", False))
         is_loading = bool(getattr(backend, "loading_model_identifier", None))
@@ -6200,13 +6234,15 @@ def _release_chat_backend_for_diffusion(*, check_helper_advisor: bool = True) ->
     #    will OOM the same way. We also flush any loading_models set so
     #    a chat load that is mid-download cannot race the diffusion
     #    allocation.
-    try:
-        from core.inference import get_inference_backend  # type: ignore
-    except Exception as exc:
-        logger.debug("safetensors unavailable before diffusion load: %s", exc)
+    backend = _existing_runtime_backend(
+        ("core.inference", "core.inference.orchestrator"),
+        singleton_name = "_inference_backend",
+        getter_name = "get_inference_backend",
+    )
+    if backend is None:
+        logger.debug("safetensors backend is not initialized before diffusion load")
         return
 
-    backend = get_inference_backend()
     active_model_name = getattr(backend, "active_model_name", None)
     loading_models = set(getattr(backend, "loading_models", set()) or set())
 
@@ -6292,13 +6328,16 @@ def _release_other_gpu_owners_for_diffusion() -> None:
     # ``_raise_if_training_active`` still runs ahead of the load to
     # surface the conflict as 409; this helper re-raises so direct
     # callers see the same RuntimeError the export-active path raises.
-    try:
-        from core.training import get_training_backend  # type: ignore
-    except Exception as exc:
-        logger.debug("training module not importable: %s", exc)
+    training_backend = _existing_runtime_backend(
+        ("core.training.training", "core.training"),
+        singleton_name = "_training_backend",
+        getter_name = "get_training_backend",
+    )
+    if training_backend is None:
+        logger.debug("training backend is not initialized before diffusion load")
     else:
         try:
-            training_active = bool(get_training_backend().is_training_active())
+            training_active = bool(training_backend.is_training_active())
         except Exception as exc:
             # Unverifiable status -> fail closed (might be active).
             raise RuntimeError(
@@ -6311,24 +6350,14 @@ def _release_other_gpu_owners_for_diffusion() -> None:
                 "before loading a diffusion image model."
             )
 
-    try:
-        from core.export import get_export_backend  # type: ignore
-    except Exception as exc:
-        logger.debug("export module not importable: %s", exc)
+    exp = _existing_runtime_backend(
+        ("core.export.orchestrator", "core.export"),
+        singleton_name = "_export_backend",
+        getter_name = "get_export_backend",
+    )
+    if exp is None:
+        logger.debug("export backend is not initialized before diffusion load")
         return
-
-    # Round 18 P1 #6: ``get_export_backend()`` raising used to be a
-    # silent ``return`` so direct ``DiffusionBackend.load_model``
-    # callers could proceed toward GPU allocation without being able
-    # to verify export ownership. Fail closed instead, matching the
-    # route-level helper which already maps "Could not verify" /
-    # "Could not access" failures to HTTP 503.
-    try:
-        exp = get_export_backend()
-    except Exception as exc:
-        raise RuntimeError(
-            "Could not verify export status before loading a " "diffusion image model."
-        ) from exc
 
     is_export_active_fn = getattr(exp, "is_export_active", None)
     if is_export_active_fn is not None:
