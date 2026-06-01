@@ -490,6 +490,50 @@ def test_diffusion_presets_endpoint(app_with_stub):
     )
 
 
+def test_diffusion_load_plan_allows_preset_before_quant_selection(app_with_stub):
+    app, _ = app_with_stub
+    c = TestClient(app)
+
+    r = c.post(
+        "/api/inference/images/load-plan",
+        json = {"preset_id": "flux.2-dev"},
+    )
+
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["ready_to_load"] is False
+    assert body["load_kwargs"]["repo_id"] == "black-forest-labs/FLUX.2-dev"
+    assert body["load_kwargs"]["transformer_gguf_repo"] == "unsloth/FLUX.2-dev-GGUF"
+    assert body["load_kwargs"]["transformer_gguf_filename"] is None
+    assert body["load_kwargs"]["offload_policy"] == "balanced"
+    assert body["preset"]["id"] == "flux.2-dev"
+
+
+def test_diffusion_load_plan_expands_quant_label(app_with_stub):
+    app, _ = app_with_stub
+    c = TestClient(app)
+
+    r = c.post(
+        "/api/inference/images/load-plan",
+        json = {
+            "preset_id": "flux.2-dev",
+            "transformer_quant": "Q4_K_M",
+        },
+    )
+
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["ready_to_load"] is True
+    assert body["load_kwargs"]["transformer_gguf_filename"] == (
+        "flux2-dev-Q4_K_M.gguf"
+    )
+    assert body["component_sources"]["transformer"] == {
+        "source": "gguf",
+        "repo": "unsloth/FLUX.2-dev-GGUF",
+        "filename": "flux2-dev-Q4_K_M.gguf",
+    }
+
+
 def test_load_forwards_lora_fields(app_with_stub):
     app, stub = app_with_stub
     c = TestClient(app)

@@ -2723,6 +2723,41 @@ async def diffusion_presets(
     return {"presets": curated_diffusion_presets()}
 
 
+@studio_router.post("/images/load-plan")
+async def diffusion_load_plan(
+    payload: DiffusionLoadRequest,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Return the concrete diffusion load plan without loading a model."""
+    from core.inference.diffusion import resolve_diffusion_load_plan
+
+    try:
+        return resolve_diffusion_load_plan(
+            preset_id = payload.preset_id,
+            repo_id = payload.repo_id,
+            gguf_filename = payload.gguf_filename,
+            transformer_gguf_repo = payload.transformer_gguf_repo,
+            transformer_gguf_filename = payload.transformer_gguf_filename,
+            transformer_quant = payload.transformer_quant,
+            base_repo = payload.base_repo,
+            text_encoder_gguf_repo = payload.text_encoder_gguf_repo,
+            text_encoder_gguf_filename = payload.text_encoder_gguf_filename,
+            text_encoder_gguf_component = payload.text_encoder_gguf_component,
+            prompt_enhancer_gguf_repo = payload.prompt_enhancer_gguf_repo,
+            prompt_enhancer_gguf_filename = payload.prompt_enhancer_gguf_filename,
+            lora_repo = payload.lora_repo,
+            lora_weight_name = payload.lora_weight_name,
+            lora_adapter_name = payload.lora_adapter_name,
+            lora_scale = payload.lora_scale,
+            lora_fuse = payload.lora_fuse,
+            family_override = payload.family,
+            offload_policy = payload.offload_policy,
+            require_loadable = False,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+
+
 @studio_router.post("/images/generate", response_model = DiffusionGenerateResponse)
 async def diffusion_generate(
     payload: DiffusionGenerateRequest,
