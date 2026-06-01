@@ -7092,7 +7092,16 @@ def main() -> int:
         return EXIT_SUCCESS
 
     if args.smoke_test is not None:
-        host = detect_host()
+        # Honor the same host overrides as the install path so a caller that
+        # forwards --has-rocm / --rocm-gfx (setup.sh/setup.ps1 do, because the
+        # installer's own probe can miss amd-smi-only hosts) is held to the GPU
+        # offload check instead of silently resolving a CPU kind.
+        host = _apply_host_overrides(
+            detect_host(),
+            override_has_rocm = args.has_rocm,
+            override_rocm_gfx = args.rocm_gfx,
+            force_cpu = args.cpu_fallback,
+        )
         try:
             resolved_kind = smoke_test_server_binary(
                 args.smoke_test,

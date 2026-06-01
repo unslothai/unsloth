@@ -1362,11 +1362,23 @@ else
         # _gpu_fallback_label is empty for a pure CPU build (nothing to verify).
         if [ "$BUILD_OK" = true ]; then
             _SMOKE_LABEL="$(_gpu_fallback_label)"
-            if [ -n "$_SMOKE_LABEL" ] && [ -f "$_BUILD_TMP/build/bin/llama-server" ]; then
+            # Pass the GPU kind setup resolved, not the installer's own probe:
+            # on amd-smi-only / name-inferred ROCm hosts the child probe can miss
+            # the GPU and resolve a CPU kind, which would skip the offload gate.
+            _SMOKE_KIND=""
+            if [ "$_TRY_METAL_CPU_FALLBACK" = true ]; then
+                _SMOKE_KIND="macos-arm64"
+            elif [ "$GPU_BACKEND" = "cuda" ]; then
+                _SMOKE_KIND="linux-cuda"
+            elif [ "$GPU_BACKEND" = "rocm" ]; then
+                _SMOKE_KIND="linux-rocm"
+            fi
+            if [ -n "$_SMOKE_LABEL" ] && [ -n "$_SMOKE_KIND" ] && [ -f "$_BUILD_TMP/build/bin/llama-server" ]; then
                 # if/else keeps set -e from aborting before we read the code.
                 if python "$SCRIPT_DIR/install_llama_prebuilt.py" \
                         --smoke-test "$_BUILD_TMP/build/bin/llama-server" \
-                        --install-dir "$_BUILD_TMP" > "$_BUILD_TMP/gpu-smoke.log" 2>&1; then
+                        --install-dir "$_BUILD_TMP" \
+                        --install-kind "$_SMOKE_KIND" > "$_BUILD_TMP/gpu-smoke.log" 2>&1; then
                     _SMOKE_RC=0
                 else
                     _SMOKE_RC=$?

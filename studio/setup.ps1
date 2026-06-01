@@ -3051,7 +3051,10 @@ if (-not $NeedLlamaSourceBuild) {
         if (Test-Path -LiteralPath $builtServer) {
             Write-Host ""
             Write-Host "--- GPU smoke test ---" -ForegroundColor Cyan
-            & python "$PSScriptRoot\install_llama_prebuilt.py" --smoke-test "$builtServer" --install-dir "$LlamaCppDir" 2>&1 | Out-String | Write-Host
+            # $LlamaCudaBuild gates this block, so the build is CUDA; pass the
+            # explicit kind so the installer's own probe cannot resolve a CPU
+            # kind and skip the offload gate.
+            & python "$PSScriptRoot\install_llama_prebuilt.py" --smoke-test "$builtServer" --install-dir "$LlamaCppDir" --install-kind "windows-cuda" 2>&1 | Out-String | Write-Host
             $smokeExit = $LASTEXITCODE
             if ($smokeExit -eq 2) {
                 substep "GPU build runs on CPU only (GPU backend failed to initialize)" "Yellow"
