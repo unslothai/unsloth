@@ -11,8 +11,12 @@ from fastapi import APIRouter, Depends, HTTPException
 from auth.authentication import get_current_subject
 from core.inference.mcp_client import (
     clear_oauth_tokens_async,
+    is_stdio,
     list_tools_async,
     parse_server_headers,
+    parse_stdio_command,
+    probe_timeout,
+    stdio_mcp_enabled,
 )
 from models.mcp_servers import (
     McpServerCreate,
@@ -28,16 +32,30 @@ logger = structlog.get_logger(__name__)
 router = APIRouter()
 
 
-_PROBE_TIMEOUT_SECONDS = 8.0
-# When OAuth probes need to open a browser, wait long enough for the user to
-# sign in. Matches fastmcp's default OAuth callback_timeout (300 s) + slack.
-_OAUTH_PROBE_TIMEOUT_SECONDS = 305.0
-
-
 def _validate_url(url: str) -> str:
     trimmed = (url or "").strip()
     if not trimmed:
         raise HTTPException(status_code = 400, detail = "url must not be empty")
+    # When stdio is enabled on this host, a non-HTTP value is a local command.
+    # Reuse this field so stdio servers ride the existing CRUD/storage with no
+    # schema change. When stdio is disabled the value falls through to the
+    # http-only validation below, so non-HTTP input is just a bad URL (400).
+    if stdio_mcp_enabled() and is_stdio(trimmed):
+        try:
+            parts = parse_stdio_command(trimmed)
+        except ValueError as exc:
+            raise HTTPException(status_code = 400, detail = f"Invalid command: {exc}")
+        if not parts or not parts[0].strip():
+            raise HTTPException(status_code = 400, detail = "command must not be empty")
+        if "://" in parts[0]:
+            # A URL-scheme first token is a mistyped URL, not a command. Reject
+            # it cleanly instead of exec-ing it (mirrors the frontend check).
+            raise HTTPException(
+                status_code = 400,
+                detail = "Enter an http(s):// URL, or a local command whose "
+                "first token is an executable (not a URL).",
+            )
+        return trimmed
     parsed = urlparse(trimmed)
     if parsed.scheme not in ("http", "https"):
         raise HTTPException(
@@ -91,6 +109,9 @@ async def create_mcp_server(
         raise HTTPException(status_code = 400, detail = "display_name must not be empty")
     url = _validate_url(payload.url)
     headers = _normalize_headers(payload.headers)
+    # OAuth is HTTP-only; force it off for stdio commands so a stale flag can't
+    # push the probe onto the 305s OAuth timeout. Backend is the enforcer.
+    use_oauth = payload.use_oauth and not is_stdio(url)
 
     server_id = uuid.uuid4().hex[:16]
     mcp_servers_db.create_server(
@@ -99,7 +120,7 @@ async def create_mcp_server(
         url = url,
         headers_json = json.dumps(headers) if headers else None,
         is_enabled = payload.is_enabled,
-        use_oauth = payload.use_oauth,
+        use_oauth = use_oauth,
     )
     return _row_to_response(mcp_servers_db.get_server(server_id))
 
@@ -132,6 +153,9 @@ def _changes_from_payload(payload: McpServerUpdate) -> dict:
                 status_code = 400, detail = "use_oauth must be true or false"
             )
         changes["use_oauth"] = payload.use_oauth
+    # stdio is OAuth-less: drop a stale OAuth flag when switching to a command.
+    if "url" in changes and is_stdio(changes["url"]):
+        changes["use_oauth"] = False
     return changes
 
 
@@ -147,6 +171,15 @@ async def update_mcp_server(
     changes = _changes_from_payload(payload)
     if not changes:
         raise HTTPException(status_code = 400, detail = "No fields to update")
+    # headers == HTTP headers (remote) or env vars (stdio). On a transport-type
+    # switch with no new headers, drop the old ones so env secrets are not
+    # re-sent as HTTP headers (or vice versa).
+    if (
+        "url" in changes
+        and is_stdio(changes["url"]) != is_stdio(old["url"])
+        and "headers_json" not in changes
+    ):
+        changes["headers_json"] = None
     # Clear persisted OAuth tokens when the URL changes or OAuth is
     # disabled; fastmcp keys tokens by URL and would otherwise let a
     # re-pointed server silently inherit the old account's credentials.
@@ -180,15 +213,19 @@ async def refresh_mcp_server_tools(
     server = mcp_servers_db.get_server(server_id)
     if not server:
         raise HTTPException(status_code = 404, detail = "MCP server not found")
+    # Refresh uses the stored address, so re-check the stdio gate here too: a
+    # stdio row from a desktop DB must not spawn on a hosted/network host.
+    if is_stdio(server["url"]) and not stdio_mcp_enabled():
+        raise HTTPException(
+            status_code = 400, detail = "stdio MCP servers are disabled on this host"
+        )
 
     use_oauth = bool(server.get("use_oauth"))
     try:
         tools = await list_tools_async(
             url = server["url"],
             headers = parse_server_headers(server),
-            timeout = _OAUTH_PROBE_TIMEOUT_SECONDS
-            if use_oauth
-            else _PROBE_TIMEOUT_SECONDS,
+            timeout = probe_timeout(server["url"], use_oauth),
             use_oauth = use_oauth,
         )
     except Exception as exc:  # noqa: BLE001 — surface transport+timeout errors to UI
@@ -212,9 +249,7 @@ async def test_mcp_server(
         tools = await list_tools_async(
             url = url,
             headers = headers,
-            timeout = _OAUTH_PROBE_TIMEOUT_SECONDS
-            if payload.use_oauth
-            else _PROBE_TIMEOUT_SECONDS,
+            timeout = probe_timeout(url, payload.use_oauth),
             use_oauth = payload.use_oauth,
         )
     except Exception as exc:  # noqa: BLE001
