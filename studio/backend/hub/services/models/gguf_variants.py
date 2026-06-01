@@ -18,7 +18,10 @@ from hub.schemas.inventory import GgufVariantDetail, GgufVariantsResponse
 from hub.utils import download_manifest
 from hub.utils import download_registry
 from hub.utils import inventory_scan as hf_cache_scan
-from hub.utils.hf_cache_state import INCOMPLETE_SUFFIX
+from hub.utils.hf_cache_state import (
+    INCOMPLETE_SUFFIX,
+    iter_destructive_repo_cache_dirs,
+)
 from hub.utils.gguf import (
     extract_quant_label,
     iter_hf_cache_snapshots,
@@ -332,7 +335,9 @@ def delete_variant_incomplete_blobs_result(
             unresolved = has_variant_partial_state and has_repo_partials,
         )
     deleted = 0
-    for entry in hf_cache_scan.iter_repo_cache_dirs("model", repo_id):
+    # Destructive iterator: only the exact-case match (or abort if ambiguous),
+    # so a case-variant sibling repo's partials are never unlinked.
+    for entry in iter_destructive_repo_cache_dirs("model", repo_id):
         blobs_dir = entry / "blobs"
         if not blobs_dir.is_dir():
             continue
@@ -470,13 +475,13 @@ async def get_gguf_variants_response(
         default_variant = extract_quant_label(best) if best else None
 
         # Check which variants are fully downloaded in the HF cache.
-        # For split GGUFs, ALL shards must be present -- sum cached bytes
-        # per variant and compare against the expected total.
-        # HF cache dir uses the exact case from the repo_id at download time,
-        # which may differ from the canonical HF repo_id, so do a
-        # case-insensitive match.
-        cached_bytes_by_quant: dict[str, int] = {}
-        cached_bytes_by_filename: dict[str, int] = {}
+        # Accounting is per snapshot: a variant counts as present only when one
+        # snapshot holds all its files (split GGUFs need every shard in the same
+        # snapshot), and sizes are the max across snapshots so blobs shared
+        # between revisions are not double-counted. HF cache dir casing can
+        # differ from the canonical repo_id, so keys are lowercased.
+        cached_filenames_by_snapshot: list[dict[str, int]] = []
+        cached_quant_bytes_by_snapshot: list[dict[str, int]] = []
         if _is_valid_repo_id(repo_id):
             for snap in iter_hf_cache_snapshots(repo_id):
                 try:
@@ -484,6 +489,8 @@ async def get_gguf_variants_response(
                 except (OSError, RuntimeError, ValueError) as e:
                     logger.debug("Skipping GGUF cache snapshot %s: %s", snap, e)
                     continue
+                by_filename: dict[str, int] = {}
+                by_quant: dict[str, int] = {}
                 for f in gguf_paths:
                     try:
                         rel = f.relative_to(snap).as_posix()
@@ -491,14 +498,16 @@ async def get_gguf_variants_response(
                     except (OSError, RuntimeError, ValueError) as e:
                         logger.debug("Skipping GGUF cache file %s: %s", f, e)
                         continue
-                    q = extract_quant_label(rel)
-                    cached_bytes_by_filename[rel.lower()] = max(
-                        cached_bytes_by_filename.get(rel.lower(), 0),
-                        size,
-                    )
+                    key = rel.lower()
+                    by_filename[key] = max(by_filename.get(key, 0), size)
                     if _is_mmproj_filename(f.name):
                         continue
-                    cached_bytes_by_quant[q] = cached_bytes_by_quant.get(q, 0) + size
+                    q = extract_quant_label(rel).lower()
+                    by_quant[q] = by_quant.get(q, 0) + size
+                if by_filename:
+                    cached_filenames_by_snapshot.append(by_filename)
+                if by_quant:
+                    cached_quant_bytes_by_snapshot.append(by_quant)
 
         requirements_by_quant = {
             v.quant.lower(): _variant_requirement_cache_get(
@@ -516,42 +525,47 @@ async def get_gguf_variants_response(
         def _filenames_cached(filenames: frozenset[str], expected_size: int) -> bool:
             if not filenames:
                 return False
-            cached = 0
-            for filename in filenames:
-                size = cached_bytes_by_filename.get(filename.lower())
-                if size is None:
-                    return False
-                cached += size
-            if expected_size <= 0:
-                return True
-            return cached >= expected_size * 0.99
+            wanted = [name.lower() for name in filenames]
+            # All files must live in a single snapshot, not spread across several.
+            for by_filename in cached_filenames_by_snapshot:
+                cached = 0
+                for name in wanted:
+                    size = by_filename.get(name)
+                    if size is None:
+                        break
+                    cached += size
+                else:
+                    return expected_size <= 0 or cached >= expected_size * 0.99
+            return False
 
         def _any_mmproj_cached(filenames: frozenset[str]) -> bool:
             return any(
-                cached_bytes_by_filename.get(name.lower()) is not None
+                by_filename.get(name.lower()) is not None
+                for by_filename in cached_filenames_by_snapshot
                 for name in filenames
             )
 
         def _is_fully_downloaded(variant) -> bool:
             requirement = requirements_by_quant.get(variant.quant.lower())
             if requirement is None:
-                cached = cached_bytes_by_quant.get(variant.quant, 0)
-                if cached == 0 or variant.size_bytes == 0:
+                if variant.size_bytes == 0:
                     return False
-                # Allow small rounding tolerance (symlinks vs real sizes)
-                return cached >= variant.size_bytes * 0.99
+                quant = variant.quant.lower()
+                # Allow small rounding tolerance (symlinks vs real sizes).
+                return any(
+                    by_quant.get(quant, 0) >= variant.size_bytes * 0.99
+                    for by_quant in cached_quant_bytes_by_snapshot
+                )
             if not _filenames_cached(
                 requirement.main_filenames,
                 requirement.main_size_bytes,
             ):
                 return False
             # Vision repos package an mmproj adapter alongside each variant.
-            # Any mmproj precision on disk (BF16, F16, F32, quantized, ...)
-            # is enough to call the variant "downloaded" — the loader picks
-            # whichever mmproj is present. Requiring the specific API-preferred
-            # one would falsely demote variants whose cache was populated
-            # against a different mmproj choice (e.g. mmproj-F16 on disk but
-            # the API ordered mmproj-BF16 first).
+            # Any mmproj precision on disk (BF16, F16, F32, quantized, ...) is
+            # enough; the loader picks whichever mmproj is present. Requiring the
+            # specific API-preferred one would falsely demote variants whose cache
+            # was populated against a different mmproj choice.
             if requirement.mmproj_filenames and not _any_mmproj_cached(
                 requirement.mmproj_filenames,
             ):

@@ -485,8 +485,9 @@ def resolve_cached_repo_id_case(
                     continue
                 if entry.name.lower() != expected_lower:
                     continue
-                if not entry.name.startswith(prefix):
-                    continue
+                # The lowercased full-name match already proves the prefix
+                # matches; a case-sensitive startswith would reject a
+                # mixed-case imported dir such as Models--Org--Repo.
                 repo_part = entry.name[len(prefix) :]
                 if not repo_part:
                     continue

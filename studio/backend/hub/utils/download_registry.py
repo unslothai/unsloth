@@ -42,6 +42,7 @@ import importlib.util
 import json
 import os
 import re
+import shlex
 import signal
 import subprocess
 import sys
@@ -197,14 +198,29 @@ def _read_process_cmdline(pid: int) -> Optional[str]:
         return None
 
 
+def _cmdline_repo_id(cmdline: str) -> Optional[str]:
+    try:
+        args = shlex.split(cmdline)
+    except ValueError:
+        args = cmdline.split()
+    for i, arg in enumerate(args):
+        if arg == "--repo-id" and i + 1 < len(args):
+            return args[i + 1]
+        if arg.startswith("--repo-id="):
+            return arg.split("=", 1)[1]
+    return None
+
+
 def _is_our_worker(pid: int, repo_id: Optional[str]) -> bool:
     cmdline = _read_process_cmdline(pid)
     if cmdline is None:
         return False
     if "hub.workers.hf_download" not in cmdline:
         return False
-    if isinstance(repo_id, str) and repo_id and repo_id not in cmdline:
-        return False
+    # Exact --repo-id match: substring matching would let a stale breadcrumb
+    # for Org/Model reap a live worker for Org/Model-v2.
+    if isinstance(repo_id, str) and repo_id:
+        return _cmdline_repo_id(cmdline) == repo_id
     return True
 
 

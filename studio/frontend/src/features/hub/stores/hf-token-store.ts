@@ -26,14 +26,9 @@ function loadInitial(): string {
       };
       const fromTraining = parsed?.state?.hfToken;
       if (typeof fromTraining === "string" && fromTraining.length > 0) {
+        // Copy only. training-config-store still persists and reads its own
+        // hfToken, so deleting the legacy field drops the training token.
         window.localStorage.setItem(HF_TOKEN_KEY, fromTraining);
-        if (parsed.state && "hfToken" in parsed.state) {
-          delete parsed.state.hfToken;
-          window.localStorage.setItem(
-            LEGACY_TRAINING_KEY,
-            JSON.stringify(parsed),
-          );
-        }
         return fromTraining;
       }
     }
