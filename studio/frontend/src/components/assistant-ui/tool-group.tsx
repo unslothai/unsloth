@@ -9,6 +9,7 @@ import {
   type PropsWithChildren,
 } from "react";
 import { useAuiState } from "@assistant-ui/react";
+import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { ChevronDownIcon, LoaderIcon } from "lucide-react";
 import { Wrench01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -218,6 +219,27 @@ const ToolGroupImpl: FC<
         (part) => part.type === "tool-call" && part.toolName === "render_html",
       ),
   );
+  // A blocking allow/deny prompt must never be hidden inside a collapsed
+  // group, so force the group open while any of its calls awaits confirmation.
+  const toolConfirmations = useChatRuntimeStore((s) => s.toolConfirmations);
+  const hasPendingConfirmation = useAuiState(({ message }) =>
+    message.parts
+      .slice(startIndex, endIndex + 1)
+      .some(
+        (part) =>
+          part.type === "tool-call" && part.toolCallId in toolConfirmations,
+      ),
+  );
+  const messageRunning = useAuiState(
+    ({ message }) => message.status?.type === "running",
+  );
+  // Keep the group open once a confirmation forced it open, so answering an
+  // allow/deny doesn't snap it shut between sequential tool calls. It reverts
+  // to the default collapsed state once the turn finishes.
+  const forcedOpenRef = useRef(false);
+  if (hasPendingConfirmation) forcedOpenRef.current = true;
+  const forceOpen =
+    hasPendingConfirmation || (forcedOpenRef.current && messageRunning);
 
   // Single tool calls and artifacts render directly so cards never hide inside
   // a collapsed tool group.
@@ -226,7 +248,7 @@ const ToolGroupImpl: FC<
   }
 
   return (
-    <ToolGroupRoot>
+    <ToolGroupRoot open={forceOpen ? true : undefined}>
       <ToolGroupTrigger count={toolCount} />
       <ToolGroupContent>{children}</ToolGroupContent>
     </ToolGroupRoot>

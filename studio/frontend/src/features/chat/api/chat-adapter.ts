@@ -2833,6 +2833,14 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         throw err;
       } finally {
         abortSignal.removeEventListener("abort", onAbortCancel);
+        // Drop any still-pending confirmation entries for this run's tool
+        // calls. On a normal finish they were cleared on tool_end, but an
+        // abort/error before tool_end would otherwise leak them for the
+        // session (and pin the tool group force-open).
+        const confirmStore = useChatRuntimeStore.getState();
+        for (const part of toolCallParts) {
+          confirmStore.clearToolConfirmation(part.toolCallId);
+        }
         runtime.setGeneratingStatus(null);
         runtime.setToolStatus(null);
         clearTimeout(warmupTimer);
