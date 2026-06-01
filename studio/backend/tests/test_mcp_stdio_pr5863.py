@@ -247,7 +247,9 @@ def test_validate_url_gate_on_accepts_stdio(monkeypatch):
     )
     # A lone token is ambiguous; keep the prior behaviour and accept it as a
     # command rather than guessing it's a URL (no regression for single binaries).
-    assert _validate_url("/usr/local/bin/my-mcp-server") == "/usr/local/bin/my-mcp-server"
+    assert (
+        _validate_url("/usr/local/bin/my-mcp-server") == "/usr/local/bin/my-mcp-server"
+    )
     assert _validate_url("mcp-server-sqlite") == "mcp-server-sqlite"
     # empty / unparseable still rejected
     for bad in ["   ", '"unclosed']:
