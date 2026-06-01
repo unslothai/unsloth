@@ -30,6 +30,8 @@ export const ContextUsageBar: FC<{
   used: number;
   // null on external providers (no known window); bar then hides the ratio.
   total?: number | null;
+  /** Launch -c when runtime total is below what was requested (--fit). */
+  requestedTotal?: number | null;
   cached?: number;
   // Anthropic-only (billed at the write premium).
   cacheWrites?: number;
@@ -39,6 +41,7 @@ export const ContextUsageBar: FC<{
 }> = ({
   used,
   total,
+  requestedTotal,
   cached,
   cacheWrites,
   promptTokens,
@@ -46,6 +49,10 @@ export const ContextUsageBar: FC<{
   className,
 }) => {
   const hasKnownLimit = typeof total === "number" && total > 0;
+  const fitReduced =
+    hasKnownLimit &&
+    typeof requestedTotal === "number" &&
+    requestedTotal > (total as number);
   const hasUsageDetails =
     promptTokens !== undefined ||
     completionTokens !== undefined ||
@@ -153,6 +160,15 @@ export const ContextUsageBar: FC<{
               Close to the context limit. Generation will stop at 100%.
               Increase <span className="font-medium">Context Length</span> in
               the chat Settings panel to keep going.
+            </div>
+          ) : null}
+          {fitReduced ? (
+            <div className="mt-1 max-w-64 text-[11px] leading-snug text-amber-600/90 dark:text-amber-500/90">
+              llama-server reduced context from{" "}
+              {formatTokenCountFull(requestedTotal as number)} to{" "}
+              {formatTokenCountFull(total as number)} tokens to fit VRAM (
+              <span className="font-medium">--fit</span>). The bar reflects the
+              effective limit.
             </div>
           ) : null}
         </div>

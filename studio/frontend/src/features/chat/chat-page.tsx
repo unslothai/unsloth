@@ -626,6 +626,9 @@ export function ChatPage(): ReactElement {
   const ggufContextLength = useChatRuntimeStore(
     (state) => state.ggufContextLength,
   );
+  const ggufRequestedContextLength = useChatRuntimeStore(
+    (state) => state.ggufRequestedContextLength,
+  );
   const contextUsage = useChatRuntimeStore((state) => state.contextUsage);
   const modelsFromStore = useChatRuntimeStore((state) => state.models);
   const lorasFromStore = useChatRuntimeStore((state) => state.loras);
@@ -1063,6 +1066,7 @@ export function ChatPage(): ReactElement {
           ggufContextLength: null,
           ggufMaxContextLength: null,
           ggufNativeContextLength: null,
+          ggufRequestedContextLength: null,
           activeNativePathToken: null,
           // Clear previous-model counters; the relaxed external-provider
           // render gate would otherwise show stale stats until the next
@@ -1555,6 +1559,7 @@ export function ChatPage(): ReactElement {
                 used={contextUsage.totalTokens}
                 // null on external providers; the bar handles that.
                 total={ggufContextLength}
+                requestedTotal={ggufRequestedContextLength}
                 cached={contextUsage.cachedTokens}
                 cacheWrites={contextUsage.cacheWriteTokens}
                 promptTokens={contextUsage.promptTokens}

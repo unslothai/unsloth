@@ -301,6 +301,9 @@ export function useChatModelRuntime() {
         const ggufNativeContextLength = statusRes.is_gguf
           ? (statusRes.native_context_length ?? null)
           : null;
+        const ggufRequestedContextLength = statusRes.is_gguf
+          ? (statusRes.requested_context_length ?? null)
+          : null;
         const currentSpecType = normalizeSpeculativeType(
           statusRes.speculative_type,
         );
@@ -345,6 +348,7 @@ export function useChatModelRuntime() {
           ggufContextLength: currentGgufContextLength,
           ggufMaxContextLength,
           ggufNativeContextLength,
+          ggufRequestedContextLength,
           modelRequiresTrustRemoteCode:
             statusRes.requires_trust_remote_code ?? false,
           defaultChatTemplate: nextDefaultChatTemplate,
@@ -663,6 +667,9 @@ export function useChatModelRuntime() {
             const reportedNativeCtx = loadResponse.is_gguf
               ? (loadResponse.native_context_length ?? null)
               : null;
+            const requestedCtx = loadResponse.is_gguf
+              ? (loadResponse.requested_context_length ?? null)
+              : null;
             // A successful reload has applied settings, so clear pending custom
             // context state and display the backend-reported effective context.
             const keepCustomCtx = null;
@@ -688,6 +695,7 @@ export function useChatModelRuntime() {
               ggufContextLength: nativeCtx,
               ggufMaxContextLength,
               ggufNativeContextLength: reportedNativeCtx,
+              ggufRequestedContextLength: requestedCtx,
               modelRequiresTrustRemoteCode:
                 loadResponse.requires_trust_remote_code ?? false,
               supportsReasoning,

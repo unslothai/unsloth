@@ -245,6 +245,8 @@ type ChatRuntimeStore = {
   ggufContextLength: number | null;
   ggufMaxContextLength: number | null;
   ggufNativeContextLength: number | null;
+  /** Launch -c when llama-server --fit shrank runtime n_ctx below requested. */
+  ggufRequestedContextLength: number | null;
   modelRequiresTrustRemoteCode: boolean;
   supportsReasoning: boolean;
   reasoningAlwaysOn: boolean;
@@ -600,6 +602,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   ggufContextLength: null,
   ggufMaxContextLength: null,
   ggufNativeContextLength: null,
+  ggufRequestedContextLength: null,
   modelRequiresTrustRemoteCode: false,
   supportsReasoning: false,
   reasoningAlwaysOn: false,
@@ -818,6 +821,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       ggufContextLength: null,
       ggufMaxContextLength: null,
       ggufNativeContextLength: null,
+      ggufRequestedContextLength: null,
       modelRequiresTrustRemoteCode: false,
       contextUsage: null,
       supportsReasoning: false,

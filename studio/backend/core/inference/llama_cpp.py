@@ -630,6 +630,7 @@ class LlamaCppBackend:
         self._gpu_offload_active: Optional[bool] = None
         self._context_length: Optional[int] = None
         self._effective_context_length: Optional[int] = None
+        self._launch_context_length: Optional[int] = None
         self._max_context_length: Optional[int] = None
         self._chat_template: Optional[str] = None
         self._chat_template_override: Optional[str] = None
@@ -751,8 +752,19 @@ class LlamaCppBackend:
 
     @property
     def context_length(self) -> Optional[int]:
-        """Return the effective context length the server is running at."""
+        """Return the effective per-slot context llama-server is running at."""
         return self._effective_context_length or self._context_length
+
+    @property
+    def requested_context_length(self) -> Optional[int]:
+        """Return the ``-c`` value passed at launch when ``--fit`` shrank runtime ctx."""
+        launch = self._launch_context_length
+        effective = self._effective_context_length
+        if launch is None or launch <= 0:
+            return None
+        if effective is not None and effective > 0 and launch != effective:
+            return launch
+        return None
 
     @property
     def max_context_length(self) -> Optional[int]:
@@ -3478,6 +3490,9 @@ class LlamaCppBackend:
                     if max_available_ctx > 0
                     else self._effective_context_length
                 )
+                self._launch_context_length = (
+                    effective_ctx if effective_ctx > 0 else None
+                )
 
                 # Wait for llama-server to become healthy
                 if not self._wait_for_health(timeout = 600.0):
@@ -3491,6 +3506,22 @@ class LlamaCppBackend:
                     )
 
                 self._healthy = True
+
+                runtime_ctx = self._probe_runtime_context_length()
+                if runtime_ctx is not None and runtime_ctx > 0:
+                    launch_ctx = self._launch_context_length
+                    if (
+                        launch_ctx is not None
+                        and launch_ctx > 0
+                        and runtime_ctx != launch_ctx
+                    ):
+                        logger.warning(
+                            "llama-server runtime context (%s) is below launch "
+                            "-c (%s); --fit likely reduced n_ctx per slot",
+                            runtime_ctx,
+                            launch_ctx,
+                        )
+                    self._effective_context_length = runtime_ctx
 
                 # Commit caller intent only after _healthy=True so a
                 # failed startup can't poison the next inheritance check.
@@ -3904,6 +3935,7 @@ class LlamaCppBackend:
             self._healthy = False
             self._context_length = None
             self._effective_context_length = None
+            self._launch_context_length = None
             self._max_context_length = None
             self._chat_template = None
             self._chat_template_override = None
@@ -4167,6 +4199,47 @@ class LlamaCppBackend:
     def _cleanup(self):
         """atexit handler to ensure llama-server is terminated."""
         self._kill_process()
+
+    _RUNTIME_N_CTX_STDOUT_RE = re.compile(r"new slot, n_ctx = (\d+)")
+
+    def _parse_runtime_n_ctx_from_stdout(self) -> Optional[int]:
+        """Parse per-slot ``n_ctx`` from llama-server startup logs."""
+        for line in self._stdout_lines:
+            match = self._RUNTIME_N_CTX_STDOUT_RE.search(line)
+            if match:
+                return int(match.group(1))
+        return None
+
+    def _probe_runtime_context_length(self) -> Optional[int]:
+        """Read the context size llama-server actually allocated per slot."""
+        if self._port is None:
+            return None
+
+        slots_url = f"http://127.0.0.1:{self._port}/slots"
+        try:
+            resp = httpx.get(slots_url, timeout = 2.0)
+            if resp.status_code == 200:
+                data = resp.json()
+                if isinstance(data, list) and data:
+                    n_ctx = data[0].get("n_ctx")
+                    if isinstance(n_ctx, int) and n_ctx > 0:
+                        return n_ctx
+        except Exception as exc:
+            logger.debug("Runtime context probe via /slots failed: %s", exc)
+
+        props_url = f"http://127.0.0.1:{self._port}/props"
+        try:
+            resp = httpx.get(props_url, timeout = 2.0)
+            if resp.status_code == 200:
+                data = resp.json()
+                settings = data.get("default_generation_settings") or {}
+                n_ctx = settings.get("n_ctx")
+                if isinstance(n_ctx, int) and n_ctx > 0:
+                    return n_ctx
+        except Exception as exc:
+            logger.debug("Runtime context probe via /props failed: %s", exc)
+
+        return self._parse_runtime_n_ctx_from_stdout()
 
     def _wait_for_health(self, timeout: float = 120.0, interval: float = 0.5) -> bool:
         """

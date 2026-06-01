@@ -125,6 +125,8 @@ export interface LoadModelResponse {
   context_length?: number | null;
   max_context_length?: number | null;
   native_context_length?: number | null;
+  /** Launch -c when --fit reduced runtime n_ctx below the requested value. */
+  requested_context_length?: number | null;
   supports_reasoning?: boolean;
   reasoning_style?: "enable_thinking" | "reasoning_effort";
   reasoning_always_on?: boolean;
@@ -170,6 +172,8 @@ export interface InferenceStatusResponse {
   context_length?: number | null;
   max_context_length?: number | null;
   native_context_length?: number | null;
+  /** Launch -c when --fit reduced runtime n_ctx below the requested value. */
+  requested_context_length?: number | null;
   cache_type_kv?: string | null;
   chat_template_override?: string | null;
   /** Canonical UI-facing mode currently active. See LoadModelRequest. */

@@ -200,7 +200,11 @@ class LoadResponse(BaseModel):
         description = "Whether the model defaults require trust_remote_code to be enabled for loading.",
     )
     context_length: Optional[int] = Field(
-        None, description = "Model's native context length (from GGUF metadata)"
+        None,
+        description = (
+            "Effective per-slot context length llama-server is running at "
+            "(after --fit), or the active context for non-GGUF models"
+        ),
     )
     max_context_length: Optional[int] = Field(
         None, description = "Maximum context length currently available on this hardware"
@@ -208,6 +212,13 @@ class LoadResponse(BaseModel):
     native_context_length: Optional[int] = Field(
         None,
         description = "Model's native context length from GGUF metadata (not capped by VRAM)",
+    )
+    requested_context_length: Optional[int] = Field(
+        None,
+        description = (
+            "Launch ``-c`` value when llama-server ``--fit`` reduced runtime "
+            "``n_ctx`` below what was requested; omitted when they match"
+        ),
     )
     supports_reasoning: bool = Field(
         False,
@@ -354,7 +365,11 @@ class InferenceStatusResponse(BaseModel):
         False, description = "Whether the active model supports tool calling"
     )
     context_length: Optional[int] = Field(
-        None, description = "Context length of the active model"
+        None,
+        description = (
+            "Effective per-slot context length of the active model "
+            "(runtime ``n_ctx`` for GGUF after --fit)"
+        ),
     )
     max_context_length: Optional[int] = Field(
         None,
@@ -363,6 +378,13 @@ class InferenceStatusResponse(BaseModel):
     native_context_length: Optional[int] = Field(
         None,
         description = "Model's native context length from GGUF metadata (not capped by VRAM)",
+    )
+    requested_context_length: Optional[int] = Field(
+        None,
+        description = (
+            "Launch ``-c`` value when runtime context was reduced by ``--fit``; "
+            "omitted when effective matches requested"
+        ),
     )
     cache_type_kv: Optional[str] = Field(
         None,
