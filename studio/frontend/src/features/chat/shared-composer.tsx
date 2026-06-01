@@ -32,7 +32,6 @@ import {
   CheckIcon,
   Columns2Icon,
   DownloadIcon,
-  FileTextIcon,
   GlobeIcon,
   HeadphonesIcon,
   PlusIcon,
@@ -610,7 +609,6 @@ export function SharedComposer({
   // Images pill is only ever lit on OpenAI cloud's Responses-API models
   // and Gemini Nano Banana family. No local tool runtime fallback.
   const showImagePill = supportsBuiltinImageGeneration;
-  const artifactDisabled = !modelLoaded;
   // Fetch pill: Anthropic-only (web_fetch_20250910 / web_fetch_20260209).
   const webFetchDisabled = !modelLoaded || !supportsBuiltinWebFetch;
   const showWebFetchPill = supportsBuiltinWebFetch;
@@ -1168,19 +1166,14 @@ export function SharedComposer({
                 MCP
               </DropdownMenuItem>
               <DropdownMenuItem
-                disabled={artifactDisabled}
                 className={
-                  artifactsEnabled && !artifactDisabled
-                    ? "text-primary font-medium"
-                    : undefined
+                  artifactsEnabled ? "text-primary font-medium" : undefined
                 }
                 onSelect={() => setArtifactsEnabled(!artifactsEnabled)}
               >
                 <HugeiconsIcon icon={PencilRulerIcon} strokeWidth={2} />
                 Canvas
-                {artifactsEnabled && !artifactDisabled ? (
-                  <CheckIcon className="ml-auto" />
-                ) : null}
+                {artifactsEnabled ? <CheckIcon className="ml-auto" /> : null}
               </DropdownMenuItem>
               <DropdownMenuItem>
                 <HugeiconsIcon icon={DatabaseIcon} strokeWidth={2} />
@@ -1296,21 +1289,24 @@ export function SharedComposer({
               <span>Images</span>
             </button>
           )}
-          <button
-            type="button"
-            disabled={artifactDisabled}
-            onClick={() => setArtifactsEnabled(!artifactsEnabled)}
-            className="composer-pill-btn"
-            data-active={
-              artifactsEnabled && !artifactDisabled ? "true" : "false"
-            }
-            aria-label={
-              artifactsEnabled ? "Disable artifacts" : "Enable artifacts"
-            }
-          >
-            <FileTextIcon className="size-3.5" />
-            <span>Artifacts</span>
-          </button>
+          {artifactsEnabled && (
+            <button
+              type="button"
+              onClick={() => setArtifactsEnabled(false)}
+              className="composer-pill-btn"
+              data-active="true"
+              aria-label="Disable canvas"
+            >
+              <PillGlyph>
+                <HugeiconsIcon
+                  icon={PencilRulerIcon}
+                  className="size-3.5"
+                  strokeWidth={2}
+                />
+              </PillGlyph>
+              <span>Canvas</span>
+            </button>
+          )}
           {showWebFetchPill && (
             <button
               type="button"

@@ -98,7 +98,6 @@ import {
   ChevronRightIcon,
   Columns2Icon,
   DownloadIcon,
-  FileTextIcon,
   GlobeIcon,
   HeadphonesIcon,
   MoreHorizontalIcon,
@@ -1446,24 +1445,27 @@ const ImagesToggle: FC = () => {
 };
 
 const ArtifactsToggle: FC = () => {
-  const modelLoaded = useChatRuntimeStore(
-    (s) => !!s.params.checkpoint && !s.modelLoading,
-  );
   const artifactsEnabled = useChatRuntimeStore((s) => s.artifactsEnabled);
   const setArtifactsEnabled = useChatRuntimeStore((s) => s.setArtifactsEnabled);
-  const disabled = !modelLoaded;
+  // Canvas is opt-in; the pill only shows once it is toggled on from the menu.
+  if (!artifactsEnabled) return null;
 
   return (
     <button
       type="button"
-      disabled={disabled}
-      onClick={() => setArtifactsEnabled(!artifactsEnabled)}
+      onClick={() => setArtifactsEnabled(false)}
       className="composer-pill-btn"
-      data-active={artifactsEnabled && !disabled ? "true" : "false"}
-      aria-label={artifactsEnabled ? "Disable artifacts" : "Enable artifacts"}
+      data-active="true"
+      aria-label="Disable canvas"
     >
-      <FileTextIcon className="size-3.5" />
-      <span>Artifacts</span>
+      <PillGlyph>
+        <HugeiconsIcon
+          icon={PencilRulerIcon}
+          className="size-3.5"
+          strokeWidth={2}
+        />
+      </PillGlyph>
+      <span>Canvas</span>
     </button>
   );
 };
@@ -1540,9 +1542,6 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
   const setCodeToolsEnabled = useChatRuntimeStore((s) => s.setCodeToolsEnabled);
   const artifactsEnabled = useChatRuntimeStore((s) => s.artifactsEnabled);
   const setArtifactsEnabled = useChatRuntimeStore((s) => s.setArtifactsEnabled);
-  const modelLoaded = useChatRuntimeStore(
-    (s) => !!s.params.checkpoint && !s.modelLoading,
-  );
   const [mcpOpen, setMcpOpen] = useState(false);
 
   const startCompare = useCallback(() => {
@@ -1616,17 +1615,12 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
           MCP
         </DropdownMenuItem>
         <DropdownMenuItem
-          disabled={!modelLoaded}
-          className={
-            artifactsEnabled && modelLoaded ? "text-primary font-medium" : undefined
-          }
+          className={artifactsEnabled ? "text-primary font-medium" : undefined}
           onSelect={() => setArtifactsEnabled(!artifactsEnabled)}
         >
           <HugeiconsIcon icon={PencilRulerIcon} strokeWidth={2} />
           Canvas
-          {artifactsEnabled && modelLoaded ? (
-            <CheckIcon className="ml-auto" />
-          ) : null}
+          {artifactsEnabled ? <CheckIcon className="ml-auto" /> : null}
         </DropdownMenuItem>
         <DropdownMenuItem>
           <HugeiconsIcon icon={DatabaseIcon} strokeWidth={2} />
