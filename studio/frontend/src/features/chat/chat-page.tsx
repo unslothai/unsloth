@@ -224,7 +224,10 @@ const SingleContent = memo(function SingleContent({
               {threadPane}
             </div>
           </ResizablePanel>
-          <ResizableHandle withHandle={true} />
+          <ResizableHandle
+            withHandle={false}
+            className="relative z-30 -ml-1 -mr-4 w-5 bg-transparent hover:bg-transparent hover:shadow-none active:bg-transparent active:shadow-none focus-visible:bg-transparent focus-visible:shadow-none focus-visible:ring-0 focus-visible:ring-offset-0 focus-visible:outline-none"
+          />
           <ResizablePanel
             id="chat-artifact"
             defaultSize="38%"

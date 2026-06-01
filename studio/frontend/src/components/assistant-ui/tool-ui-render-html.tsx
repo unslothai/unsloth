@@ -3,14 +3,19 @@
 
 "use client";
 
-import { ArtifactCard } from "@/features/chat";
+import {
+  ArtifactCard,
+  useChatArtifactsStore,
+  useSelectedChatArtifact,
+} from "@/features/chat";
 import { BrowserIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type ToolCallMessagePartComponent,
+  useAuiState,
   useToolArgsStatus,
 } from "@assistant-ui/react";
-import { memo } from "react";
+import { memo, useEffect } from "react";
 
 // Context7 assistant-ui docs: tool UIs can read streaming args via
 // useToolArgsStatus, so render_html does not need to wait for tool completion.
@@ -33,19 +38,7 @@ const RenderHtmlToolUIImpl: ToolCallMessagePartComponent = ({
     typeof parsedArgs.title === "string" ? parsedArgs.title : "HTML artifact";
   const isRunning = status?.type === "running";
   const codeIsStreaming = propStatus.code === "streaming";
-
-  if (hasCode) {
-    return (
-      <ArtifactCard
-        code={code}
-        title={title}
-        source="tool"
-        sourceToolCallId={toolCallId}
-        autoOpen={true}
-        isStreaming={isRunning || codeIsStreaming}
-      />
-    );
-  }
+  const isGeneratingArtifact = isRunning || codeIsStreaming;
 
   // Surface the backend error when the tool call completed with invalid
   // args.  Backend success results start with "Rendered HTML artifact";
@@ -56,6 +49,38 @@ const RenderHtmlToolUIImpl: ToolCallMessagePartComponent = ({
     result.startsWith("Error:")
       ? result
       : null;
+  const messageId = useAuiState(({ message }) => message.id) ?? null;
+  const selectedArtifact = useSelectedChatArtifact();
+  const closeArtifactSurface = useChatArtifactsStore(
+    (state) => state.closeArtifactSurface,
+  );
+
+  useEffect(() => {
+    if (!errorText) return;
+    if (!messageId || !toolCallId) return;
+    if (selectedArtifact?.sourceToolCallId !== toolCallId) return;
+    if (selectedArtifact?.sourceMessageId !== messageId) return;
+    closeArtifactSurface();
+  }, [
+    closeArtifactSurface,
+    errorText,
+    messageId,
+    selectedArtifact,
+    toolCallId,
+  ]);
+
+  if (hasCode || (isGeneratingArtifact && !errorText)) {
+    return (
+      <ArtifactCard
+        code={code}
+        title={title}
+        source="tool"
+        sourceToolCallId={toolCallId}
+        autoOpen={true}
+        isStreaming={isGeneratingArtifact}
+      />
+    );
+  }
 
   return (
     <div className="relative my-2 flex min-h-[52px] w-full max-w-md items-center overflow-hidden rounded-lg border border-border/70 bg-muted/15 px-3 py-2 text-left dark:bg-muted/10">

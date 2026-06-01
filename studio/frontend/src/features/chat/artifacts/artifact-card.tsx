@@ -4,10 +4,10 @@
 "use client";
 
 import { cn } from "@/lib/utils";
-import { BrowserIcon } from "@hugeicons/core-free-icons";
+import { LayoutTwoColumnIcon as Layout2ColumnIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useAuiState } from "@assistant-ui/react";
-import { useEffect, useMemo } from "react";
+import { useLayoutEffect, useMemo } from "react";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import {
   hasAutoOpenedArtifact,
@@ -74,7 +74,7 @@ export function ArtifactCard({
   );
   const surface = artifactThreadId ? "panel" : "overlay";
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!autoOpen) return;
     if (!hasAutoOpenedArtifact(artifact.id)) {
       rememberAutoOpenedArtifact(artifact.id);
@@ -99,14 +99,22 @@ export function ArtifactCard({
       className={cn(
         "group/artifact-card relative my-2 flex min-h-[52px] w-full max-w-md cursor-pointer items-center overflow-hidden rounded-lg border border-border/70 bg-muted/15 px-3 py-2 text-left transition-colors hover:bg-muted/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
         "dark:bg-muted/10 dark:hover:bg-muted/20",
+        isStreaming &&
+          "border-border/80 bg-muted/20 dark:border-border/70 dark:bg-muted/15",
         className,
       )}
       onClick={() => openArtifact(artifact, { surface })}
       aria-label={`Open ${artifact.title}`}
     >
+      {isStreaming ? (
+        <span
+          aria-hidden={true}
+          className="artifact-card-shimmer pointer-events-none absolute inset-0 z-0 motion-reduce:hidden"
+        />
+      ) : null}
       <div className="relative z-10 flex min-w-0 flex-1 items-center gap-2.5">
         <HugeiconsIcon
-          icon={BrowserIcon}
+          icon={Layout2ColumnIcon}
           strokeWidth={1.75}
           className="size-5 shrink-0 text-muted-foreground"
         />
@@ -119,7 +127,7 @@ export function ArtifactCard({
           </span>
         </span>
         {isStreaming ? (
-          <span className="shrink-0 rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary">
+          <span className="shimmer shrink-0 rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary motion-reduce:animate-none">
             Generating
           </span>
         ) : null}

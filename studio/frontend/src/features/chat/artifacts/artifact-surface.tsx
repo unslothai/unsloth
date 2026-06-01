@@ -63,6 +63,38 @@ function getFocusableElements(container: HTMLElement): HTMLElement[] {
   );
 }
 
+function ArtifactLoadingLine() {
+  return (
+    <div className="absolute inset-x-0 bottom-0 h-[1.5px] overflow-hidden bg-border/55">
+      <span
+        aria-hidden={true}
+        className="artifact-loading-line block h-full motion-reduce:hidden"
+      />
+    </div>
+  );
+}
+
+function ArtifactGeneratingPanel() {
+  return (
+    <div className="flex h-full min-h-0 flex-col items-center justify-center bg-muted/10 px-6 text-center">
+      <div className="max-w-[30ch] space-y-1.5">
+        <img
+          src="/Sloth%20emojis/sloth%20w%20pc%20transparent.png"
+          alt=""
+          aria-hidden={true}
+          className="mx-auto mb-3 size-20 object-contain"
+        />
+        <p className="text-sm font-medium text-foreground">
+          Building artifact preview…
+        </p>
+        <p className="text-xs leading-relaxed text-muted-foreground">
+          The preview will appear here when the HTML is ready.
+        </p>
+      </div>
+    </div>
+  );
+}
+
 function downloadTextFile(filename: string, text: string): void {
   const blob = new Blob([text], { type: "text/html;charset=utf-8" });
   const url = URL.createObjectURL(blob);
@@ -86,9 +118,7 @@ export function ArtifactSurface({
   onClose: () => void;
   onOpenFullscreen?: () => void;
 }) {
-  const [viewMode, setViewMode] = useState<ArtifactViewMode>(
-    artifact.isStreaming ? "source" : "preview",
-  );
+  const [viewMode, setViewMode] = useState<ArtifactViewMode>("preview");
   const [copied, setCopied] = useState(false);
   const copyResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const surfaceRef = useRef<HTMLElement>(null);
@@ -98,8 +128,9 @@ export function ArtifactSurface({
     () => buildHtmlFence(artifact.code),
     [artifact.code],
   );
-  const effectiveViewMode =
-    artifact.isStreaming && viewMode === "preview" ? "source" : viewMode;
+  const hasArtifactCode = artifact.code.trim().length > 0;
+  const isLoadingArtifact = Boolean(artifact.isStreaming);
+  const effectiveViewMode = isLoadingArtifact ? "preview" : viewMode;
 
   useEffect(() => {
     return () => {
@@ -170,16 +201,21 @@ export function ArtifactSurface({
       tabIndex={variant === "overlay" ? -1 : undefined}
       onKeyDown={handleDialogKeyDown}
       className={cn(
-        "flex min-h-0 flex-col overflow-hidden border border-border bg-background shadow-xl",
+        "relative flex min-h-0 flex-col border border-border bg-background",
         variant === "panel"
-          ? "mt-[48px] h-[calc(100%_-_48px)] w-full rounded-none border-y-0 border-r-0"
-          : "h-[min(92vh,900px)] w-[min(96vw,1200px)] rounded-2xl",
+          ? "artifact-panel-shell mx-2 mt-[72px] mb-[34px] h-[calc(100%_-_106px)] overflow-visible rounded-[28px] border-border/70 bg-card/95 [box-shadow:rgba(0,0,0,0.16)_0px_2px_8px_-2px]"
+          : "h-[min(92vh,900px)] w-[min(96vw,1200px)] overflow-hidden rounded-2xl shadow-xl",
       )}
       aria-label={`${artifact.title} artifact`}
     >
-      <header className="flex shrink-0 items-center justify-between gap-3 border-b border-border px-2.5 py-2">
+      <header
+        className={cn(
+          "relative flex shrink-0 items-center justify-between gap-3 px-2.5 py-2",
+          variant === "panel" && "rounded-t-[28px]",
+        )}
+      >
         <div
-          className="flex items-center gap-1 rounded-md bg-muted/40 p-0.5"
+          className="flex items-center gap-1 rounded-full bg-muted/40 p-0.5"
           role="tablist"
           aria-label="Artifact view"
         >
@@ -191,15 +227,15 @@ export function ArtifactSurface({
                 key={mode}
                 type="button"
                 role="tab"
-                disabled={artifact.isStreaming && isPreview}
+                disabled={isLoadingArtifact && !isPreview}
                 onClick={() => setViewMode(mode)}
                 className={cn(
-                  "flex size-8 items-center justify-center rounded-[4px] text-muted-foreground transition-colors",
+                  "flex size-8 items-center justify-center rounded-full text-muted-foreground transition-colors",
                   effectiveViewMode === mode
                     ? "bg-background text-foreground shadow-sm"
                     : "hover:bg-background/70 hover:text-foreground",
-                  artifact.isStreaming &&
-                    isPreview &&
+                  isLoadingArtifact &&
+                    !isPreview &&
                     "cursor-not-allowed opacity-50",
                 )}
                 aria-label={
@@ -207,7 +243,13 @@ export function ArtifactSurface({
                 }
                 aria-selected={effectiveViewMode === mode}
                 aria-pressed={effectiveViewMode === mode}
-                title={isPreview ? "Preview" : "Source"}
+                title={
+                  isPreview
+                    ? "Preview"
+                    : isLoadingArtifact
+                      ? "Source available when generation finishes"
+                      : "Source"
+                }
               >
                 <Icon className="size-4" />
               </button>
@@ -220,6 +262,7 @@ export function ArtifactSurface({
             variant="ghost"
             size="icon"
             className="size-8"
+            disabled={isLoadingArtifact || !hasArtifactCode}
             onClick={() => downloadTextFile(filename, artifact.code)}
             aria-label="Download artifact HTML"
           >
@@ -230,6 +273,7 @@ export function ArtifactSurface({
             variant="ghost"
             size="icon"
             className="size-8"
+            disabled={isLoadingArtifact || !hasArtifactCode}
             onClick={handleCopy}
             aria-label="Copy artifact HTML"
           >
@@ -262,10 +306,22 @@ export function ArtifactSurface({
             <XIcon className="size-4" />
           </Button>
         </div>
+        {isLoadingArtifact ? (
+          <ArtifactLoadingLine />
+        ) : (
+          <div className="absolute inset-x-0 bottom-0 h-px bg-border" />
+        )}
       </header>
 
-      <div className="min-h-0 flex-1 overflow-hidden bg-background">
-        {effectiveViewMode === "preview" ? (
+      <div
+        className={cn(
+          "min-h-0 flex-1 overflow-hidden bg-background",
+          variant === "panel" && "rounded-b-[28px]",
+        )}
+      >
+        {isLoadingArtifact ? (
+          <ArtifactGeneratingPanel />
+        ) : effectiveViewMode === "preview" ? (
           <ArtifactHtmlFrame
             key={artifact.id}
             code={artifact.code}
