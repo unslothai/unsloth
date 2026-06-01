@@ -18,6 +18,7 @@ from hub.schemas.inventory import GgufVariantDetail, GgufVariantsResponse
 from hub.utils import download_manifest
 from hub.utils import download_registry
 from hub.utils import inventory_scan as hf_cache_scan
+from hub.utils.hf_errors import hf_error_status
 from hub.utils.hf_cache_state import (
     INCOMPLETE_SUFFIX,
     iter_destructive_repo_cache_dirs,
@@ -352,25 +353,6 @@ def delete_variant_incomplete_blobs_result(
     return VariantIncompleteDeleteResult(deleted = deleted, unresolved = False)
 
 
-def _hf_client_error_status(exc: Exception) -> Optional[int]:
-    # Map HF client errors to their HTTP status so the UI shows "not found" /
-    # "token required" instead of a generic 500.
-    name = type(exc).__name__
-    if name in (
-        "RepositoryNotFoundError",
-        "RevisionNotFoundError",
-        "EntryNotFoundError",
-    ):
-        return 404
-    if name == "GatedRepoError":
-        return 403
-    # HfHubHTTPError subclasses carry the upstream response status.
-    code = getattr(getattr(exc, "response", None), "status_code", None)
-    if isinstance(code, int) and 400 <= code < 500:
-        return code
-    return None
-
-
 async def get_gguf_variants_response(
     repo_id: str,
     prefer_local_cache: bool = False,
@@ -448,6 +430,11 @@ async def get_gguf_variants_response(
             variants, has_vision = list_local_gguf_variants(repo_id)
 
             return _local_response(repo_id, variants, has_vision)
+
+        # Reject invalid remote repo_ids up front (like download/delete) so a
+        # malformed id returns 400 instead of a 500 from the HF client.
+        if not _is_valid_repo_id(repo_id):
+            raise HTTPException(status_code = 400, detail = f"Invalid repo_id: {repo_id!r}")
 
         local_only = prefer_local_cache or offline
         if local_only:
@@ -684,7 +671,7 @@ async def get_gguf_variants_response(
     except Exception as e:
         scrubbed = download_registry.scrub_secrets(str(e), hf_token = hf_token)
         # Client-side HF error (missing repo, gated, bad token): pass the status through.
-        status = _hf_client_error_status(e)
+        status = hf_error_status(e)
         if status is not None:
             raise HTTPException(status_code = status, detail = scrubbed)
         logger.error("Error listing GGUF variants for %s: %s", repo_id, scrubbed)

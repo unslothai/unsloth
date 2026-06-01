@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import base64
+import errno
 import io
 import re
 from pathlib import Path
@@ -32,6 +33,7 @@ from hub.utils.dataset_cache import (
 )
 from hub.utils import download_registry
 from hub.utils.dataset_format import check_dataset_format, format_dataset_preview
+from hub.utils.hf_errors import hf_error_status
 from hub.utils.paths import (
     is_valid_repo_id as _is_valid_repo_id,
     resolve_dataset_path,
@@ -478,14 +480,22 @@ def check_format_response(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(
-            "Error checking dataset format: %s",
-            download_registry.scrub_secrets(str(e), hf_token = hf_token),
-        )
+        scrubbed = download_registry.scrub_secrets(str(e), hf_token = hf_token)
+        # Missing/gated/bad-token and malformed names are client errors, not 500s.
+        status = hf_error_status(e)
+        if status is None and isinstance(e, OSError) and getattr(e, "errno", None) == errno.ENAMETOOLONG:
+            status, scrubbed = 400, "Invalid dataset name"
+        elif status is None and isinstance(e, FileNotFoundError):
+            # datasets raises DatasetNotFoundError (FileNotFoundError) for missing/gated.
+            status = 404
+        elif status is None and isinstance(e, ValueError):
+            status = 400
+        if status is not None:
+            raise HTTPException(status_code = status, detail = scrubbed)
+        logger.error("Error checking dataset format: %s", scrubbed)
         raise HTTPException(
             status_code = 500,
-            detail = "Failed to check dataset format: "
-            + download_registry.scrub_secrets(str(e), hf_token = hf_token),
+            detail = "Failed to check dataset format: " + scrubbed,
         )
 
 
@@ -540,12 +550,16 @@ def ai_assist_mapping_response(
         )
 
     except Exception as e:
-        logger.error(
-            "AI assist mapping failed: %s",
-            download_registry.scrub_secrets(str(e), hf_token = hf_token),
-        )
+        scrubbed = download_registry.scrub_secrets(str(e), hf_token = hf_token)
+        status = hf_error_status(e)
+        if status is None and isinstance(e, FileNotFoundError):
+            status = 404
+        elif status is None and isinstance(e, ValueError):
+            status = 400
+        if status is not None:
+            raise HTTPException(status_code = status, detail = scrubbed)
+        logger.error("AI assist mapping failed: %s", scrubbed)
         raise HTTPException(
             status_code = 500,
-            detail = "AI assist failed: "
-            + download_registry.scrub_secrets(str(e), hf_token = hf_token),
+            detail = "AI assist failed: " + scrubbed,
         )
