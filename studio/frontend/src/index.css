@@ -1515,6 +1515,42 @@
 	background: oklch(0.67 0 0 / 0.5);
 }
 
+/* Composer textarea: keep the scroll thumb faint until the user hovers or
+   drags the thumb itself, so a tall draft never shows a heavy dark rail. */
+.composer-input,
+.unsloth-composer-input {
+	scrollbar-color: oklch(0.5 0 0 / 0.16) transparent;
+}
+
+.composer-input::-webkit-scrollbar-thumb,
+.unsloth-composer-input::-webkit-scrollbar-thumb {
+	background: oklch(0.5 0 0 / 0.16);
+}
+
+.composer-input::-webkit-scrollbar-thumb:hover,
+.unsloth-composer-input::-webkit-scrollbar-thumb:hover,
+.composer-input::-webkit-scrollbar-thumb:active,
+.unsloth-composer-input::-webkit-scrollbar-thumb:active {
+	background: oklch(0.5 0 0 / 0.45);
+}
+
+.dark .composer-input,
+.dark .unsloth-composer-input {
+	scrollbar-color: oklch(0.72 0 0 / 0.18) transparent;
+}
+
+.dark .composer-input::-webkit-scrollbar-thumb,
+.dark .unsloth-composer-input::-webkit-scrollbar-thumb {
+	background: oklch(0.72 0 0 / 0.18);
+}
+
+.dark .composer-input::-webkit-scrollbar-thumb:hover,
+.dark .unsloth-composer-input::-webkit-scrollbar-thumb:hover,
+.dark .composer-input::-webkit-scrollbar-thumb:active,
+.dark .unsloth-composer-input::-webkit-scrollbar-thumb:active {
+	background: oklch(0.72 0 0 / 0.5);
+}
+
 /* Chat viewport: solid track matching sidebar so the scrollbar reads as a
    full-height rail flush to the right edge, without a separate decorative strip. */
 .aui-thread-viewport {

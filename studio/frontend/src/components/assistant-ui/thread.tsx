@@ -486,9 +486,8 @@ const ThreadWelcome: FC<{
     <div className="aui-thread-welcome-root mx-auto my-auto flex w-full max-w-(--thread-max-width) grow flex-col">
       <div className="aui-thread-welcome-center flex w-full grow flex-col items-center justify-start pt-[calc(29vh_-_5px)]">
         <div className="aui-thread-welcome-message flex w-full flex-col justify-center gap-9 px-4">
-          {/* Shift left by half the icon+gap so the title centers over the
-              composer instead of sitting right of center. */}
-          <div className="flex -translate-x-6 flex-row items-center justify-center gap-3">
+          {/* Center the whole greeting (sloth + title) over the composer. */}
+          <div className="flex flex-row items-center justify-center gap-3">
             <img
               src={currentEmojiSrc}
               alt="Sloth mascot"
