@@ -1462,7 +1462,7 @@ def test_curated_diffusion_presets_cover_manifest():
     assert flux2["default_text_encoder_gguf_repo"] == (
         "unsloth/Mistral-Small-3.2-24B-Instruct-2506-GGUF"
     )
-    assert flux2["recommended_offload_policy"] == "balanced"
+    assert flux2["recommended_offload_policy"] == "less_aggressive"
 
 
 def test_resolve_diffusion_load_plan_expands_preset_component_swap():
@@ -1506,6 +1506,17 @@ def test_resolve_diffusion_load_plan_requires_quant_for_preset_load():
             preset_id = "flux.2-dev",
             require_loadable = True,
         )
+
+
+def test_resolve_diffusion_load_plan_uses_flux2_dev_speed_policy():
+    from core.inference.diffusion import resolve_diffusion_load_plan
+
+    plan = resolve_diffusion_load_plan(
+        preset_id = "flux.2-dev",
+        transformer_quant = "Q4_K_M",
+    )
+
+    assert plan["load_kwargs"]["offload_policy"] == "less_aggressive"
 
 
 def test_load_model_ernie_can_replace_text_encoder_and_prompt_enhancer_ggufs(monkeypatch):

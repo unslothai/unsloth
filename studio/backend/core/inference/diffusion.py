@@ -137,6 +137,7 @@ class CuratedDiffusionGGUF:
     base_repo: str
     filename_prefixes: tuple[str, ...]
     variant: Optional[str] = None
+    recommended_offload_policy: str = DIFFUSION_OFFLOAD_POLICY_BALANCED
 
 
 @dataclass(frozen = True)
@@ -1047,6 +1048,7 @@ _CURATED_UNSLOTH_DIFFUSION_GGUFS: tuple[CuratedDiffusionGGUF, ...] = (
         family = "flux.2",
         base_repo = "black-forest-labs/FLUX.2-dev",
         filename_prefixes = ("flux2-dev-",),
+        recommended_offload_policy = DIFFUSION_OFFLOAD_POLICY_LESS_AGGRESSIVE,
     ),
     CuratedDiffusionGGUF(
         repo_id = "unsloth/FLUX.2-klein-4B-GGUF",
@@ -1180,6 +1182,7 @@ def _diffusion_preset_from_curated_gguf(
         transformer_gguf_repo = spec.repo_id,
         transformer_filename_prefixes = spec.filename_prefixes,
         variant = spec.variant,
+        recommended_offload_policy = spec.recommended_offload_policy,
     )
 
 
