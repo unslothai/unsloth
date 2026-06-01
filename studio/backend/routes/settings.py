@@ -19,9 +19,7 @@ router = APIRouter()
 
 
 class UploadLimitPayload(BaseModel):
-    max_upload_size_mb: int = Field(
-        ..., ge = MIN_UPLOAD_LIMIT_MB, le = MAX_UPLOAD_LIMIT_MB
-    )
+    max_upload_size_mb: int = Field(..., ge = MIN_UPLOAD_LIMIT_MB, le = MAX_UPLOAD_LIMIT_MB)
 
 
 class UploadLimitResponse(BaseModel):
