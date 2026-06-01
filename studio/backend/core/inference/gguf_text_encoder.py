@@ -977,16 +977,48 @@ def _dequantize_gguf_bytes(
             dequant = dequant.reshape(logical_shape)
         return dequant.to(dtype = dtype) if dtype is not None else dequant
 
-    from diffusers.quantizers.gguf.utils import (
-        GGML_QUANT_SIZES,
-        dequantize_functions,
-    )
+    try:
+        from diffusers.quantizers.gguf.utils import (
+            GGML_QUANT_SIZES,
+            dequantize_functions,
+        )
 
-    block_size, type_size = GGML_QUANT_SIZES[quant_type]
-    shape = logical_shape or (*qweight.shape[:-1], qweight.shape[-1] // type_size * block_size)
-    blocks = qweight.view(torch.uint8).reshape((-1, type_size))
-    dequant = dequantize_functions[quant_type](blocks, block_size, type_size, dtype)
-    return dequant.reshape(shape)
+        dequantize_function = dequantize_functions[quant_type]
+    except Exception:
+        dequantize_function = None
+    if dequantize_function is not None:
+        block_size, type_size = GGML_QUANT_SIZES[quant_type]
+        shape = logical_shape or (*qweight.shape[:-1], qweight.shape[-1] // type_size * block_size)
+        blocks = qweight.view(torch.uint8).reshape((-1, type_size))
+        dequant = dequantize_function(blocks, block_size, type_size, dtype)
+        return dequant.reshape(shape)
+
+    dequantize = getattr(gguf, "dequantize", None)
+    if not callable(dequantize):
+        raise NotImplementedError(f"Unsupported GGUF quantization type: {quant_type!r}")
+    data = qweight.detach()
+    if data.device.type != "cpu":
+        data = data.to("cpu")
+    data = data.contiguous().view(torch.uint8).numpy()
+    try:
+        dequant_np = dequantize(data, quant_type)
+    except NotImplementedError:
+        raise
+    except Exception as exc:
+        raise NotImplementedError(f"Unsupported GGUF quantization type: {quant_type!r}") from exc
+    dequant = torch.from_numpy(dequant_np)
+    if logical_shape is None:
+        quant_shape_from_byte_shape = getattr(gguf, "quant_shape_from_byte_shape", None)
+        if callable(quant_shape_from_byte_shape):
+            logical_shape = tuple(
+                int(dim)
+                for dim in quant_shape_from_byte_shape(tuple(qweight.shape), quant_type)
+            )
+    if logical_shape is not None:
+        dequant = dequant.reshape(logical_shape)
+    if dtype is not None and dequant.is_floating_point():
+        dequant = dequant.to(dtype = dtype)
+    return dequant.to(device = qweight.device)
 
 
 def _reverse_permute_qk(weight: torch.Tensor, num_heads: int) -> torch.Tensor:

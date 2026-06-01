@@ -2401,6 +2401,7 @@ def test_load_gguf_checkpoint_no_copy_preserves_numpy_storage(monkeypatch):
 
     tensor_data = np.arange(12, dtype = np.uint8).reshape(3, 4)
     dense_data = np.arange(6, dtype = np.float32)
+    f16_data = np.arange(6, dtype = np.float16)
 
     class _FakeField:
         def __init__(self, values):
@@ -2420,12 +2421,15 @@ def test_load_gguf_checkpoint_no_copy_preserves_numpy_storage(monkeypatch):
             self.tensors = [
                 _FakeTensor("embed.weight", _QType.BF16, tensor_data, (6, 2)),
                 _FakeTensor("dense.weight", _QType.F32, dense_data, (6,)),
+                _FakeTensor("dense_f16.weight", _QType.F16, f16_data, (6,)),
             ]
 
         def get_field(self, name):
             if name == "comfy.gguf.orig_shape.embed.weight":
                 return _FakeField([2, 6])
             if name == "comfy.gguf.orig_shape.dense.weight":
+                return _FakeField([2, 3])
+            if name == "comfy.gguf.orig_shape.dense_f16.weight":
                 return _FakeField([2, 3])
             return None
 
@@ -2453,6 +2457,7 @@ def test_load_gguf_checkpoint_no_copy_preserves_numpy_storage(monkeypatch):
     parsed = d._load_gguf_checkpoint_no_copy("/tmp/fake.gguf")
     weight = parsed["embed.weight"]
     dense = parsed["dense.weight"]
+    dense_f16 = parsed["dense_f16.weight"]
 
     assert isinstance(weight, _FakeGGUFParameter)
     assert weight.quant_type is _QType.BF16
@@ -2461,6 +2466,10 @@ def test_load_gguf_checkpoint_no_copy_preserves_numpy_storage(monkeypatch):
     assert getattr(weight, "_unsloth_gguf_reader").path == "/tmp/fake.gguf"
     assert dense.shape == (2, 3)
     assert dense.data_ptr() == torch.from_numpy(dense_data).data_ptr()
+    assert not isinstance(dense_f16, _FakeGGUFParameter)
+    assert dense_f16.shape == (2, 3)
+    assert dense_f16.dtype is torch.float16
+    assert dense_f16.data_ptr() == torch.from_numpy(f16_data).data_ptr()
 
 
 def test_load_model_text_encoder_gguf_rejects_unsupported_family_without_component(monkeypatch):

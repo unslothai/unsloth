@@ -670,6 +670,61 @@ def test_dequantize_bf16_gguf_bytes_without_diffusers_import(monkeypatch):
     )
 
 
+def test_dequantize_unknown_quant_falls_back_to_native_gguf(monkeypatch):
+    np = pytest.importorskip("numpy")
+    import builtins
+
+    import core.inference.gguf_text_encoder as g
+
+    class _FakeQuantTypes:
+        F32 = "F32"
+        F16 = "F16"
+        BF16 = "BF16"
+        IQ1_M = "IQ1_M"
+
+    calls: list[tuple[object, object]] = []
+
+    class _FakeGGUF:
+        GGMLQuantizationType = _FakeQuantTypes
+
+        @staticmethod
+        def quant_shape_from_byte_shape(shape, quant_type):
+            assert quant_type == _FakeQuantTypes.IQ1_M
+            return (*shape[:-1], shape[-1] // 2)
+
+        @staticmethod
+        def dequantize(data, quant_type):
+            calls.append((data.copy(), quant_type))
+            assert data.dtype == np.uint8
+            assert quant_type == _FakeQuantTypes.IQ1_M
+            return np.array([[1.5, -2.5]], dtype = np.float32)
+
+    original_import = builtins.__import__
+
+    def guarded_import(name, *args, **kwargs):
+        if name.startswith("diffusers.quantizers"):
+            raise ImportError("diffusers quantizer intentionally unavailable")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(g, "_require_gguf", lambda: _FakeGGUF)
+    monkeypatch.setattr(builtins, "__import__", guarded_import)
+
+    decoded = g._dequantize_gguf_bytes(
+        torch.tensor([[1, 2, 3, 4]], dtype = torch.uint8),
+        _FakeQuantTypes.IQ1_M,
+        dtype = torch.bfloat16,
+    )
+
+    assert len(calls) == 1
+    assert calls[0][1] == _FakeQuantTypes.IQ1_M
+    assert decoded.shape == (1, 2)
+    assert decoded.dtype is torch.bfloat16
+    torch.testing.assert_close(
+        decoded.float(),
+        torch.tensor([[1.5, -2.5]], dtype = torch.float32),
+    )
+
+
 def test_replace_mapped_text_modules_materializes_dense_standalone_bias(
     monkeypatch,
     tmp_path,
