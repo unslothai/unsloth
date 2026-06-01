@@ -906,6 +906,196 @@ def test_deploy_cmd_carries_nondefault_provider():
     )
 
 
+def test_is_gateway_timeout_ignores_timeout_word_in_response_body():
+    """A real HTTP error whose body merely mentions 'timeout' must not be treated
+    as a retryable gateway cut-off -- that would mask a genuine load failure."""
+    from unsloth_cli.deploy.studio_client import _is_gateway_timeout
+    assert not _is_gateway_timeout(
+        "POST /api/inference/load -> 400: {'detail': 'request timeout in config'}"
+    )
+    # A genuine Cloudflare 524 and a transport-level read timeout still count.
+    assert _is_gateway_timeout("POST /api/inference/load -> 524: upstream gone")
+    assert _is_gateway_timeout("POST /api/inference/load failed: read timed out")
+
+
+def test_mint_credential_falls_back_only_on_real_404_405():
+    """_mint_credential drops to the JWT only on an actual 404/405 status, not when
+    those digits merely appear inside some other error's body."""
+    from unsloth_cli.commands import deploy
+    from unsloth_cli.deploy import DeployError
+
+    class _Old:
+        token = "jwt-x"
+        def create_api_key(self, name):
+            raise DeployError("POST /api/auth/api-keys -> 404: route not found")
+
+    key, note = deploy._mint_credential(_Old())
+    assert key == "jwt-x" and note  # fell back to the JWT credential
+
+    class _Other:
+        token = "jwt-x"
+        def create_api_key(self, name):
+            raise DeployError("POST /api/auth/api-keys -> 500: upstream said 404 earlier")
+
+    with pytest.raises(DeployError):
+        deploy._mint_credential(_Other())  # 500 must propagate, not silently fall back
+
+
+def test_get_ssh_falls_back_when_publicport_missing(monkeypatch):
+    """A public-IP runtime port with no publicPort must not TypeError on int(None);
+    fall back to the ssh.runpod.io proxy target."""
+    from unsloth_cli.deploy.runpod_client import RunPod
+    pod = {"runtime": {"ports": [
+        {"privatePort": 22, "ip": "1.2.3.4", "isIpPublic": True},  # no publicPort
+    ]}}
+    _stub_runpod(monkeypatch, get_pod = lambda pid: pod)
+    p = RunPod(); p.auth({"api_key": "rpa_x"})
+    ssh = p.get_ssh("pod-x")
+    assert ssh.host == "ssh.runpod.io" and ssh.user == "pod-x"
+
+
+def test_is_local_model_distinguishes_hf_id_from_path(monkeypatch, tmp_path):
+    """A bare HF id isn't hijacked by a coincidentally same-named local dir, but an
+    explicit ./path or a recognized model dir is treated as local."""
+    from unsloth_cli.commands.deploy import _is_local_model
+    monkeypatch.chdir(tmp_path)
+
+    (tmp_path / "org").mkdir()
+    (tmp_path / "org" / "name").mkdir()  # exists, but not a model
+    assert _is_local_model("org/name") is False        # stays an HF id
+    assert _is_local_model("./org/name") is True        # explicit path is local
+
+    (tmp_path / "mymodel").mkdir()
+    (tmp_path / "mymodel" / "config.json").write_text("{}")
+    assert _is_local_model("mymodel") is True           # recognized model dir
+    assert _is_local_model("unsloth/Llama-3.2-1B") is False  # non-existent id
+
+
+def test_rest_non_json_response_raises_deployerror(monkeypatch):
+    """A non-JSON REST body (e.g. an HTML error page) surfaces as DeployError, not
+    a raw JSONDecodeError the callers don't expect."""
+    from unsloth_cli.deploy import DeployError
+    from unsloth_cli.deploy import runpod_storage
+    from unsloth_cli.deploy.runpod_client import RunPod
+
+    class _Resp:
+        def read(self): return b"<html>bad gateway</html>"
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    _stub_runpod(monkeypatch)
+    monkeypatch.setattr(
+        runpod_storage.urllib.request, "urlopen", lambda req, timeout = 60: _Resp(),
+    )
+    p = RunPod(); p.auth({"api_key": "rpa_x"})
+    with pytest.raises(DeployError, match = "non-JSON"):
+        runpod_storage._rest(p, "GET", "/networkvolumes/x", None)
+
+
+def test_empty_provider_opt_does_not_fall_through_to_env(monkeypatch):
+    """An explicit empty --provider-opt value clears the option instead of silently
+    falling back to the env var (--provider-opt has top precedence)."""
+    import typer
+    from unsloth_cli.commands import deploy
+    from unsloth_cli.deploy.runpod_client import RunPod
+    _stub_with_catalog(monkeypatch)
+    monkeypatch.setenv("RUNPOD_API_KEY", "rpa_from_env")
+    with pytest.raises(typer.Exit):
+        deploy._authenticate(
+            RunPod, {"api_key": ""}, need_local = False, interactive = False,
+        )
+
+
+def test_bootstrap_surfaces_password_when_change_password_drops_connection(monkeypatch):
+    """If change_password's response is lost after the server applied it, the user
+    must still see the (already rotated) password instead of being locked out."""
+    from unsloth_cli.commands import deploy
+    from unsloth_cli.deploy import DeployError
+
+    class DropOnChange(_FakeStudioClient):
+        def change_password(self, current, new):
+            self.calls.append(("change_password", current, new))
+            raise DeployError("POST /api/auth/change-password failed: connection reset")
+
+    store = {}
+    _stub_with_catalog(monkeypatch, create_pod = lambda **kw: {"id": "pod-drop"}, get_pod = _running_pod)
+    monkeypatch.setenv("RUNPOD_API_KEY", "rpa_x")
+    monkeypatch.setenv("UNSLOTH_ADMIN_PASSWORD", "bootstrap-pw")
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    monkeypatch.setattr(
+        deploy, "StudioClient",
+        lambda base_url: store.setdefault("client", DropOnChange(base_url)),
+    )
+
+    from unsloth_cli import app
+    result = CliRunner().invoke(app, [
+        "deploy", "run", "--yes", "--model", "unsloth/Llama-3.2-1B-Instruct",
+    ])
+    assert result.exit_code != 0
+    combined = result.output + (result.stderr or "")
+    rotated = [c for c in store["client"].calls if c[0] == "change_password"][0][2]
+    assert rotated and rotated in combined
+    assert "unsloth deploy stop pod-drop" in combined
+
+
+def test_bootstrap_unexpected_error_still_prints_stop_hint(monkeypatch):
+    """A non-DeployError during bootstrap (e.g. a KeyError) must still surface the
+    stop hint so the billing instance isn't lost silently."""
+    from unsloth_cli.commands import deploy
+
+    class BoomOnKey(_FakeStudioClient):
+        def create_api_key(self, name):
+            raise KeyError("key")
+
+    store = {}
+    _stub_with_catalog(monkeypatch, create_pod = lambda **kw: {"id": "pod-boom"}, get_pod = _running_pod)
+    monkeypatch.setenv("RUNPOD_API_KEY", "rpa_x")
+    monkeypatch.setenv("UNSLOTH_ADMIN_PASSWORD", "bootstrap-pw")
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    monkeypatch.setattr(
+        deploy, "StudioClient",
+        lambda base_url: store.setdefault("client", BoomOnKey(base_url)),
+    )
+
+    from unsloth_cli import app
+    result = CliRunner().invoke(app, [
+        "deploy", "run", "--yes", "--model", "unsloth/Llama-3.2-1B-Instruct",
+    ])
+    assert result.exit_code != 0
+    combined = result.output + (result.stderr or "")
+    assert "unsloth deploy stop pod-boom" in combined
+
+
+def test_stage_warns_when_volume_delete_also_fails(monkeypatch, tmp_path):
+    """If cleanup can't delete the volume after a failed upload, the user is told
+    how to remove it, and the original upload error -- not the delete error --
+    propagates."""
+    from unsloth_cli.deploy import DeployError, runpod_storage
+    from unsloth_cli.deploy.runpod_client import RunPod
+
+    model = tmp_path / "m"; model.mkdir()
+    (model / "adapter_config.json").write_text("{}")
+
+    logs = []
+    _stub_runpod(monkeypatch)
+    monkeypatch.setattr(runpod_storage, "create_network_volume", lambda client, **kw: "vol-7")
+
+    def del_fail(client, vid):
+        raise DeployError("delete boom")
+
+    def up_fail(local_path, **kw):
+        raise DeployError("upload boom")
+
+    monkeypatch.setattr(runpod_storage, "delete_network_volume", del_fail)
+    monkeypatch.setattr(runpod_storage, "upload_path", up_fail)
+
+    p = RunPod()
+    p.auth({"api_key": "rpa_x", "s3_access_key": "u", "s3_secret_key": "s", "datacenter": "DC"})
+    with pytest.raises(DeployError, match = "upload boom"):
+        p.stage_local_model(model, gpu = _gpu(), log = logs.append)
+    assert any("delete-storage vol-7" in m for m in logs)
+
+
 # A concrete minimal Provider implementation for capability tests. Defined at
 # module scope so it can be registered into PROVIDERS by name.
 from unsloth_cli.deploy.base import Provider as _Provider  # noqa: E402

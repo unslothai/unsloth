@@ -34,8 +34,26 @@ def _is_gateway_timeout(msg: str) -> bool:
     and friends, or a read/connection timeout) rather than a real failure."""
     if any(f"-> {code}:" in msg for code in _GATEWAY_TIMEOUT_CODES):
         return True
-    lowered = msg.lower()
-    return any(s in lowered for s in ("timed out", "timeout", "connection reset"))
+    # A transport-level timeout/reset surfaces as "<verb> <path> failed: <err>".
+    # Only match those words within that suffix -- never inside an HTTP response
+    # body, which can legitimately contain the word "timeout" and would otherwise
+    # mask a genuine load failure as a retryable gateway blip.
+    marker = "failed: "
+    if marker not in msg:
+        return False
+    transport = msg.split(marker, 1)[1].lower()
+    return any(s in transport for s in ("timed out", "timeout", "connection reset"))
+
+
+def _parse_json(text: str, where: str) -> dict:
+    """Parse a JSON response body, turning a non-JSON body (e.g. a Cloudflare HTML
+    error page from the proxy) into a DeployError instead of a raw ValueError."""
+    if not text:
+        return {}
+    try:
+        return json.loads(text)
+    except ValueError as e:
+        raise DeployError(f"{where} returned a non-JSON response: {text[:200]}") from e
 
 
 class StudioClient:
@@ -159,7 +177,7 @@ class StudioClient:
             raise DeployError(f"GET {path} -> {e.code}: {detail[:400]}") from e
         except (urllib.error.URLError, OSError) as e:
             raise DeployError(f"GET {path} failed: {e}") from e
-        return json.loads(text) if text else {}
+        return _parse_json(text, f"GET {path}")
 
     def _post(
         self, path: str, json_body: dict, *, auth: bool, timeout: int = _DEFAULT_TIMEOUT_S,
@@ -183,4 +201,4 @@ class StudioClient:
             # Timeouts and connection resets land here; surface them as
             # DeployError so the caller still prints the stop-the-pod hint.
             raise DeployError(f"POST {path} failed: {e}") from e
-        return json.loads(text) if text else {}
+        return _parse_json(text, f"POST {path}")

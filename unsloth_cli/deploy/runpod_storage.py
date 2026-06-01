@@ -59,7 +59,14 @@ def _rest(client: "RunPod", method: str, path: str, body: Optional[dict]) -> dic
         ) from e
     except (urllib.error.URLError, OSError) as e:
         raise DeployError(f"RunPod REST {method} {path} failed: {e}") from e
-    return json.loads(text) if text else {}
+    if not text:
+        return {}
+    try:
+        return json.loads(text)
+    except ValueError as e:
+        raise DeployError(
+            f"RunPod REST {method} {path} returned a non-JSON response: {text[:200]}"
+        ) from e
 
 
 def endpoint_for(datacenter: str) -> str:

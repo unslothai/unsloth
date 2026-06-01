@@ -250,7 +250,13 @@ def _authenticate(
         # / saved config), so a later local deploy reuses it instead of having it
         # silently dropped here.
         deferred = opt.needed_for == NEEDED_FOR_LOCAL_MODEL and not need_local
-        value = overrides.get(opt.key) or os.environ.get(opt.env) or saved.get(opt.key)
+        # --provider-opt wins outright when present (even if the user set it empty
+        # to deliberately clear it), per the documented precedence; only fall back
+        # to env then saved config when no override was passed at all.
+        if opt.key in overrides:
+            value = overrides[opt.key]
+        else:
+            value = os.environ.get(opt.env) or saved.get(opt.key) or ""
         if not value and opt.required and not deferred:
             if interactive:
                 value = typer.prompt(opt.help, hide_input = opt.secret, default = "").strip()
@@ -350,6 +356,7 @@ def _discover_local_models(cwd: Optional[Path] = None) -> list[tuple[Path, str]]
 def _studio_output_roots() -> list[Path]:
     """Studio's run and export dirs, which live outside the cwd. We ask the
     backend where they are rather than hardcode a path; [] if it isn't installed."""
+    added: Optional[str] = None
     try:
         from unsloth_cli.commands.studio import _find_run_py
 
@@ -360,10 +367,17 @@ def _studio_output_roots() -> list[Path]:
         backend = str(run_py.parent)
         if backend not in sys.path:
             sys.path.insert(0, backend)
+            added = backend  # remember that *we* added it, to undo if import fails
         from utils.paths import outputs_root, exports_root
 
         return [outputs_root(), exports_root()]
     except Exception:
+        # Don't leave a half-applied sys.path entry behind when the import fails.
+        if added is not None:
+            try:
+                sys.path.remove(added)
+            except ValueError:
+                pass
         return []
 
 
@@ -426,7 +440,18 @@ def _pick_gpu(
 
     if yes:
         # Prefer the cheapest GPU that actually has capacity over a sold-out one.
-        return next((g for g in options if g.stock), options[0])
+        in_stock = next((g for g in options if g.stock), None)
+        if in_stock is not None:
+            return in_stock
+        # Stock is best-effort: an empty signal can mean "sold out" or just "the
+        # lookup failed". Fall back to the cheapest so --yes still works, but warn
+        # so a capacity failure at create time isn't a surprise.
+        typer.echo(
+            "  warning: couldn't confirm any GPU has stock; trying the cheapest "
+            f"({options[0].name}). If it fails to start, retry or pass --gpu.",
+            err = True,
+        )
+        return options[0]
 
     shown = options[:MAX_GPU_CHOICES]
     typer.echo("")
@@ -565,8 +590,12 @@ def _serve_model(
         new_password = secrets.token_urlsafe(18)
         typer.echo("Rotating bootstrap password and minting credential...")
         client.login(username = DEFAULT_ADMIN_USERNAME, password = bootstrap_password)
-        client.change_password(current = bootstrap_password, new = new_password)
+        # Record the new password *before* the change call. If the server applies
+        # the change but the response is lost (dropped connection, missing token in
+        # the reply, etc.), the error path below must still surface it -- otherwise
+        # the user is locked out of a billing instance whose password has rotated.
         rotated_password = new_password
+        client.change_password(current = bootstrap_password, new = new_password)
         api_key, credential_note = _mint_credential(client)
 
         typer.echo(f"Loading '{model}' on the instance (can take several minutes)...")
@@ -580,7 +609,10 @@ def _serve_model(
             admin_password = new_password,
             storage_id = storage_id,
         )
-    except DeployError as e:
+    except Exception as e:
+        # Catch broadly, not just DeployError: a KeyError, a JSONDecodeError, or any
+        # other surprise during the bootstrap must still print the stop hint (and the
+        # rotated password) so the user never loses a billing instance silently.
         _fail(_stop_hint(
             e, instance.id,
             provider_name = instance.provider_name,
@@ -590,7 +622,20 @@ def _serve_model(
 
 
 def _is_local_model(model: Optional[str]) -> bool:
-    return model is not None and Path(model).expanduser().exists()
+    """True if `--model` points at something on disk to upload, rather than a
+    Hugging Face id. An explicit path (absolute, ./, ../, ~) always counts; a bare
+    name or "org/name" counts only if it actually looks like a model on disk, so a
+    Hugging Face id isn't shadowed by a coincidentally same-named local entry."""
+    if model is None:
+        return False
+    path = Path(model).expanduser()
+    if not path.exists():
+        return False
+    if model.startswith(("/", "./", "../", "~")) or model.startswith(os.sep):
+        return True
+    if path.is_dir():
+        return _model_kind(path) is not None
+    return path.suffix.lower() == ".gguf"
 
 
 def _delete_storage_quietly(provider: Provider, storage_id: Optional[str]) -> None:
@@ -622,7 +667,9 @@ def _mint_credential(client: StudioClient) -> tuple[str, str]:
     try:
         return client.create_api_key(name = f"deploy-{int(time.time())}"), ""
     except DeployError as e:
-        if any(code in str(e) for code in (" 404", " 405")):
+        # Match the response *status* (the "-> 404:" / "-> 405:" the client emits),
+        # not a bare " 404" that could also appear in an unrelated error body.
+        if any(f"-> {code}:" in str(e) for code in (404, 405)):
             note = (
                 "  (JWT credential, expires. Rebake the image with a newer\n"
                 "   UNSLOTH_COMMIT to get permanent sk-unsloth-... keys.)"
@@ -686,7 +733,7 @@ def _print_stop_hint(
 
 
 def _stop_hint(
-    err: DeployError,
+    err: Exception,
     instance_id: str,
     *,
     provider_name: str,
@@ -696,8 +743,8 @@ def _stop_hint(
     lines = [f"Deploy bootstrap failed: {err}"]
     if admin_password is not None:
         lines.append(
-            f"The Studio admin password was already rotated to: {admin_password}\n"
-            "  (save it -- the original password no longer works for the Studio UI)."
+            f"The Studio admin password may have been rotated to: {admin_password}\n"
+            "  (save it -- if the original no longer works for the Studio UI, use this)."
         )
     lines += [
         f"Instance {instance_id} is still running and billing.",

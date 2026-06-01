@@ -51,6 +51,10 @@ def save(provider_name: str, options: dict[str, str]) -> Path:
     tmp = path.with_name(path.name + ".tmp")
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, stat.S_IRUSR | stat.S_IWUSR)
     try:
+        # Force 0600 on the descriptor before writing any secrets: the create-mode
+        # above only applies to a freshly created file, so a stale .tmp left by a
+        # previous crash could otherwise carry looser, pre-existing permissions.
+        os.fchmod(fd, stat.S_IRUSR | stat.S_IWUSR)
         with os.fdopen(fd, "w", encoding = "utf-8") as f:
             f.write(payload)
         os.replace(tmp, path)

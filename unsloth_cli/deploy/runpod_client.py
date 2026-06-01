@@ -275,7 +275,12 @@ class RunPod(Provider):
     def get_ssh(self, instance_id: str) -> SshTarget:
         pod = self._sdk().get_pod(instance_id) or {}
         for p in (pod.get("runtime") or {}).get("ports") or []:
-            if p.get("privatePort") == 22 and p.get("isIpPublic") and p.get("ip"):
+            if (
+                p.get("privatePort") == 22
+                and p.get("isIpPublic")
+                and p.get("ip")
+                and p.get("publicPort")  # else int(None) below would TypeError
+            ):
                 return SshTarget(
                     user = "root",
                     host = p["ip"],
@@ -358,11 +363,17 @@ class RunPod(Provider):
         except BaseException:
             # Any failure -- a DeployError, an unexpected exception, or a Ctrl-C
             # mid-upload -- must not leave the (billing) volume behind, possibly
-            # holding a half-finished upload. Delete it, then re-raise.
+            # holding a half-finished upload. Delete it, then re-raise the original.
             try:
                 runpod_storage.delete_network_volume(self, volume_id)
-            except DeployError:
-                pass
+            except Exception:
+                # Deletion itself failed: tell the user how to remove it so it
+                # doesn't keep billing, but never let that mask the original error.
+                log(
+                    f"  warning: couldn't delete network volume {volume_id} after a "
+                    f"failed upload; it may keep billing. Remove it with:\n"
+                    f"      unsloth deploy delete-storage {volume_id}"
+                )
             raise
 
         return StagedModel(
