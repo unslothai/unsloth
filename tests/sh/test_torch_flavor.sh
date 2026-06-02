@@ -1,0 +1,62 @@
+#!/bin/bash
+# Unit tests for the torch-flavor helpers in install.sh:
+#   _torch_flavor_tag         -- torch.__version__ string -> cuXXX / rocm / cpu
+#   _expected_torch_flavor_tag -- selected index URL leaf  -> cuXXX / cpu / rocm
+#
+# These drive the post-install repair that replaces a stale CPU PyTorch with the
+# correct CUDA build (a +cpu wheel satisfies "torch>=2.4,<2.11.0" so uv otherwise
+# leaves it in place and the venv silently trains on CPU).
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+INSTALL_SH="$SCRIPT_DIR/../../install.sh"
+PASS=0
+FAIL=0
+
+# Extract just the two helper functions from install.sh and source them.
+_FUNC_FILE=$(mktemp)
+{
+    sed -n '/^_torch_flavor_tag()/,/^}/p' "$INSTALL_SH"
+    echo ""
+    sed -n '/^_expected_torch_flavor_tag()/,/^}/p' "$INSTALL_SH"
+} > "$_FUNC_FILE"
+# shellcheck disable=SC1090
+. "$_FUNC_FILE"
+rm -f "$_FUNC_FILE"
+
+assert_eq() {
+    _label="$1"; _expected="$2"; _actual="$3"
+    if [ "$_actual" = "$_expected" ]; then
+        echo "  PASS: $_label"; PASS=$((PASS + 1))
+    else
+        echo "  FAIL: $_label (expected '$_expected', got '$_actual')"; FAIL=$((FAIL + 1))
+    fi
+}
+
+echo "=== _torch_flavor_tag ==="
+assert_eq "cu130 wheel"        "cu130" "$(_torch_flavor_tag '2.10.0+cu130')"
+assert_eq "cu128 wheel"        "cu128" "$(_torch_flavor_tag '2.8.0+cu128')"
+assert_eq "cu124 wheel"        "cu124" "$(_torch_flavor_tag '2.5.1+cu124')"
+assert_eq "cu118 wheel"        "cu118" "$(_torch_flavor_tag '2.4.0+cu118')"
+assert_eq "cpu wheel"          "cpu"   "$(_torch_flavor_tag '2.10.0+cpu')"
+assert_eq "untagged -> cpu"    "cpu"   "$(_torch_flavor_tag '2.10.0')"
+assert_eq "rocm wheel"         "rocm"  "$(_torch_flavor_tag '2.11.0+rocm7.1')"
+assert_eq "nightly cu130"      "cu130" "$(_torch_flavor_tag '2.10.0.dev20250601+cu130')"
+assert_eq "cu130 with suffix"  "cu130" "$(_torch_flavor_tag '2.10.0+cu130.post1')"
+assert_eq "empty -> empty"     ""      "$(_torch_flavor_tag '')"
+assert_eq "garbage -> cpu"     "cpu"   "$(_torch_flavor_tag 'not-a-version')"
+
+echo "=== _expected_torch_flavor_tag ==="
+assert_eq "cu130 index"        "cu130" "$(_expected_torch_flavor_tag 'https://download.pytorch.org/whl/cu130')"
+assert_eq "cu130 trailing /"   "cu130" "$(_expected_torch_flavor_tag 'https://download.pytorch.org/whl/cu130/')"
+assert_eq "cu128 index"        "cu128" "$(_expected_torch_flavor_tag 'https://download.pytorch.org/whl/cu128')"
+assert_eq "cpu index"          "cpu"   "$(_expected_torch_flavor_tag 'https://download.pytorch.org/whl/cpu')"
+assert_eq "rocm index"         "rocm"  "$(_expected_torch_flavor_tag 'https://download.pytorch.org/whl/rocm7.2')"
+assert_eq "amd gfx index"      ""      "$(_expected_torch_flavor_tag 'https://repo.amd.com/rocm/whl/gfx120X-all/')"
+assert_eq "mirror cu130 leaf"  "cu130" "$(_expected_torch_flavor_tag 'https://my.mirror/pytorch/whl/cu130')"
+assert_eq "unrecognized leaf"  ""      "$(_expected_torch_flavor_tag 'https://my.mirror/whl/simple')"
+assert_eq "empty url"          ""      "$(_expected_torch_flavor_tag '')"
+
+echo ""
+echo "Results: $PASS passed, $FAIL failed"
+[ "$FAIL" -eq 0 ]

@@ -1766,6 +1766,34 @@ get_torch_index_url() {
     else echo "$_base/cpu"; fi
 }
 
+# ── Torch flavor helpers (used to repair a stale CPU / wrong-CUDA wheel) ──
+# Parse a torch.__version__ string ($1) into its flavor tag: cuXXX / rocm / cpu.
+# Mirrors the Windows installer + setup parse; an untagged wheel (no +local
+# label, e.g. plain "2.10.0") is treated as cpu.
+_torch_flavor_tag() {
+    case "$1" in
+        *+cu[0-9]*) printf '%s\n' "$1" | sed -n 's/.*+\(cu[0-9][0-9]*\).*/\1/p' ;;
+        *+rocm*)    echo "rocm" ;;
+        *+cpu*)     echo "cpu" ;;
+        "")         echo "" ;;
+        *)          echo "cpu" ;;
+    esac
+}
+
+# Expected flavor tag for the selected index URL ($1): cuXXX / cpu / rocm.
+# Empty for an unrecognized leaf (e.g. an odd UNSLOTH_PYTORCH_MIRROR) so the
+# repair safely no-ops rather than misfiring.
+_expected_torch_flavor_tag() {
+    _u="${1%/}"
+    _leaf="${_u##*/}"
+    case "$_leaf" in
+        cu[0-9]*) echo "$_leaf" ;;
+        cpu)      echo "cpu" ;;
+        rocm*)    echo "rocm" ;;
+        *)        echo "" ;;
+    esac
+}
+
 get_radeon_wheel_url() {
     # Only meaningful on Linux. Picks a repo.radeon.com base URL whose listing
     # contains torch wheels. Tries paths like rocm-rel-7.2.1/, rocm-rel-7.2/,
@@ -2359,6 +2387,32 @@ else
             "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo"
     else
         run_install_cmd "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" --torch-backend=auto -- "$PACKAGE_NAME"
+    fi
+fi
+
+# ── Enforce the installed torch flavor matches the detected CUDA build ──
+# uv keeps an already-installed torch==X+cpu when resolving "$TORCH_CONSTRAINT"
+# from a CUDA index, because PEP 440 ignores the +cpu/+cuXXX local label when
+# matching a public version range. So a stale CPU wheel survives the install
+# above and the venv silently trains on CPU (the migrated branch never reinstalls
+# torch either). Detect a flavor mismatch and force the correct wheel triplet from
+# the selected index. Skipped for --no-torch, ROCm (its own repair force-
+# reinstalls), and CPU-only / macOS hosts (expected == installed, so a no-op).
+if [ "$SKIP_TORCH" = false ] && [ -n "${TORCH_INDEX_URL:-}" ]; then
+    _expected_torch_tag=$(_expected_torch_flavor_tag "$TORCH_INDEX_URL")
+    if [ -n "$_expected_torch_tag" ] && [ "$_expected_torch_tag" != "rocm" ]; then
+        _installed_torch_ver=$("$_VENV_PY" -c "import torch; print(torch.__version__)" 2>/dev/null || true)
+        _installed_torch_tag=""
+        if [ -n "$_installed_torch_ver" ]; then
+            _installed_torch_tag=$(_torch_flavor_tag "$_installed_torch_ver")
+        fi
+        if [ -n "$_installed_torch_tag" ] && [ "$_installed_torch_tag" != "$_expected_torch_tag" ]; then
+            substep "PyTorch flavor mismatch (installed $_installed_torch_tag, need $_expected_torch_tag) -- reinstalling correct build..."
+            run_install_cmd "reinstall PyTorch ($_expected_torch_tag)" uv pip install --python "$_VENV_PY" \
+                "$TORCH_CONSTRAINT" torchvision torchaudio \
+                --index-url "$TORCH_INDEX_URL" \
+                --reinstall-package torch --reinstall-package torchvision --reinstall-package torchaudio
+        fi
     fi
 fi
 
