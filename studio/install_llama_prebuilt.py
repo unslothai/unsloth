@@ -3477,14 +3477,19 @@ def windows_cuda_attempts(
 
 
 def _windows_cuda_attempt_covers_blackwell(attempt: AssetChoice) -> bool:
-    """True if an in-release windows-cuda attempt is built with a toolkit that
-    covers Blackwell sm_120 (>= 12.8), read from its asset name's CUDA minor."""
+    """True if an in-release windows-cuda attempt yields a Blackwell sm_120
+    capable build. The fork's app-named bundles declare their SM coverage
+    directly; legacy upstream-named bundles instead encode their CUDA toolkit
+    minor in the filename (covers Blackwell at toolkit >= 12.8)."""
     if attempt.install_kind != "windows-cuda":
         return False
+    # Legacy upstream-named bundles encode their toolkit minor; it is the binding
+    # constraint (a 12.4 toolkit cannot offload sm_120 whatever its metadata says).
     m = re.search(r"-bin-win-cuda-(\d+)\.(\d+)-x64\.zip$", attempt.name)
-    return (
-        m is not None and (int(m.group(1)), int(m.group(2))) >= _BLACKWELL_MIN_TOOLKIT
-    )
+    if m is not None:
+        return (int(m.group(1)), int(m.group(2))) >= _BLACKWELL_MIN_TOOLKIT
+    # App-named bundles carry no minor and declare their SM coverage directly.
+    return attempt.max_sm is not None and attempt.max_sm >= _BLACKWELL_MIN_SM
 
 
 def _pinned_windows_cuda_fallback(
@@ -3724,6 +3729,11 @@ def published_windows_cuda_attempts(
                 runtime_line = runtime_line,
                 runtime_name = runtime_archive_name,
                 runtime_url = runtime_archive_url,
+                bundle_profile = artifact.bundle_profile,
+                coverage_class = artifact.coverage_class,
+                supported_sms = artifact.supported_sms,
+                min_sm = artifact.min_sm,
+                max_sm = artifact.max_sm,
                 selection_log = attempt_log,
             )
         )

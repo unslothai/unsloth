@@ -2280,6 +2280,47 @@ class TestPinnedBlackwellCudaFallback:
         )
         assert _windows_cuda_attempt_covers_blackwell(cpu) is False
 
+    def _app_attempt(self, profile, runtime_line, max_sm):
+        # The fork's app-named windows-cuda bundle: no toolkit minor in the name,
+        # SM coverage declared directly (as published_windows_cuda_attempts sets it).
+        return AssetChoice(
+            repo = UPSTREAM_REPO,
+            tag = self.TAG,
+            name = f"app-{self.TAG}-windows-x64-{runtime_line}-{profile}.zip",
+            url = "https://example.com/x",
+            source_label = "published",
+            install_kind = "windows-cuda",
+            runtime_line = runtime_line,
+            coverage_class = "newer" if profile == "newer" else profile,
+            max_sm = max_sm,
+            min_sm = 80,
+            supported_sms = ["120"] if max_sm >= 120 else ["86", "89"],
+        )
+
+    @pytest.mark.parametrize(
+        "profile, runtime_line, max_sm, covers",
+        [
+            ("newer", "cuda13", 120, True),   # native Blackwell build
+            ("newer", "cuda12", 120, True),   # 12.8 toolkit app bundle reaches sm120
+            ("older", "cuda12", 89, False),   # 12.4 toolkit app bundle stops at Ada
+        ],
+    )
+    def test_attempt_covers_blackwell_app_bundle(
+        self, profile, runtime_line, max_sm, covers
+    ):
+        # App-named bundles carry no toolkit minor; coverage is read from max_sm.
+        attempt = self._app_attempt(profile, runtime_line, max_sm)
+        assert _windows_cuda_attempt_covers_blackwell(attempt) is covers
+
+    def test_pin_dormant_when_app_bundle_covers_blackwell(self):
+        # Regression: the fork's app-named cuda13 bundle covers Blackwell, so the
+        # b9360 pin must retire instead of being prepended ahead of the native
+        # in-release build (previously the coverage check only matched legacy
+        # -bin-win-cuda-X.Y-x64.zip names, so the pin never went dormant).
+        host = self._win_host((13, 1), ["120"])
+        existing = [self._app_attempt("newer", "cuda13", 120)]
+        assert _pinned_windows_cuda_fallback(host, existing) is None
+
 
 # ===========================================================================
 # N.1c. direct_upstream_release_plan -- pinned Blackwell fallback ordering
