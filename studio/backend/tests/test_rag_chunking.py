@@ -23,6 +23,17 @@ def test_chunk_token_bounds_and_overlap():
     assert shared == 24  # exactly overlap tokens carried
 
 
+def test_chunk_never_exceeds_max_with_overlap_carry():
+    """A small piece then a near-max piece must not produce a chunk over
+    max_tokens: the overlap carry is trimmed to fit (else the embedder overflows)."""
+    s1 = " ".join("a" for _ in range(10))  # 10 tokens
+    s2 = " ".join("b" for _ in range(95))  # 95 tokens, near max
+    chunks = chunk_pages(
+        [_page(f"{s1}. {s2}")], max_tokens = 100, overlap = 24, count = WORDS
+    )
+    assert all(c.token_count <= 100 for c in chunks), [c.token_count for c in chunks]
+
+
 def test_chunk_indices_are_sequential():
     chunks = chunk_pages(
         [_page("alpha. " * 200)], max_tokens = 32, overlap = 0, count = WORDS

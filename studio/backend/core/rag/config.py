@@ -9,7 +9,10 @@ from __future__ import annotations
 import os
 
 EMBEDDING_MODEL = os.environ.get("RAG_EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5")
-CHUNK_TOKENS = int(os.environ.get("RAG_CHUNK_TOKENS", "512"))
+# Below bge's 512 hard limit with headroom for the 2 special tokens ([CLS]/[SEP])
+# the embedder adds: a 512-token chunk becomes 514 and overflows (llama-server
+# 500s; sentence-transformers silently truncates). Keep this <= embedder_max - ~12.
+CHUNK_TOKENS = int(os.environ.get("RAG_CHUNK_TOKENS", "500"))
 CHUNK_OVERLAP = int(os.environ.get("RAG_CHUNK_OVERLAP", "64"))
 TOP_K_LEXICAL = int(os.environ.get("RAG_TOP_K_LEXICAL", "30"))
 TOP_K_DENSE = int(os.environ.get("RAG_TOP_K_DENSE", "30"))
