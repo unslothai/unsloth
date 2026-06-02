@@ -384,7 +384,9 @@ def find_none_chatml(dataset: Dataset, col: str = None) -> dict:
             if "from" in turn:
                 content = turn.get("value")
             else:
-                content = turn.get("content") if "content" in turn else turn.get("value")
+                content = (
+                    turn.get("content") if "content" in turn else turn.get("value")
+                )
             # Valid OpenAI tool-calling assistant turns carry empty content
             # plus a populated tool_calls array — these are not bad data.
             # Limit the exemption to assistant role: non-assistant turns
@@ -663,9 +665,7 @@ def scan_dataset(dataset: Dataset, fmt: str = "auto") -> dict:
     # gptoss is detected via `conversations` (because `messages` is metadata
     # strings), find_none_gptoss scans the right column instead of re-grabbing
     # `messages` and producing false positives.
-    use_probed_col = (
-        conv_info is not None and fmt != "alpaca" and was_auto
-    )
+    use_probed_col = conv_info is not None and fmt != "alpaca" and was_auto
     if use_probed_col:
         stats = scanner(dataset, col = conv_info["column"])
     else:
