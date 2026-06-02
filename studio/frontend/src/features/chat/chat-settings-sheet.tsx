@@ -725,7 +725,7 @@ export function ChatSettingsPanel({
     <>
       <div
         ref={settingsScrollRef}
-        className="relative h-full overflow-y-auto"
+        className="run-settings-scroll relative h-full overflow-y-auto"
       >
       <div className="sticky top-0 z-10 flex h-[48px] items-start gap-2 bg-panel-surface pl-[18px] pr-[16px] pt-[11px]">
         {isMobile ? (

@@ -46,7 +46,6 @@ import { useAnimatedThemeToggle } from "@/components/ui/animated-theme-toggler";
 import { cn } from "@/lib/utils";
 import {
   ChefHatIcon,
-  ColumnInsertIcon,
   CursorInfo02Icon,
   Delete02Icon,
   DownloadSquare01Icon,
@@ -753,25 +752,6 @@ export function AppSidebar() {
               }
               disabled={chatDisabled}
               onClick={() => openNewChat(null)}
-            />
-            <NavItem
-              icon={ColumnInsertIcon}
-              label={t("shell.navigation.compare")}
-              active={
-                !!search.compare &&
-                !chatItems.some((i) => i.id === search.compare)
-              }
-              disabled={chatDisabled}
-              dataTour="chat-compare"
-              onClick={() => {
-                if (chatDisabled) return;
-                setActiveThreadId(null);
-                navigate({
-                  to: "/chat",
-                  search: { compare: createNavigationNonce() },
-                });
-                closeMobileIfOpen();
-              }}
             />
             <NavItem
               icon={Search01Icon}

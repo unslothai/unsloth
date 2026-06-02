@@ -632,7 +632,8 @@ const Composer: FC<{
     toolsEnabled ||
     codeToolsEnabled ||
     imageToolsEnabled ||
-    artifactsEnabled;
+    artifactsEnabled ||
+    mcpEnabledForChat;
   // react-textarea-autosize re-measures only on value change or window resize,
   // not on the width swap from expanding, so it keeps the taller height and
   // leaves a stray blank row. Nudge a resize whenever the input width changes.

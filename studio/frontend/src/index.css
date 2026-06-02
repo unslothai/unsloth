@@ -1657,6 +1657,44 @@
 	background: oklch(0.72 0 0 / 0.5);
 }
 
+/* Both sidebars: hide the scroll thumb at rest and reveal it only while the
+   sidebar is hovered, so the rail never sits visible over the content. */
+.sidebar-scroll-fade,
+.run-settings-scroll {
+	scrollbar-color: transparent transparent;
+}
+
+.sidebar-scroll-fade::-webkit-scrollbar-thumb,
+.run-settings-scroll::-webkit-scrollbar-thumb {
+	background: transparent;
+}
+
+.sidebar-scroll-fade:hover,
+.run-settings-scroll:hover {
+	scrollbar-color: oklch(0.5 0 0 / 0.4) transparent;
+}
+
+.sidebar-scroll-fade:hover::-webkit-scrollbar-thumb,
+.run-settings-scroll:hover::-webkit-scrollbar-thumb {
+	background: oklch(0.5 0 0 / 0.4);
+}
+
+.dark .sidebar-scroll-fade:hover,
+.dark .run-settings-scroll:hover {
+	scrollbar-color: oklch(0.72 0 0 / 0.4) transparent;
+}
+
+.dark .sidebar-scroll-fade:hover::-webkit-scrollbar-thumb,
+.dark .run-settings-scroll:hover::-webkit-scrollbar-thumb {
+	background: oklch(0.72 0 0 / 0.4);
+}
+
+/* Run settings: always reserve the scrollbar gutter so the header close
+   button keeps its position whether or not the scrollbar is showing. */
+.run-settings-scroll {
+	scrollbar-gutter: stable;
+}
+
 /* Chat viewport: solid track matching sidebar so the scrollbar reads as a
    full-height rail flush to the right edge, without a separate decorative strip. */
 .aui-thread-viewport {

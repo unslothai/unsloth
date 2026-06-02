@@ -1788,8 +1788,7 @@ export function ChatPage(): ReactElement {
     () => setSettingsOpen(false),
     [setSettingsOpen],
   );
-  const { setPinned, isMobile } = useSidebar();
-  const openSidebar = useCallback(() => setPinned(true), [setPinned]);
+  const { isMobile } = useSidebar();
 
   const enterCompare = useCallback(() => {
     viewBeforeCompareRef.current = { ...search };
@@ -2062,7 +2061,6 @@ export function ChatPage(): ReactElement {
         closeModelSelector,
         openSettings,
         closeSettings,
-        openSidebar,
         enterCompare,
         exitCompare,
       }),
@@ -2074,7 +2072,6 @@ export function ChatPage(): ReactElement {
       exitCompare,
       openModelSelector,
       openSettings,
-      openSidebar,
     ],
   );
 
