@@ -212,9 +212,7 @@ export function accessErrorMessage(raw: string): string | null {
     lower.includes("unauthorized") ||
     lower.includes("forbidden") ||
     lower.includes("gated") ||
-    lower.includes("private") ||
-    lower.includes("repository not found") ||
-    lower.includes("not found");
+    lower.includes("repository not found");
   if (!hasAccessSignal) return null;
   return "Couldn't access this Hugging Face repo with the token used for this download. Update the HF token and restart the download, or delete the partial download if you no longer need it.";
 }

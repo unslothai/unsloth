@@ -8,6 +8,7 @@ Main FastAPI application for Unsloth UI Backend
 import os
 import sys
 from pathlib import Path as _Path
+import asyncio
 
 # Suppress annoying C-level dependency warnings globally
 os.environ["PYTHONWARNINGS"] = "ignore"
@@ -418,7 +419,9 @@ async def lifespan(app: FastAPI):
         app.state.bootstrap_password = storage.get_bootstrap_password()
     yield
     # Cleanup
-    terminate_hub_downloads()
+    import asyncio
+
+    await asyncio.to_thread(terminate_hub_downloads)
     _hw_module.DEVICE = None
     clear_unsloth_compiled_cache()
 
@@ -815,8 +818,6 @@ async def shutdown_server(
     Called by the frontend quit dialog so users can stop the server from the UI
     without needing to use the CLI or kill the process manually.
     """
-    import asyncio
-
     async def _delayed_shutdown():
         await asyncio.sleep(0.2)  # Let the HTTP response return first
         trigger = getattr(request.app.state, "trigger_shutdown", None)

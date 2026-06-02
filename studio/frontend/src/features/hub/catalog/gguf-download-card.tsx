@@ -13,14 +13,11 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import {
-  type DownloadJob,
-  type DownloadJobProgress,
-  type ManagedDownload,
   downloadManager,
   useDownloadManagerStore,
   useRepoDownload,
 } from "../download-manager";
-import { deleteCachedModel, type GgufVariantDetail } from "../inventory";
+import { deleteCachedModel } from "../inventory";
 import { formatBytes } from "../lib/format";
 import { type GgufFitClass, classifyGgufFit } from "../lib/gguf-fit";
 import { HUB_POST_DOWNLOAD_ACTIONS_VISIBLE } from "../lib/hub-feature-flags";
@@ -52,6 +49,15 @@ import {
   DeleteConfirmDialog,
   DownloadCard,
 } from "./download-card";
+import {
+  activeDownloadState,
+  applyLiveGgufVariantStates,
+  createLiveGgufVariantStatesSelector,
+} from "./gguf-live-variant-states";
+import {
+  GgufDownloadStatusCard,
+  GgufDownloadingFallbackCard,
+} from "./gguf-status-cards";
 import type { InventoryHint } from "../inventory";
 import { PathInfoButton } from "./path-info-button";
 import { useDeleteConfirmAction } from "./use-delete-confirm-action";
@@ -102,203 +108,6 @@ const CHIP_DEFAULT =
   "border-foreground/15 bg-muted text-foreground/85 dark:border-border/60 dark:bg-white/[0.04] dark:text-foreground/85";
 const CHIP_ACTIVE =
   "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300";
-
-type LiveGgufVariantState = {
-  state: ManagedDownload["state"];
-  expectedBytes: number;
-  startedAt: number;
-};
-
-function activeDownloadState(state: ManagedDownload["state"] | undefined): boolean {
-  return state === "running" || state === "cancelling";
-}
-
-function terminalPartialState(state: ManagedDownload["state"] | undefined): boolean {
-  return state === "cancelled" || state === "error";
-}
-
-function createLiveGgufVariantStatesSelector(repoId: string): (state: {
-  jobs: Record<string, ManagedDownload>;
-}) => Map<string, LiveGgufVariantState> {
-  const repoKey = repoId.trim().toLowerCase();
-  let cache: { signature: string; states: Map<string, LiveGgufVariantState> } = {
-    signature: "",
-    states: new Map(),
-  };
-  return (state) => {
-    const entries: Array<[string, LiveGgufVariantState]> = [];
-    for (const job of Object.values(state.jobs)) {
-      if (job.kind !== "model" || !job.variant) continue;
-      if (job.repoId.trim().toLowerCase() !== repoKey) continue;
-      const live =
-        activeDownloadState(job.state) ||
-        (terminalPartialState(job.state) &&
-          Math.max(job.downloadedBytes, job.completedBytes) > 0);
-      if (!live) continue;
-      entries.push([
-        normalizeGgufVariantIdentity(job.variant),
-        {
-          state: job.state,
-          expectedBytes: job.expectedBytes,
-          startedAt: job.startedAt,
-        },
-      ]);
-    }
-    entries.sort(([left], [right]) => left.localeCompare(right));
-    const signature = entries
-      .map(
-        ([variant, live]) =>
-          `${variant}\u0001${live.state}\u0001${live.expectedBytes}\u0001${live.startedAt}`,
-      )
-      .join("\u0002");
-    if (signature === cache.signature) return cache.states;
-    cache = { signature, states: new Map(entries) };
-    return cache.states;
-  };
-}
-
-function applyLiveGgufVariantStates(
-  variants: readonly GgufVariantDetail[],
-  liveStates: ReadonlyMap<string, LiveGgufVariantState>,
-): GgufVariantDetail[] {
-  return variants.map((variant) => {
-    const live = liveStates.get(normalizeGgufVariantIdentity(variant.quant));
-    if (!live) return variant;
-    const livePartial =
-      activeDownloadState(live.state) || terminalPartialState(live.state);
-    const expectedBytes = Math.max(
-      live.expectedBytes,
-      variant.download_size_bytes ?? 0,
-      variant.size_bytes,
-    );
-    return {
-      ...variant,
-      downloaded: livePartial ? false : variant.downloaded,
-      partial: livePartial || variant.partial,
-      size_bytes: expectedBytes > 0 ? expectedBytes : variant.size_bytes,
-      download_size_bytes:
-        expectedBytes > 0 ? expectedBytes : variant.download_size_bytes,
-    };
-  });
-}
-
-function GgufDownloadStatusCard({
-  job,
-  message,
-  tone = "muted",
-  loading = false,
-  partial = false,
-  actionLabel,
-  onAction,
-}: {
-  job: DownloadJob;
-  message: string;
-  tone?: "muted" | "danger";
-  loading?: boolean;
-  partial?: boolean;
-  actionLabel?: string;
-  onAction?: () => void;
-}) {
-  return (
-    <div className="flex w-full flex-col gap-2">
-      <DownloadCard job={job} progress={null}>
-        <div className="relative flex h-9 min-w-0 flex-1 items-center pl-3 pr-2">
-          <span
-            className={cn(
-              "flex min-w-0 items-center gap-2 text-[12.5px]",
-              tone === "danger" ? "text-destructive" : "text-muted-foreground",
-            )}
-          >
-            {loading && <Spinner className="size-3.5 shrink-0" />}
-            {partial && <DotTag tone="warning" label="Partial" />}
-            <span className="truncate">{message}</span>
-          </span>
-        </div>
-        <CardDivider />
-        {actionLabel && onAction ? (
-          <button
-            type="button"
-            onClick={onAction}
-            className="hub-action-btn w-28"
-          >
-            {actionLabel}
-          </button>
-        ) : (
-          <button
-            type="button"
-            disabled
-            className="hub-action-btn w-28 opacity-70"
-          >
-            {loading ? (
-              <>
-                <Spinner />
-                Loading
-              </>
-            ) : (
-              "Unavailable"
-            )}
-          </button>
-        )}
-      </DownloadCard>
-    </div>
-  );
-}
-
-/**
- * Shown when a download is in flight but the variant list isn't loaded yet (or
- * failed). The live job stays the source of truth so the progress bar + cancel
- * keep working across a remount (On Device tab, page refresh) instead of being
- * replaced by the "Loading…/Unavailable" variant-status card, which would hide
- * progress the download panel is still reporting.
- */
-function GgufDownloadingFallbackCard({
-  job,
-  progress,
-  cancelling,
-}: {
-  job: DownloadJob;
-  progress: DownloadJobProgress;
-  cancelling: boolean;
-}) {
-  const progressPercent = Math.round(Math.min(progress.fraction, 1) * 100);
-  return (
-    <div className="flex w-full flex-col gap-2">
-      <DownloadCard job={job} progress={progress}>
-        <div className="relative flex h-9 min-w-0 flex-1 items-center pl-3 pr-2">
-          <span className="flex min-w-0 items-center gap-2 text-[12.5px] text-muted-foreground">
-            {progress.variant && <DotTag tone="gguf" label={progress.variant} />}
-            <span className="truncate">Downloading...</span>
-          </span>
-        </div>
-        <CardDivider />
-        <button
-          type="button"
-          disabled={cancelling}
-          onClick={() => void job.cancelDownload(progress.variant)}
-          aria-label={cancelling ? "Cancelling..." : "Cancel download"}
-          className={cn(
-            "hub-action-btn w-28",
-            cancelling
-              ? "opacity-70"
-              : "hover:bg-rose-500/10 hover:text-rose-600 dark:hover:text-rose-400",
-          )}
-        >
-          {cancelling ? (
-            <span className="inline-flex items-center gap-2 text-muted-foreground">
-              <Spinner />
-              Cancelling...
-            </span>
-          ) : (
-            <span className="inline-flex items-center gap-2">
-              <DownloadCancelIndicator />
-              {progressPercent}%
-            </span>
-          )}
-        </button>
-      </DownloadCard>
-    </div>
-  );
-}
 
 function QuantBadge({
   quant,
@@ -556,7 +365,7 @@ export function GgufDownloadCard({
       <GgufDownloadStatusCard
         job={job}
         loading
-        message="Loading available quantizations..."
+        message="Loading available quantizations…"
       />
     );
   }
@@ -849,7 +658,7 @@ export function GgufDownloadCard({
           ) : downloadAction.starting ? (
             <span className="inline-flex items-center gap-2">
               <Spinner />
-              Starting...
+              Starting…
             </span>
           ) : isLoadingThisModel ? (
             <span className="inline-flex items-center gap-2">

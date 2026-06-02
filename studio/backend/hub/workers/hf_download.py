@@ -175,61 +175,52 @@ def _hf_token_arg(hf_token: str | None) -> HfTokenArg:
     return hf_token if hf_token else False
 
 
-def _model_info_with_retry(
-    repo_id: str,
-    hf_token: str | None,
-    *,
-    files_metadata: bool = False,
-):
-    from huggingface_hub import model_info as hf_model_info
-
+def _retry_metadata_fetch(repo_id: str, fetch, *, label: str):
     for attempt, timeout in enumerate(
         (_METADATA_REQUEST_TIMEOUT, _METADATA_RETRY_TIMEOUT)
     ):
         try:
-            kwargs = {"token": _hf_token_arg(hf_token), "timeout": timeout}
-            if files_metadata:
-                kwargs["files_metadata"] = True
-            return hf_model_info(repo_id, **kwargs)
+            return fetch(timeout)
         except Exception as e:
             if attempt == 1:
                 raise
             print(
-                f"Metadata request failed for {repo_id} "
+                f"{label} request failed for {repo_id} "
                 f"({type(e).__name__}: {e}); retrying.",
                 file = sys.stderr,
             )
             time.sleep(_METADATA_RETRY_DELAY)
-    raise RuntimeError(f"Metadata unavailable for {repo_id}")
+    raise RuntimeError(f"{label} unavailable for {repo_id}")
 
 
-def _dataset_info_with_retry(
-    repo_id: str,
-    hf_token: str | None,
-    *,
-    files_metadata: bool = False,
-):
+def _model_info_with_retry(repo_id: str, hf_token: str | None):
+    from huggingface_hub import model_info as hf_model_info
+
+    return _retry_metadata_fetch(
+        repo_id,
+        lambda timeout: hf_model_info(
+            repo_id,
+            token = _hf_token_arg(hf_token),
+            timeout = timeout,
+            files_metadata = True,
+        ),
+        label = "Metadata",
+    )
+
+
+def _dataset_info_with_retry(repo_id: str, hf_token: str | None):
     from huggingface_hub import HfApi
 
     api = HfApi(token = _hf_token_arg(hf_token))
-    for attempt, timeout in enumerate(
-        (_METADATA_REQUEST_TIMEOUT, _METADATA_RETRY_TIMEOUT)
-    ):
-        try:
-            kwargs = {"timeout": timeout}
-            if files_metadata:
-                kwargs["files_metadata"] = True
-            return api.dataset_info(repo_id, **kwargs)
-        except Exception as e:
-            if attempt == 1:
-                raise
-            print(
-                f"Dataset metadata request failed for {repo_id} "
-                f"({type(e).__name__}: {e}); retrying.",
-                file = sys.stderr,
-            )
-            time.sleep(_METADATA_RETRY_DELAY)
-    raise RuntimeError(f"Dataset metadata unavailable for {repo_id}")
+    return _retry_metadata_fetch(
+        repo_id,
+        lambda timeout: api.dataset_info(
+            repo_id,
+            timeout = timeout,
+            files_metadata = True,
+        ),
+        label = "Dataset metadata",
+    )
 
 
 # Tied to drain_stderr_excerpt's 500-byte head/tail window in the parent
@@ -363,16 +354,12 @@ def _snapshot_download_plan(info) -> tuple[list[str], list]:
         ExpectedFile(
             path = s.rfilename,
             size = int(getattr(s, "size", 0) or 0),
-            sha256 = _sibling_sha256(s),
+            sha256 = sibling_sha256(s),
         )
         for s in filtered
         if isinstance(s.rfilename, str)
     ]
     return resolve_snapshot_ignore_patterns_for_files(filenames), expected_files
-
-
-def _sibling_sha256(sibling) -> str | None:
-    return sibling_sha256(sibling)
 
 
 def _dataset_expected_files(info) -> list:
@@ -382,7 +369,7 @@ def _dataset_expected_files(info) -> list:
         ExpectedFile(
             path = s.rfilename,
             size = int(getattr(s, "size", 0) or 0),
-            sha256 = _sibling_sha256(s),
+            sha256 = sibling_sha256(s),
         )
         for s in info.siblings
         if isinstance(s.rfilename, str)
@@ -456,7 +443,7 @@ def _download_snapshot(repo_id: str, hf_token: str | None, mode: str) -> None:
     # post-completion verification + scanner partial detection that the
     # manifest enables.
     try:
-        info = _model_info_with_retry(repo_id, hf_token, files_metadata = True)
+        info = _model_info_with_retry(repo_id, hf_token)
     except Exception as e:
         print(
             f"metadata unavailable, downloading full snapshot for {repo_id} "
@@ -500,11 +487,7 @@ def _download_snapshot(repo_id: str, hf_token: str | None, mode: str) -> None:
             repo_id,
             snapshot_path,
             mode,
-            fetch_info = lambda: _model_info_with_retry(
-                repo_id,
-                hf_token,
-                files_metadata = True,
-            ),
+            fetch_info = lambda: _model_info_with_retry(repo_id, hf_token),
             expected_files_from_info = lambda recovered: _snapshot_download_plan(
                 recovered
             )[1],
@@ -518,7 +501,7 @@ def _gguf_variant_target_plan(
     hf_token: str | None,
 ) -> GgufVariantPlan | None:
     try:
-        info = _model_info_with_retry(repo_id, hf_token, files_metadata = True)
+        info = _model_info_with_retry(repo_id, hf_token)
     except Exception as e:
         print(
             f"metadata unavailable, cannot resolve GGUF variant '{variant}' "
@@ -650,7 +633,7 @@ def _download_dataset(repo_id: str, hf_token: str | None, mode: str) -> None:
     from hub.utils import download_manifest
 
     try:
-        info = _dataset_info_with_retry(repo_id, hf_token, files_metadata = True)
+        info = _dataset_info_with_retry(repo_id, hf_token)
     except Exception as e:
         print(
             f"dataset metadata unavailable, downloading full dataset for {repo_id} "
@@ -693,11 +676,7 @@ def _download_dataset(repo_id: str, hf_token: str | None, mode: str) -> None:
             repo_id,
             snapshot_path,
             mode,
-            fetch_info = lambda: _dataset_info_with_retry(
-                repo_id,
-                hf_token,
-                files_metadata = True,
-            ),
+            fetch_info = lambda: _dataset_info_with_retry(repo_id, hf_token),
             expected_files_from_info = _dataset_expected_files,
             label = "dataset ",
         )

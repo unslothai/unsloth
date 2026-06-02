@@ -162,11 +162,11 @@ function toPersistedJob(
 // one repo share a key: otherwise a repo can spawn duplicate jobs and listeners
 // keyed under one casing miss events fired under the other. Keys only — the
 // job's `repoId` keeps original casing for display and API calls.
-export function normalizeRepoIdentity(repoId: string): string {
+function normalizeRepoIdentity(repoId: string): string {
   return repoId.trim().toLowerCase();
 }
 
-export function normalizeVariantIdentity(variant: string | null | undefined): string {
+function normalizeVariantIdentity(variant: string | null | undefined): string {
   return variant?.trim().toLowerCase() ?? "";
 }
 
@@ -288,7 +288,7 @@ function withCompletedHintSignature(
   return { ...state, completedHintSignature, completedInventoryHints };
 }
 
-export function isPreferredRepoActiveJob(
+function isPreferredRepoActiveJob(
   candidate: ManagedDownload,
   current: ManagedDownload | null | undefined,
 ): boolean {
@@ -317,7 +317,7 @@ export function findActiveJobForRepo(
   return selected;
 }
 
-export function hasRuntimePeerForRepo(
+function hasRuntimePeerForRepo(
   kind: DownloadKind,
   repoId: string,
   key: string,
@@ -371,7 +371,7 @@ export function hasActiveRepoPeer(
   return hasRuntimePeerForRepo(kind, repoId, key);
 }
 
-export function refreshCompletedHintSignature(): void {
+function refreshCompletedHintSignature(): void {
   setState((state) => withCompletedHintSignature(state));
 }
 
@@ -479,10 +479,6 @@ export function selectActiveJob(
     return job && ACTIVE_STATES.has(job.state) ? job : null;
   }
   return findActiveJobForRepo(state.jobs, kind, repoId);
-}
-
-export function getCompletedInventoryHints(): InventoryHint[] {
-  return getState().completedInventoryHints;
 }
 
 export function clearCompletedInventoryHint(hint: InventoryHint): void {

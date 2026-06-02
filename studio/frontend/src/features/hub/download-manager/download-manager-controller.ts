@@ -28,7 +28,6 @@ import {
 export type { DownloadKind } from "./constants";
 export {
   clearCompletedInventoryHint,
-  getCompletedInventoryHints,
   jobKeyOf,
   repoKeyOf,
   selectActiveJob,

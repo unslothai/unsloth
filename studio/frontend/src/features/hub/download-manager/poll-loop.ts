@@ -2,7 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { invalidateGgufVariantsCache } from "../inventory/api";
-import { disposableTimeoutSignal } from "../lib/abort-signals";
 import { getHfToken } from "../stores/hf-token-store";
 import { bumpInventoryVersion } from "../stores/inventory-events";
 import { toast } from "@/lib/toast";
@@ -27,7 +26,6 @@ import {
   POLL_DEGRADED_MESSAGE,
   POLL_INTERVAL_MS,
   POLL_JITTER_MS,
-  POLL_REQUEST_TIMEOUT_MS,
   PROGRESS_POLL_BACKOFF_INTERVAL_MS,
   PROGRESS_POLL_INTERVAL_MS,
   SPEED_EMA_WEIGHT,
@@ -119,15 +117,10 @@ function scheduleInventoryBump(): void {
   }, INVENTORY_BUMP_DEBOUNCE_MS);
 }
 
-async function withDownloadTimeout<T>(
+function withDownloadTimeout<T>(
   request: (signal: AbortSignal) => Promise<T>,
 ): Promise<T> {
-  const timeout = disposableTimeoutSignal(POLL_REQUEST_TIMEOUT_MS);
-  try {
-    return await request(timeout.signal);
-  } finally {
-    timeout.dispose();
-  }
+  return withPollRequestTimeout(null, request);
 }
 
 export function hasObservedExpectedBytes(job: ManagedDownload): boolean {
@@ -226,7 +219,6 @@ function shouldPollProgress(rt: JobRuntime, force: boolean): boolean {
 }
 
 function markPollSuccess(key: string, rt: JobRuntime): void {
-  rt.consecutivePollFailures = 0;
   rt.pollFailureStartedAt = null;
   const job = getState().jobs[key];
   if (job?.error === POLL_DEGRADED_MESSAGE && ACTIVE_STATES.has(job.state)) {
@@ -236,7 +228,6 @@ function markPollSuccess(key: string, rt: JobRuntime): void {
 
 function markPollFailure(key: string, rt: JobRuntime): void {
   const now = Date.now();
-  rt.consecutivePollFailures += 1;
   rt.pollFailureStartedAt ??= now;
   if (now - rt.pollFailureStartedAt < POLL_DEGRADED_AFTER_MS) return;
   rt.speedSample = null;
@@ -636,7 +627,6 @@ export async function startJob(
     speedSample: null,
     idleSinceMs: null,
     lastProgressPollAt: null,
-    consecutivePollFailures: 0,
     pollFailureStartedAt: null,
     visibilityListener: null,
   };

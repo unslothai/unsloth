@@ -22,7 +22,6 @@ export {
   __resetDownloadManagerForTests,
   clearCompletedInventoryHint,
   downloadManager,
-  getCompletedInventoryHints,
   hydrateDownloadManager,
   jobKeyOf,
   repoKeyOf,

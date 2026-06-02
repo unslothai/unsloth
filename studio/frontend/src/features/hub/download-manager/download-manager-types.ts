@@ -67,7 +67,6 @@ export interface JobRuntime {
   speedSample: { bytes: number; tMs: number } | null;
   idleSinceMs: number | null;
   lastProgressPollAt: number | null;
-  consecutivePollFailures: number;
   pollFailureStartedAt: number | null;
   visibilityListener: (() => void) | null;
 }
