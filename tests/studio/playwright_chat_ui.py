@@ -1115,7 +1115,27 @@ with sync_playwright() as p:
     step("sidebar nav: New Chat -> Compare -> Search -> Recipes")
     click_nav("New Chat", r"/chat")
     shoot("11-new-chat")
-    click_nav("Compare", r"/chat\?")  # /chat?compare=...
+    # Compare moved into the composer + menu (Tools and attachments).
+    plus_btn = page.get_by_role(
+        "button", name = re.compile(r"Tools and attachments", re.I)
+    ).first
+    if plus_btn.count() > 0:
+        plus_btn.click(force = True)
+        page.wait_for_timeout(400)
+        compare_item = page.get_by_role(
+            "menuitem", name = re.compile(r"Compare chat", re.I)
+        ).first
+        if compare_item.count() > 0:
+            compare_item.click(force = True)
+            page.wait_for_timeout(800)
+            if not re.search(r"/chat\?", page.url):
+                soft_fail(
+                    f"'Compare chat' didn't open compare; current: {page.url}"
+                )
+        else:
+            soft_fail("composer + menu: 'Compare chat' item not found")
+    else:
+        soft_fail("composer + menu: plus button not found")
     shoot("12-compare")
     # Search opens a dialog (not a route change).
     search_btn = page.get_by_role("button", name = re.compile(r"^search$", re.I)).first
