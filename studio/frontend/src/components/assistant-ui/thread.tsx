@@ -24,6 +24,7 @@ import { ToolFallback } from "@/components/assistant-ui/tool-fallback";
 import { ToolGroup } from "@/components/assistant-ui/tool-group";
 import { CodeExecutionToolUI } from "@/components/assistant-ui/tool-ui-code-execution";
 import { ImageGenerationToolUI } from "@/components/assistant-ui/tool-ui-image-generation";
+import { RenderHtmlToolUI } from "@/components/assistant-ui/tool-ui-render-html";
 import { PythonToolUI } from "@/components/assistant-ui/tool-ui-python";
 import { TerminalToolUI } from "@/components/assistant-ui/tool-ui-terminal";
 import { WebSearchToolUI } from "@/components/assistant-ui/tool-ui-web-search";
@@ -43,6 +44,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { sentAudioNames } from "@/features/chat/api/chat-adapter";
 import { parseExternalModelId } from "@/features/chat/external-providers";
+import { McpComposerButton } from "@/features/chat/mcp-composer-button";
 import { getExternalReasoningCapabilities } from "@/features/chat/provider-capabilities";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { useExternalProvidersStore } from "@/features/chat/stores/external-providers-store";
@@ -73,6 +75,7 @@ import {
   ChevronLeftIcon,
   ChevronRightIcon,
   DownloadIcon,
+  FileTextIcon,
   GlobeIcon,
   HeadphonesIcon,
   LightbulbIcon,
@@ -371,7 +374,7 @@ const ThreadWelcome: FC<{
         <div className="aui-thread-welcome-message flex w-full flex-col justify-center gap-6 px-4">
           <div className="flex flex-col items-center gap-2 text-center">
             <img src={currentEmojiSrc} alt="Sloth mascot" className="size-20" />
-            <h1 className="aui-thread-welcome-message-inner fade-in slide-in-from-bottom-1 animate-in font-heading font-semibold text-2xl tracking-[-0.02em] duration-200">
+            <h1 className="aui-thread-welcome-message-inner fade-in slide-in-from-bottom-1 animate-in font-heading font-semibold text-2xl tracking-[0em] duration-200">
               Chat with your model
             </h1>
             <p className="aui-thread-welcome-message-inner fade-in slide-in-from-bottom-1 -mt-1 animate-in font-heading font-normal text-muted-foreground text-sm delay-75 duration-200">
@@ -385,14 +388,30 @@ const ThreadWelcome: FC<{
   );
 };
 
+export const ProjectComposer: FC<{
+  disabled?: boolean;
+  placeholder?: string;
+}> = ({ disabled, placeholder }) => {
+  return (
+    <GeneratedImageOverlayProvider>
+      <ComposerAnimated disabled={disabled} placeholder={placeholder} />
+    </GeneratedImageOverlayProvider>
+  );
+};
+
 const ComposerAnimated: FC<{
   disabled?: boolean;
+  placeholder?: string;
   threadId?: string | null;
-}> = ({ disabled, threadId }) => {
+}> = ({ disabled, placeholder, threadId }) => {
   return (
     <div className="relative mx-auto min-w-0 w-full max-w-(--thread-max-width)">
       <div className="relative z-10 w-full">
-        <Composer disabled={disabled} threadId={threadId} />
+        <Composer
+          disabled={disabled}
+          placeholder={placeholder}
+          threadId={threadId}
+        />
       </div>
     </div>
   );
@@ -424,8 +443,9 @@ const PendingAudioChip: FC = () => {
 
 const Composer: FC<{
   disabled?: boolean;
+  placeholder?: string;
   threadId?: string | null;
-}> = ({ disabled, threadId }) => {
+}> = ({ disabled, placeholder = "Send a message...", threadId }) => {
   const aui = useAui();
   const { overlay, closeOverlay } = useGeneratedImageOverlay();
   const setImageToolsEnabled = useChatRuntimeStore(
@@ -526,9 +546,7 @@ const Composer: FC<{
       <PendingAudioChip />
       <ToolStatusDisplay />
       <ComposerPrimitive.Input
-        placeholder={
-          overlay ? "Type your edits for your image" : "Send a message..."
-        }
+        placeholder={overlay ? "Type your edits for your image" : placeholder}
         className="aui-composer-input composer-input"
         minRows={1}
         maxRows={12}
@@ -972,8 +990,8 @@ const PreserveThinkingToggle: FC = () => {
         disabled
           ? "cursor-not-allowed opacity-40"
           : preserveThinking
-            ? "text-primary hover:bg-primary/10 dark:hover:bg-white/[0.08]"
-            : "hover:bg-primary/10 dark:hover:bg-white/[0.08]",
+            ? "cursor-pointer text-primary hover:bg-primary/10 dark:hover:bg-white/[0.08]"
+            : "cursor-pointer hover:bg-primary/10 dark:hover:bg-white/[0.08]",
       )}
       aria-label={
         preserveThinking ? "Disable preserve think" : "Enable preserve think"
@@ -1117,6 +1135,29 @@ const ImagesToggle: FC = () => {
   );
 };
 
+const ArtifactsToggle: FC = () => {
+  const modelLoaded = useChatRuntimeStore(
+    (s) => !!s.params.checkpoint && !s.modelLoading,
+  );
+  const artifactsEnabled = useChatRuntimeStore((s) => s.artifactsEnabled);
+  const setArtifactsEnabled = useChatRuntimeStore((s) => s.setArtifactsEnabled);
+  const disabled = !modelLoaded;
+
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={() => setArtifactsEnabled(!artifactsEnabled)}
+      className="composer-pill-btn"
+      data-active={artifactsEnabled && !disabled ? "true" : "false"}
+      aria-label={artifactsEnabled ? "Disable artifacts" : "Enable artifacts"}
+    >
+      <FileTextIcon className="size-3.5" />
+      <span>Artifacts</span>
+    </button>
+  );
+};
+
 const ToolStatusDisplay: FC = () => {
   const toolStatus = useChatRuntimeStore((s) => s.toolStatus);
   const isThreadRunning = useAuiState(({ thread }) => thread.isRunning);
@@ -1189,6 +1230,8 @@ const ComposerAction: FC<{
         <WebSearchToggle />
         <CodeToolsToggle />
         <ImagesToggle />
+        <ArtifactsToggle />
+        <McpComposerButton />
       </div>
       <div className="flex items-center gap-1">
         <ComposerPrimitive.If dictation={false}>
@@ -1316,6 +1359,7 @@ const AssistantMessage: FC = () => {
                 terminal: TerminalToolUI,
                 code_execution: CodeExecutionToolUI,
                 image_generation: ImageGenerationToolUI,
+                render_html: RenderHtmlToolUI,
               },
               Fallback: ToolFallback,
             },

@@ -21,7 +21,13 @@ export { useChatSearchStore } from "./stores/chat-search-store";
 export { useChatModelRuntime } from "./hooks/use-chat-model-runtime";
 export { ChatSearchDialog } from "./components/chat-search-dialog";
 export { setTrainingCompareHandoff } from "./lib/training-compare-handoff";
+export type { ProjectRecord } from "./types";
 export { clearAllChats, countAllChats } from "./utils/clear-all-chats";
+export { ArtifactCard } from "./artifacts/artifact-card";
+export {
+  useChatArtifactsStore,
+  useSelectedChatArtifact,
+} from "./artifacts/store";
 export { downloadChatExport } from "./utils/export-chat-history";
 export {
   deleteChatItem,
@@ -29,3 +35,11 @@ export {
   useChatSidebarItems,
   type SidebarItem,
 } from "./hooks/use-chat-sidebar-items";
+export {
+  createChatProject,
+  deleteChatProject,
+  moveChatItemToProject,
+  renameChatProject,
+  updateChatProjectInstructions,
+  useChatProjects,
+} from "./hooks/use-chat-projects";
