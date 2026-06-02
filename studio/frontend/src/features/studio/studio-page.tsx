@@ -177,7 +177,7 @@ export function StudioPage(): ReactElement {
           </div>
         ) : (
           <Tabs value={activeTab} onValueChange={handleTabChange}>
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-3 pb-3">
               {selectedHistoryRunId && activeTab === "history" && (
                 <Button
                   variant="ghost"
