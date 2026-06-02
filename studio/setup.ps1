@@ -388,15 +388,20 @@ function Find-VsBuildTools {
     if (Test-Path $vsw) {
         $info = & $vsw -latest -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property catalog_productLineVersion 2>$null
         $path = & $vsw -latest -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath 2>$null
+        
         if ($info -and $path) {
             $y = $info.Trim()
             $n = $map[$y]
             if ($n) {
                 return @{ Generator = "Visual Studio $n $y"; InstallPath = $path.Trim(); Source = 'vswhere' }
             }
+        } else {
+            Write-Host ""
+            Write-Host "[ERROR] Visual Studio detected, but the C++ compiler is missing." -ForegroundColor Red
+            Write-Host "You must install the 'Desktop development with C++' workload via the Visual Studio Installer to build Unsloth." -ForegroundColor Yellow
+            exit 1
         }
     }
-
     # --- Scan filesystem (handles broken vswhere registration after winget cycles) ---
     $roots = @($env:ProgramFiles, ${env:ProgramFiles(x86)})
     $editions = @('BuildTools', 'Community', 'Professional', 'Enterprise')
@@ -2502,6 +2507,7 @@ if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
             $PSNativeCommandUseErrorActionPreference = $false
             $restoreNativeErrorPreference = $true
         }
+        $env:LOCALAPPDATA = "$env:USERPROFILE\AppData\Local"
         try {
             if ($script:UnslothVerbose) {
                 # Show live output in verbose mode while still capturing for error log
