@@ -225,6 +225,7 @@ def test_build_rag_autoinject_emits_pipeline(monkeypatch):
     from core.inference import tools
     from storage import rag_db
 
+    monkeypatch.setenv("RAG_AUTOINJECT", "1")  # off by default; enable for this test
     monkeypatch.setattr(rag_db, "RAG_AVAILABLE", True, raising = False)
     monkeypatch.setattr(
         tool,
@@ -254,6 +255,7 @@ def test_build_rag_autoinject_skips_without_hit(monkeypatch):
     from core.inference import tools
     from storage import rag_db
 
+    monkeypatch.setenv("RAG_AUTOINJECT", "1")  # enable so we exercise the no-hit path
     monkeypatch.setattr(rag_db, "RAG_AVAILABLE", True, raising = False)
     monkeypatch.setattr(tool, "search_for_autoinject", lambda **k: None)
     assert (
@@ -262,6 +264,44 @@ def test_build_rag_autoinject_skips_without_hit(monkeypatch):
         )
         is None
     )
+
+
+def test_build_rag_autoinject_disabled_by_default(monkeypatch):
+    """No env and no scope toggle -> forced inject is off (docs come via the tool)."""
+    from core.inference import tools
+    from storage import rag_db
+
+    monkeypatch.delenv("RAG_AUTOINJECT", raising = False)
+    monkeypatch.setattr(rag_db, "RAG_AVAILABLE", True, raising = False)
+    monkeypatch.setattr(tool, "search_for_autoinject", lambda **k: ("x", [{"a": 1}]))
+    assert (
+        tools.build_rag_autoinject(
+            [{"role": "user", "content": "hi"}], {"thread_id": "t1"}
+        )
+        is None
+    )
+
+
+def test_build_rag_autoinject_caps_top_k(monkeypatch):
+    """Forced inject uses the lean RAG_AUTOINJECT_TOP_K, capped by a lower user top_k."""
+    from core.inference import tools
+    from storage import rag_db
+
+    monkeypatch.setenv("RAG_AUTOINJECT", "1")
+    monkeypatch.setenv("RAG_AUTOINJECT_TOP_K", "4")
+    monkeypatch.setattr(rag_db, "RAG_AVAILABLE", True, raising = False)
+    seen: dict = {}
+
+    def fake(**k):
+        seen.update(k)
+        return ("x", [{"citationId": 1}])
+
+    monkeypatch.setattr(tool, "search_for_autoinject", fake)
+    conv = [{"role": "user", "content": "q"}]
+    tools.build_rag_autoinject(conv, {"thread_id": "t1"})
+    assert seen["top_k"] == 4  # lean default
+    tools.build_rag_autoinject(conv, {"thread_id": "t1", "default_top_k": 2})
+    assert seen["top_k"] == 2  # a lower user setting still wins
 
 
 def test_build_rag_autoinject_disabled_by_env(monkeypatch):

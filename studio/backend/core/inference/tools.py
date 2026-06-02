@@ -857,11 +857,14 @@ _AUTOINJECT_DEFAULT_FLOOR = 0.55
 
 
 def _autoinject_enabled() -> bool:
-    return os.environ.get("RAG_AUTOINJECT", "1").strip().lower() not in (
-        "0",
-        "false",
-        "no",
-        "",
+    # Off by default: forcing a retrieval every turn can inject weakly-matching
+    # chunks that mislead the answer. The model still pulls docs on demand via the
+    # search_knowledge_base tool; opt back in with RAG_AUTOINJECT=1.
+    return os.environ.get("RAG_AUTOINJECT", "0").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
     )
 
 
@@ -873,6 +876,22 @@ def _autoinject_floor() -> float:
         except ValueError:
             pass
     return _AUTOINJECT_DEFAULT_FLOOR
+
+
+# Forced inject is leaner than the model-driven tool: a handful of chunks usually
+# holds the answer, and injecting the full top_k every turn prefills thousands of
+# extra tokens -- a big latency hit on small machines.
+_AUTOINJECT_DEFAULT_TOP_K = 4
+
+
+def _autoinject_top_k() -> int:
+    raw = os.environ.get("RAG_AUTOINJECT_TOP_K")
+    if raw is not None:
+        try:
+            return max(1, int(raw))
+        except ValueError:
+            pass
+    return _AUTOINJECT_DEFAULT_TOP_K
 
 
 def _last_user_text(conversation: list[dict]) -> str:
@@ -923,7 +942,10 @@ def build_rag_autoinject(
 
     floor_override = rag_scope.get("autoinject_min_score")
     floor = float(floor_override) if floor_override is not None else _autoinject_floor()
-    top_k = rag_scope.get("default_top_k")
+    # Cap the forced inject to the lean auto-inject top_k, but honor a lower user setting.
+    lean_k = _autoinject_top_k()
+    sidebar_k = _opt_int(rag_scope.get("default_top_k"))
+    top_k = min(sidebar_k, lean_k) if sidebar_k is not None else lean_k
     try:
         found = search_for_autoinject(
             query = query,

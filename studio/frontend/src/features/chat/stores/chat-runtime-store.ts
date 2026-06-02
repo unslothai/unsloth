@@ -57,8 +57,10 @@ export type RagMode = "hybrid" | "lexical" | "dense";
 export const DEFAULT_RAG_SOURCE: RagSource = { type: "thread" };
 export const DEFAULT_RAG_MODE: RagMode = "hybrid";
 export const DEFAULT_RAG_TOP_K = 5;
-// Mirror the backend config.py defaults (RAG_AUTOINJECT / config.*).
-export const DEFAULT_RAG_AUTOINJECT = true;
+// Mirror the backend defaults. Auto-inject is off by default: forcing a
+// retrieval every turn can inject weakly-matching chunks that mislead the answer;
+// the model still pulls docs on demand via the search_knowledge_base tool.
+export const DEFAULT_RAG_AUTOINJECT = false;
 export const DEFAULT_RAG_AUTOINJECT_MIN_SCORE = 0.55;
 export const DEFAULT_RAG_MIN_SCORE = 0;
 export const DEFAULT_RAG_RRF_K = 60;
