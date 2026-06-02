@@ -535,19 +535,19 @@ _FULL_REPO_FAMILIES: tuple[DiffusionFamily, ...] = (
         media_kind = "video",
         default_steps = 30,
         default_guidance_scale = 3.0,
-        default_width = 960,
-        default_height = 544,
+        default_width = 768,
+        default_height = 512,
         default_num_frames = 121,
         default_frame_rate = 24.0,
         default_call_kwargs = {
-            # Official LTX 2.3 Comfy workflows use STG + modality
-            # isolation guidance. Diffusers exposes the same guidance
-            # families directly, but not the full Comfy custom sampler
-            # stack, so keep this to the representable high-quality
-            # call kwargs only.
+            # Lightricks/LTX-2 LTX_2_3_PARAMS for the single-stage
+            # base/dev path. The separate high-quality repo pipeline is
+            # two-stage and uses a latent upsampler, distilled LoRA, and
+            # res_2s sampler; do not pretend this one-call Diffusers path
+            # is equivalent to that pipeline.
             "stg_scale": 1.0,
             "modality_scale": 3.0,
-            "guidance_rescale": 0.9,
+            "guidance_rescale": 0.7,
             "audio_guidance_scale": 7.0,
             "audio_stg_scale": 1.0,
             "audio_modality_scale": 3.0,
@@ -577,21 +577,10 @@ _FULL_REPO_FAMILIES: tuple[DiffusionFamily, ...] = (
         media_kind = "video",
         default_steps = 8,
         default_guidance_scale = 1.0,
-        default_width = 960,
-        default_height = 544,
+        default_width = 768,
+        default_height = 512,
         default_num_frames = 121,
         default_frame_rate = 24.0,
-        default_call_kwargs = {
-            "stg_scale": 1.0,
-            "modality_scale": 3.0,
-            "guidance_rescale": 0.9,
-            "audio_guidance_scale": 7.0,
-            "audio_stg_scale": 1.0,
-            "audio_modality_scale": 3.0,
-            "audio_guidance_rescale": 0.7,
-            "spatio_temporal_guidance_blocks": [28],
-            "use_cross_timestep": True,
-        },
         supports_gguf_single_file = True,
         aliases = (
             "ltx2-3-distilled",
