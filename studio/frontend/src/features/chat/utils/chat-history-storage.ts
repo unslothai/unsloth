@@ -37,11 +37,13 @@ import {
 
 // Thread ids that belong to a temporary/incognito session. A thread is
 // tagged once, at creation (ensureThreadRecord, when the toggle is on), and
-// stays tagged for its whole lifetime -- the writers below consult this
-// set, never the live toggle. That decoupling is what makes mid-stream
-// toggling safe: flipping the toggle can neither leak an in-flight incognito
-// run into history nor drop a normal thread's writes. Reads stay ungated so
-// real history still loads while a temporary chat is open.
+// stays tagged for its whole lifetime -- the readers and writers below
+// consult this set, never the live toggle. That decoupling is what makes
+// mid-stream toggling safe: flipping the toggle can neither leak an
+// in-flight incognito run into history nor drop a normal thread's writes.
+// Per-thread reads short-circuit too (nothing is stored to fetch); only the
+// thread list stays ungated, so real history still loads next to a
+// temporary chat.
 const incognitoThreadIds = new Set<string>();
 
 export function markThreadIncognito(threadId: string): void {
@@ -447,6 +449,9 @@ async function importLegacyChatsIfNeeded(): Promise<void> {
 export async function getStoredChatThread(
   threadId: string,
 ): Promise<ThreadRecord | undefined> {
+  // Incognito threads are never stored, so the lookup can only come back
+  // empty -- short-circuit it instead of doing a Dexie read + backend GET.
+  if (isThreadIncognito(threadId)) return undefined;
   if (isChatThreadDeleted(threadId)) return undefined;
   const legacyThread = await db.threads.get(threadId);
   let backendThread: ThreadRecord | null;
@@ -494,6 +499,7 @@ export async function ensureStoredChatThread(
 export async function listStoredChatMessages(
   threadId: string,
 ): Promise<MessageRecord[]> {
+  if (isThreadIncognito(threadId)) return [];
   if (isChatThreadDeleted(threadId)) return [];
   const legacyMessages = await db.messages
     .where("threadId")
@@ -537,6 +543,7 @@ export async function getStoredChatMessage(
   threadId: string,
   messageId: string,
 ): Promise<MessageRecord | undefined> {
+  if (isThreadIncognito(threadId)) return undefined;
   if (isChatThreadDeleted(threadId)) return undefined;
   const legacyMessage = await db.messages.get(messageId);
   const matchingLegacyMessage =
@@ -730,15 +737,19 @@ export async function updateStoredChatThread(
 export async function deleteStoredChatThreads(
   idsToDelete: string[],
 ): Promise<void> {
-  if (idsToDelete.length === 0) return;
-  await deleteChatThreads(idsToDelete);
+  // Incognito threads were never stored, so there's nothing to delete --
+  // drop them to skip the no-op backend DELETE (and the history-refresh
+  // event it would fire) when the active temporary chat is closed.
+  const ids = idsToDelete.filter((id) => !isThreadIncognito(id));
+  if (ids.length === 0) return;
+  await deleteChatThreads(ids);
   await db
     .transaction("rw", db.threads, db.messages, async () => {
-      await db.messages.where("threadId").anyOf(idsToDelete).delete();
-      await db.threads.bulkDelete(idsToDelete);
+      await db.messages.where("threadId").anyOf(ids).delete();
+      await db.threads.bulkDelete(ids);
     })
     .catch(() => undefined);
-  markChatThreadsDeleted(idsToDelete);
+  markChatThreadsDeleted(ids);
 }
 
 export async function countStoredChats(): Promise<number> {
