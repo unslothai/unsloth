@@ -1053,6 +1053,8 @@ export function useChatModelRuntime() {
 
         try {
           await performLoad();
+          // User cancelled mid-refresh; cancelLoading handles teardown.
+          if (abortCtrl.signal.aborted) return;
           if (loadToastDismissedRef.current) {
             toast.success(`${displayName} loaded`);
           } else {
