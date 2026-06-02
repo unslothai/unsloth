@@ -265,9 +265,9 @@ def test_consume_refresh_token_concurrent_only_one_succeeds(tmp_path, monkeypatc
         results = list(pool.map(attempt, range(workers)))
 
     successes = [r for r in results if r is not None]
-    assert len(successes) == 1, (
-        f"expected exactly one consumer to win, got {len(successes)}"
-    )
+    assert (
+        len(successes) == 1
+    ), f"expected exactly one consumer to win, got {len(successes)}"
     assert successes[0] == (storage.DEFAULT_ADMIN_USERNAME, False)
 
 

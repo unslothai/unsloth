@@ -554,6 +554,7 @@ TERMINAL_TOOL = {
     },
 }
 
+
 # Lazy import: don't pull rag stack on inference paths that never see RAG.
 def _get_rag_tool_spec():
     from core.rag.tool import SEARCH_KNOWLEDGE_BASE_TOOL
