@@ -63,6 +63,35 @@ DIFFUSION_OFFLOAD_POLICIES = {
     DIFFUSION_OFFLOAD_POLICY_LESS_AGGRESSIVE,
     DIFFUSION_OFFLOAD_POLICY_HYBRID,
 }
+DIFFUSION_SAFETENSORS_QUANT_NONE = "none"
+DIFFUSION_SAFETENSORS_QUANT_BNB_4BIT = "bitsandbytes_4bit"
+DIFFUSION_SAFETENSORS_QUANT_BNB_4BIT_NF4 = "bitsandbytes_4bit_nf4"
+DIFFUSION_SAFETENSORS_QUANT_BNB_8BIT = "bitsandbytes_8bit"
+DIFFUSION_SAFETENSORS_QUANT_TORCHAO_INT8_WEIGHT_ONLY = "torchao_int8_weight_only"
+DIFFUSION_SAFETENSORS_QUANT_TORCHAO_INT4_WEIGHT_ONLY = "torchao_int4_weight_only"
+DIFFUSION_SAFETENSORS_QUANTS = {
+    DIFFUSION_SAFETENSORS_QUANT_NONE,
+    DIFFUSION_SAFETENSORS_QUANT_BNB_4BIT,
+    DIFFUSION_SAFETENSORS_QUANT_BNB_4BIT_NF4,
+    DIFFUSION_SAFETENSORS_QUANT_BNB_8BIT,
+    DIFFUSION_SAFETENSORS_QUANT_TORCHAO_INT8_WEIGHT_ONLY,
+    DIFFUSION_SAFETENSORS_QUANT_TORCHAO_INT4_WEIGHT_ONLY,
+}
+DIFFUSION_SAFETENSORS_QUANT_DEFAULT_COMPONENTS = (
+    "transformer",
+    "unet",
+    "text_encoder",
+    "text_encoder_2",
+    "text_encoder_3",
+    "pe",
+)
+DIFFUSION_DIFFUSERS_QUANT_COMPONENTS = {"transformer", "unet", "vae"}
+DIFFUSION_TRANSFORMERS_QUANT_COMPONENTS = {
+    "text_encoder",
+    "text_encoder_2",
+    "text_encoder_3",
+    "pe",
+}
 DEFAULT_BALANCED_GGUF_CUDA_CACHE_MIB = 4096
 MID_BALANCED_GGUF_CUDA_CACHE_MIB = 2048
 MIN_BALANCED_GGUF_CUDA_CACHE_TOTAL_MIB = 24 * 1024
@@ -1651,6 +1680,8 @@ def resolve_diffusion_load_plan(
     lora_fuse: bool = False,
     family_override: Optional[str] = None,
     offload_policy: Optional[str] = None,
+    safetensors_quantization: Optional[str] = None,
+    safetensors_quantization_components: Optional[list[str]] = None,
     require_loadable: bool = False,
 ) -> dict[str, Any]:
     """Expand a Studio preset into concrete DiffusionBackend kwargs.
@@ -1665,6 +1696,30 @@ def resolve_diffusion_load_plan(
     if preset_id is None:
         if not repo_id:
             raise ValueError("repo_id is required when preset_id is not set.")
+        normalized_safetensors_quantization = _normalize_safetensors_quantization(
+            safetensors_quantization
+        )
+        normalized_safetensors_quantization_components = (
+            _normalize_safetensors_quantization_components(
+                safetensors_quantization_components
+            )
+        )
+        if (
+            normalized_safetensors_quantization
+            and normalized_safetensors_quantization
+            != DIFFUSION_SAFETENSORS_QUANT_NONE
+            and (
+                gguf_filename
+                or transformer_gguf_filename
+                or text_encoder_gguf_filename
+                or prompt_enhancer_gguf_filename
+            )
+        ):
+            raise ValueError(
+                "safetensors_quantization is only supported for regular "
+                "Diffusers safetensors repos. Omit GGUF component filenames "
+                "or omit safetensors_quantization."
+            )
         load_kwargs = {
             "repo_id": repo_id,
             "gguf_filename": gguf_filename,
@@ -1683,6 +1738,10 @@ def resolve_diffusion_load_plan(
             "lora_fuse": lora_fuse,
             "family_override": family_override,
             "offload_policy": offload_policy,
+            "safetensors_quantization": normalized_safetensors_quantization,
+            "safetensors_quantization_components": (
+                normalized_safetensors_quantization_components
+            ),
         }
         return {
             "preset": None,
@@ -1693,6 +1752,14 @@ def resolve_diffusion_load_plan(
         }
 
     preset = _resolve_diffusion_preset(preset_id)
+    normalized_safetensors_quantization = _normalize_safetensors_quantization(
+        safetensors_quantization
+    )
+    normalized_safetensors_quantization_components = (
+        _normalize_safetensors_quantization_components(
+            safetensors_quantization_components
+        )
+    )
     fam = _family_by_name(preset.family)
     if fam is None:
         raise ValueError(
@@ -1738,6 +1805,21 @@ def resolve_diffusion_load_plan(
     planned_pe_repo = prompt_enhancer_gguf_repo
     if prompt_enhancer_gguf_filename and not planned_pe_repo:
         planned_pe_repo = _default_prompt_enhancer_gguf_repo(fam)
+    if (
+        normalized_safetensors_quantization
+        and normalized_safetensors_quantization != DIFFUSION_SAFETENSORS_QUANT_NONE
+        and (
+            planned_transformer_filename
+            or text_encoder_gguf_filename
+            or prompt_enhancer_gguf_filename
+        )
+    ):
+        raise ValueError(
+            "safetensors_quantization is only supported for regular "
+            "Diffusers safetensors repos. Studio diffusion presets currently "
+            "swap GGUF components, so omit safetensors_quantization for preset "
+            "loads."
+        )
     defaults = _sampling_defaults_for_family(fam, base_repo_variant = preset.variant)
     effective_offload_policy = offload_policy
     if effective_offload_policy is None:
@@ -1768,6 +1850,10 @@ def resolve_diffusion_load_plan(
         "lora_fuse": lora_fuse,
         "family_override": family_override or preset.family,
         "offload_policy": effective_offload_policy,
+        "safetensors_quantization": normalized_safetensors_quantization,
+        "safetensors_quantization_components": (
+            normalized_safetensors_quantization_components
+        ),
     }
     ready_to_load = bool(planned_transformer_filename)
     return {
@@ -2790,6 +2876,22 @@ def _guard_diffusers_optional_bitsandbytes() -> None:
     ] = bnb_quantizer_stub
 
 
+def _require_bitsandbytes_for_safetensors_quantization() -> None:
+    try:
+        with (
+            warnings.catch_warnings(),
+            contextlib.redirect_stdout(io.StringIO()),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            warnings.simplefilter("ignore")
+            import bitsandbytes  # noqa: F401
+    except Exception as exc:
+        raise RuntimeError(
+            "Diffusers bitsandbytes safetensors quantization is unavailable "
+            f"because bitsandbytes failed to import: {exc}"
+        ) from exc
+
+
 def _guard_peft_optional_bitsandbytes() -> None:
     try:
         with (
@@ -2821,6 +2923,176 @@ def _guard_peft_optional_bitsandbytes() -> None:
         if module is not None:
             setattr(module, "is_bnb_available", lambda: False)
             setattr(module, "is_bnb_4bit_available", lambda: False)
+
+
+def _normalize_safetensors_quantization(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    normalized = str(value).strip().lower().replace("-", "_")
+    aliases = {
+        "": None,
+        "false": None,
+        "off": None,
+        "none": DIFFUSION_SAFETENSORS_QUANT_NONE,
+        "bnb4": DIFFUSION_SAFETENSORS_QUANT_BNB_4BIT_NF4,
+        "bnb_4bit": DIFFUSION_SAFETENSORS_QUANT_BNB_4BIT_NF4,
+        "bitsandbytes4bit": DIFFUSION_SAFETENSORS_QUANT_BNB_4BIT_NF4,
+        "bitsandbytes_4bit": DIFFUSION_SAFETENSORS_QUANT_BNB_4BIT,
+        "bitsandbytes_4bit_nf4": DIFFUSION_SAFETENSORS_QUANT_BNB_4BIT_NF4,
+        "bnb8": DIFFUSION_SAFETENSORS_QUANT_BNB_8BIT,
+        "bnb_8bit": DIFFUSION_SAFETENSORS_QUANT_BNB_8BIT,
+        "bitsandbytes8bit": DIFFUSION_SAFETENSORS_QUANT_BNB_8BIT,
+        "bitsandbytes_8bit": DIFFUSION_SAFETENSORS_QUANT_BNB_8BIT,
+        "torchao_int8": DIFFUSION_SAFETENSORS_QUANT_TORCHAO_INT8_WEIGHT_ONLY,
+        "torchao_int8_weight_only": DIFFUSION_SAFETENSORS_QUANT_TORCHAO_INT8_WEIGHT_ONLY,
+        "torchao_int4": DIFFUSION_SAFETENSORS_QUANT_TORCHAO_INT4_WEIGHT_ONLY,
+        "torchao_int4_weight_only": DIFFUSION_SAFETENSORS_QUANT_TORCHAO_INT4_WEIGHT_ONLY,
+    }
+    normalized = aliases.get(normalized, normalized)
+    if normalized is None:
+        return None
+    if normalized not in DIFFUSION_SAFETENSORS_QUANTS:
+        allowed = ", ".join(sorted(DIFFUSION_SAFETENSORS_QUANTS))
+        raise ValueError(f"safetensors_quantization must be one of: {allowed}")
+    return normalized
+
+
+def _normalize_safetensors_quantization_components(
+    components: Optional[list[str] | tuple[str, ...]],
+) -> Optional[list[str]]:
+    if components is None:
+        return None
+    normalized: list[str] = []
+    for component in components:
+        item = str(component).strip()
+        if not item:
+            continue
+        if item not in DIFFUSION_SAFETENSORS_QUANT_DEFAULT_COMPONENTS:
+            allowed = ", ".join(DIFFUSION_SAFETENSORS_QUANT_DEFAULT_COMPONENTS)
+            raise ValueError(
+                "safetensors_quantization_components entries must be one of: "
+                f"{allowed}"
+            )
+        if item not in normalized:
+            normalized.append(item)
+    return normalized or None
+
+
+def _safetensors_quantization_components(
+    components: Optional[list[str] | tuple[str, ...]],
+) -> list[str]:
+    return list(
+        _normalize_safetensors_quantization_components(components)
+        or DIFFUSION_SAFETENSORS_QUANT_DEFAULT_COMPONENTS
+    )
+
+
+def _torchao_weight_only_config(quantization: str) -> Any:
+    from torchao.quantization import Int4WeightOnlyConfig, Int8WeightOnlyConfig
+
+    if quantization == DIFFUSION_SAFETENSORS_QUANT_TORCHAO_INT8_WEIGHT_ONLY:
+        return Int8WeightOnlyConfig()
+    if quantization == DIFFUSION_SAFETENSORS_QUANT_TORCHAO_INT4_WEIGHT_ONLY:
+        return Int4WeightOnlyConfig()
+    raise ValueError(f"Unsupported torchao safetensors quantization: {quantization}")
+
+
+def _build_safetensors_pipeline_quantization_config(
+    diffusers_mod: Any,
+    quantization: Optional[str],
+    components: Optional[list[str] | tuple[str, ...]],
+    dtype: Any,
+) -> tuple[Any, Optional[str], Optional[list[str]]]:
+    """Build a Diffusers pipeline-level quantization config for full repos."""
+
+    normalized = _normalize_safetensors_quantization(quantization)
+    if normalized is None or normalized == DIFFUSION_SAFETENSORS_QUANT_NONE:
+        return None, normalized, None
+
+    selected_components = _safetensors_quantization_components(components)
+    pipeline_quant_config_cls = getattr(diffusers_mod, "PipelineQuantizationConfig", None)
+    if pipeline_quant_config_cls is None:
+        try:
+            from diffusers.quantizers import PipelineQuantizationConfig
+        except Exception as exc:
+            raise RuntimeError(
+                "Diffusers pipeline quantization is unavailable in this runtime. "
+                "Upgrade the Studio torch runtime before loading a quantized "
+                "safetensors diffusion model."
+            ) from exc
+        pipeline_quant_config_cls = PipelineQuantizationConfig
+
+    if normalized in {
+        DIFFUSION_SAFETENSORS_QUANT_BNB_4BIT,
+        DIFFUSION_SAFETENSORS_QUANT_BNB_4BIT_NF4,
+        DIFFUSION_SAFETENSORS_QUANT_BNB_8BIT,
+    }:
+        _require_bitsandbytes_for_safetensors_quantization()
+        if normalized == DIFFUSION_SAFETENSORS_QUANT_BNB_8BIT:
+            return (
+                pipeline_quant_config_cls(
+                    quant_backend = "bitsandbytes_8bit",
+                    quant_kwargs = {"load_in_8bit": True},
+                    components_to_quantize = selected_components,
+                ),
+                normalized,
+                selected_components,
+            )
+        quant_kwargs = {
+            "load_in_4bit": True,
+            "bnb_4bit_compute_dtype": dtype,
+        }
+        if normalized == DIFFUSION_SAFETENSORS_QUANT_BNB_4BIT_NF4:
+            quant_kwargs["bnb_4bit_quant_type"] = "nf4"
+        return (
+            pipeline_quant_config_cls(
+                quant_backend = "bitsandbytes_4bit",
+                quant_kwargs = quant_kwargs,
+                components_to_quantize = selected_components,
+            ),
+            normalized,
+            selected_components,
+        )
+
+    if normalized in {
+        DIFFUSION_SAFETENSORS_QUANT_TORCHAO_INT8_WEIGHT_ONLY,
+        DIFFUSION_SAFETENSORS_QUANT_TORCHAO_INT4_WEIGHT_ONLY,
+    }:
+        try:
+            from transformers import TorchAoConfig as TransformersTorchAoConfig
+        except Exception as exc:
+            raise RuntimeError(
+                "TorchAO safetensors quantization needs transformers with "
+                "TorchAoConfig support."
+            ) from exc
+        diffusers_torchao_config_cls = getattr(diffusers_mod, "TorchAoConfig", None)
+        if diffusers_torchao_config_cls is None:
+            try:
+                from diffusers import TorchAoConfig as DiffusersTorchAoConfig
+            except Exception as exc:
+                raise RuntimeError(
+                    "TorchAO safetensors quantization needs diffusers with "
+                    "TorchAoConfig support."
+                ) from exc
+            diffusers_torchao_config_cls = DiffusersTorchAoConfig
+
+        quant_mapping: dict[str, Any] = {}
+        for component in selected_components:
+            if component in DIFFUSION_DIFFUSERS_QUANT_COMPONENTS:
+                quant_mapping[component] = diffusers_torchao_config_cls(
+                    _torchao_weight_only_config(normalized)
+                )
+            elif component in DIFFUSION_TRANSFORMERS_QUANT_COMPONENTS:
+                quant_mapping[component] = TransformersTorchAoConfig(
+                    _torchao_weight_only_config(normalized)
+                )
+        return (
+            pipeline_quant_config_cls(quant_mapping = quant_mapping),
+            normalized,
+            selected_components,
+        )
+
+    raise ValueError(f"Unsupported safetensors quantization: {normalized}")
 
 
 def _guard_transformers_tokenizers_backend() -> None:
@@ -3060,6 +3332,8 @@ class DiffusionBackend:
         self._gguf_pin_cpu_resident: bool = False
         self._gguf_execution_backend: Optional[str] = None
         self._gguf_prepared_module_counts: dict[str, int] = {}
+        self._safetensors_quantization: Optional[str] = None
+        self._safetensors_quantization_components: Optional[list[str]] = None
         self._load_timings: dict[str, float] = {}
         self._prompt_embedding_cache_key: Optional[tuple[Any, ...]] = None
         self._prompt_embedding_cache_value: Optional[
@@ -3239,6 +3513,12 @@ class DiffusionBackend:
                 "offload_policy": self._offload_policy,
                 "gguf_execution_backend": self._gguf_execution_backend,
                 "gguf_prepared_module_counts": dict(self._gguf_prepared_module_counts),
+                "safetensors_quantization": self._safetensors_quantization,
+                "safetensors_quantization_components": (
+                    list(self._safetensors_quantization_components)
+                    if self._safetensors_quantization_components is not None
+                    else None
+                ),
                 "load_timings": dict(self._load_timings),
                 "device": self._device,
                 "dtype": self._dtype,
@@ -3371,6 +3651,8 @@ class DiffusionBackend:
         offload_policy: Optional[str] = None,
         gguf_quantized_cpu_resident: Optional[bool] = None,
         gguf_pin_cpu_resident: Optional[bool] = None,
+        safetensors_quantization: Optional[str] = None,
+        safetensors_quantization_components: Optional[list[str]] = None,
         ignore_public_load_pending_workload: Optional[str] = None,
     ) -> dict[str, Any]:
         """Load a diffusion model.
@@ -3407,6 +3689,12 @@ class DiffusionBackend:
         ``gguf_pin_cpu_resident`` pins CPU-resident packed GGUF tensors
         so host-to-device copies can use non-blocking transfer. When
         omitted, it follows UNSLOTH_STUDIO_GGUF_PIN_CPU_RESIDENT.
+
+        ``safetensors_quantization`` is only for regular Diffusers
+        safetensors repos. It uses Diffusers pipeline-level
+        quantization to quantize selected components with bitsandbytes
+        or torchao. It is rejected when any GGUF component swap is
+        active because GGUF already owns the transformer/text precision.
 
         ``lora_repo`` optionally points at a Diffusers LoRA adapter repo
         or local path. When provided, the adapter is attached after the
@@ -3508,6 +3796,29 @@ class DiffusionBackend:
         else:
             diffusion_gguf_repo = repo_id if diffusion_gguf_filename else None
             pipeline_repo = base_repo if diffusion_gguf_filename and base_repo else repo_id
+
+        resolved_safetensors_quantization = _normalize_safetensors_quantization(
+            safetensors_quantization
+        )
+        resolved_safetensors_quantization_components = (
+            _normalize_safetensors_quantization_components(
+                safetensors_quantization_components
+            )
+        )
+        if (
+            resolved_safetensors_quantization
+            and resolved_safetensors_quantization != DIFFUSION_SAFETENSORS_QUANT_NONE
+            and (
+                diffusion_gguf_filename
+                or text_encoder_gguf_filename
+                or prompt_enhancer_gguf_filename
+            )
+        ):
+            raise ValueError(
+                "safetensors_quantization is only supported for regular "
+                "Diffusers safetensors repos. Omit it when loading GGUF "
+                "transformer, text encoder, or prompt-enhancer components."
+            )
 
         family_probe_repo = pipeline_repo if explicit_transformer_swap else repo_id
         fam = detect_family(family_probe_repo, override_family = family_override)
@@ -4012,6 +4323,24 @@ class DiffusionBackend:
                             "loading an image GGUF."
                         ) from exc
 
+                pipeline_quant_config = None
+                if (
+                    resolved_safetensors_quantization
+                    and resolved_safetensors_quantization
+                    != DIFFUSION_SAFETENSORS_QUANT_NONE
+                ):
+                    with _load_phase("build_safetensors_quantization_config"):
+                        (
+                            pipeline_quant_config,
+                            resolved_safetensors_quantization,
+                            resolved_safetensors_quantization_components,
+                        ) = _build_safetensors_pipeline_quantization_config(
+                            diffusers,
+                            resolved_safetensors_quantization,
+                            resolved_safetensors_quantization_components,
+                            dtype,
+                        )
+
                 # All cheap failure points (bad gguf_filename, missing
                 # pipeline / transformer class, gated download token,
                 # transient Hub error on the GGUF download) have now
@@ -4099,6 +4428,8 @@ class DiffusionBackend:
                         self._gguf_pin_cpu_resident = False
                         self._gguf_execution_backend = None
                         self._gguf_prepared_module_counts = {}
+                        self._safetensors_quantization = None
+                        self._safetensors_quantization_components = None
                         self._load_timings = {}
                         self._prompt_embedding_cache_key = None
                         self._prompt_embedding_cache_value = None
@@ -4371,6 +4702,8 @@ class DiffusionBackend:
                 elif fam.name.startswith("ernie-image"):
                     pipe_kwargs["pe"] = None
                     pipe_kwargs["pe_tokenizer"] = None
+                if pipeline_quant_config is not None:
+                    pipe_kwargs["quantization_config"] = pipeline_quant_config
                 pipe_kwargs.update(extra_components)
                 if hf_token:
                     pipe_kwargs["token"] = hf_token
@@ -4525,6 +4858,22 @@ class DiffusionBackend:
                     )
                     self._gguf_prepared_module_counts = dict(
                         prepared_gguf_module_counts
+                    )
+                    self._safetensors_quantization = (
+                        resolved_safetensors_quantization
+                        if resolved_safetensors_quantization
+                        != DIFFUSION_SAFETENSORS_QUANT_NONE
+                        else None
+                    )
+                    self._safetensors_quantization_components = (
+                        list(resolved_safetensors_quantization_components)
+                        if (
+                            resolved_safetensors_quantization
+                            and resolved_safetensors_quantization
+                            != DIFFUSION_SAFETENSORS_QUANT_NONE
+                            and resolved_safetensors_quantization_components
+                        )
+                        else None
                     )
                     load_timings["total"] = time.perf_counter() - load_started
                     self._load_timings = {
@@ -4755,6 +5104,8 @@ class DiffusionBackend:
                 self._gguf_pin_cpu_resident = False
                 self._gguf_execution_backend = None
                 self._gguf_prepared_module_counts = {}
+                self._safetensors_quantization = None
+                self._safetensors_quantization_components = None
                 self._load_timings = {}
                 self._prompt_embedding_cache_key = None
                 self._prompt_embedding_cache_value = None

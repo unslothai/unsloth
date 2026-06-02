@@ -2501,6 +2501,10 @@ async def diffusion_load(
         planned_lora_fuse = payload.lora_fuse
         planned_family = payload.family
         planned_offload_policy = payload.offload_policy
+        planned_safetensors_quantization = payload.safetensors_quantization
+        planned_safetensors_quantization_components = (
+            payload.safetensors_quantization_components
+        )
         if payload.preset_id:
             try:
                 from core.inference.diffusion import resolve_diffusion_load_plan
@@ -2525,6 +2529,10 @@ async def diffusion_load(
                     lora_fuse = payload.lora_fuse,
                     family_override = payload.family,
                     offload_policy = payload.offload_policy,
+                    safetensors_quantization = payload.safetensors_quantization,
+                    safetensors_quantization_components = (
+                        payload.safetensors_quantization_components
+                    ),
                     require_loadable = True,
                 )
             except ValueError as exc:
@@ -2547,6 +2555,10 @@ async def diffusion_load(
             planned_lora_fuse = load_kwargs["lora_fuse"]
             planned_family = load_kwargs["family_override"]
             planned_offload_policy = load_kwargs["offload_policy"]
+            planned_safetensors_quantization = load_kwargs["safetensors_quantization"]
+            planned_safetensors_quantization_components = load_kwargs[
+                "safetensors_quantization_components"
+            ]
         resolved_repo_id = (
             _resolve_diffusion_repo_for_request(
                 planned_repo_id,
@@ -2620,6 +2632,10 @@ async def diffusion_load(
                     offload_policy = planned_offload_policy,
                     gguf_quantized_cpu_resident = payload.gguf_quantized_cpu_resident,
                     gguf_pin_cpu_resident = payload.gguf_pin_cpu_resident,
+                    safetensors_quantization = planned_safetensors_quantization,
+                    safetensors_quantization_components = (
+                        planned_safetensors_quantization_components
+                    ),
                     # Round 38 P1: this route already published the
                     # "diffusion" pending marker above; tell the
                     # backend to ignore it so the parity check it
@@ -2752,6 +2768,10 @@ async def diffusion_load_plan(
             lora_fuse = payload.lora_fuse,
             family_override = payload.family,
             offload_policy = payload.offload_policy,
+            safetensors_quantization = payload.safetensors_quantization,
+            safetensors_quantization_components = (
+                payload.safetensors_quantization_components
+            ),
             require_loadable = False,
         )
     except ValueError as exc:

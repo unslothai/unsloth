@@ -1770,6 +1770,40 @@ class DiffusionLoadRequest(BaseModel):
             "use non-blocking transfer. Defaults to UNSLOTH_STUDIO_GGUF_PIN_CPU_RESIDENT."
         ),
     )
+    safetensors_quantization: Optional[
+        Literal[
+            "none",
+            "bitsandbytes_4bit",
+            "bitsandbytes_4bit_nf4",
+            "bitsandbytes_8bit",
+            "torchao_int8_weight_only",
+            "torchao_int4_weight_only",
+        ]
+    ] = Field(
+        None,
+        description = (
+            "Optional regular-safetensors pipeline quantization. Applies only when "
+            "loading a normal Diffusers repo without GGUF component swaps."
+        ),
+    )
+    safetensors_quantization_components: Optional[
+        List[
+            Literal[
+                "transformer",
+                "unet",
+                "text_encoder",
+                "text_encoder_2",
+                "text_encoder_3",
+                "pe",
+            ]
+        ]
+    ] = Field(
+        None,
+        description = (
+            "Optional component slots to quantize for a regular safetensors "
+            "Diffusers repo. Defaults to transformer/unet plus text encoders."
+        ),
+    )
 
     @field_validator(
         "repo_id",
@@ -1788,6 +1822,7 @@ class DiffusionLoadRequest(BaseModel):
         "lora_weight_name",
         "lora_adapter_name",
         "family",
+        "safetensors_quantization",
     )
     @classmethod
     def _no_control_chars(cls, v, info):
@@ -1823,6 +1858,23 @@ class DiffusionLoadRequest(BaseModel):
     def _requires_repo_or_preset(self):
         if not self.repo_id and not self.preset_id:
             raise ValueError("Either repo_id or preset_id is required")
+        return self
+
+    @model_validator(mode = "after")
+    def _safetensors_quantization_requires_full_repo(self):
+        if self.safetensors_quantization in (None, "none"):
+            return self
+        if (
+            self.gguf_filename
+            or self.transformer_gguf_filename
+            or self.text_encoder_gguf_filename
+            or self.prompt_enhancer_gguf_filename
+            or self.preset_id
+        ):
+            raise ValueError(
+                "safetensors_quantization is only supported for regular "
+                "Diffusers safetensors repos without GGUF component swaps."
+            )
         return self
 
     @field_validator("lora_weight_name")

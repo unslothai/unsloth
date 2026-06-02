@@ -97,6 +97,8 @@ class _FakeBackend:
             "gguf_quantized_cpu_resident": False,
             "gguf_pin_cpu_resident": False,
             "offload_policy": None,
+            "safetensors_quantization": None,
+            "safetensors_quantization_components": None,
             "active_repo_id": self._repo,
             "active_base_repo": (
                 "black-forest-labs/FLUX.2-klein" if self._loaded else None
@@ -408,6 +410,8 @@ def test_load_forwards_text_encoder_gguf_fields(app_with_stub):
         "offload_policy": None,
         "gguf_quantized_cpu_resident": True,
         "gguf_pin_cpu_resident": True,
+        "safetensors_quantization": None,
+        "safetensors_quantization_components": None,
         "ignore_public_load_pending_workload": "diffusion",
     }
 
@@ -509,6 +513,28 @@ def test_diffusion_load_plan_allows_preset_before_quant_selection(app_with_stub)
     assert body["preset"]["id"] == "flux.2-dev"
 
 
+def test_diffusion_load_plan_includes_safetensors_quantization(app_with_stub):
+    app, _ = app_with_stub
+    c = TestClient(app)
+
+    r = c.post(
+        "/api/inference/images/load-plan",
+        json = {
+            "repo_id": "owner/my-flux-diffusers",
+            "family": "flux.1",
+            "safetensors_quantization": "bitsandbytes_8bit",
+            "safetensors_quantization_components": ["transformer"],
+        },
+    )
+
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["load_kwargs"]["safetensors_quantization"] == "bitsandbytes_8bit"
+    assert body["load_kwargs"]["safetensors_quantization_components"] == [
+        "transformer",
+    ]
+
+
 def test_diffusion_load_plan_expands_quant_label(app_with_stub):
     app, _ = app_with_stub
     c = TestClient(app)
@@ -594,6 +620,47 @@ def test_load_forwards_offload_policy(app_with_stub):
     assert stub.calls[-1]["enable_model_cpu_offload"] is True
     assert stub.calls[-1]["gguf_quantized_cpu_resident"] is None
     assert stub.calls[-1]["gguf_pin_cpu_resident"] is None
+
+
+def test_load_forwards_safetensors_quantization(app_with_stub):
+    app, stub = app_with_stub
+    c = TestClient(app)
+
+    r = c.post(
+        "/api/inference/images/load",
+        json = {
+            "repo_id": "owner/my-flux-diffusers",
+            "family": "flux.1",
+            "safetensors_quantization": "bitsandbytes_4bit_nf4",
+            "safetensors_quantization_components": [
+                "transformer",
+                "text_encoder_2",
+            ],
+        },
+    )
+    assert r.status_code == 200, r.text
+
+    assert stub.calls[-1]["safetensors_quantization"] == "bitsandbytes_4bit_nf4"
+    assert stub.calls[-1]["safetensors_quantization_components"] == [
+        "transformer",
+        "text_encoder_2",
+    ]
+
+
+def test_load_rejects_safetensors_quantization_with_gguf(app_with_stub):
+    app, _ = app_with_stub
+    c = TestClient(app)
+
+    r = c.post(
+        "/api/inference/images/load",
+        json = {
+            "repo_id": "unsloth/Qwen-Image-Edit-GGUF",
+            "gguf_filename": "qwen-image-edit-Q4_K_M.gguf",
+            "safetensors_quantization": "bitsandbytes_4bit_nf4",
+        },
+    )
+    assert r.status_code == 422, r.text
+    assert "safetensors_quantization" in repr(r.json())
 
 
 def test_generate_rejects_off_grid_size(app_with_stub):

@@ -355,6 +355,8 @@ def test_status_shape_unloaded():
         "offload_policy",
         "gguf_execution_backend",
         "gguf_prepared_module_counts",
+        "safetensors_quantization",
+        "safetensors_quantization_components",
         "load_timings",
         "device",
         "dtype",
@@ -1195,6 +1197,19 @@ def _install_fake_diffusers(monkeypatch, *, raise_on_pipeline = False):
         def __init__(self, compute_dtype = None):
             self.compute_dtype = compute_dtype
 
+    class _FakePipelineQuantizationConfig:
+        def __init__(
+            self,
+            quant_backend = None,
+            quant_kwargs = None,
+            components_to_quantize = None,
+            quant_mapping = None,
+        ):
+            self.quant_backend = quant_backend
+            self.quant_kwargs = quant_kwargs or {}
+            self.components_to_quantize = components_to_quantize
+            self.quant_mapping = quant_mapping
+
     class _FakeTransformer:
         @classmethod
         def from_single_file(cls, path, **kw):
@@ -1279,6 +1294,7 @@ def _install_fake_diffusers(monkeypatch, *, raise_on_pipeline = False):
             self.fuse_calls.append(kwargs)
 
     fake.GGUFQuantizationConfig = _FakeQuantConfig
+    fake.PipelineQuantizationConfig = _FakePipelineQuantizationConfig
     fake.DiffusionPipeline = _FakePipeline
     fake.Flux2KleinPipeline = _FakePipeline
     fake.Flux2Transformer2DModel = _FakeTransformer
@@ -1349,6 +1365,51 @@ def _install_fake_diffusers(monkeypatch, *, raise_on_pipeline = False):
     monkeypatch.setitem(sys.modules, "core.export", fake_export_mod)
 
     return fake
+
+
+def test_load_model_full_repo_uses_safetensors_quantization(monkeypatch):
+    _install_fake_diffusers(monkeypatch)
+    from core.inference.diffusion import get_diffusion_backend
+
+    backend = get_diffusion_backend()
+    status = backend.load_model(
+        "owner/my-flux-diffusers",
+        family_override = "flux.1",
+        safetensors_quantization = "bitsandbytes_4bit_nf4",
+        safetensors_quantization_components = ["transformer", "text_encoder_2"],
+        enable_model_cpu_offload = False,
+    )
+
+    pipe = backend._pipe
+    quant_config = pipe.kwargs["quantization_config"]
+    assert status["is_loaded"] is True
+    assert status["safetensors_quantization"] == "bitsandbytes_4bit_nf4"
+    assert status["safetensors_quantization_components"] == [
+        "transformer",
+        "text_encoder_2",
+    ]
+    assert quant_config.quant_backend == "bitsandbytes_4bit"
+    assert quant_config.quant_kwargs["load_in_4bit"] is True
+    assert quant_config.quant_kwargs["bnb_4bit_quant_type"] == "nf4"
+    assert quant_config.components_to_quantize == [
+        "transformer",
+        "text_encoder_2",
+    ]
+
+
+def test_load_model_rejects_safetensors_quantization_with_gguf(monkeypatch):
+    _install_fake_diffusers(monkeypatch)
+    from core.inference.diffusion import get_diffusion_backend
+
+    backend = get_diffusion_backend()
+    with pytest.raises(ValueError, match = "safetensors_quantization"):
+        backend.load_model(
+            "unsloth/FLUX.2-klein-4B-GGUF",
+            gguf_filename = "flux-2-klein-4b-Q4_K_M.gguf",
+            base_repo = "black-forest-labs/FLUX.2-klein-4B",
+            family_override = "flux.2-klein",
+            safetensors_quantization = "bitsandbytes_4bit_nf4",
+        )
 
 
 def test_load_model_ernie_gguf_uses_state_dict_fallback(monkeypatch):
