@@ -1476,7 +1476,15 @@ const AssistantActionBar: FC = () => {
           onCloseAutoFocus={(e) => e.preventDefault()}
           className="aui-action-bar-more-content z-50 min-w-32 overflow-hidden rounded-md border bg-popover p-1 text-popover-foreground shadow-md"
         >
-          <ActionBarPrimitive.ExportMarkdown asChild={true}>
+          <ActionBarPrimitive.ExportMarkdown
+            asChild={true}
+            // Match Settings -> Chat -> Export's human-readable naming
+            // (``unsloth-chats-YYYY-MM-DD.json``) rather than
+            // assistant-ui's default ``message-<epoch-ms>.md``. The
+            // component re-renders often enough that the date stays
+            // fresh in practice.
+            filename={`unsloth-message-${new Date().toISOString().slice(0, 10)}.md`}
+          >
             <ActionBarMorePrimitive.Item className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground">
               <DownloadIcon strokeWidth={1.75} className="size-icon" />
               Export as Markdown
