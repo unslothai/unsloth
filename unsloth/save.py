@@ -1173,12 +1173,16 @@ def install_llama_cpp_make_non_blocking():
 
     if not IS_CMAKE:
         # Try make clean silently to confirm make still works
-        result = subprocess.run(
-            ["make", "clean", "-C", "llama.cpp"],
-            stdout = subprocess.DEVNULL,
-            stderr = subprocess.DEVNULL,
-        )
-        IS_CMAKE = result.returncode != 0
+        try:
+            result = subprocess.run(
+                ["make", "clean", "-C", "llama.cpp"],
+                stdout = subprocess.DEVNULL,
+                stderr = subprocess.DEVNULL,
+            )
+            IS_CMAKE = result.returncode != 0
+        except FileNotFoundError:
+            # make executable not found, fallback to CMake
+            IS_CMAKE = True
 
     if not IS_CMAKE:
         # Uses old MAKE
