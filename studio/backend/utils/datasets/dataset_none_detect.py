@@ -492,7 +492,10 @@ FORMAT_REGISTRY = [
         # below so None turns in the chat column are caught.
         "match": lambda ds, conv: (
             {"instruction", "output"}.issubset(ds.column_names)
-            and (conv is None or conv.get("all_corrupt"))
+            and (
+                conv is None
+                or (conv.get("all_corrupt") and not conv.get("has_plausible_turns"))
+            )
         ),
         "scan": find_none_alpaca,
     },
@@ -676,7 +679,10 @@ def _print_summary_header(stats: dict, fmt: str) -> bool:
     print(f"  Total rows:   {total}")
 
     if not findings:
-        print(f"  Result:       CLEAN -- no None or empty values found")
+        if fmt == "unknown":
+            print(f"  Result:       NOT SCANNED -- format could not be detected")
+        else:
+            print(f"  Result:       CLEAN -- no None or empty values found")
         print(f"{'=' * 64}")
         return False
 
