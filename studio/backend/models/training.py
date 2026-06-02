@@ -35,7 +35,9 @@ class S3Config(BaseModel):
 
     bucket: str = Field(..., description = "S3 bucket name")
     region: str = Field("us-east-1", description = "AWS region")
-    prefix: Optional[str] = Field(None, description = "Optional path prefix within bucket")
+    prefix: Optional[str] = Field(
+        None, description = "Optional path prefix within bucket"
+    )
     access_key_id: Optional[str] = Field(
         None, description = "AWS access key ID (optional if using IAM role)"
     )
