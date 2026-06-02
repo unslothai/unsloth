@@ -311,11 +311,35 @@ def test_supported_optimization_options_payload_shape():
 
     payload = supported_optimization_options()
     assert set(payload.keys()) == {
+        "recommended_defaults",
         "offload_policies",
         "safetensors_quantizations",
         "safetensors_quantization_components",
         "compile",
     }
+
+    recommended = payload["recommended_defaults"]
+    assert recommended["gguf_image"]["offload_policy"] == "balanced"
+    assert recommended["gguf_image"]["compile_dequant"] is True
+    assert recommended["gguf_image"]["use_balanced_cuda_cache"] is True
+    assert recommended["safetensors_image"]["safetensors_quantization"] == "none"
+    assert recommended["safetensors_image"]["enable_model_cpu_offload"] is False
+    assert (
+        recommended["safetensors_low_vram"]["safetensors_quantization"]
+        == "bitsandbytes_4bit_nf4"
+    )
+    assert recommended["safetensors_low_vram"][
+        "safetensors_quantization_components"
+    ] == ["transformer", "unet"]
+    assert (
+        recommended["safetensors_quality_quantized"][
+            "safetensors_quantization"
+        ]
+        == "torchao_int8_weight_only"
+    )
+    assert recommended["denoiser_torch_compile"]["default_enabled"] is False
+    assert recommended["group_offload"]["image_default"] is False
+    assert recommended["group_offload"]["media_kind"] == "video"
 
     offload_by_name = {
         entry["name"]: entry for entry in payload["offload_policies"]

@@ -2547,6 +2547,74 @@ def supported_optimization_options() -> dict[str, Any]:
         torch_compile_available = False
 
     return {
+        "recommended_defaults": {
+            "gguf_image": {
+                "offload_policy": DIFFUSION_OFFLOAD_POLICY_BALANCED,
+                "compile_dequant": True,
+                "use_balanced_cuda_cache": True,
+                "reason": (
+                    "Best measured default tradeoff for GGUF image models: "
+                    "keeps packed diffusion/text weights quantized, avoids "
+                    "Diffusers full CPU offload, compiles the repeated GGUF "
+                    "dequant block, and caches packed diffusion weights on "
+                    "CUDA when there is enough headroom."
+                ),
+            },
+            "safetensors_image": {
+                "safetensors_quantization": DIFFUSION_SAFETENSORS_QUANT_NONE,
+                "enable_model_cpu_offload": False,
+                "reason": (
+                    "Quality baseline for regular Diffusers safetensors repos. "
+                    "Use model CPU offload or explicit quantization only when "
+                    "the model does not fit or the user chooses a lower-VRAM mode."
+                ),
+            },
+            "safetensors_low_vram": {
+                "safetensors_quantization": DIFFUSION_SAFETENSORS_QUANT_BNB_4BIT_NF4,
+                "safetensors_quantization_components": [
+                    "transformer",
+                    "unet",
+                ],
+                "enable_model_cpu_offload": True,
+                "reason": (
+                    "Lowest practical safetensors VRAM path measured so far, "
+                    "but quality can drift from BF16 and should remain explicit."
+                ),
+            },
+            "safetensors_quality_quantized": {
+                "safetensors_quantization": (
+                    DIFFUSION_SAFETENSORS_QUANT_TORCHAO_INT8_WEIGHT_ONLY
+                ),
+                "safetensors_quantization_components": [
+                    "transformer",
+                    "unet",
+                ],
+                "enable_model_cpu_offload": False,
+                "reason": (
+                    "Optional quantized safetensors path that was closer to "
+                    "BF16 in pixel metrics than BnB NF4, but with weaker "
+                    "speed/VRAM tradeoff."
+                ),
+            },
+            "denoiser_torch_compile": {
+                "default_enabled": False,
+                "reason": (
+                    "Transformer/denoiser compile can improve steady-state "
+                    "throughput, but cold-start cost and CUDA graph compatibility "
+                    "make it an advanced long-session option rather than the "
+                    "default image path."
+                ),
+            },
+            "group_offload": {
+                "image_default": False,
+                "media_kind": "video",
+                "reason": (
+                    "Reserve Diffusers group offload for video-sized memory "
+                    "pressure; image defaults use model CPU offload, quantization, "
+                    "or GGUF residency policies."
+                ),
+            },
+        },
         "offload_policies": [
             {
                 "name": DIFFUSION_OFFLOAD_POLICY_AGGRESSIVE,
