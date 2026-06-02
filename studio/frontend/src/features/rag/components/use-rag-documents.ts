@@ -61,12 +61,16 @@ export function useRagDocuments(
     },
     [],
   );
+  // True while upload() runs. Lets the scope-change effect tell a real context
+  // switch from lazy thread materialization mid-upload (which must not reset).
+  const uploadInFlightRef = useRef(false);
 
   const scopeKey = scope
     ? scope.type === "kb"
       ? `kb:${scope.kbId}`
       : `thread:${scope.threadId}`
     : null;
+  const prevScopeKeyRef = useRef<string | null>(null);
 
   const patchDoc = useCallback(
     (documentId: string, patch: Partial<TrackedDocument>) => {
@@ -177,14 +181,26 @@ export function useRagDocuments(
     }
   }, [scope, lister]);
 
-  // Reset + load on scope change; abort any in-flight job streams.
+  // On scope change: a real switch (thread/KB swap) resets + reloads; first
+  // acquiring a scope just loads. Skip both during lazy thread materialization
+  // mid-upload (scope goes null -> new thread while upload() runs) so we don't
+  // abort the upload's job tracking or wipe its optimistic chips.
   useEffect(() => {
-    for (const controller of trackedJobs.current.values()) controller.abort();
-    trackedJobs.current.clear();
-    sigByDocId.current.clear();
-    setDocuments([]);
-    if (scope) void refresh();
+    const prev = prevScopeKeyRef.current;
+    prevScopeKeyRef.current = scopeKey;
+    if (prev !== null && prev !== scopeKey) {
+      for (const controller of trackedJobs.current.values()) controller.abort();
+      trackedJobs.current.clear();
+      sigByDocId.current.clear();
+      setDocuments([]);
+      if (scope) void refresh();
+    } else if (prev === null && scope && !uploadInFlightRef.current) {
+      void refresh();
+    }
     return () => {
+      // Preserve an in-flight upload's tracking when the cleanup is the lazy
+      // materialization flip rather than a real switch/unmount.
+      if (uploadInFlightRef.current) return;
       for (const controller of trackedJobs.current.values()) controller.abort();
       trackedJobs.current.clear();
     };
@@ -195,8 +211,7 @@ export function useRagDocuments(
   // backend deduped to an existing document, drop the chip. `seenIds` holds
   // ids present/added this batch.
   const uploadOne = useCallback(
-    async (file: File, seenIds: Set<string>) => {
-      if (!scope) return;
+    async (file: File, seenIds: Set<string>, activeScope: RagDocumentScope) => {
       const tempId = `pending_${Math.random().toString(36).slice(2)}`;
       setDocuments((rows) => [
         ...rows,
@@ -204,9 +219,9 @@ export function useRagDocuments(
       ]);
       try {
         const result =
-          scope.type === "kb"
-            ? await uploadKnowledgeBaseDocument(scope.kbId, file)
-            : await uploadThreadDocument(scope.threadId, file);
+          activeScope.type === "kb"
+            ? await uploadKnowledgeBaseDocument(activeScope.kbId, file)
+            : await uploadThreadDocument(activeScope.threadId, file);
         sigByDocId.current.set(result.documentId, fileSignature(file));
         if (seenIds.has(result.documentId)) {
           setDocuments((rows) => rows.filter((row) => row.id !== tempId));
@@ -234,12 +249,17 @@ export function useRagDocuments(
         toast.error(`Couldn't upload ${file.name}`, { description: message });
       }
     },
-    [scope, trackJob],
+    [trackJob],
   );
 
+  // `overrideScope` lets a caller pass a freshly-resolved scope (the thread bar
+  // materializes its thread id at upload time, so the hook's `scope` prop is
+  // still null on the first click); falls back to the hook scope otherwise.
   const upload = useCallback(
-    async (files: FileList | File[]) => {
-      if (!scope) return;
+    async (files: FileList | File[], overrideScope?: RagDocumentScope) => {
+      const activeScope = overrideScope ?? scope;
+      if (!activeScope) return;
+      uploadInFlightRef.current = true;
       setUploading(true);
       const seenIds = new Set(documentsRef.current.map((d) => d.id));
       try {
@@ -250,10 +270,11 @@ export function useRagDocuments(
             toast.info(`${file.name} is already indexed - skipping`);
             continue;
           }
-          await uploadOne(file, seenIds);
+          await uploadOne(file, seenIds, activeScope);
         }
       } finally {
         setUploading(false);
+        uploadInFlightRef.current = false;
       }
     },
     [scope, uploadOne, sigAttached],
