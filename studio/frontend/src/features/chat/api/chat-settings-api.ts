@@ -23,6 +23,8 @@ export interface PersistedChatSettings {
   autoTitle?: boolean;
   reasoningEffort?: ReasoningEffort;
   preserveThinking?: boolean;
+  collapseHtmlArtifacts?: boolean;
+  allowArtifactNetworkAccess?: boolean;
   autoHealToolCalls?: boolean;
   maxToolCallsPerMessage?: number;
   toolCallTimeout?: number;

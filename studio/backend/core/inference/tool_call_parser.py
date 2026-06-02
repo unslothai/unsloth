@@ -49,6 +49,12 @@ DUPLICATE_CALL_NUDGE = (
     "provide your final answer now."
 )
 
+RENDER_HTML_REPEAT_NUDGE = (
+    "Error: render_html was already called for this response. Do not call "
+    "render_html again in this response unless the user asks for changes. "
+    "Provide the final answer now."
+)
+
 TOOL_ERROR_NUDGE = (
     "\n\nThe tool call encountered an issue. Please try a different "
     "approach or rephrase your request."
@@ -70,6 +76,20 @@ _TC_FUNC_CLOSE_RE = re.compile(r"\s*</function>\s*$")
 # `issue-number`, `repo-name`); using `\w+` here dropped those keys.
 _TC_PARAM_START_RE = re.compile(r"<parameter=([\w-]+)>\s*")
 _TC_PARAM_CLOSE_RE = re.compile(r"\s*</parameter>\s*$")
+_PARAM_CLOSE_TAG = "</parameter>"
+_FUNC_CLOSE_TAG = "</function>"
+
+
+def _inside_open_parameter(content: str, pos: int) -> bool:
+    """Return True when ``pos`` falls inside an unclosed parameter value."""
+    last_param_start = -1
+    for match in _TC_PARAM_START_RE.finditer(content, 0, pos):
+        last_param_start = match.start()
+    if last_param_start < 0:
+        return False
+    last_param_close = content.rfind(_PARAM_CLOSE_TAG, 0, pos)
+    last_func_close = content.rfind(_FUNC_CLOSE_TAG, 0, pos)
+    return last_param_start > max(last_param_close, last_func_close)
 
 
 def strip_tool_markup(text: str, *, final: bool = False) -> str:
@@ -151,7 +171,11 @@ def parse_tool_calls_from_text(content: str, *, id_offset: int = 0) -> list[dict
     # optional; don't use </function> as body boundary because code
     # values can contain that literal.
     if not tool_calls:
-        func_starts = list(_TC_FUNC_START_RE.finditer(content))
+        func_starts = [
+            fm
+            for fm in _TC_FUNC_START_RE.finditer(content)
+            if not _inside_open_parameter(content, fm.start())
+        ]
         for idx, fm in enumerate(func_starts):
             func_name = fm.group(1)
             body_start = fm.end()
