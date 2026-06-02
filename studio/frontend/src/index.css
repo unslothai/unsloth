@@ -764,13 +764,13 @@
 
 	.app-user-menu [data-slot="dropdown-menu-item"],
 	.app-user-menu [data-slot="dropdown-menu-sub-trigger"] {
-		height: 32px;
-		padding: 0 0.625rem !important;
-		gap: 8.5px !important;
-		border-radius: 10px;
+		height: 36px;
+		padding: 0 0.875rem !important;
+		gap: 9.5px !important;
+		border-radius: 12px;
 		font-weight: 500;
-		font-size: 14.5px;
-		line-height: 19px;
+		font-size: 15px;
+		line-height: 20px;
 		letter-spacing: 0;
 		color: var(--nav-fg);
 	}
