@@ -26,6 +26,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
+import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Tooltip,
@@ -154,6 +155,8 @@ export function DatasetSection() {
     setDatasetSliceStart,
     datasetSliceEnd,
     setDatasetSliceEnd,
+    datasetStreaming,
+    setDatasetStreaming,
   } = useTrainingConfigStore(
     useShallow((s) => ({
       dataset: s.dataset,
@@ -177,6 +180,8 @@ export function DatasetSection() {
       setDatasetSliceStart: s.setDatasetSliceStart,
       datasetSliceEnd: s.datasetSliceEnd,
       setDatasetSliceEnd: s.setDatasetSliceEnd,
+      datasetStreaming: s.datasetStreaming,
+      setDatasetStreaming: s.setDatasetStreaming,
     })),
   );
 
@@ -932,6 +937,36 @@ export function DatasetSection() {
                       <SelectItem value="raw">{t("studio.dataset.rawText")}</SelectItem>
                     </SelectContent>
                   </Select>
+                </div>
+                <div className="flex items-center justify-between">
+                  <div className="flex flex-col gap-0.5">
+                    <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                      {t("studio.dataset.streaming")}
+                      <Tooltip>
+                        <TooltipTrigger asChild={true}>
+                          <button
+                            type="button"
+                            className="text-foreground/70 hover:text-foreground"
+                          >
+                            <HugeiconsIcon
+                              icon={InformationCircleIcon}
+                              className="size-3"
+                            />
+                          </button>
+                        </TooltipTrigger>
+                        <TooltipContent>
+                          {t("studio.dataset.streamingTooltip")}
+                        </TooltipContent>
+                      </Tooltip>
+                    </span>
+                    <span className="text-[10px] text-muted-foreground/70">
+                      {t("studio.dataset.streamingDescription")}
+                    </span>
+                  </div>
+                  <Switch
+                    checked={datasetStreaming}
+                    onCheckedChange={setDatasetStreaming}
+                  />
                 </div>
                 <div className="grid grid-cols-2 gap-3">
                   <div className="flex flex-col gap-1.5">

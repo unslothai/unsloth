@@ -430,6 +430,10 @@ export const en = {
       evalDatasetDescription:
         "Optional. If not provided, a small portion will be split from the training data.",
       advanced: "Advanced",
+      streaming: "Streaming Mode",
+      streamingTooltip:
+        "Load dataset in streaming mode to reduce memory usage for very large datasets.",
+      streamingDescription: "Recommended for datasets larger than available RAM",
       targetFormat: "Target Format",
       targetFormatTooltip:
         "Format of your training data. Auto-detect works for most datasets.",

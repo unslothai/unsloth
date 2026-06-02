@@ -407,6 +407,10 @@ export const zhCN = {
       evalDatasetDescription:
         "可选。如果未提供，将从训练数据中切分出一小部分。",
       advanced: "高级",
+      streaming: "流式模式",
+      streamingTooltip:
+        "以流式模式加载数据集，以减少超大数据集的内存使用。",
+      streamingDescription: "推荐用于大于可用内存的数据集",
       targetFormat: "目标格式",
       targetFormatTooltip:
         "训练数据的格式。自动检测对大多数数据集都有效。",

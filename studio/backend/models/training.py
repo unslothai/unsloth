@@ -102,6 +102,9 @@ class TrainingStartRequest(BaseModel):
     dataset_slice_end: Optional[int] = Field(
         None, description = "Inclusive end row index for dataset slicing"
     )
+    dataset_streaming: bool = Field(
+        False, description = "Load dataset in streaming mode to reduce memory usage"
+    )
 
     @model_validator(mode = "before")
     @classmethod

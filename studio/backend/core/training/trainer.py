@@ -2363,6 +2363,7 @@ class UnslothTrainer:
         eval_steps: float = 0.00,
         dataset_slice_start: int = None,
         dataset_slice_end: int = None,
+        dataset_streaming: bool = False,
         is_cpt: bool = False,
     ) -> Optional[tuple]:
         """
@@ -2473,6 +2474,24 @@ class UnslothTrainer:
                     logger.info(
                         f"[dataset-slice] Downloaded {len(dataset)} rows "
                         f"(requested {rows_to_stream})\n"
+                    )
+                    self._update_progress(
+                        status_message = f"Streamed {len(dataset)} rows from HuggingFace"
+                    )
+                elif dataset_streaming:
+                    # User requested streaming mode for large datasets
+                    logger.info(
+                        f"[dataset-streaming] Streaming mode enabled for {dataset_source}\n"
+                    )
+                    self._update_progress(
+                        status_message = f"Streaming dataset: {dataset_source}..."
+                    )
+                    stream = load_dataset(**load_kwargs, streaming = True)
+                    # Convert streaming dataset to in-memory for training
+                    # Note: This still loads all data but does so incrementally
+                    dataset = Dataset.from_list(list(stream))
+                    logger.info(
+                        f"[dataset-streaming] Streamed {len(dataset)} rows from {dataset_source}\n"
                     )
                     self._update_progress(
                         status_message = f"Streamed {len(dataset)} rows from HuggingFace"

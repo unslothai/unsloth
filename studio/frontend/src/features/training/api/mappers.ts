@@ -71,6 +71,7 @@ export function buildTrainingStartPayload(
     eval_split: hfDataset ? config.datasetEvalSplit : null,
     dataset_slice_start: parseSliceValue(config.datasetSliceStart),
     dataset_slice_end: parseSliceValue(config.datasetSliceEnd),
+    dataset_streaming: config.datasetStreaming ?? false,
     local_datasets: localDatasets,
     local_eval_datasets:
       config.datasetSource === "upload" && config.uploadedEvalFile

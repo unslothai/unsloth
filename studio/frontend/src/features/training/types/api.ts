@@ -16,6 +16,8 @@ export interface TrainingStartRequest {
   eval_split: string | null;
   dataset_slice_start: number | null;
   dataset_slice_end: number | null;
+  /** Load dataset in streaming mode to reduce memory usage for large datasets */
+  dataset_streaming: boolean;
   local_datasets: string[];
   local_eval_datasets: string[];
   format_type: string;

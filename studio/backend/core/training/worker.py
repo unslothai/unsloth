@@ -2494,6 +2494,7 @@ def run_training_process(
             eval_steps = config.get("eval_steps", 0.00),
             dataset_slice_start = config.get("dataset_slice_start"),
             dataset_slice_end = config.get("dataset_slice_end"),
+            dataset_streaming = config.get("dataset_streaming", False),
             is_cpt = _is_cpt_for_dataset,
         )
 

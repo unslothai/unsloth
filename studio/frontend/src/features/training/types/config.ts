@@ -36,6 +36,7 @@ export interface TrainingConfigState {
   datasetAdvisorNotification: string | null;
   datasetSliceStart: string | null;
   datasetSliceEnd: string | null;
+  datasetStreaming: boolean;
   uploadedFile: string | null;
   uploadedEvalFile: string | null;
   epochs: number;
@@ -112,6 +113,7 @@ export interface TrainingConfigActions {
   clearDatasetAdvisorFields: () => void;
   setDatasetSliceStart: (value: string | null) => void;
   setDatasetSliceEnd: (value: string | null) => void;
+  setDatasetStreaming: (value: boolean) => void;
   setUploadedFile: (file: string | null) => void;
   setUploadedEvalFile: (file: string | null) => void;
   setEpochs: (epochs: number) => void;

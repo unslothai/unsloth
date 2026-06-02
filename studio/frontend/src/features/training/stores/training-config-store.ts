@@ -75,6 +75,7 @@ const initialState: TrainingConfigState = {
   datasetAdvisorNotification: null,
   datasetSliceStart: null,
   datasetSliceEnd: null,
+  datasetStreaming: false,
   uploadedFile: null,
   uploadedEvalFile: null,
   isCheckingVision: false,
@@ -688,6 +689,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           }),
         setDatasetSliceStart: (datasetSliceStart) => set({ datasetSliceStart }),
         setDatasetSliceEnd: (datasetSliceEnd) => set({ datasetSliceEnd }),
+        setDatasetStreaming: (datasetStreaming) => set({ datasetStreaming }),
         setUploadedFile: (uploadedFile) => {
           _datasetCheckController?.abort();
           _datasetCheckController = null;
