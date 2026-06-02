@@ -6,6 +6,7 @@ import type {
   DatasetSource,
   GradientCheckpointing,
   ModelType,
+  S3Config,
   StepNumber,
   TrainingMethod,
 } from "@/types/training";
@@ -83,6 +84,7 @@ export interface TrainingConfigState {
   targetModules: string[];
   maxPositionEmbeddings: number | null;
   visionImageSize: number | null;
+  s3Config: S3Config | null;
 }
 
 export interface TrainingConfigActions {
@@ -147,6 +149,7 @@ export interface TrainingConfigActions {
   setFinetuneAttentionModules: (value: boolean) => void;
   setFinetuneMLPModules: (value: boolean) => void;
   setTargetModules: (value: string[]) => void;
+  setS3Config: (value: S3Config | null) => void;
   canProceed: () => boolean;
   reset: () => void;
   resetToModelDefaults: () => void;

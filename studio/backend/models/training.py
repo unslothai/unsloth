@@ -30,6 +30,23 @@ _MIN_VISION_IMAGE_SIZE = 256
 _MAX_VISION_IMAGE_SIZE = 2048
 
 
+class S3Config(BaseModel):
+    """S3 bucket configuration for loading datasets from AWS S3"""
+
+    bucket: str = Field(..., description = "S3 bucket name")
+    region: str = Field("us-east-1", description = "AWS region")
+    prefix: Optional[str] = Field(None, description = "Optional path prefix within bucket")
+    access_key_id: Optional[str] = Field(
+        None, description = "AWS access key ID (optional if using IAM role)"
+    )
+    secret_access_key: Optional[str] = Field(
+        None, description = "AWS secret access key (optional if using IAM role)"
+    )
+    use_iam_role: bool = Field(
+        False, description = "Use IAM role credentials instead of access keys"
+    )
+
+
 def _parse_lr(v: Any) -> float:
     """Parse learning_rate as a positive float strictly below _MAX_LR_VALUE."""
     if v is None:
@@ -375,6 +392,12 @@ class TrainingStartRequest(BaseModel):
     gpu_ids: Optional[List[int]] = Field(
         None,
         description = "Physical GPU indices to use, for example [0, 1]. Omit or pass [] to use automatic selection. Explicit gpu_ids are unsupported when the parent CUDA_VISIBLE_DEVICES uses UUID/MIG entries.",
+    )
+
+    # S3 dataset source configuration
+    s3_config: Optional[S3Config] = Field(
+        None,
+        description = "S3 bucket configuration for loading datasets from AWS S3. Requires boto3 to be installed.",
     )
 
     @model_validator(mode = "after")
