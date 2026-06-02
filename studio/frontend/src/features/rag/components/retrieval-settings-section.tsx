@@ -291,6 +291,12 @@ export function RetrievalSettingsSection() {
         </CollapsibleContent>
       </Collapsible>
 
+      <p className="text-[12px] leading-[1.4] text-muted-foreground">
+        Document tool-calling works best with capable models (roughly 4B
+        parameters or more). Smaller models often answer from memory instead of
+        searching, so keep Auto-retrieve on to consult attachments either way.
+      </p>
+
       <div className="flex justify-end">
         <Button
           variant="ghost"

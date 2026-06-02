@@ -921,7 +921,12 @@ def build_rag_autoinject(
     """Pre-retrieve the latest user turn; if a hit clears the cosine floor return
     ``{"events": [...], "messages": [...]}`` to splice into the loop, else ``None``.
     Toggle via ``rag_scope.autoinject`` (else env ``RAG_AUTOINJECT``); floor via
-    ``rag_scope.autoinject_min_score`` (else env ``RAG_AUTOINJECT_MIN_SCORE``)."""
+    ``rag_scope.autoinject_min_score`` (else env ``RAG_AUTOINJECT_MIN_SCORE``).
+
+    This is also the small-model fallback: models below ~4B often answer from
+    memory instead of emitting a ``search_knowledge_base`` call, so forcing a
+    pre-retrieval here keeps attachments consulted regardless of model size.
+    Reliable tool-driven retrieval wants a capable model (roughly 4B+)."""
     if not rag_scope:
         return None
     enabled = rag_scope.get("autoinject")
