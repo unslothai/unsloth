@@ -114,13 +114,12 @@ def _probe_conversation(dataset: Dataset, candidates = None):
                     # as a corrupt chatml dataset.  This matches the
                     # behaviour of studio's existing format_detection.py.
                     if isinstance(cell, list):
-                        # Empty list is a valid (but empty) conversation
-                        # shape; a non-empty list is only plausible if it
-                        # contains dict/None turns, so plain list-of-string
-                        # columns (e.g. raw-text `texts`) don't match.
-                        if len(cell) == 0 or any(
-                            t is None or isinstance(t, dict) for t in cell
-                        ):
+                        # Only treat as plausible chat data when the list
+                        # contains at least one dict or None turn.  Empty
+                        # lists and plain list-of-strings (e.g. raw-text
+                        # `texts` or token columns) are not evidence of a
+                        # conversation column and must not match chatml.
+                        if any(t is None or isinstance(t, dict) for t in cell):
                             has_plausible_turns = True
                             break
                 all_corrupt_fallback = {
@@ -377,10 +376,22 @@ def find_none_chatml(dataset: Dataset, col: str = None) -> dict:
                 role = r
             else:
                 role = str(r)
-            content = turn.get("content") if "content" in turn else turn.get("value")
+            # Key off the turn's own structure: ShareGPT turns use "from"/"value";
+            # chatml turns use "role"/"content".  When a turn has both keys (e.g.
+            # a mixed row {"from":"human","content":null,"value":"hello"}), the
+            # presence of "from" marks it as ShareGPT so we prefer "value" to
+            # avoid false positives where content=null but value is valid.
+            if "from" in turn:
+                content = turn.get("value")
+            else:
+                content = turn.get("content") if "content" in turn else turn.get("value")
             # Valid OpenAI tool-calling assistant turns carry empty content
             # plus a populated tool_calls array — these are not bad data.
-            if is_none_or_empty(content) and not turn.get("tool_calls"):
+            # Limit the exemption to assistant role: non-assistant turns
+            # with tool_calls metadata but empty content are genuinely bad.
+            if is_none_or_empty(content) and not (
+                role == "assistant" and turn.get("tool_calls")
+            ):
                 vtype = _classify_empty(content)
                 row_findings.append(
                     {
@@ -646,13 +657,14 @@ def scan_dataset(dataset: Dataset, fmt: str = "auto") -> dict:
     #   picks a different column than the format expects, e.g. scan_dataset(
     #   fmt='sharegpt') should always scan 'conversations', not 'messages'
     #   even when both columns are all-corrupt (P1 fix).
-    # gptoss is also exempted: find_none_gptoss has its own P1 priority
-    # rule (always target `messages` when it exists, even if corrupt), and
-    # forwarding a healthy `conversations` column from the generic probe
-    # would bypass that rule and silently report 0 bad rows when the
-    # canonical column is broken.
+    # gptoss explicit scans are exempted: find_none_gptoss has its own P1
+    # priority rule (always target `messages` when it exists, even if corrupt).
+    # For auto-detected gptoss we DO forward the probed column so that when
+    # gptoss is detected via `conversations` (because `messages` is metadata
+    # strings), find_none_gptoss scans the right column instead of re-grabbing
+    # `messages` and producing false positives.
     use_probed_col = (
-        conv_info is not None and fmt not in ("alpaca", "gptoss") and was_auto
+        conv_info is not None and fmt != "alpaca" and was_auto
     )
     if use_probed_col:
         stats = scanner(dataset, col = conv_info["column"])
