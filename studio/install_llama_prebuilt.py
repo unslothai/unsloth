@@ -2818,6 +2818,18 @@ def run_capture(
     check: bool = False,
     env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
+    # amd-smi on Windows auto-elevates to read GPU/APU memory details, which pops
+    # a confusing UAC/DiskPart prompt mid-install. __COMPAT_LAYER=RunAsInvoker
+    # forces it (and any helper it spawns) to run un-elevated -- no prompt; the
+    # callers already tolerate an empty/non-zero result and fall back to the
+    # WMI/name detection. Mirrors install.ps1's Invoke-AmdSmiNoElevate. Gated to
+    # Windows so Linux/macOS amd-smi behaviour is unchanged.
+    if (
+        command
+        and platform.system() == "Windows"
+        and os.path.basename(command[0]).lower().startswith("amd-smi")
+    ):
+        env = {**(os.environ if env is None else env), "__COMPAT_LAYER": "RunAsInvoker"}
     result = subprocess.run(
         command,
         capture_output = True,

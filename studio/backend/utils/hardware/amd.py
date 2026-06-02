@@ -40,13 +40,20 @@ def _run_amd_smi(*args: str, timeout: int = _AMD_SMI_DEFAULT_TIMEOUT) -> Optiona
     global _amd_smi_consecutive_failures, _amd_smi_disabled
     if _amd_smi_disabled:
         return None
+    _amd_env = child_env_without_native_path_secret()
+    if platform.system() == "Windows":
+        # amd-smi auto-elevates on Windows to read GPU/APU memory, popping a
+        # UAC/DiskPart prompt. RunAsInvoker forces it to run un-elevated (no
+        # prompt); the circuit breaker above still disables polling on failure.
+        # Mirrors the install scripts' amd-smi guard.
+        _amd_env = {**_amd_env, "__COMPAT_LAYER": "RunAsInvoker"}
     try:
         result = subprocess.run(
             ["amd-smi", *args, "--json"],
             capture_output = True,
             text = True,
             timeout = timeout,
-            env = child_env_without_native_path_secret(),
+            env = _amd_env,
             **windows_hidden_subprocess_kwargs(),
         )
     except (OSError, subprocess.TimeoutExpired) as e:

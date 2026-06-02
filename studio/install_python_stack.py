@@ -144,6 +144,16 @@ def _bnb_rocm_prerelease_url() -> str | None:
     return _BNB_ROCM_PRERELEASE_URLS.get(arch)
 
 
+def _amd_smi_env() -> dict[str, str] | None:
+    """On Windows, return an env that stops amd-smi auto-elevating (which pops a
+    confusing UAC/DiskPart prompt); None elsewhere so the default env is used.
+    Mirrors install.ps1's Invoke-AmdSmiNoElevate and run_capture in
+    install_llama_prebuilt.py. Windows-only so Linux/macOS behaviour is unchanged."""
+    if platform.system() != "Windows":
+        return None
+    return {**os.environ, "__COMPAT_LAYER": "RunAsInvoker"}
+
+
 def _detect_rocm_version() -> tuple[int, int] | None:
     """Return (major, minor) of the installed ROCm stack, or None."""
     # Check /opt/rocm/.info/version or ROCM_PATH equivalent
@@ -173,6 +183,7 @@ def _detect_rocm_version() -> tuple[int, int] | None:
                 stderr = subprocess.DEVNULL,
                 text = True,
                 timeout = 5,
+                env = _amd_smi_env(),
             )
             if result.returncode == 0:
                 import re
@@ -328,6 +339,7 @@ def _detect_windows_gfx_arch() -> str | None:
                     stdout = subprocess.PIPE,
                     stderr = subprocess.DEVNULL,
                     timeout = 10,
+                    env = _amd_smi_env(),
                 )
                 if result.returncode != 0:
                     continue
@@ -408,6 +420,7 @@ def _has_rocm_gpu() -> bool:
                 stderr = subprocess.DEVNULL,
                 text = True,
                 timeout = 10,
+                env = _amd_smi_env() if cmd[0] == "amd-smi" else None,
             )
         except Exception:
             continue
