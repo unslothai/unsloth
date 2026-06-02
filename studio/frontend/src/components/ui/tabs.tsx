@@ -106,7 +106,7 @@ export function TabsTrigger({
       {isActive && (
         <motion.span
           layoutId={`tab-bg-${ctx.id}`}
-          className="absolute inset-0 rounded-xl bg-background dark:bg-input/30 dark:border dark:border-input group-data-[variant=line]/tabs-list:bg-background dark:group-data-[variant=line]/tabs-list:bg-[#2d2f33] dark:group-data-[variant=line]/tabs-list:border-0 group-data-[variant=line]/tabs-list:shadow-[0_2px_8px_-2px_rgba(27,27,31,0.16)] dark:group-data-[variant=line]/tabs-list:shadow-none"
+          className="absolute inset-0 rounded-xl bg-background dark:bg-input/30 dark:border dark:border-input group-data-[variant=line]/tabs-list:bg-[#ececec] dark:group-data-[variant=line]/tabs-list:bg-[#2d2f33] dark:group-data-[variant=line]/tabs-list:border-0"
           transition={{
             type: "spring",
             stiffness: 500,
