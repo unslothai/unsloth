@@ -210,8 +210,15 @@ class GuidedProjectionPooling(nn.Module):
 
     @classmethod
     def load(
-        cls, input_path: str, pooling_module: nn.Module
+        cls, input_path: str, pooling_module: Optional[nn.Module] = None, **kwargs
     ) -> "GuidedProjectionPooling":
+        # ST >= 5.4 / resume call this as load(path) or load(path, **kwargs)
+        # (e.g. subfolder=...) with no pooling_module, so accept both and stay
+        # self-contained.
+        subfolder = kwargs.get("subfolder", "") or ""
+        if subfolder:
+            input_path = os.path.join(input_path, subfolder)
+
         config_path = os.path.join(input_path, cls.PROJECTION_CONFIG_NAME)
         weights_path = os.path.join(input_path, cls.PROJECTION_WEIGHTS_NAME)
 
@@ -228,6 +235,15 @@ class GuidedProjectionPooling(nn.Module):
         projection.load_state_dict(
             torch.load(weights_path, map_location = "cpu", weights_only = True)
         )
+
+        if pooling_module is None:
+            # Reconstruct the wrapped Pooling saved alongside the projection.
+            from sentence_transformers.models import Pooling
+
+            try:
+                pooling_module = Pooling.load(input_path)
+            except Exception:
+                pooling_module = Pooling(config["dim"])
 
         return cls(pooling_module, projection)
 
@@ -373,7 +389,17 @@ def _patch_encoder_attention_lora(model):
         ("q_lin", "k_lin", "v_lin"),  # DistilBERT
     ]
 
+    def _active_lora_dropout(m):
+        # The fused QKV path does not apply LoRA dropout; detect active dropout
+        # so we can skip fusing those modules and keep training math correct (K3).
+        dd = getattr(m, "lora_dropout", None)
+        if dd is None:
+            return False
+        mods = list(dd.values()) if hasattr(dd, "values") else [dd]
+        return any(getattr(d, "p", 0.0) and float(d.p) > 0.0 for d in mods)
+
     count = 0
+    dropout_skipped = 0
     for _name, module in model.named_modules():
         detected = None
         for q_attr, k_attr, v_attr in QKV_ATTRS:
@@ -398,12 +424,25 @@ def _patch_encoder_attention_lora(model):
         k_mod = getattr(module, k_attr)
         v_mod = getattr(module, v_attr)
 
+        if (
+            _active_lora_dropout(q_mod)
+            or _active_lora_dropout(k_mod)
+            or _active_lora_dropout(v_mod)
+        ):
+            dropout_skipped += 1
+            continue
+
         q_mod._original_forward = q_mod.forward
         k_mod._original_forward = k_mod.forward
         v_mod._original_forward = v_mod.forward
 
         def _make_fused_forwards(attn_mod, qm, km, vm):
             def q_fused(x, *args, **kwargs):
+                # Self-healing: drop any stale K/V cache left by a prior forward
+                # that raised or was recomputed (gradient checkpointing) before
+                # k_fused/v_fused consumed it.
+                attn_mod._fused_k = None
+                attn_mod._fused_v = None
                 QW, QW_quant, QA, QB, QS = get_lora_parameters(qm)
                 KW, KW_quant, KA, KB, KS = get_lora_parameters(km)
                 VW, VW_quant, VA, VB, VS = get_lora_parameters(vm)
@@ -465,6 +504,14 @@ def _patch_encoder_attention_lora(model):
         v_mod.forward = v_fwd
         count += 1
 
+    if dropout_skipped:
+        import warnings
+
+        warnings.warn(
+            f"Unsloth: Skipped fused QKV LoRA for {dropout_skipped} attention "
+            "module(s) with lora_dropout>0 (fused path does not apply LoRA dropout).",
+            stacklevel = 2,
+        )
     return count
 
 
@@ -536,6 +583,12 @@ def _apply_sparsity_to_base_weights(peft_model, target_modules = None):
         if w.shape[0] % 4 != 0 or w.shape[1] % 4 != 0:
             continue
 
+        # Preserve the ORIGINAL dense weights BEFORE destructive pruning so
+        # save/merge can recover them.
+        base._dense_weight = w.clone()
+        _rg = base.weight.requires_grad
+        base._dense_weight_rg = _rg
+
         # Keep top-2 per group of 4
         w_abs = w.detach().abs().view(w.shape[0], -1, 4)
         _, topk = w_abs.topk(2, dim = -1)
@@ -544,8 +597,6 @@ def _apply_sparsity_to_base_weights(peft_model, target_modules = None):
         mask = mask.view(w.shape)
         w.mul_(mask)
 
-        base._dense_weight = w.clone()
-        _rg = base.weight.requires_grad
         base.weight = torch.nn.Parameter(
             to_sparse_semi_structured(w), requires_grad = _rg
         )
@@ -562,8 +613,11 @@ def _remove_sparsity_from_base_weights(peft_model):
         if base is None or not isinstance(base, torch.nn.Linear):
             continue
         if hasattr(base, "_dense_weight"):
-            base.weight = torch.nn.Parameter(base._dense_weight, requires_grad = False)
+            _rg = getattr(base, "_dense_weight_rg", False)
+            base.weight = torch.nn.Parameter(base._dense_weight, requires_grad = _rg)
             del base._dense_weight
+            if hasattr(base, "_dense_weight_rg"):
+                del base._dense_weight_rg
             count += 1
     return count
 
@@ -572,6 +626,12 @@ def _patch_fused_pooling(st_model):
     """Fuse final LayerNorm + mean Pooling into single Triton kernel."""
     if not _HAS_FUSED_POOLING:
         return False
+
+    # Idempotency: if already fused, a 2nd call would fuse the wrong (Identity)
+    # LayerNorm. Bail out early.
+    for _mod in st_model:
+        if hasattr(_mod, "_fused_ln"):
+            return True
 
     transformer_mod = None
     pooling_mod = None
@@ -643,6 +703,18 @@ def _patch_fused_pooling(st_model):
             ),
         )
 
+        # The fused kernel assumes right-padding (real tokens occupy [0, seq_len)).
+        # Fall back to the original pooling for left-/irregularly-padded batches
+        # so embeddings stay correct.
+        seq_lengths = attention_mask.sum(dim = 1)
+        seq_dim = attention_mask.shape[1]
+        right_padded = (
+            torch.arange(seq_dim, device = attention_mask.device).unsqueeze(0)
+            < seq_lengths.unsqueeze(1)
+        ).to(attention_mask.dtype)
+        if not torch.equal(attention_mask, right_padded):
+            return _original_pooling_forward(features)
+
         pooled = fused_layernorm_mean_pool(stored_ln, token_embeddings, attention_mask)
         features["sentence_embedding"] = pooled
         return features
@@ -675,6 +747,18 @@ def _restore_fused_pooling_ln(st_model):
     finally:
         setattr(parent, attr, identity)
         pooling_mod.forward = old_fwd
+
+
+def _gguf_save_with_restore(self, *args, **kwargs):
+    # GGUF export must restore the real LayerNorm that fused pooling swapped for
+    # Identity, exactly like the merged/torchao save paths do.
+    with _restore_fused_pooling_ln(self):
+        return unsloth_save_pretrained_gguf(self, *args, **kwargs)
+
+
+def _gguf_push_with_restore(self, *args, **kwargs):
+    with _restore_fused_pooling_ln(self):
+        return unsloth_push_to_hub_gguf(self, *args, **kwargs)
 
 
 # modernbert excluded — has native unpadding (indices, cu_seqlens args)
@@ -1030,11 +1114,14 @@ def _patch_unpadded_encoder(st_model, model_type):
         B, S = attention_mask.shape
         device = attention_mask.device
 
-        seq_info = get_encoder_seq_info(attention_mask)
-        total_tokens = int(seq_info.cu_seqlens[-1].item())
-
+        # Cheap precheck: only the token count decides the padding-ratio bailout,
+        # so avoid building full packed metadata (max().item() sync + nonzero +
+        # cumsum) on lightly-padded batches that will bail out.
+        total_tokens = int(attention_mask.sum().item())
         if total_tokens >= B * S * (1.0 - _UNPAD_MIN_PADDING_RATIO):
             return _original_forward(features, **kwargs)
+
+        seq_info = get_encoder_seq_info(attention_mask)
 
         input_ids = features["input_ids"]
         packed_ids = input_ids.flatten()[seq_info.indices].unsqueeze(0)
@@ -1168,11 +1255,14 @@ def _patch_unpadded_decoder(st_model):
         B, S = attention_mask.shape
         device = attention_mask.device
 
-        seq_info = get_encoder_seq_info(attention_mask)
-        total_tokens = int(seq_info.cu_seqlens[-1].item())
-
+        # Cheap precheck: only the token count decides the padding-ratio bailout,
+        # so avoid building full packed metadata (max().item() sync + nonzero +
+        # cumsum) on lightly-padded batches that will bail out.
+        total_tokens = int(attention_mask.sum().item())
         if total_tokens >= B * S * (1.0 - _UNPAD_MIN_PADDING_RATIO):
             return _original_forward(features, **kwargs)
+
+        seq_info = get_encoder_seq_info(attention_mask)
 
         input_ids = features["input_ids"]
         packed_ids = input_ids.flatten()[seq_info.indices].unsqueeze(0)
@@ -1216,6 +1306,31 @@ def _patch_unpadded_decoder(st_model):
     return True
 
 
+_POOLING_MODE_FLAGS = {
+    "cls": "pooling_mode_cls_token",
+    "max": "pooling_mode_max_tokens",
+    "mean": "pooling_mode_mean_tokens",
+    "mean_sqrt_len_tokens": "pooling_mode_mean_sqrt_len_tokens",
+    "weightedmean": "pooling_mode_weightedmean_tokens",
+    "lasttoken": "pooling_mode_lasttoken",
+}
+
+
+def _ensure_pooling_flags(pooling_mod):
+    """sentence-transformers >= 5.x dropped the boolean ``pooling_mode_*``
+    attributes in favour of a single ``pooling_mode`` string. The efficient /
+    fused pooling patches read those booleans, so reconstruct them when absent
+    (otherwise _efficient_forward raises AttributeError on ST 5.x)."""
+    if hasattr(pooling_mod, "pooling_mode_cls_token"):
+        return
+    mode = getattr(pooling_mod, "pooling_mode", None)
+    for attr in _POOLING_MODE_FLAGS.values():
+        setattr(pooling_mod, attr, False)
+    target = _POOLING_MODE_FLAGS.get(mode)
+    if target is not None:
+        setattr(pooling_mod, target, True)
+
+
 _POOLING_PATCHED = False
 
 
@@ -1224,7 +1339,6 @@ def _patch_efficient_pooling():
     global _POOLING_PATCHED
     if _POOLING_PATCHED:
         return
-    _POOLING_PATCHED = True
 
     try:
         from sentence_transformers.models import Pooling
@@ -1232,6 +1346,7 @@ def _patch_efficient_pooling():
         _original_forward = Pooling.forward
 
         def _efficient_forward(self, features):
+            _ensure_pooling_flags(self)  # ST 5.x compat (booleans dropped)
             token_embeddings = features["token_embeddings"]
             attention_mask = features.get(
                 "attention_mask",
@@ -1247,11 +1362,17 @@ def _patch_efficient_pooling():
                 if isinstance(prompt_length, torch.Tensor):
                     prompt_length = int(prompt_length[0].item())
                 attention_mask = attention_mask.clone()
-                # Handle left-padded sequences
+                # Handle left-padded sequences (vectorized: removes B per-row
+                # .item() device->host syncs)
+                seq_len_dim = attention_mask.shape[1]
                 pad_lengths = (attention_mask == 0).to(torch.int32).argmin(dim = 1)
-                for i in range(attention_mask.shape[0]):
-                    start = int(pad_lengths[i].item())
-                    attention_mask[i, start : start + prompt_length] = 0
+                prompt_cols = (
+                    pad_lengths.unsqueeze(1)
+                    + torch.arange(
+                        prompt_length, device = attention_mask.device
+                    ).unsqueeze(0)
+                ).clamp(max = seq_len_dim - 1)
+                attention_mask.scatter_(1, prompt_cols, 0)
 
             output_vectors = []
 
@@ -1265,8 +1386,12 @@ def _patch_efficient_pooling():
                     .expand(token_embeddings.size())
                     .to(token_embeddings.dtype)
                 )
-                token_embeddings[input_mask_expanded == 0] = -1e9
-                max_over_time = torch.max(token_embeddings, 1)[0]
+                # out-of-place to avoid mutating a possibly grad-tracked / shared
+                # token_embeddings tensor
+                masked_embeddings = token_embeddings.masked_fill(
+                    input_mask_expanded == 0, -1e9
+                )
+                max_over_time = torch.max(masked_embeddings, 1)[0]
                 output_vectors.append(max_over_time)
 
             if self.pooling_mode_mean_tokens or self.pooling_mode_mean_sqrt_len_tokens:
@@ -1295,11 +1420,18 @@ def _patch_efficient_pooling():
             if self.pooling_mode_lasttoken:
                 return _original_forward(self, features)
 
+            # Global class patch means a Pooling with every standard mode False
+            # would otherwise hit torch.cat([], 1) -> RuntimeError
+            if not output_vectors:
+                return _original_forward(self, features)
             output_vector = torch.cat(output_vectors, 1)
             features["sentence_embedding"] = output_vector
             return features
 
         Pooling.forward = _efficient_forward
+        # Only mark patched after the assignment succeeds, so a failed import
+        # doesn't permanently disable the patch for the process
+        _POOLING_PATCHED = True
     except Exception as e:
         import warnings
 
@@ -1347,7 +1479,6 @@ def _patch_mnrl_loss():
     global _MNRL_PATCHED
     if _MNRL_PATCHED:
         return
-    _MNRL_PATCHED = True
 
     try:
         from sentence_transformers.losses import MultipleNegativesRankingLoss
@@ -1374,21 +1505,35 @@ def _patch_mnrl_loss():
             embeddings_a = reps[0]
             embeddings_b = torch.cat(reps[1:], dim = 0)
 
+            similarity_fct = getattr(self, "similarity_fct", None)
             try:
-                from sentence_transformers.util import cos_sim
+                from sentence_transformers.util import cos_sim, dot_score
 
-                is_cosine = self.similarity_fct is cos_sim
+                is_cosine = similarity_fct is cos_sim
+                is_dot = similarity_fct is dot_score
             except ImportError:
                 is_cosine = True
+                is_dot = False
+
+            # The fused kernel computes a scaled dot-product contrastive loss:
+            #   cos_sim   -> L2-normalize first (dot of normalized == cosine)
+            #   dot_score -> leave unnormalized (already a dot product)
+            #   any other / custom similarity_fct -> fall back to exact original,
+            #     since the fused dot-product would silently differ.
+            if not (is_cosine or is_dot):
+                return _original_forward(self, sentence_features, labels)
 
             if is_cosine:
                 embeddings_a = torch.nn.functional.normalize(embeddings_a, p = 2, dim = 1)
                 embeddings_b = torch.nn.functional.normalize(embeddings_b, p = 2, dim = 1)
 
-            return FusedContrastiveLoss.apply(embeddings_a, embeddings_b, self.scale)
+            scale = getattr(self, "scale", 1.0)
+            return FusedContrastiveLoss.apply(embeddings_a, embeddings_b, scale)
 
         MultipleNegativesRankingLoss.forward = _fused_forward
         MultipleNegativesRankingLoss._original_forward = _original_forward
+        # Mark patched only after success so a failed import can be retried
+        _MNRL_PATCHED = True
         print(
             "Unsloth: Patched MultipleNegativesRankingLoss with fused contrastive loss"
         )
@@ -3105,11 +3250,11 @@ class FastSentenceTransformer(FastModel):
             )
 
             st_model.save_pretrained_gguf = types.MethodType(
-                unsloth_save_pretrained_gguf, st_model
+                _gguf_save_with_restore, st_model
             )
 
             st_model.push_to_hub_gguf = types.MethodType(
-                unsloth_push_to_hub_gguf, st_model
+                _gguf_push_with_restore, st_model
             )
 
             def _push_to_hub_merged(self, repo_id, **push_kwargs):
@@ -3345,7 +3490,12 @@ class FastSentenceTransformer(FastModel):
                     inner_auto = self[0].auto_model
                     if getattr(self, "_sparsity_applied", False):
                         _remove_sparsity_from_base_weights(inner_auto)
-                    merged_model = inner_auto.merge_and_unload()
+                    # A plain (non-PEFT) encoder has no merge_and_unload; fall
+                    # back to a straight save instead of crashing.
+                    if hasattr(inner_auto, "merge_and_unload"):
+                        merged_model = inner_auto.merge_and_unload()
+                    else:
+                        merged_model = inner_auto
                     merged_model.save_pretrained(save_directory, **safe_kwargs)
                     if tokenizer is not None:
                         tokenizer.save_pretrained(save_directory)
@@ -3370,10 +3520,10 @@ class FastSentenceTransformer(FastModel):
         )
 
         st_model.save_pretrained_gguf = types.MethodType(
-            unsloth_save_pretrained_gguf, st_model
+            _gguf_save_with_restore, st_model
         )
 
-        st_model.push_to_hub_gguf = types.MethodType(unsloth_push_to_hub_gguf, st_model)
+        st_model.push_to_hub_gguf = types.MethodType(_gguf_push_with_restore, st_model)
 
         def _push_to_hub_merged(self, repo_id, **kwargs):
             token = kwargs.get("token", None) or get_token()
@@ -3723,7 +3873,13 @@ def _patch_sentence_transformer_trainer():
 
         _original_init(self, *args, **kwargs)
 
-        if hasattr(self, "args") and self.args is not None:
+        # Only mutate dataloader settings for Unsloth's own models; a plain
+        # SentenceTransformerTrainer must keep the user's args
+        if (
+            isinstance(model, FastSentenceTransformer)
+            and hasattr(self, "args")
+            and self.args is not None
+        ):
             if not self.args.dataloader_pin_memory:
                 self.args.dataloader_pin_memory = True
             if (

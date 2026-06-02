@@ -48,12 +48,11 @@ class FusedContrastiveLoss(torch.autograd.Function):
         B_b = embeddings_b.shape[0]
 
         if B_a == 0 or B_b == 0:
-            return torch.tensor(
-                0.0,
-                device = embeddings_a.device,
-                dtype = embeddings_a.dtype,
-                requires_grad = embeddings_a.requires_grad,
-            )
+            # Save context so backward returns zero grads instead of crashing on
+            # an empty ctx.saved_tensors unpack.
+            ctx.empty = True
+            ctx.save_for_backward(embeddings_a, embeddings_b)
+            return embeddings_a.new_zeros(())
 
         assert (
             B_a <= B_b
@@ -100,6 +99,9 @@ class FusedContrastiveLoss(torch.autograd.Function):
     @staticmethod
     @torch_amp_custom_bwd
     def backward(ctx, grad_output):
+        if getattr(ctx, "empty", False):
+            embeddings_a, embeddings_b = ctx.saved_tensors
+            return torch.zeros_like(embeddings_a), torch.zeros_like(embeddings_b), None
         embeddings_a, embeddings_b, row_max, row_lse = ctx.saved_tensors
         scale = ctx.scale
 
