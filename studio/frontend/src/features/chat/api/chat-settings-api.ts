@@ -37,7 +37,6 @@ export interface PersistedChatSettings {
   toolCallTimeout?: number;
   ragSource?: RagSource;
   ragMode?: RagMode;
-  enableRerank?: boolean;
   ragTopK?: number;
   ragMinScore?: number;
   ragIndexConcurrency?: number;

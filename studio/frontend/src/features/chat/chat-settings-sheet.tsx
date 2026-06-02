@@ -48,7 +48,6 @@ import {
 import {
   type KBMode,
   type ChunkingStrategy as RagChunkingStrategy,
-  precacheRagReranker,
 } from "@/features/rag/api/rag-api";
 import { DocumentRow } from "@/features/rag/components/document-row";
 import { KBCreateDialog } from "@/features/rag/components/kb-create-dialog";
@@ -523,8 +522,6 @@ export function ChatSettingsPanel({
   const ragMode = useChatRuntimeStore((s) => s.ragMode);
   const setRagMode = useChatRuntimeStore((s) => s.setRagMode);
   const ragToolEnabled = useChatRuntimeStore((s) => s.ragToolEnabled);
-  const enableRerank = useChatRuntimeStore((s) => s.enableRerank);
-  const setEnableRerank = useChatRuntimeStore((s) => s.setEnableRerank);
   const ragTopK = useChatRuntimeStore((s) => s.ragTopK);
   const setRagTopK = useChatRuntimeStore((s) => s.setRagTopK);
   const ragIndexConcurrency = useChatRuntimeStore(
@@ -1715,52 +1712,6 @@ export function ChatSettingsPanel({
                     (distinct from the sampling Top K below). Higher = more
                     grounding, more tokens.
                   </p>
-                </div>
-                <div className="flex items-center justify-between">
-                  <div className="flex flex-col">
-                    <span className="text-[13px] font-medium">
-                      Use reranker
-                    </span>
-                    <span className="text-[11px] text-muted-foreground">
-                      Slower; uses GPU. Improves quality for fact-heavy
-                      questions.
-                    </span>
-                  </div>
-                  <Switch
-                    checked={enableRerank}
-                    onCheckedChange={(next) => {
-                      setEnableRerank(next);
-                      if (!next) return;
-                      // First flip-on may download ~1.1 GB; the toast
-                      // covers the latency so the next query doesn't look
-                      // hung waiting on the reranker.
-                      const toastId = toast.loading(
-                        "Preparing reranker (one-time download)…",
-                      );
-                      void precacheRagReranker()
-                        .then((res) => {
-                          if (res.ok) {
-                            toast.success("Reranker ready", { id: toastId });
-                          } else {
-                            toast.error(
-                              `Reranker download failed: ${res.error ?? "unknown"}`,
-                              { id: toastId },
-                            );
-                            setEnableRerank(false);
-                          }
-                        })
-                        .catch((err: unknown) => {
-                          toast.error(
-                            `Reranker download failed: ${
-                              err instanceof Error ? err.message : String(err)
-                            }`,
-                            { id: toastId },
-                          );
-                          setEnableRerank(false);
-                        });
-                    }}
-                    disabled={!ragEnabled}
-                  />
                 </div>
                 <div className="flex flex-col gap-1.5">
                   <div className="flex items-center justify-between">

@@ -127,8 +127,6 @@ export interface SearchRequest {
   top_k?: number;
   mode?: "bm25" | "dense" | "hybrid";
   document_ids?: string[];
-  enable_rerank?: boolean;
-  reranker_model?: string;
   /** Cosine-similarity floor (0..1). Hits below are dropped server-side. */
   min_score?: number;
 }
@@ -399,22 +397,6 @@ export async function setRagDefaults(
  *  30s+). Fire-and-forget: failure is fine, the first query lazy-loads. */
 export async function warmupRagEmbedder(): Promise<void> {
   await authFetch("/api/rag/warmup", { method: "POST" });
-}
-
-/**  Download reranker weights into the HF cache. ~1.1 GB on first call,
- *   no-op when cached. Triggered by the reranker toggle so the download
- *   happens on an explicit action, not the first chat turn. */
-export async function precacheRagReranker(): Promise<{
-  ok: boolean;
-  model: string;
-  error?: string;
-}> {
-  const response = await authFetch("/api/rag/reranker/precache", {
-    method: "POST",
-  });
-  return parseJsonOrThrow<{ ok: boolean; model: string; error?: string }>(
-    response,
-  );
 }
 
 // --- Search ---

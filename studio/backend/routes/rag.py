@@ -41,7 +41,7 @@ async def _sse_auth(
     return await get_current_subject_sse(token, authorization)
 
 
-from core.rag import embeddings, ingestion, reranker, retrieval, vector_store
+from core.rag import embeddings, ingestion, retrieval, vector_store
 from core.rag.authorization import document_for_subject_or_404
 from core.rag.locators import backfill_document_locators
 from core.rag.vector_store import kb_scope, thread_scope
@@ -54,7 +54,6 @@ from storage.studio_db import (
 from utils.paths.storage_roots import ensure_dir, rag_uploads_root, resolve_under_root
 from utils.rag.config import (
     RAG_MAX_UPLOAD_MB,
-    RAG_RERANK_CANDIDATE_K,
     RAG_UPLOAD_EXTS,
 )
 
@@ -133,8 +132,6 @@ class SearchRequest(BaseModel):
     top_k: int = Field(default = 10, ge = 1, le = 100)
     mode: Literal["bm25", "dense", "hybrid"] = "hybrid"
     document_ids: list[str] | None = None
-    enable_rerank: bool = False
-    reranker_model: str | None = None
     min_score: float = Field(default = 0.0, ge = 0.0, le = 1.0)
 
 
@@ -506,37 +503,6 @@ def warmup_rag_embedder(
         logger.warning("RAG warmup failed for %s: %s", model_name, exc)
         return {"ok": False, "model": model_name, "error": "Failed to load embedder"}
     return {"ok": True, "model": model_name}
-
-
-@router.post("/reranker/precache")
-def precache_rag_reranker(
-    current_subject: str = Depends(get_current_subject),
-) -> dict:
-    """Download the reranker weights (~1.1 GB) into the HF cache.
-
-    Called from the frontend the moment the user flips the "Use
-    reranker" switch ON so the cost lands on the explicit toggle
-    instead of the first chat turn — where a multi-minute download
-    looks like a hung tool call.
-    """
-    from core.rag.reranker import precache_reranker
-    from utils.rag.config import RAG_RERANKER_MODEL
-
-    try:
-        precache_reranker()
-    except Exception as exc:  # noqa: BLE001
-        # Log details server-side; client gets a generic message so paths/stack stay hidden.
-        logger.warning(
-            "RAG reranker precache failed",
-            model = RAG_RERANKER_MODEL,
-            error = str(exc),
-        )
-        return {
-            "ok": False,
-            "model": RAG_RERANKER_MODEL,
-            "error": "Failed to download reranker",
-        }
-    return {"ok": True, "model": RAG_RERANKER_MODEL}
 
 
 @router.put("/defaults", response_model = RagDefaults)
@@ -1634,22 +1600,16 @@ def search(
     # Query must use the same embedder as the scope (dim must match).
     scope_embedder = _resolve_scope_embedder(scope)
     logger.info(
-        "RAG search: scope=%s embedder=%s mode=%s top_k=%d min_score=%.3f rerank=%s query=%r",
+        "RAG search: scope=%s embedder=%s mode=%s top_k=%d min_score=%.3f query=%r",
         scope,
         scope_embedder or "<default>",
         payload.mode,
         payload.top_k,
         payload.min_score,
-        payload.enable_rerank,
         payload.query[:120],
     )
 
-    # Reranker needs a wider candidate pool than top_k.
-    candidate_k = (
-        max(payload.top_k, RAG_RERANK_CANDIDATE_K)
-        if payload.enable_rerank
-        else payload.top_k
-    )
+    candidate_k = payload.top_k
 
     if payload.mode == "bm25":
         hits = retrieval.retrieve_bm25(scope, payload.query, candidate_k)
@@ -1703,20 +1663,7 @@ def search(
         for r in rows:
             chunk_lookup[r["chunk_id"]] = dict(r)
 
-    if payload.enable_rerank:
-        pairs = [
-            (hit, chunk_lookup[hit.chunk_id]["text"])
-            for hit in hits
-            if hit.chunk_id in chunk_lookup
-        ]
-        hits = reranker.rerank(
-            payload.query,
-            pairs,
-            model_name = payload.reranker_model,
-            top_k = payload.top_k,
-        )
-    else:
-        hits = hits[: payload.top_k]
+    hits = hits[: payload.top_k]
 
     out: list[SearchHit] = []
     for hit in hits:

@@ -744,9 +744,8 @@ class ChatCompletionRequest(BaseModel):
         description = (
             "[x-unsloth] Per-request context the `search_knowledge_base` tool "
             "consumes when the LLM invokes it. Shape: "
-            "{kb_id?: str, thread_id?: str, enable_rerank?: bool, "
-            "default_top_k?: int, reranker_model?: str, min_score?: float, "
-            "mode?: 'bm25'|'dense'|'hybrid'}. Ignored unless "
+            "{kb_id?: str, thread_id?: str, default_top_k?: int, "
+            "min_score?: float, mode?: 'bm25'|'dense'|'hybrid'}. Ignored unless "
             "'search_knowledge_base' is in enabled_tools."
         ),
     )

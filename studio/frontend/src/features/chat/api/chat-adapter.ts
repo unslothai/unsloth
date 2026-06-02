@@ -2376,7 +2376,6 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                             ragSource.kind === "thread"
                               ? (resolvedThreadId ?? null)
                               : null,
-                          enable_rerank: runtime.enableRerank,
                           default_top_k: runtime.ragTopK,
                           min_score: runtime.ragMinScore,
                           mode: runtime.ragMode,

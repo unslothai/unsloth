@@ -352,7 +352,6 @@ type ChatRuntimeStore = {
   activeNativePathToken: string | null;
   ragSource: RagSource;
   ragMode: RagMode;
-  enableRerank: boolean;
   ragTopK: number;
   // Cosine floor; 0 disables. Set > 0 to drop off-topic hits.
   ragMinScore: number;
@@ -421,7 +420,6 @@ type ChatRuntimeStore = {
   setContextUsage: (usage: ChatRuntimeStore["contextUsage"]) => void;
   setRagSource: (source: RagSource) => void;
   setRagMode: (mode: RagMode) => void;
-  setEnableRerank: (value: boolean) => void;
   setRagTopK: (value: number) => void;
   setRagMinScore: (value: number) => void;
   setRagIndexConcurrency: (value: number) => void;
@@ -447,7 +445,6 @@ type ScalarSettingKey =
   | "toolCallTimeout"
   | "ragSource"
   | "ragMode"
-  | "enableRerank"
   | "ragTopK"
   | "ragMinScore"
   | "ragIndexConcurrency"
@@ -490,7 +487,6 @@ const SCALAR_SETTING_KEYS = [
   "toolCallTimeout",
   "ragSource",
   "ragMode",
-  "enableRerank",
   "ragTopK",
   "ragMinScore",
   "ragIndexConcurrency",
@@ -714,7 +710,6 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   activeNativePathToken: null,
   ragSource: { kind: "thread" },
   ragMode: "hybrid",
-  enableRerank: false,
   ragTopK: 5,
   ragMinScore: 0,
   ragIndexConcurrency: 1,
@@ -976,15 +971,6 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     set((state) => {
       setScalarSettingVersion("ragMode", ragMode, state.ragMode);
       return { ragMode };
-    }),
-  setEnableRerank: (enableRerank) =>
-    set((state) => {
-      setScalarSettingVersion(
-        "enableRerank",
-        enableRerank,
-        state.enableRerank,
-      );
-      return { enableRerank };
     }),
   setRagTopK: (ragTopK) =>
     set((state) => {
