@@ -88,6 +88,7 @@ def _temporary_unsloth_return_hidden_states():
         else:
             os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = old_value
 
+
 _DPO_VISION_KEYS = (
     "pixel_position_ids",
     "image_position_ids",
@@ -1114,8 +1115,9 @@ def grpo_trainer__get_per_token_logps(function_name, function):
             if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1":
                 self._autocast_dtype = torch.float16
 
-        with _temporary_unsloth_return_hidden_states(), torch.amp.autocast(
-            device_type = DEVICE_TYPE, dtype = self._autocast_dtype
+        with (
+            _temporary_unsloth_return_hidden_states(),
+            torch.amp.autocast(device_type = DEVICE_TYPE, dtype = self._autocast_dtype),
         ):
             # We add 1 to `logits_to_keep` because the last logits of the sequence is later excluded
             logits = model(
@@ -1394,8 +1396,9 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 token_type_ids_chunks,
                 mm_token_type_ids_chunks,
             )
-            with _temporary_unsloth_return_hidden_states(), _get_inference_mode_context_manager(
-                model
+            with (
+                _temporary_unsloth_return_hidden_states(),
+                _get_inference_mode_context_manager(model),
             ):
                 for (
                     input_ids_chunk,
