@@ -1129,9 +1129,7 @@ with sync_playwright() as p:
             compare_item.click(force = True)
             page.wait_for_timeout(800)
             if not re.search(r"/chat\?", page.url):
-                soft_fail(
-                    f"'Compare chat' didn't open compare; current: {page.url}"
-                )
+                soft_fail(f"'Compare chat' didn't open compare; current: {page.url}")
         else:
             soft_fail("composer + menu: 'Compare chat' item not found")
     else:
