@@ -1006,14 +1006,14 @@ export function AppSidebar() {
                 <SidebarMenuButton
                   size="lg"
                   aria-label={t("shell.accountMenu", { name: displayTitle })}
-                  className="sidebar-nav-btn !h-[40px] gap-[8px] px-2 py-[5px] rounded-[12px]"
+                  className="sidebar-nav-btn !h-[48px] gap-[9px] px-2 py-[7px] rounded-[13px]"
                 >
                   <div className="shrink-0">
                     <UserAvatar
                       name={displayTitle}
                       imageUrl={avatarDataUrl}
                       size="sm"
-                      className="!size-[30px]"
+                      className="!size-[32px]"
                     />
                   </div>
                   <div className="flex flex-col gap-0.5 leading-tight group-data-[collapsible=icon]:hidden">
