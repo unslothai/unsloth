@@ -211,7 +211,7 @@ function NavItem({
           onClick={onClick}
           isActive={active}
           data-tour={dataTour}
-          className="sidebar-nav-btn h-[33px] rounded-[10px] gap-[8.5px] px-2.5 font-medium group-data-[collapsible=icon]:!w-[32px] group-data-[collapsible=icon]:!rounded-[10px] group-data-[collapsible=icon]:mx-auto"
+          className="sidebar-nav-btn h-[33px] rounded-[12px] gap-[8.5px] px-2.5 font-medium group-data-[collapsible=icon]:!w-[32px] group-data-[collapsible=icon]:!rounded-[10px] group-data-[collapsible=icon]:mx-auto"
         >
           <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-icon! shrink-0 group-hover/menu-button:animate-icon-pop" />
           <span className="text-[14.5px] leading-[19px] tracking-nav">{label}</span>
@@ -551,7 +551,7 @@ export function AppSidebar() {
         ? "sidebar-row-action group-hover/project-chat-item:opacity-100 group-hover/project-chat-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto"
         : "sidebar-row-action group-hover/recent-item:opacity-100 group-hover/recent-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto";
     const buttonClass = cn(
-      "sidebar-nav-btn h-[33px] cursor-pointer rounded-[10px] pr-4 text-[14.5px] leading-[19px] tracking-nav font-medium",
+      "sidebar-nav-btn h-[33px] cursor-pointer rounded-[12px] pr-4 text-[14.5px] leading-[19px] tracking-nav font-medium",
       variant === "project" ? "pl-[37px]" : "pl-2.5",
       variant === "project"
         ? "group-hover/project-chat-item:pr-8 group-has-[.sidebar-row-action[data-state=open]]/project-chat-item:pr-8"
@@ -915,7 +915,7 @@ export function AppSidebar() {
                       >
                         <SidebarMenuButton
                           isActive={isActiveRun}
-                          className="sidebar-nav-btn h-auto flex-col items-start gap-0.5 py-[5px] rounded-[10px] pl-2.5 pr-7 text-[14.5px] tracking-nav font-medium"
+                          className="sidebar-nav-btn h-auto flex-col items-start gap-0.5 py-[5px] rounded-[12px] pl-2.5 pr-7 text-[14.5px] tracking-nav font-medium"
                           onClick={() => {
                             setSelectedHistoryRunId(run.id);
                             closeMobileIfOpen();
@@ -1005,7 +1005,7 @@ export function AppSidebar() {
                 <SidebarMenuButton
                   size="lg"
                   aria-label={t("shell.accountMenu", { name: displayTitle })}
-                  className="sidebar-nav-btn !h-[40px] gap-[8px] px-2 py-[5px] rounded-[10px]"
+                  className="sidebar-nav-btn !h-[40px] gap-[8px] px-2 py-[5px] rounded-[12px]"
                 >
                   <div className="shrink-0">
                     <UserAvatar
