@@ -14,6 +14,11 @@ from utils.rag.config import RAG_EMBED_BATCH_SIZE, RAG_EMBEDDING_MODEL
 logger = logging.getLogger(__name__)
 
 _lock = threading.Lock()
+# Serializes actual compute (encode/tokenize). The ingestion thread and a
+# concurrent retrieval request share one model; HF's fast tokenizer panics
+# ("Already borrowed") if encode/tokenize run on it from two threads at once.
+# GPU work is serial anyway, so this costs nothing in practice.
+_compute_lock = threading.Lock()
 _model: Any | None = None
 _model_name: str | None = None
 _embedding_dim: int | None = None
@@ -66,13 +71,14 @@ def encode(
     normalize: bool = True,
 ):
     model = get_embedder(model_name)
-    return model.encode(
-        texts,
-        batch_size = batch_size or RAG_EMBED_BATCH_SIZE,
-        normalize_embeddings = normalize,
-        convert_to_numpy = True,
-        show_progress_bar = False,
-    )
+    with _compute_lock:
+        return model.encode(
+            texts,
+            batch_size = batch_size or RAG_EMBED_BATCH_SIZE,
+            normalize_embeddings = normalize,
+            convert_to_numpy = True,
+            show_progress_bar = False,
+        )
 
 
 def token_counter(model_name: str | None = None):
@@ -81,7 +87,8 @@ def token_counter(model_name: str | None = None):
 
     def _count(text: str) -> int:
         try:
-            tokens = model.tokenize([text])
+            with _compute_lock:
+                tokens = model.tokenize([text])
             ids = tokens.get("input_ids")
             if ids is None:
                 return max(1, len(text) // 4)

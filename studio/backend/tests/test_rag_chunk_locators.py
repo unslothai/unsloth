@@ -11,7 +11,7 @@ import storage.studio_db as studio_db
 from core.rag.chunking import chunk_pages, chunk_pages_with_spans
 from core.rag.ingestion import (
     _JobState,
-    _insert_chunks_and_collect_for_bm25,
+    _insert_chunks,
     _pump,
     _replace_document_pages,
 )
@@ -111,7 +111,7 @@ def test_image_chunk_persistence_keeps_page_focus_and_null_text_locators(
             (doc_id, kb_id, "image.pdf", "application/pdf", "image.pdf", 1_700_000_001),
         )
 
-    _insert_chunks_and_collect_for_bm25(
+    _insert_chunks(
         doc_id,
         "kb_scope",
         0,
@@ -228,15 +228,12 @@ class _OneMessageQueue:
         return self.message
 
 
-class _FinishedProcess:
+class _FinishedWorker:
     def join(self, timeout: float | None = None) -> None:
         return None
 
     def is_alive(self) -> bool:
         return False
-
-    def terminate(self) -> None:
-        return None
 
 
 @pytest.mark.parametrize(
@@ -272,7 +269,7 @@ def test_document_pages_missing_document_fails_pump_cleanly(
         }
     )
 
-    _pump(state, _FinishedProcess(), queue)
+    _pump(state, _FinishedWorker(), queue)
 
     assert state.status == "failed"
     assert state.error is not None
