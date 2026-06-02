@@ -2112,7 +2112,14 @@ if ($HasNvidiaSmi) {
 # Wheels bundle their own ROCm runtime; HIP SDK version is irrelevant.
 $ROCmGfxArch = $script:ROCmGfxArch
 $ROCmIndexUrl = $null
-if ($HasROCm -and $CuTag -eq "cpu") {
+# Install the AMD ROCm PyTorch wheels when ROCm is confirmed OR a gfx arch is
+# known (name-inferred on Adrenalin-only hosts). AMD's per-arch wheels bundle
+# the ROCm runtime (rocm-sdk-libraries-<gfx>), so torch.cuda.is_available()
+# returns True without a HIP SDK -- which is what flips Studio out of chat-only
+# (CHAT_ONLY) and enables the Train/Export tabs. Gating on $HasROCm alone left
+# Strix Halo / Radeon 8060S on CPU torch. A failed ROCm install still falls
+# back to CPU below, so this is safe.
+if (($HasROCm -or $ROCmGfxArch) -and $CuTag -eq "cpu") {
     $amdIndexBase = if ($env:UNSLOTH_ROCM_WINDOWS_MIRROR) { $env:UNSLOTH_ROCM_WINDOWS_MIRROR.TrimEnd('/') } else { "https://repo.amd.com/rocm/whl" }
     $archFamilyMap = @{
         "gfx1201" = "gfx120X-all"; "gfx1200" = "gfx120X-all"  # RDNA 4
