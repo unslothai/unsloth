@@ -35,6 +35,67 @@ from loggers import get_logger
 logger = get_logger(__name__)
 
 
+# ---------------------------------------------------------------------------
+# SSM (State Space Model) detection for optimized inference
+# ---------------------------------------------------------------------------
+# State-space models like Mamba, LFM, Falcon-H1, NemotronH, and Jamba use
+# recurrent state instead of KV caches. Setting use_cache=True on these
+# architectures causes errors or degraded performance.
+
+_SSM_MODEL_SUBSTRINGS = (
+    "nemotron_h", "nemotron-h", "nemotron-3-nano",
+    "falcon_h1", "falcon-h1", "granite-4.0-h",
+    "granitemoehybrid", "lfm2", "lfm-2", "mamba", "jamba",
+)
+
+
+def _extract_model_identifier(model_name: str) -> str:
+    """Extract the model identifier from a full path or HuggingFace repo ID.
+
+    Examples:
+        '/home/user/.cache/huggingface/hub/models--meta-llama--Llama-3.2-1B/...'
+            -> 'meta-llama--Llama-3.2-1B'
+        '/home/mamba/models/llama-7b'  -> 'llama-7b'
+        'unsloth/Llama-3.2-1B'         -> 'unsloth/Llama-3.2-1B'
+    """
+    import os
+
+    if not model_name:
+        return model_name
+
+    # Handle HuggingFace cache paths: .../models--org--name/...
+    if "models--" in model_name:
+        parts = model_name.split("models--")
+        if len(parts) > 1:
+            # Get the part after 'models--' and before any path separator
+            repo_part = parts[-1].split(os.sep)[0].split("/")[0]
+            return repo_part.replace("--", "/")
+
+    # Handle regular file paths - use basename
+    if os.sep in model_name or (model_name.count("/") > 1):
+        return os.path.basename(model_name.rstrip(os.sep + "/"))
+
+    # Already a simple identifier or HF repo ID
+    return model_name
+
+
+def _is_ssm_model(model_name: str) -> bool:
+    """Check if a model is a State Space Model (SSM) architecture.
+
+    SSM architectures (Mamba, LFM, Falcon-H1, NemotronH, Jamba) use recurrent
+    state instead of traditional KV caches and require use_cache=False.
+    """
+    if not model_name:
+        return False
+
+    # Extract the model identifier to avoid false positives from paths
+    # e.g., '/home/mamba/models/llama' should not match 'mamba'
+    identifier = _extract_model_identifier(model_name)
+    identifier_lower = identifier.lower()
+
+    return any(sub in identifier_lower for sub in _SSM_MODEL_SUBSTRINGS)
+
+
 class HarmonyTextStreamer:
     """Streaming text decoder for gpt-oss harmony channel protocol.
 
@@ -1187,11 +1248,14 @@ class InferenceBackend:
                 timeout = 0.2,
             )
 
+            # SSM models (Mamba, LFM, etc.) use recurrent state, not KV cache
+            use_cache = not _is_ssm_model(self.active_model_name)
+
             generation_kwargs = dict(
                 **inputs,
                 streamer = streamer,
                 max_new_tokens = max_new_tokens,
-                use_cache = True,
+                use_cache = use_cache,
                 do_sample = temperature > 0,
                 temperature = temperature,
                 top_p = top_p,
@@ -1325,12 +1389,15 @@ class InferenceBackend:
                 timeout = 0.2,
             )
 
+            # SSM models (Mamba, LFM, etc.) use recurrent state, not KV cache
+            use_cache = not _is_ssm_model(self.active_model_name)
+
             # Notebook uses do_sample=False for ASR (greedy decoding for accuracy)
             generation_kwargs = dict(
                 **inputs,
                 streamer = streamer,
                 max_new_tokens = max_new_tokens,
-                use_cache = True,
+                use_cache = use_cache,
                 do_sample = False,
             )
 
@@ -1657,6 +1724,9 @@ class InferenceBackend:
         input_ids = torch.cat([start_token, text_ids, end_tokens], dim = 1)
         attention_mask = torch.ones_like(input_ids)
 
+        # SSM models (Mamba, LFM, etc.) use recurrent state, not KV cache
+        use_cache = not _is_ssm_model(self.active_model_name)
+
         generated = model.generate(
             input_ids = input_ids,
             attention_mask = attention_mask,
@@ -1666,7 +1736,7 @@ class InferenceBackend:
             top_p = top_p,
             repetition_penalty = repetition_penalty,
             eos_token_id = 128258,  # END_OF_SPEECH
-            use_cache = True,
+            use_cache = use_cache,
         )
         return self._audio_codec_manager.decode_snac(generated, str(device))
 
