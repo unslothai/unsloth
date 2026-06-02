@@ -2084,7 +2084,23 @@ def _apply_diffusion_lora(
     if hf_token:
         kwargs["token"] = hf_token
     _guard_peft_optional_bitsandbytes()
-    load_lora(lora_repo, **kwargs)
+    try:
+        load_lora(lora_repo, **kwargs)
+    except Exception as exc:
+        retry_state_dict = _load_component_prefix_stripped_lora_state_dict(
+            lora_repo,
+            lora_weight_name = lora_weight_name,
+            hf_token = hf_token,
+            original_error = exc,
+        )
+        if retry_state_dict is None:
+            raise
+        logger.info(
+            "Retrying Diffusers LoRA load after stripping component prefix "
+            "from %d tensors.",
+            len(retry_state_dict),
+        )
+        load_lora(retry_state_dict, adapter_name = adapter_name)
     set_adapters = getattr(pipe, "set_adapters", None)
     if callable(set_adapters):
         set_adapters(adapter_name, adapter_weights = scale)
@@ -2102,6 +2118,91 @@ def _apply_diffusion_lora(
         scale = scale,
         fused = bool(lora_fuse),
     )
+
+
+def _load_component_prefix_stripped_lora_state_dict(
+    lora_repo: str,
+    *,
+    lora_weight_name: Optional[str],
+    hf_token: Optional[str],
+    original_error: Exception,
+) -> Optional[dict[str, Any]]:
+    """Return a LoRA state dict with a redundant component prefix stripped.
+
+    Some Diffusers-format LoRAs are saved with keys like
+    ``transformer.layers.0.attention.to_q.lora_down.weight``. Pipeline
+    loaders may then pass the state dict into the transformer component,
+    whose own module tree starts at ``layers.0...``. In that case PEFT sees
+    target modules prefixed with ``transformer.`` and rejects an otherwise
+    compatible adapter. Keep this as a narrow retry for fully component-
+    prefixed safetensors files; already-compatible adapters continue through
+    Diffusers' standard path above.
+    """
+
+    message = str(original_error)
+    if "Target modules" not in message or "not found in the base model" not in message:
+        return None
+    if not lora_weight_name and not str(lora_repo).lower().endswith(".safetensors"):
+        return None
+    try:
+        from safetensors.torch import load_file
+    except Exception:
+        return None
+    try:
+        path = _resolve_lora_safetensors_path(
+            lora_repo,
+            lora_weight_name = lora_weight_name,
+            hf_token = hf_token,
+        )
+        state_dict = load_file(str(path), device = "cpu")
+    except Exception as exc:
+        logger.debug("Could not load LoRA safetensors for prefix retry: %s", exc)
+        return None
+
+    return _strip_lora_component_prefix(state_dict)
+
+
+def _resolve_lora_safetensors_path(
+    lora_repo: str,
+    *,
+    lora_weight_name: Optional[str],
+    hf_token: Optional[str],
+) -> Path:
+    repo_path = Path(lora_repo).expanduser()
+    if repo_path.is_file():
+        return repo_path
+    if repo_path.is_dir():
+        if not lora_weight_name:
+            raise FileNotFoundError("A local LoRA directory requires lora_weight_name.")
+        return repo_path / lora_weight_name
+    if not lora_weight_name:
+        raise FileNotFoundError("A Hub LoRA retry requires lora_weight_name.")
+    from huggingface_hub import hf_hub_download
+
+    return Path(
+        hf_hub_download(
+            lora_repo,
+            lora_weight_name,
+            token = hf_token or None,
+        )
+    )
+
+
+def _strip_lora_component_prefix(state_dict: dict[str, Any]) -> Optional[dict[str, Any]]:
+    if not state_dict:
+        return None
+    prefixes = (
+        "transformer.",
+        "unet.",
+        "text_encoder.",
+        "text_encoder_2.",
+        "text_encoder_3.",
+    )
+    keys = tuple(state_dict.keys())
+    for prefix in prefixes:
+        if all(key.startswith(prefix) for key in keys):
+            return {key[len(prefix):]: value for key, value in state_dict.items()}
+    return None
 
 
 def _expand_existing_local_path(value: str) -> str:

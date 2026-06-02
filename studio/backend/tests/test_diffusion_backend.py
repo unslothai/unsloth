@@ -5190,6 +5190,59 @@ def test_apply_lora_allows_studio_lazy_gguf_modules():
     ]
 
 
+def test_apply_lora_retries_component_prefixed_safetensors(monkeypatch, tmp_path):
+    from core.inference import diffusion as d
+
+    lora_file = tmp_path / "adapter.safetensors"
+    lora_file.write_bytes(b"stub")
+    state_dict = {
+        "transformer.layers.0.attention.to_q.lora_down.weight": object(),
+        "transformer.layers.0.attention.to_q.lora_up.weight": object(),
+    }
+
+    import safetensors.torch
+
+    monkeypatch.setattr(safetensors.torch, "load_file", lambda *a, **k: state_dict)
+
+    class Pipe:
+        def __init__(self):
+            self.loads = []
+            self.adapter_calls = []
+
+        def load_lora_weights(self, source, **kwargs):
+            self.loads.append((source, kwargs))
+            if len(self.loads) == 1:
+                raise RuntimeError(
+                    "Target modules {'transformer.layers.0.attention.to_q'} "
+                    "not found in the base model."
+                )
+
+        def set_adapters(self, adapter_names, adapter_weights = None):
+            self.adapter_calls.append((adapter_names, adapter_weights))
+
+    pipe = Pipe()
+    state = d._apply_diffusion_lora(
+        pipe,
+        lora_repo = str(lora_file),
+        lora_weight_name = None,
+        lora_adapter_name = "style",
+        lora_scale = 0.25,
+        lora_fuse = False,
+        hf_token = None,
+        gguf_filename = None,
+        uses_studio_lazy_gguf_modules = False,
+    )
+
+    assert state.adapter_name == "style"
+    assert pipe.loads[0][0] == str(lora_file)
+    assert pipe.loads[1][1] == {"adapter_name": "style"}
+    assert sorted(pipe.loads[1][0]) == [
+        "layers.0.attention.to_q.lora_down.weight",
+        "layers.0.attention.to_q.lora_up.weight",
+    ]
+    assert pipe.adapter_calls == [("style", 0.25)]
+
+
 def test_lazy_gguf_linear_is_peft_lora_dispatchable():
     import gguf
     import torch
