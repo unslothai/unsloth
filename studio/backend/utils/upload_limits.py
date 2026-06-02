@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import math
 import os
 from typing import Any
 
@@ -14,8 +13,14 @@ DEFAULT_UPLOAD_LIMIT_MB = 500
 MIN_UPLOAD_LIMIT_MB = 1
 MAX_UPLOAD_LIMIT_MB = 8192
 _BYTES_PER_MB = 1024 * 1024
-_MULTIPART_OVERHEAD_BYTES = 8 * _BYTES_PER_MB
-_BASE64_BODY_OVERHEAD_RATIO = 1.4
+MULTIPART_OVERHEAD_BYTES = 10 * _BYTES_PER_MB
+
+LOCAL_SEED_UPLOAD_MAX_BYTES = 100 * _BYTES_PER_MB
+LOCAL_SEED_UPLOAD_MAX_LABEL = "100MB"
+UNSTRUCTURED_RECIPE_UPLOAD_MAX_BYTES = 500 * _BYTES_PER_MB
+UNSTRUCTURED_RECIPE_UPLOAD_MAX_LABEL = "500MB"
+UNSTRUCTURED_RECIPE_UPLOAD_TOTAL_MAX_BYTES = 1024 * _BYTES_PER_MB
+UNSTRUCTURED_RECIPE_UPLOAD_TOTAL_MAX_LABEL = "1GB"
 
 
 def _coerce_upload_limit_mb(value: Any) -> int | None:
@@ -78,19 +83,15 @@ def get_upload_limit_label() -> str:
     return upload_limit_label()
 
 
-def request_body_limit_bytes(limit_mb: int | None = None) -> int:
-    """Allow transport overhead for the configured max file upload size.
+def default_request_body_limit_bytes() -> int:
+    """Default protected-route body cap for non-upload requests."""
 
-    Multipart uploads add boundaries/headers, and the legacy recipe local-file
-    path sends base64 JSON. The user-facing setting remains a file-size limit;
-    the raw request-body guard gets enough headroom to carry that file.
-    """
-
-    file_limit = upload_limit_bytes(limit_mb)
-    multipart_limit = file_limit + _MULTIPART_OVERHEAD_BYTES
-    base64_limit = math.ceil(file_limit * _BASE64_BODY_OVERHEAD_RATIO)
-    return max(multipart_limit, base64_limit)
+    return default_upload_limit_mb() * _BYTES_PER_MB
 
 
-def get_request_body_limit_bytes() -> int:
-    return request_body_limit_bytes()
+def upload_request_limit_bytes(file_limit_bytes: int | None = None) -> int:
+    """Request cap for upload routes, including multipart field overhead."""
+
+    return (
+        file_limit_bytes if file_limit_bytes is not None else get_upload_limit_bytes()
+    ) + MULTIPART_OVERHEAD_BYTES

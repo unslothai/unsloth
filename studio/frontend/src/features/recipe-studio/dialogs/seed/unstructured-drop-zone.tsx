@@ -8,10 +8,14 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { uploadUnstructuredFile, removeUnstructuredFile } from "../../api";
+import {
+  UNSTRUCTURED_RECIPE_UPLOAD_MAX_BYTES,
+  UNSTRUCTURED_RECIPE_UPLOAD_MAX_LABEL,
+  UNSTRUCTURED_RECIPE_UPLOAD_TOTAL_MAX_BYTES,
+  UNSTRUCTURED_RECIPE_UPLOAD_TOTAL_MAX_LABEL,
+} from "./upload-limits";
 
 const ACCEPTED_EXTENSIONS = [".txt", ".pdf", ".docx", ".md"];
-const MAX_FILE_SIZE = 500 * 1024 * 1024;
-const MAX_TOTAL_SIZE = 1024 * 1024 * 1024;
 
 type FileEntry = {
   id: string;
@@ -62,7 +66,7 @@ export function UnstructuredDropZone({
     async (newFiles: File[]) => {
       const valid = newFiles.filter((f) => {
         if (!isValidExtension(f.name)) return false;
-        if (f.size > MAX_FILE_SIZE) return false;
+        if (f.size > UNSTRUCTURED_RECIPE_UPLOAD_MAX_BYTES) return false;
         return true;
       });
 
@@ -70,7 +74,8 @@ export function UnstructuredDropZone({
 
       const addedSize = valid.reduce((s, f) => s + f.size, 0);
       const currentTotal = filesRef.current.reduce((sum, f) => sum + f.size, 0);
-      if (currentTotal + addedSize > MAX_TOTAL_SIZE) return;
+      if (currentTotal + addedSize > UNSTRUCTURED_RECIPE_UPLOAD_TOTAL_MAX_BYTES)
+        return;
 
       const entries: FileEntry[] = valid.map((f) => ({
         id: "",
@@ -89,14 +94,10 @@ export function UnstructuredDropZone({
         let updatedStatus: FileEntry["status"] = "error";
         let updatedError: string | undefined;
         try {
-          const existingIds = filesRef.current
-            .filter((f) => f.id)
-            .map((f) => f.id);
           const result = await uploadUnstructuredFile(
             file,
             blockId,
             entry.abortController?.signal,
-            existingIds,
           );
           updatedId = result.file_id;
           updatedStatus = result.status === "ok" ? "ok" : "error";
@@ -203,7 +204,8 @@ export function UnstructuredDropZone({
           Drop files here or click to browse
         </p>
         <p className="text-muted-foreground/60 mt-1 text-xs">
-          PDF, DOCX, TXT, MD - up to 500MB each, 1GB total
+          PDF, DOCX, TXT, MD - up to {UNSTRUCTURED_RECIPE_UPLOAD_MAX_LABEL}{" "}
+          each, {UNSTRUCTURED_RECIPE_UPLOAD_TOTAL_MAX_LABEL} total
         </p>
       </div>
 
@@ -265,7 +267,10 @@ export function UnstructuredDropZone({
               {successFiles.length} file{successFiles.length !== 1 ? "s" : ""}{" "}
               uploaded
             </span>
-            <span>{formatSize(totalSize)} / 1GB</span>
+            <span>
+              {formatSize(totalSize)} /{" "}
+              {UNSTRUCTURED_RECIPE_UPLOAD_TOTAL_MAX_LABEL}
+            </span>
           </div>
         </div>
       )}

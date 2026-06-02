@@ -111,9 +111,9 @@ export const zhCN = {
       startOnboardingAction: "开始引导",
       uploads: {
         sectionTitle: "上传",
-        maxUploadSize: "最大上传大小",
+        maxUploadSize: "训练数据集上传上限",
         maxUploadSizeDescription:
-          "适用于训练数据集上传和 Learning Recipes 文件。默认值为 {defaultSize} MB。",
+          "适用于训练数据集上传。默认值为 {defaultSize} MB。",
       },
       resetPreferences: {
         sectionTitle: "危险区域",
@@ -250,10 +250,10 @@ export const zhCN = {
       actionsFor: "{name} 的操作",
       copyPrefix: "复制前缀",
       revokeToken: "撤销 token",
-      revokeTitle: "撤销访问 token \"{name}\"？",
+      revokeTitle: '撤销访问 token "{name}"？',
       revokeDescription:
         "使用此 token 的应用会立即失去访问权限。此操作无法撤销。",
-      revokeAction: "撤销 \"{name}\"",
+      revokeAction: '撤销 "{name}"',
       revoking: "撤销中...",
     },
     about: {
@@ -414,8 +414,7 @@ export const zhCN = {
         "可选。如果未提供，将从训练数据中切分出一小部分。",
       advanced: "高级",
       targetFormat: "目标格式",
-      targetFormatTooltip:
-        "训练数据的格式。自动检测对大多数数据集都有效。",
+      targetFormatTooltip: "训练数据的格式。自动检测对大多数数据集都有效。",
       auto: "自动",
       rawText: "原始文本",
       trainSplitStart: "训练切分起始",
@@ -512,8 +511,7 @@ export const zhCN = {
       weightDecayTooltip: "L2 正则化，用于防止过拟合。",
       warmupSteps: "预热步数",
       warmupStepsTooltip: "在训练开始时逐步提高学习率，提升稳定性。",
-      scheduleEpochsTooltip:
-        "完整遍历数据集的次数。设为 0 则按最大步数运行。",
+      scheduleEpochsTooltip: "完整遍历数据集的次数。设为 0 则按最大步数运行。",
       saveSteps: "保存步数",
       saveStepsTooltip: "每 N 步保存一次检查点。0 表示禁用。",
       evalSteps: "评估步数",
