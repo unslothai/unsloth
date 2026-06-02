@@ -1332,24 +1332,35 @@ shell.Run cmd, 0, False
         # On failure/timeout the caller's WMI name -> gfx fallback still resolves.
         $prevCompat = [Environment]::GetEnvironmentVariable('__COMPAT_LAYER', 'Process')
         $env:__COMPAT_LAYER = 'RunAsInvoker'
-        $outFile = [System.IO.Path]::GetTempFileName()
-        $errFile = [System.IO.Path]::GetTempFileName()
         try {
-            $p = Start-Process -FilePath $Exe -ArgumentList $SmiArgs -NoNewWindow -PassThru `
-                     -RedirectStandardOutput $outFile -RedirectStandardError $errFile
-            if (-not $p.WaitForExit($TimeoutSec * 1000)) {
-                try { $p.Kill() } catch {}
+            # [Process]::Start, NOT Start-Process -PassThru -- the latter leaves
+            # .ExitCode $null after WaitForExit on PS 5.1, so $LASTEXITCODE (which
+            # every caller checks) would always read non-zero and silently kill
+            # the amd-smi detection. Async stream reads drain the pipes (no
+            # deadlock) while WaitForExit bounds a flaky amd-smi. amd-smi args
+            # have no spaces, so a plain join is safe and avoids Start-Process's
+            # empty-ArgumentList error.
+            $psi = New-Object System.Diagnostics.ProcessStartInfo
+            $psi.FileName = $Exe
+            $psi.Arguments = ($SmiArgs -join ' ')
+            $psi.UseShellExecute = $false
+            $psi.RedirectStandardOutput = $true
+            $psi.RedirectStandardError = $true
+            $psi.CreateNoWindow = $true
+            $proc = [System.Diagnostics.Process]::Start($psi)
+            $outTask = $proc.StandardOutput.ReadToEndAsync()
+            $errTask = $proc.StandardError.ReadToEndAsync()
+            if (-not $proc.WaitForExit($TimeoutSec * 1000)) {
+                try { $proc.Kill() } catch {}
                 $global:LASTEXITCODE = 124
                 return ""
             }
-            $global:LASTEXITCODE = $p.ExitCode
-            return (((Get-Content -LiteralPath $outFile -Raw -ErrorAction SilentlyContinue)) + "`n" +
-                    ((Get-Content -LiteralPath $errFile -Raw -ErrorAction SilentlyContinue)))
+            $global:LASTEXITCODE = $proc.ExitCode
+            return ($outTask.Result + "`n" + $errTask.Result)
         } catch {
             $global:LASTEXITCODE = 1
             return ""
         } finally {
-            Remove-Item -LiteralPath $outFile, $errFile -Force -ErrorAction SilentlyContinue
             if ($null -eq $prevCompat) {
                 Remove-Item Env:__COMPAT_LAYER -ErrorAction SilentlyContinue
             } else {
@@ -1495,7 +1506,7 @@ shell.Run cmd, 0, False
                     @{ P = "9070|9060";                                           A = "gfx1200" }  # RDNA 4 (RX 9070 / 9060)
                     @{ P = "8060S|8050S|8040S|890M|Strix Halo|Ryzen AI Max|HX 37[05]|HX 38[05]|AI 9 HX|AI Max"; A = "gfx1151" }  # RDNA 3.5 (Strix Halo / Radeon 8000S)
                     @{ P = "880M|860M|840M|Strix Point|Krackan|AI 9 36[05]|AI 7 35[05]|AI 5 34[05]|AI 7 PRO 35|AI 5 33"; A = "gfx1150" }  # RDNA 3.5 (Strix/Krackan Point)
-                    @{ P = "RX 7900|RX 7800|RX 7700(?! S)|PRO W7900|PRO W7800|PRO W7700"; A = "gfx1100" }  # RDNA 3 desktop/workstation (Navi 31)
+                    @{ P = "RX 7900|RX 7800|RX 7700(?!S)|PRO W7900|PRO W7800|PRO W7700"; A = "gfx1100" }  # RDNA 3 desktop/workstation (Navi 31)
                     @{ P = "RX 7600|RX 7700S|RX 7650|PRO W7600|PRO W7500|PRO V710"; A = "gfx1102" }  # RDNA 3 (Navi 33)
                     @{ P = "780M|760M|740M|Phoenix|Hawk Point|Z1 Extreme|Z2 Extreme"; A = "gfx1103" }  # RDNA 3 iGPU (Phoenix / Hawk Point)
                     @{ P = "RX 6900|RX 6800|RX 6750|RX 6700|PRO W6800|PRO W6900";  A = "gfx1030" }  # RDNA 2 (Navi 21) -- lemonade gfx103X
