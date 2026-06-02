@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Modal provider: GPU sandboxes running Unsloth Studio, with local-model staging
-onto a Modal volume. Implements the `Provider` contract in deploy/base.py.
-"""
+"""Modal provider for `unsloth deploy`: GPU sandboxes running Unsloth Studio."""
 
 from __future__ import annotations
 
@@ -15,19 +13,14 @@ from unsloth_cli.deploy import DeployError, Gpu, StagedModel
 from unsloth_cli.deploy.base import Option, Provider
 
 
-APP_NAME = "unsloth-studio"          # persisted Modal app sandboxes are created under
-MODEL_MOUNT_DIR = "/model"           # where a staged volume is mounted in the sandbox
-SANDBOX_TIMEOUT_S = 86400            # Modal's hard cap on a sandbox's lifetime (24h)
+APP_NAME = "unsloth-studio"
+MODEL_MOUNT_DIR = "/model"
+SANDBOX_TIMEOUT_S = 86400
 POLL_INTERVAL_S = 3
-
-# The official prebaked Studio image (pulled, not built). Runs as user `unsloth` with
-# `unsloth` on PATH (/opt/venv); its built frontend is whited out, so we serve the API
-# only (--api-only) -- all the deploy needs. The web UI would need the image entrypoint.
 STUDIO_IMAGE = "unsloth/unsloth"
-STUDIO_HOME = "/home/unsloth/.unsloth/studio"   # UNSLOTH_STUDIO_HOME we pin (writable)
+STUDIO_HOME = "/home/unsloth/.unsloth/studio"
 
-# Modal has no live pricing/stock API, so this is its published catalog.
-MODAL_GPUS = [  # (gpu id / spec, display name, vram_gb, usd/hr)
+MODAL_GPUS = [  # (gpu id, display name, vram_gb, usd/hr)
     ("T4",        "NVIDIA T4",        16, 0.59),
     ("L4",        "NVIDIA L4",        24, 0.80),
     ("A10G",      "NVIDIA A10G",      24, 1.10),
@@ -43,10 +36,10 @@ MODAL_GPUS = [  # (gpu id / spec, display name, vram_gb, usd/hr)
 class Modal(Provider):
     name = "modal"
 
-    supports_ssh = False             # Modal exposes sb.exec, not an SSH target
-    supports_pause = False           # no suspend/resume
-    supports_local_model = True      # uploads onto a Modal volume
-    reports_stock = False            # fixed-capacity cloud; no live stock signal
+    supports_ssh = False
+    supports_pause = False
+    supports_local_model = True
+    reports_stock = False
     deploy_note = "Modal stops this instance automatically after 24h (max sandbox lifetime)."
 
     def __init__(self):
@@ -55,8 +48,6 @@ class Modal(Provider):
 
     @classmethod
     def option_schema(cls) -> list[Option]:
-        # None: the Modal SDK discovers credentials itself (MODAL_TOKEN_ID/SECRET env
-        # vars, else ~/.modal.toml written by `modal token new`).
         return []
 
     def auth(self, options: dict[str, str]) -> None:
@@ -69,9 +60,6 @@ class Modal(Provider):
                 "    pip install unsloth[deploy]"
             ) from e
         try:
-            # App.lookup authenticates with the SDK's ambient credentials and returns a
-            # persisted app, so sandboxes outlive this CLI process (ephemeral app.run()
-            # would tear them down). Raises if no valid credentials are found.
             self._app = modal.App.lookup(APP_NAME, create_if_missing = True)
         except Exception as e:
             raise DeployError(
@@ -100,14 +88,11 @@ class Modal(Provider):
         ssh_port: Optional[int] = None,
         staged: Optional[StagedModel] = None,
     ) -> str:
-        # We pull the prebaked unsloth/unsloth (see _studio_image) and start Studio
-        # ourselves, so the passed `image` tag, disk_gb, and ssh_port don't apply.
         sdk = self._sdk()
         volumes = {}
         if staged and staged.storage_id:
             volumes[MODEL_MOUNT_DIR] = sdk.Volume.from_name(staged.storage_id)
         try:
-            # Stream the first-time image pull (~13 GB) so the deploy isn't silent.
             with sdk.enable_output():
                 sb = sdk.Sandbox.create(
                     "/bin/sh", "-lc", self._start_command(http_port),
@@ -115,9 +100,8 @@ class Modal(Provider):
                     name = name,
                     image = self._studio_image(),
                     gpu = gpu.id,
-                    # TLS tunnel: the admin password travels over this URL, so never plaintext.
                     encrypted_ports = [http_port],
-                    secrets = [sdk.Secret.from_dict(env)],   # admin password, not a plaintext arg
+                    secrets = [sdk.Secret.from_dict(env)],
                     volumes = volumes,
                     timeout = SANDBOX_TIMEOUT_S,
                 )
@@ -126,10 +110,9 @@ class Modal(Provider):
         return sb.object_id
 
     def _start_command(self, http_port: int) -> str:
-        """Shell to launch Studio. Studio ignores UNSLOTH_ADMIN_PASSWORD and seeds its
-        admin user from a .bootstrap_password file (like the RunPod image's start.sh),
-        so we pin UNSLOTH_STUDIO_HOME and write the password (a Modal secret) there
-        first. --api-only because the image whites out the built web frontend."""
+        # Studio seeds its admin user from a .bootstrap_password file, not from
+        # UNSLOTH_ADMIN_PASSWORD, so write the password there before launch.
+        # --api-only: the image's built web frontend is whited out.
         pw_file = f"{STUDIO_HOME}/auth/.bootstrap_password"
         return (
             f"export UNSLOTH_STUDIO_HOME={STUDIO_HOME} && "
@@ -140,8 +123,6 @@ class Modal(Provider):
         )
 
     def _studio_image(self):
-        # Clear the image entrypoint so our command runs directly (the entrypoint also
-        # launches Jupyter/SSH, which a Studio deploy doesn't need).
         return self._sdk().Image.from_registry(STUDIO_IMAGE).entrypoint([])
 
     def wait_ready(self, instance_id: str, timeout_s: int) -> None:
@@ -151,15 +132,14 @@ class Modal(Provider):
         while time.time() < deadline:
             code = sb.poll()
             if code is not None:
-                # A non-None exit code means the container stopped before it served.
                 raise DeployError(
                     f"Modal sandbox {instance_id} exited before serving (code {code})."
                 )
             try:
                 if sb.tunnels(timeout = POLL_INTERVAL_S):
-                    return  # tunnel resolved -> the network path is up
+                    return
             except Exception:
-                pass  # tunnel not ready yet; keep polling until the deadline
+                pass
             time.sleep(POLL_INTERVAL_S)
         raise DeployError(f"Modal sandbox {instance_id} did not start within {timeout_s}s")
 
@@ -185,8 +165,6 @@ class Modal(Provider):
         gpu: Gpu,
         log: Callable[[str], None] = lambda _msg: None,
     ) -> StagedModel:
-        """Create a Modal volume, upload `local_path` onto it, and return the
-        on-volume path the sandbox loads from."""
         sdk = self._sdk()
         volume_name = f"unsloth-model-{int(time.time())}"
         model_name = local_path.name or local_path.resolve().name or "model"
@@ -202,17 +180,15 @@ class Modal(Provider):
                 else:
                     batch.put_file(str(local_path), f"/{model_name}")
         except BaseException as e:
-            # Any failure -- including a Ctrl-C mid-upload -- must not leave the
-            # billing volume behind. Delete it, then propagate.
+            # Delete the volume on any failure (incl. Ctrl-C) so it stops billing.
             try:
                 sdk.Volume.delete(volume_name)
             except Exception:
                 log(
                     f"  warning: couldn't delete volume {volume_name} after a failed "
-                    f"upload; it may keep billing. Remove it with:\n"
+                    f"upload; remove it with:\n"
                     f"      unsloth deploy delete-storage {volume_name} --provider modal"
                 )
-            # Wrap a plain SDK error so the command layer catches it; let interrupts pass.
             if isinstance(e, (KeyboardInterrupt, SystemExit, DeployError)):
                 raise
             raise DeployError(f"Modal volume upload failed: {e}") from e
@@ -221,7 +197,7 @@ class Modal(Provider):
             model_path = f"{MODEL_MOUNT_DIR}/{model_name}",
             storage_id = volume_name,
             summary = f"Modal volume {volume_name}",
-            placement = None,  # Modal volumes are region-agnostic; no pinning
+            placement = None,
         )
 
     def delete_storage(self, storage_id: str) -> None:

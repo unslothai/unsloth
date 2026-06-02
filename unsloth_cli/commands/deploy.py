@@ -1,12 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Launch Unsloth Studio on a cloud provider.
-
-Provider-agnostic: talks only to the `Provider` contract (deploy/base.py) and
-checks capability flags. Provider-specific settings are declared per provider
-(`option_schema`) and resolved from --provider-opt / env / saved config here.
-"""
 
 from __future__ import annotations
 
@@ -55,7 +49,6 @@ deploy_app = typer.Typer(
 
 @dataclass(frozen = True)
 class Instance:
-    """A running instance and the endpoints we reach it on."""
     id: str
     studio_url: str
     ssh: Optional[SshTarget]
@@ -117,8 +110,6 @@ def run(
         model = _pick_model()
     need_local = _is_local_model(model)
 
-    # A local model needs the provider's storage capability; bail before we resolve
-    # creds or create anything billing.
     if need_local and not provider_cls.supports_local_model:
         _fail(
             f"{provider_name} can't upload a local model.\n"
@@ -146,8 +137,6 @@ def run(
         typer.echo("Aborted.")
         raise typer.Exit(0)
 
-    # Stage a local model only after the user commits: creating the volume and
-    # uploading multi-GB weights costs time and money.
     staged: Optional[StagedModel] = None
     if need_local:
         staged = _stage_local_model(provider, Path(model).expanduser(), chosen)
@@ -230,20 +219,11 @@ def _authenticate(
     interactive: bool = False,
     persist: bool = False,
 ) -> Provider:
-    """Resolve the provider's options (--provider-opt > env > saved config),
-    prompting for missing required ones when interactive, then authenticate. With
-    `persist`, save them for reuse -- only `run` does this, so `stop` never writes
-    the credential file as a side effect."""
     saved = store.load(provider_cls.name)
     resolved: dict[str, str] = dict(saved)
 
     for opt in provider_cls.option_schema():
-        # An option only needed for a local model isn't required when we aren't
-        # staging one, so don't prompt or fail for it -- but still resolve and
-        # persist any value the user supplied, so a later local deploy reuses it.
         deferred = opt.needed_for == NEEDED_FOR_LOCAL_MODEL and not need_local
-        # --provider-opt wins outright when present (even if set empty to clear it);
-        # only fall back to env then saved config when no override was passed.
         if opt.key in overrides:
             value = overrides[opt.key]
         else:
@@ -275,8 +255,6 @@ def _authenticate(
 def _persist_options(
     provider_cls: type[Provider], resolved: dict[str, str], *, previously: dict[str, str],
 ) -> None:
-    """Save resolved options for reuse, printing the file path the first time
-    anything is stored."""
     keys = {opt.key for opt in provider_cls.option_schema()}
     to_save = {k: v for k, v in resolved.items() if k in keys}
     if not to_save or to_save == previously:
@@ -303,9 +281,6 @@ def _model_kind(p: Path) -> Optional[str]:
 
 
 def _discover_local_models(cwd: Optional[Path] = None) -> list[tuple[Path, str]]:
-    """Find model directories under `cwd`, the common output dirs, and Studio's
-    output/export roots, looking one level into each so checkpoints and Studio
-    runs show up individually."""
     cwd = (cwd or Path.cwd()).resolve()
     found: list[tuple[Path, str]] = []
     seen: set[Path] = set()
@@ -325,7 +300,6 @@ def _discover_local_models(cwd: Optional[Path] = None) -> list[tuple[Path, str]]
         return True
 
     add(cwd)
-    # Studio's roots are added too, so models trained in the UI also show up.
     roots = [cwd / name for name in MODEL_SEARCH_DIRS] + _studio_output_roots()
     for root in roots:
         if add(root):
@@ -339,8 +313,6 @@ def _discover_local_models(cwd: Optional[Path] = None) -> list[tuple[Path, str]]
 
 
 def _studio_output_roots() -> list[Path]:
-    """Studio's run and export dirs, which live outside the cwd. We ask the backend
-    where they are rather than hardcode a path; [] if it isn't installed."""
     added: Optional[str] = None
     try:
         from unsloth_cli.commands.studio import _find_run_py
@@ -348,11 +320,10 @@ def _studio_output_roots() -> list[Path]:
         run_py = _find_run_py()
         if run_py is None:
             return []
-        # utils.paths uses root-relative imports, so backend must be on the path.
         backend = str(run_py.parent)
         if backend not in sys.path:
             sys.path.insert(0, backend)
-            added = backend  # remember we added it, to undo if the import fails
+            added = backend
         from utils.paths import outputs_root, exports_root
 
         return [outputs_root(), exports_root()]
@@ -424,12 +395,9 @@ def _pick_gpu(
 
     if yes:
         if provider.reports_stock:
-            # Prefer the cheapest GPU with confirmed capacity over a sold-out one.
             in_stock = next((g for g in options if g.stock), None)
             if in_stock is not None:
                 return in_stock
-            # An empty signal can mean "sold out" or "lookup failed"; fall back to
-            # the cheapest so --yes still works, but warn it might not schedule.
             typer.echo(
                 "  warning: couldn't confirm any GPU has stock; trying the cheapest "
                 f"({options[0].name}). If it fails to start, retry or pass --gpu.",
@@ -442,7 +410,6 @@ def _pick_gpu(
     typer.echo("Available GPUs (cheapest first):")
     for i, gpu in enumerate(shown, start = 1):
         price = f"${gpu.cost_per_hour_usd:.3f}/hr"
-        # A fixed-capacity provider (reports_stock = False) has no band to show.
         stock = f"stock: {gpu.stock or 'none':<6}   " if provider.reports_stock else ""
         typer.echo(
             f"  {i:2d}. {gpu.name:<24} {gpu.vram_gb:>3} GB   {price:<11} "
@@ -460,8 +427,6 @@ def _pick_gpu(
 
 
 def _stage_local_model(provider: Provider, local: Path, gpu: Gpu) -> StagedModel:
-    """Hand the local model to the provider's storage, streaming progress to the
-    console. The provider cleans up after itself on failure."""
     try:
         return provider.stage_local_model(local, gpu = gpu, log = typer.echo)
     except DeployError as e:
@@ -478,8 +443,6 @@ def _deploy(
     gguf_variant: Optional[str],
     hf_token: Optional[str],
 ) -> None:
-    # A staged local model loads from its on-storage path; an HF id (or no model)
-    # is pulled by Studio directly.
     storage_id = staged.storage_id if staged else None
     if staged is not None:
         load_model: Optional[str] = staged.model_path
@@ -511,8 +474,6 @@ def _deploy(
             staged = staged,
         )
     except DeployError as e:
-        # Capacity can vanish between staging and launch; delete the storage so it
-        # doesn't keep billing, then point at the fix.
         if storage_id:
             _delete_storage_quietly(provider, storage_id)
             _fail(
@@ -574,9 +535,6 @@ def _serve_model(
         new_password = secrets.token_urlsafe(18)
         typer.echo("Rotating bootstrap password and minting credential...")
         client.login(username = DEFAULT_ADMIN_USERNAME, password = bootstrap_password)
-        # Record the new password before the change call: if the server applies it
-        # but the response is lost, the error path below must still surface it,
-        # else the user is locked out of a billing instance.
         rotated_password = new_password
         client.change_password(current = bootstrap_password, new = new_password)
         api_key, credential_note = _mint_credential(client)
@@ -593,9 +551,6 @@ def _serve_model(
             storage_id = storage_id,
         )
     except Exception as e:
-        # Catch broadly, not just DeployError: any surprise during bootstrap must
-        # still print the stop hint (and the rotated password) so the user never
-        # loses a billing instance silently.
         _fail(_stop_hint(
             e, instance.id,
             provider_name = instance.provider_name,
@@ -605,10 +560,6 @@ def _serve_model(
 
 
 def _is_local_model(model: Optional[str]) -> bool:
-    """True if `--model` points at something on disk to upload rather than a
-    Hugging Face id. An explicit path always counts; a bare name or "org/name"
-    counts only if it actually looks like a model on disk, so an HF id isn't
-    shadowed by a coincidentally same-named local entry."""
     if model is None:
         return False
     path = Path(model).expanduser()
@@ -644,13 +595,9 @@ def _storage_billing_note(storage_id: Optional[str], provider_name: str) -> str:
 
 
 def _mint_credential(client: StudioClient) -> tuple[str, str]:
-    """Mint a permanent API key, falling back to the login JWT on older images that
-    predate POST /api/auth/api-keys (404/405). Any other failure propagates."""
     try:
         return client.create_api_key(name = f"deploy-{int(time.time())}"), ""
     except DeployError as e:
-        # Match the response status the client emits ("-> 404:" / "-> 405:"), not a
-        # bare " 404" that could also appear in an unrelated error body.
         if any(f"-> {code}:" in str(e) for code in (404, 405)):
             note = (
                 "  (JWT credential, expires. Rebake the image with a newer\n"
@@ -737,8 +684,6 @@ def _stop_hint(
 
 
 def _deploy_cmd(verb: str, arg: str, provider_name: str) -> str:
-    """A copy-pasteable `unsloth deploy <verb> <arg>` hint, carrying --provider when
-    the instance isn't on the default provider so the command targets the right one."""
     flag = "" if provider_name == DEFAULT_PROVIDER else f" --provider {provider_name}"
     return f"unsloth deploy {verb}{flag} {arg}"
 

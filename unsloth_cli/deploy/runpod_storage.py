@@ -1,9 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""RunPod storage: network volumes (REST) and uploading a local model onto one
-over the S3-compatible API.
-"""
 
 from __future__ import annotations
 
@@ -70,7 +67,6 @@ def _rest(client: "RunPod", method: str, path: str, body: Optional[dict]) -> dic
 
 
 def endpoint_for(datacenter: str) -> str:
-    """RunPod's S3 endpoint is per-datacenter, e.g. s3api-eur-is-1.runpod.io."""
     return f"https://s3api-{datacenter.lower()}.runpod.io"
 
 
@@ -93,7 +89,6 @@ def upload_path(
     prefix: str,
     on_file: Optional[Callable[[str, int], None]] = None,
 ) -> None:
-    """Upload `local_path` (file or directory) into the volume under `prefix`."""
     try:
         import boto3
         from botocore.config import Config
