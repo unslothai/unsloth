@@ -2265,6 +2265,24 @@ def iter_published_release_bundles(
         yield bundle
 
 
+def _artifact_covers_sms(
+    artifact: PublishedLlamaArtifact, host_sms: Iterable[str]
+) -> bool:
+    """True when every host SM is listed in the artifact's supported_sms and
+    falls within its [min_sm, max_sm] range."""
+    if (
+        not artifact.supported_sms
+        or artifact.min_sm is None
+        or artifact.max_sm is None
+    ):
+        return False
+    supported = {str(value) for value in artifact.supported_sms}
+    return all(
+        sm in supported and artifact.min_sm <= int(sm) <= artifact.max_sm
+        for sm in host_sms
+    )
+
+
 def linux_cuda_choice_from_release(
     host: HostInfo,
     release: PublishedReleaseBundle,
@@ -3562,61 +3580,97 @@ def published_windows_cuda_attempts(
             continue
         artifacts_by_runtime.setdefault(artifact.runtime_line, []).append(artifact)
 
+    host_sms = normalize_compute_caps(host.compute_caps)
     attempts: list[AssetChoice] = []
     for ordered_attempt in runtime_order:
         runtime_line = ordered_attempt.runtime_line
         if not runtime_line:
             continue
-        candidates = sorted(
-            artifacts_by_runtime.get(runtime_line, []),
-            key = lambda artifact: (artifact.rank, artifact.asset_name),
-        )
-        for artifact in candidates:
+        # Pick the artifact whose SM coverage fits the host, preferring the
+        # tightest targeted bundle and falling back to portable -- the same
+        # policy as linux_cuda_choice_from_release. Without this, app-named
+        # bundles (no minor in the filename) skip the SM filter and the
+        # lowest-rank "older" bundle is chosen for every host, breaking newer
+        # GPUs (e.g. Blackwell sm120 on a cuda12-older bundle capped at sm89).
+        targeted: list[tuple[PublishedLlamaArtifact, str, re.Match[str] | None]] = []
+        portable: tuple[PublishedLlamaArtifact, str, re.Match[str] | None] | None = None
+        for artifact in artifacts_by_runtime.get(runtime_line, []):
             asset_url = release.assets.get(artifact.asset_name)
             if not asset_url:
                 continue
             am = re.search(r"-bin-win-cuda-(\d+)\.(\d+)-x64\.zip$", artifact.asset_name)
-            # Gate the real published minor against the driver, so a published
-            # windows-cuda artifact can never bypass the driver-version gate.
+            # Legacy upstream-named bundles encode the minor; gate it against the
+            # driver. app-named bundles carry no minor and are driver-gated at the
+            # runtime-line level by windows_cuda_attempts above.
             if (
                 am is not None
                 and host.driver_cuda_version is not None
                 and (int(am.group(1)), int(am.group(2))) > host.driver_cuda_version
             ):
                 continue
-            # See windows_cuda_attempts: pair the cudart bundle for the real minor.
-            runtime_archive_name: str | None = None
-            runtime_archive_url: str | None = None
-            if am is not None and artifact.asset_name.startswith("llama-"):
-                runtime = f"{am.group(1)}.{am.group(2)}"
-                cudart_name = f"cudart-llama-bin-win-cuda-{runtime}-x64.zip"
-                cudart_url = release.assets.get(cudart_name)
-                if cudart_url and cudart_url != asset_url:
-                    runtime_archive_name = cudart_name
-                    runtime_archive_url = cudart_url
-            attempt_log = list(ordered_attempt.selection_log or []) + [
-                "windows_cuda_selection: selected published asset "
-                f"{artifact.asset_name} for runtime_line={runtime_line}"
-            ]
-            if runtime_archive_name:
-                attempt_log.append(
-                    f"windows_cuda_selection: paired published runtime archive {runtime_archive_name}"
-                )
-            attempts.append(
-                AssetChoice(
-                    repo = release.repo,
-                    tag = release.release_tag,
-                    name = artifact.asset_name,
-                    url = asset_url,
-                    source_label = "published",
-                    install_kind = "windows-cuda",
-                    runtime_line = runtime_line,
-                    runtime_name = runtime_archive_name,
-                    runtime_url = runtime_archive_url,
-                    selection_log = attempt_log,
-                )
+            # Only SM-filter artifacts that declare full SM metadata (the app
+            # bundles). Legacy/upstream-named artifacts without it keep the old
+            # rank-based selection rather than being dropped.
+            has_sm_info = (
+                bool(artifact.supported_sms)
+                and artifact.min_sm is not None
+                and artifact.max_sm is not None
             )
-            break
+            if host_sms and has_sm_info and not _artifact_covers_sms(artifact, host_sms):
+                continue
+            if not host_sms and has_sm_info and artifact.coverage_class != "portable":
+                continue
+            if artifact.coverage_class == "portable":
+                portable = (artifact, asset_url, am)
+            else:
+                targeted.append((artifact, asset_url, am))
+        chosen: tuple[PublishedLlamaArtifact, str, re.Match[str] | None] | None = None
+        if targeted:
+            chosen = sorted(
+                targeted,
+                key = lambda item: (
+                    (item[0].max_sm or 0) - (item[0].min_sm or 0),
+                    item[0].rank,
+                    item[0].max_sm or 0,
+                ),
+            )[0]
+        elif portable is not None:
+            chosen = portable
+        if chosen is None:
+            continue
+        artifact, asset_url, am = chosen
+        # See windows_cuda_attempts: pair the cudart bundle for the real minor.
+        runtime_archive_name: str | None = None
+        runtime_archive_url: str | None = None
+        if am is not None and artifact.asset_name.startswith("llama-"):
+            runtime = f"{am.group(1)}.{am.group(2)}"
+            cudart_name = f"cudart-llama-bin-win-cuda-{runtime}-x64.zip"
+            cudart_url = release.assets.get(cudart_name)
+            if cudart_url and cudart_url != asset_url:
+                runtime_archive_name = cudart_name
+                runtime_archive_url = cudart_url
+        attempt_log = list(ordered_attempt.selection_log or []) + [
+            "windows_cuda_selection: selected published asset "
+            f"{artifact.asset_name} for runtime_line={runtime_line}"
+        ]
+        if runtime_archive_name:
+            attempt_log.append(
+                f"windows_cuda_selection: paired published runtime archive {runtime_archive_name}"
+            )
+        attempts.append(
+            AssetChoice(
+                repo = release.repo,
+                tag = release.release_tag,
+                name = artifact.asset_name,
+                url = asset_url,
+                source_label = "published",
+                install_kind = "windows-cuda",
+                runtime_line = runtime_line,
+                runtime_name = runtime_archive_name,
+                runtime_url = runtime_archive_url,
+                selection_log = attempt_log,
+            )
+        )
     return attempts
 
 

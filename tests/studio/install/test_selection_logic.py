@@ -2373,6 +2373,7 @@ class TestPublishedWindowsCudaAttemptsDynamicMajor:
             f"llama-{self.TAG}-bin-win-cuda-{minor}-x64.zip",
             install_kind = "windows-cuda",
             runtime_line = runtime_line,
+            supported_sms = ["75", "80", "86", "89", "90", "100", "120"],
             max_sm = 120,
         )
 
@@ -2443,6 +2444,7 @@ class TestResolveReleaseAssetChoicePin:
                 f"llama-{self.TAG}-bin-win-cuda-{minor}-x64.zip",
                 install_kind = "windows-cuda",
                 runtime_line = line,
+                supported_sms = ["75", "80", "86", "89", "90", "100", "120"],
                 max_sm = 120,
             )
             for minor, line in minors_lines
@@ -2519,6 +2521,47 @@ class TestResolveReleaseAssetChoicePin:
         )
         result = resolve_release_asset_choice(host, self.TAG, release, checksums)
         assert "b9360" not in [a.tag for a in result]
+
+
+class TestPublishedWindowsCudaAppBundleSmSelection:
+    """app-named windows-cuda bundles carry no minor in the filename, so the
+    driver-minor gate is skipped. Selection must instead filter by SM coverage,
+    or every host gets the lowest-rank "older" bundle regardless of its GPU."""
+
+    TAG = "b9457"
+
+    def _app(self, klass, supported, min_sm, max_sm, rank):
+        return make_artifact(
+            f"app-{self.TAG}-windows-x64-cuda12-{klass}.zip",
+            install_kind = "windows-cuda",
+            runtime_line = "cuda12",
+            coverage_class = klass,
+            supported_sms = supported,
+            min_sm = min_sm,
+            max_sm = max_sm,
+            bundle_profile = f"cuda12-{klass}",
+            rank = rank,
+        )
+
+    def test_blackwell_sm120_skips_older_bundle(self, monkeypatch):
+        mock_windows_runtime(monkeypatch, ["cuda12"])
+        older = self._app("older", ["70", "75", "80", "86", "89"], 70, 89, 10)
+        newer = self._app("newer", ["86", "89", "90", "100", "120"], 86, 120, 20)
+        portable = self._app(
+            "portable", ["70", "75", "80", "86", "89", "90", "100", "120"], 70, 120, 30
+        )
+        release = make_release([older, newer, portable], upstream_tag = self.TAG)
+        host = make_host(
+            system = "Windows",
+            machine = "AMD64",
+            driver_cuda_version = (12, 8),
+            compute_caps = ["120"],
+        )
+        result = published_windows_cuda_attempts(host, release, None)
+        assert result, "expected a windows-cuda attempt for an sm120 host"
+        # The lowest-rank "older" bundle (max_sm 89) must not be chosen, and the
+        # tightest covering bundle is cuda12-newer (range 86-120).
+        assert result[0].name == f"app-{self.TAG}-windows-x64-cuda12-newer.zip"
 
 
 # ===========================================================================
