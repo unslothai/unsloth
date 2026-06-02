@@ -402,7 +402,7 @@ def test_download_gguf_variant_purges_only_main_quant_hashes(
         ),
     )
     monkeypatch.setattr(
-        hf_download, "_verify_completed_download", lambda *args: verified.append(args)
+        hf_download, "_verify_completed_download", lambda *args, **kwargs: verified.append(args)
     )
     monkeypatch.setattr(
         download_registry,
@@ -486,7 +486,9 @@ def test_download_gguf_variant_manifest_resume_purges_only_main_quant_hashes(
         "prepare_cache_for_transport",
         lambda *args, **kwargs: prepare_calls.append((args, kwargs)) or 0,
     )
-    monkeypatch.setattr(hf_download, "_verify_completed_download", lambda *_args: None)
+    monkeypatch.setattr(
+        hf_download, "_verify_completed_download", lambda *_args, **_kwargs: None
+    )
     monkeypatch.setitem(
         sys.modules,
         "huggingface_hub",
@@ -532,7 +534,7 @@ def test_download_snapshot_recovers_manifest_after_metadata_fallback(
 
     monkeypatch.setattr(hf_download, "_model_info_with_retry", _metadata)
     monkeypatch.setattr(
-        hf_download, "_verify_completed_download", lambda *args: verified.append(args)
+        hf_download, "_verify_completed_download", lambda *args, **kwargs: verified.append(args)
     )
     monkeypatch.setattr(
         download_registry, "prepare_cache_for_transport", lambda *_args, **_kwargs: 0
@@ -571,7 +573,7 @@ def test_download_dataset_continues_without_metadata_manifest(monkeypatch, tmp_p
 
     monkeypatch.setattr(hf_download, "_dataset_info_with_retry", _metadata)
     monkeypatch.setattr(
-        hf_download, "_verify_completed_download", lambda *args: verified.append(args)
+        hf_download, "_verify_completed_download", lambda *args, **kwargs: verified.append(args)
     )
     monkeypatch.setattr(
         download_registry, "prepare_cache_for_transport", lambda *_args, **_kwargs: 0
@@ -2748,7 +2750,7 @@ def test_download_snapshot_writes_manifest_for_xet(monkeypatch, tmp_path):
         ),
     )
     monkeypatch.setattr(
-        hf_download, "_verify_completed_download", lambda *args: verified.append(args)
+        hf_download, "_verify_completed_download", lambda *args, **kwargs: verified.append(args)
     )
     monkeypatch.setattr(
         download_registry, "prepare_cache_for_transport", lambda *_args, **_kwargs: 0
@@ -2783,7 +2785,7 @@ def test_download_gguf_variant_writes_manifest_for_xet(monkeypatch, tmp_path):
         ),
     )
     monkeypatch.setattr(
-        hf_download, "_verify_completed_download", lambda *args: verified.append(args)
+        hf_download, "_verify_completed_download", lambda *args, **kwargs: verified.append(args)
     )
     monkeypatch.setattr(
         download_registry, "prepare_cache_for_transport", lambda *_args, **_kwargs: 0
@@ -2818,7 +2820,7 @@ def test_download_dataset_writes_manifest_for_xet(monkeypatch, tmp_path):
         ),
     )
     monkeypatch.setattr(
-        hf_download, "_verify_completed_download", lambda *args: verified.append(args)
+        hf_download, "_verify_completed_download", lambda *args, **kwargs: verified.append(args)
     )
     monkeypatch.setattr(
         download_registry, "prepare_cache_for_transport", lambda *_args, **_kwargs: 0
