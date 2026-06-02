@@ -1527,13 +1527,43 @@
 /* No border line; same drop shadow as the composer (.unsloth-composer-surface).
    !important because Sonner injects its base rules at runtime. */
 [data-sonner-toast][data-styled='true'] {
-	padding: 10px 16px !important;
-	box-shadow: 0 2px 8px -2px rgba(27, 27, 31, 0.16) !important;
-	/* Pin to the light --radius so dark mode (smaller --radius) matches. */
-	border-radius: 1.1rem !important;
+	padding: 12px 18px !important;
+	box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08) !important;
 }
 
-/* Match the composer (.unsloth-composer-surface) in dark mode: same surface color, no shadow. */
+[data-sonner-toast][data-styled='true']:has([data-close-button]):not(:has([data-cancel])) {
+	padding-right: 48px !important;
+}
+
+[data-sonner-toast][data-styled='true']:has([data-cancel]):has([data-close-button]) {
+	padding-right: 88px !important;
+}
+
+[data-sonner-toast][data-styled='true'].chat-model-load-toast,
+[data-sonner-toast][data-styled='true'].chat-model-loaded-toast {
+	padding-top: 14px !important;
+	padding-bottom: 14px !important;
+}
+
+[data-sonner-toast][data-styled='true'].chat-model-loaded-toast [data-close-button] {
+	top: calc(50% - 0.25px) !important;
+	transform: translateY(-50%) !important;
+}
+
+[data-sonner-toast][data-styled='true'].chat-model-load-toast:not(:has([data-cancel])) [data-close-button] {
+	top: calc(50% - 0.25px) !important;
+	transform: translateY(-50%) !important;
+}
+
+[data-sonner-toast][data-styled="true"]:has([data-cancel]) [data-cancel] {
+	position: absolute !important;
+	right: 36px !important;
+	top: 50% !important;
+	transform: translateY(-50%) !important;
+	margin: 0 !important;
+}
+
+/* Boost shadow on dark surfaces; mirrors .shadow-border / .menu-soft-surface pattern. */
 .dark [data-sonner-toast][data-styled='true'] {
 	background-color: #2a2a2c !important;
 	box-shadow: none !important;
@@ -1770,9 +1800,10 @@
 	mix-blend-mode: normal;
 }
 
-/* Override sonner top: 0 and pin to theme tokens (--gray2 hover ignores data-sonner-theme). */
+/* Keep Sonner close button inside the toast and pin to theme tokens (--gray2 hover ignores data-sonner-theme). */
 [data-sonner-toast][data-styled="true"] [data-close-button] {
 	top: 8px !important;
+	transform: none !important;
 	background: var(--popover) !important;
 	color: var(--popover-foreground) !important;
 	border-color: transparent !important;
