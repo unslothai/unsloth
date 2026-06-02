@@ -19,7 +19,6 @@ import {
 } from "../external-providers";
 import { pickFriendlyContainerName } from "../lib/friendly-names";
 import {
-  EXTERNAL_MAX_OUTPUT_TOKENS,
   clampReasoningEffortToLevels,
   getExternalMaxOutputTokens,
   getExternalMinOutputTokens,
@@ -34,6 +33,7 @@ import {
 } from "../provider-capabilities";
 import {
   type PendingImageEditReference,
+  resolveToolsEnabledOnLoad,
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
 import { useExternalProvidersStore } from "../stores/external-providers-store";
@@ -45,12 +45,13 @@ import type {
   OpenAIReasoningContentPart,
 } from "../types/api";
 import type { ChatModelSummary } from "../types/runtime";
-import { getImageInputUnavailableReason } from "../utils/image-input-support";
 import {
   getStoredChatThread,
+  getStoredChatProject,
   listStoredChatThreads,
   updateStoredChatThread,
 } from "../utils/chat-history-storage";
+import { getImageInputUnavailableReason } from "../utils/image-input-support";
 import {
   hasClosedThinkTag,
   parseAssistantContent,
@@ -774,36 +775,6 @@ function toOpenAIMessages(message: RunMessage): SerializedMessage[] {
   return toolResults.length > 0 ? [base, ...toolResults] : [base];
 }
 
-// Thin singular wrapper: returns only the first serialized message
-// (without tool_calls or tool follow-ups) so the OpenAI image-edit
-// replay path can map a thread to flat OpenAI chat messages without
-// pulling in tool history.
-function toOpenAIMessage(message: RunMessage): {
-  role: "system" | "user" | "assistant";
-  content: OpenAIMessageContent;
-} | null {
-  const serialized = toOpenAIMessages(message);
-  if (serialized.length === 0) return null;
-  const first = serialized[0];
-  if (
-    first.role !== "system" &&
-    first.role !== "user" &&
-    first.role !== "assistant"
-  ) {
-    return null;
-  }
-  if (first.content === null || first.content === undefined) {
-    return null;
-  }
-  if (typeof first.content === "string" && !first.content) {
-    return null;
-  }
-  return {
-    role: first.role,
-    content: first.content as OpenAIMessageContent,
-  };
-}
-
 function extractImageBase64(input: string): string | undefined {
   if (!input) {
     return undefined;
@@ -894,6 +865,45 @@ async function resolveUseAdapter(
   } catch {
     return undefined;
   }
+}
+
+async function resolveProjectInstructions(
+  threadId: string | undefined,
+): Promise<string> {
+  const projectId = await resolveProjectId(threadId);
+  if (!projectId) {
+    return "";
+  }
+
+  const project = await getStoredChatProject(projectId).catch(() => null);
+  if (!project || project.archived) {
+    return "";
+  }
+  return project.instructions?.trim() ?? "";
+}
+
+async function resolveProjectId(
+  threadId: string | undefined,
+): Promise<string | null> {
+  let projectId: string | null | undefined;
+  if (threadId) {
+    const thread = await getStoredChatThread(threadId).catch(() => null);
+    projectId = thread?.projectId ?? null;
+  }
+  if (!projectId) {
+    projectId = useChatRuntimeStore.getState().activeProjectId;
+  }
+  if (!projectId) {
+    return null;
+  }
+  return projectId;
+}
+
+async function resolveSandboxSessionId(
+  threadId: string | undefined,
+): Promise<string | undefined> {
+  const projectId = await resolveProjectId(threadId);
+  return projectId ? `project-${projectId}` : threadId;
 }
 
 /** Wait for an in-progress model load to finish (polls store every 500ms). */
@@ -1034,8 +1044,7 @@ async function autoLoadSmallestModel(): Promise<{
               supportsPreserveThinking:
                 loadResp.supports_preserve_thinking ?? false,
               supportsTools: loadResp.supports_tools ?? false,
-              toolsEnabled: loadResp.supports_tools ?? false,
-              codeToolsEnabled: loadResp.supports_tools ?? false,
+              ...resolveToolsEnabledOnLoad(loadResp.supports_tools ?? false),
               kvCacheDtype: loadResp.cache_type_kv ?? null,
               loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
               defaultChatTemplate: loadResp.chat_template ?? null,
@@ -1098,8 +1107,7 @@ async function autoLoadSmallestModel(): Promise<{
               sfLoadResp.supports_preserve_thinking ?? false,
             supportsTools: sfLoadResp.supports_tools ?? false,
             // Parity with the GGUF branch above.
-            toolsEnabled: sfLoadResp.supports_tools ?? false,
-            codeToolsEnabled: sfLoadResp.supports_tools ?? false,
+            ...resolveToolsEnabledOnLoad(sfLoadResp.supports_tools ?? false),
             defaultChatTemplate: sfLoadResp.chat_template ?? null,
             chatTemplateOverride: null,
             loadedChatTemplateOverride: null,
@@ -1197,8 +1205,7 @@ async function autoLoadSmallestModel(): Promise<{
         reasoningStyle: loadResp.reasoning_style ?? "enable_thinking",
         supportsPreserveThinking: loadResp.supports_preserve_thinking ?? false,
         supportsTools: loadResp.supports_tools ?? false,
-        toolsEnabled: loadResp.supports_tools ?? false,
-        codeToolsEnabled: loadResp.supports_tools ?? false,
+        ...resolveToolsEnabledOnLoad(loadResp.supports_tools ?? false),
         kvCacheDtype: loadResp.cache_type_kv ?? null,
         loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
         defaultChatTemplate: loadResp.chat_template ?? null,
@@ -1235,6 +1242,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       // the user switches chats while waiting for model load / auto-load.
       const resolvedThreadId =
         (unstable_threadId ?? runtime.activeThreadId) || undefined;
+      const sandboxSessionId = await resolveSandboxSessionId(resolvedThreadId);
       const resolvedThreadKey = resolvedThreadId ?? null;
       const pendingImageEditReferenceForRun = runtime.pendingImageEditReference;
       const selectedImageEditReference =
@@ -1305,6 +1313,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         toolsEnabled,
         codeToolsEnabled,
         imageToolsEnabled,
+        artifactsEnabled,
         mcpEnabledForChat,
         webFetchToolsEnabled,
       } = runtime;
@@ -1474,10 +1483,20 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
 
       const safeSystemPrompt =
         typeof params.systemPrompt === "string" ? params.systemPrompt : "";
-      if (safeSystemPrompt.trim()) {
+      const projectInstructions =
+        await resolveProjectInstructions(resolvedThreadId);
+      const combinedSystemPrompt = [
+        projectInstructions
+          ? `<project_instructions>\n${projectInstructions}\n</project_instructions>`
+          : "",
+        safeSystemPrompt.trim(),
+      ]
+        .filter(Boolean)
+        .join("\n\n");
+      if (combinedSystemPrompt) {
         outboundMessages.unshift({
           role: "system",
-          content: safeSystemPrompt.trim(),
+          content: combinedSystemPrompt,
         });
       }
       let disabledToolGuard: string | null = null;
@@ -1539,36 +1558,62 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             "Do not return tool-call syntax inside your response.";
         }
       }
-      if (disabledToolGuard) {
-        const firstMessage = outboundMessages[0];
+      type OutboundMessage = (typeof outboundMessages)[number];
+      function addSystemInstruction(
+        targetMessages: OutboundMessage[],
+        text: string | null,
+      ): void {
+        if (!text) return;
+        const firstMessage = targetMessages[0];
         if (firstMessage?.role === "system") {
           if (typeof firstMessage.content === "string") {
-            outboundMessages[0] = {
+            targetMessages[0] = {
               ...firstMessage,
-              content: `${firstMessage.content}\n\n${disabledToolGuard}`,
+              content: `${firstMessage.content}\n\n${text}`,
             };
           } else {
-            outboundMessages[0] = {
+            targetMessages[0] = {
               ...firstMessage,
               content: [
                 ...(Array.isArray(firstMessage.content)
                   ? firstMessage.content
                   : []),
-                { type: "text", text: `\n\n${disabledToolGuard}` },
+                { type: "text", text: `\n\n${text}` },
               ],
             };
           }
-        } else {
-          outboundMessages.unshift({
-            role: "system",
-            content: disabledToolGuard,
-          });
+          return;
         }
+        targetMessages.unshift({ role: "system", content: text });
       }
+
       // Scan post-prune history so a refused user turn's image/audio
       // doesn't gate or mis-attribute the next non-refused turn.
       const imageBase64 = findLatestUserImageBase64(survivingMessages);
       const audioBase64 = findLatestUserAudioBase64(survivingMessages);
+      const hasOutboundImage = Boolean(imageBase64);
+
+      // Keep render_html local-only and mirror the backend image-turn gate.
+      // Artifacts are independent of Search/Code: if a local tool-capable
+      // model has Artifacts enabled, expose render_html even when no other
+      // tool pills are active.
+      const renderHtmlToolEnabledForThisTurn = Boolean(
+        !isExternalRequest &&
+          supportsTools &&
+          artifactsEnabled &&
+          !hasOutboundImage,
+      );
+      const artifactInstruction = artifactsEnabled
+        ? renderHtmlToolEnabledForThisTurn
+          ? "When the user asks for an HTML, CSS, or JavaScript artifact, call render_html once with one complete self-contained HTML document in the code argument. Embed CSS and JavaScript inside the document. After render_html succeeds, do not call it again in the same response unless the user asks for changes. Future user requests for new artifacts may call render_html once."
+          : "When the user asks for an HTML, CSS, or JavaScript artifact, return one complete self-contained fenced html code block. Embed CSS and JavaScript inside the document. Do not emit tool-call syntax."
+        : null;
+      const effectiveDisabledToolGuard =
+        disabledToolGuard && artifactsEnabled
+          ? `${disabledToolGuard} HTML, CSS, or JavaScript artifact requests can still be answered by following the artifact fallback instruction.`
+          : disabledToolGuard;
+      addSystemInstruction(outboundMessages, effectiveDisabledToolGuard);
+      addSystemInstruction(outboundMessages, artifactInstruction);
 
       // Block when ANY image is in the outbound payload (current or
       // prior turns) and the loaded model can't process images. Keeps
@@ -1768,7 +1813,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       // /inference/cancel explicitly on abort.
       const onAbortCancel = () => {
         const body: Record<string, string> = { cancel_id: cancelId };
-        if (resolvedThreadId) body.session_id = resolvedThreadId;
+        if (sandboxSessionId) body.session_id = sandboxSessionId;
         // Plain fetch, not authFetch: authFetch redirects to login on
         // 401, which would kick the user out mid-stop.
         const token = getAuthToken();
@@ -2083,7 +2128,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             image_base64: imageBase64,
             audio_base64: audioBase64,
             cancel_id: cancelId,
-            ...(resolvedThreadId ? { session_id: resolvedThreadId } : {}),
+            ...(sandboxSessionId ? { session_id: sandboxSessionId } : {}),
             ...(useAdapter === undefined ? {} : { use_adapter: useAdapter }),
             ...(supportsReasoning
               ? reasoningStyle === "reasoning_effort"
@@ -2095,12 +2140,19 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             ...(supportsPreserveThinking
               ? { preserve_thinking: preserveThinking }
               : {}),
-            ...(supportsTools && (toolsEnabled || codeToolsEnabled || mcpEnabledForChat)
+            ...(supportsTools &&
+            (toolsEnabled ||
+              codeToolsEnabled ||
+              renderHtmlToolEnabledForThisTurn ||
+              mcpEnabledForChat)
               ? {
                   enable_tools: true,
                   enabled_tools: [
                     ...(toolsEnabled ? ["web_search"] : []),
                     ...(codeToolsEnabled ? ["python", "terminal"] : []),
+                    ...(renderHtmlToolEnabledForThisTurn
+                      ? ["render_html"]
+                      : []),
                   ],
                   mcp_enabled: mcpEnabledForChat,
                   auto_heal_tool_calls:
@@ -2207,13 +2259,25 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                     `${toolEvent.tool_name}_${Date.now()}`;
                   const toolArgs = (toolEvent.arguments ??
                     {}) as ToolCallMessagePart["args"];
-                  toolCallParts.push({
-                    type: "tool-call" as const,
-                    toolCallId: id,
-                    toolName: toolEvent.tool_name as string,
-                    argsText: JSON.stringify(toolArgs),
-                    args: toolArgs,
-                  });
+                  const idx = toolCallParts.findIndex(
+                    (p) => p.toolCallId === id,
+                  );
+                  if (idx !== -1) {
+                    toolCallParts[idx] = {
+                      ...toolCallParts[idx],
+                      toolName: toolEvent.tool_name as string,
+                      argsText: JSON.stringify(toolArgs),
+                      args: toolArgs,
+                    };
+                  } else {
+                    toolCallParts.push({
+                      type: "tool-call" as const,
+                      toolCallId: id,
+                      toolName: toolEvent.tool_name as string,
+                      argsText: JSON.stringify(toolArgs),
+                      args: toolArgs,
+                    });
+                  }
                 } else if (toolEvent.type === "tool_end") {
                   const id =
                     (toolEvent.tool_call_id as string) ||
@@ -2259,7 +2323,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                       const text = rawResult.slice(0, imgIdx);
                       // Fall back to "_default" to match the backend sandbox directory
                       // used when no session_id is provided (see tools.py _get_workdir).
-                      const sessionId = resolvedThreadId || "_default";
+                      const sessionId = sandboxSessionId || "_default";
                       try {
                         const images = JSON.parse(
                           rawResult.slice(imgIdx + imgMarker.length),
