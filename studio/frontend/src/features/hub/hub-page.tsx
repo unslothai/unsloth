@@ -36,6 +36,7 @@ import {
 } from "./catalog/models-catalog";
 import { ModelsHeader } from "./catalog/models-header";
 import { ModelsToolbar } from "./catalog/models-toolbar";
+import { ExternalLinkConfirmDialog } from "./catalog/external-link-confirm-dialog";
 import { OnDeviceFoldersDialog } from "./catalog/on-device-folders-dialog";
 import { useDiscoverSearch } from "./hooks/use-discover-search";
 import { useHubModelVram } from "./hooks/use-hub-model-vram";
@@ -778,6 +779,7 @@ export function ModelsPage() {
           onOpenChange={setFoldersDialogOpen}
           onInventoryChange={refreshInventory}
         />
+        <ExternalLinkConfirmDialog />
       </div>
     </div>
   );

@@ -23,6 +23,7 @@ import {
 import { formatBytes } from "../lib/format";
 import { ggufVariantsMatch } from "../lib/model-identity";
 import { cn } from "@/lib/utils";
+import { confirmExternalLink } from "../stores/external-link-confirm";
 import { useHfTokenStore } from "../stores/hf-token-store";
 import {
   Alert02Icon,
@@ -140,6 +141,12 @@ function BaseModelReference({
               rel="noopener noreferrer"
               aria-label={`Open ${baseModelHubId} on Hugging Face`}
               className="inline-flex size-7 shrink-0 items-center justify-center rounded-[8px] text-muted-foreground transition-colors hover:bg-background hover:text-foreground"
+              onClick={(event) => {
+                event.stopPropagation();
+                if (confirmExternalLink(`https://huggingface.co/${baseModelHubId}`)) {
+                  event.preventDefault();
+                }
+              }}
             >
               <HugeiconsIcon
                 icon={Share05Icon}

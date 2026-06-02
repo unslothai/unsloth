@@ -14,6 +14,7 @@ import {
 import { useOnlineStatus } from "@/features/hub/hooks/use-online-status";
 import { formatBytes, formatRelativeShort } from "@/features/hub/lib/format";
 import { cn, formatCompact } from "@/lib/utils";
+import { confirmExternalLink } from "../stores/external-link-confirm";
 import { useHfTokenStore } from "@/features/hub/stores/hf-token-store";
 import {
   Calendar03Icon,
@@ -78,6 +79,12 @@ function ViewRepositoryButton({
             rel="noopener noreferrer"
             aria-label="View repository"
             className={cn(baseClass, "hover:bg-muted hover:text-foreground")}
+            onClick={(event) => {
+              event.stopPropagation();
+              if (confirmExternalLink(url)) {
+                event.preventDefault();
+              }
+            }}
           >
             {icon}
           </a>

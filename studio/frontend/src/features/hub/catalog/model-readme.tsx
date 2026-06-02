@@ -7,6 +7,7 @@ import { LruMap } from "@/features/hub/lib/lru-map";
 import { isHuggingFaceOffline } from "@/features/hub/lib/network";
 import { fingerprintToken } from "@/features/hub/lib/token-fingerprint";
 import { cn } from "@/lib/utils";
+import { confirmExternalLink } from "../stores/external-link-confirm";
 import { useHfTokenStore } from "@/features/hub/stores/hf-token-store";
 import { code as streamdownCode } from "@streamdown/code";
 import { math as streamdownMath } from "@streamdown/math";
@@ -181,6 +182,11 @@ function ReadmeLink({
       target={target ?? "_blank"}
       className={className}
       title={title}
+      onClick={(event) => {
+        if (confirmExternalLink(rawHref)) {
+          event.preventDefault();
+        }
+      }}
     >
       {children}
     </a>
