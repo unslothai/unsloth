@@ -268,6 +268,8 @@ export const zhCN = {
       whatsNew: "最新内容",
       feedback: "反馈",
       reportIssue: "报告问题",
+      downloadDocs: "下载",
+      downloadDocsTooltip: "下载文档以供离线使用或RAG",
       dangerZone: "危险区域",
       shutDownStudio: "关闭 Unsloth Studio",
       shutDownStudioDescription: "停止 Studio 服务进程并结束你的会话。",

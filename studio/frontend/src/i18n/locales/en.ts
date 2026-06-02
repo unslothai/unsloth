@@ -286,6 +286,8 @@ export const en = {
       whatsNew: "What's new",
       feedback: "Feedback",
       reportIssue: "Report an issue",
+      downloadDocs: "Download",
+      downloadDocsTooltip: "Download documentation for offline use or RAG",
       dangerZone: "Danger zone",
       shutDownStudio: "Shut down Unsloth Studio",
       shutDownStudioDescription:
