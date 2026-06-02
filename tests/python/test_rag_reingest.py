@@ -2,8 +2,7 @@
 
 Full end-to-end reingest needs a running studio + a real embedder; that's
 covered manually via the curl smoke flow in the plan. Here we cover the
-parts that are testable without external models: payload validation and
-the (multimodal, late) constraint propagation.
+parts that are testable without external models: payload validation.
 """
 
 import importlib.util
@@ -43,22 +42,12 @@ def test_reingest_request_accepts_all_optional_fields():
     ReingestKBRequest = _rag_route().ReingestKBRequest
 
     empty = ReingestKBRequest()
-    assert empty.chunking_strategy is None
     assert empty.mode is None
     assert empty.embedding_model is None
 
-    partial = ReingestKBRequest(chunking_strategy = "late")
-    assert partial.chunking_strategy == "late"
-    assert partial.mode is None
-
-
-def test_reingest_request_rejects_unknown_strategy():
-    from pydantic import ValidationError
-
-    ReingestKBRequest = _rag_route().ReingestKBRequest
-
-    with pytest.raises(ValidationError):
-        ReingestKBRequest(chunking_strategy = "telekinetic")
+    partial = ReingestKBRequest(mode = "multimodal")
+    assert partial.mode == "multimodal"
+    assert partial.embedding_model is None
 
 
 def test_reingest_request_rejects_unknown_mode():
@@ -68,14 +57,3 @@ def test_reingest_request_rejects_unknown_mode():
 
     with pytest.raises(ValidationError):
         ReingestKBRequest(mode = "augmented")
-
-
-def test_constraint_still_enforced_for_reingest_combos():
-    """The combination guard is shared with create — verify it still bites."""
-    from fastapi import HTTPException
-
-    _validate_mode_combo = _rag_route()._validate_mode_combo
-
-    with pytest.raises(HTTPException) as excinfo:
-        _validate_mode_combo("multimodal", "late")
-    assert excinfo.value.status_code == 400

@@ -20,11 +20,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useEffect, useState } from "react";
-import type {
-  ChunkingStrategy,
-  KBMode,
-  KnowledgeBase,
-} from "../api/rag-api";
+import type { KBMode, KnowledgeBase } from "../api/rag-api";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { useRagStore } from "../stores/rag-store";
 
@@ -40,9 +36,6 @@ export function KBReconfigureDialog({
   documentCount: number;
 }) {
   const reingestKB = useRagStore((s) => s.reingestKB);
-  const [chunkingStrategy, setChunkingStrategy] = useState<ChunkingStrategy>(
-    kb.chunking_strategy,
-  );
   const [mode, setMode] = useState<KBMode>(kb.mode);
   const [embeddingModel, setEmbeddingModel] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -51,28 +44,17 @@ export function KBReconfigureDialog({
   // Re-sync when the dialog opens against a different KB.
   useEffect(() => {
     if (open) {
-      setChunkingStrategy(kb.chunking_strategy);
       setMode(kb.mode);
       setEmbeddingModel("");
       setError(null);
       setSubmitting(false);
     }
-  }, [open, kb.id, kb.chunking_strategy, kb.mode]);
+  }, [open, kb.id, kb.mode]);
 
-  const lateDisabled = mode === "multimodal";
-  const multimodalDisabled = chunkingStrategy === "late";
-
-  const placeholderEmbedder =
-    mode === "multimodal"
-      ? `Current: ${kb.embedding_model}`
-      : chunkingStrategy === "late"
-        ? `Current: ${kb.embedding_model}`
-        : `Current: ${kb.embedding_model}`;
+  const placeholderEmbedder = `Current: ${kb.embedding_model}`;
 
   const changedSettings =
-    chunkingStrategy !== kb.chunking_strategy ||
-    mode !== kb.mode ||
-    embeddingModel.trim() !== "";
+    mode !== kb.mode || embeddingModel.trim() !== "";
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -91,7 +73,6 @@ export function KBReconfigureDialog({
     setError(null);
     try {
       await reingestKB(kb.id, {
-        chunking_strategy: chunkingStrategy,
         mode,
         embedding_model: embeddingModel.trim() || undefined,
         caption_images: useChatRuntimeStore.getState().ragCaptionImages,
@@ -110,7 +91,7 @@ export function KBReconfigureDialog({
           <DialogHeader>
             <DialogTitle>Reconfigure “{kb.name}”</DialogTitle>
             <DialogDescription>
-              Change the chunking strategy, mode, or embedder for this KB.
+              Change the mode or embedder for this KB.
               All {documentCount} document{documentCount === 1 ? "" : "s"}{" "}
               will be re-ingested from the originals on disk.
             </DialogDescription>
@@ -127,43 +108,8 @@ export function KBReconfigureDialog({
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="text">Text only</SelectItem>
-                  <SelectItem
-                    value="multimodal"
-                    disabled={multimodalDisabled}
-                    title={
-                      multimodalDisabled
-                        ? "Multimodal cannot be combined with late chunking"
-                        : undefined
-                    }
-                  >
+                  <SelectItem value="multimodal">
                     Multimodal — text + images
-                  </SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="flex flex-col gap-2">
-              <Label htmlFor="reconf-strategy">Chunking strategy</Label>
-              <Select
-                value={chunkingStrategy}
-                onValueChange={(v) => setChunkingStrategy(v as ChunkingStrategy)}
-              >
-                <SelectTrigger id="reconf-strategy">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="standard">
-                    Standard — heading-aware recursive splitter
-                  </SelectItem>
-                  <SelectItem
-                    value="late"
-                    disabled={lateDisabled}
-                    title={
-                      lateDisabled
-                        ? "Late chunking cannot be combined with multimodal mode"
-                        : undefined
-                    }
-                  >
-                    Late chunking — single-pass embedder
                   </SelectItem>
                 </SelectContent>
               </Select>
@@ -177,8 +123,8 @@ export function KBReconfigureDialog({
                 placeholder={placeholderEmbedder}
               />
               <p className="text-[11px] text-muted-foreground">
-                Leave blank to keep the current model (or pick the matrix
-                default when mode/strategy changes).
+                Leave blank to keep the current model (or pick the default
+                when the mode changes).
               </p>
             </div>
             {error ? (

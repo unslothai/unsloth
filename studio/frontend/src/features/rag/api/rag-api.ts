@@ -6,7 +6,6 @@ import { apiUrl } from "@/lib/api-base";
 import { formatFastApiDetail } from "@/lib/format-fastapi-error";
 import { EventSourcePolyfill } from "event-source-polyfill";
 
-export type ChunkingStrategy = "standard" | "late";
 export type KBMode = "text" | "multimodal";
 
 export interface KnowledgeBase {
@@ -14,7 +13,6 @@ export interface KnowledgeBase {
   name: string;
   description: string | null;
   embedding_model: string;
-  chunking_strategy: ChunkingStrategy;
   mode: KBMode;
   created_at: number;
 }
@@ -183,7 +181,6 @@ export interface CreateKnowledgeBaseRequest {
   name: string;
   description?: string;
   embedding_model?: string;
-  chunking_strategy?: ChunkingStrategy;
   mode?: KBMode;
 }
 
@@ -291,7 +288,6 @@ export interface ReingestResponse {
 }
 
 export interface ReingestKBOptions {
-  chunking_strategy?: ChunkingStrategy;
   mode?: KBMode;
   embedding_model?: string;
   caption_images?: boolean;
@@ -313,13 +309,11 @@ export async function reingestKnowledgeBase(
 }
 
 export interface ThreadRagSettings {
-  chunking_strategy: ChunkingStrategy;
   mode: KBMode;
   embedding_model: string | null;
 }
 
 export interface UpdateThreadRagSettingsRequest {
-  chunking_strategy?: ChunkingStrategy;
   mode?: KBMode;
   embedding_model?: string | null;
   // Only consulted by reingest (not persisted as a thread setting).
@@ -366,7 +360,6 @@ export async function reingestThreadDocuments(
 }
 
 export interface RagDefaults {
-  chunking_strategy: ChunkingStrategy;
   mode: KBMode;
   embedding_model: string | null;
 }
@@ -377,7 +370,6 @@ export async function getRagDefaults(): Promise<RagDefaults> {
 }
 
 export interface UpdateRagDefaultsRequest {
-  chunking_strategy?: ChunkingStrategy;
   mode?: KBMode;
   embedding_model?: string | null;
 }

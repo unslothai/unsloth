@@ -63,7 +63,6 @@ logger = get_logger(__name__)
 
 # --- Pydantic schemas ---
 
-ChunkingStrategy = Literal["standard", "late"]
 KBMode = Literal["text", "multimodal"]
 
 
@@ -71,7 +70,6 @@ class CreateKBRequest(BaseModel):
     name: str = Field(min_length = 1, max_length = 200)
     description: str | None = None
     embedding_model: str | None = None
-    chunking_strategy: ChunkingStrategy = "standard"
     mode: KBMode = "text"
 
 
@@ -80,7 +78,6 @@ class KBResponse(BaseModel):
     name: str
     description: str | None
     embedding_model: str
-    chunking_strategy: ChunkingStrategy
     mode: KBMode
     created_at: int
 
@@ -173,32 +170,15 @@ from core.rag.scope import resolve_scope_embedder as _resolve_scope_embedder  # 
 
 def _row_to_kb(row: Any) -> KBResponse:
     keys = row.keys() if hasattr(row, "keys") else ()
-    chunking_strategy = (
-        row["chunking_strategy"] if "chunking_strategy" in keys else "standard"
-    )
     mode = row["mode"] if "mode" in keys else "text"
     return KBResponse(
         id = row["id"],
         name = row["name"],
         description = row["description"],
         embedding_model = row["embedding_model"],
-        chunking_strategy = chunking_strategy,
         mode = mode,
         created_at = row["created_at"],
     )
-
-
-def _validate_mode_combo(mode: KBMode, chunking_strategy: ChunkingStrategy) -> None:
-    """Reject (multimodal, late) — no embedder supports both at once."""
-    if mode == "multimodal" and chunking_strategy == "late":
-        raise HTTPException(
-            status_code = 400,
-            detail = (
-                "Late chunking is not supported in multimodal mode — "
-                "the multimodal embedder does not expose per-token "
-                "embeddings. Pick 'standard' chunking or 'text' mode."
-            ),
-        )
 
 
 def _row_to_document(row: Any) -> DocumentResponse:
@@ -300,7 +280,6 @@ def _start_ingestion(
     kb_id: str | None,
     thread_id: str | None,
     embedding_model: str,
-    chunking_strategy: str = "standard",
     mode: str = "text",
     caption_images: bool = True,
     content_hash: str | None = None,
@@ -360,7 +339,6 @@ def _start_ingestion(
         kb_id = kb_id,
         thread_id = thread_id,
         embedding_model = embedding_model,
-        chunking_strategy = chunking_strategy,
         mode = mode,
         enable_captions = caption_images,
     )
@@ -387,13 +365,9 @@ def create_knowledge_base(
 ) -> KBResponse:
     from utils.rag.config import resolve_embedder
 
-    _validate_mode_combo(payload.mode, payload.chunking_strategy)
-
     kb_id = str(uuid4())
-    # No override: resolve from (mode, strategy) matrix.
-    embedding_model = payload.embedding_model or resolve_embedder(
-        payload.mode, payload.chunking_strategy
-    )
+    # No override: resolve the embedder from the KB mode.
+    embedding_model = payload.embedding_model or resolve_embedder(payload.mode)
     created_at = _now_ms()
     with closing_connection() as conn:
         try:
@@ -401,8 +375,8 @@ def create_knowledge_base(
                 """
                 INSERT INTO rag_knowledge_bases
                 (id, name, description, owner_user_id, embedding_model,
-                 chunking_strategy, mode, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                 mode, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     kb_id,
@@ -410,7 +384,6 @@ def create_knowledge_base(
                     payload.description,
                     current_subject,
                     embedding_model,
-                    payload.chunking_strategy,
                     payload.mode,
                     created_at,
                 ),
@@ -426,7 +399,6 @@ def create_knowledge_base(
         name = payload.name,
         description = payload.description,
         embedding_model = embedding_model,
-        chunking_strategy = payload.chunking_strategy,
         mode = payload.mode,
         created_at = created_at,
     )
@@ -444,7 +416,6 @@ def list_knowledge_bases(
 
 
 class RagDefaults(BaseModel):
-    chunking_strategy: ChunkingStrategy = "standard"
     mode: KBMode = "text"
     embedding_model: str | None = None
 
@@ -452,7 +423,6 @@ class RagDefaults(BaseModel):
 class UpdateRagDefaultsRequest(BaseModel):
     """Patch shape — only fields present overwrite stored values."""
 
-    chunking_strategy: ChunkingStrategy | None = None
     mode: KBMode | None = None
     embedding_model: str | None = None
 
@@ -466,7 +436,6 @@ def _load_rag_defaults() -> RagDefaults:
     if not isinstance(raw, dict):
         raw = {}
     return RagDefaults(
-        chunking_strategy = raw.get("chunking_strategy") or "standard",
         mode = raw.get("mode") or "text",
         embedding_model = raw.get("embedding_model"),
     )
@@ -492,10 +461,7 @@ def warmup_rag_embedder(
     from utils.rag.config import resolve_embedder
 
     defaults = _load_rag_defaults()
-    model_name = defaults.embedding_model or resolve_embedder(
-        defaults.mode,
-        defaults.chunking_strategy,
-    )
+    model_name = defaults.embedding_model or resolve_embedder(defaults.mode)
     try:
         embeddings.get_embedder(model_name)
     except Exception as exc:  # noqa: BLE001
@@ -511,7 +477,6 @@ def set_rag_defaults(
     current_subject: str = Depends(get_current_subject),
 ) -> RagDefaults:
     current = _load_rag_defaults()
-    new_strategy = payload.chunking_strategy or current.chunking_strategy
     new_mode = payload.mode or current.mode
     # PATCH-style: empty string clears, null/missing keeps current.
     if payload.embedding_model is None:
@@ -520,32 +485,27 @@ def set_rag_defaults(
         new_embedder = None
     else:
         new_embedder = payload.embedding_model.strip()
-    _validate_mode_combo(new_mode, new_strategy)
 
     upsert_chat_settings_merge(
         {
             _DEFAULTS_KEY: {
-                "chunking_strategy": new_strategy,
                 "mode": new_mode,
                 "embedding_model": new_embedder,
             }
         }
     )
     return RagDefaults(
-        chunking_strategy = new_strategy,
         mode = new_mode,
         embedding_model = new_embedder,
     )
 
 
 class ThreadRagSettings(BaseModel):
-    chunking_strategy: ChunkingStrategy = "standard"
     mode: KBMode = "text"
     embedding_model: str | None = None
 
 
 class UpdateThreadRagSettingsRequest(BaseModel):
-    chunking_strategy: ChunkingStrategy | None = None
     mode: KBMode | None = None
     embedding_model: str | None = None
     # Reingest-only (not persisted); omit or None keeps captioning on.
@@ -564,7 +524,6 @@ def _load_thread_settings(thread_id: str) -> ThreadRagSettings:
         raw = {}
     fallback = _load_rag_defaults()
     return ThreadRagSettings(
-        chunking_strategy = (raw.get("chunking_strategy") or fallback.chunking_strategy),
         mode = raw.get("mode") or fallback.mode,
         embedding_model = raw.get("embedding_model") or fallback.embedding_model,
     )
@@ -591,7 +550,6 @@ def set_thread_rag_settings(
     current_subject: str = Depends(get_current_subject),
 ) -> ThreadRagSettings:
     current = _load_thread_settings(thread_id)
-    new_strategy = payload.chunking_strategy or current.chunking_strategy
     new_mode = payload.mode or current.mode
     if payload.embedding_model is None:
         new_embedder = current.embedding_model
@@ -599,19 +557,16 @@ def set_thread_rag_settings(
         new_embedder = None
     else:
         new_embedder = payload.embedding_model.strip()
-    _validate_mode_combo(new_mode, new_strategy)
 
     upsert_chat_settings_merge(
         {
             _thread_settings_key(thread_id): {
-                "chunking_strategy": new_strategy,
                 "mode": new_mode,
                 "embedding_model": new_embedder,
             }
         }
     )
     return ThreadRagSettings(
-        chunking_strategy = new_strategy,
         mode = new_mode,
         embedding_model = new_embedder,
     )
@@ -620,7 +575,6 @@ def set_thread_rag_settings(
 class ReingestKBRequest(BaseModel):
     """All fields optional — omitting one keeps the KB's current value."""
 
-    chunking_strategy: ChunkingStrategy | None = None
     mode: KBMode | None = None
     embedding_model: str | None = None
     # Not persisted on the KB; omit or None keeps captioning on for the rebuild.
@@ -636,7 +590,6 @@ def _reingest_scope(
     *,
     kb_id: str | None,
     thread_id: str | None,
-    chunking_strategy: str,
     mode: str,
     embedding_model: str,
     caption_images: bool = True,
@@ -685,7 +638,6 @@ def _reingest_scope(
             kb_id = kb_id,
             thread_id = thread_id,
             embedding_model = embedding_model,
-            chunking_strategy = chunking_strategy,
             mode = mode,
             caption_images = caption_images,
         )
@@ -707,37 +659,31 @@ def reingest_knowledge_base(
 
     kb_row = _kb_or_404(kb_id)
     keys = kb_row.keys() if hasattr(kb_row, "keys") else ()
-    current_strategy = (
-        kb_row["chunking_strategy"] if "chunking_strategy" in keys else "standard"
-    )
     current_mode = kb_row["mode"] if "mode" in keys else "text"
     current_embedder = kb_row["embedding_model"]
 
-    new_strategy = payload.chunking_strategy or current_strategy
     new_mode = payload.mode or current_mode
-    _validate_mode_combo(new_mode, new_strategy)
 
     new_embedder = payload.embedding_model or (
         current_embedder
-        if (new_strategy == current_strategy and new_mode == current_mode)
-        else resolve_embedder(new_mode, new_strategy)
+        if new_mode == current_mode
+        else resolve_embedder(new_mode)
     )
 
     with closing_connection() as conn:
         conn.execute(
             """
             UPDATE rag_knowledge_bases
-            SET chunking_strategy = ?, mode = ?, embedding_model = ?
+            SET mode = ?, embedding_model = ?
             WHERE id = ?
             """,
-            (new_strategy, new_mode, new_embedder, kb_id),
+            (new_mode, new_embedder, kb_id),
         )
         conn.commit()
 
     return _reingest_scope(
         kb_id = kb_id,
         thread_id = None,
-        chunking_strategy = new_strategy,
         mode = new_mode,
         embedding_model = new_embedder,
         caption_images = payload.caption_images is not False,
@@ -758,11 +704,7 @@ def reingest_thread_documents(
 
     if payload is None:
         payload = UpdateThreadRagSettingsRequest()
-    if (
-        payload.chunking_strategy is not None
-        or payload.mode is not None
-        or payload.embedding_model is not None
-    ):
+    if payload.mode is not None or payload.embedding_model is not None:
         settings = set_thread_rag_settings(
             thread_id,
             payload,
@@ -771,14 +713,10 @@ def reingest_thread_documents(
     else:
         settings = _load_thread_settings(thread_id)
 
-    embedder = settings.embedding_model or resolve_embedder(
-        settings.mode,
-        settings.chunking_strategy,
-    )
+    embedder = settings.embedding_model or resolve_embedder(settings.mode)
     return _reingest_scope(
         kb_id = None,
         thread_id = thread_id,
-        chunking_strategy = settings.chunking_strategy,
         mode = settings.mode,
         embedding_model = embedder,
         caption_images = payload.caption_images is not False,
@@ -816,11 +754,8 @@ async def upload_kb_document(
 ) -> UploadResponse:
     kb_row = _kb_or_404(kb_id)
     stored_path, filename, byte_size, content_hash = await _save_upload(file)
-    # Tolerate pre-Phase-3 rows missing chunking_strategy/mode.
+    # Tolerate pre-Phase-3 rows missing mode.
     kb_keys = kb_row.keys() if hasattr(kb_row, "keys") else ()
-    chunking_strategy = (
-        kb_row["chunking_strategy"] if "chunking_strategy" in kb_keys else "standard"
-    )
     mode = kb_row["mode"] if "mode" in kb_keys else "text"
     return _start_ingestion(
         filename = filename,
@@ -830,7 +765,6 @@ async def upload_kb_document(
         kb_id = kb_id,
         thread_id = None,
         embedding_model = kb_row["embedding_model"],
-        chunking_strategy = chunking_strategy,
         mode = mode,
         caption_images = caption_images,
         content_hash = content_hash,
@@ -849,10 +783,7 @@ async def upload_thread_document(
     # No chat_threads check — fresh threads aren't persisted until first run.
     stored_path, filename, byte_size, content_hash = await _save_upload(file)
     settings = _load_thread_settings(thread_id)
-    embedder = settings.embedding_model or resolve_embedder(
-        settings.mode,
-        settings.chunking_strategy,
-    )
+    embedder = settings.embedding_model or resolve_embedder(settings.mode)
     return _start_ingestion(
         filename = filename,
         stored_path = stored_path,
@@ -861,7 +792,6 @@ async def upload_thread_document(
         kb_id = None,
         thread_id = thread_id,
         embedding_model = embedder,
-        chunking_strategy = settings.chunking_strategy,
         mode = settings.mode,
         caption_images = caption_images,
         content_hash = content_hash,

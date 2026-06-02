@@ -134,7 +134,6 @@ export function KBDetailPanel({
             wrapping next to the action buttons. */}
         <p className="truncate text-xs text-muted-foreground">
           {kb.mode === "multimodal" ? "🖼️ Multimodal · " : ""}
-          {kb.chunking_strategy === "late" ? "⚡ Late · " : ""}
           Embedder: <code>{kb.embedding_model}</code>
         </p>
       </div>

@@ -50,14 +50,6 @@ export function KBList({
                 <div className="flex min-w-0 flex-col">
                   <span className="flex min-w-0 items-center gap-1.5 truncate text-sm font-medium">
                     <span className="truncate">{kb.name}</span>
-                    {kb.chunking_strategy === "late" ? (
-                      <span
-                        className="shrink-0 rounded-sm bg-amber-500/15 px-1 text-[10px] font-medium text-amber-700 dark:text-amber-300"
-                        title="Late chunking enabled"
-                      >
-                        ⚡ Late
-                      </span>
-                    ) : null}
                     {kb.mode === "multimodal" ? (
                       <span
                         className="shrink-0 rounded-sm bg-violet-500/15 px-1 text-[10px] font-medium text-violet-700 dark:text-violet-300"

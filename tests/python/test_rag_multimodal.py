@@ -7,7 +7,6 @@ returns images when asked, route accepts the mode field, constraint
 validator rejects illegal combos) run in every test invocation.
 """
 
-import importlib.util
 import sys
 from pathlib import Path
 
@@ -17,27 +16,6 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 STUDIO_BACKEND = REPO_ROOT / "studio" / "backend"
 if str(STUDIO_BACKEND) not in sys.path:
     sys.path.insert(0, str(STUDIO_BACKEND))
-
-
-def _rag_route():
-    """Load ``routes/rag.py`` directly, bypassing the ``routes`` package.
-
-    ``from routes.rag import X`` first runs ``routes/__init__.py``, which eagerly
-    imports every router — including the datasets router, whose chain does
-    ``from datasets import IterableDataset`` at import time. On a GPU-less CI
-    runner the unsloth bootstrap can leave ``datasets`` half-initialized, so that
-    eager import raises. These tests only need pure helpers from rag.py, so load
-    the file on its own (it has no intra-``routes`` imports).
-    """
-    mod = sys.modules.get("_rag_route_under_test")
-    if mod is None:
-        spec = importlib.util.spec_from_file_location(
-            "_rag_route_under_test", STUDIO_BACKEND / "routes" / "rag.py"
-        )
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        sys.modules["_rag_route_under_test"] = mod
-    return mod
 
 
 def test_html_parser_returns_images_when_requested(tmp_path):
@@ -74,32 +52,14 @@ def test_html_parser_returns_images_when_requested(tmp_path):
     assert img.nearest_caption == "A tiny figure"
 
 
-def test_multimodal_late_combo_validator():
-    from fastapi import HTTPException
-
-    _validate_mode_combo = _rag_route()._validate_mode_combo
-
-    # Allowed combos → None.
-    assert _validate_mode_combo("text", "standard") is None
-    assert _validate_mode_combo("text", "late") is None
-    assert _validate_mode_combo("multimodal", "standard") is None
-
-    # Forbidden combo → 400.
-    with pytest.raises(HTTPException) as excinfo:
-        _validate_mode_combo("multimodal", "late")
-    assert excinfo.value.status_code == 400
-
-
-def test_rag_embedder_matrix_excludes_multimodal_late():
+def test_rag_embedder_matrix_is_keyed_by_mode():
     from utils.rag.config import RAG_EMBEDDER_MATRIX, resolve_embedder
 
-    assert ("multimodal", "late") not in RAG_EMBEDDER_MATRIX
-    assert ("text", "standard") in RAG_EMBEDDER_MATRIX
-    assert ("text", "late") in RAG_EMBEDDER_MATRIX
-    assert ("multimodal", "standard") in RAG_EMBEDDER_MATRIX
+    assert "text" in RAG_EMBEDDER_MATRIX
+    assert "multimodal" in RAG_EMBEDDER_MATRIX
 
-    # Unknown combos fall back to the legacy default, not KeyError.
-    fallback = resolve_embedder("multimodal", "late")
+    # Unknown modes fall back to the default, not KeyError.
+    fallback = resolve_embedder("unknown-mode")
     assert isinstance(fallback, str) and fallback
 
 

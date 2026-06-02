@@ -39,11 +39,6 @@ def resolve_scope_embedder(scope: str) -> str | None:
         if explicit:
             return explicit
         mode = per_thread.get("mode") or defaults.get("mode") or "text"
-        chunking_strategy = (
-            per_thread.get("chunking_strategy")
-            or defaults.get("chunking_strategy")
-            or "standard"
-        )
-        return resolve_embedder(mode, chunking_strategy)
+        return resolve_embedder(mode)
 
     return None

@@ -93,7 +93,6 @@ def test_multimodal_subprocess_emits_image_and_caption_chunks(
         overlap = 20,
         batch_size = 4,
         out_queue = out_queue,
-        chunking_strategy = "standard",
         mode = "multimodal",
         document_id = "test-doc-1",
     )

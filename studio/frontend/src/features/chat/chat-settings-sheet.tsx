@@ -45,10 +45,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import {
-  type KBMode,
-  type ChunkingStrategy as RagChunkingStrategy,
-} from "@/features/rag/api/rag-api";
+import { type KBMode } from "@/features/rag/api/rag-api";
 import { DocumentRow } from "@/features/rag/components/document-row";
 import { KBCreateDialog } from "@/features/rag/components/kb-create-dialog";
 import { PreviewPanel } from "@/features/rag/components/preview-panel";
@@ -562,10 +559,6 @@ export function ChatSettingsPanel({
     }
   }, [ragSource.kind, activeThreadId, loadThreadSettings]);
 
-  const effectiveThreadChunking: RagChunkingStrategy =
-    threadSettings?.chunking_strategy ??
-    ragDefaults?.chunking_strategy ??
-    "standard";
   const effectiveThreadMode: KBMode =
     threadSettings?.mode ?? ragDefaults?.mode ?? "text";
 
@@ -592,7 +585,6 @@ export function ChatSettingsPanel({
   };
 
   const applyThreadSettingChange = (patch: {
-    chunking_strategy?: RagChunkingStrategy;
     mode?: KBMode;
   }) => {
     void (async () => {
@@ -1422,7 +1414,6 @@ export function ChatSettingsPanel({
                       ) : null}
                       {knowledgeBases.map((kb) => {
                         const isActive = kb.id === activeKbId;
-                        const isLate = kb.chunking_strategy === "late";
                         const isMultimodal = kb.mode === "multimodal";
                         return (
                           <DropdownMenuItem
@@ -1437,14 +1428,6 @@ export function ChatSettingsPanel({
                           >
                             <span className="flex min-w-0 items-center gap-1.5 truncate">
                               <span className="truncate">{kb.name}</span>
-                              {isLate ? (
-                                <span
-                                  className="rounded-sm bg-amber-500/15 px-1 text-[10px] font-medium text-amber-700 dark:text-amber-300"
-                                  title="Late chunking enabled"
-                                >
-                                  ⚡ Late
-                                </span>
-                              ) : null}
                               {isMultimodal ? (
                                 <span
                                   className="rounded-sm bg-violet-500/15 px-1 text-[10px] font-medium text-violet-700 dark:text-violet-300"
@@ -1547,75 +1530,30 @@ export function ChatSettingsPanel({
                 />
                 {ragSource.kind === "thread" ? (
                   <>
-                    <div className="grid grid-cols-2 gap-2">
-                      <div className="flex flex-col gap-1">
-                        <label className="text-[11px] font-medium text-muted-foreground">
-                          Mode
-                        </label>
-                        <Select
-                          value={effectiveThreadMode}
-                          onValueChange={(v) => {
-                            const next = v as KBMode;
-                            if (next === effectiveThreadMode) return;
-                            applyThreadSettingChange({ mode: next });
-                          }}
-                        >
-                          <SelectTrigger className="h-8 text-xs">
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="text">Text only</SelectItem>
-                            <SelectItem
-                              value="multimodal"
-                              disabled={effectiveThreadChunking === "late"}
-                              title={
-                                effectiveThreadChunking === "late"
-                                  ? "Multimodal cannot be combined with late chunking"
-                                  : undefined
-                              }
-                            >
-                              Multimodal
-                            </SelectItem>
-                          </SelectContent>
-                        </Select>
-                      </div>
-                      <div className="flex flex-col gap-1">
-                        <label className="text-[11px] font-medium text-muted-foreground">
-                          Chunking
-                        </label>
-                        <Select
-                          value={effectiveThreadChunking}
-                          onValueChange={(v) => {
-                            const next = v as RagChunkingStrategy;
-                            if (next === effectiveThreadChunking) return;
-                            applyThreadSettingChange({
-                              chunking_strategy: next,
-                            });
-                          }}
-                        >
-                          <SelectTrigger className="h-8 text-xs">
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="standard">Standard</SelectItem>
-                            <SelectItem
-                              value="late"
-                              disabled={effectiveThreadMode === "multimodal"}
-                              title={
-                                effectiveThreadMode === "multimodal"
-                                  ? "Late chunking cannot be combined with multimodal mode"
-                                  : undefined
-                              }
-                            >
-                              Late
-                            </SelectItem>
-                          </SelectContent>
-                        </Select>
-                      </div>
+                    <div className="flex flex-col gap-1">
+                      <label className="text-[11px] font-medium text-muted-foreground">
+                        Mode
+                      </label>
+                      <Select
+                        value={effectiveThreadMode}
+                        onValueChange={(v) => {
+                          const next = v as KBMode;
+                          if (next === effectiveThreadMode) return;
+                          applyThreadSettingChange({ mode: next });
+                        }}
+                      >
+                        <SelectTrigger className="h-8 text-xs">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="text">Text only</SelectItem>
+                          <SelectItem value="multimodal">Multimodal</SelectItem>
+                        </SelectContent>
+                      </Select>
                     </div>
                     <p className="text-[11px] text-muted-foreground">
-                      Changing either setting will re-index this thread's
-                      existing documents.
+                      Changing the mode will re-index this thread's existing
+                      documents.
                     </p>
                     <div className="flex flex-col gap-1.5">
                       <label className="text-[12px] font-medium text-muted-foreground">
