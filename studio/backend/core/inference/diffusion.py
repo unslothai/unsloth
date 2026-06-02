@@ -6593,7 +6593,7 @@ def _release_other_gpu_owners_for_diffusion() -> None:
     # surface the conflict as 409; this helper re-raises so direct
     # callers see the same RuntimeError the export-active path raises.
     training_backend = _existing_runtime_backend(
-        ("core.training.training", "core.training"),
+        ("core.training", "core.training.training"),
         singleton_name = "_training_backend",
         getter_name = "get_training_backend",
     )
@@ -6615,7 +6615,7 @@ def _release_other_gpu_owners_for_diffusion() -> None:
             )
 
     exp = _existing_runtime_backend(
-        ("core.export.orchestrator", "core.export"),
+        ("core.export", "core.export.orchestrator"),
         singleton_name = "_export_backend",
         getter_name = "get_export_backend",
     )
