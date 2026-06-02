@@ -52,57 +52,8 @@ def test_html_parser_returns_images_when_requested(tmp_path):
     assert img.nearest_caption == "A tiny figure"
 
 
-def test_rag_embedder_matrix_is_keyed_by_mode():
-    from utils.rag.config import RAG_EMBEDDER_MATRIX, resolve_embedder
+def test_rag_resolve_embedder_returns_default():
+    from utils.rag.config import RAG_EMBEDDING_MODEL, resolve_embedder
 
-    assert "text" in RAG_EMBEDDER_MATRIX
-    assert "multimodal" in RAG_EMBEDDER_MATRIX
-
-    # Unknown modes fall back to the default, not KeyError.
-    fallback = resolve_embedder("unknown-mode")
-    assert isinstance(fallback, str) and fallback
-
-
-def test_image_path_url_construction():
-    """Sanity-check the URL shape served back to the frontend.
-
-    The image URL is built relative to /api/rag/images/<doc>/<filename>
-    purely from the stored image_path (filename only — directory
-    structure is fixed). Verify the rule.
-    """
-    from pathlib import Path as P
-
-    image_path = "/var/data/rag/images/doc-123/img-0042.png"
-    document_id = "doc-123"
-    expected = f"/api/rag/images/{document_id}/{P(image_path).name}"
-    assert expected == "/api/rag/images/doc-123/img-0042.png"
-
-
-@pytest.mark.server
-def test_multimodal_encode_image_returns_vector(tmp_path, monkeypatch):
-    pytest.importorskip("sentence_transformers")
-    pytest.importorskip("PIL")
-    monkeypatch.setenv("UNSLOTH_RAG_EMBEDDING_MODEL", "BAAI/BGE-VL-base")
-    # Reset the embedder singleton so the env var applies.
-    from core.rag import embeddings as embeddings_module
-
-    embeddings_module._model = None
-    embeddings_module._model_name = None
-
-    from io import BytesIO
-
-    from PIL import Image
-
-    img = Image.new("RGB", (32, 32), (200, 100, 50))
-    buf = BytesIO()
-    img.save(buf, format = "PNG")
-    image_bytes = buf.getvalue()
-
-    vectors = embeddings_module.encode_images([image_bytes])
-    assert len(vectors) == 1
-    dim = vectors[0].shape[0]
-    assert dim > 0
-
-    # Text shares the same dim — the point of a multimodal embedder.
-    text_vec = embeddings_module.encode(["a red square"])[0]
-    assert text_vec.shape[0] == dim
+    assert resolve_embedder() == RAG_EMBEDDING_MODEL
+    assert isinstance(resolve_embedder(), str) and resolve_embedder()

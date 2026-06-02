@@ -133,7 +133,6 @@ export function KBDetailPanel({
         {/* Own full-width row so the embedder id fits on one line instead of
             wrapping next to the action buttons. */}
         <p className="truncate text-xs text-muted-foreground">
-          {kb.mode === "multimodal" ? "🖼️ Multimodal · " : ""}
           Embedder: <code>{kb.embedding_model}</code>
         </p>
       </div>

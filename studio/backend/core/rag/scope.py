@@ -38,7 +38,6 @@ def resolve_scope_embedder(scope: str) -> str | None:
         explicit = per_thread.get("embedding_model") or defaults.get("embedding_model")
         if explicit:
             return explicit
-        mode = per_thread.get("mode") or defaults.get("mode") or "text"
-        return resolve_embedder(mode)
+        return resolve_embedder()
 
     return None

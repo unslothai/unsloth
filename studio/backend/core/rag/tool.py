@@ -120,15 +120,6 @@ def _format_hits_for_llm(hits: list[dict], start_id: int = 0) -> str:
         tokens = hit.get("token_count")
         if tokens:
             attrs.append(f'tokens="{tokens}"')
-        kind = hit.get("kind")
-        if kind and kind != "text":
-            attrs.append(f'kind="{_xml_attr(kind)}"')
-        image_path = hit.get("image_path")
-        if kind == "image" and image_path and document_id:
-            # Mirror routes/rag.py search-response shape so the frontend tool card
-            # can render the image inline via the same route.
-            image_url = f"/api/rag/images/{document_id}/{Path(image_path).name}"
-            attrs.append(f'image_url="{_xml_attr(image_url)}"')
         text = (hit.get("text") or "").strip()
         blocks.append(f"<chunk {' '.join(attrs)}>\n{text}\n</chunk>")
     return "\n\n".join(blocks)

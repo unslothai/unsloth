@@ -45,7 +45,6 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { type KBMode } from "@/features/rag/api/rag-api";
 import { DocumentRow } from "@/features/rag/components/document-row";
 import { KBCreateDialog } from "@/features/rag/components/kb-create-dialog";
 import { PreviewPanel } from "@/features/rag/components/preview-panel";
@@ -559,9 +558,6 @@ export function ChatSettingsPanel({
     }
   }, [ragSource.kind, activeThreadId, loadThreadSettings]);
 
-  const effectiveThreadMode: KBMode =
-    threadSettings?.mode ?? ragDefaults?.mode ?? "text";
-
   const aui = useAui();
   // Brand-new chat has no backend thread yet — initialize the local
   // assistant-ui thread to mint a remoteId so per-thread RAG settings
@@ -584,31 +580,6 @@ export function ChatSettingsPanel({
     }
   };
 
-  const applyThreadSettingChange = (patch: {
-    mode?: KBMode;
-  }) => {
-    void (async () => {
-      const threadId = await ensureThreadId();
-      if (!threadId) return;
-      if (threadDocs.length === 0) {
-        void updateThreadSettings(threadId, patch);
-        return;
-      }
-      const ok = window.confirm(
-        `Re-index ${threadDocs.length} document${threadDocs.length === 1 ? "" : "s"} ` +
-          `with the new settings? Existing chunks will be deleted and rebuilt.`,
-      );
-      if (ok) {
-        void reingestThread(threadId, {
-          ...patch,
-          caption_images: ragCaptionImages,
-        });
-      } else {
-        // User declined: refresh so the select snaps back.
-        void loadThreadSettings(threadId);
-      }
-    })();
-  };
   const [kbCreateOpen, setKbCreateOpen] = useState(false);
   const ragEnabled = ragSource.kind !== "off";
   const activeKbId = ragSource.kind === "kb" ? ragSource.kbId : null;
@@ -1414,7 +1385,6 @@ export function ChatSettingsPanel({
                       ) : null}
                       {knowledgeBases.map((kb) => {
                         const isActive = kb.id === activeKbId;
-                        const isMultimodal = kb.mode === "multimodal";
                         return (
                           <DropdownMenuItem
                             key={kb.id}
@@ -1428,14 +1398,6 @@ export function ChatSettingsPanel({
                           >
                             <span className="flex min-w-0 items-center gap-1.5 truncate">
                               <span className="truncate">{kb.name}</span>
-                              {isMultimodal ? (
-                                <span
-                                  className="rounded-sm bg-violet-500/15 px-1 text-[10px] font-medium text-violet-700 dark:text-violet-300"
-                                  title="Multimodal mode — text + image embeddings"
-                                >
-                                  🖼️ MM
-                                </span>
-                              ) : null}
                             </span>
                             <button
                               type="button"
@@ -1530,31 +1492,6 @@ export function ChatSettingsPanel({
                 />
                 {ragSource.kind === "thread" ? (
                   <>
-                    <div className="flex flex-col gap-1">
-                      <label className="text-[11px] font-medium text-muted-foreground">
-                        Mode
-                      </label>
-                      <Select
-                        value={effectiveThreadMode}
-                        onValueChange={(v) => {
-                          const next = v as KBMode;
-                          if (next === effectiveThreadMode) return;
-                          applyThreadSettingChange({ mode: next });
-                        }}
-                      >
-                        <SelectTrigger className="h-8 text-xs">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="text">Text only</SelectItem>
-                          <SelectItem value="multimodal">Multimodal</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
-                    <p className="text-[11px] text-muted-foreground">
-                      Changing the mode will re-index this thread's existing
-                      documents.
-                    </p>
                     <div className="flex flex-col gap-1.5">
                       <label className="text-[12px] font-medium text-muted-foreground">
                         Documents in this thread

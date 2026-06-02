@@ -6,14 +6,12 @@ import { apiUrl } from "@/lib/api-base";
 import { formatFastApiDetail } from "@/lib/format-fastapi-error";
 import { EventSourcePolyfill } from "event-source-polyfill";
 
-export type KBMode = "text" | "multimodal";
 
 export interface KnowledgeBase {
   id: string;
   name: string;
   description: string | null;
   embedding_model: string;
-  mode: KBMode;
   created_at: number;
 }
 
@@ -47,7 +45,6 @@ export interface SearchHit {
   page_number: number | null;
   filename: string | null;
   kind?: "text" | "image" | "caption";
-  image_url?: string | null;
   source_page_index?: number | null;
   page_char_start?: number | null;
   page_char_end?: number | null;
@@ -92,7 +89,6 @@ export interface PreviewTarget {
   targetPage: number | null;
   snippet: string | null;
   kind: PreviewChunkKind | null;
-  imageUrl: string | null;
   sourcePageIndex: number | null;
   pageCharStart: number | null;
   pageCharEnd: number | null;
@@ -181,7 +177,6 @@ export interface CreateKnowledgeBaseRequest {
   name: string;
   description?: string;
   embedding_model?: string;
-  mode?: KBMode;
 }
 
 export async function createKnowledgeBase(
@@ -288,7 +283,6 @@ export interface ReingestResponse {
 }
 
 export interface ReingestKBOptions {
-  mode?: KBMode;
   embedding_model?: string;
   caption_images?: boolean;
 }
@@ -309,12 +303,10 @@ export async function reingestKnowledgeBase(
 }
 
 export interface ThreadRagSettings {
-  mode: KBMode;
   embedding_model: string | null;
 }
 
 export interface UpdateThreadRagSettingsRequest {
-  mode?: KBMode;
   embedding_model?: string | null;
   // Only consulted by reingest (not persisted as a thread setting).
   caption_images?: boolean;
@@ -360,7 +352,6 @@ export async function reingestThreadDocuments(
 }
 
 export interface RagDefaults {
-  mode: KBMode;
   embedding_model: string | null;
 }
 
@@ -370,7 +361,6 @@ export async function getRagDefaults(): Promise<RagDefaults> {
 }
 
 export interface UpdateRagDefaultsRequest {
-  mode?: KBMode;
   embedding_model?: string | null;
 }
 

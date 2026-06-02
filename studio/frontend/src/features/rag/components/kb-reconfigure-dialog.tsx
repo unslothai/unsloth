@@ -12,15 +12,8 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { useEffect, useState } from "react";
-import type { KBMode, KnowledgeBase } from "../api/rag-api";
+import type { KnowledgeBase } from "../api/rag-api";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { useRagStore } from "../stores/rag-store";
 
@@ -36,7 +29,6 @@ export function KBReconfigureDialog({
   documentCount: number;
 }) {
   const reingestKB = useRagStore((s) => s.reingestKB);
-  const [mode, setMode] = useState<KBMode>(kb.mode);
   const [embeddingModel, setEmbeddingModel] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -44,17 +36,15 @@ export function KBReconfigureDialog({
   // Re-sync when the dialog opens against a different KB.
   useEffect(() => {
     if (open) {
-      setMode(kb.mode);
       setEmbeddingModel("");
       setError(null);
       setSubmitting(false);
     }
-  }, [open, kb.id, kb.mode]);
+  }, [open, kb.id]);
 
   const placeholderEmbedder = `Current: ${kb.embedding_model}`;
 
-  const changedSettings =
-    mode !== kb.mode || embeddingModel.trim() !== "";
+  const changedSettings = embeddingModel.trim() !== "";
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -73,7 +63,6 @@ export function KBReconfigureDialog({
     setError(null);
     try {
       await reingestKB(kb.id, {
-        mode,
         embedding_model: embeddingModel.trim() || undefined,
         caption_images: useChatRuntimeStore.getState().ragCaptionImages,
       });
@@ -91,29 +80,12 @@ export function KBReconfigureDialog({
           <DialogHeader>
             <DialogTitle>Reconfigure “{kb.name}”</DialogTitle>
             <DialogDescription>
-              Change the mode or embedder for this KB.
+              Change the embedder for this KB.
               All {documentCount} document{documentCount === 1 ? "" : "s"}{" "}
               will be re-ingested from the originals on disk.
             </DialogDescription>
           </DialogHeader>
           <div className="flex flex-col gap-4 py-4">
-            <div className="flex flex-col gap-2">
-              <Label htmlFor="reconf-mode">Mode</Label>
-              <Select
-                value={mode}
-                onValueChange={(v) => setMode(v as KBMode)}
-              >
-                <SelectTrigger id="reconf-mode">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="text">Text only</SelectItem>
-                  <SelectItem value="multimodal">
-                    Multimodal — text + images
-                  </SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
             <div className="flex flex-col gap-2">
               <Label htmlFor="reconf-model">Embedding model (optional)</Label>
               <Input

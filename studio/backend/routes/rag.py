@@ -63,14 +63,11 @@ logger = get_logger(__name__)
 
 # --- Pydantic schemas ---
 
-KBMode = Literal["text", "multimodal"]
-
 
 class CreateKBRequest(BaseModel):
     name: str = Field(min_length = 1, max_length = 200)
     description: str | None = None
     embedding_model: str | None = None
-    mode: KBMode = "text"
 
 
 class KBResponse(BaseModel):
@@ -78,7 +75,6 @@ class KBResponse(BaseModel):
     name: str
     description: str | None
     embedding_model: str
-    mode: KBMode
     created_at: int
 
 
@@ -169,14 +165,11 @@ from core.rag.scope import resolve_scope_embedder as _resolve_scope_embedder  # 
 
 
 def _row_to_kb(row: Any) -> KBResponse:
-    keys = row.keys() if hasattr(row, "keys") else ()
-    mode = row["mode"] if "mode" in keys else "text"
     return KBResponse(
         id = row["id"],
         name = row["name"],
         description = row["description"],
         embedding_model = row["embedding_model"],
-        mode = mode,
         created_at = row["created_at"],
     )
 
@@ -280,7 +273,6 @@ def _start_ingestion(
     kb_id: str | None,
     thread_id: str | None,
     embedding_model: str,
-    mode: str = "text",
     caption_images: bool = True,
     content_hash: str | None = None,
 ) -> UploadResponse:
@@ -339,7 +331,6 @@ def _start_ingestion(
         kb_id = kb_id,
         thread_id = thread_id,
         embedding_model = embedding_model,
-        mode = mode,
         enable_captions = caption_images,
     )
     return UploadResponse(document_id = document_id, job_id = job_id, filename = filename)
@@ -366,8 +357,7 @@ def create_knowledge_base(
     from utils.rag.config import resolve_embedder
 
     kb_id = str(uuid4())
-    # No override: resolve the embedder from the KB mode.
-    embedding_model = payload.embedding_model or resolve_embedder(payload.mode)
+    embedding_model = payload.embedding_model or resolve_embedder()
     created_at = _now_ms()
     with closing_connection() as conn:
         try:
@@ -375,8 +365,8 @@ def create_knowledge_base(
                 """
                 INSERT INTO rag_knowledge_bases
                 (id, name, description, owner_user_id, embedding_model,
-                 mode, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                 created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
                 (
                     kb_id,
@@ -384,7 +374,6 @@ def create_knowledge_base(
                     payload.description,
                     current_subject,
                     embedding_model,
-                    payload.mode,
                     created_at,
                 ),
             )
@@ -399,7 +388,6 @@ def create_knowledge_base(
         name = payload.name,
         description = payload.description,
         embedding_model = embedding_model,
-        mode = payload.mode,
         created_at = created_at,
     )
 
@@ -416,14 +404,12 @@ def list_knowledge_bases(
 
 
 class RagDefaults(BaseModel):
-    mode: KBMode = "text"
     embedding_model: str | None = None
 
 
 class UpdateRagDefaultsRequest(BaseModel):
     """Patch shape — only fields present overwrite stored values."""
 
-    mode: KBMode | None = None
     embedding_model: str | None = None
 
 
@@ -436,7 +422,6 @@ def _load_rag_defaults() -> RagDefaults:
     if not isinstance(raw, dict):
         raw = {}
     return RagDefaults(
-        mode = raw.get("mode") or "text",
         embedding_model = raw.get("embedding_model"),
     )
 
@@ -461,7 +446,7 @@ def warmup_rag_embedder(
     from utils.rag.config import resolve_embedder
 
     defaults = _load_rag_defaults()
-    model_name = defaults.embedding_model or resolve_embedder(defaults.mode)
+    model_name = defaults.embedding_model or resolve_embedder()
     try:
         embeddings.get_embedder(model_name)
     except Exception as exc:  # noqa: BLE001
@@ -477,7 +462,6 @@ def set_rag_defaults(
     current_subject: str = Depends(get_current_subject),
 ) -> RagDefaults:
     current = _load_rag_defaults()
-    new_mode = payload.mode or current.mode
     # PATCH-style: empty string clears, null/missing keeps current.
     if payload.embedding_model is None:
         new_embedder = current.embedding_model
@@ -489,24 +473,20 @@ def set_rag_defaults(
     upsert_chat_settings_merge(
         {
             _DEFAULTS_KEY: {
-                "mode": new_mode,
                 "embedding_model": new_embedder,
             }
         }
     )
     return RagDefaults(
-        mode = new_mode,
         embedding_model = new_embedder,
     )
 
 
 class ThreadRagSettings(BaseModel):
-    mode: KBMode = "text"
     embedding_model: str | None = None
 
 
 class UpdateThreadRagSettingsRequest(BaseModel):
-    mode: KBMode | None = None
     embedding_model: str | None = None
     # Reingest-only (not persisted); omit or None keeps captioning on.
     caption_images: bool | None = None
@@ -524,7 +504,6 @@ def _load_thread_settings(thread_id: str) -> ThreadRagSettings:
         raw = {}
     fallback = _load_rag_defaults()
     return ThreadRagSettings(
-        mode = raw.get("mode") or fallback.mode,
         embedding_model = raw.get("embedding_model") or fallback.embedding_model,
     )
 
@@ -550,7 +529,6 @@ def set_thread_rag_settings(
     current_subject: str = Depends(get_current_subject),
 ) -> ThreadRagSettings:
     current = _load_thread_settings(thread_id)
-    new_mode = payload.mode or current.mode
     if payload.embedding_model is None:
         new_embedder = current.embedding_model
     elif payload.embedding_model.strip() == "":
@@ -561,13 +539,11 @@ def set_thread_rag_settings(
     upsert_chat_settings_merge(
         {
             _thread_settings_key(thread_id): {
-                "mode": new_mode,
                 "embedding_model": new_embedder,
             }
         }
     )
     return ThreadRagSettings(
-        mode = new_mode,
         embedding_model = new_embedder,
     )
 
@@ -575,7 +551,6 @@ def set_thread_rag_settings(
 class ReingestKBRequest(BaseModel):
     """All fields optional — omitting one keeps the KB's current value."""
 
-    mode: KBMode | None = None
     embedding_model: str | None = None
     # Not persisted on the KB; omit or None keeps captioning on for the rebuild.
     caption_images: bool | None = None
@@ -590,7 +565,6 @@ def _reingest_scope(
     *,
     kb_id: str | None,
     thread_id: str | None,
-    mode: str,
     embedding_model: str,
     caption_images: bool = True,
 ) -> ReingestResponse:
@@ -638,7 +612,6 @@ def _reingest_scope(
             kb_id = kb_id,
             thread_id = thread_id,
             embedding_model = embedding_model,
-            mode = mode,
             caption_images = caption_images,
         )
         job_ids.append(upload.job_id)
@@ -655,34 +628,24 @@ def reingest_knowledge_base(
     payload: ReingestKBRequest,
     current_subject: str = Depends(get_current_subject),
 ) -> ReingestResponse:
-    from utils.rag.config import resolve_embedder
-
     kb_row = _kb_or_404(kb_id)
-    keys = kb_row.keys() if hasattr(kb_row, "keys") else ()
-    current_mode = kb_row["mode"] if "mode" in keys else "text"
     current_embedder = kb_row["embedding_model"]
-
-    new_mode = payload.mode or current_mode
-
-    new_embedder = payload.embedding_model or (
-        current_embedder if new_mode == current_mode else resolve_embedder(new_mode)
-    )
+    new_embedder = payload.embedding_model or current_embedder
 
     with closing_connection() as conn:
         conn.execute(
             """
             UPDATE rag_knowledge_bases
-            SET mode = ?, embedding_model = ?
+            SET embedding_model = ?
             WHERE id = ?
             """,
-            (new_mode, new_embedder, kb_id),
+            (new_embedder, kb_id),
         )
         conn.commit()
 
     return _reingest_scope(
         kb_id = kb_id,
         thread_id = None,
-        mode = new_mode,
         embedding_model = new_embedder,
         caption_images = payload.caption_images is not False,
     )
@@ -702,7 +665,7 @@ def reingest_thread_documents(
 
     if payload is None:
         payload = UpdateThreadRagSettingsRequest()
-    if payload.mode is not None or payload.embedding_model is not None:
+    if payload.embedding_model is not None:
         settings = set_thread_rag_settings(
             thread_id,
             payload,
@@ -711,11 +674,10 @@ def reingest_thread_documents(
     else:
         settings = _load_thread_settings(thread_id)
 
-    embedder = settings.embedding_model or resolve_embedder(settings.mode)
+    embedder = settings.embedding_model or resolve_embedder()
     return _reingest_scope(
         kb_id = None,
         thread_id = thread_id,
-        mode = settings.mode,
         embedding_model = embedder,
         caption_images = payload.caption_images is not False,
     )
@@ -752,9 +714,6 @@ async def upload_kb_document(
 ) -> UploadResponse:
     kb_row = _kb_or_404(kb_id)
     stored_path, filename, byte_size, content_hash = await _save_upload(file)
-    # Tolerate pre-Phase-3 rows missing mode.
-    kb_keys = kb_row.keys() if hasattr(kb_row, "keys") else ()
-    mode = kb_row["mode"] if "mode" in kb_keys else "text"
     return _start_ingestion(
         filename = filename,
         stored_path = stored_path,
@@ -763,7 +722,6 @@ async def upload_kb_document(
         kb_id = kb_id,
         thread_id = None,
         embedding_model = kb_row["embedding_model"],
-        mode = mode,
         caption_images = caption_images,
         content_hash = content_hash,
     )
@@ -781,7 +739,7 @@ async def upload_thread_document(
     # No chat_threads check — fresh threads aren't persisted until first run.
     stored_path, filename, byte_size, content_hash = await _save_upload(file)
     settings = _load_thread_settings(thread_id)
-    embedder = settings.embedding_model or resolve_embedder(settings.mode)
+    embedder = settings.embedding_model or resolve_embedder()
     return _start_ingestion(
         filename = filename,
         stored_path = stored_path,
@@ -790,7 +748,6 @@ async def upload_thread_document(
         kb_id = None,
         thread_id = thread_id,
         embedding_model = embedder,
-        mode = settings.mode,
         caption_images = caption_images,
         content_hash = content_hash,
     )
@@ -824,28 +781,6 @@ def list_thread_documents(
             (thread_id,),
         ).fetchall()
     return DocumentListResponse(documents = [_row_to_document(r) for r in rows])
-
-
-@router.get("/images/{document_id}/{filename}")
-def get_rag_image(
-    document_id: str,
-    filename: str,
-    current_subject: str = Depends(get_current_subject),
-) -> FileResponse:
-    """Serve an extracted image; realpath-check against the uploads root."""
-    document_for_subject_or_404(document_id, current_subject)
-    if "/" in filename or "\\" in filename or filename.startswith("."):
-        raise HTTPException(status_code = 400, detail = "Invalid filename")
-    root = Path(os.path.realpath(rag_uploads_root() / "images"))
-    candidate = rag_uploads_root() / "images" / document_id / filename
-    try:
-        real = Path(os.path.realpath(candidate))
-        real.relative_to(root)
-    except (OSError, ValueError) as exc:
-        raise HTTPException(status_code = 404, detail = "Image not found") from exc
-    if not real.is_file():
-        raise HTTPException(status_code = 404, detail = "Image not found")
-    return FileResponse(str(real))
 
 
 @router.delete("/documents/{document_id}")
@@ -1375,10 +1310,6 @@ def get_document_preview_target(
 
     chunk_kind: PreviewChunkKind = chunk_row["kind"] or "text"  # type: ignore[assignment]
     image_url: str | None = None
-    if chunk_kind == "image" and chunk_row["image_path"]:
-        image_url = (
-            f"/api/rag/images/{doc_row['id']}/" f"{Path(chunk_row['image_path']).name}"
-        )
 
     return PreviewTargetResponse(
         **base,
@@ -1600,10 +1531,6 @@ def search(
             continue
         kind = meta.get("kind", "text") or "text"
         image_url: str | None = None
-        if kind == "image" and meta.get("image_path"):
-            image_url = (
-                f"/api/rag/images/{meta['document_id']}/{Path(meta['image_path']).name}"
-            )
         out.append(
             SearchHit(
                 chunk_id = hit.chunk_id,

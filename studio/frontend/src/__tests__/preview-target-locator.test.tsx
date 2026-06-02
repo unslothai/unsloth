@@ -23,7 +23,6 @@ function target(overrides: Partial<PreviewTarget> = {}): PreviewTarget {
     targetPage: 2,
     snippet: "alpha\nhighlighted line\nomega",
     kind: "text",
-    imageUrl: null,
     sourcePageIndex: null,
     pageCharStart: null,
     pageCharEnd: null,

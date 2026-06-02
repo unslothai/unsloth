@@ -3,14 +3,13 @@
 
 "use client";
 
-import { authFetch } from "@/features/auth";
 import { usePreviewStore } from "@/features/rag/stores/preview-store";
 import { cn } from "@/lib/utils";
 import {
   type ToolCallMessagePartComponent,
   useAuiState,
 } from "@assistant-ui/react";
-import { FileTextIcon, ImageIcon, LoaderIcon } from "lucide-react";
+import { FileTextIcon, LoaderIcon } from "lucide-react";
 import { memo, useCallback, useEffect, useState } from "react";
 import {
   ToolFallbackContent,
@@ -31,7 +30,6 @@ export interface ParsedChunk {
   lineStart?: string;
   lineEnd?: string;
   kind?: string;
-  imageUrl?: string;
   text: string;
   /** Durable `rag_documents.id` from tool XML `document_id=`. Absent on
    *  legacy tool output. */
@@ -79,7 +77,6 @@ export function parseChunks(raw: string): ParsedChunk[] {
         lineStart: attrs.line_start,
         lineEnd: attrs.line_end,
         kind: attrs.kind,
-        imageUrl: attrs.image_url,
         text,
         // Durable backend ids (legacy XML omits both → preview gated off).
         ...(attrs.document_id ? { documentId: attrs.document_id } : {}),
@@ -91,59 +88,6 @@ export function parseChunks(raw: string): ParsedChunk[] {
   CHUNK_RE.lastIndex = 0;
   ATTR_RE.lastIndex = 0;
   return out;
-}
-
-/** Fetch a backend image via bearer-authed `authFetch`, expose it as a
- *  blob URL for `<img src>`. Revokes the object URL on unmount. */
-function useAuthedImageUrl(path: string | undefined): string | undefined {
-  const [url, setUrl] = useState<string | undefined>(undefined);
-  useEffect(() => {
-    if (!path) {
-      setUrl(undefined);
-      return;
-    }
-    let cancelled = false;
-    let objectUrl: string | undefined;
-    authFetch(path)
-      .then((response) => {
-        if (!response.ok) {
-          throw new Error(`image fetch ${response.status}`);
-        }
-        return response.blob();
-      })
-      .then((blob) => {
-        if (cancelled) return;
-        objectUrl = URL.createObjectURL(blob);
-        setUrl(objectUrl);
-      })
-      .catch(() => {
-        if (!cancelled) setUrl(undefined);
-      });
-    return () => {
-      cancelled = true;
-      if (objectUrl) URL.revokeObjectURL(objectUrl);
-    };
-  }, [path]);
-  return url;
-}
-
-function ChunkImage({ url, alt }: { url: string; alt: string }) {
-  const blobUrl = useAuthedImageUrl(url);
-  if (!blobUrl) {
-    return (
-      <div className="mb-2 flex h-32 items-center justify-center rounded-md bg-muted/60 text-[10px] text-muted-foreground">
-        <ImageIcon className="mr-1.5 size-3" />
-        Loading image…
-      </div>
-    );
-  }
-  return (
-    <img
-      src={blobUrl}
-      alt={alt}
-      className="mb-2 max-h-64 w-full rounded-md object-contain"
-    />
-  );
 }
 
 function ChunkCard({ chunk }: { chunk: ParsedChunk }) {
@@ -174,11 +118,7 @@ function ChunkCard({ chunk }: { chunk: ParsedChunk }) {
       <span className="rounded bg-foreground/10 px-1.5 py-0.5 font-mono text-[10px] font-semibold">
         [{chunk.id}]
       </span>
-      {chunk.kind === "image" ? (
-        <ImageIcon className="size-3 shrink-0 text-muted-foreground" />
-      ) : (
-        <FileTextIcon className="size-3 shrink-0 text-muted-foreground" />
-      )}
+      <FileTextIcon className="size-3 shrink-0 text-muted-foreground" />
       <span className="truncate font-medium" title={chunk.source}>
         {chunk.source}
       </span>
@@ -213,9 +153,6 @@ function ChunkCard({ chunk }: { chunk: ParsedChunk }) {
           </span>
         ) : null}
       </div>
-      {chunk.kind === "image" && chunk.imageUrl ? (
-        <ChunkImage url={chunk.imageUrl} alt={chunk.source} />
-      ) : null}
       {chunk.text ? (
         <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words text-[11px] leading-relaxed text-foreground/80">
           {chunk.text}

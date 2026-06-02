@@ -66,7 +66,6 @@ function target(): PreviewTarget {
     targetPage: 1,
     snippet: "excerpt",
     kind: "text",
-    imageUrl: null,
     sourcePageIndex: 0,
     pageCharStart: 0,
     pageCharEnd: 7,

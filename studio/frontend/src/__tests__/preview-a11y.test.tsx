@@ -47,7 +47,6 @@ function target(overrides: Partial<PreviewTarget> = {}): PreviewTarget {
     targetPage: 1,
     snippet: "safe extracted text",
     kind: "text",
-    imageUrl: null,
     sourcePageIndex: null,
     pageCharStart: null,
     pageCharEnd: null,

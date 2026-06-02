@@ -12,15 +12,8 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { useEffect, useState } from "react";
-import type { KBMode, KnowledgeBase } from "../api/rag-api";
+import type { KnowledgeBase } from "../api/rag-api";
 import { useKnowledgeBases } from "../hooks/use-knowledge-bases";
 import { useRagStore } from "../stores/rag-store";
 
@@ -37,13 +30,11 @@ export function KBCreateDialog({
   const defaults = useRagStore((s) => s.defaults);
   const loadDefaults = useRagStore((s) => s.loadDefaults);
 
-  const initialMode: KBMode = defaults?.mode ?? "text";
   const initialEmbedder = defaults?.embedding_model ?? "";
 
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [embeddingModel, setEmbeddingModel] = useState(initialEmbedder);
-  const [mode, setMode] = useState<KBMode>(initialMode);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -55,7 +46,6 @@ export function KBCreateDialog({
 
   useEffect(() => {
     if (open && defaults) {
-      setMode(defaults.mode);
       setEmbeddingModel(defaults.embedding_model ?? "");
     }
     // Only on open-flip, not on every defaults change.
@@ -66,15 +56,11 @@ export function KBCreateDialog({
     setName("");
     setDescription("");
     setEmbeddingModel(defaults?.embedding_model ?? "");
-    setMode(defaults?.mode ?? "text");
     setError(null);
     setSubmitting(false);
   };
 
-  const placeholderEmbedder =
-    mode === "multimodal"
-      ? "Defaults to BAAI/BGE-VL-base"
-      : "Defaults to BAAI/bge-small-en-v1.5";
+  const placeholderEmbedder = "Defaults to BAAI/bge-small-en-v1.5";
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -86,7 +72,6 @@ export function KBCreateDialog({
         name: name.trim(),
         description: description.trim() || undefined,
         embedding_model: embeddingModel.trim() || undefined,
-        mode,
       });
       onCreated?.(kb);
       reset();
@@ -134,31 +119,6 @@ export function KBCreateDialog({
                 onChange={(e) => setDescription(e.target.value)}
                 placeholder="What's in this KB?"
               />
-            </div>
-            <div className="flex flex-col gap-2">
-              <Label htmlFor="kb-mode">Mode</Label>
-              <Select
-                value={mode}
-                onValueChange={(v) => setMode(v as KBMode)}
-              >
-                <SelectTrigger id="kb-mode">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="text">
-                    Text only — embed text chunks
-                  </SelectItem>
-                  <SelectItem value="multimodal">
-                    Multimodal — also embed images alongside text
-                  </SelectItem>
-                </SelectContent>
-              </Select>
-              <p className="text-[11px] text-muted-foreground">
-                Multimodal mode extracts figures from your documents and
-                embeds them in a shared text + image vector space (BGE-VL),
-                so retrieval can match visual content. Larger embedder
-                (~1.5&nbsp;GB VRAM).
-              </p>
             </div>
             <div className="flex flex-col gap-2">
               <Label htmlFor="kb-model">Embedding model (optional)</Label>

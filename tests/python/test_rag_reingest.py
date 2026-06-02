@@ -9,8 +9,6 @@ import importlib.util
 import sys
 from pathlib import Path
 
-import pytest
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 STUDIO_BACKEND = REPO_ROOT / "studio" / "backend"
 if str(STUDIO_BACKEND) not in sys.path:
@@ -42,18 +40,7 @@ def test_reingest_request_accepts_all_optional_fields():
     ReingestKBRequest = _rag_route().ReingestKBRequest
 
     empty = ReingestKBRequest()
-    assert empty.mode is None
     assert empty.embedding_model is None
 
-    partial = ReingestKBRequest(mode = "multimodal")
-    assert partial.mode == "multimodal"
-    assert partial.embedding_model is None
-
-
-def test_reingest_request_rejects_unknown_mode():
-    from pydantic import ValidationError
-
-    ReingestKBRequest = _rag_route().ReingestKBRequest
-
-    with pytest.raises(ValidationError):
-        ReingestKBRequest(mode = "augmented")
+    partial = ReingestKBRequest(embedding_model = "BAAI/bge-small-en-v1.5")
+    assert partial.embedding_model == "BAAI/bge-small-en-v1.5"

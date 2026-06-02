@@ -31,26 +31,12 @@ RAG_EMBEDDING_MODEL: str = (
     or "BAAI/bge-small-en-v1.5"
 )
 
-# Default embedder per mode.
-#
-# Text mode is the default: PDF figures are captioned at ingest (chat VLM or
-# helper gemma-3n fallback) and spliced into the page markdown before chunking,
-# so a single 384-d text embedder handles retrieval. Multimodal adds image-vector
-# rows on top via Qwen3-VL-Embedding-2B (2 B, 2048-d, no CLIP text cap — full
-# 512-token chunks embed losslessly).
-#
-# Alternative multimodal embedders kept for manual override:
-#   - "BAAI/BGE-VL-large" — smaller (~400 M / 768-d) but CLIP-family with a
-#     77-token text cap; routed via `_BGEVLAdapter` in core/rag/embeddings.py.
-RAG_EMBEDDER_MATRIX: dict[str, str] = {
-    "text": "BAAI/bge-small-en-v1.5",
-    "multimodal": "Qwen/Qwen3-VL-Embedding-2B",
-}
-
-
-def resolve_embedder(mode: str) -> str:
-    """Embedder for the given mode; unknown modes fall back to RAG_EMBEDDING_MODEL."""
-    return RAG_EMBEDDER_MATRIX.get(mode, RAG_EMBEDDING_MODEL)
+# A single text embedder handles retrieval. PDF figures are captioned at ingest
+# (chat VLM or helper gemma-3n fallback) and spliced into the page markdown
+# before chunking, so the 384-d text embedder covers figure content too.
+def resolve_embedder() -> str:
+    """The configured RAG embedder."""
+    return RAG_EMBEDDING_MODEL
 
 
 RAG_CHUNK_SIZE: int = _env_int("UNSLOTH_RAG_CHUNK_SIZE", 512)

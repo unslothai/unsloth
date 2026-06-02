@@ -48,11 +48,6 @@ vi.mock("@/features/rag/components/thread-index-list", () => ({
     React.createElement("div", { "data-testid": "thread-index-list" }),
 }));
 
-vi.mock("@/features/rag/components/rag-defaults-section", () => ({
-  RagDefaultsSection: () =>
-    React.createElement("div", { "data-testid": "rag-defaults-section" }),
-}));
-
 beforeEach(() => {
   mockUsePreviewStore.__state.target = null;
   mockUsePreviewStore.__state.status = "idle";

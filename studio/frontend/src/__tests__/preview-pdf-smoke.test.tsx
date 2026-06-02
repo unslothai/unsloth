@@ -86,7 +86,6 @@ function target(overrides: Partial<PreviewTarget> = {}): PreviewTarget {
     targetPage: 1,
     snippet: "target phrase appears here",
     kind: "text",
-    imageUrl: null,
     sourcePageIndex: 0,
     pageCharStart: 0,
     pageCharEnd: 13,

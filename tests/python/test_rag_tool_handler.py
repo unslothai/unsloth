@@ -146,25 +146,6 @@ def test_format_hits_offsets_ids_by_start_id():
     assert '<chunk id="1"' not in result
 
 
-def test_format_hits_emits_image_url_for_image_kind():
-    from core.rag.tool import _format_hits_for_llm
-
-    hits = [
-        {
-            "filename": "paper.pdf",
-            "text": "Figure 1 shows a bar chart of X over time.",
-            "kind": "image",
-            "image_path": "/abs/path/images/doc-123/img-0007.png",
-            "document_id": "doc-123",
-            "page_number": 5,
-        }
-    ]
-    result = _format_hits_for_llm(hits)
-    assert 'kind="image"' in result
-    assert 'image_url="/api/rag/images/doc-123/img-0007.png"' in result
-    assert "Figure 1 shows a bar chart" in result
-
-
 def test_format_hits_escapes_xml_in_source():
     from core.rag.tool import _format_hits_for_llm
 

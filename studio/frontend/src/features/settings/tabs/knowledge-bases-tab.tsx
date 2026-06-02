@@ -8,7 +8,6 @@ import { KBCreateDialog } from "@/features/rag/components/kb-create-dialog";
 import { KBDetailPanel } from "@/features/rag/components/kb-detail-panel";
 import { KBList, type KBPanel } from "@/features/rag/components/kb-list";
 import { PreviewPanel } from "@/features/rag/components/preview-panel";
-import { RagDefaultsSection } from "@/features/rag/components/rag-defaults-section";
 import { ThreadIndexList } from "@/features/rag/components/thread-index-list";
 import { useResizablePanelWidth } from "@/features/rag/hooks/use-resizable-width";
 import { usePreviewStore } from "@/features/rag/stores/preview-store";
@@ -193,8 +192,6 @@ export function KnowledgeBasesTab() {
 
       <Separator />
       <ThreadIndexList />
-      <Separator />
-      <RagDefaultsSection />
     </div>
   );
 }

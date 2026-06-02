@@ -100,7 +100,6 @@ function makeTarget(overrides: Partial<PreviewTarget> = {}): PreviewTarget {
     targetPage: null,
     snippet: null,
     kind: null,
-    imageUrl: null,
     sourcePageIndex: null,
     pageCharStart: null,
     pageCharEnd: null,

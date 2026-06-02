@@ -58,8 +58,6 @@ def _subprocess_worker(
     overlap: int,
     batch_size: int,
     out_queue: Any,
-    mode: str = "text",
-    document_id: str = "",
     vlm_url: str | None = None,
     vlm_model: str | None = None,
     enable_captions: bool = True,
@@ -83,8 +81,8 @@ def _subprocess_worker(
         from core.rag.parsers import inline_image_captions, parse
 
         out_queue.put({"type": "progress", "stage": "parse", "progress": 0.05})
-        # Always extract images to caption + splice for both modes. Text mode uses
-        # captions inline in markdown; multimodal also embeds raw images as image-kind chunks.
+        # Extract images so figures can be captioned and spliced into the page
+        # markdown, where the chunker indexes them like any other text.
         parsed = parse(Path(stored_path), want_images = True)
         pages = parsed.pages
         if not pages and not parsed.images:
@@ -95,7 +93,6 @@ def _subprocess_worker(
 
         # Caption figures once (chat VLM if available, else helper VLM), then splice
         # captions into the page markdown so the chunker indexes them like any text.
-        # Multimodal reuses these captions in _stream_image_chunks below — no duplicate VLM calls.
         captions: list[str] = []
         if parsed.images and enable_captions:
             out_queue.put(
@@ -147,17 +144,7 @@ def _subprocess_worker(
             out_queue = out_queue,
             send_complete = False,
         )
-        image_count = 0
-        if mode == "multimodal" and parsed.images and document_id:
-            image_count = _stream_image_chunks(
-                images = parsed.images,
-                document_id = document_id,
-                model_name = model_name,
-                out_queue = out_queue,
-                first_index = text_count,
-                precomputed_captions = captions,
-            )
-        out_queue.put({"type": "complete", "num_chunks": text_count + image_count})
+        out_queue.put({"type": "complete", "num_chunks": text_count})
     except Exception as exc:  # noqa: BLE001
         logger.exception("ingestion subprocess failed")
         out_queue.put({"type": "error", "error": f"{type(exc).__name__}: {exc}"})
@@ -230,111 +217,6 @@ def _run_standard_chunking(
     if send_complete:
         out_queue.put({"type": "complete", "num_chunks": total})
     return total
-
-
-def _stream_image_chunks(
-    *,
-    images,
-    document_id: str,
-    model_name: str,
-    out_queue,
-    first_index: int,
-    precomputed_captions: list[str] | None = None,
-) -> int:
-    """Persist images, emit image+caption chunks; pairs share pair_group.
-
-    ``precomputed_captions`` come from the parent's earlier
-    caption_images call (used so we don't VLM-caption the same images
-    twice — once for markdown splicing, once for the caption-kind chunk).
-    If absent we fall back to each image's nearest_caption (page text).
-    """
-    from core.rag.embeddings import encode, encode_images
-    from utils.paths.storage_roots import ensure_dir, rag_uploads_root
-
-    if not images:
-        return 0
-
-    out_queue.put({"type": "progress", "stage": "extract_images", "progress": 0.85})
-
-    img_dir = ensure_dir(rag_uploads_root() / "images" / document_id)
-
-    paths: list[str] = []
-    bytes_for_encoding: list[bytes] = []
-    captions: list[str] = []
-    pages: list[int | None] = []
-    pre_caps = precomputed_captions or []
-    for idx, img in enumerate(images):
-        ext = _MIME_TO_EXT.get(img.mime_type, ".bin")
-        path = img_dir / f"img-{idx:04d}{ext}"
-        try:
-            path.write_bytes(img.image_bytes)
-        except OSError:
-            logger.warning("failed to save image; skipping", path = str(path))
-            continue
-        paths.append(str(path))
-        bytes_for_encoding.append(img.image_bytes)
-        vlm_cap = pre_caps[idx].strip() if idx < len(pre_caps) and pre_caps[idx] else ""
-        captions.append(vlm_cap or (img.nearest_caption or ""))
-        pages.append(img.page_number)
-
-    if not paths:
-        return 0
-
-    image_vectors = encode_images(bytes_for_encoding, model_name = model_name)
-
-    caption_to_image: list[int] = [i for i, cap in enumerate(captions) if cap.strip()]
-    if caption_to_image:
-        caption_vectors_arr = encode(
-            [captions[i] for i in caption_to_image],
-            model_name = model_name,
-        )
-        caption_vectors = caption_vectors_arr.tolist()
-    else:
-        caption_vectors = []
-
-    out_chunks: list[dict] = []
-    out_vectors: list[list[float]] = []
-    cap_iter = iter(zip(caption_to_image, caption_vectors))
-    next_cap = next(cap_iter, None)
-
-    for idx, (path, page, caption) in enumerate(zip(paths, pages, captions)):
-        group_id = f"img-{idx:04d}"
-        out_chunks.append(
-            {
-                "text": caption[:1000] if caption else "",
-                "token_count": 0,
-                "page_number": page,
-                "kind": "image",
-                "image_path": path,
-                "pair_group": group_id,
-            }
-        )
-        out_vectors.append(image_vectors[idx].tolist())
-        if next_cap is not None and next_cap[0] == idx:
-            _cap_index, cap_vec = next_cap
-            out_chunks.append(
-                {
-                    "text": caption,
-                    "token_count": max(1, len(caption.split())),
-                    "page_number": page,
-                    "kind": "caption",
-                    "image_path": None,
-                    "pair_group": group_id,
-                }
-            )
-            out_vectors.append(cap_vec)
-            next_cap = next(cap_iter, None)
-
-    out_queue.put(
-        {
-            "type": "chunks_batch",
-            "first_index": first_index,
-            "chunks": out_chunks,
-            "vectors": out_vectors,
-        }
-    )
-    out_queue.put({"type": "progress", "stage": "extract_images", "progress": 0.95})
-    return len(out_chunks)
 
 
 # --- Job manager (parent side) ---
@@ -754,17 +636,15 @@ def enqueue_ingestion(
     kb_id: str | None = None,
     thread_id: str | None = None,
     embedding_model: str | None = None,
-    mode: str = "text",
     enable_captions: bool = True,
 ) -> str:
     """Create the job row, spawn the subprocess, start the pump; return job_id."""
     from utils.rag.config import resolve_embedder
 
     scope = _scope_for(kb_id, thread_id)
-    model_name = embedding_model or resolve_embedder(mode) or RAG_EMBEDDING_MODEL
+    model_name = embedding_model or resolve_embedder() or RAG_EMBEDDING_MODEL
     # Probe the loaded chat backend so the subprocess can caption figures with the
-    # user's own vision model (no extra VRAM). Runs for both modes — text splices
-    # captions into markdown, multimodal also feeds them to the image-vector encoder.
+    # user's own vision model (no extra VRAM). Text splices captions into markdown.
     # No vision chat model loaded → falls back to the helper VLM (pre-cached at startup).
     # Skipped when captioning is disabled for this upload.
     vlm_url: str | None = None
@@ -811,8 +691,6 @@ def enqueue_ingestion(
             RAG_CHUNK_OVERLAP,
             RAG_EMBED_BATCH_SIZE,
             out_queue,
-            mode,
-            document_id,
             vlm_url,
             vlm_model,
             enable_captions,
