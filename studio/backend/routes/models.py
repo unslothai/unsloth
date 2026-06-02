@@ -2713,7 +2713,9 @@ async def delete_cached_model(
 
 @router.post("/check-updates")
 async def check_model_updates(
-    repo_ids: List[str] = Body(..., description = "List of HuggingFace repo IDs to check"),
+    repo_ids: List[str] = Body(
+        ..., description = "List of HuggingFace repo IDs to check"
+    ),
     current_subject: str = Depends(get_current_subject),
 ):
     """Check if cached models have newer versions available on HuggingFace.
@@ -2754,12 +2756,16 @@ async def check_model_updates(
 
             cached_commits = local_commits.get(repo_key, set())
             if latest_sha not in cached_commits:
-                updates.append({
-                    "repo_id": repo_id,
-                    "local_commits": list(cached_commits)[:3],  # Show first 3 for debugging
-                    "latest_commit": latest_sha,
-                    "has_update": True,
-                })
+                updates.append(
+                    {
+                        "repo_id": repo_id,
+                        "local_commits": list(cached_commits)[
+                            :3
+                        ],  # Show first 3 for debugging
+                        "latest_commit": latest_sha,
+                        "has_update": True,
+                    }
+                )
         except Exception as e:
             logger.debug(f"Could not check updates for {repo_id}: {e}")
             continue
@@ -2770,7 +2776,9 @@ async def check_model_updates(
 @router.post("/update-model")
 async def update_cached_model(
     repo_id: str = Body(..., description = "HuggingFace repo ID to update"),
-    variant: Optional[str] = Body(None, description = "GGUF variant to update (optional)"),
+    variant: Optional[str] = Body(
+        None, description = "GGUF variant to update (optional)"
+    ),
     current_subject: str = Depends(get_current_subject),
 ):
     """Update a cached model by re-downloading the latest version from HuggingFace.
