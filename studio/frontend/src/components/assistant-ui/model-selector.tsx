@@ -246,7 +246,7 @@ function ModelSelectorContent({
       align="start"
       data-tour={dataTour}
       className={cn(
-        "unsloth-model-selector-menu menu-soft-surface ring-0 w-[min(440px,calc(100vw-1rem))] max-w-[calc(100vw-1rem)] min-w-0 gap-0 p-2",
+        "unsloth-model-selector-menu menu-soft-surface ring-0 w-[min(440px,calc(100vw-1rem))] max-w-[calc(100vw-1rem)] min-w-0 gap-0 p-3",
         className,
       )}
     >
