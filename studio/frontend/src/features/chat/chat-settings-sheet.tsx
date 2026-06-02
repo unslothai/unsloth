@@ -728,12 +728,12 @@ export function ChatSettingsPanel({
           close button. */}
       <div className="flex h-[48px] shrink-0 items-start gap-2 bg-panel-surface pl-[18px] pr-[16px] pt-[11px]">
         {isMobile ? (
-          <span className="flex h-[34px] flex-1 items-center text-[15px] font-semibold tracking-[0em] dark:tracking-[0.015em] text-nav-fg">
+          <span className="flex h-[34px] flex-1 items-center text-[16px] font-semibold tracking-[0em] dark:tracking-[0.015em] text-nav-fg">
             Run settings
           </span>
         ) : (
           <>
-            <span className="flex h-[34px] flex-1 items-center text-[15px] font-semibold tracking-[0em] dark:tracking-[0.015em] text-nav-fg">
+            <span className="flex h-[34px] flex-1 items-center text-[16px] font-semibold tracking-[0em] dark:tracking-[0.015em] text-nav-fg">
               Run settings
             </span>
             <Tooltip>
