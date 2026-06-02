@@ -74,14 +74,26 @@ sudo apt install -y cmake gcc g++ git wget python3-venv python3-pip
 
 # ── Step 1: ROCm 7.2 (WSL usecase, no kernel DKMS -- WSL uses the Windows driver) ──
 say "Installing ROCm ${ROCM_VER} (WSL usecase)"
-if [ ! -d "/opt/rocm-${ROCM_VER}" ]; then
-    # Grab the current amdgpu-install for ROCm 7.2 / noble. If this URL 404s,
-    # pick the matching .deb from
-    # https://repo.radeon.com/amdgpu-install/${ROCM_VER}/ubuntu/noble/
-    base="https://repo.radeon.com/amdgpu-install/${ROCM_VER}/ubuntu/noble"
-    deb_name="$(wget -qO- "${base}/" | grep -oE 'amdgpu-install_[0-9][^"]*_all\.deb' | sort -u | tail -1)"
-    [ -n "${deb_name}" ] || die "Could not find amdgpu-install .deb under ${base}/ -- check ROCM_VER."
-    wget -O /tmp/amdgpu-install.deb "${base}/${deb_name}"
+_rocm_mm="${ROCM_VER%.*}"   # 7.2.0 -> 7.2 (matched against the .deb name)
+if ! ls -d /opt/rocm /opt/rocm-* >/dev/null 2>&1; then
+    # IMPORTANT: repo.radeon.com/amdgpu-install/ is indexed by AMD's UNIFIED
+    # installer version (e.g. 30.30, 31.30), NOT by ROCm version -- the ROCm 7.2
+    # installer lives at .../30.30/ubuntu/noble/amdgpu-install_7.2.70200-1_all.deb.
+    # So scan the installer dirs (newest first) for a noble .deb whose name matches
+    # ROCm ${_rocm_mm}; fall back to the newest available noble installer.
+    _deb_url=""; _newest_url=""
+    for _iv in $(wget -qO- https://repo.radeon.com/amdgpu-install/ 2>/dev/null \
+                 | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?/' | tr -d '/' | sort -Vr); do
+        _b="https://repo.radeon.com/amdgpu-install/${_iv}/ubuntu/noble"
+        _d="$(wget -qO- "${_b}/" 2>/dev/null | grep -oE 'amdgpu-install_[0-9][^"]*_all\.deb' | sort -u | tail -1)"
+        [ -z "$_d" ] && continue
+        [ -z "$_newest_url" ] && _newest_url="${_b}/${_d}"
+        case "$_d" in *"_${_rocm_mm}."*) _deb_url="${_b}/${_d}"; break ;; esac
+    done
+    [ -n "$_deb_url" ] || _deb_url="$_newest_url"
+    [ -n "$_deb_url" ] || die "Could not find an amdgpu-install .deb for noble at repo.radeon.com/amdgpu-install/ -- check connectivity or pin one from that listing."
+    echo "Using amdgpu-install: ${_deb_url}"
+    wget -O /tmp/amdgpu-install.deb "${_deb_url}"
     sudo apt install -y /tmp/amdgpu-install.deb
     sudo amdgpu-install -y --usecase=wsl,rocm --no-dkms
 fi

@@ -2061,7 +2061,32 @@ case "$TORCH_INDEX_URL" in
     */cpu)
         if [ "$SKIP_TORCH" = false ] && [ "$OS" != "macos" ]; then
             substep "No GPU detected -- installing CPU-only PyTorch." "$C_WARN"
-            substep "AMD ROCm users: see https://docs.unsloth.ai/get-started/install-and-update/amd"
+            if [ "$OS" = "wsl" ]; then
+                # WSL + no GPU detected. GPU detection (rocminfo/_has_amd_rocm_gpu)
+                # already ran above; we only reach here when it found nothing, so
+                # this hint is skipped automatically the moment a driver/distro DOES
+                # expose the GPU (e.g. if AMD later adds Ubuntu 26.04 support).
+                # The most common cause is an AMD GPU whose ROCm-on-WSL runtime is
+                # not exposed yet: /dev/dxg is present (graphics) but no ROCm runtime.
+                _wsl_ubu_ver=""
+                [ -r /etc/os-release ] && _wsl_ubu_ver=$(. /etc/os-release 2>/dev/null; printf '%s' "${VERSION_ID:-}")
+                if [ -e /dev/dxg ]; then
+                    substep "A GPU is plumbed into WSL (/dev/dxg) but no ROCm runtime is exposed to it." "$C_WARN"
+                fi
+                substep "For an AMD GPU, ROCm-on-WSL currently needs BOTH:"
+                substep "  1. A recent AMD Adrenalin driver with ROCm-on-WSL support (installed on Windows)."
+                substep "  2. A WSL distro AMD supports for ROCm -- Ubuntu 24.04 is the known-good one."
+                if [ -n "$_wsl_ubu_ver" ] && [ "$_wsl_ubu_ver" != "24.04" ]; then
+                    substep "  This distro is Ubuntu $_wsl_ubu_ver, which AMD may not support for ROCm-on-WSL yet." "$C_WARN"
+                fi
+                substep "Set up the GPU in WSL with a dedicated Ubuntu 24.04 distro:"
+                substep "  wsl --install Ubuntu-24.04        # run in Windows PowerShell, then reopen WSL"
+                substep "  # then re-run this installer inside Ubuntu-24.04 -- it will detect the GPU."
+                substep "AMD ROCm-on-WSL guide: https://rocm.docs.amd.com/projects/radeon/en/latest/docs/install/wsl/install-radeon.html"
+                substep "Strix Halo (gfx1151) helper (experimental): unsloth/scripts/install_rocm_wsl_strixhalo.sh"
+            else
+                substep "AMD ROCm users: see https://docs.unsloth.ai/get-started/install-and-update/amd"
+            fi
             substep "Re-run with --no-torch for GGUF-only (faster, no PyTorch):"
             substep "  curl -fsSL https://unsloth.ai/install.sh | sh -s -- --no-torch"
         fi
