@@ -6,6 +6,7 @@ parts that are testable without external models: payload validation and
 the (multimodal, late) constraint propagation.
 """
 
+import importlib.util
 import sys
 from pathlib import Path
 
@@ -17,8 +18,29 @@ if str(STUDIO_BACKEND) not in sys.path:
     sys.path.insert(0, str(STUDIO_BACKEND))
 
 
+def _rag_route():
+    """Load ``routes/rag.py`` directly, bypassing the ``routes`` package.
+
+    ``from routes.rag import X`` first runs ``routes/__init__.py``, which eagerly
+    imports every router — including the datasets router, whose chain does
+    ``from datasets import IterableDataset`` at import time. On a GPU-less CI
+    runner the unsloth bootstrap can leave ``datasets`` half-initialized, so that
+    eager import raises. These tests only need pure helpers from rag.py, so load
+    the file on its own (it has no intra-``routes`` imports).
+    """
+    mod = sys.modules.get("_rag_route_under_test")
+    if mod is None:
+        spec = importlib.util.spec_from_file_location(
+            "_rag_route_under_test", STUDIO_BACKEND / "routes" / "rag.py"
+        )
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        sys.modules["_rag_route_under_test"] = mod
+    return mod
+
+
 def test_reingest_request_accepts_all_optional_fields():
-    from routes.rag import ReingestKBRequest
+    ReingestKBRequest = _rag_route().ReingestKBRequest
 
     empty = ReingestKBRequest()
     assert empty.chunking_strategy is None
@@ -31,16 +53,18 @@ def test_reingest_request_accepts_all_optional_fields():
 
 
 def test_reingest_request_rejects_unknown_strategy():
-    from routes.rag import ReingestKBRequest
     from pydantic import ValidationError
+
+    ReingestKBRequest = _rag_route().ReingestKBRequest
 
     with pytest.raises(ValidationError):
         ReingestKBRequest(chunking_strategy = "telekinetic")
 
 
 def test_reingest_request_rejects_unknown_mode():
-    from routes.rag import ReingestKBRequest
     from pydantic import ValidationError
+
+    ReingestKBRequest = _rag_route().ReingestKBRequest
 
     with pytest.raises(ValidationError):
         ReingestKBRequest(mode = "augmented")
@@ -50,7 +74,7 @@ def test_constraint_still_enforced_for_reingest_combos():
     """The combination guard is shared with create — verify it still bites."""
     from fastapi import HTTPException
 
-    from routes.rag import _validate_mode_combo
+    _validate_mode_combo = _rag_route()._validate_mode_combo
 
     with pytest.raises(HTTPException) as excinfo:
         _validate_mode_combo("multimodal", "late")

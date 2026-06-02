@@ -172,6 +172,7 @@ class FakeExecuteTool:
         cancel_event = None,
         timeout = None,
         session_id = None,
+        tool_context = None,
     ):
         self.calls.append((name, arguments))
         result = self.results.pop(0) if self.results else "OK"
@@ -384,9 +385,9 @@ class TestLoopBehaviour:
         tool_msgs = [m for m in captured[1] if m.get("role") == "tool"]
         assert tool_msgs, "no tool message reached the model"
         for tm in tool_msgs:
-            assert (
-                "__IMAGES__" not in tm["content"]
-            ), f"sentinel leaked to model: {tm['content']!r}"
+            assert "__IMAGES__" not in tm["content"], (
+                f"sentinel leaked to model: {tm['content']!r}"
+            )
 
     def test_image_sentinel_stripped_with_multiple_markers(self):
         # Consecutive sentinels: cut at the first, nothing leaks.
@@ -416,12 +417,12 @@ class TestLoopBehaviour:
         tool_msgs = [m for m in captured[1] if m.get("role") == "tool"]
         assert tool_msgs
         for tm in tool_msgs:
-            assert (
-                "__IMAGES__" not in tm["content"]
-            ), f"second sentinel leaked: {tm['content']!r}"
-            assert (
-                tm["content"] == "panel"
-            ), f"expected payload-only 'panel', got {tm['content']!r}"
+            assert "__IMAGES__" not in tm["content"], (
+                f"second sentinel leaked: {tm['content']!r}"
+            )
+            assert tm["content"] == "panel", (
+                f"expected payload-only 'panel', got {tm['content']!r}"
+            )
 
     def test_tool_execution_error_is_emitted_but_loop_continues(self):
         loop, exec_fn = _make_loop(
@@ -544,9 +545,9 @@ class TestProseMentioningToolCall:
         contents = [e for e in events if e["type"] == "content"]
         assert contents, "expected at least one content event"
         final = contents[-1]["text"]
-        assert (
-            "LLM tool" in final
-        ), f"prose mentioning <tool_call> should not be truncated; got {final!r}"
+        assert "LLM tool" in final, (
+            f"prose mentioning <tool_call> should not be truncated; got {final!r}"
+        )
 
     def test_tool_result_with_tool_call_text_does_not_retrigger(self):
         # Tool result text contains the literal ``<tool_call>`` string.
