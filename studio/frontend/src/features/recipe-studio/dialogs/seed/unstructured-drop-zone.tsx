@@ -1,10 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { CloudUploadIcon, Cancel01Icon, Loading03Icon, CheckmarkCircle02Icon, Alert02Icon } from "@hugeicons/core-free-icons";
+import {
+  CloudUploadIcon,
+  Cancel01Icon,
+  Loading03Icon,
+  CheckmarkCircle02Icon,
+  Alert02Icon,
+} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { loadUploadLimitSettings } from "@/features/settings/api/upload-limit";
 import { uploadUnstructuredFile, removeUnstructuredFile } from "../../api";
 
 const ACCEPTED_EXTENSIONS = [".txt", ".pdf", ".docx", ".md"];
+const MAX_FILE_SIZE = 500 * 1024 * 1024;
+const MAX_TOTAL_SIZE = 1024 * 1024 * 1024;
 
 type FileEntry = {
   id: string;
@@ -18,9 +25,9 @@ type FileEntry = {
 type UnstructuredDropZoneProps = {
   blockId: string;
   files: FileEntry[];
-  maxUploadBytes: number;
-  maxUploadLabel: string;
-  onFilesChange: (files: FileEntry[] | ((prev: FileEntry[]) => FileEntry[])) => void;
+  onFilesChange: (
+    files: FileEntry[] | ((prev: FileEntry[]) => FileEntry[]),
+  ) => void;
   disabled?: boolean;
 };
 
@@ -38,8 +45,6 @@ function isValidExtension(name: string): boolean {
 export function UnstructuredDropZone({
   blockId,
   files,
-  maxUploadBytes,
-  maxUploadLabel,
   onFilesChange,
   disabled,
 }: UnstructuredDropZoneProps) {
@@ -55,15 +60,9 @@ export function UnstructuredDropZone({
 
   const handleFiles = useCallback(
     async (newFiles: File[]) => {
-      let latestMaxUploadBytes = maxUploadBytes;
-      try {
-        latestMaxUploadBytes = (await loadUploadLimitSettings()).maxUploadSizeBytes;
-      } catch {
-        // Keep the current prop fallback if settings cannot be loaded.
-      }
       const valid = newFiles.filter((f) => {
         if (!isValidExtension(f.name)) return false;
-        if (f.size > latestMaxUploadBytes) return false;
+        if (f.size > MAX_FILE_SIZE) return false;
         return true;
       });
 
@@ -71,7 +70,7 @@ export function UnstructuredDropZone({
 
       const addedSize = valid.reduce((s, f) => s + f.size, 0);
       const currentTotal = filesRef.current.reduce((sum, f) => sum + f.size, 0);
-      if (currentTotal + addedSize > latestMaxUploadBytes) return;
+      if (currentTotal + addedSize > MAX_TOTAL_SIZE) return;
 
       const entries: FileEntry[] = valid.map((f) => ({
         id: "",
@@ -90,7 +89,9 @@ export function UnstructuredDropZone({
         let updatedStatus: FileEntry["status"] = "error";
         let updatedError: string | undefined;
         try {
-          const existingIds = filesRef.current.filter((f) => f.id).map((f) => f.id);
+          const existingIds = filesRef.current
+            .filter((f) => f.id)
+            .map((f) => f.id);
           const result = await uploadUnstructuredFile(
             file,
             blockId,
@@ -110,14 +111,18 @@ export function UnstructuredDropZone({
         onFilesChange((prev) =>
           prev.map((f) =>
             f === entry
-              ? { ...f, id: updatedId, status: updatedStatus, error: updatedError }
+              ? {
+                  ...f,
+                  id: updatedId,
+                  status: updatedStatus,
+                  error: updatedError,
+                }
               : f,
           ),
         );
       }
-
     },
-    [blockId, maxUploadBytes, onFilesChange],
+    [blockId, onFilesChange],
   );
 
   const deletedIdsRef = useRef(new Set<string>());
@@ -128,7 +133,11 @@ export function UnstructuredDropZone({
       if (entry.status === "uploading" && entry.abortController) {
         entry.abortController.abort();
       }
-      if (entry.id && entry.status === "ok" && !deletedIdsRef.current.has(entry.id)) {
+      if (
+        entry.id &&
+        entry.status === "ok" &&
+        !deletedIdsRef.current.has(entry.id)
+      ) {
         deletedIdsRef.current.add(entry.id);
         void removeUnstructuredFile(blockId, entry.id).catch(() => {});
       }
@@ -186,12 +195,15 @@ export function UnstructuredDropZone({
         onDragLeave={handleDragLeave}
         onClick={handleClick}
       >
-        <HugeiconsIcon icon={CloudUploadIcon} className="text-muted-foreground mb-2 size-8" />
+        <HugeiconsIcon
+          icon={CloudUploadIcon}
+          className="text-muted-foreground mb-2 size-8"
+        />
         <p className="text-muted-foreground text-sm">
           Drop files here or click to browse
         </p>
         <p className="text-muted-foreground/60 mt-1 text-xs">
-          PDF, DOCX, TXT, MD up to {maxUploadLabel} total
+          PDF, DOCX, TXT, MD - up to 500MB each, 1GB total
         </p>
       </div>
 
@@ -212,13 +224,22 @@ export function UnstructuredDropZone({
               className="flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm"
             >
               {entry.status === "uploading" && (
-                <HugeiconsIcon icon={Loading03Icon} className="text-muted-foreground size-4 animate-spin" />
+                <HugeiconsIcon
+                  icon={Loading03Icon}
+                  className="text-muted-foreground size-4 animate-spin"
+                />
               )}
               {entry.status === "ok" && (
-                <HugeiconsIcon icon={CheckmarkCircle02Icon} className="size-4 text-green-500" />
+                <HugeiconsIcon
+                  icon={CheckmarkCircle02Icon}
+                  className="size-4 text-green-500"
+                />
               )}
               {entry.status === "error" && (
-                <HugeiconsIcon icon={Alert02Icon} className="size-4 text-red-500" />
+                <HugeiconsIcon
+                  icon={Alert02Icon}
+                  className="size-4 text-red-500"
+                />
               )}
               <span className="flex-1 truncate">{entry.name}</span>
               <span className="text-muted-foreground text-xs">
@@ -240,8 +261,11 @@ export function UnstructuredDropZone({
             </div>
           ))}
           <div className="text-muted-foreground flex justify-between px-1 text-xs">
-            <span>{successFiles.length} file{successFiles.length !== 1 ? "s" : ""} uploaded</span>
-            <span>{formatSize(totalSize)} / {maxUploadLabel}</span>
+            <span>
+              {successFiles.length} file{successFiles.length !== 1 ? "s" : ""}{" "}
+              uploaded
+            </span>
+            <span>{formatSize(totalSize)} / 1GB</span>
           </div>
         </div>
       )}

@@ -43,12 +43,6 @@ import {
   useState,
 } from "react";
 import { cn } from "@/lib/utils";
-import {
-  getCachedUploadLimitBytes,
-  getCachedUploadLimitLabel,
-  loadUploadLimitSettings,
-  subscribeUploadLimitSettings,
-} from "@/features/settings/api/upload-limit";
 import { UnstructuredDropZone, type FileEntry } from "./unstructured-drop-zone";
 import {
   getGithubEnvTokenStatus,
@@ -79,6 +73,7 @@ const SELECTION_OPTIONS: Array<{ value: SeedSelectionType; label: string }> = [
 ];
 
 const LOCAL_ACCEPT = ".csv,.json,.jsonl";
+const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
 const DEFAULT_CHUNK_SIZE = 1200;
 const DEFAULT_CHUNK_OVERLAP = 200;
 const MAX_CHUNK_SIZE = 20000;
@@ -582,12 +577,6 @@ export function SeedDialog({
     Record<number, boolean>
   >({});
   const [localFile, setLocalFile] = useState<File | null>(null);
-  const [uploadLimitBytes, setUploadLimitBytes] = useState(
-    getCachedUploadLimitBytes,
-  );
-  const [uploadLimitLabel, setUploadLimitLabel] = useState(
-    getCachedUploadLimitLabel,
-  );
   const [unstructuredFiles, setUnstructuredFiles] = useState<FileEntry[]>(
     () => {
       if (config.unstructured_file_ids?.length) {
@@ -657,25 +646,6 @@ export function SeedDialog({
     config.unstructured_file_names,
     config.unstructured_file_sizes,
   ]);
-
-  useEffect(() => {
-    let cancelled = false;
-    const applyLimit = (settings: {
-      maxUploadSizeBytes: number;
-      maxUploadSizeLabel: string;
-    }) => {
-      setUploadLimitBytes(settings.maxUploadSizeBytes);
-      setUploadLimitLabel(settings.maxUploadSizeLabel);
-    };
-    const unsubscribe = subscribeUploadLimitSettings(applyLimit);
-    void loadUploadLimitSettings().then((settings) => {
-      if (!cancelled) applyLimit(settings);
-    }).catch(() => {});
-    return () => {
-      cancelled = true;
-      unsubscribe();
-    };
-  }, []);
 
   const handleUnstructuredFilesChange = useCallback(
     (updater: FileEntry[] | ((prev: FileEntry[]) => FileEntry[])) => {
@@ -770,19 +740,8 @@ export function SeedDialog({
           if (!localFile) {
             throw new Error("Select a local CSV/JSON/JSONL file first.");
           }
-          let latestUploadLimitBytes = uploadLimitBytes;
-          let latestUploadLimitLabel = uploadLimitLabel;
-          try {
-            const settings = await loadUploadLimitSettings();
-            latestUploadLimitBytes = settings.maxUploadSizeBytes;
-            latestUploadLimitLabel = settings.maxUploadSizeLabel;
-            setUploadLimitBytes(settings.maxUploadSizeBytes);
-            setUploadLimitLabel(settings.maxUploadSizeLabel);
-          } catch {
-            // Keep the current UI fallback if settings cannot be loaded.
-          }
-          if (localFile.size > latestUploadLimitBytes) {
-            throw new Error(`File too large (max ${latestUploadLimitLabel}).`);
+          if (localFile.size > MAX_UPLOAD_BYTES) {
+            throw new Error("File too large (max 100MB).");
           }
           const payload = await fileToBase64Payload(localFile);
           const response = await inspectSeedUpload({
@@ -870,8 +829,6 @@ export function SeedDialog({
       mode,
       onUpdate,
       unstructuredFiles,
-      uploadLimitBytes,
-      uploadLimitLabel,
     ],
   );
 
@@ -1030,7 +987,7 @@ export function SeedDialog({
                 </Button>
               </div>
               <p className="text-xs text-muted-foreground">
-                Max {uploadLimitLabel} per file.
+                Max 100MB per file.
               </p>
               {(localFile?.name || config.local_file_name?.trim()) && (
                 <p className="text-xs text-muted-foreground">
@@ -1044,8 +1001,6 @@ export function SeedDialog({
             <UnstructuredDropZone
               blockId={config.id}
               files={unstructuredFiles}
-              maxUploadBytes={uploadLimitBytes}
-              maxUploadLabel={uploadLimitLabel}
               onFilesChange={handleUnstructuredFilesChange}
               disabled={isInspecting}
             />
