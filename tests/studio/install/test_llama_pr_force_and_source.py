@@ -469,11 +469,17 @@ class TestSourcePatternsPs1:
         assert "$LlamaSource = $DefaultLlamaSource" in self.content
 
     def test_release_repo_override_removed(self):
+        # No env-based release-repo override; the repo is chosen by GPU detection
+        # (GPU -> fork, CPU -> ggml-org), mirroring setup.sh.
         assert (
             "$HelperReleaseRepo = if ($env:UNSLOTH_LLAMA_RELEASE_REPO)"
             not in self.content
         )
-        assert '$HelperReleaseRepo = "ggml-org/llama.cpp"' in self.content
+        assert (
+            '$HelperReleaseRepo = if ($HasNvidiaSmi -or $HasROCm) '
+            '{ "unslothai/llama.cpp" } else { "ggml-org/llama.cpp" }'
+            in self.content
+        )
 
     def test_force_compile_skips_prebuilt_resolution_early(self):
         assert 'if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {' in self.content
