@@ -528,6 +528,32 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
 # from _FAMILIES so the GGUF-only status panel does not over-advertise.
 _FULL_REPO_FAMILIES: tuple[DiffusionFamily, ...] = (
     DiffusionFamily(
+        name = "ltx2-3-base",
+        pipeline_class = "LTX2Pipeline",
+        transformer_class = "LTX2VideoTransformer3DModel",
+        base_repo = "diffusers/LTX-2.3-Diffusers",
+        media_kind = "video",
+        default_steps = 30,
+        default_guidance_scale = 3.0,
+        default_width = 768,
+        default_height = 512,
+        default_num_frames = 121,
+        default_frame_rate = 24.0,
+        supports_gguf_single_file = True,
+        aliases = (
+            "ltx2-3-base",
+            "ltx-2-3-base",
+            "ltx-2.3-base",
+            "ltx2-3-dev",
+            "ltx-2-3-dev",
+            "ltx-2.3-dev",
+            "ltx-2-3-diffusers",
+            "ltx-2.3-diffusers",
+            "ltx-2-3-22b-dev",
+            "ltx-2.3-22b-dev",
+        ),
+    ),
+    DiffusionFamily(
         name = "ltx2-3-distilled",
         pipeline_class = "LTX2Pipeline",
         transformer_class = "LTX2VideoTransformer3DModel",
@@ -541,13 +567,13 @@ _FULL_REPO_FAMILIES: tuple[DiffusionFamily, ...] = (
         default_frame_rate = 24.0,
         supports_gguf_single_file = True,
         aliases = (
-            "ltx2",
-            "ltx-2",
-            "ltx2-3",
-            "ltx-2-3",
-            "ltx2.3",
-            "ltx-2.3",
+            "ltx2-3-distilled",
+            "ltx-2-3-distilled",
             "ltx-2.3-distilled",
+            "ltx-2-3-distilled-diffusers",
+            "ltx-2.3-distilled-diffusers",
+            "ltx-2-3-22b-distilled",
+            "ltx-2.3-22b-distilled",
         ),
     ),
     DiffusionFamily(
@@ -884,7 +910,7 @@ _GGUF_ARCHITECTURE_FAMILY_HINTS: dict[str, tuple[str, ...]] = {
     "z_image": ("z-image", "z-image-turbo"),
     "ernie_image": ("ernie-image", "ernie-image-turbo"),
     "wan": ("wan2-2-t2v",),
-    "ltxv": ("ltx2-3-distilled",),
+    "ltxv": ("ltx2-3-base", "ltx2-3-distilled"),
 }
 
 
@@ -1169,6 +1195,23 @@ _CURATED_UNSLOTH_DIFFUSION_GGUFS: tuple[CuratedDiffusionGGUF, ...] = (
         recommended_offload_policy = DIFFUSION_OFFLOAD_POLICY_LESS_AGGRESSIVE,
     ),
     CuratedDiffusionGGUF(
+        repo_id = "unsloth/LTX-2.3-GGUF",
+        family = "ltx2-3-base",
+        base_repo = "diffusers/LTX-2.3-Diffusers",
+        filename_prefixes = ("ltx-2.3-22b-dev-",),
+        recommended_offload_policy = DIFFUSION_OFFLOAD_POLICY_LESS_AGGRESSIVE,
+    ),
+    CuratedDiffusionGGUF(
+        repo_id = "unsloth/LTX-2.3-GGUF",
+        family = "ltx2-3-distilled",
+        base_repo = "diffusers/LTX-2.3-Distilled-Diffusers",
+        filename_prefixes = (
+            "ltx-2.3-22b-distilled-",
+            "ltx-2.3-22b-distilled-1.1-",
+        ),
+        recommended_offload_policy = DIFFUSION_OFFLOAD_POLICY_LESS_AGGRESSIVE,
+    ),
+    CuratedDiffusionGGUF(
         repo_id = "unsloth/Qwen-Image-GGUF",
         family = "qwen-image",
         base_repo = "Qwen/Qwen-Image",
@@ -1206,9 +1249,14 @@ _CURATED_UNSLOTH_DIFFUSION_GGUFS: tuple[CuratedDiffusionGGUF, ...] = (
     ),
 )
 
-_CURATED_UNSLOTH_DIFFUSION_GGUFS_BY_REPO: dict[str, CuratedDiffusionGGUF] = {
-    spec.repo_id.lower(): spec
-    for spec in _CURATED_UNSLOTH_DIFFUSION_GGUFS
+_CURATED_UNSLOTH_DIFFUSION_GGUFS_BY_REPO: dict[str, tuple[CuratedDiffusionGGUF, ...]] = {
+    repo_id: tuple(
+        spec for spec in _CURATED_UNSLOTH_DIFFUSION_GGUFS
+        if spec.repo_id.lower() == repo_id
+    )
+    for repo_id in tuple(
+        dict.fromkeys(spec.repo_id.lower() for spec in _CURATED_UNSLOTH_DIFFUSION_GGUFS)
+    )
 }
 
 
@@ -1226,11 +1274,12 @@ def _curated_gguf_recommended_offload_policy(
 
     spec: Optional[CuratedDiffusionGGUF] = None
     if transformer_gguf_repo and transformer_gguf_filename:
-        spec = _CURATED_UNSLOTH_DIFFUSION_GGUFS_BY_REPO.get(
-            str(transformer_gguf_repo).lower()
+        spec = _curated_unsloth_diffusion_gguf(
+            transformer_gguf_repo,
+            transformer_gguf_filename,
         )
     if spec is None and repo_id and gguf_filename:
-        spec = _CURATED_UNSLOTH_DIFFUSION_GGUFS_BY_REPO.get(str(repo_id).lower())
+        spec = _curated_unsloth_diffusion_gguf(repo_id, gguf_filename)
     if spec is None:
         return None
 
@@ -1241,6 +1290,10 @@ def _preset_id_from_curated_diffusion_gguf(spec: CuratedDiffusionGGUF) -> str:
     leaf = _repo_leaf(spec.repo_id)
     if leaf.endswith("-gguf"):
         leaf = leaf[:-5]
+    if len(_CURATED_UNSLOTH_DIFFUSION_GGUFS_BY_REPO.get(spec.repo_id.lower(), ())) > 1:
+        family_leaf = spec.family.rsplit("-", 1)[-1]
+        if family_leaf and family_leaf not in leaf.lower():
+            leaf = f"{leaf}-{family_leaf}"
     return leaf.replace("_", "-")
 
 
@@ -1282,15 +1335,18 @@ _CURATED_DIFFUSION_PRESETS: tuple[DiffusionLoadPreset, ...] = tuple(
     for spec in _CURATED_UNSLOTH_DIFFUSION_GGUFS
 )
 
-_CURATED_DIFFUSION_PRESETS_BY_ID: dict[str, DiffusionLoadPreset] = {
-    key: preset
-    for preset in _CURATED_DIFFUSION_PRESETS
-    for key in (
-        preset.id.lower(),
+_CURATED_DIFFUSION_PRESETS_BY_ID: dict[str, DiffusionLoadPreset] = {}
+for preset in _CURATED_DIFFUSION_PRESETS:
+    _CURATED_DIFFUSION_PRESETS_BY_ID[preset.id.lower()] = preset
+    repo_specs = _CURATED_UNSLOTH_DIFFUSION_GGUFS_BY_REPO.get(
         preset.transformer_gguf_repo.lower(),
-        _repo_leaf(preset.transformer_gguf_repo).lower(),
+        (),
     )
-}
+    if len(repo_specs) == 1:
+        _CURATED_DIFFUSION_PRESETS_BY_ID[preset.transformer_gguf_repo.lower()] = preset
+        _CURATED_DIFFUSION_PRESETS_BY_ID[
+            _repo_leaf(preset.transformer_gguf_repo).lower()
+        ] = preset
 
 
 def _contains_label(text: str, label: str) -> bool:
@@ -1366,10 +1422,6 @@ def _candidate_base_repo_message(family: str) -> str:
     return f"base_repo candidates: {joined}."
 
 
-def _curated_unsloth_diffusion_gguf(repo_id: str) -> Optional[CuratedDiffusionGGUF]:
-    return _CURATED_UNSLOTH_DIFFUSION_GGUFS_BY_REPO.get(str(repo_id).lower())
-
-
 def _filename_matches_curated_diffusion_gguf(
     spec: CuratedDiffusionGGUF,
     gguf_filename: Optional[str],
@@ -1379,6 +1431,23 @@ def _filename_matches_curated_diffusion_gguf(
         leaf.startswith(prefix.lower())
         for prefix in spec.filename_prefixes
     )
+
+
+def _curated_unsloth_diffusion_gguf(
+    repo_id: str,
+    gguf_filename: Optional[str] = None,
+) -> Optional[CuratedDiffusionGGUF]:
+    specs = _CURATED_UNSLOTH_DIFFUSION_GGUFS_BY_REPO.get(str(repo_id).lower(), ())
+    if not specs:
+        return None
+    if gguf_filename is not None:
+        for spec in specs:
+            if _filename_matches_curated_diffusion_gguf(spec, gguf_filename):
+                return spec
+        return None
+    if len(specs) == 1:
+        return specs[0]
+    return None
 
 
 def _variant_hint_matches_for_family(
@@ -1488,7 +1557,7 @@ def _resolve_diffusion_base_repo(
             confidence = "explicit",
             variant = variant,
         )
-    curated = _curated_unsloth_diffusion_gguf(repo_id)
+    curated = _curated_unsloth_diffusion_gguf(repo_id, gguf_filename)
     if (
         curated is not None
         and curated.family == fam.name
@@ -4470,6 +4539,8 @@ class DiffusionBackend:
             )
 
         family_probe_repo = pipeline_repo if explicit_transformer_swap else repo_id
+        if diffusion_gguf_filename and not explicit_transformer_swap:
+            family_probe_repo = f"{family_probe_repo}/{diffusion_gguf_filename}"
         fam = detect_family(family_probe_repo, override_family = family_override)
         if fam is None and diffusion_gguf_filename and not explicit_transformer_swap:
             fam = detect_family(repo_id, override_family = family_override)
@@ -4496,7 +4567,8 @@ class DiffusionBackend:
                 "'qwen-image-edit' / 'qwen-image-edit-2509' / "
                 "'qwen-image-edit-2511' / 'qwen-image-layered' / "
                 "'z-image' / 'z-image-turbo' / 'ernie-image' / "
-                "'ernie-image-turbo' / 'ltx2-3-distilled' / "
+                "'ernie-image-turbo' / 'ltx2-3-base' / "
+                "'ltx2-3-distilled' / "
                 "'wan2-2-t2v' / 'stable-diffusion-3' / "
                 "'stable-diffusion-xl' to disambiguate."
             )
@@ -6538,6 +6610,14 @@ def _video_family_call_defaults(fam: DiffusionFamily) -> dict[str, Any]:
     These live behind a helper so imports for optional pipeline utility
     modules happen only when the video family is actually used.
     """
+    if fam.name == "ltx2-3-base":
+        from diffusers.pipelines.ltx2.utils import DEFAULT_NEGATIVE_PROMPT
+
+        return {
+            "negative_prompt": DEFAULT_NEGATIVE_PROMPT,
+            "output_type": "np",
+            "return_dict": False,
+        }
     if fam.name == "ltx2-3-distilled":
         from diffusers.pipelines.ltx2.utils import (
             DEFAULT_NEGATIVE_PROMPT,

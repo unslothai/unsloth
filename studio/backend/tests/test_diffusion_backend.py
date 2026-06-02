@@ -245,6 +245,16 @@ def test_detect_family_finds_full_repo_sdxl():
 def test_detect_family_finds_video_full_repo_families():
     from core.inference.diffusion import detect_family
 
+    base = detect_family("diffusers/LTX-2.3-Diffusers")
+    assert base is not None
+    assert base.name == "ltx2-3-base"
+    assert base.media_kind == "video"
+    assert base.pipeline_class == "LTX2Pipeline"
+    assert base.base_repo == "diffusers/LTX-2.3-Diffusers"
+    assert base.default_steps == 30
+    assert base.default_guidance_scale == 3.0
+    assert base.supports_gguf_single_file is True
+
     fam = detect_family("diffusers/LTX-2.3-Distilled-Diffusers")
     assert fam is not None
     assert fam.name == "ltx2-3-distilled"
@@ -255,6 +265,17 @@ def test_detect_family_finds_video_full_repo_families():
     assert fam.default_num_frames == 121
     assert fam.default_frame_rate == 24.0
     assert fam.supports_gguf_single_file is True
+
+    ambiguous = detect_family("unsloth/LTX-2.3-GGUF")
+    assert ambiguous is None
+    dev_gguf = detect_family("unsloth/LTX-2.3-GGUF/ltx-2.3-22b-dev-Q4_K_M.gguf")
+    assert dev_gguf is not None
+    assert dev_gguf.name == "ltx2-3-base"
+    distilled_gguf = detect_family(
+        "unsloth/LTX-2.3-GGUF/distilled/ltx-2.3-22b-distilled-Q4_K_M.gguf"
+    )
+    assert distilled_gguf is not None
+    assert distilled_gguf.name == "ltx2-3-distilled"
 
     wan = detect_family("Wan-AI/Wan2.2-T2V-A14B-Diffusers")
     assert wan is not None
@@ -273,7 +294,12 @@ def test_supported_families_payload_shape():
     assert isinstance(payload, list)
     assert len(payload) >= 4
     by_name = {entry["name"]: entry for entry in payload}
+    assert by_name["ltx2-3-base"]["media_kind"] == "video"
+    assert by_name["ltx2-3-base"]["default_steps"] == 30
+    assert by_name["ltx2-3-base"]["default_guidance_scale"] == 3.0
     assert by_name["ltx2-3-distilled"]["media_kind"] == "video"
+    assert by_name["ltx2-3-distilled"]["default_steps"] == 8
+    assert by_name["ltx2-3-distilled"]["default_guidance_scale"] == 1.0
     assert by_name["wan2-2-t2v"]["media_kind"] == "video"
     assert by_name["flux.2"]["media_kind"] == "image"
     for entry in payload:
@@ -1859,6 +1885,20 @@ def test_load_model_ernie_gguf_uses_state_dict_fallback(monkeypatch):
             None,
         ),
         (
+            "unsloth/LTX-2.3-GGUF",
+            "ltx-2.3-22b-dev-Q4_K_M.gguf",
+            "ltx2-3-base",
+            "diffusers/LTX-2.3-Diffusers",
+            None,
+        ),
+        (
+            "unsloth/LTX-2.3-GGUF",
+            "distilled/ltx-2.3-22b-distilled-Q4_K_M.gguf",
+            "ltx2-3-distilled",
+            "diffusers/LTX-2.3-Distilled-Diffusers",
+            None,
+        ),
+        (
             "unsloth/Qwen-Image-GGUF",
             "qwen-image-Q4_K_M.gguf",
             "qwen-image",
@@ -1920,7 +1960,7 @@ def test_load_model_curated_unsloth_diffusion_gguf_manifest(
     assert status["family"] == family
     assert status["base_repo"] == base_repo
     assert status["base_repo_variant"] == variant
-    assert status["gguf_filename"] == filename
+    assert status["gguf_filename"] == filename.split("/")[-1]
     assert status["sampling_contract"]["gguf"] is True
     assert backend._pipe.base_repo == base_repo
     assert backend._pipe.kwargs["transformer"].path.endswith(filename)
@@ -1969,6 +2009,15 @@ def test_curated_unsloth_diffusion_gguf_manifest_covers_all_quant_filenames():
             "UD-Q5_K_M.gguf",
         ),
         "unsloth/Z-Image-GGUF": ("Q3_K_L.gguf",),
+        "unsloth/LTX-2.3-GGUF": (
+            "UD-Q2_K.gguf",
+            "UD-Q3_K_M.gguf",
+            "UD-Q3_K_S.gguf",
+            "UD-Q4_K_M.gguf",
+            "UD-Q4_K_S.gguf",
+            "UD-Q5_K_M.gguf",
+            "UD-Q5_K_S.gguf",
+        ),
     }
     expected_repos = {
         "unsloth/FLUX.1-Kontext-dev-GGUF",
@@ -1983,6 +2032,7 @@ def test_curated_unsloth_diffusion_gguf_manifest_covers_all_quant_filenames():
         "unsloth/Z-Image-Turbo-GGUF",
         "unsloth/ERNIE-Image-Turbo-GGUF",
         "unsloth/ERNIE-Image-GGUF",
+        "unsloth/LTX-2.3-GGUF",
         "unsloth/Qwen-Image-GGUF",
         "unsloth/Qwen-Image-Edit-GGUF",
         "unsloth/Qwen-Image-Edit-2509-GGUF",
@@ -2004,7 +2054,7 @@ def test_curated_unsloth_diffusion_gguf_manifest_covers_all_quant_filenames():
                 checked += 1
                 assert _filename_matches_curated_diffusion_gguf(spec, prefix + suffix)
 
-    assert checked == 285
+    assert checked == 351
 
 
 def test_curated_diffusion_presets_cover_manifest():
@@ -2015,12 +2065,14 @@ def test_curated_diffusion_presets_cover_manifest():
 
     presets = curated_diffusion_presets()
     assert len(presets) == len(_CURATED_UNSLOTH_DIFFUSION_GGUFS)
+    by_id = {entry["id"]: entry for entry in presets}
+    assert len(by_id) == len(presets)
     by_repo = {entry["transformer_gguf_repo"]: entry for entry in presets}
-    assert set(by_repo) == {
+    assert {
         spec.repo_id
         for spec in _CURATED_UNSLOTH_DIFFUSION_GGUFS
-    }
-    flux2 = by_repo["unsloth/FLUX.2-dev-GGUF"]
+    }.issubset(set(by_repo))
+    flux2 = by_id["flux.2-dev"]
     assert flux2["id"] == "flux.2-dev"
     assert flux2["pipeline_repo"] == "black-forest-labs/FLUX.2-dev"
     assert flux2["default_steps"] == 50
@@ -2029,6 +2081,23 @@ def test_curated_diffusion_presets_cover_manifest():
         "unsloth/Mistral-Small-3.2-24B-Instruct-2506-GGUF"
     )
     assert flux2["recommended_offload_policy"] == "less_aggressive"
+    ltx_base = by_id["ltx-2.3-base"]
+    assert ltx_base["family"] == "ltx2-3-base"
+    assert ltx_base["pipeline_repo"] == "diffusers/LTX-2.3-Diffusers"
+    assert ltx_base["default_steps"] == 30
+    assert ltx_base["default_guidance_scale"] == 3.0
+    assert ltx_base["transformer_filename_prefixes"] == ["ltx-2.3-22b-dev-"]
+    assert ltx_base["recommended_offload_policy"] == "less_aggressive"
+    ltx_distilled = by_id["ltx-2.3-distilled"]
+    assert ltx_distilled["family"] == "ltx2-3-distilled"
+    assert ltx_distilled["pipeline_repo"] == "diffusers/LTX-2.3-Distilled-Diffusers"
+    assert ltx_distilled["default_steps"] == 8
+    assert ltx_distilled["default_guidance_scale"] == 1.0
+    assert ltx_distilled["transformer_filename_prefixes"] == [
+        "ltx-2.3-22b-distilled-",
+        "ltx-2.3-22b-distilled-1.1-",
+    ]
+    assert ltx_distilled["recommended_offload_policy"] == "less_aggressive"
     assert by_repo["unsloth/Z-Image-GGUF"]["recommended_offload_policy"] == (
         "less_aggressive"
     )
@@ -2195,6 +2264,14 @@ def test_curated_gguf_recommended_offload_policy_for_direct_loads():
         gguf_filename = "z-image-turbo-Q4_K_M.gguf",
     ) == "less_aggressive"
     assert d._curated_gguf_recommended_offload_policy(
+        repo_id = "unsloth/LTX-2.3-GGUF",
+        gguf_filename = "ltx-2.3-22b-dev-Q4_K_M.gguf",
+    ) == "less_aggressive"
+    assert d._curated_gguf_recommended_offload_policy(
+        repo_id = "unsloth/LTX-2.3-GGUF",
+        gguf_filename = "distilled/ltx-2.3-22b-distilled-Q4_K_M.gguf",
+    ) == "less_aggressive"
+    assert d._curated_gguf_recommended_offload_policy(
         repo_id = "Qwen/Qwen-Image",
         transformer_gguf_repo = "unsloth/Qwen-Image-GGUF",
         transformer_gguf_filename = "qwen-image-Q4_K_M.gguf",
@@ -2211,6 +2288,11 @@ def test_curated_gguf_recommended_offload_policy_for_direct_loads():
     assert d._curated_gguf_recommended_offload_policy(
         repo_id = "Qwen/Qwen-Image",
     ) is None
+    assert d._curated_gguf_recommended_offload_policy(
+        repo_id = "diffusers/LTX-2.3-Diffusers",
+        transformer_gguf_repo = "unsloth/LTX-2.3-GGUF",
+        transformer_gguf_filename = "ltx-2.3-22b-dev-Q4_K_M.gguf",
+    ) == "less_aggressive"
 
 
 def test_load_model_ernie_can_replace_text_encoder_and_prompt_enhancer_ggufs(monkeypatch):
@@ -3742,6 +3824,24 @@ def test_load_gguf_checkpoint_no_copy_normalizes_ltx23_prompt_adaln_aliases(monk
     }
     assert parsed["prompt_adaln.linear.weight"].quant_shape == (8, 2)
     assert parsed["audio_prompt_adaln.linear.weight"].quant_shape == (4, 4)
+
+
+def test_ltx23_gguf_architecture_hint_matches_base_and_distilled_families():
+    import core.inference.diffusion as d
+
+    inspection = d._inspect_diffusion_gguf_tensor_names(
+        set(),
+        metadata = {"general.architecture": "ltxv"},
+    )
+    assert inspection.family_hints == ("ltx2-3-base", "ltx2-3-distilled")
+    assert d._gguf_inspection_matches_family(
+        inspection,
+        d.detect_family("diffusers/LTX-2.3-Diffusers"),
+    )
+    assert d._gguf_inspection_matches_family(
+        inspection,
+        d.detect_family("diffusers/LTX-2.3-Distilled-Diffusers"),
+    )
 
 
 def test_load_gguf_checkpoint_no_copy_accepts_observed_unsloth_quant_types(monkeypatch):
@@ -6468,6 +6568,103 @@ def test_generate_video_with_metadata_uses_family_defaults():
     assert meta["family"] == "wan2-2-t2v"
     assert meta["num_frames"] == 81
     assert meta["frame_rate"] == 16.0
+
+
+@pytest.mark.parametrize(
+    ("repo_id", "family", "steps", "guidance", "expects_sigmas"),
+    [
+        ("diffusers/LTX-2.3-Diffusers", "ltx2-3-base", 30, 3.0, False),
+        (
+            "diffusers/LTX-2.3-Distilled-Diffusers",
+            "ltx2-3-distilled",
+            8,
+            1.0,
+            True,
+        ),
+    ],
+)
+def test_generate_video_with_metadata_uses_ltx23_family_defaults(
+    monkeypatch,
+    repo_id,
+    family,
+    steps,
+    guidance,
+    expects_sigmas,
+):
+    import core.inference.diffusion as d
+
+    fake_diffusers = types.ModuleType("diffusers")
+    fake_pipelines = types.ModuleType("diffusers.pipelines")
+    fake_ltx2 = types.ModuleType("diffusers.pipelines.ltx2")
+    fake_utils = types.ModuleType("diffusers.pipelines.ltx2.utils")
+    fake_utils.DEFAULT_NEGATIVE_PROMPT = "ltx default negative"
+    fake_utils.DISTILLED_SIGMA_VALUES = [1.0, 0.5]
+    monkeypatch.setitem(sys.modules, "diffusers", fake_diffusers)
+    monkeypatch.setitem(sys.modules, "diffusers.pipelines", fake_pipelines)
+    monkeypatch.setitem(sys.modules, "diffusers.pipelines.ltx2", fake_ltx2)
+    monkeypatch.setitem(sys.modules, "diffusers.pipelines.ltx2.utils", fake_utils)
+
+    backend = d.DiffusionBackend()
+
+    class _FakeLTXPipe:
+        def __init__(self):
+            self.last_kwargs = None
+
+        def __call__(
+            self,
+            *,
+            prompt,
+            negative_prompt,
+            num_inference_steps,
+            guidance_scale,
+            width,
+            height,
+            num_frames,
+            frame_rate,
+            output_type,
+            return_dict,
+            sigmas = None,
+            generator = None,
+        ):
+            self.last_kwargs = {
+                "prompt": prompt,
+                "negative_prompt": negative_prompt,
+                "num_inference_steps": num_inference_steps,
+                "guidance_scale": guidance_scale,
+                "width": width,
+                "height": height,
+                "num_frames": num_frames,
+                "frame_rate": frame_rate,
+                "output_type": output_type,
+                "return_dict": return_dict,
+                "sigmas": sigmas,
+                "generator": generator,
+            }
+            return SimpleNamespace(frames = [["frame0", "frame1"]])
+
+    pipe = _FakeLTXPipe()
+    backend._pipe = pipe
+    backend._device = "cpu"
+    backend._repo_id = repo_id
+    backend._family = d.detect_family(repo_id)
+
+    video, meta = backend.generate_video_with_metadata(prompt = "a slow dolly shot")
+
+    assert backend._family.name == family
+    assert video == ["frame0", "frame1"]
+    assert pipe.last_kwargs["negative_prompt"] == "ltx default negative"
+    assert pipe.last_kwargs["num_inference_steps"] == steps
+    assert pipe.last_kwargs["guidance_scale"] == guidance
+    assert pipe.last_kwargs["width"] == 768
+    assert pipe.last_kwargs["height"] == 512
+    assert pipe.last_kwargs["num_frames"] == 121
+    assert pipe.last_kwargs["frame_rate"] == 24.0
+    assert pipe.last_kwargs["output_type"] == "np"
+    assert pipe.last_kwargs["return_dict"] is False
+    assert pipe.last_kwargs["sigmas"] == ([1.0, 0.5] if expects_sigmas else None)
+    assert meta["family"] == family
+    assert meta["num_inference_steps"] == steps
+    assert meta["guidance_scale"] == guidance
 
 
 def test_generate_video_rejects_image_family():
