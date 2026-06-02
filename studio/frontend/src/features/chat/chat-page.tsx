@@ -1087,6 +1087,15 @@ export function ChatPage(): ReactElement {
   const [modelSelectorOpen, setModelSelectorOpen] = useState(false);
   const [modelSelectorLocked, setModelSelectorLocked] = useState(false);
   const viewBeforeCompareRef = useRef<ChatSearch | null>(null);
+  // Tracks the latest non-compare view so exiting compare can restore it even
+  // when compare was opened from a path that does not set viewBeforeCompareRef
+  // (e.g. the composer + menu).
+  const lastNonCompareViewRef = useRef<ChatSearch | null>(null);
+  useEffect(() => {
+    if (!search.compare) {
+      lastNonCompareViewRef.current = { ...search };
+    }
+  }, [search]);
   const inferenceParams = useChatRuntimeStore((state) => state.params);
   const setInferenceParams = useChatRuntimeStore((state) => state.setParams);
   const activeGgufVariant = useChatRuntimeStore(
@@ -1804,7 +1813,9 @@ export function ChatPage(): ReactElement {
   }, [currentProjectId, navigate, search]);
 
   const exitCompare = useCallback(() => {
-    const saved = viewBeforeCompareRef.current;
+    // Prefer the explicit save; fall back to the last non-compare view so the
+    // composer + menu path also returns to where the user started.
+    const saved = viewBeforeCompareRef.current ?? lastNonCompareViewRef.current;
     // No saved view (compare opened by direct URL); fall back to a fresh chat.
     if (!saved) {
       navigate({ to: "/chat" });
