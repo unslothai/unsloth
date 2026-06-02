@@ -209,6 +209,16 @@ _custom_studio_roots | while IFS= read -r _custom_root; do
     _remove_path "$_custom_root"
 done
 _remove_path "$HOME/.unsloth/studio"
+# Default-mode shared llama.cpp build + cache live at ~/.unsloth/* (siblings of
+# studio, NOT under it -- install.sh puts them at $HOME/.unsloth/llama.cpp). They
+# are not removed by deleting studio. No-ops in env/custom mode (llama.cpp nests
+# under the custom root removed above) and when absent. A user-set
+# UNSLOTH_LLAMA_CPP_PATH points at the user's own dir and is intentionally kept.
+_remove_path "$HOME/.unsloth/llama.cpp"
+_remove_path "$HOME/.unsloth/.cache"
+# Drop ~/.unsloth itself only if it is now empty (rmdir refuses a non-empty dir,
+# so unrelated content a user may keep there is never removed).
+rmdir "$HOME/.unsloth" 2>/dev/null || true
 _remove_path "$HOME/.local/share/unsloth"
 # CLI shim: only the symlink Studio created, never a pip-installed file.
 _remove_cli_shim
@@ -245,17 +255,28 @@ case "$_os" in
             # Start Menu Programs folder via powershell.exe; mirror that path.
             if command -v powershell.exe >/dev/null 2>&1; then
                 # shellcheck disable=SC2016
-                # $env:APPDATA is a PowerShell expansion; intentionally literal at shell level.
+                # $env:APPDATA etc. are PowerShell expansions; intentionally literal at shell level.
+                # Remove every "Unsloth Studio*.lnk" whose target launches WSL
+                # (wsl.exe), covering both the legacy "Unsloth Studio.lnk" name and
+                # the current "Unsloth Studio (WSL - <distro>).lnk". We match on the
+                # target, NOT the name, so a native-Windows install's shortcut
+                # (which launches wscript.exe) is never removed by the WSL uninstall.
                 powershell.exe -NoProfile -Command '
-                    $names = @("Desktop","StartMenu");
                     $dirs = @(
                         [Environment]::GetFolderPath("Desktop"),
                         (Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs")
                     );
+                    $ws = New-Object -ComObject WScript.Shell;
                     foreach ($d in $dirs) {
-                        if (-not $d) { continue }
-                        $p = Join-Path $d "Unsloth Studio.lnk";
-                        if (Test-Path -LiteralPath $p) { Remove-Item -LiteralPath $p -Force }
+                        if (-not $d -or -not (Test-Path -LiteralPath $d)) { continue }
+                        Get-ChildItem -LiteralPath $d -Filter "Unsloth Studio*.lnk" -ErrorAction SilentlyContinue | ForEach-Object {
+                            try {
+                                $sc = $ws.CreateShortcut($_.FullName);
+                                if ("$($sc.TargetPath) $($sc.Arguments)" -match "wsl\.exe") {
+                                    Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue
+                                }
+                            } catch { }
+                        }
                     }' >/dev/null 2>&1 || true
             fi
         fi

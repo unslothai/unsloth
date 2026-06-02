@@ -13,15 +13,20 @@ function Uninstall-UnslothStudio {
     function _Step { param([string]$Msg) Write-Host $Msg }
     function _Substep { param([string]$Msg, [string]$Color = "Gray") Write-Host "  $Msg" -ForegroundColor $Color }
 
-    # Remove a file/dir/symlink only if it exists. Idempotent.
+    # Remove a file/dir/symlink only if it exists. Idempotent. Retries a couple
+    # of times because a just-killed process can briefly keep a file handle open
+    # (Windows refuses the delete until the handle is released).
     function _RemovePath {
         param([string]$Path)
         if ([string]::IsNullOrWhiteSpace($Path)) { return }
-        if (Test-Path -LiteralPath $Path) {
+        if (-not (Test-Path -LiteralPath $Path)) { return }
+        for ($attempt = 1; $attempt -le 3; $attempt++) {
             try {
                 Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop
                 _Substep "removed: $Path" "Green"
+                return
             } catch {
+                if ($attempt -lt 3) { Start-Sleep -Milliseconds 700; continue }
                 _Substep "could not remove: $Path ($($_.Exception.Message))" "Yellow"
             }
         }
@@ -233,9 +238,59 @@ function Uninstall-UnslothStudio {
         } catch { }
     }
 
+    # Stop any process that would block deletion of the paths we are about to
+    # remove. _StopStudioProcesses (above) only matches the venv unsloth/python/
+    # studio exe; this also catches:
+    #   - llama-server.exe / llama-cli.exe under <root>\llama.cpp\,
+    #   - the unsloth.exe CLI shim under <root>\bin\,
+    #   - orphaned multiprocessing workers that run from the SYSTEM python but
+    #     loaded a DLL (e.g. bitsandbytes) from the Studio venv -- on Windows an
+    #     open DLL handle blocks the directory delete. These are found by checking
+    #     each candidate process's loaded modules, not just its image path.
+    function _StopProcessesLockingRoots {
+        param([string[]]$Roots)
+        $clean = @($Roots | Where-Object { $_ } | ForEach-Object { $_.TrimEnd('\','/') })
+        if ($clean.Count -eq 0) { return }
+        $underRoot = {
+            param($p)
+            if (-not $p) { return $false }
+            foreach ($r in $clean) { if ($p -ieq $r -or $p -ilike "$r\*") { return $true } }
+            return $false
+        }
+        # 1. Image path under a target root (venv python, shim, llama-server).
+        try {
+            foreach ($proc in (Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)) {
+                if ((& $underRoot $proc.ExecutablePath)) {
+                    try { Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue } catch { }
+                }
+            }
+        } catch { }
+        # 2. A loaded module under a target root (orphaned mp-fork python holding
+        #    a venv DLL). Scope to the process names that actually load our DLLs so
+        #    the module scan stays fast and never touches unrelated apps.
+        try {
+            $cands = Get-Process -Name python, pythonw, unsloth, llama-server, llama-cli -ErrorAction SilentlyContinue
+            foreach ($proc in $cands) {
+                $hit = $false
+                try {
+                    foreach ($m in $proc.Modules) { if ((& $underRoot $m.FileName)) { $hit = $true; break } }
+                } catch { }  # access denied enumerating modules -> skip
+                if ($hit) { try { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue } catch { } }
+            }
+        } catch { }
+    }
+
     # Default install root + default data dir.
     $defaultStudioHome = if ($env:USERPROFILE) { Join-Path $env:USERPROFILE ".unsloth\studio" } else { $null }
     $defaultDataDir = if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA "Unsloth Studio" } else { $null }
+    # Default-mode ~/.unsloth holds a SHARED llama.cpp build (a sibling of studio,
+    # NOT under it -- setup.ps1 puts it at $UnslothHome\llama.cpp) plus a .cache
+    # dir. Deleting <studio> does not remove these, so handle them explicitly.
+    # These are no-ops in env/custom mode (llama.cpp is nested under the custom
+    # root and removed with it). A user-set UNSLOTH_LLAMA_CPP_PATH is left alone.
+    $defaultUnslothHome = if ($env:USERPROFILE) { Join-Path $env:USERPROFILE ".unsloth" } else { $null }
+    $defaultLlamaCpp = if ($defaultUnslothHome) { Join-Path $defaultUnslothHome "llama.cpp" } else { $null }
+    $defaultCache = if ($defaultUnslothHome) { Join-Path $defaultUnslothHome ".cache" } else { $null }
 
     # Build known-root list FIRST so the port-file kill can verify ownership.
     $customRoots = @(_CustomStudioRoots)
@@ -252,6 +307,10 @@ function Uninstall-UnslothStudio {
         _StopByPortFile -PortFile (Join-Path $r "share\studio.port") -KnownRoots $knownRoots
     }
     _StopStudioProcesses -KnownRoots $knownRoots
+    # Also stop anything still holding a handle on the EXACT paths we will delete
+    # (llama-server under llama.cpp, the CLI shim, an orphaned mp-fork python that
+    # loaded a venv DLL) so Windows does not refuse the directory delete.
+    _StopProcessesLockingRoots -Roots (@($knownRoots) + @($defaultDataDir, $defaultLlamaCpp, $defaultCache))
 
     # ── Remove custom-root install trees ──
     _Step "Removing data and install directories..."
@@ -270,6 +329,17 @@ function Uninstall-UnslothStudio {
     if ($defaultStudioHome) { _RemovePath $defaultStudioHome }
     # Default data dir.
     if ($defaultDataDir) { _RemovePath $defaultDataDir }
+    # Default-mode shared llama.cpp build + cache (siblings of studio under
+    # ~/.unsloth). No-ops in env/custom mode (llama.cpp lives under the custom
+    # root removed above) and when absent.
+    if ($defaultLlamaCpp) { _RemovePath $defaultLlamaCpp }
+    if ($defaultCache) { _RemovePath $defaultCache }
+    # Finally drop ~/.unsloth itself, but ONLY if it is now empty -- never nuke
+    # unrelated content a user may keep there.
+    if ($defaultUnslothHome -and (Test-Path -LiteralPath $defaultUnslothHome) -and
+        -not (Get-ChildItem -LiteralPath $defaultUnslothHome -Force -ErrorAction SilentlyContinue)) {
+        _RemovePath $defaultUnslothHome
+    }
 
     # ── Remove desktop and Start Menu shortcuts ──
     _Step "Removing desktop and Start Menu shortcuts..."
