@@ -20,8 +20,8 @@ import {
   loadUploadLimitSettings,
   updateUploadLimitSettings,
   type UploadLimitSettings,
-} from "@/features/settings/api/upload-limit";
-import { useSettingsDialogStore } from "@/features/settings";
+} from "../api/upload-limit";
+import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 import { LOCALE_STORAGE_KEY, useT } from "@/i18n";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
@@ -254,16 +254,21 @@ export function GeneralTab() {
         >
           <div className="flex flex-col items-end gap-1">
             <div className="flex items-center gap-2">
-              <Input
-                type="number"
-                min={uploadLimit?.minUploadSizeMb ?? 1}
-                max={uploadLimit?.maxAllowedUploadSizeMb ?? 8192}
-                step={1}
-                value={draftUploadLimit}
-                onChange={(event) => setDraftUploadLimit(event.target.value)}
-                className="h-8 w-24"
-              />
-              <span className="text-xs text-muted-foreground">MB</span>
+              <div className="relative w-28">
+                <Input
+                  type="number"
+                  min={uploadLimit?.minUploadSizeMb ?? 1}
+                  max={uploadLimit?.maxAllowedUploadSizeMb ?? 8192}
+                  step={1}
+                  value={draftUploadLimit}
+                  aria-label="Training dataset upload cap in MB"
+                  onChange={(event) => setDraftUploadLimit(event.target.value)}
+                  className="h-8 w-full pr-10"
+                />
+                <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-xs font-medium text-muted-foreground">
+                  MB
+                </span>
+              </div>
               <Button
                 variant="outline"
                 size="sm"
