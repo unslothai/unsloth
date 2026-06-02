@@ -1442,7 +1442,14 @@ shell.Run cmd, 0, False
                 }
             } catch {}
         }
-        if (-not $HasROCm) {
+        # amd-smi on Windows elevates a child at runtime on systems without a
+        # working HIP runtime, popping a UAC/DiskPart prompt that RunAsInvoker
+        # cannot suppress (amd-smi's manifest is asInvoker). Only probe it when
+        # a HIP SDK is present (hipinfo found -> amd-smi runs un-elevated) or the
+        # user opts in. Otherwise we fall through to WMI name inference, which is
+        # enough to select the ROCm wheels + lemonade llama.cpp.
+        $amdSmiAllowed = $HipSdkInstalled -or ($env:UNSLOTH_ENABLE_AMD_SMI -match '^(?i)(1|true|yes|on)$')
+        if (-not $HasROCm -and $amdSmiAllowed) {
             $amdSmiExe = Get-Command "amd-smi" -ErrorAction SilentlyContinue
             if ($amdSmiExe) {
                 try {

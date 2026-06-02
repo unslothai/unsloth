@@ -799,7 +799,16 @@ if (-not $HasNvidiaSmi) {
     # Confirms GPU visibility via 'list', then attempts 'static --asic' to extract
     # the gfx arch that hipinfo would have provided.  Critical for Strix Halo
     # (gfx1151) and other iGPUs where only the HIP runtime is installed.
-    if (-not $HasROCm) {
+    #
+    # BUT: on Windows amd-smi elevates a child at runtime on systems without a
+    # working HIP runtime, popping a UAC/DiskPart prompt that RunAsInvoker
+    # cannot suppress (amd-smi's manifest is asInvoker -- even 'amd-smi version'
+    # hangs on such systems).  Only probe amd-smi when a HIP SDK is present
+    # (hipinfo found -> amd-smi runs un-elevated) or the user opts in; otherwise
+    # fall through to WMI name inference, which already selects the right ROCm
+    # wheels + lemonade llama.cpp for Strix Halo et al.
+    $amdSmiAllowed = $HipSdkInstalled -or ($env:UNSLOTH_ENABLE_AMD_SMI -match '^(?i)(1|true|yes|on)$')
+    if (-not $HasROCm -and $amdSmiAllowed) {
         $amdSmiExe = Get-Command "amd-smi" -ErrorAction SilentlyContinue
         if ($amdSmiExe) {
             try {

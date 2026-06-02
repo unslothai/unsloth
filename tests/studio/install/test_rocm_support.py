@@ -1267,6 +1267,11 @@ class TestAmdGpuMonitoring:
         ):
             monkeypatch.delenv(var, raising = False)
 
+        # amd-smi is gated off on Windows without a HIP SDK to avoid the
+        # UAC/DiskPart elevation prompt. This test mocks amd-smi as available,
+        # so opt in explicitly so the gate allows it on every platform.
+        monkeypatch.setenv("UNSLOTH_ENABLE_AMD_SMI", "1")
+
         mock_json = json.dumps(
             [
                 {
@@ -1302,7 +1307,10 @@ class TestAmdGpuMonitoring:
         except Exception:
             pytest.skip("Could not load amd module")
 
-        with patch.object(subprocess, "run", side_effect = OSError("amd-smi not found")):
+        # Opt in so the call reaches subprocess.run (amd-smi is gated off on
+        # Windows without a HIP SDK); we are testing the OSError handling here.
+        with patch.dict(os.environ, {"UNSLOTH_ENABLE_AMD_SMI": "1"}), \
+             patch.object(subprocess, "run", side_effect = OSError("amd-smi not found")):
             result = amd_mod.get_primary_gpu_utilization()
         assert result["available"] is False
 
@@ -1321,11 +1329,14 @@ class TestAmdGpuMonitoring:
         except Exception:
             pytest.skip("Could not load amd module")
 
-        with patch.object(
-            subprocess,
-            "run",
-            side_effect = subprocess.TimeoutExpired("amd-smi", 5),
-        ):
+        # Opt in so the call reaches subprocess.run (amd-smi is gated off on
+        # Windows without a HIP SDK); we are testing the timeout handling here.
+        with patch.dict(os.environ, {"UNSLOTH_ENABLE_AMD_SMI": "1"}), \
+             patch.object(
+                 subprocess,
+                 "run",
+                 side_effect = subprocess.TimeoutExpired("amd-smi", 5),
+             ):
             result = amd_mod.get_primary_gpu_utilization()
         assert result["available"] is False
 

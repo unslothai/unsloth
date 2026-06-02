@@ -47,14 +47,45 @@ EXIT_FALLBACK = 2
 EXIT_ERROR = 1
 EXIT_BUSY = 3
 
-# DiskPart-prompt suppression: amd-smi auto-elevates on Windows, popping a
-# UAC/DiskPart prompt. This installer only spawns download / extract / probe
-# subprocesses (amd-smi, llama-server validation, git/cmake source builds) --
-# none of which need elevation -- so force __COMPAT_LAYER=RunAsInvoker
-# process-wide so every amd-smi call runs un-elevated. Belt-and-suspenders with
-# run_capture's per-command guard; mirrors install_python_stack.py.
+# DiskPart-prompt suppression. On Windows amd-smi re-initialises the ROCm
+# runtime on every call and, on systems without a working HIP runtime, elevates
+# a child process at runtime -- popping a UAC/DiskPart prompt. __COMPAT_LAYER=
+# RunAsInvoker does NOT suppress this (amd-smi's own manifest is asInvoker, so
+# there is no manifest elevation to override). We keep it set process-wide as a
+# harmless belt-and-suspenders for any tool that DOES use manifest elevation,
+# but the real guard is _amd_smi_allowed(): we simply do not spawn amd-smi on
+# Windows unless a HIP SDK is present or the user opts in.
 if platform.system() == "Windows":
     os.environ.setdefault("__COMPAT_LAYER", "RunAsInvoker")
+
+
+def _amd_smi_allowed() -> bool:
+    """Whether it is safe to spawn amd-smi on this platform.
+
+    On Windows, amd-smi elevates a child at runtime on hosts without a working
+    HIP runtime (consumer APUs/dGPUs with only the Adrenalin driver), popping a
+    UAC/DiskPart prompt that RunAsInvoker cannot suppress. We therefore only
+    call amd-smi on Windows when a HIP SDK is detectable (hipinfo present, so
+    amd-smi runs un-elevated) or when the user opts in via
+    UNSLOTH_ENABLE_AMD_SMI=1. Linux/macOS amd-smi does not elevate -> always
+    allowed. When skipped, the gfx arch is still resolved from the forwarded
+    --rocm-gfx (setup.ps1's WMI name inference), so prebuilt selection is
+    unaffected.
+    """
+    if platform.system() != "Windows":
+        return True
+    flag = os.environ.get("UNSLOTH_ENABLE_AMD_SMI", "").strip().lower()
+    if flag in ("1", "true", "yes", "on"):
+        return True
+    if flag in ("0", "false", "no", "off"):
+        return False
+    if shutil.which("hipinfo"):
+        return True
+    for _var in ("HIP_PATH", "HIP_PATH_57", "ROCM_PATH"):
+        _root = os.environ.get(_var)
+        if _root and os.path.isfile(os.path.join(_root, "bin", "hipinfo.exe")):
+            return True
+    return False
 
 
 def windows_hidden_subprocess_kwargs() -> dict[str, object]:
@@ -3070,10 +3101,13 @@ def detect_host() -> HostInfo:
                         return _candidate
             return None
 
-        for _cmd, _check in (
-            (["hipinfo"], lambda out: "gcnarchname" in out.lower()),
-            (["amd-smi", "list"], _amd_smi_has_gpu),
-        ):
+        _win_probes = [(["hipinfo"], lambda out: "gcnarchname" in out.lower())]
+        if _amd_smi_allowed():
+            # Skipped on Windows w/o a HIP SDK: amd-smi would elevate + pop a
+            # UAC/DiskPart prompt. The gfx arch still arrives via --rocm-gfx
+            # (setup.ps1 WMI name inference), so has_rocm is set by override.
+            _win_probes.append((["amd-smi", "list"], _amd_smi_has_gpu))
+        for _cmd, _check in _win_probes:
             _exe = _resolve_exe(_cmd[0])
             if not _exe:
                 continue
@@ -3717,11 +3751,12 @@ def _detect_host_rocm_version() -> tuple[int, int] | None:
                 return int(parts[0]), int(parts[1])
         except Exception:
             pass
-    amd_smi = shutil.which("amd-smi")
+    amd_smi = shutil.which("amd-smi") if _amd_smi_allowed() else None
     if amd_smi:
         try:
-            # Via run_capture so the Windows RunAsInvoker guard applies (no
-            # amd-smi auto-elevation / DiskPart UAC prompt).
+            # _amd_smi_allowed() keeps this off on Windows w/o a HIP SDK, where
+            # amd-smi would elevate and pop a UAC/DiskPart prompt. hipconfig
+            # below (and the version-file reads above) cover the SDK case.
             result = run_capture([amd_smi, "version"], timeout = 5)
             if result.returncode == 0:
                 m = re.search(r"ROCm version:\s*(\d+)\.(\d+)", result.stdout)

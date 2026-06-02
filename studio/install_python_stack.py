@@ -155,13 +155,39 @@ def _bnb_rocm_prerelease_url() -> str | None:
 
 
 def _amd_smi_env() -> dict[str, str] | None:
-    """On Windows, return an env that stops amd-smi auto-elevating (which pops a
-    confusing UAC/DiskPart prompt); None elsewhere so the default env is used.
-    Mirrors install.ps1's Invoke-AmdSmiNoElevate and run_capture in
-    install_llama_prebuilt.py. Windows-only so Linux/macOS behaviour is unchanged."""
+    """On Windows, return an env with __COMPAT_LAYER=RunAsInvoker; None elsewhere.
+    NB: RunAsInvoker does NOT actually stop amd-smi's runtime elevation on hosts
+    without a HIP runtime (amd-smi's manifest is asInvoker -- it elevates a child
+    via ShellExecute, which this cannot override). The real guard is
+    _amd_smi_allowed() below, which avoids spawning amd-smi at all in that case.
+    Kept as harmless belt-and-suspenders. Windows-only; Linux/macOS unchanged."""
     if platform.system() != "Windows":
         return None
     return {**os.environ, "__COMPAT_LAYER": "RunAsInvoker"}
+
+
+def _amd_smi_allowed() -> bool:
+    """Whether it is safe to spawn amd-smi on this platform.
+
+    On Windows, amd-smi elevates a child at runtime on hosts without a working
+    HIP runtime, popping a UAC/DiskPart prompt that RunAsInvoker cannot suppress.
+    Only call amd-smi on Windows when a HIP SDK is detectable (hipinfo present)
+    or the user opts in via UNSLOTH_ENABLE_AMD_SMI=1. Linux/macOS always allowed.
+    """
+    if platform.system() != "Windows":
+        return True
+    flag = os.environ.get("UNSLOTH_ENABLE_AMD_SMI", "").strip().lower()
+    if flag in ("1", "true", "yes", "on"):
+        return True
+    if flag in ("0", "false", "no", "off"):
+        return False
+    if shutil.which("hipinfo"):
+        return True
+    for _var in ("HIP_PATH", "HIP_PATH_57", "ROCM_PATH"):
+        _root = os.environ.get(_var)
+        if _root and os.path.isfile(os.path.join(_root, "bin", "hipinfo.exe")):
+            return True
+    return False
 
 
 def _detect_rocm_version() -> tuple[int, int] | None:
@@ -183,8 +209,10 @@ def _detect_rocm_version() -> tuple[int, int] | None:
         except Exception:
             pass
 
-    # Try amd-smi version (outputs "... | ROCm version: X.Y.Z")
-    amd_smi = shutil.which("amd-smi")
+    # Try amd-smi version (outputs "... | ROCm version: X.Y.Z").
+    # Gated: on Windows w/o a HIP SDK amd-smi would elevate + pop a UAC/DiskPart
+    # prompt; hipconfig below covers the SDK case.
+    amd_smi = shutil.which("amd-smi") if _amd_smi_allowed() else None
     if amd_smi:
         try:
             result = subprocess.run(
@@ -340,7 +368,11 @@ def _detect_windows_gfx_arch() -> str | None:
             pass
 
     # 3. amd-smi fallback -- runtime-only Radeon installs ship amd-smi but no hipinfo.
-    amd_smi = shutil.which("amd-smi")
+    # Gated: on Windows w/o a HIP SDK amd-smi would elevate + pop a UAC/DiskPart
+    # prompt (RunAsInvoker can't stop it). The arch is supplied via --rocm-gfx /
+    # name inference in that case, so this fallback is only needed where amd-smi
+    # is safe to run.
+    amd_smi = shutil.which("amd-smi") if _amd_smi_allowed() else None
     if amd_smi:
         for _args in (("static", "--asic"), ("list",)):
             try:

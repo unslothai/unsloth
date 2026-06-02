@@ -157,5 +157,61 @@ def test_radeon_8060s_resolves_to_gfx1151():
     assert matched == "gfx1151"
 
 
+# ── amd-smi gating (DiskPart UAC-prompt avoidance) ───────────────────────────
+# On Windows amd-smi elevates a child at runtime on hosts without a working HIP
+# runtime, popping a UAC/DiskPart prompt that __COMPAT_LAYER=RunAsInvoker cannot
+# suppress (amd-smi's manifest is asInvoker). _amd_smi_allowed() therefore skips
+# amd-smi by default on Windows-without-HIP-SDK; HIP-SDK hosts and an explicit
+# opt-in keep it.
+
+def _amd_smi_allowed_under(system, hipinfo_present, env):
+    which = (
+        (lambda name: r"C:\hip\bin\hipinfo.exe" if name == "hipinfo" else None)
+        if hipinfo_present
+        else (lambda name: None)
+    )
+    with patch.object(prebuilt.platform, "system", return_value=system), \
+         patch.object(prebuilt.shutil, "which", side_effect=which), \
+         patch.dict(prebuilt.os.environ, env, clear=True):
+        return prebuilt._amd_smi_allowed()
+
+
+def test_amd_smi_allowed_on_linux_regardless():
+    # Linux amd-smi does not elevate -> always allowed (no regression on Linux).
+    assert _amd_smi_allowed_under("Linux", hipinfo_present=False, env={}) is True
+
+
+def test_amd_smi_skipped_on_windows_without_hip_sdk():
+    # The DiskPart fix: no HIP SDK + no opt-in -> do not spawn amd-smi.
+    assert _amd_smi_allowed_under("Windows", hipinfo_present=False, env={}) is False
+
+
+def test_amd_smi_allowed_on_windows_with_hip_sdk():
+    # hipinfo present => amd-smi runs un-elevated, so it is allowed (no regression
+    # for HIP-SDK Windows users, who never saw the prompt).
+    assert _amd_smi_allowed_under("Windows", hipinfo_present=True, env={}) is True
+
+
+def test_amd_smi_opt_in_forces_on_windows_no_sdk():
+    assert _amd_smi_allowed_under(
+        "Windows", hipinfo_present=False, env={"UNSLOTH_ENABLE_AMD_SMI": "1"}
+    ) is True
+
+
+def test_amd_smi_opt_out_overrides_hip_sdk():
+    assert _amd_smi_allowed_under(
+        "Windows", hipinfo_present=True, env={"UNSLOTH_ENABLE_AMD_SMI": "0"}
+    ) is False
+
+
+def test_ps_installers_gate_amd_smi_on_windows():
+    # Both PowerShell installers must gate the amd-smi probe behind HIP SDK
+    # presence + the UNSLOTH_ENABLE_AMD_SMI opt-in, mirroring _amd_smi_allowed().
+    for ps in (_INSTALL_PS1, _SETUP_PS1):
+        text = ps.read_text(encoding="utf-8")
+        assert "UNSLOTH_ENABLE_AMD_SMI" in text, f"{ps.name} missing amd-smi opt-in gate"
+        assert "amdSmiAllowed" in text, f"{ps.name} missing amd-smi gate variable"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
