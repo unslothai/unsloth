@@ -762,9 +762,10 @@ _HOST_SYSTEM="$(uname -s 2>/dev/null || true)"
 _HOST_MACHINE="$(uname -m 2>/dev/null || true)"
 
 # Pick the release repo install_llama_prebuilt.py plans against.
-# unslothai/llama.cpp ships only Linux CUDA bundles, so CPU-only Linux
-# x86_64 routes to ggml-org for bin-ubuntu-x64.tar.gz. Anything with a
-# GPU tool installed stays on unslothai (CUDA bundle / ROCm source build).
+# The fork ships CUDA (Linux x64/arm64, Windows), ROCm (Linux/Windows) and
+# macOS bundles. Only the plain CPU/Vulkan bundles still come from ggml-org, so
+# CPU-only Linux (x86_64 and arm64) routes there; GPU Linux, Windows and macOS
+# use unslothai.
 _LINUX_HAS_GPU=false
 for _GPU_TOOL in nvidia-smi rocminfo amd-smi hipconfig hipinfo; do
     if command -v "$_GPU_TOOL" >/dev/null 2>&1; then
@@ -773,26 +774,29 @@ for _GPU_TOOL in nvidia-smi rocminfo amd-smi hipconfig hipinfo; do
     fi
 done
 
-if [ "$_HOST_SYSTEM" = "Darwin" ]; then
-    _HELPER_RELEASE_REPO="ggml-org/llama.cpp"
-elif [ "$_HOST_SYSTEM" = "Linux" ] \
+if [ "$_HOST_SYSTEM" = "Linux" ] \
         && [ "$_HOST_MACHINE" = "x86_64" ] \
         && [ "$_LINUX_HAS_GPU" = false ]; then
     _HELPER_RELEASE_REPO="ggml-org/llama.cpp"
 elif [ "$_HOST_SYSTEM" = "Linux" ] \
         && { [ "$_HOST_MACHINE" = "aarch64" ] || [ "$_HOST_MACHINE" = "arm64" ]; } \
         && [ "$_LINUX_HAS_GPU" = false ]; then
-    # Linux ARM64 (Ampere Altra, Raspberry Pi 5, GitHub `ubuntu-24.04-arm`,
-    # CPU-only Jetson rescue mode, ...). unslothai/llama.cpp only ships
-    # the Linux CUDA bundles, so without this branch the prebuilt
-    # resolver returns 0 attempts on every release and the installer
-    # falls all the way back to a source build. Upstream ggml-org ships
+    # CPU-only Linux ARM64 (Ampere Altra, Raspberry Pi 5, GitHub
+    # `ubuntu-24.04-arm`, CPU-only Jetson rescue mode, ...). The fork ships no
+    # arm64 CPU bundle, so without this branch the prebuilt resolver returns 0
+    # attempts and the installer falls back to a source build. ggml-org ships
     # llama-bNNNN-bin-ubuntu-arm64.tar.gz from at least b9072 onward.
     _HELPER_RELEASE_REPO="ggml-org/llama.cpp"
 else
+    # GPU Linux (x64 CUDA/ROCm, arm64 CUDA), Windows (CUDA/ROCm), and macOS.
     _HELPER_RELEASE_REPO="unslothai/llama.cpp"
 fi
 unset _GPU_TOOL
+# Optional override for validating a release before it lands on the production
+# repo (e.g. UNSLOTH_LLAMA_PUBLISHED_REPO=oobabooga/llama.cpp). Unset normally.
+if [ -n "${UNSLOTH_LLAMA_PUBLISHED_REPO:-}" ]; then
+    _HELPER_RELEASE_REPO="$UNSLOTH_LLAMA_PUBLISHED_REPO"
+fi
 _LLAMA_PR="${UNSLOTH_LLAMA_PR:-}"
 _SKIP_PREBUILT_INSTALL=false
 _LLAMA_PR_FORCE="${UNSLOTH_LLAMA_PR_FORCE:-${_DEFAULT_LLAMA_PR_FORCE}}"

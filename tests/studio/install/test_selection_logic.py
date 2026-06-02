@@ -2635,6 +2635,54 @@ class TestPublishedRocmGfxSelection:
         )
 
 
+class TestPublishedMacosForkSelection:
+    """macOS now routes to the fork (setup.sh), which ships
+    llama-<tag>-bin-macos-<arch>.tar.gz with pinned deployment targets, selected
+    by install_kind."""
+
+    def _release(self):
+        arts = [
+            make_artifact(
+                "llama-b9457-bin-macos-arm64.tar.gz",
+                install_kind = "macos-arm64",
+                runtime_line = None,
+                coverage_class = None,
+                supported_sms = [],
+                min_sm = None,
+                max_sm = None,
+                bundle_profile = "macos-metal-arm64",
+                rank = 50,
+            ),
+            make_artifact(
+                "llama-b9457-bin-macos-x64.tar.gz",
+                install_kind = "macos-x64",
+                runtime_line = None,
+                coverage_class = None,
+                supported_sms = [],
+                min_sm = None,
+                max_sm = None,
+                bundle_profile = "macos-cpu-x64",
+                rank = 50,
+            ),
+        ]
+        return make_release(arts, upstream_tag = "b9457")
+
+    def test_macos_arm64_selects_fork_bundle(self):
+        choice = INSTALL_LLAMA_PREBUILT.published_asset_choice_for_kind(
+            self._release(), "macos-arm64"
+        )
+        assert choice is not None
+        assert choice.name == "llama-b9457-bin-macos-arm64.tar.gz"
+        assert choice.install_kind == "macos-arm64"
+
+    def test_macos_x64_selects_fork_bundle(self):
+        choice = INSTALL_LLAMA_PREBUILT.published_asset_choice_for_kind(
+            self._release(), "macos-x64"
+        )
+        assert choice is not None
+        assert choice.name == "llama-b9457-bin-macos-x64.tar.gz"
+
+
 # ===========================================================================
 # N.1. apply_approved_hashes -- runtime archive checksum threading
 # ===========================================================================
