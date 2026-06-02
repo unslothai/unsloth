@@ -25,6 +25,7 @@ import re
 import torch
 import inspect
 import linecache
+from contextlib import contextmanager
 from collections import defaultdict
 from unsloth_zoo.rl_replacements import (
     RL_REPLACEMENTS,
@@ -73,6 +74,19 @@ def _unsloth_clear_stateful_mrope(model):
 RL_CONFIG_CHANGES = defaultdict(list)
 RL_METRICS_CHANGES = defaultdict(list)
 RL_ADDITIONAL_FUNCTIONS = defaultdict(list)
+
+
+@contextmanager
+def _temporary_unsloth_return_hidden_states():
+    old_value = os.environ.get("UNSLOTH_RETURN_HIDDEN_STATES")
+    os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "1"
+    try:
+        yield
+    finally:
+        if old_value is None:
+            os.environ.pop("UNSLOTH_RETURN_HIDDEN_STATES", None)
+        else:
+            os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = old_value
 
 _DPO_VISION_KEYS = (
     "pixel_position_ids",
@@ -1100,8 +1114,9 @@ def grpo_trainer__get_per_token_logps(function_name, function):
             if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1":
                 self._autocast_dtype = torch.float16
 
-        os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "1"
-        with torch.amp.autocast(device_type = DEVICE_TYPE, dtype = self._autocast_dtype):
+        with _temporary_unsloth_return_hidden_states(), torch.amp.autocast(
+            device_type = DEVICE_TYPE, dtype = self._autocast_dtype
+        ):
             # We add 1 to `logits_to_keep` because the last logits of the sequence is later excluded
             logits = model(
                 input_ids = input_ids,
@@ -1379,9 +1394,9 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 token_type_ids_chunks,
                 mm_token_type_ids_chunks,
             )
-            os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "1"
-
-            with _get_inference_mode_context_manager(model):
+            with _temporary_unsloth_return_hidden_states(), _get_inference_mode_context_manager(
+                model
+            ):
                 for (
                     input_ids_chunk,
                     attention_mask_chunk,
@@ -1478,8 +1493,6 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 logprobs = torch.cat(all_logprobs_list, dim = 0)
                 entropies = None
 
-            os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "0"
-
             return logprobs.detach(), entropies  # logps, entropies
             # input_ids = input_ids[:, -logits_to_keep:]
             # For transformers<=4.48, logits_to_keep argument isn't supported, so here we drop logits ourselves.
@@ -1535,6 +1548,10 @@ grpo_accumulated_loss = RL_REPLACEMENTS["grpo_accumulated_loss"]
 grpo_update_SamplingParams = RL_REPLACEMENTS["grpo_update_SamplingParams"]
 RL_PRE_ITEMS["grpo_trainer"].append(
     inspect.getsource(_unsloth_get_final_logit_softcapping)
+)
+RL_PRE_ITEMS["grpo_trainer"].append("from contextlib import contextmanager")
+RL_PRE_ITEMS["grpo_trainer"].append(
+    inspect.getsource(_temporary_unsloth_return_hidden_states)
 )
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_get_mm_token_id))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_fix_mm_token_type_ids))

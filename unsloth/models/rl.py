@@ -597,10 +597,14 @@ def _grpo_owns_lm_head(module):
 
 def _grpo_causal_head(model):
     # The module that owns lm_head / output embeddings (whose forward emits `.logits`).
+    if model is None:
+        return None
+    if _grpo_owns_lm_head(model):
+        return model
     get_base_model = getattr(model, "get_base_model", None)
     if callable(get_base_model):
         base_model = get_base_model()
-        if base_model is not None:
+        if base_model is not None and _grpo_owns_lm_head(base_model):
             return base_model
     return model
 
@@ -608,6 +612,8 @@ def _grpo_causal_head(model):
 def _grpo_hidden_states_wrap_target(model):
     if model is None:
         return None
+    if _grpo_owns_lm_head(model):
+        return model
     get_base_model = getattr(model, "get_base_model", None)
     if callable(get_base_model):
         base_model = get_base_model()
@@ -622,6 +628,53 @@ def _grpo_hidden_states_wrap_target(model):
             if child is not None and child is not model and hasattr(child, "forward"):
                 return child
     return model
+
+
+def _grpo_config_value(config, name, default = None):
+    if config is None:
+        return default
+    value = getattr(config, name, default)
+    if value is not default:
+        return value
+    text_config = getattr(config, "text_config", None)
+    if text_config is not None:
+        value = getattr(text_config, name, default)
+        if value is not default:
+            return value
+    get_text_config = getattr(config, "get_text_config", None)
+    if callable(get_text_config):
+        try:
+            text_config = get_text_config()
+            return getattr(text_config, name, default)
+        except Exception:
+            pass
+    return default
+
+
+def _grpo_has_post_lm_head_transform(module):
+    config = getattr(module, "config", None)
+    if config is None:
+        return False
+
+    final_logit_softcapping = _grpo_config_value(
+        config, "final_logit_softcapping", None
+    )
+    if final_logit_softcapping not in (None, 0, 0.0):
+        return True
+
+    logit_scale = _grpo_config_value(config, "logit_scale", None)
+    if logit_scale not in (None, 0, 0.0, 1, 1.0):
+        return True
+
+    logits_scaling = _grpo_config_value(config, "logits_scaling", None)
+    if logits_scaling not in (None, 0, 0.0, 1, 1.0):
+        return True
+
+    lm_head_multiplier = _grpo_config_value(config, "lm_head_multiplier", None)
+    if lm_head_multiplier not in (None, 0, 0.0, 1, 1.0):
+        return True
+
+    return False
 
 
 def _model_supports_unsloth_return_hidden_states(model):
@@ -724,6 +777,8 @@ def _install_grpo_lm_head_passthrough(model):
     # weight is untouched, and the accelerate-managed top-level forward is not wrapped, so there is
     # no bound-self collision. No-op when the flag is 0.
     head = _grpo_causal_head(model)
+    if _grpo_has_post_lm_head_transform(head):
+        return False
     lm_head = getattr(head, "lm_head", None)
     if lm_head is None:
         get_output_embeddings = getattr(head, "get_output_embeddings", None)
@@ -738,9 +793,14 @@ def _install_grpo_lm_head_passthrough(model):
     original_lm_head_forward = lm_head.forward
 
     def passthrough_forward(*args, **kwargs):
+        forward_args = args[1:] if len(args) > 0 and args[0] is lm_head else args
         if os.environ.get("UNSLOTH_RETURN_HIDDEN_STATES", "0") == "1":
-            return args[0] if args else next(iter(kwargs.values()))
-        return original_lm_head_forward(*args, **kwargs)
+            if len(forward_args) > 0:
+                return forward_args[0]
+            if len(kwargs) > 0:
+                return next(iter(kwargs.values()))
+            raise TypeError("forward() missing 1 required positional argument: 'input'")
+        return original_lm_head_forward(*forward_args, **kwargs)
 
     lm_head.forward = passthrough_forward
     lm_head._unsloth_grpo_passthrough = True
