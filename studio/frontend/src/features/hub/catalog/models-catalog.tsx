@@ -115,6 +115,11 @@ export const ModelsCatalog = memo(function ModelsCatalog({
   const previousLoadingIntentRef = useRef(loadingIntentCount);
   const discoverScrollRef = useRef<HTMLDivElement>(null);
   const downloadedScrollRef = useRef<HTMLDivElement>(null);
+  const [discoverScrollEl, setDiscoverScrollEl] = useState<HTMLDivElement | null>(
+    null,
+  );
+  const [downloadedScrollEl, setDownloadedScrollEl] =
+    useState<HTMLDivElement | null>(null);
   const activeTabRef = useRef(tab);
   // Per-tab scroll positions. The visibility-hidden pane should preserve its
   // scrollTop in DOM by spec, but some browsers (and our absolute-positioned
@@ -129,10 +134,12 @@ export const ModelsCatalog = memo(function ModelsCatalog({
 
   const setDiscoverScrollNode = useCallback((node: HTMLDivElement | null) => {
     discoverScrollRef.current = node;
+    setDiscoverScrollEl(node);
   }, []);
 
   const setDownloadedScrollNode = useCallback((node: HTMLDivElement | null) => {
     downloadedScrollRef.current = node;
+    setDownloadedScrollEl(node);
   }, []);
 
   // Synchronously restore the incoming pane's scrollTop and rebind the shared
@@ -285,7 +292,7 @@ export const ModelsCatalog = memo(function ModelsCatalog({
             onSelect={onSelect}
             isLoading={isLoading}
             query={query}
-            scrollRef={discoverScrollRef}
+            scrollElement={discoverScrollEl}
             sentinelRef={sentinelRef}
             activeCheckpoint={activeCheckpoint}
             searchError={searchError}
@@ -321,7 +328,7 @@ export const ModelsCatalog = memo(function ModelsCatalog({
             downloadedReady={downloadedReady}
             inventoryError={inventoryError}
             query={query}
-            scrollRef={downloadedScrollRef}
+            scrollElement={downloadedScrollEl}
             activeCheckpoint={activeCheckpoint}
             activeGgufVariant={activeGgufVariant}
             isDataset={isDataset}

@@ -31,7 +31,6 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import {
   type ReactNode,
-  type RefObject,
   createContext,
   memo,
   useCallback,
@@ -720,19 +719,19 @@ const ROW_HEIGHT_PX = 57;
 
 export function VirtualRows<T>({
   items,
-  scrollRef,
+  scrollElement,
   getKey,
   renderRow,
 }: {
   items: readonly T[];
-  scrollRef: RefObject<HTMLDivElement | null>;
+  scrollElement: HTMLDivElement | null;
   getKey: (item: T, index: number) => string;
   renderRow: (item: T) => ReactNode;
 }) {
   // eslint-disable-next-line react-hooks/incompatible-library
   const virtualizer = useVirtualizer({
     count: items.length,
-    getScrollElement: () => scrollRef.current,
+    getScrollElement: () => scrollElement,
     estimateSize: () => ROW_HEIGHT_PX,
     overscan: 24,
     getItemKey: (index) => getKey(items[index], index),

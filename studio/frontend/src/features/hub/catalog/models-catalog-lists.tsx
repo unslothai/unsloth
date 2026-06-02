@@ -67,7 +67,7 @@ export function DiscoverList({
   onSelect,
   isLoading,
   query,
-  scrollRef,
+  scrollElement,
   sentinelRef,
   activeCheckpoint,
   searchError,
@@ -89,7 +89,7 @@ export function DiscoverList({
   onSelect: (id: string) => void;
   isLoading: boolean;
   query: string;
-  scrollRef: RefObject<HTMLDivElement | null>;
+  scrollElement: HTMLDivElement | null;
   sentinelRef: RefObject<HTMLDivElement | null>;
   activeCheckpoint: string | null;
   searchError: string | null;
@@ -144,7 +144,7 @@ export function DiscoverList({
           <>
             <VirtualRows
               items={discoverRows}
-              scrollRef={scrollRef}
+              scrollElement={scrollElement}
               getKey={(row) => row.id}
               renderRow={(row) => (
                 <DiscoverModelRow
@@ -191,7 +191,7 @@ export function DownloadedList({
   downloadedReady,
   inventoryError,
   query,
-  scrollRef,
+  scrollElement,
   activeCheckpoint,
   activeGgufVariant,
   isDataset,
@@ -206,7 +206,7 @@ export function DownloadedList({
   downloadedReady: boolean;
   inventoryError: boolean;
   query: string;
-  scrollRef: RefObject<HTMLDivElement | null>;
+  scrollElement: HTMLDivElement | null;
   activeCheckpoint: string | null;
   activeGgufVariant: string | null;
   isDataset: boolean;
@@ -260,7 +260,7 @@ export function DownloadedList({
   return (
     <VirtualRows
       items={inventoryItems}
-      scrollRef={scrollRef}
+      scrollElement={scrollElement}
       getKey={(item) => `${item.variant}-${item.row.id}`}
       renderRow={(item) => (
         <InventoryRow
