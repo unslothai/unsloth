@@ -283,9 +283,9 @@ def fused_layernorm_mean_pool(layernorm, X, attention_mask):
         if hasattr(layernorm, "variance_epsilon")
         else layernorm.eps
     )
-    if not X.is_cuda:
-        # Triton kernels require CUDA; dispatch to eager LayerNorm + masked mean
-        # on CPU / offloaded tensors instead of crashing.
+    if not (X.is_cuda or X.is_xpu):
+        # No GPU (is_cuda covers CUDA+ROCm, is_xpu covers Intel) -> Triton can't
+        # run, so fall back to eager LayerNorm + masked mean.
         normed = torch.nn.functional.layer_norm(
             X.float(), (X.shape[-1],), W.float(), bias.float(), eps
         ).to(X.dtype)

@@ -36,9 +36,12 @@ class FusedContrastiveLoss(torch.autograd.Function):
     The positive pair for row i is at column i (diagonal).
     Columns beyond B_a are additional negatives.
 
-    The two-pass forward avoids ever allocating a full (B_a, B_b) tensor:
-      Pass 1 — row-wise max  (for numerically stable log-sum-exp)
-      Pass 2 — log-sum-exp + positive-logit extraction
+    The forward is a single streaming pass that never allocates a full
+    (B_a, B_b) tensor: each chunk updates a running (max, sum) pair via the
+    online log-sum-exp recurrence (Welford-style rescale when the max grows),
+    extracting the positive logits on the diagonal in the same loop. This
+    replaces the older two-pass approach (separate max pass + lse pass) with
+    one matmul pass.
     """
 
     @staticmethod
@@ -60,36 +63,47 @@ class FusedContrastiveLoss(torch.autograd.Function):
 
         CHUNK = min(64, B_b)
 
-        row_max = torch.full(
+        # Online log-sum-exp: one streaming pass instead of two. Keep a running
+        # max + sum per row so we don't recompute every chunk's matmul twice.
+        running_max = torch.full(
             (B_a,),
             float("-inf"),
             device = embeddings_a.device,
             dtype = embeddings_a.dtype,
         )
-        for j0 in range(0, B_b, CHUNK):
-            j1 = min(j0 + CHUNK, B_b)
-            sim = embeddings_a @ embeddings_b[j0:j1].t() * scale
-            row_max = torch.max(row_max, sim.max(dim = 1).values)
-
-        row_lse = torch.zeros(B_a, device = embeddings_a.device, dtype = embeddings_a.dtype)
+        running_sum = torch.zeros(
+            B_a, device = embeddings_a.device, dtype = embeddings_a.dtype
+        )
         pos_logits = torch.zeros(
             B_a, device = embeddings_a.device, dtype = embeddings_a.dtype
         )
 
         for j0 in range(0, B_b, CHUNK):
             j1 = min(j0 + CHUNK, B_b)
-            sim = embeddings_a @ embeddings_b[j0:j1].t() * scale
-            sim_shifted = sim - row_max.unsqueeze(1)
-            row_lse += sim_shifted.exp().sum(dim = 1)
+            sim = embeddings_a @ embeddings_b[j0:j1].t() * scale  # (B_a, chunk)
 
-            # Positive logits sit on the diagonal (row i, col i) for i < B_a
-            diag_lo = max(0, j0)
+            chunk_max = sim.max(dim = 1).values
+            new_max = torch.maximum(running_max, chunk_max)
+            # First chunk: exp(-inf - finite) == 0, so running_sum starts clean.
+            rescale = torch.exp(running_max - new_max)
+            running_sum = running_sum * rescale + torch.exp(
+                sim - new_max.unsqueeze(1)
+            ).sum(dim = 1)
+            running_max = new_max
+
+            # Gather diagonal positives sim[i, i] in one shot (no per-row loop).
+            # These are RAW (unshifted) logits; the loss adds row_max back below.
             diag_hi = min(j1, B_a)
-            for i in range(diag_lo, diag_hi):
-                pos_logits[i] = sim_shifted[i, i - j0]
+            if diag_hi > j0:
+                rows = torch.arange(j0, diag_hi, device = sim.device)
+                pos_logits[j0:diag_hi] = sim[rows, rows - j0]
 
-        row_lse = row_lse.log()
-        loss = (-pos_logits + row_lse).mean()
+        # row_lse is the SHIFTED lse (relative to row_max): log(sum exp(sim - row_max)).
+        # backward expects that form. The full log-sum-exp is (row_max + row_lse),
+        # which is why the loss adds row_max back to the raw pos_logits here.
+        row_max = running_max
+        row_lse = running_sum.log()
+        loss = (-pos_logits + (row_max + row_lse)).mean()
 
         ctx.save_for_backward(embeddings_a, embeddings_b, row_max, row_lse)
         ctx.scale = scale
@@ -119,11 +133,11 @@ class FusedContrastiveLoss(torch.autograd.Function):
             sim = embeddings_a @ b_chunk.t() * scale
             prob = (sim - row_max.unsqueeze(1) - row_lse.unsqueeze(1)).exp()
 
-            # subtract one-hot for diagonal entries
-            diag_lo = max(0, j0)
+            # subtract 1 on the diagonal, vectorized (was a row-by-row loop)
             diag_hi = min(j1, B_a)
-            for i in range(diag_lo, diag_hi):
-                prob[i, i - j0] -= 1.0
+            if diag_hi > j0:
+                rows = torch.arange(j0, diag_hi, device = prob.device)
+                prob[rows, rows - j0] -= 1.0
 
             prob = prob * (grad_output * scale / B_a)
 

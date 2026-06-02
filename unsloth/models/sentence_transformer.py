@@ -1471,7 +1471,16 @@ def _patch_dense_dtype():
         pass
 
 
+# Below this score-matrix size (~4096^2) dense matmul + cross_entropy beats the
+# chunked kernel. Override via UNSLOTH_CONTRASTIVE_MIN_ELEMENTS (0 = always chunk).
+_FUSED_CONTRASTIVE_MIN_ELEMENTS = int(
+    os.environ.get("UNSLOTH_CONTRASTIVE_MIN_ELEMENTS", 16_000_000)
+)
+
 _MNRL_PATCHED = False
+# MNRL.forward is patched globally at model load, but most runs never use that
+# loss. Announce the fused path lazily, the first time it actually runs.
+_MNRL_FUSED_NOTICE_SHOWN = False
 
 
 def _patch_mnrl_loss():
@@ -1487,24 +1496,17 @@ def _patch_mnrl_loss():
         _original_forward = MultipleNegativesRankingLoss.forward
 
         def _fused_forward(self, sentence_features, labels = None):
-            first_ids = sentence_features[0].get("input_ids")
-            if first_ids is not None and first_ids.shape[0] < 8:
-                return _original_forward(self, sentence_features, labels)
-
-            # Fall back for non-default MNRL configurations
+            # Non-default MNRL setups: just use the original.
             if (
                 getattr(self, "gather_across_devices", False)
                 or getattr(self, "directions", None) not in (None, ("query_to_doc",))
-                or getattr(self, "partition_mode", None)
-                not in (None, "disabled", "joint")
+                or getattr(self, "partition_mode", None) not in (None, "joint")
                 or getattr(self, "hardness_mode", None) is not None
             ):
                 return _original_forward(self, sentence_features, labels)
 
-            reps = [self.model(sf)["sentence_embedding"] for sf in sentence_features]
-            embeddings_a = reps[0]
-            embeddings_b = torch.cat(reps[1:], dim = 0)
-
+            # Check the similarity fn first, so a custom one bails out before we
+            # pay for a forward pass.
             similarity_fct = getattr(self, "similarity_fct", None)
             try:
                 from sentence_transformers.util import cos_sim, dot_score
@@ -1514,29 +1516,45 @@ def _patch_mnrl_loss():
             except ImportError:
                 is_cosine = True
                 is_dot = False
-
-            # The fused kernel computes a scaled dot-product contrastive loss:
-            #   cos_sim   -> L2-normalize first (dot of normalized == cosine)
-            #   dot_score -> leave unnormalized (already a dot product)
-            #   any other / custom similarity_fct -> fall back to exact original,
-            #     since the fused dot-product would silently differ.
+            # cos_sim: normalize then dot. dot_score: dot as-is. Anything else we
+            # don't replicate, so fall back.
             if not (is_cosine or is_dot):
                 return _original_forward(self, sentence_features, labels)
+
+            reps = [self.model(sf)["sentence_embedding"] for sf in sentence_features]
+            embeddings_a = reps[0]
+            embeddings_b = torch.cat(reps[1:], dim = 0)
 
             if is_cosine:
                 embeddings_a = torch.nn.functional.normalize(embeddings_a, p = 2, dim = 1)
                 embeddings_b = torch.nn.functional.normalize(embeddings_b, p = 2, dim = 1)
 
-            scale = getattr(self, "scale", 1.0)
+            scale = getattr(self, "scale", 20.0)
+
+            global _MNRL_FUSED_NOTICE_SHOWN
+            if not _MNRL_FUSED_NOTICE_SHOWN:
+                _MNRL_FUSED_NOTICE_SHOWN = True
+                print(
+                    "Unsloth: Using optimized contrastive loss for MultipleNegativesRankingLoss"
+                )
+
+            B_a = embeddings_a.shape[0]
+            B_b = embeddings_b.shape[0]
+
+            # Decide off the real matrix size, not the batch count. For typical
+            # batches the chunked kernel is just overhead, so do the dense matmul
+            # + cross_entropy and only chunk once the matrix is large.
+            if B_a * B_b <= _FUSED_CONTRASTIVE_MIN_ELEMENTS:
+                scores = (embeddings_a @ embeddings_b.t()) * scale
+                labels = torch.arange(B_a, device = scores.device)
+                return torch.nn.functional.cross_entropy(scores, labels)
+
             return FusedContrastiveLoss.apply(embeddings_a, embeddings_b, scale)
 
         MultipleNegativesRankingLoss.forward = _fused_forward
         MultipleNegativesRankingLoss._original_forward = _original_forward
         # Mark patched only after success so a failed import can be retried
         _MNRL_PATCHED = True
-        print(
-            "Unsloth: Patched MultipleNegativesRankingLoss with fused contrastive loss"
-        )
     except Exception as e:
         import warnings
 
