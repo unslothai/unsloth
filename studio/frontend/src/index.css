@@ -765,7 +765,7 @@
 	.app-user-menu [data-slot="dropdown-menu-item"],
 	.app-user-menu [data-slot="dropdown-menu-sub-trigger"] {
 		height: 36px;
-		padding: 0 0.875rem !important;
+		padding: 0 0.75rem !important;
 		gap: 9.5px !important;
 		border-radius: 12px;
 		font-weight: 500;
