@@ -5156,23 +5156,73 @@ def test_load_model_gguf_rejects_lora_fusion(monkeypatch):
     assert status["pending_lora_repo"] is None
 
 
-def test_apply_lora_rejects_studio_lazy_gguf_modules():
+def test_apply_lora_allows_studio_lazy_gguf_modules():
     from core.inference.diffusion import _apply_diffusion_lora
 
-    pipe = SimpleNamespace(load_lora_weights = lambda *_args, **_kwargs: None)
+    calls = []
+    pipe = SimpleNamespace(
+        load_lora_weights = lambda repo, **kwargs: calls.append(
+            {"repo": repo, **kwargs}
+        ),
+        set_adapters = lambda *_args, **_kwargs: None,
+    )
 
-    with pytest.raises(RuntimeError, match = "lazy quantized modules"):
-        _apply_diffusion_lora(
-            pipe,
-            lora_repo = "owner/my-klein-lora",
-            lora_weight_name = None,
-            lora_adapter_name = None,
-            lora_scale = None,
-            lora_fuse = False,
-            hf_token = None,
-            gguf_filename = "flux-2-klein-4b-Q4_K_S.gguf",
-            uses_studio_lazy_gguf_modules = True,
-        )
+    state = _apply_diffusion_lora(
+        pipe,
+        lora_repo = "owner/my-klein-lora",
+        lora_weight_name = None,
+        lora_adapter_name = None,
+        lora_scale = None,
+        lora_fuse = False,
+        hf_token = None,
+        gguf_filename = "flux-2-klein-4b-Q4_K_S.gguf",
+        uses_studio_lazy_gguf_modules = True,
+    )
+
+    assert state.repo == "owner/my-klein-lora"
+    assert state.fused is False
+    assert calls == [
+        {
+            "repo": "owner/my-klein-lora",
+            "adapter_name": "default",
+            "use_safetensors": True,
+        }
+    ]
+
+
+def test_lazy_gguf_linear_is_peft_lora_dispatchable():
+    import gguf
+    import torch
+    from peft import LoraConfig
+    from peft.tuners.lora.layer import Linear as PeftLoraLinear
+    from peft.tuners.lora.layer import dispatch_default
+
+    from core.inference.gguf_text_encoder import LazyGGUFLinear
+
+    dense = torch.arange(12, dtype = torch.float32).reshape(3, 4).to(torch.bfloat16)
+    qweight = dense.view(torch.uint8).reshape(3, 8)
+    lazy = LazyGGUFLinear(
+        qweight,
+        gguf.GGMLQuantizationType.BF16,
+        in_features = 4,
+        out_features = 3,
+        compute_dtype = torch.bfloat16,
+    )
+
+    assert isinstance(lazy, torch.nn.Linear)
+    assert "weight" not in lazy._parameters
+    wrapped = dispatch_default(
+        lazy,
+        "studio",
+        config = LoraConfig(r = 2, lora_alpha = 2, target_modules = ["unused"]),
+        r = 2,
+        lora_alpha = 2,
+    )
+    assert isinstance(wrapped, PeftLoraLinear)
+
+    inputs = torch.ones(2, 4, dtype = torch.bfloat16)
+    outputs = wrapped(inputs)
+    assert outputs.shape == (2, 3)
 
 
 def test_load_model_wan_full_repo_uses_fp32_vae(monkeypatch):

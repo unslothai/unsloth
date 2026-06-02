@@ -1532,7 +1532,7 @@ def _reverse_permute_qk(weight: torch.Tensor, num_heads: int) -> torch.Tensor:
     return weight.reshape(num_heads, dim, 2, *weight.shape[1:]).transpose(1, 2).reshape(weight.shape)
 
 
-class LazyGGUFLinear(_LazyGGUFOffloadMixin, nn.Module):
+class LazyGGUFLinear(_LazyGGUFOffloadMixin, nn.Linear):
     def __init__(
         self,
         qweight: torch.Tensor,
@@ -1548,7 +1548,11 @@ class LazyGGUFLinear(_LazyGGUFOffloadMixin, nn.Module):
         bias_quant_type: Any | None = None,
         bias_logical_shape: tuple[int, ...] | None = None,
     ) -> None:
-        super().__init__()
+        # Intentionally do not call nn.Linear.__init__: that would allocate a
+        # dense weight Parameter and defeat GGUF lazy residency.  We still
+        # subclass nn.Linear so PEFT/Diffusers LoRA dispatch treats this as a
+        # standard linear base layer and wraps it for unfused adapters.
+        nn.Module.__init__(self)
         self.in_features = in_features
         self.out_features = out_features
         self.quant_type = quant_type

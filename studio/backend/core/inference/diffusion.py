@@ -2061,14 +2061,6 @@ def _apply_diffusion_lora(
             "Fusing LoRA into a GGUF diffusion model is not supported. "
             "Load the adapter unfused, or use a non-GGUF Diffusers model."
         )
-    if gguf_filename and uses_studio_lazy_gguf_modules:
-        raise RuntimeError(
-            "LoRA adapters for this GGUF diffusion model are not supported in "
-            "the current low-VRAM path because Studio replaced Diffusers "
-            "GGUFLinear modules with lazy quantized modules that PEFT cannot "
-            "inject into. Use a non-GGUF Diffusers model for LoRA, or run a "
-            "Diffusers GGUF build that keeps upstream GGUFLinear modules."
-        )
     load_lora = getattr(pipe, "load_lora_weights", None)
     if not callable(load_lora):
         raise RuntimeError(
