@@ -867,6 +867,11 @@ shell.Run cmd, 0, False
                 }
                 if ($createdShortcutCount -gt 0) {
                     substep "Created Unsloth Studio shortcut"
+                    # Nudge the shell to refresh the new shortcut's icon right away.
+                    # Without this, a stale icon cache can show a blank icon until
+                    # the next explorer restart -- especially when a shortcut of the
+                    # same name was rewritten (e.g. native vs WSL installs).
+                    try { & "$env:SystemRoot\System32\ie4uinit.exe" -show 2>$null } catch {}
                 } else {
                     substep "no Unsloth Studio shortcuts were created" "Yellow"
                 }
