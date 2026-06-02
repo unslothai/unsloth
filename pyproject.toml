@@ -105,6 +105,7 @@ base = [
 deploy = [
     "runpod",
     "boto3",
+    "modal>=0.64",
 ]
 cu118only = [
     "xformers @ https://download.pytorch.org/whl/cu118/xformers-0.0.22.post7%2Bcu118-cp39-cp39-manylinux2014_x86_64.whl ; python_version=='3.9' and ('linux' in sys_platform)",

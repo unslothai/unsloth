@@ -8,10 +8,11 @@ from __future__ import annotations
 
 from unsloth_cli.deploy import DeployError
 from unsloth_cli.deploy.base import Provider
+from unsloth_cli.deploy.modal_client import Modal
 from unsloth_cli.deploy.runpod_client import RunPod
 
 
-PROVIDERS: dict[str, type[Provider]] = {"runpod": RunPod}
+PROVIDERS: dict[str, type[Provider]] = {"runpod": RunPod, "modal": Modal}
 
 
 def get_provider(name: str) -> Provider:

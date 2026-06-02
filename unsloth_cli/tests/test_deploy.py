@@ -863,6 +863,7 @@ def test_pick_gpu_yes_skips_out_of_stock(monkeypatch):
 
     class _P:
         name = "runpod"
+        reports_stock = True
         def list_gpus(self, min_vram_gb = 0):
             return [
                 Gpu(id = "cheap-soldout", name = "c", vram_gb = 24, cost_per_hour_usd = 0.2, stock = None),
@@ -1125,3 +1126,300 @@ class _RealNoStorage(_Provider):
 
     def terminate(self, instance_id):
         pass
+
+
+# ---------------------------------------------------------------------------
+# Modal provider
+# ---------------------------------------------------------------------------
+
+
+def _stub_modal(monkeypatch, *, poll_code = None, tunnels = None,
+                lookup_error = None, upload_error = None):
+    """Inject a fake `modal` module so Modal tests run offline, mirroring
+    _stub_runpod. Returns (stub, state) where state records the SDK calls."""
+    state = {
+        "create_args": None, "create_kwargs": None, "secret_env": None,
+        "image_ref": None, "app": None, "terminated": None,
+        "volumes_created": [], "volumes_deleted": [], "uploaded": [],
+    }
+    tunnel_urls = tunnels if tunnels is not None else {8000: "https://sb-1.modal.host"}
+
+    class _Tunnel:
+        def __init__(self, url):
+            self.url = url
+
+    class _Sandbox:
+        def __init__(self, object_id = "sb-1"):
+            self.object_id = object_id
+
+        def poll(self):
+            return poll_code
+
+        def tunnels(self, timeout = None):
+            return {p: _Tunnel(u) for p, u in tunnel_urls.items()}
+
+        def terminate(self, wait = False):
+            state["terminated"] = self.object_id
+
+    class _Batch:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def put_directory(self, local, remote):
+            if upload_error:
+                raise upload_error
+            state["uploaded"].append(("dir", local, remote))
+
+        def put_file(self, local, remote):
+            if upload_error:
+                raise upload_error
+            state["uploaded"].append(("file", local, remote))
+
+    class _Volume:
+        def batch_upload(self):
+            return _Batch()
+
+    class _Image:
+        def from_registry(self, ref, **kw):
+            state["image_ref"] = ref
+            return self
+
+        def apt_install(self, *pkgs):
+            return self
+
+        def run_commands(self, *cmds, **kw):
+            state["build_cmds"] = cmds
+            return self
+
+        def entrypoint(self, args):
+            return self
+
+    class _NullCtx:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    class _SandboxNS:
+        @staticmethod
+        def create(*args, **kwargs):
+            state["create_args"] = args
+            state["create_kwargs"] = kwargs
+            return _Sandbox()
+
+        @staticmethod
+        def from_id(object_id, client = None):
+            return _Sandbox(object_id)
+
+    class _VolumeNS:
+        @staticmethod
+        def from_name(name, create_if_missing = False, **kw):
+            state["volumes_created"].append(name)
+            return _Volume()
+
+        @staticmethod
+        def delete(name, **kw):
+            state["volumes_deleted"].append(name)
+
+    class _SecretNS:
+        @staticmethod
+        def from_dict(env):
+            state["secret_env"] = env
+            return ("secret", env)
+
+    class _AppNS:
+        @staticmethod
+        def lookup(name, create_if_missing = False, **kw):
+            if lookup_error:
+                raise lookup_error
+            state["app"] = name
+            return ("app", name)
+
+    stub = types.ModuleType("modal")
+    stub.Sandbox = _SandboxNS
+    stub.Volume = _VolumeNS
+    stub.Secret = _SecretNS
+    stub.App = _AppNS
+    stub.Image = _Image()
+    stub.enable_output = lambda: _NullCtx()
+    monkeypatch.setitem(sys.modules, "modal", stub)
+    return stub, state
+
+
+def _authed_modal(monkeypatch, **stub_kw):
+    stub, state = _stub_modal(monkeypatch, **stub_kw)
+    from unsloth_cli.deploy.modal_client import Modal
+    p = Modal()
+    p.auth({})
+    return p, state
+
+
+def test_modal_registered():
+    from unsloth_cli.deploy.base import Provider
+    from unsloth_cli.deploy.provider import PROVIDERS, get_provider
+    assert "modal" in PROVIDERS
+    assert isinstance(get_provider("modal"), Provider)
+
+
+def test_modal_declares_its_capabilities():
+    from unsloth_cli.deploy.modal_client import Modal
+    assert Modal.supports_local_model is True
+    assert Modal.supports_ssh is False
+    assert Modal.supports_pause is False
+    assert Modal.reports_stock is False     # fixed-capacity: no stock band
+    assert Modal.deploy_note                # non-empty 24h auto-stop note
+
+
+def test_modal_list_gpus_filters_and_sorts_with_no_stock():
+    from unsloth_cli.deploy.modal_client import Modal
+    gpus = Modal().list_gpus(min_vram_gb = 40)
+    assert gpus and all(g.vram_gb >= 40 for g in gpus)
+    assert all(g.stock is None for g in gpus)
+    costs = [g.cost_per_hour_usd for g in gpus]
+    assert costs == sorted(costs)
+
+
+def test_modal_auth_errors_without_sdk(monkeypatch):
+    monkeypatch.setitem(sys.modules, "modal", None)  # `import modal` -> ImportError
+    from unsloth_cli.deploy import DeployError
+    from unsloth_cli.deploy.modal_client import Modal
+    with pytest.raises(DeployError, match = r"unsloth\[deploy\]"):
+        Modal().auth({})
+
+
+def test_modal_auth_errors_on_bad_credentials(monkeypatch):
+    _stub_modal(monkeypatch, lookup_error = RuntimeError("unauthenticated"))
+    from unsloth_cli.deploy import DeployError
+    from unsloth_cli.deploy.modal_client import Modal
+    with pytest.raises(DeployError, match = "authentication failed"):
+        Modal().auth({})
+
+
+def test_modal_create_instance_passes_studio_command_ports_and_secret(monkeypatch):
+    p, state = _authed_modal(monkeypatch)
+    sid = p.create_instance(
+        name = "unsloth-studio-1",
+        gpu = _gpu(gid = "H100", vram = 80, price = 3.95),
+        image = "ignored-by-modal",     # Modal builds from source, not a registry tag
+        http_port = 8000,
+        env = {"UNSLOTH_ADMIN_PASSWORD": "secret-pw"},
+        disk_gb = 100,
+    )
+    assert sid == "sb-1"
+    args = state["create_args"]
+    assert args[0] == "/bin/sh" and args[1] == "-lc"
+    # --api-only: the image whites out the built frontend; the deploy only needs the API.
+    assert "unsloth studio --api-only -p 8000 -H 0.0.0.0" in args[2]
+    # Seed the admin password into Studio's .bootstrap_password before launch
+    # (Studio creates the admin user from it; it ignores UNSLOTH_ADMIN_PASSWORD).
+    assert "UNSLOTH_STUDIO_HOME=" in args[2]
+    assert ".bootstrap_password" in args[2]
+    assert '"$UNSLOTH_ADMIN_PASSWORD"' in args[2]   # injected via secret, not inlined
+    kwargs = state["create_kwargs"]
+    assert kwargs["gpu"] == "H100"
+    assert kwargs["encrypted_ports"] == [8000]      # TLS, never plaintext
+    assert kwargs["timeout"] == 86400               # 24h hard cap
+    assert kwargs["name"] == "unsloth-studio-1"
+    assert state["secret_env"] == {"UNSLOTH_ADMIN_PASSWORD": "secret-pw"}
+
+
+def test_modal_uses_prebaked_image(monkeypatch):
+    from unsloth_cli.deploy.modal_client import STUDIO_IMAGE
+    p, state = _authed_modal(monkeypatch)
+    p.create_instance(
+        name = "n", gpu = _gpu(), image = "x", http_port = 8000,
+        env = {}, disk_gb = 100,
+    )
+    assert state["image_ref"] == STUDIO_IMAGE       # pulls the published image
+    assert state.get("build_cmds") is None          # no from-source build (run_commands unused)
+
+
+def test_modal_create_instance_mounts_staged_volume(monkeypatch):
+    from unsloth_cli.deploy import StagedModel
+    from unsloth_cli.deploy.modal_client import MODEL_MOUNT_DIR
+    p, state = _authed_modal(monkeypatch)
+    staged = StagedModel(
+        model_path = f"{MODEL_MOUNT_DIR}/m", storage_id = "vol-1",
+        summary = "", placement = None,
+    )
+    p.create_instance(
+        name = "n", gpu = _gpu(), image = "img", http_port = 8000,
+        env = {}, disk_gb = 100, staged = staged,
+    )
+    assert "vol-1" in state["volumes_created"]      # re-acquired by name
+    assert MODEL_MOUNT_DIR in state["create_kwargs"]["volumes"]
+
+
+def test_modal_wait_ready_raises_on_early_exit(monkeypatch):
+    from unsloth_cli.deploy import DeployError
+    p, _ = _authed_modal(monkeypatch, poll_code = 1)
+    with pytest.raises(DeployError, match = "exited before serving"):
+        p.wait_ready("sb-1", timeout_s = 5)
+
+
+def test_modal_wait_ready_returns_when_tunnel_resolves(monkeypatch):
+    p, _ = _authed_modal(monkeypatch, poll_code = None,
+                         tunnels = {8000: "https://x.modal.host"})
+    p.wait_ready("sb-1", timeout_s = 5)             # returns immediately
+
+
+def test_modal_endpoint_url_uses_tunnel(monkeypatch):
+    p, _ = _authed_modal(monkeypatch, tunnels = {8000: "https://abc.modal.host"})
+    assert p.endpoint_url("sb-1", http_port = 8000) == "https://abc.modal.host"
+
+
+def test_modal_terminate(monkeypatch):
+    p, state = _authed_modal(monkeypatch)
+    p.terminate("sb-1")
+    assert state["terminated"] == "sb-1"
+
+
+def test_modal_stage_local_model_uploads_to_volume(monkeypatch, tmp_path):
+    from unsloth_cli.deploy.modal_client import MODEL_MOUNT_DIR
+    p, state = _authed_modal(monkeypatch)
+    model = tmp_path / "lora_model"
+    model.mkdir()
+    (model / "adapter_config.json").write_text("{}")
+
+    staged = p.stage_local_model(model, gpu = _gpu())
+    assert staged.model_path == f"{MODEL_MOUNT_DIR}/lora_model"
+    assert staged.storage_id in state["volumes_created"]
+    assert staged.placement is None                 # Modal needs no datacenter pin
+    assert ("dir", str(model), "/lora_model") in state["uploaded"]
+
+
+def test_modal_stage_deletes_volume_when_upload_fails(monkeypatch, tmp_path):
+    from unsloth_cli.deploy import DeployError
+    p, state = _authed_modal(monkeypatch, upload_error = RuntimeError("boom"))
+    model = tmp_path / "m"
+    model.mkdir()
+    (model / "config.json").write_text("{}")
+
+    with pytest.raises(DeployError, match = "upload failed"):
+        p.stage_local_model(model, gpu = _gpu())
+    assert state["volumes_deleted"]                 # billing volume cleaned up
+
+
+def test_modal_yes_picks_cheapest_without_stock_warning(monkeypatch, capsys):
+    from unsloth_cli.commands import deploy
+    from unsloth_cli.deploy.modal_client import Modal
+    chosen = deploy._pick_gpu(Modal(), override = None, min_vram_gb = 24, yes = True)
+    cheapest = min(Modal().list_gpus(min_vram_gb = 24), key = lambda g: g.cost_per_hour_usd)
+    assert chosen.id == cheapest.id
+    # A fixed-capacity provider must not emit the "couldn't confirm stock" warning.
+    assert "couldn't confirm" not in capsys.readouterr().err
+
+
+def test_modal_stop_rejects_pause(monkeypatch):
+    _stub_modal(monkeypatch)
+    from unsloth_cli import app
+    result = CliRunner().invoke(
+        app, ["deploy", "stop", "sb-1", "--provider", "modal", "--pause"],
+    )
+    assert result.exit_code != 0
+    combined = result.output + (result.stderr or "")
+    assert "can't pause" in combined

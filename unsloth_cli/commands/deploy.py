@@ -423,17 +423,18 @@ def _pick_gpu(
         _fail(f"--gpu '{override}' not found. Available:\n{listing}", code = 2)
 
     if yes:
-        # Prefer the cheapest GPU that actually has capacity over a sold-out one.
-        in_stock = next((g for g in options if g.stock), None)
-        if in_stock is not None:
-            return in_stock
-        # Stock is best-effort: an empty signal can mean "sold out" or "lookup
-        # failed". Fall back to the cheapest so --yes still works, but warn.
-        typer.echo(
-            "  warning: couldn't confirm any GPU has stock; trying the cheapest "
-            f"({options[0].name}). If it fails to start, retry or pass --gpu.",
-            err = True,
-        )
+        if provider.reports_stock:
+            # Prefer the cheapest GPU with confirmed capacity over a sold-out one.
+            in_stock = next((g for g in options if g.stock), None)
+            if in_stock is not None:
+                return in_stock
+            # An empty signal can mean "sold out" or "lookup failed"; fall back to
+            # the cheapest so --yes still works, but warn it might not schedule.
+            typer.echo(
+                "  warning: couldn't confirm any GPU has stock; trying the cheapest "
+                f"({options[0].name}). If it fails to start, retry or pass --gpu.",
+                err = True,
+            )
         return options[0]
 
     shown = options[:MAX_GPU_CHOICES]
@@ -441,9 +442,11 @@ def _pick_gpu(
     typer.echo("Available GPUs (cheapest first):")
     for i, gpu in enumerate(shown, start = 1):
         price = f"${gpu.cost_per_hour_usd:.3f}/hr"
+        # A fixed-capacity provider (reports_stock = False) has no band to show.
+        stock = f"stock: {gpu.stock or 'none':<6}   " if provider.reports_stock else ""
         typer.echo(
             f"  {i:2d}. {gpu.name:<24} {gpu.vram_gb:>3} GB   {price:<11} "
-            f"stock: {gpu.stock or 'none':<6}   ({gpu.id})"
+            f"{stock}({gpu.id})"
         )
     typer.echo("")
     raw = typer.prompt("Pick a GPU (number)", default = "1")
@@ -547,6 +550,9 @@ def _deploy(
             load_kwargs = load_kwargs,
             storage_id = storage_id,
         )
+
+    if provider.deploy_note:
+        typer.echo(f"  NOTE: {provider.deploy_note}\n")
 
 
 def _serve_model(

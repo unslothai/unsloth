@@ -54,6 +54,10 @@ class Provider(ABC):
     supports_ssh: bool = False           # get_ssh() returns a reachable target
     supports_pause: bool = False         # pause() suspends without terminating
     supports_local_model: bool = False   # stage_local_model() uploads local weights
+    reports_stock: bool = True           # list_gpus carries a live per-GPU stock band
+
+    # One-line caveat printed after a successful deploy (e.g. an auto-stop limit).
+    deploy_note: str = ""
 
     @classmethod
     def option_schema(cls) -> list[Option]:
