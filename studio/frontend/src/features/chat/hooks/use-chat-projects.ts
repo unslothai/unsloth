@@ -21,9 +21,11 @@ export function useChatProjects(): {
   isLoading: boolean;
   hasLoaded: boolean;
 } {
-  const [projects, setProjects] = useState<ProjectRecord[]>(cachedProjects);
-  const [isLoading, setIsLoading] = useState(cachedProjects.length === 0);
-  const [hasLoaded, setHasLoaded] = useState(cachedProjects.length > 0);
+  // Stay null-safe even if the cache was poisoned by a bad response.
+  const cached = Array.isArray(cachedProjects) ? cachedProjects : [];
+  const [projects, setProjects] = useState<ProjectRecord[]>(cached);
+  const [isLoading, setIsLoading] = useState(cached.length === 0);
+  const [hasLoaded, setHasLoaded] = useState(cached.length > 0);
 
   useEffect(() => {
     let cancelled = false;
@@ -32,8 +34,8 @@ export function useChatProjects(): {
       if (!cancelled) setIsLoading(true);
       try {
         const next = await listStoredChatProjects({ includeArchived: false });
-        cachedProjects = next;
-        if (!cancelled) setProjects(next);
+        cachedProjects = Array.isArray(next) ? next : [];
+        if (!cancelled) setProjects(cachedProjects);
       } catch (error) {
         if (isExpectedBackgroundChatStorageError(error)) {
           return;

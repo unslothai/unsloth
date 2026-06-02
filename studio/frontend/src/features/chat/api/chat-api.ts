@@ -306,7 +306,8 @@ export async function listChatThreads(
   const qs = params.toString();
   const response = await authFetch(`/api/chat/threads${qs ? `?${qs}` : ""}`);
   const data = await parseJsonOrThrow<{ threads: ThreadRecord[] }>(response);
-  return data.threads;
+  // Never hand back undefined: an older backend may omit the field.
+  return data.threads ?? [];
 }
 
 export async function getChatThread(
@@ -370,7 +371,8 @@ export async function listChatProjects(
   const qs = params.toString();
   const response = await authFetch(`/api/chat/projects${qs ? `?${qs}` : ""}`);
   const data = await parseJsonOrThrow<{ projects: ProjectRecord[] }>(response);
-  return data.projects;
+  // Never hand back undefined: an older backend may omit the field.
+  return data.projects ?? [];
 }
 
 export async function getChatProject(
