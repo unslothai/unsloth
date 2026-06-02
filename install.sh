@@ -1198,6 +1198,19 @@ STUB_EOF
         # Escape single quotes for PowerShell single-quoted string embedding
         _css_sc_args_ps=$(printf '%s' "$_css_sc_args" | sed "s/'/''/g")
 
+        # Use a DISTINCT shortcut name so the WSL launcher never clobbers a
+        # native-Windows install, which writes "Unsloth Studio.lnk" to the SAME
+        # Desktop / Start Menu folder (install.ps1 New-StudioShortcuts). Without
+        # this, running install.sh in WSL silently retargets the native shortcut
+        # at the WSL launcher. Include the distro so multiple WSL distros each
+        # get their own shortcut.
+        if [ -n "$_css_distro" ]; then
+            _css_lnk_name="Unsloth Studio (WSL - ${_css_distro}).lnk"
+        else
+            _css_lnk_name="Unsloth Studio (WSL).lnk"
+        fi
+        _css_lnk_name_ps=$(printf '%s' "$_css_lnk_name" | sed "s/'/''/g")
+
         # Create shortcuts via a temp PowerShell script to avoid escaping issues
         _css_ps1_tmp=$(mktemp /tmp/unsloth-shortcut-XXXXXX.ps1 2>/dev/null) || true
         if [ -n "$_css_ps1_tmp" ]; then
@@ -1205,17 +1218,32 @@ STUB_EOF
 \$WshShell = New-Object -ComObject WScript.Shell
 \$targetExe = (Get-Command '$_css_sc_target' -ErrorAction SilentlyContinue).Source
 if (-not \$targetExe) { exit 1 }
+# Best-effort: fetch the Unsloth icon to a stable Windows path (shared with a
+# native install if one exists) so the WSL shortcut shows the proper icon.
+\$iconDir = Join-Path \$env:LOCALAPPDATA 'Unsloth Studio'
+\$iconPath = Join-Path \$iconDir 'unsloth.ico'
+if (-not (Test-Path -LiteralPath \$iconPath)) {
+    try {
+        New-Item -ItemType Directory -Force -Path \$iconDir | Out-Null
+        Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/unslothai/unsloth/main/studio/frontend/public/unsloth.ico' -OutFile \$iconPath -UseBasicParsing -ErrorAction Stop
+    } catch {}
+}
+\$hasIcon = \$false
+if (Test-Path -LiteralPath \$iconPath) {
+    try { \$b = [System.IO.File]::ReadAllBytes(\$iconPath); if (\$b.Length -ge 4 -and \$b[0] -eq 0 -and \$b[1] -eq 0 -and \$b[2] -eq 1 -and \$b[3] -eq 0) { \$hasIcon = \$true } } catch {}
+}
 \$locations = @(
     [Environment]::GetFolderPath('Desktop'),
     (Join-Path \$env:APPDATA 'Microsoft\Windows\Start Menu\Programs')
 )
 foreach (\$dir in \$locations) {
     if (-not \$dir -or -not (Test-Path \$dir)) { continue }
-    \$linkPath = Join-Path \$dir 'Unsloth Studio.lnk'
+    \$linkPath = Join-Path \$dir '$_css_lnk_name_ps'
     \$shortcut = \$WshShell.CreateShortcut(\$linkPath)
     \$shortcut.TargetPath = \$targetExe
     \$shortcut.Arguments = '$_css_sc_args_ps'
-    \$shortcut.Description = 'Launch Unsloth Studio'
+    \$shortcut.Description = 'Launch Unsloth Studio (WSL)'
+    if (\$hasIcon) { \$shortcut.IconLocation = "\$iconPath,0" }
     \$shortcut.Save()
 }
 WSLPS1_EOF
@@ -2073,16 +2101,18 @@ case "$TORCH_INDEX_URL" in
                 if [ -e /dev/dxg ]; then
                     substep "A GPU is plumbed into WSL (/dev/dxg) but no ROCm runtime is exposed to it." "$C_WARN"
                 fi
-                substep "For an AMD GPU, ROCm-on-WSL currently needs BOTH:"
-                substep "  1. A recent AMD Adrenalin driver with ROCm-on-WSL support (installed on Windows)."
-                substep "  2. A WSL distro AMD supports for ROCm -- Ubuntu 24.04 is the known-good one."
+                substep "For an AMD GPU, ROCm-on-WSL currently needs ALL of:"
+                substep "  1. AMD Adrenalin Edition 26.1.1+ on Windows (26.2.2+ for Strix Halo / Ryzen AI Max+)."
+                substep "     Older drivers don't inject the ROCm/DXG runtime into /usr/lib/wsl/lib."
+                substep "  2. ROCm 7.2.1 + librocdxg inside WSL (with HSA_ENABLE_DXG_DETECTION=1)."
+                substep "  3. A WSL distro AMD supports for ROCm -- Ubuntu 24.04 is the known-good one."
                 if [ -n "$_wsl_ubu_ver" ] && [ "$_wsl_ubu_ver" != "24.04" ]; then
                     substep "  This distro is Ubuntu $_wsl_ubu_ver, which AMD may not support for ROCm-on-WSL yet." "$C_WARN"
                 fi
                 substep "Set up the GPU in WSL with a dedicated Ubuntu 24.04 distro:"
                 substep "  wsl --install Ubuntu-24.04        # run in Windows PowerShell, then reopen WSL"
                 substep "  # then re-run this installer inside Ubuntu-24.04 -- it will detect the GPU."
-                substep "AMD ROCm-on-WSL guide: https://rocm.docs.amd.com/projects/radeon/en/latest/docs/install/wsl/install-radeon.html"
+                substep "AMD ROCm-on-WSL docs: https://rocm.docs.amd.com/projects/radeon-ryzen/en/latest/"
                 substep "Strix Halo (gfx1151) helper (experimental): unsloth/scripts/install_rocm_wsl_strixhalo.sh"
             else
                 substep "AMD ROCm users: see https://docs.unsloth.ai/get-started/install-and-update/amd"

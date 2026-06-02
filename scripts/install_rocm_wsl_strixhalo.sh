@@ -13,21 +13,32 @@
 #
 # RUN THIS *AFTER* the two manual prerequisites are done (the preflight enforces
 # them and refuses to half-install otherwise):
-#   1. Windows: AMD Adrenalin driver >= 26.3.1 installed (admin) + reboot.
+#   1. Windows: AMD Adrenalin Edition >= 26.1.1 installed (admin) + reboot.
+#      26.2.2+ is AMD's first PRODUCTION ROCDXG/WSL release covering Strix /
+#      Strix Halo (Ryzen AI Max+). Older drivers do NOT inject the ROCm/DXG
+#      runtime into /usr/lib/wsl/lib, so rocminfo sees only the CPU and the GPU
+#      is undetectable no matter what you install inside WSL. Also needs the
+#      Windows 11 SDK 10.0.26100.0 (to build librocdxg).
 #   2. A dedicated Ubuntu-24.04 WSL distro:  wsl --install Ubuntu-24.04
 #      (do NOT run this in an Ubuntu 26.04 distro -- ROCm 7.2 targets 24.04).
 #
-# Procedure adapted from AMD's ROCm-on-WSL docs and the community
-# andweng/wsl-rocm gfx1151 notes. This is bleeding edge; read each step before
-# trusting it on a work machine.
+# Procedure adapted from AMD's official ROCm-on-WSL docs
+# (rocm.docs.amd.com/projects/radeon-ryzen) and community gfx1151 notes
+# (andweng/wsl-rocm, gianni.rosagallina.com). Bleeding edge; read each step.
+#
+# KNOWN CAVEAT (ROCm/ROCm#6022): even when working, librocdxg currently caps the
+# usable ROCm VRAM pool at the WSL VM's RAM (.wslconfig [wsl2] memory=...), NOT
+# the full APU allocation, and amd-smi does not work inside WSL. Set a large
+# .wslconfig memory= and watch GPU usage from Windows (Task Manager / Adrenalin).
 # ──────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
-# Verified against: ROCm 7.2 + AMD Adrenalin 26.3.1 + Ubuntu 24.04.4 + WSL2,
-# circa 2026-06. These are MOVING targets -- the amdgpu-install .deb is scraped
-# from repo.radeon.com, librocdxg is built from a Git ref, and the version pins
-# below WILL rot. Bump them (and re-verify) when AMD ships a newer ROCm-on-WSL.
-ROCM_VER="7.2.0"           # ROCm release to install; bump as AMD ships newer
+# Verified against AMD's documented combo: ROCm 7.2.1 + Adrenalin >= 26.1.1 +
+# Ubuntu 24.04 + WSL2, circa 2026-06. These are MOVING targets -- the
+# amdgpu-install .deb is discovered from repo.radeon.com, librocdxg is built from
+# a Git ref, and the pins below WILL rot. Bump them (and re-verify) when AMD
+# ships a newer ROCm-on-WSL.
+ROCM_VER="7.2.1"           # ROCm release to install; bump as AMD ships newer
 ROCM_BIN_VER="7.2.1"       # rocr4wsl userspace tools ship under 7.2.1
 GFX="gfx1151"
 LIBROCDXG_REF="develop"    # ROCm/librocdxg ref to build; pin to a known-good commit if develop breaks
@@ -47,7 +58,7 @@ say "Preflight checks"
 
 [ -e /dev/dxg ] || die "/dev/dxg missing -- WSL GPU paravirtualization not present. Ensure WSL2 (not WSL1) and a recent Windows build."
 
-# The Adrenalin >=26.3.1 driver injects ROCm/DXG runtime libs into
+# The Adrenalin >=26.1.1 driver injects ROCm/DXG runtime libs into
 # /usr/lib/wsl/lib. If only the base D3D12/dxcore libs are present, the driver
 # is too old -- stop before touching apt.
 if ! ls /usr/lib/wsl/lib/ 2>/dev/null | grep -qiE 'hsa|rocm|amdhip|dxg'; then
@@ -56,9 +67,11 @@ if ! ls /usr/lib/wsl/lib/ 2>/dev/null | grep -qiE 'hsa|rocm|amdhip|dxg'; then
 [BLOCKED] No AMD ROCm/DXG runtime libraries found in /usr/lib/wsl/lib
           (only the base D3D12/dxcore libs are present).
 
-The Windows AMD Adrenalin driver does NOT yet provide ROCm-on-WSL.
+The Windows AMD Adrenalin driver is too old to provide ROCm-on-WSL.
 Fix (needs Windows admin), then reboot and re-run this script:
-  1. Update to AMD Adrenalin Edition >= 26.3.1 for Ryzen AI Max+ / Radeon 8060S:
+  1. Update to AMD Adrenalin Edition >= 26.1.1 (26.2.2+ recommended) for
+     Ryzen AI Max+ / Radeon 8060S -- this is the first driver family that ships
+     the production ROCDXG/WSL runtime:
        https://www.amd.com/en/support/download/drivers.html
   2. Reboot Windows.
   3. Verify in WSL:  ls /usr/lib/wsl/lib/   (should now list hsa/rocm libs)
