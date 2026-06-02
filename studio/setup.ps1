@@ -2771,6 +2771,20 @@ if (-not $NeedLlamaSourceBuild) {
     Write-Host ""
     if ($HasNvidiaSmi) {
         substep "building llama.cpp with CUDA support..."
+    } elseif ($HasROCm -or $script:ROCmGfxArch) {
+        # An AMD ROCm GPU is present but we are in the source-build fallback,
+        # which is CPU-only: a HIP/ROCm *source* build needs the full HIP SDK +
+        # ROCm clang toolchain. GPU acceleration for AMD comes from the lemonade
+        # prebuilt (it bundles the ROCm runtime, no SDK needed) -- reaching here
+        # means that GPU prebuilt could not be installed. Warn loudly instead of
+        # silently shipping a slow CPU build.
+        $_amdArch = if ($script:ROCmGfxArch) { $script:ROCmGfxArch } else { "ROCm" }
+        substep "[WARN] AMD GPU ($_amdArch) detected, but the GPU-accelerated lemonade" "Yellow"
+        substep "       llama.cpp prebuilt could not be installed -- falling back to a CPU build." "Yellow"
+        substep "       The prebuilt is the AMD GPU path (no HIP SDK required). To restore GPU" "Yellow"
+        substep "       acceleration: re-run the installer (check your network / proxy), or set" "Yellow"
+        substep "       UNSLOTH_LLAMA_RELEASE_TAG to a tag with a gfx prebuilt for your GPU." "Yellow"
+        substep "building llama.cpp (CPU-only fallback)..." "Yellow"
     } else {
         substep "building llama.cpp (CPU-only, no NVIDIA GPU detected)..."
     }
