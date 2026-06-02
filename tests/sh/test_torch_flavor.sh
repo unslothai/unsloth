@@ -13,12 +13,14 @@ INSTALL_SH="$SCRIPT_DIR/../../install.sh"
 PASS=0
 FAIL=0
 
-# Extract just the two helper functions from install.sh and source them.
+# Extract the three helper functions from install.sh and source them.
 _FUNC_FILE=$(mktemp)
 {
     sed -n '/^_torch_flavor_tag()/,/^}/p' "$INSTALL_SH"
     echo ""
     sed -n '/^_expected_torch_flavor_tag()/,/^}/p' "$INSTALL_SH"
+    echo ""
+    sed -n '/^_torch_index_repairable()/,/^}/p' "$INSTALL_SH"
 } > "$_FUNC_FILE"
 # shellcheck disable=SC1090
 . "$_FUNC_FILE"
@@ -52,10 +54,16 @@ assert_eq "cu130 trailing /"   "cu130" "$(_expected_torch_flavor_tag 'https://do
 assert_eq "cu128 index"        "cu128" "$(_expected_torch_flavor_tag 'https://download.pytorch.org/whl/cu128')"
 assert_eq "cpu index"          "cpu"   "$(_expected_torch_flavor_tag 'https://download.pytorch.org/whl/cpu')"
 assert_eq "rocm index"         "rocm"  "$(_expected_torch_flavor_tag 'https://download.pytorch.org/whl/rocm7.2')"
-assert_eq "amd gfx index"      ""      "$(_expected_torch_flavor_tag 'https://repo.amd.com/rocm/whl/gfx120X-all/')"
+assert_eq "amd gfx index"      "rocm"  "$(_expected_torch_flavor_tag 'https://repo.amd.com/rocm/whl/gfx120X-all/')"
 assert_eq "mirror cu130 leaf"  "cu130" "$(_expected_torch_flavor_tag 'https://my.mirror/pytorch/whl/cu130')"
 assert_eq "unrecognized leaf"  ""      "$(_expected_torch_flavor_tag 'https://my.mirror/whl/simple')"
 assert_eq "empty url"          ""      "$(_expected_torch_flavor_tag '')"
+
+echo "=== _torch_index_repairable ==="
+assert_eq "cu130 repairable"   "yes"   "$(_torch_index_repairable 'https://download.pytorch.org/whl/cu130')"
+assert_eq "rocm7.2 repairable" "yes"   "$(_torch_index_repairable 'https://download.pytorch.org/whl/rocm7.2')"
+assert_eq "gfx NOT repairable" "no"    "$(_torch_index_repairable 'https://repo.amd.com/rocm/whl/gfx120X-all/')"
+assert_eq "cpu NOT repairable" "no"    "$(_torch_index_repairable 'https://download.pytorch.org/whl/cpu')"
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

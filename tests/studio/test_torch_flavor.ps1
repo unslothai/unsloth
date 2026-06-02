@@ -47,6 +47,8 @@ Check "cu130 index -> cu130"         ((Get-ExpectedTorchFlavorTag -TorchIndexUrl
 Check "trailing slash -> cu130"      ((Get-ExpectedTorchFlavorTag -TorchIndexUrl "https://download.pytorch.org/whl/cu130/") -eq "cu130")
 Check "cpu index -> cpu"             ((Get-ExpectedTorchFlavorTag -TorchIndexUrl "https://download.pytorch.org/whl/cpu") -eq "cpu")
 Check "ROCm url -> rocm"             ((Get-ExpectedTorchFlavorTag -TorchIndexUrl "https://download.pytorch.org/whl/cpu" -ROCmIndexUrl "https://repo.amd.com/rocm/whl/gfx120X-all/") -eq "rocm")
+Check "gfx index leaf -> rocm"        ((Get-ExpectedTorchFlavorTag -TorchIndexUrl "https://repo.amd.com/rocm/whl/gfx120X-all/") -eq "rocm")
+Check "rocm7.2 leaf -> rocm"          ((Get-ExpectedTorchFlavorTag -TorchIndexUrl "https://download.pytorch.org/whl/rocm7.2") -eq "rocm")
 Check "mirror cu130 leaf -> cu130"   ((Get-ExpectedTorchFlavorTag -TorchIndexUrl "https://my.mirror/whl/cu130") -eq "cu130")
 Check "unrecognized leaf -> null"    ($null -eq (Get-ExpectedTorchFlavorTag -TorchIndexUrl "https://my.mirror/whl/simple"))
 Check "empty url -> null"            ($null -eq (Get-ExpectedTorchFlavorTag -TorchIndexUrl ""))
