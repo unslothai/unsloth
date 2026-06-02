@@ -1301,6 +1301,11 @@ def _install_fake_diffusers(monkeypatch, *, raise_on_pipeline = False):
             self.quant_mapping = quant_mapping
 
     class _FakeTransformer:
+        def __init__(self):
+            self.compile_calls = []
+            self.compile_repeated_blocks_calls = []
+            self._repeated_blocks = ("fake_block",)
+
         @classmethod
         def from_single_file(cls, path, **kw):
             inst = cls()
@@ -1311,6 +1316,12 @@ def _install_fake_diffusers(monkeypatch, *, raise_on_pipeline = False):
             inst.subfolder = kw.get("subfolder")
             inst.token = kw.get("token")
             return inst
+
+        def compile(self, **kwargs):
+            self.compile_calls.append(kwargs)
+
+        def compile_repeated_blocks(self, **kwargs):
+            self.compile_repeated_blocks_calls.append(kwargs)
 
     class _FakeWanVAE:
         @classmethod
@@ -1339,6 +1350,13 @@ def _install_fake_diffusers(monkeypatch, *, raise_on_pipeline = False):
             inst.lora_loads = []
             inst.adapter_calls = []
             inst.fuse_calls = []
+            inst.transformer = kwargs.get("transformer")
+            inst.unet = kwargs.get("unet")
+            inst.vae = kwargs.get("vae")
+            inst.text_encoder = kwargs.get("text_encoder")
+            inst.text_encoder_2 = kwargs.get("text_encoder_2")
+            inst.text_encoder_3 = kwargs.get("text_encoder_3")
+            inst.pe = kwargs.get("pe")
             inst.config = SimpleNamespace(
                 is_distilled = (
                     isinstance(base_repo, str)
@@ -2814,6 +2832,89 @@ def test_load_model_offload_policy_none(monkeypatch):
     assert getattr(backend._pipe, "cpu_offload", False) is False
     assert backend._pipe.device == "cuda"
     assert calls == []
+
+
+def test_load_model_torch_compile_regional(monkeypatch):
+    _install_fake_diffusers(monkeypatch)
+
+    from core.inference.diffusion import get_diffusion_backend
+
+    backend = get_diffusion_backend()
+    status = backend.load_model(
+        "unsloth/FLUX.2-klein-4B-GGUF",
+        gguf_filename = "flux-2-klein-4b-Q4_K_S.gguf",
+        torch_compile = "regional",
+        torch_compile_mode = "default",
+        torch_compile_dynamic = True,
+        torch_compile_fullgraph = False,
+    )
+
+    transformer = backend._pipe.transformer
+    assert transformer.compile_repeated_blocks_calls == [
+        {"mode": "default", "fullgraph": False, "dynamic": True}
+    ]
+    assert transformer.compile_calls == []
+    assert status["torch_compile_config"]["scope"] == "regional"
+    assert status["torch_compile_stats"]["compiled_components"][0]["component"] == "transformer"
+    assert status["load_timings"]["torch_compile"] >= 0
+
+
+def test_load_model_torch_compile_transformer(monkeypatch):
+    _install_fake_diffusers(monkeypatch)
+
+    from core.inference.diffusion import get_diffusion_backend
+
+    backend = get_diffusion_backend()
+    status = backend.load_model(
+        "unsloth/FLUX.2-klein-4B-GGUF",
+        gguf_filename = "flux-2-klein-4b-Q4_K_S.gguf",
+        torch_compile = "transformer",
+        torch_compile_mode = "reduce-overhead",
+    )
+
+    transformer = backend._pipe.transformer
+    assert transformer.compile_calls == [{"mode": "reduce-overhead"}]
+    assert transformer.compile_repeated_blocks_calls == []
+    assert status["torch_compile_config"]["scope"] == "transformer"
+    assert status["torch_compile_stats"]["compiled_components"][0]["method"] == "module.compile"
+
+
+def test_load_model_torch_compile_pipeline(monkeypatch):
+    _install_fake_diffusers(monkeypatch)
+
+    from core.inference.diffusion import get_diffusion_backend
+
+    backend = get_diffusion_backend()
+    status = backend.load_model(
+        "unsloth/FLUX.2-klein-4B-GGUF",
+        gguf_filename = "flux-2-klein-4b-Q4_K_S.gguf",
+        torch_compile = "pipeline",
+        torch_compile_mode = "default",
+        torch_compile_options = {"triton.cudagraphs": False},
+    )
+
+    transformer = backend._pipe.transformer
+    assert transformer.compile_calls == [
+        {
+            "options": {"triton.cudagraphs": False},
+        }
+    ]
+    assert status["torch_compile_config"]["scope"] == "pipeline"
+    assert status["torch_compile_stats"]["compiled_components"][0]["component"] == "transformer"
+
+
+def test_load_model_torch_compile_invalid_scope(monkeypatch):
+    _install_fake_diffusers(monkeypatch)
+
+    from core.inference.diffusion import get_diffusion_backend
+
+    backend = get_diffusion_backend()
+    with pytest.raises(ValueError, match = "torch_compile must be one of"):
+        backend.load_model(
+            "unsloth/FLUX.2-klein-4B-GGUF",
+            gguf_filename = "flux-2-klein-4b-Q4_K_S.gguf",
+            torch_compile = "everything",
+        )
 
 
 def test_patch_gguf_modules_for_resident_device_keeps_weight_resident():

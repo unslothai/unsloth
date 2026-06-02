@@ -93,6 +93,29 @@ DIFFUSION_TRANSFORMERS_QUANT_COMPONENTS = {
     "text_encoder_3",
     "pe",
 }
+DIFFUSION_TORCH_COMPILE_NONE = "none"
+DIFFUSION_TORCH_COMPILE_REGIONAL = "regional"
+DIFFUSION_TORCH_COMPILE_TRANSFORMER = "transformer"
+DIFFUSION_TORCH_COMPILE_PIPELINE = "pipeline"
+DIFFUSION_TORCH_COMPILE_SCOPES = {
+    DIFFUSION_TORCH_COMPILE_NONE,
+    DIFFUSION_TORCH_COMPILE_REGIONAL,
+    DIFFUSION_TORCH_COMPILE_TRANSFORMER,
+    DIFFUSION_TORCH_COMPILE_PIPELINE,
+}
+DIFFUSION_TORCH_COMPILE_PRIMARY_COMPONENTS = (
+    "transformer",
+    "unet",
+)
+DIFFUSION_TORCH_COMPILE_PIPELINE_COMPONENTS = (
+    "transformer",
+    "unet",
+    "vae",
+    "text_encoder",
+    "text_encoder_2",
+    "text_encoder_3",
+    "pe",
+)
 MIN_BALANCED_GGUF_CUDA_CACHE_TOTAL_MIB = 24 * 1024
 MID_BALANCED_GGUF_CUDA_CACHE_TOTAL_MIB = 32 * 1024
 HIGH_BALANCED_GGUF_CUDA_CACHE_TOTAL_MIB = 64 * 1024
@@ -2762,6 +2785,13 @@ def supported_optimization_options() -> dict[str, Any]:
             "denoiser_torch_compile": {
                 "default_enabled": False,
                 "recommended_scope": "denoiser_or_repeated_blocks_only",
+                "backend_load_arg": "torch_compile",
+                "available_scopes": [
+                    DIFFUSION_TORCH_COMPILE_NONE,
+                    DIFFUSION_TORCH_COMPILE_REGIONAL,
+                    DIFFUSION_TORCH_COMPILE_TRANSFORMER,
+                    DIFFUSION_TORCH_COMPILE_PIPELINE,
+                ],
                 "reason": (
                     "Useful for long resident sessions, but cold-start cost and "
                     "CUDA graph compatibility need per-model benchmarking."
@@ -3430,6 +3460,178 @@ def _normalize_diffusion_offload_policy(value: Optional[str]) -> Optional[str]:
     return normalized
 
 
+def _normalize_diffusion_torch_compile_scope(value: Optional[str]) -> str:
+    if value is None:
+        return DIFFUSION_TORCH_COMPILE_NONE
+    normalized = str(value).strip().lower().replace("-", "_")
+    if normalized in {"", "0", "false", "no", "off", "disabled"}:
+        return DIFFUSION_TORCH_COMPILE_NONE
+    if normalized in {"repeated_blocks", "repeated"}:
+        return DIFFUSION_TORCH_COMPILE_REGIONAL
+    if normalized in {"denoiser", "module", "modules"}:
+        return DIFFUSION_TORCH_COMPILE_TRANSFORMER
+    if normalized not in DIFFUSION_TORCH_COMPILE_SCOPES:
+        allowed = ", ".join(sorted(DIFFUSION_TORCH_COMPILE_SCOPES))
+        raise ValueError(f"torch_compile must be one of: {allowed}")
+    return normalized
+
+
+def _diffusion_torch_compile_kwargs(
+    *,
+    mode: Optional[str],
+    fullgraph: Optional[bool],
+    dynamic: Optional[bool],
+    options: Optional[dict[str, Any]],
+) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {}
+    if mode and not options:
+        kwargs["mode"] = mode
+    if fullgraph is not None:
+        kwargs["fullgraph"] = bool(fullgraph)
+    if dynamic is not None:
+        kwargs["dynamic"] = bool(dynamic)
+    if options:
+        kwargs["options"] = dict(options)
+    return kwargs
+
+
+def _compile_diffusion_component(
+    pipe: Any,
+    component_name: str,
+    component: Any,
+    *,
+    kwargs: dict[str, Any],
+) -> dict[str, Any]:
+    compile_method = getattr(component, "compile", None)
+    if callable(compile_method):
+        result = compile_method(**kwargs)
+        if result is not None:
+            try:
+                setattr(pipe, component_name, result)
+            except Exception:
+                pass
+        return {
+            "component": component_name,
+            "method": "module.compile",
+            "compiled": True,
+        }
+
+    try:
+        import torch
+    except Exception as exc:
+        return {
+            "component": component_name,
+            "compiled": False,
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+    compile_fn = getattr(torch, "compile", None)
+    if not callable(compile_fn):
+        return {
+            "component": component_name,
+            "compiled": False,
+            "error": "torch.compile unavailable",
+        }
+    compiled = compile_fn(component, **kwargs)
+    setattr(pipe, component_name, compiled)
+    return {
+        "component": component_name,
+        "method": "torch.compile",
+        "compiled": True,
+    }
+
+
+def _apply_diffusion_torch_compile(
+    pipe: Any,
+    *,
+    scope: Optional[str],
+    mode: Optional[str],
+    fullgraph: Optional[bool],
+    dynamic: Optional[bool],
+    options: Optional[dict[str, Any]],
+) -> dict[str, Any]:
+    """Optionally compile denoising modules inside a Diffusers pipeline.
+
+    ``pipeline`` is intentionally interpreted as "compile pipeline
+    components", not ``torch.compile(pipe)``: Diffusers pipelines are
+    orchestration objects, not ``nn.Module`` instances.
+    """
+
+    normalized_scope = _normalize_diffusion_torch_compile_scope(scope)
+    stats: dict[str, Any] = {
+        "enabled": normalized_scope != DIFFUSION_TORCH_COMPILE_NONE,
+        "scope": normalized_scope,
+        "compiled_components": [],
+        "skipped_components": [],
+    }
+    if normalized_scope == DIFFUSION_TORCH_COMPILE_NONE:
+        return stats
+
+    kwargs = _diffusion_torch_compile_kwargs(
+        mode = mode,
+        fullgraph = fullgraph,
+        dynamic = dynamic,
+        options = options,
+    )
+    stats["kwargs"] = kwargs
+
+    if normalized_scope == DIFFUSION_TORCH_COMPILE_REGIONAL:
+        for component_name in DIFFUSION_TORCH_COMPILE_PRIMARY_COMPONENTS:
+            component = getattr(pipe, component_name, None)
+            if component is None:
+                continue
+            compile_repeated_blocks = getattr(
+                component,
+                "compile_repeated_blocks",
+                None,
+            )
+            if not callable(compile_repeated_blocks):
+                stats["skipped_components"].append(
+                    {
+                        "component": component_name,
+                        "reason": "compile_repeated_blocks unavailable",
+                    }
+                )
+                continue
+            compile_repeated_blocks(**kwargs)
+            stats["compiled_components"].append(
+                {
+                    "component": component_name,
+                    "method": "compile_repeated_blocks",
+                    "compiled": True,
+                    "repeated_blocks": getattr(component, "_repeated_blocks", None),
+                }
+            )
+        return stats
+
+    component_names = (
+        DIFFUSION_TORCH_COMPILE_PIPELINE_COMPONENTS
+        if normalized_scope == DIFFUSION_TORCH_COMPILE_PIPELINE
+        else DIFFUSION_TORCH_COMPILE_PRIMARY_COMPONENTS
+    )
+    for component_name in component_names:
+        component = getattr(pipe, component_name, None)
+        if component is None:
+            continue
+        try:
+            result = _compile_diffusion_component(
+                pipe,
+                component_name,
+                component,
+                kwargs = kwargs,
+            )
+        except Exception as exc:
+            result = {
+                "component": component_name,
+                "compiled": False,
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+        if result.get("compiled"):
+            stats["compiled_components"].append(result)
+        else:
+            stats["skipped_components"].append(result)
+    return stats
+
+
 def _resolve_diffusion_offload_policy(
     *,
     offload_policy: Optional[str],
@@ -3605,6 +3807,8 @@ class DiffusionBackend:
         self._gguf_pin_cpu_resident: bool = False
         self._gguf_execution_backend: Optional[str] = None
         self._gguf_prepared_module_counts: dict[str, int] = {}
+        self._torch_compile_config: Optional[dict[str, Any]] = None
+        self._torch_compile_stats: Optional[dict[str, Any]] = None
         self._safetensors_quantization: Optional[str] = None
         self._safetensors_quantization_components: Optional[list[str]] = None
         self._load_timings: dict[str, float] = {}
@@ -3786,6 +3990,16 @@ class DiffusionBackend:
                 "offload_policy": self._offload_policy,
                 "gguf_execution_backend": self._gguf_execution_backend,
                 "gguf_prepared_module_counts": dict(self._gguf_prepared_module_counts),
+                "torch_compile_config": (
+                    dict(self._torch_compile_config)
+                    if self._torch_compile_config is not None
+                    else None
+                ),
+                "torch_compile_stats": (
+                    dict(self._torch_compile_stats)
+                    if self._torch_compile_stats is not None
+                    else None
+                ),
                 "safetensors_quantization": self._safetensors_quantization,
                 "safetensors_quantization_components": (
                     list(self._safetensors_quantization_components)
@@ -3927,6 +4141,11 @@ class DiffusionBackend:
         gguf_pin_cpu_resident: Optional[bool] = None,
         safetensors_quantization: Optional[str] = None,
         safetensors_quantization_components: Optional[list[str]] = None,
+        torch_compile: Optional[str] = None,
+        torch_compile_mode: Optional[str] = None,
+        torch_compile_fullgraph: Optional[bool] = None,
+        torch_compile_dynamic: Optional[bool] = None,
+        torch_compile_options: Optional[dict[str, Any]] = None,
         ignore_public_load_pending_workload: Optional[str] = None,
     ) -> dict[str, Any]:
         """Load a diffusion model.
@@ -3969,6 +4188,13 @@ class DiffusionBackend:
         quantization to quantize selected components with bitsandbytes
         or torchao. It is rejected when any GGUF component swap is
         active because GGUF already owns the transformer/text precision.
+
+        ``torch_compile`` is an experimental backend-only compile scope
+        for the denoising modules inside the loaded Diffusers pipeline.
+        Supported values are ``none`` (default), ``regional`` (Diffusers
+        compile_repeated_blocks), ``transformer`` (compile transformer /
+        UNet), and ``pipeline`` (compile major pipeline modules). This
+        is intentionally not wired to the Studio UI yet.
 
         ``lora_repo`` optionally points at a Diffusers LoRA adapter repo
         or local path. When provided, the adapter is attached after the
@@ -4166,6 +4392,16 @@ class DiffusionBackend:
             gguf_quantized_cpu_resident = gguf_quantized_cpu_resident,
             gguf_pin_cpu_resident = gguf_pin_cpu_resident,
         )
+        resolved_torch_compile = _normalize_diffusion_torch_compile_scope(
+            torch_compile
+        )
+        torch_compile_config = {
+            "scope": resolved_torch_compile,
+            "mode": torch_compile_mode,
+            "fullgraph": torch_compile_fullgraph,
+            "dynamic": torch_compile_dynamic,
+            "options": dict(torch_compile_options or {}),
+        }
 
         # Round 32 P1 #3: track whether the backend-side
         # helper-busy check published a "diffusion-backend" pending
@@ -4293,6 +4529,7 @@ class DiffusionBackend:
                 text_encoder = None
                 prompt_enhancer = None
                 lora_state: Optional[DiffusionLoraState] = None
+                torch_compile_stats: Optional[dict[str, Any]] = None
                 local_text_encoder_gguf_path: Optional[str] = None
                 effective_text_encoder_gguf_repo: Optional[str] = None
                 text_encoder_gguf_info: Any = None
@@ -4702,6 +4939,8 @@ class DiffusionBackend:
                         self._gguf_pin_cpu_resident = False
                         self._gguf_execution_backend = None
                         self._gguf_prepared_module_counts = {}
+                        self._torch_compile_config = None
+                        self._torch_compile_stats = None
                         self._safetensors_quantization = None
                         self._safetensors_quantization_components = None
                         self._load_timings = {}
@@ -5039,6 +5278,16 @@ class DiffusionBackend:
                         )
                     with _load_phase("apply_memory_policy"):
                         _apply_diffusion_memory_policy(pipe, resolved_offload_policy)
+                    if resolved_torch_compile != DIFFUSION_TORCH_COMPILE_NONE:
+                        with _load_phase("torch_compile"):
+                            torch_compile_stats = _apply_diffusion_torch_compile(
+                                pipe,
+                                scope = resolved_torch_compile,
+                                mode = torch_compile_mode,
+                                fullgraph = torch_compile_fullgraph,
+                                dynamic = torch_compile_dynamic,
+                                options = torch_compile_options,
+                            )
                 except Exception:
                     if pipe is not None:
                         _release(pipe)
@@ -5141,6 +5390,16 @@ class DiffusionBackend:
                     )
                     self._gguf_prepared_module_counts = dict(
                         prepared_gguf_module_counts
+                    )
+                    self._torch_compile_config = (
+                        dict(torch_compile_config)
+                        if resolved_torch_compile != DIFFUSION_TORCH_COMPILE_NONE
+                        else None
+                    )
+                    self._torch_compile_stats = (
+                        dict(torch_compile_stats)
+                        if torch_compile_stats is not None
+                        else None
                     )
                     self._safetensors_quantization = (
                         resolved_safetensors_quantization
@@ -5387,6 +5646,8 @@ class DiffusionBackend:
                 self._gguf_pin_cpu_resident = False
                 self._gguf_execution_backend = None
                 self._gguf_prepared_module_counts = {}
+                self._torch_compile_config = None
+                self._torch_compile_stats = None
                 self._safetensors_quantization = None
                 self._safetensors_quantization_components = None
                 self._load_timings = {}
