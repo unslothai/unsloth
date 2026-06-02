@@ -68,16 +68,6 @@ MID_BALANCED_GGUF_CUDA_CACHE_MIB = 2048
 MIN_BALANCED_GGUF_CUDA_CACHE_TOTAL_MIB = 24 * 1024
 MID_BALANCED_GGUF_CUDA_CACHE_TOTAL_MIB = 32 * 1024
 BALANCED_GGUF_CUDA_CACHE_HEADROOM_MIB = 8 * 1024
-AUTO_FAST_GGUF_POLICY_MIN_TOTAL_MIB = 40 * 1024
-AUTO_FAST_GGUF_POLICY_MIN_FREE_MIB = 36 * 1024
-AUTO_FAST_GGUF_POLICY_FAMILIES = {
-    "qwen-image",
-    "qwen-image-2512",
-    "qwen-image-edit",
-    "qwen-image-edit-2509",
-    "qwen-image-edit-2511",
-    "qwen-image-layered",
-}
 
 
 # ─── Pipeline registry ────────────────────────────────────────────────
@@ -1187,42 +1177,7 @@ def _curated_gguf_recommended_offload_policy(
     if spec is None:
         return None
 
-    policy = spec.recommended_offload_policy
-    if (
-        policy == DIFFUSION_OFFLOAD_POLICY_BALANCED
-        and spec.family in AUTO_FAST_GGUF_POLICY_FAMILIES
-        and _cuda_memory_meets_mib_floor(
-            device = device,
-            free_bytes = free_bytes,
-            total_bytes = total_bytes,
-            min_free_mib = AUTO_FAST_GGUF_POLICY_MIN_FREE_MIB,
-            min_total_mib = AUTO_FAST_GGUF_POLICY_MIN_TOTAL_MIB,
-        )
-    ):
-        return DIFFUSION_OFFLOAD_POLICY_LESS_AGGRESSIVE
-    return policy
-
-
-def _cuda_memory_meets_mib_floor(
-    *,
-    device: Optional[str],
-    free_bytes: Optional[int],
-    total_bytes: Optional[int],
-    min_free_mib: int,
-    min_total_mib: int,
-) -> bool:
-    if str(device or "").split(":", 1)[0] != "cuda":
-        return False
-    if free_bytes is None or total_bytes is None:
-        try:
-            import torch
-
-            free_bytes, total_bytes = torch.cuda.mem_get_info()
-        except Exception:
-            return False
-    free_mib = int(free_bytes) // (1024 * 1024)
-    total_mib = int(total_bytes) // (1024 * 1024)
-    return free_mib >= int(min_free_mib) and total_mib >= int(min_total_mib)
+    return spec.recommended_offload_policy
 
 
 def _preset_id_from_curated_diffusion_gguf(spec: CuratedDiffusionGGUF) -> str:
