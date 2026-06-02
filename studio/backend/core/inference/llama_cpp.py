@@ -4843,7 +4843,7 @@ class LlamaCppBackend:
                                                     "tool_call_id": current_id,
                                                     "arguments": {},
                                                     "provenance": _tool_event_provenance(
-                                                        provisional=True,
+                                                        provisional = True,
                                                     ),
                                                 }
                                         continue
@@ -5261,9 +5261,9 @@ class LlamaCppBackend:
                         and tc.get("id") in provisional_render_html_tool_call_ids
                     )
                     _tool_provenance = _tool_event_provenance(
-                        healed=_args_healed,
-                        forced=_forced_tool_call_pending,
-                        provisional=_provisional_render_html_match,
+                        healed = _args_healed,
+                        forced = _forced_tool_call_pending,
+                        provisional = _provisional_render_html_match,
                     )
 
                     if tool_name == "web_search":

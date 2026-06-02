@@ -46,9 +46,7 @@ logger = get_logger(__name__)
 _MAX_BUFFER_CHARS = 32
 
 
-def strip_tool_markup_streaming(
-    text: str, *, auto_heal_tool_calls: bool = True
-) -> str:
+def strip_tool_markup_streaming(text: str, *, auto_heal_tool_calls: bool = True) -> str:
     """Strip open-ended tool XML from display text without trimming whitespace."""
     if not auto_heal_tool_calls:
         return text
@@ -131,8 +129,8 @@ def _coerce_arguments_with_provenance(raw_args, *, heal: bool, tool_name: str = 
 def _coerce_arguments(raw_args, *, heal: bool, tool_name: str = "") -> dict:
     arguments, _ = _coerce_arguments_with_provenance(
         raw_args,
-        heal=heal,
-        tool_name=tool_name,
+        heal = heal,
+        tool_name = tool_name,
     )
     return arguments
 
@@ -244,7 +242,7 @@ def run_safetensors_tool_loop(
                         "tool_name": "render_html",
                         "tool_call_id": provisional_render_html_id,
                         "arguments": {},
-                        "provenance": _tool_event_provenance(provisional=True),
+                        "provenance": _tool_event_provenance(provisional = True),
                     }
                 continue
 
@@ -259,7 +257,7 @@ def run_safetensors_tool_loop(
                     before_tool = candidate[:signal_pos]
                     cleaned_before = strip_tool_markup_streaming(
                         before_tool,
-                        auto_heal_tool_calls=auto_heal_tool_calls,
+                        auto_heal_tool_calls = auto_heal_tool_calls,
                     )
                     if len(cleaned_before) > len(last_emitted):
                         last_emitted = cleaned_before
@@ -277,13 +275,13 @@ def run_safetensors_tool_loop(
                             "tool_name": "render_html",
                             "tool_call_id": provisional_render_html_id,
                             "arguments": {},
-                            "provenance": _tool_event_provenance(provisional=True),
+                            "provenance": _tool_event_provenance(provisional = True),
                         }
                     continue
                 cumulative_display = candidate
                 cleaned = strip_tool_markup_streaming(
                     cumulative_display,
-                    auto_heal_tool_calls=auto_heal_tool_calls,
+                    auto_heal_tool_calls = auto_heal_tool_calls,
                 )
                 if len(cleaned) > len(last_emitted):
                     last_emitted = cleaned
@@ -312,7 +310,7 @@ def run_safetensors_tool_loop(
                 cumulative_display += content_buffer
                 cleaned = strip_tool_markup_streaming(
                     cumulative_display,
-                    auto_heal_tool_calls=auto_heal_tool_calls,
+                    auto_heal_tool_calls = auto_heal_tool_calls,
                 )
                 if len(cleaned) > len(last_emitted):
                     last_emitted = cleaned
@@ -329,7 +327,7 @@ def run_safetensors_tool_loop(
                         "tool_name": "render_html",
                         "tool_call_id": provisional_render_html_id,
                         "arguments": {},
-                        "provenance": _tool_event_provenance(provisional=True),
+                        "provenance": _tool_event_provenance(provisional = True),
                     }
             elif is_prefix and len(stripped) < _MAX_BUFFER_CHARS:
                 continue
@@ -397,7 +395,7 @@ def run_safetensors_tool_loop(
                         "tool_name": "render_html",
                         "tool_call_id": provisional_render_html_id,
                         "result": "Error: render_html tool call could not be parsed.",
-                        "provenance": _tool_event_provenance(provisional=True),
+                        "provenance": _tool_event_provenance(provisional = True),
                     }
                 yield {"type": "status", "text": ""}
                 return
