@@ -3882,16 +3882,11 @@ async def serve_sandbox_file(
         )
 
     # ── Path containment check ──────────────────────────────────
-    home = os.path.expanduser("~")
-    sandbox_root = os.path.realpath(os.path.join(home, "studio_sandbox"))
-    safe_session = os.path.basename(session_id.replace("..", ""))
-    if not safe_session:
-        raise HTTPException(status_code = 404, detail = "Not found")
+    from core.inference.tools import get_sandbox_workdir
 
-    file_path = os.path.realpath(
-        os.path.join(sandbox_root, safe_session, safe_filename)
-    )
-    if not file_path.startswith(sandbox_root + os.sep):
+    sandbox_dir = os.path.realpath(get_sandbox_workdir(session_id))
+    file_path = os.path.realpath(os.path.join(sandbox_dir, safe_filename))
+    if file_path != sandbox_dir and not file_path.startswith(sandbox_dir + os.sep):
         raise HTTPException(
             status_code = status.HTTP_403_FORBIDDEN,
             detail = "Access denied",

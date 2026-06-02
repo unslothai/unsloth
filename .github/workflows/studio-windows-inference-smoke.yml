@@ -372,6 +372,9 @@ jobs:
 
       - name: Collect llama-server logs
         if: always()
+        # A transient Windows DLL-init crash (0xC0000142) in this diagnostic
+        # copy must not fail an otherwise-green job.
+        continue-on-error: true
         shell: bash
         # Copy llama-server's own stdout/stderr (teed by Studio under
         # ~/.unsloth/studio/logs/llama-server/) into the workspace so
@@ -802,6 +805,9 @@ jobs:
 
       - name: Collect llama-server logs
         if: always()
+        # A transient Windows DLL-init crash (0xC0000142) in this diagnostic
+        # copy must not fail an otherwise-green job.
+        continue-on-error: true
         shell: bash
         # Copy llama-server's own stdout/stderr (teed by Studio under
         # ~/.unsloth/studio/logs/llama-server/) into the workspace so
@@ -1202,6 +1208,9 @@ jobs:
 
       - name: Collect llama-server logs
         if: always()
+        # A transient Windows DLL-init crash (0xC0000142) in this diagnostic
+        # copy must not fail an otherwise-green job.
+        continue-on-error: true
         shell: bash
         # Copy llama-server's own stdout/stderr (teed by Studio under
         # ~/.unsloth/studio/logs/llama-server/) into the workspace so
