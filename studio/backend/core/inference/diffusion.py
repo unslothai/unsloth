@@ -2615,6 +2615,7 @@ def supported_optimization_options() -> dict[str, Any]:
                 "default_scope": DIFFUSION_TORCH_COMPILE_REGIONAL,
                 "default_fullgraph": True,
                 "default_dynamic": True,
+                "default_options": {"triton.cudagraphs": False},
                 "default_when": [
                     "safetensors_bf16",
                     "safetensors_bitsandbytes_4bit_nf4",
@@ -2790,6 +2791,7 @@ def supported_optimization_options() -> dict[str, Any]:
                 "default_scope": DIFFUSION_TORCH_COMPILE_REGIONAL,
                 "default_fullgraph": True,
                 "default_dynamic": True,
+                "default_options": {"triton.cudagraphs": False},
                 "recommended_scope": "denoiser_or_repeated_blocks_only",
                 "backend_load_arg": "torch_compile",
                 "recommended_for": [
@@ -4459,6 +4461,7 @@ class DiffusionBackend:
         )
         effective_torch_compile_fullgraph = torch_compile_fullgraph
         effective_torch_compile_dynamic = torch_compile_dynamic
+        effective_torch_compile_options = torch_compile_options
         if (
             torch_compile is None
             and resolved_torch_compile == DIFFUSION_TORCH_COMPILE_REGIONAL
@@ -4467,13 +4470,15 @@ class DiffusionBackend:
                 effective_torch_compile_fullgraph = True
             if effective_torch_compile_dynamic is None:
                 effective_torch_compile_dynamic = True
+            if effective_torch_compile_options is None:
+                effective_torch_compile_options = {"triton.cudagraphs": False}
         torch_compile_config = {
             "scope": resolved_torch_compile,
             "source": "explicit" if torch_compile is not None else "default",
             "mode": torch_compile_mode,
             "fullgraph": effective_torch_compile_fullgraph,
             "dynamic": effective_torch_compile_dynamic,
-            "options": dict(torch_compile_options or {}),
+            "options": dict(effective_torch_compile_options or {}),
         }
 
         # Round 32 P1 #3: track whether the backend-side
@@ -5377,7 +5382,7 @@ class DiffusionBackend:
                                 mode = torch_compile_mode,
                                 fullgraph = effective_torch_compile_fullgraph,
                                 dynamic = effective_torch_compile_dynamic,
-                                options = torch_compile_options,
+                                options = effective_torch_compile_options,
                             )
                 except Exception:
                     if pipe is not None:

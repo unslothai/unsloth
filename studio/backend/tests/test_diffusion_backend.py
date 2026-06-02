@@ -338,6 +338,9 @@ def test_supported_optimization_options_payload_shape():
     assert recommended["denoiser_torch_compile"]["default_scope"] == "regional"
     assert recommended["denoiser_torch_compile"]["default_fullgraph"] is True
     assert recommended["denoiser_torch_compile"]["default_dynamic"] is True
+    assert recommended["denoiser_torch_compile"]["default_options"] == {
+        "triton.cudagraphs": False,
+    }
     assert recommended["denoiser_torch_compile"]["default_when"] == [
         "safetensors_bf16",
         "safetensors_bitsandbytes_4bit_nf4",
@@ -402,6 +405,9 @@ def test_supported_optimization_options_payload_shape():
     assert compile_options["denoiser_torch_compile"]["default_scope"] == "regional"
     assert compile_options["denoiser_torch_compile"]["default_fullgraph"] is True
     assert compile_options["denoiser_torch_compile"]["default_dynamic"] is True
+    assert compile_options["denoiser_torch_compile"]["default_options"] == {
+        "triton.cudagraphs": False,
+    }
     assert compile_options["denoiser_torch_compile"]["recommended_for"] == [
         "safetensors_bf16",
         "safetensors_bf16_long_session",
@@ -1525,7 +1531,11 @@ def test_load_model_full_repo_uses_safetensors_quantization(monkeypatch):
         "text_encoder_2",
     ]
     assert pipe.transformer.compile_repeated_blocks_calls == [
-        {"fullgraph": True, "dynamic": True}
+        {
+            "fullgraph": True,
+            "dynamic": True,
+            "options": {"triton.cudagraphs": False},
+        }
     ]
     assert status["torch_compile_config"] == {
         "scope": "regional",
@@ -1533,7 +1543,7 @@ def test_load_model_full_repo_uses_safetensors_quantization(monkeypatch):
         "mode": None,
         "fullgraph": True,
         "dynamic": True,
-        "options": {},
+        "options": {"triton.cudagraphs": False},
     }
     assert status["torch_compile_stats"]["compiled_components"][0]["component"] == "transformer"
 
@@ -1551,7 +1561,11 @@ def test_load_model_full_repo_defaults_to_regional_torch_compile(monkeypatch):
 
     pipe = backend._pipe
     assert pipe.transformer.compile_repeated_blocks_calls == [
-        {"fullgraph": True, "dynamic": True}
+        {
+            "fullgraph": True,
+            "dynamic": True,
+            "options": {"triton.cudagraphs": False},
+        }
     ]
     assert pipe.transformer.compile_calls == []
     assert status["torch_compile_config"]["scope"] == "regional"
@@ -1583,7 +1597,11 @@ def test_load_model_cpu_offload_defaults_to_regional_torch_compile(monkeypatch):
     assert backend._cpu_offload_enabled is True
     assert pipe.cpu_offload is True
     assert pipe.transformer.compile_repeated_blocks_calls == [
-        {"fullgraph": True, "dynamic": True}
+        {
+            "fullgraph": True,
+            "dynamic": True,
+            "options": {"triton.cudagraphs": False},
+        }
     ]
     assert status["torch_compile_config"]["scope"] == "regional"
     assert status["torch_compile_config"]["source"] == "default"
