@@ -43,7 +43,7 @@ def _make_protected_app(
     app.add_middleware(
         main_module.MaxBodyMiddleware,
         max_bytes_getter = lambda: max_bytes,
-        protected_prefixes = ("/v1/chat/completions", "/api/train"),
+        protected_prefixes = ("/v1/chat/completions", "/api/settings", "/api/train"),
         upload_passthrough_prefixes = upload_passthrough_prefixes,
         upload_passthrough_max_bytes_getter = upload_passthrough_max_bytes_getter,
     )
@@ -55,6 +55,10 @@ def _make_protected_app(
     @app.post("/api/other")
     async def other(payload: dict):
         return {"ok": True, "unprotected": True}
+
+    @app.put("/api/settings/upload-limit")
+    async def update_upload_limit(payload: dict):
+        return {"ok": True, "limit": payload.get("max_upload_size_mb")}
 
     @app.post("/api/train/upload")
     async def upload(request: Request):
@@ -94,6 +98,16 @@ class TestMaxBodyMiddleware:
         r = c.post("/api/other", json = {"text": "x" * 5000})
         assert r.status_code == 200
         assert r.json()["unprotected"] is True
+
+    def test_settings_put_body_over_cap_rejected(self, main_module):
+        app = _make_protected_app(1024, main_module)
+        c = TestClient(app)
+        r = c.put(
+            "/api/settings/upload-limit",
+            json = {"max_upload_size_mb": 500, "padding": "x" * 5000},
+        )
+        assert r.status_code == 413
+        assert "too large" in r.json()["detail"].lower()
 
     def test_chunked_upload_over_cap_rejected(self, main_module):
         # Regression: declared-Content-Length-only check could be bypassed

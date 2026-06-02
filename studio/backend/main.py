@@ -540,6 +540,7 @@ _BODY_PROTECTED_PREFIXES = (
     "/api/data-recipe",
     "/api/datasets",
     "/api/chat",
+    "/api/settings",
     "/api/train",
     "/api/export",
 )
