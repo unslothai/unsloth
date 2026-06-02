@@ -81,6 +81,7 @@ import {
   Copy01Icon,
   DatabaseIcon,
   Delete02Icon,
+  Download01Icon,
   Edit03Icon,
   Folder01Icon,
   FolderAddIcon,
@@ -98,7 +99,6 @@ import {
   ChevronLeftIcon,
   ChevronRightIcon,
   Columns2Icon,
-  DownloadIcon,
   GlobeIcon,
   HeadphonesIcon,
   MoreHorizontalIcon,
@@ -323,7 +323,7 @@ const GeneratedImageViewportOverlay: FC<{ hideComposer?: boolean }> = ({
                 }
                 aria-label="Download generated image"
               >
-                <DownloadIcon className="size-3.5" />
+                <HugeiconsIcon icon={Download01Icon} className="size-3.5" />
               </Button>
               <Button
                 type="button"
@@ -2053,7 +2053,7 @@ const AssistantActionBar: FC = () => {
         >
           <ActionBarPrimitive.ExportMarkdown asChild={true}>
             <ActionBarMorePrimitive.Item className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground">
-              <DownloadIcon strokeWidth={1.75} className="size-icon" />
+              <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-icon" />
               Export as Markdown
             </ActionBarMorePrimitive.Item>
           </ActionBarPrimitive.ExportMarkdown>

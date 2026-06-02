@@ -15,13 +15,14 @@ import type {
 import { type VariantProps, cva } from "class-variance-authority";
 import {
   CopyIcon,
-  DownloadIcon,
   ImageIcon,
   ImageOffIcon,
   Loader2Icon,
   RefreshCwIcon,
   ShieldAlertIcon,
 } from "lucide-react";
+import { Download01Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type ComponentProps,
   type PropsWithChildren,
@@ -427,7 +428,7 @@ function ImageActions({ part, onRegenerate, className }: ImageActionsProps) {
         aria-label="Download image"
         className="inline-flex size-7 items-center justify-center rounded hover:bg-muted"
       >
-        <DownloadIcon className="size-4" />
+        <HugeiconsIcon icon={Download01Icon} className="size-4" />
       </button>
       <button
         type="button"

@@ -15,11 +15,12 @@ import { cn } from "@/lib/utils";
 import {
   CheckIcon,
   CopyIcon,
-  DownloadIcon,
   EyeIcon,
   Maximize2Icon,
   XIcon,
 } from "lucide-react";
+import { Download01Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type KeyboardEvent,
   useEffect,
@@ -266,7 +267,7 @@ export function ArtifactSurface({
             onClick={() => downloadTextFile(filename, artifact.code)}
             aria-label="Download artifact HTML"
           >
-            <DownloadIcon className="size-4" />
+            <HugeiconsIcon icon={Download01Icon} className="size-4" />
           </Button>
           <Button
             type="button"

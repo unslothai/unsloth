@@ -19,7 +19,7 @@ import {
   useChatRuntimeStore,
 } from "@/features/chat";
 import { useT } from "@/i18n";
-import { Delete02Icon, Download02Icon } from "@hugeicons/core-free-icons";
+import { Delete02Icon, Download01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useState } from "react";
 import { SettingsRow } from "../components/settings-row";
@@ -165,7 +165,7 @@ export function ChatTab() {
             onClick={handleExport}
             disabled={exporting || count === 0}
           >
-            <HugeiconsIcon icon={Download02Icon} className="size-3.5 mr-1.5" />
+            <HugeiconsIcon icon={Download01Icon} className="size-3.5 mr-1.5" />
             {exporting
               ? t("settings.chat.exportingAction")
               : t("settings.chat.exportAction")}

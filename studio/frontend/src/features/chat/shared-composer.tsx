@@ -29,7 +29,6 @@ import {
   ArrowUpIcon,
   CheckIcon,
   Columns2Icon,
-  DownloadIcon,
   GlobeIcon,
   HeadphonesIcon,
   PlusIcon,
@@ -40,6 +39,7 @@ import {
   AttachmentIcon,
   CodeIcon,
   DatabaseIcon,
+  Download01Icon,
   Folder01Icon,
   FolderAddIcon,
   Image03Icon,
@@ -1385,7 +1385,7 @@ export function SharedComposer({
               }
             >
               <PillGlyph>
-                <DownloadIcon className="size-3.5" />
+                <HugeiconsIcon icon={Download01Icon} className="size-3.5" />
               </PillGlyph>
               <span>Fetch</span>
             </button>
