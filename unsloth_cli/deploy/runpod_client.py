@@ -31,8 +31,7 @@ POLL_INTERVAL_S = 3
 STOCK_RANK = {"High": 3, "Medium": 2, "Low": 1}
 AVAILABILITY_WORKERS = 16
 
-# A network volume hosts the model plus whatever Studio writes at runtime on the
-# same /workspace mount, so size it with headroom over the model's on-disk size.
+# Volume holds the model + Studio's runtime writes on /workspace, so add headroom.
 VOLUME_HEADROOM_FACTOR = 1.3
 VOLUME_MIN_GB = 20
 
@@ -139,9 +138,8 @@ class RunPod(Provider):
 
     def _global_stock(self) -> dict[str, str]:
         """`{gpu_id: stock_band}` for secure-cloud availability across the whole
-        catalog, in a single query, so the picker can show which GPUs actually
-        have capacity. Best-effort: returns {} if the lookup fails, so listing
-        still works (just without the stock column)."""
+        catalog in one query, so the picker can show which GPUs have capacity.
+        Best-effort: returns {} if the lookup fails, so listing still works."""
         try:
             from runpod.api.graphql import run_graphql_query
 
@@ -154,26 +152,20 @@ class RunPod(Provider):
         out: dict[str, str] = {}
         for r in rows:
             band = (r.get("lowestPrice") or {}).get("stockStatus")
-            # Only record bands that mean real capacity (High/Medium/Low). RunPod
-            # also returns out-of-stock statuses; recording those as a truthy stock
-            # makes `--yes` auto-pick a GPU that can't actually schedule.
+            # Only real-capacity bands: recording out-of-stock as truthy would make
+            # `--yes` auto-pick a GPU that can't actually schedule.
             if r.get("id") and band in STOCK_RANK:
                 out[r["id"]] = band
         return out
 
     def datacenters_for_gpu(self, gpu_id: str) -> list[tuple[str, str]]:
-        """`(datacenter_id, stock_status)` for datacenters that currently have
-        secure-cloud capacity for `gpu_id`, best availability first. Empty if the
-        GPU is unschedulable everywhere right now. Used to place a network-volume
-        deploy where the pod can actually start, instead of a fixed datacenter
-        whose stock comes and goes.
+        """`(datacenter_id, stock_status)` for datacenters with secure-cloud
+        capacity for `gpu_id`, best first; empty if unschedulable everywhere.
 
-        Network volumes only exist in secure cloud, so we ask per datacenter with
-        `secureCloud: true`. We also restrict to datacenters that actually support
-        network volumes (`storageSupport`) -- some have GPU stock but can't host a
-        volume, and creating one there fails. The catalog (`get_gpus`) is global
-        and says nothing about per-datacenter stock, hence the sweep."""
-        self._sdk()  # ensure authenticated
+        Network volumes only exist in secure cloud and only in datacenters that
+        support them (`storageSupport`), so we sweep per datacenter -- the global
+        catalog (`get_gpus`) says nothing about per-datacenter stock."""
+        self._sdk()
         try:
             from runpod.api.graphql import run_graphql_query
         except Exception as e:
@@ -234,9 +226,8 @@ class RunPod(Provider):
             support_public_ip = True,
             env = env,
         )
-        # A staged model rides a network volume, which *is* the /workspace volume
-        # and is pinned to a datacenter: don't also request a per-pod volume, and
-        # force the pod into the volume's datacenter (staged.placement).
+        # A staged model rides its network volume (the /workspace mount, pinned to a
+        # datacenter): skip the per-pod volume and force the pod into that datacenter.
         if staged and staged.storage_id:
             kwargs["network_volume_id"] = staged.storage_id
             kwargs["data_center_id"] = staged.placement
@@ -252,7 +243,7 @@ class RunPod(Provider):
         return pod["id"]
 
     def wait_ready(self, instance_id: str, timeout_s: int) -> None:
-        # `desiredStatus` flips to RUNNING right after create_pod returns; the
+        # desiredStatus flips to RUNNING right after create_pod returns; the
         # container is actually up only once `runtime` is populated.
         sdk = self._sdk()
         deadline = time.time() + timeout_s
@@ -260,8 +251,8 @@ class RunPod(Provider):
             try:
                 pod = sdk.get_pod(instance_id) or {}
             except Exception:
-                # A transient SDK/network blip mid-poll must not abort the wait and
-                # orphan a billing pod -- keep polling until the deadline.
+                # A transient blip mid-poll must not orphan a billing pod -- keep
+                # polling until the deadline.
                 time.sleep(POLL_INTERVAL_S)
                 continue
             status = pod.get("desiredStatus")
@@ -286,15 +277,12 @@ class RunPod(Provider):
                     host = p["ip"],
                     port = int(p["publicPort"]),
                 )
-        # Proxy fallback: `ssh <pod_id>@ssh.runpod.io`. Requires a pubkey on
-        # the user's account.
+        # Proxy fallback: `ssh <pod_id>@ssh.runpod.io`; needs a pubkey on the account.
         return SshTarget(user = instance_id, host = "ssh.runpod.io", port = 22)
 
     def endpoint_url(self, instance_id: str, http_port: int) -> str:
-        # Always the TLS proxy, never the pod's direct IP. The deploy bootstrap and
-        # the user's Studio login send the admin password over this URL, and RunPod
-        # exposes the direct pod IP over plaintext http only -- the proxy terminates
-        # TLS, so the credentials stay encrypted.
+        # Always the TLS proxy, never the pod's plaintext-http direct IP: the admin
+        # password travels over this URL and must stay encrypted.
         return f"https://{instance_id}-{http_port}.proxy.runpod.net"
 
     def pause(self, instance_id: str) -> None:
@@ -309,8 +297,6 @@ class RunPod(Provider):
         except Exception as e:
             raise DeployError(f"RunPod terminate_pod failed: {e}") from e
 
-    # --- local-model staging --------------------------------------------------
-
     def stage_local_model(
         self,
         local_path: Path,
@@ -318,9 +304,8 @@ class RunPod(Provider):
         gpu: Gpu,
         log: Callable[[str], None] = lambda _msg: None,
     ) -> StagedModel:
-        """Create a network volume, upload `local_path` onto it over S3, and
-        return the on-volume path the pod loads from. The pod must be pinned to
-        the returned `placement` (the volume's datacenter)."""
+        """Create a network volume, upload `local_path` onto it over S3, and return
+        the on-volume path the pod loads from (pinned to the returned `placement`)."""
         if not (self._s3_access_key and self._s3_secret_key):
             raise DeployError(
                 "Uploading a local model needs RunPod S3 credentials.\n"
@@ -331,8 +316,7 @@ class RunPod(Provider):
 
         datacenter = self._datacenter or self._auto_datacenter(gpu, log)
         size_gb = _volume_size_gb(local_path)
-        # Use the unresolved name so it matches what we upload (runpod_storage keys
-        # a single file under its own `local_path.name`); fall back to the resolved
+        # Use the unresolved name to match what we upload; fall back to the resolved
         # name for inputs like "." that have no trailing component.
         model_name = local_path.name or local_path.resolve().name or "model"
 
@@ -345,10 +329,9 @@ class RunPod(Provider):
         )
         log(f"  volume id: {volume_id}")
 
-        # A directory uploads as uploads/<name>/<relpath>; a single file uploads as
-        # uploads/<name> (its own basename is the relpath). Folding the name into
-        # the prefix for a file too would double-nest it (uploads/<name>/<name>),
-        # and Studio -- which loads /workspace/uploads/<name> -- wouldn't find it.
+        # Dir -> uploads/<name>/<relpath>; single file -> uploads/<name>. Folding
+        # <name> into the prefix for a file would double-nest it and Studio (which
+        # loads /workspace/uploads/<name>) wouldn't find it.
         prefix = f"uploads/{model_name}" if local_path.is_dir() else "uploads"
         log(f"Uploading {local_path} to the volume over S3 (stays in RunPod)...")
         try:
@@ -361,14 +344,13 @@ class RunPod(Provider):
                 prefix = prefix,
             )
         except BaseException:
-            # Any failure -- a DeployError, an unexpected exception, or a Ctrl-C
-            # mid-upload -- must not leave the (billing) volume behind, possibly
-            # holding a half-finished upload. Delete it, then re-raise the original.
+            # Any failure -- including a Ctrl-C mid-upload -- must not leave the
+            # billing volume behind. Delete it, then re-raise the original.
             try:
                 runpod_storage.delete_network_volume(self, volume_id)
             except Exception:
-                # Deletion itself failed: tell the user how to remove it so it
-                # doesn't keep billing, but never let that mask the original error.
+                # Deletion failed too: tell the user how to remove it, but never
+                # let that mask the original error.
                 log(
                     f"  warning: couldn't delete network volume {volume_id} after a "
                     f"failed upload; it may keep billing. Remove it with:\n"
@@ -387,8 +369,8 @@ class RunPod(Provider):
         runpod_storage.delete_network_volume(self, storage_id)
 
     def _auto_datacenter(self, gpu: Gpu, log: Callable[[str], None]) -> str:
-        """Pick the datacenter with the most capacity for `gpu` right now, since
-        a fixed default goes stale as stock moves."""
+        """Pick the datacenter with the most capacity for `gpu` right now, since a
+        fixed default goes stale as stock moves."""
         log(f"Finding a datacenter with capacity for {gpu.name}...")
         ranked = self.datacenters_for_gpu(gpu.id)
         if not ranked:
@@ -403,16 +385,14 @@ class RunPod(Provider):
     def _sdk(self):
         if self._sdk_mod is None:
             raise DeployError("RunPod is not authenticated. Call auth() first.")
-        # The runpod SDK reads its key from a module-level global, so a second
-        # authenticated instance would otherwise hijack this one's calls. Re-assert
-        # ours right before every use so each call runs under its own key.
+        # The SDK reads its key from a module-level global, so re-assert ours before
+        # every use in case another authenticated instance changed it.
         self._sdk_mod.api_key = self._api_key
         return self._sdk_mod
 
 
 def _volume_size_gb(local: Path) -> int:
-    """Volume size for a model: its on-disk size + headroom for what Studio
-    writes at runtime on the same /workspace volume."""
+    """Volume size for a model: on-disk size + headroom for Studio's runtime writes."""
     total = 0
     if local.is_dir():
         for p in local.rglob("*"):

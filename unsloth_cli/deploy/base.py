@@ -5,9 +5,8 @@
 
 The command layer (commands/deploy.py) talks only to `Provider`, so adding a
 cloud means implementing it in a new ``<name>_client.py`` and registering it in
-``provider.py``. The required methods are few; SSH, pausing, and local-model
-upload are opt-in capabilities a provider declares with a flag, so a cloud that
-lacks them still works for Hugging Face models.
+``provider.py``. SSH, pausing, and local-model upload are opt-in capabilities a
+provider declares with a flag, so a cloud that lacks them still works.
 """
 
 from __future__ import annotations
@@ -20,8 +19,7 @@ from typing import Callable, Optional
 from unsloth_cli.deploy import DeployError, Gpu, SshTarget, StagedModel
 
 
-# Whether an option is needed to authenticate (API tokens, always) or only to
-# upload a local model (storage creds).
+# Whether an option is needed to authenticate (always) or only to upload a local model.
 NEEDED_FOR_AUTH = "auth"
 NEEDED_FOR_LOCAL_MODEL = "local_model"
 
@@ -57,8 +55,6 @@ class Provider(ABC):
     supports_pause: bool = False         # pause() suspends without terminating
     supports_local_model: bool = False   # stage_local_model() uploads local weights
 
-    # --- credentials / configuration -----------------------------------------
-
     @classmethod
     def option_schema(cls) -> list[Option]:
         """Options this provider reads. Default: none (auth uses ambient creds)."""
@@ -69,14 +65,10 @@ class Provider(ABC):
         """Authenticate from resolved `options` (keyed by `Option.key`). Raise
         DeployError if a credential is missing or the SDK isn't installed."""
 
-    # --- GPU catalog ----------------------------------------------------------
-
     @abstractmethod
     def list_gpus(self, min_vram_gb: int = 0) -> list[Gpu]:
         """On-demand GPUs with at least `min_vram_gb` of VRAM, cheapest first.
         Enumerate what the cloud actually offers -- no hardcoded allow/denylist."""
-
-    # --- compute lifecycle ----------------------------------------------------
 
     @abstractmethod
     def create_instance(
@@ -111,13 +103,9 @@ class Provider(ABC):
         """Suspend without destroying (only when `supports_pause`)."""
         raise _unsupported(self, "pausing an instance", "Use terminate instead.")
 
-    # --- optional: SSH --------------------------------------------------------
-
     def get_ssh(self, instance_id: str) -> SshTarget:
         """SSH target for the instance (only when `supports_ssh`)."""
         raise _unsupported(self, "SSH access")
-
-    # --- optional: local-model staging ---------------------------------------
 
     def stage_local_model(
         self,

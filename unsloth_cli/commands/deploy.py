@@ -117,8 +117,8 @@ def run(
         model = _pick_model()
     need_local = _is_local_model(model)
 
-    # A local model needs the provider's storage capability; bail before we
-    # resolve creds or create anything billing.
+    # A local model needs the provider's storage capability; bail before we resolve
+    # creds or create anything billing.
     if need_local and not provider_cls.supports_local_model:
         _fail(
             f"{provider_name} can't upload a local model.\n"
@@ -147,8 +147,7 @@ def run(
         raise typer.Exit(0)
 
     # Stage a local model only after the user commits: creating the volume and
-    # uploading multi-GB weights costs time and money, so it must not run before
-    # the confirmation prompt.
+    # uploading multi-GB weights costs time and money.
     staged: Optional[StagedModel] = None
     if need_local:
         staged = _stage_local_model(provider, Path(model).expanduser(), chosen)
@@ -207,11 +206,6 @@ def delete_storage(
         _fail(str(e))
 
 
-# ---------------------------------------------------------------------------
-# Provider auth + options
-# ---------------------------------------------------------------------------
-
-
 def _provider_cls(name: str) -> type[Provider]:
     if name not in PROVIDERS:
         _fail(f"Unknown provider '{name}'. Available: {', '.join(PROVIDERS)}.", code = 2)
@@ -244,15 +238,12 @@ def _authenticate(
     resolved: dict[str, str] = dict(saved)
 
     for opt in provider_cls.option_schema():
-        # An option only needed to upload a local model isn't required when we
-        # aren't staging one -- so don't prompt or fail for it. But still resolve
-        # and persist any value the user supplied explicitly (env / --provider-opt
-        # / saved config), so a later local deploy reuses it instead of having it
-        # silently dropped here.
+        # An option only needed for a local model isn't required when we aren't
+        # staging one, so don't prompt or fail for it -- but still resolve and
+        # persist any value the user supplied, so a later local deploy reuses it.
         deferred = opt.needed_for == NEEDED_FOR_LOCAL_MODEL and not need_local
-        # --provider-opt wins outright when present (even if the user set it empty
-        # to deliberately clear it), per the documented precedence; only fall back
-        # to env then saved config when no override was passed at all.
+        # --provider-opt wins outright when present (even if set empty to clear it);
+        # only fall back to env then saved config when no override was passed.
         if opt.key in overrides:
             value = overrides[opt.key]
         else:
@@ -298,11 +289,6 @@ def _persist_options(
         typer.echo(f"  saved {provider_cls.name} settings to {path}")
 
 
-# ---------------------------------------------------------------------------
-# Model discovery + pickers
-# ---------------------------------------------------------------------------
-
-
 def _model_kind(p: Path) -> Optional[str]:
     if (p / "adapter_config.json").is_file():
         return "LoRA adapter"
@@ -317,10 +303,9 @@ def _model_kind(p: Path) -> Optional[str]:
 
 
 def _discover_local_models(cwd: Optional[Path] = None) -> list[tuple[Path, str]]:
-    """Find model directories under `cwd`, the common output dirs, and the
-    Studio output/export roots. Looks one level into each so HF Trainer
-    checkpoints and Studio runs show up individually.
-    """
+    """Find model directories under `cwd`, the common output dirs, and Studio's
+    output/export roots, looking one level into each so checkpoints and Studio
+    runs show up individually."""
     cwd = (cwd or Path.cwd()).resolve()
     found: list[tuple[Path, str]] = []
     seen: set[Path] = set()
@@ -354,8 +339,8 @@ def _discover_local_models(cwd: Optional[Path] = None) -> list[tuple[Path, str]]
 
 
 def _studio_output_roots() -> list[Path]:
-    """Studio's run and export dirs, which live outside the cwd. We ask the
-    backend where they are rather than hardcode a path; [] if it isn't installed."""
+    """Studio's run and export dirs, which live outside the cwd. We ask the backend
+    where they are rather than hardcode a path; [] if it isn't installed."""
     added: Optional[str] = None
     try:
         from unsloth_cli.commands.studio import _find_run_py
@@ -367,12 +352,11 @@ def _studio_output_roots() -> list[Path]:
         backend = str(run_py.parent)
         if backend not in sys.path:
             sys.path.insert(0, backend)
-            added = backend  # remember that *we* added it, to undo if import fails
+            added = backend  # remember we added it, to undo if the import fails
         from utils.paths import outputs_root, exports_root
 
         return [outputs_root(), exports_root()]
     except Exception:
-        # Don't leave a half-applied sys.path entry behind when the import fails.
         if added is not None:
             try:
                 sys.path.remove(added)
@@ -443,9 +427,8 @@ def _pick_gpu(
         in_stock = next((g for g in options if g.stock), None)
         if in_stock is not None:
             return in_stock
-        # Stock is best-effort: an empty signal can mean "sold out" or just "the
-        # lookup failed". Fall back to the cheapest so --yes still works, but warn
-        # so a capacity failure at create time isn't a surprise.
+        # Stock is best-effort: an empty signal can mean "sold out" or "lookup
+        # failed". Fall back to the cheapest so --yes still works, but warn.
         typer.echo(
             "  warning: couldn't confirm any GPU has stock; trying the cheapest "
             f"({options[0].name}). If it fails to start, retry or pass --gpu.",
@@ -473,14 +456,9 @@ def _pick_gpu(
     return shown[idx]
 
 
-# ---------------------------------------------------------------------------
-# Deploy
-# ---------------------------------------------------------------------------
-
-
 def _stage_local_model(provider: Provider, local: Path, gpu: Gpu) -> StagedModel:
-    """Hand the local model to the provider's storage, streaming its progress to
-    the console. The provider cleans up after itself on failure."""
+    """Hand the local model to the provider's storage, streaming progress to the
+    console. The provider cleans up after itself on failure."""
     try:
         return provider.stage_local_model(local, gpu = gpu, log = typer.echo)
     except DeployError as e:
@@ -530,7 +508,7 @@ def _deploy(
             staged = staged,
         )
     except DeployError as e:
-        # Capacity can vanish between staging and launch. Delete the storage so it
+        # Capacity can vanish between staging and launch; delete the storage so it
         # doesn't keep billing, then point at the fix.
         if storage_id:
             _delete_storage_quietly(provider, storage_id)
@@ -590,10 +568,9 @@ def _serve_model(
         new_password = secrets.token_urlsafe(18)
         typer.echo("Rotating bootstrap password and minting credential...")
         client.login(username = DEFAULT_ADMIN_USERNAME, password = bootstrap_password)
-        # Record the new password *before* the change call. If the server applies
-        # the change but the response is lost (dropped connection, missing token in
-        # the reply, etc.), the error path below must still surface it -- otherwise
-        # the user is locked out of a billing instance whose password has rotated.
+        # Record the new password before the change call: if the server applies it
+        # but the response is lost, the error path below must still surface it,
+        # else the user is locked out of a billing instance.
         rotated_password = new_password
         client.change_password(current = bootstrap_password, new = new_password)
         api_key, credential_note = _mint_credential(client)
@@ -610,9 +587,9 @@ def _serve_model(
             storage_id = storage_id,
         )
     except Exception as e:
-        # Catch broadly, not just DeployError: a KeyError, a JSONDecodeError, or any
-        # other surprise during the bootstrap must still print the stop hint (and the
-        # rotated password) so the user never loses a billing instance silently.
+        # Catch broadly, not just DeployError: any surprise during bootstrap must
+        # still print the stop hint (and the rotated password) so the user never
+        # loses a billing instance silently.
         _fail(_stop_hint(
             e, instance.id,
             provider_name = instance.provider_name,
@@ -622,10 +599,10 @@ def _serve_model(
 
 
 def _is_local_model(model: Optional[str]) -> bool:
-    """True if `--model` points at something on disk to upload, rather than a
-    Hugging Face id. An explicit path (absolute, ./, ../, ~) always counts; a bare
-    name or "org/name" counts only if it actually looks like a model on disk, so a
-    Hugging Face id isn't shadowed by a coincidentally same-named local entry."""
+    """True if `--model` points at something on disk to upload rather than a
+    Hugging Face id. An explicit path always counts; a bare name or "org/name"
+    counts only if it actually looks like a model on disk, so an HF id isn't
+    shadowed by a coincidentally same-named local entry."""
     if model is None:
         return False
     path = Path(model).expanduser()
@@ -661,14 +638,13 @@ def _storage_billing_note(storage_id: Optional[str], provider_name: str) -> str:
 
 
 def _mint_credential(client: StudioClient) -> tuple[str, str]:
-    """Mint a permanent API key, falling back to the login JWT on older images
-    that predate POST /api/auth/api-keys (they 404/405). Any other failure
-    propagates to the caller's stop-the-instance handler."""
+    """Mint a permanent API key, falling back to the login JWT on older images that
+    predate POST /api/auth/api-keys (404/405). Any other failure propagates."""
     try:
         return client.create_api_key(name = f"deploy-{int(time.time())}"), ""
     except DeployError as e:
-        # Match the response *status* (the "-> 404:" / "-> 405:" the client emits),
-        # not a bare " 404" that could also appear in an unrelated error body.
+        # Match the response status the client emits ("-> 404:" / "-> 405:"), not a
+        # bare " 404" that could also appear in an unrelated error body.
         if any(f"-> {code}:" in str(e) for code in (404, 405)):
             note = (
                 "  (JWT credential, expires. Rebake the image with a newer\n"
@@ -755,9 +731,8 @@ def _stop_hint(
 
 
 def _deploy_cmd(verb: str, arg: str, provider_name: str) -> str:
-    """A copy-pasteable `unsloth deploy <verb> <arg>` hint, carrying --provider
-    when the instance isn't on the default provider so the command targets the
-    right one (without it, stop/delete-storage would hit the default provider)."""
+    """A copy-pasteable `unsloth deploy <verb> <arg>` hint, carrying --provider when
+    the instance isn't on the default provider so the command targets the right one."""
     flag = "" if provider_name == DEFAULT_PROVIDER else f" --provider {provider_name}"
     return f"unsloth deploy {verb}{flag} {arg}"
 

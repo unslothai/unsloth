@@ -19,9 +19,7 @@ class Gpu:
     name: str
     vram_gb: int
     cost_per_hour_usd: float
-    # Optional, provider-defined availability hint shown in the picker (e.g.
-    # RunPod's High/Medium/Low band). None when the provider has no live stock
-    # signal -- e.g. a fixed-capacity cloud like Modal.
+    # Provider availability hint for the picker; None if there's no live stock signal.
     stock: Optional[str] = None
 
 
@@ -34,9 +32,8 @@ class SshTarget:
 
 @dataclass(frozen = True)
 class StagedModel:
-    """A local model a provider has placed on its own storage, ready for the
-    instance to read. Returned by Provider.stage_local_model so the command
-    layer never touches provider storage internals (volumes, S3, datacenters)."""
+    """A local model a provider has placed on its own storage for the instance to
+    read, so the command layer never touches storage internals (volumes, S3)."""
     model_path: str                  # path Studio loads from inside the container
     storage_id: Optional[str]        # provider handle to delete when done, or None
     summary: str                     # one-line note for the deploy preview/hints

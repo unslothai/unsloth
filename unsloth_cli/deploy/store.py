@@ -44,16 +44,11 @@ def save(provider_name: str, options: dict[str, str]) -> Path:
     data[provider_name] = {k: v for k, v in options.items() if v}
     payload = json.dumps(data, indent = 2, sort_keys = True)
 
-    # Create the file 0600 from the start and rename it into place atomically.
-    # Writing the path directly and chmod-ing afterwards leaves a window where the
-    # tokens/secrets are world-readable under the default umask, and a crash
-    # mid-write could truncate the existing config.
+    # Write 0600 then atomic-rename so secrets are never briefly world-readable.
     tmp = path.with_name(path.name + ".tmp")
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, stat.S_IRUSR | stat.S_IWUSR)
     try:
-        # Force 0600 on the descriptor before writing any secrets: the create-mode
-        # above only applies to a freshly created file, so a stale .tmp left by a
-        # previous crash could otherwise carry looser, pre-existing permissions.
+        # Re-assert 0600 in case a stale .tmp from a crash carried looser perms.
         os.fchmod(fd, stat.S_IRUSR | stat.S_IWUSR)
         with os.fdopen(fd, "w", encoding = "utf-8") as f:
             f.write(payload)
