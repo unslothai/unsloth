@@ -932,6 +932,11 @@ shell.Run cmd, 0, False
     # commands and redirect to the Microsoft Store instead of real Python.
     # Returns @{ Blocking = $true/$false; Aliases = @("python.exe", ...) }
     function Test-AppExecutionAliasesBlocking {
+        # Check if LOCALAPPDATA is available (may be null in service/CI environments)
+        if (-not $env:LOCALAPPDATA) {
+            return @{ Blocking = $false; Aliases = @() }
+        }
+
         $windowsAppsPath = Join-Path $env:LOCALAPPDATA "Microsoft\WindowsApps"
         $blockingAliases = @()
 
@@ -946,25 +951,26 @@ shell.Run cmd, 0, False
             }
         }
 
-        # Check if WindowsApps appears before real Python in PATH
-        $pathDirs = $env:PATH -split ';'
-        $windowsAppsIndex = -1
-        $realPythonIndex = -1
-        for ($i = 0; $i -lt $pathDirs.Count; $i++) {
-            $dir = $pathDirs[$i].Trim()
-            if ($dir -like "*\WindowsApps*" -or $dir -like "*\WindowsApps") {
-                if ($windowsAppsIndex -eq -1) { $windowsAppsIndex = $i }
-            }
-            # Check for common Python installation paths
-            if ($dir -match '\\Python3\d+\\?' -or $dir -match '\\Python\\Python3\d+') {
-                if ($realPythonIndex -eq -1) { $realPythonIndex = $i }
+        # No stubs found - not blocking
+        if ($blockingAliases.Count -eq 0) {
+            return @{ Blocking = $false; Aliases = @() }
+        }
+
+        # Use Get-Command to check what python/python3 actually resolves to.
+        # This approach works regardless of Python installation method
+        # (uv, pyenv-win, custom paths, etc.) unlike hardcoded PATH parsing.
+        foreach ($name in @("python", "python3")) {
+            $cmd = Get-Command $name -ErrorAction SilentlyContinue
+            if ($cmd -and $cmd.Source) {
+                # If the first resolved command is NOT in WindowsApps, aliases aren't blocking
+                if ($cmd.Source -notlike "*\WindowsApps\*") {
+                    return @{ Blocking = $false; Aliases = $blockingAliases }
+                }
             }
         }
 
-        # Aliases are blocking if: stubs exist AND (no real Python OR WindowsApps comes first)
-        $isBlocking = ($blockingAliases.Count -gt 0) -and (($realPythonIndex -eq -1) -or ($windowsAppsIndex -ne -1 -and $windowsAppsIndex -lt $realPythonIndex))
-
-        return @{ Blocking = $isBlocking; Aliases = $blockingAliases; WindowsAppsIndex = $windowsAppsIndex; RealPythonIndex = $realPythonIndex }
+        # Stubs exist and either no Python found or first result is WindowsApps
+        return @{ Blocking = $true; Aliases = $blockingAliases }
     }
 
     function Show-AppAliasWarning {
@@ -1048,6 +1054,9 @@ shell.Run cmd, 0, False
             if ($preAliasCheck.Blocking) {
                 Write-Host "        App Execution Aliases may be blocking Python detection." -ForegroundColor Yellow
                 Write-Host "        Disable them first (see instructions above), then either:" -ForegroundColor Yellow
+                Write-Host "        1. Re-run this installer to retry detection" -ForegroundColor White
+                Write-Host "        2. Or install Python $PythonVersion from https://www.python.org/downloads/" -ForegroundColor White
+                Write-Host "           (make sure 'Add Python to PATH' is checked)" -ForegroundColor White
             } else {
                 Write-Host "        Install Python $PythonVersion from https://www.python.org/downloads/" -ForegroundColor Yellow
                 Write-Host "        and re-run this installer (make sure 'Add Python to PATH' is checked)." -ForegroundColor Yellow
@@ -1094,6 +1103,10 @@ shell.Run cmd, 0, False
             $aliasCheck = Test-AppExecutionAliasesBlocking
             if ($aliasCheck.Blocking) {
                 Show-AppAliasWarning -Aliases $aliasCheck.Aliases
+                Write-Host "        After disabling the aliases, install Python $PythonVersion manually:" -ForegroundColor Yellow
+                Write-Host "        https://www.python.org/downloads/" -ForegroundColor Cyan
+                Write-Host "        Make sure to check 'Add Python to PATH' during installation." -ForegroundColor Yellow
+                Write-Host "        Then re-run this installer." -ForegroundColor Yellow
             } else {
                 Write-Host "        Please install Python $PythonVersion manually from https://www.python.org/downloads/" -ForegroundColor Yellow
                 Write-Host "        Make sure to check 'Add Python to PATH' during installation." -ForegroundColor Yellow
