@@ -1412,6 +1412,31 @@ def test_load_model_rejects_safetensors_quantization_with_gguf(monkeypatch):
         )
 
 
+def test_build_safetensors_quantization_preflights_torchao_int4_mslk(
+    monkeypatch,
+):
+    import core.inference.diffusion as d
+
+    fake_diffusers = types.SimpleNamespace(
+        PipelineQuantizationConfig = lambda **kwargs: kwargs,
+        TorchAoConfig = lambda config: ("diffusers_torchao", config),
+    )
+    real_find_spec = d.importlib.util.find_spec
+    monkeypatch.setattr(
+        d.importlib.util,
+        "find_spec",
+        lambda name: None if name == "mslk" else real_find_spec(name),
+    )
+
+    with pytest.raises(RuntimeError, match = "mslk"):
+        d._build_safetensors_pipeline_quantization_config(
+            fake_diffusers,
+            "torchao_int4_weight_only",
+            ["transformer"],
+            "fake_dtype",
+        )
+
+
 def test_load_model_ernie_gguf_uses_state_dict_fallback(monkeypatch):
     fake = _install_fake_diffusers(monkeypatch)
     import core.inference.diffusion as d

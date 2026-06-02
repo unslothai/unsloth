@@ -35,6 +35,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import gc
+import importlib.util
 import io
 import os
 import re
@@ -2988,11 +2989,18 @@ def _safetensors_quantization_components(
 
 
 def _torchao_weight_only_config(quantization: str) -> Any:
-    from torchao.quantization import Int4WeightOnlyConfig, Int8WeightOnlyConfig
-
     if quantization == DIFFUSION_SAFETENSORS_QUANT_TORCHAO_INT8_WEIGHT_ONLY:
+        from torchao.quantization import Int8WeightOnlyConfig
+
         return Int8WeightOnlyConfig()
     if quantization == DIFFUSION_SAFETENSORS_QUANT_TORCHAO_INT4_WEIGHT_ONLY:
+        if importlib.util.find_spec("mslk") is None:
+            raise RuntimeError(
+                "TorchAO int4 safetensors quantization requires mslk >= 1.0.0. "
+                "Install mslk or use torchao_int8_weight_only / bitsandbytes_4bit_nf4."
+            )
+        from torchao.quantization import Int4WeightOnlyConfig
+
         return Int4WeightOnlyConfig()
     raise ValueError(f"Unsupported torchao safetensors quantization: {quantization}")
 
