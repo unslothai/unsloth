@@ -57,9 +57,40 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             ON rag_vectors(scope);
         CREATE INDEX IF NOT EXISTS idx_rag_vectors_scope_doc
             ON rag_vectors(scope, document_id);
+        CREATE VIRTUAL TABLE IF NOT EXISTS rag_chunks_fts USING fts5(
+            text,
+            chunk_id UNINDEXED,
+            scope UNINDEXED,
+            tokenize = 'porter unicode61'
+        );
         """
     )
+    _backfill_fts(conn)
     conn.commit()
+
+
+def _backfill_fts(conn: sqlite3.Connection) -> None:
+    """One-time: seed FTS from existing vectors for rag.db files created before
+    FTS5 replaced the on-disk bm25s index. Runs only when FTS is empty but
+    vectors exist; idempotent thereafter."""
+    fts_seeded = conn.execute(
+        "SELECT 1 FROM rag_chunks_fts LIMIT 1"
+    ).fetchone()
+    if fts_seeded is not None:
+        return
+    has_vectors = conn.execute("SELECT 1 FROM rag_vectors LIMIT 1").fetchone()
+    if has_vectors is None:
+        return
+    conn.execute(
+        """
+        INSERT INTO rag_chunks_fts (text, chunk_id, scope)
+        SELECT json_extract(payload_json, '$.text'), chunk_id, scope
+        FROM rag_vectors
+        WHERE kind IN ('text', 'caption')
+          AND json_extract(payload_json, '$.text') IS NOT NULL
+        """
+    )
+    logger.info("RAG FTS5 backfilled from existing vectors")
 
 
 def get_rag_connection() -> sqlite3.Connection:

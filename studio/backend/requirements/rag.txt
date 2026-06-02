@@ -9,10 +9,9 @@
 # adds vector functions (vec_distance_cosine, serialize_float32, vec0
 # virtual tables). The studio loads it into a dedicated rag.db file and
 # stores vectors as BLOB columns alongside the RAG metadata — no separate
-# vector server, no second client library. bm25s persists per-scope
-# lexical indexes to disk.
+# vector server, no second client library. The lexical index lives in the
+# same rag.db as a SQLite FTS5 virtual table (built-in, no extra dependency).
 sqlite-vec>=0.1.5
-bm25s>=0.2
 
 # Image preprocessing helpers required by Qwen3-VL-Embedding-2B (the
 # multimodal embedder). Not used in text-only mode.

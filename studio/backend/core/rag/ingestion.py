@@ -28,7 +28,7 @@ from utils.rag.config import (
     RAG_EMBEDDING_MODEL,
 )
 
-from . import bm25, embeddings, vector_store
+from . import embeddings, vector_store
 from .vector_store import kb_scope, thread_scope
 
 logger = get_logger(__name__)
@@ -297,17 +297,18 @@ def _update_document_row(document_id: str, **fields: Any) -> None:
         conn.commit()
 
 
-def _insert_chunks_and_collect_for_bm25(
+def _insert_chunks(
     document_id: str,
     scope: str,
     first_index: int,
     chunks_meta: list[dict],
     vectors: list[list[float]],
 ) -> list[dict]:
-    """Insert chunks into sqlite + vector_store; return [{id, text}] for BM25."""
+    """Insert chunks into sqlite + vector_store (which also indexes them into
+    FTS5); return [{id, text}] of the text chunks for the completion count."""
     rows: list[tuple] = []
     points: list[dict] = []
-    bm25_rows: list[dict] = []
+    text_rows: list[dict] = []
     pair_groups: dict[str, list[str]] = {}
 
     for offset, (meta, vec) in enumerate(zip(chunks_meta, vectors)):
@@ -359,7 +360,7 @@ def _insert_chunks_and_collect_for_bm25(
             }
         )
         if kind in ("text", "caption") and meta["text"]:
-            bm25_rows.append({"id": chunk_id, "text": meta["text"]})
+            text_rows.append({"id": chunk_id, "text": meta["text"]})
     with closing_connection() as conn:
         conn.executemany(
             """
@@ -386,7 +387,7 @@ def _insert_chunks_and_collect_for_bm25(
             )
         conn.commit()
     vector_store.upsert_chunks(scope, points)
-    return bm25_rows
+    return text_rows
 
 
 def _replace_document_pages(document_id: str, pages: list[dict]) -> None:
@@ -426,37 +427,13 @@ def _replace_document_pages(document_id: str, pages: list[dict]) -> None:
         conn.commit()
 
 
-def _all_scope_chunks(scope: str) -> list[dict]:
-    if scope.startswith("kb_"):
-        kb_id = scope[len("kb_") :]
-        sql = (
-            "SELECT c.id, c.text FROM rag_chunks c "
-            "JOIN rag_documents d ON d.id = c.document_id "
-            "WHERE d.kb_id = ?"
-        )
-        bind = (kb_id,)
-    elif scope.startswith("thread_"):
-        thread_id = scope[len("thread_") :]
-        sql = (
-            "SELECT c.id, c.text FROM rag_chunks c "
-            "JOIN rag_documents d ON d.id = c.document_id "
-            "WHERE d.thread_id = ?"
-        )
-        bind = (thread_id,)
-    else:
-        return []
-    with closing_connection() as conn:
-        rows = conn.execute(sql, bind).fetchall()
-    return [{"id": r["id"], "text": r["text"]} for r in rows]
-
-
 def _pump(
     state: _JobState,
     proc: Any,
     out_queue: Any,
 ) -> None:
     """Drain queue until subprocess completes/errors/dies."""
-    bm25_buffer: list[dict] = []
+    text_buffer: list[dict] = []
     embedding_dim: int | None = None
     final_status = "failed"
     final_error: str | None = None
@@ -512,7 +489,7 @@ def _pump(
                     if embedding_dim is not None:
                         vector_store.ensure_collection(state.scope, embedding_dim)
                 try:
-                    bm25_rows = _insert_chunks_and_collect_for_bm25(
+                    text_rows = _insert_chunks(
                         state.document_id,
                         state.scope,
                         int(msg["first_index"]),
@@ -526,10 +503,10 @@ def _pump(
                         f"document was removed before ingestion finished ({exc})"
                     )
                     break
-                bm25_buffer.extend(bm25_rows)
+                text_buffer.extend(text_rows)
             elif mtype == "complete":
                 final_status = "completed"
-                final_num_chunks = int(msg.get("num_chunks", len(bm25_buffer)))
+                final_num_chunks = int(msg.get("num_chunks", len(text_buffer)))
                 break
             elif mtype == "error":
                 final_error = str(msg.get("error", "unknown error"))
@@ -557,8 +534,6 @@ def _pump(
         state.push_event({"type": "cancelled"})
         return
     if final_status == "completed":
-        full_scope_chunks = _all_scope_chunks(state.scope)
-        bm25.rebuild_index(state.scope, full_scope_chunks)
         _update_document_row(
             state.document_id,
             status = "completed",
@@ -732,18 +707,12 @@ def cancel_ingestion(job_id: str) -> bool:
 
 
 def delete_document_artifacts(document_id: str, scope: str) -> None:
-    """Drop the doc's vectors, rebuild BM25. Caller deletes the rag_documents row."""
+    """Drop the doc's vectors + FTS rows. Caller deletes the rag_documents row."""
     vector_store.delete_document(scope, document_id)
-    remaining = _all_scope_chunks(scope)
-    if remaining:
-        bm25.rebuild_index(scope, remaining)
-    else:
-        bm25.delete_scope(scope)
 
 
 def delete_scope_artifacts(scope: str) -> None:
     vector_store.delete_scope(scope)
-    bm25.delete_scope(scope)
 
 
 def purge_thread_documents(thread_ids: list[str]) -> None:

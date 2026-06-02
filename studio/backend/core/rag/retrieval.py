@@ -15,7 +15,7 @@ from utils.rag.config import (
     RAG_TOP_K_HYBRID,
 )
 
-from . import bm25, embeddings, vector_store
+from . import embeddings, vector_store
 
 # Match "Figure 1", "Figure 1.2", "Figure B.1", "Table 4", "Fig. 5" anywhere in
 # the query. Feeds a third retrieval source that looks up chunks anchored by these
@@ -59,7 +59,10 @@ class Hit:
 
 def retrieve_bm25(scope: str, query: str, k: int | None = None) -> list[Hit]:
     limit = k or RAG_TOP_K_BM25
-    return [Hit(chunk_id = cid, score = s) for cid, s in bm25.search(scope, query, limit)]
+    return [
+        Hit(chunk_id = cid, score = s)
+        for cid, s in vector_store.search_lexical(scope, query, limit)
+    ]
 
 
 def retrieve_figure_refs(
