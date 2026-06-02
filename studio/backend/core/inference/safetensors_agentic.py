@@ -26,6 +26,7 @@ from urllib.parse import urlparse
 from loggers import get_logger
 
 from core.inference.tool_call_parser import (
+    _TOOL_ALL_PATS,
     BUDGET_EXHAUSTED_NUDGE,
     DUPLICATE_CALL_NUDGE,
     RENDER_HTML_REPEAT_NUDGE,
@@ -43,6 +44,13 @@ logger = get_logger(__name__)
 
 # Buffer cap while waiting to disambiguate a possible tool-call prefix.
 _MAX_BUFFER_CHARS = 32
+
+
+def strip_tool_markup_streaming(text: str) -> str:
+    """Strip open-ended tool XML from display text without trimming whitespace."""
+    for pat in _TOOL_ALL_PATS:
+        text = pat.sub("", text)
+    return text
 
 
 def _status_for_tool(tool_name: str, arguments: dict) -> str:
@@ -98,29 +106,39 @@ def _detect_render_html_tool_start(content: str) -> bool:
     return False
 
 
-def _coerce_arguments(raw_args, *, heal: bool, tool_name: str = "") -> dict:
-    """Normalise tool ``arguments`` to a dict.
-
-    Some templates emit a JSON string, others a bare query string. With
-    ``heal=True`` we accept a bare string as ``{<canonical_key>: ...}``
-    so a Hermes-style call without proper JSON still runs the tool. The
-    canonical key is picked per tool: ``code`` for python, ``command``
-    for terminal, ``query`` for everything else (e.g. web_search).
-    """
+def _coerce_arguments_with_provenance(raw_args, *, heal: bool, tool_name: str = ""):
+    """Normalise tool ``arguments`` and report whether healing was applied."""
     if isinstance(raw_args, dict):
-        return raw_args
+        return raw_args, False
     if isinstance(raw_args, str):
         try:
             parsed = json.loads(raw_args)
             if isinstance(parsed, dict):
-                return parsed
+                return parsed, False
         except (json.JSONDecodeError, ValueError):
             pass
         if heal:
             key = _CANONICAL_HEAL_ARG.get(tool_name, "query")
-            return {key: raw_args}
-        return {"raw": raw_args}
-    return {}
+            return {key: raw_args}, True
+        return {"raw": raw_args}, False
+    return {}, False
+
+
+def _coerce_arguments(raw_args, *, heal: bool, tool_name: str = "") -> dict:
+    arguments, _ = _coerce_arguments_with_provenance(
+        raw_args,
+        heal=heal,
+        tool_name=tool_name,
+    )
+    return arguments
+
+
+def _tool_event_provenance(**flags: object) -> dict[str, object]:
+    provenance: dict[str, object] = {"source": "local"}
+    for key, value in flags.items():
+        if value is not None and value is not False:
+            provenance[key] = value
+    return provenance
 
 
 def run_safetensors_tool_loop(
@@ -222,6 +240,7 @@ def run_safetensors_tool_loop(
                         "tool_name": "render_html",
                         "tool_call_id": provisional_render_html_id,
                         "arguments": {},
+                        "provenance": _tool_event_provenance(provisional=True),
                     }
                 continue
 
@@ -234,7 +253,7 @@ def run_safetensors_tool_loop(
                         signal_pos = p
                 if signal_pos >= 0:
                     before_tool = candidate[:signal_pos]
-                    cleaned_before = strip_tool_markup(before_tool)
+                    cleaned_before = strip_tool_markup_streaming(before_tool)
                     if len(cleaned_before) > len(last_emitted):
                         last_emitted = cleaned_before
                         yield {"type": "content", "text": cleaned_before}
@@ -251,10 +270,11 @@ def run_safetensors_tool_loop(
                             "tool_name": "render_html",
                             "tool_call_id": provisional_render_html_id,
                             "arguments": {},
+                            "provenance": _tool_event_provenance(provisional=True),
                         }
                     continue
                 cumulative_display = candidate
-                cleaned = strip_tool_markup(cumulative_display)
+                cleaned = strip_tool_markup_streaming(cumulative_display)
                 if len(cleaned) > len(last_emitted):
                     last_emitted = cleaned
                     yield {"type": "content", "text": cleaned}
@@ -277,6 +297,13 @@ def run_safetensors_tool_loop(
                     break
 
             if is_match:
+                # Tool signal -- flush any visible prefix before DRAINING
+                # so the route sends it before tool_start.
+                cumulative_display += content_buffer
+                cleaned = strip_tool_markup_streaming(cumulative_display)
+                if len(cleaned) > len(last_emitted):
+                    last_emitted = cleaned
+                    yield {"type": "content", "text": cleaned}
                 detect_state = _state_draining
                 if (
                     not render_html_succeeded
@@ -289,6 +316,7 @@ def run_safetensors_tool_loop(
                         "tool_name": "render_html",
                         "tool_call_id": provisional_render_html_id,
                         "arguments": {},
+                        "provenance": _tool_event_provenance(provisional=True),
                     }
             elif is_prefix and len(stripped) < _MAX_BUFFER_CHARS:
                 continue
@@ -314,7 +342,7 @@ def run_safetensors_tool_loop(
                     cumulative_display += content_buffer
                     yield {
                         "type": "content",
-                        "text": strip_tool_markup(cumulative_display, final = True),
+                        "text": strip_tool_markup(cumulative_display, final=True),
                     }
                 yield {"type": "status", "text": ""}
                 return
@@ -325,7 +353,7 @@ def run_safetensors_tool_loop(
             if has_tool_signal(content_accum):
                 safety_tc = parse_tool_calls_from_text(
                     content_accum,
-                    id_offset = next_call_id,
+                    id_offset=next_call_id,
                 )
             if not safety_tc:
                 # Final answer: streaming already emitted content.
@@ -334,7 +362,7 @@ def run_safetensors_tool_loop(
                 yield {"type": "status", "text": ""}
                 return
             tool_calls = safety_tc
-            content_text = strip_tool_markup(content_accum, final = True)
+            content_text = strip_tool_markup(content_accum, final=True)
             logger.info(
                 "Safetensors safety net: parsed %d tool call(s) from streamed content",
                 len(tool_calls),
@@ -343,7 +371,7 @@ def run_safetensors_tool_loop(
             # DRAINING: parse tool calls out of full content.
             tool_calls = parse_tool_calls_from_text(
                 content_accum,
-                id_offset = next_call_id,
+                id_offset=next_call_id,
             )
             if not tool_calls and auto_heal_tool_calls:
                 # Parser found nothing -- surface raw content so any
@@ -356,10 +384,11 @@ def run_safetensors_tool_loop(
                         "tool_name": "render_html",
                         "tool_call_id": provisional_render_html_id,
                         "result": "Error: render_html tool call could not be parsed.",
+                        "provenance": _tool_event_provenance(provisional=True),
                     }
                 yield {"type": "status", "text": ""}
                 return
-            content_text = strip_tool_markup(content_accum, final = True)
+            content_text = strip_tool_markup(content_accum, final=True)
 
         if final_attempt_done:
             # Final-answer turn re-called a tool -- stop the loop.
@@ -377,10 +406,18 @@ def run_safetensors_tool_loop(
         for tc in tool_calls or []:
             func = tc.get("function", {}) or {}
             tool_name = func.get("name", "") or ""
-            arguments = _coerce_arguments(
+            arguments, args_healed = _coerce_arguments_with_provenance(
                 func.get("arguments", {}),
-                heal = auto_heal_tool_calls,
-                tool_name = tool_name,
+                heal=auto_heal_tool_calls,
+                tool_name=tool_name,
+            )
+            tool_provenance = _tool_event_provenance(
+                healed=args_healed,
+                provisional=(
+                    provisional_render_html_started
+                    and tool_name == "render_html"
+                    and tc.get("id", "") == provisional_render_html_id
+                ),
             )
 
             repeat_render_html = tool_name == "render_html" and render_html_succeeded
@@ -391,6 +428,7 @@ def run_safetensors_tool_loop(
                     "tool_name": tool_name,
                     "tool_call_id": tc.get("id", ""),
                     "arguments": arguments,
+                    "provenance": tool_provenance,
                 }
 
             tc_key = tool_name + str(arguments)
@@ -416,9 +454,9 @@ def run_safetensors_tool_loop(
                         result = execute_tool(
                             tool_name,
                             arguments,
-                            cancel_event = cancel_event,
-                            timeout = eff_timeout,
-                            session_id = session_id,
+                            cancel_event=cancel_event,
+                            timeout=eff_timeout,
+                            session_id=session_id,
                         )
                     except Exception as exc:
                         logger.exception("Tool %s raised: %s", tool_name, exc)
@@ -430,6 +468,7 @@ def run_safetensors_tool_loop(
                     "tool_name": tool_name,
                     "tool_call_id": tc.get("id", ""),
                     "result": result,
+                    "provenance": tool_provenance,
                 }
 
             is_error = isinstance(result, str) and result.lstrip().startswith(
