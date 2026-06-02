@@ -191,6 +191,7 @@ function NavItem({
   onClick,
   children,
   dataTour,
+  className,
 }: {
   icon: typeof ZapIcon;
   label: string;
@@ -199,9 +200,10 @@ function NavItem({
   onClick: () => void;
   children?: ReactNode;
   dataTour?: string;
+  className?: string;
 }) {
   return (
-    <SidebarMenuItem>
+    <SidebarMenuItem className={className}>
       <div className="relative">
         <SidebarMenuButton
           tooltip={label}
@@ -792,6 +794,22 @@ export function AppSidebar() {
                   navigate({ to: "/projects" });
                   closeMobileIfOpen();
                 }}
+              />
+              {/* Train has its own labelled section when expanded; surface it as
+                  a plain icon here only while the sidebar is collapsed. */}
+              <NavItem
+                icon={TestTubeOutlineIcon}
+                label={t("shell.navigation.train")}
+                active={
+                  pathname === "/studio" || pathname.startsWith("/studio/")
+                }
+                disabled={chatOnly}
+                onClick={() => {
+                  if (chatOnly) return;
+                  navigate({ to: "/studio" });
+                  closeMobileIfOpen();
+                }}
+                className="hidden group-data-[collapsible=icon]:block"
               />
             </SidebarMenu>
           </SidebarGroupContent>

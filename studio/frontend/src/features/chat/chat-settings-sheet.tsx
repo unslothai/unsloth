@@ -723,11 +723,10 @@ export function ChatSettingsPanel({
 
   const settingsContent = (
     <>
-      <div
-        ref={settingsScrollRef}
-        className="run-settings-scroll relative h-full overflow-y-auto"
-      >
-      <div className="sticky top-0 z-10 flex h-[48px] items-start gap-2 bg-panel-surface pl-[18px] pr-[16px] pt-[11px]">
+      <div className="flex h-full min-h-0 flex-col">
+      {/* Header sits outside the scroll area so the scrollbar never shifts the
+          close button. */}
+      <div className="flex h-[48px] shrink-0 items-start gap-2 bg-panel-surface pl-[18px] pr-[16px] pt-[11px]">
         {isMobile ? (
           <span className="flex h-[34px] flex-1 items-center text-[15px] font-semibold tracking-[0em] dark:tracking-[0.015em] text-nav-fg">
             Run settings
@@ -764,6 +763,10 @@ export function ChatSettingsPanel({
         )}
       </div>
 
+      <div
+        ref={settingsScrollRef}
+        className="run-settings-scroll relative min-h-0 flex-1 overflow-y-auto"
+      >
       <div className="px-[18px] pt-3">
         {hasModelContent && (
         <CollapsibleSection label="Model" defaultOpen={true} first>
@@ -1371,6 +1374,7 @@ export function ChatSettingsPanel({
             </div>
           </CollapsibleSection>
         ) : null}
+      </div>
       </div>
       </div>
       <Dialog
