@@ -253,8 +253,8 @@ def test_detect_family_finds_video_full_repo_families():
     assert base.base_repo == "diffusers/LTX-2.3-Diffusers"
     assert base.default_steps == 30
     assert base.default_guidance_scale == 3.0
-    assert base.default_width == 768
-    assert base.default_height == 512
+    assert base.default_width == 1536
+    assert base.default_height == 1024
     assert base.default_call_kwargs["stg_scale"] == 1.0
     assert base.default_call_kwargs["modality_scale"] == 3.0
     assert base.default_call_kwargs["guidance_rescale"] == 0.7
@@ -271,8 +271,8 @@ def test_detect_family_finds_video_full_repo_families():
     assert fam.name == "ltx2-3-distilled"
     assert fam.media_kind == "video"
     assert fam.pipeline_class == "LTX2Pipeline"
-    assert fam.default_width == 768
-    assert fam.default_height == 512
+    assert fam.default_width == 1536
+    assert fam.default_height == 1024
     assert fam.default_num_frames == 121
     assert fam.default_frame_rate == 24.0
     assert fam.default_call_kwargs == {}
@@ -6585,16 +6585,42 @@ def test_generate_video_with_metadata_uses_family_defaults():
 
 
 @pytest.mark.parametrize(
-    ("repo_id", "family", "steps", "guidance", "expects_sigmas", "expects_base_guidance"),
+    (
+        "repo_id",
+        "family",
+        "steps",
+        "guidance",
+        "width",
+        "height",
+        "expects_two_stage",
+        "expects_base_guidance",
+        "expected_sigmas",
+        "expected_profile",
+    ),
     [
-        ("diffusers/LTX-2.3-Diffusers", "ltx2-3-base", 30, 3.0, False, True),
+        (
+            "diffusers/LTX-2.3-Diffusers",
+            "ltx2-3-base",
+            30,
+            3.0,
+            1536,
+            1024,
+            True,
+            True,
+            None,
+            "official-base-two-stage",
+        ),
         (
             "diffusers/LTX-2.3-Distilled-Diffusers",
             "ltx2-3-distilled",
             8,
             1.0,
+            1536,
+            1024,
             True,
             False,
+            [1.0, 0.5],
+            "official-distilled-two-stage",
         ),
     ],
 )
@@ -6604,8 +6630,12 @@ def test_generate_video_with_metadata_uses_ltx23_family_defaults(
     family,
     steps,
     guidance,
-    expects_sigmas,
+    width,
+    height,
+    expects_two_stage,
     expects_base_guidance,
+    expected_sigmas,
+    expected_profile,
 ):
     import core.inference.diffusion as d
 
@@ -6681,37 +6711,78 @@ def test_generate_video_with_metadata_uses_ltx23_family_defaults(
     backend._device = "cpu"
     backend._repo_id = repo_id
     backend._family = d.detect_family(repo_id)
+    if expects_two_stage and family == "ltx2-3-base":
+
+        def _fake_base_two_stage(self, **kwargs):
+            self.two_stage_kwargs = kwargs
+            return ["frame0", "frame1"], {
+                "sampling_profile": d.LTX2_3_BASE_TWO_STAGE_PROFILE,
+                "stage_1_width": kwargs["resolved_width"] // 2,
+                "stage_1_height": kwargs["resolved_height"] // 2,
+            }
+
+        monkeypatch.setattr(
+            d.DiffusionBackend,
+            "_generate_ltx2_base_two_stage_video",
+            _fake_base_two_stage,
+        )
+    if expects_two_stage and family == "ltx2-3-distilled":
+
+        def _fake_two_stage(self, **kwargs):
+            self.two_stage_kwargs = kwargs
+            return ["frame0", "frame1"], {
+                "sampling_profile": d.LTX2_3_DISTILLED_TWO_STAGE_PROFILE,
+                "stage_1_width": kwargs["resolved_width"] // 2,
+                "stage_1_height": kwargs["resolved_height"] // 2,
+            }
+
+        monkeypatch.setattr(
+            d.DiffusionBackend,
+            "_generate_ltx2_distilled_two_stage_video",
+            _fake_two_stage,
+        )
 
     video, meta = backend.generate_video_with_metadata(prompt = "a slow dolly shot")
 
     assert backend._family.name == family
     assert video == ["frame0", "frame1"]
-    assert pipe.last_kwargs["negative_prompt"] == "ltx default negative"
-    assert pipe.last_kwargs["num_inference_steps"] == steps
-    assert pipe.last_kwargs["guidance_scale"] == guidance
-    assert pipe.last_kwargs["width"] == 768
-    assert pipe.last_kwargs["height"] == 512
-    assert pipe.last_kwargs["num_frames"] == 121
-    assert pipe.last_kwargs["frame_rate"] == 24.0
-    assert pipe.last_kwargs["output_type"] == "np"
-    assert pipe.last_kwargs["return_dict"] is False
-    assert pipe.last_kwargs["stg_scale"] == (1.0 if expects_base_guidance else None)
-    assert pipe.last_kwargs["modality_scale"] == (3.0 if expects_base_guidance else None)
-    assert pipe.last_kwargs["guidance_rescale"] == (0.7 if expects_base_guidance else None)
-    assert pipe.last_kwargs["audio_guidance_scale"] == (7.0 if expects_base_guidance else None)
-    assert pipe.last_kwargs["audio_stg_scale"] == (1.0 if expects_base_guidance else None)
-    assert pipe.last_kwargs["audio_modality_scale"] == (3.0 if expects_base_guidance else None)
-    assert pipe.last_kwargs["audio_guidance_rescale"] == (0.7 if expects_base_guidance else None)
-    assert pipe.last_kwargs["spatio_temporal_guidance_blocks"] == (
+    observed_kwargs = (
+        backend.two_stage_kwargs["base_call_kwargs"]
+        if expects_two_stage
+        else pipe.last_kwargs
+    )
+    assert observed_kwargs["negative_prompt"] == "ltx default negative"
+    assert observed_kwargs["num_inference_steps"] == steps
+    assert observed_kwargs["guidance_scale"] == guidance
+    assert observed_kwargs["width"] == width
+    assert observed_kwargs["height"] == height
+    assert observed_kwargs["num_frames"] == 121
+    assert observed_kwargs["frame_rate"] == 24.0
+    assert observed_kwargs["output_type"] == "np"
+    assert observed_kwargs["return_dict"] is False
+    assert observed_kwargs.get("stg_scale") == (1.0 if expects_base_guidance else None)
+    assert observed_kwargs.get("modality_scale") == (3.0 if expects_base_guidance else None)
+    assert observed_kwargs.get("guidance_rescale") == (0.7 if expects_base_guidance else None)
+    assert observed_kwargs.get("audio_guidance_scale") == (7.0 if expects_base_guidance else None)
+    assert observed_kwargs.get("audio_stg_scale") == (1.0 if expects_base_guidance else None)
+    assert observed_kwargs.get("audio_modality_scale") == (3.0 if expects_base_guidance else None)
+    assert observed_kwargs.get("audio_guidance_rescale") == (0.7 if expects_base_guidance else None)
+    assert observed_kwargs.get("spatio_temporal_guidance_blocks") == (
         [28] if expects_base_guidance else None
     )
-    assert pipe.last_kwargs["use_cross_timestep"] == (
+    assert observed_kwargs.get("use_cross_timestep") == (
         True if expects_base_guidance else None
     )
-    assert pipe.last_kwargs["sigmas"] == ([1.0, 0.5] if expects_sigmas else None)
+    assert observed_kwargs.get("sigmas") == expected_sigmas
     assert meta["family"] == family
     assert meta["num_inference_steps"] == steps
     assert meta["guidance_scale"] == guidance
+    assert meta["width"] == width
+    assert meta["height"] == height
+    assert meta["sampling_profile"] == expected_profile
+    if expects_two_stage:
+        assert meta["stage_1_width"] == 768
+        assert meta["stage_1_height"] == 512
 
 
 def test_generate_video_rejects_image_family():

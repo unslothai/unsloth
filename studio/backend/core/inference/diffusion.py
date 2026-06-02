@@ -37,6 +37,7 @@ import contextlib
 import gc
 import importlib.util
 import io
+import json
 import os
 import re
 import sys
@@ -93,6 +94,15 @@ DIFFUSION_TRANSFORMERS_QUANT_COMPONENTS = {
     "text_encoder_3",
     "pe",
 }
+
+LTX2_3_OFFICIAL_REPO = "Lightricks/LTX-2.3"
+LTX2_3_SPATIAL_UPSCALER_X2_FILENAME = "ltx-2.3-spatial-upscaler-x2-1.1.safetensors"
+LTX2_3_DISTILLED_LORA_FILENAME = "ltx-2.3-22b-distilled-lora-384-1.1.safetensors"
+LTX2_3_BASE_STAGE_2_LORA_ADAPTER = "ltx2_3_distilled_stage2"
+LTX2_3_BASE_STAGE_2_LORA_SCALE = 0.8
+LTX2_3_DISTILLED_STAGE_2_SIGMAS = [0.909375, 0.725, 0.421875, 0.0]
+LTX2_3_BASE_TWO_STAGE_PROFILE = "official-base-two-stage"
+LTX2_3_DISTILLED_TWO_STAGE_PROFILE = "official-distilled-two-stage"
 DIFFUSION_TORCH_COMPILE_NONE = "none"
 DIFFUSION_TORCH_COMPILE_REGIONAL = "regional"
 DIFFUSION_TORCH_COMPILE_TRANSFORMER = "transformer"
@@ -535,8 +545,10 @@ _FULL_REPO_FAMILIES: tuple[DiffusionFamily, ...] = (
         media_kind = "video",
         default_steps = 30,
         default_guidance_scale = 3.0,
-        default_width = 768,
-        default_height = 512,
+        # Official production TI2VidTwoStagesPipeline defaults to
+        # 1536x1024 final output after a 768x512 first stage.
+        default_width = 1536,
+        default_height = 1024,
         default_num_frames = 121,
         default_frame_rate = 24.0,
         default_call_kwargs = {
@@ -577,8 +589,11 @@ _FULL_REPO_FAMILIES: tuple[DiffusionFamily, ...] = (
         media_kind = "video",
         default_steps = 8,
         default_guidance_scale = 1.0,
-        default_width = 768,
-        default_height = 512,
+        # Official LTX-2.3 DistilledPipeline is two-stage: stage 1
+        # denoises at 768x512, then the spatial upsampler produces a
+        # 1536x1024 final video before stage-2 refinement.
+        default_width = 1536,
+        default_height = 1024,
         default_num_frames = 121,
         default_frame_rate = 24.0,
         supports_gguf_single_file = True,
@@ -4051,6 +4066,9 @@ class DiffusionBackend:
         self._torch_compile_stats: Optional[dict[str, Any]] = None
         self._safetensors_quantization: Optional[str] = None
         self._safetensors_quantization_components: Optional[list[str]] = None
+        self._ltx2_latent_upsampler: Any = None
+        self._ltx2_latent_upsampler_cache_key: Optional[tuple[Any, ...]] = None
+        self._ltx2_distilled_lora_cache_key: Optional[tuple[Any, ...]] = None
         self._load_timings: dict[str, float] = {}
         self._prompt_embedding_cache_key: Optional[tuple[Any, ...]] = None
         self._prompt_embedding_cache_value: Optional[
@@ -5171,6 +5189,7 @@ class DiffusionBackend:
                     _release_chat_backend_for_diffusion(check_helper_advisor = False)
 
                 old = self._pipe
+                old_ltx2_upsampler = self._ltx2_latent_upsampler
                 if old is not None:
                     with self._lock:
                         # Clear ALL metadata together so a failed swap
@@ -5179,6 +5198,9 @@ class DiffusionBackend:
                         # pipe. The except block below will restore
                         # last_error so the caller knows what happened.
                         self._pipe = None
+                        self._ltx2_latent_upsampler = None
+                        self._ltx2_latent_upsampler_cache_key = None
+                        self._ltx2_distilled_lora_cache_key = None
                         self._family = None
                         self._repo_id = None
                         self._diffusion_gguf_repo = None
@@ -5216,7 +5238,9 @@ class DiffusionBackend:
                         self._loaded_at = None
                     with _load_phase("release_previous_pipeline"):
                         _release(old)
+                        _release(old_ltx2_upsampler)
                         old = None
+                        old_ltx2_upsampler = None
                         # Now that both the attribute and the local
                         # have been nulled, the pipeline is unreachable;
                         # ask the CUDA allocator to release its slabs so
@@ -5899,6 +5923,7 @@ class DiffusionBackend:
         with self._load_lock, self._generate_lock:
             with self._lock:
                 old = self._pipe
+                old_ltx2_upsampler = self._ltx2_latent_upsampler
                 # Mark the slot as busy BEFORE clearing _pipe so a
                 # concurrent helper-busy check (which treats either
                 # is_loaded OR is_loading as busy) does not see a
@@ -5907,6 +5932,9 @@ class DiffusionBackend:
                 # actually freed.
                 self._loading = True
                 self._pipe = None
+                self._ltx2_latent_upsampler = None
+                self._ltx2_latent_upsampler_cache_key = None
+                self._ltx2_distilled_lora_cache_key = None
                 self._family = None
                 self._repo_id = None
                 self._diffusion_gguf_repo = None
@@ -5946,7 +5974,9 @@ class DiffusionBackend:
                 self._loaded_at = None
             try:
                 _release(old)
+                _release(old_ltx2_upsampler)
                 old = None  # noqa: F841
+                old_ltx2_upsampler = None  # noqa: F841
                 _drain_cuda_cache()
             finally:
                 with self._lock:
@@ -6457,6 +6487,336 @@ class DiffusionBackend:
                 }
         return image, meta
 
+    def _get_ltx2_latent_upsampler(
+        self,
+        *,
+        dtype: Any,
+        device: Any,
+    ) -> Any:
+        """Load and cache the official LTX-2.3 x2 latent upsampler."""
+
+        cache_key = (
+            LTX2_3_OFFICIAL_REPO,
+            LTX2_3_SPATIAL_UPSCALER_X2_FILENAME,
+            str(dtype),
+            str(device),
+        )
+        if (
+            self._ltx2_latent_upsampler is not None
+            and self._ltx2_latent_upsampler_cache_key == cache_key
+        ):
+            return self._ltx2_latent_upsampler
+
+        import torch
+        from huggingface_hub import hf_hub_download
+        from safetensors import safe_open
+        from safetensors.torch import load_file
+        from diffusers.pipelines.ltx2.latent_upsampler import (
+            LTX2LatentUpsamplerModel,
+        )
+
+        token = os.environ.get("HF_TOKEN") or None
+        path = hf_hub_download(
+            LTX2_3_OFFICIAL_REPO,
+            filename = LTX2_3_SPATIAL_UPSCALER_X2_FILENAME,
+            token = token,
+        )
+        with safe_open(path, framework = "pt", device = "cpu") as handle:
+            metadata = handle.metadata() or {}
+        config = json.loads(metadata.get("config") or "{}")
+        upsampler = LTX2LatentUpsamplerModel(
+            in_channels = int(config.get("in_channels", 128)),
+            mid_channels = int(config.get("mid_channels", 1024)),
+            num_blocks_per_stage = int(config.get("num_blocks_per_stage", 4)),
+            dims = int(config.get("dims", 3)),
+            spatial_upsample = bool(config.get("spatial_upsample", True)),
+            temporal_upsample = bool(config.get("temporal_upsample", False)),
+            rational_spatial_scale = float(
+                config.get("spatial_scale", config.get("rational_spatial_scale", 2.0))
+            ),
+            use_rational_resampler = bool(
+                config.get("rational_resampler", config.get("use_rational_resampler", True))
+            ),
+        )
+        state_dict = load_file(path, device = "cpu")
+        upsampler.load_state_dict(state_dict, strict = True)
+        upsampler.to(device = device, dtype = dtype)
+        upsampler.eval()
+
+        old = self._ltx2_latent_upsampler
+        self._ltx2_latent_upsampler = upsampler
+        self._ltx2_latent_upsampler_cache_key = cache_key
+        _release(old)
+        _drain_cuda_cache()
+        return upsampler
+
+    def _ensure_ltx2_distilled_lora_adapter(self, pipe: Any) -> None:
+        """Load the official distilled LoRA used by LTX-2.3 stage 2."""
+
+        cache_key = (
+            id(pipe),
+            LTX2_3_OFFICIAL_REPO,
+            LTX2_3_DISTILLED_LORA_FILENAME,
+            LTX2_3_BASE_STAGE_2_LORA_ADAPTER,
+        )
+        if self._ltx2_distilled_lora_cache_key == cache_key:
+            return
+
+        load_lora = getattr(pipe, "load_lora_weights", None)
+        if not callable(load_lora):
+            raise RuntimeError(
+                f"{type(pipe).__name__} does not support loading the official "
+                "LTX-2.3 distilled LoRA required for two-stage base video."
+            )
+        token = os.environ.get("HF_TOKEN") or None
+        kwargs: dict[str, Any] = {
+            "weight_name": LTX2_3_DISTILLED_LORA_FILENAME,
+            "adapter_name": LTX2_3_BASE_STAGE_2_LORA_ADAPTER,
+        }
+        if token:
+            kwargs["token"] = token
+        load_lora(LTX2_3_OFFICIAL_REPO, **kwargs)
+        self._ltx2_distilled_lora_cache_key = cache_key
+
+    def _disable_ltx2_distilled_lora_adapter(self, pipe: Any) -> None:
+        disable_lora = getattr(pipe, "disable_lora", None)
+        if callable(disable_lora):
+            disable_lora()
+
+    def _enable_ltx2_distilled_lora_adapter(self, pipe: Any, *, scale: float) -> None:
+        self._ensure_ltx2_distilled_lora_adapter(pipe)
+        set_adapters = getattr(pipe, "set_adapters", None)
+        if not callable(set_adapters):
+            raise RuntimeError(
+                f"{type(pipe).__name__} cannot activate the official LTX-2.3 "
+                "distilled LoRA adapter."
+            )
+        set_adapters(
+            [LTX2_3_BASE_STAGE_2_LORA_ADAPTER],
+            adapter_weights = [float(scale)],
+        )
+        enable_lora = getattr(pipe, "enable_lora", None)
+        if callable(enable_lora):
+            enable_lora()
+
+    def _generate_ltx2_base_two_stage_video(
+        self,
+        *,
+        pipe: Any,
+        base_call_kwargs: dict[str, Any],
+        resolved_width: int,
+        resolved_height: int,
+        resolved_steps: int,
+        resolved_guidance: float,
+        resolved_frame_rate: float,
+        resolved_frames: int,
+        generator: Any,
+        device: str,
+    ) -> tuple[Any, dict[str, Any]]:
+        """Run the clean-room LTX-2.3 base two-stage production workflow."""
+
+        if resolved_width % 64 or resolved_height % 64:
+            raise ValueError(
+                "LTX-2.3 two-stage base generation requires final width "
+                "and height to be multiples of 64."
+            )
+
+        import torch
+
+        execution_device = getattr(pipe, "_execution_device", None) or device
+        transformer = getattr(pipe, "transformer", None)
+        if transformer is not None:
+            try:
+                dtype = next(transformer.parameters()).dtype
+            except StopIteration:
+                dtype = torch.bfloat16
+        else:
+            dtype = torch.bfloat16
+        upsampler = self._get_ltx2_latent_upsampler(
+            dtype = dtype,
+            device = execution_device,
+        )
+
+        stage_1_width = resolved_width // 2
+        stage_1_height = resolved_height // 2
+        self._disable_ltx2_distilled_lora_adapter(pipe)
+        stage_1_kwargs = dict(base_call_kwargs)
+        stage_1_kwargs.update(
+            {
+                "width": stage_1_width,
+                "height": stage_1_height,
+                "num_inference_steps": resolved_steps,
+                "guidance_scale": resolved_guidance,
+                "output_type": "latent",
+                "return_dict": False,
+            }
+        )
+        if generator is not None:
+            stage_1_kwargs["generator"] = generator
+
+        stage_1_out = pipe(**stage_1_kwargs)
+        if not isinstance(stage_1_out, tuple) or len(stage_1_out) < 2:
+            raise RuntimeError(
+                "LTX-2.3 base stage 1 did not return video and audio latents."
+            )
+        video_latents, audio_latents = stage_1_out[0], stage_1_out[1]
+        upsampler_param = next(upsampler.parameters())
+        video_latents = video_latents.to(
+            device = upsampler_param.device,
+            dtype = upsampler_param.dtype,
+        )
+        with torch.no_grad():
+            upscaled_video_latents = upsampler(video_latents)
+
+        stage_2_kwargs = dict(base_call_kwargs)
+        for key in (
+            "stg_scale",
+            "modality_scale",
+            "guidance_rescale",
+            "audio_guidance_scale",
+            "audio_stg_scale",
+            "audio_modality_scale",
+            "audio_guidance_rescale",
+            "spatio_temporal_guidance_blocks",
+            "use_cross_timestep",
+        ):
+            stage_2_kwargs.pop(key, None)
+        stage_2_kwargs.update(
+            {
+                "width": resolved_width,
+                "height": resolved_height,
+                "num_frames": resolved_frames,
+                "frame_rate": resolved_frame_rate,
+                "num_inference_steps": len(LTX2_3_DISTILLED_STAGE_2_SIGMAS) - 1,
+                "guidance_scale": 1.0,
+                "sigmas": LTX2_3_DISTILLED_STAGE_2_SIGMAS,
+                "noise_scale": LTX2_3_DISTILLED_STAGE_2_SIGMAS[0],
+                "latents": upscaled_video_latents,
+                "audio_latents": audio_latents,
+                "output_type": "np",
+                "return_dict": False,
+            }
+        )
+        if generator is not None:
+            stage_2_kwargs["generator"] = generator
+
+        try:
+            self._enable_ltx2_distilled_lora_adapter(
+                pipe,
+                scale = LTX2_3_BASE_STAGE_2_LORA_SCALE,
+            )
+            out = pipe(**stage_2_kwargs)
+        finally:
+            self._disable_ltx2_distilled_lora_adapter(pipe)
+        return _extract_pipeline_video(out), {
+            "sampling_profile": LTX2_3_BASE_TWO_STAGE_PROFILE,
+            "stage_1_width": stage_1_width,
+            "stage_1_height": stage_1_height,
+            "stage_2_sigmas": list(LTX2_3_DISTILLED_STAGE_2_SIGMAS),
+            "stage_2_lora": LTX2_3_DISTILLED_LORA_FILENAME,
+            "stage_2_lora_scale": LTX2_3_BASE_STAGE_2_LORA_SCALE,
+            "latent_upsampler": LTX2_3_SPATIAL_UPSCALER_X2_FILENAME,
+        }
+
+    def _generate_ltx2_distilled_two_stage_video(
+        self,
+        *,
+        pipe: Any,
+        base_call_kwargs: dict[str, Any],
+        resolved_width: int,
+        resolved_height: int,
+        resolved_steps: int,
+        resolved_guidance: float,
+        resolved_frame_rate: float,
+        resolved_frames: int,
+        generator: Any,
+        device: str,
+    ) -> tuple[Any, dict[str, Any]]:
+        """Run the clean-room LTX-2.3 distilled two-stage workflow."""
+
+        if resolved_width % 64 or resolved_height % 64:
+            raise ValueError(
+                "LTX-2.3 two-stage distilled generation requires final "
+                "width and height to be multiples of 64."
+            )
+
+        import torch
+        from diffusers.pipelines.ltx2.utils import DISTILLED_SIGMA_VALUES
+
+        execution_device = getattr(pipe, "_execution_device", None) or device
+        transformer = getattr(pipe, "transformer", None)
+        if transformer is not None:
+            try:
+                dtype = next(transformer.parameters()).dtype
+            except StopIteration:
+                dtype = torch.bfloat16
+        else:
+            dtype = torch.bfloat16
+        upsampler = self._get_ltx2_latent_upsampler(
+            dtype = dtype,
+            device = execution_device,
+        )
+
+        stage_1_width = resolved_width // 2
+        stage_1_height = resolved_height // 2
+        stage_1_kwargs = dict(base_call_kwargs)
+        stage_1_kwargs.update(
+            {
+                "width": stage_1_width,
+                "height": stage_1_height,
+                "num_inference_steps": resolved_steps,
+                "guidance_scale": resolved_guidance,
+                "sigmas": DISTILLED_SIGMA_VALUES,
+                "output_type": "latent",
+                "return_dict": False,
+            }
+        )
+        if generator is not None:
+            stage_1_kwargs["generator"] = generator
+
+        stage_1_out = pipe(**stage_1_kwargs)
+        if not isinstance(stage_1_out, tuple) or len(stage_1_out) < 2:
+            raise RuntimeError(
+                "LTX-2.3 distilled stage 1 did not return video and audio latents."
+            )
+        video_latents, audio_latents = stage_1_out[0], stage_1_out[1]
+        video_latents = video_latents.to(
+            device = next(upsampler.parameters()).device,
+            dtype = next(upsampler.parameters()).dtype,
+        )
+        with torch.no_grad():
+            upscaled_video_latents = upsampler(video_latents)
+
+        stage_2_kwargs = dict(base_call_kwargs)
+        stage_2_kwargs.update(
+            {
+                "width": resolved_width,
+                "height": resolved_height,
+                "num_frames": resolved_frames,
+                "frame_rate": resolved_frame_rate,
+                "num_inference_steps": len(LTX2_3_DISTILLED_STAGE_2_SIGMAS) - 1,
+                "guidance_scale": 1.0,
+                "sigmas": LTX2_3_DISTILLED_STAGE_2_SIGMAS,
+                "noise_scale": LTX2_3_DISTILLED_STAGE_2_SIGMAS[0],
+                "latents": upscaled_video_latents,
+                "audio_latents": audio_latents,
+                "output_type": "np",
+                "return_dict": False,
+            }
+        )
+        if generator is not None:
+            stage_2_kwargs["generator"] = generator
+
+        out = pipe(**stage_2_kwargs)
+        return _extract_pipeline_video(out), {
+            "sampling_profile": LTX2_3_DISTILLED_TWO_STAGE_PROFILE,
+            "stage_1_width": stage_1_width,
+            "stage_1_height": stage_1_height,
+            "stage_1_sigmas": list(DISTILLED_SIGMA_VALUES),
+            "stage_2_sigmas": list(LTX2_3_DISTILLED_STAGE_2_SIGMAS),
+            "latent_upsampler": LTX2_3_SPATIAL_UPSCALER_X2_FILENAME,
+        }
+
     def generate_video_with_metadata(
         self,
         *,
@@ -6593,8 +6953,36 @@ class DiffusionBackend:
             if generator is not None:
                 call_kwargs["generator"] = generator
 
-            out = pipe(**call_kwargs)
-            video = _extract_pipeline_video(out)
+            profile_meta: dict[str, Any] = {"sampling_profile": "single-stage"}
+            if fam.name == "ltx2-3-base":
+                video, profile_meta = self._generate_ltx2_base_two_stage_video(
+                    pipe = pipe,
+                    base_call_kwargs = call_kwargs,
+                    resolved_width = resolved_width,
+                    resolved_height = resolved_height,
+                    resolved_steps = resolved_steps,
+                    resolved_guidance = resolved_guidance,
+                    resolved_frame_rate = resolved_frame_rate,
+                    resolved_frames = resolved_frames,
+                    generator = generator,
+                    device = device,
+                )
+            elif fam.name == "ltx2-3-distilled":
+                video, profile_meta = self._generate_ltx2_distilled_two_stage_video(
+                    pipe = pipe,
+                    base_call_kwargs = call_kwargs,
+                    resolved_width = resolved_width,
+                    resolved_height = resolved_height,
+                    resolved_steps = resolved_steps,
+                    resolved_guidance = resolved_guidance,
+                    resolved_frame_rate = resolved_frame_rate,
+                    resolved_frames = resolved_frames,
+                    generator = generator,
+                    device = device,
+                )
+            else:
+                out = pipe(**call_kwargs)
+                video = _extract_pipeline_video(out)
             with self._lock:
                 meta = {
                     "model": _display_repo_id(self._repo_id),
@@ -6607,6 +6995,7 @@ class DiffusionBackend:
                     "guidance_scale": resolved_guidance,
                     "guidance_scale_2": guidance_scale_2,
                 }
+                meta.update(profile_meta)
             return video, meta
 
 
