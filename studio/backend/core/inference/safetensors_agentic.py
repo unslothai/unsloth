@@ -46,8 +46,12 @@ logger = get_logger(__name__)
 _MAX_BUFFER_CHARS = 32
 
 
-def strip_tool_markup_streaming(text: str) -> str:
+def strip_tool_markup_streaming(
+    text: str, *, auto_heal_tool_calls: bool = True
+) -> str:
     """Strip open-ended tool XML from display text without trimming whitespace."""
+    if not auto_heal_tool_calls:
+        return text
     for pat in _TOOL_ALL_PATS:
         text = pat.sub("", text)
     return text
@@ -253,7 +257,10 @@ def run_safetensors_tool_loop(
                         signal_pos = p
                 if signal_pos >= 0:
                     before_tool = candidate[:signal_pos]
-                    cleaned_before = strip_tool_markup_streaming(before_tool)
+                    cleaned_before = strip_tool_markup_streaming(
+                        before_tool,
+                        auto_heal_tool_calls=auto_heal_tool_calls,
+                    )
                     if len(cleaned_before) > len(last_emitted):
                         last_emitted = cleaned_before
                         yield {"type": "content", "text": cleaned_before}
@@ -274,7 +281,10 @@ def run_safetensors_tool_loop(
                         }
                     continue
                 cumulative_display = candidate
-                cleaned = strip_tool_markup_streaming(cumulative_display)
+                cleaned = strip_tool_markup_streaming(
+                    cumulative_display,
+                    auto_heal_tool_calls=auto_heal_tool_calls,
+                )
                 if len(cleaned) > len(last_emitted):
                     last_emitted = cleaned
                     yield {"type": "content", "text": cleaned}
@@ -300,7 +310,10 @@ def run_safetensors_tool_loop(
                 # Tool signal -- flush any visible prefix before DRAINING
                 # so the route sends it before tool_start.
                 cumulative_display += content_buffer
-                cleaned = strip_tool_markup_streaming(cumulative_display)
+                cleaned = strip_tool_markup_streaming(
+                    cumulative_display,
+                    auto_heal_tool_calls=auto_heal_tool_calls,
+                )
                 if len(cleaned) > len(last_emitted):
                     last_emitted = cleaned
                     yield {"type": "content", "text": cleaned}

@@ -37,6 +37,7 @@ from core.inference.safetensors_agentic import (
     _coerce_arguments,
     _detect_render_html_tool_start,
     run_safetensors_tool_loop,
+    strip_tool_markup_streaming,
 )
 from core.inference.tool_call_parser import (
     has_tool_signal,
@@ -153,6 +154,11 @@ class TestParser:
         assert strip_tool_markup(text, final = True) == "before"
         # Without final=True the unclosed run is preserved.
         assert "partial" in strip_tool_markup(text)
+
+    def test_streaming_strip_respects_disabled_healing(self):
+        raw = 'before <tool_call>{"name":"web_search"'
+        assert strip_tool_markup_streaming(raw, auto_heal_tool_calls = False) == raw
+        assert strip_tool_markup_streaming(raw) == "before "
 
 
 # ────────────────────────────────────────────────────────────────────
