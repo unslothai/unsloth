@@ -1046,6 +1046,48 @@ def configure_lazy_gguf_cuda_cache(root: Any, max_bytes: int) -> dict[str, int]:
     }
 
 
+def prime_lazy_gguf_cuda_cache(root: Any, device: torch.device | str) -> dict[str, int]:
+    """Populate selected packed GGUF CUDA cache entries before a compiled forward.
+
+    Lazy GGUF modules normally populate their packed-weight CUDA cache on first
+    use. When a caller compiles a surrounding transformer block with
+    ``fullgraph=True``, that first-use path exposes Python-only bookkeeping such
+    as pinned-memory checks to Dynamo. Priming keeps that bookkeeping outside the
+    traced region while preserving the same cached packed tensors used by normal
+    balanced execution.
+    """
+
+    target_device = torch.device(device)
+    stats = {
+        "modules": 0,
+        "buffers": 0,
+    }
+    if target_device.type != "cuda" or not hasattr(root, "modules"):
+        return stats
+
+    for module in root.modules():
+        if not isinstance(module, _LazyGGUFOffloadMixin):
+            continue
+        if getattr(module, "_cuda_quant_cache_state", None) is None:
+            continue
+        module_buffers = 0
+        for name in ("qweight", "qbias"):
+            qbuffer = getattr(module, "_buffers", {}).get(name)
+            if not isinstance(qbuffer, torch.Tensor) or qbuffer.device.type != "cpu":
+                continue
+            cached = module._maybe_cuda_cached_quant_buffer(
+                name,
+                target_device,
+                qbuffer,
+            )
+            if cached is not None:
+                module_buffers += 1
+        if module_buffers:
+            stats["modules"] += 1
+            stats["buffers"] += module_buffers
+    return stats
+
+
 def install_compiled_lazy_gguf_linear_dequant(root: Any) -> dict[str, int]:
     """Install torch.compile wrappers for lazy GGUF Linear dequantization.
 

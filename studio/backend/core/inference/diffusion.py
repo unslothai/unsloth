@@ -5279,6 +5279,24 @@ class DiffusionBackend:
                     with _load_phase("apply_memory_policy"):
                         _apply_diffusion_memory_policy(pipe, resolved_offload_policy)
                     if resolved_torch_compile != DIFFUSION_TORCH_COMPILE_NONE:
+                        if diffusion_gguf_filename and device == "cuda":
+                            try:
+                                from .gguf_text_encoder import prime_lazy_gguf_cuda_cache
+                            except Exception:
+                                prime_lazy_gguf_cuda_cache = None
+                            if prime_lazy_gguf_cuda_cache is not None:
+                                with _load_phase("prime_gguf_cuda_cache_for_compile"):
+                                    prime_stats = prime_lazy_gguf_cuda_cache(
+                                        transformer,
+                                        device,
+                                    )
+                                if prime_stats.get("modules", 0):
+                                    prepared_gguf_module_counts[
+                                        "diffusion_cuda_cache_primed_modules"
+                                    ] = int(prime_stats["modules"])
+                                    prepared_gguf_module_counts[
+                                        "diffusion_cuda_cache_primed_buffers"
+                                    ] = int(prime_stats["buffers"])
                         with _load_phase("torch_compile"):
                             torch_compile_stats = _apply_diffusion_torch_compile(
                                 pipe,
