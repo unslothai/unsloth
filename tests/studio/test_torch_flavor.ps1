@@ -1,13 +1,7 @@
 #!/usr/bin/env pwsh
-# Unit test for the torch-flavor helpers in install.ps1:
-#   ConvertTo-TorchFlavorTag  -- torch.__version__ string -> cuXXX / rocm / cpu
-#   Get-ExpectedTorchFlavorTag -- selected index URL      -> cuXXX / cpu / rocm
-#
-# These drive the post-install repair that replaces a stale CPU PyTorch with the
-# correct CUDA build (a CPU wheel satisfies "torch>=2.4,<2.11.0" so uv otherwise
-# leaves it in place, and setup.ps1 then loops on "torch cpu != required cuXXX").
-# No GPU/venv required: the helpers are pure, extracted via AST, and run in-process.
-#
+# Unit test for install.ps1's torch-flavor helpers (ConvertTo-TorchFlavorTag,
+# Get-ExpectedTorchFlavorTag) that drive the stale-CPU-PyTorch repair. Pure
+# helpers, AST-extracted and run in-process -- no GPU/venv needed.
 # Run: pwsh -NoProfile -File tests/studio/test_torch_flavor.ps1
 
 $ErrorActionPreference = "Stop"

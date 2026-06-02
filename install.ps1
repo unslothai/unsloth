@@ -1456,11 +1456,9 @@ shell.Run cmd, 0, False
         return "$baseUrl/cu126"
     }
 
-    # ── Torch flavor helpers (used to repair a stale CPU/wrong-CUDA wheel) ──
-    # Parse a torch.__version__ string into its flavor tag: cuXXX / rocm / cpu.
-    # Mirrors setup.ps1's stale-venv parse (studio/setup.ps1) so install.ps1 and
-    # setup.ps1 agree on what flavor is present. An untagged PyPI wheel (no
-    # +local label, e.g. plain "2.10.0") is treated as cpu, matching setup.ps1.
+    # ── Torch flavor helpers (to repair a stale CPU / wrong-CUDA wheel) ──
+    # torch.__version__ -> flavor tag (cuXXX / rocm / cpu); untagged wheel = cpu,
+    # matching setup.ps1's stale-venv parse.
     function ConvertTo-TorchFlavorTag {
         param([string]$TorchVersion)
         if (-not $TorchVersion) { return $null }
@@ -1470,10 +1468,8 @@ shell.Run cmd, 0, False
         return 'cpu'
     }
 
-    # Expected flavor tag for the selected index (the URL leaf): cuXXX / cpu / rocm.
-    # A ROCm index (the AMD repo.amd.com gfx* arch families, passed as
-    # $ROCmIndexUrl) maps to 'rocm'. Returns $null for an unrecognized leaf (e.g.
-    # an odd UNSLOTH_PYTORCH_MIRROR) so the repair/warning safely no-op.
+    # Expected tag from the index leaf: cuXXX / cpu / rocm ($ROCmIndexUrl or a
+    # gfx* leaf -> rocm). $null on an unknown leaf (odd mirror) so repair no-ops.
     function Get-ExpectedTorchFlavorTag {
         param([string]$TorchIndexUrl, [string]$ROCmIndexUrl)
         if (-not [string]::IsNullOrWhiteSpace($ROCmIndexUrl)) { return 'rocm' }
@@ -1486,9 +1482,8 @@ shell.Run cmd, 0, False
         return $null
     }
 
-    # Read the torch flavor tag installed in $PythonExe's venv, or $null if torch
-    # is absent / unreadable. Uses ProcessStartInfo (not a plain &) so pip/python
-    # stderr does not trip $ErrorActionPreference; mirrors setup.ps1's probe.
+    # Installed torch flavor tag in $PythonExe's venv, or $null if absent. Uses
+    # ProcessStartInfo (not &) so stderr doesn't trip $ErrorActionPreference.
     function Get-InstalledTorchTag {
         param([string]$PythonExe)
         if (-not (Test-Path -LiteralPath $PythonExe)) { return $null }
@@ -1748,23 +1743,16 @@ shell.Run cmd, 0, False
     }
 
     # ── Enforce the installed torch flavor matches the detected GPU build ──
-    # uv keeps an already-installed torch==X+cpu when resolving "torch>=2.4,<2.11.0"
-    # from a CUDA index, because PEP 440 ignores the +cpu/+cuXXX/+rocm local label
-    # when matching a public version range. So a stale CPU wheel survives the
-    # install above, and setup.ps1 then rejects the venv as "torch cpu != required
-    # cuXXX" and exits -- an unrecoverable loop, since re-running install.ps1 hits
-    # the same no-op. The migrated-venv branch above also never reinstalls torch.
-    # When a GPU build is expected, reinstall the correct CUDA wheel triplet; if
-    # that is not done (ROCm, whose install above already --force-reinstalls, or a
-    # migrated AMD venv), warn loudly rather than silently running on CPU.
-    # --no-torch / legitimately-CPU machines (expected cpu) are no-ops.
+    # PEP 440 ignores the +cpu/+cuXXX/+rocm local label in a version range, so uv
+    # keeps a stale torch==X+cpu against a CUDA index and setup.ps1 then loops on
+    # "torch cpu != required cuXXX". Reinstall the right CUDA triplet when a GPU
+    # build is expected; ROCm (already --force-reinstalled) or a migrated AMD venv
+    # just warns. --no-torch / CPU-only hosts (expected cpu) are no-ops.
     if (-not $SkipTorch) {
         $expectedTorchTag = Get-ExpectedTorchFlavorTag -TorchIndexUrl $TorchIndexUrl -ROCmIndexUrl $ROCmIndexUrl
         if ($expectedTorchTag -and $expectedTorchTag -ne 'cpu') {
             $installedTorchTag = Get-InstalledTorchTag -PythonExe $VenvPython
-            # Auto-repair CUDA from the explicit CUDA index. ROCm is left to its
-            # own --force-reinstall install above; a migrated AMD venv that slipped
-            # through is caught by the warning below.
+            # Auto-repair CUDA only; ROCm is force-reinstalled above, migrated AMD warns below.
             if ($expectedTorchTag -ne 'rocm' -and $installedTorchTag -and $installedTorchTag -ne $expectedTorchTag) {
                 substep "PyTorch flavor mismatch (installed $installedTorchTag, need $expectedTorchTag) -- reinstalling correct build..." "Yellow"
                 $torchFixExit = Invoke-InstallCommand { uv pip install --python $VenvPython "torch>=2.4,<2.11.0" torchvision torchaudio --index-url $TorchIndexUrl --reinstall-package torch --reinstall-package torchvision --reinstall-package torchaudio }
@@ -1774,8 +1762,7 @@ shell.Run cmd, 0, False
                 }
                 $installedTorchTag = Get-InstalledTorchTag -PythonExe $VenvPython
             }
-            # Safety net (all GPU hosts incl. AMD): still CPU-only when a GPU build
-            # was expected -> warn loudly so the user is not silently on CPU.
+            # Safety net (incl. AMD): GPU build expected but still CPU -> warn loudly.
             if ($installedTorchTag -eq 'cpu') {
                 Write-Host ""
                 Write-Host "  [WARN] PyTorch is CPU-only but a $expectedTorchTag GPU build was expected for this machine." -ForegroundColor Yellow

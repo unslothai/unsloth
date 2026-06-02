@@ -1766,10 +1766,8 @@ get_torch_index_url() {
     else echo "$_base/cpu"; fi
 }
 
-# ── Torch flavor helpers (used to repair a stale CPU / wrong-CUDA wheel) ──
-# Parse a torch.__version__ string ($1) into its flavor tag: cuXXX / rocm / cpu.
-# Mirrors the Windows installer + setup parse; an untagged wheel (no +local
-# label, e.g. plain "2.10.0") is treated as cpu.
+# ── Torch flavor helpers (to repair a stale CPU / wrong-CUDA wheel) ──
+# torch.__version__ ($1) -> flavor tag (cuXXX / rocm / cpu); untagged wheel = cpu.
 _torch_flavor_tag() {
     case "$1" in
         *+cu[0-9]*) printf '%s\n' "$1" | sed -n 's/.*+\(cu[0-9][0-9]*\).*/\1/p' ;;
@@ -1780,10 +1778,8 @@ _torch_flavor_tag() {
     esac
 }
 
-# Expected flavor tag for the selected index URL ($1): cuXXX / cpu / rocm.
-# AMD indexes (pytorch.org rocmX.Y and the repo.amd.com gfx* arch families) both
-# map to "rocm". Empty for an unrecognized leaf (e.g. an odd UNSLOTH_PYTORCH_MIRROR)
-# so the repair / warning safely no-op rather than misfiring.
+# Expected tag from the index leaf ($1): cuXXX / cpu / rocm (rocmX.Y and gfx* ->
+# rocm). Empty on an unknown leaf (odd mirror) so the repair safely no-ops.
 _expected_torch_flavor_tag() {
     _u="${1%/}"
     _leaf="${_u##*/}"
@@ -1795,10 +1791,8 @@ _expected_torch_flavor_tag() {
     esac
 }
 
-# Whether the index URL ($1) is safe to reinstall from with a plain --index-url +
-# version range. The repo.amd.com gfx* arch indexes are NOT: they ship a partial
-# listing and need --find-links + explicit wheels (see the Radeon install path),
-# so those are warned about rather than auto-reinstalled.
+# Whether index ($1) supports a plain --index-url reinstall. repo.amd.com gfx*
+# indexes do not (partial listing, need --find-links) -> warned, not reinstalled.
 _torch_index_repairable() {
     _u="${1%/}"
     _leaf="${_u##*/}"
@@ -2405,13 +2399,10 @@ else
 fi
 
 # ── Enforce the installed torch flavor matches the detected GPU build ──
-# uv keeps an already-installed torch==X+cpu when resolving "$TORCH_CONSTRAINT"
-# from a CUDA/ROCm index, because PEP 440 ignores the +cpu/+cuXXX/+rocm local
-# label when matching a public version range. So a stale CPU wheel survives the
-# install above and the venv silently trains on CPU (the migrated branch never
-# reinstalls torch either). When a GPU build is expected, reinstall the correct
-# wheel triplet; if that is not possible, warn loudly rather than silently
-# running on CPU. No-op for --no-torch and CPU-only / macOS hosts (expected cpu).
+# PEP 440 ignores the +cpu/+cuXXX/+rocm local label in a version range, so uv
+# keeps a stale torch==X+cpu against a GPU index and the venv silently trains on
+# CPU. Reinstall the right wheel triplet when a GPU build is expected; if it
+# can't be reinstalled, warn loudly. --no-torch / CPU-only / macOS: no-op.
 if [ "$SKIP_TORCH" = false ] && [ -n "${TORCH_INDEX_URL:-}" ]; then
     _expected_torch_tag=$(_expected_torch_flavor_tag "$TORCH_INDEX_URL")
     # Only act when a GPU build is expected (cuXXX / rocm); cpu and unknown skip.
@@ -2419,9 +2410,7 @@ if [ "$SKIP_TORCH" = false ] && [ -n "${TORCH_INDEX_URL:-}" ]; then
         _installed_torch_ver=$("$_VENV_PY" -c "import torch; print(torch.__version__)" 2>/dev/null || true)
         _installed_torch_tag=""
         [ -n "$_installed_torch_ver" ] && _installed_torch_tag=$(_torch_flavor_tag "$_installed_torch_ver")
-        # Auto-repair when the flavor is wrong AND the index supports a plain
-        # --index-url reinstall (CUDA, pytorch.org rocmX.Y). gfx* arch indexes
-        # are not reinstallable this way and fall through to the warning.
+        # Repair when flavor is wrong AND index is plain-reinstallable (gfx* -> warn).
         if [ -n "$_installed_torch_tag" ] && [ "$_installed_torch_tag" != "$_expected_torch_tag" ] \
            && [ "$(_torch_index_repairable "$TORCH_INDEX_URL")" = "yes" ]; then
             substep "PyTorch flavor mismatch (installed $_installed_torch_tag, need $_expected_torch_tag) -- reinstalling correct build..."
@@ -2433,8 +2422,7 @@ if [ "$SKIP_TORCH" = false ] && [ -n "${TORCH_INDEX_URL:-}" ]; then
             _installed_torch_tag=""
             [ -n "$_installed_torch_ver" ] && _installed_torch_tag=$(_torch_flavor_tag "$_installed_torch_ver")
         fi
-        # Safety net (all GPU hosts incl. AMD/WSL): still CPU-only when a GPU
-        # build was expected -> warn loudly so the user is not silently on CPU.
+        # Safety net (incl. AMD/WSL): GPU build expected but still CPU -> warn loudly.
         if [ "$_installed_torch_tag" = "cpu" ]; then
             substep "[WARN] PyTorch is CPU-only but a $_expected_torch_tag GPU build was expected for this machine." "$C_WARN"
             substep "[WARN] Training and GPU inference will run on CPU until this is fixed." "$C_WARN"

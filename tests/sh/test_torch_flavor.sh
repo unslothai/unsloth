@@ -1,11 +1,7 @@
 #!/bin/bash
-# Unit tests for the torch-flavor helpers in install.sh:
-#   _torch_flavor_tag         -- torch.__version__ string -> cuXXX / rocm / cpu
-#   _expected_torch_flavor_tag -- selected index URL leaf  -> cuXXX / cpu / rocm
-#
-# These drive the post-install repair that replaces a stale CPU PyTorch with the
-# correct CUDA build (a +cpu wheel satisfies "torch>=2.4,<2.11.0" so uv otherwise
-# leaves it in place and the venv silently trains on CPU).
+# Unit tests for install.sh's torch-flavor helpers (_torch_flavor_tag,
+# _expected_torch_flavor_tag, _torch_index_repairable) that drive the
+# stale-CPU-PyTorch repair. Helpers are extracted from install.sh and sourced.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

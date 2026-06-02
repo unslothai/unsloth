@@ -66,8 +66,7 @@ jobs:
           persist-credentials: false
 
       # Fast GPU-free gate: parse install.ps1 + setup.ps1 and run the PowerShell
-      # unit tests (Resolve-CudaToolkit deferred-toolkit check, torch-flavor
-      # repair helpers) before the heavy GGUF smoke.
+      # unit tests (CUDA-toolkit + torch-flavor helpers) before the heavy GGUF smoke.
       - name: PowerShell installer unit tests
         shell: pwsh
         run: |
