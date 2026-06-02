@@ -585,7 +585,7 @@
 	}
 
 	.sidebar-sticky-label {
-		@apply rounded-none bg-sidebar pt-0 pb-[8px] pl-[18px] pr-4 text-[14.5px]! leading-[17px] font-medium normal-case focus-visible:ring-0! focus-visible:outline-none transition-shadow duration-150;
+		@apply rounded-none bg-sidebar pt-0 pb-[8px] pl-[18px] pr-4 text-[14px]! leading-[17px] font-medium normal-case focus-visible:ring-0! focus-visible:outline-none transition-shadow duration-150;
 		/* Muted section-header gray, matching Gemini's "Notebooks"/"Recents".
 		   Lightened from #5f6368 so the label reads as a header, clearly
 		   lighter than the near-black nav items. */
