@@ -4240,7 +4240,6 @@ class DiffusionBackend:
                                     cache_stats = configure_lazy_gguf_cuda_cache(
                                         transformer,
                                         cuda_cache_bytes,
-                                        prefill_device = device,
                                     )
                                 if cache_stats.get("modules", 0):
                                     prepared_gguf_module_counts[
@@ -4249,20 +4248,11 @@ class DiffusionBackend:
                                     prepared_gguf_module_counts[
                                         "diffusion_cuda_cache_budget_mib"
                                     ] = int(cache_stats["budget_bytes"] // (1024 * 1024))
-                                    if cache_stats.get("prefilled_tensors", 0):
-                                        prepared_gguf_module_counts[
-                                            "diffusion_cuda_cache_prefilled_tensors"
-                                        ] = int(cache_stats["prefilled_tensors"])
-                                        prepared_gguf_module_counts[
-                                            "diffusion_cuda_cache_prefilled_mib"
-                                        ] = int(cache_stats["prefilled_bytes"] // (1024 * 1024))
                                     logger.info(
                                         "Configured balanced diffusion GGUF CUDA cache "
-                                        "for %d CPU-resident modules with budget %d MiB "
-                                        "and prefilled %d packed tensors.",
+                                        "for %d CPU-resident modules with budget %d MiB.",
                                         cache_stats["modules"],
                                         cache_stats["budget_bytes"] // (1024 * 1024),
-                                        cache_stats.get("prefilled_tensors", 0),
                                     )
                 if local_text_encoder_gguf_path:
                     from . import gguf_text_encoder as gguf_text_encoder_mod
