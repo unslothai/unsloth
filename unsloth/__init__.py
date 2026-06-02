@@ -27,6 +27,7 @@ os.environ["UNSLOTH_IS_PRESENT"] = "1"
 # errors="replace" guarantees we can never crash on an unencodable glyph.
 if platform.system() == "Windows":
     import sys as _sys
+
     for _name in ("stdout", "stderr"):
         _s = getattr(_sys, _name, None)
         try:
