@@ -1503,9 +1503,11 @@ class InferenceBackend:
     def _is_active_model_ssm(self) -> bool:
         """Check if the currently active model is a State Space Model (SSM).
 
-        For LoRA adapters, checks both the adapter name and the base model,
-        since the adapter path may not contain SSM architecture identifiers
-        even when the underlying base model is an SSM architecture.
+        Checks multiple sources since SSM architecture identifiers may not be
+        present in the model name itself:
+        1. The active model name
+        2. The base_model field (for LoRA adapters)
+        3. The export_metadata.json file (for exported/merged models)
         """
         if not self.active_model_name:
             return False
@@ -1514,12 +1516,25 @@ class InferenceBackend:
         if _is_ssm_model(self.active_model_name):
             return True
 
-        # For LoRA adapters, also check the base model
         model_info = self.models.get(self.active_model_name)
         if model_info:
+            # For LoRA adapters, check the base model
             base_model = model_info.get("base_model")
             if base_model and _is_ssm_model(base_model):
                 return True
+
+            # For exported models, check export_metadata.json
+            model_path = model_info.get("model_path")
+            if model_path:
+                try:
+                    meta_path = Path(model_path) / "export_metadata.json"
+                    if meta_path.exists():
+                        meta = json.loads(meta_path.read_text())
+                        export_base = meta.get("base_model")
+                        if export_base and _is_ssm_model(export_base):
+                            return True
+                except Exception:
+                    pass
 
         return False
 
