@@ -7,11 +7,8 @@ import {
 } from "@/components/assistant-ui/tool-ui-search-knowledge-base";
 import { getAuthToken } from "@/features/auth";
 import {
-  type SearchHit,
-  type SearchRequest,
   listKBDocuments,
   listThreadDocuments,
-  search as ragSearch,
 } from "@/features/rag/api/rag-api";
 import { apiUrl } from "@/lib/api-base";
 import { toast } from "@/lib/toast";
@@ -76,7 +73,6 @@ import {
   streamChatCompletions,
   validateModel,
 } from "./chat-api";
-import type { RagMode, RagSource } from "./chat-settings-api";
 import {
   createOpenAIContainer,
   listOpenAIContainers,
@@ -85,58 +81,6 @@ import {
   encryptProviderApiKey,
   isProviderKeyRotationError,
 } from "./providers-api";
-
-function extractMessageText(content: unknown): string {
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return "";
-  const out: string[] = [];
-  for (const part of content) {
-    if (
-      part &&
-      typeof part === "object" &&
-      (part as { type?: unknown }).type === "text" &&
-      typeof (part as { text?: unknown }).text === "string"
-    ) {
-      out.push((part as { text: string }).text);
-    }
-  }
-  return out.join(" ");
-}
-
-function buildRagRequest(
-  source: RagSource,
-  query: string,
-  resolvedThreadId: string | undefined,
-  enableRerank: boolean,
-  topK: number,
-  minScore: number,
-  mode: RagMode,
-): SearchRequest | null {
-  const base: SearchRequest = {
-    query,
-    top_k: topK,
-    mode,
-    enable_rerank: enableRerank,
-    min_score: minScore,
-  };
-  if (source.kind === "thread") {
-    if (!resolvedThreadId) return null;
-    return { ...base, thread_id: resolvedThreadId };
-  }
-  if (source.kind === "kb") {
-    return { ...base, kb_id: source.kbId };
-  }
-  return null;
-}
-
-function formatRagContext(hits: SearchHit[]): string {
-  const parts = hits.map((h) => {
-    const name = h.filename ?? `chunk ${h.chunk_index}`;
-    const pageAttr = h.page_number != null ? ` page="${h.page_number}"` : "";
-    return `<source filename="${name}"${pageAttr}>\n${h.text}\n</source>`;
-  });
-  return `<context>\nThe following documents may help answer the user's question:\n${parts.join("\n")}\n</context>`;
-}
 
 /** Server-side usage data from llama-server (via stream_options.include_usage). */
 interface ServerUsage {
@@ -1674,12 +1618,6 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         );
       }
 
-      // Temporary debug toggle: when false, pre-fetch is skipped so
-      // retrieval only runs via the LLM-invoked search_knowledge_base
-      // tool. Flip back to true to restore always-on grounding for
-      // external providers / non-tool models.
-      const ragPrefetchEnabled = false;
-
       const ragSource = runtime.ragSource;
       const ragToolEnabled = runtime.ragToolEnabled;
       // Even with RAG on, the tool + prompt nudge are useless if the
@@ -1762,46 +1700,6 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
           role: "system",
           content: systemPromptParts.join("\n\n"),
         });
-      }
-
-      if (ragPrefetchEnabled && ragToolEnabled && ragSource.kind !== "off") {
-        const lastUser = [...outboundMessages]
-          .reverse()
-          .find((m) => m.role === "user");
-        const queryText = lastUser ? extractMessageText(lastUser.content) : "";
-        if (queryText.trim()) {
-          const ragReq = buildRagRequest(
-            ragSource,
-            queryText,
-            resolvedThreadId,
-            runtime.enableRerank,
-            runtime.ragTopK,
-            runtime.ragMinScore,
-            runtime.ragMode,
-          );
-          if (ragReq) {
-            try {
-              const hits = await ragSearch(ragReq);
-              if (hits.length > 0) {
-                const nudge =
-                  "The following context was retrieved from the user's " +
-                  "attached documents. Use it to answer; cite sources as " +
-                  "[1], [2], etc. by source filename.";
-                const block = `${nudge}\n\n${formatRagContext(hits)}`;
-                if (
-                  outboundMessages[0]?.role === "system" &&
-                  typeof outboundMessages[0].content === "string"
-                ) {
-                  outboundMessages[0].content = `${block}\n\n${outboundMessages[0].content}`;
-                } else {
-                  outboundMessages.unshift({ role: "system", content: block });
-                }
-              }
-            } catch (err) {
-              console.warn("RAG retrieval failed:", err);
-            }
-          }
-        }
       }
 
       let disabledToolGuard: string | null = null;
