@@ -245,7 +245,8 @@ export function useChatModelRuntime() {
     [],
   );
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (options?: { signal?: AbortSignal }) => {
+    const signal = options?.signal;
     setModelsError(null);
     try {
       const [listRes, statusRes, lorasRes] = await Promise.all([
@@ -253,6 +254,11 @@ export function useChatModelRuntime() {
         getInferenceStatus(),
         listLoras(),
       ]);
+
+      // Cancellation can land while the requests above are in flight (e.g. the
+      // user cancels a load during this refresh). Bail before writing any
+      // backend state back into the store -- cancelLoading already cleared it.
+      if (signal?.aborted) return;
 
       setModels(listRes.models.map(toChatModelSummary));
       setLoras(lorasRes.loras.map(toLoraSummary));
@@ -395,6 +401,7 @@ export function useChatModelRuntime() {
         });
       }
     } catch (error) {
+      if (signal?.aborted) return;
       const message =
         error instanceof Error ? error.message : "Failed to load models";
       setModelsError(message);
@@ -750,7 +757,7 @@ export function useChatModelRuntime() {
                 store.setParams({ ...store.params, ...p });
               }
             }
-            await refresh();
+            await refresh({ signal: abortCtrl.signal });
           } catch (error) {
             // Skip rollback if user cancelled -- model is already being unloaded.
             if (abortCtrl.signal.aborted) throw error;
