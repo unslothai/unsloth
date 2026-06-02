@@ -46,7 +46,7 @@ if sys.platform == "win32":
         try:
             if os.path.isdir(_default_root):
                 for _ver in sorted(
-                    os.listdir(_default_root), key=_ver_key, reverse=True
+                    os.listdir(_default_root), key = _ver_key, reverse = True
                 ):
                     _bin = os.path.join(_default_root, _ver, "bin")
                     if os.path.isdir(_bin):
@@ -101,7 +101,7 @@ if sys.platform == "win32":
                         if _km:
                             _all_vers_main.append(_km.group(1))
                 if _all_vers_main:
-                    _bnb_rocm_ver = max(_all_vers_main, key=lambda v: int(v))
+                    _bnb_rocm_ver = max(_all_vers_main, key = lambda v: int(v))
         except Exception as _e:
             _logging.getLogger(__name__).warning(
                 "Windows ROCm: BNB DLL detection failed (%s); falling back to version '72'",
@@ -273,7 +273,7 @@ def get_unsloth_version() -> str:
         _Path(__file__).resolve().parents[2] / "unsloth" / "models" / "_utils.py"
     )
     try:
-        for line in version_file.read_text(encoding="utf-8").splitlines():
+        for line in version_file.read_text(encoding = "utf-8").splitlines():
             if line.startswith("__version__ = "):
                 return line.split("=", 1)[1].strip().strip('"').strip("'")
     except OSError:
@@ -318,7 +318,7 @@ async def lifespan(app: FastAPI):
     # Version switching now uses .venv_t5/ (pre-installed by setup.sh).
     overlay_dir = Path(__file__).resolve().parent.parent.parent / ".venv_overlay"
     if overlay_dir.is_dir():
-        shutil.rmtree(overlay_dir, ignore_errors=True)
+        shutil.rmtree(overlay_dir, ignore_errors = True)
 
     # Detect hardware first — sets DEVICE global used everywhere
     detect_hardware()
@@ -348,11 +348,11 @@ async def lifespan(app: FastAPI):
                 "MTP GGUFs will load without speculative decoding."
             )
             _log.warning(_msg)
-            print(f"WARNING: {_msg}", flush=True)
+            print(f"WARNING: {_msg}", flush = True)
         if _freshness.get("stale"):
             _msg = format_stale_warning(_freshness)
             _log.warning(_msg)
-            print(f"WARNING: {_msg}", flush=True)
+            print(f"WARNING: {_msg}", flush = True)
     except Exception as _probe_exc:
         import structlog as _structlog
 
@@ -383,7 +383,7 @@ async def lifespan(app: FastAPI):
         except Exception:
             pass  # non-critical
 
-    threading.Thread(target=_precache, daemon=True).start()
+    threading.Thread(target = _precache, daemon = True).start()
 
     # Initialize RSA key pair for API key encryption (external providers)
     from core.inference.key_exchange import init_key_pair
@@ -411,10 +411,10 @@ async def lifespan(app: FastAPI):
 
 # Create FastAPI app
 app = FastAPI(
-    title="Unsloth UI Backend",
-    version=UNSLOTH_VERSION,
-    description="Backend API for Unsloth UI - Training and Model Management",
-    lifespan=lifespan,
+    title = "Unsloth UI Backend",
+    version = UNSLOTH_VERSION,
+    description = "Backend API for Unsloth UI - Training and Model Management",
+    lifespan = lifespan,
 )
 
 # Initialize structured logging
@@ -422,8 +422,8 @@ from loggers.config import LogConfig
 from loggers.handlers import LoggingMiddleware
 
 logger = LogConfig.setup_logging(
-    service_name="unsloth-studio-backend",
-    env=os.getenv("ENVIRONMENT_TYPE", "production"),
+    service_name = "unsloth-studio-backend",
+    env = os.getenv("ENVIRONMENT_TYPE", "production"),
 )
 
 app.add_middleware(LoggingMiddleware)
@@ -608,7 +608,7 @@ class MaxBodyMiddleware:
         max_bytes_getter,
         protected_prefixes: tuple,
         upload_passthrough_prefixes: tuple = (),
-        upload_passthrough_max_bytes_getter=None,
+        upload_passthrough_max_bytes_getter = None,
     ):
         self.app = app
         self.max_bytes_getter = max_bytes_getter
@@ -704,21 +704,21 @@ class MaxBodyMiddleware:
 
 app.add_middleware(
     MaxBodyMiddleware,
-    max_bytes_getter=default_request_body_limit_bytes,
-    protected_prefixes=_BODY_PROTECTED_PREFIXES,
-    upload_passthrough_prefixes=_BODY_UPLOAD_PASSTHROUGH_PREFIXES,
-    upload_passthrough_max_bytes_getter=_get_upload_passthrough_request_max_bytes,
+    max_bytes_getter = default_request_body_limit_bytes,
+    protected_prefixes = _BODY_PROTECTED_PREFIXES,
+    upload_passthrough_prefixes = _BODY_UPLOAD_PASSTHROUGH_PREFIXES,
+    upload_passthrough_max_bytes_getter = _get_upload_passthrough_request_max_bytes,
 )
 
 
 from starlette.responses import RedirectResponse as _RedirectResponse  # noqa: E402
 
 
-@app.get("/recipes", include_in_schema=False)
-@app.get("/recipes/{rest:path}", include_in_schema=False)
+@app.get("/recipes", include_in_schema = False)
+@app.get("/recipes/{rest:path}", include_in_schema = False)
 async def _recipes_redirect(rest: str = ""):
     target = "/data-recipes" + (("/" + rest) if rest else "")
-    return _RedirectResponse(url=target, status_code=308)
+    return _RedirectResponse(url = target, status_code = 308)
 
 
 # CORS middleware
@@ -738,37 +738,37 @@ else:
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=_cors_origins,
-    allow_origin_regex=_cors_origin_regex,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins = _cors_origins,
+    allow_origin_regex = _cors_origin_regex,
+    allow_credentials = True,
+    allow_methods = ["*"],
+    allow_headers = ["*"],
 )
 
 # ============ Register API Routes ============
 
 # Register routers
-app.include_router(auth_router, prefix="/api/auth", tags=["auth"])
-app.include_router(training_router, prefix="/api/train", tags=["training"])
-app.include_router(models_router, prefix="/api/models", tags=["models"])
-app.include_router(chat_history_router, prefix="/api/chat", tags=["chat"])
-app.include_router(inference_router, prefix="/api/inference", tags=["inference"])
+app.include_router(auth_router, prefix = "/api/auth", tags = ["auth"])
+app.include_router(training_router, prefix = "/api/train", tags = ["training"])
+app.include_router(models_router, prefix = "/api/models", tags = ["models"])
+app.include_router(chat_history_router, prefix = "/api/chat", tags = ["chat"])
+app.include_router(inference_router, prefix = "/api/inference", tags = ["inference"])
 # Studio-only inference endpoints (cancel, etc.) are intentionally NOT
 # exposed on the /v1 OpenAI-compat prefix below.
-app.include_router(inference_studio_router, prefix="/api/inference", tags=["inference"])
+app.include_router(inference_studio_router, prefix = "/api/inference", tags = ["inference"])
 
 # OpenAI-compatible endpoints: mount the same inference router at /v1
 # so external tools (Open WebUI, SillyTavern, etc.) can use the
 # standard /v1/chat/completions path.
-app.include_router(inference_router, prefix="/v1", tags=["openai-compat"])
-app.include_router(providers_router, prefix="/api/providers", tags=["providers"])
-app.include_router(settings_router, prefix="/api/settings", tags=["settings"])
-app.include_router(mcp_servers_router, prefix="/api/mcp/servers", tags=["mcp"])
-app.include_router(datasets_router, prefix="/api/datasets", tags=["datasets"])
-app.include_router(data_recipe_router, prefix="/api/data-recipe", tags=["data-recipe"])
-app.include_router(export_router, prefix="/api/export", tags=["export"])
+app.include_router(inference_router, prefix = "/v1", tags = ["openai-compat"])
+app.include_router(providers_router, prefix = "/api/providers", tags = ["providers"])
+app.include_router(settings_router, prefix = "/api/settings", tags = ["settings"])
+app.include_router(mcp_servers_router, prefix = "/api/mcp/servers", tags = ["mcp"])
+app.include_router(datasets_router, prefix = "/api/datasets", tags = ["datasets"])
+app.include_router(data_recipe_router, prefix = "/api/data-recipe", tags = ["data-recipe"])
+app.include_router(export_router, prefix = "/api/export", tags = ["export"])
 app.include_router(
-    training_history_router, prefix="/api/train", tags=["training-history"]
+    training_history_router, prefix = "/api/train", tags = ["training-history"]
 )
 
 
@@ -808,7 +808,7 @@ async def health_check(request: Request):
         from fastapi.security import HTTPAuthorizationCredentials
 
         creds = HTTPAuthorizationCredentials(
-            scheme="Bearer", credentials=auth.split(" ", 1)[1]
+            scheme = "Bearer", credentials = auth.split(" ", 1)[1]
         )
         # Must await: a bare coroutine is truthy and would skip the auth check.
         subject = await _gcs(creds)
@@ -1069,7 +1069,7 @@ def setup_frontend(app: FastAPI, build_path: Path):
     # Mount assets
     assets_dir = build_path / "assets"
     if assets_dir.exists():
-        app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
+        app.mount("/assets", StaticFiles(directory = assets_dir), name = "assets")
 
     def _build_index_response(request: Request) -> Response:
         content = (build_path / "index.html").read_bytes()
@@ -1086,9 +1086,9 @@ def setup_frontend(app: FastAPI, build_path: Path):
         if nonce:
             headers[_CSP_SCRIPT_NONCE_HEADER] = nonce
         return Response(
-            content=content,
-            media_type="text/html",
-            headers=headers,
+            content = content,
+            media_type = "text/html",
+            headers = headers,
         )
 
     @app.get("/")
@@ -1104,7 +1104,7 @@ def setup_frontend(app: FastAPI, build_path: Path):
 
         # Block path traversal — ensure resolved path stays inside build_path
         if not file_path.is_relative_to(build_path.resolve()):
-            return Response(status_code=403)
+            return Response(status_code = 403)
 
         if file_path.is_file():
             return FileResponse(file_path)
