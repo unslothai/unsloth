@@ -336,6 +336,44 @@ function Uninstall-UnslothStudio {
         Remove-Item -LiteralPath 'HKCU:\Software\Unsloth' -Recurse -Force -ErrorAction SilentlyContinue
     } catch { }
 
+    # ── Windows-on-Arm WSL-fallback artifacts ──
+    # The ARM64+NVIDIA fallback installs Studio INSIDE WSL and drops a native shim + launcher under
+    # %LOCALAPPDATA%\Unsloth (note: "Unsloth", not "Unsloth Studio") with a PATH entry, while the real
+    # install lives in the WSL distro(s). The native cleanup above misses all of that -- handle it here.
+    _Step "Removing WSL-fallback artifacts (shim, launcher, PATH entry, WSL install)..."
+    $unslothDir = if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA "Unsloth" } else { $null }
+    if ($unslothDir) {
+        $shimDir = (Join-Path $unslothDir "bin").TrimEnd('\', '/')
+        try {
+            $rk = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)
+            if ($rk) {
+                try {
+                    $rp = $rk.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+                    if ($rp) {
+                        $kept = @(); $removed = $false
+                        foreach ($e in ($rp -split ';')) {
+                            if ([string]::IsNullOrWhiteSpace($e)) { continue }
+                            if (([Environment]::ExpandEnvironmentVariables($e).TrimEnd('\', '/')) -ieq $shimDir) { $removed = $true; _Substep "removed PATH entry: $e" "Green"; continue }
+                            $kept += $e
+                        }
+                        if ($removed) { $rk.SetValue('Path', ($kept -join ';'), [Microsoft.Win32.RegistryValueKind]::ExpandString) }
+                    }
+                } finally { $rk.Close() }
+            }
+        } catch { }
+        _RemovePath $unslothDir
+    }
+    # Remove the Studio install inside each WSL distro (the real GPU install + any CUDA llama.cpp build).
+    if (Get-Command wsl.exe -ErrorAction SilentlyContinue) {
+        try {
+            $distros = @(((& wsl.exe --list --quiet 2>$null) -join "`n").Replace([char]0, '') -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+            foreach ($d in $distros) {
+                & wsl.exe -d $d -u root -- bash -lc 'pkill -9 -f "unsloth studio" 2>/dev/null; pkill -9 -f "llama-server" 2>/dev/null; rm -rf /root/.unsloth /home/*/.unsloth /root/llama-cuda 2>/dev/null; true' 2>$null
+                if ($LASTEXITCODE -eq 0) { _Substep "cleaned Unsloth from WSL distro: $d" "Green" }
+            }
+        } catch { }
+    }
+
     Write-Host ""
     Write-Host "Unsloth Studio uninstalled."
     Write-Host "Note: Hugging Face model cache at %USERPROFILE%\.cache\huggingface was left in place."

@@ -1587,6 +1587,9 @@ shell.Run cmd, 0, False
                     $sc.Save()
                 }
                 step "shortcuts" "created Desktop + Start Menu shortcuts (launch WSL Studio + open browser)" "Green"
+                # Refresh the shell icon cache so the brand-new .lnk icons render immediately instead of
+                # showing blank (Explorer caches per-.lnk icons; programmatically-created links often need a poke).
+                try { & "$env:SystemRoot\System32\ie4uinit.exe" -show 2>$null } catch {}
             } catch {
                 substep "(could not create shortcuts: $($_.Exception.Message))" "Yellow"
             }

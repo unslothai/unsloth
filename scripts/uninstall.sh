@@ -247,7 +247,6 @@ case "$_os" in
                 # shellcheck disable=SC2016
                 # $env:APPDATA is a PowerShell expansion; intentionally literal at shell level.
                 powershell.exe -NoProfile -Command '
-                    $names = @("Desktop","StartMenu");
                     $dirs = @(
                         [Environment]::GetFolderPath("Desktop"),
                         (Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs")
@@ -256,6 +255,14 @@ case "$_os" in
                         if (-not $d) { continue }
                         $p = Join-Path $d "Unsloth Studio.lnk";
                         if (Test-Path -LiteralPath $p) { Remove-Item -LiteralPath $p -Force }
+                    }
+                    # WSL-fallback native shim/launcher dir (%LOCALAPPDATA%\Unsloth) + its PATH entry.
+                    $ud = if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA "Unsloth" } else { $null };
+                    if ($ud) {
+                        $shim = (Join-Path $ud "bin").TrimEnd("\","/");
+                        $up = [Environment]::GetEnvironmentVariable("Path","User");
+                        if ($up) { [Environment]::SetEnvironmentVariable("Path", (($up -split ";" | Where-Object { $_ -and ($_.TrimEnd("\","/") -ine $shim) }) -join ";"), "User") }
+                        if (Test-Path -LiteralPath $ud) { Remove-Item -LiteralPath $ud -Recurse -Force -ErrorAction SilentlyContinue }
                     }' >/dev/null 2>&1 || true
             fi
         fi
