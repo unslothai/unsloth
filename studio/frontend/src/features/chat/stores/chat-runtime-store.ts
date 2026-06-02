@@ -319,6 +319,8 @@ type ChatRuntimeStore = {
   autoHealToolCalls: boolean;
   maxToolCallsPerMessage: number;
   toolCallTimeout: number;
+  autoUnloadEnabled: boolean;
+  autoUnloadIdleMinutes: number;
   kvCacheDtype: string | null;
   loadedKvCacheDtype: string | null;
   speculativeType: string | null;
@@ -391,6 +393,8 @@ type ChatRuntimeStore = {
   setAutoHealToolCalls: (enabled: boolean) => void;
   setMaxToolCallsPerMessage: (value: number) => void;
   setToolCallTimeout: (value: number) => void;
+  setAutoUnloadEnabled: (enabled: boolean) => void;
+  setAutoUnloadIdleMinutes: (value: number) => void;
   setKvCacheDtype: (dtype: string | null) => void;
   setSpeculativeType: (type: string | null) => void;
   setSpecDraftNMax: (value: number | null) => void;
@@ -420,7 +424,9 @@ type ScalarSettingKey =
   | "allowArtifactNetworkAccess"
   | "autoHealToolCalls"
   | "maxToolCallsPerMessage"
-  | "toolCallTimeout";
+  | "toolCallTimeout"
+  | "autoUnloadEnabled"
+  | "autoUnloadIdleMinutes";
 
 type PresetHydrationVersions = {
   customPresets: number;
@@ -457,6 +463,8 @@ const SCALAR_SETTING_KEYS = [
   "autoHealToolCalls",
   "maxToolCallsPerMessage",
   "toolCallTimeout",
+  "autoUnloadEnabled",
+  "autoUnloadIdleMinutes",
 ] as const satisfies readonly ScalarSettingKey[];
 
 const inferenceParamMutationVersions = Object.fromEntries(
@@ -652,6 +660,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   autoHealToolCalls: true,
   maxToolCallsPerMessage: 25,
   toolCallTimeout: 5,
+  autoUnloadEnabled: false,
+  autoUnloadIdleMinutes: 10,
   kvCacheDtype: null,
   loadedKvCacheDtype: null,
   speculativeType: "auto",
@@ -994,6 +1004,24 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         state.toolCallTimeout,
       );
       return { toolCallTimeout };
+    }),
+  setAutoUnloadEnabled: (autoUnloadEnabled) =>
+    set((state) => {
+      setScalarSettingVersion(
+        "autoUnloadEnabled",
+        autoUnloadEnabled,
+        state.autoUnloadEnabled,
+      );
+      return { autoUnloadEnabled };
+    }),
+  setAutoUnloadIdleMinutes: (autoUnloadIdleMinutes) =>
+    set((state) => {
+      setScalarSettingVersion(
+        "autoUnloadIdleMinutes",
+        autoUnloadIdleMinutes,
+        state.autoUnloadIdleMinutes,
+      );
+      return { autoUnloadIdleMinutes };
     }),
   setKvCacheDtype: (kvCacheDtype) => set({ kvCacheDtype }),
   setSpeculativeType: (speculativeType) => set({ speculativeType }),

@@ -28,6 +28,8 @@ export interface PersistedChatSettings {
   autoHealToolCalls?: boolean;
   maxToolCallsPerMessage?: number;
   toolCallTimeout?: number;
+  autoUnloadEnabled?: boolean;
+  autoUnloadIdleMinutes?: number;
 }
 
 interface ChatSettingsResponse {

@@ -171,6 +171,11 @@ class ChatSettingsPayload(BaseModel):
     autoHealToolCalls: Optional[bool] = None
     maxToolCallsPerMessage: Optional[int] = Field(default = None, ge = 1)
     toolCallTimeout: Optional[int] = Field(default = None, ge = 1)
+    # Idle-unload watchdog (issue #5650). When ``autoUnloadEnabled`` is
+    # true, the loaded model is unloaded after ``autoUnloadIdleMinutes``
+    # of inactivity. Cap mirrors the watchdog's clamp (1 min .. 24 h).
+    autoUnloadEnabled: Optional[bool] = None
+    autoUnloadIdleMinutes: Optional[int] = Field(default = None, ge = 1, le = 1440)
 
 
 class ChatSettingsResponse(BaseModel):

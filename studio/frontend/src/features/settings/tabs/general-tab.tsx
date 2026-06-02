@@ -101,6 +101,16 @@ export function GeneralTab() {
   const setHfToken = useChatRuntimeStore((s) => s.setHfToken);
   const autoTitle = useChatRuntimeStore((s) => s.autoTitle);
   const setAutoTitle = useChatRuntimeStore((s) => s.setAutoTitle);
+  const autoUnloadEnabled = useChatRuntimeStore((s) => s.autoUnloadEnabled);
+  const setAutoUnloadEnabled = useChatRuntimeStore(
+    (s) => s.setAutoUnloadEnabled,
+  );
+  const autoUnloadIdleMinutes = useChatRuntimeStore(
+    (s) => s.autoUnloadIdleMinutes,
+  );
+  const setAutoUnloadIdleMinutes = useChatRuntimeStore(
+    (s) => s.setAutoUnloadIdleMinutes,
+  );
   const chatOnly = usePlatformStore((s) => s.chatOnly);
   const redirectTo = `${pathname}${search}`;
 
@@ -181,6 +191,39 @@ export function GeneralTab() {
         >
           <Switch checked={autoTitle} onCheckedChange={setAutoTitle} />
         </SettingsRow>
+      </SettingsSection>
+
+      <SettingsSection title="Model lifecycle">
+        <SettingsRow
+          label="Auto-unload idle model"
+          description="Free RAM and VRAM by unloading the model after a period of inactivity. The next request reloads it automatically."
+        >
+          <Switch
+            checked={autoUnloadEnabled}
+            onCheckedChange={setAutoUnloadEnabled}
+          />
+        </SettingsRow>
+        {autoUnloadEnabled && (
+          <SettingsRow
+            label="Idle timeout"
+            description="Minutes of inactivity before unloading. Cap is 1440 (24 hours)."
+          >
+            <Input
+              type="number"
+              min={1}
+              max={1440}
+              step={1}
+              value={autoUnloadIdleMinutes}
+              onChange={(e) => {
+                const next = Number(e.target.value);
+                if (Number.isInteger(next) && next >= 1 && next <= 1440) {
+                  setAutoUnloadIdleMinutes(next);
+                }
+              }}
+              className="h-8 w-[120px]"
+            />
+          </SettingsRow>
+        )}
       </SettingsSection>
 
       {!chatOnly && (

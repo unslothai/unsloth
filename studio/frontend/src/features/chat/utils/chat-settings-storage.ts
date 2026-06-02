@@ -226,6 +226,8 @@ function sanitizeChatSettings(value: unknown): PersistedChatSettings {
   const autoHealToolCalls = sanitizeBool(value.autoHealToolCalls);
   const maxToolCallsPerMessage = sanitizeInt(value.maxToolCallsPerMessage, 1);
   const toolCallTimeout = sanitizeInt(value.toolCallTimeout, 1);
+  const autoUnloadEnabled = sanitizeBool(value.autoUnloadEnabled);
+  const autoUnloadIdleMinutes = sanitizeInt(value.autoUnloadIdleMinutes, 1);
 
   if (inferenceParams) settings.inferenceParams = inferenceParams;
   if (customPresets !== undefined) settings.customPresets = customPresets;
@@ -250,6 +252,12 @@ function sanitizeChatSettings(value: unknown): PersistedChatSettings {
     settings.maxToolCallsPerMessage = maxToolCallsPerMessage;
   }
   if (toolCallTimeout !== undefined) settings.toolCallTimeout = toolCallTimeout;
+  if (autoUnloadEnabled !== undefined) {
+    settings.autoUnloadEnabled = autoUnloadEnabled;
+  }
+  if (autoUnloadIdleMinutes !== undefined) {
+    settings.autoUnloadIdleMinutes = autoUnloadIdleMinutes;
+  }
 
   return settings;
 }
@@ -307,7 +315,9 @@ export function isEmptyChatSettings(settings: PersistedChatSettings): boolean {
     settings.allowArtifactNetworkAccess === undefined &&
     settings.autoHealToolCalls === undefined &&
     settings.maxToolCallsPerMessage === undefined &&
-    settings.toolCallTimeout === undefined
+    settings.toolCallTimeout === undefined &&
+    settings.autoUnloadEnabled === undefined &&
+    settings.autoUnloadIdleMinutes === undefined
   );
 }
 
