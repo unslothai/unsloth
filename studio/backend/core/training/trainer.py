@@ -2479,22 +2479,49 @@ class UnslothTrainer:
                         status_message = f"Streamed {len(dataset)} rows from HuggingFace"
                     )
                 elif dataset_streaming:
-                    # User requested streaming mode for large datasets
+                    # User requested streaming mode for large datasets.
+                    # Stream data incrementally to reduce peak memory usage.
+                    # Default limit prevents OOM on very large datasets.
+                    STREAMING_MAX_ROWS = 500_000  # Reasonable default for most hardware
                     logger.info(
-                        f"[dataset-streaming] Streaming mode enabled for {dataset_source}\n"
+                        f"[dataset-streaming] Streaming mode enabled for {dataset_source} "
+                        f"(max {STREAMING_MAX_ROWS:,} rows)\n"
                     )
                     self._update_progress(
                         status_message = f"Streaming dataset: {dataset_source}..."
                     )
                     stream = load_dataset(**load_kwargs, streaming = True)
-                    # Convert streaming dataset to in-memory for training
-                    # Note: This still loads all data but does so incrementally
-                    dataset = Dataset.from_list(list(stream))
+
+                    # Process in batches to reduce peak memory usage
+                    BATCH_SIZE = 10_000
+                    rows = []
+                    row_count = 0
+                    for item in stream:
+                        rows.append(item)
+                        row_count += 1
+                        if row_count >= STREAMING_MAX_ROWS:
+                            logger.warning(
+                                f"[dataset-streaming] Reached streaming limit of "
+                                f"{STREAMING_MAX_ROWS:,} rows. Use dataset slicing for "
+                                f"more control over which rows to load.\n"
+                            )
+                            break
+                        if row_count % BATCH_SIZE == 0:
+                            self._update_progress(
+                                status_message = f"Streaming: {row_count:,} rows loaded..."
+                            )
+                            # Check for stop request during streaming
+                            if self.should_stop:
+                                logger.info("Stopped during dataset streaming\n")
+                                return None
+
+                    dataset = Dataset.from_list(rows)
+                    del rows  # Free memory immediately
                     logger.info(
-                        f"[dataset-streaming] Streamed {len(dataset)} rows from {dataset_source}\n"
+                        f"[dataset-streaming] Streamed {len(dataset):,} rows from {dataset_source}\n"
                     )
                     self._update_progress(
-                        status_message = f"Streamed {len(dataset)} rows from HuggingFace"
+                        status_message = f"Streamed {len(dataset):,} rows from HuggingFace"
                     )
                 else:
                     self._update_progress(
