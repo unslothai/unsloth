@@ -49,14 +49,19 @@ import {
 } from "./api/providers-api";
 import type { ExternalProviderConfig } from "./external-providers";
 import {
+  CODEX_PROVIDER_TYPE,
   CUSTOM_BACKEND_PROVIDER_TYPE,
   CUSTOM_PROVIDER_PRESETS,
   allowsManualModelIdsWithCatalog,
+  CODEX_DEFAULT_PARALLEL_CALLS,
+  CODEX_MAX_PARALLEL_CALLS,
+  clampCodexParallelCalls,
   customProviderBaseUrlPlaceholder,
   customProviderDisplayName,
   customProviderModelIdsPlaceholder,
   customPresetSkipsApiKeyField,
   getExternalProviderApiKey,
+  isCodexProviderType,
   isCustomProviderType,
   LEGACY_CUSTOM_PROVIDER_TYPE,
   removeExternalProviderApiKey,
@@ -66,6 +71,8 @@ import {
   supportsRemoteModelCatalog,
   toExternalBackendProviderType,
 } from "./external-providers";
+import { fetchCodexStatus, type CodexStatus } from "./api/codex-api";
+import { CodexLoginButton } from "./components/codex-login-button";
 import { useExternalProvidersStore } from "./stores/external-providers-store";
 
 /** Matches navbar / thread layout easing (see index.css --ease-out-quart) */
@@ -221,6 +228,20 @@ export function ChatProvidersSettings({
     null,
   );
   const [registry, setRegistry] = useState<ProviderRegistryEntry[]>([]);
+  // Codex CLI / SDK availability snapshot. Used to (a) decide whether
+  // to render the synthetic Codex registry row, and (b) drive the
+  // sign-in button when the host is installed but logged out.
+  const [codexStatus, setCodexStatus] = useState<CodexStatus | null>(null);
+  const refreshCodexStatus = async () => {
+    try {
+      const next = await fetchCodexStatus();
+      setCodexStatus(next);
+      return next;
+    } catch {
+      setCodexStatus(null);
+      return null;
+    }
+  };
   const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [selectedModelIds, setSelectedModelIds] = useState<string[]>([]);
   const [syncingProviders, setSyncingProviders] = useState(false);
@@ -231,6 +252,14 @@ export function ChatProvidersSettings({
   const [modelSearchQuery, setModelSearchQuery] = useState("");
   const [customProviderName, setCustomProviderName] = useState("Custom");
   const [isReasoningModel, setIsReasoningModel] = useState(false);
+  // Per-Codex-connection fan-out width. Stored on the provider so
+  // restoring it after a refresh / page reload does not collapse back
+  // to single-call. Clamped to [1, MAX] at every write because the
+  // input is a plain `<input type="number">` and a hand-edited
+  // localStorage entry could otherwise overflow.
+  const [codexParallelCalls, setCodexParallelCalls] = useState<number>(
+    CODEX_DEFAULT_PARALLEL_CALLS,
+  );
   const reduceMotion = useReducedMotion();
   const connectionsEnabled = useExternalProvidersStore(
     (s) => s.connectionsEnabled,
@@ -239,9 +268,15 @@ export function ChatProvidersSettings({
     (s) => s.setConnectionsEnabled,
   );
   const isCustomProvider = isCustomProviderType(providerType);
+  const isCodexProvider = isCodexProviderType(providerType);
   // Local presets (Ollama, llama.cpp) never use API keys — hide the field.
-  // vLLM may optionally use a bearer token on secured deployments.
-  const showApiKeyField = !customPresetSkipsApiKeyField(providerType);
+  // vLLM may optionally use a bearer token on secured deployments. Codex
+  // dispatches via the local CLI / SDK, no HTTP API key either.
+  const showApiKeyField =
+    !customPresetSkipsApiKeyField(providerType) && !isCodexProvider;
+  // Codex behaves like a "custom" provider for the gate logic below: the
+  // backend skips the api_key requirement entirely for `provider_type=codex`.
+  const providerSkipsApiKey = isCustomProvider || isCodexProvider;
   const showReasoningToggle = supportsProviderReasoningToggle(providerType);
 
   const registryByType = useMemo(
@@ -279,7 +314,7 @@ export function ChatProvidersSettings({
   const missingModelCatalogBaseUrl =
     supportsRemoteModelCatalog(providerType) && baseUrlDraft.trim().length === 0;
   const missingModelCatalogApiKey =
-    !isCustomProvider && !isCuratedModelList && apiKey.trim().length === 0;
+    !providerSkipsApiKey && !isCuratedModelList && apiKey.trim().length === 0;
   const loadModelsDisabled =
     modelsLoading ||
     mutatingProvider ||
@@ -330,8 +365,18 @@ export function ChatProvidersSettings({
     // providers and local OpenAI-compat presets stay empty until the user
     // clicks "Load available models".
     const seedDefaults = entry.model_list_mode === "curated";
-    setAvailableModels(seedDefaults ? [...entry.default_models] : []);
-    setSelectedModelIds([]);
+    const defaults = seedDefaults ? [...entry.default_models] : [];
+    setAvailableModels(defaults);
+    // Codex is a local CLI, not a metered cloud account, so checking all of
+    // the SDK's default model ids by default is safe and avoids the
+    // first-run UX trap where users create the connection, never check any
+    // model, and then the "Connected" tab silently never appears in the
+    // chat model picker. Anthropic / OpenAI / etc. still need explicit
+    // model selection because the choice has billing and capability
+    // consequences.
+    setSelectedModelIds(
+      providerType === CODEX_PROVIDER_TYPE ? defaults : [],
+    );
     setManualModelIds("");
     setModelSearchQuery("");
     setBaseUrlDraft("");
@@ -354,12 +399,42 @@ export function ChatProvidersSettings({
       }
       let syncSucceeded = false;
       try {
-        const [registryRows, configRows] = await Promise.all([
-          listProviderRegistry(),
-          listProviderConfigs(),
-        ]);
+        // Probe Codex availability in parallel with the registry / configs.
+        // Codex stays `hidden:true` in the backend registry so it is filtered
+        // out of `/api/providers/registry`; we synthesise a row here when
+        // the host has both the CLI and the SDK installed.
+        const [registryRowsRaw, configRows, codexStatusRaw] = await Promise.all(
+          [
+            listProviderRegistry(),
+            listProviderConfigs(),
+            fetchCodexStatus().catch(() => null),
+          ],
+        );
         if (!isMounted) return;
         syncSucceeded = true;
+        setCodexStatus(codexStatusRaw);
+        const registryRows: ProviderRegistryEntry[] =
+          codexStatusRaw && codexStatusRaw.installed &&
+          !registryRowsRaw.some(
+            (entry) => entry.provider_type === CODEX_PROVIDER_TYPE,
+          )
+            ? [
+                ...registryRowsRaw,
+                {
+                  provider_type: CODEX_PROVIDER_TYPE,
+                  display_name: "OpenAI Codex (local CLI)",
+                  base_url: "",
+                  default_models: codexStatusRaw.supported_models ?? [],
+                  supports_streaming: true,
+                  supports_vision: false,
+                  supports_tool_calling: true,
+                  model_list_mode: "curated",
+                  notes: codexStatusRaw.logged_in
+                    ? "Dispatches chat turns through the local Codex CLI."
+                    : "Sign in with `codex login` before chatting.",
+                } as ProviderRegistryEntry,
+              ]
+            : registryRowsRaw;
         setRegistry(registryRows);
         setProviderType((current) => {
           if (
@@ -421,6 +496,15 @@ export function ChatProvidersSettings({
               isReasoningModel: supportsProviderReasoningToggle(uiProviderType)
                 ? existing?.isReasoningModel === true
                 : undefined,
+              // Preserve the per-Codex fan-out width on sync. The
+              // backend provider row does not carry it (it lives in
+              // localStorage only), so we read it from `existing` and
+              // skip the field entirely for non-Codex providers.
+              codexParallelCalls: isCodexProviderType(uiProviderType)
+                ? clampCodexParallelCalls(
+                    existing?.codexParallelCalls ?? CODEX_DEFAULT_PARALLEL_CALLS,
+                  )
+                : undefined,
               createdAt: existing?.createdAt ?? createdAt,
               updatedAt,
             };
@@ -478,13 +562,27 @@ export function ChatProvidersSettings({
     setModelSearchQuery("");
     setCustomProviderName(customProviderDisplayName(providerType));
     setIsReasoningModel(false);
+    setCodexParallelCalls(CODEX_DEFAULT_PARALLEL_CALLS);
   }
 
   function openAddProvider() {
     resetForm();
     const entry = providerType ? registryByType.get(providerType) : null;
     if (entry?.model_list_mode === "curated") {
-      setAvailableModels([...entry.default_models]);
+      const defaults = [...entry.default_models];
+      setAvailableModels(defaults);
+      // Mirror the providerType-change effect's first-run behavior:
+      // Codex is the local CLI so pre-checking the default models lets
+      // the user click Save without re-ticking anything. Without this
+      // the resetForm above would zero selectedModelIds and the form
+      // would fail the "Add at least one model ID" save guard even
+      // though the round 7 Codex auto-enable effect would have
+      // populated them. Triggered when the user clicks Add connection
+      // while Codex was already the providerType (e.g. after closing
+      // and reopening the form).
+      setSelectedModelIds(
+        providerType === CODEX_PROVIDER_TYPE ? defaults : [],
+      );
     }
     setPage("form");
   }
@@ -566,7 +664,7 @@ export function ChatProvidersSettings({
       );
       return;
     }
-    if (!isCustomProvider && !apiKey.trim()) {
+    if (!providerSkipsApiKey && !apiKey.trim()) {
       toast.error("Add an API key first.");
       return;
     }
@@ -638,7 +736,7 @@ export function ChatProvidersSettings({
     const displayName = isCustomProvider
       ? customProviderName.trim() || customProviderDisplayName(providerType)
       : (selectedRegistryEntry?.display_name ?? providerType);
-    if (!isCustomProvider && !apiKey.trim()) {
+    if (!providerSkipsApiKey && !apiKey.trim()) {
       toast.error("API key is required.");
       return;
     }
@@ -715,6 +813,11 @@ export function ChatProvidersSettings({
         isReasoningModel: supportsProviderReasoningToggle(uiProviderType)
           ? isReasoningModel
           : undefined,
+        // Persist the fan-out width on the Codex provider only; other
+        // providers must not carry the field through normalization.
+        codexParallelCalls: isCodexProviderType(uiProviderType)
+          ? clampCodexParallelCalls(codexParallelCalls)
+          : undefined,
         createdAt,
         updatedAt,
       };
@@ -747,7 +850,9 @@ export function ChatProvidersSettings({
     }
     const isEditingCustomProvider =
       isCustomProviderType(existing.providerType);
-    if (!isEditingCustomProvider && !apiKey.trim()) {
+    const editingProviderSkipsApiKey =
+      isEditingCustomProvider || isCodexProviderType(existing.providerType);
+    if (!editingProviderSkipsApiKey && !apiKey.trim()) {
       toast.error("API key is required.");
       return;
     }
@@ -833,6 +938,12 @@ export function ChatProvidersSettings({
                 )
                   ? isReasoningModel
                   : undefined,
+                // Carry through the fan-out width for Codex; clear it on
+                // every other provider type so a left-over value cannot
+                // hitchhike on the persisted record.
+                codexParallelCalls: isCodexProviderType(existing.providerType)
+                  ? clampCodexParallelCalls(codexParallelCalls)
+                  : undefined,
                 updatedAt,
               }
             : provider,
@@ -864,6 +975,13 @@ export function ChatProvidersSettings({
       supportsProviderReasoningToggle(provider.providerType)
         ? provider.isReasoningModel === true
         : false,
+    );
+    setCodexParallelCalls(
+      isCodexProviderType(provider.providerType)
+        ? clampCodexParallelCalls(
+            provider.codexParallelCalls ?? CODEX_DEFAULT_PARALLEL_CALLS,
+          )
+        : CODEX_DEFAULT_PARALLEL_CALLS,
     );
     if (
       isCustomProviderType(provider.providerType) &&
@@ -937,6 +1055,30 @@ export function ChatProvidersSettings({
 
   async function testProvider(provider: ExternalProviderConfig) {
     const savedKey = getExternalProviderApiKey(provider.id).trim();
+    // Codex dispatches via the local CLI / SDK -- there is no remote
+    // endpoint to ping. Reuse `/api/codex/status` as the test result.
+    if (isCodexProviderType(provider.providerType)) {
+      try {
+        const status = await fetchCodexStatus();
+        if (!status.installed) {
+          toast.error("Codex CLI or SDK is not available on this host.");
+          return;
+        }
+        if (!status.logged_in) {
+          toast.info("Sign in to Codex before testing this connection.");
+          return;
+        }
+        toast.success(
+          status.version
+            ? `Codex is available (${status.version}).`
+            : "Codex is available.",
+        );
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Unknown error";
+        toast.error(`Codex status check failed: ${message}`);
+      }
+      return;
+    }
     // Local OpenAI-compat presets skip API keys — run the connection check.
     if (!savedKey && !supportsRemoteModelCatalog(provider.providerType)) {
       if (isCustomProviderType(provider.providerType)) {
@@ -1087,6 +1229,66 @@ export function ChatProvidersSettings({
                   </SelectContent>
                 </Select>
               </div>
+
+              {isCodexProvider &&
+              codexStatus?.installed &&
+              !codexStatus.logged_in ? (
+                <div className="grid grid-cols-[minmax(150px,0.8fr)_minmax(260px,1.2fr)] items-center gap-4 px-4 py-3 max-sm:grid-cols-1">
+                  <div className="flex min-w-0 flex-col gap-0.5">
+                    <Label className="text-sm font-medium">
+                      Codex sign-in
+                    </Label>
+                    <p className="text-xs leading-snug text-muted-foreground">
+                      Authenticate the local Codex CLI before chatting.
+                    </p>
+                  </div>
+                  <CodexLoginButton
+                    onLoggedIn={() => {
+                      void refreshCodexStatus();
+                    }}
+                  />
+                </div>
+              ) : null}
+
+              {isCodexProvider ? (
+                <div className="grid grid-cols-[minmax(150px,0.8fr)_minmax(260px,1.2fr)] items-center gap-4 px-4 py-3 max-sm:grid-cols-1">
+                  <div className="flex min-w-0 flex-col gap-0.5">
+                    <Label
+                      htmlFor="codex-parallel-calls"
+                      className="text-sm font-medium"
+                    >
+                      Parallel calls
+                    </Label>
+                    <p className="text-xs leading-snug text-muted-foreground">
+                      Fan-out width. Each call runs the same prompt against
+                      Codex and the results are unified in a final synthesis
+                      tab. 1-{CODEX_MAX_PARALLEL_CALLS}.
+                    </p>
+                  </div>
+                  <div className="min-w-0">
+                    <Input
+                      id="codex-parallel-calls"
+                      type="number"
+                      inputMode="numeric"
+                      min={1}
+                      max={CODEX_MAX_PARALLEL_CALLS}
+                      step={1}
+                      value={codexParallelCalls}
+                      onChange={(event) => {
+                        const raw = Number(event.target.value);
+                        setCodexParallelCalls(
+                          clampCodexParallelCalls(
+                            Number.isFinite(raw)
+                              ? raw
+                              : CODEX_DEFAULT_PARALLEL_CALLS,
+                          ),
+                        );
+                      }}
+                      className="h-9 text-sm"
+                    />
+                  </div>
+                </div>
+              ) : null}
 
               {showApiKeyField ? (
                 <div className="grid grid-cols-[minmax(150px,0.8fr)_minmax(260px,1.2fr)] items-center gap-4 px-4 py-3 max-sm:grid-cols-1">

@@ -232,6 +232,7 @@ from datetime import datetime
 from routes import (
     auth_router,
     chat_history_router,
+    codex_router,
     data_recipe_router,
     datasets_router,
     export_router,
@@ -688,6 +689,10 @@ app.include_router(inference_studio_router, prefix = "/api/inference", tags = ["
 # standard /v1/chat/completions path.
 app.include_router(inference_router, prefix = "/v1", tags = ["openai-compat"])
 app.include_router(providers_router, prefix = "/api/providers", tags = ["providers"])
+# Codex SDK provider. Status probe + device-auth helper live behind a
+# dedicated prefix so the frontend can call them without needing a
+# provider config row to exist yet.
+app.include_router(codex_router, prefix = "/api/codex", tags = ["codex"])
 app.include_router(mcp_servers_router, prefix = "/api/mcp/servers", tags = ["mcp"])
 app.include_router(datasets_router, prefix = "/api/datasets", tags = ["datasets"])
 app.include_router(data_recipe_router, prefix = "/api/data-recipe", tags = ["data-recipe"])

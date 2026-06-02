@@ -1,0 +1,81 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+# Cross-platform CI for the OpenAI Codex chat-provider work (PR #5724).
+#
+# The main studio-backend-ci.yml runs the full backend test suite on
+# ubuntu-latest across Python 3.10/3.11/3.12/3.13, which already
+# exercises tests/test_codex_provider.py. This file adds Codex-only
+# matrix runs on macos-14 (Apple Silicon, MLX-relevant for Studio
+# users) and windows-latest (Studio ships a Windows desktop build)
+# so the codex_bin / sys.modules / importlib gates that Codex relies
+# on are validated on all three platforms with a small (~1 min)
+# cycle time. Paths filter keeps it from re-running on unrelated
+# code changes.
+
+name: Studio Codex Cross-Platform CI
+
+on:
+  pull_request:
+    paths:
+      - 'studio/backend/core/inference/codex_provider.py'
+      - 'studio/backend/core/inference/codex_availability.py'
+      - 'studio/backend/routes/codex.py'
+      - 'studio/backend/tests/test_codex_provider.py'
+      - '.github/workflows/studio-codex-cross-platform-ci.yml'
+  push:
+    branches: [main, pip, feat/codex-provider]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  codex-tests:
+    name: Codex tests (${{ matrix.os }}, Py ${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-14, windows-latest]
+        python: ['3.11', '3.13']
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version: ${{ matrix.python }}
+          cache: 'pip'
+
+      - name: Install minimal deps for Codex tests
+        # Codex provider tests inject a fake SDK via sys.modules + patch
+        # importlib.util.find_spec, so the real openai-codex package is
+        # not required. structlog / fastapi / pydantic / httpx come from
+        # the production import chain that codex_provider.py walks at
+        # module load.
+        run: |
+          python -m pip install --upgrade pip
+          pip install \
+            pytest pytest-asyncio httpx \
+            'pydantic>=2,<3' \
+            structlog \
+            fastapi \
+            python-multipart aiofiles sqlalchemy cryptography \
+            pyyaml jinja2 requests \
+            'numpy<3'
+        shell: bash
+
+      - name: Run codex tests
+        working-directory: studio/backend
+        run: |
+          python -m pytest \
+            tests/test_codex_provider.py \
+            -q --tb=short
+        shell: bash

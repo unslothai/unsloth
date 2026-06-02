@@ -319,6 +319,49 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         ),
         "hidden": True,
     },
+    "codex": {
+        "display_name": "OpenAI Codex (local CLI)",
+        # No remote base_url: Codex dispatches through the local CLI
+        # via the openai_codex Python SDK (legacy alias: codex_app_server).
+        # Routing skips the standard HTTP client entirely in
+        # _proxy_to_external_provider and hands the request to
+        # core.inference.codex_provider instead.
+        "base_url": "",
+        # Mirrored from upstream ``codex-rs/models-manager/models.json``.
+        # We deliberately drop ``o3`` (not in the upstream catalog) and
+        # add ``gpt-5.3-codex`` + ``gpt-5.2``. Once the SDK exposes a
+        # runtime ``Codex.models()`` call the dynamic catalog will
+        # replace this hardcoded default.
+        "default_models": [
+            "gpt-5.5",
+            "gpt-5.4",
+            "gpt-5.4-mini",
+            "gpt-5.3-codex",
+            "gpt-5.2",
+        ],
+        "supports_streaming": True,
+        "supports_vision": False,
+        "supports_tool_calling": True,
+        # No auth header is sent on the wire; the Codex CLI handles
+        # auth via its own login flow (api key / chatgpt / device).
+        "auth_header": "Authorization",
+        "auth_prefix": "Bearer ",
+        # Codex models are picked from the local CLI catalogue; we
+        # never call a remote /models endpoint.
+        "model_list_mode": "curated",
+        # Hidden from the cross-provider dropdown until the frontend
+        # has confirmed availability via GET /api/codex/status. The
+        # chat-providers dialog conditionally surfaces the entry by
+        # merging the codex row in when status.installed is true.
+        "hidden": True,
+        "notes": (
+            "Dispatches chat turns through the local Codex CLI via "
+            "the OpenAI Codex Python SDK (pip install `openai-codex`, "
+            "imports as `openai_codex`; legacy alias `codex_app_server` "
+            "is accepted). Surfaced only when the CLI and SDK are both "
+            "installed; sign in with `codex login`."
+        ),
+    },
     "openrouter": {
         "display_name": "OpenRouter",
         "base_url": "https://openrouter.ai/api/v1",

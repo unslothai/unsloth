@@ -7,7 +7,10 @@ import { toast } from "@/lib/toast";
 import type { MessageTiming, ToolCallMessagePart } from "@assistant-ui/core";
 import type { ChatModelAdapter } from "@assistant-ui/react";
 import {
+  CODEX_DEFAULT_PARALLEL_CALLS,
+  clampCodexParallelCalls,
   getExternalProviderApiKey,
+  isCodexProviderType,
   isCustomProviderType,
   isPromptCacheTtl,
   loadExternalProviders,
@@ -56,6 +59,13 @@ import {
   hasClosedThinkTag,
   parseAssistantContent,
 } from "../utils/parse-assistant-content";
+import {
+  EMPTY_CODEX_PARALLEL_STATE,
+  hasCodexParallelContent,
+  reduceCodexParallelState,
+  type CodexParallelEvent,
+  type CodexParallelState,
+} from "../components/codex-parallel-tabs";
 import {
   generateAudio,
   listCachedGguf,
@@ -1346,9 +1356,12 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         clearSelectedImageEditReference();
         throw new Error("Connection not found.");
       }
-      // Local providers and custom Gemini bases allow an empty key.
+      // Local providers, custom Gemini bases, and Codex (local CLI / SDK) all allow an empty key.
       const externalProviderIsCustom = externalProvider
         ? isCustomProviderType(externalProvider.providerType)
+        : false;
+      const externalProviderIsCodex = externalProvider
+        ? isCodexProviderType(externalProvider.providerType)
         : false;
       const externalProviderIsGeminiCustomBase = Boolean(
         externalProvider &&
@@ -1359,10 +1372,11 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         isExternalRequest &&
         !externalApiKey &&
         !externalProviderIsCustom &&
+        !externalProviderIsCodex &&
         !externalProviderIsGeminiCustomBase
       ) {
         toast.error("Missing API key for selected connection.", {
-          description: "Open Settings → Connections and set the API key again.",
+          description: "Open Settings > Connections and set the API key again.",
         });
         clearSelectedImageEditReference();
         throw new Error("Missing connection API key.");
@@ -1747,9 +1761,85 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       let cumulativeText = "";
       let reasoningStartAt: number | null = null;
       let reasoningDuration = 0;
-      // True while wrapping a `delta.reasoning_content` stream in
-      // <think>...</think> for parseAssistantContent. Lives outside
-      // the SSE loop because the close tag fires when content arrives.
+      // Per-tab buffer for Codex parallel-calls fan-out. The backend
+      // emits N independent streams concurrently, so chunks for tab 2
+      // can land between chunks for tab 1 in arrival order. Keeping a
+      // dict keyed by tab_id and re-assembling cumulativeText from
+      // scratch on every codex event puts each tab's text under its
+      // own header regardless of arrival interleaving.
+      // Per-tab Codex fan-out state. Each codex_* SSE event is folded
+      // into ``codexParallelState`` via the pure reducer in
+      // ``components/codex-parallel-tabs``. The state is re-published
+      // on every yield as the ``args`` of a single tool-call part with
+      // ``toolName === "codex_parallel"`` so the assistant-ui surface
+      // can render real clickable tabs (one per worker plus a
+      // Synthesis tab) instead of inline ``[Codex tab N]`` headings.
+      // The stable toolCallId keeps assistant-ui updating the same
+      // part across stream yields rather than spawning new cards.
+      let codexParallelState: CodexParallelState = EMPTY_CODEX_PARALLEL_STATE;
+      let codexGatherEmitted = false;
+      const CODEX_PARALLEL_TOOL_ID = "codex_parallel_main";
+
+      function upsertCodexParallelToolPart(): void {
+        if (!hasCodexParallelContent(codexParallelState)) return;
+        const args = { state: codexParallelState };
+        const argsText = "";
+        const idx = toolCallParts.findIndex(
+          (p) => p.toolCallId === CODEX_PARALLEL_TOOL_ID,
+        );
+        const part: ToolCallMessagePart = {
+          type: "tool-call" as const,
+          toolCallId: CODEX_PARALLEL_TOOL_ID,
+          toolName: "codex_parallel",
+          argsText,
+          args: args as unknown as ToolCallMessagePart["args"],
+        };
+        if (idx === -1) {
+          toolCallParts.push(part);
+        } else {
+          toolCallParts[idx] = part;
+        }
+      }
+
+      // No inline `[Codex tab N]` block in the message body any more --
+      // the tab UI is mounted as a tool-call part above. The function
+      // is kept (returning the empty string) so the rest of the
+      // adapter's renderFullContent() / pin signature paths are
+      // unchanged across the file.
+      function renderCodexTabsBlock(): string {
+        return "";
+      }
+
+      // Codex parallel-calls fan-out renders the labeled tab outputs
+      // first, then a "--- Synthesis ---" divider, then the synthesis
+      // text the backend streams as plain content deltas after the
+      // `codex_gather` event. Earlier the synthesis came BEFORE the
+      // tabs (since cumulativeText was prepended) which left the
+      // trailing "--- Synthesis ---" line orphaned at the bottom with
+      // no synthesis text under it, confusing users. When there is no
+      // Codex fan-out (single-tab Codex turn or any other provider)
+      // the function falls back to the plain cumulativeText.
+      function renderFullContent(): string {
+        const tabsBlock = renderCodexTabsBlock();
+        if (!tabsBlock && !codexGatherEmitted) {
+          return cumulativeText;
+        }
+        const parts: string[] = [];
+        if (tabsBlock) parts.push(tabsBlock);
+        if (codexGatherEmitted) parts.push("\n\n--- Synthesis ---\n\n");
+        if (cumulativeText) parts.push(cumulativeText);
+        return parts.join("");
+      }
+      // Tracks whether we are currently inside a `<think>` block opened by
+      // a `delta.reasoning_content` chunk. Kimi (kimi-k2.6, kimi-k2-thinking)
+      // and DeepSeek's reasoner stream their thinking as a separate
+      // `reasoning_content` field on the chat-completion delta — not as
+      // `content`, not as a structured part. We wrap those chunks with
+      // inline `<think>...</think>` so the existing parseAssistantContent
+      // lifts them into the reasoning panel the same way it does for
+      // local Harmony models. State has to live outside the SSE loop
+      // because the close tag fires when the next chunk carries content
+      // (or when the stream ends).
       let reasoningContentOpen = false;
       // Tool call parts, cumulative; result lands on tool_end.
       const toolCallParts: ToolCallMessagePart[] = [];
@@ -2111,6 +2201,19 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                         }
                   : { enable_thinking: reasoningEnabled }
                 : {}),
+              // Codex provider only: ask the backend to fan the turn out
+              // across N parallel Codex tasks and synthesise a unified
+              // answer. The picker UI uses the provider config's
+              // `codexParallelCalls` field; default of 1 keeps the
+              // single-call path. Backend clamps to [1, 20].
+              ...(externalProviderIsCodex
+                ? {
+                    parallel_calls: clampCodexParallelCalls(
+                      externalProvider.codexParallelCalls ??
+                        CODEX_DEFAULT_PARALLEL_CALLS,
+                    ),
+                  }
+                : {}),
             };
           }
 
@@ -2198,7 +2301,82 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                 chunk as unknown as { _toolEvent?: Record<string, unknown> }
               )._toolEvent;
               if (toolEvent !== undefined) {
-                // Persist container_id onto the thread (OpenAI / Anthropic).
+                // Codex parallel-calls fan-out events. Each event is
+                // folded into ``codexParallelState`` and re-published
+                // as the ``args.state`` of the ``codex_parallel`` tool-
+                // call part, so the assistant-ui surface renders one
+                // tab per worker plus a Synthesis tab the user can
+                // click between. ``codex_gather`` flips the flag so
+                // ``renderFullContent`` knows the synthesis stream is
+                // about to arrive on the regular content-delta path.
+                if (typeof toolEvent.type === "string" && toolEvent.type.startsWith("codex_")) {
+                  const evType = toolEvent.type;
+                  const tabId = Number(toolEvent.tab_id);
+                  let reduced: CodexParallelEvent | null = null;
+                  if (evType === "codex_tab_open" && Number.isFinite(tabId)) {
+                    const total = Number(toolEvent.total_tabs);
+                    reduced = {
+                      type: "codex_tab_open",
+                      tab_id: tabId,
+                      query:
+                        typeof toolEvent.query === "string"
+                          ? toolEvent.query
+                          : undefined,
+                      total_tabs: Number.isFinite(total) ? total : undefined,
+                    };
+                  } else if (evType === "codex_tab_chunk" && Number.isFinite(tabId)) {
+                    const text =
+                      typeof toolEvent.text === "string" ? toolEvent.text : "";
+                    if (text) {
+                      reduced = {
+                        type: "codex_tab_chunk",
+                        tab_id: tabId,
+                        text,
+                      };
+                    }
+                  } else if (evType === "codex_tab_error" && Number.isFinite(tabId)) {
+                    reduced = {
+                      type: "codex_tab_error",
+                      tab_id: tabId,
+                      error:
+                        typeof toolEvent.error === "string"
+                          ? toolEvent.error
+                          : "error",
+                    };
+                  } else if (evType === "codex_tab_close" && Number.isFinite(tabId)) {
+                    reduced = { type: "codex_tab_close", tab_id: tabId };
+                  } else if (evType === "codex_gather") {
+                    codexGatherEmitted = true;
+                    reduced = {
+                      type: "codex_gather",
+                      summary:
+                        typeof toolEvent.summary === "string"
+                          ? toolEvent.summary
+                          : undefined,
+                      tab_count:
+                        typeof toolEvent.tab_count === "number"
+                          ? toolEvent.tab_count
+                          : undefined,
+                    };
+                  }
+                  if (reduced) {
+                    codexParallelState = reduceCodexParallelState(
+                      codexParallelState,
+                      reduced,
+                    );
+                    upsertCodexParallelToolPart();
+                  }
+                  const codexParts = parseAssistantContent(renderFullContent());
+                  yield {
+                    content: [...toolCallParts, ...codexParts],
+                  };
+                  continue;
+                }
+                // OpenAI shell-tool container persistence — see
+                // ThreadRecord.openaiCodeExecContainerId. The backend
+                // emits these synthetic events on the OpenAI Responses
+                // SSE stream after capturing the container_id from a
+                // response, or detecting an expired-container error.
                 if (toolEvent.type === "container_ready") {
                   const newContainerId = toolEvent.container_id as
                     | string
@@ -2428,10 +2606,13 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                     };
                   }
                 }
-                // Cumulative yield. orderAssistantContent puts search/
-                // code before text and generated images after.
+                // Cumulative yield so tool UI updates. orderAssistantContent
+                // puts search / code before text and generated images after.
+                // renderFullContent() preserves any Codex per-tab text from
+                // earlier _toolEvent frames; pinTextThoughtSignature attaches
+                // Gemini thoughtSignature onto the final text part.
                 const textParts = pinTextThoughtSignature(
-                  parseAssistantContent(cumulativeText),
+                  parseAssistantContent(renderFullContent()),
                 );
                 yield {
                   content: orderAssistantContent(textParts),
@@ -2692,8 +2873,11 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                   "",
                 );
               }
+              // renderFullContent() preserves any Codex per-tab text the
+              // fan-out branch accumulated into codexTabBuffers;
+              // pinTextThoughtSignature attaches Gemini thoughtSignature.
               const parts = pinTextThoughtSignature(
-                parseAssistantContent(cumulativeText),
+                parseAssistantContent(renderFullContent()),
               );
 
               if (
@@ -2810,8 +2994,12 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
 
         yield {
           content: [
+            // renderFullContent() ensures the Codex per-tab text is in
+            // the FINAL message too -- otherwise the synthesis delta on
+            // the regular content path would have erased it.
+            // pinTextThoughtSignature attaches Gemini thoughtSignature.
             ...orderAssistantContent(
-              pinTextThoughtSignature(parseAssistantContent(cumulativeText)),
+              pinTextThoughtSignature(parseAssistantContent(renderFullContent())),
             ),
             ...sourceParts,
             ...documentCitationParts,
