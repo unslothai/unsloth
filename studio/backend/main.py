@@ -240,10 +240,10 @@ from routes import (
     mcp_servers_router,
     models_router,
     providers_router,
-    settings_router,
     training_history_router,
     training_router,
 )
+from routes.settings import router as settings_router
 from auth import storage
 from auth.authentication import get_current_subject
 from utils.hardware import (
