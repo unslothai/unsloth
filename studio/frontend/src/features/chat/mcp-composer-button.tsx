@@ -249,7 +249,7 @@ export function McpComposerButton({
             >
               <HugeiconsIcon
                 icon={McpServerIcon}
-                className="size-[14.5px]"
+                className="size-[15px]"
                 strokeWidth={2}
               />
               <span>MCP</span>
@@ -312,7 +312,7 @@ export function McpComposerButton({
             >
               <HugeiconsIcon
                 icon={McpServerIcon}
-                className="size-[14.5px]"
+                className="size-[15px]"
                 strokeWidth={2}
               />
               <span>MCP</span>
