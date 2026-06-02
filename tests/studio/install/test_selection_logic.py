@@ -2563,6 +2563,39 @@ class TestPublishedWindowsCudaAppBundleSmSelection:
         # tightest covering bundle is cuda12-newer (range 86-120).
         assert result[0].name == f"app-{self.TAG}-windows-x64-cuda12-newer.zip"
 
+    def _line(self, line, klass, rank):
+        return make_artifact(
+            f"app-{self.TAG}-windows-x64-{line}-{klass}.zip",
+            install_kind = "windows-cuda",
+            runtime_line = line,
+            coverage_class = klass,
+            supported_sms = ["86", "89", "90", "100", "120"],
+            min_sm = 86,
+            max_sm = 120,
+            bundle_profile = f"{line}-{klass}",
+            rank = rank,
+        )
+
+    def test_cuda13_reachable_on_driver_13_0(self, monkeypatch):
+        # app-named cuda13 bundles must be reachable on a 13.0 driver. The old
+        # synthetic '13.1' minor gate dropped the whole cuda13 line (13.1 > 13.0),
+        # so a cu13 host fell to cuda12. cuda13 is gated at the major level now.
+        mock_windows_runtime(monkeypatch, ["cuda13", "cuda12"])
+        release = make_release(
+            [self._line("cuda12", "newer", 20), self._line("cuda13", "newer", 50)],
+            upstream_tag = self.TAG,
+        )
+        host = make_host(
+            system = "Windows",
+            machine = "AMD64",
+            driver_cuda_version = (13, 0),
+            compute_caps = ["120"],
+        )
+        result = published_windows_cuda_attempts(host, release, "cuda13")
+        assert result
+        assert result[0].runtime_line == "cuda13"
+        assert result[0].name == f"app-{self.TAG}-windows-x64-cuda13-newer.zip"
+
 
 class TestPublishedRocmGfxSelection:
     """Published ROCm bundles are matched by the host's detected gfx family, not
@@ -2570,6 +2603,13 @@ class TestPublishedRocmGfxSelection:
     bundle (e.g. a gfx1151 Strix Halo host)."""
 
     GFX = ["gfx103X", "gfx110X", "gfx120X", "gfx1150", "gfx1151"]
+    MEMBERS = {
+        "gfx103X": ["gfx1030", "gfx1031", "gfx1032", "gfx1034"],
+        "gfx110X": ["gfx1100", "gfx1101", "gfx1102", "gfx1103"],
+        "gfx120X": ["gfx1200", "gfx1201"],
+        "gfx1150": ["gfx1150"],
+        "gfx1151": ["gfx1151"],
+    }
 
     def _release(self, install_kind, prefix):
         artifacts = [
@@ -2584,6 +2624,7 @@ class TestPublishedRocmGfxSelection:
                 bundle_profile = None,
                 rank = 1000,
                 gfx_target = gfx,
+                mapped_targets = self.MEMBERS[gfx],
             )
             for gfx in self.GFX
         ]
@@ -2633,6 +2674,18 @@ class TestPublishedRocmGfxSelection:
             )
             is None
         )
+
+    def test_in_prefix_but_unbuilt_arch_returns_none(self):
+        # gfx1033 shares the gfx103 prefix but is not in any bundle's
+        # mapped_targets, so it must fall back to source, not be served gfx103X.
+        release = self._release("linux-rocm", "app-b9457-linux-x64-rocm")
+        for unbuilt in ("gfx1033", "gfx1035", "gfx1104", "gfx1202"):
+            assert (
+                INSTALL_LLAMA_PREBUILT.published_rocm_choice_for_host(
+                    release, self._host(unbuilt), "linux-rocm"
+                )
+                is None
+            ), unbuilt
 
 
 class TestPublishedMacosForkSelection:

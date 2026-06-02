@@ -1353,6 +1353,7 @@ def parse_direct_linux_release_bundle(
             continue
 
         if target.startswith("linux-x64-rocm-"):
+            gfx_family = target.removeprefix("linux-x64-rocm-")
             artifacts.append(
                 PublishedLlamaArtifact(
                     asset_name = asset_name,
@@ -1364,7 +1365,8 @@ def parse_direct_linux_release_bundle(
                     max_sm = None,
                     bundle_profile = None,
                     rank = 1000,
-                    gfx_target = target.removeprefix("linux-x64-rocm-"),
+                    gfx_target = gfx_family,
+                    mapped_targets = _GFX_TARGET_MEMBERS.get(gfx_family, [gfx_family]),
                 )
             )
             continue
@@ -3585,30 +3587,6 @@ def published_windows_cuda_attempts(
     selection_preamble: Iterable[str] = (),
 ) -> list[AssetChoice]:
     selection_log = list(release.selection_log) + list(selection_preamble)
-    # Seed the runtime-line ordering from the real published windows-cuda minors
-    # (their names encode the minor), so a future CUDA major published here is
-    # ordered too instead of a hardcoded cuda12/cuda13 pair. Keys mirror the
-    # upstream naming so windows_cuda_attempts can match them; fall back to the
-    # long-standing default when the release lists no windows-cuda asset.
-    published_minors: list[str] = []
-    for artifact in release.artifacts:
-        if artifact.install_kind != "windows-cuda":
-            continue
-        m = re.search(r"-bin-win-cuda-(\d+\.\d+)-x64\.zip$", artifact.asset_name)
-        if m:
-            published_minors.append(m.group(1))
-    if not published_minors:
-        published_minors = ["12.4", "13.1"]
-    runtime_order = windows_cuda_attempts(
-        host,
-        release.upstream_tag,
-        {
-            f"llama-{release.upstream_tag}-bin-win-cuda-{minor}-x64.zip": "published"
-            for minor in published_minors
-        },
-        preferred_runtime_line,
-        selection_log,
-    )
     published_artifacts = [
         artifact
         for artifact in release.artifacts
@@ -3620,10 +3598,48 @@ def published_windows_cuda_attempts(
             continue
         artifacts_by_runtime.setdefault(artifact.runtime_line, []).append(artifact)
 
+    # Order the runtime lines to try. Legacy upstream-named bundles encode a CUDA
+    # minor in the filename and are driver-gated per minor. The fork's app-named
+    # bundles carry no minor: their runtime line (cuda12/cuda13) is gated at the
+    # CUDA *major* level (a 13.0 driver runs any cuda13 build) and by what torch
+    # actually provides on the host, preferring the torch line. Routing them
+    # through the synthetic-minor path wrongly dropped cuda13 on a 13.0 driver.
+    legacy_minors: list[str] = []
+    for artifact in published_artifacts:
+        m = re.search(r"-bin-win-cuda-(\d+\.\d+)-x64\.zip$", artifact.asset_name)
+        if m:
+            legacy_minors.append(m.group(1))
+    if legacy_minors:
+        ordered_lines = [
+            attempt.runtime_line
+            for attempt in windows_cuda_attempts(
+                host,
+                release.upstream_tag,
+                {
+                    f"llama-{release.upstream_tag}-bin-win-cuda-{minor}-x64.zip": "published"
+                    for minor in legacy_minors
+                },
+                preferred_runtime_line,
+                selection_log,
+            )
+            if attempt.runtime_line
+        ]
+    else:
+        detected, _ = detected_windows_runtime_lines()
+        compatible = set(compatible_windows_runtime_lines(host))
+        ordered_lines = [line for line in detected if line in compatible]
+        if preferred_runtime_line and preferred_runtime_line in ordered_lines:
+            ordered_lines = [preferred_runtime_line] + [
+                line for line in ordered_lines if line != preferred_runtime_line
+            ]
+        selection_log.append(
+            "windows_cuda_selection: app-bundle runtime lines (major-gated)="
+            + (",".join(ordered_lines) if ordered_lines else "none")
+        )
+
     host_sms = normalize_compute_caps(host.compute_caps)
     attempts: list[AssetChoice] = []
-    for ordered_attempt in runtime_order:
-        runtime_line = ordered_attempt.runtime_line
+    for runtime_line in ordered_lines:
         if not runtime_line:
             continue
         # Pick the artifact whose SM coverage fits the host, preferring the
@@ -3689,7 +3705,7 @@ def published_windows_cuda_attempts(
             if cudart_url and cudart_url != asset_url:
                 runtime_archive_name = cudart_name
                 runtime_archive_url = cudart_url
-        attempt_log = list(ordered_attempt.selection_log or []) + [
+        attempt_log = list(selection_log) + [
             "windows_cuda_selection: selected published asset "
             f"{artifact.asset_name} for runtime_line={runtime_line}"
         ]
@@ -3879,6 +3895,19 @@ _LEMONADE_GFX_FAMILIES: list[tuple[str, str]] = [
     ("gfx103", "gfx103X"),
 ]
 
+# Concrete gfx archs each umbrella family bundle was actually compiled for
+# (mirrors the producer's ROCM_TARGET_MAP). Used to populate mapped_targets for
+# simple-path ROCm artifacts, which are parsed from filenames and can't read the
+# manifest. Matching on this -- not the family prefix -- prevents serving a
+# bundle to an in-generation-but-unbuilt arch (e.g. gfx1033).
+_GFX_TARGET_MEMBERS: dict[str, list[str]] = {
+    "gfx1151": ["gfx1151"],
+    "gfx1150": ["gfx1150"],
+    "gfx120X": ["gfx1200", "gfx1201"],
+    "gfx110X": ["gfx1100", "gfx1101", "gfx1102", "gfx1103"],
+    "gfx103X": ["gfx1030", "gfx1031", "gfx1032", "gfx1034"],
+}
+
 
 def _lemonade_gfx_family(gfx_id: str) -> str | None:
     gfx_id = gfx_id.lower().strip()
@@ -3900,13 +3929,15 @@ def published_rocm_choice_for_host(
     the caller can fall back (lemonade / upstream HIP)."""
     if not host.rocm_gfx_target:
         return None
-    gfx_family = _lemonade_gfx_family(host.rocm_gfx_target)
+    gfx = host.rocm_gfx_target.lower().strip()
     for artifact in release.artifacts:
         if artifact.install_kind != install_kind:
             continue
-        if artifact.gfx_target != gfx_family and (
-            host.rocm_gfx_target not in artifact.mapped_targets
-        ):
+        # Match on the concrete built-arch list, not the family prefix: an
+        # in-generation-but-unbuilt arch (e.g. gfx1033 in the gfx103 prefix) must
+        # NOT be served the family bundle. None makes the caller fall back to a
+        # source build for that GPU.
+        if gfx not in {target.lower() for target in artifact.mapped_targets}:
             continue
         asset_url = release.assets.get(artifact.asset_name)
         if not asset_url:
@@ -3920,7 +3951,7 @@ def published_rocm_choice_for_host(
             install_kind = install_kind,
             selection_log = list(release.selection_log)
             + [
-                f"rocm_selection: gpu={host.rocm_gfx_target} family={gfx_family} "
+                f"rocm_selection: gpu={host.rocm_gfx_target} "
                 f"selected published {artifact.asset_name}"
             ],
         )
