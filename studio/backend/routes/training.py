@@ -250,6 +250,7 @@ async def start_training(
             "resume_from_checkpoint": request.resume_from_checkpoint,
             "trust_remote_code": request.trust_remote_code,
             "gpu_ids": request.gpu_ids,
+            "s3_config": request.s3_config.model_dump() if request.s3_config else None,
         }
 
         # Training page has no trust_remote_code toggle — the value comes from
