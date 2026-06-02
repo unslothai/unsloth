@@ -62,28 +62,39 @@ def _extract_model_identifier(model_name: str) -> str:
 
     Examples:
         '/home/user/.cache/huggingface/hub/models--meta-llama--Llama-3.2-1B/...'
-            -> 'meta-llama--Llama-3.2-1B'
+            -> 'meta-llama/Llama-3.2-1B'
         '/home/mamba/models/llama-7b'  -> 'llama-7b'
         'unsloth/Llama-3.2-1B'         -> 'unsloth/Llama-3.2-1B'
+        'C:\\Users\\user\\models\\llama' -> 'llama'
     """
-    import os
-
     if not model_name:
         return model_name
 
+    # Normalize path separators for cross-platform compatibility
+    normalized = model_name.replace("\\", "/")
+
     # Handle HuggingFace cache paths: .../models--org--name/...
-    if "models--" in model_name:
-        parts = model_name.split("models--")
+    if "models--" in normalized:
+        parts = normalized.split("models--")
         if len(parts) > 1:
             # Get the part after 'models--' and before any path separator
-            repo_part = parts[-1].split(os.sep)[0].split("/")[0]
+            repo_part = parts[-1].split("/")[0]
             return repo_part.replace("--", "/")
 
-    # Handle regular file paths - use basename
-    if os.sep in model_name or (model_name.count("/") > 1):
-        return os.path.basename(model_name.rstrip(os.sep + "/"))
+    # Detect local file paths: absolute paths, relative markers, or deep paths
+    is_local_path = (
+        normalized.startswith("/")  # Unix absolute
+        or normalized.startswith("./")  # Relative current dir
+        or normalized.startswith("~/")  # Home dir
+        or (len(normalized) > 1 and normalized[1] == ":")  # Windows drive letter
+        or normalized.count("/") > 1  # Deep path like /home/user/models/llama
+    )
 
-    # Already a simple identifier or HF repo ID
+    if is_local_path:
+        # Use basename, stripping trailing slashes
+        return normalized.rstrip("/").rsplit("/", 1)[-1]
+
+    # Already a simple identifier or HF repo ID (e.g., 'unsloth/Llama-3.2-1B')
     return model_name
 
 
@@ -1551,10 +1562,14 @@ class InferenceBackend:
                     timeout = 0.2,
                 )
 
+            # SSM models (Mamba, LFM, etc.) use recurrent state, not KV cache
+            use_cache = not _is_ssm_model(self.active_model_name)
+
             generation_kwargs = dict(
                 **inputs,
                 streamer = streamer,
                 max_new_tokens = max_new_tokens,
+                use_cache = use_cache,
                 temperature = temperature,
                 top_p = top_p,
                 top_k = top_k,
