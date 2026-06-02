@@ -43,6 +43,7 @@ import {
   providerTypeSupportsVision,
 } from "./external-providers";
 import { useExternalProvidersStore } from "./stores/external-providers-store";
+import { McpComposerButton } from "./mcp-composer-button";
 import {
   type ReasoningEffort,
   useChatRuntimeStore,
@@ -51,6 +52,7 @@ import {
   getExternalReasoningCapabilities,
   providerSupportsBuiltinCodeExecution,
   providerSupportsBuiltinImageGeneration,
+  providerSupportsBuiltinWebSearch,
   providerSupportsBuiltinWebFetch,
 } from "./provider-capabilities";
 import {
@@ -75,9 +77,9 @@ export type CompareMessagePart =
 export interface CompareHandle {
   append: (content: CompareMessagePart[]) => void;
   /** Append a user message without triggering generation. */
-  appendMessage: (content: CompareMessagePart[]) => void;
+  appendMessage: (content: CompareMessagePart[]) => Promise<string | null>;
   /** Trigger generation on the current thread (after appendMessage). */
-  startRun: () => void;
+  startRun: (parentId?: string | null) => void;
   cancel: () => void;
   isRunning: () => boolean;
   /** Returns a promise that resolves when the current or next run finishes. */
@@ -86,6 +88,7 @@ export interface CompareHandle {
 
 const IMAGE_ACCEPT = "image/jpeg,image/png,image/webp,image/gif";
 const MAX_IMAGE_SIZE = 20 * 1024 * 1024;
+const COMPARE_APPEND_MESSAGE_TIMEOUT_MS = 10_000;
 
 function isNativeComposing(event: Event) {
   return "isComposing" in event && (event as InputEvent).isComposing === true;
@@ -229,6 +232,7 @@ export function RegisterCompareHandle({
 }): ReactElement | null {
   const handlesRef = useContext(CompareHandlesContext);
   const aui = useAui();
+  const pendingAppendWaitersRef = useRef<Set<() => void>>(new Set());
 
   useEffect(() => {
     if (!handlesRef) {
@@ -241,19 +245,76 @@ export function RegisterCompareHandle({
         aui
           .thread()
           .append({ role: "user", content, createdAt: new Date() } as never),
-      appendMessage: (content) =>
-        aui
-          .thread()
-          .append({
-            role: "user",
-            content,
-            createdAt: new Date(),
-            startRun: false,
-          } as never),
-      startRun: () => {
+      appendMessage: (content) => {
+        const thread = aui.thread();
+        const beforeIds = new Set(
+          thread.getState().messages.map((message) => message.id),
+        );
+        thread.append({
+          role: "user",
+          content,
+          createdAt: new Date(),
+          startRun: false,
+        } as never);
+
+        const findAppendedUserMessageId = () => {
+          const messages = thread.getState().messages;
+          for (let index = messages.length - 1; index >= 0; index -= 1) {
+            const message = messages[index];
+            if (beforeIds.has(message.id) || message.role !== "user") {
+              continue;
+            }
+            return message.id;
+          }
+          return null;
+        };
+
+        const appendedId = findAppendedUserMessageId();
+        if (appendedId) {
+          return Promise.resolve(appendedId);
+        }
+
+        return new Promise<string | null>((resolve) => {
+          const startedAt = Date.now();
+          let settled = false;
+          let timer: number | null = null;
+          let cancel: (() => void) | null = null;
+          const cleanup = () => {
+            if (timer !== null) {
+              window.clearTimeout(timer);
+              timer = null;
+            }
+            if (cancel) {
+              pendingAppendWaitersRef.current.delete(cancel);
+            }
+          };
+          const finish = (messageId: string | null) => {
+            if (settled) return;
+            settled = true;
+            cleanup();
+            resolve(messageId);
+          };
+          cancel = () => finish(null);
+          const poll = () => {
+            timer = null;
+            const messageId = findAppendedUserMessageId();
+            if (
+              messageId ||
+              Date.now() - startedAt >= COMPARE_APPEND_MESSAGE_TIMEOUT_MS
+            ) {
+              finish(messageId);
+              return;
+            }
+            timer = window.setTimeout(poll, 16);
+          };
+          pendingAppendWaitersRef.current.add(cancel);
+          timer = window.setTimeout(poll, 0);
+        });
+      },
+      startRun: (parentId) => {
         const msgs = aui.thread().getState().messages;
-        const lastId = msgs.length > 0 ? msgs[msgs.length - 1].id : null;
-        aui.thread().startRun({ parentId: lastId });
+        const fallbackId = msgs.length > 0 ? msgs[msgs.length - 1].id : null;
+        aui.thread().startRun({ parentId: parentId ?? fallbackId });
       },
       cancel: () => aui.thread().cancelRun(),
       isRunning: () => aui.thread().getState().isRunning,
@@ -271,6 +332,10 @@ export function RegisterCompareHandle({
         }),
     };
     return () => {
+      for (const cancel of pendingAppendWaitersRef.current) {
+        cancel();
+      }
+      pendingAppendWaitersRef.current.clear();
       delete currentHandles[name];
     };
   }, [handlesRef, name, aui]);
@@ -705,6 +770,8 @@ export function SharedComposer({
         : null;
 
       function modelDisplayName(id: string): string {
+        const external = parseExternalModelId(id);
+        if (external) return external.modelId;
         const parts = id.split("/");
         return parts[parts.length - 1] || id;
       }
@@ -713,6 +780,76 @@ export function SharedComposer({
       async function ensureModelLoaded(
         sel: CompareModelSelection,
       ): Promise<string> {
+        const external = parseExternalModelId(sel.id);
+        if (external) {
+          const externalStore = useExternalProvidersStore.getState();
+          if (!externalStore.connectionsEnabled) {
+            throw new Error(
+              "Connections are disabled. Turn on Enable connections in Settings -> Connections to use hosted models.",
+            );
+          }
+          const provider = externalStore.providers.find(
+            (p) => p.id === external.providerId,
+          );
+          if (!provider) {
+            throw new Error(
+              "Connection not found. Open Settings -> Connections and add it again.",
+            );
+          }
+
+          const reasoningCaps = getExternalReasoningCapabilities(
+            provider.providerType,
+            external.modelId,
+            {
+              isReasoningProvider: provider.isReasoningModel === true,
+              baseUrl: provider.baseUrl ?? null,
+            },
+          );
+          const supportsBuiltinWebSearch = providerSupportsBuiltinWebSearch(
+            provider.providerType,
+            external.modelId,
+            provider.baseUrl,
+          );
+          const supportsBuiltinCodeExecution =
+            providerSupportsBuiltinCodeExecution(
+              provider.providerType,
+              external.modelId,
+              provider.baseUrl,
+            );
+          const supportsBuiltinImageGeneration =
+            providerSupportsBuiltinImageGeneration(
+              provider.providerType,
+              external.modelId,
+              provider.baseUrl,
+            );
+          const supportsBuiltinWebFetch = providerSupportsBuiltinWebFetch(
+            provider.providerType,
+          );
+          const currentStore = useChatRuntimeStore.getState();
+          currentStore.setCheckpoint(sel.id, null);
+          useChatRuntimeStore.setState({
+            activeGgufVariant: null,
+            ggufContextLength: null,
+            ggufMaxContextLength: null,
+            ggufNativeContextLength: null,
+            activeNativePathToken: null,
+            supportsReasoning: reasoningCaps.supportsReasoning,
+            reasoningAlwaysOn: reasoningCaps.reasoningAlwaysOn,
+            reasoningStyle: reasoningCaps.reasoningStyle,
+            supportsReasoningOff: reasoningCaps.supportsReasoningOff,
+            reasoningEffortLevels: reasoningCaps.reasoningEffortLevels,
+            supportsPreserveThinking: false,
+            supportsTools: false,
+            supportsBuiltinWebSearch,
+            supportsBuiltinCodeExecution,
+            supportsBuiltinImageGeneration,
+            supportsBuiltinWebFetch,
+            loadedIsMultimodal:
+              providerTypeSupportsVision(provider.providerType) === true,
+          });
+          return "external";
+        }
+
         const currentStore = useChatRuntimeStore.getState();
         const isAlreadyActive =
           currentStore.params.checkpoint === sel.id &&
@@ -795,9 +932,19 @@ export function SharedComposer({
       const handle1 = handlesRef.current["model1"];
       const handle2 = handlesRef.current["model2"];
 
-      // Show user messages immediately on both sides
-      if (handle1) handle1.appendMessage(content);
-      if (handle2) handle2.appendMessage(content);
+      // Show user messages immediately on both sides and keep the ids
+      // so delayed model loads can start the run from the intended turn.
+      const [parentId1, parentId2] = await Promise.all([
+        handle1 ? handle1.appendMessage(content) : Promise.resolve(null),
+        handle2 ? handle2.appendMessage(content) : Promise.resolve(null),
+      ]);
+      if ((handle1 && !parentId1) || (handle2 && !parentId2)) {
+        toast.error("Compare failed", {
+          description:
+            "The prompt could not be added to both compare panes. Try sending it again.",
+        });
+        return;
+      }
 
       const name1 = model1?.id ? modelDisplayName(model1.id) : "";
       const name2 = model2?.id ? modelDisplayName(model2.id) : "";
@@ -819,7 +966,7 @@ export function SharedComposer({
             duration: Infinity,
           });
           const done = handle1.waitForRunEnd();
-          handle1.startRun();
+          handle1.startRun(parentId1);
           await done;
         }
 
@@ -842,7 +989,7 @@ export function SharedComposer({
             duration: Infinity,
           });
           const done = handle2.waitForRunEnd();
-          handle2.startRun();
+          handle2.startRun(parentId2);
           await done;
         }
 
@@ -1147,8 +1294,8 @@ export function SharedComposer({
                     : reasoningDisabled
                       ? "cursor-not-allowed opacity-40"
                       : effectiveReasoningEnabled
-                        ? "text-primary hover:bg-primary/10 dark:hover:bg-white/[0.08]"
-                        : "hover:bg-primary/10 dark:hover:bg-white/[0.08]",
+                        ? "cursor-pointer text-primary hover:bg-primary/10 dark:hover:bg-white/[0.08]"
+                        : "cursor-pointer hover:bg-primary/10 dark:hover:bg-white/[0.08]",
                 )}
                 aria-label={thinkToggleAriaLabel({
                   reasoningLockedOn,
@@ -1177,8 +1324,8 @@ export function SharedComposer({
                 !modelLoaded
                   ? "cursor-not-allowed opacity-40"
                   : preserveThinking
-                    ? "text-primary hover:bg-primary/10 dark:hover:bg-white/[0.08]"
-                    : "hover:bg-primary/10 dark:hover:bg-white/[0.08]",
+                    ? "cursor-pointer text-primary hover:bg-primary/10 dark:hover:bg-white/[0.08]"
+                    : "cursor-pointer hover:bg-primary/10 dark:hover:bg-white/[0.08]",
               )}
               aria-label={
                 preserveThinking
@@ -1272,6 +1419,7 @@ export function SharedComposer({
             <FileTextIcon className="size-3.5" />
             <span>Artifacts</span>
           </button>
+          <McpComposerButton />
           {showWebFetchPill && (
             <button
               type="button"
