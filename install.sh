@@ -2104,6 +2104,8 @@ case "$TORCH_INDEX_URL" in
                 substep "For an AMD GPU, ROCm-on-WSL currently needs ALL of:"
                 substep "  1. AMD Adrenalin Edition 26.1.1+ on Windows (26.2.2+ for Strix Halo / Ryzen AI Max+)."
                 substep "     Older drivers don't inject the ROCm/DXG runtime into /usr/lib/wsl/lib."
+                substep "     Get it from AMD (open in a browser -- direct downloads are referrer-gated):"
+                substep "       https://www.amd.com/en/resources/support-articles/release-notes/RN-RAD-WIN-26-2-2.html"
                 substep "  2. ROCm 7.2.1 + librocdxg inside WSL (with HSA_ENABLE_DXG_DETECTION=1)."
                 substep "  3. A WSL distro AMD supports for ROCm -- Ubuntu 24.04 is the known-good one."
                 if [ -n "$_wsl_ubu_ver" ] && [ "$_wsl_ubu_ver" != "24.04" ]; then

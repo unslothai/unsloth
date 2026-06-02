@@ -1573,6 +1573,42 @@ shell.Run cmd, 0, False
         }
     }
 
+    # ── Optional WSL-ROCm driver hint ────────────────────────────────────────
+    # An AMD GPU on native Windows can ALSO be used inside WSL2, but only with
+    # AMD Adrenalin Edition >= 26.2.2 (the first production ROCDXG/WSL release).
+    # Native Windows GPU works with any recent driver -- this is purely about the
+    # optional WSL path. We cannot auto-install the driver (AMD referrer-gates
+    # downloads and does not publish Adrenalin via winget), so we point the user
+    # at AMD's page. Shown only when the installed AMD driver predates the 26.2.2
+    # release (Feb 2026); suppress with UNSLOTH_SKIP_AMD_DRIVER_HINT=1.
+    function Show-AmdWslDriverHint {
+        if ($env:UNSLOTH_SKIP_AMD_DRIVER_HINT) { return }
+        try {
+            $amd = Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -match 'AMD|Radeon' } | Select-Object -First 1
+            if (-not $amd) { return }
+            $drvDate = $null
+            try {
+                if ($amd.DriverDate -is [datetime]) {
+                    # Get-CimInstance returns DriverDate already parsed.
+                    $drvDate = $amd.DriverDate
+                } elseif ($amd.DriverDate) {
+                    # Get-WmiObject style WMI datetime string.
+                    $drvDate = [Management.ManagementDateTimeConverter]::ToDateTime([string]$amd.DriverDate)
+                }
+            } catch {}
+            # Older than the 26.2.2 release (Feb 2026) => can't expose the GPU to
+            # WSL ROCm. If the date is unreadable, still show the hint (it's
+            # informational and suppressible).
+            if ($drvDate -and $drvDate -ge (Get-Date '2026-02-01')) { return }
+            substep "Tip: to use this GPU inside WSL too, install AMD Adrenalin 26.2.2+ (for WSL2)." "Cyan"
+            substep "  Your current driver predates it; native Windows GPU is unaffected. Get it from AMD:" "Cyan"
+            substep "    https://www.amd.com/en/resources/support-articles/release-notes/RN-RAD-WIN-26-2-2.html" "Cyan"
+            substep "  Then reboot and run this installer inside an Ubuntu-24.04 WSL distro." "Cyan"
+            substep "  (suppress: set UNSLOTH_SKIP_AMD_DRIVER_HINT=1)" "Cyan"
+        } catch {}
+    }
+
     if ($HasNvidiaSmi) {
         step "gpu" "NVIDIA GPU detected"
     } elseif ($HasROCm) {
@@ -1598,6 +1634,8 @@ shell.Run cmd, 0, False
         step "gpu" "none (chat-only / GGUF)" "Yellow"
         substep "Training and GPU inference require an NVIDIA or AMD ROCm GPU." "Yellow"
     }
+    # On an AMD GPU (no NVIDIA), surface the optional WSL-ROCm driver hint.
+    if (-not $HasNvidiaSmi -and ($ROCmGfxArch -or $ROCmGpuLabel)) { Show-AmdWslDriverHint }
 
     # ── Choose the correct PyTorch index URL based on driver CUDA version ──
     # Mirrors Get-PytorchCudaTag in setup.ps1.
