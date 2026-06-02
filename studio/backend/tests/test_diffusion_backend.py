@@ -2547,11 +2547,19 @@ def test_balanced_gguf_cuda_cache_budget_is_automatic_and_headroom_aware(monkeyp
     assert d._balanced_gguf_cuda_cache_bytes(
         free_bytes = 64 * gib,
         total_bytes = 64 * gib,
+    ) == 8 * gib
+    assert d._balanced_gguf_cuda_cache_bytes(
+        free_bytes = 64 * gib,
+        total_bytes = 48 * gib,
     ) == 4 * gib
     assert d._balanced_gguf_cuda_cache_bytes(
         free_bytes = 10 * gib,
         total_bytes = 64 * gib,
     ) == 2 * gib
+    assert d._balanced_gguf_cuda_cache_bytes(
+        free_bytes = 128 * gib,
+        total_bytes = 96 * gib,
+    ) == 16 * gib
 
 
 def test_balanced_gguf_cuda_cache_budget_env_override(monkeypatch):

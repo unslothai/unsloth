@@ -93,10 +93,14 @@ DIFFUSION_TRANSFORMERS_QUANT_COMPONENTS = {
     "text_encoder_3",
     "pe",
 }
-DEFAULT_BALANCED_GGUF_CUDA_CACHE_MIB = 4096
-MID_BALANCED_GGUF_CUDA_CACHE_MIB = 2048
 MIN_BALANCED_GGUF_CUDA_CACHE_TOTAL_MIB = 24 * 1024
 MID_BALANCED_GGUF_CUDA_CACHE_TOTAL_MIB = 32 * 1024
+HIGH_BALANCED_GGUF_CUDA_CACHE_TOTAL_MIB = 64 * 1024
+VERY_HIGH_BALANCED_GGUF_CUDA_CACHE_TOTAL_MIB = 96 * 1024
+MID_BALANCED_GGUF_CUDA_CACHE_MIB = 2048
+DEFAULT_BALANCED_GGUF_CUDA_CACHE_MIB = 4096
+HIGH_BALANCED_GGUF_CUDA_CACHE_MIB = 8192
+VERY_HIGH_BALANCED_GGUF_CUDA_CACHE_MIB = 16 * 1024
 BALANCED_GGUF_CUDA_CACHE_HEADROOM_MIB = 8 * 1024
 
 
@@ -2942,11 +2946,14 @@ def _balanced_gguf_cuda_cache_bytes(
         total_mib = int(total_bytes) // (1024 * 1024)
         if total_mib < MIN_BALANCED_GGUF_CUDA_CACHE_TOTAL_MIB:
             return 0
-        cap_mib = (
-            MID_BALANCED_GGUF_CUDA_CACHE_MIB
-            if total_mib < MID_BALANCED_GGUF_CUDA_CACHE_TOTAL_MIB
-            else DEFAULT_BALANCED_GGUF_CUDA_CACHE_MIB
-        )
+        if total_mib >= VERY_HIGH_BALANCED_GGUF_CUDA_CACHE_TOTAL_MIB:
+            cap_mib = VERY_HIGH_BALANCED_GGUF_CUDA_CACHE_MIB
+        elif total_mib >= HIGH_BALANCED_GGUF_CUDA_CACHE_TOTAL_MIB:
+            cap_mib = HIGH_BALANCED_GGUF_CUDA_CACHE_MIB
+        elif total_mib >= MID_BALANCED_GGUF_CUDA_CACHE_TOTAL_MIB:
+            cap_mib = DEFAULT_BALANCED_GGUF_CUDA_CACHE_MIB
+        else:
+            cap_mib = MID_BALANCED_GGUF_CUDA_CACHE_MIB
         budget_mib = min(
             cap_mib,
             max(0, free_mib - BALANCED_GGUF_CUDA_CACHE_HEADROOM_MIB),
@@ -4703,11 +4710,20 @@ class DiffusionBackend:
                                     prepared_gguf_module_counts[
                                         "diffusion_cuda_cache_budget_mib"
                                     ] = int(cache_stats["budget_bytes"] // (1024 * 1024))
+                                    prepared_gguf_module_counts[
+                                        "diffusion_cuda_cache_candidate_mib"
+                                    ] = int(cache_stats["candidate_bytes"] // (1024 * 1024))
+                                    prepared_gguf_module_counts[
+                                        "diffusion_cuda_cache_selected_mib"
+                                    ] = int(cache_stats["selected_bytes"] // (1024 * 1024))
                                     logger.info(
                                         "Configured balanced diffusion GGUF CUDA cache "
-                                        "for %d CPU-resident modules with budget %d MiB.",
+                                        "for %d CPU-resident modules with budget %d MiB "
+                                        "(selected %d MiB of %d MiB candidates).",
                                         cache_stats["modules"],
                                         cache_stats["budget_bytes"] // (1024 * 1024),
+                                        cache_stats["selected_bytes"] // (1024 * 1024),
+                                        cache_stats["candidate_bytes"] // (1024 * 1024),
                                     )
                                 with _load_phase("compile_balanced_gguf_dequant"):
                                     compile_stats = install_compiled_lazy_gguf_linear_dequant(
