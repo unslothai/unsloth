@@ -2693,8 +2693,24 @@ def _prompt_embeds_and_optional_mask(
         and len(value) >= 2
         and hasattr(value[0], "shape")
     ):
-        return value[0], value[1]
-    return _primary_prompt_embeds(value), None
+        prompt_embeds = value[0]
+        prompt_embeds_mask = value[1]
+    else:
+        prompt_embeds = _primary_prompt_embeds(value)
+        prompt_embeds_mask = None
+    if accepts_mask and prompt_embeds_mask is None and hasattr(prompt_embeds, "shape"):
+        try:
+            import torch
+
+            if len(prompt_embeds.shape) >= 2:
+                prompt_embeds_mask = torch.ones(
+                    (int(prompt_embeds.shape[0]), int(prompt_embeds.shape[1])),
+                    dtype = torch.long,
+                    device = prompt_embeds.device,
+                )
+        except Exception:
+            prompt_embeds_mask = None
+    return prompt_embeds, prompt_embeds_mask
 
 
 def _env_pin_cpu_resident_gguf() -> bool:

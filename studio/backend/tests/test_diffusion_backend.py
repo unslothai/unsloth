@@ -806,6 +806,92 @@ def test_prompt_embedding_cache_preserves_qwen_masks(monkeypatch):
     assert backend._prompt_embedding_cache_value[3].device.type == "cpu"
 
 
+def test_prompt_embedding_cache_synthesizes_qwen_all_valid_masks(monkeypatch):
+    import torch
+    import core.inference.diffusion as d
+    from PIL import Image
+
+    backend = d.get_diffusion_backend()
+    fam = next(f for f in d._FAMILIES if f.name == "qwen-image")
+
+    class _QwenPromptCachePipe:
+        _execution_device = "cpu"
+
+        def __init__(self):
+            self.calls: list[dict[str, Any]] = []
+
+        def encode_prompt(
+            self,
+            prompt,
+            device = None,
+            num_images_per_prompt = 1,
+        ):
+            batch = len(prompt) if isinstance(prompt, list) else 1
+            return torch.ones(batch, 4, 3, device = device), None
+
+        def __call__(
+            self,
+            *,
+            prompt = None,
+            prompt_embeds = None,
+            prompt_embeds_mask = None,
+            negative_prompt_embeds = None,
+            negative_prompt_embeds_mask = None,
+            num_inference_steps,
+            width,
+            height,
+            true_cfg_scale = None,
+            generator = None,
+        ):
+            self.calls.append(
+                {
+                    "prompt_embeds_mask": prompt_embeds_mask,
+                    "negative_prompt_embeds_mask": negative_prompt_embeds_mask,
+                }
+            )
+
+            class _Out:
+                pass
+
+            out = _Out()
+            out.images = [Image.new("RGB", (width, height), color = (0, 255, 0))]
+            return out
+
+    pipe = _QwenPromptCachePipe()
+    backend._pipe = pipe
+    backend._device = "cpu"
+    backend._family = fam
+    backend._repo_id = "stub/qwen-image"
+
+    backend.generate_image(
+        prompt = "same prompt",
+        negative_prompt = " ",
+        width = 256,
+        height = 256,
+        guidance_scale = 4,
+        seed = 1,
+    )
+
+    assert len(pipe.calls) == 1
+    assert torch.equal(
+        pipe.calls[0]["prompt_embeds_mask"],
+        torch.ones(1, 4, dtype = torch.long),
+    )
+    assert torch.equal(
+        pipe.calls[0]["negative_prompt_embeds_mask"],
+        torch.ones(1, 4, dtype = torch.long),
+    )
+    assert backend._prompt_embedding_cache_value is not None
+    assert torch.equal(
+        backend._prompt_embedding_cache_value[1],
+        torch.ones(1, 4, dtype = torch.long),
+    )
+    assert torch.equal(
+        backend._prompt_embedding_cache_value[3],
+        torch.ones(1, 4, dtype = torch.long),
+    )
+
+
 def test_flux2_klein_embedded_guidance_patch_disables_cfg_and_forwards_guidance(monkeypatch):
     import torch
     from core.inference import diffusion as d
