@@ -1033,6 +1033,12 @@ export function SharedComposer({
       refreshStuckImeTimer();
       return;
     }
+    // Non-IME key while composingRef is stuck — mirrors the fix in thread.tsx.
+    // On macOS, switching input methods without composing can leave composingRef
+    // pinned; clear it immediately on the first non-IME keystroke.
+    if (composingRef.current) {
+      setCompositionState(false);
+    }
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       if (!busy) {
@@ -1118,6 +1124,12 @@ export function SharedComposer({
           setText(e.currentTarget.value);
         }}
         onKeyDown={onKeyDown}
+        onBlur={() => {
+          // Mac: switching input methods can fire compositionstart without a
+          // matching compositionend, leaving composingRef pinned. The OS always
+          // commits or cancels composition before the element loses focus.
+          setCompositionState(false);
+        }}
         placeholder="Send to both models..."
         className="composer-input"
         rows={1}
