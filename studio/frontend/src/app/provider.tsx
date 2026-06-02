@@ -65,17 +65,38 @@ async function applyAppWindowLayout(isCurrent: WindowLayoutGuard): Promise<void>
   if (!isCurrent()) return;
   await win.setResizable(true);
   if (!isCurrent()) return;
-  // Set the floor before restoring so a stale/undersized saved size is clamped up.
-  await win.setSizeConstraints({ minWidth: MIN_WINDOW_WIDTH, minHeight: MIN_WINDOW_HEIGHT });
-  if (!isCurrent()) return;
-  // First-launch baseline; overwritten by restoreStateCurrent when a state file exists.
-  await win.setSize(new LogicalSize(finalW, finalH));
-  if (!isCurrent()) return;
+
+  // Restore before any resize call. The plugin still tracks the window even when
+  // skip_initial_state("main") is set, so setSize before restore can overwrite
+  // the cached saved size.
   await restoreStateCurrent(StateFlags.SIZE | StateFlags.MAXIMIZED);
   if (!isCurrent()) return;
-  // Position isn't persisted, so keep the window centered unless it was maximized.
-  if (!(await win.isMaximized())) {
+  const restoredMaximized = await win.isMaximized();
+  if (!isCurrent()) return;
+  await win.setSizeConstraints({
+    minWidth: MIN_WINDOW_WIDTH,
+    minHeight: MIN_WINDOW_HEIGHT,
+  });
+  if (!isCurrent()) return;
+
+  // Only apply first-launch/default size if restore did not maximize and there is
+  // no useful saved size. The saved file stores physical px, while innerSize()
+  // returns physical px; compare against logical minimum using scale factor.
+  const restoredSize = await win.innerSize();
+  if (!isCurrent()) return;
+  const restoredScale = await win.scaleFactor();
+  const restoredW = restoredSize.width / restoredScale;
+  const restoredH = restoredSize.height / restoredScale;
+
+  if (
+    !restoredMaximized &&
+    (restoredW < MIN_WINDOW_WIDTH || restoredH < MIN_WINDOW_HEIGHT)
+  ) {
+    await win.setSize(new LogicalSize(finalW, finalH));
     if (!isCurrent()) return;
+  }
+
+  if (!restoredMaximized) {
     await win.center();
   }
   if (!isCurrent()) return;
