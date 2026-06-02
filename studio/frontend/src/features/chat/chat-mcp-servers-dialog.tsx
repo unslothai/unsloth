@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useCallback, useEffect, useState } from "react";
+import { type ChangeEvent, useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Delete02Icon, Edit03Icon, PlusSignIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { RefreshCwIcon } from "lucide-react";
+import { RefreshCwIcon, UploadIcon } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -23,6 +23,7 @@ import {
   type McpServerConfig,
   createMcpServer,
   deleteMcpServer,
+  importMcpServers,
   listMcpServers,
   refreshMcpServerTools,
   testMcpServer,
@@ -198,7 +199,9 @@ export function ChatMcpServersDialog({
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
+  const [importing, setImporting] = useState(false);
   const [refreshingId, setRefreshingId] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -318,6 +321,43 @@ export function ChatMcpServersDialog({
       });
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function onImportFile(e: ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = ""; // let the user re-pick the same file later
+    if (!file) return;
+    let config: unknown;
+    try {
+      config = JSON.parse(await file.text());
+    } catch {
+      toast.error("Invalid JSON file");
+      return;
+    }
+    setImporting(true);
+    try {
+      const result = await importMcpServers(config);
+      const parts = [`${result.created.length} added`];
+      if (result.skipped.length) parts.push(`${result.skipped.length} skipped`);
+      if (result.errors.length) {
+        parts.push(
+          `${result.errors.length} error${result.errors.length === 1 ? "" : "s"}`,
+        );
+      }
+      const summary = parts.join(", ");
+      if (result.errors.length) {
+        toast.warning(summary, { description: result.errors.slice(0, 5).join("\n") });
+      } else {
+        toast.success(summary);
+      }
+      await refresh();
+    } catch (err) {
+      toast.error("Import failed", {
+        description: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      setImporting(false);
     }
   }
 
@@ -473,7 +513,24 @@ export function ChatMcpServersDialog({
           </div>
         ) : (
           <div className="flex min-w-0 flex-col gap-3">
-            <div className="flex justify-end">
+            <div className="flex justify-end gap-2">
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="application/json,.json"
+                className="hidden"
+                onChange={onImportFile}
+              />
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={importing}
+                title="Import servers from a mcpServers JSON config (Claude Desktop, Cursor, VS Code…)"
+              >
+                {importing ? <Spinner /> : <UploadIcon size={14} />}
+                Import config
+              </Button>
               <Button size="sm" onClick={startCreate}>
                 <HugeiconsIcon icon={PlusSignIcon} size={14} />
                 Add server

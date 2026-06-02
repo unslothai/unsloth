@@ -41,6 +41,19 @@ def parse_stdio_command(address: str) -> list[str]:
     return parts
 
 
+def join_stdio_command(parts: list[str]) -> str:
+    """Inverse of parse_stdio_command: join argv into a single command string
+    that parse_stdio_command() splits back into ``parts`` on this platform.
+    Config files (issue #5936) carry structured command + args; storage holds
+    one string in the url field. Windows uses list2cmdline so spaced/backslash
+    paths round-trip through the posix=False quote-strip; posix uses shlex."""
+    if sys.platform == "win32":
+        import subprocess
+
+        return subprocess.list2cmdline(parts)
+    return shlex.join(parts)
+
+
 def stdio_mcp_enabled() -> bool:
     """stdio MCP servers spawn local processes as the backend user (and bypass
     the python/terminal sandbox), so they are only allowed when the backend

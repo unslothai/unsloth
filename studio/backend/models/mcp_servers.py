@@ -44,3 +44,14 @@ class McpServerProbeResult(BaseModel):
     ok: bool
     tool_count: int = 0
     error: Optional[str] = None
+
+
+class McpServerImportRequest(BaseModel):
+    # A standard mcpServers JSON config (Claude Desktop / Cursor / Cline / VS Code).
+    config: dict
+
+
+class McpServerImportResult(BaseModel):
+    created: list[McpServerResponse] = Field(default_factory = list)
+    skipped: list[str] = Field(default_factory = list)  # display names skipped as duplicates
+    errors: list[str] = Field(default_factory = list)

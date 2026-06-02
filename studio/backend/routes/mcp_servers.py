@@ -18,8 +18,11 @@ from core.inference.mcp_client import (
     probe_timeout,
     stdio_mcp_enabled,
 )
+from core.inference.mcp_config_import import parse_mcp_config
 from models.mcp_servers import (
     McpServerCreate,
+    McpServerImportRequest,
+    McpServerImportResult,
     McpServerProbeResult,
     McpServerResponse,
     McpServerTestRequest,
@@ -245,6 +248,47 @@ async def refresh_mcp_server_tools(
         return McpServerProbeResult(ok = False, error = str(exc))
 
     return McpServerProbeResult(ok = True, tool_count = len(tools))
+
+
+@router.post("/import", response_model = McpServerImportResult)
+async def import_mcp_servers(
+    payload: McpServerImportRequest,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Bulk-register servers from a standard mcpServers JSON config (issue
+    #5936). Each entry rides the existing create path: _validate_url applies
+    the same stdio gate (a stdio entry becomes a per-entry error when stdio is
+    off; http still imports), and entries whose url already exists are skipped
+    so re-importing the same file is idempotent. One bad entry never 400s the
+    whole batch -- failures are reported per entry."""
+    entries, errors = parse_mcp_config(payload.config)
+    created: list[McpServerResponse] = []
+    skipped: list[str] = []
+    seen_urls = {row["url"] for row in mcp_servers_db.list_servers()}
+
+    for entry in entries:
+        try:
+            url = _validate_url(entry.url)
+        except HTTPException as exc:
+            errors.append(f"{entry.display_name}: {exc.detail}")
+            continue
+        if url in seen_urls:
+            skipped.append(entry.display_name)
+            continue
+        headers = _normalize_headers(entry.headers)
+        server_id = uuid.uuid4().hex[:16]
+        mcp_servers_db.create_server(
+            id = server_id,
+            display_name = entry.display_name,
+            url = url,
+            headers_json = json.dumps(headers) if headers else None,
+            is_enabled = True,
+            use_oauth = False,
+        )
+        seen_urls.add(url)
+        created.append(_row_to_response(mcp_servers_db.get_server(server_id)))
+
+    return McpServerImportResult(created = created, skipped = skipped, errors = errors)
 
 
 @router.post("/test", response_model = McpServerProbeResult)
