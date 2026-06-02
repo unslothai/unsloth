@@ -1533,6 +1533,50 @@ shell.Run cmd, 0, False
             & wsl.exe -d $distro -u root -- /root/.unsloth/studio/unsloth_studio/bin/python -c "import torch,sys; sys.exit(0 if torch.cuda.is_available() else 3)" *> $null
             $torchOk = ($LASTEXITCODE -eq 0)
         } catch {} finally { $ErrorActionPreference = $prevEapChk }
+        # Self-heal Studio's web-server deps. install.sh installs them in a late step
+        # (install_python_stack.py "studio deps", step 8). If that step is cut short --
+        # an interrupted download, or a transient resolver hiccup -- torch + unsloth still
+        # land, but the server stack (fastapi/uvicorn/structlog/starlette) is missing and
+        # `unsloth studio` dies at launch with ModuleNotFoundError. If the stack can't
+        # import, install it WITHOUT disturbing the working ML stack: we deliberately do
+        # NOT pin huggingface-hub / transformers / datasets here, so the GPU torch path
+        # we just verified stays intact (those pins live in studio.txt for a fresh env).
+        if ($torchOk) {
+            $_studioPy = "/root/.unsloth/studio/unsloth_studio/bin/python"
+            $_serverOk = $false
+            $prevEapS = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+            try {
+                & wsl.exe -d $distro -u root -- $_studioPy -c "import structlog, fastapi, uvicorn, starlette" *> $null
+                $_serverOk = ($LASTEXITCODE -eq 0)
+            } catch {} finally { $ErrorActionPreference = $prevEapS }
+            if (-not $_serverOk) {
+                substep "Studio web-server deps incomplete (install.sh step cut short) -- installing them now..." "Cyan"
+                # Mirrors studio/backend/requirements/studio.txt MINUS the huggingface-hub
+                # pin (protected above). Prefer uv (matches install.sh); fall back to pip.
+                $_deps = 'typer fastapi uvicorn matplotlib pandas nest_asyncio pyjwt easydict addict "structlog>=24.1.0" diceware ddgs "cryptography>=42.0.0" "httpx>=0.27.0" "fastmcp>=3.0.2"'
+                $_repair = 'PY=/root/.unsloth/studio/unsloth_studio/bin/python; UV="$(command -v uv 2>/dev/null || echo /root/.local/bin/uv)"; if [ -x "$UV" ] || command -v uv >/dev/null 2>&1; then "$UV" pip install --python "$PY" ' + $_deps + '; else "$PY" -m pip install ' + $_deps + '; fi'
+                $prevEapR = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+                try { & wsl.exe -d $distro -u root -- bash -lc $_repair } catch {} finally { $ErrorActionPreference = $prevEapR }
+                $prevEapS2 = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+                try {
+                    & wsl.exe -d $distro -u root -- $_studioPy -c "import structlog, fastapi, uvicorn, starlette" *> $null
+                    $_serverOk = ($LASTEXITCODE -eq 0)
+                } catch {} finally { $ErrorActionPreference = $prevEapS2 }
+                if ($_serverOk) { substep "Studio web-server deps installed." "Green" }
+                else { substep "(could not auto-install Studio server deps; 'unsloth studio' may fail to start)" "Yellow" }
+            }
+            # GGUF export robustness: the venv is uv-managed and ships no `pip`, but
+            # unsloth-zoo's exporter calls check_pip() and only finds `uv pip` when uv is
+            # on PATH (true for the login-shell launcher, not for every code path).
+            # Seeding pip into the venv makes `save_pretrained_gguf` work regardless.
+            $prevEapP = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+            try {
+                & wsl.exe -d $distro -u root -- $_studioPy -m pip --version *> $null
+                if ($LASTEXITCODE -ne 0) {
+                    & wsl.exe -d $distro -u root -- $_studioPy -m ensurepip --upgrade *> $null
+                }
+            } catch {} finally { $ErrorActionPreference = $prevEapP }
+        }
         if ($torchOk) {
             step "done" "Unsloth Studio installed in WSL '$distro' -- GPU ready (torch.cuda available)." "Green"
             # Native Windows `unsloth` shim: forward every `unsloth ...` into the WSL GPU env so the user
@@ -1587,11 +1631,38 @@ shell.Run cmd, 0, False
                     $sc.Save()
                 }
                 step "shortcuts" "created Desktop + Start Menu shortcuts (launch WSL Studio + open browser)" "Green"
-                # Refresh the shell icon cache so the brand-new .lnk icons render immediately instead of
-                # showing blank (Explorer caches per-.lnk icons; programmatically-created links often need a poke).
+                # Make the brand-new .lnk icons render immediately instead of blank. Explorer caches
+                # per-.lnk icons, so a freshly-created shortcut often shows blank until the shell is told
+                # to re-read it. ie4uinit -show alone is unreliable; also broadcast SHChangeNotify so
+                # Explorer refreshes the icons without needing a restart or re-login.
                 try { & "$env:SystemRoot\System32\ie4uinit.exe" -show 2>$null } catch {}
+                try {
+                    if (-not ("UnslothShell.Notify" -as [type])) {
+                        Add-Type -Namespace UnslothShell -Name Notify -MemberDefinition '[System.Runtime.InteropServices.DllImport("shell32.dll")] public static extern void SHChangeNotify(int eventId, uint flags, System.IntPtr item1, System.IntPtr item2);'
+                    }
+                    # SHCNE_ASSOCCHANGED (0x08000000) with SHCNF_IDLIST (0) -> flush shell icon associations.
+                    [UnslothShell.Notify]::SHChangeNotify(0x08000000, 0, [System.IntPtr]::Zero, [System.IntPtr]::Zero)
+                } catch {}
             } catch {
                 substep "(could not create shortcuts: $($_.Exception.Message))" "Yellow"
+            }
+            # GGUF *inference* needs a CUDA-linked llama-server. There is no published
+            # aarch64+CUDA llama.cpp prebuilt (NVIDIA DGX Spark / N1X), so build one into
+            # ~/.unsloth/llama.cpp (Studio's resolver path) IN THE BACKGROUND: the user gets
+            # Studio + training immediately, and GGUF inference lights up a few minutes later
+            # with zero manual steps. Best-effort; opt out with UNSLOTH_NO_LLAMA_CUDA=1.
+            if ($env:UNSLOTH_NO_LLAMA_CUDA -ne '1') {
+                $prevEapL = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+                try {
+                    $_llamaUrl = "https://raw.githubusercontent.com/unslothai/unsloth/main/studio/scripts/provision_llama_cuda.sh"
+                    $_provCmd = 'mkdir -p /root/.unsloth; if curl -fsSL "' + $_llamaUrl + '" -o /root/.unsloth/provision_llama_cuda.sh && [ -s /root/.unsloth/provision_llama_cuda.sh ]; then chmod +x /root/.unsloth/provision_llama_cuda.sh; nohup setsid bash /root/.unsloth/provision_llama_cuda.sh > /root/.unsloth/llama_cuda_build.log 2>&1 < /dev/null & echo PROV_STARTED; else echo PROV_NOSCRIPT; fi'
+                    $_provOut = & wsl.exe -d $distro -u root -- bash -lc $_provCmd 2>$null
+                    if ("$_provOut" -match 'PROV_STARTED') {
+                        step "llama.cpp" "building CUDA llama.cpp for GGUF inference in the background (a few min); log: ~/.unsloth/llama_cuda_build.log" "Green"
+                    } else {
+                        substep "(GGUF inference needs a CUDA llama.cpp build; build later:  wsl -d $distro -u root -- bash ~/.unsloth/provision_llama_cuda.sh)" "Yellow"
+                    }
+                } catch {} finally { $ErrorActionPreference = $prevEapL }
             }
         } else {
             step "wsl" "WSL Studio install did not finish cleanly (torch.cuda not detected; inner exit $wslRc) -- see log above." "Yellow"
