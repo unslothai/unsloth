@@ -242,6 +242,8 @@ def _verify_completed_download(
     repo_id: str,
     variant: str | None,
     snapshot_path: str,
+    *,
+    metadata_unavailable: bool = False,
 ) -> None:
     """Walk the manifest and verify every expected file is on disk at the
     declared size. Exit nonzero with a diagnostic stderr message if not.
@@ -264,12 +266,24 @@ def _verify_completed_download(
     if result.ok:
         return
     label = f"{repo_id}{f' [{variant}]' if variant else ''}"
-    print(
-        f"Verification failed for {label}: snapshot_download completed but "
-        f"{len(result.missing)} expected file(s) are missing and "
-        f"{len(result.size_mismatched)} have incorrect size on disk.",
-        file = sys.stderr,
-    )
+    if metadata_unavailable:
+        print(
+            f"Could not reach Hugging Face for {label} and the copy on disk is "
+            f"incomplete ({len(result.missing)} file(s) missing, "
+            f"{len(result.size_mismatched)} the wrong size). Access to a private "
+            "or restricted repo may have been lost (HF token removed or "
+            "changed), the connection dropped, or Hugging Face is temporarily "
+            "unavailable. Set a valid HF token or reconnect, then resume the "
+            "download.",
+            file = sys.stderr,
+        )
+    else:
+        print(
+            f"Verification failed for {label}: snapshot_download completed but "
+            f"{len(result.missing)} expected file(s) are missing and "
+            f"{len(result.size_mismatched)} have incorrect size on disk.",
+            file = sys.stderr,
+        )
     if result.missing:
         print(
             f"Missing: {_format_path_list(result.missing)}",
@@ -390,8 +404,20 @@ def _recover_manifest_after_download(
     unavailable at start: re-fetch and record the expected files, else fall
     back to the on-disk file list so completion/partial detection still works.
     Shared by the model and dataset workers (they differ only in the metadata
-    fetch, the expected-files extraction, and the log label)."""
+    fetch, the expected-files extraction, and the log label).
+
+    A pre-existing manifest is authoritative (a prior attempt recorded the true
+    expected set) and is preserved untouched. This is load-bearing: when access
+    is lost on resume (token revoked/changed on a gated/private repo),
+    snapshot_download returns the cached partial snapshot WITHOUT downloading
+    (huggingface_hub's auth/connection fallback returns snapshots/<sha> as-is),
+    so rebuilding the manifest from the on-disk files here would record the
+    partial set as the expected set and let _verify_completed_download certify a
+    half-finished download as complete."""
     from hub.utils import download_manifest
+
+    if download_manifest.read_manifest(repo_type, repo_id, None) is not None:
+        return
 
     try:
         if download_manifest.write_manifest(
@@ -492,7 +518,13 @@ def _download_snapshot(repo_id: str, hf_token: str | None, mode: str) -> None:
                 recovered
             )[1],
         )
-    _verify_completed_download("model", repo_id, None, snapshot_path)
+    _verify_completed_download(
+        "model",
+        repo_id,
+        None,
+        snapshot_path,
+        metadata_unavailable = info is None,
+    )
 
 
 def _gguf_variant_target_plan(
@@ -624,7 +656,13 @@ def _download_gguf_variant(
         allow_patterns = targets,
         max_workers = 1,
     )
-    _verify_completed_download("model", repo_id, variant, snapshot_path)
+    _verify_completed_download(
+        "model",
+        repo_id,
+        variant,
+        snapshot_path,
+        metadata_unavailable = metadata_unavailable,
+    )
 
 
 def _download_dataset(repo_id: str, hf_token: str | None, mode: str) -> None:
@@ -680,7 +718,13 @@ def _download_dataset(repo_id: str, hf_token: str | None, mode: str) -> None:
             expected_files_from_info = _dataset_expected_files,
             label = "dataset ",
         )
-    _verify_completed_download("dataset", repo_id, None, snapshot_path)
+    _verify_completed_download(
+        "dataset",
+        repo_id,
+        None,
+        snapshot_path,
+        metadata_unavailable = info is None,
+    )
 
 
 def main() -> None:
