@@ -216,9 +216,6 @@ async def cancel_download_model_response(body: CancelDownloadRequest):
         _registry,
         key,
         generation = body.generation,
-        repo_type = "model",
-        repo_id = repo_id,
-        variant = variant,
         label = repo_id,
         logger = logger,
     )

@@ -227,9 +227,6 @@ async def cancel_dataset_download_response(body: CancelDatasetDownloadRequest) -
         _registry,
         key,
         generation = body.generation,
-        repo_type = "dataset",
-        repo_id = repo_id,
-        variant = None,
         label = f"dataset {repo_id}",
         logger = logger,
     )

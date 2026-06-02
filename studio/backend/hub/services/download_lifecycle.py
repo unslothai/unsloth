@@ -172,8 +172,12 @@ def classify_exit(rc: int, *, cancel_requested: bool = False) -> str:
     """Map a worker process exit code to a job state.
 
     - rc == 0: clean completion.
-    - rc == EXIT_CANCELLED (130): the worker trapped a stop signal and exited
-      its own cancellation path, so this is unambiguously a cancel.
+    - rc == EXIT_CANCELLED (130): the worker trapped a stop signal (an external
+      SIGTERM/SIGINT, or its own parent-death watchdog) and exited cleanly
+      through its cancellation path, leaving a byte-exact resumable partial. Our
+      own in-app cancel uses untrappable SIGKILL, not this path, and the OOM
+      killer never produces 130, so 130 is always an intentional stop and is
+      treated as a resumable cancel regardless of who sent the signal.
     - rc killed by a cancellation signal (SIGKILL/SIGTERM/SIGINT): a cancel
       only when *we* asked for it. The OOM killer also sends SIGKILL, so an
       unrequested signal kill is surfaced as an error rather than masquerading
@@ -263,7 +267,7 @@ def finalize_worker_exit(
                 logger.debug(f"clear_cancel_marker failed for {repo_id} (rc=0): {exc}")
     elif state == "cancelled":
         registry.set_job(key, "cancelled")
-        logger.info(f"{log_prefix} cancelled by user: {label} (rc={rc})")
+        logger.info(f"{log_prefix} cancelled: {label} (rc={rc})")
         # Persist the original variant casing from metadata so the marker matches
         # the manifest; the lowercased job key is only a fallback once metadata is
         # gone. Mismatched casing would otherwise double-list the variant offline.
@@ -402,9 +406,6 @@ def cancel_worker(
     key: str,
     *,
     generation: Optional[int],
-    repo_type: RepoType,
-    repo_id: str,
-    variant: Optional[str],
     label: str,
     logger,
 ) -> str:
@@ -423,13 +424,9 @@ def cancel_worker(
 
     if not registry.request_cancel(key, proc, generation):
         return registry.get_job(key).state
-    registry.persist_cancel_for_key(
-        key,
-        repo_type = repo_type,
-        repo_id = repo_id,
-        variant = variant,
-    )
-
+    # No eager marker: finalize_worker_exit writes it when the reaped exit
+    # classifies as "cancelled". Persisting before the kill races a clean
+    # completion and would strand a stale marker on a finished download.
     try:
         proc.kill()
     except ProcessLookupError:

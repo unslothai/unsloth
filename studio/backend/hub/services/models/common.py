@@ -17,7 +17,11 @@ from hub.schemas.inventory import (
     ModelFormat,
     ModelRuntime,
 )
-from hub.utils.gguf import extract_quant_label
+from hub.utils.gguf import (
+    extract_quant_label,
+    is_gguf_filename as _is_gguf_filename,
+    is_mmproj_filename as _is_mmproj_filename,
+)
 from hub.utils.paths import is_valid_repo_id as _is_valid_repo_id
 
 ModelType = Literal["text", "vision", "audio", "embeddings"]
@@ -307,14 +311,6 @@ def _classify_non_gguf_model_format(
     if has_config and has_checkpoint_weights:
         return "checkpoint"
     return None
-
-
-def _is_gguf_filename(name: str) -> bool:
-    return name.lower().endswith(".gguf")
-
-
-def _is_mmproj_filename(name: str) -> bool:
-    return "mmproj" in name.lower()
 
 
 def _is_main_gguf_filename(name: str) -> bool:

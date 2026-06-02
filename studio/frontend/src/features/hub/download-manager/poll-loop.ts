@@ -847,6 +847,10 @@ export async function cancelJob(key: string): Promise<void> {
   } catch (err) {
     const liveAtError = runtimeRegistry.runtimes.get(key);
     if (rt && liveAtError && liveAtError.epoch !== cancelEpoch) return;
+    // apiCancel failed; the probe below is the authority on the real backend
+    // state. Disarm the watchdog so it can't finalize "cancelled" mid-probe and
+    // tear down a worker that is actually still running.
+    clearWatchdog(liveAtError);
 
     const probe = await probeCancelOutcome(key, job, rt, cancelEpoch);
     if (probe === "stale") return;
@@ -855,7 +859,6 @@ export async function cancelJob(key: string): Promise<void> {
     if (rt && (!live || live.epoch !== cancelEpoch)) return;
 
     if (probe.terminal !== null) {
-      if (live) clearWatchdog(live);
       if (probe.terminal === "complete") {
         const current = getState().jobs[key];
         finalize(key, "complete", { bytes: current?.downloadedBytes ?? 0 });
@@ -869,7 +872,6 @@ export async function cancelJob(key: string): Promise<void> {
 
     if (live) {
       live.cancelRequested = false;
-      clearWatchdog(live);
     }
     patchJob(key, { state: "running" });
     toast.error("Couldn't cancel the download. It's still running.");

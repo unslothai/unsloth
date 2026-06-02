@@ -1391,9 +1391,6 @@ def test_cancel_worker_leaves_exited_process_to_watcher():
         _Registry(),
         "org/model::",
         generation = 3,
-        repo_type = "model",
-        repo_id = "Org/Model",
-        variant = None,
         label = "Org/Model",
         logger = SimpleNamespace(warning = lambda *_a, **_k: None),
     )
@@ -2202,7 +2199,7 @@ def test_model_claim_register_cancel_uses_registry_marker_owner(monkeypatch):
     assert killed
 
 
-def test_model_cancel_registered_worker_persists_marker_and_kills(monkeypatch):
+def test_model_cancel_registered_worker_requests_and_kills(monkeypatch):
     events = []
 
     class _Proc:
@@ -2220,8 +2217,11 @@ def test_model_cancel_registered_worker_persists_marker_and_kills(monkeypatch):
             events.append(("request", key, generation))
             return True
 
-        def persist_cancel_for_key(self, key, **kwargs):
-            events.append(("persist", key, kwargs))
+        def persist_cancel_for_key(self, *_args, **_kwargs):
+            raise AssertionError(
+                "cancel_worker must leave marker persistence to the exit watcher; "
+                "an eager persist races a clean completion and strands a stale marker"
+            )
 
         def get_job(self, _key):
             return SimpleNamespace(state = "running")
@@ -2245,11 +2245,6 @@ def test_model_cancel_registered_worker_persists_marker_and_kills(monkeypatch):
     }
     assert events == [
         ("request", downloads._download_job_key("Org/Model", "Q4_K_M"), 7),
-        (
-            "persist",
-            downloads._download_job_key("Org/Model", "Q4_K_M"),
-            {"repo_type": "model", "repo_id": "Org/Model", "variant": "Q4_K_M"},
-        ),
         ("kill",),
     ]
 
