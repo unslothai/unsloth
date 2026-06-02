@@ -100,7 +100,11 @@ LTX2_3_SPATIAL_UPSCALER_X2_FILENAME = "ltx-2.3-spatial-upscaler-x2-1.1.safetenso
 LTX2_3_DISTILLED_LORA_FILENAME = "ltx-2.3-22b-distilled-lora-384-1.1.safetensors"
 LTX2_3_BASE_STAGE_2_LORA_ADAPTER = "ltx2_3_distilled_stage2"
 LTX2_3_BASE_STAGE_2_LORA_SCALE = 0.8
-LTX2_3_DISTILLED_STAGE_2_SIGMAS = [0.909375, 0.725, 0.421875, 0.0]
+LTX2_3_DISTILLED_STAGE_2_SIGMAS = [0.909375, 0.725, 0.421875]
+LTX2_3_DISTILLED_STAGE_2_OFFICIAL_SIGMAS = [
+    *LTX2_3_DISTILLED_STAGE_2_SIGMAS,
+    0.0,
+]
 LTX2_3_BASE_TWO_STAGE_PROFILE = "official-base-two-stage"
 LTX2_3_DISTILLED_TWO_STAGE_PROFILE = "official-distilled-two-stage"
 DIFFUSION_TORCH_COMPILE_NONE = "none"
@@ -6687,7 +6691,7 @@ class DiffusionBackend:
                 "height": resolved_height,
                 "num_frames": resolved_frames,
                 "frame_rate": resolved_frame_rate,
-                "num_inference_steps": len(LTX2_3_DISTILLED_STAGE_2_SIGMAS) - 1,
+                "num_inference_steps": len(LTX2_3_DISTILLED_STAGE_2_SIGMAS),
                 "guidance_scale": 1.0,
                 "sigmas": LTX2_3_DISTILLED_STAGE_2_SIGMAS,
                 "noise_scale": LTX2_3_DISTILLED_STAGE_2_SIGMAS[0],
@@ -6712,7 +6716,7 @@ class DiffusionBackend:
             "sampling_profile": LTX2_3_BASE_TWO_STAGE_PROFILE,
             "stage_1_width": stage_1_width,
             "stage_1_height": stage_1_height,
-            "stage_2_sigmas": list(LTX2_3_DISTILLED_STAGE_2_SIGMAS),
+            "stage_2_sigmas": list(LTX2_3_DISTILLED_STAGE_2_OFFICIAL_SIGMAS),
             "stage_2_lora": LTX2_3_DISTILLED_LORA_FILENAME,
             "stage_2_lora_scale": LTX2_3_BASE_STAGE_2_LORA_SCALE,
             "latent_upsampler": LTX2_3_SPATIAL_UPSCALER_X2_FILENAME,
@@ -6794,7 +6798,7 @@ class DiffusionBackend:
                 "height": resolved_height,
                 "num_frames": resolved_frames,
                 "frame_rate": resolved_frame_rate,
-                "num_inference_steps": len(LTX2_3_DISTILLED_STAGE_2_SIGMAS) - 1,
+                "num_inference_steps": len(LTX2_3_DISTILLED_STAGE_2_SIGMAS),
                 "guidance_scale": 1.0,
                 "sigmas": LTX2_3_DISTILLED_STAGE_2_SIGMAS,
                 "noise_scale": LTX2_3_DISTILLED_STAGE_2_SIGMAS[0],
@@ -6813,7 +6817,7 @@ class DiffusionBackend:
             "stage_1_width": stage_1_width,
             "stage_1_height": stage_1_height,
             "stage_1_sigmas": list(DISTILLED_SIGMA_VALUES),
-            "stage_2_sigmas": list(LTX2_3_DISTILLED_STAGE_2_SIGMAS),
+            "stage_2_sigmas": list(LTX2_3_DISTILLED_STAGE_2_OFFICIAL_SIGMAS),
             "latent_upsampler": LTX2_3_SPATIAL_UPSCALER_X2_FILENAME,
         }
 

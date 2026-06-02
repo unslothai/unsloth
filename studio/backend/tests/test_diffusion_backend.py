@@ -6785,6 +6785,76 @@ def test_generate_video_with_metadata_uses_ltx23_family_defaults(
         assert meta["stage_1_height"] == 512
 
 
+def test_ltx23_distilled_stage_two_passes_nonterminal_sigmas_to_diffusers(
+    monkeypatch,
+):
+    import core.inference.diffusion as d
+    import torch
+
+    fake_utils = types.ModuleType("diffusers.pipelines.ltx2.utils")
+    fake_utils.DISTILLED_SIGMA_VALUES = [1.0, 0.5]
+    monkeypatch.setitem(sys.modules, "diffusers.pipelines.ltx2.utils", fake_utils)
+
+    backend = d.DiffusionBackend()
+
+    class _FakeUpsampler(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.param = torch.nn.Parameter(torch.zeros((), dtype = torch.bfloat16))
+
+        def forward(self, latents):
+            return latents
+
+    monkeypatch.setattr(
+        backend,
+        "_get_ltx2_latent_upsampler",
+        lambda *, dtype, device: _FakeUpsampler(),
+    )
+
+    class _FakePipe:
+        def __init__(self):
+            self.calls = []
+
+        def __call__(self, **kwargs):
+            self.calls.append(kwargs)
+            if kwargs["output_type"] == "latent":
+                return (
+                    torch.zeros((1, 128, 2, 4, 4), dtype = torch.bfloat16),
+                    torch.zeros((1, 8, 2, 4), dtype = torch.bfloat16),
+                )
+            return ([["frame0"]],)
+
+    pipe = _FakePipe()
+    video, meta = backend._generate_ltx2_distilled_two_stage_video(
+        pipe = pipe,
+        base_call_kwargs = {
+            "prompt": "prompt",
+            "negative_prompt": None,
+            "num_frames": 9,
+            "frame_rate": 24.0,
+            "output_type": "np",
+            "return_dict": False,
+        },
+        resolved_width = 1536,
+        resolved_height = 1024,
+        resolved_steps = 8,
+        resolved_guidance = 1.0,
+        resolved_frame_rate = 24.0,
+        resolved_frames = 9,
+        generator = None,
+        device = "cpu",
+    )
+
+    assert video == ["frame0"]
+    assert len(pipe.calls) == 2
+    stage_2_kwargs = pipe.calls[1]
+    assert stage_2_kwargs["sigmas"] == d.LTX2_3_DISTILLED_STAGE_2_SIGMAS
+    assert stage_2_kwargs["sigmas"][-1] != 0.0
+    assert stage_2_kwargs["num_inference_steps"] == 3
+    assert meta["stage_2_sigmas"] == d.LTX2_3_DISTILLED_STAGE_2_OFFICIAL_SIGMAS
+    assert meta["stage_2_sigmas"][-1] == 0.0
+
+
 def test_generate_video_rejects_image_family():
     import core.inference.diffusion as d
 
