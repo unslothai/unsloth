@@ -146,6 +146,24 @@ def test_tool_formats_chunks_and_sources(rag_conn, bow_embeddings, monkeypatch):
     ]
 
 
+def test_tool_kb_scope_retrieves_from_db(rag_conn, bow_embeddings):
+    """End-to-end (no retrieve stub): a doc ingested under a KB scope is found
+    when the tool is invoked with that ``scope_kb_id``. Guards against regressing
+    the reusable-KB path returning empty while per-thread docs work (#8)."""
+    _add_doc(rag_conn, "kb_K", "d1", "kb.pdf", "h1", "alpha bravo charlie", page = 1)
+    text, sources = tool.search_knowledge_base_with_sources(
+        query = "alpha bravo", scope_kb_id = "K"
+    )
+    assert "No matching chunks" not in text
+    assert sources and sources[0]["chunkId"] == "d1:0"
+    assert sources[0]["filename"] == "kb.pdf"
+    # A different KB id sees nothing (scope isolation, mirrors thread isolation).
+    other, other_sources = tool.search_knowledge_base_with_sources(
+        query = "alpha bravo", scope_kb_id = "OTHER"
+    )
+    assert other_sources == [] and "No matching chunks" in other
+
+
 def test_dispatcher_appends_sources_sentinel(rag_conn, bow_embeddings, monkeypatch):
     """JSON source-map is appended after the sentinel; model-facing text before it stays clean."""
     import json
