@@ -86,7 +86,8 @@ function stripTrailingEpoch(input: string): string {
 
 function shortModelLabel(idOrName: string): string {
   const slash = idOrName.lastIndexOf("/");
-  return slash >= 0 ? idOrName.slice(slash + 1) : idOrName;
+  const label = slash >= 0 ? idOrName.slice(slash + 1) : idOrName;
+  return label || idOrName;
 }
 
 function describeModel(model: {

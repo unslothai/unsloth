@@ -1010,11 +1010,7 @@
 	padding-right: 88px !important;
 }
 
-[data-sonner-toast][data-styled='true'].chat-model-load-toast {
-	padding-top: 14px !important;
-	padding-bottom: 14px !important;
-}
-
+[data-sonner-toast][data-styled='true'].chat-model-load-toast,
 [data-sonner-toast][data-styled='true'].chat-model-loaded-toast {
 	padding-top: 14px !important;
 	padding-bottom: 14px !important;
