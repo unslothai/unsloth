@@ -169,10 +169,8 @@ class Modal(Provider):
         volume_name = f"unsloth-model-{int(time.time())}"
         model_name = local_path.name or local_path.resolve().name or "model"
 
-        log(f"Creating Modal volume {volume_name}...")
         vol = sdk.Volume.from_name(volume_name, create_if_missing = True)
-
-        log(f"Uploading {local_path} to the volume (stays in Modal)...")
+        log(f"Uploading {local_path} to Modal storage (this can take a while)...")
         try:
             with vol.batch_upload() as batch:
                 if local_path.is_dir():

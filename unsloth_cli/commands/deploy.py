@@ -22,7 +22,7 @@ from unsloth_cli.deploy.provider import PROVIDERS
 from unsloth_cli.deploy.studio_client import StudioClient
 
 
-IMAGE_TAG = "ghcr.io/unslothai/unsloth-base:cu128"
+IMAGE_TAG = "ghcr.io/nilayyadav/unsloth-base:cu128"
 
 STUDIO_PORT = 8000
 SSH_PORT = 22

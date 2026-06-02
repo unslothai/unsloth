@@ -287,21 +287,19 @@ class RunPod(Provider):
                 "RUNPOD_S3_SECRET_ACCESS_KEY."
             )
 
-        datacenter = self._datacenter or self._auto_datacenter(gpu, log)
+        datacenter = self._datacenter or self._auto_datacenter(gpu)
         size_gb = _volume_size_gb(local_path)
         model_name = local_path.name or local_path.resolve().name or "model"
 
-        log(f"Creating {size_gb} GB network volume in {datacenter}...")
         volume_id = runpod_storage.create_network_volume(
             self,
             name = f"unsloth-{int(time.time())}",
             size_gb = size_gb,
             datacenter_id = datacenter,
         )
-        log(f"  volume id: {volume_id}")
 
         prefix = f"uploads/{model_name}" if local_path.is_dir() else "uploads"
-        log(f"Uploading {local_path} to the volume over S3 (stays in RunPod)...")
+        log(f"Uploading {local_path} to RunPod storage (this can take a while)...")
         try:
             runpod_storage.upload_path(
                 local_path,
@@ -332,17 +330,14 @@ class RunPod(Provider):
     def delete_storage(self, storage_id: str) -> None:
         runpod_storage.delete_network_volume(self, storage_id)
 
-    def _auto_datacenter(self, gpu: Gpu, log: Callable[[str], None]) -> str:
-        log(f"Finding a datacenter with capacity for {gpu.name}...")
+    def _auto_datacenter(self, gpu: Gpu) -> str:
         ranked = self.datacenters_for_gpu(gpu.id)
         if not ranked:
             raise DeployError(
                 f"No datacenter currently has secure-cloud capacity for {gpu.name}.\n"
                 "Pick a different GPU (the picker shows stock) or retry shortly."
             )
-        datacenter, stock = ranked[0]
-        log(f"  -> {datacenter} ({stock} stock)")
-        return datacenter
+        return ranked[0][0]
 
     def _sdk(self):
         if self._sdk_mod is None:
