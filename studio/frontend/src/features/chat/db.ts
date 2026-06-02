@@ -2,10 +2,14 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import Dexie, { type EntityTable, liveQuery } from "dexie";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { MessageRecord, ThreadRecord } from "./types";
 
-const db = new Dexie("unsloth-chat") as Dexie & {
+// Legacy browser-only chat storage. Replaced by studio.db (see
+// chat-history-storage.ts), kept read-only for the one-shot import path.
+export const DEXIE_DB_NAME = "unsloth-chat";
+
+const db = new Dexie(DEXIE_DB_NAME) as Dexie & {
   threads: EntityTable<ThreadRecord, "id">;
   messages: EntityTable<MessageRecord, "id">;
 };
@@ -38,18 +42,29 @@ db.version(3)
 
 export { db };
 
+/**
+ * Wraps Dexie liveQuery for React state updates.
+ *
+ * Important: include every semantic query input in `deps` (filters, sort keys,
+ * IDs, etc). `querier` identity is intentionally ignored to avoid re-subscribing
+ * on every render when callers pass inline functions.
+ */
 export function useLiveQuery<T>(
   querier: () => Promise<T>,
   deps: unknown[] = [],
 ): T | undefined {
   const [value, setValue] = useState<T>();
+  const querierRef = useRef(querier);
+  querierRef.current = querier;
+
   useEffect(() => {
-    const sub = liveQuery(querier).subscribe({
+    const sub = liveQuery(() => querierRef.current()).subscribe({
       next: setValue,
       error: (err) => console.error("useLiveQuery:", err),
     });
     return () => sub.unsubscribe();
+    // Intentionally omit `querier` from deps: inline functions would re-subscribe every render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [querier, ...deps]);
+  }, deps);
   return value;
 }

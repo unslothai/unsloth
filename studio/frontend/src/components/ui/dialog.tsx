@@ -189,6 +189,7 @@ export {
   DialogHeader,
   DialogOverlay,
   DialogPortal,
+  DialogPortalContainerContext,
   DialogTitle,
   DialogTrigger,
 };

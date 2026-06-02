@@ -18,7 +18,14 @@ from typing import Optional, Union, Generator, Tuple
 from utils.models import ModelConfig, get_base_model_from_lora
 from utils.paths import is_model_cached
 from utils.utils import format_error_message
-from utils.hardware import get_device, clear_gpu_cache, log_gpu_memory
+from utils.hardware import (
+    get_device,
+    clear_gpu_cache,
+    log_gpu_memory,
+    get_device_map,
+    raise_if_offloaded,
+    get_visible_gpu_count,
+)
 from core.inference.audio_codecs import AudioCodecManager
 from io import StringIO
 import structlog
@@ -241,10 +248,15 @@ class InferenceBackend:
         load_in_4bit: bool = True,
         hf_token: Optional[str] = None,
         trust_remote_code: bool = False,
+        gpu_ids: Optional[list[int]] = None,
     ) -> bool:
         """
         Load any model: base, LoRA adapter, text, or vision.
         """
+        # GGUF uses max_seq_length=0 as "model default"; Unsloth crashes on it.
+        if max_seq_length <= 0:
+            max_seq_length = 2048
+
         try:
             model_name = config.identifier
 
@@ -260,6 +272,10 @@ class InferenceBackend:
                 return False
 
             self.loading_models.add(model_name)
+            device_map = get_device_map(gpu_ids)
+            logger.info(
+                f"Using device_map='{device_map}' ({get_visible_gpu_count()} GPU(s) visible)"
+            )
 
             self.models[model_name] = {
                 "is_vision": config.is_vision,
@@ -290,6 +306,7 @@ class InferenceBackend:
                         config.path,
                         auto_model = CsmForConditionalGeneration,
                         load_in_4bit = False,
+                        device_map = device_map,
                         token = hf_token if hf_token and hf_token.strip() else None,
                         trust_remote_code = trust_remote_code,
                     )
@@ -325,6 +342,7 @@ class InferenceBackend:
                             config.path,
                             dtype = torch.float32,
                             load_in_4bit = False,
+                            device_map = device_map,
                             token = hf_token if hf_token and hf_token.strip() else None,
                             trust_remote_code = trust_remote_code,
                         )
@@ -345,6 +363,7 @@ class InferenceBackend:
                             llm_path,
                             dtype = torch.float32,
                             load_in_4bit = False,
+                            device_map = device_map,
                             token = hf_token if hf_token and hf_token.strip() else None,
                             trust_remote_code = trust_remote_code,
                         )
@@ -361,6 +380,7 @@ class InferenceBackend:
                         config.path,
                         max_seq_length = max_seq_length,
                         load_in_4bit = False,
+                        device_map = device_map,
                         token = hf_token if hf_token and hf_token.strip() else None,
                         trust_remote_code = trust_remote_code,
                     )
@@ -378,6 +398,7 @@ class InferenceBackend:
                         whisper_language = "English",
                         whisper_task = "transcribe",
                         load_in_4bit = False,
+                        device_map = device_map,
                         token = hf_token if hf_token and hf_token.strip() else None,
                         trust_remote_code = trust_remote_code,
                     )
@@ -405,6 +426,7 @@ class InferenceBackend:
                         model_name = config.path,
                         max_seq_length = max_seq_length,
                         load_in_4bit = False,
+                        device_map = device_map,
                         token = hf_token if hf_token and hf_token.strip() else None,
                         trust_remote_code = trust_remote_code,
                     )
@@ -419,6 +441,11 @@ class InferenceBackend:
                     self._audio_codec_manager.load_codec(
                         audio_type, self.device, model_repo_path = model_repo_path
                     )
+
+                # Reject CPU/disk offload for audio models too
+                raise_if_offloaded(
+                    self.models[model_name]["model"], device_map, "Inference"
+                )
 
                 self.active_model_name = model_name
                 self.loading_models.discard(model_name)
@@ -441,6 +468,7 @@ class InferenceBackend:
                     max_seq_length = max_seq_length,
                     dtype = dtype,
                     load_in_4bit = load_in_4bit,
+                    device_map = device_map,
                     token = hf_token if hf_token and hf_token.strip() else None,
                     trust_remote_code = trust_remote_code,
                 )
@@ -497,6 +525,7 @@ class InferenceBackend:
                     max_seq_length = max_seq_length,
                     dtype = dtype,
                     load_in_4bit = load_in_4bit,
+                    device_map = device_map,
                     token = hf_token if hf_token and hf_token.strip() else None,
                     trust_remote_code = trust_remote_code,
                 )
@@ -506,6 +535,10 @@ class InferenceBackend:
 
                 self.models[model_name]["model"] = model
                 self.models[model_name]["tokenizer"] = tokenizer
+
+            raise_if_offloaded(
+                self.models[model_name]["model"], device_map, "Inference"
+            )
 
             # Load chat template info
             self._load_chat_template_info(model_name)
@@ -549,10 +582,18 @@ class InferenceBackend:
                 # Clear GPU memory cache
                 clear_gpu_cache()
 
-                # Remove stale compiled cache so the next model gets a fresh one
+                # Remove stale compiled cache so the next model gets a fresh one.
+                # On spawn-based platforms, preserve trainer files so that any
+                # concurrent training dataset.map() workers can still import them.
+                import sys as _sys
                 from utils.cache_cleanup import clear_unsloth_compiled_cache
 
-                clear_unsloth_compiled_cache()
+                _preserve = (
+                    ["Unsloth*Trainer.py"]
+                    if _sys.platform in ("win32", "darwin")
+                    else None
+                )
+                clear_unsloth_compiled_cache(preserve_patterns = _preserve)
 
                 logger.info(f"Model '{model_name}' successfully unloaded.")
                 return True
@@ -607,6 +648,7 @@ class InferenceBackend:
         dtype = None,
         load_in_4bit: bool = True,
         hf_token: Optional[str] = None,
+        gpu_ids: Optional[list[int]] = None,
     ) -> Tuple[bool, Optional[str], Optional[str]]:
         """
         Final Corrected Version:
@@ -631,7 +673,12 @@ class InferenceBackend:
                     base_model_name, None, is_lora = False
                 )
                 if not self.load_model(
-                    base_config, max_seq_length, dtype, load_in_4bit, hf_token
+                    base_config,
+                    max_seq_length,
+                    dtype,
+                    load_in_4bit,
+                    hf_token,
+                    gpu_ids = gpu_ids,
                 ):
                     return False, None, None
 
@@ -792,6 +839,74 @@ class InferenceBackend:
             cancel_event = cancel_event, _adapter_state = use_adapter, **gen_kwargs
         )
 
+    def generate_chat_completion_with_tools(
+        self,
+        messages: list,
+        tools: list,
+        system_prompt: str = "",
+        temperature: float = 0.7,
+        top_p: float = 0.9,
+        top_k: int = 40,
+        min_p: float = 0.0,
+        max_new_tokens: int = 2048,
+        repetition_penalty: float = 1.0,
+        cancel_event = None,
+        enable_thinking: Optional[bool] = None,
+        reasoning_effort: Optional[str] = None,
+        preserve_thinking: Optional[bool] = None,
+        max_tool_iterations: int = 25,
+        auto_heal_tool_calls: bool = True,
+        tool_call_timeout: int = 300,
+        session_id: Optional[str] = None,
+    ):
+        """Run an agentic tool loop on top of ``generate_chat_response``.
+
+        Yields the same event-dict protocol used by the GGUF path so
+        the route layer can stream both backends through one helper.
+        Each event is one of:
+
+        * ``{"type": "status", "text": ...}``
+        * ``{"type": "content", "text": cumulative_text}``
+        * ``{"type": "tool_start", "tool_name", "tool_call_id", "arguments"}``
+        * ``{"type": "tool_end", "tool_name", "tool_call_id", "result"}``
+        """
+        from core.inference.safetensors_agentic import run_safetensors_tool_loop
+        from core.inference.tools import execute_tool
+
+        def _single_turn(conv: list):
+            # conv already has the system message -- avoid double-prepend.
+            yield from self._generate_chat_response_inner(
+                messages = conv,
+                system_prompt = "",
+                temperature = temperature,
+                top_p = top_p,
+                top_k = top_k,
+                min_p = min_p,
+                max_new_tokens = max_new_tokens,
+                repetition_penalty = repetition_penalty,
+                cancel_event = cancel_event,
+                tools = tools,
+                enable_thinking = enable_thinking,
+                reasoning_effort = reasoning_effort,
+                preserve_thinking = preserve_thinking,
+            )
+
+        initial = list(messages)
+        if system_prompt:
+            initial = [{"role": "system", "content": system_prompt}] + initial
+
+        yield from run_safetensors_tool_loop(
+            single_turn = _single_turn,
+            messages = initial,
+            tools = tools,
+            execute_tool = execute_tool,
+            cancel_event = cancel_event,
+            auto_heal_tool_calls = auto_heal_tool_calls,
+            max_tool_iterations = max_tool_iterations,
+            tool_call_timeout = tool_call_timeout,
+            session_id = session_id,
+        )
+
     def generate_chat_response(
         self,
         messages: list,
@@ -804,10 +919,20 @@ class InferenceBackend:
         max_new_tokens: int = 256,
         repetition_penalty: float = 1.0,
         cancel_event = None,
+        tools: Optional[list] = None,
+        enable_thinking: Optional[bool] = None,
+        reasoning_effort: Optional[str] = None,
+        preserve_thinking: Optional[bool] = None,
     ) -> Generator[str, None, None]:
         """
         Generate response for text or vision models.
         The generation lock is acquired by the background generation thread.
+
+        ``tools`` / ``enable_thinking`` / ``reasoning_effort`` /
+        ``preserve_thinking`` are forwarded into
+        ``tokenizer.apply_chat_template`` so templates that understand
+        these kwargs (Qwen3, Llama 3.1+, gpt-oss harmony, ...) advertise
+        the tool schemas and reasoning controls to the model.
         """
         yield from self._generate_chat_response_inner(
             messages = messages,
@@ -820,6 +945,10 @@ class InferenceBackend:
             max_new_tokens = max_new_tokens,
             repetition_penalty = repetition_penalty,
             cancel_event = cancel_event,
+            tools = tools,
+            enable_thinking = enable_thinking,
+            reasoning_effort = reasoning_effort,
+            preserve_thinking = preserve_thinking,
         )
 
     def _generate_chat_response_inner(
@@ -835,6 +964,10 @@ class InferenceBackend:
         repetition_penalty: float = 1.0,
         cancel_event = None,
         _adapter_state = None,
+        tools: Optional[list] = None,
+        enable_thinking: Optional[bool] = None,
+        reasoning_effort: Optional[str] = None,
+        preserve_thinking: Optional[bool] = None,
     ) -> Generator[str, None, None]:
         """
         Inner generation logic. Called by both generate_chat_response
@@ -919,6 +1052,12 @@ class InferenceBackend:
             logger.warning(f"Could not apply get_chat_template: {e}")
 
         # Step 2: Format with tokenizer.apply_chat_template()
+        if system_prompt:
+            template_messages = [
+                {"role": "system", "content": system_prompt}
+            ] + messages
+        else:
+            template_messages = messages
         try:
             if not (hasattr(tokenizer, "chat_template") and tokenizer.chat_template):
                 raise ValueError(
@@ -928,8 +1067,13 @@ class InferenceBackend:
                     f"Please use a model that includes a chat template, or manually set "
                     f"one via tokenizer.chat_template before inference."
                 )
-            formatted_prompt = tokenizer.apply_chat_template(
-                messages, tokenize = False, add_generation_prompt = True
+            formatted_prompt = self._apply_chat_template_for_generation(
+                tokenizer,
+                template_messages,
+                tools = tools,
+                enable_thinking = enable_thinking,
+                reasoning_effort = reasoning_effort,
+                preserve_thinking = preserve_thinking,
             )
             logger.debug(f"Formatted prompt: {formatted_prompt[:200]}...")
         except Exception as e:
@@ -984,30 +1128,51 @@ class InferenceBackend:
 
         # Prepare vision messages
         if image:
-            vision_messages = [
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "image"},
-                        {"type": "text", "text": user_message},
-                    ],
-                }
-            ]
+            user_msg = {
+                "role": "user",
+                "content": [
+                    {"type": "image"},
+                    {"type": "text", "text": user_message},
+                ],
+            }
+            if system_prompt:
+                vision_messages = [
+                    {
+                        "role": "system",
+                        "content": [{"type": "text", "text": system_prompt}],
+                    },
+                    user_msg,
+                ]
+            else:
+                vision_messages = [user_msg]
 
-            input_text = processor.apply_chat_template(
-                vision_messages, add_generation_prompt = True, tokenize = False
-            )
+            try:
+                input_text = processor.apply_chat_template(
+                    vision_messages, add_generation_prompt = True, tokenize = False
+                )
+            except Exception as e:
+                if system_prompt:
+                    logger.warning(
+                        f"Vision processor for '{self.active_model_name}' may not support "
+                        f"system messages; retrying without. Original error: {e}"
+                    )
+                    vision_messages = [user_msg]
+                    input_text = processor.apply_chat_template(
+                        vision_messages, add_generation_prompt = True, tokenize = False
+                    )
+                else:
+                    raise
             inputs = processor(
                 image,
                 input_text,
                 add_special_tokens = False,
                 return_tensors = "pt",
-            ).to(self.device)
+            ).to(model.device)
         else:
             # Text-only for vision model
             formatted_prompt = self.format_chat_prompt(messages, system_prompt)
             inputs = raw_tokenizer(formatted_prompt, return_tensors = "pt").to(
-                self.device
+                model.device
             )
 
         # Stream with TextIteratorStreamer + background thread
@@ -1147,7 +1312,7 @@ class InferenceBackend:
             return_dict = True,
             return_tensors = "pt",
             truncation = False,
-        ).to(self.device)
+        ).to(model.device)
 
         try:
             from transformers import TextIteratorStreamer
@@ -1245,20 +1410,9 @@ class InferenceBackend:
 
     def _is_gpt_oss_model(self, model_name: str = None) -> bool:
         """Check if the given (or active) model uses the gpt-oss harmony protocol."""
-        name = (model_name or self.active_model_name or "").lower()
-        try:
-            from utils.datasets import MODEL_TO_TEMPLATE_MAPPER
+        from utils.datasets import is_gpt_oss_model_name
 
-            # Exact match
-            if MODEL_TO_TEMPLATE_MAPPER.get(name) == "gpt-oss":
-                return True
-            # Partial match (e.g. name-bnb-4bit variants)
-            for key, tmpl in MODEL_TO_TEMPLATE_MAPPER.items():
-                if tmpl == "gpt-oss" and (key in name or name in key):
-                    return True
-        except Exception:
-            pass
-        return "gpt-oss" in name
+        return is_gpt_oss_model_name(model_name or self.active_model_name or "")
 
     def generate_stream(
         self,
@@ -1639,6 +1793,34 @@ class InferenceBackend:
         )
         logger.info(
             "Patched RepetitionPenaltyLogitsProcessor with 64-token window for OuteTTS"
+        )
+
+    def _apply_chat_template_for_generation(
+        self,
+        tokenizer,
+        messages: list,
+        *,
+        tools: Optional[list] = None,
+        enable_thinking: Optional[bool] = None,
+        reasoning_effort: Optional[str] = None,
+        preserve_thinking: Optional[bool] = None,
+    ) -> str:
+        """Render the chat prompt, peeling kwargs the template does not
+        understand. Delegates to the dependency-light helper module so
+        the fallback chain can be unit-tested without pulling unsloth /
+        torch into the test sandbox.
+        """
+        from core.inference.chat_template_helpers import (
+            apply_chat_template_for_generation,
+        )
+
+        return apply_chat_template_for_generation(
+            tokenizer,
+            messages,
+            tools = tools,
+            enable_thinking = enable_thinking,
+            reasoning_effort = reasoning_effort,
+            preserve_thinking = preserve_thinking,
         )
 
     def format_chat_prompt(self, messages: list, system_prompt: str = None) -> str:

@@ -12,378 +12,1514 @@
 @plugin "@toolwind/corner-shape";
 @source "../node_modules/streamdown/dist/*.js";
 
-@font-face {
-  font-family: "Hellix";
-  src: url("/fonts/Hellix-SemiBold.woff2") format("woff2"),
-    url("/fonts/Hellix-SemiBold.woff") format("woff");
-  font-weight: 600;
-  font-style: normal;
-  font-display: swap;
-}
-
 @custom-variant dark (&:is(.dark *));
 
-:root {
-  /* Animation timing */
-  --duration-micro: 100ms;
-  --duration-fast: 150ms;
-  --duration-normal: 200ms;
-
-  /* Easing curves (Emil Kowalski) */
-  --ease-out-quart: cubic-bezier(0.165, 0.84, 0.44, 1);
-  --ease-out-cubic: cubic-bezier(0.215, 0.61, 0.355, 1);
-
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.2686 0 0);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.1281 0.0179 169.2764);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.1281 0.0179 169.2764);
-  --primary: oklch(0.6929 0.1396 166.5513);
-  --primary-foreground: oklch(1 0 0);
-  --secondary: oklch(0.9596 0.0275 167.8295);
-  --secondary-foreground: oklch(0.2868 0.0649 159.9823);
-  --muted: oklch(0.9702 0 0);
-  --muted-foreground: oklch(0.5486 0 0);
-  --accent: oklch(0.9596 0.0275 167.8295);
-  --accent-foreground: oklch(0.2868 0.0649 159.9823);
-  --destructive: oklch(0.6368 0.2078 25.3313);
-  --border: oklch(0.9208 0.0101 164.8536);
-  --input: oklch(0.9208 0.0101 164.8536);
-  --ring: oklch(0.6929 0.1396 166.5513);
-  --chart-1: oklch(0.6929 0.1396 166.5513);
-  --chart-2: oklch(0.694 0.1395 136.6059);
-  --chart-3: oklch(0.7014 0.1193 197.5897);
-  --chart-4: oklch(0.6926 0.1112 346.5775);
-  --chart-5: oklch(0.7497 0.1003 85.0057);
-  --radius: 1.2rem;
-  --sidebar: oklch(0.975 0 0);
-  --sidebar-foreground: oklch(0.1281 0.0179 169.2764);
-  --sidebar-primary: oklch(0.6929 0.1396 166.5513);
-  --sidebar-primary-foreground: oklch(1 0 0);
-  --sidebar-accent: oklch(0.96 0.0279 166.55);
-  --sidebar-accent-foreground: oklch(0.2868 0.0649 159.9823);
-  --sidebar-border: oklch(0.9208 0.0101 164.8536);
-  --sidebar-ring: oklch(0.6929 0.1396 166.5513);
-  --destructive-foreground: oklch(1 0 0);
-  --font-sans: "Inter Variable", ui-sans-serif, sans-serif, system-ui;
-  --font-heading: "Hellix", "Space Grotesk Variable", ui-sans-serif, sans-serif;
-  --font-serif: Source Serif 4, serif;
-  --font-mono: JetBrains Mono, monospace;
-  --shadow-color: hsl(0 0% 0%);
-  --shadow-opacity: 0;
-  --shadow-blur: 0px;
-  --shadow-spread: 0px;
-  --shadow-offset-x: 0px;
-  --shadow-offset-y: 0px;
-  --letter-spacing: 0em;
-  --spacing: 0.25rem;
-  /*--shadow-2xs: 0px 0px 0px 0px hsl(0 0% 0% / 0);*/
-  /*--shadow-xs: 0px 0px 0px 0px hsl(0 0% 0% / 0);*/
-  /*--shadow-sm:*/
-  /*    0px 0px 0px 0px hsl(0 0% 0% / 0),*/
-  /*    0px 1px 2px 0px hsl(0 0% 0% / 0);*/
-  /*--shadow:*/
-  /*    0px 0px 0px 0px hsl(0 0% 0% / 0),*/
-  /*    0px 1px 2px 0px hsl(0 0% 0% / 0);*/
-  /*--shadow-md:*/
-  /*    0px 0px 0px 0px hsl(0 0% 0% / 0),*/
-  /*    0px 2px 4px 0px hsl(0 0% 0% / 0);*/
-  /*--shadow-lg:*/
-  /*    0px 0px 0px 0px hsl(0 0% 0% / 0),*/
-  /*    0px 4px 6px 0px hsl(0 0% 0% / 0);*/
-  /*--shadow-xl:*/
-  /*    0px 0px 0px 0px hsl(0 0% 0% / 0),*/
-  /*    0px 8px 10px 0px hsl(0 0% 0% / 0);*/
-  /*--shadow-2xl: 0px 0px 0px 0px hsl(0 0% 0% / 0);*/
-  --tracking-normal: 0em;
+@layer components {
+	/* Sidebar scroll area (Gemini-style). The BOTTOM edge always fades so the
+	   last rows dissolve into the profile footer (no divider line). Once
+	   scrolled, the TOP edge also fades so rows dissolve as they pass under the
+	   pinned New Chat / Search header. */
+	/* Top edge: when scrolled, rows dissolve as they pass under the pinned
+	   New Chat / Search header (mask — fades content to transparent). */
+	.sidebar-scroll-fade.is-scrolled {
+		-webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 14px);
+		mask-image: linear-gradient(to bottom, transparent 0, #000 14px);
+	}
+	/* Bottom edge: Gemini-style sticky gradient OVERLAY painted in the sidebar
+	   background colour, so the last rows wash into the profile footer. Uses a
+	   zero-height sticky anchor with an absolutely-positioned gradient so it
+	   never takes layout space. */
+	.sidebar-bottom-fade {
+		position: sticky;
+		bottom: 0;
+		height: 0;
+		z-index: 1;
+		pointer-events: none;
+	}
+	.sidebar-bottom-fade::after {
+		content: "";
+		position: absolute;
+		inset-inline: 0;
+		bottom: 0;
+		height: 40px;
+		background: linear-gradient(to top, var(--sidebar), transparent);
+	}
 }
+
+@layer base {
+	h1,
+	h2,
+	h3,
+	[data-slot="dialog-title"],
+	[data-slot="alert-dialog-title"] {
+		font-family: "Hellix", "Space Grotesk Variable", var(--font-sans) !important;
+		font-weight: 500 !important;
+	}
+}
+
+
+
+@font-face {
+	font-family: "Hellix";
+	src: url("/fonts/Hellix-Regular.woff") format("woff");
+	font-weight: 400;
+	font-style: normal;
+	font-display: swap;
+}
+
+@font-face {
+	font-family: "Hellix";
+	src: url("/fonts/Hellix-Medium.woff") format("woff");
+	font-weight: 500;
+	font-style: normal;
+	font-display: swap;
+}
+
+@font-face {
+	font-family: "Hellix";
+	src: url("/fonts/Hellix-SemiBold.woff2") format("woff2"),
+		url("/fonts/Hellix-SemiBold.woff") format("woff");
+	font-weight: 600;
+	font-style: normal;
+	font-display: swap;
+}
+
+@font-face {
+	font-family: "Fira Code";
+	src: url("/fonts/FiraCode-VariableFont_wght.ttf") format("truetype-variations");
+	font-weight: 300 700;
+	font-style: normal;
+	font-display: swap;
+}
+
+:root {
+	/* Animation timing */
+	--duration-micro: 100ms;
+	--duration-fast: 150ms;
+	--duration-normal: 200ms;
+
+	/* Easing curves (Emil Kowalski) */
+	--ease-out-quart: cubic-bezier(0.165, 0.84, 0.44, 1);
+	--ease-out-cubic: cubic-bezier(0.215, 0.61, 0.355, 1);
+
+	--background: oklch(1 0 0);
+	--foreground: oklch(0.2686 0 0);
+	--card: oklch(1 0 0);
+	--card-foreground: oklch(0.1281 0.0179 169.2764);
+	--popover: oklch(1 0 0);
+	--popover-foreground: oklch(0.1281 0.0179 169.2764);
+	--primary: #17b88b;
+	--primary-foreground: oklch(1 0 0);
+	--secondary: oklch(0.9596 0.0275 167.8295);
+	--secondary-foreground: oklch(0.2868 0.0649 159.9823);
+	--muted: oklch(0.9702 0 0);
+	--muted-foreground: oklch(0.5486 0 0);
+	--accent: oklch(0.9596 0.0275 167.8295);
+	--accent-foreground: oklch(0.2868 0.0649 159.9823);
+	--destructive: oklch(0.6368 0.2078 25.3313);
+	--border: oklch(0.9208 0.0101 164.8536);
+	--input: oklch(0.9208 0.0101 164.8536);
+	--ring: #17b88b;
+	--chart-1: #17b88b;
+	--chart-2: oklch(0.694 0.1395 136.6059);
+	--chart-3: oklch(0.7014 0.1193 197.5897);
+	--chart-4: oklch(0.6926 0.1112 346.5775);
+	--chart-5: oklch(0.7497 0.1003 85.0057);
+	--radius: 1.1rem;
+	/* Match the page background so the sidebar reads as one surface with the
+	   content; the faint --sidebar-border on its right edge is the separator. */
+	--sidebar: oklch(1 0 0);
+	--sidebar-foreground: oklch(0.1281 0.0179 169.2764);
+	--sidebar-primary: #17b88b;
+	--sidebar-primary-foreground: oklch(1 0 0);
+	--sidebar-accent: oklch(0.96 0.0279 166.55);
+	--sidebar-accent-foreground: oklch(0.2868 0.0649 159.9823);
+	--sidebar-border: oklch(0.92 0 0);
+	--sidebar-ring: #17b88b;
+	--destructive-foreground: oklch(1 0 0);
+	--font-sans: "Inter Variable", ui-sans-serif, sans-serif, system-ui;
+	--font-heading: "Hellix", "Space Grotesk Variable", var(--font-sans);
+	--font-serif: Source Serif 4, serif;
+	--font-mono: JetBrains Mono, monospace;
+	--shadow-color: hsl(0 0% 0%);
+	--shadow-opacity: 0;
+	--shadow-blur: 0px;
+	--shadow-spread: 0px;
+	--shadow-offset-x: 0px;
+	--shadow-offset-y: 0px;
+	--letter-spacing: 0em;
+	--spacing: 0.25rem;
+	/*--shadow-2xs: 0px 0px 0px 0px hsl(0 0% 0% / 0);*/
+	/*--shadow-xs: 0px 0px 0px 0px hsl(0 0% 0% / 0);*/
+	/*--shadow-sm:*/
+	/*    0px 0px 0px 0px hsl(0 0% 0% / 0),*/
+	/*    0px 1px 2px 0px hsl(0 0% 0% / 0);*/
+	/*--shadow:*/
+	/*    0px 0px 0px 0px hsl(0 0% 0% / 0),*/
+	/*    0px 1px 2px 0px hsl(0 0% 0% / 0);*/
+	/*--shadow-md:*/
+	/*    0px 0px 0px 0px hsl(0 0% 0% / 0),*/
+	/*    0px 2px 4px 0px hsl(0 0% 0% / 0);*/
+	/*--shadow-lg:*/
+	/*    0px 0px 0px 0px hsl(0 0% 0% / 0),*/
+	/*    0px 4px 6px 0px hsl(0 0% 0% / 0);*/
+	/*--shadow-xl:*/
+	/*    0px 0px 0px 0px hsl(0 0% 0% / 0),*/
+	/*    0px 8px 10px 0px hsl(0 0% 0% / 0);*/
+	/*--shadow-2xl: 0px 0px 0px 0px hsl(0 0% 0% / 0);*/
+	--tracking-normal: 0em;
+
+	/* Hex (not OKLCH) so the rendered surface matches the design mockup pixel-for-pixel. */
+	--nav-fg: #383835;
+	--nav-fg-muted: #858279;
+	--nav-surface-hover: #f0f0f0;
+	--nav-icon-idle: #8f8f8f;
+	--nav-beta-border: #e0ded6;
+	--panel-surface-hover: #ebebeb;
+	/* Right-side chat-parameters panel: matches the chat content
+	   surface in both themes — distinction from the left sidebar
+	   (#f9faf9) is handled by the left border alone. Tracks
+	   `--background` so any future tweaks to the chat surface flow
+	   through automatically. */
+	--panel-surface: var(--background);
+	--panel-surface-fg: var(--foreground);
+	--panel-input-surface: #f5f5f5;
+	--panel-input-surface-hover: #efefef;
+	/* Muted gray with a one-step warmer-blue last channel (#779 vs flat #777)
+	   so the tone has a faint hue rather than pure neutral — keeps text and
+	   sliders quiet but not lifeless. */
+	--panel-surface-fg-muted: #777779;
+	/* Slider track-fill / thumb / hover halo. Decoupled from
+	   --panel-surface-fg-muted so the slider can be tuned independently
+	   from muted text. Light mode: lighter than the muted-text gray for
+	   a softer feel. Dark mode (further down) keeps parity with the
+	   muted-text token. */
+	--panel-slider-fg: #9a9a9c;
+	/* Chat-message action icons (assistant action bar, branch picker
+	   chevrons + numbers, message-timing token counter, code-block
+	   copy/download, user action bar, delete button). One token drives
+	   all of them so the row reads as a single coherent control strip.
+	   Mid-dark gray on the light surface — visible enough to read as
+	   active controls, not so dark that they compete with message
+	   text. */
+	--chat-icon-fg: #555555;
+	--chat-icon-fg-hover: var(--foreground);
+	--chat-icon-bg-hover: #ededec;
+
+	/* Standard interactive-icon size for nav, menus, action bars, and
+	   in-message code-block actions. Sized one step above body text so
+	   icons read as minimally larger than adjacent labels (~14px text).
+	   Theme-independent — declared once in :root. */
+	--icon-size: 18px;
+	/* Inset of a centered .size-icon glyph within a 2rem (size-8) action
+	   button — i.e. (32px − icon-size) / 2. Use as a negative margin on a
+	   chat-message action bar so the leftmost icon's visual edge aligns
+	   with the message text edge. Auto-tracks --icon-size. */
+	--icon-btn-inset: calc((2rem - var(--icon-size)) / 2);
+}
+
 .dark {
-  --background: oklch(0.24 0 0);
-  --foreground: oklch(0.98 0 0);
-  --card: oklch(0.28 0 0);
-  --card-foreground: oklch(0.98 0 0);
-  --popover: oklch(0.28 0 0);
-  --popover-foreground: oklch(0.98 0 0);
-  --primary: oklch(0.6929 0.1396 166.5513);
-  --primary-foreground: oklch(1 0 0);
-  --secondary: oklch(0.33 0 0);
-  --secondary-foreground: oklch(0.98 0 0);
-  --muted: oklch(0.33 0 0);
-  --muted-foreground: oklch(0.70 0 0);
-  --accent: oklch(0.33 0 0);
-  --accent-foreground: oklch(0.98 0 0);
-  --destructive: oklch(0.6368 0.2078 25.3313);
-  --border: oklch(0.38 0 0);
-  --input: oklch(0.38 0 0);
-  --ring: oklch(0.6929 0.1396 166.5513);
-  --chart-1: oklch(0.7511 0.1407 166.2284);
-  --chart-2: oklch(0.75 0.14 136.5572);
-  --chart-3: oklch(0.7554 0.1285 197.339);
-  --chart-4: oklch(0.7503 0.1199 346.7805);
-  --chart-5: oklch(0.799 0.1196 84.6633);
-  --sidebar: oklch(0.24 0 0);
-  --sidebar-foreground: oklch(0.98 0 0);
-  --sidebar-primary: oklch(0.6929 0.1396 166.5513);
-  --sidebar-primary-foreground: oklch(1 0 0);
-  --sidebar-accent: oklch(0.33 0 0);
-  --sidebar-accent-foreground: oklch(0.98 0 0);
-  --sidebar-border: oklch(0.38 0 0);
-  --sidebar-ring: oklch(0.6929 0.1396 166.5513);
-  --destructive-foreground: oklch(1 0 0);
-  --radius: 1.2rem;
-  --font-sans: Geist, ui-sans-serif, sans-serif, system-ui;
-  --font-serif: Source Serif 4, serif;
-  --font-mono: JetBrains Mono, monospace;
-  --shadow-color: hsl(0 0% 0%);
-  --shadow-opacity: 0;
-  --shadow-blur: 0px;
-  --shadow-spread: 0px;
-  --shadow-offset-x: 0px;
-  --shadow-offset-y: 0px;
-  --letter-spacing: 0em;
-  --spacing: 0.25rem;
-  --shadow-2xs: 0px 0px 0px 0px hsl(0 0% 0% / 0);
-  --shadow-xs: 0px 0px 0px 0px hsl(0 0% 0% / 0);
-  --shadow-sm: 0px 0px 0px 0px hsl(0 0% 0% / 0), 0px 1px 2px 0px
-  hsl(0 0% 0% / 0);
-  --shadow: 0px 0px 0px 0px hsl(0 0% 0% / 0), 0px 1px 2px 0px hsl(0 0% 0% / 0);
-  --shadow-md: 0px 0px 0px 0px hsl(0 0% 0% / 0), 0px 2px 4px 0px
-  hsl(0 0% 0% / 0);
-  --shadow-lg: 0px 0px 0px 0px hsl(0 0% 0% / 0), 0px 4px 6px 0px
-  hsl(0 0% 0% / 0);
-  --shadow-xl: 0px 0px 0px 0px hsl(0 0% 0% / 0), 0px 8px 10px 0px
-  hsl(0 0% 0% / 0);
-  --shadow-2xl: 0px 0px 0px 0px hsl(0 0% 0% / 0);
+	/* Exact palette from apps/studio/index_chat.html mockup. Using hex so the
+	   rendered surface matches the mockup pixel-for-pixel — OKLCH conversion
+	   drifted ~3% darker and shifted the neutral hue. */
+	--background: #1f2023;
+	--foreground: #ececee;
+	--card: #2d2e32;
+	--card-foreground: #ececee;
+	--popover: #2d2e32;
+	--popover-foreground: #ececee;
+	--primary: #17b88b;
+	--primary-foreground: oklch(1 0 0);
+	--secondary: #2e3035;
+	--secondary-foreground: #ececee;
+	--muted: #2e3035;
+	--muted-foreground: #999999;
+	--accent: #2e3035;
+	--accent-foreground: #ececee;
+	--destructive: oklch(0.6368 0.2078 25.3313);
+	/* --border / --input one step lighter than --muted so outlines and form
+	   borders stay visible on muted surfaces (right config panel, export
+	   tiles, quant chips) and keep subtle contrast on card. */
+	--border: #3a3d42;
+	--input: #3a3d42;
+	--ring: #17b88b;
+	--chart-1: oklch(0.7511 0.1407 166.2284);
+	--chart-2: oklch(0.75 0.14 136.5572);
+	--chart-3: oklch(0.7554 0.1285 197.339);
+	--chart-4: oklch(0.7503 0.1199 346.7805);
+	--chart-5: oklch(0.799 0.1196 84.6633);
+	/* Match the page background (dark); --sidebar-border is the right-edge separator. */
+	--sidebar: #1f2023;
+	--sidebar-foreground: #ececee;
+	--sidebar-primary: #17b88b;
+	--sidebar-primary-foreground: oklch(1 0 0);
+	--sidebar-accent: #2f2f31;
+	--sidebar-accent-foreground: #ececee;
+	--sidebar-border: #2d2d2f;
+	--sidebar-ring: #17b88b;
+	--destructive-foreground: oklch(1 0 0);
+	--radius: 0.625rem;
+	--font-sans: "Inter Variable", ui-sans-serif, sans-serif, system-ui;
+	--font-serif: Source Serif 4, serif;
+	--font-mono: JetBrains Mono, monospace;
+	--shadow-color: hsl(0 0% 0%);
+	--shadow-opacity: 0;
+	--shadow-blur: 0px;
+	--shadow-spread: 0px;
+	--shadow-offset-x: 0px;
+	--shadow-offset-y: 0px;
+	--letter-spacing: 0em;
+	--spacing: 0.25rem;
+	--shadow-2xs: 0px 0px 0px 0px hsl(0 0% 0% / 0);
+	--shadow-xs: 0px 0px 0px 0px hsl(0 0% 0% / 0);
+	--shadow-sm: 0px 0px 0px 0px hsl(0 0% 0% / 0), 0px 1px 2px 0px hsl(0 0% 0% / 0);
+	--shadow: 0px 0px 0px 0px hsl(0 0% 0% / 0), 0px 1px 2px 0px hsl(0 0% 0% / 0);
+	--shadow-md: 0px 0px 0px 0px hsl(0 0% 0% / 0), 0px 2px 4px 0px hsl(0 0% 0% / 0);
+	--shadow-lg: 0px 0px 0px 0px hsl(0 0% 0% / 0), 0px 4px 6px 0px hsl(0 0% 0% / 0);
+	--shadow-xl: 0px 0px 0px 0px hsl(0 0% 0% / 0), 0px 8px 10px 0px hsl(0 0% 0% / 0);
+	--shadow-2xl: 0px 0px 0px 0px hsl(0 0% 0% / 0);
+
+	--nav-fg: #c7c7c4;
+	--nav-fg-muted: #96979b;
+	--nav-surface-hover: #2e2e30;
+	--nav-icon-idle: #5c5c5c;
+	--nav-beta-border: #3a3c3f;
+	--panel-surface-hover: #3a3c42;
+	/* Right-side chat-parameters panel: matches the chat content
+	   surface in both themes — distinction from the left sidebar
+	   (#18181a, the deepest surface) is handled by the left border
+	   alone. Tracks `--background` so any future tweaks to the chat
+	   surface flow through automatically. */
+	--panel-surface: var(--background);
+	--panel-surface-fg: var(--foreground);
+	--panel-input-surface: #2a2b2e;
+	--panel-input-surface-hover: #2e3033;
+	/* Soft neutral gray for muted text and sliders. Pure-ish #ababab
+	   reads as quiet on the dark panel without going colored. */
+	--panel-surface-fg-muted: #ababab;
+	/* Dark-mode slider tone matches muted text — user wants the dark
+	   theme slider unchanged from the previous behavior. */
+	--panel-slider-fg: #ababab;
+	/* Chat-message action icons. A touch lighter than the previous
+	   #b8b8b8 so the icons read clearly without going near pure white;
+	   hover restores full --foreground for affordance. */
+	--chat-icon-fg: #d8d8d8;
+	--chat-icon-fg-hover: var(--foreground);
+	--chat-icon-bg-hover: #2d2e32;
 }
 
 @theme inline {
-  --font-sans: "Inter Variable", ui-sans-serif, sans-serif, system-ui;
-  --font-heading: "Hellix", "Space Grotesk Variable", ui-sans-serif, sans-serif;
-  --color-sidebar-ring: var(--sidebar-ring);
-  --color-sidebar-border: var(--sidebar-border);
-  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
-  --color-sidebar-accent: var(--sidebar-accent);
-  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
-  --color-sidebar-primary: var(--sidebar-primary);
-  --color-sidebar-foreground: var(--sidebar-foreground);
-  --color-sidebar: var(--sidebar);
-  --color-chart-5: var(--chart-5);
-  --color-chart-4: var(--chart-4);
-  --color-chart-3: var(--chart-3);
-  --color-chart-2: var(--chart-2);
-  --color-chart-1: var(--chart-1);
-  --color-ring: var(--ring);
-  --color-input: var(--input);
-  --color-border: var(--border);
-  --color-destructive: var(--destructive);
-  --color-accent-foreground: var(--accent-foreground);
-  --color-accent: var(--accent);
-  --color-muted-foreground: var(--muted-foreground);
-  --color-muted: var(--muted);
-  --color-secondary-foreground: var(--secondary-foreground);
-  --color-secondary: var(--secondary);
-  --color-primary-foreground: var(--primary-foreground);
-  --color-primary: var(--primary);
-  --color-popover-foreground: var(--popover-foreground);
-  --color-popover: var(--popover);
-  --color-card-foreground: var(--card-foreground);
-  --color-card: var(--card);
-  --color-foreground: var(--foreground);
-  --color-background: var(--background);
-  --radius-sm: calc(var(--radius) - 4px);
-  --radius-md: calc(var(--radius) - 2px);
-  --radius-lg: var(--radius);
-  --radius-xl: calc(var(--radius) + 4px);
-  --radius-2xl: calc(var(--radius) + 8px);
-  --radius-3xl: calc(var(--radius) + 12px);
-  --radius-4xl: calc(var(--radius) + 16px);
-  --font-mono: JetBrains Mono, monospace;
-  --font-serif: Source Serif 4, serif;
-  --radius: 1.2rem;
-  --tracking-tighter: calc(var(--tracking-normal) - 0.05em);
-  --tracking-tight: calc(var(--tracking-normal) - 0.025em);
-  --tracking-wide: calc(var(--tracking-normal) + 0.025em);
-  --tracking-wider: calc(var(--tracking-normal) + 0.05em);
-  --tracking-widest: calc(var(--tracking-normal) + 0.1em);
-  --tracking-normal: var(--tracking-normal);
-  /*--shadow-2xl: var(--shadow-2xl);*/
-  /*--shadow-xl: var(--shadow-xl);*/
-  /*--shadow-lg: var(--shadow-lg);*/
-  /*--shadow-md: var(--shadow-md);*/
-  /*--shadow: var(--shadow);*/
-  /*--shadow-sm: var(--shadow-sm);*/
-  /*--shadow-xs: var(--shadow-xs);*/
-  /*--shadow-2xs: var(--shadow-2xs);*/
-  /*--spacing: var(--spacing);*/
-  /*--letter-spacing: var(--letter-spacing);*/
-  /*--shadow-offset-y: var(--shadow-offset-y);*/
-  /*--shadow-offset-x: var(--shadow-offset-x);*/
-  /*--shadow-spread: var(--shadow-spread);*/
-  /*--shadow-blur: var(--shadow-blur);*/
-  /*--shadow-opacity: var(--shadow-opacity);*/
-  /*--color-shadow-color: var(--shadow-color);*/
-  --color-destructive-foreground: var(--destructive-foreground);
-  --animate-pulse: pulse var(--duration) ease-out infinite;
-  @keyframes pulse {
-    0%,
-    100% {
-      box-shadow: 0 0 0 0 var(--pulse-color);
-    }
-    50% {
-      box-shadow: 0 0 0 8px var(--pulse-color);
-    }
-  }
-  --animate-shiny-text: shiny-text 8s infinite;
-  @keyframes shiny-text {
-    0%,
-    90%,
-    100% {
-      background-position: calc(-100% - var(--shiny-width)) 0;
-    }
-    30%,
-    60% {
-      background-position: calc(100% + var(--shiny-width)) 0;
-    }
-  }
-  --animate-shine: shine var(--duration) infinite linear
-;
-  @keyframes shine {
-  0% {
-    background-position: 0% 0%;
-    }
-  50% {
-    background-position: 100% 100%;
-    }
-  to {
-    background-position: 0% 0%;
-    }
-  }}
+	--font-sans: "Inter Variable", ui-sans-serif, sans-serif, system-ui;
+	--font-heading: "Hellix", "Space Grotesk Variable", var(--font-sans);
+	--color-sidebar-ring: var(--sidebar-ring);
+	--color-sidebar-border: var(--sidebar-border);
+	--color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+	--color-sidebar-accent: var(--sidebar-accent);
+	--color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+	--color-sidebar-primary: var(--sidebar-primary);
+	--color-sidebar-foreground: var(--sidebar-foreground);
+	--color-sidebar: var(--sidebar);
+	--color-chart-5: var(--chart-5);
+	--color-chart-4: var(--chart-4);
+	--color-chart-3: var(--chart-3);
+	--color-chart-2: var(--chart-2);
+	--color-chart-1: var(--chart-1);
+	--color-code-block: #181818;
+	--color-ring: var(--ring);
+	--color-input: var(--input);
+	--color-border: var(--border);
+	--color-destructive: var(--destructive);
+	--color-accent-foreground: var(--accent-foreground);
+	--color-accent: var(--accent);
+	--color-muted-foreground: var(--muted-foreground);
+	--color-muted: var(--muted);
+	--color-secondary-foreground: var(--secondary-foreground);
+	--color-secondary: var(--secondary);
+	--color-primary-foreground: var(--primary-foreground);
+	--color-primary: var(--primary);
+	--color-popover-foreground: var(--popover-foreground);
+	--color-popover: var(--popover);
+	--color-card-foreground: var(--card-foreground);
+	--color-card: var(--card);
+	--color-foreground: var(--foreground);
+	--color-background: var(--background);
+	--radius-sm: calc(var(--radius) - 4px);
+	--radius-md: calc(var(--radius) - 2px);
+	--radius-lg: var(--radius);
+	--radius-xl: calc(var(--radius) + 4px);
+	--radius-2xl: calc(var(--radius) + 8px);
+	--radius-3xl: calc(var(--radius) + 12px);
+	--radius-4xl: calc(var(--radius) + 16px);
+	--font-mono: JetBrains Mono, monospace;
+	--font-serif: Source Serif 4, serif;
+	--radius: 1.1rem;
+	--tracking-tighter: 0em;
+	--tracking-tight: 0em;
+	--tracking-wide: calc(var(--tracking-normal) + 0.025em);
+	--tracking-wider: calc(var(--tracking-normal) + 0.05em);
+	--tracking-widest: calc(var(--tracking-normal) + 0.1em);
+	--tracking-normal: var(--tracking-normal);
+	/*--shadow-2xl: var(--shadow-2xl);*/
+	/*--shadow-xl: var(--shadow-xl);*/
+	/*--shadow-lg: var(--shadow-lg);*/
+	/*--shadow-md: var(--shadow-md);*/
+	/*--shadow: var(--shadow);*/
+	/*--shadow-sm: var(--shadow-sm);*/
+	/*--shadow-xs: var(--shadow-xs);*/
+	/*--shadow-2xs: var(--shadow-2xs);*/
+	/*--spacing: var(--spacing);*/
+	/*--letter-spacing: var(--letter-spacing);*/
+	/*--shadow-offset-y: var(--shadow-offset-y);*/
+	/*--shadow-offset-x: var(--shadow-offset-x);*/
+	/*--shadow-spread: var(--shadow-spread);*/
+	/*--shadow-blur: var(--shadow-blur);*/
+	/*--shadow-opacity: var(--shadow-opacity);*/
+	/*--color-shadow-color: var(--shadow-color);*/
+	--color-destructive-foreground: var(--destructive-foreground);
+
+	--color-nav-fg: var(--nav-fg);
+	--color-nav-fg-muted: var(--nav-fg-muted);
+	--color-nav-surface-hover: var(--nav-surface-hover);
+	--color-nav-icon-idle: var(--nav-icon-idle);
+	--color-nav-beta-border: var(--nav-beta-border);
+	--color-panel-surface-hover: var(--panel-surface-hover);
+	--color-panel-surface: var(--panel-surface);
+	--color-panel-surface-fg: var(--panel-surface-fg);
+	--color-panel-surface-fg-muted: var(--panel-surface-fg-muted);
+	--color-chat-icon-fg: var(--chat-icon-fg);
+	--color-chat-icon-fg-hover: var(--chat-icon-fg-hover);
+	--color-chat-icon-bg-hover: var(--chat-icon-bg-hover);
+
+	--animate-pulse: pulse var(--duration) ease-out infinite;
+
+	@keyframes pulse {
+
+		0%,
+		100% {
+			box-shadow: 0 0 0 0 var(--pulse-color);
+		}
+
+		50% {
+			box-shadow: 0 0 0 8px var(--pulse-color);
+		}
+	}
+
+	--animate-shiny-text: shiny-text 8s infinite;
+
+	@keyframes shiny-text {
+
+		0%,
+		90%,
+		100% {
+			background-position: calc(-100% - var(--shiny-width)) 0;
+		}
+
+		30%,
+		60% {
+			background-position: calc(100% + var(--shiny-width)) 0;
+		}
+	}
+
+	--animate-icon-pop: icon-pop 0.3s ease-out;
+
+	@keyframes icon-pop {
+		0% {
+			transform: scale(1);
+		}
+
+		45% {
+			transform: scale(1.08);
+		}
+
+		100% {
+			transform: scale(1);
+		}
+	}
+
+	--animate-shine: shine var(--duration) infinite linear;
+
+	@keyframes shine {
+		0% {
+			background-position: 0% 0%;
+		}
+
+		50% {
+			background-position: 100% 100%;
+		}
+
+		to {
+			background-position: 0% 0%;
+		}
+	}
+}
 
 @layer base {
-  * {
-    @apply border-border outline-ring/50;
-  }
-  body {
-    @apply font-sans bg-background text-foreground;
-    letter-spacing: var(--tracking-normal);
-  }
-  html {
-    @apply font-sans;
-    scrollbar-gutter: stable;
-  }
-  body[data-scroll-locked] {
-    margin-right: 0 !important;
-  }
-  h1,
-  h2,
-  h3,
-  h4,
-  h5,
-  h6 {
-    font-family: var(--font-heading);
-  }
-  .font-medium,
-  .font-semibold,
-  .font-bold {
-    font-family: var(--font-heading);
-  }
+	* {
+		@apply border-border outline-ring/50;
+	}
+
+	body {
+		@apply font-sans bg-background text-foreground;
+		letter-spacing: var(--tracking-normal);
+		-webkit-font-smoothing: antialiased;
+		-moz-osx-font-smoothing: grayscale;
+		text-rendering: optimizeLegibility;
+	}
+
+	html {
+		@apply font-sans h-full;
+	}
+
+	body,
+	#root {
+		@apply h-full;
+	}
+
+	body[data-scroll-locked] {
+		margin-right: 0 !important;
+	}
+
+	h1,
+	h2,
+	h3,
+	h4,
+	h5,
+	h6 {
+		font-family: var(--font-sans);
+		letter-spacing: 0;
+	}
 }
 
 @layer utilities {
-  /* Heading font utility */
-  .font-heading {
-    font-family: var(--font-heading);
-  }
 
-  /* Elevated surface shadow (use ring-* for borders) */
-  .shadow-border {
-    --tw-shadow: 0 4px 16px rgba(0, 0, 0, 0.1);
-    --tw-shadow-colored: 0 4px 16px var(--tw-shadow-color);
-    box-shadow: var(--tw-ring-offset-shadow, 0 0 #0000),
-      var(--tw-ring-shadow, 0 0 #0000), var(--tw-shadow);
-  }
-  .dark .shadow-border {
-    --tw-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
-  }
+	/* Heading font utility — the logo applies its own dark-mode tracking
+	   to offset optical bloom at large sizes. For small UI text (menus,
+	   nav items) we keep a single tight tracking in both themes, relying
+	   on global antialiased font-smoothing to neutralize the bloom. */
+	.font-heading {
+		font-family: var(--font-heading);
+		letter-spacing: 0;
+	}
 
-  [data-streamdown="unordered-list"] {
-    list-style-type: disc;
-    list-style-position: outside;
-    padding-left: 1.25rem;
-    margin-block: 0.5rem;
-  }
+	.tracking-nav {
+		letter-spacing: 0;
+	}
+	.dark .tracking-nav {
+		letter-spacing: 0;
+	}
 
-  [data-streamdown="ordered-list"] {
-    list-style-type: decimal;
-    list-style-position: outside;
-    padding-left: 1.25rem;
-    margin-block: 0.5rem;
-  }
+	.nav-icon-btn {
+		@apply inline-flex h-7 w-7 items-center justify-center rounded-[10px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring;
+	}
 
-  [data-streamdown="list-item"] {
-    display: list-item;
-  }
+	/* Standard icon size — drives every nav/menu/action-bar icon
+	   (left sidebar, app-user menu, settings tabs, chat config toggle,
+	   right-panel close, chat message action bars, code-block actions).
+	   Pulls from --icon-size so a single edit retunes them all. */
+	.size-icon {
+		width: var(--icon-size);
+		height: var(--icon-size);
+	}
 
-  /* Flatten code blocks: single border, language label, then code directly */
-  [data-streamdown="code-block-body"] {
-    border: none !important;
-    border-radius: 0 !important;
-    background: transparent !important;
-    padding: 0 !important;
-  }
-  [data-streamdown="code-block"] {
-    gap: 0;
-    padding: 0.5rem;
-  }
-  [data-streamdown="code-block-header"] {
-    padding-left: 0.75rem;
-  }
+	/* Pins Inter across themes; parent `font-heading` resolves to Geist in dark. */
+	.nav-badge {
+		font-family: "Inter Variable", ui-sans-serif, system-ui, sans-serif;
+	}
+
+	.sidebar-nav-btn {
+		color: var(--nav-fg);
+	}
+	.sidebar-nav-btn:hover,
+	.sidebar-nav-btn[data-active="true"],
+	.sidebar-nav-btn[data-state="open"],
+	.group\/project-item:hover .sidebar-nav-btn,
+	.group\/project-item:has(.sidebar-row-action[data-state="open"]) .sidebar-nav-btn,
+	.group\/project-chat-item:hover .sidebar-nav-btn,
+	.group\/project-chat-item:has(.sidebar-row-action[data-state="open"]) .sidebar-nav-btn,
+	.group\/recent-item:hover .sidebar-nav-btn,
+	.group\/recent-item:has(.sidebar-row-action[data-state="open"]) .sidebar-nav-btn,
+	.group\/run-item:hover .sidebar-nav-btn,
+	.group\/run-item:has(.sidebar-row-action[data-state="open"]) .sidebar-nav-btn {
+		background-color: var(--nav-surface-hover) !important;
+		color: #000 !important;
+	}
+	.dark .sidebar-nav-btn:hover,
+	.dark .sidebar-nav-btn[data-active="true"],
+	.dark .sidebar-nav-btn[data-state="open"],
+	.dark .group\/project-item:hover .sidebar-nav-btn,
+	.dark .group\/project-item:has(.sidebar-row-action[data-state="open"]) .sidebar-nav-btn,
+	.dark .group\/project-chat-item:hover .sidebar-nav-btn,
+	.dark .group\/project-chat-item:has(.sidebar-row-action[data-state="open"]) .sidebar-nav-btn,
+	.dark .group\/recent-item:hover .sidebar-nav-btn,
+	.dark .group\/recent-item:has(.sidebar-row-action[data-state="open"]) .sidebar-nav-btn,
+	.dark .group\/run-item:hover .sidebar-nav-btn,
+	.dark .group\/run-item:has(.sidebar-row-action[data-state="open"]) .sidebar-nav-btn {
+		color: #fff !important;
+	}
+
+	.sidebar-row-action {
+		@apply absolute top-0 bottom-0 right-0 inline-flex cursor-pointer items-center justify-end pl-2 pr-1.5 opacity-0 pointer-events-none outline-none;
+	}
+	.sidebar-row-action[data-state="open"] {
+		@apply opacity-100 pointer-events-auto;
+	}
+	.sidebar-row-action-glyph {
+		@apply inline-flex size-6 items-center justify-center rounded-[10px] text-sidebar-foreground/55;
+	}
+
+	/* Branch picker chevron buttons sit beside action bar icon buttons
+	   (size-8, rounded-[10px]). Height + radius match for visual
+	   alignment, but width is tighter so the small chevron glyph reads
+	   as a compact control rather than a full-size icon button. */
+	.aui-branch-chevron-btn {
+		@apply inline-flex h-8 w-6 cursor-pointer items-center justify-center rounded-[10px] p-0 text-chat-icon-fg transition-colors hover:bg-chat-icon-bg-hover hover:text-chat-icon-fg-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent;
+	}
+	.sidebar-row-action:hover .sidebar-row-action-glyph,
+	.sidebar-row-action[data-state="open"] .sidebar-row-action-glyph {
+		@apply bg-nav-surface-hover text-nav-fg;
+	}
+	.dark .sidebar-row-action:hover .sidebar-row-action-glyph,
+	.dark .sidebar-row-action[data-state="open"] .sidebar-row-action-glyph {
+		color: #fff;
+	}
+
+	.sidebar-sticky-label {
+		@apply rounded-none bg-sidebar pt-0 pb-[8px] pl-[18px] pr-4 text-[14.5px]! leading-[17px] font-medium normal-case focus-visible:ring-0! focus-visible:outline-none transition-shadow duration-150;
+		/* Muted section-header gray, matching Gemini's "Notebooks"/"Recents".
+		   Lightened from #5f6368 so the label reads as a header, clearly
+		   lighter than the near-black nav items. */
+		color: #80868b;
+		letter-spacing: 0;
+	}
+	.sidebar-sticky-label-following {
+		@apply pt-[21px];
+	}
+	.dark .sidebar-sticky-label {
+		/* Muted gray, clearly dimmer than the near-white nav items (#ececee) so
+		   "Train"/"Recents" read as section headers — like Gemini's dark mode. */
+		color: #9aa0a6;
+		letter-spacing: 0;
+	}
+	/* Neutral panel input surface — sidesteps the green cast on
+	   `--input` / `--border` (both have a small chroma at hue ~165 in
+	   light mode). Same value drives the preset input pill, the system
+	   prompt button, and the chat-template textarea so all three read
+	   as one quiet gray family, matching the focused-edit-number tint. */
+	.panel-input-group {
+		@apply !h-9 min-h-9 min-w-0 items-stretch gap-0 rounded-[10px] pr-0 transition-colors focus-within:ring-0 focus-within:shadow-none;
+		border: 0 !important;
+		background-color: var(--panel-input-surface);
+	}
+	.panel-input-group:has([data-slot="input-group-control"]:focus-visible) {
+		border: 0 !important;
+		box-shadow: none;
+	}
+
+	/* Neutral surface for the larger panel text containers — system
+	   prompt preview button and chat-template textarea — so they share
+	   the same gray as the preset input pill and don't pick up the
+	   theme's slight green-cast `--input`. */
+	.panel-text-surface {
+		@apply rounded-[20px] border-0 transition-colors;
+		background-color: var(--panel-input-surface);
+	}
+	.panel-text-surface:hover {
+		background-color: var(--panel-input-surface-hover);
+	}
+
+	/* Sidebar sliders: soft neutral grays — active fill and thumb stay
+	   in the same neutral family as the panel surface so the controls
+	   read as quiet, modern, and uncluttered. Flat (no shadow), small
+	   thumb, no ring. The track's translucent neutral adapts to either
+	   theme; the fill/thumb pick a mid-gray with enough contrast to
+	   read on the panel without competing with text. */
+	/* Inactive track: barely-there alpha so it reads as a faint hint
+	   rather than a visible bar — the active fill carries the value,
+	   the track just suggests the slider's extent. Same alpha both
+	   themes; the black/white base flips automatically per theme. */
+	.panel-slider [data-slot="slider-track"] {
+		height: 0.25rem !important;
+		background-color: rgb(0 0 0 / 0.025) !important;
+	}
+	.dark .panel-slider [data-slot="slider-track"] {
+		background-color: rgb(255 255 255 / 0.025) !important;
+	}
+	/* Sliders in the right-side parameters panel.
+	 *
+	 * Color: every interactive surface (active fill, thumb body, thumb
+	 * border, hover/press halo) resolves through a single token —
+	 * `--panel-surface-fg-muted` — so the slider always belongs to the
+	 * same gray family as the panel's muted text. Theme switching and
+	 * future tone tweaks happen in one place.
+	 *
+	 * Pressure feedback: only the halo expresses interaction. The
+	 * shared <Slider /> component (components/ui/slider.tsx) applies
+	 * `hover:scale-110`, `active:scale-95`, `hover:ring-4`, and
+	 * `shadow-sm` to the thumb via Tailwind utilities. Suppressing
+	 * `transform` and `box-shadow` on the base rule prevents those from
+	 * competing with the halo's transition — without that, two
+	 * animations run on different durations/curves and the interaction
+	 * reads as jittery.
+	 *
+	 * Track-press detection: Radix's slider thumb only exposes
+	 * `data-disabled` and `data-orientation` (verified against the
+	 * package source) — there is no active-state attribute on the
+	 * thumb. We anchor the press selector on the slider root
+	 * (`.panel-slider:active`), which receives `:active` for any
+	 * pointer-down inside the slider, including presses that start on
+	 * the track. This is the only DOM-faithful way to show the halo
+	 * during a track-press without patching the shared component.
+	 *
+	 * Halo lifecycle: deliberately no `:focus` — pointer focus persists
+	 * after release and would leave a stale halo. `:focus-visible`
+	 * keeps keyboard navigation accessible (Tab + arrows). */
+	.panel-slider .bg-primary {
+		background-color: var(--panel-slider-fg) !important;
+	}
+	.panel-slider [data-slot="slider-thumb"] {
+		width: 0.875rem !important;
+		height: 0.875rem !important;
+		background-color: var(--panel-slider-fg) !important;
+		border-color: var(--panel-slider-fg) !important;
+		transform: none !important;
+		box-shadow: none !important;
+		transition: box-shadow 140ms ease-out !important;
+	}
+	.panel-slider [data-slot="slider-thumb"]:hover,
+	.panel-slider [data-slot="slider-thumb"]:focus-visible,
+	.panel-slider:active [data-slot="slider-thumb"] {
+		box-shadow: 0 0 0 10px
+			color-mix(in srgb, var(--panel-slider-fg) 18%, transparent) !important;
+	}
+	/* Active press: slightly larger / more opaque ring than passive
+	   hover, so the haptic reads stronger when the user is actively
+	   manipulating the value. */
+	.panel-slider:active [data-slot="slider-thumb"] {
+		box-shadow: 0 0 0 12px
+			color-mix(in srgb, var(--panel-slider-fg) 22%, transparent) !important;
+	}
+
+	/* Inline numeric input — used for slider values and Context Length.
+	   Designed to read as *editable text* rather than a pill button so
+	   it doesn't mirror the Select/dropdown components on the panel.
+	   Default: transparent box, no border, no ring, sized by the
+	   `size` HTML attribute (each consumer picks 6 / 8 / etc. chars).
+	   Hover/focus: very light bg fade-in to signal editability — just
+	   enough to read as interactive, not enough to compete with the
+	   slider row's quiet aesthetic. */
+	.panel-number-input {
+		@apply h-7 rounded-md border-0 bg-transparent px-1.5 text-right text-[13px]! font-medium tabular-nums text-nav-fg shadow-none transition-colors hover:bg-black/[0.04] focus:bg-black/[0.05] focus-visible:ring-0! focus-visible:outline-none md:text-[13px]!;
+	}
+	.dark .panel-number-input {
+		@apply hover:bg-white/[0.04] focus:bg-white/[0.06];
+	}
+
+	/* Switch — unsloth-green track when active, slider-gray thumb in
+	   both states. Keeps the on-state recognizable as an "engaged"
+	   primary control while the moving thumb sits in the same neutral
+	   palette as the panel sliders, tying every control in the panel
+	   to a single gray family. Unchecked track keeps shadcn's default
+	   bg-input for the standard off affordance. */
+	.panel-switch[data-state="checked"] {
+		background-color: var(--primary) !important;
+	}
+	.panel-switch [data-slot="switch-thumb"] {
+		background-color: var(--panel-slider-fg) !important;
+	}
+	.panel-switch[data-state="checked"] [data-slot="switch-thumb"] {
+		background-color: #ffffff !important;
+	}
+
+	/* Compact tooltip — small black pill with white text. Used for short
+	   hover labels on chat-area icon buttons (Copy, Edit, Delete,
+	   Refresh, More, code-block actions) and the panel's info-icon
+	   hints. Corner radius is fixed at 8px so it tracks with the
+	   underlying icon button corners (also 8px) — keeps the tooltip
+	   visually anchored to its trigger rather than reading as a much
+	   larger floating pill. */
+	.tooltip-compact {
+		@apply rounded-[10px] border-transparent bg-black px-2 py-1.5 text-[11px] font-medium leading-snug text-white shadow-md;
+	}
+
+	/* Rich tooltip — used for the context-usage and token-counter
+	   popups (multi-row metric breakdowns). Same black surface as the
+	   compact tooltips so chat-area popovers feel like one family.
+	   Corner radius matches the user-profile dropdown in the left
+	   sidebar (14px) so panel-level menu surfaces share a single
+	   roundness. Uses the heading font with tracking for the structured
+	   content. Same in both themes. */
+	.tooltip-rich {
+		@apply rounded-[16px] border-transparent bg-black px-4 py-3 font-heading tracking-wide text-white shadow-[0_8px_28px_-6px_rgba(0,0,0,0.32)];
+	}
+	/* Row-label color override — the popups reuse the existing prose
+	   `text-muted-foreground` class. Fixed light gray on the black
+	   surface keeps the label clearly legible while staying distinct
+	   from the values (full white). */
+	.tooltip-rich .text-muted-foreground {
+		color: #b1b1b1 !important;
+	}
+	.tooltip-rich .border-border\/40 {
+		border-color: rgb(255 255 255 / 0.12) !important;
+	}
+
+	.app-user-menu [data-slot="dropdown-menu-item"],
+	.app-user-menu [data-slot="dropdown-menu-sub-trigger"] {
+		height: 32px;
+		padding: 0 0.625rem !important;
+		gap: 8.5px !important;
+		border-radius: 10px;
+		font-weight: 500;
+		font-size: 14.5px;
+		line-height: 19px;
+		letter-spacing: 0;
+		color: var(--nav-fg);
+	}
+	.dark .app-user-menu [data-slot="dropdown-menu-item"],
+	.dark .app-user-menu [data-slot="dropdown-menu-sub-trigger"] {
+		letter-spacing: 0;
+	}
+	.app-user-menu [data-slot="dropdown-menu-item"] svg,
+	.app-user-menu [data-slot="dropdown-menu-sub-trigger"] svg {
+		width: 19px !important;
+		height: 19px !important;
+		flex-shrink: 0;
+	}
+	.app-user-menu [data-slot="dropdown-menu-item"]:focus,
+	.app-user-menu [data-slot="dropdown-menu-sub-trigger"]:focus,
+	.app-user-menu [data-slot="dropdown-menu-sub-trigger"][data-state="open"] {
+		background-color: var(--nav-surface-hover);
+		color: #000;
+	}
+	.dark .app-user-menu [data-slot="dropdown-menu-item"]:focus,
+	.dark .app-user-menu [data-slot="dropdown-menu-sub-trigger"]:focus,
+	.dark .app-user-menu [data-slot="dropdown-menu-sub-trigger"][data-state="open"] {
+		color: #fff;
+	}
+	.app-user-menu [data-slot="dropdown-menu-item"]:focus *,
+	.app-user-menu [data-slot="dropdown-menu-sub-trigger"]:focus *,
+	.app-user-menu [data-slot="dropdown-menu-sub-trigger"][data-state="open"] * {
+		color: #000 !important;
+	}
+	.dark .app-user-menu [data-slot="dropdown-menu-item"]:focus *,
+	.dark .app-user-menu [data-slot="dropdown-menu-sub-trigger"]:focus *,
+	.dark .app-user-menu [data-slot="dropdown-menu-sub-trigger"][data-state="open"] * {
+		color: #fff !important;
+	}
+
+	.menu-flat-destructive {
+		--destructive: #dc4848;
+	}
+	.dark .menu-flat-destructive {
+		--destructive: #ed7878;
+	}
+	.app-user-menu [data-slot="dropdown-menu-item"][data-variant="destructive"],
+	.app-user-menu [data-slot="dropdown-menu-item"][data-variant="destructive"]:focus {
+		color: var(--destructive);
+	}
+	.app-user-menu [data-slot="dropdown-menu-item"][data-variant="destructive"]:focus {
+		background-color: color-mix(in oklab, var(--destructive) 10%, transparent);
+	}
+	.app-user-menu [data-slot="dropdown-menu-item"][data-variant="destructive"]:focus * {
+		color: var(--destructive) !important;
+	}
+
+	/* Elevated surface shadow (use ring-* for borders) */
+	.shadow-border {
+		--tw-shadow: 0 4px 16px rgba(0, 0, 0, 0.1);
+		--tw-shadow-colored: 0 4px 16px var(--tw-shadow-color);
+		box-shadow: var(--tw-ring-offset-shadow, 0 0 #0000),
+			var(--tw-ring-shadow, 0 0 #0000), var(--tw-shadow);
+	}
+
+	.dark .shadow-border {
+		--tw-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+	}
+
+	.menu-soft-surface,
+	.menu-soft-surface-up {
+		--menu-soft-edge: rgba(0, 0, 0, 0.14);
+		--menu-soft-shadow: rgba(0, 0, 0, 0.18);
+		--menu-soft-offset-y: 8px;
+		--menu-soft-blur: 28px;
+		--menu-soft-spread: -6px;
+		@apply bg-popover text-popover-foreground;
+		box-shadow:
+			inset 0 0 0 1px var(--menu-soft-edge),
+			0 var(--menu-soft-offset-y) var(--menu-soft-blur)
+				var(--menu-soft-spread) var(--menu-soft-shadow);
+	}
+	.menu-soft-surface-up {
+		--menu-soft-offset-y: -6px;
+		--menu-soft-spread: -8px;
+	}
+	.dark .menu-soft-surface,
+	.dark .menu-soft-surface-up {
+		--menu-soft-edge: rgba(255, 255, 255, 0.07);
+		--menu-soft-shadow: rgba(0, 0, 0, 0.28);
+	}
+
+	.chat-composer-surface {
+		@apply relative flex w-full flex-col rounded-[24px] bg-background dark:bg-card px-1 pt-2 outline-none transition-shadow;
+		font-family: var(--font-sans);
+		border: 1px solid oklch(0.93 0 0 / 1);
+		background-clip: padding-box;
+		box-shadow:
+			0 1px 2px oklch(0 0 0 / 0.04),
+			0 6px 14px oklch(0 0 0 / 0.05),
+			0 18px 40px oklch(0 0 0 / 0.05);
+	}
+
+	.dark .chat-composer-surface {
+		border-color: #34363a;
+		box-shadow: 0 -6px 36px -14px rgba(0, 0, 0, 0.15);
+	}
+
+	.composer-pill-btn {
+		@apply flex cursor-pointer items-center gap-1.5 rounded-full px-1.5 py-1.5 text-[13px] font-medium text-muted-foreground/70 transition-colors hover:bg-primary/10 dark:hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-40;
+	}
+	.composer-pill-btn[data-active="true"] {
+		color: var(--primary);
+	}
+
+	.composer-input {
+		@apply mt-2 mb-1 mx-3 min-h-12 w-[calc(100%-1.5rem)] resize-none overflow-y-auto bg-transparent pl-5 pr-4 pt-2 pb-3 text-sm font-[450] outline-none placeholder:text-muted-foreground focus-visible:ring-0;
+	}
+
+	.composer-action-wrapper {
+		@apply relative mx-2 mb-2 flex items-center justify-between;
+	}
+
+	.composer-footer-note {
+		@apply mt-1.5 text-center text-[11px] tracking-[0em] text-muted-foreground;
+		font-family: var(--font-sans);
+	}
+
+	.artifact-panel-shell {
+		box-shadow: 0 2px 8px -2px rgba(27, 27, 31, 0.16);
+	}
+
+	.dark .artifact-panel-shell {
+		box-shadow: none;
+	}
+
+	.chat-artifact-split[data-artifact-layout-animating="true"] > [data-panel] {
+		transition:
+			flex-basis 260ms var(--ease-out-cubic),
+			flex-grow 260ms var(--ease-out-cubic),
+			flex-shrink 260ms var(--ease-out-cubic);
+		will-change: flex-basis, flex-grow;
+	}
+
+	.chat-artifact-pop-surface {
+		pointer-events: none;
+		opacity: 0;
+		transform: scale(0.965) translateY(8px);
+		transform-origin: center center;
+		transition:
+			opacity 180ms var(--ease-out-cubic),
+			transform 220ms var(--ease-out-cubic);
+		will-change: opacity, transform;
+	}
+
+	.chat-artifact-pop-surface[data-artifact-surface-visible="true"] {
+		pointer-events: auto;
+		opacity: 1;
+		transform: scale(1) translateY(0);
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		.chat-artifact-pop-surface {
+			transition: none;
+			transform: none;
+		}
+	}
+
+	.artifact-card-shimmer {
+		background: linear-gradient(
+			105deg,
+			transparent 0%,
+			color-mix(in oklch, var(--muted-foreground) 4%, transparent) 40%,
+			color-mix(in oklch, var(--muted-foreground) 8%, transparent) 50%,
+			color-mix(in oklch, var(--muted-foreground) 4%, transparent) 60%,
+			transparent 100%
+		);
+		transform: translateX(-120%);
+		animation: artifact-card-shimmer 1.55s var(--ease-out-cubic) infinite;
+	}
+
+	.artifact-loading-line {
+		width: 48%;
+		background: color-mix(in oklch, var(--primary) 88%, transparent);
+		transform: translate3d(-125%, 0, 0) scaleX(0.78);
+		transform-origin: center center;
+		animation: artifact-loading-line 1.7s linear infinite;
+	}
+
+	.artifact-panel-shell::before,
+	.artifact-panel-shell::after {
+		content: "";
+		position: absolute;
+		z-index: 20;
+		pointer-events: none;
+		transition:
+			border-color 150ms var(--ease-out-cubic),
+			background-color 150ms var(--ease-out-cubic),
+			box-shadow 150ms var(--ease-out-cubic),
+			transform 150ms var(--ease-out-cubic);
+	}
+
+	.artifact-panel-shell::before {
+		inset: 0;
+		border: 2px solid transparent;
+		border-radius: inherit;
+		-webkit-mask: linear-gradient(90deg, #000 0 24px, transparent 24px);
+		mask: linear-gradient(90deg, #000 0 24px, transparent 24px);
+	}
+
+	.artifact-panel-shell::after {
+		top: 50%;
+		left: -2px;
+		height: 28px;
+		width: 4px;
+		border-radius: 999px;
+		background: transparent;
+		transform: translateY(-50%);
+	}
+
+	[data-slot="resizable-handle"]:hover
+		+ [data-slot="resizable-panel"]
+		.artifact-panel-shell::before,
+	[data-slot="resizable-handle"]:active
+		+ [data-slot="resizable-panel"]
+		.artifact-panel-shell::before,
+	[data-slot="resizable-handle"][data-resize-handle-state="hover"]
+		+ [data-slot="resizable-panel"]
+		.artifact-panel-shell::before,
+	[data-slot="resizable-handle"][data-resize-handle-state="drag"]
+		+ [data-slot="resizable-panel"]
+		.artifact-panel-shell::before {
+		border-color: color-mix(in oklch, var(--primary) 58%, var(--border));
+	}
+
+	[data-slot="resizable-handle"]:hover
+		+ [data-slot="resizable-panel"]
+		.artifact-panel-shell::after,
+	[data-slot="resizable-handle"]:active
+		+ [data-slot="resizable-panel"]
+		.artifact-panel-shell::after,
+	[data-slot="resizable-handle"][data-resize-handle-state="hover"]
+		+ [data-slot="resizable-panel"]
+		.artifact-panel-shell::after,
+	[data-slot="resizable-handle"][data-resize-handle-state="drag"]
+		+ [data-slot="resizable-panel"]
+		.artifact-panel-shell::after {
+		background: color-mix(in oklch, var(--primary) 58%, var(--border));
+		box-shadow: none;
+		transform: translateY(-50%) scaleY(1.06);
+	}
+
+	@keyframes artifact-card-shimmer {
+		to {
+			transform: translateX(120%);
+		}
+	}
+
+	@keyframes artifact-loading-line {
+		0% {
+			transform: translate3d(-125%, 0, 0) scaleX(0.78);
+		}
+		35% {
+			transform: translate3d(-18%, 0, 0) scaleX(0.96);
+		}
+		62% {
+			transform: translate3d(72%, 0, 0) scaleX(1.12);
+		}
+		82% {
+			transform: translate3d(132%, 0, 0) scaleX(1.26);
+		}
+		94% {
+			transform: translate3d(188%, 0, 0) scaleX(1.36);
+		}
+		100% {
+			transform: translate3d(220%, 0, 0) scaleX(1.42);
+		}
+	}
+
+	/* Fine-tuning Studio: equal default height, expandable when needed (md+) */
+	.min-h-studio-config-column {
+		@apply md:min-h-[470px];
+	}
+
+	.h-studio-config-column {
+		@apply md:h-[470px];
+	}
+
+	[data-streamdown="unordered-list"] {
+		list-style-type: disc;
+		list-style-position: outside;
+		padding-left: 1.25rem;
+		margin-block: 0.5rem;
+	}
+
+	[data-streamdown="ordered-list"] {
+		list-style-type: decimal;
+		list-style-position: outside;
+		padding-left: 1.25rem;
+		margin-block: 0.5rem;
+	}
+
+	[data-streamdown="list-item"] {
+		display: list-item;
+	}
+
+	/* Flatten code blocks: single border, language label, then code directly */
+	[data-streamdown="code-block-body"] {
+		border: none !important;
+		border-radius: 0 !important;
+		background: transparent !important;
+		padding: 0 !important;
+	}
+
+	[data-streamdown="code-block"] {
+		gap: 0.25rem;
+		padding: 0.75rem 1rem;
+		border-radius: 1.5rem;
+		/* Wide lines must scroll inside the thread column, not widen past the composer (flex min-width:auto). */
+		max-width: 100%;
+		min-width: 0;
+		overflow-x: auto;
+	}
+
+	[data-streamdown="code-block-header"] {
+		padding-left: 0;
+	}
+
+	.aui-thread-root [data-streamdown="code-block"] code > span::before {
+		content: none !important;
+		display: none !important;
+		margin: 0 !important;
+		width: 0 !important;
+	}
+
+	/* Chat thread: code slightly smaller by default; step up when the thread column is wide. */
+	.aui-thread-root [data-streamdown="code-block"] {
+		font-size: 0.8125rem;
+		line-height: 1.55;
+	}
+
+	.aui-thread-root [data-streamdown="code-block-header"] {
+		font-size: 0.6875rem;
+	}
+
+	@container (min-width: 36rem) {
+		.aui-thread-root [data-streamdown="code-block"] {
+			font-size: 0.875rem;
+		}
+
+		.aui-thread-root [data-streamdown="code-block-header"] {
+			font-size: 0.75rem;
+		}
+	}
+
+	/* Chat: use the app sans stack for UI + prose. */
+	.aui-thread-root {
+		--font-heading: var(--font-sans);
+		font-family: var(--font-sans);
+	}
+
+	/* Normalize the trailing margin of the last element inside an
+	   assistant message so the gap above the action bar is the same
+	   regardless of whether the response ends with a paragraph
+	   (margin-bottom: 0 by Tailwind preflight) or a streamdown block
+	   like a code fence (margin-bottom: 1rem from `my-4`). Browser
+	   block layout doesn't collapse trailing margin into a sibling
+	   container, so we zero it explicitly along the deepest
+	   `:last-child` path. Streamdown wraps content in several
+	   nested divs, so code blocks land 4–5 levels deep — the chain
+	   walks that depth without using a generic descendant `:last-child`
+	   (which would also zero last-paragraph-in-list margins). The
+	   visible gap is then driven solely by the footer's own `mt-*`. */
+	.aui-assistant-message-content > *:last-child,
+	.aui-assistant-message-content > *:last-child > *:last-child,
+	.aui-assistant-message-content > *:last-child > *:last-child > *:last-child,
+	.aui-assistant-message-content > *:last-child > *:last-child > *:last-child > *:last-child,
+	.aui-assistant-message-content > *:last-child > *:last-child > *:last-child > *:last-child > *:last-child,
+	.aui-assistant-message-content > *:last-child > *:last-child > *:last-child > *:last-child > *:last-child > *:last-child {
+		margin-bottom: 0 !important;
+	}
+
+	/* The streamdown code-block wrapper carries `my-4` (16px top + 16px
+	   bottom margin). The bottom margin is what stretches the gap
+	   between the code-block box and the action-bar below it on a
+	   trailing code block. We zero `margin-bottom` on every code block
+	   inside an assistant message body. CSS margin collapsing handles
+	   the non-trailing case correctly: when a code block is followed by
+	   a paragraph (or any block with `my-4` mt), the rendered gap is
+	   `max(prev.mb, next.mt)` — so removing the code block's `mb` still
+	   leaves the next element's `mt-4` as the visible spacer. The only
+	   case actually affected is the trailing position (no next element),
+	   where `mb=0` collapses the gap to just the footer's `mt-2`,
+	   matching a text-trailing message. The wrapper's own
+	   `padding-bottom` is preserved, so the last line of code keeps its
+	   natural breathing room inside the box. */
+	.aui-assistant-message-content [data-streamdown="code-block"] {
+		margin-bottom: 0 !important;
+	}
+
+	/* Keep monospace for code fences and inline code (not KaTeX). */
+	.aui-thread-root [data-streamdown="code-block"] pre,
+	.aui-thread-root [data-streamdown="code-block"] code {
+		font-family: "Fira Code", ui-monospace, monospace;
+	}
+
+	.aui-thread-root :where(p, li, td, th, blockquote, h1, h2, h3, h4, h5, h6) code {
+		font-family: "Fira Code", ui-monospace, monospace;
+	}
+
+	/* Align fenced code blocks with the main chat column even when nested in lists. */
+	.aui-thread-root [data-streamdown="list-item"] > [data-streamdown="code-block"],
+	.aui-thread-root [data-streamdown="list-item"] [data-streamdown="code-block"] {
+		margin-left: -1.25rem;
+		width: calc(100% + 1.25rem);
+		max-width: calc(100% + 1.25rem);
+	}
+
+	.dark .aui-thread-root [data-streamdown="code-block"] {
+		/* Streamdown `pre` uses `dark:bg-[var(--shiki-dark-bg,...)]`; keep one surface on the outer shell. */
+		--shiki-dark-bg: transparent;
+		background: var(--color-code-block);
+		border: 1px solid oklch(1 0 0 / 0.08);
+	}
+
+	/* Streamdown code-block stability hardening.
+	 *
+	 * Two streamdown internals cause a visible "reload"-style flicker on
+	 * trailing code blocks the moment streaming ends. Both are addressable
+	 * purely in CSS without patching the library:
+	 *
+	 * 1. `content-visibility: auto` + `contain-intrinsic-size: auto 200px`
+	 *    (set inline by streamdown's <ot> wrapper). The IntersectionObserver
+	 *    that gates content-visibility flips rendered height between the
+	 *    200px placeholder and the actual code-block height as the block
+	 *    sits near the viewport edge during stream finalization. The
+	 *    height jump is small but visible, and the rendering optimization
+	 *    is unnecessary for chat content (thread length is bounded). We
+	 *    force `visible` to keep the rendered height of code blocks fully
+	 *    determined by their actual content at all times.
+	 *
+	 * 2. `[data-sd-animate]` (`sd-fadeIn`, 150ms). Streamdown wraps each
+	 *    streaming text segment in a span carrying this attribute. When
+	 *    shiki re-renders the code body at stream end, those wrapper
+	 *    spans get re-keyed and the fade animation replays across the
+	 *    whole block at once — exactly the visual that reads as the chat
+	 *    area "reloading for a frame." We disable the animation only
+	 *    inside code blocks; prose token fade-in elsewhere is untouched. */
+	.aui-thread-root [data-streamdown="code-block"] {
+		content-visibility: visible !important;
+		contain-intrinsic-size: none !important;
+	}
+	.aui-thread-root [data-streamdown="code-block"] [data-sd-animate] {
+		animation: none !important;
+	}
 }
 
-/* Minimal scrollbar — thumb only, no track */
+/* Lighter shadow + tighter vertical padding than Sonner's defaults; !important because Sonner injects its base rules at runtime. */
+[data-sonner-toast][data-styled='true'] {
+	padding: 12px 18px !important;
+	box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08) !important;
+}
+
+[data-sonner-toast][data-styled='true']:has([data-close-button]):not(:has([data-cancel])) {
+	padding-right: 48px !important;
+}
+
+[data-sonner-toast][data-styled='true']:has([data-cancel]):has([data-close-button]) {
+	padding-right: 88px !important;
+}
+
+[data-sonner-toast][data-styled='true'].chat-model-load-toast,
+[data-sonner-toast][data-styled='true'].chat-model-loaded-toast {
+	padding-top: 14px !important;
+	padding-bottom: 14px !important;
+}
+
+[data-sonner-toast][data-styled='true'].chat-model-loaded-toast [data-close-button] {
+	top: calc(50% - 0.25px) !important;
+	transform: translateY(-50%) !important;
+}
+
+[data-sonner-toast][data-styled='true'].chat-model-load-toast:not(:has([data-cancel])) [data-close-button] {
+	top: calc(50% - 0.25px) !important;
+	transform: translateY(-50%) !important;
+}
+
+[data-sonner-toast][data-styled="true"]:has([data-cancel]) [data-cancel] {
+	position: absolute !important;
+	right: 36px !important;
+	top: 50% !important;
+	transform: translateY(-50%) !important;
+	margin: 0 !important;
+}
+
+/* Boost shadow on dark surfaces; mirrors .shadow-border / .menu-soft-surface pattern. */
+.dark [data-sonner-toast][data-styled='true'] {
+	box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3) !important;
+}
+
+/* Selectable toast text; non-selectable toast buttons. */
+[data-sonner-toast],
+[data-sonner-toast] [data-content],
+[data-sonner-toast] [data-title],
+[data-sonner-toast] [data-description],
+[data-sonner-toast] p,
+[data-sonner-toast] span {
+	-webkit-user-select: text;
+	user-select: text;
+}
+
+/* Text cursor only on actual text nodes, so the toast container does
+   not pretend to be an input. */
+[data-sonner-toast] [data-title],
+[data-sonner-toast] [data-description],
+[data-sonner-toast] p,
+[data-sonner-toast] span {
+	cursor: text;
+}
+
+[data-sonner-toast] button,
+[data-sonner-toast] [data-button],
+[data-sonner-toast] [data-cancel],
+[data-sonner-toast] [data-close-button] {
+	-webkit-user-select: none;
+	user-select: none;
+	cursor: pointer;
+}
+
+/* Flat scrollbar chrome */
 * {
-  scrollbar-width: thin;
-  scrollbar-color: transparent transparent;
+	scrollbar-width: thin;
+	scrollbar-color: oklch(0.5 0 0 / 0.54) transparent;
 }
-*:hover {
-  scrollbar-color: oklch(0.6 0 0 / 0.3) transparent;
-}
-.dark *:hover {
-  scrollbar-color: oklch(0.5 0 0 / 0.35) transparent;
+
+.dark * {
+	scrollbar-color: oklch(0.67 0 0 / 0.5) transparent;
 }
 
 /* Webkit (Chrome, Safari, Edge) */
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+	width: 8px;
+	height: 8px;
+	background: transparent;
+	border: none;
+	box-shadow: none;
 }
+
 ::-webkit-scrollbar-track {
-  background: transparent;
+	background: transparent;
+	border: none;
+	box-shadow: none;
 }
+
+::-webkit-scrollbar-track-piece {
+	background: transparent;
+	border: none;
+	box-shadow: none;
+}
+
 ::-webkit-scrollbar-thumb {
-  background: transparent;
-  border-radius: 9999px;
+	background: oklch(0.5 0 0 / 0.54);
+	border-radius: 9999px;
+	border: none;
+	box-shadow: none;
 }
-*:hover::-webkit-scrollbar-thumb {
-  background: oklch(0.6 0 0 / 0.3);
+
+::-webkit-scrollbar-corner {
+	background: transparent;
+	border: none;
+	box-shadow: none;
 }
-.dark *:hover::-webkit-scrollbar-thumb {
-  background: oklch(0.5 0 0 / 0.35);
+
+::-webkit-scrollbar-button {
+	display: none;
+	width: 0;
+	height: 0;
+}
+
+.dark *::-webkit-scrollbar-thumb {
+	background: oklch(0.67 0 0 / 0.5);
+}
+
+/* Chat viewport: solid track matching sidebar so the scrollbar reads as a
+   full-height rail flush to the right edge, without a separate decorative strip. */
+.aui-thread-viewport {
+	scrollbar-color: oklch(0.5 0 0 / 0.54) var(--sidebar);
+	/* Reserve scrollbar space always so absolute-positioned overlays (topbar)
+	   can stop flush with the gutter edge without covering the scrollbar. */
+	scrollbar-gutter: stable;
+}
+
+/* Marker class applied only to actual streaming-thread viewports
+   (see ThreadPrimitive.Viewport in components/assistant-ui/thread.tsx).
+   Scoped separately from `.aui-thread-viewport` because that class is
+   reused elsewhere for shared scrollbar styling on non-streaming scroll
+   areas; the stabilizer must only attach to viewports the
+   useIntentAwareAutoScroll hook actually drives. */
+.aui-stream-viewport {
+	/* Scroll stabilizer: compensates for transient scrollHeight shrinks
+	   (most visibly, shiki re-highlighting a trailing code block the
+	   instant streaming ends). The useIntentAwareAutoScroll hook sets
+	   this variable to the exact pixel amount of any content shrink
+	   observed while the follow window is active; that padding keeps
+	   scrollHeight monotonic, so the browser never auto-clamps scrollTop,
+	   so no jump is ever painted. Released back to 0 as content
+	   genuinely grows past its prior high-water mark, and on user
+	   detach so the bottom stays flush when they come back. */
+	padding-bottom: var(--aui-scroll-stabilizer, 0px);
+}
+
+.dark .aui-thread-viewport {
+	scrollbar-color: oklch(0.72 0 0 / 0.25) #23252a;
+}
+
+.dark .aui-thread-viewport::-webkit-scrollbar-thumb {
+	background: oklch(0.72 0 0 / 0.25);
+}
+
+.aui-thread-viewport::-webkit-scrollbar-track {
+	background: var(--sidebar);
+}
+
+.dark .aui-thread-viewport::-webkit-scrollbar-track {
+	background: #23252a;
+}
+
+
+/* Search list: re-enable the native scrollbar (CommandList defaults to no-scrollbar). */
+.cmd-native-scrollbar {
+	scrollbar-width: thin;
+	-ms-overflow-style: auto;
+}
+.cmd-native-scrollbar::-webkit-scrollbar {
+	display: block;
+	width: 8px;
+	height: 8px;
 }
 
 /*---break---*/
 
 @layer base {
-  * {
-    @apply border-border outline-ring/50;
-  }
-  body {
-    @apply bg-background text-foreground;
-  }
+	* {
+		@apply border-border outline-ring/50;
+	}
+
+	body {
+		@apply bg-background text-foreground;
+	}
 }
 
-::view-transition-old(root), ::view-transition-new(root) {
-    animation: none;
-    mix-blend-mode: normal;
+::view-transition-old(root),
+::view-transition-new(root) {
+	animation: none;
+	mix-blend-mode: normal;
+}
+
+/* Keep Sonner close button inside the toast and pin to theme tokens (--gray2 hover ignores data-sonner-theme). */
+[data-sonner-toast][data-styled="true"] [data-close-button] {
+	top: 8px !important;
+	transform: none !important;
+	background: var(--popover) !important;
+	color: var(--popover-foreground) !important;
+	border-color: var(--border) !important;
+}
+
+[data-sonner-toast][data-styled="true"] [data-close-button] svg {
+	stroke-width: 2.25;
+}
+[data-sonner-toast][data-styled="true"]:hover [data-close-button]:hover {
+	background: var(--muted) !important;
+	color: var(--popover-foreground) !important;
+	border-color: var(--border) !important;
+}
+
+.generated-image-loading-card {
+	position: relative;
+	overflow: hidden;
+	contain: paint;
+}
+
+.generated-image-loading-wave {
+	position: relative;
+	display: grid;
+	grid-template-columns: repeat(8, minmax(0, 1fr));
+	gap: 14px;
+	width: min(66%, 18rem);
+	padding: 1.5rem;
+	border-radius: 1.5rem;
+}
+
+.generated-image-loading-dot {
+	width: 7px;
+	height: 7px;
+	border-radius: 9999px;
+	background: color-mix(in oklch, var(--muted-foreground) 82%, var(--primary));
+	opacity: 0.12;
+	transform: translate3d(0, 4px, 0) scale(0.72);
+	animation: generated-image-dot-wave 1850ms var(--ease-out-quart) infinite;
+	animation-delay: calc((var(--dot-row) * 72ms) + (var(--dot-col) * 72ms));
+	will-change: transform, opacity;
+}
+
+@keyframes generated-image-dot-wave {
+	0%,
+	22%,
+	100% {
+		opacity: 0.1;
+		transform: translate3d(0, 4px, 0) scale(0.72);
+	}
+
+	46% {
+		opacity: 0.46;
+		transform: translate3d(0, -3px, 0) scale(0.96);
+	}
+
+	66% {
+		opacity: 0.2;
+		transform: translate3d(0, 0, 0) scale(0.82);
+	}
+}
+
+/*
+ * prefers-reduced-motion: honour the OS-level "reduce motion" preference.
+ * Tailwind animate-in/out, Radix open/close transforms, infinite shine/pulse
+ * keyframes, and Framer Motion layout transitions all ignore the media query
+ * by default. Forcing every animation/transition to ~0ms collapses zoom-ins,
+ * slide-ins, and continuous shimmers to a single frame without removing the
+ * end state. Hover colour changes become instant rather than fading, which is
+ * the documented WCAG outcome (motion is "minimised, not removed").
+ *
+ * .animate-spin and generated image loading dots are the exceptions: loading
+ * indicators across Studio (tool execution loaders, sonner toasts, Tauri
+ * startup / update screens, the <Spinner /> primitive, and image generation
+ * cards). Freezing them removes the only visual signal that work is in flight,
+ * so they keep animating.
+ */
+@media (prefers-reduced-motion: reduce) {
+	*,
+	*::before,
+	*::after {
+		animation-duration: 0.01ms !important;
+		animation-iteration-count: 1 !important;
+		transition-duration: 0.01ms !important;
+		scroll-behavior: auto !important;
+	}
+
+	.animate-spin {
+		animation-duration: 1.5s !important;
+		animation-iteration-count: infinite !important;
+	}
+
+	.generated-image-loading-dot {
+		animation-duration: 1850ms !important;
+		animation-iteration-count: infinite !important;
+	}
 }

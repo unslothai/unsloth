@@ -28,6 +28,7 @@ export function renderBlockDialog(
   categoryOptions: SamplerConfig[],
   modelConfigAliases: string[],
   modelProviderOptions: string[],
+  localProviderNames: Set<string>,
   toolProfileAliases: string[],
   datetimeOptions: string[],
   onUpdate: (id: string, patch: Partial<NodeConfig>) => void,
@@ -109,6 +110,7 @@ export function renderBlockDialog(
         <ModelConfigDialog
           config={config}
           providerOptions={modelProviderOptions}
+          localProviderNames={localProviderNames}
           onUpdate={update}
         />
       ) : null;

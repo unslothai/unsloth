@@ -165,7 +165,7 @@ function McpServerCard({
             </div>
           )}
 
-          <div className="grid gap-2">
+          <div className="grid gap-1.5">
             <FieldLabel label="Server name" hint="Name shown in this tool access setup." />
             <Input
               className="nodrag"
@@ -194,7 +194,7 @@ function McpServerCard({
 
           {provider.provider_type === "stdio" ? (
             <div className="space-y-4">
-              <div className="grid gap-2">
+              <div className="grid gap-1.5">
                 <FieldLabel label="Command" hint="Command used to start the tool server." />
                 <Input
                   className="nodrag"
@@ -293,7 +293,7 @@ function McpServerCard({
             </div>
           ) : (
             <div className="space-y-4">
-              <div className="grid gap-2">
+              <div className="grid gap-1.5">
                 <FieldLabel label="Endpoint" hint="URL for the tool server." />
                 <Input
                   className="nodrag"
@@ -305,7 +305,7 @@ function McpServerCard({
                 />
               </div>
               <div className="grid gap-2 sm:grid-cols-2">
-                <div className="grid gap-2">
+                <div className="grid gap-1.5">
                   <FieldLabel
                     label="API key environment variable"
                     hint="Optional environment variable that stores the API key."
@@ -322,7 +322,7 @@ function McpServerCard({
                     }
                   />
                 </div>
-                <div className="grid gap-2">
+                <div className="grid gap-1.5">
                   <FieldLabel
                     label="API key"
                     hint="Optional API key."
@@ -705,7 +705,7 @@ export function ToolProfileDialog({
               )}
             </div>
 
-            <div className="grid gap-2">
+            <div className="grid gap-1.5">
               <FieldLabel
                 label="Tools this setup may use"
                 hint="Leave this empty to allow every tool from these servers."
@@ -740,7 +740,7 @@ export function ToolProfileDialog({
               </CollapsibleTrigger>
               <CollapsibleContent className="mt-3">
                 <div className="grid gap-3 sm:grid-cols-2">
-                  <div className="grid gap-2">
+                  <div className="grid gap-1.5">
                     <FieldLabel
                       label="Max tool-use turns"
                       hint="How many back-and-forth tool calls an AI step can make."
@@ -756,7 +756,7 @@ export function ToolProfileDialog({
                       }
                     />
                   </div>
-                  <div className="grid gap-2">
+                  <div className="grid gap-1.5">
                     <FieldLabel
                       label="Timeout (seconds)"
                       hint="How long to wait when loading or calling tools."

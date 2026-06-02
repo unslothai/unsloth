@@ -8,7 +8,6 @@ This module contains custom data collators for training,
 particularly for VLM/OCR processing.
 """
 
-import torch
 from dataclasses import dataclass
 from typing import Any, List, Optional, Union
 from loggers import get_logger

@@ -50,7 +50,7 @@ export function DatetimeDialog({
       />
       <div className="grid gap-3">
         <div className="grid gap-2 sm:grid-cols-2">
-          <div className="grid gap-2">
+          <div className="grid gap-1.5">
             <FieldLabel
               label="Start"
               htmlFor={startId}
@@ -66,7 +66,7 @@ export function DatetimeDialog({
               }
             />
           </div>
-          <div className="grid gap-2">
+          <div className="grid gap-1.5">
             <FieldLabel
               label="End"
               htmlFor={endId}
@@ -83,7 +83,7 @@ export function DatetimeDialog({
             />
           </div>
         </div>
-        <div className="grid gap-2">
+        <div className="grid gap-1.5">
           <FieldLabel
             label="Unit"
             htmlFor={unitId}

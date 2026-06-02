@@ -7,6 +7,7 @@ export type DialogOptions = {
   categoryOptions: SamplerConfig[];
   modelConfigAliases: string[];
   modelProviderOptions: string[];
+  localProviderNames: Set<string>;
   toolProfileAliases: string[];
   datetimeOptions: string[];
 };
@@ -15,6 +16,7 @@ export function buildDialogOptions(configList: NodeConfig[]): DialogOptions {
   const categoryOptions: SamplerConfig[] = [];
   const modelConfigAliases: string[] = [];
   const modelProviderOptions: string[] = [];
+  const localProviderNames = new Set<string>();
   const toolProfileAliases: string[] = [];
   const datetimeOptions: string[] = [];
 
@@ -34,6 +36,9 @@ export function buildDialogOptions(configList: NodeConfig[]): DialogOptions {
     }
     if (config.kind === "model_provider") {
       modelProviderOptions.push(config.name);
+      if (config.is_local) {
+        localProviderNames.add(config.name);
+      }
       continue;
     }
     if (config.kind === "tool_config") {
@@ -45,6 +50,7 @@ export function buildDialogOptions(configList: NodeConfig[]): DialogOptions {
     categoryOptions,
     modelConfigAliases,
     modelProviderOptions,
+    localProviderNames,
     toolProfileAliases,
     datetimeOptions,
   };

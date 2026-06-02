@@ -240,6 +240,8 @@ export function makeModelProviderConfig(
     extra_headers: "",
     // biome-ignore lint/style/useNamingConvention: api schema
     extra_body: "",
+    // biome-ignore lint/style/useNamingConvention: api schema
+    is_local: false,
   };
 }
 
@@ -366,7 +368,9 @@ export function makeSeedConfig(
     hf_token: "",
     hf_endpoint: "https://huggingface.co",
     local_file_name: "",
-    unstructured_file_name: "",
+    unstructured_file_ids: [],
+    unstructured_file_names: [],
+    unstructured_file_sizes: [],
     seed_preview_rows: [],
     unstructured_chunk_size: "1200",
     unstructured_chunk_overlap: "200",

@@ -12,23 +12,23 @@ import {
   applyNodeChanges,
 } from "@xyflow/react";
 import { create } from "zustand";
-import type {
-  RecipeNode,
-  RecipeProcessorConfig,
-  LayoutDirection,
-  LlmType,
-  NodeConfig,
-  SeedSourceType,
-  SamplerType,
-} from "../types";
 import {
-  getBlockDefinition,
   type BlockKind,
   type BlockType,
   type SeedBlockType,
+  getBlockDefinition,
 } from "../blocks/registry";
-import { deriveDisplayGraph } from "../utils/graph/derive-display-graph";
+import type {
+  LayoutDirection,
+  LlmType,
+  NodeConfig,
+  RecipeNode,
+  RecipeProcessorConfig,
+  SamplerType,
+  SeedSourceType,
+} from "../types";
 import { applyRecipeConnection, isValidRecipeConnection } from "../utils/graph";
+import { deriveDisplayGraph } from "../utils/graph/derive-display-graph";
 import {
   HANDLE_IDS,
   normalizeRecipeHandleId,
@@ -42,8 +42,8 @@ import {
 } from "./helpers/model-infra-layout";
 import { applyEdgeRemovals, applyNodeRemovals } from "./helpers/removals";
 import {
-  applyRenameToConfigs,
   applyLayoutDirectionToNodes,
+  applyRenameToConfigs,
   buildNodeUpdate,
   syncEdgesForConfigPatch,
   syncSubcategoryConfigsForCategoryUpdate,
@@ -97,7 +97,11 @@ type RecipeStudioState = {
     position?: XYPosition,
     openDialog?: boolean,
   ) => void;
-  addLlmNode: (type: LlmType, position?: XYPosition, openDialog?: boolean) => void;
+  addLlmNode: (
+    type: LlmType,
+    position?: XYPosition,
+    openDialog?: boolean,
+  ) => void;
   addModelProviderNode: (position?: XYPosition, openDialog?: boolean) => void;
   addModelConfigNode: (position?: XYPosition, openDialog?: boolean) => void;
   addToolProfileNode: (position?: XYPosition, openDialog?: boolean) => void;
@@ -250,7 +254,10 @@ function connectSemantic(
   };
 }
 
-function isModelSemanticEdge(edge: Edge, configs: Record<string, NodeConfig>): boolean {
+function isModelSemanticEdge(
+  edge: Edge,
+  configs: Record<string, NodeConfig>,
+): boolean {
   const source = configs[edge.source];
   const target = configs[edge.target];
   return Boolean(
@@ -315,12 +322,16 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
         auxNodePositions: {},
         llmAuxVisibility: state.llmAuxVisibility,
       });
-      const { nodes } = getLayoutedElements(displayGraph.nodes, displayGraph.edges, {
-        direction: state.layoutDirection,
-        nodesep: isTopBottom ? 120 : 80,
-        ranksep: isTopBottom ? 140 : 80,
-        configs: state.configs,
-      });
+      const { nodes } = getLayoutedElements(
+        displayGraph.nodes,
+        displayGraph.edges,
+        {
+          direction: state.layoutDirection,
+          nodesep: isTopBottom ? 120 : 80,
+          ranksep: isTopBottom ? 140 : 80,
+          configs: state.configs,
+        },
+      );
       const layoutedPositions = new Map(
         nodes.map((node) => [node.id, node.position] as const),
       );
@@ -381,22 +392,18 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
         (config) => config.kind === "seed",
       );
       if (!existing) {
-        return buildAddedNodeState(
-          state,
-          "seed",
-          type,
-          position,
-          openDialog,
-        );
+        return buildAddedNodeState(state, "seed", type, position, openDialog);
       }
       let nextSourceType: SeedSourceType = "hf";
       if (type === "seed_local") {
         nextSourceType = "local";
       } else if (type === "seed_unstructured") {
         nextSourceType = "unstructured";
+      } else if (type === "seed_github") {
+        nextSourceType = "github_repo";
       }
 
-      const nextConfig = {
+      const nextConfig: typeof existing = {
         ...existing,
         seed_source_type: nextSourceType,
         hf_repo_id: "",
@@ -406,12 +413,21 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
         hf_token: "",
         hf_endpoint: "https://huggingface.co",
         local_file_name: "",
-        unstructured_file_name: "",
+        unstructured_file_ids: [],
+        unstructured_file_names: [],
+        unstructured_file_sizes: [],
+        resolved_paths: [],
         seed_columns: [],
         seed_drop_columns: [],
         seed_preview_rows: [],
         unstructured_chunk_size: "1200",
         unstructured_chunk_overlap: "200",
+        github_repo_slug: "",
+        github_token: "",
+        github_limit: "100",
+        github_item_types: ["issues", "pulls"],
+        github_include_comments: true,
+        github_max_comments_per_item: "30",
       };
       return {
         configs: {
@@ -419,7 +435,10 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
           [existing.id]: nextConfig,
         },
         nodes: updateNodeData(
-          state.nodes.map((node) => ({ ...node, selected: node.id === existing.id })),
+          state.nodes.map((node) => ({
+            ...node,
+            selected: node.id === existing.id,
+          })),
           existing.id,
           nextConfig,
           state.layoutDirection,
@@ -433,7 +452,13 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
       if (state.executionLocked) {
         return state;
       }
-      const added = buildAddedNodeState(state, "llm", type, position, openDialog);
+      const added = buildAddedNodeState(
+        state,
+        "llm",
+        type,
+        position,
+        openDialog,
+      );
       const context = getAddedNodeContext(added);
       if (!context) {
         return added;
@@ -484,9 +509,7 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
       let { nodes, configs } = context;
       let edges = state.edges;
       const unboundModelConfigs = Object.values(configs).filter(
-        (config) =>
-          config.kind === "model_config" &&
-          !config.provider.trim(),
+        (config) => config.kind === "model_config" && !config.provider.trim(),
       );
       if (!position && unboundModelConfigs.length > 0) {
         nodes = placeNodeNear(
@@ -594,7 +617,7 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
       let { nodes, configs } = context;
       let edges = state.edges;
       const unboundLlms = Object.values(configs).filter(
-        (config) => config.kind === "llm" && !(config.tool_alias?.trim()),
+        (config) => config.kind === "llm" && !config.tool_alias?.trim(),
       );
       if (!position && unboundLlms.length > 0) {
         nodes = placeNodeNear(
@@ -731,6 +754,32 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
 
       if (nameChanged) {
         configs = applyRenameToConfigs(configs, oldName, newName);
+      }
+
+      // When a provider toggles between local and external, keep already
+      // linked model_config nodes in sync. applyRenameToConfigs above has
+      // already propagated any name change, so providerName here is the
+      // post-rename value.
+      if (current.kind === "model_provider" && next.kind === "model_provider") {
+        const prevIsLocal = current.is_local === true;
+        const nextIsLocal = next.is_local === true;
+        if (prevIsLocal !== nextIsLocal) {
+          const providerName = next.name;
+          for (const [cfgId, cfg] of Object.entries(configs)) {
+            if (cfg.kind !== "model_config" || cfg.provider !== providerName) {
+              continue;
+            }
+            configs = {
+              ...configs,
+              [cfgId]: {
+                ...cfg,
+                model: "",
+                // biome-ignore lint/style/useNamingConvention: api schema
+                gguf_variant: undefined,
+              },
+            };
+          }
+        }
       }
 
       return { configs, nodes, edges };

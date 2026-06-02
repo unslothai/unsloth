@@ -355,6 +355,9 @@ def GraniteAttention_fast_forward_inference(
     # cos, sin = self.rotary_emb(Vn, seq_len = kv_seq_len)
     # Qn, Kn = inplace_rope_embedding(Qn, Kn, cos, sin, position_ids)
     cos, sin = position_embeddings
+    # Transformers 5.x: position_ids may be [batch, full_seq_len]; slice to last
+    if position_ids.dim() >= 2 and position_ids.shape[-1] > 1:
+        position_ids = position_ids[:, -1:]
     cos, sin = cos[position_ids], sin[position_ids]
     h = self.half_head_dim
 

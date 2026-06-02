@@ -22,6 +22,8 @@ from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, Union
 import inspect
 import os
 import re
+import sys
+from contextlib import contextmanager
 from unsloth_zoo.compiler import create_new_function
 from unsloth_zoo.log import logger
 from unsloth_zoo.logging_utils import PatchRLStatistics
@@ -93,6 +95,58 @@ def vLLMSamplingParams(**kwargs):
     return sampling_params
 
 
+def _maybe_prepare_vllm_for_resume(trainer):
+    if not torch.cuda.is_available():
+        return
+
+    llm = getattr(trainer, "llm", None)
+    if llm is None:
+        llm = getattr(getattr(trainer, "model", None), "vllm_engine", None)
+    if llm is None:
+        return
+
+    model_config = getattr(
+        getattr(getattr(llm, "llm_engine", None), "vllm_config", None),
+        "model_config",
+        None,
+    )
+    if not getattr(model_config, "enable_sleep_mode", False):
+        return
+
+    try:
+        llm.sleep(1)
+    except Exception:
+        pass
+
+    import gc
+
+    for _ in range(3):
+        gc.collect()
+        torch.cuda.empty_cache()
+
+
+def _patch_resume_from_checkpoint_memory(trainer_class):
+    original_train = getattr(trainer_class, "train", None)
+    if original_train is None:
+        return
+    if getattr(original_train, "_unsloth_resume_guard", False):
+        return
+
+    def _unsloth_train_with_resume_guard(self, *args, **kwargs):
+        resume_from_checkpoint = kwargs.get("resume_from_checkpoint", None)
+        if resume_from_checkpoint is None:
+            resume_from_checkpoint = kwargs.get("model_path", None)
+        if resume_from_checkpoint is None and len(args) != 0:
+            resume_from_checkpoint = args[0]
+
+        if resume_from_checkpoint:
+            _maybe_prepare_vllm_for_resume(self)
+        return original_train(self, *args, **kwargs)
+
+    _unsloth_train_with_resume_guard._unsloth_resume_guard = True
+    trainer_class.train = _unsloth_train_with_resume_guard
+
+
 def PatchRL(FastLanguageModel):
     try:
         from trl.models.utils import unwrap_model_for_generation
@@ -132,6 +186,20 @@ def PatchRL(FastLanguageModel):
 
     @contextmanager
     def unsloth_unwrap_model_for_generation(model, *args, **kwargs):
+        # why: snapshot before TRL's unwrap context manager, which calls
+        # gradient_checkpointing_disable() before yielding; preserve the actual
+        # mode value (e.g. "unsloth") rather than collapsing it to a bool, so
+        # the finally restore matches the caller's configured GC mode.
+        use_gradient_checkpointing = next(
+            (
+                v
+                for v in (
+                    getattr(m, "gradient_checkpointing", False) for m in model.modules()
+                )
+                if v
+            ),
+            False,
+        )
         with unwrap_model_for_generation(model, *args, **kwargs) as unwrapped_model:
             # Put the model in inference mode.
             FastLanguageModel.for_inference(model)
@@ -153,7 +221,10 @@ def PatchRL(FastLanguageModel):
             finally:
                 # Restore generate and return
                 unwrapped_model.generate = original_generate
-                FastLanguageModel.for_training(model)
+                FastLanguageModel.for_training(
+                    model,
+                    use_gradient_checkpointing = use_gradient_checkpointing,
+                )
 
     from transformers import Trainer
     from transformers.trainer_pt_utils import nested_detach
@@ -221,8 +292,17 @@ def PatchRL(FastLanguageModel):
         with torch.no_grad():
             if has_labels or loss_without_labels:
                 with self.compute_loss_context_manager():
+                    try:
+                        num_items_in_batch = self._get_num_items_in_batch(
+                            [inputs], self.args.device
+                        )
+                    except (AttributeError, TypeError):
+                        num_items_in_batch = None
                     loss, outputs = self.compute_loss(
-                        model, inputs, return_outputs = True
+                        model,
+                        inputs,
+                        return_outputs = True,
+                        num_items_in_batch = num_items_in_batch,
                     )
                 loss = loss.mean().detach()
 
@@ -285,6 +365,22 @@ calculate_pad_tokens_in_prompt = RL_REPLACEMENTS["calculate_pad_tokens_in_prompt
 create_completion_attention_mask = RL_REPLACEMENTS["create_completion_attention_mask"]
 left_pack_padding = RL_REPLACEMENTS["left_pack_padding"]
 align_logprobs_with_mask = RL_REPLACEMENTS["align_logprobs_with_mask"]
+align_completion_tool_mask = RL_REPLACEMENTS.get("align_completion_tool_mask")
+if align_completion_tool_mask is None:
+
+    def align_completion_tool_mask(
+        tool_mask: torch.Tensor,
+        completion_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        if tool_mask is None:
+            return completion_mask
+        raise RuntimeError(
+            "env_mask/tool_mask GRPO requires an unsloth_zoo build whose "
+            "grpo_accumulated_loss handles tool_mask. Please upgrade "
+            "unsloth_zoo."
+        )
+
+
 autotune_batch_and_chunks = RL_REPLACEMENTS["grpo_autotune_batch_and_chunks"]
 sanitize_logprob = RL_REPLACEMENTS["sanitize_logprob"]
 
@@ -305,7 +401,6 @@ from transformers.training_args import ParallelMode
 from unsloth_zoo.device_type import DEVICE_TYPE, device_synchronize
 
 # Wrap trainer with padding to right and enable training mode
-# Also patches W&B since multiple runs must use wandb.finish()
 import functools
 from types import MethodType
 try:
@@ -315,6 +410,23 @@ except:
 def prepare_for_training_mode(f):
     @functools.wraps(f)
     def wrapper(self, *args, **kwargs):
+        # Finish the previous W&B run if this is a subsequent train() call.
+        # We do this at the START of train() (not the end) so that
+        # evaluate() / log() still work after train() completes.
+        # HF's WandbCallback.setup() will call wandb.init() for the new run.
+        # See: https://github.com/unslothai/unsloth/issues/3954
+        if getattr(self, '_unsloth_training_completed', False):
+            try:
+                import wandb
+                if wandb.run is not None:
+                    wandb.finish()
+                    # Reset HF's WandbCallback so it calls wandb.init() for the new run
+                    for cb in self.callback_handler.callbacks:
+                        if type(cb).__name__ == 'WandbCallback':
+                            cb._initialized = False
+                            break
+            except:
+                pass
         # Enable training mode
         _was_training = None
         # Get gradient checkpointing setting from training arguments
@@ -335,12 +447,9 @@ def prepare_for_training_mode(f):
             reset_unsloth_gradient_checkpointing_buffers()
         except:
             pass
-        # Patch W&B to enable logging on future runs, otherwise it'll overwrite the first run
-        try:
-            import wandb
-            wandb.finish()
-        except:
-            pass
+        # Mark that training completed so the next train() call can
+        # finish this W&B run before starting a new one
+        self._unsloth_training_completed = True
         return output
     return wrapper
 pass
@@ -359,6 +468,7 @@ torch_compile_options = {{
 {create_completion_attention_mask_code}
 {left_pack_padding_code}
 {align_logprobs_with_mask_code}
+{align_completion_tool_mask_code}
 {autotune_batch_and_chunks_code}
 {sanitize_logprob_code}
 
@@ -463,7 +573,208 @@ def _wrap_grpo_generate_and_score(trainer_cls):
     trainer_cls._generate_and_score_completions = wrapped
 
 
+_UNSLOTH_RETURN_HIDDEN_STATES_SUPPORT_MARKER = (
+    "__UNSLOTH_SUPPORTS_RETURN_HIDDEN_STATES__"
+)
+_UNSLOTH_GRPO_HIDDEN_STATES_WRAPPED_ATTR = "_unsloth_grpo_hidden_states_forward_wrapped"
+_UNSLOTH_GRPO_HIDDEN_STATES_WARNING_ATTR = "_unsloth_grpo_hidden_states_warning_issued"
+
+
+def _grpo_hidden_states_wrap_target(model):
+    if model is None:
+        return None
+    get_base_model = getattr(model, "get_base_model", None)
+    if callable(get_base_model):
+        base_model = get_base_model()
+        if base_model is not None and base_model is not model:
+            return base_model
+    for attr in ("base_model", "model"):
+        child = getattr(model, attr, None)
+        if child is not None and child is not model and hasattr(child, "forward"):
+            return child
+    return model
+
+
+def _model_supports_unsloth_return_hidden_states(model):
+    target_model = _grpo_hidden_states_wrap_target(model)
+    for candidate in (model, target_model):
+        if candidate is None:
+            continue
+        if getattr(candidate, _UNSLOTH_RETURN_HIDDEN_STATES_SUPPORT_MARKER, False):
+            return True
+        if getattr(
+            type(candidate), _UNSLOTH_RETURN_HIDDEN_STATES_SUPPORT_MARKER, False
+        ):
+            return True
+    return False
+
+
+def _drop_forward_kwargs_consumed_positionally(forward_signature, args, kwargs):
+    if len(args) == 0 or len(kwargs) == 0:
+        return kwargs
+
+    consumed_names = []
+    for parameter in forward_signature.parameters.values():
+        if parameter.kind == inspect.Parameter.VAR_POSITIONAL:
+            break
+        if parameter.kind in (
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        ):
+            consumed_names.append(parameter.name)
+        if len(consumed_names) >= len(args):
+            break
+
+    if len(consumed_names) == 0:
+        return kwargs
+
+    kwargs = dict(kwargs)
+    for name in consumed_names:
+        kwargs.pop(name, None)
+    return kwargs
+
+
+def _get_num_logits_to_keep(forward_signature, args, kwargs):
+    try:
+        bound = forward_signature.bind_partial(*args, **kwargs)
+        arguments = bound.arguments
+        num_logits_to_keep = arguments.get("num_logits_to_keep", 0) or 0
+        logits_to_keep = arguments.get("logits_to_keep", 0) or 0
+        for parameter in forward_signature.parameters.values():
+            if parameter.kind != inspect.Parameter.VAR_KEYWORD:
+                continue
+            extra_kwargs = arguments.get(parameter.name, {})
+            num_logits_to_keep = max(
+                num_logits_to_keep,
+                extra_kwargs.get("num_logits_to_keep", 0) or 0,
+            )
+            logits_to_keep = max(
+                logits_to_keep,
+                extra_kwargs.get("logits_to_keep", 0) or 0,
+            )
+            break
+        return max(num_logits_to_keep, logits_to_keep)
+    except TypeError:
+        logger.debug(
+            "Unsloth: Could not bind forward arguments for GRPO hidden-state fallback.",
+            exc_info = True,
+        )
+
+    num_logits_to_keep = kwargs.get("num_logits_to_keep", 0) or 0
+    logits_to_keep = kwargs.get("logits_to_keep", 0) or 0
+    return max(num_logits_to_keep, logits_to_keep)
+
+
+def _warn_grpo_hidden_states_fallback_once(model, message):
+    if getattr(model, _UNSLOTH_GRPO_HIDDEN_STATES_WARNING_ATTR, False):
+        return
+    setattr(model, _UNSLOTH_GRPO_HIDDEN_STATES_WARNING_ATTR, True)
+    logger.warning(message)
+
+
+def _replace_outputs_logits(outputs, hidden_states):
+    if hasattr(outputs, "logits"):
+        outputs.logits = hidden_states
+        return outputs
+    if isinstance(outputs, dict):
+        outputs["logits"] = hidden_states
+        return outputs
+    if isinstance(outputs, tuple) and len(outputs) != 0:
+        return (hidden_states,) + tuple(outputs[1:])
+    raise TypeError(
+        f"Unsupported output type for GRPO hidden-state fallback: {type(outputs)}"
+    )
+
+
+def _install_grpo_hidden_states_forward_wrapper(model):
+    if model is None or getattr(model, _UNSLOTH_GRPO_HIDDEN_STATES_WRAPPED_ATTR, False):
+        return False
+    if _model_supports_unsloth_return_hidden_states(model):
+        return False
+
+    target_model = _grpo_hidden_states_wrap_target(model)
+    if getattr(target_model, _UNSLOTH_GRPO_HIDDEN_STATES_WRAPPED_ATTR, False):
+        setattr(model, _UNSLOTH_GRPO_HIDDEN_STATES_WRAPPED_ATTR, True)
+        return False
+
+    original_forward = target_model.forward
+    forward_signature = inspect.signature(original_forward)
+    model_name = type(target_model).__name__
+
+    def wrapped_forward(*args, **kwargs):
+        if os.environ.get("UNSLOTH_RETURN_HIDDEN_STATES", "0") != "1":
+            return original_forward(*args, **kwargs)
+
+        forward_kwargs = _drop_forward_kwargs_consumed_positionally(
+            forward_signature, args, kwargs
+        )
+        num_logits_to_keep = _get_num_logits_to_keep(
+            forward_signature, args, forward_kwargs
+        )
+        forward_kwargs["output_hidden_states"] = True
+        forward_kwargs["return_dict"] = True
+        try:
+            outputs = original_forward(*args, **forward_kwargs)
+        except TypeError as error:
+            if "output_hidden_states" not in str(error) and "return_dict" not in str(
+                error
+            ):
+                raise
+            _warn_grpo_hidden_states_fallback_once(
+                target_model,
+                f"Unsloth: GRPO fallback could not request hidden states for unsupported model {model_name}; using logits directly.",
+            )
+            return original_forward(*args, **kwargs)
+
+        hidden_states = getattr(outputs, "hidden_states", None)
+        if hidden_states is None or len(hidden_states) == 0:
+            _warn_grpo_hidden_states_fallback_once(
+                target_model,
+                f"Unsloth: GRPO fallback did not receive hidden states for unsupported model {model_name}; using logits directly.",
+            )
+            return outputs
+
+        hidden_states = hidden_states[-1]
+        if num_logits_to_keep != 0:
+            hidden_states = hidden_states[:, -num_logits_to_keep:, :]
+        return _replace_outputs_logits(outputs, hidden_states)
+
+    wrapped_forward._unsloth_grpo_hidden_states_forward_wrapped = True
+    target_model.forward = wrapped_forward
+    setattr(target_model, _UNSLOTH_GRPO_HIDDEN_STATES_WRAPPED_ATTR, True)
+    setattr(model, _UNSLOTH_GRPO_HIDDEN_STATES_WRAPPED_ATTR, True)
+    return True
+
+
+def _wrap_grpo_hidden_states_fallback(trainer_cls):
+    original_init = trainer_cls.__init__
+    if getattr(original_init, "_unsloth_grpo_hidden_states_init_wrapped", False):
+        return
+
+    def wrapped_init(self, *args, **kwargs):
+        original_init(self, *args, **kwargs)
+        _install_grpo_hidden_states_forward_wrapper(getattr(self, "model", None))
+        _install_grpo_hidden_states_forward_wrapper(getattr(self, "ref_model", None))
+
+    wrapped_init._unsloth_grpo_hidden_states_init_wrapped = True
+    trainer_cls.__init__ = wrapped_init
+
+
 def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
+    # Defensive wrapper: matches patch_trl_rl_trainers()'s try/except so
+    # direct callers don't see exceptions from the impl on TRL versions
+    # that rename or move classes (e.g. TRL 1.x trl.experimental).
+    try:
+        return _patch_trl_rl_trainers_impl(trainer_file)
+    except Exception as e:
+        logger.info(
+            f"Unsloth: Could not patch trl.trainer.{trainer_file}: "
+            f"{type(e).__name__}: {e}"
+        )
+        return
+
+
+def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
     # Patch for vLLM and Unsloth PEFT
     import trl
     import trl.trainer
@@ -686,8 +997,8 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
             else:
                 continue
             call_args.append(f"{k} = {k}")
-        arguments = f"\n{' '*8}" + f",\n{' '*8}".join(arguments)
-        call_args = f"\n{' '*12}" + f",\n{' '*12}".join(call_args)
+        arguments = f"\n{' ' * 8}" + f",\n{' ' * 8}".join(arguments)
+        call_args = f"\n{' ' * 12}" + f",\n{' ' * 12}".join(call_args)
         processed.append(
             (
                 arguments,
@@ -701,7 +1012,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
 
     # Add tokenizer if not seen
     if "tokenizer" not in parameters and "processing_class" in parameters:
-        arguments += f",\n{' '*8}tokenizer = None"
+        arguments += f",\n{' ' * 8}tokenizer = None"
         call_args = call_args.replace(
             "processing_class = processing_class",
             "processing_class = tokenizer if tokenizer is not None else processing_class",
@@ -907,6 +1218,9 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         extra_args += data_collator_check
 
         # Also check if .pad exists -> if not, and is VLM, then change it!
+        # Only swap LM/Seq2Seq collators; leave preference collators
+        # (DPODataCollatorWithPadding etc.) alone so ORPO/DPO/CPO/KTO keep
+        # their own prompt/chosen/rejected handling.
         pad_check = (
             "if not isinstance(data_collator, UnslothVisionDataCollator):\n"
             "    if not hasattr(__tokenizer, 'pad') and hasattr(__tokenizer, 'tokenizer'):\n"
@@ -915,7 +1229,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
             "                __tokenizer.tokenizer,\n"
             "                pad_to_multiple_of = getattr(args, 'pad_to_multiple_of', None),\n"
             "            )\n"
-            "        else:\n"
+            "        elif isinstance(data_collator, TransformersDataCollatorForLanguageModeling):\n"
             "            data_collator = TransformersDataCollatorForLanguageModeling(\n"
             "                __tokenizer.tokenizer,\n"
             "                mlm = False,\n"
@@ -1015,7 +1329,9 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         "logging_nan_inf_filter": False,
         "per_device_train_batch_size": 4,
         "gradient_accumulation_steps": 2,
-        "weight_decay": 0.01,
+        # LoRA decays A and B toward 0 so effective W = W_init + (alpha/r) * B @ A is pulled toward W_init, not 0 as in full FT.
+        # 0.001 keeps a small Frobenius prior |A|_F^2 + |B|_F^2 without measurably dragging the merged adapter back to base.
+        "weight_decay": 0.001,
         "seed": 3407,
         "optim": "adamw_8bit",
         "learning_rate": 5e-05,
@@ -1278,6 +1594,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     )
     left_pack_padding_code = inspect.getsource(left_pack_padding)
     align_logprobs_with_mask_code = inspect.getsource(align_logprobs_with_mask)
+    align_completion_tool_mask_code = inspect.getsource(align_completion_tool_mask)
     autotune_batch_and_chunks_code = inspect.getsource(autotune_batch_and_chunks)
     sanitize_logprob_code = inspect.getsource(sanitize_logprob)
     # Get final source code
@@ -1308,6 +1625,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         autotune_batch_and_chunks_code = autotune_batch_and_chunks_code,
         left_pack_padding_code = left_pack_padding_code,
         align_logprobs_with_mask_code = align_logprobs_with_mask_code,
+        align_completion_tool_mask_code = align_completion_tool_mask_code,
         sanitize_logprob_code = sanitize_logprob_code,
     )
 
@@ -1490,6 +1808,9 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         imports,
         overwrite = False,
     )
+    patched_trainer = getattr(created_module, f"Unsloth{RLTrainer_name}")
+    if trainer_file == "grpo_trainer":
+        _patch_resume_from_checkpoint_memory(patched_trainer)
 
     # Patch Trainer
     exec(
@@ -1533,6 +1854,14 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         except Exception as e:
             logger.info(
                 f"Unsloth: Could not wrap _generate_and_score_completions for {RLTrainer_name}: {e}"
+            )
+        try:
+            _wrap_grpo_hidden_states_fallback(
+                getattr(created_module, f"Unsloth{RLTrainer_name}")
+            )
+        except Exception as e:
+            logger.info(
+                f"Unsloth: Could not wrap GRPO hidden-state fallback for {RLTrainer_name}: {e}"
             )
 
 
@@ -1673,12 +2002,14 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
                 'GuidedDecodingParams(backend="outlines", regex=args.vllm_guided_decoding_regex) '
                 'if getattr(args, "vllm_guided_decoding_regex", None) is not None else None,',
             )
-            # Replace with our vLLM engine
+            # Replace with our vLLM engine when sharing weights
             sampling_params = (
                 " " * 12
-                + "self.llm = model.vllm_engine; self._last_loaded_step = 0; "
+                + "if getattr(getattr(model, 'vllm_engine', None), 'shared_weights', False): "
+                + "self.llm = model.vllm_engine; self._last_loaded_step = 0\n"
+                + " " * 12
                 + sampling_params
-            )  # Add spaces
+            )
 
             # count the indentation of last line of sampling_params.
             splitted_sampling_params = sampling_params.split("\n")
@@ -1706,19 +2037,32 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
                 sampling_params = re.sub(r"[\,][\s]{0,}\,", ",", sampling_params)
 
                 new_vllm_part = (
-                    f"\n{' '*8}if {args}.use_vllm:\n{sampling_params}"
-                    f"\n{' '*8}else:\n"
+                    f"\n{' ' * 8}if {args}.use_vllm:\n{sampling_params}"
+                    f"\n{' ' * 8}else:\n"
                 )
 
         if trl_version >= Version("0.18.0"):
-            # Replace LLM init with already existing vLLM engine for colocate mode
-            vllm_llm_init_pattern = r"self\.llm\s*=\s*LLM\(.*?\)*\)\s*?\n(?!,)"
-            vllm_llm_replacement = "self.llm = model.vllm_engine\n"
+            # Guard LLM init - use existing vLLM engine when sharing weights,
+            # otherwise keep the original LLM() creation for sync/reload path
+            vllm_llm_init_pattern = (
+                r"(?P<indent>[ \t]*)self\.llm\s*=\s*LLM\(.*?\)*\)\s*?\n(?!,)"
+            )
+
+            def guard_llm_init(match):
+                indent = match.group("indent")
+                original = match.group(0)
+                return (
+                    f"{indent}if getattr(getattr(model, 'vllm_engine', None), 'shared_weights', False):\n"
+                    f"{indent}    self.llm = model.vllm_engine\n"
+                    f"{indent}else:\n"
+                    f"{indent}    {original.lstrip()}"
+                )
+
             new_vllm_part = re.sub(
                 vllm_llm_init_pattern,
-                vllm_llm_replacement,
+                guard_llm_init,
                 new_vllm_part,
-                flags = re.DOTALL,  # Ensure . matches newlines [[5]]
+                flags = re.DOTALL,
             )
 
         init = init.replace(vllm_part, new_vllm_part)
@@ -1787,7 +2131,7 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
             source,
         )
 
-        # Replace self.llm.generate and self.llm.chat
+        # Replace self.llm.generate and self.llm.chat with lora_request (only when sharing weights)
         if "CUDA_VISIBLE_DEVICES" in os.environ:
             lora_name = (
                 trainer_file
@@ -1800,7 +2144,9 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
             r"(self\.llm\.(?:generate|chat)\([^\)]{1,})\)",
             r"\1, lora_request = self.model.load_lora('"
             + lora_name
-            + r", load_tensors = True))",
+            + r", load_tensors = True)"
+            + r" if getattr(self.llm, 'shared_weights', False)"
+            + r" else None)",
             source,
         )
         # All these are to fix multiple commas before lora_request (in case the original code ends with something like ",)")
@@ -1870,6 +2216,84 @@ def patch_trl_rl_trainers():
     return
 
 
+def patch_trl_disable_gradient_checkpointing():
+    # TRL 1.0.0+ wraps generation in:
+    #   with torch.no_grad(), disable_gradient_checkpointing(self.model, ...):
+    # The toggle exists only to suppress a cosmetic PyTorch warning
+    # ("None of the inputs have requires_grad=True"). Inside torch.no_grad()
+    # the gradient checkpointing state has no functional effect on the
+    # forward pass.
+    #
+    # On exit, the context manager calls model.gradient_checkpointing_enable()
+    # which dispatches to HuggingFace's generic implementation and overwrites
+    # Unsloth's custom `use_gradient_checkpointing="unsloth"` wrapper. For
+    # Gemma-4 (and likely other models) this corrupts the forward numerics
+    # enough to make GRPO KL divergence explode to ~10^12 at step 1.
+    #
+    # Replacing the context manager with a no-op preserves Unsloth's custom
+    # gradient checkpointing wrapper across generation/inference passes.
+    #
+    # Backwards compatibility:
+    #   - trl < 1.0.0 (no disable_gradient_checkpointing): early return.
+    #   - trl >= 1.0.0: noop is functionally equivalent for forward
+    #     correctness. The only loss is a cosmetic warning being emitted
+    #     by PyTorch when use_reentrant=True (which is exactly the warning
+    #     TRL added the toggle to suppress in the first place).
+    try:
+        import trl.models.utils as _tmu
+    except ImportError:
+        return
+    if not hasattr(_tmu, "disable_gradient_checkpointing"):
+        return
+    if getattr(
+        _tmu.disable_gradient_checkpointing,
+        "_unsloth_noop_patched",
+        False,
+    ):
+        return
+
+    @contextmanager
+    def _noop_disable_gradient_checkpointing(model, gradient_checkpointing_kwargs = None):
+        yield
+
+    _noop_disable_gradient_checkpointing._unsloth_noop_patched = True
+
+    _tmu.disable_gradient_checkpointing = _noop_disable_gradient_checkpointing
+
+    # Also rebind any trl.* module that already imported the symbol by
+    # reference, so the noop applies even when the trainer module cached the
+    # original at import time. We walk sys.modules dynamically rather than
+    # hardcoding a list, so this picks up every trainer that does
+    # `from ...models.utils import disable_gradient_checkpointing`
+    # (grpo, dpo, rloo, dppo, gfpo, grpo_with_replay_buffer, and any future
+    # TRL trainer module).
+    for _mod_name, _mod in list(sys.modules.items()):
+        if _mod is None or not _mod_name.startswith("trl."):
+            continue
+        try:
+            _bound = getattr(_mod, "disable_gradient_checkpointing", None)
+        except (AttributeError, ImportError):
+            continue
+        if _bound is None:
+            continue
+        try:
+            setattr(
+                _mod,
+                "disable_gradient_checkpointing",
+                _noop_disable_gradient_checkpointing,
+            )
+        except (AttributeError, TypeError):
+            pass
+
+    if os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") == "1":
+        logger.warning_once(
+            "Unsloth: Patched trl.models.utils.disable_gradient_checkpointing with "
+            "a no-op to preserve Unsloth gradient checkpointing across TRL "
+            "generation passes."
+        )
+    return
+
+
 def patch_trl_openenv():
     for function in RL_ADDITIONAL_FUNCTIONS["openenv"]:
         logger.info(f"Unsloth: Patching trl openenv with function: {function.__name__}")
@@ -1904,6 +2328,19 @@ def patch_trl_vllm_generation():
 def PatchFastRL(algorithm = None, FastLanguageModel = None):
     if FastLanguageModel is not None:
         PatchRL(FastLanguageModel)
+    # Under UNSLOTH_ALLOW_CPU=1 (CPU-only CI), skip TRL trainer rewriting so
+    # downstream `inspect.getsource(trl.SFTTrainer)` drift detectors see the
+    # pristine upstream class, not the compiled Unsloth* wrappers.
+    if os.environ.get("UNSLOTH_ALLOW_CPU", "0") == "1":
+        return
+    # Install the disable_gradient_checkpointing noop BEFORE
+    # patch_trl_rl_trainers. patch_trl_rl_trainers imports extra trl.* trainer
+    # submodules while generating the compiled cache; any new trl.* modules
+    # imported after the sys.modules walk would keep their original (broken)
+    # binding of disable_gradient_checkpointing. Running the noop install
+    # first ensures the canonical trl.models.utils symbol is already replaced
+    # before those submodules bind it.
+    patch_trl_disable_gradient_checkpointing()
     patch_trl_rl_trainers()
     patch_trl_openenv()
     patch_trl_vllm_generation()

@@ -30,11 +30,9 @@ __all__ = [
 from transformers import StoppingCriteria, StoppingCriteriaList
 from torch import LongTensor, FloatTensor
 from transformers.models.llama.modeling_llama import logger
-from .save import patch_saving_functions
 import os
 import shutil
 from .tokenizer_utils import *
-from .models._utils import patch_tokenizer
 import re
 from .ollama_template_mappers import OLLAMA_TEMPLATES
 from unsloth_zoo.dataset_utils import (
@@ -213,7 +211,7 @@ vicuna_ollama = _ollama_template("vicuna")
 
 vicuna_eos_token = "eos_token"
 CHAT_TEMPLATES["vicuna"] = (vicuna_template, vicuna_eos_token, False, vicuna_ollama,)
-DEFAULT_SYSTEM_MESSAGE["vicuna"] = "A chat between a curious user and an artificial intelligence assistant. The assistant gives helpful, detailed, and polite answers to the user's questions."
+DEFAULT_SYSTEM_MESSAGE["vicuna"] = "A chat between a curious user and an artificial intelligence assistant. The assistant gives helpful, detailed, and polite answers to the user\\'s questions."
 
 # =========================================== Vicuna Old
 # https://github.com/lm-sys/FastChat/blob/main/docs/vicuna_weights_version.md#prompt-template
@@ -862,6 +860,163 @@ DEFAULT_SYSTEM_MESSAGE["gemma-3n"] = None # No system message in Gemma-3n
 
 CHAT_TEMPLATES["gemma3n"] = (gemma3n_template, gemma3n_template_eos_token, False, gemma3n_ollama,)
 DEFAULT_SYSTEM_MESSAGE["gemma3n"] = None # No system message in Gemma-3n
+
+# =========================================== Gemma-4
+# Gemma-4 uses <|turn>role\n...<turn|>\n format
+gemma4_template = \
+"""{%- macro strip_thinking(text) -%}
+    {%- set ns = namespace(result='') -%}
+    {%- for part in text.split('<channel|>') -%}
+        {%- if '<|channel>' in part -%}
+            {%- set ns.result = ns.result + part.split('<|channel>')[0] -%}
+        {%- else -%}
+            {%- set ns.result = ns.result + part -%}
+        {%- endif -%}
+    {%- endfor -%}
+    {{- ns.result | trim -}}
+{%- endmacro -%}
+{%- set thinking = enable_thinking is defined and enable_thinking -%}
+{%- set loop_messages = messages -%}
+{%- if messages[0]['role'] in ['system', 'developer'] or thinking -%}
+    {{ '<|turn>system\n' }}
+    {%- if thinking -%}
+        {{ '<|think|>\n' }}
+    {%- endif -%}
+    {%- if messages[0]['role'] in ['system', 'developer'] -%}
+        {{ messages[0]['content'] | trim }}
+        {%- set loop_messages = messages[1:] -%}
+    {%- endif -%}
+    {{ '<turn|>\n' }}
+{%- endif -%}
+{%- for message in loop_messages -%}
+    {%- if (message['role'] == 'user') != (loop.index0 % 2 == 0) -%}
+        {{ raise_exception("Conversation roles must alternate user/assistant/user/assistant/...") }}
+    {%- endif -%}
+    {%- if (message['role'] == 'assistant') -%}
+        {%- set role = "model" -%}
+    {%- else -%}
+        {%- set role = message['role'] -%}
+    {%- endif -%}
+    {{ '<|turn>' + role + '\n' }}
+    {%- if message['content'] is string -%}
+        {%- if role == "model" -%}
+            {{ strip_thinking(message['content']) }}
+        {%- else -%}
+            {{ message['content'] | trim }}
+        {%- endif -%}
+    {%- elif message['content'] is iterable -%}
+        {%- for item in message['content'] -%}
+            {%- if item['type'] == 'audio' -%}
+                {{ '<|audio|>' }}
+            {%- elif item['type'] == 'image' -%}
+                {{ '<|image|>' }}
+            {%- elif item['type'] == 'video' -%}
+                {{ '<|video|>' }}
+            {%- elif item['type'] == 'text' -%}
+                {%- if role == "model" -%}
+                    {{ strip_thinking(item['text']) }}
+                {%- else -%}
+                    {{ item['text'] | trim }}
+                {%- endif -%}
+            {%- endif -%}
+        {%- endfor -%}
+    {%- else -%}
+        {{ raise_exception("Invalid content type") }}
+    {%- endif -%}
+    {{ '<turn|>\n' }}
+{%- endfor -%}
+{%- if add_generation_prompt -%}
+    {{'<|turn>model\n'}}
+{%- endif -%}
+"""
+
+try:
+    gemma4_ollama = _ollama_template("gemma-4")
+except KeyError:
+    gemma4_ollama = ""
+gemma4_template_eos_token = "<turn|>"
+CHAT_TEMPLATES["gemma-4"] = (gemma4_template, gemma4_template_eos_token, False, gemma4_ollama,)
+DEFAULT_SYSTEM_MESSAGE["gemma-4"] = None
+
+CHAT_TEMPLATES["gemma4"] = (gemma4_template, gemma4_template_eos_token, False, gemma4_ollama,)
+DEFAULT_SYSTEM_MESSAGE["gemma4"] = None
+
+# Gemma-4 thinking template
+gemma4_thinking_template = \
+"""{%- macro strip_thinking(text) -%}
+    {%- set ns = namespace(result='') -%}
+    {%- for part in text.split('<channel|>') -%}
+        {%- if '<|channel>' in part -%}
+            {%- set ns.result = ns.result + part.split('<|channel>')[0] -%}
+        {%- else -%}
+            {%- set ns.result = ns.result + part -%}
+        {%- endif -%}
+    {%- endfor -%}
+    {{- ns.result | trim -}}
+{%- endmacro -%}
+{%- set thinking = enable_thinking is defined and enable_thinking -%}
+{%- set loop_messages = messages -%}
+{%- if messages[0]['role'] in ['system', 'developer'] or thinking -%}
+    {{ '<|turn>system\n' }}
+    {%- if thinking -%}
+        {{ '<|think|>\n' }}
+    {%- endif -%}
+    {%- if messages[0]['role'] in ['system', 'developer'] -%}
+        {{ messages[0]['content'] | trim }}
+        {%- set loop_messages = messages[1:] -%}
+    {%- endif -%}
+    {{ '<turn|>\n' }}
+{%- endif -%}
+{%- for message in loop_messages -%}
+    {%- if (message['role'] == 'user') != (loop.index0 % 2 == 0) -%}
+        {{ raise_exception("Conversation roles must alternate user/assistant/user/assistant/...") }}
+    {%- endif -%}
+    {%- if (message['role'] == 'assistant') -%}
+        {%- set role = "model" -%}
+    {%- else -%}
+        {%- set role = message['role'] -%}
+    {%- endif -%}
+    {{ '<|turn>' + role + '\n' }}
+    {%- if message['content'] is string -%}
+        {%- if role == "model" -%}
+            {{ strip_thinking(message['content']) }}
+        {%- else -%}
+            {{ message['content'] | trim }}
+        {%- endif -%}
+    {%- elif message['content'] is iterable -%}
+        {%- for item in message['content'] -%}
+            {%- if item['type'] == 'audio' -%}
+                {{ '<|audio|>' }}
+            {%- elif item['type'] == 'image' -%}
+                {{ '<|image|>' }}
+            {%- elif item['type'] == 'video' -%}
+                {{ '<|video|>' }}
+            {%- elif item['type'] == 'text' -%}
+                {%- if role == "model" -%}
+                    {{ strip_thinking(item['text']) }}
+                {%- else -%}
+                    {{ item['text'] | trim }}
+                {%- endif -%}
+            {%- endif -%}
+        {%- endfor -%}
+    {%- else -%}
+        {{ raise_exception("Invalid content type") }}
+    {%- endif -%}
+    {{ '<turn|>\n' }}
+{%- endfor -%}
+{%- if add_generation_prompt -%}
+    {{'<|turn>model\n'}}
+    {%- if not thinking -%}
+        {{ '<|channel>thought\n<channel|>' }}
+    {%- endif -%}
+{%- endif -%}
+"""
+
+CHAT_TEMPLATES["gemma-4-thinking"] = (gemma4_thinking_template, gemma4_template_eos_token, False, gemma4_ollama,)
+DEFAULT_SYSTEM_MESSAGE["gemma-4-thinking"] = None
+
+CHAT_TEMPLATES["gemma4-thinking"] = (gemma4_thinking_template, gemma4_template_eos_token, False, gemma4_ollama,)
+DEFAULT_SYSTEM_MESSAGE["gemma4-thinking"] = None
 
 # =========================================== GPT-OSS
 # Obtained via
@@ -1608,6 +1763,8 @@ liquid_lfm2_template = \
 liquid_lfm2_template_eos_token = "<|im_end|>"
 CHAT_TEMPLATES["lfm-2"] = (liquid_lfm2_template, liquid_lfm2_template_eos_token, False, None)
 DEFAULT_SYSTEM_MESSAGE["lfm-2"] = None # No system message in Phi-3
+CHAT_TEMPLATES["lfm-2.5"] = (liquid_lfm2_template, liquid_lfm2_template_eos_token, False, None)
+DEFAULT_SYSTEM_MESSAGE["lfm-2.5"] = None
 
 
 # =========================================== Starling-LM
@@ -1685,6 +1842,8 @@ def get_chat_template(
     mapping = {"role" : "role", "content" : "content", "user" : "user", "assistant" : "assistant"},
     map_eos_token = True,
     system_message = None,
+    patch_saving = True,
+    use_zoo_tokenizer_patch = False,
 ):
     assert(type(map_eos_token) is bool)
     old_tokenizer = tokenizer
@@ -1867,6 +2026,12 @@ def get_chat_template(
         .replace("'user'",      "'" + mapping["user"]      + "'")\
         .replace("'assistant'", "'" + mapping["assistant"] + "'")
 
+    if use_zoo_tokenizer_patch:
+        # Studio MLX avoids the model-utils tokenizer wrapper because that
+        # import path pulls in Torch/GPU-specific modules before MLX training.
+        from unsloth_zoo.tokenizer_utils import patch_tokenizer
+    else:
+        from .models._utils import patch_tokenizer
     _, tokenizer = patch_tokenizer(model = None, tokenizer = tokenizer)
     tokenizer.padding_side = old_padding_side
 
@@ -1900,7 +2065,9 @@ def get_chat_template(
     # stopping_criteria = create_stopping_criteria(tokenizer, stop_word)
 
     # Patch saving functions
-    tokenizer = patch_saving_functions(tokenizer)
+    if patch_saving:
+        from .save import patch_saving_functions
+        tokenizer = patch_saving_functions(tokenizer)
 
     # Add Ollama
     tokenizer._ollama_modelfile = ollama_modelfile
@@ -2294,17 +2461,40 @@ extra_eos_tokens = None,
                 f"{left_changed}"
             )
     except:
-        ending = chat_template[chat_template.find("{OUTPUT}") + len("{OUTPUT}"):]
+        output_pos = chat_template.find("{OUTPUT}")
+        input_pos  = chat_template.find("{INPUT}")
+        if output_pos == -1 or input_pos == -1:
+            missing = []
+            if input_pos  == -1: missing.append("{INPUT}")
+            if output_pos == -1: missing.append("{OUTPUT}")
+            raise RuntimeError(
+                f"Unsloth: chat_template must contain {' and '.join(missing)} "
+                f"placeholder(s). Got: {chat_template[:200]!r}"
+            )
+        ending = chat_template[output_pos + len("{OUTPUT}"):]
 
         ending = re.escape(ending)
         find_text = "{INPUT}" + ending + "(.+?{OUTPUT}" + ending + ")"
         response_part = re.findall(find_text, chat_template, flags = re.DOTALL | re.MULTILINE)
+        if len(response_part) == 0:
+            raise RuntimeError(
+                "Unsloth: Could not recover a two-example structure from chat_template. "
+                "Provide exactly two {INPUT}/{OUTPUT} pairs (and optionally {SYSTEM}). "
+                f"Got: {chat_template[:200]!r}"
+            )
         response_part = response_part[0]
 
+        found = None
         for j in range(1, len(response_part)):
             try_find = re.escape(response_part[:j])
             try: found = next(re.finditer("(" + try_find + ").+?\\{INPUT\\}", chat_template, flags = re.DOTALL | re.MULTILINE))
             except: break
+        if found is None:
+            raise RuntimeError(
+                "Unsloth: Could not locate a separator between examples in chat_template. "
+                "Provide exactly two {INPUT}/{OUTPUT} pairs (and optionally {SYSTEM}). "
+                f"Got: {chat_template[:200]!r}"
+            )
         separator = found.group(1)
 
         response_start = chat_template.find(response_part)
@@ -2440,8 +2630,20 @@ extra_eos_tokens = None,
             jinja_template = "{{ bos_token }}" + jinja_template
 
     # Get instruction and output parts for train_on_inputs = False
-    input_part  = input_part [:input_part .find("{INPUT}")]
-    output_part = output_part[:output_part.find("{OUTPUT}")]
+    input_idx  = input_part .find("{INPUT}")
+    output_idx = output_part.find("{OUTPUT}")
+    if input_idx == -1:
+        raise RuntimeError(
+            f"Unsloth: The instruction section of the template must contain the "
+            f"'{{INPUT}}' placeholder. Section: {input_part[:200]!r}"
+        )
+    if output_idx == -1:
+        raise RuntimeError(
+            f"Unsloth: The response section of the template must contain the "
+            f"'{{OUTPUT}}' placeholder. Section: {output_part[:200]!r}"
+        )
+    input_part  = input_part [:input_idx ]
+    output_part = output_part[:output_idx]
     return modelfile, jinja_template, input_part, output_part
 
 

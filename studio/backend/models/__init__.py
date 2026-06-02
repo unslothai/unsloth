@@ -10,6 +10,12 @@ from .training import (
     TrainingJobResponse,
     TrainingStatus,
     TrainingProgress,
+    TrainingRunSummary,
+    TrainingRunListResponse,
+    TrainingRunMetrics,
+    TrainingRunDetailResponse,
+    TrainingRunDeleteResponse,
+    TrainingRunUpdateRequest,
 )
 from .models import (
     CheckpointInfo,
@@ -71,6 +77,12 @@ __all__ = [
     "TrainingJobResponse",
     "TrainingStatus",
     "TrainingProgress",
+    "TrainingRunSummary",
+    "TrainingRunListResponse",
+    "TrainingRunMetrics",
+    "TrainingRunDetailResponse",
+    "TrainingRunDeleteResponse",
+    "TrainingRunUpdateRequest",
     # Model management schemas
     "ModelDetails",
     "LocalModelInfo",

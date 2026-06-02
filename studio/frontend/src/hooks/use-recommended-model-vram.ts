@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { modelInfo } from "@huggingface/hub";
+import { cachedModelInfo } from "@/lib/hf-cache";
 import { useEffect, useState } from "react";
 
 /**
@@ -10,9 +10,9 @@ import { useEffect, useState } from "react";
  * models in the chat model dropdown.
  */
 export function useRecommendedModelVram(ids: string[]) {
-  const [paramCountById, setParamCountById] = useState<
-    Map<string, number>
-  >(new Map());
+  const [paramCountById, setParamCountById] = useState<Map<string, number>>(
+    new Map(),
+  );
   const [isLoading, setIsLoading] = useState(false);
 
   const stableKey = [...ids].filter(Boolean).sort().join(",");
@@ -30,14 +30,15 @@ export function useRecommendedModelVram(ids: string[]) {
       const next = new Map<string, number>();
       await Promise.all(
         stableIds.map(async (id) => {
-          if (canceled) return;
+          if (canceled) {
+            return;
+          }
           try {
-            const info = await modelInfo({
+            const info = await cachedModelInfo({
               name: id,
               additionalFields: ["safetensors"],
             });
-            const raw = info as { safetensors?: { total?: number } };
-            const total = raw.safetensors?.total;
+            const total = info.safetensors?.total;
             if (typeof total === "number" && total > 0) {
               next.set(id, total);
             }
@@ -47,7 +48,9 @@ export function useRecommendedModelVram(ids: string[]) {
         }),
       );
       if (!canceled) {
-        setParamCountById(next);
+        // Merge with previous state so that VRAM badges for already-visible
+        // models are preserved while newly-visible models are still loading.
+        setParamCountById((prev) => new Map([...prev, ...next]));
         setIsLoading(false);
       }
     })();

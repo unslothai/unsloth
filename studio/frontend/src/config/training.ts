@@ -76,6 +76,13 @@ export const TARGET_MODULES = [
   "down_proj",
 ];
 
+/** CPT requires embed_tokens and lm_head in addition to standard LoRA modules. */
+export const CPT_TARGET_MODULES = [
+  ...TARGET_MODULES,
+  "embed_tokens",
+  "lm_head",
+];
+
 export const OPTIMIZER_OPTIONS: ReadonlyArray<{ value: string; label: string }> = [
   { value: "adamw_8bit", label: "AdamW 8-bit" },
   { value: "paged_adamw_8bit", label: "Paged AdamW 8-bit" },
@@ -90,10 +97,21 @@ export const LR_SCHEDULER_OPTIONS: ReadonlyArray<{ value: string; label: string 
   { value: "cosine", label: "Cosine" },
 ];
 
+/**
+ * Method-aware learning rate defaults.
+ * Backend mirrors these in the YAML configs under studio/backend/assets/configs/.
+ */
+export const LR_DEFAULT_LORA = 2e-4;
+export const LR_DEFAULT_FULL = 2e-5;
+export const LR_DEFAULT_CPT = 5e-5;
+
 export const DEFAULT_HYPERPARAMS = {
   epochs: 3,
   contextLength: 2048,
-  learningRate: 2e-4,
+  visionImageSize: null as number | null,
+  learningRate: LR_DEFAULT_LORA,
+  // null = let backend auto-compute (lr/10 per Unsloth CPT recipe). Only used by CPT.
+  embeddingLearningRate: null as number | null,
   optimizerType: "adamw_8bit",
   lrSchedulerType: "linear",
   loraRank: 16,
@@ -102,7 +120,7 @@ export const DEFAULT_HYPERPARAMS = {
   loraVariant: "lora" as const,
   batchSize: 4,
   gradientAccumulation: 8,
-  weightDecay: 0.01,
+  weightDecay: 0.001,
   warmupSteps: 5,
   maxSteps: 60,
   saveSteps: 0,
@@ -134,6 +152,10 @@ export const MODEL_TYPE_TO_HF_TASK: Record<ModelType, PipelineType> = {
 
 
 export const PRIORITY_TRAINING_MODELS: readonly string[] = [
+  "unsloth/gemma-4-E2B-it",
+  "unsloth/gemma-4-E4B-it",
+  "unsloth/gemma-4-31B-it",
+  "unsloth/gemma-4-26B-A4B-it",
   "unsloth/Qwen3.5-2B",
   "unsloth/Qwen3.5-9B",
   "unsloth/gpt-oss-20b",

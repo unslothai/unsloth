@@ -2,6 +2,13 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
+import { formatFastApiDetail } from "@/lib/format-fastapi-error";
+import type {
+  MessageRecord,
+  ModelType,
+  ProjectRecord,
+  ThreadRecord,
+} from "../types";
 import type {
   AudioGenerationResponse,
   GgufVariantsResponse,
@@ -16,22 +23,21 @@ import type {
   ValidateModelResponse,
 } from "../types/api";
 
-function parseErrorText(status: number, body: unknown): string {
-  if (
-    body &&
-    typeof body === "object" &&
-    "detail" in body &&
-    typeof body.detail === "string"
-  ) {
-    return body.detail;
+export const CHAT_HISTORY_UPDATED_EVENT = "unsloth-chat-history-updated";
+
+export function notifyChatHistoryUpdated(): void {
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new Event(CHAT_HISTORY_UPDATED_EVENT));
   }
-  if (
-    body &&
-    typeof body === "object" &&
-    "message" in body &&
-    typeof body.message === "string"
-  ) {
-    return body.message;
+}
+
+function parseErrorText(status: number, body: unknown): string {
+  if (body && typeof body === "object") {
+    const detail = (body as { detail?: unknown }).detail;
+    const formatted = formatFastApiDetail(detail);
+    if (formatted) return formatted;
+    const message = (body as { message?: unknown }).message;
+    if (typeof message === "string" && message) return message;
   }
   return `Request failed (${status})`;
 }
@@ -49,7 +55,9 @@ export async function listModels(): Promise<ListModelsResponse> {
   return parseJsonOrThrow<ListModelsResponse>(response);
 }
 
-export async function listLoras(outputsDir?: string): Promise<ListLorasResponse> {
+export async function listLoras(
+  outputsDir?: string,
+): Promise<ListLorasResponse> {
   const query = outputsDir
     ? `?${new URLSearchParams({ outputs_dir: outputsDir }).toString()}`
     : "";
@@ -68,7 +76,11 @@ export async function loadModel(
   const response = await authFetch("/api/inference/load", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
+    body: JSON.stringify({
+      ...payload,
+      native_path_lease: payload.nativePathLease ?? null,
+      nativePathLease: undefined,
+    }),
   });
   return parseJsonOrThrow<LoadModelResponse>(response);
 }
@@ -81,6 +93,7 @@ export async function validateModel(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       model_path: payload.model_path,
+      native_path_lease: payload.nativePathLease ?? null,
       hf_token: payload.hf_token,
       gguf_variant: payload.gguf_variant ?? null,
     }),
@@ -107,22 +120,94 @@ export async function getGgufDownloadProgress(
   repoId: string,
   variant: string,
   expectedBytes: number,
-): Promise<{ downloaded_bytes: number; expected_bytes: number; progress: number }> {
+): Promise<{
+  downloaded_bytes: number;
+  expected_bytes: number;
+  progress: number;
+}> {
   const params = new URLSearchParams({
     repo_id: repoId,
     variant,
     expected_bytes: String(expectedBytes),
   });
-  const response = await authFetch(`/api/models/gguf-download-progress?${params}`);
+  const response = await authFetch(
+    `/api/models/gguf-download-progress?${params}`,
+  );
   return parseJsonOrThrow(response);
+}
+
+export interface DownloadProgressResponse {
+  downloaded_bytes: number;
+  expected_bytes: number;
+  progress: number;
+  /**
+   * Resolved on-disk path of the snapshot dir (or cache repo root if no
+   * snapshot exists yet). Null when nothing has been written to the
+   * cache for this repo.
+   */
+  cache_path: string | null;
 }
 
 export async function getDownloadProgress(
   repoId: string,
-): Promise<{ downloaded_bytes: number; expected_bytes: number; progress: number }> {
+): Promise<DownloadProgressResponse> {
   const params = new URLSearchParams({ repo_id: repoId });
   const response = await authFetch(`/api/models/download-progress?${params}`);
   return parseJsonOrThrow(response);
+}
+
+export async function getDatasetDownloadProgress(
+  repoId: string,
+): Promise<DownloadProgressResponse> {
+  const params = new URLSearchParams({ repo_id: repoId });
+  const response = await authFetch(`/api/datasets/download-progress?${params}`);
+  return parseJsonOrThrow(response);
+}
+
+export type ModelLoadPhase = "mmap" | "ready" | null;
+
+export interface LoadProgressResponse {
+  /**
+   * Load phase: ``"mmap"`` while the llama-server subprocess is paging
+   * weight shards into RAM, ``"ready"`` once it has reported healthy,
+   * or ``null`` when no load is in flight.
+   */
+  phase: ModelLoadPhase;
+  bytes_loaded: number;
+  bytes_total: number;
+  fraction: number;
+}
+
+/**
+ * Fetch the active GGUF load's mmap/upload progress. Complements
+ * ``getDownloadProgress`` / ``getGgufDownloadProgress`` for the window
+ * between "download complete" and "chat ready", which for large MoE
+ * models can be several minutes of otherwise-opaque spinning.
+ */
+export async function getLoadProgress(): Promise<LoadProgressResponse> {
+  const response = await authFetch(`/api/inference/load-progress`);
+  return parseJsonOrThrow(response);
+}
+
+export interface LocalModelInfo {
+  id: string;
+  display_name: string;
+  path: string;
+  source: "models_dir" | "hf_cache" | "lmstudio" | "custom";
+  model_id?: string | null;
+  updated_at?: number | null;
+}
+
+interface LocalModelListResponse {
+  models_dir: string;
+  hf_cache_dir?: string | null;
+  lmstudio_dirs: string[];
+  models: LocalModelInfo[];
+}
+
+export async function listLocalModels(): Promise<LocalModelListResponse> {
+  const response = await authFetch("/api/models/local");
+  return parseJsonOrThrow<LocalModelListResponse>(response);
 }
 
 export async function listCachedGguf(): Promise<CachedGgufRepo[]> {
@@ -142,7 +227,10 @@ export async function listCachedModels(): Promise<CachedModelRepo[]> {
   return data.cached;
 }
 
-export async function deleteCachedModel(repoId: string, variant?: string): Promise<void> {
+export async function deleteCachedModel(
+  repoId: string,
+  variant?: string,
+): Promise<void> {
   const payload: Record<string, string> = { repo_id: repoId };
   if (variant) payload.variant = variant;
   const response = await authFetch("/api/models/delete-cached", {
@@ -151,6 +239,406 @@ export async function deleteCachedModel(repoId: string, variant?: string): Promi
     body: JSON.stringify(payload),
   });
   await parseJsonOrThrow<unknown>(response);
+}
+
+export async function deleteFineTunedModel(args: {
+  modelPath: string;
+  source: "training" | "exported";
+  exportType?: "lora" | "merged" | "gguf";
+  ggufVariant?: string;
+}): Promise<void> {
+  const response = await authFetch("/api/models/delete-finetuned", {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model_path: args.modelPath,
+      source: args.source,
+      export_type: args.exportType ?? null,
+      gguf_variant: args.ggufVariant ?? null,
+    }),
+  });
+  await parseJsonOrThrow<unknown>(response);
+}
+
+export interface ScanFolderInfo {
+  id: number;
+  path: string;
+  created_at: string;
+}
+
+export async function listScanFolders(): Promise<ScanFolderInfo[]> {
+  const response = await authFetch("/api/models/scan-folders");
+  const data = await parseJsonOrThrow<{ folders: ScanFolderInfo[] }>(response);
+  return data.folders;
+}
+
+export async function addScanFolder(path: string): Promise<ScanFolderInfo> {
+  const response = await authFetch("/api/models/scan-folders", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path }),
+  });
+  return parseJsonOrThrow<ScanFolderInfo>(response);
+}
+
+export async function removeScanFolder(id: number): Promise<void> {
+  const response = await authFetch(`/api/models/scan-folders/${id}`, {
+    method: "DELETE",
+  });
+  await parseJsonOrThrow<unknown>(response);
+}
+
+export async function listChatThreads(
+  args: {
+    modelType?: ModelType;
+    pairId?: string;
+    projectId?: string | null;
+    includeArchived?: boolean;
+  } = {},
+): Promise<ThreadRecord[]> {
+  const params = new URLSearchParams();
+  if (args.modelType) params.set("model_type", args.modelType);
+  if (args.pairId) params.set("pair_id", args.pairId);
+  if (args.projectId) params.set("project_id", args.projectId);
+  if (args.includeArchived !== undefined) {
+    params.set("include_archived", String(args.includeArchived));
+  }
+  const qs = params.toString();
+  const response = await authFetch(`/api/chat/threads${qs ? `?${qs}` : ""}`);
+  const data = await parseJsonOrThrow<{ threads: ThreadRecord[] }>(response);
+  return data.threads;
+}
+
+export async function getChatThread(
+  threadId: string,
+): Promise<ThreadRecord | null> {
+  const response = await authFetch(
+    `/api/chat/threads/${encodeURIComponent(threadId)}`,
+  );
+  if (response.status === 404) return null;
+  return parseJsonOrThrow<ThreadRecord>(response);
+}
+
+export async function saveChatThread(
+  thread: ThreadRecord,
+): Promise<ThreadRecord> {
+  const response = await authFetch("/api/chat/threads", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(thread),
+  });
+  const savedThread = await parseJsonOrThrow<ThreadRecord>(response);
+  notifyChatHistoryUpdated();
+  return savedThread;
+}
+
+export async function updateChatThread(
+  threadId: string,
+  patch: Partial<ThreadRecord>,
+): Promise<ThreadRecord> {
+  const response = await authFetch(
+    `/api/chat/threads/${encodeURIComponent(threadId)}`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    },
+  );
+  const thread = await parseJsonOrThrow<ThreadRecord>(response);
+  notifyChatHistoryUpdated();
+  return thread;
+}
+
+export async function deleteChatThreads(threadIds: string[]): Promise<void> {
+  if (threadIds.length === 0) return;
+  const response = await authFetch("/api/chat/threads", {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ids: threadIds }),
+  });
+  await parseJsonOrThrow<unknown>(response);
+  notifyChatHistoryUpdated();
+}
+
+export async function listChatProjects(
+  args: { includeArchived?: boolean } = {},
+): Promise<ProjectRecord[]> {
+  const params = new URLSearchParams();
+  if (args.includeArchived !== undefined) {
+    params.set("include_archived", String(args.includeArchived));
+  }
+  const qs = params.toString();
+  const response = await authFetch(`/api/chat/projects${qs ? `?${qs}` : ""}`);
+  const data = await parseJsonOrThrow<{ projects: ProjectRecord[] }>(response);
+  return data.projects;
+}
+
+export async function getChatProject(
+  projectId: string,
+): Promise<ProjectRecord | null> {
+  const response = await authFetch(
+    `/api/chat/projects/${encodeURIComponent(projectId)}`,
+  );
+  if (response.status === 404) return null;
+  return parseJsonOrThrow<ProjectRecord>(response);
+}
+
+export async function saveChatProject(
+  project: ProjectRecord,
+): Promise<ProjectRecord> {
+  const response = await authFetch("/api/chat/projects", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(project),
+  });
+  const saved = await parseJsonOrThrow<ProjectRecord>(response);
+  notifyChatHistoryUpdated();
+  return saved;
+}
+
+export async function updateChatProject(
+  projectId: string,
+  patch: Partial<ProjectRecord>,
+): Promise<ProjectRecord> {
+  const response = await authFetch(
+    `/api/chat/projects/${encodeURIComponent(projectId)}`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    },
+  );
+  const project = await parseJsonOrThrow<ProjectRecord>(response);
+  notifyChatHistoryUpdated();
+  return project;
+}
+
+export async function deleteChatProject(
+  projectId: string,
+  args: { deleteFiles?: boolean } = {},
+): Promise<void> {
+  const params = new URLSearchParams();
+  if (args.deleteFiles) params.set("delete_files", "true");
+  const qs = params.toString();
+  const response = await authFetch(
+    `/api/chat/projects/${encodeURIComponent(projectId)}${qs ? `?${qs}` : ""}`,
+    { method: "DELETE" },
+  );
+  await parseJsonOrThrow<ProjectRecord>(response);
+  notifyChatHistoryUpdated();
+}
+
+export async function listChatMessages(
+  threadId: string,
+): Promise<MessageRecord[]> {
+  const response = await authFetch(
+    `/api/chat/threads/${encodeURIComponent(threadId)}/messages`,
+  );
+  if (response.status === 404) return [];
+  const data = await parseJsonOrThrow<{ messages: MessageRecord[] }>(response);
+  return data.messages;
+}
+
+/**
+ * Fetch messages for many threads in one HTTP call. Falls back to
+ * per-thread listChatMessages on 404/405 (older servers without the
+ * batch route).
+ */
+export async function batchListChatMessages(
+  threadIds: string[],
+): Promise<Map<string, MessageRecord[]>> {
+  const out = new Map<string, MessageRecord[]>();
+  if (threadIds.length === 0) return out;
+  const response = await authFetch("/api/chat/messages:batch", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ threadIds }),
+  });
+  if (response.status === 404 || response.status === 405) {
+    // Older server: fall back to per-thread fetches.
+    const per = await Promise.all(
+      threadIds.map(async (id) => [id, await listChatMessages(id)] as const),
+    );
+    for (const [id, msgs] of per) out.set(id, msgs);
+    return out;
+  }
+  const data = await parseJsonOrThrow<{
+    messagesByThreadId: Record<string, MessageRecord[]>;
+  }>(response);
+  for (const id of threadIds) {
+    out.set(id, data.messagesByThreadId[id] ?? []);
+  }
+  return out;
+}
+
+export async function getChatMessage(
+  threadId: string,
+  messageId: string,
+): Promise<MessageRecord | null> {
+  const response = await authFetch(
+    `/api/chat/threads/${encodeURIComponent(threadId)}/messages/${encodeURIComponent(messageId)}`,
+  );
+  if (response.status === 404) return null;
+  return parseJsonOrThrow<MessageRecord>(response);
+}
+
+export async function saveChatMessage(
+  message: MessageRecord,
+): Promise<MessageRecord> {
+  const response = await authFetch(
+    `/api/chat/threads/${encodeURIComponent(message.threadId)}/messages/${encodeURIComponent(message.id)}`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(message),
+    },
+  );
+  const savedMessage = await parseJsonOrThrow<MessageRecord>(response);
+  notifyChatHistoryUpdated();
+  return savedMessage;
+}
+
+export async function syncChatMessages(
+  threadId: string,
+  messages: MessageRecord[],
+  options: { pruneMissing?: boolean } = {},
+): Promise<MessageRecord[]> {
+  const response = await authFetch(
+    `/api/chat/threads/${encodeURIComponent(threadId)}/messages`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        messages,
+        pruneMissing: options.pruneMissing ?? false,
+      }),
+    },
+  );
+  const data = await parseJsonOrThrow<{ messages: MessageRecord[] }>(response);
+  notifyChatHistoryUpdated();
+  return data.messages;
+}
+
+export async function countBackendChats(): Promise<number> {
+  const response = await authFetch("/api/chat/count");
+  const data = await parseJsonOrThrow<{ count: number }>(response);
+  return data.count;
+}
+
+export async function clearBackendChats(
+  options: { notify?: boolean } = {},
+): Promise<void> {
+  const response = await authFetch("/api/chat", { method: "DELETE" });
+  await parseJsonOrThrow<unknown>(response);
+  if (options.notify !== false) {
+    notifyChatHistoryUpdated();
+  }
+}
+
+export async function buildBackendChatExport(): Promise<{
+  exportedAt: string;
+  version: number;
+  threadCount: number;
+  projects?: ProjectRecord[];
+  threads: ThreadRecord[];
+  messages: MessageRecord[];
+}> {
+  const response = await authFetch("/api/chat/export");
+  return parseJsonOrThrow(response);
+}
+
+// Legacy-Dexie import ledger. The server-side source of truth that
+// replaces the boolean localStorage sentinel
+// (`unsloth_chat_legacy_imported_to_studio_db`) so a studio.db wipe
+// makes the import recoverable.
+export async function listChatImportLedger(): Promise<Set<string>> {
+  const response = await authFetch("/api/chat/import-ledger");
+  // Backend deployments that don't have this endpoint yet behave the
+  // same as an empty ledger -- caller treats every legacy thread as
+  // un-imported and tries to import. The UPSERT semantics in
+  // syncChatMessages prevent duplicates, so this fallback is safe.
+  if (response.status === 404 || response.status === 405) return new Set();
+  const data = await parseJsonOrThrow<{ threadIds: string[] }>(response);
+  return new Set(data.threadIds);
+}
+
+export interface RecordChatImportLedgerResult {
+  accepted: number;
+  inserted: number;
+  // false when the backend predates /api/chat/import-ledger (404/405/501)
+  // so the caller can avoid poisoning the localStorage perf hint -- the
+  // next launch will retry the (idempotent) import.
+  supported: boolean;
+}
+
+export async function recordChatImportLedger(
+  threadIds: string[],
+): Promise<RecordChatImportLedgerResult> {
+  if (threadIds.length === 0) {
+    return { accepted: 0, inserted: 0, supported: true };
+  }
+  const response = await authFetch("/api/chat/import-ledger", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ threadIds }),
+  });
+  if (
+    response.status === 404 ||
+    response.status === 405 ||
+    response.status === 501
+  ) {
+    return { accepted: 0, inserted: 0, supported: false };
+  }
+  const data = await parseJsonOrThrow<{ accepted: number; inserted: number }>(
+    response,
+  );
+  return {
+    accepted: data.accepted,
+    inserted: data.inserted,
+    supported: true,
+  };
+}
+
+export interface BrowseEntry {
+  name: string;
+  has_models: boolean;
+  hidden: boolean;
+}
+
+export interface BrowseFoldersResponse {
+  current: string;
+  parent: string | null;
+  entries: BrowseEntry[];
+  suggestions: string[];
+  truncated?: boolean;
+  model_files_here?: number;
+}
+
+export async function listRecommendedFolders(): Promise<string[]> {
+  const response = await authFetch("/api/models/recommended-folders");
+  const data = await parseJsonOrThrow<{ folders: string[] }>(response);
+  return data.folders;
+}
+
+export async function browseFolders(
+  path?: string,
+  showHidden = false,
+  signal?: AbortSignal,
+): Promise<BrowseFoldersResponse> {
+  const params = new URLSearchParams();
+  if (path !== undefined && path !== null) params.set("path", path);
+  if (showHidden) params.set("show_hidden", "true");
+  const qs = params.toString();
+  // Forward the AbortSignal through authFetch -> fetch so that a
+  // navigation cancelled in the FolderBrowser (rapid breadcrumb / row /
+  // hidden-toggle clicks) actually cancels the in-flight HTTP request
+  // server-side, instead of merely dropping the response client-side
+  // while the backend keeps walking large directory trees.
+  const response = await authFetch(
+    `/api/models/browse-folders${qs ? `?${qs}` : ""}`,
+    signal ? { signal } : undefined,
+  );
+  return parseJsonOrThrow<BrowseFoldersResponse>(response);
 }
 
 export async function listGgufVariants(
@@ -230,12 +718,17 @@ export async function* streamChatCompletions(
       }
       // Tool status events are custom SSE payloads, not OpenAI chunks
       if ("type" in parsed && parsed.type === "tool_status") {
-        yield { _toolStatus: parsed.content ?? "" } as unknown as OpenAIChatChunk;
+        yield {
+          _toolStatus: parsed.content ?? "",
+        } as unknown as OpenAIChatChunk;
         separatorIndex = buffer.search(/\r?\n\r?\n/);
         continue;
       }
       // Tool start/end events carry full input/output for the tool outputs panel
-      if ("type" in parsed && (parsed.type === "tool_start" || parsed.type === "tool_end")) {
+      if (
+        "type" in parsed &&
+        (parsed.type === "tool_start" || parsed.type === "tool_end")
+      ) {
         yield { _toolEvent: parsed } as unknown as OpenAIChatChunk;
         separatorIndex = buffer.search(/\r?\n\r?\n/);
         continue;

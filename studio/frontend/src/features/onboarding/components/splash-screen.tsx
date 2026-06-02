@@ -7,12 +7,12 @@ import { motion } from "motion/react";
 
 interface SplashScreenProps {
   onStartOnboarding: () => void;
-  onGoToStudio: () => void;
+  onSkipOnboarding: () => void;
 }
 
 export function SplashScreen({
   onStartOnboarding,
-  onGoToStudio,
+  onSkipOnboarding,
 }: SplashScreenProps) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-gradient-to-b from-background via-background to-primary/5 p-6">
@@ -20,7 +20,7 @@ export function SplashScreen({
         {/* Mascot */}
         <div className="flex justify-center">
           <motion.img
-            src="/Sloth emojis/Sloth loca pc.png"
+            src={`${import.meta.env.BASE_URL}Sloth emojis/Sloth loca pc.png`}
             alt="Sloth mascot"
             className="size-30"
             initial={{ opacity: 0, y: 40, scale: 0.95 }}
@@ -65,7 +65,7 @@ export function SplashScreen({
           <Button size="lg" onClick={onStartOnboarding}>
             Start Onboarding
           </Button>
-          <Button size="lg" variant="outline" onClick={onGoToStudio}>
+          <Button size="lg" variant="outline" onClick={onSkipOnboarding}>
             Skip Onboarding
           </Button>
         </motion.div>

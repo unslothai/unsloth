@@ -43,7 +43,9 @@ type UiInput = {
   seed_drop_columns?: unknown;
   seed_preview_rows?: unknown;
   local_file_name?: unknown;
-  unstructured_file_name?: unknown;
+  unstructured_file_ids?: unknown;
+  unstructured_file_names?: unknown;
+  unstructured_file_sizes?: unknown;
   unstructured_chunk_size?: unknown;
   unstructured_chunk_overlap?: unknown;
   advanced_open_by_node?: unknown;
@@ -408,8 +410,16 @@ export function importRecipePayload(input: string): ImportResult {
         .map((row) => ({ ...row }))
     : undefined;
   const uiLocalFileName = readString(ui?.local_file_name) ?? undefined;
-  const uiUnstructuredFileName =
-    readString(ui?.unstructured_file_name) ?? undefined;
+  // Preserve file IDs/names from saved recipes (cleared at share time by sanitizeSeedForShare)
+  const uiUnstructuredFileIds: string[] = Array.isArray(ui?.unstructured_file_ids)
+    ? (ui.unstructured_file_ids as string[]).filter((v): v is string => typeof v === "string")
+    : [];
+  const uiUnstructuredFileNames: string[] = Array.isArray(ui?.unstructured_file_names)
+    ? (ui.unstructured_file_names as string[]).filter((v): v is string => typeof v === "string")
+    : [];
+  const uiUnstructuredFileSizes: number[] = Array.isArray(ui?.unstructured_file_sizes)
+    ? (ui.unstructured_file_sizes as number[]).filter((v): v is number => typeof v === "number")
+    : [];
   const uiUnstructuredChunkSize = readStringNumber(ui?.unstructured_chunk_size);
   const uiUnstructuredChunkOverlap = readStringNumber(
     ui?.unstructured_chunk_overlap,
@@ -449,7 +459,9 @@ export function importRecipePayload(input: string): ImportResult {
           : payloadSeedDropColumns,
       seed_preview_rows: uiSeedPreviewRows,
       local_file_name: uiLocalFileName,
-      unstructured_file_name: uiUnstructuredFileName,
+      unstructuredFileIds: uiUnstructuredFileIds,
+      unstructuredFileNames: uiUnstructuredFileNames,
+      unstructuredFileSizes: uiUnstructuredFileSizes,
       unstructured_chunk_size: uiUnstructuredChunkSize,
       unstructured_chunk_overlap: uiUnstructuredChunkOverlap,
     });

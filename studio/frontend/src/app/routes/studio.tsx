@@ -15,6 +15,7 @@ const StudioPage = lazy(() =>
 export const Route = createRoute({
   getParentRoute: () => rootRoute,
   path: "/studio",
+  staticData: { titleKey: "studio.routeTitle" },
   beforeLoad: () => requireAuth(),
   component: StudioPage,
 });

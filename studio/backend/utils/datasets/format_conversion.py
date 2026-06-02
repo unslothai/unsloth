@@ -127,12 +127,12 @@ def standardize_chat_format(
     }
 
     if not isinstance(dataset, IterableDataset):
-        from utils.hardware import safe_num_proc
+        from utils.hardware import dataset_map_num_proc
 
         if num_proc is None or type(num_proc) is not int:
-            num_proc = safe_num_proc()
+            num_proc = dataset_map_num_proc()
         else:
-            num_proc = safe_num_proc(num_proc)
+            num_proc = dataset_map_num_proc(num_proc)
 
         dataset_map_kwargs["num_proc"] = num_proc
         dataset_map_kwargs["desc"] = "Standardizing chat format"
@@ -149,7 +149,12 @@ def convert_chatml_to_alpaca(dataset, batch_size = 1000, num_proc = None):
     - "messages" or "conversations" column
     - "role"/"content" (standard) or "from"/"value" (ShareGPT)
     """
-    from torch.utils.data import IterableDataset
+    try:
+        from torch.utils.data import IterableDataset
+
+        _is_torch_iterable = isinstance(dataset, IterableDataset)
+    except ImportError:
+        _is_torch_iterable = False
 
     def _convert(examples):
         # Auto-detect which column name is used
@@ -196,13 +201,13 @@ def convert_chatml_to_alpaca(dataset, batch_size = 1000, num_proc = None):
         "batch_size": batch_size,
     }
 
-    if not isinstance(dataset, IterableDataset):
-        from utils.hardware import safe_num_proc
+    if not _is_torch_iterable:
+        from utils.hardware import dataset_map_num_proc
 
         if num_proc is None or type(num_proc) is not int:
-            num_proc = safe_num_proc()
+            num_proc = dataset_map_num_proc()
         else:
-            num_proc = safe_num_proc(num_proc)
+            num_proc = dataset_map_num_proc(num_proc)
 
         dataset_map_kwargs["num_proc"] = num_proc
         dataset_map_kwargs["desc"] = "Converting ChatML to Alpaca format"
@@ -216,7 +221,12 @@ def convert_alpaca_to_chatml(dataset, batch_size = 1000, num_proc = None):
 
     Output format: Uses 'conversations' column with standard 'role'/'content' structure.
     """
-    from torch.utils.data import IterableDataset
+    try:
+        from torch.utils.data import IterableDataset
+
+        _is_torch_iterable = isinstance(dataset, IterableDataset)
+    except ImportError:
+        _is_torch_iterable = False
 
     def _convert(examples):
         conversations = []
@@ -246,13 +256,13 @@ def convert_alpaca_to_chatml(dataset, batch_size = 1000, num_proc = None):
         "batch_size": batch_size,
     }
 
-    if not isinstance(dataset, IterableDataset):
-        from utils.hardware import safe_num_proc
+    if not _is_torch_iterable:
+        from utils.hardware import dataset_map_num_proc
 
         if num_proc is None or type(num_proc) is not int:
-            num_proc = safe_num_proc()
+            num_proc = dataset_map_num_proc()
         else:
-            num_proc = safe_num_proc(num_proc)
+            num_proc = dataset_map_num_proc(num_proc)
 
         dataset_map_kwargs["num_proc"] = num_proc
         dataset_map_kwargs["desc"] = "Converting Alpaca to ChatML format"
@@ -435,9 +445,9 @@ def convert_to_vlm_format(
     if has_urls and total > PROBE_SIZE:
         import time
         from concurrent.futures import ThreadPoolExecutor, as_completed
-        from utils.hardware import safe_num_proc
+        from utils.hardware import safe_thread_num_proc
 
-        num_workers = safe_num_proc()
+        num_workers = safe_thread_num_proc()
         _notify(f"Probing {PROBE_SIZE} image URLs with {num_workers} workers...")
         logger.info(
             f"🔍 Probing {PROBE_SIZE}/{total} image URLs with {num_workers} workers..."
@@ -521,9 +531,9 @@ def convert_to_vlm_format(
         # Parallel conversion for URL-based datasets
         import time
         from concurrent.futures import ThreadPoolExecutor, as_completed
-        from utils.hardware import safe_num_proc
+        from utils.hardware import safe_thread_num_proc
 
-        num_workers = safe_num_proc()
+        num_workers = safe_thread_num_proc()
         batch_size = 500
         start_time = time.time()
 
@@ -544,12 +554,8 @@ def convert_to_vlm_format(
                     except Exception as e:
                         failed_count += 1
                         if failed_count == 1:
-                            print(
-                                f"⚠️ First VLM conversion failure: {type(e).__name__}: {e}"
-                            )
-                        if failed_count == 1:
                             logger.info(
-                                f"⚠️ First VLM conversion failure: {type(e).__name__}: {e}"
+                                f"First VLM conversion failure: {type(e).__name__}: {e}"
                             )
 
             converted_list.extend(r for r in batch_results if r is not None)
@@ -575,11 +581,8 @@ def convert_to_vlm_format(
                 failed_count += 1
                 if failed_count == 1:
                     # Log the first failure to aid debugging
-                    print(f"⚠️ First VLM conversion failure: {type(e).__name__}: {e}")
-                if failed_count == 1:
-                    # Log the first failure to aid debugging
                     logger.info(
-                        f"⚠️ First VLM conversion failure: {type(e).__name__}: {e}"
+                        f"First VLM conversion failure: {type(e).__name__}: {e}"
                     )
             pbar.set_postfix(ok = len(converted_list), failed = failed_count, refresh = False)
         pbar.close()

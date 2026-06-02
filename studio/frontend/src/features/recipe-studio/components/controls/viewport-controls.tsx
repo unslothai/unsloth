@@ -5,7 +5,7 @@ import { type ReactElement, useCallback } from "react";
 import { Lock, LockOpen, Maximize2, Minus, Plus } from "lucide-react";
 import { Panel, useReactFlow } from "@xyflow/react";
 import { Button } from "@/components/ui/button";
-import { getFitNodeIdsIgnoringNotes } from "../../utils/graph/fit-view";
+import { buildFitViewOptions } from "../../utils/graph/fit-view";
 import { RECIPE_FLOATING_ICON_BUTTON_CLASS } from "../recipe-floating-icon-button-class";
 
 type ViewportControlsProps = {
@@ -30,10 +30,7 @@ export function ViewportControls({
   }, [zoomOut]);
 
   const handleFitView = useCallback(() => {
-    fitView({
-      duration: 250,
-      nodes: getFitNodeIdsIgnoringNotes(getNodes()),
-    });
+    fitView(buildFitViewOptions(getNodes()));
   }, [fitView, getNodes]);
 
   return (

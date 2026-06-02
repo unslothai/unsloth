@@ -17,6 +17,7 @@ Pattern follows core/training/training.py.
 
 import atexit
 import base64
+import os
 import structlog
 from loggers import get_logger
 import multiprocessing as mp
@@ -27,10 +28,16 @@ import uuid
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Generator, Optional, Tuple, Union
+from utils.hardware import prepare_gpu_selection
 
 logger = get_logger(__name__)
 
 _CTX = mp.get_context("spawn")
+
+
+class DownloadStallError(RuntimeError):
+    """Raised when the worker reports no download progress for too long."""
+
 
 # Dispatcher timeout constants (seconds)
 _DISPATCH_READ_TIMEOUT = 30.0
@@ -102,12 +109,13 @@ class InferenceOrchestrator:
         self._top_models_ready.wait(timeout = 5)
         top_gguf = self._top_gguf_cache or []
         top_hub = self._top_hub_cache or []
-        # GGUFs first, then hub models, then static fallbacks.
+        # Curated static defaults first (editorial picks like new models),
+        # then HF download-ranked models to backfill.
         # Send extras so the frontend still has 4 per category
         # after removing already-downloaded models.
         result: list[str] = []
         seen: set[str] = set()
-        for m in top_gguf + top_hub + self._static_models:
+        for m in self._static_models + top_gguf + top_hub:
             if m not in seen:
                 result.append(m)
                 seen.add(m)
@@ -158,23 +166,30 @@ class InferenceOrchestrator:
 
     def _spawn_subprocess(self, config: dict) -> None:
         """Spawn a new inference subprocess."""
+        from utils.native_path_leases import (
+            native_path_secret_removed_for_child_start,
+            run_without_native_path_secret,
+        )
+
         from .worker import run_inference_process
 
-        self._cmd_queue = _CTX.Queue()
-        self._resp_queue = _CTX.Queue()
-        self._cancel_event = _CTX.Event()
+        with native_path_secret_removed_for_child_start():
+            self._cmd_queue = _CTX.Queue()
+            self._resp_queue = _CTX.Queue()
+            self._cancel_event = _CTX.Event()
 
-        self._proc = _CTX.Process(
-            target = run_inference_process,
-            kwargs = {
-                "cmd_queue": self._cmd_queue,
-                "resp_queue": self._resp_queue,
-                "cancel_event": self._cancel_event,
-                "config": config,
-            },
-            daemon = True,
-        )
-        self._proc.start()
+            self._proc = _CTX.Process(
+                target = run_without_native_path_secret,
+                args = (run_inference_process,),
+                kwargs = {
+                    "cmd_queue": self._cmd_queue,
+                    "resp_queue": self._resp_queue,
+                    "cancel_event": self._cancel_event,
+                    "config": config,
+                },
+                daemon = True,
+            )
+            self._proc.start()
         logger.info("Inference subprocess started (pid=%s)", self._proc.pid)
 
     def _cancel_generation(self) -> None:
@@ -262,12 +277,17 @@ class InferenceOrchestrator:
         except (EOFError, OSError, ValueError):
             return None
 
-    def _wait_response(self, expected_type: str, timeout: float = 120.0) -> dict:
+    def _wait_response(self, expected_type: str, timeout: float = 300.0) -> dict:
         """Block until a response of the expected type arrives.
 
         Also handles 'status' and 'error' events during the wait.
         Returns the matching response dict.
         Raises RuntimeError on timeout or subprocess crash.
+
+        The *timeout* is an **inactivity** timeout: it resets whenever the
+        subprocess sends a status message, so long-running operations (large
+        downloads, slow model loads) won't be killed as long as the subprocess
+        keeps reporting progress.
         """
         deadline = time.monotonic() + timeout
 
@@ -292,7 +312,14 @@ class InferenceOrchestrator:
 
             if rtype == "status":
                 logger.info("Subprocess status: %s", resp.get("message", ""))
+                # Reset deadline — subprocess is still alive and working
+                deadline = time.monotonic() + timeout
                 continue
+
+            if rtype == "stall":
+                msg = resp.get("message", "Download stalled")
+                logger.warning("Subprocess reported stall: %s", msg)
+                raise DownloadStallError(msg)
 
             # Other response types during wait — skip
             logger.debug(
@@ -302,7 +329,8 @@ class InferenceOrchestrator:
             )
 
         raise RuntimeError(
-            f"Timeout waiting for '{expected_type}' response after {timeout}s"
+            f"Timeout waiting for '{expected_type}' response "
+            f"(no activity for {timeout}s)"
         )
 
     def _drain_queue(self) -> list:
@@ -421,6 +449,10 @@ class InferenceOrchestrator:
         repetition_penalty: float = 1.0,
         cancel_event = None,
         use_adapter = None,
+        tools: Optional[list] = None,
+        enable_thinking: Optional[bool] = None,
+        reasoning_effort: Optional[str] = None,
+        preserve_thinking: Optional[bool] = None,
     ) -> Generator[str, None, None]:
         """Dispatched generation — sends command without holding _gen_lock.
 
@@ -466,6 +498,14 @@ class InferenceOrchestrator:
 
         if use_adapter is not None:
             cmd["use_adapter"] = use_adapter
+        if tools is not None:
+            cmd["tools"] = tools
+        if enable_thinking is not None:
+            cmd["enable_thinking"] = enable_thinking
+        if reasoning_effort is not None:
+            cmd["reasoning_effort"] = reasoning_effort
+        if preserve_thinking is not None:
+            cmd["preserve_thinking"] = preserve_thinking
 
         # Create mailbox BEFORE sending command
         mailbox: queue.Queue = queue.Queue()
@@ -571,6 +611,7 @@ class InferenceOrchestrator:
         load_in_4bit: bool = True,
         hf_token: Optional[str] = None,
         trust_remote_code: bool = False,
+        gpu_ids: Optional[list[int]] = None,
     ) -> bool:
         """Load a model for inference.
 
@@ -594,7 +635,16 @@ class InferenceOrchestrator:
                 "hf_token": hf_token or "",
                 "gguf_variant": getattr(config, "gguf_variant", None),
                 "trust_remote_code": trust_remote_code,
+                "gpu_ids": gpu_ids,
             }
+            resolved_gpu_ids, gpu_selection = prepare_gpu_selection(
+                gpu_ids,
+                model_name = model_name,
+                hf_token = hf_token,
+                load_in_4bit = load_in_4bit,
+            )
+            sub_config["resolved_gpu_ids"] = resolved_gpu_ids
+            sub_config["gpu_selection"] = gpu_selection
 
             # Always kill existing subprocess and spawn fresh.
             # Reusing a subprocess after unsloth patches torch internals
@@ -608,36 +658,73 @@ class InferenceOrchestrator:
                 # Dead subprocess — clean up
                 self._shutdown_subprocess(timeout = 2)
 
-            logger.info(
-                "Spawning fresh inference subprocess for '%s' (transformers %s.x)",
-                model_name,
-                needed_major,
+            disable_xet = sub_config.get("disable_xet", False) or (
+                os.environ.get("HF_HUB_DISABLE_XET") == "1"
             )
-            self._spawn_subprocess(sub_config)
-            resp = self._wait_response("loaded", timeout = 180)
 
-            # Update local state from response
-            if resp.get("success"):
-                self._current_transformers_major = needed_major
-                model_info = resp.get("model_info", {})
-                self.active_model_name = model_info.get("identifier", model_name)
-                self.models[self.active_model_name] = {
-                    "is_vision": model_info.get("is_vision", False),
-                    "is_lora": model_info.get("is_lora", False),
-                    "display_name": model_info.get("display_name", model_name),
-                    "is_audio": model_info.get("is_audio", False),
-                    "audio_type": model_info.get("audio_type"),
-                    "has_audio_input": model_info.get("has_audio_input", False),
-                }
-                self.loading_models.discard(model_name)
-                logger.info("Model '%s' loaded successfully in subprocess", model_name)
-                return True
-            else:
-                error = resp.get("error", "Failed to load model")
-                self.loading_models.discard(model_name)
-                self.active_model_name = None
-                self.models.clear()
-                raise Exception(error)
+            for attempt in range(2):
+                logger.info(
+                    "Spawning fresh inference subprocess for '%s' "
+                    "(transformers %s.x, attempt %d/2%s)",
+                    model_name,
+                    needed_major,
+                    attempt + 1,
+                    ", xet disabled" if disable_xet else "",
+                )
+                sub_config["disable_xet"] = disable_xet
+                self._spawn_subprocess(sub_config)
+
+                try:
+                    resp = self._wait_response("loaded")
+                except DownloadStallError:
+                    # First stall and Xet was enabled -> retry with Xet disabled
+                    if attempt == 0 and not disable_xet:
+                        logger.warning(
+                            "Download stalled for '%s' -- retrying with "
+                            "HF_HUB_DISABLE_XET=1",
+                            model_name,
+                        )
+                        self._shutdown_subprocess(timeout = 5)
+                        disable_xet = True
+                        continue
+                    # Second stall (or already had xet disabled) -> give up
+                    self._shutdown_subprocess(timeout = 5)
+                    raise RuntimeError(
+                        f"Download stalled for '{model_name}' even with "
+                        f"HF_HUB_DISABLE_XET=1 -- check your network connection"
+                    )
+
+                # Got a response — check success
+                if resp.get("success"):
+                    self._current_transformers_major = needed_major
+                    model_info = resp.get("model_info", {})
+                    self.active_model_name = model_info.get("identifier", model_name)
+                    self.models[self.active_model_name] = {
+                        "is_vision": model_info.get("is_vision", False),
+                        "is_lora": model_info.get("is_lora", False),
+                        "display_name": model_info.get("display_name", model_name),
+                        "is_audio": model_info.get("is_audio", False),
+                        "audio_type": model_info.get("audio_type"),
+                        "has_audio_input": model_info.get("has_audio_input", False),
+                    }
+                    # Mirror chat_template_info so routes can classify
+                    # capabilities without re-entering the subprocess.
+                    _tpl_info = model_info.get("chat_template_info")
+                    if isinstance(_tpl_info, dict):
+                        self.models[self.active_model_name]["chat_template_info"] = (
+                            _tpl_info
+                        )
+                    self.loading_models.discard(model_name)
+                    logger.info(
+                        "Model '%s' loaded successfully in subprocess", model_name
+                    )
+                    return True
+                else:
+                    error = resp.get("error", "Failed to load model")
+                    self.loading_models.discard(model_name)
+                    self.active_model_name = None
+                    self.models.clear()
+                    raise Exception(error)
 
         except Exception:
             self.loading_models.discard(model_name)
@@ -647,6 +734,17 @@ class InferenceOrchestrator:
 
     def unload_model(self, model_name: str) -> bool:
         """Unload a model from the subprocess."""
+        if model_name in self.loading_models:
+            logger.info(
+                "Cancelling in-flight load for model '%s' by terminating subprocess",
+                model_name,
+            )
+            self._shutdown_subprocess(timeout = 0.5)
+            self.loading_models.discard(model_name)
+            self.active_model_name = None
+            self.models.clear()
+            return True
+
         if not self._ensure_subprocess_alive():
             # No subprocess — just clear local state
             self.models.pop(model_name, None)
@@ -661,7 +759,7 @@ class InferenceOrchestrator:
                     "model_name": model_name,
                 }
             )
-            resp = self._wait_response("unloaded", timeout = 30)
+            resp = self._wait_response("unloaded")
 
             # Update local state
             self.models.pop(model_name, None)
@@ -691,8 +789,18 @@ class InferenceOrchestrator:
         max_new_tokens: int = 256,
         repetition_penalty: float = 1.0,
         cancel_event = None,
+        tools: Optional[list] = None,
+        enable_thinking: Optional[bool] = None,
+        reasoning_effort: Optional[str] = None,
+        preserve_thinking: Optional[bool] = None,
     ) -> Generator[str, None, None]:
-        """Generate response, streaming tokens from subprocess."""
+        """Generate response, streaming tokens from subprocess.
+
+        Optional ``tools`` / ``enable_thinking`` / ``reasoning_effort`` /
+        ``preserve_thinking`` kwargs are forwarded into the worker so
+        ``tokenizer.apply_chat_template`` can render tool schemas and
+        reasoning controls when the template understands them.
+        """
         yield from self._generate_inner(
             messages = messages,
             system_prompt = system_prompt,
@@ -705,6 +813,88 @@ class InferenceOrchestrator:
             repetition_penalty = repetition_penalty,
             cancel_event = cancel_event,
             use_adapter = None,
+            tools = tools,
+            enable_thinking = enable_thinking,
+            reasoning_effort = reasoning_effort,
+            preserve_thinking = preserve_thinking,
+        )
+
+    def generate_chat_completion_with_tools(
+        self,
+        messages: list,
+        tools: list,
+        system_prompt: str = "",
+        temperature: float = 0.7,
+        top_p: float = 0.9,
+        top_k: int = 40,
+        min_p: float = 0.0,
+        max_tokens: Optional[int] = None,
+        repetition_penalty: float = 1.0,
+        cancel_event = None,
+        enable_thinking: Optional[bool] = None,
+        reasoning_effort: Optional[str] = None,
+        preserve_thinking: Optional[bool] = None,
+        max_tool_iterations: int = 25,
+        auto_heal_tool_calls: bool = True,
+        tool_call_timeout: int = 300,
+        session_id: Optional[str] = None,
+        use_adapter: Optional[Union[bool, str]] = None,
+        **_unused,
+    ):
+        """Run the safetensors agentic tool loop in this (parent)
+        process, calling the worker for each generation turn.
+
+        Yields the same event dicts as the GGUF tool loop so the route
+        layer can stream both backends through one helper. See
+        ``safetensors_agentic.run_safetensors_tool_loop`` for the
+        event protocol.
+        """
+        from core.inference.safetensors_agentic import run_safetensors_tool_loop
+        from core.inference.tools import execute_tool
+
+        max_new_tokens = max_tokens if max_tokens and max_tokens > 0 else 2048
+
+        def _single_turn(conv: list):
+            # ``conv`` already carries any system message because the
+            # loop appends to a list seeded with system+user above.
+            common_kwargs = dict(
+                messages = conv,
+                system_prompt = "",
+                image = None,
+                temperature = temperature,
+                top_p = top_p,
+                top_k = top_k,
+                min_p = min_p,
+                max_new_tokens = max_new_tokens,
+                repetition_penalty = repetition_penalty,
+                cancel_event = cancel_event,
+                tools = tools,
+                enable_thinking = enable_thinking,
+                reasoning_effort = reasoning_effort,
+                preserve_thinking = preserve_thinking,
+            )
+            if use_adapter is not None:
+                yield from self.generate_with_adapter_control(
+                    use_adapter = use_adapter,
+                    **common_kwargs,
+                )
+            else:
+                yield from self.generate_chat_response(**common_kwargs)
+
+        initial = list(messages)
+        if system_prompt:
+            initial = [{"role": "system", "content": system_prompt}] + initial
+
+        yield from run_safetensors_tool_loop(
+            single_turn = _single_turn,
+            messages = initial,
+            tools = tools,
+            execute_tool = execute_tool,
+            cancel_event = cancel_event,
+            auto_heal_tool_calls = auto_heal_tool_calls,
+            max_tool_iterations = max_tool_iterations,
+            tool_call_timeout = tool_call_timeout,
+            session_id = session_id,
         )
 
     def generate_with_adapter_control(
@@ -738,6 +928,10 @@ class InferenceOrchestrator:
         repetition_penalty: float = 1.0,
         cancel_event = None,
         use_adapter = None,
+        tools: Optional[list] = None,
+        enable_thinking: Optional[bool] = None,
+        reasoning_effort: Optional[str] = None,
+        preserve_thinking: Optional[bool] = None,
     ) -> Generator[str, None, None]:
         """Inner generation logic — sends command to subprocess, yields tokens.
 
@@ -774,6 +968,10 @@ class InferenceOrchestrator:
                 repetition_penalty = repetition_penalty,
                 cancel_event = cancel_event,
                 use_adapter = use_adapter,
+                tools = tools,
+                enable_thinking = enable_thinking,
+                reasoning_effort = reasoning_effort,
+                preserve_thinking = preserve_thinking,
             )
 
     def _generate_locked(
@@ -789,6 +987,10 @@ class InferenceOrchestrator:
         repetition_penalty: float = 1.0,
         cancel_event = None,
         use_adapter = None,
+        tools: Optional[list] = None,
+        enable_thinking: Optional[bool] = None,
+        reasoning_effort: Optional[str] = None,
+        preserve_thinking: Optional[bool] = None,
     ) -> Generator[str, None, None]:
         """Actual generation logic — must be called under _gen_lock."""
         request_id = str(uuid.uuid4())
@@ -814,6 +1016,16 @@ class InferenceOrchestrator:
 
         if use_adapter is not None:
             cmd["use_adapter"] = use_adapter
+        # Only forward template kwargs the caller actually set so older
+        # workers that ignore unknown keys still work.
+        if tools is not None:
+            cmd["tools"] = tools
+        if enable_thinking is not None:
+            cmd["enable_thinking"] = enable_thinking
+        if reasoning_effort is not None:
+            cmd["reasoning_effort"] = reasoning_effort
+        if preserve_thinking is not None:
+            cmd["preserve_thinking"] = preserve_thinking
 
         try:
             self._send_cmd(cmd)
@@ -1120,6 +1332,13 @@ class InferenceOrchestrator:
         if self.active_model_name and self.active_model_name in self.models:
             return self.models[self.active_model_name].get("is_vision", False)
         return False
+
+    def _is_gpt_oss_model(self, model_name: str = None) -> bool:
+        """Parent-side gpt-oss detection so the safetensors route can run
+        the same guard without an IPC round-trip to the subprocess."""
+        from utils.datasets import is_gpt_oss_model_name
+
+        return is_gpt_oss_model_name(model_name or self.active_model_name or "")
 
 
 # ========== GLOBAL INSTANCE ==========

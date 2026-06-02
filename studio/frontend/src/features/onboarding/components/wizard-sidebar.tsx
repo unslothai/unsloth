@@ -10,7 +10,7 @@ import { ArrowRight02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { WizardStepItem } from "./wizard-step-item";
 
-export function WizardSidebar() {
+export function WizardSidebar({ returnTo }: { returnTo: string }) {
   const currentStep = useTrainingConfigStore((s) => s.currentStep);
   const progress = ((currentStep - 1) / (STEPS.length - 1)) * 100;
 
@@ -18,7 +18,7 @@ export function WizardSidebar() {
     <aside className="w-full shrink-0 bg-muted/70 p-4 md:w-64 md:p-6">
       <div className="flex items-center gap-3 py-1 md:py-2">
         <img
-          src="https://unsloth.ai/cgi/image/unsloth_sticker_no_shadow_ldN4V4iydw00qSIIWDCUv.png?width=96&quality=80&format=auto"
+          src={`${import.meta.env.BASE_URL}sticker.png`}
           alt="Unsloth"
           className="size-12"
         />
@@ -38,10 +38,10 @@ export function WizardSidebar() {
         className="mt-2 w-full md:hidden"
         onClick={() => {
           markOnboardingDone();
-          window.location.href = "/chat";
+          window.location.assign(returnTo);
         }}
       >
-        Skip to Chat
+        Skip onboarding
         <HugeiconsIcon icon={ArrowRight02Icon} data-icon="inline-end" />
       </Button>
       <nav className="mt-3 hidden flex-col gap-1 md:flex">
@@ -54,10 +54,10 @@ export function WizardSidebar() {
         className="mt-3 hidden w-full md:flex"
         onClick={() => {
           markOnboardingDone();
-          window.location.href = "/chat";
+          window.location.assign(returnTo);
         }}
       >
-        Skip to Chat
+        Skip onboarding
         <HugeiconsIcon icon={ArrowRight02Icon} data-icon="inline-end" />
       </Button>
     </aside>

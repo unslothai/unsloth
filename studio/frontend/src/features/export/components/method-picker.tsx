@@ -18,9 +18,13 @@ import { EXPORT_METHODS, type ExportMethod } from "../constants";
 interface MethodPickerProps {
   value: ExportMethod | null;
   onChange: (v: ExportMethod) => void;
+  /** Methods that should be shown but disabled (greyed out, not clickable). */
+  disabledMethods?: ExportMethod[];
+  /** Optional reason shown in a tooltip on disabled methods. */
+  disabledReason?: string;
 }
 
-export function MethodPicker({ value, onChange }: MethodPickerProps) {
+export function MethodPicker({ value, onChange, disabledMethods = [], disabledReason }: MethodPickerProps) {
   return (
     <div data-tour="export-method" className="flex flex-col gap-3">
       <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
@@ -50,16 +54,21 @@ export function MethodPicker({ value, onChange }: MethodPickerProps) {
       <div className="grid grid-cols-3 gap-3">
         {EXPORT_METHODS.map((m) => {
           const selected = value === m.value;
-          return (
+          const isDisabled = disabledMethods.includes(m.value);
+
+          const card = (
             <button
               key={m.value}
               type="button"
-              onClick={() => onChange(m.value)}
+              disabled={isDisabled}
+              onClick={() => !isDisabled && onChange(m.value)}
               className={cn(
                 "flex items-start gap-3 rounded-xl p-4 text-left ring-1 transition-all",
-                selected
-                  ? "ring-2 ring-primary bg-primary/5"
-                  : "ring-border hover:-translate-y-0.5 hover:shadow-sm",
+                isDisabled
+                  ? "ring-border opacity-40 cursor-not-allowed"
+                  : selected
+                    ? "ring-2 ring-primary bg-primary/5"
+                    : "ring-border hover:-translate-y-0.5 hover:shadow-sm",
               )}
             >
               <div
@@ -125,6 +134,17 @@ export function MethodPicker({ value, onChange }: MethodPickerProps) {
               </div>
             </button>
           );
+
+          if (isDisabled && disabledReason) {
+            return (
+              <Tooltip key={m.value}>
+                <TooltipTrigger asChild={true}>{card}</TooltipTrigger>
+                <TooltipContent>{disabledReason}</TooltipContent>
+              </Tooltip>
+            );
+          }
+
+          return card;
         })}
       </div>
     </div>

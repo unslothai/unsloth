@@ -27,6 +27,7 @@ interface BackendTrainingDefaults {
   eval_steps?: number;
   weight_decay?: number;
   random_seed?: number;
+  vision_image_size?: number | string | null;
   packing?: boolean;
   train_on_completions?: boolean;
   gradient_checkpointing?: "none" | "true" | "unsloth";
@@ -79,7 +80,7 @@ export interface LocalModelInfo {
   id: string;
   display_name: string;
   path: string;
-  source: "models_dir" | "hf_cache";
+  source: "models_dir" | "hf_cache" | "lmstudio" | "custom";
   model_id?: string | null;
   updated_at?: number | null;
 }
@@ -87,6 +88,7 @@ export interface LocalModelInfo {
 interface LocalModelListResponse {
   models_dir: string;
   hf_cache_dir?: string | null;
+  lmstudio_dirs: string[];
   models: LocalModelInfo[];
 }
 

@@ -144,7 +144,9 @@ function sanitizeSeedForShare(payload: unknown): unknown {
       ui.seed_drop_columns = [];
       ui.seed_preview_rows = [];
       ui.local_file_name = "";
-      ui.unstructured_file_name = "";
+      ui.unstructured_file_ids = [];
+      ui.unstructured_file_names = [];
+      ui.unstructured_file_sizes = [];
     }
   }
 
@@ -152,12 +154,20 @@ function sanitizeSeedForShare(payload: unknown): unknown {
     if (source && "path" in source) {
       source.path = "";
     }
+    if (source && "paths" in source) {
+      source.paths = [];
+    }
+    if (seedConfig) {
+      seedConfig.resolved_paths = [];
+    }
     if (ui) {
       ui.seed_columns = [];
       ui.seed_drop_columns = [];
       ui.seed_preview_rows = [];
       ui.local_file_name = "";
-      ui.unstructured_file_name = "";
+      ui.unstructured_file_ids = [];
+      ui.unstructured_file_names = [];
+      ui.unstructured_file_sizes = [];
     }
   }
 

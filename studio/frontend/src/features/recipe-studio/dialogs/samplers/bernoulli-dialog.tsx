@@ -23,7 +23,7 @@ export function BernoulliDialog({
         value={config.name}
         onChange={(value) => onUpdate({ name: value })}
       />
-      <div className="grid gap-2">
+      <div className="grid gap-1.5">
         <FieldLabel
           label="Probability (p)"
           htmlFor={pId}

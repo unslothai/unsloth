@@ -7,6 +7,7 @@ export interface TrainingStartRequest {
   hf_token: string | null;
   load_in_4bit: boolean;
   max_seq_length: number;
+  vision_image_size?: number | null;
   /** Allow loading models with custom code. Only enable for repos you trust. */
   trust_remote_code?: boolean;
   hf_dataset: string | null;
@@ -21,6 +22,8 @@ export interface TrainingStartRequest {
   custom_format_mapping?: Record<string, unknown> | null;
   num_epochs: number;
   learning_rate: string;
+  /** Optional CPT embedding LR. If omitted, backend uses lr/10; typical range is 2x-10x smaller than main LR. */
+  embedding_learning_rate?: number | null;
   batch_size: number;
   gradient_accumulation_steps: number;
   warmup_steps: number | null;
@@ -29,6 +32,7 @@ export interface TrainingStartRequest {
   save_steps: number;
   eval_steps: number;
   weight_decay: number;
+  max_grad_norm: number;
   random_seed: number;
   packing: boolean;
   optim: string;
@@ -54,6 +58,7 @@ export interface TrainingStartRequest {
   wandb_project: string | null;
   enable_tensorboard: boolean;
   tensorboard_dir: string | null;
+  resume_from_checkpoint?: string | null;
 }
 
 export interface TrainingStartResponse {

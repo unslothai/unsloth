@@ -13,11 +13,13 @@ import { useTheme } from "next-themes";
 import { Toaster as Sonner, type ToasterProps } from "sonner";
 
 const Toaster = ({ ...props }: ToasterProps) => {
-  const { theme = "system" } = useTheme();
+  // Use resolvedTheme so sonner's data-sonner-theme always matches the class
+  // next-themes puts on <html>; sonner-side "system" resolution can drift.
+  const { resolvedTheme } = useTheme();
 
   return (
     <Sonner
-      theme={theme as ToasterProps["theme"]}
+      theme={(resolvedTheme as ToasterProps["theme"]) ?? "light"}
       className="toaster group"
       duration={5000}
       icons={{
@@ -63,13 +65,20 @@ const Toaster = ({ ...props }: ToasterProps) => {
           "--normal-text": "var(--popover-foreground)",
           "--normal-border": "var(--border)",
           "--border-radius": "var(--radius)",
+          // Pin the close button inside the toast's top-right corner.
+          // Sonner defaults to the left/outside edge, so keep the horizontal
+          // override here and the top offset in index.css.
+          "--toast-close-button-start": "unset",
+          "--toast-close-button-end": "8px",
+          "--toast-close-button-transform": "none",
         } as React.CSSProperties
       }
+      // No swipe gestures; keeps toast text selectable.
+      swipeDirections={[]}
       toastOptions={{
         classNames: {
           toast: "cn-toast",
           description: "!text-muted-foreground",
-          closeButton: "!top-3 !right-3 !translate-y-0",
         },
       }}
       {...props}

@@ -4,16 +4,23 @@
 "use client";
 
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
+import { getAuthToken } from "@/features/auth/session";
 import type { ToolCallMessagePartComponent } from "@assistant-ui/react";
 import { code as codePlugin } from "@streamdown/code";
 import { CheckIcon, CodeIcon, CopyIcon, LoaderIcon } from "lucide-react";
-import { memo, useCallback, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Streamdown } from "streamdown";
 import {
   ToolFallbackContent,
   ToolFallbackRoot,
   ToolFallbackTrigger,
 } from "./tool-fallback";
+
+interface StructuredResult {
+  text: string;
+  images: string[];
+  sessionId: string;
+}
 
 const MAX_DISPLAY = 10_000;
 const COPY_RESET_MS = 2000;
@@ -28,8 +35,17 @@ function truncate(text: string): string {
 function CopyBtn({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const copy = useCallback(() => {
-    if (copyToClipboard(text)) {
+
+  useEffect(() => {
+    return () => {
+      if (timer.current) {
+        clearTimeout(timer.current);
+      }
+    };
+  }, []);
+
+  const copy = useCallback(async () => {
+    if (await copyToClipboard(text)) {
       setCopied(true);
       if (timer.current) {
         clearTimeout(timer.current);
@@ -62,7 +78,7 @@ function HighlightedCode({ code: source, language }: { code: string; language: s
     [source, language],
   );
   return (
-    <div className="max-h-48 overflow-auto text-xs [&_pre]:!m-0 [&_pre]:!bg-transparent [&_pre]:!p-0 [&_pre]:!text-xs [&_[data-streamdown=code-block]]:!my-0 [&_[data-streamdown=code-block]]:!p-0 [&_[data-streamdown=code-block]]:!border-0">
+    <div className="max-h-48 overflow-auto text-xs [&_pre]:!m-0 [&_pre]:!bg-transparent [&_pre]:!p-0 [&_pre]:!text-xs [&_[data-streamdown=code-block]]:!my-0 [&_[data-streamdown=code-block]]:!p-3 [&_[data-streamdown=code-block]]:!border-0">
       <Streamdown
         mode="static"
         plugins={{ code: codePlugin }}
@@ -75,6 +91,16 @@ function HighlightedCode({ code: source, language }: { code: string; language: s
   );
 }
 
+function isStructuredResult(val: unknown): val is StructuredResult {
+  return (
+    typeof val === "object" &&
+    val !== null &&
+    "text" in val &&
+    "images" in val &&
+    "sessionId" in val
+  );
+}
+
 const PythonToolUIImpl: ToolCallMessagePartComponent = ({
   args,
   result,
@@ -83,12 +109,24 @@ const PythonToolUIImpl: ToolCallMessagePartComponent = ({
   const code = (args as { code?: string })?.code ?? "";
   const firstLine = code.split("\n")[0]?.slice(0, 60) ?? "";
   const isRunning = status?.type === "running";
-  const output =
-    typeof result === "string"
-      ? result
-      : result
-        ? JSON.stringify(result, null, 2)
-        : "";
+
+  let output: string;
+  let images: string[] = [];
+  let sessionId = "";
+
+  if (isStructuredResult(result)) {
+    output = result.text;
+    images = result.images;
+    sessionId = result.sessionId;
+  } else if (typeof result === "string") {
+    output = result;
+  } else if (result) {
+    output = JSON.stringify(result, null, 2);
+  } else {
+    output = "";
+  }
+
+  const authToken = getAuthToken();
 
   return (
     <ToolFallbackRoot>
@@ -98,14 +136,14 @@ const PythonToolUIImpl: ToolCallMessagePartComponent = ({
         icon={CodeIcon}
       />
       <ToolFallbackContent>
-        <div className="flex flex-col px-4">
+        <div className="border-l-2 border-muted-foreground/20 pl-2">
           {/* Code + copy */}
           {code && (
             <div className="flex justify-end">
               <CopyBtn text={code} />
             </div>
           )}
-          <HighlightedCode code={code} language="python" />
+          {code && <HighlightedCode code={code} language="python" />}
 
           {/* Output */}
           {isRunning ? (
@@ -124,6 +162,21 @@ const PythonToolUIImpl: ToolCallMessagePartComponent = ({
               </pre>
             </div>
           ) : null}
+
+          {/* Images from Python tool execution */}
+          {images.length > 0 && sessionId && (
+            <div className="mt-2 flex flex-col gap-2">
+              {images.map((filename) => (
+                <img
+                  key={filename}
+                  src={`/api/inference/sandbox/${encodeURIComponent(sessionId)}/${encodeURIComponent(filename)}${authToken ? `?token=${encodeURIComponent(authToken)}` : ""}`}
+                  alt={filename}
+                  loading="lazy"
+                  className="max-w-full rounded border border-border"
+                />
+              ))}
+            </div>
+          )}
         </div>
       </ToolFallbackContent>
     </ToolFallbackRoot>

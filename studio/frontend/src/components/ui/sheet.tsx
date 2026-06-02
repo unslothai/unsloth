@@ -3,8 +3,10 @@
 
 import { Dialog as SheetPrimitive } from "radix-ui";
 import type * as React from "react";
+import { useState } from "react";
 
 import { Button } from "@/components/ui/button";
+import { DialogPortalContainerContext } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 import { Cancel01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -69,6 +71,7 @@ function SheetContent({
   overlayClassName?: string;
   overlayPosition?: "fixed" | "absolute";
 }) {
+  const [contentEl, setContentEl] = useState<HTMLDivElement | null>(null);
   return (
     <SheetPortal container={container ?? undefined}>
       <SheetOverlay
@@ -76,6 +79,7 @@ function SheetContent({
         position={overlayPosition ?? position}
       />
       <SheetPrimitive.Content
+        ref={setContentEl}
         data-slot="sheet-content"
         data-side={side}
         className={cn(
@@ -85,7 +89,9 @@ function SheetContent({
         )}
         {...props}
       >
-        {children}
+        <DialogPortalContainerContext.Provider value={contentEl}>
+          {children}
+        </DialogPortalContainerContext.Provider>
         {showCloseButton && (
           <SheetPrimitive.Close data-slot="sheet-close" asChild>
             <Button
