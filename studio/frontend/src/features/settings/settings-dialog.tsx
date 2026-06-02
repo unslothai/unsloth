@@ -129,8 +129,9 @@ export function SettingsDialog() {
           // on iPad-portrait widths (640-820px) where the fixed
           // `w-[820px]` overflows by 26px on each side.
           "settings-surface !max-w-[min(820px,calc(100vw-2rem))] h-[560px] w-[min(820px,calc(100vw-2rem))] p-0 overflow-hidden",
-          // Soft shadow only, no outline ring.
-          "shadow-border rounded-xl ring-0",
+          // Soft shadow only, no outline ring. Pin --radius to the light value
+          // so the corner rounding is the same in dark mode.
+          "shadow-border rounded-xl ring-0 [--radius:1.1rem]",
           "max-sm:h-dvh max-sm:w-dvw max-sm:!max-w-none max-sm:rounded-none",
         )}
       >

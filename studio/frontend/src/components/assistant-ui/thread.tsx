@@ -2049,7 +2049,7 @@ const AssistantActionBar: FC = () => {
           side="bottom"
           align="start"
           onCloseAutoFocus={(e) => e.preventDefault()}
-          className="aui-action-bar-more-content z-50 min-w-32 overflow-hidden rounded-md border bg-popover p-1 text-popover-foreground shadow-md"
+          className="aui-action-bar-more-content z-50 min-w-32 overflow-hidden rounded-md [--radius:1.1rem] bg-popover p-1 text-popover-foreground shadow-md dark:shadow-none"
         >
           <ActionBarPrimitive.ExportMarkdown asChild={true}>
             <ActionBarMorePrimitive.Item className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground">
