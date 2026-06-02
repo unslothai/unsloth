@@ -42,61 +42,49 @@ async function showSetupWindow(isCurrent: WindowLayoutGuard): Promise<void> {
 
 async function applyAppWindowLayout(isCurrent: WindowLayoutGuard): Promise<void> {
   const { getCurrentWindow, currentMonitor, LogicalSize } = await import("@tauri-apps/api/window");
+  const { invoke } = await import("@tauri-apps/api/core");
   const { restoreStateCurrent, StateFlags } = await import("@tauri-apps/plugin-window-state");
   if (!isCurrent()) return;
 
   const win = getCurrentWindow();
-  const monitor = await currentMonitor();
+  // Decide first-launch vs restore from the on-disk state file BEFORE touching the
+  // window. Probing the window itself after restoreStateCurrent is unreliable:
+  // on GTK, set_size against a hidden window is deferred until show(), so
+  // innerSize() reads a stale value and any baseline fallback would overwrite the
+  // queued restore. On macOS the same probe works, hence the inconsistency
+  // between previous iterations of this code.
+  const hasSavedState = await invoke<boolean>("has_saved_window_state");
   if (!isCurrent()) return;
 
-  let finalW = MIN_WINDOW_WIDTH;
-  let finalH = MIN_WINDOW_HEIGHT;
-
-  if (monitor) {
-    const scale = monitor.scaleFactor;
-    const screenW = monitor.size.width / scale;
-    const screenH = monitor.size.height / scale;
-
-    finalW = Math.max(MIN_WINDOW_WIDTH, Math.round(screenW * 0.75));
-    const targetH = Math.max(MIN_WINDOW_HEIGHT, Math.round(finalW / 1.618));
-    finalH = Math.min(targetH, Math.round(screenH * 0.85));
-  }
-
-  if (!isCurrent()) return;
   await win.setResizable(true);
   if (!isCurrent()) return;
-
-  // Restore before any resize call. The plugin still tracks the window even when
-  // skip_initial_state("main") is set, so setSize before restore can overwrite
-  // the cached saved size.
-  await restoreStateCurrent(StateFlags.SIZE | StateFlags.MAXIMIZED);
-  if (!isCurrent()) return;
-  const restoredMaximized = await win.isMaximized();
-  if (!isCurrent()) return;
-  await win.setSizeConstraints({
-    minWidth: MIN_WINDOW_WIDTH,
-    minHeight: MIN_WINDOW_HEIGHT,
-  });
+  // Floor before restore: clamps a stale/undersized saved size up to the min.
+  await win.setSizeConstraints({ minWidth: MIN_WINDOW_WIDTH, minHeight: MIN_WINDOW_HEIGHT });
   if (!isCurrent()) return;
 
-  // Only apply first-launch/default size if restore did not maximize and there is
-  // no useful saved size. The saved file stores physical px, while innerSize()
-  // returns physical px; compare against logical minimum using scale factor.
-  const restoredSize = await win.innerSize();
-  if (!isCurrent()) return;
-  const restoredScale = await win.scaleFactor();
-  const restoredW = restoredSize.width / restoredScale;
-  const restoredH = restoredSize.height / restoredScale;
-
-  if (
-    !restoredMaximized &&
-    (restoredW < MIN_WINDOW_WIDTH || restoredH < MIN_WINDOW_HEIGHT)
-  ) {
+  if (hasSavedState) {
+    // Subsequent launch: the plugin handles size, position, and maximized,
+    // with built-in off-screen protection (monitor-intersection check) for
+    // positions saved on a now-disconnected display.
+    await restoreStateCurrent(
+      StateFlags.SIZE | StateFlags.POSITION | StateFlags.MAXIMIZED,
+    );
+  } else {
+    // First launch: fit to the current monitor and center.
+    const monitor = await currentMonitor();
+    if (!isCurrent()) return;
+    let finalW = MIN_WINDOW_WIDTH;
+    let finalH = MIN_WINDOW_HEIGHT;
+    if (monitor) {
+      const scale = monitor.scaleFactor;
+      const screenW = monitor.size.width / scale;
+      const screenH = monitor.size.height / scale;
+      finalW = Math.max(MIN_WINDOW_WIDTH, Math.round(screenW * 0.75));
+      const targetH = Math.max(MIN_WINDOW_HEIGHT, Math.round(finalW / 1.618));
+      finalH = Math.min(targetH, Math.round(screenH * 0.85));
+    }
     await win.setSize(new LogicalSize(finalW, finalH));
     if (!isCurrent()) return;
-  }
-
-  if (!restoredMaximized) {
     await win.center();
   }
   if (!isCurrent()) return;
