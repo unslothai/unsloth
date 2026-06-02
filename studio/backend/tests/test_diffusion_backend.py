@@ -1759,12 +1759,24 @@ def test_curated_gguf_recommended_offload_policy_for_direct_loads():
         free_bytes = 30 * 1024**3,
         total_bytes = 48 * 1024**3,
     ) == "balanced"
-    assert d._curated_gguf_recommended_offload_policy(
-        repo_id = "unsloth/Qwen-Image-Edit-GGUF",
-        gguf_filename = "qwen-image-edit-Q4_K_M.gguf",
-        free_bytes = 64 * 1024**3,
-        total_bytes = 80 * 1024**3,
-    ) == "balanced"
+    for repo_id, filename in (
+        ("unsloth/Qwen-Image-Edit-GGUF", "qwen-image-edit-Q4_K_M.gguf"),
+        ("unsloth/Qwen-Image-Edit-2509-GGUF", "qwen-image-edit-2509-Q4_K_M.gguf"),
+        ("unsloth/Qwen-Image-Edit-2511-GGUF", "qwen-image-edit-2511-Q4_K_M.gguf"),
+        ("unsloth/Qwen-Image-Layered-GGUF", "qwen-image-layered-Q4_K_M.gguf"),
+    ):
+        assert d._curated_gguf_recommended_offload_policy(
+            repo_id = repo_id,
+            gguf_filename = filename,
+            free_bytes = 64 * 1024**3,
+            total_bytes = 80 * 1024**3,
+        ) == "less_aggressive"
+        assert d._curated_gguf_recommended_offload_policy(
+            repo_id = repo_id,
+            gguf_filename = filename,
+            free_bytes = 30 * 1024**3,
+            total_bytes = 48 * 1024**3,
+        ) == "balanced"
     assert d._curated_gguf_recommended_offload_policy(
         repo_id = "unsloth/Z-Image-Turbo-GGUF",
         gguf_filename = "z-image-turbo-Q4_K_M.gguf",

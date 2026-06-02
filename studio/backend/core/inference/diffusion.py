@@ -73,6 +73,10 @@ AUTO_FAST_GGUF_POLICY_MIN_FREE_MIB = 36 * 1024
 AUTO_FAST_GGUF_POLICY_FAMILIES = {
     "qwen-image",
     "qwen-image-2512",
+    "qwen-image-edit",
+    "qwen-image-edit-2509",
+    "qwen-image-edit-2511",
+    "qwen-image-layered",
 }
 
 
