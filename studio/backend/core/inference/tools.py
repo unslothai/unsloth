@@ -853,18 +853,20 @@ def _search_knowledge_base(arguments: dict, rag_scope: dict | None) -> str:
 # than trusting the model to pick search over web_search). Gated on a cosine floor
 # so unrelated docs don't pollute the answer; emits the same events/messages a
 # real tool call would.
-_AUTOINJECT_DEFAULT_FLOOR = 0.55
+# A high cosine floor keeps the forced inject precise: it fires on clearly
+# on-topic queries but skips weak/off-topic ones (which would mislead the answer),
+# leaving those to the model's own search_knowledge_base call. Helps small models
+# that don't reliably call the tool. Tunable via RAG_AUTOINJECT_MIN_SCORE.
+_AUTOINJECT_DEFAULT_FLOOR = 0.70
 
 
 def _autoinject_enabled() -> bool:
-    # Off by default: forcing a retrieval every turn can inject weakly-matching
-    # chunks that mislead the answer. The model still pulls docs on demand via the
-    # search_knowledge_base tool; opt back in with RAG_AUTOINJECT=1.
-    return os.environ.get("RAG_AUTOINJECT", "0").strip().lower() in (
-        "1",
-        "true",
-        "yes",
-        "on",
+    # On by default; disable with RAG_AUTOINJECT=0.
+    return os.environ.get("RAG_AUTOINJECT", "1").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
     )
 
 

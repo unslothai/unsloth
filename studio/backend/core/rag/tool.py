@@ -133,7 +133,7 @@ def search_for_autoinject(
     scope_kb_id: str | None = None,
     scope_thread_id: str | None = None,
     top_k: int | None = None,
-    min_dense_score: float = 0.55,
+    min_dense_score: float = 0.70,
     model_name: str | None = None,
     mode: str = "hybrid",
     rrf_k: int | None = None,
@@ -142,10 +142,11 @@ def search_for_autoinject(
 ) -> tuple[str, list[dict]] | None:
     """Forced-retrieval variant for auto-injection.
 
-    Returns ``(rendered_text, sources)`` only if some hit's dense (cosine)
-    similarity clears ``min_dense_score``, else ``None`` (inject nothing). The
-    dense gate keeps weak lexical-only matches from polluting unrelated answers
-    (e.g. agriculture docs vs "capital of France").
+    Returns ``(rendered_text, sources)`` only if the query confidently matches
+    the docs (some hit's cosine clears ``min_dense_score``), else ``None`` (inject
+    nothing). The dense gate keeps weak/off-topic matches from polluting answers
+    (e.g. agriculture docs vs "capital of France"). In ``lexical`` (BM25) mode the
+    hits carry no cosine, so the gate falls back to a dense 1-NN probe.
     """
     if not query or not query.strip():
         return None
@@ -171,6 +172,16 @@ def search_for_autoinject(
             for h in hits
             if h.dense_score is not None and h.dense_score >= min_dense_score
         ][:k]
+        if not strong and hits and mode == "lexical":
+            probe = retrieval.retrieve_dense(
+                conn, scope, query, 1, model_name = model_name
+            )
+            if (
+                probe
+                and probe[0].dense_score is not None
+                and (probe[0].dense_score >= min_dense_score)
+            ):
+                strong = hits[:k]
         if not strong:
             return None
         rows = store_rows(conn, strong)

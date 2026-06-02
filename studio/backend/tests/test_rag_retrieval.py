@@ -215,6 +215,45 @@ def test_search_for_autoinject_gates_on_dense_score(
     )
 
 
+def test_search_for_autoinject_bm25_gates_on_dense_probe(
+    rag_conn, bow_embeddings, monkeypatch
+):
+    """In lexical/BM25 mode hits carry no cosine, so the gate uses a dense 1-NN
+    probe: a confident probe injects the lexical hits; a weak one skips (#5)."""
+    _add_doc(rag_conn, "kb_a", "d1", "paper.pdf", "h1", "body text here", page = 3)
+    monkeypatch.setattr(
+        retrieval,
+        "retrieve_hybrid",
+        lambda conn, scope, q, **k: [retrieval.Hit("d1:0", 1.0, lexical_score = 2.5)],
+    )
+
+    monkeypatch.setattr(
+        retrieval,
+        "retrieve_dense",
+        lambda conn, scope, q, k = None, **kw: [
+            retrieval.Hit("d1:0", 0.82, dense_score = 0.82)
+        ],
+    )
+    found = tool.search_for_autoinject(
+        query = "q", scope_kb_id = "a", mode = "lexical", min_dense_score = 0.70
+    )
+    assert found is not None and found[1][0]["chunkId"] == "d1:0"
+
+    monkeypatch.setattr(
+        retrieval,
+        "retrieve_dense",
+        lambda conn, scope, q, k = None, **kw: [
+            retrieval.Hit("d1:0", 0.40, dense_score = 0.40)
+        ],
+    )
+    assert (
+        tool.search_for_autoinject(
+            query = "q", scope_kb_id = "a", mode = "lexical", min_dense_score = 0.70
+        )
+        is None
+    )
+
+
 def test_search_for_autoinject_empty_query_or_scope(rag_home):
     assert tool.search_for_autoinject(query = "  ", scope_kb_id = "a") is None
     assert tool.search_for_autoinject(query = "hello") is None  # no scope
@@ -225,7 +264,6 @@ def test_build_rag_autoinject_emits_pipeline(monkeypatch):
     from core.inference import tools
     from storage import rag_db
 
-    monkeypatch.setenv("RAG_AUTOINJECT", "1")  # off by default; enable for this test
     monkeypatch.setattr(rag_db, "RAG_AVAILABLE", True, raising = False)
     monkeypatch.setattr(
         tool,
@@ -255,7 +293,6 @@ def test_build_rag_autoinject_skips_without_hit(monkeypatch):
     from core.inference import tools
     from storage import rag_db
 
-    monkeypatch.setenv("RAG_AUTOINJECT", "1")  # enable so we exercise the no-hit path
     monkeypatch.setattr(rag_db, "RAG_AVAILABLE", True, raising = False)
     monkeypatch.setattr(tool, "search_for_autoinject", lambda **k: None)
     assert (
@@ -266,20 +303,26 @@ def test_build_rag_autoinject_skips_without_hit(monkeypatch):
     )
 
 
-def test_build_rag_autoinject_disabled_by_default(monkeypatch):
-    """No env and no scope toggle -> forced inject is off (docs come via the tool)."""
+def test_build_rag_autoinject_enabled_by_default(monkeypatch):
+    """No env, no scope toggle -> forced inject is on, at the default 0.70 floor."""
     from core.inference import tools
     from storage import rag_db
 
     monkeypatch.delenv("RAG_AUTOINJECT", raising = False)
+    monkeypatch.delenv("RAG_AUTOINJECT_MIN_SCORE", raising = False)
     monkeypatch.setattr(rag_db, "RAG_AVAILABLE", True, raising = False)
-    monkeypatch.setattr(tool, "search_for_autoinject", lambda **k: ("x", [{"a": 1}]))
-    assert (
-        tools.build_rag_autoinject(
-            [{"role": "user", "content": "hi"}], {"thread_id": "t1"}
-        )
-        is None
+    seen: dict = {}
+
+    def fake(**k):
+        seen.update(k)
+        return ("x", [{"citationId": 1}])
+
+    monkeypatch.setattr(tool, "search_for_autoinject", fake)
+    out = tools.build_rag_autoinject(
+        [{"role": "user", "content": "hi"}], {"thread_id": "t1"}
     )
+    assert out is not None  # on by default
+    assert seen["min_dense_score"] == 0.70  # high precision floor by default
 
 
 def test_build_rag_autoinject_caps_top_k(monkeypatch):
