@@ -28,6 +28,8 @@ from loggers import get_logger
 from core.inference.tool_call_parser import (
     BUDGET_EXHAUSTED_NUDGE,
     DUPLICATE_CALL_NUDGE,
+    RAG_MAX_SEARCHES_PER_TURN,
+    RAG_SEARCH_CAP_NUDGE,
     RENDER_HTML_REPEAT_NUDGE,
     TOOL_ERROR_NUDGE,
     TOOL_ERROR_PREFIXES,
@@ -178,6 +180,7 @@ def run_safetensors_tool_loop(
 
     tool_call_history: list[tuple[str, bool]] = []
     render_html_succeeded = False
+    kb_search_count = 0  # executed search_knowledge_base calls this turn
     final_attempt_done = False
     allowed_tool_names = {
         (tool.get("function") or {}).get("name")
@@ -415,6 +418,11 @@ def run_safetensors_tool_loop(
                     "request. Use one of the enabled tools or provide a "
                     "final answer."
                 )
+            elif (
+                tool_name == "search_knowledge_base"
+                and kb_search_count >= RAG_MAX_SEARCHES_PER_TURN
+            ):
+                result = RAG_SEARCH_CAP_NUDGE
             else:
                 already_ran_ok = any(
                     k == tc_key and not err for k, err in tool_call_history
@@ -437,6 +445,8 @@ def run_safetensors_tool_loop(
                     except Exception as exc:
                         logger.exception("Tool %s raised: %s", tool_name, exc)
                         result = f"Error: tool raised an exception: {exc}"
+                    if tool_name == "search_knowledge_base":
+                        kb_search_count += 1
 
             if not repeat_render_html:
                 yield {

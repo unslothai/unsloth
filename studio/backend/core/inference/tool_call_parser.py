@@ -66,6 +66,18 @@ BUDGET_EXHAUSTED_NUDGE = (
     "any more tools."
 )
 
+# search_knowledge_base retrieves from a fixed scope, so paraphrased
+# re-searches within one turn return largely overlapping passages and only
+# fragment the answer (a model once called it 4x and concatenated 4 partial
+# answers). The exact-args duplicate guard misses paraphrases, so additionally
+# cap executed KB searches per turn, then nudge the model to answer.
+RAG_MAX_SEARCHES_PER_TURN = 3
+RAG_SEARCH_CAP_NUDGE = (
+    "You have already searched the knowledge base several times this turn. "
+    "Do not search again. Answer the question using the passages already "
+    "retrieved above; if they do not contain the answer, say so plainly."
+)
+
 
 # Pre-compiled patterns reused by ``parse_tool_calls_from_text``.
 _TC_JSON_START_RE = re.compile(r"<tool_call>\s*\{")

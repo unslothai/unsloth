@@ -52,6 +52,9 @@ from utils.subprocess_compat import (
     windows_hidden_subprocess_kwargs as _windows_hidden_subprocess_kwargs,
 )
 from core.inference.tool_call_parser import (
+    DUPLICATE_CALL_NUDGE,
+    RAG_MAX_SEARCHES_PER_TURN,
+    RAG_SEARCH_CAP_NUDGE,
     RENDER_HTML_REPEAT_NUDGE,
     parse_tool_calls_from_text as _shared_parse_tool_calls_from_text,
 )
@@ -4630,6 +4633,7 @@ class LlamaCppBackend:
         # identical call succeeded).
         _tool_call_history: list[tuple[str, bool]] = []  # (key, failed)
         _render_html_succeeded = False
+        _kb_search_count = 0  # executed search_knowledge_base calls this turn
 
         # ── Re-prompt on plan-without-action ─────────────────
         # When the model describes what it intends to do (forward-looking
@@ -5270,20 +5274,25 @@ class LlamaCppBackend:
                     # ── Duplicate call detection ──────────────
                     # str(dict) is stable here: arguments always comes from
                     # json.loads on the same model output within one request,
-                    # so insertion order is deterministic (Python 3.7+).
+                    # so insertion order is deterministic (Python 3.7+). Scan the
+                    # whole turn (not just the previous call) for a prior
+                    # *successful* identical call, matching the safetensors loop;
+                    # retries after a failure are still allowed.
                     _tc_key = tool_name + str(arguments)
-                    _prev = _tool_call_history[-1] if _tool_call_history else None
+                    _already_ran_ok = any(
+                        k == _tc_key and not err for k, err in _tool_call_history
+                    )
                     if _repeat_render_html:
                         result = RENDER_HTML_REPEAT_NUDGE
-                    elif _prev and _prev[0] == _tc_key and not _prev[1]:
-                        result = (
-                            "You already made this exact call. "
-                            "Do not repeat the same tool call. "
-                            "Try a different approach: fetch a URL "
-                            "from previous results, use Python to "
-                            "process data you already have, or "
-                            "provide your final answer now."
-                        )
+                    elif _already_ran_ok:
+                        result = DUPLICATE_CALL_NUDGE
+                    elif (
+                        tool_name == "search_knowledge_base"
+                        and _kb_search_count >= RAG_MAX_SEARCHES_PER_TURN
+                    ):
+                        # Paraphrased KB re-searches slip past the exact-args
+                        # guard but just fragment the answer; cap them per turn.
+                        result = RAG_SEARCH_CAP_NUDGE
                     else:
                         _effective_timeout = (
                             None if tool_call_timeout >= 9999 else tool_call_timeout
@@ -5313,6 +5322,8 @@ class LlamaCppBackend:
                                 session_id = session_id,
                                 rag_scope = rag_scope,
                             )
+                            if tool_name == "search_knowledge_base":
+                                _kb_search_count += 1
 
                     if not _repeat_render_html:
                         yield {

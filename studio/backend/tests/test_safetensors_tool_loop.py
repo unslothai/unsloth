@@ -39,6 +39,7 @@ from core.inference.safetensors_agentic import (
     run_safetensors_tool_loop,
 )
 from core.inference.tool_call_parser import (
+    RAG_MAX_SEARCHES_PER_TURN,
     has_tool_signal,
     parse_tool_calls_from_text,
     strip_tool_markup,
@@ -461,6 +462,70 @@ class TestLoopBehaviour:
         tool_end_events = [e for e in events if e["type"] == "tool_end"]
         assert len(tool_end_events) == 2
         assert "do not repeat" in tool_end_events[1]["result"].lower()
+
+    def test_nonadjacent_duplicate_tool_call_blocked(self):
+        # A, B, then A again: the second A is a prior successful call, so it is
+        # blocked even though it is not the immediately preceding call.
+        loop, exec_fn = _make_loop(
+            turns = [
+                [
+                    '<tool_call>{"name":"web_search","arguments":{"query":"a"}}</tool_call>'
+                ],
+                [
+                    '<tool_call>{"name":"web_search","arguments":{"query":"b"}}</tool_call>'
+                ],
+                [
+                    '<tool_call>{"name":"web_search","arguments":{"query":"a"}}</tool_call>'
+                ],
+                ["final"],
+            ],
+            exec_results = ["res-a", "res-b"],
+        )
+        events = _collect_events(loop)
+        # Only A and B actually executed; the repeated A is short-circuited.
+        assert [a[1].get("query") for a in exec_fn.calls] == ["a", "b"]
+        tool_end_events = [e for e in events if e["type"] == "tool_end"]
+        assert "do not repeat" in tool_end_events[2]["result"].lower()
+
+    def test_kb_search_capped_per_turn(self):
+        # Paraphrased KB searches differ by args so the duplicate guard misses
+        # them; the per-turn cap stops the runaway re-search loop that fragments
+        # the answer. The first N execute; the next is nudged to answer.
+        n = RAG_MAX_SEARCHES_PER_TURN
+        queries = [f"paraphrase {i}" for i in range(n + 1)]
+        turns = [
+            [
+                '<tool_call>{"name":"search_knowledge_base",'
+                f'"arguments":{{"query":"{q}"}}}}</tool_call>'
+            ]
+            for q in queries
+        ] + [["final answer"]]
+        turn_iter = iter(turns)
+
+        def _gen(_messages):
+            try:
+                chunks = next(turn_iter)
+            except StopIteration:
+                return
+            acc = ""
+            for c in chunks:
+                acc += c
+                yield acc
+
+        exec_fn = FakeExecuteTool([f"chunk-{i}" for i in range(n)])
+        loop = run_safetensors_tool_loop(
+            single_turn = _gen,
+            messages = [{"role": "user", "content": "hi"}],
+            tools = [{"type": "function", "function": {"name": "search_knowledge_base"}}],
+            execute_tool = exec_fn,
+        )
+        events = _collect_events(loop)
+        # Exactly the cap executed; the (n+1)-th was short-circuited.
+        assert len(exec_fn.calls) == n
+        assert all(c[0] == "search_knowledge_base" for c in exec_fn.calls)
+        tool_end_events = [e for e in events if e["type"] == "tool_end"]
+        assert len(tool_end_events) == n + 1
+        assert "do not search again" in tool_end_events[n]["result"].lower()
 
     def test_image_sentinel_stripped_from_model_feed(self):
         # The tool result has a frontend image sentinel that should be
