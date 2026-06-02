@@ -906,14 +906,20 @@
 		box-shadow: none;
 	}
 
-	/* Every dropdown: borderless, chatbox shadow in light, none in dark.
-	   !important so it also overrides the bespoke menu shadows below. */
+	/* Every dropdown/menu/select/popover: borderless, chatbox shadow in light,
+	   none in dark. !important so it also overrides the bespoke menu shadows. */
 	[data-slot="dropdown-menu-content"],
-	[data-slot="dropdown-menu-sub-content"] {
+	[data-slot="dropdown-menu-sub-content"],
+	[data-slot="select-content"],
+	[data-slot="combobox-content"],
+	[data-slot="popover-content"] {
 		box-shadow: 0 2px 8px -2px rgba(27, 27, 31, 0.16) !important;
 	}
 	.dark [data-slot="dropdown-menu-content"],
-	.dark [data-slot="dropdown-menu-sub-content"] {
+	.dark [data-slot="dropdown-menu-sub-content"],
+	.dark [data-slot="select-content"],
+	.dark [data-slot="combobox-content"],
+	.dark [data-slot="popover-content"] {
 		box-shadow: none !important;
 	}
 
