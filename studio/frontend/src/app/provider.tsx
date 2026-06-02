@@ -58,9 +58,6 @@ async function applyAppWindowLayout(isCurrent: WindowLayoutGuard): Promise<void>
 
   await win.setResizable(true);
   if (!isCurrent()) return;
-  // Floor before restore: clamps a stale/undersized saved size up to the min.
-  await win.setSizeConstraints({ minWidth: MIN_WINDOW_WIDTH, minHeight: MIN_WINDOW_HEIGHT });
-  if (!isCurrent()) return;
 
   if (hasSavedState) {
     // Subsequent launch: the plugin handles size, position, and maximized,
@@ -89,6 +86,10 @@ async function applyAppWindowLayout(isCurrent: WindowLayoutGuard): Promise<void>
   }
   if (!isCurrent()) return;
   await win.show();
+  if (!isCurrent()) return;
+  // Apply constraints after restore/show. Setting constraints before plugin restore
+  // can emit a Resized event and overwrite the plugin's cached saved size.
+  await win.setSizeConstraints({ minWidth: MIN_WINDOW_WIDTH, minHeight: MIN_WINDOW_HEIGHT });
 }
 
 async function showWindowFallback(): Promise<void> {
