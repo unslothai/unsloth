@@ -2644,6 +2644,53 @@ def supported_optimization_options() -> dict[str, Any]:
                     "gguf_prepared_module_counts.diffusion_compiled_dequant_modules"
                 ),
             },
+            "gguf_balanced_cuda_cache": {
+                "default_enabled": True,
+                "automatic_when": (
+                    "CUDA load with offload_policy=balanced and CPU-resident "
+                    "diffusion GGUF weights"
+                ),
+                "env_override": "UNSLOTH_STUDIO_GGUF_CUDA_CACHE_MIB",
+                "free_memory_headroom_mib": BALANCED_GGUF_CUDA_CACHE_HEADROOM_MIB,
+                "tiers": [
+                    {
+                        "min_total_vram_mib": MIN_BALANCED_GGUF_CUDA_CACHE_TOTAL_MIB,
+                        "max_total_vram_mib": MID_BALANCED_GGUF_CUDA_CACHE_TOTAL_MIB,
+                        "cache_budget_mib": MID_BALANCED_GGUF_CUDA_CACHE_MIB,
+                    },
+                    {
+                        "min_total_vram_mib": MID_BALANCED_GGUF_CUDA_CACHE_TOTAL_MIB,
+                        "max_total_vram_mib": HIGH_BALANCED_GGUF_CUDA_CACHE_TOTAL_MIB,
+                        "cache_budget_mib": DEFAULT_BALANCED_GGUF_CUDA_CACHE_MIB,
+                    },
+                    {
+                        "min_total_vram_mib": HIGH_BALANCED_GGUF_CUDA_CACHE_TOTAL_MIB,
+                        "max_total_vram_mib": (
+                            VERY_HIGH_BALANCED_GGUF_CUDA_CACHE_TOTAL_MIB
+                        ),
+                        "cache_budget_mib": HIGH_BALANCED_GGUF_CUDA_CACHE_MIB,
+                    },
+                    {
+                        "min_total_vram_mib": (
+                            VERY_HIGH_BALANCED_GGUF_CUDA_CACHE_TOTAL_MIB
+                        ),
+                        "max_total_vram_mib": None,
+                        "cache_budget_mib": VERY_HIGH_BALANCED_GGUF_CUDA_CACHE_MIB,
+                    },
+                ],
+                "status_counters": {
+                    "modules": "gguf_prepared_module_counts.diffusion_cuda_cache_modules",
+                    "budget_mib": (
+                        "gguf_prepared_module_counts.diffusion_cuda_cache_budget_mib"
+                    ),
+                    "candidate_mib": (
+                        "gguf_prepared_module_counts.diffusion_cuda_cache_candidate_mib"
+                    ),
+                    "selected_mib": (
+                        "gguf_prepared_module_counts.diffusion_cuda_cache_selected_mib"
+                    ),
+                },
+            },
             "denoiser_torch_compile": {
                 "default_enabled": False,
                 "recommended_scope": "denoiser_or_repeated_blocks_only",

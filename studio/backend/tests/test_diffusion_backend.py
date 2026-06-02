@@ -347,6 +347,25 @@ def test_supported_optimization_options_payload_shape():
 
     compile_options = payload["compile"]
     assert compile_options["gguf_balanced_dequant_compile"]["default_enabled"] is True
+    cache_options = compile_options["gguf_balanced_cuda_cache"]
+    assert cache_options["default_enabled"] is True
+    assert cache_options["env_override"] == "UNSLOTH_STUDIO_GGUF_CUDA_CACHE_MIB"
+    assert cache_options["free_memory_headroom_mib"] == 8 * 1024
+    assert cache_options["tiers"][-1] == {
+        "min_total_vram_mib": 96 * 1024,
+        "max_total_vram_mib": None,
+        "cache_budget_mib": 16 * 1024,
+    }
+    assert cache_options["status_counters"] == {
+        "modules": "gguf_prepared_module_counts.diffusion_cuda_cache_modules",
+        "budget_mib": "gguf_prepared_module_counts.diffusion_cuda_cache_budget_mib",
+        "candidate_mib": (
+            "gguf_prepared_module_counts.diffusion_cuda_cache_candidate_mib"
+        ),
+        "selected_mib": (
+            "gguf_prepared_module_counts.diffusion_cuda_cache_selected_mib"
+        ),
+    }
     assert compile_options["denoiser_torch_compile"]["default_enabled"] is False
     assert compile_options["group_offload"]["image_default"] is False
     assert compile_options["group_offload"]["media_kind"] == "video"
