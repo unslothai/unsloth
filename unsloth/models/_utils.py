@@ -939,6 +939,72 @@ except:
 from transformers.modeling_utils import logger as transformers_logger
 
 
+# ---- NVIDIA DGX Spark (GB10) / N1X "RTX Spark" (Blackwell unified-memory) support ----
+# These Blackwell unified-memory (UMA) machines report different device names:
+# "NVIDIA GB10" on DGX Spark, "JMJWOA-Generic-GPU" on the pre-launch N1X laptop.
+# One shared detector so every Spark-specific workaround uses the same definition.
+# The aarch64 + CUDA gate makes this a strict no-op on x86_64 NVIDIA, AMD/ROCm,
+# Intel/XPU, Mac/MLX, and discrete aarch64 GPUs (GH200/GB200) -- those report
+# non-matching names and/or are not aarch64, so behaviour there is unchanged.
+_DGX_SPARK_DEVICE_TOKENS = ("GB10", "JMJWOA", "N1X", "DGX SPARK", "GB110")
+
+@functools.lru_cache(maxsize = None)
+def is_dgx_spark():
+    """True only on a DGX Spark / N1X Spark-class machine.
+
+    Gate: aarch64 + NVIDIA CUDA + a known Spark device-name token. Overridable for
+    testing via UNSLOTH_FORCE_DGX_SPARK=1 (force on) / =0 (force off).
+    """
+    _force = os.environ.get("UNSLOTH_FORCE_DGX_SPARK")
+    if _force == "1": return True
+    if _force == "0": return False
+    try:
+        import platform
+        if platform.machine().lower() not in ("aarch64", "arm64"):
+            return False
+        if not (hasattr(torch, "cuda") and torch.cuda.is_available()):
+            return False
+        names = " ".join(
+            str(torch.cuda.get_device_name(i)).upper()
+            for i in range(torch.cuda.device_count())
+        )
+        return any(token in names for token in _DGX_SPARK_DEVICE_TOKENS)
+    except Exception:
+        return False
+pass
+
+
+def patch_dgx_spark_caching_allocator_warmup():
+    """No-op `transformers.modeling_utils.caching_allocator_warmup` on Spark UMA.
+
+    HF sizes a GPU pre-allocation from `cudaMemGetInfo()` to warm the caching
+    allocator. On Spark unified memory `cudaMemGetInfo` undercounts free memory
+    (reclaimable buffer cache is reported unavailable), so the warmup
+    `torch.empty(...)` raises `AcceleratorError: invalid argument` and aborts any
+    runtime-quantized (bitsandbytes 4/8-bit) load. The warmup is only a speed hint,
+    so skipping it on Spark merely forgoes a minor warmup while letting loads
+    succeed. No-op on every non-Spark platform (gated by `is_dgx_spark()`).
+    Idempotent: re-applying is a no-op (marked via `_unsloth_spark_noop`).
+    """
+    if not is_dgx_spark():
+        return
+    try:
+        from transformers import modeling_utils as _mu
+    except Exception:
+        return
+    if not hasattr(_mu, "caching_allocator_warmup"):
+        return
+    if getattr(_mu.caching_allocator_warmup, "_unsloth_spark_noop", False):
+        return
+    def _noop(*args, **kwargs):
+        return None
+    _noop._unsloth_spark_noop = True
+    _mu.caching_allocator_warmup = _noop
+pass
+
+patch_dgx_spark_caching_allocator_warmup()
+
+
 class _RaiseUninitialized(logging.Handler):
     def __init__(self):
         super().__init__()
