@@ -226,17 +226,50 @@ _SSM_MODEL_SUBSTRINGS = (
 )
 
 
+def _extract_model_identifier(model_name: str) -> str:
+    """Extract the model identifier from a full path or HuggingFace repo ID.
+
+    Prevents false positives from paths like '/home/mamba/models/llama'.
+
+    Examples:
+        '/home/user/models/llama-7b' -> 'llama-7b'
+        'unsloth/Mamba-130M' -> 'unsloth/Mamba-130M'
+        '/cache/hub/models--state-spaces--mamba-130m/...' -> 'state-spaces/mamba-130m'
+    """
+    import os
+
+    # Handle HuggingFace cache paths like 'models--org--name'
+    if "models--" in model_name:
+        parts = model_name.split("models--")
+        if len(parts) > 1:
+            repo_part = parts[-1].split(os.sep)[0].split("/")[0]
+            return repo_part.replace("--", "/")
+
+    # For local paths, use basename; for repo IDs, use as-is
+    if os.sep in model_name or (model_name.count("/") > 1):
+        return os.path.basename(model_name.rstrip(os.sep + "/"))
+
+    return model_name
+
+
 def _is_ssm_model(model_name: str) -> bool:
     """Check if a model is an SSM (State Space Model) architecture.
 
     SSM models like Mamba, LFM, NemotronH, FalconH1, and Jamba use state-based
     recurrence rather than attention-based KV caching. They benefit from
     use_cache=False during generation since they don't need KV cache management.
+
+    Note: Only checks the model identifier (not full path) to avoid false
+    positives from paths like '/home/mamba/models/llama'.
     """
     if not model_name:
         return False
-    name_lower = model_name.lower()
-    return any(sub in name_lower for sub in _SSM_MODEL_SUBSTRINGS)
+
+    # Extract just the model identifier to avoid false positives from paths
+    identifier = _extract_model_identifier(model_name)
+    identifier_lower = identifier.lower()
+
+    return any(sub in identifier_lower for sub in _SSM_MODEL_SUBSTRINGS)
 
 
 class InferenceBackend:
