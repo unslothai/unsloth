@@ -343,6 +343,9 @@ export function AppSidebar() {
     if (chatDisabled) return;
     setActiveThreadId(null);
     useChatRuntimeStore.getState().setActiveProjectId(projectId);
+    // The normal new-chat affordance is always a regular, saved chat --
+    // only the toolbar toggle starts a temporary one.
+    useChatRuntimeStore.getState().setIncognito(false);
     navigate({ to: "/chat", search: chatSearchForProject(projectId) });
     closeMobileIfOpen();
   }

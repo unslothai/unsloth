@@ -57,6 +57,7 @@ import {
   isExpectedBackgroundChatStorageError,
   listStoredChatMessages,
   listStoredChatThreads,
+  markThreadIncognito,
   saveStoredChatMessage,
   saveStoredChatThread,
   updateStoredChatThread,
@@ -545,10 +546,25 @@ export async function ensureThreadRecord({
   if (isChatThreadDeleted(threadId)) {
     return;
   }
+  // Snapshot the toggle SYNCHRONOUSLY, before the await below. This runs in
+  // the same tick as the user's send, so it reliably captures the toggle's
+  // state at creation. Reading it after the await would let a toggle-off
+  // that lands mid-await (the list call is a real network round-trip) flip
+  // the decision and persist what should have been an incognito thread.
+  const incognitoAtInit = useChatRuntimeStore.getState().incognito;
   const existing = (await listStoredChatThreads({ includeArchived: true })).find(
     (thread) => thread.id === threadId,
   );
   if (existing) {
+    return;
+  }
+  // Tag a brand-new thread created while temporary chat is on (see the
+  // incognitoThreadIds note in chat-history-storage). The `existing` check
+  // runs first so an already-persisted thread is never tagged -- that's
+  // what keeps a real thread saving normally even if the toggle flips on
+  // while its run is still streaming.
+  if (incognitoAtInit) {
+    markThreadIncognito(threadId);
     return;
   }
 

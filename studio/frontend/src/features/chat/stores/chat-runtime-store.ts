@@ -333,6 +333,14 @@ type ChatRuntimeStore = {
   loadedChatTemplateOverride: string | null;
   activeThreadId: string | null;
   activeProjectId: string | null;
+  /**
+   * Temporary / incognito chat toggle. When on, the active conversation
+   * lives only in assistant-ui's in-memory repository and is never
+   * persisted to studio.db -- so it stays out of history and vanishes on
+   * reload. Deliberately ephemeral: NOT mirrored to localStorage or the
+   * backend settings, so a refresh always exits incognito.
+   */
+  incognito: boolean;
   settingsPanelOpen: boolean;
   pendingAudioBase64: string | null;
   pendingAudioName: string | null;
@@ -365,6 +373,7 @@ type ChatRuntimeStore = {
   setCheckpoint: (modelId: string, ggufVariant?: string | null) => void;
   setActiveThreadId: (threadId: string | null) => void;
   setActiveProjectId: (projectId: string | null) => void;
+  setIncognito: (incognito: boolean) => void;
   setSettingsPanelOpen: (open: boolean) => void;
   clearCheckpoint: () => void;
   setReasoningEnabled: (
@@ -665,6 +674,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   loadedChatTemplateOverride: null,
   activeThreadId: null,
   activeProjectId: null,
+  incognito: false,
   settingsPanelOpen: false,
   pendingAudioBase64: null,
   pendingAudioName: null,
@@ -829,6 +839,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   setActiveThreadId: (activeThreadId) =>
     set({ activeThreadId, contextUsage: null }),
   setActiveProjectId: (activeProjectId) => set({ activeProjectId }),
+  setIncognito: (incognito) => set({ incognito }),
   setSettingsPanelOpen: (settingsPanelOpen) => set({ settingsPanelOpen }),
   clearCheckpoint: () => {
     // Mirror setCheckpoint's persistence behavior: dropping the

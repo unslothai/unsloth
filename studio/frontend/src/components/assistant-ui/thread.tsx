@@ -352,6 +352,7 @@ const ThreadWelcome: FC<{
   hideComposer?: boolean;
   threadId?: string | null;
 }> = ({ hideComposer, threadId }) => {
+  const incognito = useChatRuntimeStore((s) => s.incognito);
   const [currentEmoji, setCurrentEmoji] = useState("large sloth drink.png");
 
   useEffect(() => {
@@ -375,10 +376,12 @@ const ThreadWelcome: FC<{
           <div className="flex flex-col items-center gap-2 text-center">
             <img src={currentEmojiSrc} alt="Sloth mascot" className="size-20" />
             <h1 className="aui-thread-welcome-message-inner fade-in slide-in-from-bottom-1 animate-in font-heading font-semibold text-2xl tracking-[0em] duration-200">
-              Chat with your model
+              {incognito ? "Temporary chat" : "Chat with your model"}
             </h1>
             <p className="aui-thread-welcome-message-inner fade-in slide-in-from-bottom-1 -mt-1 animate-in font-heading font-normal text-muted-foreground text-sm delay-75 duration-200">
-              Run GGUFs, safetensors, vision and audio models
+              {incognito
+                ? "This chat won't appear in your history and isn't saved. It disappears when you leave."
+                : "Run GGUFs, safetensors, vision and audio models"}
             </p>
           </div>
           {!hideComposer && <ComposerAnimated threadId={threadId} />}

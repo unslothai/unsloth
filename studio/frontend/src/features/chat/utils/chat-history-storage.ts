@@ -35,6 +35,23 @@ import {
   markChatThreadsDeleted,
 } from "./chat-thread-tombstones";
 
+// Thread ids that belong to a temporary/incognito session. A thread is
+// tagged once, at creation (ensureThreadRecord, when the toggle is on), and
+// stays tagged for its whole lifetime -- the writers below consult this
+// set, never the live toggle. That decoupling is what makes mid-stream
+// toggling safe: flipping the toggle can neither leak an in-flight incognito
+// run into history nor drop a normal thread's writes. Reads stay ungated so
+// real history still loads while a temporary chat is open.
+const incognitoThreadIds = new Set<string>();
+
+export function markThreadIncognito(threadId: string): void {
+  incognitoThreadIds.add(threadId);
+}
+
+function isThreadIncognito(threadId: string): boolean {
+  return incognitoThreadIds.has(threadId);
+}
+
 type ThreadListArgs = {
   modelType?: ModelType;
   pairId?: string;
@@ -452,6 +469,10 @@ export async function ensureStoredChatThread(
   threadId: string,
   fallback?: ThreadRecord,
 ): Promise<ThreadRecord | undefined> {
+  // An incognito thread is never persisted, so there's genuinely nothing
+  // to ensure -- skip the backend round-trips this would otherwise make
+  // on every autosave (runStart/runEnd) and message append.
+  if (isThreadIncognito(threadId)) return undefined;
   if (isChatThreadDeleted(threadId)) return undefined;
   const legacyThread = fallback ?? (await db.threads.get(threadId));
   let backendThread: ThreadRecord | null;
@@ -667,6 +688,7 @@ export async function moveStoredChatItemToProject(
 export async function saveStoredChatMessage(
   message: MessageRecord,
 ): Promise<MessageRecord> {
+  if (isThreadIncognito(message.threadId)) return message;
   if (isChatThreadDeleted(message.threadId)) {
     throw new Error(`Thread ${message.threadId} was deleted`);
   }
@@ -679,6 +701,7 @@ export async function syncStoredChatMessages(
   messages: MessageRecord[],
   options: { pruneMissing?: boolean } = {},
 ): Promise<MessageRecord[]> {
+  if (isThreadIncognito(threadId)) return messages;
   if (isChatThreadDeleted(threadId)) return [];
   await ensureStoredChatThread(threadId);
   return syncChatMessages(threadId, messages, options);
@@ -687,6 +710,7 @@ export async function syncStoredChatMessages(
 export async function saveStoredChatThread(
   thread: ThreadRecord,
 ): Promise<ThreadRecord> {
+  if (isThreadIncognito(thread.id)) return thread;
   if (isChatThreadDeleted(thread.id)) {
     throw new Error(`Thread ${thread.id} was deleted`);
   }
@@ -697,6 +721,7 @@ export async function updateStoredChatThread(
   threadId: string,
   patch: Partial<ThreadRecord>,
 ): Promise<ThreadRecord | undefined> {
+  if (isThreadIncognito(threadId)) return undefined;
   const thread = await ensureStoredChatThread(threadId);
   if (!thread) return undefined;
   return updateChatThread(threadId, patch);
