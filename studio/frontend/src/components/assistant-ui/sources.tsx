@@ -406,35 +406,49 @@ const SourcesGroup: FC = () => {
 
   return (
     <div className="relative mt-2 mb-3">
-      {/* Hidden measurement container — renders all badges to measure row positions */}
+      {/* Hidden measurement container. Renders all badges off-screen so we
+          can read each child's offsetTop and decide how many fit in two
+          rows. Wrapped in an absolute, h-0, overflow-hidden box so the
+          measurement pills do NOT contribute to the viewport's scrollable
+          overflow region. Without this clip, every hidden source row
+          adds ~30px to scrollHeight, producing a phantom empty scroll
+          area below the message: visible to users as unbounded blank
+          space below the assistant action bar. The inner div still
+          flex-wraps its children for measurement; offsetTop reads
+          correctly because the wrapper is positioned (absolute) and the
+          children's offsetTop is measured relative to it. */}
       <div
-        ref={containerRef}
-        aria-hidden={true}
-        className="flex w-full flex-wrap gap-1 invisible absolute pointer-events-none"
+        aria-hidden
+        className="absolute pointer-events-none overflow-hidden h-0 w-full left-0 top-0"
       >
-        {sources.map((source) => (
-          <span key={sourceKey(source)} className="inline-block">
-            {source.kind === "url" ? (
-              <Source href={source.url}>
-                <SourceIcon url={source.url} />
-                <SourceTitle>
-                  {source.title || extractDomain(source.url)}
-                </SourceTitle>
-              </Source>
-            ) : (
-              <Badge
-                variant="outline"
-                className="rounded-full inline-flex items-center gap-1.5"
-              >
-                <span className="font-mono text-[10px] font-semibold text-muted-foreground">
-                  [{source.chunkId}]
-                </span>
-                <FileTextIcon className="size-3 shrink-0 text-muted-foreground" />
-                <SourceTitle>{source.filename}</SourceTitle>
-              </Badge>
-            )}
-          </span>
-        ))}
+        <div
+          ref={containerRef}
+          className="flex w-full flex-wrap gap-1 invisible"
+        >
+          {sources.map((source) => (
+            <span key={sourceKey(source)} className="inline-block">
+              {source.kind === "url" ? (
+                <Source href={source.url}>
+                  <SourceIcon url={source.url} />
+                  <SourceTitle>
+                    {source.title || extractDomain(source.url)}
+                  </SourceTitle>
+                </Source>
+              ) : (
+                <Badge
+                  variant="outline"
+                  className="rounded-full inline-flex items-center gap-1.5"
+                >
+                  <span className="font-mono text-[10px] font-semibold text-muted-foreground">
+                    [{source.chunkId}]
+                  </span>
+                  <FileTextIcon className="size-3 shrink-0 text-muted-foreground" />
+                  <SourceTitle>{source.filename}</SourceTitle>
+                </Badge>
+              )}
+            </span>
+          ))}
+        </div>
       </div>
 
       {/* Visible container */}

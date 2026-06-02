@@ -10,6 +10,7 @@ export type ChatSearch = {
   thread?: string;
   compare?: string;
   new?: string;
+  project?: string;
 };
 
 export const Route = createRoute({
@@ -21,6 +22,7 @@ export const Route = createRoute({
     thread: typeof search.thread === "string" ? search.thread : undefined,
     compare: typeof search.compare === "string" ? search.compare : undefined,
     new: typeof search.new === "string" ? search.new : undefined,
+    project: typeof search.project === "string" ? search.project : undefined,
   }),
   component: ChatPage,
 });

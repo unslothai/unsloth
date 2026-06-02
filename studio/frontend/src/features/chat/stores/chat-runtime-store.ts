@@ -29,6 +29,11 @@ export const CHAT_TOOLS_ENABLED_KEY = "unsloth_chat_tools_enabled";
 export const CHAT_CODE_TOOLS_ENABLED_KEY = "unsloth_chat_code_tools_enabled";
 export const CHAT_IMAGE_TOOLS_ENABLED_KEY = "unsloth_chat_image_tools_enabled";
 export const CHAT_RAG_TOOL_ENABLED_KEY = "unsloth_chat_rag_tool_enabled";
+export const CHAT_ARTIFACTS_ENABLED_KEY = "unsloth_chat_artifacts_enabled";
+export const CHAT_COLLAPSE_HTML_ARTIFACTS_KEY =
+  "unsloth_chat_collapse_html_artifacts";
+export const CHAT_ALLOW_ARTIFACT_NETWORK_ACCESS_KEY =
+  "unsloth_chat_allow_artifact_network_access";
 export const CHAT_MCP_ENABLED_KEY = "unsloth_chat_mcp_enabled";
 export const CHAT_WEB_FETCH_TOOLS_ENABLED_KEY =
   "unsloth_chat_web_fetch_tools_enabled";
@@ -303,6 +308,9 @@ type ChatRuntimeStore = {
   ragToolEnabled: boolean;
   codeToolsEnabled: boolean;
   imageToolsEnabled: boolean;
+  artifactsEnabled: boolean;
+  collapseHtmlArtifacts: boolean;
+  allowArtifactNetworkAccess: boolean;
   mcpEnabledForChat: boolean;
   /**
    * Fetch pill state, independent of `toolsEnabled` (Search). Only
@@ -327,6 +335,7 @@ type ChatRuntimeStore = {
   chatTemplateOverride: string | null;
   loadedChatTemplateOverride: string | null;
   activeThreadId: string | null;
+  activeProjectId: string | null;
   settingsPanelOpen: boolean;
   pendingAudioBase64: string | null;
   pendingAudioName: string | null;
@@ -371,6 +380,7 @@ type ChatRuntimeStore = {
   setModelsError: (error: string | null) => void;
   setCheckpoint: (modelId: string, ggufVariant?: string | null) => void;
   setActiveThreadId: (threadId: string | null) => void;
+  setActiveProjectId: (projectId: string | null) => void;
   setSettingsPanelOpen: (open: boolean) => void;
   clearCheckpoint: () => void;
   setReasoningEnabled: (
@@ -384,6 +394,12 @@ type ChatRuntimeStore = {
   setToolsEnabled: (enabled: boolean, options?: { persist?: boolean }) => void;
   setCodeToolsEnabled: (enabled: boolean) => void;
   setImageToolsEnabled: (enabled: boolean) => void;
+  setArtifactsEnabled: (
+    enabled: boolean,
+    options?: { persist?: boolean },
+  ) => void;
+  setCollapseHtmlArtifacts: (enabled: boolean) => void;
+  setAllowArtifactNetworkAccess: (enabled: boolean) => void;
   setMcpEnabledForChat: (enabled: boolean) => void;
   setWebFetchToolsEnabled: (enabled: boolean) => void;
   setToolStatus: (status: string | null) => void;
@@ -424,6 +440,8 @@ type ScalarSettingKey =
   | "autoTitle"
   | "reasoningEffort"
   | "preserveThinking"
+  | "collapseHtmlArtifacts"
+  | "allowArtifactNetworkAccess"
   | "autoHealToolCalls"
   | "maxToolCallsPerMessage"
   | "toolCallTimeout"
@@ -465,6 +483,8 @@ const SCALAR_SETTING_KEYS = [
   "autoTitle",
   "reasoningEffort",
   "preserveThinking",
+  "collapseHtmlArtifacts",
+  "allowArtifactNetworkAccess",
   "autoHealToolCalls",
   "maxToolCallsPerMessage",
   "toolCallTimeout",
@@ -659,6 +679,12 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   ragToolEnabled: loadBool(CHAT_RAG_TOOL_ENABLED_KEY, false),
   codeToolsEnabled: loadBool(CHAT_CODE_TOOLS_ENABLED_KEY, false),
   imageToolsEnabled: loadBool(CHAT_IMAGE_TOOLS_ENABLED_KEY, false),
+  artifactsEnabled: loadBool(CHAT_ARTIFACTS_ENABLED_KEY, false),
+  collapseHtmlArtifacts: loadBool(CHAT_COLLAPSE_HTML_ARTIFACTS_KEY, false),
+  allowArtifactNetworkAccess: loadBool(
+    CHAT_ALLOW_ARTIFACT_NETWORK_ACCESS_KEY,
+    false,
+  ),
   mcpEnabledForChat: loadBool(CHAT_MCP_ENABLED_KEY, false),
   webFetchToolsEnabled: loadBool(CHAT_WEB_FETCH_TOOLS_ENABLED_KEY, false),
   toolStatus: null,
@@ -678,6 +704,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   chatTemplateOverride: null,
   loadedChatTemplateOverride: null,
   activeThreadId: null,
+  activeProjectId: null,
   settingsPanelOpen: false,
   pendingAudioBase64: null,
   pendingAudioName: null,
@@ -859,6 +886,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     }),
   setActiveThreadId: (activeThreadId) =>
     set({ activeThreadId, contextUsage: null }),
+  setActiveProjectId: (activeProjectId) => set({ activeProjectId }),
   setSettingsPanelOpen: (settingsPanelOpen) => set({ settingsPanelOpen }),
   clearCheckpoint: () => {
     // Mirror setCheckpoint's persistence behavior: dropping the
@@ -893,6 +921,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       toolsEnabled: false,
       codeToolsEnabled: false,
       imageToolsEnabled: false,
+      artifactsEnabled: false,
+      mcpEnabledForChat: false,
       webFetchToolsEnabled: false,
       toolStatus: null,
       kvCacheDtype: null,
@@ -1014,6 +1044,36 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     set(() => {
       saveBool(CHAT_IMAGE_TOOLS_ENABLED_KEY, imageToolsEnabled);
       return { imageToolsEnabled };
+    }),
+  setArtifactsEnabled: (artifactsEnabled, options) =>
+    set(() => {
+      if (options?.persist !== false) {
+        saveBool(CHAT_ARTIFACTS_ENABLED_KEY, artifactsEnabled);
+      }
+      return { artifactsEnabled };
+    }),
+  setCollapseHtmlArtifacts: (collapseHtmlArtifacts) =>
+    set((state) => {
+      saveBool(CHAT_COLLAPSE_HTML_ARTIFACTS_KEY, collapseHtmlArtifacts);
+      setScalarSettingVersion(
+        "collapseHtmlArtifacts",
+        collapseHtmlArtifacts,
+        state.collapseHtmlArtifacts,
+      );
+      return { collapseHtmlArtifacts };
+    }),
+  setAllowArtifactNetworkAccess: (allowArtifactNetworkAccess) =>
+    set((state) => {
+      saveBool(
+        CHAT_ALLOW_ARTIFACT_NETWORK_ACCESS_KEY,
+        allowArtifactNetworkAccess,
+      );
+      setScalarSettingVersion(
+        "allowArtifactNetworkAccess",
+        allowArtifactNetworkAccess,
+        state.allowArtifactNetworkAccess,
+      );
+      return { allowArtifactNetworkAccess };
     }),
   setMcpEnabledForChat: (mcpEnabledForChat) =>
     set(() => {

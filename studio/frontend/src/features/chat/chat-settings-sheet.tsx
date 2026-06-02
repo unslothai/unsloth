@@ -69,7 +69,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { Add01Icon, Delete02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { ChevronDown } from "lucide-react";
+import { ChevronDown, ExternalLink } from "lucide-react";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { type CSSProperties, Fragment, type ReactNode } from "react";
 import {
@@ -100,7 +100,6 @@ import {
   toPresetParams,
 } from "./presets/preset-policy";
 import {
-  EXTERNAL_MAX_OUTPUT_TOKENS,
   type ProviderCapabilities,
   getExternalMaxOutputTokens,
   getExternalMinOutputTokens,
@@ -108,8 +107,6 @@ import {
   providerSupportsFastMode,
 } from "./provider-capabilities";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
-import { ChatMcpServersDialog } from "./chat-mcp-servers-dialog";
-import { listMcpServers } from "./api/mcp-servers-api";
 import type { InferenceParams } from "./types/runtime";
 
 function ragSourceLabel(
@@ -391,11 +388,19 @@ function saveCollapsibleOpen(label: string, open: boolean) {
 
 function CollapsibleSection({
   label,
+  labelHref,
   children,
   defaultOpen = false,
   first = false,
 }: {
   label: string;
+  /**
+   * When set, the label text becomes an external link (e.g. to the feature's
+   * GitHub PR) instead of part of the collapse toggle. The chevron still
+   * toggles open/close, so we render the two as siblings rather than nesting
+   * an <a> inside the <button> (invalid HTML).
+   */
+  labelHref?: string;
   children?: ReactNode;
   defaultOpen?: boolean;
   first?: boolean;
@@ -405,31 +410,59 @@ function CollapsibleSection({
     return Object.hasOwn(saved, label) ? saved[label] : defaultOpen;
   });
 
+  const toggle = () => {
+    const next = !open;
+    setOpen(next);
+    saveCollapsibleOpen(label, next);
+  };
+
+  const headerClasses = cn(
+    "flex w-full items-center justify-between text-[12px] font-medium normal-case tracking-[0.04em] text-nav-fg-muted transition-colors focus-visible:outline-none focus-visible:ring-0",
+    first ? "pt-4 pb-5" : "py-5",
+  );
+
   return (
     <div
       className={cn(
         !first && "border-t border-black/[0.13] dark:border-white/[0.09]",
       )}
     >
-      <button
-        type="button"
-        onClick={() => {
-          const next = !open;
-          setOpen(next);
-          saveCollapsibleOpen(label, next);
-        }}
-        className={cn(
-          "flex w-full cursor-pointer items-center justify-between text-[12px] font-medium normal-case tracking-[0.04em] text-nav-fg-muted transition-colors hover:text-nav-fg focus-visible:outline-none focus-visible:ring-0",
-          first ? "pt-4 pb-5" : "py-5",
-        )}
-      >
-        <span className="leading-none">{label}</span>
-        <span className="flex shrink-0 items-center leading-none">
-          <ChevronDown
-            className={cn("size-3.5", open ? "rotate-0" : "-rotate-90")}
-          />
-        </span>
-      </button>
+      {labelHref ? (
+        <div className={headerClasses}>
+          <a
+            href={labelHref}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex cursor-pointer items-center gap-1 leading-none transition-colors hover:text-nav-fg"
+          >
+            <span>{label}</span>
+            <ExternalLink className="size-3" />
+          </a>
+          <button
+            type="button"
+            onClick={toggle}
+            aria-label={open ? `Collapse ${label}` : `Expand ${label}`}
+            className="flex shrink-0 cursor-pointer items-center leading-none transition-colors hover:text-nav-fg"
+          >
+            <ChevronDown
+              className={cn("size-3.5", open ? "rotate-0" : "-rotate-90")}
+            />
+          </button>
+        </div>
+      ) : (
+        <button
+          type="button"
+          onClick={toggle}
+          className={cn("cursor-pointer hover:text-nav-fg", headerClasses)}
+        >
+          <span className="leading-none">{label}</span>
+          <span className="flex shrink-0 items-center leading-none">
+            <ChevronDown
+              className={cn("size-3.5", open ? "rotate-0" : "-rotate-90")}
+            />
+          </span>
+        </button>
+      )}
       {open && <div className="pb-7">{children}</div>}
     </div>
   );
@@ -604,16 +637,6 @@ export function ChatSettingsPanel({
     (s) => s.modelRequiresTrustRemoteCode,
   );
   const currentCheckpoint = params.checkpoint;
-  const currentModelIsMultimodal = useChatRuntimeStore((s) => {
-    if (s.loadedIsMultimodal) return true;
-    const m = s.models.find((m) => m.id === currentCheckpoint);
-    return (
-      Boolean(m?.isVision) ||
-      Boolean(m?.isAudio) ||
-      Boolean(m?.hasAudioInput) ||
-      m?.audioType === "audio_vlm"
-    );
-  });
   const ggufContextLength = useChatRuntimeStore((s) => s.ggufContextLength);
   const ggufMaxContextLength = useChatRuntimeStore(
     (s) => s.ggufMaxContextLength,
@@ -861,45 +884,50 @@ export function ChatSettingsPanel({
   const previewTarget = usePreviewStore((s) => s.target);
   const previewStatus = usePreviewStore((s) => s.status);
 
+  const settingsScrollRef = useRef<HTMLDivElement>(null);
+
   const settingsContent = (
     <>
-      <div className="aui-thread-viewport relative h-full overflow-y-auto">
-        <div className="sticky top-0 z-10 flex h-[48px] items-start gap-2 bg-panel-surface pl-[18px] pr-[14px] pt-[11px]">
-          {rightSlotUsesSheet ? (
-            <span className="flex h-[34px] flex-1 items-center text-[15px] font-semibold tracking-[-0.01em] dark:tracking-[0.015em] text-nav-fg">
-              Configuration
+      <div
+        ref={settingsScrollRef}
+        className="relative h-full overflow-y-auto"
+      >
+      <div className="sticky top-0 z-10 flex h-[48px] items-start gap-2 bg-panel-surface pl-[18px] pr-[16px] pt-[11px]">
+        {rightSlotUsesSheet ? (
+          <span className="flex h-[34px] flex-1 items-center text-[15px] font-semibold tracking-[0em] dark:tracking-[0.015em] text-nav-fg">
+            Run settings
+          </span>
+        ) : (
+          <>
+            <span className="flex h-[34px] flex-1 items-center text-[15px] font-semibold tracking-[0em] dark:tracking-[0.015em] text-nav-fg">
+              Run settings
             </span>
-          ) : (
-            <>
-              <span className="flex h-[34px] flex-1 items-center text-[15px] font-semibold tracking-[-0.01em] dark:tracking-[0.015em] text-nav-fg">
-                Configuration
-              </span>
-              <Tooltip>
-                <TooltipPrimitive.Trigger asChild={true}>
-                  <button
-                    type="button"
-                    onClick={() => onOpenChange?.(false)}
-                    className="flex h-[34px] w-[34px] items-center justify-center rounded-[12px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                    aria-label="Close configuration"
-                  >
-                    <HugeiconsIcon
-                      icon={LayoutAlignRightIcon}
-                      strokeWidth={1.75}
-                      className="size-icon"
-                    />
-                  </button>
-                </TooltipPrimitive.Trigger>
-                <TooltipContent
-                  side="bottom"
-                  sideOffset={6}
-                  className="tooltip-compact"
+            <Tooltip>
+              <TooltipPrimitive.Trigger asChild={true}>
+                <button
+                  type="button"
+                  onClick={() => onOpenChange?.(false)}
+                  className="flex h-[34px] w-[34px] cursor-pointer items-center justify-center rounded-[12px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  aria-label="Close run settings"
                 >
-                  Close configuration
-                </TooltipContent>
-              </Tooltip>
-            </>
-          )}
-        </div>
+                  <HugeiconsIcon
+                    icon={LayoutAlignRightIcon}
+                    strokeWidth={1.75}
+                    className="size-icon"
+                  />
+                </button>
+              </TooltipPrimitive.Trigger>
+              <TooltipContent
+                side="bottom"
+                sideOffset={6}
+                className="tooltip-compact"
+              >
+                Close run settings
+              </TooltipContent>
+            </Tooltip>
+          </>
+        )}
+      </div>
 
         <div className="px-[18px] pt-3">
           {hasModelContent && (
@@ -1876,7 +1904,7 @@ export function ChatSettingsPanel({
                 }
                 max={
                   isExternalModel
-                    ? EXTERNAL_MAX_OUTPUT_TOKENS
+                    ? getExternalMaxOutputTokens(externalProviderType)
                     : isGguf && ggufContextLength
                       ? ggufContextLength
                       : 32768
@@ -1904,12 +1932,6 @@ export function ChatSettingsPanel({
               </div>
             </CollapsibleSection>
           )}
-
-          {!isExternalModel ? (
-            <CollapsibleSection label="MCP Servers">
-              <McpServersSection />
-            </CollapsibleSection>
-          ) : null}
         </div>
       </div>
       <Dialog
@@ -2010,7 +2032,7 @@ export function ChatSettingsPanel({
         >
           <SheetHeader className="sr-only">
             <SheetTitle>
-              {slotShowsPreview ? "Document preview" : "Configuration"}
+              {slotShowsPreview ? "Document preview" : "Run settings"}
             </SheetTitle>
             <SheetDescription>
               {slotShowsPreview
@@ -2184,74 +2206,6 @@ function AutoHealToolCallsToggle() {
         className="panel-switch"
         checked={autoHealToolCalls}
         onCheckedChange={setAutoHealToolCalls}
-      />
-    </div>
-  );
-}
-
-function McpServersSection() {
-  const mcpEnabledForChat = useChatRuntimeStore((s) => s.mcpEnabledForChat);
-  const setMcpEnabledForChat = useChatRuntimeStore(
-    (s) => s.setMcpEnabledForChat,
-  );
-  const [enabledServerCount, setEnabledServerCount] = useState<number | null>(
-    null,
-  );
-  const [dialogOpen, setDialogOpen] = useState(false);
-  const [refreshTick, setRefreshTick] = useState(0);
-
-  useEffect(() => {
-    let cancelled = false;
-    listMcpServers()
-      .then((rows) => {
-        if (cancelled) return;
-        setEnabledServerCount(rows.filter((row) => row.is_enabled).length);
-      })
-      .catch(() => {
-        if (!cancelled) setEnabledServerCount(0);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [refreshTick]);
-
-  return (
-    <div className="flex flex-col gap-3 pt-1">
-      <div className="flex items-center justify-between gap-3">
-        <div className="flex min-w-0 items-center gap-1.5">
-          <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
-            Use MCP Servers
-          </span>
-          <InfoHint>
-            When on, every server marked enabled in the manage dialog is
-            attached to this chat's tool list.
-          </InfoHint>
-        </div>
-        <Switch
-          className="panel-switch"
-          checked={mcpEnabledForChat}
-          onCheckedChange={setMcpEnabledForChat}
-          disabled={enabledServerCount === 0 && !mcpEnabledForChat}
-        />
-      </div>
-      <div className="flex items-center justify-between">
-        <span className="text-[11px] text-muted-foreground">
-          {enabledServerCount === null
-            ? "Loading…"
-            : enabledServerCount === 0
-              ? "No servers configured"
-              : `${enabledServerCount} server${enabledServerCount === 1 ? "" : "s"} enabled`}
-        </span>
-        <Button variant="ghost" size="sm" onClick={() => setDialogOpen(true)}>
-          Manage…
-        </Button>
-      </div>
-      <ChatMcpServersDialog
-        open={dialogOpen}
-        onOpenChange={(next) => {
-          setDialogOpen(next);
-          if (!next) setRefreshTick((tick) => tick + 1);
-        }}
       />
     </div>
   );
