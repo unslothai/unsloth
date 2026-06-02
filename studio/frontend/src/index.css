@@ -899,6 +899,12 @@
 			var(--menu-soft-spread) var(--menu-soft-shadow);
 	}
 
+	/* Context menus (chat, run, project): drop the inset edge ring, keep the soft shadow. */
+	.app-user-menu.menu-soft-surface {
+		box-shadow: 0 var(--menu-soft-offset-y) var(--menu-soft-blur)
+			var(--menu-soft-spread) var(--menu-soft-shadow);
+	}
+
 	/* Account menu: drop the inset edge ring and use the composer's soft shadow. */
 	.app-user-menu.menu-soft-surface-up {
 		box-shadow: 0 0 20px 0 rgba(0, 0, 0, 0.09);

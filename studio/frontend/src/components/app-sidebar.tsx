@@ -51,6 +51,7 @@ import {
   DownloadSquare01Icon,
   Edit03Icon,
   FolderAddIcon,
+  FolderExportIcon,
   Folder01Icon,
   Globe02Icon,
   HelpCircleIcon,
@@ -610,8 +611,8 @@ export function AppSidebar() {
             </DropdownMenuItem>
             <DropdownMenuSub>
               <DropdownMenuSubTrigger>
-                <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} className="size-icon" />
-                <span>Move to project</span>
+                <HugeiconsIcon icon={FolderExportIcon} strokeWidth={1.75} className="size-icon" />
+                <span>Projects</span>
               </DropdownMenuSubTrigger>
               <DropdownMenuSubContent
                 sideOffset={8}
