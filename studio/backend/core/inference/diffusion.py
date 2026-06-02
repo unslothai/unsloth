@@ -2622,10 +2622,13 @@ def supported_optimization_options() -> dict[str, Any]:
             "denoiser_torch_compile": {
                 "default_enabled": False,
                 "reason": (
-                    "Transformer/denoiser compile can improve steady-state "
-                    "throughput, but cold-start cost and CUDA graph compatibility "
-                    "make it an advanced long-session option rather than the "
-                    "default image path."
+                    "Transformer/denoiser compile improves measured steady-state "
+                    "throughput for BF16 safetensors and BnB NF4 safetensors "
+                    "long sessions, but cold-start cost makes it an advanced "
+                    "option rather than the default image path. GGUF image loads "
+                    "use the separate GGUF dequant compile path by default; "
+                    "denoiser compile is not currently recommended for GGUF "
+                    "dequant-on-the-fly."
                 ),
             },
             "group_offload": {
@@ -2786,6 +2789,13 @@ def supported_optimization_options() -> dict[str, Any]:
                 "default_enabled": False,
                 "recommended_scope": "denoiser_or_repeated_blocks_only",
                 "backend_load_arg": "torch_compile",
+                "recommended_for": [
+                    "safetensors_bf16_long_session",
+                    "safetensors_bitsandbytes_4bit_nf4_long_session",
+                ],
+                "not_recommended_for": [
+                    "gguf_dequant_on_the_fly",
+                ],
                 "available_scopes": [
                     DIFFUSION_TORCH_COMPILE_NONE,
                     DIFFUSION_TORCH_COMPILE_REGIONAL,
@@ -2793,8 +2803,11 @@ def supported_optimization_options() -> dict[str, Any]:
                     DIFFUSION_TORCH_COMPILE_PIPELINE,
                 ],
                 "reason": (
-                    "Useful for long resident sessions, but cold-start cost and "
-                    "CUDA graph compatibility need per-model benchmarking."
+                    "Useful for long resident safetensors sessions, but cold-start "
+                    "cost needs per-model benchmarking. GGUF dequant-on-the-fly "
+                    "uses gguf_balanced_dequant_compile instead; denoiser compile "
+                    "is kept opt-in because measured GGUF runs had high compile "
+                    "warmup and no second-image speedup."
                 ),
             },
             "group_offload": {

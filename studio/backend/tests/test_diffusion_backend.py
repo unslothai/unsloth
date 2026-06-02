@@ -391,6 +391,13 @@ def test_supported_optimization_options_payload_shape():
         ),
     }
     assert compile_options["denoiser_torch_compile"]["default_enabled"] is False
+    assert compile_options["denoiser_torch_compile"]["recommended_for"] == [
+        "safetensors_bf16_long_session",
+        "safetensors_bitsandbytes_4bit_nf4_long_session",
+    ]
+    assert compile_options["denoiser_torch_compile"]["not_recommended_for"] == [
+        "gguf_dequant_on_the_fly",
+    ]
     assert compile_options["group_offload"]["image_default"] is False
     assert compile_options["group_offload"]["media_kind"] == "video"
 
