@@ -174,7 +174,10 @@ class TestSecurityHeadersMiddleware:
         assert r.headers["x-frame-options"] == "DENY"
         assert r.headers["x-content-type-options"] == "nosniff"
         assert r.headers["referrer-policy"] == "no-referrer"
-        assert "camera=()" in r.headers["permissions-policy"]
+        permissions_policy = r.headers["permissions-policy"]
+        assert "camera=()" in permissions_policy
+        assert "microphone=(self)" in permissions_policy
+        assert "geolocation=()" in permissions_policy
         assert r.headers["server"] == "unsloth-studio"
 
     def test_internal_nonce_header_is_spliced_into_csp_and_stripped(self, main_module):

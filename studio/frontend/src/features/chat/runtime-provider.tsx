@@ -14,7 +14,6 @@ import {
   type PendingAttachment,
   type ThreadHistoryAdapter,
   type ThreadMessage,
-  WebSpeechDictationAdapter,
   type unstable_RemoteThreadListAdapter,
   useAui,
   useAuiEvent,
@@ -34,6 +33,7 @@ import {
 } from "react";
 import { extractText, getDocumentProxy } from "unpdf";
 import { toast } from "sonner";
+import { StudioWebSpeechDictationAdapter } from "./adapters/studio-web-speech-dictation-adapter";
 import { createOpenAIStreamAdapter } from "./api/chat-adapter";
 import {
   loadConnectionsEnabled,
@@ -976,8 +976,8 @@ function useStudioRuntimeAdapters(
 
   const dictation = useMemo(
     () =>
-      WebSpeechDictationAdapter.isSupported()
-        ? new WebSpeechDictationAdapter()
+      StudioWebSpeechDictationAdapter.isSupported()
+        ? new StudioWebSpeechDictationAdapter()
         : undefined,
     [],
   );
