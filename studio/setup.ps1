@@ -1190,7 +1190,7 @@ if (-not $NvccPath -and $RequireOrExit) {
             $drMinor = [int]$DriverMaxCuda.Split('.')[1]
             $AvailableVersions = @()
             try {
-                $rawOutput = winget show Nvidia.CUDA --versions --accept-source-agreements 2>&1 | Out-String
+                $rawOutput = winget show Nvidia.CUDA --versions --source winget --accept-source-agreements 2>&1 | Out-String
                 # Parse version lines (e.g. "12.6", "12.5", "11.8")
                 foreach ($line in $rawOutput -split "`n") {
                     $line = $line.Trim()
@@ -2583,7 +2583,7 @@ if ($NeedLlamaSourceBuild) {
         substep "installing OpenSSL dev (for HTTPS in llama-server)..."
         $HasWinget = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
         if ($HasWinget) {
-            winget install -e --id ShiningLight.OpenSSL.Dev --accept-package-agreements --accept-source-agreements
+            winget install -e --id ShiningLight.OpenSSL.Dev --source winget --accept-package-agreements --accept-source-agreements
             # Re-check after install
             foreach ($root in $OpenSslRoots) {
                 if (Test-Path (Join-Path $root 'include\openssl\ssl.h')) {
