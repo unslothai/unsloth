@@ -691,6 +691,50 @@ if (-not $HasNvidiaSmi) {
         }
     }
 }
+# ── Helper: run amd-smi without triggering a UAC elevation prompt ──
+# amd-smi on Windows auto-elevates to read GPU/APU memory details, which surfaces
+# a confusing DiskPart UAC prompt mid-install (the Studio backend's amd.py
+# documents the same side-effect and circuit-breaks on it). RunAsInvoker forces
+# amd-smi -- and any helper it spawns -- to run un-elevated: the prompt never
+# appears, and on failure the WMI name -> gfx fallback still resolves the arch.
+function Invoke-AmdSmiNoElevate {
+    param(
+        [Parameter(Mandatory = $true, Position = 0)][string]$Exe,
+        [Parameter(Position = 1)][string[]]$SmiArgs = @(),
+        [int]$TimeoutSec = 30
+    )
+    # RunAsInvoker blocks amd-smi's auto-elevation, so the UAC/DiskPart prompt
+    # never appears; the timeout bounds a flaky amd-smi that can otherwise spin
+    # for minutes before failing (30s mirrors the Studio backend amd.py).
+    # On failure/timeout the caller's WMI name -> gfx fallback still resolves.
+    $prevCompat = [Environment]::GetEnvironmentVariable('__COMPAT_LAYER', 'Process')
+    $env:__COMPAT_LAYER = 'RunAsInvoker'
+    $outFile = [System.IO.Path]::GetTempFileName()
+    $errFile = [System.IO.Path]::GetTempFileName()
+    try {
+        $p = Start-Process -FilePath $Exe -ArgumentList $SmiArgs -NoNewWindow -PassThru `
+                 -RedirectStandardOutput $outFile -RedirectStandardError $errFile
+        if (-not $p.WaitForExit($TimeoutSec * 1000)) {
+            try { $p.Kill() } catch {}
+            $global:LASTEXITCODE = 124
+            return ""
+        }
+        $global:LASTEXITCODE = $p.ExitCode
+        return (((Get-Content -LiteralPath $outFile -Raw -ErrorAction SilentlyContinue)) + "`n" +
+                ((Get-Content -LiteralPath $errFile -Raw -ErrorAction SilentlyContinue)))
+    } catch {
+        $global:LASTEXITCODE = 1
+        return ""
+    } finally {
+        Remove-Item -LiteralPath $outFile, $errFile -Force -ErrorAction SilentlyContinue
+        if ($null -eq $prevCompat) {
+            Remove-Item Env:__COMPAT_LAYER -ErrorAction SilentlyContinue
+        } else {
+            $env:__COMPAT_LAYER = $prevCompat
+        }
+    }
+}
+
 # ── AMD ROCm detection (Windows): probe hipinfo/amd-smi for actual GPU ──
 $HasROCm = $false
 $HipSdkInstalled = $false   # HIP SDK binary found (independent of device accessibility)
@@ -748,7 +792,7 @@ if (-not $HasNvidiaSmi) {
         $amdSmiExe = Get-Command "amd-smi" -ErrorAction SilentlyContinue
         if ($amdSmiExe) {
             try {
-                $smiOut = & $amdSmiExe.Source list 2>&1 | Out-String
+                $smiOut = Invoke-AmdSmiNoElevate $amdSmiExe.Source @('list')
                 if ($LASTEXITCODE -eq 0 -and $smiOut -match "(?im)^GPU\s*[:\[]\s*\d") {
                     $HasROCm = $true
                     # Attempt 1: newer amd-smi versions embed the gfx arch in list output.
@@ -782,7 +826,7 @@ if (-not $HasNvidiaSmi) {
                         # Attempt 2: 'static --asic' exposes ASIC details on ROCm 6+,
                         # including the GFX target needed for wheel index selection.
                         $smiAsicOut = ""
-                        try { $smiAsicOut = & $amdSmiExe.Source static --asic 2>&1 | Out-String } catch {}
+                        try { $smiAsicOut = Invoke-AmdSmiNoElevate $amdSmiExe.Source @('static','--asic') } catch {}
                         if ($smiAsicOut -match "(?i)\b(gfx\d+[a-z]?)\b") {
                             $script:ROCmGfxArch = $Matches[1].ToLower()
                             $ROCmGpuLabel = "AMD ROCm ($script:ROCmGfxArch)"
@@ -876,7 +920,7 @@ if (-not $HasNvidiaSmi) {
             $amdSmiVer = Get-Command "amd-smi" -ErrorAction SilentlyContinue
             if ($amdSmiVer) {
                 try {
-                    $smiVerOut = & $amdSmiVer.Source version 2>&1 | Out-String
+                    $smiVerOut = Invoke-AmdSmiNoElevate $amdSmiVer.Source @('version')
                     if ($LASTEXITCODE -eq 0 -and $smiVerOut -match 'ROCm version:\s*(\d+\.\d+)') { $script:ROCmVersion = $Matches[1] }
                 } catch {}
             }
