@@ -596,23 +596,34 @@ const Composer: FC<{
   // Expand only once the input wraps to a second line, not on first keystroke.
   // Latch until cleared so it can't flip-flop at the wrap boundary.
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  // Cache line metrics so getComputedStyle runs once, not on every keystroke.
+  const lineMetricsRef = useRef<{ lineHeight: number; padding: number } | null>(
+    null,
+  );
   const [isMultiline, setIsMultiline] = useState(false);
   useEffect(() => {
     if (composerText.length === 0) {
       setIsMultiline(false);
+      lineMetricsRef.current = null;
       return;
     }
+    // Latched on: stays until the text clears, so skip re-measuring.
+    if (isMultiline) return;
     const el = inputRef.current;
     if (!el) {
       return;
     }
-    const cs = getComputedStyle(el);
-    const lineHeight = Number.parseFloat(cs.lineHeight) || 24;
-    const padTop = Number.parseFloat(cs.paddingTop) || 0;
-    const padBottom = Number.parseFloat(cs.paddingBottom) || 0;
-    const contentHeight = el.scrollHeight - padTop - padBottom;
-    setIsMultiline((prev) => prev || contentHeight > lineHeight * 1.5);
-  }, [composerText]);
+    if (!lineMetricsRef.current) {
+      const cs = getComputedStyle(el);
+      const lineHeight = Number.parseFloat(cs.lineHeight) || 24;
+      const padTop = Number.parseFloat(cs.paddingTop) || 0;
+      const padBottom = Number.parseFloat(cs.paddingBottom) || 0;
+      lineMetricsRef.current = { lineHeight, padding: padTop + padBottom };
+    }
+    const { lineHeight, padding } = lineMetricsRef.current;
+    const contentHeight = el.scrollHeight - padding;
+    if (contentHeight > lineHeight * 1.5) setIsMultiline(true);
+  }, [composerText, isMultiline]);
   const hasAttachments = useAuiState(
     ({ composer }) => composer.attachments.length > 0,
   );
