@@ -32,7 +32,9 @@ def _coerce_str_dict(value: dict) -> dict[str, str]:
     return {str(k): str(v) for k, v in value.items()}
 
 
-def _parse_entry(name: str, spec: object) -> tuple[Optional[ParsedMcpEntry], Optional[str]]:
+def _parse_entry(
+    name: str, spec: object
+) -> tuple[Optional[ParsedMcpEntry], Optional[str]]:
     label = str(name).strip()
     if not label:
         return None, "Server entry has an empty name."

@@ -127,7 +127,9 @@ def test_servers_alias_key():
 
 
 def test_env_and_args_values_coerced_to_str():
-    cfg = {"mcpServers": {"fs": {"command": "node", "args": [8080], "env": {"PORT": 8080}}}}
+    cfg = {
+        "mcpServers": {"fs": {"command": "node", "args": [8080], "env": {"PORT": 8080}}}
+    }
     entries, errors = parse_mcp_config(cfg)
     assert errors == []
     assert entries[0].headers == {"PORT": "8080"}
