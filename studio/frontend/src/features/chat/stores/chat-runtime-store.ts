@@ -326,6 +326,9 @@ type ChatRuntimeStore = {
   /** User --spec-draft-n-max override (null = platform default). */
   specDraftNMax: number | null;
   loadedSpecDraftNMax: number | null;
+  /** User --spec-draft-p-min override (null = upstream default 0.0). */
+  specDraftPMin: number | null;
+  loadedSpecDraftPMin: number | null;
   loadedIsMultimodal: boolean;
   customContextLength: number | null;
   defaultChatTemplate: string | null;
@@ -394,6 +397,7 @@ type ChatRuntimeStore = {
   setKvCacheDtype: (dtype: string | null) => void;
   setSpeculativeType: (type: string | null) => void;
   setSpecDraftNMax: (value: number | null) => void;
+  setSpecDraftPMin: (value: number | null) => void;
   setCustomContextLength: (v: number | null) => void;
   setChatTemplateOverride: (template: string | null) => void;
   setPendingAudio: (base64: string, name: string) => void;
@@ -658,6 +662,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   loadedSpeculativeType: null,
   specDraftNMax: null,
   loadedSpecDraftNMax: null,
+  specDraftPMin: null,
+  loadedSpecDraftPMin: null,
   loadedIsMultimodal: false,
   customContextLength: null,
   defaultChatTemplate: null,
@@ -873,6 +879,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       loadedSpeculativeType: null,
       specDraftNMax: null,
       loadedSpecDraftNMax: null,
+      specDraftPMin: null,
+      loadedSpecDraftPMin: null,
       loadedIsMultimodal: false,
       customContextLength: null,
       defaultChatTemplate: null,
@@ -998,6 +1006,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   setKvCacheDtype: (kvCacheDtype) => set({ kvCacheDtype }),
   setSpeculativeType: (speculativeType) => set({ speculativeType }),
   setSpecDraftNMax: (specDraftNMax) => set({ specDraftNMax }),
+  setSpecDraftPMin: (specDraftPMin) => set({ specDraftPMin }),
   setCustomContextLength: (customContextLength) => set({ customContextLength }),
   setChatTemplateOverride: (chatTemplateOverride) =>
     set({ chatTemplateOverride }),

@@ -467,6 +467,11 @@ export function ChatSettingsPanel({
   const loadedSpecDraftNMax = useChatRuntimeStore(
     (s) => s.loadedSpecDraftNMax,
   );
+  const specDraftPMin = useChatRuntimeStore((s) => s.specDraftPMin);
+  const setSpecDraftPMin = useChatRuntimeStore((s) => s.setSpecDraftPMin);
+  const loadedSpecDraftPMin = useChatRuntimeStore(
+    (s) => s.loadedSpecDraftPMin,
+  );
   const modelRequiresTrustRemoteCode = useChatRuntimeStore(
     (s) => s.modelRequiresTrustRemoteCode,
   );
@@ -501,7 +506,9 @@ export function ChatSettingsPanel({
   const ctxDirty = customContextLength !== null;
   const specDirty = speculativeType !== loadedSpeculativeType;
   const specDraftDirty = specDraftNMax !== loadedSpecDraftNMax;
-  const modelSettingsDirty = kvDirty || ctxDirty || specDirty || specDraftDirty;
+  const specPMinDirty = specDraftPMin !== loadedSpecDraftPMin;
+  const modelSettingsDirty =
+    kvDirty || ctxDirty || specDirty || specDraftDirty || specPMinDirty;
   const chatTemplateOverride = useChatRuntimeStore(
     (s) => s.chatTemplateOverride,
   );
@@ -878,6 +885,7 @@ export function ChatSettingsPanel({
                         setSpeculativeType(v);
                         if (v !== "mtp" && v !== "mtp+ngram") {
                           setSpecDraftNMax(null);
+                          setSpecDraftPMin(null);
                         }
                       }}
                     >
@@ -940,6 +948,46 @@ export function ChatSettingsPanel({
                     />
                   </div>
                 )}
+                {(speculativeType === "mtp" ||
+                  speculativeType === "mtp+ngram") && (
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="flex min-w-0 items-center gap-1.5">
+                      <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
+                        Draft p-min
+                      </span>
+                      <InfoHint>
+                        Min MTP draft probability (--spec-draft-p-min).
+                        Drafts below this probability are rejected.
+                        Range 0..1. Default: 0 (no filtering). Higher
+                        values trade acceptance for lower wasted-draft
+                        cost. Functional since llama.cpp #23269.
+                      </InfoHint>
+                    </div>
+                    <input
+                      type="number"
+                      min={0}
+                      max={1}
+                      step={0.05}
+                      value={specDraftPMin ?? ""}
+                      placeholder="auto"
+                      onChange={(e) => {
+                        const raw = e.target.value;
+                        if (raw === "") {
+                          setSpecDraftPMin(null);
+                          return;
+                        }
+                        const parsed = Number.parseFloat(raw);
+                        if (Number.isFinite(parsed)) {
+                          const clamped = Math.max(0, Math.min(1, parsed));
+                          setSpecDraftPMin(clamped);
+                        }
+                      }}
+                      data-test-id="spec-draft-p-min-input"
+                      aria-label="Speculative decoding draft p-min"
+                      className="h-7 w-[72px] rounded-[10px] border-transparent bg-black/[0.04] dark:bg-white/[0.05] hover:bg-black/[0.06] dark:hover:bg-white/[0.07] px-2 py-0 text-[13px] font-medium text-nav-fg outline-none focus-visible:ring-0"
+                    />
+                  </div>
+                )}
               </>
             )}
             {!isGguf && params.checkpoint && (
@@ -994,6 +1042,7 @@ export function ChatSettingsPanel({
                     setKvCacheDtype(loadedKvCacheDtype);
                     setSpeculativeType(loadedSpeculativeType);
                     setSpecDraftNMax(loadedSpecDraftNMax);
+                    setSpecDraftPMin(loadedSpecDraftPMin);
                     setChatTemplateOverride(loadedChatTemplateOverride);
                   }}
                   className="h-7 px-3 text-[12px] font-medium tracking-nav text-muted-foreground"
