@@ -1309,8 +1309,10 @@ class TestAmdGpuMonitoring:
 
         # Opt in so the call reaches subprocess.run (amd-smi is gated off on
         # Windows without a HIP SDK); we are testing the OSError handling here.
-        with patch.dict(os.environ, {"UNSLOTH_ENABLE_AMD_SMI": "1"}), \
-             patch.object(subprocess, "run", side_effect = OSError("amd-smi not found")):
+        with (
+            patch.dict(os.environ, {"UNSLOTH_ENABLE_AMD_SMI": "1"}),
+            patch.object(subprocess, "run", side_effect = OSError("amd-smi not found")),
+        ):
             result = amd_mod.get_primary_gpu_utilization()
         assert result["available"] is False
 
@@ -1331,12 +1333,14 @@ class TestAmdGpuMonitoring:
 
         # Opt in so the call reaches subprocess.run (amd-smi is gated off on
         # Windows without a HIP SDK); we are testing the timeout handling here.
-        with patch.dict(os.environ, {"UNSLOTH_ENABLE_AMD_SMI": "1"}), \
-             patch.object(
-                 subprocess,
-                 "run",
-                 side_effect = subprocess.TimeoutExpired("amd-smi", 5),
-             ):
+        with (
+            patch.dict(os.environ, {"UNSLOTH_ENABLE_AMD_SMI": "1"}),
+            patch.object(
+                subprocess,
+                "run",
+                side_effect = subprocess.TimeoutExpired("amd-smi", 5),
+            ),
+        ):
             result = amd_mod.get_primary_gpu_utilization()
         assert result["available"] is False
 
