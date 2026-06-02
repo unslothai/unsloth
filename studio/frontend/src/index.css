@@ -906,6 +906,15 @@
 		box-shadow: none;
 	}
 
+	/* New Recipe menu: borderless (box-shadow replaces the ring), chatbox shadow
+	   in light, none in dark. */
+	.recipes-new-menu {
+		box-shadow: 0 2px 8px -2px rgba(27, 27, 31, 0.16);
+	}
+	.dark .recipes-new-menu {
+		box-shadow: none;
+	}
+
 	/* Context menus (chat, run, project): drop the inset edge ring, keep the soft shadow. */
 	.app-user-menu.menu-soft-surface {
 		box-shadow: 0 var(--menu-soft-offset-y) var(--menu-soft-blur)
