@@ -72,7 +72,7 @@ export function ChatSearchDialog() {
             <HugeiconsIcon icon={Cancel01Icon} strokeWidth={2} className="size-4" />
           </button>
         </div>
-        <CommandList className="cmd-native-scrollbar max-h-[420px] p-1">
+        <CommandList className="cmd-native-scrollbar hover-scrollbar max-h-[420px] p-1">
           <CommandEmpty className="py-6 text-center text-xs text-muted-foreground">
             {loading
               ? "Loading…"

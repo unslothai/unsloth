@@ -883,6 +883,14 @@
 		--menu-soft-shadow: rgba(0, 0, 0, 0.28);
 	}
 
+	/* Account menu: drop the inset edge ring and use the composer's soft shadow. */
+	.app-user-menu.menu-soft-surface-up {
+		box-shadow: 0 0 20px 0 rgba(0, 0, 0, 0.09);
+	}
+	.dark .app-user-menu.menu-soft-surface-up {
+		box-shadow: 0 8px 28px -6px rgba(0, 0, 0, 0.28);
+	}
+
 	.chat-composer-surface {
 		@apply relative flex w-full flex-col rounded-[32px] bg-background dark:bg-card px-1 pt-2 outline-none transition-shadow;
 		font-family: var(--font-sans);
@@ -1688,35 +1696,41 @@
 	background: oklch(0.72 0 0 / 0.5);
 }
 
-/* Both sidebars: hide the scroll thumb at rest and reveal it only while the
-   sidebar is hovered, so the rail never sits visible over the content. */
+/* Sidebars, settings and search: hide the scroll thumb at rest and reveal it
+   only while the area is hovered, so the rail never sits visible over content. */
 .sidebar-scroll-fade,
-.run-settings-scroll {
+.run-settings-scroll,
+.hover-scrollbar {
 	scrollbar-color: transparent transparent;
 }
 
 .sidebar-scroll-fade::-webkit-scrollbar-thumb,
-.run-settings-scroll::-webkit-scrollbar-thumb {
+.run-settings-scroll::-webkit-scrollbar-thumb,
+.hover-scrollbar::-webkit-scrollbar-thumb {
 	background: transparent;
 }
 
 .sidebar-scroll-fade:hover,
-.run-settings-scroll:hover {
+.run-settings-scroll:hover,
+.hover-scrollbar:hover {
 	scrollbar-color: oklch(0.5 0 0 / 0.4) transparent;
 }
 
 .sidebar-scroll-fade:hover::-webkit-scrollbar-thumb,
-.run-settings-scroll:hover::-webkit-scrollbar-thumb {
+.run-settings-scroll:hover::-webkit-scrollbar-thumb,
+.hover-scrollbar:hover::-webkit-scrollbar-thumb {
 	background: oklch(0.5 0 0 / 0.4);
 }
 
 .dark .sidebar-scroll-fade:hover,
-.dark .run-settings-scroll:hover {
+.dark .run-settings-scroll:hover,
+.dark .hover-scrollbar:hover {
 	scrollbar-color: oklch(0.72 0 0 / 0.4) transparent;
 }
 
 .dark .sidebar-scroll-fade:hover::-webkit-scrollbar-thumb,
-.dark .run-settings-scroll:hover::-webkit-scrollbar-thumb {
+.dark .run-settings-scroll:hover::-webkit-scrollbar-thumb,
+.dark .hover-scrollbar:hover::-webkit-scrollbar-thumb {
 	background: oklch(0.72 0 0 / 0.4);
 }
 
