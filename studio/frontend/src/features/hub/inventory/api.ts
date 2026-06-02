@@ -251,21 +251,8 @@ export async function listCachedDatasets(): Promise<CachedDatasetRepo[]> {
   const response = await withHubTimeout(INVENTORY_TIMEOUT_MS, (signal) =>
     authFetch("/api/hub/datasets/cached", { signal }),
   );
-  if (!response.ok) {
-    if (response.status === 404) {
-      console.warn(
-        "GET /api/hub/datasets/cached returned 404 - backend may need a restart to expose the cached-datasets endpoint.",
-      );
-      return [];
-    }
-    throw new Error(
-      await readFastApiError(response, "Couldn't scan cached datasets"),
-    );
-  }
-  const data = (await response.json().catch(() => null)) as {
-    cached?: CachedDatasetRepo[];
-  } | null;
-  return data?.cached ?? [];
+  const data = await parseJsonOrThrow<{ cached: CachedDatasetRepo[] }>(response);
+  return data.cached;
 }
 
 export async function deleteCachedDataset(repoId: string): Promise<void> {

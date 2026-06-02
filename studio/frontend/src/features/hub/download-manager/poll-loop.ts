@@ -747,7 +747,9 @@ function applyCancelResult(
     return;
   }
   if (live) {
-    live.cancelRequested = false;
+    if (result.state !== "idle") {
+      live.cancelRequested = false;
+    }
     clearWatchdog(live);
   }
   if (result.state === "complete") {
