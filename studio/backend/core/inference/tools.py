@@ -10,6 +10,7 @@ Supports web search (DuckDuckGo), Python code execution, and terminal commands.
 import ast
 import http.client
 import os
+import posixpath
 import signal
 
 os.environ["UNSLOTH_IS_PRESENT"] = "1"
@@ -149,6 +150,636 @@ _COMMAND_PREFIXES = frozenset(
 )
 _ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 _FIND_EXEC_FLAGS = frozenset({"-exec", "-execdir", "-ok", "-okdir"})
+
+
+# Narrow allow-list of CLEAR credential / process-state targets.
+#
+# Two categories:
+#
+# * ``_HOME_RELATIVE_SENSITIVE`` — relative paths under the user's home that
+#   are dangerous ONLY when accessed via a home-equivalent prefix (``~``,
+#   ``$HOME``, ``${HOME}``, ``/home/<user>``, ``/Users/<user>``, ``/root``).
+#   This is what keeps project-local files like ``./project/.npmrc`` /
+#   ``./pkg/.pypirc`` readable while ``~/.npmrc`` is denied.
+#
+# * ``_ABSOLUTE_SENSITIVE`` — absolute paths that are dangerous wherever
+#   they appear (`/etc/shadow`, `/proc/<pid>/environ`, etc.).
+#
+# Anything with a legitimate LLM-tool-use case (``~/.gitconfig``,
+# ``~/.bashrc``, ``~/.ssh/config``, ``~/.ssh/known_hosts``, ``/etc/hosts``,
+# ``~/.npm/`` cache, project-local rc files, ``~/.bash_history``,
+# ``~/.cache/``) MUST stay out of this list — those still flow through.
+# SSH private-key alternatives require a filename-end boundary so that
+# the matching public key ``~/.ssh/id_rsa.pub`` (legitimate developer
+# action) is NOT blocked. Non-key entries deliberately omit the end
+# anchor: ``.aws/credentials.bak`` etc. are still credentials.
+_SSH_KEY_END = r"(?=$|[\s'\";&|)<>])"
+_HOME_RELATIVE_SENSITIVE = (
+    # SSH private keys (config / known_hosts / *.pub intentionally allowed)
+    rf"\.ssh/id_rsa{_SSH_KEY_END}",
+    rf"\.ssh/id_ed25519{_SSH_KEY_END}",
+    rf"\.ssh/id_ecdsa{_SSH_KEY_END}",
+    rf"\.ssh/id_dsa{_SSH_KEY_END}",
+    rf"\.ssh/identity{_SSH_KEY_END}",
+    # Cloud provider credentials
+    r"\.aws/credentials",
+    r"\.docker/config\.json",
+    r"\.kube/config",
+    r"\.config/gcloud/application_default_credentials",
+    r"\.config/gcloud/access_tokens",
+    r"\.config/gcloud/credentials",
+    # Personal package-manager tokens (project-local rc stays readable)
+    r"\.pypirc",
+    r"\.npmrc",
+    r"\.cargo/credentials",
+    # Authentication / password stores
+    r"\.netrc",
+    r"\.password-store",
+    r"\.gnupg/private-keys-v1\.d",
+)
+_ABSOLUTE_SENSITIVE = (
+    r"/etc/shadow",
+    r"/etc/sudoers",
+    r"/etc/ssh/ssh_host_[^\s'\"]+",
+    # Linux process-state surfaces. ``thread-self`` and ``task/<tid>``
+    # expose the same secrets as ``self``/``<pid>`` for individual
+    # threads; ``cmdline`` and ``auxv`` carry env-derived strings too.
+    r"/proc/(?:self|thread-self|\d+)/(?:environ|mem|maps|auxv|cmdline)",
+    r"/proc/(?:self|thread-self|\d+)/task/\d+/(?:environ|mem|maps|auxv|cmdline)",
+    # ``/proc/<pid>/cwd`` and ``/proc/<pid>/root`` are symlinks to the
+    # process cwd and the filesystem root respectively. Reading via
+    # ``/proc/self/cwd/X`` is equivalent to reading ``X`` but bypasses
+    # any path normalisation that worked on the literal text; reading
+    # ``/proc/self/root/etc/shadow`` opens ``/etc/shadow`` even under
+    # chroot. Block any access via these symlink prefixes; there is no
+    # legitimate LLM-tool-use reason to dereference them.
+    r"/proc/(?:self|thread-self|\d+)/(?:cwd|root)(?:/|\Z)",
+    r"/proc/(?:self|thread-self|\d+)/task/\d+/(?:cwd|root)(?:/|\Z)",
+    r"/proc/kcore",
+    r"/proc/kallsyms",
+    r"/var/spool/cron/[^\s'\"]*",
+)
+
+# Home-equivalent prefix the path must be preceded by for HOME_RELATIVE
+# entries to fire. Covers POSIX tilde forms (``~/`` and ``~user/``),
+# $HOME / ${HOME}, POSIX absolute homes (/home/<u>, /root, /Users/<u>),
+# and Windows env-var / drive-letter homes (%USERPROFILE%,
+# %HOMEDRIVE%%HOMEPATH%, $env:USERPROFILE, C:/Users/<u>). Backslashes get
+# normalized to forward slashes in _find_sensitive_paths before matching,
+# so Windows-style C:\Users\... input is covered by the C:/Users/...
+# branch here. ``~ubuntu/`` matches the POSIX ``~user/`` shell expansion
+# that bash resolves to that user's home directory before exec.
+_HOME_PREFIX_RE = (
+    r"(?:"
+    r"~(?:[^/\s'\";&|)<>]*)?"
+    r"|\$\{?HOME\}?"
+    r"|%USERPROFILE%"
+    r"|%HOMEDRIVE%%HOMEPATH%"
+    r"|\$env:USERPROFILE"
+    r"|\$\{?env:USERPROFILE\}?"
+    r"|/home/[^/\s'\"]+"
+    r"|/root"
+    r"|/Users/[^/\s'\"]+"
+    r"|[A-Za-z]:/Users/[^/\s'\"]+"
+    r")/"
+)
+
+# Path-token start anchor: refuse to match inside a longer path like
+# ``./workspace/home/u/.aws/credentials`` or ``/tmp/home/u/.npmrc`` --
+# those are project-local lookalikes, not host credentials. The negative
+# lookbehind keeps matches anchored to a real shell token boundary.
+_PATH_TOKEN_START = r"(?<![A-Za-z0-9_./~$%-])"
+
+_HOME_SENSITIVE_RE = re.compile(
+    _PATH_TOKEN_START
+    + _HOME_PREFIX_RE
+    + r"(?:"
+    + "|".join(_HOME_RELATIVE_SENSITIVE)
+    + r")",
+    re.IGNORECASE,
+)
+_ABSOLUTE_SENSITIVE_RE = re.compile(
+    _PATH_TOKEN_START + r"(?:" + "|".join(_ABSOLUTE_SENSITIVE) + r")",
+    re.IGNORECASE,
+)
+
+# Whole-directory variants of the credential roots above. Only used by
+# the shutil / file-copy gate -- ``ls ~/.ssh`` and ``find ~/.aws -type f``
+# are legitimate, but ``shutil.copytree('~/.ssh', dst)`` and
+# ``cp -r ~/.aws /tmp/out`` exfil every file in those dirs in one call.
+#
+# The end anchor matches the path AS the directory (``~/.ssh`` or
+# ``~/.ssh/``) and not a file inside it (``~/.ssh/known_hosts`` —
+# the per-file allow-list already governs whether that single read
+# is OK). It also rejects similar-name prefixes (``~/.ssh_backup``).
+_DIR_END = r"(?=/?$|/?[\s'\";&|)<>])"
+_HOME_RELATIVE_SENSITIVE_DIRS = (
+    rf"\.ssh{_DIR_END}",
+    rf"\.aws{_DIR_END}",
+    rf"\.config/gcloud{_DIR_END}",
+    rf"\.gnupg{_DIR_END}",
+    rf"\.docker{_DIR_END}",
+    rf"\.kube{_DIR_END}",
+    rf"\.password-store{_DIR_END}",
+)
+_ABSOLUTE_SENSITIVE_DIRS = (
+    rf"/etc{_DIR_END}",
+    rf"/etc/ssh{_DIR_END}",
+    rf"/var/spool/cron{_DIR_END}",
+    # Same Linux process-state roots as the per-file regex — copying
+    # ``/proc/self/`` or ``/proc/<pid>/`` recursively drags the entire
+    # process state (environ, mem, maps, cmdline) out.
+    rf"/proc/(?:self|thread-self|\d+){_DIR_END}",
+)
+_HOME_SENSITIVE_DIR_RE = re.compile(
+    _PATH_TOKEN_START
+    + _HOME_PREFIX_RE
+    + r"(?:"
+    + "|".join(_HOME_RELATIVE_SENSITIVE_DIRS)
+    + r")",
+    re.IGNORECASE,
+)
+_ABSOLUTE_SENSITIVE_DIR_RE = re.compile(
+    _PATH_TOKEN_START + r"(?:" + "|".join(_ABSOLUTE_SENSITIVE_DIRS) + r")",
+    re.IGNORECASE,
+)
+
+
+def _matches_sensitive_dir(path: str) -> bool:
+    """Return True if *path* names a sensitive credential / key directory
+    (rather than a single file). Used by the shutil-copy gate so
+    ``shutil.copytree('~/.ssh', dst)`` and ``shutil.copy('~/.aws', dst)``
+    are caught even though ``~/.ssh`` itself isn't a single sensitive
+    file in ``_HOME_RELATIVE_SENSITIVE``."""
+    if not path:
+        return False
+    for cand in {path, path.replace("\\", "/")}:
+        norm = _normalize_path_separators(cand)
+        for projection in {cand, norm}:
+            if _HOME_SENSITIVE_DIR_RE.search(projection):
+                return True
+            if _ABSOLUTE_SENSITIVE_DIR_RE.search(projection):
+                return True
+    return False
+
+
+# Sensitive root prefix immediately followed by a shell substitution
+# (``$(...)`` or backticks). Catches dynamic-path constructions like
+# ``cat /etc/$(printf shadow)`` or ``cat /proc/1/$(echo environ)`` that
+# materialise a protected path AFTER the literal scan has run.
+_SENSITIVE_ROOT_WITH_EXPANSION_RE = re.compile(
+    _PATH_TOKEN_START
+    + r"(?:"
+    + r"~(?:[^/\s'\";&|)<>]*)?/"
+    + r"|\$\{?HOME\}?/"
+    + r"|/home/[^/\s'\"]+/"
+    + r"|/root/"
+    + r"|/Users/[^/\s'\"]+/"
+    + r"|/etc/"
+    + r"|/proc/(?:self|thread-self|\d+)/"
+    + r"|/var/spool/"
+    + r")"
+    + r"[^\s'\";&|`$]*"
+    + r"(?:\$\([^)]*\)|`[^`]+`)",
+    re.IGNORECASE,
+)
+
+# ``cp -r ~/.ssh /tmp/out`` / ``mv ~/.aws /tmp/out`` /
+# ``tar czf out.tar.gz ~/.ssh`` -- bash directory-copy commands
+# referencing a sensitive directory. The Python shutil gate covers
+# the in-process equivalents (`shutil.copytree` etc.); without this
+# pattern the bash side is asymmetric and `os.system('cp -r ~/.ssh
+# /tmp/out')` slips through. The named commands cover the common
+# dir-exfil verbs; ``rsync`` / ``zip`` / ``7z`` are added too because
+# they all read the source directory recursively. ``ls`` / ``find``
+# / ``cd`` / ``cat <single file>`` deliberately stay out of this
+# list so legitimate inspection of sensitive directories is still
+# allowed.
+_BASH_DIR_EXFIL_COMMANDS = (
+    "cp",
+    "mv",
+    "rsync",
+    "tar",
+    "zip",
+    "7z",
+    "7za",
+    "xz",
+    "scp",
+    "sftp",
+)
+_BASH_SENSITIVE_DIR_NAMES = (
+    r"\.ssh",
+    r"\.aws",
+    r"\.gnupg",
+    r"\.kube",
+    r"\.docker",
+    r"\.config/gcloud",
+    r"\.password-store",
+)
+_BASH_DIR_EXFIL_RE = re.compile(
+    r"\b(?:"
+    + "|".join(re.escape(c) for c in _BASH_DIR_EXFIL_COMMANDS)
+    + r")\b[^;&|\n]*?"
+    + r"(?:"
+    + _HOME_PREFIX_RE
+    + r"(?:"
+    + "|".join(_BASH_SENSITIVE_DIR_NAMES)
+    + r")"
+    + r"(?=/?$|/?[\s'\";&|)<>])"
+    + r"|"
+    + r"(?<![A-Za-z0-9_./~$%-])/etc(?=/?$|/?[\s'\";&|)<>])"
+    + r"|"
+    + r"(?<![A-Za-z0-9_./~$%-])/etc/ssh(?=/?$|/?[\s'\";&|)<>])"
+    + r"|"
+    + r"(?<![A-Za-z0-9_./~$%-])/var/spool/cron(?=/?$|/?[\s'\";&|)<>])"
+    + r"|"
+    + r"(?<![A-Za-z0-9_./~$%-])/proc/(?:self|thread-self|\d+)"
+    + r"(?=/?$|/?[\s'\";&|)<>])"
+    + r")",
+    re.IGNORECASE,
+)
+
+# ``cat /etc/sha*ow`` / ``cat /etc/sh?dow`` -- bash expands ``*`` and
+# ``?`` glob wildcards against the filesystem. The brace expander above
+# only handles ``{a,b}`` braces; this pattern catches the wildcard
+# globs that target a sensitive root path. The literal-text-only
+# constraint (``[^\s'\";&|`$]*[*?]``) ensures we match an attached
+# glob char and not a glob that lives in a separate argument like
+# ``find /etc/ -name '*.conf'`` (whitespace breaks the token).
+_SENSITIVE_ROOT_WITH_GLOB_RE = re.compile(
+    _PATH_TOKEN_START
+    + r"(?:"
+    + r"~(?:[^/\s'\";&|)<>]*)?/"
+    + r"|\$\{?HOME\}?/"
+    + r"|/home/[^/\s'\"]+/"
+    + r"|/root/"
+    + r"|/Users/[^/\s'\"]+/"
+    + r"|/etc/"
+    + r"|/proc/(?:self|thread-self|\d+)/"
+    + r"|/var/spool/"
+    + r")"
+    + r"[^\s'\";&|`$]*[*?]",
+    re.IGNORECASE,
+)
+
+_BRACE_EXPANSION_RE = re.compile(r"\{([^{}]*,[^{}]*)\}")
+
+
+_TILDE_USER_PREFIX_RE = re.compile(r"^~[^/]+/")
+
+
+def _tail_escapes_home(tail: str) -> bool:
+    """Return True if *tail* (the path after a home prefix) contains
+    a ``..`` chain that takes the cursor above its starting directory.
+
+    A simple ``startswith('..')`` check misses ``foo/../../etc/shadow``
+    where a regular segment precedes the chain. Walks segments with a
+    depth counter -- a negative depth at any point means the path has
+    escaped its starting directory and the runtime resolve will land
+    outside HOME (worst case ``/etc/shadow`` on a single-segment HOME
+    like ``/root``)."""
+    depth = 0
+    for seg in tail.split("/"):
+        if not seg or seg == ".":
+            continue
+        if seg == "..":
+            depth -= 1
+            if depth < 0:
+                return True
+        else:
+            depth += 1
+    return False
+
+
+def _normalize_path_separators(text: str) -> str:
+    """Collapse ``//`` to ``/``, remove ``/./`` segments, and resolve
+    ``/..`` parent-directory traversal so that filesystem-equivalent
+    spellings of a sensitive path (``/etc//shadow``, ``/etc/./shadow``,
+    ``/etc/apt/../shadow``) match the canonical pattern.
+
+    Home prefix handling. ``~/`` / ``$HOME/`` / ``${HOME}/`` /
+    ``%USERPROFILE%/`` and POSIX ``~<user>/`` get re-attached after
+    the parent-dir resolve so ``~/.ssh/../.aws/credentials`` becomes
+    ``~/.aws/credentials``. When the ``..`` chain breaks out of HOME
+    (``~/../etc/shadow``, ``~root/../etc/shadow``) the home prefix is
+    DROPPED instead: with a single-segment sandbox HOME like ``/root``
+    the runtime resolves ``~/../etc/shadow`` to ``/etc/shadow``, so
+    the absolute projection has to reach ``_ABSOLUTE_SENSITIVE_RE``."""
+    if not text:
+        return text
+    # Preserve the scheme separator (``http://``); collapse only path slashes.
+    collapsed = re.sub(r"(?<!:)//+", "/", text)
+    while "/./" in collapsed:
+        collapsed = collapsed.replace("/./", "/")
+    if collapsed.endswith("/."):
+        collapsed = collapsed[:-2] or "/"
+    if "/.." in collapsed or collapsed.endswith("/.."):
+        # posixpath.normpath only follows ``..`` when the path is
+        # absolute or starts with a known root. Re-attach the home
+        # prefix unless ``..`` escaped home, in which case the
+        # absolute form is what the runtime will hit.
+        for prefix in ("~/", "$HOME/", "${HOME}/", "%USERPROFILE%/"):
+            if collapsed.startswith(prefix):
+                tail = collapsed[len(prefix) :]
+                if _tail_escapes_home(tail):
+                    return posixpath.normpath("/" + tail)
+                return prefix + posixpath.normpath("/" + tail).lstrip("/")
+        tilde_user = _TILDE_USER_PREFIX_RE.match(collapsed)
+        if tilde_user:
+            tail = collapsed[tilde_user.end() :]
+            if _tail_escapes_home(tail):
+                return posixpath.normpath("/" + tail)
+            return tilde_user.group(0) + posixpath.normpath("/" + tail).lstrip("/")
+        collapsed = posixpath.normpath(collapsed)
+    return collapsed
+
+
+def _expand_token_normalisations(token: str) -> set[str]:
+    """Return the projections of a single token used for sensitive-path
+    matching: raw, backslash-normalised, separator-collapsed."""
+    out = {token}
+    if "\\" in token:
+        out.add(token.replace("\\", "/"))
+    norm = _normalize_path_separators(token)
+    if norm and norm != token:
+        out.add(norm)
+    return out
+
+
+# Brace-defence sensitive names are SPLIT by root context so the gate
+# does not over-block. ``cat ~/data/{maps,routes}`` is a legitimate
+# user-data brace listing whose ``maps`` alternative is the name of
+# a folder, NOT ``/proc/<pid>/maps``. Pairing each root with its own
+# applicable sensitive-name set keeps the gate precise.
+
+# Names that target a home / credential root. Apply to ``~/``,
+# ``$HOME/``, ``/home/<u>/``, ``/root/``, ``/Users/<u>/``,
+# ``%USERPROFILE%/`` -- the credential families that live under the
+# user's home directory.
+_HOME_BRACE_SENSITIVE_NAMES = (
+    r"\.ssh/id_rsa",
+    r"\.ssh/id_ed25519",
+    r"\.ssh/id_ecdsa",
+    r"\.ssh/id_dsa",
+    r"\.aws/credentials",
+    r"\.config/gcloud/[\w.]+",
+    r"\.gnupg/[\w./-]+",
+    r"\.netrc",
+    r"\.pypirc",
+    r"\.npmrc",
+    r"\.docker/config\.json",
+    r"\.kube/config",
+)
+# Names that target ``/etc/``: only the four well-defined credential /
+# privilege files. ``hosts`` / ``hostname`` / ``resolv.conf`` /
+# ``os-release`` are still allowed.
+_ETC_BRACE_SENSITIVE_NAMES = (
+    r"shadow",
+    r"sudoers",
+    r"passwd",
+    r"gshadow",
+)
+# Names that target ``/proc/<pid>/``: the per-process state files that
+# leak the runtime environment. Generic words like ``maps`` and
+# ``mem`` only fire under this root, never under a home or local path.
+_PROC_BRACE_SENSITIVE_NAMES = (
+    r"environ",
+    r"cmdline",
+    r"maps",
+    r"mem",
+    r"auxv",
+)
+
+
+def _build_brace_re(prefix_alt: str, names: tuple[str, ...]) -> "re.Pattern[str]":
+    """Compile a brace-aware sensitive-name regex for a single root
+    alternation. Anchors:
+      * ``_PATH_TOKEN_START`` -- shell-token boundary so project-local
+        lookalikes (``./workspace/home/u/...``) do not match.
+      * Path body between root and final brace can contain its own
+        brace groups (the empty-alt + dummies bypass uses this).
+      * ``(?<=[,{/])`` lookbehind plus ``(?=,|\\}|/)`` lookahead so
+        the sensitive name is one complete brace alternative
+        (``\\b`` does not fire between ``.`` and ``{`` -- both
+        non-word -- so it cannot anchor here)."""
+    return re.compile(
+        _PATH_TOKEN_START
+        + r"(?:"
+        + prefix_alt
+        + r")"
+        + r"[^\s'\";&|`$]*?"
+        + r"\{[^{}]*?(?<=[,{/])(?:"
+        + "|".join(names)
+        + r")(?=,|\}|/)[^{}]*\}",
+        re.IGNORECASE,
+    )
+
+
+_HOME_BRACE_PREFIX_ALT = (
+    r"~(?:[^/\s'\";&|)<>]*)?/+"
+    + r"|\$\{?HOME\}?/+"
+    + r"|/home/[^/\s'\"]+/+"
+    + r"|/root/+"
+    + r"|/Users/[^/\s'\"]+/+"
+    + r"|%USERPROFILE%/+"
+    + r"|%HOMEDRIVE%%HOMEPATH%/+"
+)
+_HOME_BRACE_RE = _build_brace_re(_HOME_BRACE_PREFIX_ALT, _HOME_BRACE_SENSITIVE_NAMES)
+_ETC_BRACE_RE = _build_brace_re(r"/etc/+", _ETC_BRACE_SENSITIVE_NAMES)
+_PROC_BRACE_RE = _build_brace_re(
+    r"/proc/(?:self|thread-self|\d+)/+", _PROC_BRACE_SENSITIVE_NAMES
+)
+_VAR_SPOOL_BRACE_RE = _build_brace_re(r"/var/spool/cron/+", (r"[\w.-]+",))
+
+
+def _expand_brace_projections(text: str, limit: int = 1024) -> set[str]:
+    """Return the set of strings reachable from *text* by applying bash
+    brace expansion ``{a,b}`` and bounded ``[abc]`` glob character
+    classes. Bounded to ``limit`` total projections (raised from 64
+    after a 64-alternative brace bomb -- ``cat ~/.aws/{x0,...,x62,
+    credentials}`` -- evaded the per-alternative inner break, since the
+    bypass adds 63 dummies plus the sensitive name in one brace group).
+
+    Now expands ALL alternatives of the current brace in one inner
+    pass so partially-applied state never blocks a sensitive name from
+    being projected. The outer ``limit`` only stops the queue between
+    brace groups, keeping the DOS bound while removing the off-by-one
+    that capped the first brace at ``limit - 1`` alternatives."""
+    out = {text}
+    if "{" not in text and "[" not in text:
+        return out
+    queue = [text]
+    glob_re = re.compile(r"\[([^\]/\\!^]{1,8})\]")
+    while queue:
+        if len(out) >= limit:
+            break
+        cur = queue.pop()
+        brace = _BRACE_EXPANSION_RE.search(cur)
+        if brace:
+            for alt in brace.group(1).split(","):
+                nxt = cur[: brace.start()] + alt + cur[brace.end() :]
+                if nxt not in out:
+                    out.add(nxt)
+                    queue.append(nxt)
+            continue
+        klass = glob_re.search(cur)
+        if klass:
+            for ch in klass.group(1):
+                if ch == "-":
+                    continue
+                nxt = cur[: klass.start()] + ch + cur[klass.end() :]
+                if nxt not in out:
+                    out.add(nxt)
+                    queue.append(nxt)
+    return out
+
+
+def _find_sensitive_paths(command: str) -> set[str]:
+    """Return any sensitive credential / process-state paths in *command*.
+
+    Two-class matching:
+      * Home-relative paths (``.ssh/id_rsa``, ``.aws/credentials``,
+        ``.npmrc``, …) match only when prefixed by a home-equivalent
+        token (``~/``, ``$HOME/``, ``/home/<user>/``, ``/root/``,
+        ``/Users/<user>/``, ``%USERPROFILE%/``, ``C:/Users/<user>/``).
+        This keeps project-local files like ``./project/.npmrc``
+        readable.
+      * Absolute system paths (``/etc/shadow``, ``/proc/<pid>/environ``,
+        …) match anywhere they appear.
+
+    To resist shell-quote splicing (``cat /etc/sha''dow``,
+    ``cat ~/'.ssh/id_rsa'``) we scan three projections of the command:
+    the raw text, a backslash-normalized copy (so Windows
+    ``C:\\Users\\alice\\.ssh\\id_rsa`` is checked under the
+    ``C:/Users/…`` branch), and a shlex-dequoted token reconstruction.
+    Nested ``bash -c '…'`` / ``cmd /c '…'`` payloads are then recursed
+    into so the bypass surface mirrors ``_find_blocked_commands``.
+
+    Used by both ``_bash_exec`` (gates the raw command) and the Python
+    AST gate (via ``_check_args_for_blocked``, so
+    ``os.system('cat ~/.ssh/id_rsa')`` is caught the same way as the
+    bash equivalent).
+
+    The allow-list intentionally excludes common LLM-developer-tool
+    paths (``~/.gitconfig``, ``~/.bashrc``, ``~/.ssh/config``,
+    ``~/.ssh/known_hosts``, ``/etc/hosts``, ``~/.cache/``, ``*.pub``
+    SSH public keys, project-local rc files) so legitimate tool calls
+    like ``cat ~/.gitconfig`` or ``find src/ -name '*.py'`` still work.
+    """
+    if not command:
+        return set()
+
+    # Pre-normalise backslashes so the POSIX shlex below does not treat
+    # ``C:\Users\alice`` as containing escape sequences (POSIX shlex
+    # would otherwise collapse it to ``C:Usersalice`` and lose the path
+    # structure). Both projections feed the regex scan.
+    normalized = command.replace("\\", "/") if "\\" in command else command
+
+    # Always use POSIX shlex for the dequote reconstruction regardless of
+    # host OS: the threat model is shell-quote splicing (``cat /etc/sha''dow``,
+    # ``bash -c "cat ~/'.ssh/id_rsa'"``) which is POSIX syntax. Running
+    # non-POSIX shlex on Windows leaves the splice quotes intact and the
+    # bypass slips through.
+    try:
+        lexer = shlex.shlex(normalized, posix = True, punctuation_chars = ";&|()`")
+        lexer.whitespace_split = True
+        tokens = list(lexer)
+    except ValueError:
+        tokens = normalized.split()
+
+    raw_targets = [command]
+    if normalized is not command:
+        raw_targets.append(normalized)
+    if tokens:
+        raw_targets.append(" ".join(tokens))
+        # Per-token normalisation catches ``..``-traversal that the
+        # full-command normpath cannot resolve safely (commands aren't
+        # paths). ``cat /etc/apt/../shadow`` reaches the regex as
+        # ``/etc/shadow`` once the token is normalised in isolation.
+        for tok in tokens:
+            for variant in _expand_token_normalisations(tok):
+                if variant != tok:
+                    raw_targets.append(variant)
+
+    # Cross-product the projections so the regexes see every shape:
+    # raw / backslash-normalised / shlex-dequoted x with-and-without
+    # path-separator normalisation x brace and glob expansions.
+    scan_targets: set[str] = set()
+    for text in raw_targets:
+        for projected in _expand_brace_projections(text):
+            scan_targets.add(projected)
+            normalized_path = _normalize_path_separators(projected)
+            if normalized_path != projected:
+                scan_targets.add(normalized_path)
+
+    found: set[str] = set()
+    for text in scan_targets:
+        for m in _HOME_SENSITIVE_RE.finditer(text):
+            found.add(m.group(0))
+        for m in _ABSOLUTE_SENSITIVE_RE.finditer(text):
+            found.add(m.group(0))
+        # Sensitive prefix + shell substitution that the literal scan
+        # cannot statically resolve (``cat /etc/$(printf shadow)``).
+        for m in _SENSITIVE_ROOT_WITH_EXPANSION_RE.finditer(text):
+            found.add(m.group(0))
+        # Sensitive prefix + bash glob (``cat /etc/sha*ow``,
+        # ``cat /etc/sh?dow``, ``cat /etc/*``). The shell expands the
+        # glob at runtime; statically we cannot enumerate the matches
+        # but a glob immediately attached to a sensitive root is
+        # an attempt to escape literal-path detection.
+        for m in _SENSITIVE_ROOT_WITH_GLOB_RE.finditer(text):
+            found.add(m.group(0))
+        # Directory-copy verbs (``cp -r``, ``mv``, ``tar`` etc.) that
+        # reference a sensitive directory. Asymmetry-fix for the
+        # Python shutil dir-exfil gate that the round-4 commit added;
+        # without this the bash side is still wide open.
+        for m in _BASH_DIR_EXFIL_RE.finditer(text):
+            found.add(m.group(0))
+        # Brace-bomb defence. ``cat ~/{,x0,...,x341}/{.ssh/id_rsa,...}``
+        # exceeds ``_expand_brace_projections``'s cap so the leaf
+        # projection ``~/.ssh/id_rsa`` never reaches the literal regex.
+        # These patterns catch sensitive-name fragments inside a brace
+        # group attached to a sensitive root and fire regardless of
+        # whether the expansion completed. Split by root so legitimate
+        # brace listings like ``cat ~/data/{maps,routes}`` are not
+        # flagged (``maps`` only matches under ``/proc/<pid>/``).
+        for regex in (
+            _HOME_BRACE_RE,
+            _ETC_BRACE_RE,
+            _PROC_BRACE_RE,
+            _VAR_SPOOL_BRACE_RE,
+        ):
+            for m in regex.finditer(text):
+                found.add(m.group(0))
+
+    # Recurse into nested shells. Mirrors the structure in
+    # _find_blocked_commands so ``bash -c "cat ~/.ssh/id_rsa"`` and
+    # ``cmd /c type %USERPROFILE%\.aws\credentials`` both surface.
+    _SHELLS = {"bash", "sh", "zsh", "dash", "ksh", "csh", "tcsh", "fish"}
+    _SHELLS_WIN = {"cmd", "cmd.exe"}
+    for i, token in enumerate(tokens):
+        tok_lower = token.lower()
+        is_unix_c = tok_lower == "-c" or (
+            tok_lower.startswith("-")
+            and tok_lower.endswith("c")
+            and not tok_lower.startswith("--")
+        )
+        is_win_c = tok_lower == "/c"
+        if not (is_unix_c or is_win_c) or i < 1 or i + 1 >= len(tokens):
+            continue
+        for j in range(i - 1, -1, -1):
+            prev = tokens[j]
+            if prev.startswith("-"):
+                continue
+            if is_win_c and prev.startswith("/") and len(prev) <= 3:
+                continue
+            prev_base = os.path.basename(prev).lower()
+            if is_unix_c and prev_base in _SHELLS:
+                found |= _find_sensitive_paths(tokens[i + 1])
+            elif is_win_c and prev_base in _SHELLS_WIN:
+                found |= _find_sensitive_paths(tokens[i + 1])
+            break
+    return found
 
 
 def _find_blocked_commands(command: str) -> set[str]:
@@ -1081,11 +1712,564 @@ def _check_signal_escape_patterns(code: str):
         }
     )
 
-    def _extract_string_from_node(node):
-        """Extract a plain string value from an AST node, if it is a constant."""
-        if isinstance(node, ast.Constant) and isinstance(node.value, str):
-            return node.value
+    # Simple ``name = 'literal'`` assignments are tracked on a pre-pass
+    # below and stored here so ``_extract_string_from_node`` can fold
+    # them as if they were inline string constants. Same surface for
+    # function aliases (``e = eval``) populates ``eval_exec_aliases``.
+    #
+    # ``string_bindings`` returns a single representative string per
+    # name (used by callers via ``_extract_string_from_node``).
+    # ``string_bindings_all`` keeps EVERY literal value ever bound to
+    # a name; the representative is picked to favour sensitive-shaped
+    # paths so an adversarial ``p = '/tmp/safe'; p = '/etc/shadow';
+    # open(p)`` (Python last-wins at runtime) does not slip through
+    # the gate just because the AST walk picked the safe binding first.
+    string_bindings: dict[str, str] = {}
+    string_bindings_all: dict[str, list[str]] = {}
+    eval_exec_aliases: dict[str, str] = {}
+
+    # ``os.path.join`` alias tracking. Recognised forms:
+    #
+    #   import os                       -> "os.path.join"
+    #   import os as o                  -> "o.path.join"
+    #   from os import path             -> "path.join"
+    #   from os import path as op       -> "op.join"
+    #   import posixpath / ntpath / as pp -> "pp.join"
+    #   from os.path import join        -> bare "join(...)"
+    #   from os.path import join as j   -> bare "j(...)"
+    #   from posixpath import join      -> bare "join(...)"
+    #
+    # ``os_path_module_aliases`` holds the dotted prefix used for an
+    # attribute call (``o``, ``op``, ``pp``, ...) such that
+    # ``<alias>.join(...)`` is treated as ``os.path.join``.
+    # ``bare_path_join_aliases`` holds bare-name callables that
+    # behave like ``os.path.join`` when called directly.
+    os_path_module_aliases: set[str] = {"os.path", "posixpath", "ntpath"}
+    bare_path_join_aliases: set[str] = set()
+    bare_path_expanduser_aliases: set[str] = set()
+
+    # ``shutil`` alias tracking. Recognised forms:
+    #
+    #   import shutil                       -> "shutil"
+    #   import shutil as sh                 -> "sh"
+    #   from shutil import copyfile         -> bare "copyfile(...)"
+    #   from shutil import copy as cp       -> bare "cp(...)"
+    shutil_module_aliases: set[str] = {"shutil"}
+    bare_shutil_copy_aliases: dict[str, str] = {}
+
+    _SHUTIL_COPY_NAMES = (
+        "copyfile",
+        "copy",
+        "copy2",
+        "copytree",
+        "move",
+    )
+
+    # ``pathlib`` alias tracking for the pre-pass pathlib resolver.
+    # Visitor-level state extends these later, but the pre-pass needs
+    # them now so ``import pathlib as pl; p = pl.Path('/etc/shadow')``
+    # is folded into ``string_bindings``. Mirror of ``_PATHLIB_PATH_CLASSES``
+    # below; kept literal here to avoid a forward-reference dance.
+    _PATHLIB_PATH_CLASSES_PREPASS = (
+        "Path",
+        "PurePath",
+        "PosixPath",
+        "WindowsPath",
+        "PurePosixPath",
+        "PureWindowsPath",
+    )
+    pathlib_module_aliases_prepass: set[str] = {"pathlib"}
+    path_class_aliases_prepass: set[str] = set(_PATHLIB_PATH_CLASSES_PREPASS)
+
+    def _run_alias_prepass(subtree: ast.AST) -> None:
+        """Collect import aliases (os/os.path/posixpath/shutil/pathlib)
+        from ``subtree``. Idempotent and additive so eval/exec payloads
+        that contain ``import shutil as sh`` see their aliases tracked
+        before the inner visitor runs."""
+        for _node in ast.walk(subtree):
+            if isinstance(_node, ast.Import):
+                for alias in _node.names:
+                    _local = alias.asname or alias.name
+                    if alias.name == "os":
+                        os_path_module_aliases.add(f"{_local}.path")
+                    elif alias.name in ("posixpath", "ntpath"):
+                        os_path_module_aliases.add(_local)
+                    elif alias.name == "shutil":
+                        shutil_module_aliases.add(_local)
+                    elif alias.name == "pathlib":
+                        pathlib_module_aliases_prepass.add(_local)
+            elif isinstance(_node, ast.ImportFrom):
+                if _node.module == "os":
+                    for alias in _node.names:
+                        if alias.name == "path":
+                            os_path_module_aliases.add(alias.asname or "path")
+                elif _node.module == "os.path" or _node.module in (
+                    "posixpath",
+                    "ntpath",
+                ):
+                    for alias in _node.names:
+                        if alias.name == "join":
+                            bare_path_join_aliases.add(alias.asname or "join")
+                        elif alias.name == "expanduser":
+                            bare_path_expanduser_aliases.add(
+                                alias.asname or "expanduser"
+                            )
+                elif _node.module == "shutil":
+                    for alias in _node.names:
+                        if alias.name in _SHUTIL_COPY_NAMES:
+                            bare_shutil_copy_aliases[alias.asname or alias.name] = (
+                                f"shutil.{alias.name}"
+                            )
+                elif _node.module == "pathlib":
+                    for alias in _node.names:
+                        if alias.name in _PATHLIB_PATH_CLASSES_PREPASS:
+                            path_class_aliases_prepass.add(alias.asname or alias.name)
+
+    _run_alias_prepass(tree)
+
+    # ``_SENSITIVE_FILE_PREFIXES`` and ``_SENSITIVE_FILE_RE`` are also
+    # defined inside ``NetworkAndIoVisitor`` for the open-call gate,
+    # but ``_looks_sensitive`` needs them in the binding pre-pass which
+    # runs much earlier. Duplicate the literal here so the bias check
+    # covers ``/etc/passwd`` (not in ``_ABSOLUTE_SENSITIVE``, only in
+    # this prefix list) too.
+    _PREPASS_SENSITIVE_PREFIXES = (
+        "/etc/passwd",
+        "/etc/shadow",
+        "/etc/sudoers",
+        "/etc/ssh/",
+    )
+    _PREPASS_SENSITIVE_RE = re.compile(
+        r"^/proc/(?:self|\d+)/(?:environ|cmdline|task/\d+/environ)$"
+    )
+
+    def _looks_sensitive(value: str) -> bool:
+        """True if *value* matches any host-credential / process-state
+        path that the bash / file gates already flag. Uses the
+        authoritative ``_find_sensitive_paths`` (covers /etc/shadow,
+        /proc/<pid>/environ, ~/.ssh/id_rsa, ~/.aws/credentials, etc.)
+        plus the open-call ``_SENSITIVE_FILE_PREFIXES`` / ``_SENSITIVE_FILE_RE``
+        so /etc/passwd and similar prefix-only entries are caught too."""
+        if not value:
+            return False
+        if _find_sensitive_paths(value):
+            return True
+        if any(value.startswith(p) for p in _PREPASS_SENSITIVE_PREFIXES):
+            return True
+        if _PREPASS_SENSITIVE_RE.match(value):
+            return True
+        return False
+
+    def _record_string_binding(name: str, value: str) -> None:
+        """Append ``value`` to ``string_bindings_all[name]`` and update
+        ``string_bindings[name]`` so the gate sees the most sensitive
+        value the variable could carry at runtime. The selection rule
+        mirrors Python's last-wins semantics for sensitive values:
+
+          * If the new value is sensitive, it always wins (even if the
+            current is also sensitive) -- a later sensitive assignment
+            is at least as concerning as an earlier one, and the chain
+            ``p='/etc/hosts'; p='/etc/shadow'`` must surface the shadow.
+          * If the new value is benign and the current sensitive, keep
+            the sensitive value (Python would last-wins to benign, but
+            statically we cannot prove the new value executes and we
+            err on the side of blocking the path the attacker reached
+            for).
+          * If both are benign, latest seen wins."""
+        bucket = string_bindings_all.setdefault(name, [])
+        if value not in bucket:
+            bucket.append(value)
+        cur = string_bindings.get(name)
+        if cur is None:
+            string_bindings[name] = value
+            return
+        if _looks_sensitive(value):
+            string_bindings[name] = value
+            return
+        if _looks_sensitive(cur):
+            return
+        string_bindings[name] = value
+
+    def _extract_string_literal(node, _depth = 0):
+        """Strict literal-string extraction: no name binding lookup,
+        no ``os.path.join`` resolution. Used at sites where conservative
+        "dynamic means allow" behaviour is required for non-regression
+        (e.g. the trusted-host check, where ``url = some_input;
+        requests.get(url)`` must continue to pass through to the host
+        gate rather than getting eagerly bound to a literal)."""
+        if _depth > 64:
+            return None
+        if isinstance(node, ast.Constant):
+            if isinstance(node.value, str):
+                return node.value
+            if isinstance(node.value, bytes):
+                # ``open(b'/etc/shadow')`` — bytes are valid path-like
+                # objects to ``open()`` so the literal must reach the
+                # sensitive-path gate too. Strict UTF-8 to avoid
+                # masking junk.
+                try:
+                    return node.value.decode("utf-8")
+                except UnicodeDecodeError:
+                    return None
+            if isinstance(node.value, (int, float)):
+                return str(node.value)
+            return None
+        if isinstance(node, ast.NamedExpr):
+            # Walrus (``open((p := '/etc/shadow'))``): resolve the RHS.
+            return _extract_string_literal(node.value, _depth + 1)
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            # Flatten left-leaning ``+`` chains iteratively so a long
+            # concat ``v0+v1+...+v64+'/etc/shadow'`` does not blow the
+            # depth cap (each level adds 1, so the recursive form
+            # fails closed at 64 operands).
+            operands: list[ast.AST] = []
+            cur = node
+            while isinstance(cur, ast.BinOp) and isinstance(cur.op, ast.Add):
+                operands.append(cur.right)
+                cur = cur.left
+            operands.append(cur)
+            operands.reverse()
+            parts: list[str] = []
+            for op in operands:
+                s = _extract_string_literal(op, _depth + 1)
+                if s is None:
+                    return None
+                parts.append(s)
+            return "".join(parts)
+        if isinstance(node, ast.JoinedStr):
+            parts: list[str] = []
+            for v in node.values:
+                if isinstance(v, ast.Constant) and isinstance(v.value, str):
+                    parts.append(v.value)
+                elif isinstance(v, ast.FormattedValue):
+                    inner = _extract_string_literal(v.value, _depth + 1)
+                    if inner is None:
+                        return None
+                    parts.append(inner)
+                else:
+                    return None
+            return "".join(parts)
         return None
+
+    def _extract_string_from_node(node, _depth = 0):
+        """Extract a plain string value from an AST node when it can be
+        resolved statically.
+
+        Handles:
+          * ``ast.Constant`` strings (unchanged from prior behaviour).
+          * Numeric ``ast.Constant`` values stringified, used inside
+            f-strings (``f'/proc/{1}/environ'``).
+          * ``ast.BinOp(ast.Add)`` joining two resolvable string operands.
+            Closes ``open('/etc/' + 'shadow')`` style dynamic paths.
+          * ``ast.JoinedStr`` (f-strings) whose ``FormattedValue`` parts
+            are themselves resolvable, including numeric constants.
+          * ``ast.Name`` lookups against a name -> literal pre-pass so
+            ``p = '/etc/shadow'; open(p)`` resolves.
+          * ``os.path.join('/etc', 'shadow')`` and
+            ``os.path.expanduser('~/...')`` so common stdlib path
+            helpers do not hide a sensitive target.
+
+        Resolution is depth-capped so adversarial deeply-nested
+        ``'a' + ('b' + ('c' + ...))`` cannot blow the stack. The cap
+        (64) sits well below CPython's default recursion limit and
+        comfortably above any realistic credential-path concatenation
+        (the longest sensitive path is roughly 30 chars).
+        Returns ``None`` whenever any subpart fails to resolve.
+        """
+        if _depth > 64:
+            return None
+        if isinstance(node, ast.Constant):
+            if isinstance(node.value, str):
+                return node.value
+            if isinstance(node.value, bytes):
+                # ``open(b'/etc/shadow')`` -- bytes paths are valid
+                # PathLike for ``open()``. Decode strictly so non-UTF-8
+                # junk does not mask the gate.
+                try:
+                    return node.value.decode("utf-8")
+                except UnicodeDecodeError:
+                    return None
+            if isinstance(node.value, (int, float)):
+                return str(node.value)
+            return None
+        if isinstance(node, ast.Name):
+            return string_bindings.get(node.id)
+        if isinstance(node, ast.NamedExpr):
+            # Walrus ``(p := '/etc/shadow')``: resolve and record the
+            # binding so later uses of ``p`` also resolve.
+            val = _extract_string_from_node(node.value, _depth + 1)
+            if val is not None and isinstance(node.target, ast.Name):
+                string_bindings.setdefault(node.target.id, val)
+            return val
+        if isinstance(node, ast.IfExp):
+            # Ternary ``'/etc/shadow' if cond else 'data.txt'``: either
+            # branch can execute at runtime, so a sensitive value in
+            # ANY branch must reach the gate. Prefer the sensitive one
+            # so the downstream check fires; fall back to whichever
+            # branch resolves.
+            body_val = _extract_string_from_node(node.body, _depth + 1)
+            orelse_val = _extract_string_from_node(node.orelse, _depth + 1)
+            if body_val is not None and _looks_sensitive(body_val):
+                return body_val
+            if orelse_val is not None and _looks_sensitive(orelse_val):
+                return orelse_val
+            return body_val if body_val is not None else orelse_val
+        if isinstance(node, ast.Subscript):
+            # ``['/etc/shadow'][0]`` and ``{'k':'/etc/shadow'}['k']``
+            # are statically resolvable index expressions. Attempt the
+            # literal value lookup; otherwise return any sensitive
+            # candidate in the container so the gate still fires.
+            #
+            # ``ast.Index`` was folded in Python 3.9 -- on older
+            # grammars the slice node would itself be an ``ast.Index``
+            # wrapping the constant. Strip the wrapper if present.
+            key_node = node.slice
+            if isinstance(key_node, getattr(ast, "Index", tuple())):
+                key_node = key_node.value
+            container = node.value
+            if isinstance(container, (ast.List, ast.Tuple)):
+                # Indexed list / tuple of literals: prefer the indexed
+                # element when the index is a static int; otherwise
+                # take any sensitive element so the gate fires.
+                if isinstance(key_node, ast.Constant) and isinstance(
+                    key_node.value, int
+                ):
+                    idx = key_node.value
+                    if -len(container.elts) <= idx < len(container.elts):
+                        v = _extract_string_from_node(container.elts[idx], _depth + 1)
+                        if v is not None:
+                            return v
+                for elt in container.elts:
+                    v = _extract_string_from_node(elt, _depth + 1)
+                    if v is not None and _looks_sensitive(v):
+                        return v
+                for elt in container.elts:
+                    v = _extract_string_from_node(elt, _depth + 1)
+                    if v is not None:
+                        return v
+                return None
+            if isinstance(container, ast.Dict):
+                # Indexed dict of literals: prefer the value at the
+                # static key; otherwise return any sensitive value.
+                if isinstance(key_node, ast.Constant):
+                    for k_node, v_node in zip(container.keys, container.values):
+                        if (
+                            isinstance(k_node, ast.Constant)
+                            and k_node.value == key_node.value
+                        ):
+                            v = _extract_string_from_node(v_node, _depth + 1)
+                            if v is not None:
+                                return v
+                for v_node in container.values:
+                    v = _extract_string_from_node(v_node, _depth + 1)
+                    if v is not None and _looks_sensitive(v):
+                        return v
+                return None
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            # Flatten left-leaning ``+`` chains iteratively to avoid
+            # the recursion depth cap rejecting long concat bypasses
+            # like ``open(v0+v1+...+v64+'/etc/shadow')``.
+            operands: list[ast.AST] = []
+            cur = node
+            while isinstance(cur, ast.BinOp) and isinstance(cur.op, ast.Add):
+                operands.append(cur.right)
+                cur = cur.left
+            operands.append(cur)
+            operands.reverse()
+            parts: list[str] = []
+            for op in operands:
+                s = _extract_string_from_node(op, _depth + 1)
+                if s is None:
+                    return None
+                parts.append(s)
+            return "".join(parts)
+        if isinstance(node, ast.JoinedStr):
+            parts: list[str] = []
+            for v in node.values:
+                if isinstance(v, ast.Constant) and isinstance(v.value, str):
+                    parts.append(v.value)
+                elif isinstance(v, ast.FormattedValue):
+                    inner = _extract_string_from_node(v.value, _depth + 1)
+                    if inner is None:
+                        return None
+                    parts.append(inner)
+                else:
+                    return None
+            return "".join(parts)
+        if isinstance(node, ast.Call):
+            # ``os.path.join(a, b, ...)`` and ``os.path.expanduser(s)``
+            # are the two stdlib path-building primitives that commonly
+            # appear in attacker payloads; resolve them when all inputs
+            # are static.
+            fq_chain = []
+            cur = node.func
+            while isinstance(cur, ast.Attribute):
+                fq_chain.insert(0, cur.attr)
+                cur = cur.value
+            if isinstance(cur, ast.Name):
+                fq_chain.insert(0, cur.id)
+            fq = ".".join(fq_chain) if fq_chain else ""
+            # Match ``X.join(...)`` where X is any tracked alias of
+            # ``os.path`` / ``posixpath`` / ``ntpath`` (handles
+            # ``import os as o; o.path.join``, ``from os import path``,
+            # ``from os import path as op``, ``import posixpath as pp``).
+            is_path_join = (
+                fq in ("os.path.join", "posixpath.join", "ntpath.join")
+                or (
+                    fq.endswith(".join")
+                    and fq[: -len(".join")] in os_path_module_aliases
+                )
+                or (
+                    isinstance(node.func, ast.Name)
+                    and node.func.id in bare_path_join_aliases
+                )
+            )
+            if is_path_join and node.args:
+                parts = []
+                for arg in node.args:
+                    s = _extract_string_from_node(arg, _depth + 1)
+                    if s is None:
+                        return None
+                    parts.append(s)
+                if not parts:
+                    return None
+                joined = parts[0]
+                for p in parts[1:]:
+                    if p.startswith(("/", "\\")):
+                        joined = p
+                    elif joined.endswith(("/", "\\")):
+                        joined = joined + p
+                    else:
+                        joined = joined + "/" + p
+                return joined
+            is_path_expanduser = (
+                fq == "os.path.expanduser"
+                or (
+                    fq.endswith(".expanduser")
+                    and fq[: -len(".expanduser")] in os_path_module_aliases
+                )
+                or (
+                    isinstance(node.func, ast.Name)
+                    and node.func.id in bare_path_expanduser_aliases
+                )
+            )
+            if is_path_expanduser and len(node.args) == 1:
+                return _extract_string_from_node(node.args[0], _depth + 1)
+        return None
+
+    def _run_string_binding_prepass(subtree: ast.AST) -> None:
+        """Collect simple ``name = 'literal'`` string assignments and
+        ``name = eval`` / ``name = exec`` function aliases from
+        ``subtree``. Idempotent and additive: callable on the outer
+        module AST and again on each eval / exec literal payload so
+        ``exec("p='/etc/shadow'\\nopen(p)")`` is not a free bypass.
+
+        Records every literal so multiple-assignment bypasses (``p =
+        '/tmp/safe'; p = '/etc/shadow'; open(p)``) cannot dodge the
+        gate by ordering -- the sensitive-shape preference in
+        ``_record_string_binding`` picks the dangerous value.
+
+        Also resolves:
+
+        * Tuple / list unpacking destructuring (``(a, b) = ('/etc',
+          'shadow')`` and ``p, = ['/etc/shadow']``) element-wise.
+        * Pathlib constructor assignments (``p = Path('/etc/shadow');
+          p.read_text()``) so the bound name resolves to the path
+          string when later referenced by the file-read or shutil gate.
+        """
+        for _assign in ast.walk(subtree):
+            # Walrus (``p := '/etc/shadow'``) is an expression that
+            # binds, not an Assign. Handle it here so a walrus inside
+            # an eval / exec payload (or any expression context) is
+            # surfaced by the pre-pass too.
+            if isinstance(_assign, ast.NamedExpr) and isinstance(
+                _assign.target, ast.Name
+            ):
+                _val = _extract_string_from_node(_assign.value)
+                if _val is None:
+                    _val = _extract_pathlib_target(
+                        _assign.value,
+                        path_class_aliases_prepass,
+                        pathlib_module_aliases_prepass,
+                    )
+                if _val is not None:
+                    _record_string_binding(_assign.target.id, _val)
+                continue
+            # Annotated assignment (``path: str = '/etc/shadow'``) is
+            # an ast.AnnAssign, not an ast.Assign. Same surface: a
+            # single Name target bound to a single value.
+            if (
+                isinstance(_assign, ast.AnnAssign)
+                and isinstance(_assign.target, ast.Name)
+                and _assign.value is not None
+            ):
+                _val = _extract_string_from_node(_assign.value)
+                if _val is None:
+                    _val = _extract_pathlib_target(
+                        _assign.value,
+                        path_class_aliases_prepass,
+                        pathlib_module_aliases_prepass,
+                    )
+                if _val is not None:
+                    _record_string_binding(_assign.target.id, _val)
+                continue
+            if not isinstance(_assign, ast.Assign):
+                continue
+            # Chained assignment ``a = b = '/etc/shadow'`` is one Assign
+            # node with multiple targets. Resolve the value once and
+            # bind every Name target -- ``open(a)`` and ``open(b)``
+            # both have to flow through the gate.
+            if len(_assign.targets) > 1:
+                _val = _extract_string_from_node(_assign.value)
+                if _val is None:
+                    _val = _extract_pathlib_target(
+                        _assign.value,
+                        path_class_aliases_prepass,
+                        pathlib_module_aliases_prepass,
+                    )
+                if _val is not None:
+                    for _tgt in _assign.targets:
+                        if isinstance(_tgt, ast.Name):
+                            _record_string_binding(_tgt.id, _val)
+                continue
+            if len(_assign.targets) == 1:
+                _target = _assign.targets[0]
+                if isinstance(_target, ast.Name):
+                    _val = _extract_string_from_node(_assign.value)
+                    if _val is None:
+                        # Pathlib fallback: ``p = Path('/etc/shadow')`` /
+                        # ``p = pathlib.PosixPath('/proc/self/environ')`` /
+                        # ``import pathlib as pl; p = pl.Path('/...')``.
+                        # Uses the per-tree alias sets built earlier so
+                        # ``import pathlib as pl`` and ``from pathlib
+                        # import Path as P`` both resolve.
+                        _val = _extract_pathlib_target(
+                            _assign.value,
+                            path_class_aliases_prepass,
+                            pathlib_module_aliases_prepass,
+                        )
+                    if _val is not None:
+                        _record_string_binding(_target.id, _val)
+                    elif isinstance(_assign.value, ast.Name) and _assign.value.id in (
+                        "eval",
+                        "exec",
+                    ):
+                        eval_exec_aliases.setdefault(_target.id, _assign.value.id)
+                elif isinstance(_target, (ast.Tuple, ast.List)) and isinstance(
+                    _assign.value, (ast.Tuple, ast.List)
+                ):
+                    if len(_target.elts) == len(_assign.value.elts):
+                        for _tgt_e, _val_e in zip(_target.elts, _assign.value.elts):
+                            if isinstance(_tgt_e, ast.Name):
+                                _v = _extract_string_from_node(_val_e)
+                                if _v is not None:
+                                    _record_string_binding(_tgt_e.id, _v)
+
+    # The initial pre-pass call moves to AFTER ``_extract_pathlib_target``
+    # is defined so the pathlib fallback resolves (Python closure cell
+    # binding rule: ``_run_string_binding_prepass`` looks up the name
+    # in the enclosing scope at CALL time, which must be after the
+    # ``def`` site runs).
 
     def _extract_strings_from_list(node):
         """Extract string elements from an AST List or Tuple node."""
@@ -1098,20 +2282,219 @@ def _check_signal_escape_patterns(code: str):
             return parts
         return []
 
+    def _join_path_parts(parts):
+        """Stitch path parts the way ``pathlib.Path(*parts)`` does for
+        statically-resolvable string segments.
+
+        Mirrors pathlib's absolute-segment-reset semantics: when a later
+        part starts with ``/`` or a drive letter, it discards everything
+        accumulated so far. ``Path('/tmp', '/etc/shadow')`` resolves to
+        ``/etc/shadow`` at runtime; this helper does the same."""
+        if not parts:
+            return None
+        out = parts[0]
+        for p in parts[1:]:
+            if p.startswith(("/", "\\")) or (
+                len(p) >= 2 and p[1] == ":" and p[0].isalpha()
+            ):
+                out = p
+                continue
+            if out.endswith(("/", "\\")):
+                out = out + p.lstrip("/\\")
+            else:
+                out = out + "/" + p.lstrip("/\\")
+        return out
+
+    def _fq_chain_name(func):
+        """Return the dotted FQ chain for an attribute / name expression,
+        or empty string if the chain stops at something other than a Name."""
+        parts: list[str] = []
+        cur = func
+        while isinstance(cur, ast.Attribute):
+            parts.insert(0, cur.attr)
+            cur = cur.value
+        if isinstance(cur, ast.Name):
+            parts.insert(0, cur.id)
+        return ".".join(parts) if parts else ""
+
+    # Pathlib methods that return ``self`` unchanged for the purposes
+    # of static path matching: tilde expansion, symlink resolution, and
+    # absolutification do not change which path the read will hit.
+    _PATHLIB_PASS_THROUGH = frozenset({"expanduser", "resolve", "absolute"})
+    # Pathlib concrete classes that behave like Path for our purposes.
+    _PATHLIB_PATH_CLASSES = frozenset(
+        {
+            "Path",
+            "PurePath",
+            "PosixPath",
+            "WindowsPath",
+            "PurePosixPath",
+            "PureWindowsPath",
+        }
+    )
+
+    def _extract_pathlib_target(node, path_aliases, pathlib_aliases, _depth = 0):
+        """Statically resolve a pathlib expression to its target path
+        string, or None if any subpart is not resolvable.
+
+        Recognises (with depth cap):
+          * Plain string literals (delegated to ``_extract_string_from_node``).
+          * ``Path('/etc/shadow')`` and aliased ``P('/etc/shadow')`` /
+            ``pl.Path('/etc/shadow')`` / ``PosixPath('/etc/shadow')``.
+          * Multi-part construction ``Path('/etc', 'shadow')``.
+          * ``Path('/etc').joinpath('shadow')`` (one or more parts).
+          * ``Path('/etc') / 'shadow'`` (``__truediv__`` chain).
+          * ``Path.home()`` resolves to ``~`` so subsequent ``/`` or
+            ``.joinpath()`` reach the home-prefix regex.
+          * ``.expanduser()`` / ``.resolve()`` / ``.absolute()``
+            pass-through.
+        """
+        if _depth > 32:
+            return None
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return node.value
+        if isinstance(node, ast.Name):
+            return string_bindings.get(node.id)
+        if isinstance(node, ast.Call):
+            # Pass-through methods on a pathlib object (.expanduser(),
+            # .resolve(), .absolute()): return the receiver path.
+            if (
+                isinstance(node.func, ast.Attribute)
+                and node.func.attr in _PATHLIB_PASS_THROUGH
+            ):
+                return _extract_pathlib_target(
+                    node.func.value, path_aliases, pathlib_aliases, _depth + 1
+                )
+            if isinstance(node.func, ast.Attribute) and node.func.attr == "joinpath":
+                base = _extract_pathlib_target(
+                    node.func.value, path_aliases, pathlib_aliases, _depth + 1
+                )
+                if base is None:
+                    return None
+                parts = [base]
+                for arg in node.args:
+                    s = _extract_pathlib_target(
+                        arg, path_aliases, pathlib_aliases, _depth + 1
+                    )
+                    if s is None:
+                        return None
+                    parts.append(s)
+                return _join_path_parts(parts)
+            ctor_fq = _fq_chain_name(node.func)
+            # ``Path.home()`` (and aliases) resolves to ``~`` so
+            # ``Path.home() / '.aws/credentials'`` reaches the
+            # ``~/.aws/credentials`` home-anchored regex below.
+            if ctor_fq in {f"{a}.home" for a in path_aliases} or ctor_fq in {
+                f"{a}.Path.home" for a in pathlib_aliases
+            }:
+                return "~"
+            is_path_ctor = ctor_fq in path_aliases or any(
+                ctor_fq == f"{alias}.{cls}"
+                for alias in pathlib_aliases
+                for cls in _PATHLIB_PATH_CLASSES
+            )
+            if is_path_ctor and node.args:
+                parts = []
+                for arg in node.args:
+                    s = _extract_pathlib_target(
+                        arg, path_aliases, pathlib_aliases, _depth + 1
+                    )
+                    if s is None:
+                        return None
+                    parts.append(s)
+                return _join_path_parts(parts)
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+            left = _extract_pathlib_target(
+                node.left, path_aliases, pathlib_aliases, _depth + 1
+            )
+            right = _extract_pathlib_target(
+                node.right, path_aliases, pathlib_aliases, _depth + 1
+            )
+            if left is not None and right is not None:
+                return _join_path_parts([left, right])
+        # Last-ditch: BinOp.Add of string constants, JoinedStr, etc.
+        return _extract_string_from_node(node)
+
+    _PATH_RECEIVER_READ_METHODS = frozenset({"open", "read_text", "read_bytes"})
+
+    # ``_extract_pathlib_target`` is now defined; run the string-binding
+    # pre-pass so the pathlib fallback inside it resolves.
+    _run_string_binding_prepass(tree)
+
+    def _eval_exec_call_name(func, builtins_aliases):
+        """Match ``eval`` / ``exec`` invocations including:
+
+          * Bare ``eval`` / ``exec``.
+          * Qualified forms ``builtins.exec``, ``__builtins__.eval``,
+            and any tracked alias of ``builtins`` (``import builtins as b``).
+          * ``from builtins import exec as e`` aliases (tracked per
+            visitor in ``shell_exec_aliases``).
+          * Simple ``e = eval`` assignment aliases collected by the
+            pre-pass into ``eval_exec_aliases``.
+
+        Returns the bare function name (``eval`` or ``exec``) when
+        recognised, else None."""
+        if isinstance(func, ast.Name):
+            if func.id in ("eval", "exec"):
+                return func.id
+            return eval_exec_aliases.get(func.id)
+        if (
+            isinstance(func, ast.Attribute)
+            and func.attr in ("eval", "exec")
+            and isinstance(func.value, ast.Name)
+            and func.value.id in builtins_aliases
+        ):
+            return func.attr
+        return None
+
+    def _resolve_dynamic_module_name(node):
+        """Return the module string for dynamic import expressions.
+
+        Recognises:
+          * ``__import__('os')``
+          * ``importlib.import_module('os')``
+          * bare ``import_module('os')`` (after ``from importlib import
+            import_module``)
+
+        Returns the literal first-argument string when matched, else
+        ``None``. Used to ensure ``__import__('os').system(...)`` and
+        ``m = importlib.import_module('os'); m.system(...)`` flow
+        through the same shell-escape gate as ``import os; os.system(...)``.
+        """
+        if not isinstance(node, ast.Call) or not node.args:
+            return None
+        arg0 = node.args[0]
+        if not (isinstance(arg0, ast.Constant) and isinstance(arg0.value, str)):
+            return None
+        f = node.func
+        if isinstance(f, ast.Name) and f.id in ("__import__", "import_module"):
+            return arg0.value
+        if isinstance(f, ast.Attribute) and f.attr == "import_module":
+            return arg0.value
+        return None
+
     # Keyword argument names that carry command content (as opposed to
     # control flags like check=True, text=True, capture_output=True).
     _CMD_KWARGS = frozenset({"args", "command", "executable", "path", "file"})
 
     def _check_args_for_blocked(args_nodes):
-        """Check if any call arguments contain blocked commands."""
+        """Check if any call arguments contain blocked commands or
+        clear-cut credential / process-state paths.
+
+        Mirrors the bash side's combined ``_find_blocked_commands`` +
+        ``_find_sensitive_paths`` so e.g. ``os.system('cat ~/.ssh/id_rsa')``
+        is caught by the same gate as ``bash $ cat ~/.ssh/id_rsa``.
+        """
         found = set()
         for arg in args_nodes:
             s = _extract_string_from_node(arg)
             if s is not None:
                 found |= _find_blocked_commands(s)
+                found |= _find_sensitive_paths(s)
             strs = _extract_strings_from_list(arg)
             for s in strs:
                 found |= _find_blocked_commands(s)
+                found |= _find_sensitive_paths(s)
         return found
 
     class SignalEscapeVisitor(ast.NodeVisitor):
@@ -1123,7 +2506,19 @@ def _check_signal_escape_patterns(code: str):
             # Maps bare function names to their fully-qualified form
             # for from-import tracking (e.g. "system" -> "os.system")
             self.shell_exec_aliases: dict[str, str] = {}
+            # Builtins aliases so ``builtins.exec`` / ``__builtins__.eval``
+            # and ``import builtins as b; b.exec(...)`` flow through the
+            # same recursion guard as the bare-name forms.
+            self.builtins_aliases = {"builtins", "__builtins__"}
+            # Names that resolve to ``importlib.import_module`` so
+            # ``from importlib import import_module as IM; IM('os')...``
+            # flows through ``_resolve_dynamic_module`` the same as
+            # ``import importlib; importlib.import_module('os')...``.
+            self.import_module_aliases = {"import_module"}
             self.loop_depth = 0
+            # Cap recursion into nested eval/exec literals; an adversarial
+            # ``eval("eval('eval(...)')")`` should not blow the stack.
+            self._eval_depth = 0
 
         def visit_Import(self, node):
             for alias in node.names:
@@ -1133,6 +2528,8 @@ def _check_signal_escape_patterns(code: str):
                         self.signal_aliases.add(alias.asname)
                 elif alias.name == "os":
                     self.os_aliases.add(alias.asname or "os")
+                elif alias.name == "builtins":
+                    self.builtins_aliases.add(alias.asname or "builtins")
                 elif alias.name == "subprocess":
                     self.subprocess_aliases.add(alias.asname or "subprocess")
             self.generic_visit(node)
@@ -1162,6 +2559,21 @@ def _check_signal_escape_patterns(code: str):
                     fq = f"{node.module}.{alias.name}"
                     if fq in _SHELL_EXEC_FUNCS:
                         self.shell_exec_aliases[alias.asname or alias.name] = fq
+            elif node.module == "builtins":
+                # ``from builtins import exec as e`` / ``eval as e``
+                # registers the alias for both the literal-payload
+                # recursion (via eval_exec_aliases) and the builtins
+                # qualified-call resolution.
+                for alias in node.names:
+                    if alias.name in ("eval", "exec"):
+                        eval_exec_aliases[alias.asname or alias.name] = alias.name
+            elif node.module == "importlib":
+                # ``from importlib import import_module as IM`` so a
+                # later ``IM('os').system(...)`` flows through the same
+                # dynamic-import gate as ``importlib.import_module('os')``.
+                for alias in node.names:
+                    if alias.name == "import_module":
+                        self.import_module_aliases.add(alias.asname or alias.name)
             self.generic_visit(node)
 
         def visit_While(self, node):
@@ -1174,8 +2586,135 @@ def _check_signal_escape_patterns(code: str):
             self.generic_visit(node)
             self.loop_depth -= 1
 
+        def visit_Assign(self, node):
+            # Track ``m = __import__('os')`` and
+            # ``m = importlib.import_module('os')`` so a subsequent
+            # ``m.system(...)`` / ``m.popen(...)`` flows through the
+            # os/subprocess alias detection unchanged.
+            dyn = self._resolve_dynamic_module(node.value)
+            if dyn == "os":
+                for tgt in node.targets:
+                    if isinstance(tgt, ast.Name):
+                        self.os_aliases.add(tgt.id)
+            elif dyn == "subprocess":
+                for tgt in node.targets:
+                    if isinstance(tgt, ast.Name):
+                        self.subprocess_aliases.add(tgt.id)
+
+            # Bare module rebinding (``m = os`` / ``r = subprocess``):
+            # propagate the source alias set so a later ``m.system(...)``
+            # is caught by the same os/subprocess gate as the direct call.
+            if isinstance(node.value, ast.Name):
+                src = node.value.id
+                if src in self.os_aliases:
+                    for tgt in node.targets:
+                        if isinstance(tgt, ast.Name):
+                            self.os_aliases.add(tgt.id)
+                elif src in self.subprocess_aliases:
+                    for tgt in node.targets:
+                        if isinstance(tgt, ast.Name):
+                            self.subprocess_aliases.add(tgt.id)
+
+            # Method rebinding (``p = os.popen`` / ``r = subprocess.run``):
+            # the bound name now points at a shell-exec function so a
+            # later ``p('sudo whoami')`` must flow through the
+            # shell-escape gate. Track it under ``shell_exec_aliases``
+            # alongside the existing from-import path.
+            elif isinstance(node.value, ast.Attribute) and isinstance(
+                node.value.value, ast.Name
+            ):
+                recv = node.value.value.id
+                attr = node.value.attr
+                fq = None
+                if recv in self.os_aliases:
+                    fq = f"os.{attr}"
+                elif recv in self.subprocess_aliases:
+                    fq = f"subprocess.{attr}"
+                if fq and fq in _SHELL_EXEC_FUNCS:
+                    for tgt in node.targets:
+                        if isinstance(tgt, ast.Name):
+                            self.shell_exec_aliases[tgt.id] = fq
+
+            self.generic_visit(node)
+
+        def _resolve_dynamic_module(self, node):
+            """Visitor-aware dynamic-import detection: recognises
+            everything :func:`_resolve_dynamic_module_name` does plus
+            tracked ``from importlib import import_module as IM``
+            aliases stored on ``self.import_module_aliases``."""
+            mod = _resolve_dynamic_module_name(node)
+            if mod is not None:
+                return mod
+            if isinstance(node, ast.Call) and node.args:
+                arg0 = node.args[0]
+                if isinstance(arg0, ast.Constant) and isinstance(arg0.value, str):
+                    if (
+                        isinstance(node.func, ast.Name)
+                        and node.func.id in self.import_module_aliases
+                    ):
+                        return arg0.value
+            return None
+
         def visit_Call(self, node):
             func = node.func
+
+            # --- eval / exec body inspection --------------------------
+            # If a payload is a statically-resolvable string we parse it
+            # and recurse so the inner code is checked by all the same
+            # detectors (signal tampering, shell escape, sensitive files,
+            # network policy). If the payload is not statically resolvable
+            # we flag it as a dynamic shell-escape candidate — eval/exec
+            # of runtime data is the classic injection vector.
+            eval_exec_name = _eval_exec_call_name(func, self.builtins_aliases)
+            if eval_exec_name is not None:
+                if node.args:
+                    payload = _extract_string_from_node(node.args[0])
+                    if payload is None:
+                        # Dynamic payload: classic injection vector.
+                        shell_escapes.append(
+                            {
+                                "type": "shell_escape_dynamic",
+                                "line": node.lineno,
+                                "description": (
+                                    f"{eval_exec_name}() called with non-literal "
+                                    "argument (potential code-injection escape)"
+                                ),
+                            }
+                        )
+                    elif self._eval_depth >= 3:
+                        # Fail-closed at the recursion cap so an attacker
+                        # cannot bypass inspection by wrapping the payload
+                        # in four-plus nested literal eval/exec layers.
+                        shell_escapes.append(
+                            {
+                                "type": "shell_escape_dynamic",
+                                "line": node.lineno,
+                                "description": (
+                                    f"{eval_exec_name}() literal payload nesting "
+                                    "exceeds sandbox inspection depth"
+                                ),
+                            }
+                        )
+                    else:
+                        try:
+                            inner_tree = ast.parse(payload, mode = "exec")
+                        except SyntaxError:
+                            inner_tree = None
+                        if inner_tree is not None:
+                            # Re-run the string-binding pre-pass on the
+                            # payload so ``exec("p='/etc/shadow'\\nopen(p)")``
+                            # surfaces ``p``'s literal before the
+                            # ``open(p)`` visit. Without this the inner
+                            # ``Name('p')`` lookup misses and the read
+                            # is treated as dynamic-and-allowed.
+                            _run_alias_prepass(inner_tree)
+                            _run_string_binding_prepass(inner_tree)
+                            self._eval_depth += 1
+                            try:
+                                self.visit(inner_tree)
+                            finally:
+                                self._eval_depth -= 1
+
             func_name = None
             if isinstance(func, ast.Attribute):
                 if isinstance(func.value, ast.Name):
@@ -1235,6 +2774,18 @@ def _check_signal_escape_patterns(code: str):
                     if func.value.id in self.os_aliases:
                         shell_func = f"os.{func.attr}"
                     elif func.value.id in self.subprocess_aliases:
+                        shell_func = f"subprocess.{func.attr}"
+                else:
+                    # Inline dynamic import:
+                    #   __import__('os').system(...)
+                    #   importlib.import_module('os').popen(...)
+                    #   IM('os').system(...)  (IM is a from-import alias)
+                    # No intermediate name binding so the Name branch
+                    # above misses it; resolve the receiver here.
+                    dyn = self._resolve_dynamic_module(func.value)
+                    if dyn == "os":
+                        shell_func = f"os.{func.attr}"
+                    elif dyn == "subprocess":
                         shell_func = f"subprocess.{func.attr}"
             elif isinstance(func, ast.Name):
                 # Check from-import aliases: from os import system; system(...)
@@ -1842,7 +3393,135 @@ def _check_signal_escape_patterns(code: str):
         return None
 
     class NetworkAndIoVisitor(ast.NodeVisitor):
+        def __init__(self):
+            super().__init__()
+            self._eval_depth = 0
+            # Builtins / pathlib alias tracking so the receiver-side
+            # pathlib detection and the eval/exec recursion both reach
+            # qualified and aliased forms (``builtins.exec``, ``P('/etc/x')``,
+            # ``PosixPath(...)``).
+            self.builtins_aliases = {"builtins", "__builtins__"}
+            self.path_aliases = set(_PATHLIB_PATH_CLASSES)
+            self.pathlib_aliases = {"pathlib"}
+            # ``from io import FileIO as X`` and ``from codecs import open
+            # as X``: a later bare ``X('/etc/shadow')`` flows through the
+            # same file-read gate as the qualified call.
+            self.file_reader_aliases: set[str] = set()
+
+        def visit_Import(self, node):
+            for alias in node.names:
+                if alias.name == "pathlib":
+                    self.pathlib_aliases.add(alias.asname or "pathlib")
+                elif alias.name == "builtins":
+                    self.builtins_aliases.add(alias.asname or "builtins")
+            self.generic_visit(node)
+
+        def visit_ImportFrom(self, node):
+            if node.module == "pathlib":
+                for alias in node.names:
+                    if alias.name in _PATHLIB_PATH_CLASSES:
+                        self.path_aliases.add(alias.asname or alias.name)
+            elif node.module == "builtins":
+                for alias in node.names:
+                    if alias.name in ("eval", "exec"):
+                        eval_exec_aliases[alias.asname or alias.name] = alias.name
+            elif node.module in ("io", "codecs"):
+                # ``from io import FileIO`` / ``from codecs import open``
+                # bind a bare name that is otherwise indistinguishable
+                # from any other ``FileIO(...)`` / ``open(...)`` call.
+                # The reader's gate uses this set to recognise the
+                # alias as a file-read.
+                for alias in node.names:
+                    if (node.module == "io" and alias.name in ("FileIO", "open")) or (
+                        node.module == "codecs" and alias.name == "open"
+                    ):
+                        self.file_reader_aliases.add(alias.asname or alias.name)
+            self.generic_visit(node)
+
+        def visit_Assign(self, node):
+            # Module rebinding: ``import pathlib; pl = pathlib``,
+            # ``import shutil; sh = shutil`` (and the equivalent for
+            # ``io`` / ``codecs``). Mirrors ``SignalEscapeVisitor.visit_Assign``
+            # so the file-read / shutil-copy / pathlib gates see the
+            # bound alias the same way they see the import-time alias.
+            if isinstance(node.value, ast.Name):
+                src = node.value.id
+                for tgt in node.targets:
+                    if not isinstance(tgt, ast.Name):
+                        continue
+                    if src in self.pathlib_aliases:
+                        self.pathlib_aliases.add(tgt.id)
+                    if src in shutil_module_aliases:
+                        shutil_module_aliases.add(tgt.id)
+                    if src in self.builtins_aliases:
+                        self.builtins_aliases.add(tgt.id)
+                    if src in self.path_aliases:
+                        self.path_aliases.add(tgt.id)
+            # Method rebinding inside the file-read surface:
+            # ``r = pl.Path`` so a later ``r('/etc/shadow').read_text()``
+            # flows through the pathlib resolver. The receiver alias
+            # for ``shutil.copy`` etc. is handled by the shutil-fq
+            # canonicalisation in the gate itself.
+            if isinstance(node.value, ast.Attribute) and isinstance(
+                node.value.value, ast.Name
+            ):
+                recv = node.value.value.id
+                attr = node.value.attr
+                if recv in self.pathlib_aliases and attr in _PATHLIB_PATH_CLASSES:
+                    for tgt in node.targets:
+                        if isinstance(tgt, ast.Name):
+                            self.path_aliases.add(tgt.id)
+            self.generic_visit(node)
+
         def visit_Call(self, node):
+            func = node.func
+            # eval/exec payload recursion — see SignalEscapeVisitor for
+            # the dual gate. Catches ``exec("open('/etc/shadow').read()")``
+            # by parsing the literal payload and walking it through the
+            # same sensitive-file / network / upload checks.
+            eval_exec_name = _eval_exec_call_name(func, self.builtins_aliases)
+            if eval_exec_name is not None:
+                if node.args:
+                    payload = _extract_string_from_node(node.args[0])
+                    if payload is not None:
+                        if self._eval_depth >= 3:
+                            # Fail-closed at the depth cap so nested literal
+                            # ``exec(exec(exec(exec("open('/etc/shadow')"))))``
+                            # cannot tunnel past inspection.
+                            sensitive_file_reads.append(
+                                {
+                                    "type": "sensitive_file_read",
+                                    "line": getattr(node, "lineno", -1),
+                                    "description": (
+                                        f"{eval_exec_name}() literal payload nesting "
+                                        "exceeds sandbox inspection depth"
+                                    ),
+                                }
+                            )
+                        else:
+                            try:
+                                inner_tree = ast.parse(payload, mode = "exec")
+                            except SyntaxError:
+                                inner_tree = None
+                            if inner_tree is not None:
+                                # Mirror SignalEscapeVisitor: re-run
+                                # the string-binding pre-pass on the
+                                # payload so inner variable assignments
+                                # are visible to this visitor too. The
+                                # gate currently works because the
+                                # other visitor runs first and shares
+                                # ``string_bindings``, but making this
+                                # site independently correct prevents
+                                # a silent regression if visitor order
+                                # ever changes.
+                                _run_alias_prepass(inner_tree)
+                                _run_string_binding_prepass(inner_tree)
+                                self._eval_depth += 1
+                                try:
+                                    self.visit(inner_tree)
+                                finally:
+                                    self._eval_depth -= 1
+
             parts: list[str] = []
             cur = node.func
             while isinstance(cur, ast.Attribute):
@@ -1865,19 +3544,45 @@ def _check_signal_escape_patterns(code: str):
                     )
 
             # Direct sock.connect((host, port)) bypasses the FQ-prefix branch below.
+            # ``sendto`` / ``sendmsg`` / ``connect_ex`` carry the dest
+            # ``(host, port)`` tuple the same way ``connect`` does
+            # (datagram sockets never call ``.connect()``). Match them
+            # all so ``s.sendto(b'x', ('169.254.169.254', 80))`` is
+            # gated by the same metadata-host check.
+            _SOCKET_DEST_METHODS = {"connect", "connect_ex", "sendto", "sendmsg"}
             if (
                 isinstance(node.func, ast.Attribute)
-                and node.func.attr == "connect"
-                and node.args
+                and node.func.attr in _SOCKET_DEST_METHODS
             ):
-                a0 = node.args[0]
+                # Resolve the host through the strict literal extractor:
+                # variable assignments stay opaque to this gate so
+                # ``host = some_input; sock.connect((host, 80))`` keeps
+                # legitimate dynamic-host tool calls passing through.
+                #
+                # ``sendto(data, address)`` and ``sendmsg(buffers,
+                # ancdata, flags, address)`` carry the address tuple at
+                # a non-zero positional index, so scan every positional
+                # arg for a ``(host, port)`` tuple shape -- the first
+                # match wins.
                 host_lit = None
-                if isinstance(a0, ast.Tuple) and a0.elts:
-                    e0 = a0.elts[0]
-                    if isinstance(e0, ast.Constant) and isinstance(e0.value, str):
-                        host_lit = e0.value
-                elif isinstance(a0, ast.Constant) and isinstance(a0.value, str):
-                    host_lit = a0.value
+                for a in node.args:
+                    if isinstance(a, ast.Tuple) and a.elts:
+                        host_lit = _extract_string_literal(a.elts[0])
+                        if host_lit:
+                            break
+                if host_lit is None and node.args:
+                    host_lit = _extract_string_literal(node.args[0])
+                # Keyword forms: sock.connect(address=(host, port)).
+                if host_lit is None:
+                    for kw in node.keywords or []:
+                        if kw.arg in ("address", "host", "hostname"):
+                            v = kw.value
+                            if isinstance(v, ast.Tuple) and v.elts:
+                                host_lit = _extract_string_literal(v.elts[0])
+                            else:
+                                host_lit = _extract_string_literal(v)
+                            if host_lit:
+                                break
                 if host_lit:
                     if _is_metadata_host(host_lit):
                         network_calls.append(
@@ -1912,17 +3617,64 @@ def _check_signal_escape_patterns(code: str):
                         }
                     )
 
-                # 2) Extract literal host (URL string or (host, port) tuple).
+                # 2) Extract literal host. Three call shapes are handled:
+                #
+                #   * Host-first APIs whose positional arg 0 is the host
+                #     directly (``socket.getaddrinfo('169.254.169.254', 80)``,
+                #     ``http.client.HTTPConnection('169.254.169.254')``).
+                #   * URL-second APIs whose positional arg 1 is the URL
+                #     (``requests.request('GET', 'http://...')``).
+                #   * Everything else: positional arg 0 is a URL or
+                #     ``(host, port)`` tuple, with keyword fallbacks for
+                #     ``url=``, ``address=``, ``host=`` / ``hostname=``.
+                _HOST_FIRST_FQ = (
+                    "socket.create_connection",
+                    "socket.getaddrinfo",
+                    "http.client.HTTPConnection",
+                    "http.client.HTTPSConnection",
+                )
+                _URL_SECOND_FQ = ("requests.request", "httpx.request")
+
                 host_arg = None
                 url_arg = None
+
                 if node.args:
-                    a0 = node.args[0]
-                    if isinstance(a0, ast.Constant) and isinstance(a0.value, str):
-                        url_arg = a0.value
-                    elif isinstance(a0, ast.Tuple) and a0.elts:
-                        e0 = a0.elts[0]
-                        if isinstance(e0, ast.Constant) and isinstance(e0.value, str):
-                            host_arg = e0.value
+                    if fq in _URL_SECOND_FQ:
+                        # ``requests.request('GET', url='http://...')`` —
+                        # positional arg 0 is the HTTP method, not the
+                        # URL. Only treat args[1] as the URL; otherwise
+                        # leave url_arg/host_arg None so the kw fallback
+                        # below picks up ``url=``.
+                        if len(node.args) >= 2:
+                            url_arg = _extract_string_literal(node.args[1])
+                    else:
+                        a0 = node.args[0]
+                        if isinstance(a0, ast.Tuple) and a0.elts:
+                            host_arg = _extract_string_literal(a0.elts[0])
+                        elif fq in _HOST_FIRST_FQ:
+                            host_arg = _extract_string_literal(a0)
+                        else:
+                            url_arg = _extract_string_literal(a0)
+
+                # Keyword fallback. ``url=`` and ``address=`` carry the
+                # full URL or (host, port); ``host=`` / ``hostname=``
+                # carry just the host. Strict literal extraction keeps
+                # ``url = some_input; requests.get(url=url)`` flowing
+                # through to runtime allow/deny without the static gate
+                # eagerly binding the name.
+                for kw in node.keywords or []:
+                    if kw.arg in ("url", "address"):
+                        v = kw.value
+                        if isinstance(v, ast.Tuple) and v.elts:
+                            if host_arg is None:
+                                host_arg = _extract_string_literal(v.elts[0])
+                        else:
+                            if url_arg is None and host_arg is None:
+                                url_arg = _extract_string_literal(v)
+                    elif kw.arg in ("host", "hostname"):
+                        if host_arg is None:
+                            host_arg = _extract_string_literal(kw.value)
+
                 if url_arg and host_arg is None:
                     m = re.match(r"^\w+://([^/?#]+)", url_arg)
                     if m:
@@ -1949,30 +3701,271 @@ def _check_signal_escape_patterns(code: str):
                             }
                         )
 
-            is_open_call = (
-                (isinstance(node.func, ast.Name) and node.func.id == "open")
-                or fq in ("io.open", "pathlib.Path.open")
-                or fq.endswith(".open")
+            # File-read surface detection. Three families are recognised:
+            #
+            #   * Bare ``open(arg)`` / ``open(file=...)`` and ``io.open``.
+            #   * Receiver-side pathlib reads: ``Path(...).open()``,
+            #     ``Path(...).open('r')`` (where ``args[0]`` is the MODE,
+            #     not the path), ``Path(...).read_text()``, and
+            #     ``Path(...).read_bytes()``. The path is extracted from
+            #     the receiver expression by ``_extract_pathlib_target``,
+            #     which handles ``Path(a, b)``, ``Path().joinpath()``,
+            #     ``Path() / arg``, and aliased Path constructors.
+            #
+            # ``fq`` only resolves when the attribute chain ends in a
+            # Name, so ``Path(...).open()`` (with a Call in the chain)
+            # short-circuits to ``"open"`` — we accept any Attribute
+            # call whose attr is in the path-reader set and pull the
+            # actual target from the receiver.
+            receiver_read_method = None
+            if (
+                isinstance(node.func, ast.Attribute)
+                and node.func.attr in _PATH_RECEIVER_READ_METHODS
+            ):
+                receiver_read_method = node.func.attr
+
+            # ``io.FileIO`` and ``codecs.open`` are the two stdlib
+            # file-reader call shapes that don't end in ``.open`` /
+            # ``open()`` but still read an arbitrary path. Treat them
+            # as the same gate so ``io.FileIO('/etc/shadow').read()`` is
+            # blocked alongside ``open('/etc/shadow')``.
+            _EXPLICIT_FILE_READERS = ("io.FileIO", "codecs.open")
+            # Third-party file-reader method names that any reasonable
+            # ``pandas``/``numpy`` alias exposes (``pd.read_csv`` /
+            # ``pandas.read_csv`` / ``np.fromfile`` / ``numpy.loadtxt``).
+            # Matched by suffix so the receiver alias does not need to
+            # be tracked separately.
+            _DATAFRAME_READERS = (
+                ".read_csv",
+                ".read_table",
+                ".read_excel",
+                ".read_json",
+                ".read_parquet",
+                ".read_pickle",
+                ".read_feather",
+                ".read_orc",
+                ".read_hdf",
+                ".read_sas",
+                ".read_stata",
+                ".read_xml",
+                ".read_fwf",
+                ".read_sql",
+                ".fromfile",
+                ".loadtxt",
+                ".genfromtxt",
             )
-            if is_open_call and node.args:
-                a0 = node.args[0]
+            looks_like_dataframe_reader = isinstance(node.func, ast.Attribute) and any(
+                fq.endswith(s) for s in _DATAFRAME_READERS
+            )
+            is_open_call = (
+                (
+                    isinstance(node.func, ast.Name)
+                    and (
+                        node.func.id == "open"
+                        or node.func.id in self.file_reader_aliases
+                    )
+                )
+                or fq in ("io.open", "pathlib.Path.open")
+                or fq in _EXPLICIT_FILE_READERS
+                or fq.endswith(".open")
+                or looks_like_dataframe_reader
+                or receiver_read_method is not None
+            )
+            if is_open_call:
                 path_lit = None
-                if isinstance(a0, ast.Constant) and isinstance(a0.value, str):
-                    path_lit = a0.value
+
+                if receiver_read_method is not None:
+                    # For ``Path('/etc/shadow').open('r')`` the positional
+                    # arg is the open mode, not the path. Pull the path
+                    # exclusively from the receiver to avoid misreading
+                    # ``'r'`` as a target.
+                    path_lit = _extract_pathlib_target(
+                        node.func.value,
+                        self.path_aliases,
+                        self.pathlib_aliases,
+                    )
+
+                if path_lit is None and node.args:
+                    # Built-in ``open()`` accepts ``PathLike`` objects, so
+                    # ``open(Path('/etc/shadow'))`` and
+                    # ``open(Path('/etc') / 'shadow')`` need the pathlib
+                    # resolver too — not just plain string literals.
+                    path_lit = _extract_pathlib_target(
+                        node.args[0], self.path_aliases, self.pathlib_aliases
+                    )
+                    if path_lit is None:
+                        path_lit = _extract_string_from_node(node.args[0])
+
+                # Keyword form. Covers:
+                #   * ``open(file=...)`` / ``io.open(file=...)``
+                #   * ``pd.read_csv(filepath_or_buffer=...)`` /
+                #     ``pd.read_parquet(path=...)`` etc.
+                #   * ``np.fromfile(file=...)`` / ``np.loadtxt(fname=...)`` /
+                #     ``np.load(file=...)``
+                # The keyword set is intentionally broad because the
+                # downstream sensitive-path check is the actual gate;
+                # extra kwargs just give us additional ways to spot
+                # the path argument.
+                _FILE_PATH_KWARGS = (
+                    "file",
+                    "path",
+                    "filepath",
+                    "filepath_or_buffer",
+                    "path_or_buf",
+                    "fname",
+                    "filename",
+                    "io",
+                    "buf",
+                    "source",
+                    "src",
+                )
+                if path_lit is None:
+                    for kw in node.keywords or []:
+                        if kw.arg in _FILE_PATH_KWARGS:
+                            path_lit = _extract_pathlib_target(
+                                kw.value,
+                                self.path_aliases,
+                                self.pathlib_aliases,
+                            )
+                            if path_lit is None:
+                                path_lit = _extract_string_from_node(kw.value)
+                            if path_lit is not None:
+                                break
+
                 if path_lit:
+                    # Cross-product the projections: backslash-normalised
+                    # and path-separator-collapsed (``/etc//shadow``,
+                    # ``/etc/./shadow``) so equivalent spellings match.
+                    candidates = {path_lit}
+                    if "\\" in path_lit:
+                        candidates.add(path_lit.replace("\\", "/"))
+                    candidates.add(_normalize_path_separators(path_lit))
+
                     flagged = False
-                    if any(path_lit.startswith(p) for p in _SENSITIVE_FILE_PREFIXES):
-                        flagged = True
-                    elif _SENSITIVE_FILE_RE.match(path_lit):
-                        flagged = True
+                    for cand in candidates:
+                        if any(cand.startswith(p) for p in _SENSITIVE_FILE_PREFIXES):
+                            flagged = True
+                            break
+                        if _SENSITIVE_FILE_RE.match(cand):
+                            flagged = True
+                            break
+                        # The credential / process-state allow-list lives
+                        # in ``_find_sensitive_paths`` (Patch B). Reuse it
+                        # so ``open('/home/u/.aws/credentials')`` is
+                        # blocked the same as the bash equivalent.
+                        if _find_sensitive_paths(cand):
+                            flagged = True
+                            break
+                    if flagged:
+                        method_label = receiver_read_method or "open"
+                        sensitive_file_reads.append(
+                            {
+                                "type": "sensitive_file_read",
+                                "line": getattr(node, "lineno", -1),
+                                "description": (
+                                    f"{method_label}({path_lit!r}) targets a host "
+                                    "identity / credential file; sandboxed code "
+                                    "may not read it"
+                                ),
+                            }
+                        )
+
+            # File-copy / file-move APIs read the source path just like
+            # ``open()`` does, and the copy gives the attacker a second
+            # exfil channel (rename/print/upload the destination). Gate
+            # the source argument with the same sensitive-path checks.
+            #
+            # Matches all three call shapes:
+            #   shutil.copy(...) / shutil.copytree(...) etc.
+            #   <alias>.copy(...) when ``import shutil as <alias>``
+            #   bare copy(...) when ``from shutil import copy [as ...]``
+            _FILE_COPY_FUNCS = frozenset(
+                {
+                    "shutil.copyfile",
+                    "shutil.copy",
+                    "shutil.copy2",
+                    "shutil.copytree",
+                    "shutil.move",
+                }
+            )
+            file_copy_fq = None
+            if fq in _FILE_COPY_FUNCS:
+                file_copy_fq = fq
+            elif fq.endswith(_SHUTIL_COPY_NAMES) and isinstance(
+                node.func, ast.Attribute
+            ):
+                # ``sh.copy(...)`` -- check the receiver is a tracked
+                # shutil alias. The suffix-match guards against random
+                # ``something.copy(...)`` calls on unrelated objects.
+                _attr = node.func.attr
+                _recv_chain = (
+                    fq[: -(len(_attr) + 1)] if _attr in _SHUTIL_COPY_NAMES else ""
+                )
+                if _recv_chain in shutil_module_aliases and _attr in _SHUTIL_COPY_NAMES:
+                    file_copy_fq = f"shutil.{_attr}"
+            elif (
+                isinstance(node.func, ast.Name)
+                and node.func.id in bare_shutil_copy_aliases
+            ):
+                file_copy_fq = bare_shutil_copy_aliases[node.func.id]
+            if file_copy_fq is not None:
+                # Use the canonical ``shutil.X`` name in the error
+                # description so aliased and from-import bypasses surface
+                # with the same identity as the literal form.
+                fq = file_copy_fq
+                src_lit = None
+                if node.args:
+                    src_lit = _extract_pathlib_target(
+                        node.args[0], self.path_aliases, self.pathlib_aliases
+                    )
+                    if src_lit is None:
+                        src_lit = _extract_string_from_node(node.args[0])
+                if src_lit is None:
+                    for kw in node.keywords or []:
+                        if kw.arg in ("src", "source"):
+                            src_lit = _extract_pathlib_target(
+                                kw.value,
+                                self.path_aliases,
+                                self.pathlib_aliases,
+                            )
+                            if src_lit is None:
+                                src_lit = _extract_string_from_node(kw.value)
+                            if src_lit is not None:
+                                break
+                if src_lit:
+                    candidates = {src_lit}
+                    if "\\" in src_lit:
+                        candidates.add(src_lit.replace("\\", "/"))
+                    candidates.add(_normalize_path_separators(src_lit))
+                    flagged = False
+                    for cand in candidates:
+                        if any(cand.startswith(p) for p in _SENSITIVE_FILE_PREFIXES):
+                            flagged = True
+                            break
+                        if _SENSITIVE_FILE_RE.match(cand):
+                            flagged = True
+                            break
+                        if _find_sensitive_paths(cand):
+                            flagged = True
+                            break
+                        # Whole-directory exfil: shutil.copytree('~/.ssh',
+                        # dst) drags every key out in one call. Reusing
+                        # `_find_sensitive_paths` would miss it because
+                        # `~/.ssh` (no filename) isn't in the per-file
+                        # list. The dir matcher is shutil-specific so
+                        # `ls ~/.ssh` (legit) stays allowed.
+                        if _matches_sensitive_dir(cand):
+                            flagged = True
+                            break
                     if flagged:
                         sensitive_file_reads.append(
                             {
                                 "type": "sensitive_file_read",
                                 "line": getattr(node, "lineno", -1),
                                 "description": (
-                                    f"open({path_lit!r}) targets a host identity / "
-                                    "credential file; sandboxed code may not read it"
+                                    f"{fq}({src_lit!r}, ...) reads a host "
+                                    "identity / credential file; sandboxed "
+                                    "code may not copy it"
                                 ),
                             }
                         )
@@ -2199,6 +4192,18 @@ def _bash_exec(
     blocked = _find_blocked_commands(command)
     if blocked:
         return f"Blocked command(s) for safety: {', '.join(sorted(blocked))}"
+
+    # Block direct references to clear-cut credential / process-state
+    # paths. Allow-list excludes ~/.gitconfig, ~/.bashrc, ~/.ssh/config,
+    # /etc/hosts, ~/.npm/, project-local rc files, etc. so legitimate
+    # tool calls (`cat ~/.gitconfig`, `find src/`, `grep -r foo src/`)
+    # still work.
+    sensitive = _find_sensitive_paths(command)
+    if sensitive:
+        return (
+            f"Blocked: command references credential / process-state paths "
+            f"({', '.join(sorted(sensitive))})"
+        )
 
     try:
         workdir = _get_workdir(session_id)
