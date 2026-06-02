@@ -219,8 +219,7 @@ function documentCitationToSource(
   title: string;
   metadata?: { description: string };
 } | null {
-  const source =
-    typeof cit.source === "string" && cit.source ? cit.source : "";
+  const source = typeof cit.source === "string" && cit.source ? cit.source : "";
   const docTitle =
     (typeof cit.document_title === "string" && cit.document_title) ||
     (typeof cit.title === "string" && cit.title) ||
@@ -232,19 +231,17 @@ function documentCitationToSource(
   // or a hostile ``javascript:`` / ``data:`` / ``vbscript:`` string.
   // Fall back to a stable doc anchor otherwise.
   const url =
-    isSafeNavigableSourceUrl(source) || `#anthropic-doc-${docIndex ?? fallbackIdx}`;
+    isSafeNavigableSourceUrl(source) ||
+    `#anthropic-doc-${docIndex ?? fallbackIdx}`;
   const title = docTitle || source || `Document ${fallbackIdx + 1}`;
-  const cited =
-    typeof cit.cited_text === "string" ? cit.cited_text.trim() : "";
+  const cited = typeof cit.cited_text === "string" ? cit.cited_text.trim() : "";
   // Trim the cited snippet so the Sources panel stays scannable.
-  const description =
-    cited.length > 240 ? `${cited.slice(0, 240)}...` : cited;
+  const description = cited.length > 240 ? `${cited.slice(0, 240)}...` : cited;
   // Anthropic numbers inline [N] per citation, not per source URL.
   // Fold citation type + position-bearing fields into the id so two
   // distinct citations on the same source (or two search_result_locations
   // with different search_result_index) keep separate Sources entries.
-  const citationType =
-    typeof cit.type === "string" ? String(cit.type) : "";
+  const citationType = typeof cit.type === "string" ? String(cit.type) : "";
   const positionParts = [
     cit.search_result_index,
     cit.start_char_index,
@@ -537,154 +534,6 @@ function isAnthropicRefusalMessage(message: RunMessage): boolean {
   return metadata?.custom?.anthropicRefusal === true;
 }
 
-function collectAssistantToolCalls(
-  message: RunMessage,
-): Array<{
-  id: string;
-  type: "function";
-  function: { name: string; arguments: string };
-  extra_content?: unknown;
-}> {
-  const out: Array<{
-    id: string;
-    type: "function";
-    function: { name: string; arguments: string };
-    extra_content?: unknown;
-  }> = [];
-  for (const part of message.content ?? []) {
-    if (part.type !== "tool-call") continue;
-    const tc = part as ToolCallMessagePart & {
-      argsText?: string;
-      extra_content?: unknown;
-    };
-    const toolNameLower = (tc.toolName ?? "").toLowerCase();
-    const argsObj =
-      tc.args && typeof tc.args === "object"
-        ? (tc.args as Record<string, unknown>)
-        : null;
-    const argsGoogle =
-      argsObj && typeof argsObj.google === "object" && argsObj.google !== null
-        ? (argsObj.google as Record<string, unknown>)
-        : null;
-    const hasNativePart = Boolean(
-      argsGoogle &&
-        typeof argsGoogle.native_part === "object" &&
-        argsGoogle.native_part !== null,
-    );
-    const hasServerToolMarker = Boolean(
-      argsObj && (argsObj as Record<string, unknown>)._server_tool === true,
-    );
-    const isServerSideBuiltin = isServerSideBuiltinToolPart(
-      toolNameLower,
-      argsObj,
-      hasServerToolMarker,
-      hasNativePart,
-    );
-    if (isServerSideBuiltin) {
-      // Gemini code_execution / image_generation still need to round-
-      // trip the native_part payload for native replay; drop the rest.
-      if (!hasNativePart) continue;
-    }
-    const argumentsStr =
-      typeof tc.argsText === "string" && tc.argsText.length > 0
-        ? tc.argsText
-        : JSON.stringify(tc.args ?? {});
-    const entry: {
-      id: string;
-      type: "function";
-      function: { name: string; arguments: string };
-      extra_content?: unknown;
-    } = {
-      id: tc.toolCallId,
-      type: "function" as const,
-      function: {
-        name: tc.toolName ?? "",
-        arguments: argumentsStr,
-      },
-    };
-    // Promote args.google to extra_content.google so the backend
-    // native_part replay branch can find it. The backend only inspects
-    // extra_content, not function.arguments.
-    if (tc.extra_content !== undefined) {
-      entry.extra_content = tc.extra_content;
-    } else if (argsGoogle) {
-      entry.extra_content = { google: argsGoogle };
-    }
-    out.push(entry);
-  }
-  return out;
-}
-
-function collectToolResultMessages(
-  message: RunMessage,
-): Array<{
-  role: "tool";
-  content: string;
-  tool_call_id: string;
-  name?: string;
-}> {
-  const out: Array<{
-    role: "tool";
-    content: string;
-    tool_call_id: string;
-    name?: string;
-  }> = [];
-  for (const part of message.content ?? []) {
-    if (part.type !== "tool-call") continue;
-    const tc = part as ToolCallMessagePart;
-    const result = (tc as { result?: unknown }).result;
-    // Skip provider-side builtins; see isServerSideBuiltinToolPart.
-    const argsObj =
-      tc.args && typeof tc.args === "object"
-        ? (tc.args as Record<string, unknown>)
-        : null;
-    const argsGoogle =
-      argsObj && typeof argsObj.google === "object" && argsObj.google !== null
-        ? (argsObj.google as Record<string, unknown>)
-        : null;
-    const toolNameLower = (tc.toolName ?? "").toLowerCase();
-    const hasServerToolMarker = Boolean(
-      argsObj && argsObj._server_tool === true,
-    );
-    const hasNativePart = Boolean(
-      argsGoogle &&
-        typeof argsGoogle.native_part === "object" &&
-        argsGoogle.native_part !== null,
-    );
-    if (
-      isServerSideBuiltinToolPart(
-        toolNameLower,
-        argsObj,
-        hasServerToolMarker,
-        hasNativePart,
-      )
-    ) {
-      continue;
-    }
-    if (result === undefined || result === null) continue;
-    let content: string;
-    if (typeof result === "string") {
-      // Backend ChatMessage validator rejects role="tool" with empty
-      // content; serialise a sentinel JSON so legitimately empty tool
-      // outputs still round-trip the follow-up turn to the provider.
-      content = result.length > 0 ? result : JSON.stringify({ result: "" });
-    } else {
-      try {
-        content = JSON.stringify(result);
-      } catch {
-        content = String(result);
-      }
-    }
-    out.push({
-      role: "tool",
-      content,
-      tool_call_id: tc.toolCallId,
-      ...(tc.toolName ? { name: tc.toolName } : {}),
-    });
-  }
-  return out;
-}
-
 type SerializedMessage = {
   role: "system" | "user" | "assistant" | "tool";
   content: OpenAIMessageContent | null;
@@ -705,6 +554,150 @@ type SerializedMessage = {
   extra_content?: unknown;
 };
 
+type SerializedToolCall = NonNullable<SerializedMessage["tool_calls"]>[number];
+type SerializedToolResult = {
+  role: "tool";
+  content: string;
+  tool_call_id: string;
+  name?: string;
+};
+
+type ToolPartReplayMetadata = {
+  argsObj: Record<string, unknown> | null;
+  argsGoogle: Record<string, unknown> | null;
+  hasNativePart: boolean;
+  isServerSideBuiltin: boolean;
+};
+
+function getToolPartReplayMetadata(
+  tc: ToolCallMessagePart,
+): ToolPartReplayMetadata {
+  const toolNameLower = (tc.toolName ?? "").toLowerCase();
+  const argsObj =
+    tc.args && typeof tc.args === "object"
+      ? (tc.args as Record<string, unknown>)
+      : null;
+  const argsGoogle =
+    argsObj && typeof argsObj.google === "object" && argsObj.google !== null
+      ? (argsObj.google as Record<string, unknown>)
+      : null;
+  const hasNativePart = Boolean(
+    argsGoogle &&
+      typeof argsGoogle.native_part === "object" &&
+      argsGoogle.native_part !== null,
+  );
+  const hasServerToolMarker = Boolean(
+    argsObj && (argsObj as Record<string, unknown>)._server_tool === true,
+  );
+  return {
+    argsObj,
+    argsGoogle,
+    hasNativePart,
+    isServerSideBuiltin: isServerSideBuiltinToolPart(
+      toolNameLower,
+      argsObj,
+      hasServerToolMarker,
+      hasNativePart,
+    ),
+  };
+}
+
+function serializeAssistantToolCallPart(
+  part: ToolCallMessagePart,
+): SerializedToolCall | null {
+  const tc = part as ToolCallMessagePart & {
+    argsText?: string;
+    extra_content?: unknown;
+  };
+  const { argsGoogle, hasNativePart, isServerSideBuiltin } =
+    getToolPartReplayMetadata(tc);
+
+  if (isServerSideBuiltin && !hasNativePart) {
+    return null;
+  }
+
+  const argumentsStr =
+    typeof tc.argsText === "string" && tc.argsText.length > 0
+      ? tc.argsText
+      : JSON.stringify(tc.args ?? {});
+  const entry: SerializedToolCall = {
+    id: tc.toolCallId,
+    type: "function" as const,
+    function: {
+      name: tc.toolName ?? "",
+      arguments: argumentsStr,
+    },
+  };
+  // Promote args.google to extra_content.google so the backend
+  // native_part replay branch can find it. The backend only inspects
+  // extra_content, not function.arguments.
+  if (tc.extra_content !== undefined) {
+    entry.extra_content = tc.extra_content;
+  } else if (argsGoogle) {
+    entry.extra_content = { google: argsGoogle };
+  }
+  return entry;
+}
+
+function serializeToolResultPart(
+  part: ToolCallMessagePart,
+): SerializedToolResult | null {
+  const tc = part as ToolCallMessagePart;
+  const result = (tc as { result?: unknown }).result;
+  const { isServerSideBuiltin } = getToolPartReplayMetadata(tc);
+
+  // Skip provider-side builtins; see isServerSideBuiltinToolPart.
+  if (isServerSideBuiltin) {
+    return null;
+  }
+  if (result === undefined || result === null) return null;
+
+  let content: string;
+  if (typeof result === "string") {
+    // Backend ChatMessage validator rejects role="tool" with empty
+    // content; serialise a sentinel JSON so legitimately empty tool
+    // outputs still round-trip the follow-up turn to the provider.
+    content = result.length > 0 ? result : JSON.stringify({ result: "" });
+  } else {
+    try {
+      content = JSON.stringify(result);
+    } catch {
+      content = String(result);
+    }
+  }
+
+  return {
+    role: "tool" as const,
+    content,
+    tool_call_id: tc.toolCallId,
+    ...(tc.toolName ? { name: tc.toolName } : {}),
+  };
+}
+
+function canReplayToolCallWithoutRoleTool(part: ToolCallMessagePart): boolean {
+  // Gemini/OpenAI provider-native builtin cards replay through
+  // extra_content/native parts and intentionally do not produce role="tool"
+  // messages. Local/user tool calls must have a concrete tool result before
+  // they are replayed ahead of later assistant text.
+  return getToolPartReplayMetadata(part).isServerSideBuiltin;
+}
+
+function sanitizeAssistantReplayText(text: string): string {
+  return text.replace(
+    /data:audio\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]+/g,
+    "[audio]",
+  );
+}
+
+function buildReplayContent(
+  textContent: string,
+  imageParts: Array<{ type: "image_url"; image_url: { url: string } }>,
+): OpenAIMessageContent {
+  return imageParts.length > 0
+    ? [{ type: "text", text: textContent }, ...imageParts]
+    : textContent;
+}
+
 function collectAssistantTextThoughtSignature(
   message: RunMessage,
 ): string | undefined {
@@ -721,6 +714,123 @@ function collectAssistantTextThoughtSignature(
   return undefined;
 }
 
+function attachAssistantThoughtSignature(
+  messages: SerializedMessage[],
+  thoughtSignature: string | undefined,
+): void {
+  if (!thoughtSignature) return;
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i];
+    if (message.role !== "assistant") continue;
+    const extra =
+      message.extra_content &&
+      typeof message.extra_content === "object" &&
+      !Array.isArray(message.extra_content)
+        ? (message.extra_content as Record<string, unknown>)
+        : {};
+    const google =
+      extra.google &&
+      typeof extra.google === "object" &&
+      !Array.isArray(extra.google)
+        ? (extra.google as Record<string, unknown>)
+        : {};
+    message.extra_content = {
+      ...extra,
+      google: { ...google, thought_signature: thoughtSignature },
+    };
+    return;
+  }
+}
+
+function serializeAssistantReplayMessages(
+  message: RunMessage,
+): SerializedMessage[] {
+  if (isAnthropicRefusalMessage(message)) {
+    // Prune refused assistant turn from outbound history; the
+    // rendered transcript still shows the user-visible notice.
+    return [];
+  }
+
+  const imageParts = collectImageParts(message);
+  const messages: SerializedMessage[] = [];
+  const pendingTextParts: string[] = [];
+  let pendingToolCalls: SerializedToolCall[] = [];
+  let pendingToolResults: SerializedToolResult[] = [];
+  let imagePartsPending = imageParts.length > 0;
+
+  const flushAssistantAndToolResults = (force = false): void => {
+    const textContent = sanitizeAssistantReplayText(
+      pendingTextParts.join("\n"),
+    );
+    const includeImageParts = imagePartsPending ? imageParts : [];
+    const hasContent = textContent.length > 0 || includeImageParts.length > 0;
+    const hasToolCalls = pendingToolCalls.length > 0;
+
+    if (!force && !hasContent && !hasToolCalls) {
+      return;
+    }
+
+    const assistantMessage: SerializedMessage = {
+      role: "assistant",
+      content: hasContent
+        ? buildReplayContent(textContent, includeImageParts)
+        : "",
+    };
+    if (hasToolCalls) {
+      assistantMessage.tool_calls = pendingToolCalls;
+      // OpenAI requires content === null on assistant turns whose
+      // payload is entirely tool_calls (matches the wire shape Gemini
+      // expects for the next functionCall replay).
+      if (!hasContent) {
+        assistantMessage.content = null;
+      }
+    }
+
+    messages.push(assistantMessage);
+    if (pendingToolResults.length > 0) {
+      messages.push(...pendingToolResults);
+    }
+
+    pendingTextParts.length = 0;
+    pendingToolCalls = [];
+    pendingToolResults = [];
+    imagePartsPending = false;
+  };
+
+  for (const part of message.content ?? []) {
+    if (part.type === "text") {
+      if (pendingToolCalls.length > 0) {
+        flushAssistantAndToolResults();
+      }
+      pendingTextParts.push(part.text);
+      continue;
+    }
+
+    if (part.type === "tool-call") {
+      const toolPart = part as ToolCallMessagePart;
+      const toolCall = serializeAssistantToolCallPart(toolPart);
+      if (!toolCall) continue;
+
+      const toolResult = serializeToolResultPart(toolPart);
+      if (!toolResult && !canReplayToolCallWithoutRoleTool(toolPart)) {
+        continue;
+      }
+
+      pendingToolCalls.push(toolCall);
+      if (toolResult) {
+        pendingToolResults.push(toolResult);
+      }
+    }
+  }
+
+  flushAssistantAndToolResults(messages.length === 0);
+  attachAssistantThoughtSignature(
+    messages,
+    collectAssistantTextThoughtSignature(message),
+  );
+  return messages;
+}
+
 function toOpenAIMessages(message: RunMessage): SerializedMessage[] {
   if (
     message.role !== "system" &&
@@ -730,49 +840,18 @@ function toOpenAIMessages(message: RunMessage): SerializedMessage[] {
     return [];
   }
 
-  let textContent = collectTextParts(message).join("\n");
   if (message.role === "assistant") {
-    textContent = textContent.replace(
-      /data:audio\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]+/g,
-      "[audio]",
-    );
-    if (isAnthropicRefusalMessage(message)) {
-      // Prune refused assistant turn from outbound history; the
-      // rendered transcript still shows the user-visible notice.
-      return [];
-    }
+    return serializeAssistantReplayMessages(message);
   }
 
+  const textContent = collectTextParts(message).join("\n");
   const imageParts = collectImageParts(message);
-  const toolCalls =
-    message.role === "assistant" ? collectAssistantToolCalls(message) : [];
-  const toolResults =
-    message.role === "assistant" ? collectToolResultMessages(message) : [];
-
-  const base: SerializedMessage = {
-    role: message.role,
-    content:
-      imageParts.length > 0
-        ? [{ type: "text", text: textContent }, ...imageParts]
-        : textContent,
-  };
-  if (toolCalls.length > 0) {
-    base.tool_calls = toolCalls;
-    // OpenAI requires content === null on assistant turns whose
-    // payload is entirely tool_calls (matches the wire shape Gemini
-    // expects for the next functionCall replay).
-    if (!textContent && imageParts.length === 0) {
-      base.content = null;
-    }
-  }
-  if (message.role === "assistant") {
-    const sig = collectAssistantTextThoughtSignature(message);
-    if (sig) {
-      base.extra_content = { google: { thought_signature: sig } };
-    }
-  }
-
-  return toolResults.length > 0 ? [base, ...toolResults] : [base];
+  return [
+    {
+      role: message.role,
+      content: buildReplayContent(textContent, imageParts),
+    },
+  ];
 }
 
 function extractImageBase64(input: string): string | undefined {
@@ -1284,7 +1363,8 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         let loaded: boolean;
         let blockedByTrustRemoteCode: boolean;
         try {
-          ({ loaded, blockedByTrustRemoteCode } = await autoLoadSmallestModel());
+          ({ loaded, blockedByTrustRemoteCode } =
+            await autoLoadSmallestModel());
         } catch (error) {
           clearSelectedImageEditReference();
           throw error;
@@ -1751,8 +1831,23 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       // <think>...</think> for parseAssistantContent. Lives outside
       // the SSE loop because the close tag fires when content arrives.
       let reasoningContentOpen = false;
+      type ToolCallProvenance = {
+        source?: string;
+        healed?: boolean;
+        forced?: boolean;
+        provisional?: boolean;
+        duplicate?: boolean;
+        reason?: string;
+        [key: string]: unknown;
+      };
+      type PositionedToolCallPart = ToolCallMessagePart & {
+        textCursor?: number;
+        _delta_index?: number;
+        extra_content?: unknown;
+        provenance?: ToolCallProvenance;
+      };
       // Tool call parts, cumulative; result lands on tool_end.
-      const toolCallParts: ToolCallMessagePart[] = [];
+      const toolCallParts: PositionedToolCallPart[] = [];
       // Latest Gemini text-part thoughtSignature; pinned onto the final
       // text MessagePart so next-turn replay carries it.
       let latestTextThoughtSignature: string | undefined;
@@ -1771,16 +1866,81 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         }
         return parts;
       };
-      const orderAssistantContent = (
-        textParts: ReturnType<typeof parseAssistantContent>,
-      ) => {
-        const imageToolParts = toolCallParts.filter(
-          (part) => part.toolName === "image_generation",
-        );
-        const otherToolParts = toolCallParts.filter(
-          (part) => part.toolName !== "image_generation",
-        );
-        return [...otherToolParts, ...textParts, ...imageToolParts];
+      const buildAssistantContent = (rawText: string) => {
+        const positionedTools = toolCallParts
+          .map((part, index) => {
+            const cursor = (part as PositionedToolCallPart).textCursor;
+            return {
+              part,
+              index,
+              cursor:
+                typeof cursor === "number" && Number.isFinite(cursor)
+                  ? Math.min(Math.max(cursor, 0), rawText.length)
+                  : 0,
+            };
+          })
+          .sort((a, b) => a.cursor - b.cursor || a.index - b.index);
+
+        const assembled: Array<
+          ReturnType<typeof parseAssistantContent>[number] | ToolCallMessagePart
+        > = [];
+        let textCursor = 0;
+        let toolIndex = 0;
+
+        const appendTextThrough = (nextCursor: number) => {
+          if (nextCursor <= textCursor) return;
+          assembled.push(
+            ...parseAssistantContent(rawText.slice(textCursor, nextCursor)),
+          );
+          textCursor = nextCursor;
+        };
+
+        while (toolIndex < positionedTools.length) {
+          const cursor = positionedTools[toolIndex].cursor;
+          appendTextThrough(cursor);
+          while (
+            toolIndex < positionedTools.length &&
+            positionedTools[toolIndex].cursor === cursor
+          ) {
+            assembled.push(positionedTools[toolIndex].part);
+            toolIndex += 1;
+          }
+        }
+        appendTextThrough(rawText.length);
+
+        return pinTextThoughtSignature(assembled);
+      };
+      const parseToolProvenance = (
+        value: unknown,
+      ): ToolCallProvenance | undefined => {
+        if (!value || typeof value !== "object" || Array.isArray(value)) {
+          return undefined;
+        }
+        return { ...(value as Record<string, unknown>) } as ToolCallProvenance;
+      };
+      const mergeToolProvenance = (
+        existing: ToolCallProvenance | undefined,
+        incoming: ToolCallProvenance | undefined,
+      ): ToolCallProvenance | undefined => {
+        if (!incoming) return existing;
+        if (!existing) return incoming;
+        const merged: ToolCallProvenance = { ...existing, ...incoming };
+        for (const key of [
+          "healed",
+          "forced",
+          "provisional",
+          "duplicate",
+        ] as const) {
+          if (existing[key] === true || incoming[key] === true) {
+            merged[key] = true;
+          }
+        }
+        return merged;
+      };
+      const closeReasoningContent = () => {
+        if (!reasoningContentOpen) return;
+        cumulativeText += "</think>";
+        reasoningContentOpen = false;
       };
       // Anthropic document_citations tool_event payload, converted to
       // Sources-panel source parts at end-of-stream so the inline [N]
@@ -2173,7 +2333,9 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
           try {
             let requestPayload: OpenAIChatCompletionsRequest;
             try {
-              requestPayload = await buildRequestPayload(retriedWithRefreshedKey);
+              requestPayload = await buildRequestPayload(
+                retriedWithRefreshedKey,
+              );
             } catch (error) {
               clearSelectedImageEditReference();
               throw error;
@@ -2253,6 +2415,10 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                   anthropicRefusalSeen = true;
                   continue;
                 }
+                closeReasoningContent();
+                const toolProvenance = parseToolProvenance(
+                  toolEvent.provenance,
+                );
                 if (toolEvent.type === "tool_start") {
                   const id =
                     (toolEvent.tool_call_id as string) ||
@@ -2263,11 +2429,18 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                     (p) => p.toolCallId === id,
                   );
                   if (idx !== -1) {
+                    const existing = toolCallParts[
+                      idx
+                    ] as PositionedToolCallPart;
                     toolCallParts[idx] = {
-                      ...toolCallParts[idx],
+                      ...existing,
                       toolName: toolEvent.tool_name as string,
                       argsText: JSON.stringify(toolArgs),
                       args: toolArgs,
+                      provenance: mergeToolProvenance(
+                        existing.provenance,
+                        toolProvenance,
+                      ),
                     };
                   } else {
                     toolCallParts.push({
@@ -2276,7 +2449,9 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                       toolName: toolEvent.tool_name as string,
                       argsText: JSON.stringify(toolArgs),
                       args: toolArgs,
-                    });
+                      textCursor: cumulativeText.length,
+                      ...(toolProvenance ? { provenance: toolProvenance } : {}),
+                    } as PositionedToolCallPart);
                   }
                 } else if (toolEvent.type === "tool_end") {
                   const id =
@@ -2420,21 +2595,23 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                         native_part: { parts: mergedParts },
                       };
                     }
+                    const existing = toolCallParts[
+                      idx
+                    ] as PositionedToolCallPart;
                     toolCallParts[idx] = {
-                      ...toolCallParts[idx],
+                      ...existing,
                       args: mergedArgs,
                       argsText: JSON.stringify(mergedArgs ?? {}),
                       result: parsedResult,
+                      provenance: mergeToolProvenance(
+                        existing.provenance,
+                        toolProvenance,
+                      ),
                     };
                   }
                 }
-                // Cumulative yield. orderAssistantContent puts search/
-                // code before text and generated images after.
-                const textParts = pinTextThoughtSignature(
-                  parseAssistantContent(cumulativeText),
-                );
                 yield {
-                  content: orderAssistantContent(textParts),
+                  content: buildAssistantContent(cumulativeText),
                   metadata: {
                     timing: buildTiming(
                       streamStartTime,
@@ -2487,10 +2664,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                   | { extra_content?: unknown }
                   | undefined
               )?.extra_content;
-              if (
-                deltaExtraContent &&
-                typeof deltaExtraContent === "object"
-              ) {
+              if (deltaExtraContent && typeof deltaExtraContent === "object") {
                 const eGoogle = (deltaExtraContent as Record<string, unknown>)
                   .google;
                 if (eGoogle && typeof eGoogle === "object") {
@@ -2539,6 +2713,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                 Array.isArray(rawDeltaToolCalls) &&
                 rawDeltaToolCalls.length > 0
               ) {
+                closeReasoningContent();
                 for (const tc of rawDeltaToolCalls) {
                   if (!tc || typeof tc !== "object") continue;
                   const call = tc as {
@@ -2558,20 +2733,16 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                     : undefined;
                   if (!existing && idx !== undefined) {
                     existing = toolCallParts.find(
-                      (p) =>
-                        (
-                          p as ToolCallMessagePart & { _delta_index?: number }
-                        )._delta_index === idx,
+                      (p) => (p as PositionedToolCallPart)._delta_index === idx,
                     );
                   }
                   const argsFragment = call.function?.arguments ?? "";
                   if (existing) {
                     const prevName = existing.toolName ?? "";
                     const nextName = call.function?.name ?? prevName;
-                    const merged =
-                      (existing.argsText ?? "") + argsFragment;
-                    let parsedArgs:
-                      ToolCallMessagePart["args"] = existing.args ?? {};
+                    const merged = (existing.argsText ?? "") + argsFragment;
+                    let parsedArgs: ToolCallMessagePart["args"] =
+                      existing.args ?? {};
                     if (merged) {
                       try {
                         parsedArgs = JSON.parse(
@@ -2583,24 +2754,18 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                         } as ToolCallMessagePart["args"];
                       }
                     }
-                    const prevExtra = (
-                      existing as ToolCallMessagePart & {
-                        extra_content?: unknown;
-                      }
-                    ).extra_content;
-                    const updated: ToolCallMessagePart & {
-                      _delta_index?: number;
-                      extra_content?: unknown;
-                    } = {
-                      ...(existing as ToolCallMessagePart),
+                    const prevExtra = (existing as PositionedToolCallPart)
+                      .extra_content;
+                    const updated: PositionedToolCallPart = {
+                      ...(existing as PositionedToolCallPart),
                       toolName: nextName,
                       argsText: merged,
                       args: parsedArgs,
                       ...(call.extra_content !== undefined
                         ? { extra_content: call.extra_content }
                         : prevExtra !== undefined
-                        ? { extra_content: prevExtra }
-                        : {}),
+                          ? { extra_content: prevExtra }
+                          : {}),
                       ...(idx !== undefined ? { _delta_index: idx } : {}),
                     };
                     const replaceIdx = toolCallParts.indexOf(existing);
@@ -2609,8 +2774,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                     }
                   } else {
                     const callId =
-                      stableId ||
-                      `tool_call_${idx ?? toolCallParts.length}`;
+                      stableId || `tool_call_${idx ?? toolCallParts.length}`;
                     const argsText = argsFragment;
                     let parsedArgs: ToolCallMessagePart["args"] = {};
                     if (argsText) {
@@ -2624,15 +2788,13 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                         } as ToolCallMessagePart["args"];
                       }
                     }
-                    const fresh: ToolCallMessagePart & {
-                      _delta_index?: number;
-                      extra_content?: unknown;
-                    } = {
+                    const fresh: PositionedToolCallPart = {
                       type: "tool-call" as const,
                       toolCallId: callId,
                       toolName: call.function?.name ?? "",
                       argsText,
                       args: parsedArgs,
+                      textCursor: cumulativeText.length,
                       ...(call.extra_content !== undefined
                         ? { extra_content: call.extra_content }
                         : {}),
@@ -2642,12 +2804,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                   }
                 }
                 yield {
-                  content: [
-                    ...toolCallParts,
-                    ...pinTextThoughtSignature(
-                      parseAssistantContent(cumulativeText),
-                    ),
-                  ],
+                  content: buildAssistantContent(cumulativeText),
                   metadata: {
                     timing: buildTiming(
                       streamStartTime,
@@ -2678,10 +2835,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                 }
               }
               if (delta) {
-                if (reasoningContentOpen) {
-                  cumulativeText += "</think>";
-                  reasoningContentOpen = false;
-                }
+                closeReasoningContent();
                 cumulativeText += delta;
               }
               // Strip a trailing ${...} template-literal artifact from
@@ -2692,12 +2846,10 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                   "",
                 );
               }
-              const parts = pinTextThoughtSignature(
-                parseAssistantContent(cumulativeText),
-              );
+              const textParts = parseAssistantContent(cumulativeText);
 
               if (
-                parts.some((part) => part.type === "reasoning") &&
+                textParts.some((part) => part.type === "reasoning") &&
                 !reasoningStartAt
               ) {
                 reasoningStartAt = Date.now();
@@ -2712,9 +2864,9 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                 );
               }
 
-              if (parts.length > 0 || toolCallParts.length > 0) {
+              if (textParts.length > 0 || toolCallParts.length > 0) {
                 yield {
-                  content: orderAssistantContent(parts),
+                  content: buildAssistantContent(cumulativeText),
                   metadata: {
                     timing: buildTiming(
                       streamStartTime,
@@ -2742,10 +2894,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         // If the stream ended while we were still inside a
         // delta.reasoning_content block (Kimi / DeepSeek path), close
         // the open <think> tag so the reasoning panel parses cleanly.
-        if (reasoningContentOpen) {
-          cumulativeText += "</think>";
-          reasoningContentOpen = false;
-        }
+        closeReasoningContent();
         settleFirstTokenOk();
 
         // Extract source parts from completed web_search and web_fetch
@@ -2810,9 +2959,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
 
         yield {
           content: [
-            ...orderAssistantContent(
-              pinTextThoughtSignature(parseAssistantContent(cumulativeText)),
-            ),
+            ...buildAssistantContent(cumulativeText),
             ...sourceParts,
             ...documentCitationParts,
           ],
