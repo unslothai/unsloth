@@ -178,6 +178,8 @@ function HeadersEditor({
 export interface ChatMcpServersDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /** Open straight into the "add server" form instead of the list view. */
+  openToCreate?: boolean;
 }
 
 type View =
@@ -188,6 +190,7 @@ type View =
 export function ChatMcpServersDialog({
   open,
   onOpenChange,
+  openToCreate = false,
 }: ChatMcpServersDialogProps) {
   const [servers, setServers] = useState<McpServerConfig[]>([]);
   const [loading, setLoading] = useState(false);
@@ -214,7 +217,12 @@ export function ChatMcpServersDialog({
   useEffect(() => {
     if (!open) return;
     refresh();
-  }, [open, refresh]);
+    // Land on the create form when opened via "Add custom MCP".
+    if (openToCreate) {
+      setView({ kind: "create" });
+      setForm(EMPTY_FORM);
+    }
+  }, [open, openToCreate, refresh]);
 
   function startCreate() {
     setView({ kind: "create" });

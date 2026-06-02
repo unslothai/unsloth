@@ -32,14 +32,21 @@ logger = structlog.get_logger(__name__)
 router = APIRouter()
 
 
+def _looks_like_command(value: str) -> bool:
+    """Whitespace is a one-way signal: a URL can't hold an unencoded space, so a
+    value with whitespace is definitely a command. No whitespace proves nothing
+    (a lone token may be a single-arg command or a scheme-less URL)."""
+    return any(ch.isspace() for ch in value)
+
+
 def _validate_url(url: str) -> str:
     trimmed = (url or "").strip()
     if not trimmed:
         raise HTTPException(status_code = 400, detail = "url must not be empty")
     # When stdio is enabled on this host, a non-HTTP value is a local command.
     # Reuse this field so stdio servers ride the existing CRUD/storage with no
-    # schema change. When stdio is disabled the value falls through to the
-    # http-only validation below, so non-HTTP input is just a bad URL (400).
+    # schema change. A lone token (example.com, /usr/bin/srv) is ambiguous, so we
+    # keep the existing behaviour and treat any non-HTTP value as a command here.
     if stdio_mcp_enabled() and is_stdio(trimmed):
         try:
             parts = parse_stdio_command(trimmed)
@@ -47,13 +54,26 @@ def _validate_url(url: str) -> str:
             raise HTTPException(status_code = 400, detail = f"Invalid command: {exc}")
         if not parts or not parts[0].strip():
             raise HTTPException(status_code = 400, detail = "command must not be empty")
+        if "://" in parts[0]:
+            # A URL-scheme first token is a mistyped URL, not a command. Reject
+            # it cleanly instead of exec-ing it (mirrors the frontend check).
+            raise HTTPException(
+                status_code = 400,
+                detail = "Enter an http(s):// URL, or a local command whose "
+                "first token is an executable (not a URL).",
+            )
         return trimmed
     parsed = urlparse(trimmed)
     if parsed.scheme not in ("http", "https"):
-        raise HTTPException(
-            status_code = 400,
-            detail = "url must start with http:// or https://",
+        detail = (
+            "MCP server address must start with http:// or https:// "
+            "(for example https://example.com/mcp)."
         )
+        # Host-scoped wording ("this server"), not "desktop only": self-hosted
+        # hosts can opt in via the env var.
+        if _looks_like_command(trimmed):
+            detail += " Running a local command is not enabled on this server."
+        raise HTTPException(status_code = 400, detail = detail)
     if not parsed.netloc:
         raise HTTPException(status_code = 400, detail = "url is missing a host")
     return trimmed
@@ -101,6 +121,9 @@ async def create_mcp_server(
         raise HTTPException(status_code = 400, detail = "display_name must not be empty")
     url = _validate_url(payload.url)
     headers = _normalize_headers(payload.headers)
+    # OAuth is HTTP-only; force it off for stdio commands so a stale flag can't
+    # push the probe onto the 305s OAuth timeout. Backend is the enforcer.
+    use_oauth = payload.use_oauth and not is_stdio(url)
 
     server_id = uuid.uuid4().hex[:16]
     mcp_servers_db.create_server(
@@ -109,7 +132,7 @@ async def create_mcp_server(
         url = url,
         headers_json = json.dumps(headers) if headers else None,
         is_enabled = payload.is_enabled,
-        use_oauth = payload.use_oauth,
+        use_oauth = use_oauth,
     )
     return _row_to_response(mcp_servers_db.get_server(server_id))
 
@@ -142,6 +165,9 @@ def _changes_from_payload(payload: McpServerUpdate) -> dict:
                 status_code = 400, detail = "use_oauth must be true or false"
             )
         changes["use_oauth"] = payload.use_oauth
+    # stdio is OAuth-less: drop a stale OAuth flag when switching to a command.
+    if "url" in changes and is_stdio(changes["url"]):
+        changes["use_oauth"] = False
     return changes
 
 
@@ -157,6 +183,15 @@ async def update_mcp_server(
     changes = _changes_from_payload(payload)
     if not changes:
         raise HTTPException(status_code = 400, detail = "No fields to update")
+    # headers == HTTP headers (remote) or env vars (stdio). On a transport-type
+    # switch with no new headers, drop the old ones so env secrets are not
+    # re-sent as HTTP headers (or vice versa).
+    if (
+        "url" in changes
+        and is_stdio(changes["url"]) != is_stdio(old["url"])
+        and "headers_json" not in changes
+    ):
+        changes["headers_json"] = None
     # Clear persisted OAuth tokens when the URL changes or OAuth is
     # disabled; fastmcp keys tokens by URL and would otherwise let a
     # re-pointed server silently inherit the old account's credentials.
