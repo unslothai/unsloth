@@ -488,7 +488,7 @@ const ThreadWelcome: FC<{
 
   return (
     <div className="aui-thread-welcome-root mx-auto my-auto flex w-full max-w-(--thread-max-width) grow flex-col">
-      <div className="aui-thread-welcome-center flex w-full grow flex-col items-center justify-start pt-[calc(30vh_-_10px)]">
+      <div className="aui-thread-welcome-center flex w-full grow flex-col items-center justify-start pt-[28vh]">
         <div className="aui-thread-welcome-message flex w-full flex-col justify-center gap-9 px-4">
           {/* Center the whole greeting (sloth + title) over the composer. */}
           <div className="flex flex-row items-center justify-center gap-4">
