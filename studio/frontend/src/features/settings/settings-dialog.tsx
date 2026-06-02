@@ -128,8 +128,9 @@ export function SettingsDialog() {
           // Cap at 820px but shrink to the viewport so we don't clip
           // on iPad-portrait widths (640-820px) where the fixed
           // `w-[820px]` overflows by 26px on each side.
-          "!max-w-[min(820px,calc(100vw-2rem))] h-[560px] w-[min(820px,calc(100vw-2rem))] p-0 overflow-hidden",
-          "shadow-border rounded-xl border-border",
+          "settings-surface !max-w-[min(820px,calc(100vw-2rem))] h-[560px] w-[min(820px,calc(100vw-2rem))] p-0 overflow-hidden",
+          // Soft shadow only, no outline ring.
+          "shadow-border rounded-xl ring-0",
           "max-sm:h-dvh max-sm:w-dvw max-sm:!max-w-none max-sm:rounded-none",
         )}
       >
@@ -198,7 +199,7 @@ export function SettingsDialog() {
             <button
               type="button"
               onClick={closeDialog}
-              className="absolute top-3 right-3 z-10 flex size-7 items-center justify-center rounded-[8px] text-[#383835] dark:text-[#c7c7c4] transition-colors hover:bg-[#ececec] dark:hover:bg-[#2d2f33] hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="absolute top-3 right-3 z-10 flex size-7 items-center justify-center rounded-full text-[#383835] dark:text-[#c7c7c4] transition-colors hover:bg-[#ececec] dark:hover:bg-[#2d2f33] hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               aria-label={t("settings.dialog.closeAriaLabel")}
             >
               <HugeiconsIcon icon={Cancel01Icon} className="size-4" />

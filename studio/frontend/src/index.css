@@ -835,6 +835,11 @@
 		--tw-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
 	}
 
+	/* Settings dialog: pointer cursor on every clickable control. */
+	.settings-surface :is(button, a, [role="switch"], [role="tab"]):not(:disabled) {
+		cursor: pointer;
+	}
+
 	/* Model selector: pointer cursor on every clickable element. */
 	.unsloth-model-selector-trigger,
 	.unsloth-model-selector-menu button {
