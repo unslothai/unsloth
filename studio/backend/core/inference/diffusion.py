@@ -2682,6 +2682,21 @@ def _primary_prompt_embeds(value: Any) -> Any:
     return value
 
 
+def _prompt_embeds_and_optional_mask(
+    value: Any,
+    *,
+    accepts_mask: bool,
+) -> tuple[Any, Any]:
+    if (
+        accepts_mask
+        and isinstance(value, tuple)
+        and len(value) >= 2
+        and hasattr(value[0], "shape")
+    ):
+        return value[0], value[1]
+    return _primary_prompt_embeds(value), None
+
+
 def _env_pin_cpu_resident_gguf() -> bool:
     return (
         os.environ.get("UNSLOTH_STUDIO_GGUF_PIN_CPU_RESIDENT", "")
@@ -3061,7 +3076,9 @@ class DiffusionBackend:
         self._gguf_execution_backend: Optional[str] = None
         self._gguf_prepared_module_counts: dict[str, int] = {}
         self._prompt_embedding_cache_key: Optional[tuple[Any, ...]] = None
-        self._prompt_embedding_cache_value: Optional[tuple[Any, Any]] = None
+        self._prompt_embedding_cache_value: Optional[
+            tuple[Any, Any, Any, Any]
+        ] = None
         self._loaded_at: Optional[float] = None
         self._loading: bool = False
         self._last_error: Optional[str] = None
@@ -4755,6 +4772,11 @@ class DiffusionBackend:
             "negative_prompt_embeds",
         ):
             return
+        accepts_prompt_mask = _pipe_accepts_kwarg(pipe, "prompt_embeds_mask")
+        accepts_negative_prompt_mask = _pipe_accepts_kwarg(
+            pipe,
+            "negative_prompt_embeds_mask",
+        )
 
         max_sequence_length = int(call_kwargs.get("max_sequence_length", 512))
         num_images_per_prompt = int(call_kwargs.get("num_images_per_prompt", 1))
@@ -4790,12 +4812,21 @@ class DiffusionBackend:
                     device = execution_device,
                     max_sequence_length = max_sequence_length,
                 )
-                prompt_embeds = _primary_prompt_embeds(prompt_embeds)
-                negative_prompt_embeds = (
-                    _primary_prompt_embeds(negative_prompt_embeds)
-                    if do_classifier_free_guidance
-                    else None
+                prompt_embeds, prompt_embeds_mask = _prompt_embeds_and_optional_mask(
+                    prompt_embeds,
+                    accepts_mask = accepts_prompt_mask,
                 )
+                if do_classifier_free_guidance:
+                    (
+                        negative_prompt_embeds,
+                        negative_prompt_embeds_mask,
+                    ) = _prompt_embeds_and_optional_mask(
+                        negative_prompt_embeds,
+                        accepts_mask = accepts_negative_prompt_mask,
+                    )
+                else:
+                    negative_prompt_embeds = None
+                    negative_prompt_embeds_mask = None
             except TypeError:
                 try:
                     prompt_for_encode: Any = prompt
@@ -4820,7 +4851,10 @@ class DiffusionBackend:
                         execution_device,
                         1,
                     )
-                    prompt_embeds = _primary_prompt_embeds(prompt_embeds)
+                    prompt_embeds, prompt_embeds_mask = _prompt_embeds_and_optional_mask(
+                        prompt_embeds,
+                        accepts_mask = accepts_prompt_mask,
+                    )
                     if do_classifier_free_guidance:
                         negative_values: Any = negative_prompt or ""
                         prompt_count = (
@@ -4835,16 +4869,23 @@ class DiffusionBackend:
                             execution_device,
                             1,
                         )
-                        negative_prompt_embeds = _primary_prompt_embeds(
-                            negative_prompt_embeds
+                        (
+                            negative_prompt_embeds,
+                            negative_prompt_embeds_mask,
+                        ) = _prompt_embeds_and_optional_mask(
+                            negative_prompt_embeds,
+                            accepts_mask = accepts_negative_prompt_mask,
                         )
                     else:
                         negative_prompt_embeds = None
+                        negative_prompt_embeds_mask = None
                 except TypeError:
                     return
             cached = (
                 _store_prompt_embeds_on_cpu(prompt_embeds),
+                _store_prompt_embeds_on_cpu(prompt_embeds_mask),
                 _store_prompt_embeds_on_cpu(negative_prompt_embeds),
+                _store_prompt_embeds_on_cpu(negative_prompt_embeds_mask),
             )
             self._prompt_embedding_cache_key = cache_key
             self._prompt_embedding_cache_value = cached
@@ -4855,9 +4896,19 @@ class DiffusionBackend:
             cached[0],
             execution_device,
         )
+        if accepts_prompt_mask and cached[1] is not None:
+            call_kwargs["prompt_embeds_mask"] = _clone_prompt_embeds_to_device(
+                cached[1],
+                execution_device,
+            )
         if _pipe_accepts_kwarg(pipe, "negative_prompt_embeds"):
             call_kwargs["negative_prompt_embeds"] = _clone_prompt_embeds_to_device(
-                cached[1],
+                cached[2],
+                execution_device,
+            )
+        if accepts_negative_prompt_mask and cached[3] is not None:
+            call_kwargs["negative_prompt_embeds_mask"] = _clone_prompt_embeds_to_device(
+                cached[3],
                 execution_device,
             )
         call_kwargs.pop("negative_prompt", None)
