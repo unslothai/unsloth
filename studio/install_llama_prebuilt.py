@@ -180,6 +180,10 @@ FORCE_COMPILE_DEFAULT_REF = os.environ.get("UNSLOTH_LLAMA_FORCE_COMPILE_REF", "m
 # bundled base compute_100 PTX, which the driver JIT-compiles forward to sm_103.
 # It is listed in every bundle that ships the sm_100 build (the "newer" and
 # "portable" classes) so those hosts get a prebuilt instead of a source compile.
+# Note: this JIT widening lives only on the linux-x64 filename path. The manifest
+# path (arm64, Windows) reads supported_sms verbatim, and b9457's manifest omits
+# sm_103, so a B300 there source-builds. Unify by adding sm_103 to the producer
+# manifest (unslothai/llama.cpp#17) rather than special-casing it in each path.
 DIRECT_LINUX_BUNDLE_PROFILES: dict[str, dict[str, Any]] = {
     "cuda12-older": {
         "runtime_line": "cuda12",
@@ -6843,7 +6847,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--simple-policy",
         action = "store_true",
-        help = "Use the simplified platform-specific prebuilt selection policy.",
+        help = "Deprecated no-op (kept for back-compat); one resolver now handles all hosts.",
     )
     parser.add_argument(
         "--has-rocm",
