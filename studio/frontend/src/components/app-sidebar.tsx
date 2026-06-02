@@ -603,7 +603,7 @@ export function AppSidebar() {
             side="bottom"
             align="start"
             sideOffset={6}
-            className="unsloth-plus-menu menu-flat-destructive w-56"
+            className="unsloth-plus-menu menu-flat-destructive w-[216px]"
           >
             <DropdownMenuItem onSelect={() => openRenameChat(item)}>
               <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
@@ -617,7 +617,7 @@ export function AppSidebar() {
               <DropdownMenuSubContent
                 sideOffset={8}
                 alignOffset={-4}
-                className="unsloth-plus-menu w-56"
+                className="unsloth-plus-menu w-[216px]"
               >
                 <DropdownMenuItem
                   onSelect={() => {
