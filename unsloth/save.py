@@ -161,7 +161,7 @@ def _is_cmake_only_llama_cpp(llama_cpp_dir: str = "llama.cpp") -> bool:
         # No Makefile means CMake-only or not cloned yet
         return True
     try:
-        with open(makefile_path, "r", encoding="utf-8", errors="ignore") as f:
+        with open(makefile_path, "r", encoding = "utf-8", errors = "ignore") as f:
             content = f.read(4096)  # Only read first 4KB
             # Check for the deprecation message in the Makefile
             if "cmake" in content.lower() and "deprecated" in content.lower():
@@ -1175,8 +1175,8 @@ def install_llama_cpp_make_non_blocking():
         # Try make clean silently to confirm make still works
         result = subprocess.run(
             ["make", "clean", "-C", "llama.cpp"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout = subprocess.DEVNULL,
+            stderr = subprocess.DEVNULL,
         )
         IS_CMAKE = result.returncode != 0
 
