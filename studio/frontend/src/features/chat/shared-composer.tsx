@@ -43,6 +43,7 @@ import {
   Folder01Icon,
   FolderAddIcon,
   Image03Icon,
+  McpServerIcon,
   PencilRulerIcon,
 } from "@hugeicons/core-free-icons";
 import { useNavigate } from "@tanstack/react-router";
@@ -466,6 +467,10 @@ export function SharedComposer({
   );
   const artifactsEnabled = useChatRuntimeStore((s) => s.artifactsEnabled);
   const setArtifactsEnabled = useChatRuntimeStore((s) => s.setArtifactsEnabled);
+  const mcpEnabledForChat = useChatRuntimeStore((s) => s.mcpEnabledForChat);
+  const setMcpEnabledForChat = useChatRuntimeStore(
+    (s) => s.setMcpEnabledForChat,
+  );
   // Three most recently updated projects for the quick-access submenu.
   const { projects } = useChatProjects();
   const recentProjects = [...projects]
@@ -616,12 +621,13 @@ export function SharedComposer({
   const webFetchDisabled = !modelLoaded || !supportsBuiltinWebFetch;
   const showWebFetchPill = supportsBuiltinWebFetch;
   // With more than 4 pills showing, collapse them to icons only to cut clutter.
-  // Compare, Search, Code and MCP always show; the rest are conditional.
+  // Compare, Search and Code always show; the rest are conditional.
   const pillsCompact =
-    4 +
+    3 +
       (showImagePill ? 1 : 0) +
       (showWebFetchPill ? 1 : 0) +
-      (artifactsEnabled ? 1 : 0) >
+      (artifactsEnabled ? 1 : 0) +
+      (mcpEnabledForChat ? 1 : 0) >
     4;
   // Backwards-compatible alias for any other call site that may still
   // reference `toolsDisabled` (rare; both pills used it before).
@@ -1218,6 +1224,17 @@ export function SharedComposer({
                 Canvas
                 {artifactsEnabled ? <CheckIcon className="ml-auto" /> : null}
               </DropdownMenuItem>
+              <DropdownMenuItem
+                disabled={!supportsTools}
+                className={
+                  mcpEnabledForChat ? "text-primary font-medium" : undefined
+                }
+                onSelect={() => setMcpEnabledForChat(!mcpEnabledForChat)}
+              >
+                <HugeiconsIcon icon={McpServerIcon} strokeWidth={2} />
+                MCP
+                {mcpEnabledForChat ? <CheckIcon className="ml-auto" /> : null}
+              </DropdownMenuItem>
               <DropdownMenuItem>
                 <HugeiconsIcon icon={DatabaseIcon} strokeWidth={2} />
                 RAG
@@ -1385,7 +1402,7 @@ export function SharedComposer({
               <span>Canvas</span>
             </button>
           ) : null}
-          <McpComposerButton />
+          {mcpEnabledForChat ? <McpComposerButton side="top" /> : null}
         </div>
         {/* mr-0.5 matches the send button inset from the edge in normal chat;
             gap-1.5 matches its control spacing. */}

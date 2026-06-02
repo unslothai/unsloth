@@ -918,6 +918,13 @@
 		display: none;
 	}
 
+	/* Drop the MCP dropdown caret when collapsed so the icon is not squished. */
+	[data-pill-compact="true"]
+		.composer-pill-btn:not([data-keep-label])
+		.composer-pill-caret {
+		display: none;
+	}
+
 	/* Fixed-width icon slot so every pill's icon occupies the same space and
 	   the labels line up on an even rhythm, regardless of icon size. */
 	.composer-pill-glyph {

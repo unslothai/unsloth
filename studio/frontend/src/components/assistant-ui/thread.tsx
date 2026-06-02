@@ -84,6 +84,7 @@ import {
   Folder01Icon,
   FolderAddIcon,
   Image03Icon,
+  McpServerIcon,
   PencilRulerIcon,
   Tick02Icon,
 } from "@hugeicons/core-free-icons";
@@ -573,12 +574,14 @@ const Composer: FC<{
     (s) => s.supportsBuiltinImageGeneration,
   );
   const artifactsEnabled = useChatRuntimeStore((s) => s.artifactsEnabled);
+  const mcpEnabledForChat = useChatRuntimeStore((s) => s.mcpEnabledForChat);
   // With more than 4 pills showing, collapse them to icons only to cut clutter.
-  // Search, Code and MCP always show; Images and Canvas are conditional.
+  // Search and Code always show; Images, Canvas and MCP are conditional.
   const pillsCompact =
-    3 +
+    2 +
       (supportsBuiltinImageGeneration ? 1 : 0) +
-      (artifactsEnabled ? 1 : 0) >
+      (artifactsEnabled ? 1 : 0) +
+      (mcpEnabledForChat ? 1 : 0) >
     4;
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const setPendingImageEditReference = useChatRuntimeStore(
@@ -759,7 +762,9 @@ const Composer: FC<{
               <CodeToolsToggle />
               <ImagesToggle />
               {artifactsEnabled ? <ArtifactsToggle /> : null}
-              <McpComposerButton />
+              {mcpEnabledForChat ? (
+                <McpComposerButton side={effectiveMenuSide} />
+              ) : null}
             </>
           ) : null}
         </div>
@@ -1575,6 +1580,10 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
   const setCodeToolsEnabled = useChatRuntimeStore((s) => s.setCodeToolsEnabled);
   const artifactsEnabled = useChatRuntimeStore((s) => s.artifactsEnabled);
   const setArtifactsEnabled = useChatRuntimeStore((s) => s.setArtifactsEnabled);
+  const mcpEnabledForChat = useChatRuntimeStore((s) => s.mcpEnabledForChat);
+  const setMcpEnabledForChat = useChatRuntimeStore(
+    (s) => s.setMcpEnabledForChat,
+  );
   // Capability gating, mirroring the visible pills so menu and pills agree on
   // what a loaded model supports (a tool the backend drops must not look on).
   const modelLoaded = useChatRuntimeStore(
@@ -1731,6 +1740,15 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
           <HugeiconsIcon icon={PencilRulerIcon} strokeWidth={2} />
           Canvas
           {artifactsEnabled ? <CheckIcon className="ml-auto" /> : null}
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          disabled={!supportsTools}
+          className={mcpEnabledForChat ? "text-primary font-medium" : undefined}
+          onSelect={() => setMcpEnabledForChat(!mcpEnabledForChat)}
+        >
+          <HugeiconsIcon icon={McpServerIcon} strokeWidth={2} />
+          MCP
+          {mcpEnabledForChat ? <CheckIcon className="ml-auto" /> : null}
         </DropdownMenuItem>
         <DropdownMenuItem>
           <HugeiconsIcon icon={DatabaseIcon} strokeWidth={2} />

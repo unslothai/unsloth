@@ -89,7 +89,11 @@ function normalizeMcpUrl(url: string): string {
 // Static, so it is not rebuilt on every render.
 const PRESET_URLS = new Set(MCP_PRESETS.map((p) => normalizeMcpUrl(p.url)));
 
-export function McpComposerButton() {
+export function McpComposerButton({
+  side = "bottom",
+}: {
+  side?: "top" | "bottom";
+} = {}) {
   const modelLoaded = useChatRuntimeStore(
     (s) => !!s.params.checkpoint && !s.modelLoading,
   );
@@ -109,29 +113,16 @@ export function McpComposerButton() {
   // mcp_enabled only applies on the local tool-capable send path; grey out otherwise.
   const usable = modelLoaded && supportsTools;
 
-  // Keep the per-chat flag in step with whether any server is enabled. Reads the
-  // store directly so the callback stays stable (no refetch loop on mount).
-  const reconcileFlag = useCallback(
-    (rows: McpServerConfig[]) => {
-      const anyEnabled = rows.some((s) => s.is_enabled);
-      const current = useChatRuntimeStore.getState().mcpEnabledForChat;
-      if (anyEnabled && !current) setMcpEnabledForChat(true);
-      else if (!anyEnabled && current) setMcpEnabledForChat(false);
-    },
-    [setMcpEnabledForChat],
-  );
-
   const refresh = useCallback(async () => {
     try {
       const rows = await listMcpServers();
       setServers(rows);
-      reconcileFlag(rows);
     } catch {
       // Keep prior state if the list call fails.
     }
-  }, [reconcileFlag]);
+  }, []);
 
-  // Initial load reconciles the pill with already-enabled servers (also on open).
+  // Load the server list on mount and whenever the menu opens.
   useEffect(() => {
     void refresh();
   }, [refresh]);
@@ -262,11 +253,11 @@ export function McpComposerButton() {
                 strokeWidth={2}
               />
               <span>MCP</span>
-              <ArrowDownStandardIcon className="size-[15px]" />
+              <ArrowDownStandardIcon className="composer-pill-caret size-[15px]" />
             </button>
           </DropdownMenuTrigger>
           <DropdownMenuContent
-            side="top"
+            side={side}
             align="start"
             sideOffset={2}
             avoidCollisions={true}
