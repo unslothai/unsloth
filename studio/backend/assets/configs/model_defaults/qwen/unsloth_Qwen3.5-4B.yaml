@@ -1,0 +1,44 @@
+# Model defaults for unsloth/Qwen3.5-4B
+# Based on Qwen3.5 hybrid (Mamba+Attention) architecture
+# Also applies to: Qwen/Qwen3.5-4B, unsloth/Qwen3.5-4B-bnb-4bit
+# NOTE: Qwen3.5 GDN layers require float32 to avoid NaN gradients
+
+training:
+  trust_remote_code: false
+  max_seq_length: 4096
+  # num_epochs: 4
+  num_epochs: 0
+  learning_rate: 2e-4
+  batch_size: 2
+  gradient_accumulation_steps: 4
+  warmup_steps: 5
+  max_steps: 30
+  save_steps: 30
+  weight_decay: 0.001
+  random_seed: 3407
+  packing: false
+  train_on_completions: true
+  gradient_checkpointing: "unsloth"
+  optim: "adamw_8bit"
+  lr_scheduler_type: "linear"
+
+lora:
+  lora_r: 16
+  lora_alpha: 16
+  lora_dropout: 0.0
+  target_modules:
+    - "all-linear"
+  use_rslora: false
+  use_loftq: false
+
+logging:
+  enable_wandb: false
+  wandb_project: "llm-finetuning"
+  enable_tensorboard: false
+  tensorboard_dir: "runs"
+  log_frequency: 10
+
+inference:
+  trust_remote_code: false
+  temperature: 0.3
+  min_p: 0.15

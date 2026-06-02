@@ -209,6 +209,36 @@ class HarmonyTextStreamer:
                     self._queue.put(new_content)
 
 
+# SSM (State Space Model) architectures that don't use traditional KV cache.
+# These models benefit from use_cache=False since they maintain internal state differently.
+_SSM_MODEL_SUBSTRINGS = (
+    "nemotron_h",
+    "nemotron-h",
+    "nemotron-3-nano",
+    "falcon_h1",
+    "falcon-h1",
+    "granite-4.0-h",
+    "granitemoehybrid",
+    "lfm2",
+    "lfm-2",
+    "mamba",
+    "jamba",
+)
+
+
+def _is_ssm_model(model_name: str) -> bool:
+    """Check if a model is an SSM (State Space Model) architecture.
+
+    SSM models like Mamba, LFM, NemotronH, FalconH1, and Jamba use state-based
+    recurrence rather than attention-based KV caching. They benefit from
+    use_cache=False during generation since they don't need KV cache management.
+    """
+    if not model_name:
+        return False
+    name_lower = model_name.lower()
+    return any(sub in name_lower for sub in _SSM_MODEL_SUBSTRINGS)
+
+
 class InferenceBackend:
     """Unified inference backend supporting text, vision, and LoRA models"""
 
@@ -1187,11 +1217,14 @@ class InferenceBackend:
                 timeout = 0.2,
             )
 
+            # SSM models (Mamba, LFM, etc.) don't use traditional KV cache
+            use_cache = not _is_ssm_model(self.active_model_name)
+
             generation_kwargs = dict(
                 **inputs,
                 streamer = streamer,
                 max_new_tokens = max_new_tokens,
-                use_cache = True,
+                use_cache = use_cache,
                 do_sample = temperature > 0,
                 temperature = temperature,
                 top_p = top_p,
@@ -1325,12 +1358,15 @@ class InferenceBackend:
                 timeout = 0.2,
             )
 
+            # SSM models (Mamba, LFM, etc.) don't use traditional KV cache
+            use_cache = not _is_ssm_model(self.active_model_name)
+
             # Notebook uses do_sample=False for ASR (greedy decoding for accuracy)
             generation_kwargs = dict(
                 **inputs,
                 streamer = streamer,
                 max_new_tokens = max_new_tokens,
-                use_cache = True,
+                use_cache = use_cache,
                 do_sample = False,
             )
 
@@ -1476,10 +1512,14 @@ class InferenceBackend:
                     timeout = 0.2,
                 )
 
+            # SSM models (Mamba, LFM, etc.) don't use traditional KV cache
+            use_cache = not _is_ssm_model(self.active_model_name)
+
             generation_kwargs = dict(
                 **inputs,
                 streamer = streamer,
                 max_new_tokens = max_new_tokens,
+                use_cache = use_cache,
                 temperature = temperature,
                 top_p = top_p,
                 top_k = top_k,
@@ -1657,6 +1697,9 @@ class InferenceBackend:
         input_ids = torch.cat([start_token, text_ids, end_tokens], dim = 1)
         attention_mask = torch.ones_like(input_ids)
 
+        # SSM models (Mamba, LFM, etc.) don't use traditional KV cache
+        use_cache = not _is_ssm_model(self.active_model_name)
+
         generated = model.generate(
             input_ids = input_ids,
             attention_mask = attention_mask,
@@ -1666,7 +1709,7 @@ class InferenceBackend:
             top_p = top_p,
             repetition_penalty = repetition_penalty,
             eos_token_id = 128258,  # END_OF_SPEECH
-            use_cache = True,
+            use_cache = use_cache,
         )
         return self._audio_codec_manager.decode_snac(generated, str(device))
 
