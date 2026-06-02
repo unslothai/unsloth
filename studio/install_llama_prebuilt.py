@@ -3711,13 +3711,9 @@ def _detect_host_rocm_version() -> tuple[int, int] | None:
     amd_smi = shutil.which("amd-smi")
     if amd_smi:
         try:
-            result = subprocess.run(
-                [amd_smi, "version"],
-                stdout = subprocess.PIPE,
-                stderr = subprocess.DEVNULL,
-                text = True,
-                timeout = 5,
-            )
+            # Via run_capture so the Windows RunAsInvoker guard applies (no
+            # amd-smi auto-elevation / DiskPart UAC prompt).
+            result = run_capture([amd_smi, "version"], timeout = 5)
             if result.returncode == 0:
                 m = re.search(r"ROCm version:\s*(\d+)\.(\d+)", result.stdout)
                 if m:
