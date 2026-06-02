@@ -792,11 +792,6 @@ else
     _HELPER_RELEASE_REPO="unslothai/llama.cpp"
 fi
 unset _GPU_TOOL
-# Optional override for validating a release before it lands on the production
-# repo (e.g. UNSLOTH_LLAMA_PUBLISHED_REPO=oobabooga/llama.cpp). Unset normally.
-if [ -n "${UNSLOTH_LLAMA_PUBLISHED_REPO:-}" ]; then
-    _HELPER_RELEASE_REPO="$UNSLOTH_LLAMA_PUBLISHED_REPO"
-fi
 _LLAMA_PR="${UNSLOTH_LLAMA_PR:-}"
 _SKIP_PREBUILT_INSTALL=false
 _LLAMA_PR_FORCE="${UNSLOTH_LLAMA_PR_FORCE:-${_DEFAULT_LLAMA_PR_FORCE}}"
