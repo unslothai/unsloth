@@ -854,10 +854,16 @@ if (-not $HasNvidiaSmi) {
         } catch {}
     }
     # ── Arch resolution: env-var override → name inference ──────────────────
-    # Runs after all probe methods.  Covers users whose amd-smi version is too
-    # old to report the GFX target and who don't have hipinfo (HIP-runtime-only
-    # installs, common on Strix Halo / iGPU systems).
-    if ($HasROCm -and -not $script:ROCmGfxArch) {
+    # Runs after all probe methods, and -- unlike before -- even when the
+    # hipinfo/amd-smi probe could NOT confirm a ROCm runtime ($HasROCm false).
+    # On Windows the Adrenalin driver alone (no HIP SDK) is enough to run the
+    # lemonade-sdk ROCm llama.cpp prebuilt, which bundles its own ROCm runtime;
+    # all we need is the gfx arch, which we can infer from the WMI GPU name.
+    # Resolving it here means setup.ps1 forwards --rocm-gfx (see prebuilt args
+    # below) so a GPU-accelerated llama.cpp is downloaded instead of a CPU build.
+    # (PyTorch's ROCm wheels still require a confirmed HIP SDK -- they stay gated
+    # on $HasROCm below -- so this only affects llama.cpp / inference.)
+    if (-not $script:ROCmGfxArch) {
         # 1. Manual override: set UNSLOTH_ROCM_GFX_ARCH=gfx1151 before running.
         if ($env:UNSLOTH_ROCM_GFX_ARCH) {
             $script:ROCmGfxArch = $env:UNSLOTH_ROCM_GFX_ARCH.Trim().ToLower()
@@ -865,16 +871,21 @@ if (-not $HasNvidiaSmi) {
             substep "gfx arch from UNSLOTH_ROCM_GFX_ARCH env override: $script:ROCmGfxArch" "Cyan"
         }
         # 2. Best-effort name → arch lookup from marketing name (amd-smi / WMI).
-        #    Ordered most-specific first; first match wins.
+        #    Ordered most-specific first; first match wins. Targets only arches
+        #    the lemonade-sdk ROCm prebuilts cover (gfx120X/110X/1151/1150/103X);
+        #    unknown names match nothing and fall back cleanly to CPU.
         elseif ($ROCmGpuLabel) {
             $nameArchTable = @(
-                @{ P = "9070 XT|9080";                                         A = "gfx1201" }  # RDNA 4
-                @{ P = "9070|9060";                                            A = "gfx1200" }  # RDNA 4
-                @{ P = "8060S|890M|Strix Halo|HX 37[05]|HX 38[05]|AI 9 HX";    A = "gfx1151" }  # RDNA 3.5 iGPU (Strix Halo / Radeon 8060S retail)
-                @{ P = "880M|Strix Point|AI 9 36[05]|AI 7 35[05]|AI 5 34[05]"; A = "gfx1150" }  # RDNA 3.5 iGPU (Strix Point)
-                @{ P = "RX 7900|RX 7800|RX 7700(?! S)";                        A = "gfx1100" }  # RDNA 3 desktop
-                @{ P = "RX 7600";                                              A = "gfx1102" }  # RDNA 3
-                @{ P = "780M|760M|740M|Phoenix";                               A = "gfx1103" }  # RDNA 3 iGPU (Phoenix)
+                @{ P = "9070 XT|9080|W9[0-9]{3}";                              A = "gfx1201" }  # RDNA 4 (Radeon RX 9070 XT / Pro W9000)
+                @{ P = "9070|9060|RX 90[0-9]{2}";                              A = "gfx1200" }  # RDNA 4 (Radeon RX 9000)
+                @{ P = "8060S|8050S|8040S|890M|Strix Halo|Ryzen AI Max|HX 37[05]|HX 38[05]|AI 9 HX|AI Max"; A = "gfx1151" }  # RDNA 3.5 (Strix Halo / Radeon 8000S iGPU)
+                @{ P = "880M|860M|840M|Strix Point|Krackan|AI 9 36[05]|AI 7 35[05]|AI 5 34[05]|AI 7 PRO 35|AI 5 33"; A = "gfx1150" }  # RDNA 3.5 (Strix/Krackan Point)
+                @{ P = "RX 7900|RX 7800|RX 7700(?! S)|PRO W7900|PRO W7800|PRO W7700"; A = "gfx1100" }  # RDNA 3 desktop / workstation (Navi 31)
+                @{ P = "RX 7600|RX 7700S|RX 7650|PRO W7600|PRO W7500|PRO V710"; A = "gfx1102" }  # RDNA 3 (Navi 33)
+                @{ P = "780M|760M|740M|Phoenix|Hawk Point|Z1 Extreme|Z2 Extreme"; A = "gfx1103" }  # RDNA 3 iGPU (Phoenix / Hawk Point)
+                @{ P = "RX 6900|RX 6800|RX 6750|RX 6700|PRO W6800|PRO W6900";  A = "gfx1030" }  # RDNA 2 (Navi 21) -- lemonade gfx103X
+                @{ P = "RX 6650|RX 6600|PRO W6600|PRO W6650";                  A = "gfx1032" }  # RDNA 2 (Navi 23) -- lemonade gfx103X
+                @{ P = "RX 6500|RX 6400|RX 6300|PRO W6400|PRO W6500";          A = "gfx1034" }  # RDNA 2 (Navi 24) -- lemonade gfx103X
             )
             foreach ($row in $nameArchTable) {
                 if ($ROCmGpuLabel -match $row.P) {
