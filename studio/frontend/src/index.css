@@ -915,12 +915,14 @@
 	[data-slot="popover-content"] {
 		box-shadow: 0 2px 8px -2px rgba(27, 27, 31, 0.16) !important;
 	}
+	/* Dark: keep the chat-box dropdown shadow so menus don't merge into a
+	   same-color surface (e.g. a menu overlapping the composer). */
 	.dark [data-slot="dropdown-menu-content"],
 	.dark [data-slot="dropdown-menu-sub-content"],
 	.dark [data-slot="select-content"],
 	.dark [data-slot="combobox-content"],
 	.dark [data-slot="popover-content"] {
-		box-shadow: none !important;
+		box-shadow: 0 4px 14px var(--background) !important;
 	}
 
 	/* Context menus (chat, run, project): drop the inset edge ring, keep the soft shadow. */

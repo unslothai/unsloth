@@ -438,13 +438,15 @@ const DEFAULT_WELCOME: Welcome = {
 };
 
 function buildWelcome(hour: number, name: string): Welcome {
-  const tail = name ? `, ${name}` : "";
   const g = (text: string, sloth: string): Welcome => ({ text, sloth });
+  // Use the name on roughly a third of the lines per time of day: only the
+  // direct salutations where it reads most naturally. Everything else stays
+  // name-free so the greeting doesn't feel repetitive.
   const base: Welcome[] = [
-    g(`Good to see you${tail}.`, "large sloth wave.png"),
+    g(name ? `Good to see you, ${name}.` : "Good to see you.", "large sloth wave.png"),
     g("Ready when you are.", "large sloth thumbs.png"),
     DEFAULT_WELCOME,
-    g(name ? `How can I help, ${name}?` : "How can I help?", "sloth sir large.png"),
+    g("How can I help?", "sloth sir large.png"),
   ];
   if (hour >= 4 && hour < 9) {
     const morning = g(name ? `Good morning, ${name}` : "Good morning", "large sloth drink.png");
@@ -453,16 +455,16 @@ function buildWelcome(hour: number, name: string): Welcome {
   if (hour >= 17 && hour < 23) {
     const evening: Welcome[] = [
       g(name ? `Good evening, ${name}` : "Good evening", "sloth shy large.png"),
-      g(name ? `What’s on for tonight, ${name}?` : "What’s on for tonight?", "large sloth glasses.png"),
+      g("What’s on for tonight?", "large sloth glasses.png"),
     ];
     // Lean toward an evening line, but a base greeting can still appear.
     return pickRandom(Math.random() < 0.75 ? evening : base);
   }
   if (hour >= 23 || hour < 4) {
     return pickRandom([
-      g(name ? `Night owl mode, ${name}?` : "Night owl mode?", "large sloth glasses.png"),
-      g(name ? `Late night ideas, ${name}?` : "Late night ideas?", "large sloth yay.png"),
-      g(name ? `Up late with an idea, ${name}?` : "Up late with an idea?", "large sloth heart.png"),
+      g("Night owl mode?", "large sloth glasses.png"),
+      g("Late night ideas?", "large sloth yay.png"),
+      g("Up late with an idea?", "large sloth heart.png"),
       g(name ? `The night shift begins, ${name}` : "The night shift begins", "large sloth drink.png"),
     ]);
   }
@@ -489,11 +491,11 @@ const ThreadWelcome: FC<{
       <div className="aui-thread-welcome-center flex w-full grow flex-col items-center justify-start pt-[calc(29vh_-_5px)]">
         <div className="aui-thread-welcome-message flex w-full flex-col justify-center gap-9 px-4">
           {/* Center the whole greeting (sloth + title) over the composer. */}
-          <div className="flex flex-row items-center justify-center gap-3">
+          <div className="flex flex-row items-center justify-center gap-4">
             <img
               src={currentEmojiSrc}
               alt="Sloth mascot"
-              className="size-9 -translate-y-[2px]"
+              className="size-[46px] -translate-y-[2px]"
             />
             <h1 className="aui-thread-welcome-message-inner unsloth-welcome-title fade-in slide-in-from-bottom-1 animate-in text-3xl tracking-[-0.02em] duration-200">
               {welcome.text}
