@@ -50,9 +50,18 @@ export function useRagDocuments(
   useEffect(() => {
     documentsRef.current = documents;
   }, [documents]);
-  // Signatures of files attached this scope, to skip identical re-selections;
-  // cleared on scope change.
-  const uploadedSigs = useRef<Set<string>>(new Set());
+  // documentId -> file signature for files attached this scope. Keyed by id so
+  // an identical re-selection is skipped pre-upload, yet the record is forgotten
+  // when its document is deleted (a re-upload then re-indexes). Cleared on scope
+  // change.
+  const sigByDocId = useRef<Map<string, string>>(new Map());
+  const sigAttached = useCallback(
+    (sig: string) => {
+      for (const s of sigByDocId.current.values()) if (s === sig) return true;
+      return false;
+    },
+    [],
+  );
 
   const scopeKey = scope
     ? scope.type === "kb"
@@ -174,7 +183,7 @@ export function useRagDocuments(
   useEffect(() => {
     for (const controller of trackedJobs.current.values()) controller.abort();
     trackedJobs.current.clear();
-    uploadedSigs.current.clear();
+    sigByDocId.current.clear();
     setDocuments([]);
     if (scope) void refresh();
     return () => {
@@ -200,7 +209,7 @@ export function useRagDocuments(
           scope.type === "kb"
             ? await uploadKnowledgeBaseDocument(scope.kbId, file)
             : await uploadThreadDocument(scope.threadId, file);
-        uploadedSigs.current.add(fileSignature(file));
+        sigByDocId.current.set(result.documentId, fileSignature(file));
         if (seenIds.has(result.documentId)) {
           setDocuments((rows) => rows.filter((row) => row.id !== tempId));
           toast.info(`${result.filename || file.name} is already indexed - skipping`);
@@ -239,7 +248,7 @@ export function useRagDocuments(
         for (const file of Array.from(files)) {
           // Skip an identical re-selection before any upload or chip; an edited
           // same-name file still uploads.
-          if (uploadedSigs.current.has(fileSignature(file))) {
+          if (sigAttached(fileSignature(file))) {
             toast.info(`${file.name} is already indexed - skipping`);
             continue;
           }
@@ -249,17 +258,21 @@ export function useRagDocuments(
         setUploading(false);
       }
     },
-    [scope, uploadOne],
+    [scope, uploadOne, sigAttached],
   );
 
   const remove = useCallback(
     async (documentId: string) => {
       const prev = documents;
       setDocuments((rows) => rows.filter((row) => row.id !== documentId));
+      // Forget the dedup signature so re-uploading the same file re-indexes.
+      const prevSig = sigByDocId.current.get(documentId);
+      sigByDocId.current.delete(documentId);
       try {
         await deleteDocument(documentId);
       } catch (err) {
         setDocuments(prev);
+        if (prevSig !== undefined) sigByDocId.current.set(documentId, prevSig);
         toast.error("Delete failed", {
           description: err instanceof Error ? err.message : String(err),
         });
