@@ -583,9 +583,6 @@ def _apply_sparsity_to_base_weights(peft_model, target_modules = None):
         if w.shape[0] % 4 != 0 or w.shape[1] % 4 != 0:
             continue
 
-        # Preserve the ORIGINAL dense weights BEFORE destructive pruning so
-        # save/merge can recover them.
-        base._dense_weight = w.clone()
         _rg = base.weight.requires_grad
         base._dense_weight_rg = _rg
 
@@ -596,6 +593,9 @@ def _apply_sparsity_to_base_weights(peft_model, target_modules = None):
         mask.scatter_(-1, topk, True)
         mask = mask.view(w.shape)
         w.mul_(mask)
+
+        # Dense copy of the PRUNED weights (after mul_) for save/merge.
+        base._dense_weight = w.clone()
 
         base.weight = torch.nn.Parameter(
             to_sparse_semi_structured(w), requires_grad = _rg
@@ -713,6 +713,9 @@ def _patch_fused_pooling(st_model):
             < seq_lengths.unsqueeze(1)
         ).to(attention_mask.dtype)
         if not torch.equal(attention_mask, right_padded):
+            # token_embeddings are PRE-LayerNorm (encoder LN is now Identity);
+            # re-apply stored LN since original pooling doesn't.
+            features["token_embeddings"] = stored_ln(token_embeddings)
             return _original_pooling_forward(features)
 
         pooled = fused_layernorm_mean_pool(stored_ln, token_embeddings, attention_mask)
