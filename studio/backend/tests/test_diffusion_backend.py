@@ -3039,6 +3039,119 @@ def test_load_model_torch_compile_regional(monkeypatch):
     assert status["load_timings"]["torch_compile"] >= 0
 
 
+def test_balanced_gguf_keeps_dequant_compile_without_denoiser_compile(monkeypatch):
+    _install_fake_diffusers(monkeypatch)
+
+    import core.inference.diffusion as d
+    from core.inference.diffusion import get_diffusion_backend
+
+    fake_gguf_text_encoder = types.ModuleType("core.inference.gguf_text_encoder")
+    install_calls = []
+
+    monkeypatch.setattr(
+        d.DiffusionBackend,
+        "_pick_device_and_dtype",
+        lambda self: ("cuda", "fake_dtype"),
+    )
+    monkeypatch.setattr(
+        d,
+        "_patch_gguf_modules_for_resident_device",
+        lambda root, resident_device, *, pin_memory = None: 3,
+    )
+    monkeypatch.setattr(d, "_balanced_gguf_cuda_cache_bytes", lambda device: 1024)
+    fake_gguf_text_encoder.configure_lazy_gguf_cuda_cache = lambda root, max_bytes: {
+        "modules": 3,
+        "budget_bytes": 1024,
+        "candidate_bytes": 512,
+        "selected_bytes": 512,
+    }
+
+    def _fake_install(root):
+        install_calls.append(root)
+        return {"modules": 7, "skipped": 0, "unsupported": 0}
+
+    fake_gguf_text_encoder.install_compiled_lazy_gguf_linear_dequant = _fake_install
+    monkeypatch.setitem(
+        sys.modules,
+        "core.inference.gguf_text_encoder",
+        fake_gguf_text_encoder,
+    )
+
+    backend = get_diffusion_backend()
+    status = backend.load_model(
+        "unsloth/FLUX.2-klein-4B-GGUF",
+        gguf_filename = "flux-2-klein-4b-Q4_K_S.gguf",
+        offload_policy = "balanced",
+        torch_compile = "none",
+    )
+
+    assert len(install_calls) == 1
+    assert status["gguf_prepared_module_counts"][
+        "diffusion_compiled_dequant_modules"
+    ] == 7
+    assert (
+        "diffusion_compiled_dequant_skipped_for_denoiser_compile"
+        not in status["gguf_prepared_module_counts"]
+    )
+
+
+def test_balanced_gguf_denoiser_compile_skips_nested_dequant_compile(monkeypatch):
+    _install_fake_diffusers(monkeypatch)
+
+    import core.inference.diffusion as d
+    from core.inference.diffusion import get_diffusion_backend
+
+    fake_gguf_text_encoder = types.ModuleType("core.inference.gguf_text_encoder")
+    install_calls = []
+
+    monkeypatch.setattr(
+        d.DiffusionBackend,
+        "_pick_device_and_dtype",
+        lambda self: ("cuda", "fake_dtype"),
+    )
+    monkeypatch.setattr(
+        d,
+        "_patch_gguf_modules_for_resident_device",
+        lambda root, resident_device, *, pin_memory = None: 3,
+    )
+    monkeypatch.setattr(d, "_balanced_gguf_cuda_cache_bytes", lambda device: 1024)
+    fake_gguf_text_encoder.configure_lazy_gguf_cuda_cache = lambda root, max_bytes: {
+        "modules": 3,
+        "budget_bytes": 1024,
+        "candidate_bytes": 512,
+        "selected_bytes": 512,
+    }
+
+    def _fake_install(root):
+        install_calls.append(root)
+        return {"modules": 7, "skipped": 0, "unsupported": 0}
+
+    fake_gguf_text_encoder.install_compiled_lazy_gguf_linear_dequant = _fake_install
+    monkeypatch.setitem(
+        sys.modules,
+        "core.inference.gguf_text_encoder",
+        fake_gguf_text_encoder,
+    )
+
+    backend = get_diffusion_backend()
+    status = backend.load_model(
+        "unsloth/FLUX.2-klein-4B-GGUF",
+        gguf_filename = "flux-2-klein-4b-Q4_K_S.gguf",
+        offload_policy = "balanced",
+        torch_compile = "regional",
+        torch_compile_fullgraph = True,
+        torch_compile_dynamic = True,
+        torch_compile_options = {"triton.cudagraphs": False},
+    )
+
+    assert install_calls == []
+    counts = status["gguf_prepared_module_counts"]
+    assert counts["diffusion_cuda_cache_modules"] == 3
+    assert counts["diffusion_compiled_dequant_skipped_for_denoiser_compile"] == 1
+    assert "diffusion_compiled_dequant_modules" not in counts
+    assert status["torch_compile_config"]["scope"] == "regional"
+
+
 def test_load_model_torch_compile_transformer(monkeypatch):
     _install_fake_diffusers(monkeypatch)
 
