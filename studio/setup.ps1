@@ -2513,7 +2513,11 @@ if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
             try {
                 $existingMeta = Get-Content $existingMetaPath -Raw | ConvertFrom-Json
                 $existingKind = $existingMeta.install_kind
-                $expectedKind = if ($HasROCm) { "windows-hip" } elseif ($HasNvidiaSmi) { "windows-cuda" } else { "windows-cpu" }
+                # A name-inferred gfx arch (Adrenalin-only host, no confirmed
+                # runtime) still wants the GPU (windows-hip) build -- the lemonade
+                # prebuilt bundles its own ROCm runtime. Treat a known gfx arch
+                # as ROCm-capable here, mirroring the --rocm-gfx forward below.
+                $expectedKind = if ($HasROCm -or $script:ROCmGfxArch) { "windows-hip" } elseif ($HasNvidiaSmi) { "windows-cuda" } else { "windows-cpu" }
                 if ($existingKind -and $existingKind -ne $expectedKind) {
                     substep "Removing mismatched llama.cpp install (found '$existingKind', need '$expectedKind')..."
                     Remove-Item -Recurse -Force -LiteralPath $LlamaCppDir -ErrorAction SilentlyContinue
@@ -2538,12 +2542,16 @@ if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
         )
         if ($HasROCm) {
             $prebuiltArgs += "--has-rocm"
-            # Forward the resolved gfx arch so the lemonade HIP prebuilt is picked
-            # even when the installer's own probe cannot report it (amd-smi-only
-            # hosts, name-inferred arch).
-            if ($script:ROCmGfxArch) {
-                $prebuiltArgs += @("--rocm-gfx", $script:ROCmGfxArch)
-            }
+        }
+        # Forward the resolved gfx arch so the lemonade HIP prebuilt is picked
+        # even when the installer's own probe cannot confirm the ROCm runtime
+        # (amd-smi-only / Adrenalin-only hosts where the arch is name-inferred).
+        # A forwarded --rocm-gfx is authoritative and implies ROCm in
+        # install_llama_prebuilt.py, so the GPU prebuilt is selected even when
+        # $HasROCm is false. Gating this on $HasROCm was why Strix Halo /
+        # Radeon 8060S hosts silently got the CPU llama.cpp.
+        if ($script:ROCmGfxArch) {
+            $prebuiltArgs += @("--rocm-gfx", $script:ROCmGfxArch)
         }
         if ($env:UNSLOTH_LLAMA_RELEASE_TAG) {
             $prebuiltArgs += @("--published-release-tag", $env:UNSLOTH_LLAMA_RELEASE_TAG)
