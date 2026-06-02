@@ -2613,6 +2613,8 @@ def supported_optimization_options() -> dict[str, Any]:
             "denoiser_torch_compile": {
                 "default_enabled": True,
                 "default_scope": DIFFUSION_TORCH_COMPILE_REGIONAL,
+                "default_fullgraph": True,
+                "default_dynamic": True,
                 "default_when": [
                     "safetensors_bf16",
                     "safetensors_bitsandbytes_4bit_nf4",
@@ -2786,6 +2788,8 @@ def supported_optimization_options() -> dict[str, Any]:
             "denoiser_torch_compile": {
                 "default_enabled": True,
                 "default_scope": DIFFUSION_TORCH_COMPILE_REGIONAL,
+                "default_fullgraph": True,
+                "default_dynamic": True,
                 "recommended_scope": "denoiser_or_repeated_blocks_only",
                 "backend_load_arg": "torch_compile",
                 "recommended_for": [
@@ -4453,12 +4457,22 @@ class DiffusionBackend:
             safetensors_quantization = resolved_safetensors_quantization,
             media_kind = fam.media_kind,
         )
+        effective_torch_compile_fullgraph = torch_compile_fullgraph
+        effective_torch_compile_dynamic = torch_compile_dynamic
+        if (
+            torch_compile is None
+            and resolved_torch_compile == DIFFUSION_TORCH_COMPILE_REGIONAL
+        ):
+            if effective_torch_compile_fullgraph is None:
+                effective_torch_compile_fullgraph = True
+            if effective_torch_compile_dynamic is None:
+                effective_torch_compile_dynamic = True
         torch_compile_config = {
             "scope": resolved_torch_compile,
             "source": "explicit" if torch_compile is not None else "default",
             "mode": torch_compile_mode,
-            "fullgraph": torch_compile_fullgraph,
-            "dynamic": torch_compile_dynamic,
+            "fullgraph": effective_torch_compile_fullgraph,
+            "dynamic": effective_torch_compile_dynamic,
             "options": dict(torch_compile_options or {}),
         }
 
@@ -5361,8 +5375,8 @@ class DiffusionBackend:
                                 pipe,
                                 scope = resolved_torch_compile,
                                 mode = torch_compile_mode,
-                                fullgraph = torch_compile_fullgraph,
-                                dynamic = torch_compile_dynamic,
+                                fullgraph = effective_torch_compile_fullgraph,
+                                dynamic = effective_torch_compile_dynamic,
                                 options = torch_compile_options,
                             )
                 except Exception:
