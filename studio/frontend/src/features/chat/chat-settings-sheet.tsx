@@ -1904,7 +1904,10 @@ export function ChatSettingsPanel({
                 }
                 max={
                   isExternalModel
-                    ? getExternalMaxOutputTokens(externalProviderType)
+                    ? getExternalMaxOutputTokens(
+                        externalProviderType,
+                        externalSelection?.modelId,
+                      )
                     : isGguf && ggufContextLength
                       ? ggufContextLength
                       : 32768

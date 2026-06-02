@@ -527,6 +527,38 @@ def _git_show(ref: str, path: str) -> str | None:
         return None
 
 
+def _module_all_exports(src: str) -> set[str]:
+    """Names listed in a module-level ``__all__``.
+
+    A name present in ``__all__`` is a declared public re-export, so it is
+    "used" even when nothing in the module body loads it (e.g. a package
+    ``__init__`` that aggregates routers). Such names must not be flagged as
+    newly-added-unused hoists; a genuinely botched hoist still leaves a dangling
+    reference, which UNRESOLVED-NEW catches independently.
+    """
+    try:
+        tree = ast.parse(src)
+    except SyntaxError:
+        return set()
+    exports: set[str] = set()
+    for node in tree.body:
+        targets = (
+            node.targets
+            if isinstance(node, ast.Assign)
+            else [node.target]
+            if isinstance(node, ast.AnnAssign)
+            else []
+        )
+        if not any(isinstance(t, ast.Name) and t.id == "__all__" for t in targets):
+            continue
+        value = node.value
+        if isinstance(value, (ast.List, ast.Tuple)):
+            for elt in value.elts:
+                if isinstance(elt, ast.Constant) and isinstance(elt.value, str):
+                    exports.add(elt.value)
+    return exports
+
+
 def compare(before_src: str, after_src: str, path: str) -> list[tuple[str, str]]:
     """Return list of (severity, message). severity in BLOCKER/WARN/INFO.
 
@@ -554,6 +586,7 @@ def compare(before_src: str, after_src: str, path: str) -> list[tuple[str, str]]
 
     before_used = used_targets(a)
     after_used = used_targets(b)
+    after_all_exports = _module_all_exports(after_src)
     before_module_targets: set[str] = set()
     for tids in a["module_import_targets"].values():
         before_module_targets |= tids
@@ -582,6 +615,8 @@ def compare(before_src: str, after_src: str, path: str) -> list[tuple[str, str]]
     for n, tids in b["module_import_targets"].items():
         if tids & after_used:
             continue  # resolved by something -> fine
+        if n in after_all_exports:
+            continue  # declared public re-export (used via __all__)
         newly_added = bool(tids - before_module_targets)
         was_used_before = bool(tids & before_used)
         if newly_added or was_used_before:
