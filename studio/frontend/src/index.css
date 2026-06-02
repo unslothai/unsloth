@@ -258,7 +258,8 @@
 	--sidebar-border: #2d2d2f;
 	--sidebar-ring: #17b88b;
 	--destructive-foreground: oklch(1 0 0);
-	--radius: 0.625rem;
+	/* Match light's radius so every rounded-* element is the same in both themes. */
+	--radius: 1.1rem;
 	--font-sans: "Inter Variable", ui-sans-serif, sans-serif, system-ui;
 	--font-serif: Source Serif 4, serif;
 	--font-mono: JetBrains Mono, monospace;
