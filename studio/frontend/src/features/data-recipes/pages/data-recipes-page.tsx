@@ -418,7 +418,7 @@ export function DataRecipesPage(): ReactElement {
                 <HugeiconsIcon icon={ArrowDown01Icon} className="size-4" />
               </Button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="recipes-new-menu ring-0">
+            <DropdownMenuContent align="end">
               <DropdownMenuItem
                 onSelect={() => {
                   openNewRecipe().catch(() => undefined);

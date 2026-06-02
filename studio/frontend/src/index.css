@@ -906,13 +906,15 @@
 		box-shadow: none;
 	}
 
-	/* New Recipe menu: borderless (box-shadow replaces the ring), chatbox shadow
-	   in light, none in dark. */
-	.recipes-new-menu {
-		box-shadow: 0 2px 8px -2px rgba(27, 27, 31, 0.16);
+	/* Every dropdown: borderless, chatbox shadow in light, none in dark.
+	   !important so it also overrides the bespoke menu shadows below. */
+	[data-slot="dropdown-menu-content"],
+	[data-slot="dropdown-menu-sub-content"] {
+		box-shadow: 0 2px 8px -2px rgba(27, 27, 31, 0.16) !important;
 	}
-	.dark .recipes-new-menu {
-		box-shadow: none;
+	.dark [data-slot="dropdown-menu-content"],
+	.dark [data-slot="dropdown-menu-sub-content"] {
+		box-shadow: none !important;
 	}
 
 	/* Context menus (chat, run, project): drop the inset edge ring, keep the soft shadow. */
