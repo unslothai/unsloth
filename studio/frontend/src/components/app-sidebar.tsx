@@ -603,7 +603,7 @@ export function AppSidebar() {
             side="bottom"
             align="end"
             sideOffset={4}
-            className="app-user-menu menu-soft-surface menu-flat-destructive ring-0 w-44 py-2 font-heading rounded-[14px] border-0"
+            className="unsloth-plus-menu menu-flat-destructive w-48"
           >
             <DropdownMenuItem onSelect={() => openRenameChat(item)}>
               <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
@@ -612,12 +612,12 @@ export function AppSidebar() {
             <DropdownMenuSub>
               <DropdownMenuSubTrigger>
                 <HugeiconsIcon icon={FolderExportIcon} strokeWidth={1.75} className="size-icon" />
-                <span>Projects</span>
+                <span>Move to project</span>
               </DropdownMenuSubTrigger>
               <DropdownMenuSubContent
                 sideOffset={8}
                 alignOffset={-4}
-                className="app-user-menu menu-soft-surface menu-flat-destructive ring-0 w-56 py-2 font-heading rounded-[14px] border-0"
+                className="unsloth-plus-menu w-56"
               >
                 <DropdownMenuItem
                   onSelect={() => {

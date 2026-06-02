@@ -1222,6 +1222,15 @@
 		height: 1.05rem;
 	}
 
+	/* Destructive items keep red text and a red-tinted hover, not the grey one. */
+	.unsloth-plus-menu [data-slot="dropdown-menu-item"][data-variant="destructive"],
+	.unsloth-plus-menu [data-slot="dropdown-menu-item"][data-variant="destructive"] * {
+		color: var(--destructive) !important;
+	}
+	.unsloth-plus-menu [data-slot="dropdown-menu-item"][data-variant="destructive"]:is(:hover, :focus, :focus-visible, [data-highlighted]) {
+		background-color: color-mix(in oklab, var(--destructive) 10%, transparent) !important;
+	}
+
 	/* Thinking menu: tighter gap; nowrap keeps "Preserve thinking" on one line
 	   so the menu sizes to its content. */
 	.unsloth-thinking-menu :is(
