@@ -2645,6 +2645,27 @@ class TestPublishedWindowsCudaAppBundleSmSelection:
         assert result[0].runtime_line == "cuda13"
         assert result[0].name == f"app-{self.TAG}-windows-x64-cuda13-newer.zip"
 
+    def test_app_bundle_offered_when_no_runtime_dll_detected(self, monkeypatch):
+        # Windows torch bundles cudart in torch/lib, which runtime-DLL probing
+        # misses, so detected_windows_runtime_lines() returns nothing. The app
+        # bundle ships its own runtime, so selection must fall back to the
+        # driver-derived order instead of yielding no attempt (which would drop
+        # the host to the upstream build).
+        mock_windows_runtime(monkeypatch, [])
+        release = make_release(
+            [self._line("cuda12", "newer", 20), self._line("cuda13", "newer", 50)],
+            upstream_tag = self.TAG,
+        )
+        host = make_host(
+            system = "Windows",
+            machine = "AMD64",
+            driver_cuda_version = (13, 0),
+            compute_caps = ["120"],
+        )
+        result = published_windows_cuda_attempts(host, release, "cuda13")
+        assert result, "torch-only host must still get the fork app bundle"
+        assert result[0].name == f"app-{self.TAG}-windows-x64-cuda13-newer.zip"
+
 
 class TestPublishedRocmGfxSelection:
     """Published ROCm bundles are matched by the host's detected gfx family, not

@@ -3632,8 +3632,17 @@ def published_windows_cuda_attempts(
         ]
     else:
         detected, _ = detected_windows_runtime_lines()
-        compatible = set(compatible_windows_runtime_lines(host))
-        ordered_lines = [line for line in detected if line in compatible]
+        compatible = compatible_windows_runtime_lines(host)
+        # Prefer lines whose runtime DLLs are on disk, but fall back to the
+        # driver-derived order when none are detected (Windows torch bundles
+        # cudart in torch/lib, which probing misses) or when detected DLLs are
+        # incompatible with the driver. The app bundle ships its own runtime, so
+        # the driver major is the real constraint. Mirrors the legacy
+        # windows_cuda_attempts fallback; without it a torch-only host gets no
+        # fork attempt and silently drops to the upstream build.
+        ordered_lines = [
+            line for line in compatible if line in detected
+        ] or list(compatible)
         if preferred_runtime_line and preferred_runtime_line in ordered_lines:
             ordered_lines = [preferred_runtime_line] + [
                 line for line in ordered_lines if line != preferred_runtime_line
