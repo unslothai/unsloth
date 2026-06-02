@@ -23,20 +23,20 @@ def _isolate_deploy_config(monkeypatch, tmp_path):
 
 
 _CATALOG = [
-    {"id": "A4000",    "displayName": "RTX A4000", "memoryInGb": 16},
-    {"id": "A5000",    "displayName": "RTX A5000", "memoryInGb": 24},
-    {"id": "4090",     "displayName": "RTX 4090",  "memoryInGb": 24},
-    {"id": "A100-80",  "displayName": "A100 80GB", "memoryInGb": 80},
+    {"id": "A4000", "displayName": "RTX A4000", "memoryInGb": 16},
+    {"id": "A5000", "displayName": "RTX A5000", "memoryInGb": 24},
+    {"id": "4090", "displayName": "RTX 4090", "memoryInGb": 24},
+    {"id": "A100-80", "displayName": "A100 80GB", "memoryInGb": 80},
     {"id": "spotonly", "displayName": "Spot only", "memoryInGb": 24},
-    {"id": "noprice",  "displayName": "No price",  "memoryInGb": 24},
+    {"id": "noprice", "displayName": "No price", "memoryInGb": 24},
 ]
 _DETAILS = {
-    "A4000":    {"lowestPrice": {"uninterruptablePrice": 0.20}},
-    "A5000":    {"lowestPrice": {"uninterruptablePrice": 0.36}},
-    "4090":     {"lowestPrice": {"uninterruptablePrice": 0.44}},
-    "A100-80":  {"lowestPrice": {"uninterruptablePrice": 1.89}},
+    "A4000": {"lowestPrice": {"uninterruptablePrice": 0.20}},
+    "A5000": {"lowestPrice": {"uninterruptablePrice": 0.36}},
+    "4090": {"lowestPrice": {"uninterruptablePrice": 0.44}},
+    "A100-80": {"lowestPrice": {"uninterruptablePrice": 1.89}},
     "spotonly": {"lowestPrice": {"minimumBidPrice": 0.10}},
-    "noprice":  {"lowestPrice": {}},
+    "noprice": {"lowestPrice": {}},
 }
 
 
@@ -64,11 +64,11 @@ def _running_pod(pid):
 
 def _gpu(gid = "A5000", vram = 24, price = 0.36):
     from unsloth_cli.deploy import Gpu
+
     return Gpu(id = gid, name = gid, vram_gb = vram, cost_per_hour_usd = price)
 
 
 class _FakeStudioClient:
-
     def __init__(self, base_url):
         self.base_url = base_url.rstrip("/")
         self.calls = []
@@ -101,43 +101,58 @@ class _FakeStudioClient:
 def _fake_studio(store):
     def factory(base_url):
         return store.setdefault("client", _FakeStudioClient(base_url))
+
     return factory
 
 
 def test_image_tag_lives_under_unsloth_org():
     from unsloth_cli.commands import deploy
+
     assert deploy.IMAGE_TAG.startswith("ghcr.io/unslothai/")
 
 
 def test_auth_requires_api_key(monkeypatch):
     from unsloth_cli.deploy import DeployError
     from unsloth_cli.deploy.runpod_client import RunPod
+
     with pytest.raises(DeployError, match = "RUNPOD_API_KEY"):
         RunPod().auth({})
 
 
 def test_list_gpus_drops_spot_and_priceless_and_sorts_by_cost(monkeypatch):
     from unsloth_cli.deploy.runpod_client import RunPod
+
     _stub_with_catalog(monkeypatch)
-    p = RunPod(); p.auth({"api_key": "rpa_x"})
+    p = RunPod()
+    p.auth({"api_key": "rpa_x"})
 
     gpus = p.list_gpus(min_vram_gb = 24)
     ids = [g.id for g in gpus]
     assert "spotonly" not in ids and "noprice" not in ids
     assert "A4000" not in ids
     assert ids[0] == "A5000"
-    assert [g.cost_per_hour_usd for g in gpus] == sorted(g.cost_per_hour_usd for g in gpus)
+    assert [g.cost_per_hour_usd for g in gpus] == sorted(
+        g.cost_per_hour_usd for g in gpus
+    )
 
 
 def test_create_instance_mounts_volume_at_workspace_and_opens_ports(monkeypatch):
     from unsloth_cli.deploy.runpod_client import RunPod
-    captured = {}
-    _stub_runpod(monkeypatch, create_pod = lambda **kw: captured.update(kw) or {"id": "pod-abc"})
 
-    p = RunPod(); p.auth({"api_key": "rpa_x"})
+    captured = {}
+    _stub_runpod(
+        monkeypatch, create_pod = lambda **kw: captured.update(kw) or {"id": "pod-abc"}
+    )
+
+    p = RunPod()
+    p.auth({"api_key": "rpa_x"})
     instance_id = p.create_instance(
-        name = "test", gpu = _gpu(), image = "img:tag",
-        http_port = 8000, ssh_port = 22, disk_gb = 100,
+        name = "test",
+        gpu = _gpu(),
+        image = "img:tag",
+        http_port = 8000,
+        ssh_port = 22,
+        disk_gb = 100,
         env = {"UNSLOTH_ADMIN_PASSWORD": "secret"},
     )
     assert instance_id == "pod-abc"
@@ -148,25 +163,43 @@ def test_create_instance_mounts_volume_at_workspace_and_opens_ports(monkeypatch)
 
 def test_wait_ready_waits_for_runtime(monkeypatch):
     from unsloth_cli.deploy.runpod_client import RunPod
-    states = iter([
-        {"desiredStatus": "RUNNING", "runtime": None},
-        {"desiredStatus": "RUNNING", "runtime": {"ports": []}},
-    ])
+
+    states = iter(
+        [
+            {"desiredStatus": "RUNNING", "runtime": None},
+            {"desiredStatus": "RUNNING", "runtime": {"ports": []}},
+        ]
+    )
     _stub_runpod(monkeypatch, get_pod = lambda pid: next(states))
     monkeypatch.setattr("time.sleep", lambda s: None)
-    p = RunPod(); p.auth({"api_key": "rpa_x"})
+    p = RunPod()
+    p.auth({"api_key": "rpa_x"})
     p.wait_ready("pod-x", timeout_s = 30)
 
 
 def test_endpoint_url_uses_https_proxy_never_plaintext_ip(monkeypatch):
     from unsloth_cli.deploy.runpod_client import RunPod
-    assert RunPod().endpoint_url("podxyz", http_port = 8000) == "https://podxyz-8000.proxy.runpod.net"
 
-    fake_pod = {"runtime": {"ports": [
-        {"privatePort": 8000, "publicPort": 18000, "ip": "1.2.3.4", "isIpPublic": True},
-    ]}}
+    assert (
+        RunPod().endpoint_url("podxyz", http_port = 8000)
+        == "https://podxyz-8000.proxy.runpod.net"
+    )
+
+    fake_pod = {
+        "runtime": {
+            "ports": [
+                {
+                    "privatePort": 8000,
+                    "publicPort": 18000,
+                    "ip": "1.2.3.4",
+                    "isIpPublic": True,
+                },
+            ]
+        }
+    }
     _stub_runpod(monkeypatch, get_pod = lambda pid: fake_pod)
-    p = RunPod(); p.auth({"api_key": "rpa_x"})
+    p = RunPod()
+    p.auth({"api_key": "rpa_x"})
     url = p.endpoint_url("podxyz", http_port = 8000)
     assert url == "https://podxyz-8000.proxy.runpod.net"
     assert url.startswith("https://")
@@ -183,17 +216,21 @@ def test_stop_terminates_by_default_pause_suspends(monkeypatch):
     from unsloth_cli import app
 
     assert CliRunner().invoke(app, ["deploy", "stop", "pod-a"]).exit_code == 0
-    assert CliRunner().invoke(app, ["deploy", "stop", "--pause", "pod-b"]).exit_code == 0
+    assert (
+        CliRunner().invoke(app, ["deploy", "stop", "--pause", "pod-b"]).exit_code == 0
+    )
     assert calls == [("terminate", "pod-a"), ("stop", "pod-b")]
 
 
 def test_runpod_declares_its_capabilities():
     from unsloth_cli.deploy.runpod_client import RunPod
+
     assert RunPod.supports_ssh and RunPod.supports_pause and RunPod.supports_local_model
 
 
 def test_provider_optional_methods_raise_when_unsupported():
     from unsloth_cli.deploy import DeployError
+
     p = _RealNoStorage()
     with pytest.raises(DeployError, match = "SSH"):
         p.get_ssh("i-1")
@@ -207,6 +244,7 @@ def test_provider_optional_methods_raise_when_unsupported():
 
 def _register_nostorage(monkeypatch):
     from unsloth_cli.commands import deploy
+
     monkeypatch.setitem(deploy.PROVIDERS, "nostorage", _RealNoStorage)
 
 
@@ -223,9 +261,19 @@ def test_local_model_rejected_when_provider_lacks_storage(monkeypatch, tmp_path)
     monkeypatch.setattr(deploy, "_deploy", lambda *a, **k: reached.append(1))
 
     from unsloth_cli import app
-    result = CliRunner().invoke(app, [
-        "deploy", "run", "--yes", "--provider", "nostorage", "--model", str(local),
-    ])
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "deploy",
+            "run",
+            "--yes",
+            "--provider",
+            "nostorage",
+            "--model",
+            str(local),
+        ],
+    )
     assert result.exit_code != 0
     combined = result.output + (result.stderr or "")
     assert "can't upload a local model" in combined
@@ -235,6 +283,7 @@ def test_local_model_rejected_when_provider_lacks_storage(monkeypatch, tmp_path)
 def test_unknown_provider_is_rejected_with_available_list(monkeypatch):
     monkeypatch.setenv("UNSLOTH_ADMIN_PASSWORD", "secret-pw")
     from unsloth_cli import app
+
     result = CliRunner().invoke(app, ["deploy", "run", "--yes", "--provider", "nope"])
     assert result.exit_code != 0
     combined = result.output + (result.stderr or "")
@@ -256,10 +305,13 @@ def test_provider_options_resolved_from_env_then_persisted_and_reused(monkeypatc
     from unsloth_cli.commands import deploy
     from unsloth_cli.deploy import store
     from unsloth_cli.deploy.runpod_client import RunPod
+
     _stub_with_catalog(monkeypatch)
 
     monkeypatch.setenv("RUNPOD_API_KEY", "rpa_from_env")
-    p1 = deploy._authenticate(RunPod, {}, need_local = False, interactive = False, persist = True)
+    p1 = deploy._authenticate(
+        RunPod, {}, need_local = False, interactive = False, persist = True
+    )
     assert p1._api_key == "rpa_from_env"
     assert store.load("runpod").get("api_key") == "rpa_from_env"
 
@@ -271,11 +323,15 @@ def test_provider_options_resolved_from_env_then_persisted_and_reused(monkeypatc
 def test_provider_opt_override_beats_env(monkeypatch):
     from unsloth_cli.commands import deploy
     from unsloth_cli.deploy.runpod_client import RunPod
+
     _stub_with_catalog(monkeypatch)
 
     monkeypatch.setenv("RUNPOD_API_KEY", "rpa_from_env")
     p = deploy._authenticate(
-        RunPod, {"api_key": "rpa_override"}, need_local = False, interactive = False,
+        RunPod,
+        {"api_key": "rpa_override"},
+        need_local = False,
+        interactive = False,
     )
     assert p._api_key == "rpa_override"
 
@@ -285,6 +341,7 @@ def test_run_rejects_short_admin_password(monkeypatch):
     monkeypatch.setenv("RUNPOD_API_KEY", "rpa_x")
     monkeypatch.setenv("UNSLOTH_ADMIN_PASSWORD", "12")
     from unsloth_cli import app
+
     result = CliRunner().invoke(app, ["deploy", "run", "--yes"])
     assert result.exit_code != 0
     assert "at least 8" in result.output
@@ -292,6 +349,7 @@ def test_run_rejects_short_admin_password(monkeypatch):
 
 def test_run_yes_picks_cheapest_and_forwards_model(monkeypatch):
     from unsloth_cli.commands import deploy
+
     captured = {}
 
     def fake_deploy(provider, gpu, **kw):
@@ -304,12 +362,21 @@ def test_run_yes_picks_cheapest_and_forwards_model(monkeypatch):
     monkeypatch.setattr(deploy, "_deploy", fake_deploy)
 
     from unsloth_cli import app
-    result = CliRunner().invoke(app, [
-        "deploy", "run", "--yes",
-        "--model", "unsloth/Llama-3.2-1B-Instruct-GGUF",
-        "--gguf-variant", "Q4_K_M",
-        "--hf-token", "hf_xyz",
-    ])
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "deploy",
+            "run",
+            "--yes",
+            "--model",
+            "unsloth/Llama-3.2-1B-Instruct-GGUF",
+            "--gguf-variant",
+            "Q4_K_M",
+            "--hf-token",
+            "hf_xyz",
+        ],
+    )
     assert result.exit_code == 0, result.output
     assert captured["gpu"].id == "A5000"
     assert captured["model"] == "unsloth/Llama-3.2-1B-Instruct-GGUF"
@@ -349,7 +416,9 @@ def test_discover_includes_studio_outputs_and_exports(monkeypatch, tmp_path):
     export.mkdir(parents = True)
     (export / "config.json").write_text("{}")
 
-    monkeypatch.setattr(deploy, "_studio_output_roots", lambda: [studio_out, studio_exp])
+    monkeypatch.setattr(
+        deploy, "_studio_output_roots", lambda: [studio_out, studio_exp]
+    )
 
     empty_cwd = tmp_path / "elsewhere"
     empty_cwd.mkdir()
@@ -385,15 +454,21 @@ def test_picker_offers_local_model_and_user_selects_it(monkeypatch, tmp_path):
     monkeypatch.setenv("RUNPOD_S3_ACCESS_KEY_ID", "user_x")
     monkeypatch.setenv("RUNPOD_S3_SECRET_ACCESS_KEY", "rps_y")
     monkeypatch.setattr(
-        RunPod, "stage_local_model",
+        RunPod,
+        "stage_local_model",
         lambda self, local, *, gpu, log = None: StagedModel(
             model_path = "/workspace/uploads/lora_model",
-            storage_id = "vol-1", summary = "network volume vol-1", placement = "DC",
+            storage_id = "vol-1",
+            summary = "network volume vol-1",
+            placement = "DC",
         ),
     )
-    monkeypatch.setattr(deploy, "_deploy", lambda provider, gpu, **kw: captured.update(kw))
+    monkeypatch.setattr(
+        deploy, "_deploy", lambda provider, gpu, **kw: captured.update(kw)
+    )
 
     from unsloth_cli import app
+
     result = CliRunner().invoke(app, ["deploy", "run"], input = "1\n1\ny\n")
     assert result.exit_code == 0, result.output
     assert captured["model"].endswith("/lora_model")
@@ -416,11 +491,16 @@ def test_local_model_not_staged_until_user_confirms(monkeypatch, tmp_path):
     monkeypatch.setenv("UNSLOTH_ADMIN_PASSWORD", "secret-pw")
     monkeypatch.setenv("RUNPOD_S3_ACCESS_KEY_ID", "user_x")
     monkeypatch.setenv("RUNPOD_S3_SECRET_ACCESS_KEY", "rps_y")
-    monkeypatch.setattr(RunPod, "stage_local_model", lambda self, *a, **k: staged_calls.append(1))
+    monkeypatch.setattr(
+        RunPod, "stage_local_model", lambda self, *a, **k: staged_calls.append(1)
+    )
     monkeypatch.setattr(deploy, "_deploy", lambda *a, **k: reached.append(1))
 
     from unsloth_cli import app
-    result = CliRunner().invoke(app, ["deploy", "run", "--model", str(local)], input = "1\nn\n")
+
+    result = CliRunner().invoke(
+        app, ["deploy", "run", "--model", str(local)], input = "1\nn\n"
+    )
     assert result.exit_code == 0
     assert "Aborted" in result.output
     assert not staged_calls
@@ -429,32 +509,49 @@ def test_local_model_not_staged_until_user_confirms(monkeypatch, tmp_path):
 
 def test_stop_does_not_persist_credentials(monkeypatch):
     from unsloth_cli.deploy import store
+
     _stub_runpod(monkeypatch, terminate_pod = lambda pid: None)
     monkeypatch.setenv("RUNPOD_API_KEY", "rpa_x")
 
     from unsloth_cli import app
+
     assert CliRunner().invoke(app, ["deploy", "stop", "pod-a"]).exit_code == 0
     assert store.load("runpod") == {}
 
 
 def test_bootstrap_drives_full_chain_and_prints_endpoint(monkeypatch):
     from unsloth_cli.commands import deploy
+
     store = {}
-    _stub_with_catalog(monkeypatch, create_pod = lambda **kw: {"id": "pod-xyz"}, get_pod = _running_pod)
+    _stub_with_catalog(
+        monkeypatch, create_pod = lambda **kw: {"id": "pod-xyz"}, get_pod = _running_pod
+    )
     monkeypatch.setenv("RUNPOD_API_KEY", "rpa_x")
     monkeypatch.setenv("UNSLOTH_ADMIN_PASSWORD", "bootstrap-pw")
     monkeypatch.setattr("time.sleep", lambda s: None)
     monkeypatch.setattr(deploy, "StudioClient", _fake_studio(store))
 
     from unsloth_cli import app
-    result = CliRunner().invoke(app, [
-        "deploy", "run", "--yes", "--model", "unsloth/Llama-3.2-1B-Instruct",
-    ])
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "deploy",
+            "run",
+            "--yes",
+            "--model",
+            "unsloth/Llama-3.2-1B-Instruct",
+        ],
+    )
     assert result.exit_code == 0, result.output
 
     client = store["client"]
     assert [c[0] for c in client.calls] == [
-        "wait_healthy", "login", "change_password", "create_api_key", "load_model",
+        "wait_healthy",
+        "login",
+        "change_password",
+        "create_api_key",
+        "load_model",
     ]
     assert client.calls[1] == ("login", "unsloth", "bootstrap-pw")
     assert client.calls[2][1] == "bootstrap-pw" and client.calls[2][2] != "bootstrap-pw"
@@ -488,20 +585,31 @@ def test_bootstrap_uploads_local_model_via_network_volume(monkeypatch, tmp_path)
     monkeypatch.setenv("RUNPOD_S3_SECRET_ACCESS_KEY", "rps_y")
     monkeypatch.setattr("time.sleep", lambda s: None)
     monkeypatch.setattr(
-        runpod_storage, "create_network_volume",
+        runpod_storage,
+        "create_network_volume",
         lambda client, **kw: vol_kwargs.update(kw) or "vol-123",
     )
     monkeypatch.setattr(
-        runpod_storage, "upload_path",
+        runpod_storage,
+        "upload_path",
         lambda local_path, **kw: uploads.append((local_path, kw)),
     )
     monkeypatch.setattr(deploy, "StudioClient", _fake_studio(store))
 
     from unsloth_cli import app
-    result = CliRunner().invoke(app, [
-        "deploy", "run", "--yes", "--model", str(local),
-        "--provider-opt", "datacenter=US-KS-2",
-    ])
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "deploy",
+            "run",
+            "--yes",
+            "--model",
+            str(local),
+            "--provider-opt",
+            "datacenter=US-KS-2",
+        ],
+    )
     assert result.exit_code == 0, result.output
 
     assert vol_kwargs["datacenter_id"] == "US-KS-2"
@@ -538,6 +646,7 @@ def test_run_requires_storage_creds_for_local_model(monkeypatch, tmp_path):
     monkeypatch.setattr(deploy, "_deploy", lambda *a, **k: reached.append(1))
 
     from unsloth_cli import app
+
     result = CliRunner().invoke(app, ["deploy", "run", "--yes", "--model", str(local)])
     assert result.exit_code != 0
     combined = result.output + (result.stderr or "")
@@ -545,7 +654,9 @@ def test_run_requires_storage_creds_for_local_model(monkeypatch, tmp_path):
     assert not reached
 
 
-def test_s3_upload_targets_per_datacenter_endpoint_and_volume_bucket(monkeypatch, tmp_path):
+def test_s3_upload_targets_per_datacenter_endpoint_and_volume_bucket(
+    monkeypatch, tmp_path
+):
     from unsloth_cli.deploy import runpod_storage as storage
 
     client_kwargs = {}
@@ -574,8 +685,12 @@ def test_s3_upload_targets_per_datacenter_endpoint_and_volume_bucket(monkeypatch
     (src / "sub" / "b.bin").write_bytes(b"\x00")
 
     storage.upload_path(
-        src, volume_id = "vol-9", datacenter = "US-KS-2",
-        access_key = "user_x", secret_key = "rps_y", prefix = "uploads/model",
+        src,
+        volume_id = "vol-9",
+        datacenter = "US-KS-2",
+        access_key = "user_x",
+        secret_key = "rps_y",
+        prefix = "uploads/model",
     )
 
     assert client_kwargs["endpoint_url"] == "https://s3api-us-ks-2.runpod.io"
@@ -604,16 +719,28 @@ def test_bootstrap_failure_shows_stop_hint(monkeypatch):
         def login(self, username, password):
             raise DeployError("synthetic 401")
 
-    _stub_with_catalog(monkeypatch, create_pod = lambda **kw: {"id": "pod-fail"}, get_pod = _running_pod)
+    _stub_with_catalog(
+        monkeypatch, create_pod = lambda **kw: {"id": "pod-fail"}, get_pod = _running_pod
+    )
     monkeypatch.setenv("RUNPOD_API_KEY", "rpa_x")
     monkeypatch.setenv("UNSLOTH_ADMIN_PASSWORD", "bootstrap-pw")
     monkeypatch.setattr("time.sleep", lambda s: None)
-    monkeypatch.setattr(deploy, "StudioClient", lambda base_url: FailingClient(base_url))
+    monkeypatch.setattr(
+        deploy, "StudioClient", lambda base_url: FailingClient(base_url)
+    )
 
     from unsloth_cli import app
-    result = CliRunner().invoke(app, [
-        "deploy", "run", "--yes", "--model", "unsloth/Llama-3.2-1B-Instruct",
-    ])
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "deploy",
+            "run",
+            "--yes",
+            "--model",
+            "unsloth/Llama-3.2-1B-Instruct",
+        ],
+    )
     assert result.exit_code != 0
     combined = result.output + (result.stderr or "")
     assert "synthetic 401" in combined
@@ -629,16 +756,30 @@ def test_bootstrap_failure_after_rotation_surfaces_new_password(monkeypatch):
             raise DeployError("synthetic load failure")
 
     store = {}
-    _stub_with_catalog(monkeypatch, create_pod = lambda **kw: {"id": "pod-late"}, get_pod = _running_pod)
+    _stub_with_catalog(
+        monkeypatch, create_pod = lambda **kw: {"id": "pod-late"}, get_pod = _running_pod
+    )
     monkeypatch.setenv("RUNPOD_API_KEY", "rpa_x")
     monkeypatch.setenv("UNSLOTH_ADMIN_PASSWORD", "bootstrap-pw")
     monkeypatch.setattr("time.sleep", lambda s: None)
-    monkeypatch.setattr(deploy, "StudioClient", lambda base_url: store.setdefault("client", FailAfterRotate(base_url)))
+    monkeypatch.setattr(
+        deploy,
+        "StudioClient",
+        lambda base_url: store.setdefault("client", FailAfterRotate(base_url)),
+    )
 
     from unsloth_cli import app
-    result = CliRunner().invoke(app, [
-        "deploy", "run", "--yes", "--model", "unsloth/Llama-3.2-1B-Instruct",
-    ])
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "deploy",
+            "run",
+            "--yes",
+            "--model",
+            "unsloth/Llama-3.2-1B-Instruct",
+        ],
+    )
     assert result.exit_code != 0
     combined = result.output + (result.stderr or "")
     rotated = [c for c in store["client"].calls if c[0] == "change_password"][0][2]
@@ -649,6 +790,7 @@ def test_bootstrap_failure_after_rotation_surfaces_new_password(monkeypatch):
 
 def test_wait_ready_tolerates_transient_poll_errors(monkeypatch):
     from unsloth_cli.deploy.runpod_client import RunPod
+
     seen = {"n": 0}
 
     def flaky(pid):
@@ -659,13 +801,15 @@ def test_wait_ready_tolerates_transient_poll_errors(monkeypatch):
 
     _stub_runpod(monkeypatch, get_pod = flaky)
     monkeypatch.setattr("time.sleep", lambda s: None)
-    p = RunPod(); p.auth({"api_key": "rpa_x"})
+    p = RunPod()
+    p.auth({"api_key": "rpa_x"})
     p.wait_ready("pod-x", timeout_s = 30)
     assert seen["n"] >= 2
 
 
 def test_change_password_tolerates_missing_token(monkeypatch):
     from unsloth_cli.deploy.studio_client import StudioClient
+
     c = StudioClient("http://x")
     c._token = "old"
     monkeypatch.setattr(c, "_post", lambda *a, **k: {})
@@ -682,14 +826,22 @@ def test_stage_single_file_model_avoids_double_nesting(monkeypatch, tmp_path):
 
     uploads = []
     _stub_runpod(monkeypatch)
-    monkeypatch.setattr(runpod_storage, "create_network_volume", lambda client, **kw: "vol-1")
-    monkeypatch.setattr(runpod_storage, "upload_path", lambda local_path, **kw: uploads.append(kw))
+    monkeypatch.setattr(
+        runpod_storage, "create_network_volume", lambda client, **kw: "vol-1"
+    )
+    monkeypatch.setattr(
+        runpod_storage, "upload_path", lambda local_path, **kw: uploads.append(kw)
+    )
 
     p = RunPod()
-    p.auth({
-        "api_key": "rpa_x", "s3_access_key": "user_x",
-        "s3_secret_key": "rps_y", "datacenter": "US-KS-2",
-    })
+    p.auth(
+        {
+            "api_key": "rpa_x",
+            "s3_access_key": "user_x",
+            "s3_secret_key": "rps_y",
+            "datacenter": "US-KS-2",
+        }
+    )
     staged = p.stage_local_model(model, gpu = _gpu())
     assert uploads[0]["prefix"] == "uploads"
     assert staged.model_path == "/workspace/uploads/model.gguf"
@@ -705,8 +857,12 @@ def test_stage_deletes_volume_when_upload_fails(monkeypatch, tmp_path):
 
     deleted = []
     _stub_runpod(monkeypatch)
-    monkeypatch.setattr(runpod_storage, "create_network_volume", lambda client, **kw: "vol-9")
-    monkeypatch.setattr(runpod_storage, "delete_network_volume", lambda client, vid: deleted.append(vid))
+    monkeypatch.setattr(
+        runpod_storage, "create_network_volume", lambda client, **kw: "vol-9"
+    )
+    monkeypatch.setattr(
+        runpod_storage, "delete_network_volume", lambda client, vid: deleted.append(vid)
+    )
 
     def boom(local_path, **kw):
         raise RuntimeError("network died mid-upload")
@@ -714,10 +870,14 @@ def test_stage_deletes_volume_when_upload_fails(monkeypatch, tmp_path):
     monkeypatch.setattr(runpod_storage, "upload_path", boom)
 
     p = RunPod()
-    p.auth({
-        "api_key": "rpa_x", "s3_access_key": "user_x",
-        "s3_secret_key": "rps_y", "datacenter": "US-KS-2",
-    })
+    p.auth(
+        {
+            "api_key": "rpa_x",
+            "s3_access_key": "user_x",
+            "s3_secret_key": "rps_y",
+            "datacenter": "US-KS-2",
+        }
+    )
     with pytest.raises(RuntimeError):
         p.stage_local_model(model, gpu = _gpu())
     assert deleted == ["vol-9"]
@@ -726,6 +886,7 @@ def test_stage_deletes_volume_when_upload_fails(monkeypatch, tmp_path):
 def test_saved_config_is_user_only(monkeypatch, tmp_path):
     import stat as _stat
     from unsloth_cli.deploy import store
+
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     path = store.save("runpod", {"api_key": "rpa_secret"})
     mode = _stat.S_IMODE(path.stat().st_mode)
@@ -737,6 +898,7 @@ def test_local_model_opts_persisted_even_without_local_model(monkeypatch):
     from unsloth_cli.commands import deploy
     from unsloth_cli.deploy import store
     from unsloth_cli.deploy.runpod_client import RunPod
+
     _stub_with_catalog(monkeypatch)
     monkeypatch.setenv("RUNPOD_API_KEY", "rpa_x")
     monkeypatch.setenv("RUNPOD_S3_ACCESS_KEY_ID", "user_x")
@@ -754,10 +916,23 @@ def test_pick_gpu_yes_skips_out_of_stock(monkeypatch):
     class _P:
         name = "runpod"
         reports_stock = True
+
         def list_gpus(self, min_vram_gb = 0):
             return [
-                Gpu(id = "cheap-soldout", name = "c", vram_gb = 24, cost_per_hour_usd = 0.2, stock = None),
-                Gpu(id = "instock", name = "i", vram_gb = 24, cost_per_hour_usd = 0.4, stock = "High"),
+                Gpu(
+                    id = "cheap-soldout",
+                    name = "c",
+                    vram_gb = 24,
+                    cost_per_hour_usd = 0.2,
+                    stock = None,
+                ),
+                Gpu(
+                    id = "instock",
+                    name = "i",
+                    vram_gb = 24,
+                    cost_per_hour_usd = 0.4,
+                    stock = "High",
+                ),
             ]
 
     chosen = _pick_gpu(_P(), override = None, min_vram_gb = 24, yes = True)
@@ -780,12 +955,14 @@ def test_global_stock_drops_out_of_stock_bands(monkeypatch):
     monkeypatch.setitem(sys.modules, "runpod.api", api_mod)
     monkeypatch.setitem(sys.modules, "runpod.api.graphql", graphql_mod)
 
-    p = RunPod(); p.auth({"api_key": "rpa_x"})
+    p = RunPod()
+    p.auth({"api_key": "rpa_x"})
     assert p._global_stock() == {"A": "High", "B": "Low"}
 
 
 def test_deploy_cmd_carries_nondefault_provider():
     from unsloth_cli.commands.deploy import DEFAULT_PROVIDER, _deploy_cmd
+
     assert _deploy_cmd("stop", "pod-1", DEFAULT_PROVIDER) == "unsloth deploy stop pod-1"
     assert _deploy_cmd("delete-storage", "vol-1", "modal") == (
         "unsloth deploy delete-storage --provider modal vol-1"
@@ -794,6 +971,7 @@ def test_deploy_cmd_carries_nondefault_provider():
 
 def test_is_gateway_timeout_ignores_timeout_word_in_response_body():
     from unsloth_cli.deploy.studio_client import _is_gateway_timeout
+
     assert not _is_gateway_timeout(
         "POST /api/inference/load -> 400: {'detail': 'request timeout in config'}"
     )
@@ -807,6 +985,7 @@ def test_mint_credential_falls_back_only_on_real_404_405():
 
     class _Old:
         token = "jwt-x"
+
         def create_api_key(self, name):
             raise DeployError("POST /api/auth/api-keys -> 404: route not found")
 
@@ -815,8 +994,11 @@ def test_mint_credential_falls_back_only_on_real_404_405():
 
     class _Other:
         token = "jwt-x"
+
         def create_api_key(self, name):
-            raise DeployError("POST /api/auth/api-keys -> 500: upstream said 404 earlier")
+            raise DeployError(
+                "POST /api/auth/api-keys -> 500: upstream said 404 earlier"
+            )
 
     with pytest.raises(DeployError):
         deploy._mint_credential(_Other())
@@ -824,17 +1006,24 @@ def test_mint_credential_falls_back_only_on_real_404_405():
 
 def test_get_ssh_falls_back_when_publicport_missing(monkeypatch):
     from unsloth_cli.deploy.runpod_client import RunPod
-    pod = {"runtime": {"ports": [
-        {"privatePort": 22, "ip": "1.2.3.4", "isIpPublic": True},
-    ]}}
+
+    pod = {
+        "runtime": {
+            "ports": [
+                {"privatePort": 22, "ip": "1.2.3.4", "isIpPublic": True},
+            ]
+        }
+    }
     _stub_runpod(monkeypatch, get_pod = lambda pid: pod)
-    p = RunPod(); p.auth({"api_key": "rpa_x"})
+    p = RunPod()
+    p.auth({"api_key": "rpa_x"})
     ssh = p.get_ssh("pod-x")
     assert ssh.host == "ssh.runpod.io" and ssh.user == "pod-x"
 
 
 def test_is_local_model_distinguishes_hf_id_from_path(monkeypatch, tmp_path):
     from unsloth_cli.commands.deploy import _is_local_model
+
     monkeypatch.chdir(tmp_path)
 
     (tmp_path / "org").mkdir()
@@ -854,15 +1043,23 @@ def test_rest_non_json_response_raises_deployerror(monkeypatch):
     from unsloth_cli.deploy.runpod_client import RunPod
 
     class _Resp:
-        def read(self): return b"<html>bad gateway</html>"
-        def __enter__(self): return self
-        def __exit__(self, *a): return False
+        def read(self):
+            return b"<html>bad gateway</html>"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
 
     _stub_runpod(monkeypatch)
     monkeypatch.setattr(
-        runpod_storage.urllib.request, "urlopen", lambda req, timeout = 60: _Resp(),
+        runpod_storage.urllib.request,
+        "urlopen",
+        lambda req, timeout = 60: _Resp(),
     )
-    p = RunPod(); p.auth({"api_key": "rpa_x"})
+    p = RunPod()
+    p.auth({"api_key": "rpa_x"})
     with pytest.raises(DeployError, match = "non-JSON"):
         runpod_storage._rest(p, "GET", "/networkvolumes/x", None)
 
@@ -871,11 +1068,15 @@ def test_empty_provider_opt_does_not_fall_through_to_env(monkeypatch):
     import typer
     from unsloth_cli.commands import deploy
     from unsloth_cli.deploy.runpod_client import RunPod
+
     _stub_with_catalog(monkeypatch)
     monkeypatch.setenv("RUNPOD_API_KEY", "rpa_from_env")
     with pytest.raises(typer.Exit):
         deploy._authenticate(
-            RunPod, {"api_key": ""}, need_local = False, interactive = False,
+            RunPod,
+            {"api_key": ""},
+            need_local = False,
+            interactive = False,
         )
 
 
@@ -889,19 +1090,30 @@ def test_bootstrap_surfaces_password_when_change_password_drops_connection(monke
             raise DeployError("POST /api/auth/change-password failed: connection reset")
 
     store = {}
-    _stub_with_catalog(monkeypatch, create_pod = lambda **kw: {"id": "pod-drop"}, get_pod = _running_pod)
+    _stub_with_catalog(
+        monkeypatch, create_pod = lambda **kw: {"id": "pod-drop"}, get_pod = _running_pod
+    )
     monkeypatch.setenv("RUNPOD_API_KEY", "rpa_x")
     monkeypatch.setenv("UNSLOTH_ADMIN_PASSWORD", "bootstrap-pw")
     monkeypatch.setattr("time.sleep", lambda s: None)
     monkeypatch.setattr(
-        deploy, "StudioClient",
+        deploy,
+        "StudioClient",
         lambda base_url: store.setdefault("client", DropOnChange(base_url)),
     )
 
     from unsloth_cli import app
-    result = CliRunner().invoke(app, [
-        "deploy", "run", "--yes", "--model", "unsloth/Llama-3.2-1B-Instruct",
-    ])
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "deploy",
+            "run",
+            "--yes",
+            "--model",
+            "unsloth/Llama-3.2-1B-Instruct",
+        ],
+    )
     assert result.exit_code != 0
     combined = result.output + (result.stderr or "")
     rotated = [c for c in store["client"].calls if c[0] == "change_password"][0][2]
@@ -917,19 +1129,30 @@ def test_bootstrap_unexpected_error_still_prints_stop_hint(monkeypatch):
             raise KeyError("key")
 
     store = {}
-    _stub_with_catalog(monkeypatch, create_pod = lambda **kw: {"id": "pod-boom"}, get_pod = _running_pod)
+    _stub_with_catalog(
+        monkeypatch, create_pod = lambda **kw: {"id": "pod-boom"}, get_pod = _running_pod
+    )
     monkeypatch.setenv("RUNPOD_API_KEY", "rpa_x")
     monkeypatch.setenv("UNSLOTH_ADMIN_PASSWORD", "bootstrap-pw")
     monkeypatch.setattr("time.sleep", lambda s: None)
     monkeypatch.setattr(
-        deploy, "StudioClient",
+        deploy,
+        "StudioClient",
         lambda base_url: store.setdefault("client", BoomOnKey(base_url)),
     )
 
     from unsloth_cli import app
-    result = CliRunner().invoke(app, [
-        "deploy", "run", "--yes", "--model", "unsloth/Llama-3.2-1B-Instruct",
-    ])
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "deploy",
+            "run",
+            "--yes",
+            "--model",
+            "unsloth/Llama-3.2-1B-Instruct",
+        ],
+    )
     assert result.exit_code != 0
     combined = result.output + (result.stderr or "")
     assert "unsloth deploy stop pod-boom" in combined
@@ -939,12 +1162,15 @@ def test_stage_warns_when_volume_delete_also_fails(monkeypatch, tmp_path):
     from unsloth_cli.deploy import DeployError, runpod_storage
     from unsloth_cli.deploy.runpod_client import RunPod
 
-    model = tmp_path / "m"; model.mkdir()
+    model = tmp_path / "m"
+    model.mkdir()
     (model / "adapter_config.json").write_text("{}")
 
     logs = []
     _stub_runpod(monkeypatch)
-    monkeypatch.setattr(runpod_storage, "create_network_volume", lambda client, **kw: "vol-7")
+    monkeypatch.setattr(
+        runpod_storage, "create_network_volume", lambda client, **kw: "vol-7"
+    )
 
     def del_fail(client, vid):
         raise DeployError("delete boom")
@@ -956,7 +1182,14 @@ def test_stage_warns_when_volume_delete_also_fails(monkeypatch, tmp_path):
     monkeypatch.setattr(runpod_storage, "upload_path", up_fail)
 
     p = RunPod()
-    p.auth({"api_key": "rpa_x", "s3_access_key": "u", "s3_secret_key": "s", "datacenter": "DC"})
+    p.auth(
+        {
+            "api_key": "rpa_x",
+            "s3_access_key": "u",
+            "s3_secret_key": "s",
+            "datacenter": "DC",
+        }
+    )
     with pytest.raises(DeployError, match = "upload boom"):
         p.stage_local_model(model, gpu = _gpu(), log = logs.append)
     assert any("delete-storage vol-7" in m for m in logs)
@@ -991,12 +1224,19 @@ class _RealNoStorage(_Provider):
         pass
 
 
-def _stub_modal(monkeypatch, *, poll_code = None, tunnels = None,
-                lookup_error = None, upload_error = None):
+def _stub_modal(
+    monkeypatch, *, poll_code = None, tunnels = None, lookup_error = None, upload_error = None
+):
     state = {
-        "create_args": None, "create_kwargs": None, "secret_env": None,
-        "image_ref": None, "app": None, "terminated": None,
-        "volumes_created": [], "volumes_deleted": [], "uploaded": [],
+        "create_args": None,
+        "create_kwargs": None,
+        "secret_env": None,
+        "image_ref": None,
+        "app": None,
+        "terminated": None,
+        "volumes_created": [],
+        "volumes_deleted": [],
+        "uploaded": [],
     }
     tunnel_urls = tunnels if tunnels is not None else {8000: "https://sb-1.modal.host"}
 
@@ -1109,6 +1349,7 @@ def _stub_modal(monkeypatch, *, poll_code = None, tunnels = None,
 def _authed_modal(monkeypatch, **stub_kw):
     stub, state = _stub_modal(monkeypatch, **stub_kw)
     from unsloth_cli.deploy.modal_client import Modal
+
     p = Modal()
     p.auth({})
     return p, state
@@ -1117,12 +1358,14 @@ def _authed_modal(monkeypatch, **stub_kw):
 def test_modal_registered():
     from unsloth_cli.deploy.base import Provider
     from unsloth_cli.deploy.provider import PROVIDERS, get_provider
+
     assert "modal" in PROVIDERS
     assert isinstance(get_provider("modal"), Provider)
 
 
 def test_modal_declares_its_capabilities():
     from unsloth_cli.deploy.modal_client import Modal
+
     assert Modal.supports_local_model is True
     assert Modal.supports_ssh is False
     assert Modal.supports_pause is False
@@ -1132,6 +1375,7 @@ def test_modal_declares_its_capabilities():
 
 def test_modal_list_gpus_filters_and_sorts_with_no_stock():
     from unsloth_cli.deploy.modal_client import Modal
+
     gpus = Modal().list_gpus(min_vram_gb = 40)
     assert gpus and all(g.vram_gb >= 40 for g in gpus)
     assert all(g.stock is None for g in gpus)
@@ -1143,6 +1387,7 @@ def test_modal_auth_errors_without_sdk(monkeypatch):
     monkeypatch.setitem(sys.modules, "modal", None)
     from unsloth_cli.deploy import DeployError
     from unsloth_cli.deploy.modal_client import Modal
+
     with pytest.raises(DeployError, match = r"unsloth\[deploy\]"):
         Modal().auth({})
 
@@ -1151,6 +1396,7 @@ def test_modal_auth_errors_on_bad_credentials(monkeypatch):
     _stub_modal(monkeypatch, lookup_error = RuntimeError("unauthenticated"))
     from unsloth_cli.deploy import DeployError
     from unsloth_cli.deploy.modal_client import Modal
+
     with pytest.raises(DeployError, match = "authentication failed"):
         Modal().auth({})
 
@@ -1182,10 +1428,15 @@ def test_modal_create_instance_passes_studio_command_ports_and_secret(monkeypatc
 
 def test_modal_uses_prebaked_image(monkeypatch):
     from unsloth_cli.deploy.modal_client import STUDIO_IMAGE
+
     p, state = _authed_modal(monkeypatch)
     p.create_instance(
-        name = "n", gpu = _gpu(), image = "x", http_port = 8000,
-        env = {}, disk_gb = 100,
+        name = "n",
+        gpu = _gpu(),
+        image = "x",
+        http_port = 8000,
+        env = {},
+        disk_gb = 100,
     )
     assert state["image_ref"] == STUDIO_IMAGE
     assert state.get("build_cmds") is None
@@ -1194,14 +1445,22 @@ def test_modal_uses_prebaked_image(monkeypatch):
 def test_modal_create_instance_mounts_staged_volume(monkeypatch):
     from unsloth_cli.deploy import StagedModel
     from unsloth_cli.deploy.modal_client import MODEL_MOUNT_DIR
+
     p, state = _authed_modal(monkeypatch)
     staged = StagedModel(
-        model_path = f"{MODEL_MOUNT_DIR}/m", storage_id = "vol-1",
-        summary = "", placement = None,
+        model_path = f"{MODEL_MOUNT_DIR}/m",
+        storage_id = "vol-1",
+        summary = "",
+        placement = None,
     )
     p.create_instance(
-        name = "n", gpu = _gpu(), image = "img", http_port = 8000,
-        env = {}, disk_gb = 100, staged = staged,
+        name = "n",
+        gpu = _gpu(),
+        image = "img",
+        http_port = 8000,
+        env = {},
+        disk_gb = 100,
+        staged = staged,
     )
     assert "vol-1" in state["volumes_created"]
     assert MODEL_MOUNT_DIR in state["create_kwargs"]["volumes"]
@@ -1209,14 +1468,16 @@ def test_modal_create_instance_mounts_staged_volume(monkeypatch):
 
 def test_modal_wait_ready_raises_on_early_exit(monkeypatch):
     from unsloth_cli.deploy import DeployError
+
     p, _ = _authed_modal(monkeypatch, poll_code = 1)
     with pytest.raises(DeployError, match = "exited before serving"):
         p.wait_ready("sb-1", timeout_s = 5)
 
 
 def test_modal_wait_ready_returns_when_tunnel_resolves(monkeypatch):
-    p, _ = _authed_modal(monkeypatch, poll_code = None,
-                         tunnels = {8000: "https://x.modal.host"})
+    p, _ = _authed_modal(
+        monkeypatch, poll_code = None, tunnels = {8000: "https://x.modal.host"}
+    )
     p.wait_ready("sb-1", timeout_s = 5)
 
 
@@ -1233,6 +1494,7 @@ def test_modal_terminate(monkeypatch):
 
 def test_modal_stage_local_model_uploads_to_volume(monkeypatch, tmp_path):
     from unsloth_cli.deploy.modal_client import MODEL_MOUNT_DIR
+
     p, state = _authed_modal(monkeypatch)
     model = tmp_path / "lora_model"
     model.mkdir()
@@ -1247,6 +1509,7 @@ def test_modal_stage_local_model_uploads_to_volume(monkeypatch, tmp_path):
 
 def test_modal_stage_deletes_volume_when_upload_fails(monkeypatch, tmp_path):
     from unsloth_cli.deploy import DeployError
+
     p, state = _authed_modal(monkeypatch, upload_error = RuntimeError("boom"))
     model = tmp_path / "m"
     model.mkdir()
@@ -1260,6 +1523,7 @@ def test_modal_stage_deletes_volume_when_upload_fails(monkeypatch, tmp_path):
 def test_modal_yes_picks_cheapest_without_stock_warning(monkeypatch, capsys):
     from unsloth_cli.commands import deploy
     from unsloth_cli.deploy.modal_client import Modal
+
     chosen = deploy._pick_gpu(Modal(), override = None, min_vram_gb = 24, yes = True)
     cheapest = min(Modal().list_gpus(min_vram_gb = 24), key = lambda g: g.cost_per_hour_usd)
     assert chosen.id == cheapest.id
@@ -1269,8 +1533,10 @@ def test_modal_yes_picks_cheapest_without_stock_warning(monkeypatch, capsys):
 def test_modal_stop_rejects_pause(monkeypatch):
     _stub_modal(monkeypatch)
     from unsloth_cli import app
+
     result = CliRunner().invoke(
-        app, ["deploy", "stop", "sb-1", "--provider", "modal", "--pause"],
+        app,
+        ["deploy", "stop", "sb-1", "--provider", "modal", "--pause"],
     )
     assert result.exit_code != 0
     combined = result.output + (result.stderr or "")

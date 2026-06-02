@@ -35,7 +35,9 @@ def save(provider_name: str, options: dict[str, str]) -> Path:
     payload = json.dumps(data, indent = 2, sort_keys = True)
 
     tmp = path.with_name(path.name + ".tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, stat.S_IRUSR | stat.S_IWUSR)
+    fd = os.open(
+        tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, stat.S_IRUSR | stat.S_IWUSR
+    )
     try:
         os.fchmod(fd, stat.S_IRUSR | stat.S_IWUSR)
         with os.fdopen(fd, "w", encoding = "utf-8") as f:

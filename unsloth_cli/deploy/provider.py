@@ -15,5 +15,7 @@ PROVIDERS: dict[str, type[Provider]] = {"runpod": RunPod, "modal": Modal}
 
 def get_provider(name: str) -> Provider:
     if name not in PROVIDERS:
-        raise DeployError(f"Unknown provider '{name}'. Available: {', '.join(PROVIDERS)}.")
+        raise DeployError(
+            f"Unknown provider '{name}'. Available: {', '.join(PROVIDERS)}."
+        )
     return PROVIDERS[name]()

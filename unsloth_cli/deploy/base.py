@@ -28,11 +28,12 @@ NEEDED_FOR_LOCAL_MODEL = "local_model"
 class Option:
     """A credential or setting a provider reads. The command layer resolves it
     from --provider-opt > env var > saved config and passes it to `auth()`."""
-    key: str                          # dict key the provider reads, e.g. "api_key"
-    env: str                          # env var checked, e.g. "RUNPOD_API_KEY"
-    help: str                         # shown when prompting / in error text
-    secret: bool = False              # hide prompt input; e.g. tokens, S3 secrets
-    required: bool = True             # block the deploy if unresolved
+
+    key: str  # dict key the provider reads, e.g. "api_key"
+    env: str  # env var checked, e.g. "RUNPOD_API_KEY"
+    help: str  # shown when prompting / in error text
+    secret: bool = False  # hide prompt input; e.g. tokens, S3 secrets
+    required: bool = True  # block the deploy if unresolved
     needed_for: str = NEEDED_FOR_AUTH  # NEEDED_FOR_AUTH or NEEDED_FOR_LOCAL_MODEL
 
 
@@ -51,10 +52,10 @@ class Provider(ABC):
     name: str = "provider"
 
     # Capabilities. The command layer checks these instead of provider internals.
-    supports_ssh: bool = False           # get_ssh() returns a reachable target
-    supports_pause: bool = False         # pause() suspends without terminating
-    supports_local_model: bool = False   # stage_local_model() uploads local weights
-    reports_stock: bool = True           # list_gpus carries a live per-GPU stock band
+    supports_ssh: bool = False  # get_ssh() returns a reachable target
+    supports_pause: bool = False  # pause() suspends without terminating
+    supports_local_model: bool = False  # stage_local_model() uploads local weights
+    reports_stock: bool = True  # list_gpus carries a live per-GPU stock band
 
     # One-line caveat printed after a successful deploy (e.g. an auto-stop limit).
     deploy_note: str = ""
@@ -122,7 +123,8 @@ class Provider(ABC):
         reads them (only when `supports_local_model`). `log` streams progress;
         clean up any created storage before raising on failure."""
         raise _unsupported(
-            self, "uploading a local model",
+            self,
+            "uploading a local model",
             "Pass a Hugging Face id with --model, or load from the Studio UI.",
         )
 

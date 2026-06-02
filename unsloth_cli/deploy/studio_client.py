@@ -71,9 +71,7 @@ class StudioClient:
             except (urllib.error.URLError, OSError):
                 pass
             time.sleep(_HEALTH_POLL_S)
-        raise DeployError(
-            f"Studio /api/health did not return 200 within {timeout_s}s"
-        )
+        raise DeployError(f"Studio /api/health did not return 200 within {timeout_s}s")
 
     def login(self, username: str, password: str) -> dict:
         body = self._post(
@@ -106,7 +104,10 @@ class StudioClient:
         payload.update(kwargs)
         try:
             return self._post(
-                "/api/inference/load", payload, auth = True, timeout = _LOAD_TIMEOUT_S,
+                "/api/inference/load",
+                payload,
+                auth = True,
+                timeout = _LOAD_TIMEOUT_S,
             )
         except DeployError as e:
             # A big load outlives the proxy's request timeout (Cloudflare 524); that's
@@ -130,7 +131,10 @@ class StudioClient:
                 saw_loading = True
             elif saw_loading:
                 return self._post(
-                    "/api/inference/load", payload, auth = True, timeout = _LOAD_TIMEOUT_S,
+                    "/api/inference/load",
+                    payload,
+                    auth = True,
+                    timeout = _LOAD_TIMEOUT_S,
                 )
             time.sleep(_LOAD_POLL_S)
         raise DeployError(
@@ -142,7 +146,9 @@ class StudioClient:
         if auth:
             headers["Authorization"] = f"Bearer {self.token}"
         req = urllib.request.Request(
-            self.base_url + path, headers = headers, method = "GET",
+            self.base_url + path,
+            headers = headers,
+            method = "GET",
         )
         try:
             with urllib.request.urlopen(req, timeout = timeout) as resp:
@@ -155,7 +161,12 @@ class StudioClient:
         return _parse_json(text, f"GET {path}")
 
     def _post(
-        self, path: str, json_body: dict, *, auth: bool, timeout: int = _DEFAULT_TIMEOUT_S,
+        self,
+        path: str,
+        json_body: dict,
+        *,
+        auth: bool,
+        timeout: int = _DEFAULT_TIMEOUT_S,
     ) -> dict:
         headers = {"User-Agent": _USER_AGENT, "Content-Type": "application/json"}
         if auth:

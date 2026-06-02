@@ -49,26 +49,34 @@ class RunPod(Provider):
     def option_schema(cls) -> list[Option]:
         return [
             Option(
-                key = "api_key", env = "RUNPOD_API_KEY", secret = True,
+                key = "api_key",
+                env = "RUNPOD_API_KEY",
+                secret = True,
                 needed_for = NEEDED_FOR_AUTH,
                 help = "RunPod API key (Settings > API Keys, rpa_...)",
             ),
             Option(
-                key = "s3_access_key", env = "RUNPOD_S3_ACCESS_KEY_ID", secret = True,
+                key = "s3_access_key",
+                env = "RUNPOD_S3_ACCESS_KEY_ID",
+                secret = True,
                 needed_for = NEEDED_FOR_LOCAL_MODEL,
                 help = "RunPod S3 access key (Settings > S3 API Keys, user_...) "
-                       "-- used to upload a local model",
+                "-- used to upload a local model",
             ),
             Option(
-                key = "s3_secret_key", env = "RUNPOD_S3_SECRET_ACCESS_KEY", secret = True,
+                key = "s3_secret_key",
+                env = "RUNPOD_S3_SECRET_ACCESS_KEY",
+                secret = True,
                 needed_for = NEEDED_FOR_LOCAL_MODEL,
                 help = "RunPod S3 secret access key (rps_...)",
             ),
             Option(
-                key = "datacenter", env = "RUNPOD_DATACENTER", required = False,
+                key = "datacenter",
+                env = "RUNPOD_DATACENTER",
+                required = False,
                 needed_for = NEEDED_FOR_LOCAL_MODEL,
                 help = "Datacenter for the network volume "
-                       "(blank = auto-pick one with capacity for the chosen GPU)",
+                "(blank = auto-pick one with capacity for the chosen GPU)",
             ),
         ]
 
@@ -121,13 +129,15 @@ class RunPod(Provider):
             price = (detail.get("lowestPrice") or {}).get("uninterruptablePrice")
             if not isinstance(price, (int, float)) or price <= 0:
                 continue
-            out.append(Gpu(
-                id = g["id"],
-                name = g.get("displayName") or g["id"],
-                vram_gb = vram,
-                cost_per_hour_usd = float(price),
-                stock = stock.get(g["id"]),
-            ))
+            out.append(
+                Gpu(
+                    id = g["id"],
+                    name = g.get("displayName") or g["id"],
+                    vram_gb = vram,
+                    cost_per_hour_usd = float(price),
+                    stock = stock.get(g["id"]),
+                )
+            )
         out.sort(key = lambda o: (o.cost_per_hour_usd, o.vram_gb))
         return out
 
@@ -156,9 +166,9 @@ class RunPod(Provider):
             raise DeployError(f"RunPod availability lookup is unavailable: {e}") from e
 
         try:
-            data = run_graphql_query(
-                "{ dataCenters { id storageSupport } }"
-            )["data"]["dataCenters"]
+            data = run_graphql_query("{ dataCenters { id storageSupport } }")["data"][
+                "dataCenters"
+            ]
         except Exception as e:
             raise DeployError(f"RunPod datacenter listing failed: {e}") from e
         dc_ids = [d["id"] for d in data if d.get("id") and d.get("storageSupport")]
@@ -167,7 +177,7 @@ class RunPod(Provider):
             query = (
                 '{ gpuTypes(input: {id: "%s"}) { lowestPrice('
                 'input: {gpuCount: 1, secureCloud: true, dataCenterId: "%s"}'
-                ') { stockStatus } } }' % (gpu_id, dc)
+                ") { stockStatus } } }" % (gpu_id, dc)
             )
             try:
                 rows = run_graphql_query(query)["data"]["gpuTypes"]
@@ -235,7 +245,9 @@ class RunPod(Provider):
                 continue
             status = pod.get("desiredStatus")
             if status in TERMINAL_STATUSES:
-                raise DeployError(f"Pod {instance_id} reached terminal status: {status}")
+                raise DeployError(
+                    f"Pod {instance_id} reached terminal status: {status}"
+                )
             if status == "RUNNING" and pod.get("runtime"):
                 return
             time.sleep(POLL_INTERVAL_S)

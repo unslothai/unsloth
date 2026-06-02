@@ -18,11 +18,18 @@ if TYPE_CHECKING:
 
 REST_BASE = "https://rest.runpod.io/v1"
 
+
 def create_network_volume(
-    client: "RunPod", *, name: str, size_gb: int, datacenter_id: str,
+    client: "RunPod",
+    *,
+    name: str,
+    size_gb: int,
+    datacenter_id: str,
 ) -> str:
     body = _rest(
-        client, "POST", "/networkvolumes",
+        client,
+        "POST",
+        "/networkvolumes",
         {"name": name, "size": size_gb, "dataCenterId": datacenter_id},
     )
     vol_id = body.get("id")

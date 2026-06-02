@@ -21,15 +21,15 @@ STUDIO_IMAGE = "unsloth/unsloth"
 STUDIO_HOME = "/home/unsloth/.unsloth/studio"
 
 MODAL_GPUS = [  # (gpu id, display name, vram_gb, usd/hr)
-    ("T4",        "NVIDIA T4",        16, 0.59),
-    ("L4",        "NVIDIA L4",        24, 0.80),
-    ("A10G",      "NVIDIA A10G",      24, 1.10),
-    ("L40S",      "NVIDIA L40S",      48, 1.95),
-    ("A100",      "NVIDIA A100 40GB", 40, 2.10),
+    ("T4", "NVIDIA T4", 16, 0.59),
+    ("L4", "NVIDIA L4", 24, 0.80),
+    ("A10G", "NVIDIA A10G", 24, 1.10),
+    ("L40S", "NVIDIA L40S", 48, 1.95),
+    ("A100", "NVIDIA A100 40GB", 40, 2.10),
     ("A100-80GB", "NVIDIA A100 80GB", 80, 2.50),
-    ("H100",      "NVIDIA H100",      80, 3.95),
-    ("H200",      "NVIDIA H200",     141, 4.54),
-    ("B200",      "NVIDIA B200",     180, 6.25),
+    ("H100", "NVIDIA H100", 80, 3.95),
+    ("H200", "NVIDIA H200", 141, 4.54),
+    ("B200", "NVIDIA B200", 180, 6.25),
 ]
 
 
@@ -40,7 +40,9 @@ class Modal(Provider):
     supports_pause = False
     supports_local_model = True
     reports_stock = False
-    deploy_note = "Modal stops this instance automatically after 24h (max sandbox lifetime)."
+    deploy_note = (
+        "Modal stops this instance automatically after 24h (max sandbox lifetime)."
+    )
 
     def __init__(self):
         self._modal = None
@@ -70,8 +72,15 @@ class Modal(Provider):
 
     def list_gpus(self, min_vram_gb: int = 0) -> list[Gpu]:
         gpus = [
-            Gpu(id = gpu_id, name = name, vram_gb = vram_gb, cost_per_hour_usd = price, stock = None)
-            for gpu_id, name, vram_gb, price in MODAL_GPUS if vram_gb >= min_vram_gb
+            Gpu(
+                id = gpu_id,
+                name = name,
+                vram_gb = vram_gb,
+                cost_per_hour_usd = price,
+                stock = None,
+            )
+            for gpu_id, name, vram_gb, price in MODAL_GPUS
+            if vram_gb >= min_vram_gb
         ]
         gpus.sort(key = lambda g: (g.cost_per_hour_usd, g.vram_gb))
         return gpus
@@ -95,7 +104,9 @@ class Modal(Provider):
         try:
             with sdk.enable_output():
                 sb = sdk.Sandbox.create(
-                    "/bin/sh", "-lc", self._start_command(http_port),
+                    "/bin/sh",
+                    "-lc",
+                    self._start_command(http_port),
                     app = self._app,
                     name = name,
                     image = self._studio_image(),
@@ -141,7 +152,9 @@ class Modal(Provider):
             except Exception:
                 pass
             time.sleep(POLL_INTERVAL_S)
-        raise DeployError(f"Modal sandbox {instance_id} did not start within {timeout_s}s")
+        raise DeployError(
+            f"Modal sandbox {instance_id} did not start within {timeout_s}s"
+        )
 
     def endpoint_url(self, instance_id: str, http_port: int) -> str:
         sb = self._sdk().Sandbox.from_id(instance_id)

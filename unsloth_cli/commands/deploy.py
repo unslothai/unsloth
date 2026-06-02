@@ -58,40 +58,53 @@ class Instance:
 @deploy_app.command("run")
 def run(
     provider_name: str = typer.Option(
-        DEFAULT_PROVIDER, "--provider",
+        DEFAULT_PROVIDER,
+        "--provider",
         help = f"Cloud provider to deploy to. Available: {', '.join(PROVIDERS)}.",
     ),
     gpu: Optional[str] = typer.Option(
-        None, "--gpu", help = "Skip the picker; use this provider's GPU id.",
+        None,
+        "--gpu",
+        help = "Skip the picker; use this provider's GPU id.",
     ),
     min_vram: int = typer.Option(
-        DEFAULT_MIN_VRAM_GB, "--min-vram",
+        DEFAULT_MIN_VRAM_GB,
+        "--min-vram",
         help = "Drop GPUs with less than this many GB of VRAM.",
     ),
     yes: bool = typer.Option(
-        False, "--yes", "-y",
+        False,
+        "--yes",
+        "-y",
         help = "Auto-pick the cheapest fitting GPU; skip confirmation.",
     ),
     admin_password: Optional[str] = typer.Option(
-        None, "--admin-password", envvar = "UNSLOTH_ADMIN_PASSWORD",
+        None,
+        "--admin-password",
+        envvar = "UNSLOTH_ADMIN_PASSWORD",
         help = "Studio admin password. Prefer the env var; CLI args show in `ps`.",
     ),
     model: Optional[str] = typer.Option(
-        None, "--model",
+        None,
+        "--model",
         help = "Hugging Face id or local path. If set, auto-loads after boot.",
     ),
     gguf_variant: Optional[str] = typer.Option(
-        None, "--gguf-variant",
+        None,
+        "--gguf-variant",
         help = "GGUF quantization (e.g. Q4_K_M). Only used with --model.",
     ),
     hf_token: Optional[str] = typer.Option(
-        None, "--hf-token", envvar = "HF_TOKEN",
+        None,
+        "--hf-token",
+        envvar = "HF_TOKEN",
         help = "Hugging Face token for gated repos. Only used with --model.",
     ),
     provider_opt: list[str] = typer.Option(
-        [], "--provider-opt",
+        [],
+        "--provider-opt",
         help = "Provider-specific setting as key=value (repeatable), e.g. "
-               "--provider-opt datacenter=US-KS-2. See the provider's options.",
+        "--provider-opt datacenter=US-KS-2. See the provider's options.",
     ),
 ):
     """Launch Unsloth Studio on the chosen provider."""
@@ -119,17 +132,26 @@ def run(
         )
 
     provider = _authenticate(
-        provider_cls, overrides,
-        need_local = need_local, interactive = not yes, persist = True,
+        provider_cls,
+        overrides,
+        need_local = need_local,
+        interactive = not yes,
+        persist = True,
     )
 
     chosen = _pick_gpu(provider, override = gpu, min_vram_gb = min_vram, yes = yes)
 
     typer.echo("")
     typer.echo(f"  Provider: {provider.name}")
-    typer.echo(f"  GPU:      {chosen.name} ({chosen.vram_gb} GB) - ${chosen.cost_per_hour_usd:.3f}/hr")
+    typer.echo(
+        f"  GPU:      {chosen.name} ({chosen.vram_gb} GB) - ${chosen.cost_per_hour_usd:.3f}/hr"
+    )
     if model is not None:
-        note = "  (local -- uploaded to provider storage after you confirm)" if need_local else ""
+        note = (
+            "  (local -- uploaded to provider storage after you confirm)"
+            if need_local
+            else ""
+        )
         typer.echo(f"  Model:    {model}{note}")
     typer.echo("")
 
@@ -154,14 +176,19 @@ def run(
 
 @deploy_app.command("stop")
 def stop(
-    instance_id: str = typer.Argument(..., help = "Instance id (printed when deploy succeeds)."),
+    instance_id: str = typer.Argument(
+        ..., help = "Instance id (printed when deploy succeeds)."
+    ),
     provider_name: str = typer.Option(
-        DEFAULT_PROVIDER, "--provider", help = "Provider the instance runs on.",
+        DEFAULT_PROVIDER,
+        "--provider",
+        help = "Provider the instance runs on.",
     ),
     pause: bool = typer.Option(
-        False, "--pause",
+        False,
+        "--pause",
         help = "Suspend instead of terminating (provider must support it; "
-               "attached storage may still bill).",
+        "attached storage may still bill).",
     ),
 ):
     """Terminate the instance so billing stops. Pass --pause to suspend it instead."""
@@ -169,9 +196,14 @@ def stop(
     try:
         if pause:
             if not provider.supports_pause:
-                _fail(f"{provider.name} can't pause an instance; omit --pause to terminate.", code = 2)
+                _fail(
+                    f"{provider.name} can't pause an instance; omit --pause to terminate.",
+                    code = 2,
+                )
             provider.pause(instance_id)
-            typer.echo(f"Instance {instance_id} paused (may still incur storage billing).")
+            typer.echo(
+                f"Instance {instance_id} paused (may still incur storage billing)."
+            )
         else:
             provider.terminate(instance_id)
             typer.echo(f"Instance {instance_id} terminated.")
@@ -181,9 +213,13 @@ def stop(
 
 @deploy_app.command("delete-storage")
 def delete_storage(
-    storage_id: str = typer.Argument(..., help = "Storage id (printed when deploy uploads a local model)."),
+    storage_id: str = typer.Argument(
+        ..., help = "Storage id (printed when deploy uploads a local model)."
+    ),
     provider_name: str = typer.Option(
-        DEFAULT_PROVIDER, "--provider", help = "Provider the storage lives on.",
+        DEFAULT_PROVIDER,
+        "--provider",
+        help = "Provider the storage lives on.",
     ),
 ):
     """Delete storage created for a local-model upload so it stops billing. Terminate the instance first."""
@@ -230,7 +266,9 @@ def _authenticate(
             value = os.environ.get(opt.env) or saved.get(opt.key) or ""
         if not value and opt.required and not deferred:
             if interactive:
-                value = typer.prompt(opt.help, hide_input = opt.secret, default = "").strip()
+                value = typer.prompt(
+                    opt.help, hide_input = opt.secret, default = ""
+                ).strip()
             if not value:
                 _fail(
                     f"Missing {opt.env} -- {opt.help}.\n"
@@ -253,7 +291,10 @@ def _authenticate(
 
 
 def _persist_options(
-    provider_cls: type[Provider], resolved: dict[str, str], *, previously: dict[str, str],
+    provider_cls: type[Provider],
+    resolved: dict[str, str],
+    *,
+    previously: dict[str, str],
 ) -> None:
     keys = {opt.key for opt in provider_cls.option_schema()}
     to_save = {k: v for k, v in resolved.items() if k in keys}
@@ -373,7 +414,11 @@ def _pick_model() -> Optional[str]:
 
 
 def _pick_gpu(
-    provider: Provider, *, override: Optional[str], min_vram_gb: int, yes: bool,
+    provider: Provider,
+    *,
+    override: Optional[str],
+    min_vram_gb: int,
+    yes: bool,
 ) -> Gpu:
     try:
         options = provider.list_gpus(min_vram_gb = min_vram_gb)
@@ -505,7 +550,8 @@ def _deploy(
         _print_studio_ready(instance, gpu, storage_id)
     else:
         _serve_model(
-            instance, gpu,
+            instance,
+            gpu,
             bootstrap_password = admin_password,
             model = load_model,
             load_kwargs = load_kwargs,
@@ -543,7 +589,8 @@ def _serve_model(
         client.load_model(model_path = model, **load_kwargs)
 
         _print_inference_ready(
-            instance, gpu,
+            instance,
+            gpu,
             api_key = api_key,
             credential_note = credential_note,
             model = model,
@@ -551,12 +598,15 @@ def _serve_model(
             storage_id = storage_id,
         )
     except Exception as e:
-        _fail(_stop_hint(
-            e, instance.id,
-            provider_name = instance.provider_name,
-            admin_password = rotated_password,
-            storage_id = storage_id,
-        ))
+        _fail(
+            _stop_hint(
+                e,
+                instance.id,
+                provider_name = instance.provider_name,
+                admin_password = rotated_password,
+                storage_id = storage_id,
+            )
+        )
 
 
 def _is_local_model(model: Optional[str]) -> bool:
@@ -608,13 +658,17 @@ def _mint_credential(client: StudioClient) -> tuple[str, str]:
 
 
 def _print_studio_ready(
-    instance: Instance, gpu: Gpu, storage_id: Optional[str] = None,
+    instance: Instance,
+    gpu: Gpu,
+    storage_id: Optional[str] = None,
 ) -> None:
     typer.echo("")
     typer.echo("Unsloth Studio instance is starting (Studio may take ~1 minute).")
     typer.echo(f"  Studio:  {instance.studio_url}")
     if instance.ssh is not None:
-        typer.echo(f"  SSH:     ssh {instance.ssh.user}@{instance.ssh.host} -p {instance.ssh.port}")
+        typer.echo(
+            f"  SSH:     ssh {instance.ssh.user}@{instance.ssh.host} -p {instance.ssh.port}"
+        )
     typer.echo("")
     _print_stop_hint(instance, gpu, storage_id)
 
@@ -639,7 +693,9 @@ def _print_inference_ready(
     if credential_note:
         typer.echo(credential_note)
     typer.echo(f"    model:     {model}")
-    typer.echo(f"    admin_pw:  {admin_password}   (Studio UI at {instance.studio_url})")
+    typer.echo(
+        f"    admin_pw:  {admin_password}   (Studio UI at {instance.studio_url})"
+    )
     typer.echo("")
     typer.echo("  Test it:")
     typer.echo(f"    curl {base_url}/chat/completions \\")
@@ -651,13 +707,19 @@ def _print_inference_ready(
 
 
 def _print_stop_hint(
-    instance: Instance, gpu: Gpu, storage_id: Optional[str] = None,
+    instance: Instance,
+    gpu: Gpu,
+    storage_id: Optional[str] = None,
 ) -> None:
-    typer.echo(f"  STOP THIS INSTANCE WHEN DONE - billed at ${gpu.cost_per_hour_usd:.3f}/hr.")
+    typer.echo(
+        f"  STOP THIS INSTANCE WHEN DONE - billed at ${gpu.cost_per_hour_usd:.3f}/hr."
+    )
     typer.echo(f"      {_deploy_cmd('stop', instance.id, instance.provider_name)}")
     if storage_id:
         typer.echo(f"  Storage {storage_id} persists (billed). Delete when done:")
-        typer.echo(f"      {_deploy_cmd('delete-storage', storage_id, instance.provider_name)}")
+        typer.echo(
+            f"      {_deploy_cmd('delete-storage', storage_id, instance.provider_name)}"
+        )
     typer.echo("")
 
 
