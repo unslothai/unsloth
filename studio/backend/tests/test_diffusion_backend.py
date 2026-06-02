@@ -254,6 +254,7 @@ def test_detect_family_finds_video_full_repo_families():
     assert fam.default_height == 512
     assert fam.default_num_frames == 121
     assert fam.default_frame_rate == 24.0
+    assert fam.supports_gguf_single_file is True
 
     wan = detect_family("Wan-AI/Wan2.2-T2V-A14B-Diffusers")
     assert wan is not None
@@ -3669,6 +3670,78 @@ def test_load_gguf_checkpoint_no_copy_preserves_numpy_storage(monkeypatch):
     assert native_iq.quant_type is _QType.IQ1_M
     assert native_iq.quant_shape == (256,)
     assert native_iq.data_ptr() == torch.from_numpy(native_iq_data).data_ptr()
+
+
+def test_load_gguf_checkpoint_no_copy_normalizes_ltx23_prompt_adaln_aliases(monkeypatch):
+    import numpy as np
+    import torch
+
+    import core.inference.diffusion as d
+
+    class _QType:
+        F32 = object()
+        F16 = object()
+        BF16 = object()
+
+    tensor_data = np.zeros((1, 16), dtype = np.uint8)
+
+    class _FakeField:
+        def __init__(self, values):
+            self.parts = [np.array([value], dtype = np.int32) for value in values]
+            self.data = list(range(len(values)))
+
+    class _FakeTensor:
+        def __init__(self, name):
+            self.name = name
+            self.tensor_type = _QType.BF16
+            self.data = tensor_data
+            self.shape = tensor_data.shape
+
+    class _FakeReader:
+        def __init__(self, path):
+            self.path = path
+            self.tensors = [
+                _FakeTensor("prompt_adaln_single.linear.weight"),
+                _FakeTensor("audio_prompt_adaln_single.linear.weight"),
+            ]
+
+        def get_field(self, name):
+            if name == "comfy.gguf.orig_shape.prompt_adaln_single.linear.weight":
+                return _FakeField([8, 2])
+            if name == "comfy.gguf.orig_shape.audio_prompt_adaln_single.linear.weight":
+                return _FakeField([4, 4])
+            return None
+
+    class _FakeGGUFParameter(torch.nn.Parameter):
+        def __new__(cls, data = None, requires_grad = False, quant_type = None):
+            data = torch.empty(0) if data is None else data
+            self = torch.Tensor._make_subclass(cls, data, requires_grad)
+            self.quant_type = quant_type
+            return self
+
+    fake_gguf = types.ModuleType("gguf")
+    fake_gguf.GGUFReader = _FakeReader
+    fake_gguf.GGMLQuantizationType = _QType
+    fake_gguf.quants = SimpleNamespace(_type_traits = {})
+
+    fake_utils = types.ModuleType("diffusers.quantizers.gguf.utils")
+    fake_utils.GGUFParameter = _FakeGGUFParameter
+    fake_utils.SUPPORTED_GGUF_QUANT_TYPES = {_QType.BF16}
+
+    monkeypatch.setitem(sys.modules, "gguf", fake_gguf)
+    monkeypatch.setitem(sys.modules, "diffusers", types.ModuleType("diffusers"))
+    monkeypatch.setitem(sys.modules, "diffusers.quantizers", types.ModuleType("diffusers.quantizers"))
+    monkeypatch.setitem(sys.modules, "diffusers.quantizers.gguf", types.ModuleType("diffusers.quantizers.gguf"))
+    monkeypatch.setitem(sys.modules, "diffusers.quantizers.gguf.utils", fake_utils)
+
+    parsed = d._load_gguf_checkpoint_no_copy("/tmp/fake-ltx23.gguf")
+
+    assert set(parsed) == {
+        "prompt_adaln.linear.weight",
+        "audio_prompt_adaln.linear.weight",
+    }
+    assert parsed["prompt_adaln.linear.weight"].quant_shape == (8, 2)
+    assert parsed["audio_prompt_adaln.linear.weight"].quant_shape == (4, 4)
 
 
 def test_load_gguf_checkpoint_no_copy_accepts_observed_unsloth_quant_types(monkeypatch):

@@ -539,7 +539,7 @@ _FULL_REPO_FAMILIES: tuple[DiffusionFamily, ...] = (
         default_height = 512,
         default_num_frames = 121,
         default_frame_rate = 24.0,
-        supports_gguf_single_file = False,
+        supports_gguf_single_file = True,
         aliases = (
             "ltx2",
             "ltx-2",
@@ -6687,9 +6687,12 @@ def _load_gguf_checkpoint_no_copy(gguf_checkpoint_path: str, return_tensors: boo
     if native_bf16 is not None:
         native_dequant_types.add(native_bf16)
     for tensor in reader.tensors:
-        name = tensor.name
+        original_name = tensor.name
+        name = _normalize_diffusion_gguf_tensor_name(original_name)
         quant_type = tensor.tensor_type
         logical_shape = _read_gguf_orig_shape_metadata(reader, name)
+        if logical_shape is None and name != original_name:
+            logical_shape = _read_gguf_orig_shape_metadata(reader, original_name)
         if logical_shape is None:
             logical_shape = tuple(int(v) for v in reversed(tensor.shape))
         is_gguf_quant = quant_type not in (
@@ -6744,6 +6747,26 @@ def _load_gguf_checkpoint_no_copy(gguf_checkpoint_path: str, return_tensors: boo
         except Exception:
             pass
     return parsed_parameters
+
+
+def _normalize_diffusion_gguf_tensor_name(name: str) -> str:
+    """Normalize small GGUF key aliases before Diffusers conversion.
+
+    Unsloth LTX 2.3 GGUFs use Comfy/LTX root names for prompt AdaLN modules.
+    Diffusers' LTX2 converter already handles the block-level aliases but
+    currently leaves these root names unmapped, which strands the expected
+    Diffusers modules on meta tensors during single-file load.
+    """
+
+    if name.startswith("prompt_adaln_single."):
+        return name.replace("prompt_adaln_single.", "prompt_adaln.", 1)
+    if name.startswith("audio_prompt_adaln_single."):
+        return name.replace(
+            "audio_prompt_adaln_single.",
+            "audio_prompt_adaln.",
+            1,
+        )
+    return name
 
 
 @contextlib.contextmanager
