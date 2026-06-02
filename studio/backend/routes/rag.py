@@ -4,10 +4,10 @@
 """HTTP API for the RAG engine.
 
 KB CRUD, per-KB/per-thread upload, SSE ingestion progress, document
-list/delete, and a direct hybrid/lexical/dense search endpoint. All endpoints
-auth via ``get_current_subject`` (Studio is single-tenant: the subject gates
-access, not data partitioning). Without sqlite-vec the router still mounts but
-every endpoint returns 503, leaving chat unaffected.
+list/delete, and a direct hybrid/lexical/dense search endpoint. Endpoints auth
+via ``get_current_subject`` (Studio is single-tenant: the subject gates access,
+not data partitioning). Without sqlite-vec the router still mounts but every
+endpoint returns 503, leaving chat unaffected.
 """
 
 from __future__ import annotations
@@ -57,7 +57,7 @@ def _sanitize_filename(name: str) -> str:
 
 
 def _save_upload(file: UploadFile) -> tuple[str, str]:
-    """Persist an upload under the uploads root. Returns (stored_path, filename)."""
+    """Persist an upload under the uploads root; returns (stored_path, filename)."""
     filename = _sanitize_filename(file.filename or "document")
     ext = os.path.splitext(filename)[1].lower()
     if ext not in config.UPLOAD_EXTS:

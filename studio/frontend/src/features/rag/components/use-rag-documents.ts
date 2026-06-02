@@ -18,9 +18,9 @@ export interface TrackedDocument extends RagDocument {
 }
 
 /**
- * Per-file identity for client-side dedup: name + size + last-modified. An
- * edited file counts as new; an identical re-selection is skipped pre-upload.
- * The backend dedups by content hash as the authoritative check.
+ * Client-side dedup identity: name + size + last-modified. An edit counts as
+ * new; an identical re-selection is skipped pre-upload. Backend dedups by
+ * content hash (authoritative).
  */
 function fileSignature(file: File): string {
   return `${file.name}|${file.size}|${file.lastModified}`;
@@ -33,8 +33,8 @@ export type RagDocumentScope =
 type Lister = () => Promise<RagDocument[]>;
 
 /**
- * Manage one scope's documents (KB or thread): list, upload, delete, and keep
- * indexing status live via SSE, polling getJob on error.
+ * Manage one scope's documents (KB or thread): list, upload, delete, with live
+ * indexing status via SSE (getJob polling on error).
  */
 export function useRagDocuments(
   scope: RagDocumentScope | null,
@@ -43,17 +43,16 @@ export function useRagDocuments(
   const [documents, setDocuments] = useState<TrackedDocument[]>([]);
   const [loading, setLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
-  // Tracked jobs (id -> abort) to avoid double-subscribing.
+  // jobId -> abort, to avoid double-subscribing.
   const trackedJobs = useRef<Map<string, AbortController>>(new Map());
-  // Live mirror of `documents` for synchronous dedup checks in upload().
+  // Live mirror of `documents` for synchronous dedup in upload().
   const documentsRef = useRef<TrackedDocument[]>([]);
   useEffect(() => {
     documentsRef.current = documents;
   }, [documents]);
-  // documentId -> file signature for files attached this scope. Keyed by id so
-  // an identical re-selection is skipped pre-upload, yet the record is forgotten
-  // when its document is deleted (a re-upload then re-indexes). Cleared on scope
-  // change.
+  // documentId -> file signature for this scope's files. Keyed by id so a
+  // re-selection is skipped, yet the record is forgotten on delete (re-upload
+  // then re-indexes). Cleared on scope change.
   const sigByDocId = useRef<Map<string, string>>(new Map());
   const sigAttached = useCallback(
     (sig: string) => {
@@ -88,7 +87,7 @@ export function useRagDocuments(
 
       const finish = (status: DocumentStatus, error?: string | null) => {
         if (status === "failed") {
-          // Drop the chip instead of a red "Failed" one; warn via toast.
+          // Drop the chip instead of showing "Failed"; warn via toast.
           setDocuments((rows) => rows.filter((row) => row.id !== documentId));
           toast.error(`Couldn't index ${filename}`, {
             description: error ?? "Indexing failed",
@@ -115,7 +114,7 @@ export function useRagDocuments(
               return;
             }
           }
-          // Stream ended with no terminal frame: reconcile against final state.
+          // Stream ended with no terminal frame: reconcile final state.
           const job = await getJob(jobId);
           finish(
             job.status === "completed"
@@ -158,9 +157,8 @@ export function useRagDocuments(
     if (!scope) return;
     setLoading(true);
     try {
-      // Merge server truth with locally-tracked progress so a refresh mid-index
-      // keeps a live "running %" chip. Failed docs are hidden (toast warned at
-      // upload).
+      // Merge server truth with local progress so a refresh mid-index keeps a
+      // live "running %" chip. Failed docs are hidden (toast warned at upload).
       const rows = (await lister()).filter((row) => row.status !== "failed");
       setDocuments((prev) =>
         rows.map((row) => {
@@ -194,8 +192,8 @@ export function useRagDocuments(
   }, [scopeKey]);
 
   // Upload one file: optimistic chip -> POST -> swap to the real id. If the
-  // backend deduped to an existing document, drop the chip so no duplicate shows.
-  // `seenIds` holds ids present/added this batch.
+  // backend deduped to an existing document, drop the chip. `seenIds` holds
+  // ids present/added this batch.
   const uploadOne = useCallback(
     async (file: File, seenIds: Set<string>) => {
       if (!scope) return;
@@ -231,7 +229,7 @@ export function useRagDocuments(
         trackJob(result.jobId, result.documentId, result.filename || file.name);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        // Drop the chip instead of a red "Failed" entry; warn via toast.
+        // Drop the chip instead of showing "Failed"; warn via toast.
         setDocuments((rows) => rows.filter((row) => row.id !== tempId));
         toast.error(`Couldn't upload ${file.name}`, { description: message });
       }
@@ -246,8 +244,8 @@ export function useRagDocuments(
       const seenIds = new Set(documentsRef.current.map((d) => d.id));
       try {
         for (const file of Array.from(files)) {
-          // Skip an identical re-selection before any upload or chip; an edited
-          // same-name file still uploads.
+          // Skip an identical re-selection pre-upload; an edited same-name file
+          // still uploads.
           if (sigAttached(fileSignature(file))) {
             toast.info(`${file.name} is already indexed - skipping`);
             continue;
@@ -265,7 +263,7 @@ export function useRagDocuments(
     async (documentId: string) => {
       const prev = documents;
       setDocuments((rows) => rows.filter((row) => row.id !== documentId));
-      // Forget the dedup signature so re-uploading the same file re-indexes.
+      // Forget the dedup signature so re-uploading re-indexes.
       const prevSig = sigByDocId.current.get(documentId);
       sigByDocId.current.delete(documentId);
       try {

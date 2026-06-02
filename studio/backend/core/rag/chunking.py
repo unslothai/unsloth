@@ -6,7 +6,7 @@
 Split coarsest-first, recurse finer, then greedy-merge into <= max_tokens chunks
 with ``overlap`` tokens between neighbours. Each chunk records its
 ``[page_char_start, page_char_end)`` span and ``source_page_index``, used by the
-locator pass to highlight chunks on the PDF page.
+locator pass to highlight it on the PDF page.
 """
 
 from __future__ import annotations
@@ -86,8 +86,8 @@ def _merge(
         pt = count(piece)
         if buf and buf_tok + pt > max_tokens:
             _flush()
-            # Bound the carry so carry + this piece still fits max_tokens; else a
-            # full overlap before a near-max piece would overflow the embedder.
+            # Bound the carry so carry + this piece fits max_tokens; else a full
+            # overlap before a near-max piece would overflow the embedder.
             carry_budget = min(overlap, max(0, max_tokens - pt))
             carry, carry_starts, run = [], [], 0
             for prev, prev_start in zip(reversed(buf), reversed(buf_starts)):
@@ -112,7 +112,7 @@ def chunk_pages(
     out: list[Chunk] = []
     for page_index, page in enumerate(pages):
         pieces = _split(page.text, SEPARATORS, max_tokens, count)
-        # _split preserves offsets, so a running cursor gives exact offsets.
+        # _split preserves offsets, so a running cursor gives exact ones.
         starts: list[int] = []
         cursor = 0
         for piece in pieces:

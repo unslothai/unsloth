@@ -27,7 +27,7 @@ def test_chunk_never_exceeds_max_with_overlap_carry():
     """A small piece then a near-max piece must not produce a chunk over
     max_tokens: the overlap carry is trimmed to fit (else the embedder overflows)."""
     s1 = " ".join("a" for _ in range(10))  # 10 tokens
-    s2 = " ".join("b" for _ in range(95))  # 95 tokens, near max
+    s2 = " ".join("b" for _ in range(95))  # near max
     chunks = chunk_pages(
         [_page(f"{s1}. {s2}")], max_tokens = 100, overlap = 24, count = WORDS
     )

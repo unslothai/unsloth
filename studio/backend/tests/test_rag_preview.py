@@ -5,8 +5,8 @@
 
 A small in-memory PyMuPDF PDF runs the locator's ``page.search_for`` against a
 real page, then is ingested through the real threaded pipeline (stubbed
-embeddings). Verifies chunks carry highlight regions and the
-preview-target / signed-file routes work.
+embeddings). Verifies chunks carry highlight regions and the preview-target /
+signed-file routes work.
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ def _make_pdf(path) -> None:
         "sentence prediction.\n"
         "The Transformer base model uses eight attention heads in each layer.\n"
     )
-    for _ in range(3):  # a few pages of the same distinctive text
+    for _ in range(3):  # a few pages of the same text
         page = doc.new_page()
         page.insert_text((72, 72), body, fontsize = 11)
     doc.save(str(path))
@@ -150,8 +150,8 @@ def test_norm_token_decomposes_ligatures():
 
 
 def test_locator_handles_midword_anchor_and_locates_line():
-    """A chunk span beginning mid-word still locates: first/last tokens are
-    dropped and matched words union into a rect on the right line."""
+    """A chunk span beginning mid-word still locates: first/last tokens dropped,
+    matched words union into a rect on the right line."""
     import pymupdf
 
     from core.rag.locators import LocatorMatch, _regions_for_match
@@ -174,7 +174,7 @@ def test_locator_handles_midword_anchor_and_locates_line():
     r = rects[0]
     for k in ("pageIndex", "pageNumber", "x", "y", "width", "height"):
         assert k in r
-    # Drawn near y=200 on an ~842pt page -> normalized y in the top half.
+    # Drawn near y=200 on a ~842pt page -> normalized y in the top half.
     assert 0.0 < r["y"] < 0.5
     assert r["width"] > 0 and r["height"] > 0
 

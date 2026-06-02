@@ -138,10 +138,10 @@ def render_pdf_figures(
 ) -> list[ParsedImage]:
     """Detect figure regions and render each to a PNG for captioning.
 
-    Academic figures are vector, so raw raster extraction yields fragments;
-    instead cluster vector drawings + raster placements into boxes, keep those
-    covering a meaningful slice of the page, and render them. Any failure yields
-    an empty list, never an exception.
+    Academic figures are vector, so raster extraction yields fragments; instead
+    cluster vector drawings + raster placements into boxes, keep those covering a
+    meaningful slice of the page, and render them. Any failure yields [], never an
+    exception.
     """
     try:
         import pymupdf

@@ -167,9 +167,8 @@ def run_safetensors_tool_loop(
     """
     conversation = list(messages)
 
-    # Forced first-pass RAG (mirrors the GGUF loop): splice attached-doc passages
-    # + citations in before the model answers, gated on a cosine floor, so doc
-    # questions don't lose to web_search.
+    # Forced first-pass RAG (mirrors the GGUF loop): splice doc passages + citations
+    # before answering, gated on a cosine floor, so doc Qs don't lose to web_search.
     from core.inference.tools import build_rag_autoinject
 
     _auto = build_rag_autoinject(conversation, rag_scope)

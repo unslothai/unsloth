@@ -4599,9 +4599,8 @@ class LlamaCppBackend:
         conversation = list(messages)
 
         # Forced first-pass RAG: consult attached docs up front so a doc question
-        # doesn't lose to web_search. Gated on a cosine floor in
-        # build_rag_autoinject; emits the same tool card + citations a real call
-        # would, then answers from the spliced-in passages.
+        # doesn't lose to web_search. Gated on a cosine floor in build_rag_autoinject;
+        # emits the same tool card + citations a real call would.
         _auto = build_rag_autoinject(conversation, rag_scope)
         if _auto:
             for _ev in _auto["events"]:
@@ -5272,12 +5271,9 @@ class LlamaCppBackend:
                         }
 
                     # ── Duplicate call detection ──────────────
-                    # str(dict) is stable here: arguments always comes from
-                    # json.loads on the same model output within one request,
-                    # so insertion order is deterministic (Python 3.7+). Scan the
-                    # whole turn (not just the previous call) for a prior
-                    # *successful* identical call, matching the safetensors loop;
-                    # retries after a failure are still allowed.
+                    # _tc_key is stable (one json.loads, deterministic key order).
+                    # Scan the whole turn for a prior *successful* identical call
+                    # (like the safetensors loop); retries after a failure are ok.
                     _tc_key = tool_name + str(arguments)
                     _already_ran_ok = any(
                         k == _tc_key and not err for k, err in _tool_call_history

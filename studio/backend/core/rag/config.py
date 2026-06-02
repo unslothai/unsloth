@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""RAG config. Every value is env-overridable; paths live in the shared Studio
+"""RAG config. Every value is env-overridable; paths live in shared Studio
 storage roots, not here."""
 
 from __future__ import annotations
@@ -9,9 +9,9 @@ from __future__ import annotations
 import os
 
 EMBEDDING_MODEL = os.environ.get("RAG_EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5")
-# Below bge's 512 hard limit with headroom for the 2 special tokens ([CLS]/[SEP])
-# the embedder adds: a 512-token chunk becomes 514 and overflows (llama-server
-# 500s; sentence-transformers silently truncates). Keep this <= embedder_max - ~12.
+# Under bge's 512 limit with headroom for the 2 special tokens ([CLS]/[SEP]) the
+# embedder adds (else 512 -> 514 overflows: llama-server 500s, ST truncates).
+# Keep <= embedder_max - ~12.
 CHUNK_TOKENS = int(os.environ.get("RAG_CHUNK_TOKENS", "500"))
 CHUNK_OVERLAP = int(os.environ.get("RAG_CHUNK_OVERLAP", "64"))
 TOP_K_LEXICAL = int(os.environ.get("RAG_TOP_K_LEXICAL", "30"))
@@ -30,13 +30,13 @@ CAPTION_MAX_IMAGES = int(os.environ.get("RAG_CAPTION_MAX_IMAGES", "8"))
 CAPTION_TIMEOUT_S = float(os.environ.get("RAG_CAPTION_TIMEOUT_S", "30"))
 
 # Embedder backend. "auto" (default): sentence-transformers on a CUDA/ROCm GPU
-# (torch fp16 is far faster for bulk indexing), else the torch-free GGUF
-# llama-server. "sentence-transformers"/"llama-server" force one. Switching
-# backends changes the vectors, so the index must be rebuilt.
+# (torch fp16 is far faster for bulk indexing), else torch-free GGUF llama-server.
+# "sentence-transformers"/"llama-server" force one. Switching backends changes the
+# vectors, so the index must be rebuilt.
 EMBED_BACKEND = os.environ.get("RAG_EMBED_BACKEND", "auto")
-# llama-server backend only (ignored when EMBED_BACKEND=sentence-transformers).
-# F16 over Q8_0: faster on GPU/CPU (no per-block dequant for this tiny model) and
-# exact vs fp32, for ~30MB more on disk.
+# llama-server backend only (ignored for sentence-transformers).
+# F16 over Q8_0: faster (no per-block dequant for this tiny model) and exact vs
+# fp32, for ~30MB more on disk.
 EMBED_GGUF_REPO = os.environ.get(
     "RAG_EMBED_GGUF_REPO", "CompendiumLabs/bge-small-en-v1.5-gguf"
 )

@@ -116,7 +116,7 @@ class LlamaServerBackend:
 
     def _assert_embedding_support(self, binary: str) -> None:
         help_text = self._help_text(binary)
-        # Empty help -> assume capable (a real missing flag still fails at spawn).
+        # Empty help -> assume capable (a missing flag still fails at spawn).
         if help_text and "--embedding" not in help_text:
             raise RuntimeError(
                 "the bundled llama-server build lacks --embedding support; "
@@ -259,9 +259,8 @@ class LlamaServerBackend:
             pass
 
     def _spawn(self) -> None:
-        """Start the embed server (caller holds the lifecycle lock). On ``auto``,
-        a failed GPU start falls back to CPU once; explicit ``gpu``/``cpu`` do
-        not."""
+        """Start the embed server (caller holds the lifecycle lock). On ``auto``, a
+        failed GPU start falls back to CPU once; explicit ``gpu``/``cpu`` do not."""
         use_gpu = self._use_gpu()
         try:
             self._spawn_once(use_gpu)
@@ -462,8 +461,8 @@ class LlamaServerBackend:
         self.dim()
 
     def token_counter(self, *, model_name = None):
-        """Callable counting tokens with the GGUF's own tokenizer via /tokenize,
-        so chunk sizing matches the embedder. Cached per text."""
+        """Counts tokens with the GGUF's own tokenizer via /tokenize, so chunk
+        sizing matches the embedder. Cached per text."""
 
         @lru_cache(maxsize = 4096)
         def _count(text: str) -> int:

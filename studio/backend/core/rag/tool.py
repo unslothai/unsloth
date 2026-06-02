@@ -142,11 +142,11 @@ def search_for_autoinject(
 ) -> tuple[str, list[dict]] | None:
     """Forced-retrieval variant for auto-injection.
 
-    Returns ``(rendered_text, sources)`` only if the query confidently matches
-    the docs (some hit's cosine clears ``min_dense_score``), else ``None`` (inject
-    nothing). The dense gate keeps weak/off-topic matches from polluting answers
-    (e.g. agriculture docs vs "capital of France"). In ``lexical`` (BM25) mode the
-    hits carry no cosine, so the gate falls back to a dense 1-NN probe.
+    Returns ``(rendered_text, sources)`` only if the query confidently matches the
+    docs (some hit's cosine clears ``min_dense_score``), else ``None`` (inject
+    nothing). The dense gate keeps weak/off-topic matches out of answers (e.g.
+    agriculture docs vs "capital of France"). In ``lexical`` (BM25) mode hits carry
+    no cosine, so the gate falls back to a dense 1-NN probe.
     """
     if not query or not query.strip():
         return None

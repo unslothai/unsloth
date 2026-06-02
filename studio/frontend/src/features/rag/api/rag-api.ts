@@ -144,10 +144,7 @@ export function getJob(jobId: string): Promise<IndexJob> {
   return ragRequest(`/jobs/${encodeURIComponent(jobId)}`);
 }
 
-/**
- * Stream indexing progress over SSE. Returns on `[DONE]`; transport errors
- * propagate so callers can fall back to polling getJob.
- */
+/** Stream indexing progress over SSE; returns on `[DONE]`. Transport errors propagate so callers can fall back to polling getJob. */
 export async function* streamJobEvents(
   jobId: string,
   signal?: AbortSignal,

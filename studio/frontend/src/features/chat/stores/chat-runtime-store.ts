@@ -57,10 +57,8 @@ export type RagMode = "hybrid" | "lexical" | "dense";
 export const DEFAULT_RAG_SOURCE: RagSource = { type: "thread" };
 export const DEFAULT_RAG_MODE: RagMode = "hybrid";
 export const DEFAULT_RAG_TOP_K = 5;
-// Mirror the backend defaults. Auto-inject is on but gated by a high cosine
-// floor, so it fires on clearly on-topic queries and skips weak/off-topic ones
-// (which would mislead the answer) -- those fall back to the model's own
-// search_knowledge_base call.
+// Mirror the backend defaults: auto-inject on but gated by a high cosine floor,
+// so it fires on on-topic queries and skips weak ones (left to the model's search).
 export const DEFAULT_RAG_AUTOINJECT = true;
 export const DEFAULT_RAG_AUTOINJECT_MIN_SCORE = 0.7;
 export const DEFAULT_RAG_MIN_SCORE = 0;

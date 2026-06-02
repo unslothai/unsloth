@@ -132,8 +132,8 @@ export function RetrievalSettingsSection() {
     };
   }, [refreshTick]);
 
-  // If the selected KB was deleted, fall back to the thread source so we never
-  // send a stale kb_id.
+  // If the selected KB was deleted, fall back to thread source so we never send
+  // a stale kb_id.
   useEffect(() => {
     if (
       ragSource.type === "kb" &&

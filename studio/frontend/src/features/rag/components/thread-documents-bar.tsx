@@ -12,10 +12,9 @@ import { DocumentStatusChip } from "./document-status-chip";
 import { useRagDocuments } from "./use-rag-documents";
 
 /**
- * Read-only chip shown above the composer when retrieval is sourced from a
- * reusable knowledge base instead of this thread's uploads. Without it the
- * composer shows nothing for a KB source, so the user has no signal which
- * documents the chat is querying (manage/switch via RAG retrieval settings).
+ * Read-only chip shown above the composer when retrieval comes from a knowledge
+ * base instead of this thread's uploads. Without it a KB source is invisible,
+ * leaving no signal which documents the chat queries (manage via RAG settings).
  */
 function KnowledgeBaseSourceChip({ kbId }: { kbId: string }) {
   const [name, setName] = useState<string | null>(null);
@@ -105,9 +104,9 @@ export function ThreadDocumentsBar({ threadId }: { threadId: string | null }) {
   }, [aui, effectiveThreadId, setActiveThreadId]);
 
   // Open the picker synchronously so the click's user activation survives;
-  // awaiting thread-id materialization first drops it and the browser blocks the
-  // open. The id is only needed to upload, so kick off materialization here and
-  // await it in onChange (the file dialog outlives the init).
+  // awaiting thread-id materialization first drops it and the browser blocks
+  // the open. The id is only needed to upload, so start materialization here
+  // and await it in onChange (the dialog outlives the init).
   const handleAddDocs = useCallback(() => {
     void ensureThreadId();
     fileInputRef.current?.click();
@@ -115,7 +114,7 @@ export function ThreadDocumentsBar({ threadId }: { threadId: string | null }) {
 
   if (!ragEnabled) return null;
   // A KB source uploads via the KB dialog, not here; show which KB is active so
-  // the composer never silently swaps to a knowledge base with no indication.
+  // the composer never silently swaps to a KB with no indication.
   if (ragSource.type === "kb") {
     return <KnowledgeBaseSourceChip kbId={ragSource.kbId} />;
   }

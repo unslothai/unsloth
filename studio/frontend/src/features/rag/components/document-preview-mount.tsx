@@ -8,7 +8,7 @@ import { Suspense, lazy, useEffect, useState } from "react";
 import { useDocumentPreviewStore } from "./preview-store";
 
 // pdf.js / react-pdf are heavy (~0.5 MB gzip) and rarely used. Defer the chunk
-// until the first citation click, then keep it mounted for open/close animation.
+// until the first citation click, then keep it mounted for open/close anims.
 const DocumentPreviewSheet = lazy(() =>
   import("./document-preview-sheet").then((m) => ({
     default: m.DocumentPreviewSheet,

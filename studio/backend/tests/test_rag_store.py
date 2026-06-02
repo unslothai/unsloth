@@ -81,7 +81,7 @@ def test_dense_ranks_by_cosine(rag_conn):
 
 
 def test_dense_empty_before_any_ingest(rag_conn):
-    # No chunks_vec table yet -> search_dense returns [], not a crash.
+    # No chunks_vec table yet -> search_dense returns [], no crash.
     assert store.search_dense(rag_conn, "kb_a", embed("alpha"), 10) == []
 
 

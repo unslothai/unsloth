@@ -54,7 +54,7 @@ function RegionOverlay({ regions }: { regions: PdfRegion[] }) {
 }
 
 // Zoom multiplies fit-to-panel width: 1 = fit, >1 enlarges, <1 shrinks.
-// Stepped so buttons and wheel agree.
+// Stepped so buttons and wheel stay in sync.
 const ZOOM_MIN = 0.5;
 const ZOOM_MAX = 3;
 const ZOOM_STEP = 0.25;
@@ -103,8 +103,8 @@ function PdfPreview({
     return () => ro.disconnect();
   }, []);
 
-  // Wheel zooms (up = in, down = out). Native non-passive listener so
-  // preventDefault stops the panel from scrolling.
+  // Wheel zooms (up = in, down = out). Non-passive so preventDefault can stop
+  // the panel scrolling.
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
@@ -129,8 +129,8 @@ function PdfPreview({
     [],
   );
 
-  // Whether the page overflows the panel (so panning does anything).
-  // Re-checked on layout changes and after the canvas renders.
+  // Whether the page overflows the panel (so panning matters). Re-checked on
+  // layout changes and after the canvas renders.
   const recheckScrollable = useCallback(() => {
     const el = containerRef.current;
     if (!el) return;
@@ -144,8 +144,8 @@ function PdfPreview({
     recheckScrollable();
   }, [recheckScrollable, width, scale, page, numPages]);
 
-  // Grab-to-pan an overflowing page. Listen on window so the drag keeps tracking
-  // when the cursor leaves the panel.
+  // Grab-to-pan an overflowing page. Listen on window so the drag keeps
+  // tracking when the cursor leaves the panel.
   useEffect(() => {
     if (!grabbing) return;
     const onMove = (e: MouseEvent) => {
@@ -306,7 +306,7 @@ function PdfPreview({
 
 /**
  * Shared preview panel. `openPreview` points it at a document + chunk; it
- * resolves the page + highlight regions and renders the PDF or chunk text.
+ * resolves page + highlight regions and renders the PDF or chunk text.
  */
 export function DocumentPreviewSheet() {
   const { open, documentId, chunkId, filename, page, closePreview } =
@@ -353,7 +353,7 @@ export function DocumentPreviewSheet() {
         className="flex w-full flex-col gap-0 p-0 sm:max-w-[44rem]"
       >
         <SheetHeader className="gap-1 border-b p-4">
-          {/* pr-10 reserves room for the sheet's absolute close button so a long
+          {/* pr-10 reserves room for the absolute close button so a long
           filename + page label never runs under it. */}
           <SheetTitle className="flex items-center gap-2 pr-10 text-sm">
             <FileTextIcon className="size-4 shrink-0" />

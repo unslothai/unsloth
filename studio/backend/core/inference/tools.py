@@ -849,14 +849,10 @@ def _search_knowledge_base(arguments: dict, rag_scope: dict | None) -> str:
 
 
 # ── Forced first-pass RAG retrieval (auto-inject) ───────────────────────────
-# With a rag_scope, retrieve once up front so docs are always consulted (rather
-# than trusting the model to pick search over web_search). Gated on a cosine floor
-# so unrelated docs don't pollute the answer; emits the same events/messages a
-# real tool call would.
-# A high cosine floor keeps the forced inject precise: it fires on clearly
-# on-topic queries but skips weak/off-topic ones (which would mislead the answer),
-# leaving those to the model's own search_knowledge_base call. Helps small models
-# that don't reliably call the tool. Tunable via RAG_AUTOINJECT_MIN_SCORE.
+# With a rag_scope, retrieve once up front (don't trust the model to pick search
+# over web_search). A high cosine floor keeps it precise: fires on on-topic
+# queries, skips weak/off-topic ones (left to the model's own search call), and
+# helps small models that under-call the tool. Tunable via RAG_AUTOINJECT_MIN_SCORE.
 _AUTOINJECT_DEFAULT_FLOOR = 0.70
 
 
@@ -880,9 +876,8 @@ def _autoinject_floor() -> float:
     return _AUTOINJECT_DEFAULT_FLOOR
 
 
-# Forced inject is leaner than the model-driven tool: a handful of chunks usually
-# holds the answer, and injecting the full top_k every turn prefills thousands of
-# extra tokens -- a big latency hit on small machines.
+# Leaner than the model-driven tool: a few chunks usually suffice, and injecting
+# the full top_k every turn prefills thousands of tokens (slow on small machines).
 _AUTOINJECT_DEFAULT_TOP_K = 4
 
 
@@ -923,10 +918,9 @@ def build_rag_autoinject(
     Toggle via ``rag_scope.autoinject`` (else env ``RAG_AUTOINJECT``); floor via
     ``rag_scope.autoinject_min_score`` (else env ``RAG_AUTOINJECT_MIN_SCORE``).
 
-    This is also the small-model fallback: models below ~4B often answer from
-    memory instead of emitting a ``search_knowledge_base`` call, so forcing a
-    pre-retrieval here keeps attachments consulted regardless of model size.
-    Reliable tool-driven retrieval wants a capable model (roughly 4B+)."""
+    Also the small-model fallback: models below ~4B often answer from memory
+    instead of calling ``search_knowledge_base``, so forcing retrieval here keeps
+    attachments consulted regardless of model size."""
     if not rag_scope:
         return None
     enabled = rag_scope.get("autoinject")

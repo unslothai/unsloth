@@ -5,8 +5,8 @@ import { create } from "zustand";
 
 /**
  * Store for the shared preview Sheet: a citation badge calls `openPreview` with
- * its document + chunk; the Sheet resolves and renders it. Global so any citation
- * drives the one viewer without prop-drilling.
+ * its document + chunk; the Sheet resolves and renders it. Global so any
+ * citation drives the one viewer without prop-drilling.
  */
 interface DocumentPreviewState {
   open: boolean;

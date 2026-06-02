@@ -2,8 +2,8 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """Embedder concurrency: the fast tokenizer isn't thread-safe, so encode and
-token counting must be serialized (else concurrent threads panic "Already
-borrowed"). A fake model detects overlap, so no download is needed."""
+token counting must be serialized (else threads panic "Already borrowed"). A
+fake model detects overlap, so no download is needed."""
 
 import os
 import threading
@@ -17,7 +17,7 @@ from core.rag import config, embeddings
 
 @pytest.fixture(autouse = True)
 def _pin_st_backend(monkeypatch):
-    # Tests patch ST internals (_get), so force the ST backend over the host default.
+    # Tests patch ST internals (_get), so force the ST backend over the default.
     monkeypatch.setattr(config, "EMBED_BACKEND", "sentence-transformers")
     embeddings._reset_backend()
     yield
@@ -25,7 +25,7 @@ def _pin_st_backend(monkeypatch):
 
 
 class _ConcurrencyProbe:
-    """Records whether two callers were ever in the guarded body at once."""
+    """Records whether two callers were in the guarded body at once."""
 
     def __init__(self):
         self.inside = 0

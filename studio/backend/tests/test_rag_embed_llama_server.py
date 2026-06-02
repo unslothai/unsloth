@@ -3,7 +3,7 @@
 
 """llama-server GGUF embedder backend, every boundary (binary, download,
 subprocess, HTTP) mocked. Covers backend selection, import isolation (no torch),
-spawn command, readiness fail-loud, encode/tokenize parsing, self-healing."""
+spawn command, readiness fail-loud, encode/tokenize parsing, self-heal."""
 
 import subprocess
 import sys
@@ -26,13 +26,12 @@ def _reset_backend_singleton():
 
 
 class _FakeProc:
-    """Minimal subprocess.Popen stand-in: drainable empty stdout, controllable
-    liveness."""
+    """Minimal subprocess.Popen stand-in: drainable empty stdout, controllable liveness."""
 
     def __init__(self, alive = True, returncode = 0):
         self._alive = alive
         self.returncode = returncode
-        self.stdout = iter(())  # drain thread finishes immediately
+        self.stdout = iter(())  # drain thread exits immediately
 
     def poll(self):
         return None if self._alive else self.returncode
@@ -97,8 +96,7 @@ def test_explicit_backend_overrides_auto(monkeypatch):
 
 def test_llama_backend_imports_no_torch():
     """Selecting the llama backend must not import torch / sentence_transformers.
-    Runs in a clean subprocess so the parent's already-imported modules don't
-    mask a regression."""
+    Runs in a clean subprocess so the parent's imports don't mask a regression."""
     backend_dir = Path(__file__).resolve().parents[1]
     code = textwrap.dedent(
         """
@@ -132,7 +130,7 @@ def test_build_cmd_cpu_flags():
     assert "--embedding" in cmd
     assert cmd[cmd.index("--pooling") + 1] == "cls"
     assert cmd[cmd.index("--fit") + 1] == "off"  # deterministic, no auto-resize
-    assert cmd[cmd.index("-ngl") + 1] == "0"  # CPU keeps everything off the GPU
+    assert cmd[cmd.index("-ngl") + 1] == "0"  # CPU keeps all off the GPU
     assert cmd[cmd.index("--port") + 1] == "9999"
 
 
@@ -221,7 +219,7 @@ def test_gpu_available_apple_metal(monkeypatch):
 
 
 def _patch_spawn_deps(monkeypatch, proc, *, free_port = 54321):
-    # Force CPU so spawn never depends on the host having a GPU.
+    # Force CPU so spawn never depends on a host GPU.
     monkeypatch.setattr(config, "EMBED_DEVICE", "cpu")
     monkeypatch.setattr(
         LlamaServerBackend, "_resolve_binary", lambda self: "/bin/llama-server"
@@ -256,7 +254,7 @@ def test_spawn_uses_free_port_when_auto(monkeypatch):
 def test_spawn_fails_loud_on_early_exit(monkeypatch):
     monkeypatch.setattr(config, "EMBED_PORT", 8124)
     b = LlamaServerBackend()
-    # Dead process -> real _wait_for_health returns False on the first poll.
+    # Dead process -> _wait_for_health returns False on the first poll.
     _patch_spawn_deps(monkeypatch, _FakeProc(alive = False, returncode = 1))
     with pytest.raises(RuntimeError, match = "failed to become healthy"):
         b._spawn()
@@ -278,7 +276,7 @@ def test_spawn_auto_falls_back_to_cpu_on_gpu_failure(monkeypatch):
     monkeypatch.setattr(b, "_spawn_once", fake_spawn_once)
     b._spawn()
     assert calls == [True, False]  # tried GPU, then fell back to CPU
-    assert b._force_cpu is True  # sticky so respawns stay on CPU
+    assert b._force_cpu is True  # sticky, so respawns stay on CPU
 
 
 def test_spawn_explicit_gpu_does_not_fall_back(monkeypatch):
@@ -298,7 +296,7 @@ def test_spawn_explicit_gpu_does_not_fall_back(monkeypatch):
 
 
 def _embed_response(vectors):
-    # Intentionally out-of-order indices to exercise the sort.
+    # Out-of-order indices to exercise the sort.
     items = [{"index": i, "embedding": v} for i, v in enumerate(vectors)]
     return {"data": list(reversed(items))}
 
@@ -318,7 +316,7 @@ def test_encode_orders_and_returns_float32(monkeypatch):
     assert captured["path"] == "/v1/embeddings"
     assert out.dtype == np.float32
     assert out.shape == (2, 2)
-    # index sort restored original order despite reversed response.
+    # index sort restored original order despite the reversed response
     assert out[0].tolist() == [3.0, 4.0]
 
 
@@ -403,7 +401,7 @@ def test_token_counter_hits_tokenize(monkeypatch):
 
 def test_ensure_ready_respawns_dead_process(monkeypatch):
     b = LlamaServerBackend()
-    b._process = _FakeProc(alive = False, returncode = 0)  # reaper killed us
+    b._process = _FakeProc(alive = False, returncode = 0)  # reaper killed it
     spawned = {"n": 0}
 
     def fake_spawn():
@@ -454,8 +452,8 @@ def test_post_restarts_once_on_connect_error(monkeypatch):
 
 
 def test_post_restarts_once_on_read_timeout(monkeypatch):
-    """A wedged request (ReadTimeout, not a dropped connection) also triggers a
-    single restart-and-retry -- the bundled embedding build can hang a request."""
+    """A wedged request (ReadTimeout, not a dropped connection) also triggers one
+    restart-and-retry - the bundled embedding build can hang a request."""
     import httpx
 
     b = LlamaServerBackend()

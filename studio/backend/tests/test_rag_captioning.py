@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Multimodal captioning: gating, grouping, page splice, and retrieval of spliced captions. Caption call and vision endpoint stubbed."""
+"""Multimodal captioning: gating, grouping, page splice, retrieval of spliced captions. Caption call and vision endpoint stubbed."""
 
 from __future__ import annotations
 
@@ -75,7 +75,7 @@ def test_render_pdf_figures_detects_drawing(tmp_path):
     pdf = tmp_path / "fig.pdf"
     doc = pymupdf.open()
     page = doc.new_page()
-    # Filled rect + lines = a clusterable vector drawing.
+    # Filled rect + lines = a clusterable drawing.
     shape = page.new_shape()
     shape.draw_rect(pymupdf.Rect(60, 60, 540, 460))
     for i in range(8):

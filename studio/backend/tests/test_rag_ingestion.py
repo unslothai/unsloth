@@ -3,8 +3,8 @@
 
 """Ingestion lifecycle: pending -> completed, SSE events, dedupe, delete.
 
-``stub_embeddings`` avoids a download; one optional test uses the real
-embedder, guarded by RAG_REAL_EMBEDDER=1.
+``stub_embeddings`` avoids a download; one optional test uses the real embedder,
+guarded by RAG_REAL_EMBEDDER=1.
 """
 
 import os
@@ -23,7 +23,7 @@ def _write(tmp_path, name, text):
 
 
 def _drain(job_id):
-    """Collect all SSE events for a job until the stream ends."""
+    """Collect a job's SSE events until the stream ends."""
     return list(ingestion.job_events(job_id))
 
 

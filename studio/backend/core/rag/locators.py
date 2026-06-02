@@ -64,8 +64,8 @@ def _find_subsequences(haystack: list[str], needle: list[str]) -> list[int]:
 
 def _locate(page_words: list, needle: list[str]) -> list[int] | None:
     """Matched word indices for the best anchor, or None. Tries the full anchor
-    then shorter prefixes, taking the first that matches exactly once; falls back
-    to the first hit if still ambiguous (anchor is the chunk's own start)."""
+    then shorter prefixes, taking the first that matches exactly once; else the
+    first hit if still ambiguous (anchor is the chunk's own start)."""
     # Skip punctuation-only words so they never break a phrase.
     tokens: list[str] = []
     idx_map: list[int] = []
@@ -153,7 +153,7 @@ def pdf_regions_for_chunks(
 ) -> list[list[dict[str, Any]]]:
     """Region rects per chunk (parallel to ``chunks``), keyed off each chunk's
     ``source_page_index`` / ``page_char_start`` / ``page_char_end``. Non-PDFs and
-    failures yield empty lists, never an exception."""
+    failures yield [], never an exception."""
     pdf_path = Path(pdf_path)
     if pdf_path.suffix.lower() != ".pdf":
         return [[] for _ in chunks]

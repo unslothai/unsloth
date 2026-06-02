@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Caption figures with the loaded vision model and splice the text into the
-page, making images searchable via the normal FTS5 + dense path (no image
-vector space).
+"""Caption figures with the loaded vision model and splice the text into the page,
+making images searchable via the normal FTS5 + dense path (no image vector space).
 
 No-op (never raises) without a vision model or on failure. Gated by
 ``config.CAPTION_IMAGES`` (off by default) since each caption is a model call.

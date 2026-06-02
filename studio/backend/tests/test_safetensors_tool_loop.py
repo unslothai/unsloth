@@ -488,9 +488,8 @@ class TestLoopBehaviour:
         assert "do not repeat" in tool_end_events[2]["result"].lower()
 
     def test_kb_search_capped_per_turn(self):
-        # Paraphrased KB searches differ by args so the duplicate guard misses
-        # them; the per-turn cap stops the runaway re-search loop that fragments
-        # the answer. The first N execute; the next is nudged to answer.
+        # Paraphrased KB searches differ by args, so the dup guard misses them;
+        # the per-turn cap stops the runaway re-search loop. First N run, then nudge.
         n = RAG_MAX_SEARCHES_PER_TURN
         queries = [f"paraphrase {i}" for i in range(n + 1)]
         turns = [
