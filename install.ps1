@@ -872,6 +872,25 @@ shell.Run cmd, 0, False
                     # the next explorer restart -- especially when a shortcut of the
                     # same name was rewritten (e.g. native vs WSL installs).
                     try { & "$env:SystemRoot\System32\ie4uinit.exe" -show 2>$null } catch {}
+                    # Win11's Start Menu (StartMenuExperienceHost) keeps its OWN
+                    # pre-rendered tile-icon cache, separate from Explorer's
+                    # iconcache_*.db; ie4uinit and an explorer restart do NOT
+                    # invalidate it, and the host is not recycled by them, so a
+                    # rewritten same-name shortcut keeps showing the old/generic
+                    # tile until the host restarts. Drop only the render caches
+                    # (NEVER start2.bin -- that holds the user's pinned layout)
+                    # and let the host rebuild. Guarded + best-effort so it can
+                    # never fail the install. Windows 10 has no such host (the
+                    # Test-Path simply skips it there).
+                    try {
+                        $smehTemp = Join-Path $env:LOCALAPPDATA "Packages\Microsoft.Windows.StartMenuExperienceHost_cw5n1h2txyewy\TempState"
+                        if (Test-Path -LiteralPath $smehTemp) {
+                            Get-ChildItem -LiteralPath $smehTemp -Filter "TileCache_*" -ErrorAction SilentlyContinue |
+                                Remove-Item -Force -ErrorAction SilentlyContinue
+                            Remove-Item -LiteralPath (Join-Path $smehTemp "StartUnifiedTileModelCache.dat") -Force -ErrorAction SilentlyContinue
+                            Stop-Process -Name StartMenuExperienceHost -Force -ErrorAction SilentlyContinue
+                        }
+                    } catch {}
                 } else {
                     substep "no Unsloth Studio shortcuts were created" "Yellow"
                 }
