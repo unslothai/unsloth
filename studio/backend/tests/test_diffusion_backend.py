@@ -1739,6 +1739,48 @@ def test_resolve_diffusion_load_plan_uses_fast_image_gguf_policies():
         assert plan["load_kwargs"]["offload_policy"] == "less_aggressive"
 
 
+def test_resolve_diffusion_load_plan_uses_fast_qwen_policy_when_memory_allows(monkeypatch):
+    import core.inference.diffusion as d
+
+    monkeypatch.setattr(d, "_cuda_memory_meets_mib_floor", lambda **_kwargs: True)
+
+    for preset_id in (
+        "qwen-image",
+        "qwen-image-2512",
+        "qwen-image-edit",
+        "qwen-image-edit-2509",
+        "qwen-image-edit-2511",
+        "qwen-image-layered",
+    ):
+        plan = d.resolve_diffusion_load_plan(
+            preset_id = preset_id,
+            transformer_quant = "Q4_K_M",
+        )
+
+        assert plan["load_kwargs"]["offload_policy"] == "less_aggressive"
+
+
+def test_resolve_diffusion_load_plan_keeps_qwen_balanced_when_memory_is_tight(monkeypatch):
+    import core.inference.diffusion as d
+
+    monkeypatch.setattr(d, "_cuda_memory_meets_mib_floor", lambda **_kwargs: False)
+
+    for preset_id in (
+        "qwen-image",
+        "qwen-image-2512",
+        "qwen-image-edit",
+        "qwen-image-edit-2509",
+        "qwen-image-edit-2511",
+        "qwen-image-layered",
+    ):
+        plan = d.resolve_diffusion_load_plan(
+            preset_id = preset_id,
+            transformer_quant = "Q4_K_M",
+        )
+
+        assert plan["load_kwargs"]["offload_policy"] == "balanced"
+
+
 def test_curated_gguf_recommended_offload_policy_for_direct_loads():
     import core.inference.diffusion as d
 

@@ -1784,6 +1784,16 @@ def resolve_diffusion_load_plan(
     if prompt_enhancer_gguf_filename and not planned_pe_repo:
         planned_pe_repo = _default_prompt_enhancer_gguf_repo(fam)
     defaults = _sampling_defaults_for_family(fam, base_repo_variant = preset.variant)
+    effective_offload_policy = offload_policy
+    if effective_offload_policy is None:
+        effective_offload_policy = (
+            _curated_gguf_recommended_offload_policy(
+                repo_id = planned_repo_id,
+                transformer_gguf_repo = planned_transformer_repo,
+                transformer_gguf_filename = planned_transformer_filename,
+            )
+            or preset.recommended_offload_policy
+        )
 
     load_kwargs = {
         "repo_id": planned_repo_id,
@@ -1802,7 +1812,7 @@ def resolve_diffusion_load_plan(
         "lora_scale": lora_scale,
         "lora_fuse": lora_fuse,
         "family_override": family_override or preset.family,
-        "offload_policy": offload_policy or preset.recommended_offload_policy,
+        "offload_policy": effective_offload_policy,
     }
     ready_to_load = bool(planned_transformer_filename)
     return {
