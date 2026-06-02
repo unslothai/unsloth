@@ -2052,6 +2052,14 @@ def _guidance_semantics(
     return "guidance_scale"
 
 
+def _family_has_default_negative_prompt(fam: DiffusionFamily) -> bool:
+    return fam.default_negative_prompt is not None or fam.name in {
+        "ltx2-3-base",
+        "ltx2-3-distilled",
+        "wan2-2-t2v",
+    }
+
+
 def _build_sampling_contract(
     *,
     pipe: Any,
@@ -2097,7 +2105,7 @@ def _build_sampling_contract(
         default_width = int(fam.default_width),
         default_height = int(fam.default_height),
         requires_image_input = bool(fam.requires_image_input),
-        has_default_negative_prompt = fam.default_negative_prompt is not None,
+        has_default_negative_prompt = _family_has_default_negative_prompt(fam),
         default_call_kwargs = defaults.default_call_kwargs,
     )
 

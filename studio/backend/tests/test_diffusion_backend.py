@@ -1962,6 +1962,8 @@ def test_load_model_curated_unsloth_diffusion_gguf_manifest(
     assert status["base_repo_variant"] == variant
     assert status["gguf_filename"] == filename.split("/")[-1]
     assert status["sampling_contract"]["gguf"] is True
+    if family.startswith("ltx2-3"):
+        assert status["sampling_contract"]["has_default_negative_prompt"] is True
     assert backend._pipe.base_repo == base_repo
     assert backend._pipe.kwargs["transformer"].path.endswith(filename)
 
