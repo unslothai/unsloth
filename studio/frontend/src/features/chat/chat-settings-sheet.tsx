@@ -90,8 +90,6 @@ import {
   providerSupportsFastMode,
 } from "./provider-capabilities";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
-import { ChatMcpServersDialog } from "./chat-mcp-servers-dialog";
-import { listMcpServers } from "./api/mcp-servers-api";
 import type { InferenceParams } from "./types/runtime";
 
 export { defaultInferenceParams, type Preset } from "./presets/preset-policy";
@@ -332,7 +330,12 @@ function CollapsibleSection({
   first = false,
 }: {
   label: string;
-  /** Optional link for the label (e.g. its PR); chevron still toggles. */
+  /**
+   * When set, the label text becomes an external link (e.g. to the feature's
+   * GitHub PR) instead of part of the collapse toggle. The chevron still
+   * toggles open/close, so we render the two as siblings rather than nesting
+   * an <a> inside the <button> (invalid HTML).
+   */
   labelHref?: string;
   children?: ReactNode;
   defaultOpen?: boolean;
@@ -716,26 +719,31 @@ export function ChatSettingsPanel({
     }
   }, [open]);
 
+  const settingsScrollRef = useRef<HTMLDivElement>(null);
+
   const settingsContent = (
     <>
-      <div className="aui-thread-viewport relative h-full overflow-y-auto">
-      <div className="sticky top-0 z-10 flex h-[48px] items-start gap-2 bg-panel-surface pl-[18px] pr-[14px] pt-[11px]">
+      <div
+        ref={settingsScrollRef}
+        className="relative h-full overflow-y-auto"
+      >
+      <div className="sticky top-0 z-10 flex h-[48px] items-start gap-2 bg-panel-surface pl-[18px] pr-[16px] pt-[11px]">
         {isMobile ? (
-          <span className="flex h-[34px] flex-1 items-center text-[15px] font-semibold tracking-[-0.01em] dark:tracking-[0.015em] text-nav-fg">
-            Configuration
+          <span className="flex h-[34px] flex-1 items-center text-[15px] font-semibold tracking-[0em] dark:tracking-[0.015em] text-nav-fg">
+            Run settings
           </span>
         ) : (
           <>
-            <span className="flex h-[34px] flex-1 items-center text-[15px] font-semibold tracking-[-0.01em] dark:tracking-[0.015em] text-nav-fg">
-              Configuration
+            <span className="flex h-[34px] flex-1 items-center text-[15px] font-semibold tracking-[0em] dark:tracking-[0.015em] text-nav-fg">
+              Run settings
             </span>
             <Tooltip>
               <TooltipPrimitive.Trigger asChild>
                 <button
                   type="button"
                   onClick={() => onOpenChange?.(false)}
-                  className="flex h-[34px] w-[34px] items-center justify-center rounded-[12px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                  aria-label="Close configuration"
+                  className="flex h-[34px] w-[34px] cursor-pointer items-center justify-center rounded-[12px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  aria-label="Close run settings"
                 >
                   <HugeiconsIcon
                     icon={LayoutAlignRightIcon}
@@ -749,7 +757,7 @@ export function ChatSettingsPanel({
                 sideOffset={6}
                 className="tooltip-compact"
               >
-                Close configuration
+                Close run settings
               </TooltipContent>
             </Tooltip>
           </>
@@ -1363,15 +1371,6 @@ export function ChatSettingsPanel({
             </div>
           </CollapsibleSection>
         ) : null}
-
-        {!isExternalModel ? (
-          <CollapsibleSection
-            label="MCP Servers"
-            labelHref="https://github.com/unslothai/unsloth/pull/5852"
-          >
-            <McpServersSection />
-          </CollapsibleSection>
-        ) : null}
       </div>
       </div>
       <Dialog
@@ -1437,7 +1436,7 @@ export function ChatSettingsPanel({
       <Sheet open={open} onOpenChange={onOpenChange}>
         <SheetContent side="right" className="w-[18rem] p-0 font-heading">
           <SheetHeader className="sr-only">
-            <SheetTitle>Configuration</SheetTitle>
+            <SheetTitle>Run settings</SheetTitle>
             <SheetDescription>Chat inference settings</SheetDescription>
           </SheetHeader>
           <div className="flex h-full flex-col">{settingsContent}</div>
@@ -1530,79 +1529,6 @@ function AutoHealToolCallsToggle() {
         className="panel-switch"
         checked={autoHealToolCalls}
         onCheckedChange={setAutoHealToolCalls}
-      />
-    </div>
-  );
-}
-
-function McpServersSection() {
-  const mcpEnabledForChat = useChatRuntimeStore((s) => s.mcpEnabledForChat);
-  const setMcpEnabledForChat = useChatRuntimeStore(
-    (s) => s.setMcpEnabledForChat,
-  );
-  const [enabledServerCount, setEnabledServerCount] = useState<number | null>(
-    null,
-  );
-  const [dialogOpen, setDialogOpen] = useState(false);
-  const [refreshTick, setRefreshTick] = useState(0);
-
-  useEffect(() => {
-    let cancelled = false;
-    listMcpServers()
-      .then((rows) => {
-        if (cancelled) return;
-        const count = rows.filter((row) => row.is_enabled).length;
-        setEnabledServerCount(count);
-        // No enabled server left: MCP can't stay on for chat.
-        if (count === 0 && useChatRuntimeStore.getState().mcpEnabledForChat) {
-          useChatRuntimeStore.getState().setMcpEnabledForChat(false);
-        }
-      })
-      .catch(() => {
-        if (!cancelled) setEnabledServerCount(0);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [refreshTick]);
-
-  return (
-    <div className="flex flex-col gap-3 pt-1">
-      <div className="flex items-center justify-between gap-3">
-        <div className="flex min-w-0 items-center gap-1.5">
-          <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
-            Use MCP Servers
-          </span>
-          <InfoHint>
-            When on, every server marked enabled in the manage dialog is
-            attached to this chat's tool list.
-          </InfoHint>
-        </div>
-        <Switch
-          className="panel-switch"
-          checked={mcpEnabledForChat}
-          onCheckedChange={setMcpEnabledForChat}
-          disabled={enabledServerCount === 0 && !mcpEnabledForChat}
-        />
-      </div>
-      <div className="flex items-center justify-between">
-        <span className="text-[11px] text-muted-foreground">
-          {enabledServerCount === null
-            ? "Loading…"
-            : enabledServerCount === 0
-              ? "No servers configured"
-              : `${enabledServerCount} server${enabledServerCount === 1 ? "" : "s"} enabled`}
-        </span>
-        <Button variant="ghost" size="sm" onClick={() => setDialogOpen(true)}>
-          Manage…
-        </Button>
-      </div>
-      <ChatMcpServersDialog
-        open={dialogOpen}
-        onOpenChange={(next) => {
-          setDialogOpen(next);
-          if (!next) setRefreshTick((tick) => tick + 1);
-        }}
       />
     </div>
   );

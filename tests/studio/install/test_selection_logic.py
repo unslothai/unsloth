@@ -1252,6 +1252,79 @@ class TestLinuxCudaChoiceFromRelease:
         assert result is None
 
 
+def make_profile_artifact(asset_name, profile_name, **overrides):
+    profile = INSTALL_LLAMA_PREBUILT.DIRECT_LINUX_BUNDLE_PROFILES[profile_name]
+    defaults = dict(
+        runtime_line = profile["runtime_line"],
+        coverage_class = profile["coverage_class"],
+        supported_sms = [str(value) for value in profile["supported_sms"]],
+        min_sm = int(profile["min_sm"]),
+        max_sm = int(profile["max_sm"]),
+        bundle_profile = profile_name,
+        rank = int(profile["rank"]),
+    )
+    defaults.update(overrides)
+    return make_artifact(asset_name, **defaults)
+
+
+class TestBlackwellUltraSm103Coverage:
+    """sm_103 (B300 / GB300) runs on the bundled base compute_100 PTX via JIT."""
+
+    def test_profiles_list_sm103_wherever_sm100_is_shipped(self):
+        for (
+            name,
+            profile,
+        ) in INSTALL_LLAMA_PREBUILT.DIRECT_LINUX_BUNDLE_PROFILES.items():
+            sms = {str(value) for value in profile["supported_sms"]}
+            if "100" in sms:
+                assert "103" in sms, name
+            else:
+                assert "103" not in sms, name
+
+    def test_b300_selects_cuda13_newer_prebuilt(self, monkeypatch):
+        mock_linux_runtime(monkeypatch, ["cuda13"])
+        host = make_host(compute_caps = ["103"], driver_cuda_version = (13, 0))
+        art = make_profile_artifact("cuda13-newer.tar.gz", "cuda13-newer")
+        release = make_release([art])
+        result = linux_cuda_choice_from_release(host, release)
+        assert result is not None
+        assert result.primary.name == "cuda13-newer.tar.gz"
+
+    def test_b300_selects_cuda12_newer_prebuilt(self, monkeypatch):
+        mock_linux_runtime(monkeypatch, ["cuda12"])
+        host = make_host(compute_caps = ["103"], driver_cuda_version = (12, 8))
+        art = make_profile_artifact("cuda12-newer.tar.gz", "cuda12-newer")
+        release = make_release([art])
+        result = linux_cuda_choice_from_release(host, release)
+        assert result is not None
+        assert result.primary.name == "cuda12-newer.tar.gz"
+
+    def test_b300_reported_as_decimal_normalizes_and_matches(self, monkeypatch):
+        mock_linux_runtime(monkeypatch, ["cuda13"])
+        host = make_host(compute_caps = ["10.3"], driver_cuda_version = (13, 0))
+        art = make_profile_artifact("cuda13-portable.tar.gz", "cuda13-portable")
+        release = make_release([art])
+        result = linux_cuda_choice_from_release(host, release)
+        assert result is not None
+
+    def test_b300_falls_back_to_portable_when_only_portable_present(self, monkeypatch):
+        mock_linux_runtime(monkeypatch, ["cuda13"])
+        host = make_host(compute_caps = ["103"], driver_cuda_version = (13, 0))
+        art = make_profile_artifact("cuda13-portable.tar.gz", "cuda13-portable")
+        release = make_release([art])
+        result = linux_cuda_choice_from_release(host, release)
+        assert result is not None
+        assert result.primary.name == "cuda13-portable.tar.gz"
+
+    def test_older_bundle_still_rejects_b300(self, monkeypatch):
+        mock_linux_runtime(monkeypatch, ["cuda13"])
+        host = make_host(compute_caps = ["103"], driver_cuda_version = (13, 0))
+        art = make_profile_artifact("cuda13-older.tar.gz", "cuda13-older")
+        release = make_release([art])
+        result = linux_cuda_choice_from_release(host, release)
+        assert result is None
+
+
 # ===========================================================================
 # L. resolve_install_attempts
 # ===========================================================================
@@ -2021,7 +2094,7 @@ class TestWindowsCudaAttempts:
 
 
 class TestPinnedBlackwellCudaFallback:
-    """A Blackwell host on a 13.1/13.2 driver, gated off the in-release 13.3
+    """A Blackwell host on a 13.0/13.1/13.2 driver, gated off the in-release 13.3
     build, gets the pinned immutable b9360 cuda-13.1 GPU build instead of the
     CPU-only cuda-12.4 drop. The pin is dormant for everyone else."""
 
@@ -2072,15 +2145,19 @@ class TestPinnedBlackwellCudaFallback:
         # Ada/Hopper run the cuda-12.4 build fine; the pin must not fire.
         assert _pinned_windows_cuda_fallback(self._win_host((13, 1), [sm]), []) is None
 
-    def test_pin_not_offered_to_driver_13_0(self):
-        # 13.0 cannot run the 13.1 build (forward minor); residual CPU gap.
+    def test_pin_offered_for_driver_13_0(self):
+        # b9360 is native sm_120a SASS (no JIT) and ships a cuda-13.1 cudart,
+        # both of which run on a 13.0 r580+ driver via CUDA minor-version
+        # compatibility. 13.0 is the mainstream Blackwell branch, so it must fire.
         assert (
-            _pinned_windows_cuda_fallback(self._win_host((13, 0), ["120"]), []) is None
+            _pinned_windows_cuda_fallback(self._win_host((13, 0), ["120"]), [])
+            is not None
         )
 
     def test_pin_not_offered_below_floor(self):
+        # 12.x predates Blackwell entirely; the pin stays dormant below 13.0.
         assert (
-            _pinned_windows_cuda_fallback(self._win_host((12, 8), ["120"]), []) is None
+            _pinned_windows_cuda_fallback(self._win_host((12, 9), ["120"]), []) is None
         )
 
     def test_pin_not_offered_without_driver(self):
@@ -2758,3 +2835,165 @@ class TestResolveSimpleMacosPin:
         assert plans[0].release_tag == "b9442"
         # No pin: the iterator was asked for latest, not a specific tag.
         assert calls[0][2] == "latest"
+
+
+# ===========================================================================
+# Linux arm64 + GPU must not install the x64-only fork bundle
+# ===========================================================================
+
+
+class TestLinuxArm64ForkFallsBackToSource:
+    """The unslothai/llama.cpp fork ships only linux-x64 bundles. An arm64
+    Linux host with a GPU (GH200/GB200/DGX Spark) routes to the fork and must
+    fall back to a source build instead of selecting an x64 binary."""
+
+    def test_arm64_nvidia_fork_raises_before_fetching_releases(self, monkeypatch):
+        # Guard fires before any release is fetched: poison the iterator to prove
+        # it is never called.
+        def _boom(*_a, **_k):
+            raise AssertionError("iterator must not run for arm64 fork hosts")
+
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT, "iter_release_payloads_by_time", _boom
+        )
+        host = make_host(system = "Linux", machine = "aarch64")
+        with pytest.raises(PrebuiltFallback, match = "linux-x64 prebuilts"):
+            resolve_simple_install_release_plans(
+                "latest", host, "unslothai/llama.cpp", ""
+            )
+
+    def test_x86_64_fork_is_not_blocked_by_the_arch_guard(self, monkeypatch):
+        # x64 host must pass the guard and reach the iterator (here empty, so it
+        # raises the generic message, not the arch one).
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT,
+            "iter_release_payloads_by_time",
+            lambda *_a, **_k: iter(()),
+        )
+        host = make_host(system = "Linux", machine = "x86_64")
+        with pytest.raises(PrebuiltFallback) as exc:
+            resolve_simple_install_release_plans(
+                "latest", host, "unslothai/llama.cpp", ""
+            )
+        assert "linux-x64 prebuilts" not in str(exc.value)
+
+    def test_arm64_cpu_on_ggml_org_is_not_blocked(self, monkeypatch):
+        # CPU-only arm64 routes to ggml-org (not the fork), so the guard must not
+        # fire; it reaches the iterator (empty here -> generic message).
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT,
+            "iter_release_payloads_by_time",
+            lambda *_a, **_k: iter(()),
+        )
+        host = make_host(
+            system = "Linux",
+            machine = "aarch64",
+            nvidia_smi = None,
+            driver_cuda_version = None,
+            compute_caps = [],
+            has_physical_nvidia = False,
+            has_usable_nvidia = False,
+        )
+        with pytest.raises(PrebuiltFallback) as exc:
+            resolve_simple_install_release_plans(
+                "latest", host, "ggml-org/llama.cpp", ""
+            )
+        assert "linux-x64 prebuilts" not in str(exc.value)
+
+
+# ===========================================================================
+# arm64 Linux GPU: CPU prebuilt fallback after a failed source build (--cpu-fallback)
+# ===========================================================================
+
+
+class TestCpuFallback:
+    """--cpu-fallback drops GPU attributes so the CPU prebuilt for the host's
+    OS/arch is selected, letting an arm64 GPU host install ggml-org's arm64 CPU
+    build as a last resort when its source build produced no binary."""
+
+    _SETUP_SH = PACKAGE_ROOT / "studio" / "setup.sh"
+
+    def _arm64_nvidia(self):
+        return make_host(
+            system = "Linux",
+            machine = "aarch64",
+            driver_cuda_version = (13, 0),
+            compute_caps = ["90"],
+            has_physical_nvidia = True,
+            has_usable_nvidia = True,
+        )
+
+    def test_force_cpu_drops_gpu_attrs_before_planning(self, monkeypatch, tmp_path):
+        captured = {}
+
+        def _capture(llama_tag, host, *a, **k):
+            captured["host"] = host
+            raise PrebuiltFallback("stop after capture")
+
+        monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "detect_host", self._arm64_nvidia)
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT,
+            "resolve_simple_install_release_plans",
+            _capture,
+        )
+        # install_prebuilt exits EXIT_FALLBACK on PrebuiltFallback; we only care
+        # about the host it handed to the resolver before that.
+        with pytest.raises(SystemExit):
+            INSTALL_LLAMA_PREBUILT.install_prebuilt(
+                install_dir = tmp_path / "llama",
+                llama_tag = "latest",
+                published_repo = "ggml-org/llama.cpp",
+                published_release_tag = "",
+                simple_policy = True,
+                force_cpu = True,
+            )
+        host = captured["host"]
+        assert host.has_usable_nvidia is False
+        assert host.has_physical_nvidia is False
+        assert host.has_rocm is False
+        # Arch is preserved so the arm64 CPU bundle (not x64) is chosen.
+        assert host.is_arm64 is True
+
+    def test_cpu_forced_arm64_selects_ubuntu_arm64(self):
+        tag = "b9444"
+        release = {
+            "tag_name": tag,
+            "assets": [
+                {
+                    "name": f"llama-{tag}-bin-ubuntu-arm64.tar.gz",
+                    "browser_download_url": f"https://x/llama-{tag}-bin-ubuntu-arm64.tar.gz",
+                },
+                {
+                    "name": f"llama-{tag}-bin-ubuntu-x64.tar.gz",
+                    "browser_download_url": f"https://x/llama-{tag}-bin-ubuntu-x64.tar.gz",
+                },
+            ],
+        }
+        # A GPU arm64 host cannot pick the CPU arm64 bundle on its own.
+        with pytest.raises(PrebuiltFallback):
+            direct_upstream_release_plan(
+                release, self._arm64_nvidia(), "ggml-org/llama.cpp", "latest"
+            )
+        # force_cpu drops the GPU attributes, so the CPU arm64 bundle is selected.
+        cpu_host = make_host(
+            system = "Linux",
+            machine = "aarch64",
+            nvidia_smi = None,
+            driver_cuda_version = None,
+            compute_caps = [],
+            has_physical_nvidia = False,
+            has_usable_nvidia = False,
+        )
+        plan = direct_upstream_release_plan(
+            release, cpu_host, "ggml-org/llama.cpp", "latest"
+        )
+        assert plan.attempts[0].install_kind == "linux-arm64"
+        assert plan.attempts[0].name == f"llama-{tag}-bin-ubuntu-arm64.tar.gz"
+
+    def test_setup_sh_has_arm64_cpu_prebuilt_fallback(self):
+        source = self._SETUP_SH.read_text(encoding = "utf-8")
+        assert "--cpu-fallback" in source
+        # Fallback targets ggml-org (the only repo with an arm64 Linux build) and
+        # is gated on a degraded source build for arm64.
+        assert "ggml-org/llama.cpp" in source
+        assert "_LLAMA_CPP_DEGRADED" in source

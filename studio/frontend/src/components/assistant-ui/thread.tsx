@@ -46,10 +46,9 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { sentAudioNames } from "@/features/chat/api/chat-adapter";
-import { listMcpServers } from "@/features/chat/api/mcp-servers-api";
-import { ChatMcpServersDialog } from "@/features/chat/chat-mcp-servers-dialog";
-import { usePillActivationOrder } from "@/features/chat/hooks/use-pill-activation-order";
+import { useChatProjects } from "@/features/chat/hooks/use-chat-projects";
 import { parseExternalModelId } from "@/features/chat/external-providers";
+import { McpComposerButton } from "@/features/chat/mcp-composer-button";
 import { getExternalReasoningCapabilities } from "@/features/chat/provider-capabilities";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { useExternalProvidersStore } from "@/features/chat/stores/external-providers-store";
@@ -61,7 +60,6 @@ import { AUDIO_ACCEPT, MAX_AUDIO_SIZE, fileToBase64 } from "@/lib/audio-utils";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
-import { openLink } from "@/lib/open-link";
 import {
   ActionBarMorePrimitive,
   ActionBarPrimitive,
@@ -86,7 +84,6 @@ import {
   Folder01Icon,
   FolderAddIcon,
   Image03Icon,
-  McpServerIcon,
   PencilRulerIcon,
   Tick02Icon,
 } from "@hugeicons/core-free-icons";
@@ -507,8 +504,20 @@ const ThreadWelcome: FC<{
   );
 };
 
+export const ProjectComposer: FC<{
+  disabled?: boolean;
+  placeholder?: string;
+}> = ({ disabled, placeholder }) => {
+  return (
+    <GeneratedImageOverlayProvider>
+      <ComposerAnimated disabled={disabled} placeholder={placeholder} />
+    </GeneratedImageOverlayProvider>
+  );
+};
+
 const ComposerAnimated: FC<{
   disabled?: boolean;
+  placeholder?: string;
   threadId?: string | null;
   menuSide?: "top" | "bottom";
 }> = ({ disabled, threadId, menuSide }) => {
@@ -547,6 +556,7 @@ const PendingAudioChip: FC = () => {
 
 const Composer: FC<{
   disabled?: boolean;
+  placeholder?: string;
   threadId?: string | null;
   menuSide?: "top" | "bottom";
 }> = ({ disabled, threadId, menuSide }) => {
@@ -563,19 +573,12 @@ const Composer: FC<{
     (s) => s.supportsBuiltinImageGeneration,
   );
   const artifactsEnabled = useChatRuntimeStore((s) => s.artifactsEnabled);
-  const mcpEnabledForChat = useChatRuntimeStore((s) => s.mcpEnabledForChat);
-  // Canvas and MCP are opt-in pills; show them in the order they were toggled on.
-  const optInPillOrder = usePillActivationOrder({
-    canvas: artifactsEnabled,
-    mcp: mcpEnabledForChat,
-  });
   // With more than 4 pills showing, collapse them to icons only to cut clutter.
-  // Counts pills that appear, on or off (Search and Code always show here).
+  // Search, Code and MCP always show; Images and Canvas are conditional.
   const pillsCompact =
-    2 +
+    3 +
       (supportsBuiltinImageGeneration ? 1 : 0) +
-      (artifactsEnabled ? 1 : 0) +
-      (mcpEnabledForChat ? 1 : 0) >
+      (artifactsEnabled ? 1 : 0) >
     4;
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const setPendingImageEditReference = useChatRuntimeStore(
@@ -626,8 +629,7 @@ const Composer: FC<{
     toolsEnabled ||
     codeToolsEnabled ||
     imageToolsEnabled ||
-    artifactsEnabled ||
-    mcpEnabledForChat;
+    artifactsEnabled;
   // react-textarea-autosize re-measures only on value change or window resize,
   // not on the width swap from expanding, so it keeps the taller height and
   // leaves a stray blank row. Nudge a resize whenever the input width changes.
@@ -756,13 +758,8 @@ const Composer: FC<{
               <WebSearchToggle />
               <CodeToolsToggle />
               <ImagesToggle />
-              {optInPillOrder.map((key) =>
-                key === "canvas" ? (
-                  <ArtifactsToggle key="canvas" />
-                ) : (
-                  <McpToggle key="mcp" />
-                ),
-              )}
+              {artifactsEnabled ? <ArtifactsToggle /> : null}
+              <McpComposerButton />
             </>
           ) : null}
         </div>
@@ -1509,34 +1506,6 @@ const ArtifactsToggle: FC = () => {
   );
 };
 
-const McpToggle: FC = () => {
-  const mcpEnabledForChat = useChatRuntimeStore((s) => s.mcpEnabledForChat);
-  const setMcpEnabledForChat = useChatRuntimeStore(
-    (s) => s.setMcpEnabledForChat,
-  );
-  // Like Canvas: the pill only shows once MCP is toggled on from the menu.
-  if (!mcpEnabledForChat) return null;
-
-  return (
-    <button
-      type="button"
-      onClick={() => setMcpEnabledForChat(false)}
-      className="composer-pill-btn"
-      data-active="true"
-      aria-label="Disable MCP"
-    >
-      <PillGlyph>
-        <HugeiconsIcon
-          icon={McpServerIcon}
-          className="size-[17px]"
-          strokeWidth={2}
-        />
-      </PillGlyph>
-      <span>MCP</span>
-    </button>
-  );
-};
-
 const ToolStatusDisplay: FC = () => {
   const toolStatus = useChatRuntimeStore((s) => s.toolStatus);
   const isThreadRunning = useAuiState(({ thread }) => thread.isRunning);
@@ -1594,9 +1563,6 @@ const ToolStatusDisplay: FC = () => {
     </div>
   );
 };
-// Projects is still in development; its menu entries link to the tracking PR.
-const PROJECTS_PR_URL = "https://github.com/unslothai/unsloth/pull/5725";
-
 // Plus menu: attachment and workflow actions. Opens downward in the centered
 // welcome composer; the docked composer passes side="top" to open upward.
 const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
@@ -1609,10 +1575,6 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
   const setCodeToolsEnabled = useChatRuntimeStore((s) => s.setCodeToolsEnabled);
   const artifactsEnabled = useChatRuntimeStore((s) => s.artifactsEnabled);
   const setArtifactsEnabled = useChatRuntimeStore((s) => s.setArtifactsEnabled);
-  const mcpEnabledForChat = useChatRuntimeStore((s) => s.mcpEnabledForChat);
-  const setMcpEnabledForChat = useChatRuntimeStore(
-    (s) => s.setMcpEnabledForChat,
-  );
   // Capability gating, mirroring the visible pills so menu and pills agree on
   // what a loaded model supports (a tool the backend drops must not look on).
   const modelLoaded = useChatRuntimeStore(
@@ -1652,42 +1614,14 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
   const codeDisabled =
     modelLoaded && !(supportsTools || supportsBuiltinCodeExecution);
   const imageDisabled = !modelLoaded;
-  const [mcpOpen, setMcpOpen] = useState(false);
-  // Count of servers marked enabled in the manage dialog. MCP can only be
-  // turned on once at least one exists; otherwise the menu opens the dialog.
-  const [mcpServerCount, setMcpServerCount] = useState(0);
-  // Set when the dialog is opened to configure the first server, so closing
-  // it with a valid server turns MCP on automatically.
-  const enableMcpOnClose = useRef(false);
-  const syncMcp = useCallback(() => {
-    listMcpServers()
-      .then((rows) => {
-        const count = rows.filter((r) => r.is_enabled).length;
-        setMcpServerCount(count);
-        const store = useChatRuntimeStore.getState();
-        // Just configured a server via the toggle flow: turn MCP on.
-        if (count > 0 && enableMcpOnClose.current) {
-          store.setMcpEnabledForChat(true);
-        }
-        // No enabled server left: MCP can't stay on.
-        if (count === 0 && store.mcpEnabledForChat) {
-          store.setMcpEnabledForChat(false);
-        }
-        enableMcpOnClose.current = false;
-      })
-      .catch(() => setMcpServerCount(0));
-  }, []);
-  useEffect(() => {
-    syncMcp();
-  }, [syncMcp]);
-  const mcpActive = mcpEnabledForChat && mcpServerCount > 0;
-  const onMcpSelect = () => {
-    if (mcpServerCount > 0) {
-      setMcpEnabledForChat(!mcpEnabledForChat);
-    } else {
-      enableMcpOnClose.current = true;
-      setMcpOpen(true);
-    }
+  // Three most recently updated projects for the quick-access submenu.
+  const { projects } = useChatProjects();
+  const recentProjects = [...projects]
+    .sort((a, b) => b.updatedAt - a.updatedAt)
+    .slice(0, 3);
+  const openProject = (projectId: string) => {
+    useChatRuntimeStore.getState().setActiveProjectId(projectId);
+    navigate({ to: "/chat", search: { project: projectId } });
   };
 
   const startCompare = useCallback(() => {
@@ -1703,8 +1637,7 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
   }, [navigate]);
 
   return (
-    <>
-    <DropdownMenu onOpenChange={(open) => open && syncMcp()}>
+    <DropdownMenu>
       <DropdownMenuTrigger asChild={true}>
         <button
           type="button"
@@ -1803,18 +1736,6 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
           <HugeiconsIcon icon={DatabaseIcon} strokeWidth={2} />
           RAG
         </DropdownMenuItem>
-        <DropdownMenuItem
-          className={mcpActive ? "text-primary font-medium" : undefined}
-          onSelect={onMcpSelect}
-        >
-          <HugeiconsIcon
-            icon={McpServerIcon}
-            strokeWidth={2}
-            className="size-[1.175rem]!"
-          />
-          MCP
-          {mcpActive ? <CheckIcon className="ml-auto" /> : null}
-        </DropdownMenuItem>
         <DropdownMenuItem onSelect={() => startCompare()}>
           <Columns2Icon />
           Compare chat
@@ -1826,27 +1747,30 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
             Projects
           </DropdownMenuSubTrigger>
           <DropdownMenuSubContent className="unsloth-plus-menu w-[200px]">
-            <DropdownMenuItem onSelect={() => openLink(PROJECTS_PR_URL)}>
+            <DropdownMenuItem onSelect={() => navigate({ to: "/projects" })}>
               <HugeiconsIcon icon={FolderAddIcon} strokeWidth={2} />
               New project
             </DropdownMenuItem>
             <DropdownMenuLabel>Recents</DropdownMenuLabel>
-            <DropdownMenuItem onSelect={() => openLink(PROJECTS_PR_URL)}>
-              No recent projects
-            </DropdownMenuItem>
+            {recentProjects.length > 0 ? (
+              recentProjects.map((project) => (
+                <DropdownMenuItem
+                  key={project.id}
+                  onSelect={() => openProject(project.id)}
+                >
+                  <HugeiconsIcon icon={Folder01Icon} strokeWidth={2} />
+                  <span className="truncate">{project.name}</span>
+                </DropdownMenuItem>
+              ))
+            ) : (
+              <DropdownMenuItem disabled={true}>
+                No recent projects
+              </DropdownMenuItem>
+            )}
           </DropdownMenuSubContent>
         </DropdownMenuSub>
       </DropdownMenuContent>
     </DropdownMenu>
-    <ChatMcpServersDialog
-      open={mcpOpen}
-      onOpenChange={(next) => {
-        setMcpOpen(next);
-        // Re-sync after the user manages servers (enable on add, off when none).
-        if (!next) syncMcp();
-      }}
-    />
-    </>
   );
 };
 

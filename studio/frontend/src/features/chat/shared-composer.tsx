@@ -8,7 +8,6 @@ import {
 } from "@/components/assistant-ui/think-aria-label";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { openLink } from "@/lib/open-link";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -44,15 +43,13 @@ import {
   Folder01Icon,
   FolderAddIcon,
   Image03Icon,
-  McpServerIcon,
   PencilRulerIcon,
 } from "@hugeicons/core-free-icons";
 import { useNavigate } from "@tanstack/react-router";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { toast } from "@/lib/toast";
-import { ChatMcpServersDialog } from "./chat-mcp-servers-dialog";
-import { listMcpServers } from "./api/mcp-servers-api";
-import { usePillActivationOrder } from "./hooks/use-pill-activation-order";
+import { McpComposerButton } from "./mcp-composer-button";
+import { useChatProjects } from "./hooks/use-chat-projects";
 import { loadModel, validateModel } from "./api/chat-api";
 import {
   parseExternalModelId,
@@ -83,9 +80,6 @@ import {
   useRef,
   useState,
 } from "react";
-
-// Projects is still in development; its menu entries link to the tracking PR.
-const PROJECTS_PR_URL = "https://github.com/unslothai/unsloth/pull/5725";
 
 export type CompareMessagePart =
   | { type: "text"; text: string }
@@ -420,46 +414,6 @@ export function SharedComposer({
   } | null>(null);
   const [dragging, setDragging] = useState(false);
   const [isComposing, setIsComposing] = useState(false);
-  const [mcpOpen, setMcpOpen] = useState(false);
-  const mcpEnabledForChat = useChatRuntimeStore((s) => s.mcpEnabledForChat);
-  const setMcpEnabledForChat = useChatRuntimeStore(
-    (s) => s.setMcpEnabledForChat,
-  );
-  // Count of servers marked enabled; MCP toggles only when at least one exists.
-  const [mcpServerCount, setMcpServerCount] = useState(0);
-  // Set when the dialog is opened to configure the first server, so closing
-  // it with a valid server turns MCP on automatically.
-  const enableMcpOnClose = useRef(false);
-  const syncMcp = useCallback(() => {
-    listMcpServers()
-      .then((rows) => {
-        const count = rows.filter((r) => r.is_enabled).length;
-        setMcpServerCount(count);
-        const store = useChatRuntimeStore.getState();
-        // Just configured a server via the toggle flow: turn MCP on.
-        if (count > 0 && enableMcpOnClose.current) {
-          store.setMcpEnabledForChat(true);
-        }
-        // No enabled server left: MCP can't stay on.
-        if (count === 0 && store.mcpEnabledForChat) {
-          store.setMcpEnabledForChat(false);
-        }
-        enableMcpOnClose.current = false;
-      })
-      .catch(() => setMcpServerCount(0));
-  }, []);
-  useEffect(() => {
-    syncMcp();
-  }, [syncMcp]);
-  const mcpActive = mcpEnabledForChat && mcpServerCount > 0;
-  const onMcpSelect = () => {
-    if (mcpServerCount > 0) {
-      setMcpEnabledForChat(!mcpEnabledForChat);
-    } else {
-      enableMcpOnClose.current = true;
-      setMcpOpen(true);
-    }
-  };
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const composingRef = useRef(false);
   const stuckImeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -512,11 +466,15 @@ export function SharedComposer({
   );
   const artifactsEnabled = useChatRuntimeStore((s) => s.artifactsEnabled);
   const setArtifactsEnabled = useChatRuntimeStore((s) => s.setArtifactsEnabled);
-  // Canvas and MCP are opt-in pills; show them in the order they were toggled on.
-  const optInPillOrder = usePillActivationOrder({
-    canvas: artifactsEnabled,
-    mcp: mcpActive,
-  });
+  // Three most recently updated projects for the quick-access submenu.
+  const { projects } = useChatProjects();
+  const recentProjects = [...projects]
+    .sort((a, b) => b.updatedAt - a.updatedAt)
+    .slice(0, 3);
+  const openProject = (projectId: string) => {
+    useChatRuntimeStore.getState().setActiveProjectId(projectId);
+    navigate({ to: "/chat", search: { project: projectId } });
+  };
   const webFetchToolsEnabled = useChatRuntimeStore(
     (s) => s.webFetchToolsEnabled,
   );
@@ -658,13 +616,12 @@ export function SharedComposer({
   const webFetchDisabled = !modelLoaded || !supportsBuiltinWebFetch;
   const showWebFetchPill = supportsBuiltinWebFetch;
   // With more than 4 pills showing, collapse them to icons only to cut clutter.
-  // Counts pills that appear, on or off (Compare, Search and Code always show).
+  // Compare, Search, Code and MCP always show; the rest are conditional.
   const pillsCompact =
-    3 +
+    4 +
       (showImagePill ? 1 : 0) +
       (showWebFetchPill ? 1 : 0) +
-      (artifactsEnabled ? 1 : 0) +
-      (mcpActive ? 1 : 0) >
+      (artifactsEnabled ? 1 : 0) >
     4;
   // Backwards-compatible alias for any other call site that may still
   // reference `toolsDisabled` (rare; both pills used it before).
@@ -1161,7 +1118,7 @@ export function SharedComposer({
           />
           {/* Same + side menu as the single-chat composer (ComposerToolsMenu),
               wired to the compare composer's own file/audio inputs and tools. */}
-          <DropdownMenu onOpenChange={(open) => open && syncMcp()}>
+          <DropdownMenu>
             <DropdownMenuTrigger asChild={true}>
               <button
                 type="button"
@@ -1265,18 +1222,6 @@ export function SharedComposer({
                 <HugeiconsIcon icon={DatabaseIcon} strokeWidth={2} />
                 RAG
               </DropdownMenuItem>
-              <DropdownMenuItem
-                className={mcpActive ? "text-primary font-medium" : undefined}
-                onSelect={onMcpSelect}
-              >
-                <HugeiconsIcon
-                  icon={McpServerIcon}
-                  strokeWidth={2}
-                  className="size-[1.175rem]!"
-                />
-                MCP
-                {mcpActive ? <CheckIcon className="ml-auto" /> : null}
-              </DropdownMenuItem>
               {/* Always active: this menu only renders in compare mode.
                   Ticked like Web search/Code; click toggles it off. */}
               <DropdownMenuItem
@@ -1294,26 +1239,30 @@ export function SharedComposer({
                   Projects
                 </DropdownMenuSubTrigger>
                 <DropdownMenuSubContent className="unsloth-plus-menu w-[200px]">
-                  <DropdownMenuItem onSelect={() => openLink(PROJECTS_PR_URL)}>
+                  <DropdownMenuItem onSelect={() => navigate({ to: "/projects" })}>
                     <HugeiconsIcon icon={FolderAddIcon} strokeWidth={2} />
                     New project
                   </DropdownMenuItem>
                   <DropdownMenuLabel>Recents</DropdownMenuLabel>
-                  <DropdownMenuItem onSelect={() => openLink(PROJECTS_PR_URL)}>
-                    No recent projects
-                  </DropdownMenuItem>
+                  {recentProjects.length > 0 ? (
+                    recentProjects.map((project) => (
+                      <DropdownMenuItem
+                        key={project.id}
+                        onSelect={() => openProject(project.id)}
+                      >
+                        <HugeiconsIcon icon={Folder01Icon} strokeWidth={2} />
+                        <span className="truncate">{project.name}</span>
+                      </DropdownMenuItem>
+                    ))
+                  ) : (
+                    <DropdownMenuItem disabled={true}>
+                      No recent projects
+                    </DropdownMenuItem>
+                  )}
                 </DropdownMenuSubContent>
               </DropdownMenuSub>
             </DropdownMenuContent>
           </DropdownMenu>
-          <ChatMcpServersDialog
-            open={mcpOpen}
-            onOpenChange={(next) => {
-              setMcpOpen(next);
-              // Re-sync after managing servers (enable on add, off when none).
-              if (!next) syncMcp();
-            }}
-          />
           {/* Active in compare mode; sits first. Click to exit back to single chat. */}
           <button
             type="button"
@@ -1418,45 +1367,25 @@ export function SharedComposer({
               <span>Fetch</span>
             </button>
           )}
-          {optInPillOrder.map((key) =>
-            key === "canvas" ? (
-              <button
-                key="canvas"
-                type="button"
-                onClick={() => setArtifactsEnabled(false)}
-                className="composer-pill-btn"
-                data-active="true"
-                aria-label="Disable canvas"
-              >
-                <PillGlyph>
-                  <HugeiconsIcon
-                    icon={PencilRulerIcon}
-                    className="size-[15.5px]"
-                    strokeWidth={2}
-                  />
-                </PillGlyph>
-                <span>Canvas</span>
-              </button>
-            ) : (
-              <button
-                key="mcp"
-                type="button"
-                onClick={() => setMcpEnabledForChat(false)}
-                className="composer-pill-btn"
-                data-active="true"
-                aria-label="Disable MCP"
-              >
-                <PillGlyph>
-                  <HugeiconsIcon
-                    icon={McpServerIcon}
-                    className="size-[17px]"
-                    strokeWidth={2}
-                  />
-                </PillGlyph>
-                <span>MCP</span>
-              </button>
-            ),
-          )}
+          {artifactsEnabled ? (
+            <button
+              type="button"
+              onClick={() => setArtifactsEnabled(false)}
+              className="composer-pill-btn"
+              data-active="true"
+              aria-label="Disable canvas"
+            >
+              <PillGlyph>
+                <HugeiconsIcon
+                  icon={PencilRulerIcon}
+                  className="size-[15.5px]"
+                  strokeWidth={2}
+                />
+              </PillGlyph>
+              <span>Canvas</span>
+            </button>
+          ) : null}
+          <McpComposerButton />
         </div>
         {/* mr-0.5 matches the send button inset from the edge in normal chat;
             gap-1.5 matches its control spacing. */}

@@ -8,7 +8,6 @@ import {
   CommandGroup,
   CommandList,
 } from "@/components/ui/command";
-import { useTrainingRuntimeStore } from "@/features/training";
 import { Cancel01Icon, Message01Icon, SearchIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
@@ -36,7 +35,6 @@ export function ChatSearchDialog() {
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (!(e.metaKey || e.ctrlKey) || e.key.toLowerCase() !== "k") return;
-      if (useTrainingRuntimeStore.getState().isTrainingRunning) return;
       const el = document.activeElement as HTMLElement | null;
       const tag = el?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || el?.isContentEditable) return;
@@ -51,10 +49,10 @@ export function ChatSearchDialog() {
     <CommandDialog
       open={isOpen}
       onOpenChange={setOpen}
-      className="chat-search-surface corner-squircle w-[635px] max-w-[calc(100%-2rem)] gap-0 p-0 sm:max-w-[635px]"
+      className="chat-search-surface corner-squircle top-[25%] w-[635px] max-w-[calc(100%-2rem)] gap-0 p-0 sm:max-w-[635px]"
       overlayClassName="bg-transparent"
     >
-      <Command className="rounded-none p-0">
+      <Command className="rounded-4xl p-0">
         <div className="flex items-center gap-3 border-b border-border/40 px-4 py-3">
           <HugeiconsIcon
             icon={SearchIcon}
@@ -74,7 +72,7 @@ export function ChatSearchDialog() {
             <HugeiconsIcon icon={Cancel01Icon} strokeWidth={2} className="size-4" />
           </button>
         </div>
-        <CommandList className="max-h-[420px] p-1">
+        <CommandList className="cmd-native-scrollbar max-h-[420px] p-1">
           <CommandEmpty className="py-6 text-center text-xs text-muted-foreground">
             {loading
               ? "Loading…"
@@ -92,12 +90,18 @@ export function ChatSearchDialog() {
                     to: "/chat",
                     search:
                       item.type === "single"
-                        ? { thread: item.id }
-                        : { compare: item.id },
+                        ? {
+                            thread: item.id,
+                            ...(item.projectId ? { project: item.projectId } : {}),
+                          }
+                        : {
+                            compare: item.id,
+                            ...(item.projectId ? { project: item.projectId } : {}),
+                          },
                   });
                   close();
                 }}
-                className="relative flex cursor-default select-none items-center gap-3 rounded-lg px-3 py-2.5 text-sm outline-hidden data-selected:bg-muted data-selected:text-foreground"
+                className="relative flex cursor-pointer select-none items-center gap-3 rounded-lg px-3 py-2.5 text-sm outline-hidden data-selected:bg-muted data-selected:text-foreground"
               >
                 <HugeiconsIcon
                   icon={Message01Icon}
