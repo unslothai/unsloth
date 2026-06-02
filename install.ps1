@@ -133,6 +133,11 @@ function Install-UnslothStudio {
     }
 
     $PythonVersion = "3.13"
+    # Pinned python.org fallback version, used only when winget is
+    # unavailable/broken AND the live python.org listing cannot be fetched.
+    # The python.org installer URL scheme is stable, so an older-but-valid
+    # patch still installs fine. Bump alongside $PythonVersion.
+    $PythonFallbackFullVersion = "3.13.13"
 
     # Resolve install destinations. Priority: UNSLOTH_STUDIO_HOME, then
     # STUDIO_HOME alias, then USERPROFILE-redirect, then default.
@@ -972,6 +977,77 @@ shell.Run cmd, 0, False
         return $null
     }
 
+    # ── Fallback: install CPython directly from python.org ──
+    # Used when winget is unavailable or fails -- notably the msstore source
+    # certificate-pinning error 0x8a15005e ("server certificate did not match"),
+    # which aborts `winget install` unless --source winget is given. Downloads
+    # the official python.org installer and runs it silently as a per-user
+    # install (no admin / UAC prompt), putting python.exe and the py launcher
+    # on PATH. Mirrors the uv -> astral.sh fallback below so Python installs
+    # without any manual steps. Returns @{ Version; Path } or $null.
+    function Install-PythonFromPythonOrg {
+        # python.org ships one installer per architecture.
+        $archSuffix = switch (Get-TauriDiagArch) {
+            "x86_64" { "-amd64" }
+            "arm64"  { "-arm64" }
+            "x86"    { "" }
+            default  { $null }
+        }
+        if ($null -eq $archSuffix) {
+            substep "No python.org installer is available for this architecture." "Yellow"
+            return $null
+        }
+
+        # Resolve the latest 3.13.x patch from the python.org listing, falling
+        # back to the pinned version if the listing cannot be fetched.
+        $full = $PythonFallbackFullVersion
+        try {
+            $listing = [string](Invoke-RestMethod -Uri "https://www.python.org/ftp/python/" -UseBasicParsing -TimeoutSec 20)
+            $patches = [regex]::Matches($listing, ([regex]::Escape($PythonVersion) + '\.(\d+)/')) |
+                ForEach-Object { [int]$_.Groups[1].Value } | Sort-Object -Descending
+            if ($patches.Count -gt 0) { $full = "$PythonVersion.$($patches[0])" }
+        } catch {}
+
+        $file = "python-$full$archSuffix.exe"
+        $url  = "https://www.python.org/ftp/python/$full/$file"
+        $dest = Join-Path ([System.IO.Path]::GetTempPath()) $file
+        substep "downloading Python $full from python.org..." "Yellow"
+        try {
+            Invoke-WebRequest -Uri $url -OutFile $dest -UseBasicParsing
+        } catch {
+            substep "python.org download failed: $($_.Exception.Message)" "Yellow"
+            return $null
+        }
+
+        # Per-user install => no UAC elevation. PrependPath puts python + the
+        # py launcher on PATH; Include_launcher installs py.exe (preferred by
+        # Find-CompatiblePython).
+        substep "installing Python $full (silent, per-user)..."
+        $installArgs = @(
+            "/quiet",
+            "InstallAllUsers=0",
+            "PrependPath=1",
+            "Include_launcher=1",
+            "Include_pip=1",
+            "AssociateFiles=0",
+            "Shortcuts=0"
+        )
+        $rc = 1
+        try {
+            $proc = Start-Process -FilePath $dest -ArgumentList $installArgs -Wait -PassThru
+            $rc = $proc.ExitCode
+        } catch {
+            substep "python.org installer failed to start: $($_.Exception.Message)" "Yellow"
+        } finally {
+            Remove-Item -LiteralPath $dest -Force -ErrorAction SilentlyContinue
+        }
+        if ($rc -ne 0) {
+            substep "python.org installer exited with code $rc." "Yellow"
+        }
+        Refresh-SessionPath
+        return (Find-CompatiblePython)
+    }
+
     # ── Install Python if no compatible version (3.11-3.13) found ──
     # Find-CompatiblePython returns @{ Version = "3.13"; Path = "C:\...\python.exe" } or $null.
     Write-TauriLog "STEP" "Installing Python"
@@ -981,47 +1057,67 @@ shell.Run cmd, 0, False
         step "python" "Python $($DetectedPython.Version) already installed"
     }
     if (-not $DetectedPython) {
-        if (-not $script:WingetAvailable) {
-            Write-Host "[ERROR] No compatible Python (3.11-3.13) found and winget is unavailable on this host." -ForegroundColor Red
-            Write-Host "        Install Python $PythonVersion from https://www.python.org/downloads/" -ForegroundColor Yellow
-            Write-Host "        and re-run this installer (make sure 'Add Python to PATH' is checked)." -ForegroundColor Yellow
-            return (Exit-InstallFailure "winget required to install Python on this host")
-        }
         substep "installing Python ${PythonVersion}..."
         $pythonPackageId = "Python.Python.$PythonVersion"
-        # Temporarily lower ErrorActionPreference so that winget stderr
-        # (progress bars, warnings) does not become a terminating error
-        # on PowerShell 5.1 where native-command stderr is ErrorRecord.
-        $prevEAP = $ErrorActionPreference
-        $ErrorActionPreference = "Continue"
-        try {
-            winget install -e --id $pythonPackageId --accept-package-agreements --accept-source-agreements
-            $wingetExit = $LASTEXITCODE
-        } catch { $wingetExit = 1 }
-        $ErrorActionPreference = $prevEAP
-        Refresh-SessionPath
+        $wingetExit = $null
 
-        # Re-detect after install (PATH may have changed)
-        $DetectedPython = Find-CompatiblePython
-
-        if (-not $DetectedPython) {
-            # Python still not functional after winget -- force reinstall.
-            # This handles both real failures AND "already installed" codes where
-            # winget thinks Python is present but it's not actually on PATH
-            # (e.g. user partially uninstalled, or installed via a different method).
-            substep "Python not found on PATH after winget. Retrying with --force..." "Yellow"
+        if ($script:WingetAvailable) {
+            # --source winget restricts the query to the winget source so the
+            # msstore source is never touched. The msstore source can fail with
+            # the certificate-pinning error 0x8a15005e ("server certificate did
+            # not match any of the expected values"), which otherwise aborts the
+            # whole `winget install` -- winget refuses to pick a source and
+            # demands --source. Both Python and uv live in the winget source, so
+            # pinning the source is strictly correct (and faster: one source).
+            #
+            # Temporarily lower ErrorActionPreference so that winget stderr
+            # (progress bars, warnings) does not become a terminating error
+            # on PowerShell 5.1 where native-command stderr is ErrorRecord.
+            $prevEAP = $ErrorActionPreference
             $ErrorActionPreference = "Continue"
             try {
-                winget install -e --id $pythonPackageId --accept-package-agreements --accept-source-agreements --force
+                winget install -e --id $pythonPackageId --source winget --accept-package-agreements --accept-source-agreements
                 $wingetExit = $LASTEXITCODE
             } catch { $wingetExit = 1 }
             $ErrorActionPreference = $prevEAP
             Refresh-SessionPath
+
+            # Re-detect after install (PATH may have changed)
             $DetectedPython = Find-CompatiblePython
+
+            if (-not $DetectedPython) {
+                # Python still not functional after winget -- force reinstall.
+                # This handles both real failures AND "already installed" codes where
+                # winget thinks Python is present but it's not actually on PATH
+                # (e.g. user partially uninstalled, or installed via a different method).
+                substep "Python not found on PATH after winget. Retrying with --force..." "Yellow"
+                $ErrorActionPreference = "Continue"
+                try {
+                    winget install -e --id $pythonPackageId --source winget --accept-package-agreements --accept-source-agreements --force
+                    $wingetExit = $LASTEXITCODE
+                } catch { $wingetExit = 1 }
+                $ErrorActionPreference = $prevEAP
+                Refresh-SessionPath
+                $DetectedPython = Find-CompatiblePython
+            }
+        }
+
+        # Fallback to python.org if winget is unavailable OR could not install a
+        # working Python (covers a missing winget, broken/corrupted winget
+        # sources, and msstore certificate errors that --source winget does not
+        # resolve). Keeps the install fully automatic instead of failing out.
+        if (-not $DetectedPython) {
+            if ($script:WingetAvailable) {
+                substep "winget could not install Python -- falling back to python.org..." "Yellow"
+            } else {
+                substep "winget is unavailable -- installing Python from python.org..." "Yellow"
+            }
+            $DetectedPython = Install-PythonFromPythonOrg
         }
 
         if (-not $DetectedPython) {
-            Write-Host "[ERROR] Python installation failed (exit code $wingetExit)" -ForegroundColor Red
+            $exitNote = if ($null -ne $wingetExit) { " (winget exit code $wingetExit)" } else { "" }
+            Write-Host "[ERROR] Python installation failed$exitNote" -ForegroundColor Red
             Write-Host "        Please install Python $PythonVersion manually from https://www.python.org/downloads/" -ForegroundColor Yellow
             Write-Host "        Make sure to check 'Add Python to PATH' during installation." -ForegroundColor Yellow
             Write-Host "        Then re-run this installer." -ForegroundColor Yellow
@@ -1041,7 +1137,7 @@ shell.Run cmd, 0, False
         if ($script:WingetAvailable) {
             $prevEAP = $ErrorActionPreference
             $ErrorActionPreference = "Continue"
-            try { winget install --id=astral-sh.uv -e --accept-package-agreements --accept-source-agreements } catch {}
+            try { winget install --id=astral-sh.uv -e --source winget --accept-package-agreements --accept-source-agreements } catch {}
             $ErrorActionPreference = $prevEAP
             Refresh-SessionPath
         }
