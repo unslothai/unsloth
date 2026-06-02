@@ -260,10 +260,15 @@ def test_detect_family_finds_video_full_repo_families():
     assert fam.name == "ltx2-3-distilled"
     assert fam.media_kind == "video"
     assert fam.pipeline_class == "LTX2Pipeline"
-    assert fam.default_width == 768
-    assert fam.default_height == 512
+    assert fam.default_width == 960
+    assert fam.default_height == 544
     assert fam.default_num_frames == 121
     assert fam.default_frame_rate == 24.0
+    assert fam.default_call_kwargs["stg_scale"] == 1.0
+    assert fam.default_call_kwargs["modality_scale"] == 3.0
+    assert fam.default_call_kwargs["audio_guidance_scale"] == 7.0
+    assert fam.default_call_kwargs["spatio_temporal_guidance_blocks"] == [28]
+    assert fam.default_call_kwargs["use_cross_timestep"] is True
     assert fam.supports_gguf_single_file is True
 
     ambiguous = detect_family("unsloth/LTX-2.3-GGUF")
@@ -6625,6 +6630,15 @@ def test_generate_video_with_metadata_uses_ltx23_family_defaults(
             frame_rate,
             output_type,
             return_dict,
+            stg_scale = None,
+            modality_scale = None,
+            guidance_rescale = None,
+            audio_guidance_scale = None,
+            audio_stg_scale = None,
+            audio_modality_scale = None,
+            audio_guidance_rescale = None,
+            spatio_temporal_guidance_blocks = None,
+            use_cross_timestep = None,
             sigmas = None,
             generator = None,
         ):
@@ -6639,6 +6653,15 @@ def test_generate_video_with_metadata_uses_ltx23_family_defaults(
                 "frame_rate": frame_rate,
                 "output_type": output_type,
                 "return_dict": return_dict,
+                "stg_scale": stg_scale,
+                "modality_scale": modality_scale,
+                "guidance_rescale": guidance_rescale,
+                "audio_guidance_scale": audio_guidance_scale,
+                "audio_stg_scale": audio_stg_scale,
+                "audio_modality_scale": audio_modality_scale,
+                "audio_guidance_rescale": audio_guidance_rescale,
+                "spatio_temporal_guidance_blocks": spatio_temporal_guidance_blocks,
+                "use_cross_timestep": use_cross_timestep,
                 "sigmas": sigmas,
                 "generator": generator,
             }
@@ -6657,12 +6680,21 @@ def test_generate_video_with_metadata_uses_ltx23_family_defaults(
     assert pipe.last_kwargs["negative_prompt"] == "ltx default negative"
     assert pipe.last_kwargs["num_inference_steps"] == steps
     assert pipe.last_kwargs["guidance_scale"] == guidance
-    assert pipe.last_kwargs["width"] == 768
-    assert pipe.last_kwargs["height"] == 512
+    assert pipe.last_kwargs["width"] == 960
+    assert pipe.last_kwargs["height"] == 544
     assert pipe.last_kwargs["num_frames"] == 121
     assert pipe.last_kwargs["frame_rate"] == 24.0
     assert pipe.last_kwargs["output_type"] == "np"
     assert pipe.last_kwargs["return_dict"] is False
+    assert pipe.last_kwargs["stg_scale"] == 1.0
+    assert pipe.last_kwargs["modality_scale"] == 3.0
+    assert pipe.last_kwargs["guidance_rescale"] == 0.9
+    assert pipe.last_kwargs["audio_guidance_scale"] == 7.0
+    assert pipe.last_kwargs["audio_stg_scale"] == 1.0
+    assert pipe.last_kwargs["audio_modality_scale"] == 3.0
+    assert pipe.last_kwargs["audio_guidance_rescale"] == 0.7
+    assert pipe.last_kwargs["spatio_temporal_guidance_blocks"] == [28]
+    assert pipe.last_kwargs["use_cross_timestep"] is True
     assert pipe.last_kwargs["sigmas"] == ([1.0, 0.5] if expects_sigmas else None)
     assert meta["family"] == family
     assert meta["num_inference_steps"] == steps
