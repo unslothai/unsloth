@@ -665,9 +665,7 @@ def reingest_knowledge_base(
     new_mode = payload.mode or current_mode
 
     new_embedder = payload.embedding_model or (
-        current_embedder
-        if new_mode == current_mode
-        else resolve_embedder(new_mode)
+        current_embedder if new_mode == current_mode else resolve_embedder(new_mode)
     )
 
     with closing_connection() as conn:

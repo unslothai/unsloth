@@ -135,7 +135,6 @@ def _subprocess_worker(
         dim = int(model.get_sentence_embedding_dimension())
         out_queue.put({"type": "dim", "dim": dim})
 
-
         text_count = _run_standard_chunking(
             pages = pages,
             stored_path = Path(stored_path),
@@ -762,11 +761,7 @@ def enqueue_ingestion(
     from utils.rag.config import resolve_embedder
 
     scope = _scope_for(kb_id, thread_id)
-    model_name = (
-        embedding_model
-        or resolve_embedder(mode)
-        or RAG_EMBEDDING_MODEL
-    )
+    model_name = embedding_model or resolve_embedder(mode) or RAG_EMBEDDING_MODEL
     # Probe the loaded chat backend so the subprocess can caption figures with the
     # user's own vision model (no extra VRAM). Runs for both modes — text splices
     # captions into markdown, multimodal also feeds them to the image-vector encoder.
