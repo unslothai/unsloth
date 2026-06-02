@@ -203,8 +203,8 @@ export function ImagesPage() {
 
   const [prompt, setPrompt] = useState("a tiny ginger sloth coding in a sunlit treehouse, photorealistic");
   const [negativePrompt, setNegativePrompt] = useState("");
-  const [steps, setSteps] = useState(24);
-  const [guidance, setGuidance] = useState(3.5);
+  const [steps, setSteps] = useState(DEFAULT_PRESET.default_steps);
+  const [guidance, setGuidance] = useState(DEFAULT_PRESET.default_guidance);
   const [resolutionIdx, setResolutionIdx] = useState(0);
   const [seed, setSeed] = useState<string>("");
 
