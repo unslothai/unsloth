@@ -1083,9 +1083,10 @@
 		font-weight: 500;
 	}
 
-	/* Right-side Thinking pill (toggle or dropdown). */
+	/* Right-side Thinking pill (toggle or dropdown). pl-2 matches the left
+	   pills so the hover X is not pushed in too far. */
 	.unsloth-thinking-pill {
-		@apply inline-flex shrink-0 cursor-pointer items-center gap-1 rounded-full px-2.5 py-1.5 text-[14px] font-medium text-muted-foreground transition-colors hover:bg-primary/10 dark:hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-40;
+		@apply inline-flex shrink-0 cursor-pointer items-center gap-1 rounded-full py-1.5 pl-2 pr-2.5 text-[14px] font-medium text-muted-foreground transition-colors hover:bg-primary/10 dark:hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-40;
 		/* Reserve a text line so the icon-only (inactive) pill matches the
 		   text pills' height instead of collapsing to the icon. */
 		min-height: calc(1lh + 0.75rem);

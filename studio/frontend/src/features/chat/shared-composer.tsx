@@ -50,6 +50,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { toast } from "@/lib/toast";
 import { McpComposerButton } from "./mcp-composer-button";
+import { NewProjectDialog } from "./components/new-project-dialog";
 import { useChatProjects } from "./hooks/use-chat-projects";
 import { loadModel, validateModel } from "./api/chat-api";
 import {
@@ -415,6 +416,7 @@ export function SharedComposer({
   } | null>(null);
   const [dragging, setDragging] = useState(false);
   const [isComposing, setIsComposing] = useState(false);
+  const [newProjectOpen, setNewProjectOpen] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const composingRef = useRef(false);
   const stuckImeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1122,6 +1124,10 @@ export function SharedComposer({
               e.target.value = "";
             }}
           />
+          <NewProjectDialog
+            open={newProjectOpen}
+            onOpenChange={setNewProjectOpen}
+          />
           {/* Same + side menu as the single-chat composer (ComposerToolsMenu),
               wired to the compare composer's own file/audio inputs and tools. */}
           <DropdownMenu>
@@ -1256,7 +1262,7 @@ export function SharedComposer({
                   Projects
                 </DropdownMenuSubTrigger>
                 <DropdownMenuSubContent className="unsloth-plus-menu w-[200px]">
-                  <DropdownMenuItem onSelect={() => navigate({ to: "/projects" })}>
+                  <DropdownMenuItem onSelect={() => setNewProjectOpen(true)}>
                     <HugeiconsIcon icon={FolderAddIcon} strokeWidth={2} />
                     New project
                   </DropdownMenuItem>

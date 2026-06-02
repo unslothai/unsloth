@@ -47,6 +47,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { sentAudioNames } from "@/features/chat/api/chat-adapter";
 import { useChatProjects } from "@/features/chat/hooks/use-chat-projects";
+import { NewProjectDialog } from "@/features/chat/components/new-project-dialog";
 import { parseExternalModelId } from "@/features/chat/external-providers";
 import { McpComposerButton } from "@/features/chat/mcp-composer-button";
 import { getExternalReasoningCapabilities } from "@/features/chat/provider-capabilities";
@@ -1646,7 +1647,10 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
     navigate({ to: "/chat", search: { compare: compareId } });
   }, [navigate]);
 
+  const [newProjectOpen, setNewProjectOpen] = useState(false);
+
   return (
+    <>
     <DropdownMenu>
       <DropdownMenuTrigger asChild={true}>
         <button
@@ -1766,7 +1770,7 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
             Projects
           </DropdownMenuSubTrigger>
           <DropdownMenuSubContent className="unsloth-plus-menu w-[200px]">
-            <DropdownMenuItem onSelect={() => navigate({ to: "/projects" })}>
+            <DropdownMenuItem onSelect={() => setNewProjectOpen(true)}>
               <HugeiconsIcon icon={FolderAddIcon} strokeWidth={2} />
               New project
             </DropdownMenuItem>
@@ -1790,6 +1794,11 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
         </DropdownMenuSub>
       </DropdownMenuContent>
     </DropdownMenu>
+      <NewProjectDialog
+        open={newProjectOpen}
+        onOpenChange={setNewProjectOpen}
+      />
+    </>
   );
 };
 
