@@ -127,6 +127,7 @@ class _FakeBackend:
             "loaded_at": 0,
             "last_error": None,
             "supported_families": [],
+            "optimization_options": {},
         }
 
     def load_model(self, repo_id, **kw):

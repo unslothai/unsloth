@@ -2517,6 +2517,149 @@ def supported_families() -> list[dict[str, Any]]:
     ]
 
 
+def _module_available(module_name: str) -> bool:
+    try:
+        return importlib.util.find_spec(module_name) is not None
+    except Exception:
+        return False
+
+
+def supported_optimization_options() -> dict[str, Any]:
+    """Public-facing optimization choices for image diffusion loads.
+
+    Keep this data close to the backend constants so the frontend can
+    render available choices without hardcoding backend-only strings.
+    """
+
+    bnb_available = _module_available("bitsandbytes")
+    torchao_available = _module_available("torchao")
+    mslk_available = _module_available("mslk")
+    torch_compile_available = False
+    try:
+        import torch
+
+        torch_compile_available = callable(getattr(torch, "compile", None))
+    except Exception:
+        torch_compile_available = False
+
+    return {
+        "offload_policies": [
+            {
+                "name": DIFFUSION_OFFLOAD_POLICY_AGGRESSIVE,
+                "media_kind": "image",
+                "uses_diffusers_model_cpu_offload": True,
+                "keeps_gguf_weights_cpu_resident": True,
+                "recommended_for": "lowest image VRAM when throughput can drop",
+            },
+            {
+                "name": DIFFUSION_OFFLOAD_POLICY_BALANCED,
+                "media_kind": "image",
+                "uses_diffusers_model_cpu_offload": False,
+                "keeps_gguf_weights_cpu_resident": True,
+                "recommended_for": "default GGUF image tradeoff on CUDA",
+            },
+            {
+                "name": DIFFUSION_OFFLOAD_POLICY_LESS_AGGRESSIVE,
+                "media_kind": "image",
+                "uses_diffusers_model_cpu_offload": False,
+                "keeps_gguf_weights_cpu_resident": "text_encoder_only",
+                "recommended_for": "more throughput when diffusion GGUF fits in VRAM",
+            },
+            {
+                "name": DIFFUSION_OFFLOAD_POLICY_HYBRID,
+                "media_kind": "image",
+                "alias_of": DIFFUSION_OFFLOAD_POLICY_LESS_AGGRESSIVE,
+                "uses_diffusers_model_cpu_offload": False,
+                "keeps_gguf_weights_cpu_resident": "text_encoder_only",
+                "recommended_for": "compatibility alias for less_aggressive",
+            },
+            {
+                "name": DIFFUSION_OFFLOAD_POLICY_NONE,
+                "media_kind": "image",
+                "uses_diffusers_model_cpu_offload": False,
+                "keeps_gguf_weights_cpu_resident": False,
+                "recommended_for": "highest residency when model fits in VRAM",
+            },
+        ],
+        "safetensors_quantizations": [
+            {
+                "name": DIFFUSION_SAFETENSORS_QUANT_NONE,
+                "backend": None,
+                "available": True,
+                "requires": [],
+                "default_components": None,
+            },
+            {
+                "name": DIFFUSION_SAFETENSORS_QUANT_BNB_4BIT,
+                "backend": "bitsandbytes",
+                "available": bnb_available,
+                "requires": ["bitsandbytes"],
+                "default_components": list(DIFFUSION_SAFETENSORS_QUANT_DEFAULT_COMPONENTS),
+            },
+            {
+                "name": DIFFUSION_SAFETENSORS_QUANT_BNB_4BIT_NF4,
+                "backend": "bitsandbytes",
+                "available": bnb_available,
+                "requires": ["bitsandbytes"],
+                "default_components": list(DIFFUSION_SAFETENSORS_QUANT_DEFAULT_COMPONENTS),
+            },
+            {
+                "name": DIFFUSION_SAFETENSORS_QUANT_BNB_8BIT,
+                "backend": "bitsandbytes",
+                "available": bnb_available,
+                "requires": ["bitsandbytes"],
+                "default_components": list(DIFFUSION_SAFETENSORS_QUANT_DEFAULT_COMPONENTS),
+            },
+            {
+                "name": DIFFUSION_SAFETENSORS_QUANT_TORCHAO_INT8_WEIGHT_ONLY,
+                "backend": "torchao",
+                "available": torchao_available,
+                "requires": ["torchao"],
+                "default_components": list(DIFFUSION_SAFETENSORS_QUANT_DEFAULT_COMPONENTS),
+            },
+            {
+                "name": DIFFUSION_SAFETENSORS_QUANT_TORCHAO_INT4_WEIGHT_ONLY,
+                "backend": "torchao",
+                "available": torchao_available and mslk_available,
+                "requires": ["torchao", "mslk"],
+                "default_components": list(DIFFUSION_SAFETENSORS_QUANT_DEFAULT_COMPONENTS),
+            },
+        ],
+        "safetensors_quantization_components": list(
+            DIFFUSION_SAFETENSORS_QUANT_DEFAULT_COMPONENTS
+        ),
+        "compile": {
+            "torch_compile_available": torch_compile_available,
+            "gguf_balanced_dequant_compile": {
+                "default_enabled": True,
+                "automatic_when": (
+                    "CUDA load with offload_policy=balanced and CPU-resident "
+                    "diffusion GGUF weights"
+                ),
+                "status_counter": (
+                    "gguf_prepared_module_counts.diffusion_compiled_dequant_modules"
+                ),
+            },
+            "denoiser_torch_compile": {
+                "default_enabled": False,
+                "recommended_scope": "denoiser_or_repeated_blocks_only",
+                "reason": (
+                    "Useful for long resident sessions, but cold-start cost and "
+                    "CUDA graph compatibility need per-model benchmarking."
+                ),
+            },
+            "group_offload": {
+                "image_default": False,
+                "media_kind": "video",
+                "reason": (
+                    "Diffusers group offload is a video-oriented memory strategy; "
+                    "image defaults use model CPU offload or GGUF residency policies."
+                ),
+            },
+        },
+    }
+
+
 def _enable_flux2_klein_embedded_guidance(pipe: Any, fam: Optional[DiffusionFamily]) -> bool:
     """Optionally make Flux2 Klein use Flux-style single-pass guidance.
 
@@ -3533,6 +3676,7 @@ class DiffusionBackend:
                 "loaded_at": self._loaded_at,
                 "last_error": self._last_error,
                 "supported_families": supported_families(),
+                "optimization_options": supported_optimization_options(),
             }
             if include_internal:
                 # Guard-facing fields: every repo / path / GGUF

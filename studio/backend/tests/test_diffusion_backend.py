@@ -306,6 +306,52 @@ def test_supported_families_payload_shape():
         assert isinstance(entry["supports_gguf_single_file"], bool)
 
 
+def test_supported_optimization_options_payload_shape():
+    from core.inference.diffusion import supported_optimization_options
+
+    payload = supported_optimization_options()
+    assert set(payload.keys()) == {
+        "offload_policies",
+        "safetensors_quantizations",
+        "safetensors_quantization_components",
+        "compile",
+    }
+
+    offload_by_name = {
+        entry["name"]: entry for entry in payload["offload_policies"]
+    }
+    assert offload_by_name["balanced"]["media_kind"] == "image"
+    assert offload_by_name["balanced"]["keeps_gguf_weights_cpu_resident"] is True
+    assert offload_by_name["aggressive"]["uses_diffusers_model_cpu_offload"] is True
+    assert offload_by_name["hybrid"]["alias_of"] == "less_aggressive"
+    assert offload_by_name["none"]["keeps_gguf_weights_cpu_resident"] is False
+
+    quant_by_name = {
+        entry["name"]: entry for entry in payload["safetensors_quantizations"]
+    }
+    assert quant_by_name["bitsandbytes_4bit_nf4"]["backend"] == "bitsandbytes"
+    assert quant_by_name["bitsandbytes_4bit_nf4"]["requires"] == ["bitsandbytes"]
+    assert quant_by_name["torchao_int8_weight_only"]["requires"] == ["torchao"]
+    assert quant_by_name["torchao_int4_weight_only"]["requires"] == [
+        "torchao",
+        "mslk",
+    ]
+    assert payload["safetensors_quantization_components"] == [
+        "transformer",
+        "unet",
+        "text_encoder",
+        "text_encoder_2",
+        "text_encoder_3",
+        "pe",
+    ]
+
+    compile_options = payload["compile"]
+    assert compile_options["gguf_balanced_dequant_compile"]["default_enabled"] is True
+    assert compile_options["denoiser_torch_compile"]["default_enabled"] is False
+    assert compile_options["group_offload"]["image_default"] is False
+    assert compile_options["group_offload"]["media_kind"] == "video"
+
+
 # ── singleton ───────────────────────────────────────────────────
 
 
@@ -363,6 +409,7 @@ def test_status_shape_unloaded():
         "loaded_at",
         "last_error",
         "supported_families",
+        "optimization_options",
     }
     assert expected_keys.issubset(s.keys())
     # Guard-facing fields are gated behind include_internal=True.
