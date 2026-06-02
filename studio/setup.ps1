@@ -2060,6 +2060,22 @@ if ($env:SKIP_STUDIO_BASE -ne "1" -and $env:STUDIO_LOCAL_INSTALL -ne "1") {
     if ($InstalledVer -and $LatestVer -and ($InstalledVer -eq $LatestVer)) {
         step "python" "$_PkgName $InstalledVer is up to date"
         $SkipPythonDeps = $true
+        # ...but don't skip if an AMD GPU is detected and the installed PyTorch is
+        # CPU-only. That happens when the host was installed before ROCm-wheel
+        # support (or the GPU was added/enabled later): the fast "up to date" path
+        # would leave the user stuck on CPU torch with Train/Export disabled
+        # forever. Force the dependency pass so the ROCm wheels get installed.
+        if ($script:ROCmGfxArch) {
+            $_torchIsCpu = $true
+            try {
+                & python -c "import torch, sys; sys.exit(0 if torch.cuda.is_available() else 1)" 2>$null
+                if ($LASTEXITCODE -eq 0) { $_torchIsCpu = $false }
+            } catch {}
+            if ($_torchIsCpu) {
+                substep "AMD GPU ($script:ROCmGfxArch) detected but installed PyTorch is CPU-only -- reinstalling ROCm PyTorch" "Cyan"
+                $SkipPythonDeps = $false
+            }
+        }
     } elseif ($InstalledVer -and $LatestVer) {
         substep "$_PkgName $InstalledVer -> $LatestVer available, updating..."
     } elseif (-not $LatestVer) {

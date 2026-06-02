@@ -23,11 +23,17 @@
 # ──────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
-ROCM_VER="7.2.0"
-ROCM_BIN_VER="7.2.1"        # rocr4wsl userspace tools ship under 7.2.1
+# Verified against: ROCm 7.2 + AMD Adrenalin 26.3.1 + Ubuntu 24.04.4 + WSL2,
+# circa 2026-06. These are MOVING targets -- the amdgpu-install .deb is scraped
+# from repo.radeon.com, librocdxg is built from a Git ref, and the version pins
+# below WILL rot. Bump them (and re-verify) when AMD ships a newer ROCm-on-WSL.
+ROCM_VER="7.2.0"           # ROCm release to install; bump as AMD ships newer
+ROCM_BIN_VER="7.2.1"       # rocr4wsl userspace tools ship under 7.2.1
 GFX="gfx1151"
+LIBROCDXG_REF="develop"    # ROCm/librocdxg ref to build; pin to a known-good commit if develop breaks
 WIN_SDK_INC='/mnt/c/Program Files (x86)/Windows Kits/10/Include/10.0.26100.0'
 TORCH_INDEX="https://repo.amd.com/rocm/whl/${GFX}/"   # what install.sh routes gfx1151 to
+ROCM_DIR=""                # resolved to the real /opt/rocm-* dir after install (may differ from ROCM_VER)
 
 say()  { printf '\n\033[1;36m== %s\033[0m\n' "$*"; }
 die()  { printf '\n\033[1;31m[BLOCKED] %s\033[0m\n' "$*" >&2; exit 1; }
@@ -79,7 +85,12 @@ if [ ! -d "/opt/rocm-${ROCM_VER}" ]; then
     sudo apt install -y /tmp/amdgpu-install.deb
     sudo amdgpu-install -y --usecase=wsl,rocm --no-dkms
 fi
-ls "/opt/rocm-${ROCM_VER}/" >/dev/null || die "ROCm ${ROCM_VER} not installed under /opt."
+# Resolve the actual install dir -- amdgpu-install may lay ROCm down under a
+# patch-version dir (e.g. /opt/rocm-7.2.1) that differs from $ROCM_VER. Prefer
+# the generic /opt/rocm symlink, else the newest /opt/rocm-* dir.
+if [ -d /opt/rocm ]; then ROCM_DIR="/opt/rocm"; else ROCM_DIR="$(ls -d /opt/rocm-* 2>/dev/null | sort -V | tail -1)"; fi
+{ [ -n "${ROCM_DIR}" ] && [ -d "${ROCM_DIR}" ]; } || die "ROCm not installed under /opt (expected /opt/rocm or /opt/rocm-*)."
+echo "Using ROCm at ${ROCM_DIR}"
 
 # ── Step 2: swap in the WSL/DXG-aware HSA runtime ──
 say "Installing WSL-specific HSA runtime (rocr4wsl)"
@@ -89,18 +100,18 @@ sudo apt install -y hsa-runtime-rocr4wsl-amdgpu
 dpkg -l | grep -q rocr4wsl || die "hsa-runtime-rocr4wsl-amdgpu did not install."
 
 # ── Step 3: build librocdxg (DXG <-> HSA bridge) ──
-say "Building librocdxg (develop branch)"
+say "Building librocdxg (${LIBROCDXG_REF})"
 [ -d "${WIN_SDK_INC}/shared" ] || die "Windows SDK headers not found at ${WIN_SDK_INC}/shared. Install the Windows 11 SDK on Windows (or adjust WIN_SDK_INC)."
 rm -rf "${HOME}/librocdxg"
 git clone https://github.com/ROCm/librocdxg.git "${HOME}/librocdxg"
-( cd "${HOME}/librocdxg" && git checkout develop \
+( cd "${HOME}/librocdxg" && git checkout "${LIBROCDXG_REF}" \
     && mkdir -p build && cd build \
     && cmake .. -DWIN_SDK="${WIN_SDK_INC}/shared" \
     && make -j"$(nproc)" \
     && sudo make install )
-# Fix the soname symlink ROCm's loader expects
-if [ -f "/opt/rocm-${ROCM_VER}/lib/librocdxg.so.1.1.0" ]; then
-    sudo ln -sf "librocdxg.so.1.1.0" "/opt/rocm-${ROCM_VER}/lib/librocdxg.so.1"
+# Fix the soname symlink ROCm's loader expects (under the resolved ROCm dir)
+if [ -f "${ROCM_DIR}/lib/librocdxg.so.1.1.0" ]; then
+    sudo ln -sf "librocdxg.so.1.1.0" "${ROCM_DIR}/lib/librocdxg.so.1"
 fi
 sudo ldconfig
 
@@ -111,14 +122,14 @@ if ! grep -q "ROCm-on-WSL (gfx1151)" "${HOME}/.bashrc" 2>/dev/null; then
         echo "# >>> ROCm-on-WSL (gfx1151) >>>"
         echo "export HSA_ENABLE_DXG_DETECTION=1"
         echo "export TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1"
-        echo "export PATH=/opt/rocm-${ROCM_BIN_VER}/bin:/opt/rocm/bin:\$PATH"
-        echo "export LD_LIBRARY_PATH=/opt/rocm-${ROCM_VER}/lib:\${LD_LIBRARY_PATH:-}"
+        echo "export PATH=${ROCM_DIR}/bin:/opt/rocm/bin:\$PATH"
+        echo "export LD_LIBRARY_PATH=${ROCM_DIR}/lib:\${LD_LIBRARY_PATH:-}"
         echo "# <<< ROCm-on-WSL (gfx1151) <<<"
     } >> "${HOME}/.bashrc"
 fi
 export HSA_ENABLE_DXG_DETECTION=1
-export PATH="/opt/rocm-${ROCM_BIN_VER}/bin:/opt/rocm/bin:${PATH}"
-export LD_LIBRARY_PATH="/opt/rocm-${ROCM_VER}/lib:${LD_LIBRARY_PATH:-}"
+export PATH="${ROCM_DIR}/bin:/opt/rocm/bin:${PATH}"
+export LD_LIBRARY_PATH="${ROCM_DIR}/lib:${LD_LIBRARY_PATH:-}"
 
 # ── Step 5: verify the runtime sees the GPU ──
 say "Verifying rocminfo sees ${GFX}"

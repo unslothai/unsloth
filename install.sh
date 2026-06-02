@@ -2014,14 +2014,20 @@ elif case "$TORCH_INDEX_URL" in */rocm*|*/gfx*) true ;; *) false ;; esac; then
         substep "gfx arch from UNSLOTH_ROCM_GFX_ARCH env override: $_gpu_disp_gfx"
     # Name-based arch inference when tools don't report gfx (mirrors install.ps1 nameArchTable)
     elif [ -z "$_gpu_disp_gfx" ] && [ -n "$_gpu_disp_mkt" ]; then
+        # Kept in sync with the nameArchTable in install.ps1 / setup.ps1.
+        # gfx1102 is matched BEFORE gfx1100 so the spaceless "RX 7700S" lands on
+        # gfx1102 (bash case has no negative lookahead like the PowerShell tables).
         case "$_gpu_disp_mkt" in
-            *"9070 XT"*|*9080*)                                                     _gpu_disp_gfx="gfx1201" ;;  # RDNA 4
-            *9070*|*9060*)                                                          _gpu_disp_gfx="gfx1200" ;;  # RDNA 4
-            *"8060S"*|*"890M"*|*"Strix Halo"*|*"HX 37"*|*"HX 38"*|*"AI 9 HX"*)  _gpu_disp_gfx="gfx1151" ;;  # RDNA 3.5 iGPU
-            *"880M"*|*"Strix Point"*|*"AI 9 36"*|*"AI 7 35"*|*"AI 5 34"*)        _gpu_disp_gfx="gfx1150" ;;  # RDNA 3.5 iGPU
-            *"RX 7900"*|*"RX 7800"*|*"RX 7700"*)                                  _gpu_disp_gfx="gfx1100" ;;  # RDNA 3 desktop
-            *"RX 7600"*)                                                           _gpu_disp_gfx="gfx1102" ;;  # RDNA 3
-            *"780M"*|*"760M"*|*"740M"*|*"Phoenix"*)                               _gpu_disp_gfx="gfx1103" ;;  # RDNA 3 iGPU
+            *"9070 XT"*|*9080*)                                                                            _gpu_disp_gfx="gfx1201" ;;  # RDNA 4
+            *9070*|*9060*)                                                                                 _gpu_disp_gfx="gfx1200" ;;  # RDNA 4
+            *"8060S"*|*"8050S"*|*"8040S"*|*"890M"*|*"Strix Halo"*|*"Ryzen AI Max"*|*"AI Max"*|*"HX 37"*|*"HX 38"*|*"AI 9 HX"*) _gpu_disp_gfx="gfx1151" ;;  # RDNA 3.5 (Strix Halo / Radeon 8000S iGPU)
+            *"880M"*|*"860M"*|*"840M"*|*"Strix Point"*|*"Krackan"*|*"AI 9 36"*|*"AI 7 35"*|*"AI 5 34"*|*"AI 7 PRO 35"*|*"AI 5 33"*) _gpu_disp_gfx="gfx1150" ;;  # RDNA 3.5 (Strix/Krackan Point)
+            *"RX 7600"*|*"RX 7700S"*|*"RX 7650"*|*"PRO W7600"*|*"PRO W7500"*|*"PRO V710"*)                  _gpu_disp_gfx="gfx1102" ;;  # RDNA 3 (Navi 33)
+            *"RX 7900"*|*"RX 7800"*|*"RX 7700"*|*"PRO W7900"*|*"PRO W7800"*|*"PRO W7700"*)                  _gpu_disp_gfx="gfx1100" ;;  # RDNA 3 desktop / workstation (Navi 31)
+            *"780M"*|*"760M"*|*"740M"*|*"Phoenix"*|*"Hawk Point"*|*"Z1 Extreme"*|*"Z2 Extreme"*)            _gpu_disp_gfx="gfx1103" ;;  # RDNA 3 iGPU (Phoenix / Hawk Point)
+            *"RX 6900"*|*"RX 6800"*|*"RX 6750"*|*"RX 6700"*|*"PRO W6800"*|*"PRO W6900"*)                    _gpu_disp_gfx="gfx1030" ;;  # RDNA 2 (Navi 21)
+            *"RX 6650"*|*"RX 6600"*|*"PRO W6600"*|*"PRO W6650"*)                                            _gpu_disp_gfx="gfx1032" ;;  # RDNA 2 (Navi 23)
+            *"RX 6500"*|*"RX 6400"*|*"RX 6300"*|*"PRO W6400"*|*"PRO W6500"*)                                _gpu_disp_gfx="gfx1034" ;;  # RDNA 2 (Navi 24)
         esac
         if [ -n "$_gpu_disp_gfx" ]; then
             substep "gfx arch inferred from GPU name: $_gpu_disp_gfx"
