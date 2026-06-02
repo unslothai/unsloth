@@ -1040,6 +1040,38 @@ class TestLinuxCudaChoiceFromRelease:
         log_entries = result.selection_log
         assert any("unavailable_on_host" in entry for entry in log_entries)
 
+    def test_arm64_host_selects_linux_arm64_cuda_kind(self, monkeypatch):
+        # An arm64 CUDA host (DGX Spark / Grace Hopper) selects the
+        # linux-arm64-cuda bundle and ignores the x64 linux-cuda one.
+        mock_linux_runtime(monkeypatch, ["cuda13"])
+        host = make_host(
+            machine = "aarch64",
+            driver_cuda_version = (13, 0),
+            compute_caps = ["90"],
+        )
+        arm = make_artifact(
+            "app-b9457-linux-arm64-cuda13-portable.tar.gz",
+            install_kind = "linux-arm64-cuda",
+            runtime_line = "cuda13",
+            coverage_class = "portable",
+            supported_sms = ["90", "100", "120", "121"],
+            min_sm = 90,
+            max_sm = 121,
+            bundle_profile = "cuda13-portable",
+        )
+        x64 = make_artifact(
+            "app-b9457-linux-x64-cuda13-portable.tar.gz",
+            install_kind = "linux-cuda",
+            runtime_line = "cuda13",
+        )
+        release = make_release([arm, x64])
+        result = linux_cuda_choice_from_release(host, release)
+        assert result is not None
+        assert result.primary.install_kind == "linux-arm64-cuda"
+        assert (
+            result.primary.name == "app-b9457-linux-arm64-cuda13-portable.tar.gz"
+        )
+
     # --- SM matching ---
 
     def test_exact_sm_match(self, monkeypatch):
@@ -2843,24 +2875,29 @@ class TestResolveSimpleMacosPin:
 
 
 class TestLinuxArm64ForkFallsBackToSource:
-    """The unslothai/llama.cpp fork ships only linux-x64 bundles. An arm64
-    Linux host with a GPU (GH200/GB200/DGX Spark) routes to the fork and must
-    fall back to a source build instead of selecting an x64 binary."""
+    """The fork now ships linux-arm64-cuda bundles (GH200/GB200/DGX Spark). An
+    arm64 Linux host on the fork no longer hard-fails on the simple path; it
+    delegates to the manifest-aware resolver, which selects the arm64 CUDA
+    bundle (or falls back to source only if none matches)."""
 
-    def test_arm64_nvidia_fork_raises_before_fetching_releases(self, monkeypatch):
-        # Guard fires before any release is fetched: poison the iterator to prove
-        # it is never called.
-        def _boom(*_a, **_k):
-            raise AssertionError("iterator must not run for arm64 fork hosts")
+    def test_arm64_nvidia_fork_delegates_to_manifest_resolver(self, monkeypatch):
+        # arm64 fork hosts are no longer blocked up front; the simple resolver
+        # hands them to the manifest-aware resolver instead.
+        called = {}
+
+        def _full(llama_tag, host, repo, tag, **_kw):
+            called["args"] = (host.machine, repo)
+            return "b9457", ["plan"]
 
         monkeypatch.setattr(
-            INSTALL_LLAMA_PREBUILT, "iter_release_payloads_by_time", _boom
+            INSTALL_LLAMA_PREBUILT, "resolve_install_release_plans", _full
         )
         host = make_host(system = "Linux", machine = "aarch64")
-        with pytest.raises(PrebuiltFallback, match = "linux-x64 prebuilts"):
-            resolve_simple_install_release_plans(
-                "latest", host, "unslothai/llama.cpp", ""
-            )
+        tag, plans = resolve_simple_install_release_plans(
+            "latest", host, "unslothai/llama.cpp", ""
+        )
+        assert called.get("args") == ("aarch64", "unslothai/llama.cpp")
+        assert plans == ["plan"]
 
     def test_x86_64_fork_is_not_blocked_by_the_arch_guard(self, monkeypatch):
         # x64 host must pass the guard and reach the iterator (here empty, so it

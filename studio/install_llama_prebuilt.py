@@ -1664,16 +1664,20 @@ def resolve_simple_install_release_plans(
     max_release_fallbacks: int = DEFAULT_MAX_PREBUILT_RELEASE_FALLBACKS,
 ) -> tuple[str, list[InstallReleasePlan]]:
     repo = published_repo or DEFAULT_PUBLISHED_REPO
-    requested_tag = normalized_requested_llama_tag(llama_tag)
-    # The unslothai/llama.cpp fork ships only linux-x64 bundles. An arm64 Linux
-    # host with a GPU (GH200/GB200/DGX Spark) routes here; it must not install an
-    # x64 binary, so fall back to a source build that targets the GPU rather than
-    # selecting the wrong arch (or silently dropping to a CPU arm64 build).
-    if host.is_linux and not host.is_x86_64 and repo == DEFAULT_PUBLISHED_REPO:
-        raise PrebuiltFallback(
-            f"{repo} ships only linux-x64 prebuilts; "
-            f"{host.machine or 'non-x64'} Linux falls back to source build"
+    # The fork now ships multi-platform bundles (linux-arm64 CUDA, ROCm, Windows
+    # CUDA, macOS), not just linux-x64. Only plain linux-x64 keeps this fast
+    # manifest-light path; every other host delegates to the manifest-aware
+    # resolver, which reads llama-prebuilt-manifest.json to pick the right
+    # install_kind (arm64 CUDA, per-gfx ROCm, Windows CUDA, fork macOS).
+    if repo == DEFAULT_PUBLISHED_REPO and not (host.is_linux and host.is_x86_64):
+        return resolve_install_release_plans(
+            llama_tag,
+            host,
+            published_repo,
+            published_release_tag,
+            max_release_fallbacks = max_release_fallbacks,
         )
+    requested_tag = normalized_requested_llama_tag(llama_tag)
     allow_older_release_fallback = (
         requested_tag == "latest" and not published_release_tag
     )
@@ -2300,10 +2304,14 @@ def linux_cuda_choice_from_release(
                 else "none"
             )
         )
+    # arm64 CUDA hosts (DGX Spark / Grace Hopper) consume linux-arm64-cuda
+    # bundles; x64 hosts consume linux-cuda. The SM / runtime-line matching
+    # below is arch-agnostic and applies to both.
+    cuda_install_kind = "linux-arm64-cuda" if host.is_arm64 else "linux-cuda"
     published_artifacts = [
         artifact
         for artifact in release.artifacts
-        if artifact.install_kind == "linux-cuda"
+        if artifact.install_kind == cuda_install_kind
     ]
     published_asset_names = sorted(
         artifact.asset_name for artifact in published_artifacts
@@ -2358,7 +2366,7 @@ def linux_cuda_choice_from_release(
                 url = asset_url,
                 source_label = "published",
                 is_ready_bundle = True,
-                install_kind = "linux-cuda",
+                install_kind = cuda_install_kind,
                 bundle_profile = artifact.bundle_profile,
                 runtime_line = artifact.runtime_line,
                 coverage_class = artifact.coverage_class,
@@ -4579,7 +4587,13 @@ def runtime_patterns_for_choice(choice: AssetChoice) -> list[str]:
     # libraries between b9279 and b9283) without us re-enumerating
     # every new file. Studio only invokes llama-server and llama-quantize;
     # other CLIs upstream ships (llama-cli, llama-bench, ...) are skipped.
-    if choice.install_kind in {"linux-cpu", "linux-cuda", "linux-rocm", "linux-arm64"}:
+    if choice.install_kind in {
+        "linux-cpu",
+        "linux-cuda",
+        "linux-arm64-cuda",
+        "linux-rocm",
+        "linux-arm64",
+    }:
         return ["llama-server", "llama-quantize", "lib*.so*"]
     if choice.install_kind in {"macos-arm64", "macos-x64"}:
         return ["llama-server", "llama-quantize", "lib*.dylib"]
@@ -5617,6 +5631,7 @@ def validate_server(
         # pass one (keeps backwards compatibility with older call sites).
         _gpu_kinds = {
             "linux-cuda",
+            "linux-arm64-cuda",
             "linux-rocm",
             "windows-cuda",
             "windows-hip",
@@ -6011,7 +6026,7 @@ def resolve_install_release_plans(
         checksums = resolved_release.checksums
         resolved_tag = bundle.upstream_tag
         try:
-            if host.is_linux and host.is_x86_64 and host.has_usable_nvidia:
+            if host.is_linux and host.has_usable_nvidia:
                 linux_cuda_selection = resolve_linux_cuda_choice(host, bundle)
                 attempts = apply_approved_hashes(
                     linux_cuda_selection.attempts, checksums
@@ -6182,7 +6197,7 @@ def runtime_payload_health_groups(choice: AssetChoice) -> list[list[str]]:
             ["libggml-cpu*.so*"],
             ["libmtmd.so*"],
         ]
-    if choice.install_kind == "linux-cuda":
+    if choice.install_kind in {"linux-cuda", "linux-arm64-cuda"}:
         return [
             ["libllama-common.so*"],
             ["libllama.so*"],
