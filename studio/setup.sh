@@ -1164,6 +1164,26 @@ else
                 else
                     CMAKE_ARGS="$CMAKE_ARGS -DGGML_CUDA=ON"
 
+                    # glibc >= 2.41 added rsqrt()/rsqrtf() (gated by __GLIBC_USE(IEC_60559_FUNCS_EXT_C23),
+                    # which g++ enables via _GNU_SOURCE). CUDA Toolkits < 13.3 declare these in
+                    # <crt/math_functions.h> without a matching exception specifier -> every .cu fails
+                    # "exception specification is incompatible", and the GPU build silently drops to CPU.
+                    # -allow-unsupported-compiler does NOT fix this (header clash, not the GNU-version
+                    # #error); no host gcc avoids it. NVIDIA fixed it in CUDA 13.3 (_NV_RSQRT_SPECIFIER).
+                    # Diagnostic only: never changes flags / never aborts -> cannot regress any platform.
+                    _GLIBC_VER="$(getconf GNU_LIBC_VERSION 2>/dev/null | awk '{print $2}')" || _GLIBC_VER=""
+                    if [ -n "$_GLIBC_VER" ]; then
+                        _GLIBC_MAJ="${_GLIBC_VER%%.*}"; _GLIBC_MIN="${_GLIBC_VER#*.}"; _GLIBC_MIN="${_GLIBC_MIN%%.*}"
+                        _CU_MAJ="${_NVCC_VER%%.*}";     _CU_MIN="${_NVCC_VER#*.}";     _CU_MIN="${_CU_MIN%%.*}"
+                        if [ "${_GLIBC_MAJ:-0}" -eq 2 ] 2>/dev/null && [ "${_GLIBC_MIN:-0}" -ge 41 ] 2>/dev/null \
+                           && { [ "${_CU_MAJ:-0}" -lt 13 ] 2>/dev/null \
+                                || { [ "${_CU_MAJ:-0}" -eq 13 ] 2>/dev/null && [ "${_CU_MIN:-0}" -lt 3 ] 2>/dev/null; }; }; then
+                            substep "CUDA toolkit ${_NVCC_VER} is incompatible with glibc ${_GLIBC_VER} (rsqrt/rsqrtf header clash)." "$C_ERR"
+                            substep "the GPU build will fail to compile and fall back to CPU -- install CUDA Toolkit >= 13.3:" "$C_WARN"
+                            substep "https://developer.nvidia.com/cuda-downloads  (setup.sh auto-selects the newest /usr/local/cuda-*)" "$C_WARN"
+                        fi
+                    fi
+
                     CUDA_ARCHS=""
                     if command -v nvidia-smi &>/dev/null; then
                         _raw_caps=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null || true)

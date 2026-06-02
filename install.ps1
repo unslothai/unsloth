@@ -1457,6 +1457,82 @@ shell.Run cmd, 0, False
     }
     $TorchIndexUrl = Get-TorchIndexUrl
 
+    # ===== Windows-on-ARM + NVIDIA GPU -> automatic WSL2 fallback (N1X "RTX Spark" / DGX Spark-class) =====
+    # Native Windows-ARM64 has no CUDA PyTorch wheel and no Triton wheel for win_arm64, so the GPU
+    # training/inference stack cannot run natively. When an NVIDIA GPU is present on ARM64, transparently
+    # set up the supported path for an average user: enable/install WSL2 and run the Linux installer there
+    # (full GPU). STRICTLY gated on ARM64 + NVIDIA -> normal x86_64 Windows (NVIDIA or AMD) and
+    # ARM64-without-NVIDIA are byte-for-byte unaffected and continue the native install below.
+    # Opt out with UNSLOTH_NO_WSL_FALLBACK=1; choose the distro with UNSLOTH_WSL_DISTRO.
+    try { $_winArm64 = ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString() -ieq 'Arm64') } catch { $_winArm64 = $false }
+    if ($_winArm64 -and $HasNvidiaSmi -and (-not $SkipTorch) -and ($env:UNSLOTH_NO_WSL_FALLBACK -ne '1')) {
+        step "wsl" "Windows on ARM + NVIDIA detected -- routing GPU setup through WSL2 (supported path)"
+        substep "native Windows-ARM64 has no CUDA PyTorch/Triton yet; WSL2 delivers full GPU." "Yellow"
+
+        $wslReady = $false
+        if (Get-Command wsl.exe -ErrorAction SilentlyContinue) {
+            try { & wsl.exe --status *> $null; if ($LASTEXITCODE -eq 0) { $wslReady = $true } } catch {}
+        }
+
+        if (-not $wslReady) {
+            # Enabling WSL2 is a one-time operation that requires admin + a reboot.
+            $isAdmin = $false
+            try { $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltinRole]::Administrator) } catch {}
+            step "wsl" "WSL2 isn't enabled yet -- one-time setup (needs admin + reboot)" "Yellow"
+            if ($isAdmin) {
+                substep "enabling WSL2..." "Cyan"
+                try { & wsl.exe --install --no-launch } catch {}
+                substep "WSL2 enabled. REBOOT, then re-run:  irm https://unsloth.ai/install.ps1 | iex" "Green"
+            } else {
+                substep "in an ADMINISTRATOR PowerShell run:   wsl --install" "Cyan"
+                substep "reboot, then re-run:                 irm https://unsloth.ai/install.ps1 | iex" "Cyan"
+            }
+            return
+        }
+
+        $distro = if ($env:UNSLOTH_WSL_DISTRO) { $env:UNSLOTH_WSL_DISTRO } else { "Ubuntu-24.04" }
+        # Detect the distro by exit code (encoding-proof; wsl --list emits UTF-16 that PS mis-parses).
+        $haveDistro = $false
+        try { & wsl.exe -d $distro -- true *> $null; if ($LASTEXITCODE -eq 0) { $haveDistro = $true } } catch {}
+        if (-not $haveDistro) {
+            substep "installing WSL distro '$distro' (first time only)..." "Cyan"
+            try { & wsl.exe --install -d $distro --no-launch } catch {}
+        }
+        substep "installing Unsloth Studio inside WSL '$distro' with full GPU (this downloads PyTorch)..." "Cyan"
+        $wslInstall = 'export DEBIAN_FRONTEND=noninteractive; apt-get update -y >/dev/null 2>&1; apt-get install -y build-essential cmake git curl pciutils >/dev/null 2>&1; curl -fsSL https://unsloth.ai/install.sh | sh'
+        # install.sh writes diagnostics to stderr and may exit non-zero on the optional llama.cpp
+        # prebuilt step (no aarch64 prebuilt exists) -- that must NOT abort us under -ErrorAction Stop,
+        # since torch + unsloth + Studio still install. Lower EAP around the call (same idiom as above).
+        $prevEapWsl = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        try {
+            & wsl.exe -d $distro -u root -- bash -lc $wslInstall
+            $wslRc = $LASTEXITCODE
+        } finally {
+            $ErrorActionPreference = $prevEapWsl
+        }
+        Write-Host ""
+        # The optional llama.cpp prebuilt step exits non-zero on aarch64 (no prebuilt) even when
+        # torch + unsloth + Studio installed fine -- so verify torch.cuda directly instead of trusting $wslRc.
+        $torchOk = $false
+        $prevEapChk = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        try {
+            & wsl.exe -d $distro -u root -- /root/.unsloth/studio/unsloth_studio/bin/python -c "import torch,sys; sys.exit(0 if torch.cuda.is_available() else 3)" *> $null
+            $torchOk = ($LASTEXITCODE -eq 0)
+        } catch {} finally { $ErrorActionPreference = $prevEapChk }
+        if ($torchOk) {
+            step "done" "Unsloth Studio installed in WSL '$distro' -- GPU ready (torch.cuda available)." "Green"
+        } else {
+            step "wsl" "WSL Studio install did not finish cleanly (torch.cuda not detected; inner exit $wslRc) -- see log above." "Yellow"
+        }
+        substep "Launch it from Windows (then open http://localhost:8888):" "Cyan"
+        substep "    wsl -d $distro -u root -- bash -lic 'unsloth studio -p 8888'" "Cyan"
+        substep "GPU training + GGUF export run inside WSL. (GGUF *inference* additionally needs a CUDA llama.cpp build.)" "Yellow"
+        if ($torchOk) { $global:LASTEXITCODE = 0 }
+        return
+    }
+
     # ── GPU arch → newest compatible Windows ROCm wheel release ──
     # Wheels bundle their own ROCm runtime; the installed HIP SDK version does
     # not constrain which release to use.  Always picks the newest release that
