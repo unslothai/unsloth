@@ -1491,8 +1491,8 @@ shell.Run cmd, 0, False
             #    (gfx120X/110X/1151/1150/103X); unknown names fall back to CPU.
             elseif ($ROCmGpuLabel) {
                 $nameArchTable = @(
-                    @{ P = "9070 XT|9080|W9[0-9]{3}";                              A = "gfx1201" }  # RDNA 4 (RX 9070 XT / Pro W9000)
-                    @{ P = "9070|9060|RX 90[0-9]{2}";                              A = "gfx1200" }  # RDNA 4 (RX 9000)
+                    @{ P = "9070 XT|9080";                                        A = "gfx1201" }  # RDNA 4 (RX 9070 XT / 9080)
+                    @{ P = "9070|9060";                                           A = "gfx1200" }  # RDNA 4 (RX 9070 / 9060)
                     @{ P = "8060S|8050S|8040S|890M|Strix Halo|Ryzen AI Max|HX 37[05]|HX 38[05]|AI 9 HX|AI Max"; A = "gfx1151" }  # RDNA 3.5 (Strix Halo / Radeon 8000S)
                     @{ P = "880M|860M|840M|Strix Point|Krackan|AI 9 36[05]|AI 7 35[05]|AI 5 34[05]|AI 7 PRO 35|AI 5 33"; A = "gfx1150" }  # RDNA 3.5 (Strix/Krackan Point)
                     @{ P = "RX 7900|RX 7800|RX 7700(?! S)|PRO W7900|PRO W7800|PRO W7700"; A = "gfx1100" }  # RDNA 3 desktop/workstation (Navi 31)
