@@ -43,7 +43,6 @@ async def _sse_auth(
 
 from core.rag import embeddings, ingestion, retrieval, vector_store
 from core.rag.authorization import document_for_subject_or_404
-from core.rag.locators import backfill_document_locators
 from core.rag.vector_store import kb_scope, thread_scope
 from loggers import get_logger
 from storage.studio_db import (
@@ -976,18 +975,6 @@ class PreviewFileUrlResponse(BaseModel):
     expiresAt: int
 
 
-class LocatorBackfillResponse(BaseModel):
-    documentId: str
-    totalChunks: int
-    matched: int
-    alreadyLocated: int
-    ambiguous: int
-    missing: int
-    skipped: int
-    regionsMatched: int
-    pagesRefreshed: int
-
-
 # Extension allowlist for inline rendering / disposition. Unlisted ext collapses
 # to ("application/octet-stream", attachment, "unknown"). .html / .htm serve as
 # text/plain attachment (decisions Q7 + Risk #3) so uploaded HTML can't execute in the app origin.
@@ -1329,47 +1316,6 @@ def get_document_preview_target(
         lineStart = chunk_row["line_start"],
         lineEnd = chunk_row["line_end"],
         pdfRegions = _parse_pdf_regions(chunk_row["pdf_regions_json"]),
-    )
-
-
-@router.post(
-    "/documents/{document_id}/locators/backfill",
-    response_model = LocatorBackfillResponse,
-)
-def backfill_document_locators_route(
-    document_id: str,
-    current_subject: str = Depends(get_current_subject),
-) -> LocatorBackfillResponse:
-    """In-place locator backfill for existing citations.
-
-    This preserves ``document_id`` and ``chunk_id``. Chunks are updated only
-    when their text has one unambiguous match in the parsed document text;
-    duplicate or missing matches remain null.
-    """
-    doc_row = document_for_subject_or_404(document_id, current_subject)
-    resolved = _resolve_document_file_or_404(doc_row, document_id)
-    try:
-        result = backfill_document_locators(document_id, resolved)
-    except Exception as exc:
-        logger.warning(
-            "RAG locator backfill failed",
-            document_id = document_id,
-            error = str(exc),
-        )
-        raise HTTPException(
-            status_code = 400,
-            detail = "Document locators could not be backfilled",
-        ) from exc
-    return LocatorBackfillResponse(
-        documentId = result.document_id,
-        totalChunks = result.total_chunks,
-        matched = result.matched,
-        alreadyLocated = result.already_located,
-        ambiguous = result.ambiguous,
-        missing = result.missing,
-        skipped = result.skipped,
-        regionsMatched = result.regions_matched,
-        pagesRefreshed = result.pages_refreshed,
     )
 
 

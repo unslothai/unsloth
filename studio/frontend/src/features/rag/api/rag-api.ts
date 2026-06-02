@@ -102,18 +102,6 @@ export interface PreviewFileUrl {
   expiresAt: number;
 }
 
-export interface LocatorBackfillResult {
-  documentId: string;
-  totalChunks: number;
-  matched: number;
-  alreadyLocated: number;
-  ambiguous: number;
-  missing: number;
-  skipped: number;
-  regionsMatched: number;
-  pagesRefreshed: number;
-}
-
 export interface SearchRequest {
   query: string;
   kb_id?: string;
@@ -488,16 +476,6 @@ export async function fetchPreviewFileUrl(
     ...body,
     url: apiUrl(body.url),
   };
-}
-
-export async function backfillDocumentLocators(
-  documentId: string,
-): Promise<LocatorBackfillResult> {
-  const response = await authFetch(
-    `/api/rag/documents/${encodeURIComponent(documentId)}/locators/backfill`,
-    { method: "POST" },
-  );
-  return parseJsonOrThrow<LocatorBackfillResult>(response);
 }
 
 /** Download the original uploaded file as a Blob via `authFetch` (bearer

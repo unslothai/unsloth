@@ -45,7 +45,6 @@ vi.mock("event-source-polyfill", () => ({
 }));
 
 import {
-  backfillDocumentLocators,
   fetchPreviewFileUrl,
   fetchPreviewTarget,
   subscribeToJobEvents,
@@ -122,34 +121,6 @@ describe("RAG API preview target", () => {
     expect(result.url).not.toContain("Authorization");
   });
 
-  it("posts the explicit locator backfill action", async () => {
-    mockAuthFetch.mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          documentId: "doc-abc",
-          totalChunks: 1,
-          matched: 1,
-          alreadyLocated: 0,
-          ambiguous: 0,
-          missing: 0,
-          skipped: 0,
-          regionsMatched: 0,
-          pagesRefreshed: 1,
-        }),
-        {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        },
-      ),
-    );
-
-    await backfillDocumentLocators("doc id/with?slash");
-
-    expect(mockAuthFetch).toHaveBeenCalledWith(
-      "/api/rag/documents/doc%20id%2Fwith%3Fslash/locators/backfill",
-      { method: "POST" },
-    );
-  });
 });
 
 describe("RAG API job events", () => {
