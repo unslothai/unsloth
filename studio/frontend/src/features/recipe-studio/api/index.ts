@@ -2,7 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
-import { formatFastApiDetail, readFastApiError } from "@/lib/format-fastapi-error";
+import {
+  formatFastApiDetail,
+  readFastApiError,
+} from "@/lib/format-fastapi-error";
 
 const DEFAULT_BASE = "/api/data-recipe";
 
@@ -212,8 +215,10 @@ async function parseErrorResponse(response: Response): Promise<string> {
     // formatFastApiDetail returns null when it cannot flatten the value.
     const formatted = formatFastApiDetail(parsed.detail);
     if (formatted) return formatted;
-    if (typeof parsed.message === "string" && parsed.message) return parsed.message;
-    if (typeof parsed.raw_detail === "string" && parsed.raw_detail) return parsed.raw_detail;
+    if (typeof parsed.message === "string" && parsed.message)
+      return parsed.message;
+    if (typeof parsed.raw_detail === "string" && parsed.raw_detail)
+      return parsed.raw_detail;
     return text;
   } catch {
     return text;
@@ -437,14 +442,10 @@ export async function uploadUnstructuredFile(
   file: File,
   blockId: string,
   signal?: AbortSignal,
-  existingFileIds?: string[],
 ): Promise<UnstructuredFileUploadResponse> {
   const formData = new FormData();
   formData.append("file", file);
   formData.append("block_id", blockId);
-  if (existingFileIds?.length) {
-    formData.append("existing_file_ids", existingFileIds.join(","));
-  }
 
   const res = await authFetch(
     `${DATA_DESIGNER_API_BASE}/seed/upload-unstructured-file`,
