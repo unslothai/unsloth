@@ -14,6 +14,7 @@ import signal
 
 os.environ["UNSLOTH_IS_PRESENT"] = "1"
 
+import asyncio
 import random
 import re
 import shlex
@@ -23,6 +24,17 @@ import sys
 import tempfile
 import threading
 import urllib.request
+
+from core.inference.mcp_client import (
+    MCP_TOOL_PREFIX,
+    call_tool_sync,
+    is_stdio,
+    list_tools_async,
+    parse_server_headers,
+    probe_timeout,
+    stdio_mcp_enabled,
+)
+from storage import mcp_servers_db
 
 from loggers import get_logger
 
@@ -409,6 +421,35 @@ _workdirs: dict[str, str] = {}
 
 # Non-matching session_ids collapse to ``_invalid`` to block cross-session escapes.
 _SESSION_ID_RE = re.compile(r"\A[A-Za-z0-9_\-]{1,64}\Z")
+_PROJECT_SESSION_PREFIX = "project-"
+
+
+def _get_project_workdir(session_id: str) -> str | None:
+    if not session_id.startswith(_PROJECT_SESSION_PREFIX):
+        return None
+    project_id = session_id[len(_PROJECT_SESSION_PREFIX) :]
+    if not project_id or not _SESSION_ID_RE.match(project_id):
+        return None
+    try:
+        from storage.studio_db import ensure_chat_project_workspace
+
+        project = ensure_chat_project_workspace(project_id)
+    except Exception:
+        logger.warning(
+            "Failed to resolve project sandbox for %s", session_id, exc_info = True
+        )
+        return None
+    if not project:
+        return None
+    root_path = project.get("rootPath")
+    sandbox_path = project.get("sandboxPath")
+    if not root_path or not sandbox_path:
+        return None
+    root_real = os.path.realpath(root_path)
+    sandbox_real = os.path.realpath(sandbox_path)
+    if sandbox_real != root_real and not sandbox_real.startswith(root_real + os.sep):
+        return None
+    return sandbox_real
 
 
 def _get_workdir(session_id: str | None = None) -> str:
@@ -418,7 +459,14 @@ def _get_workdir(session_id: str | None = None) -> str:
     if key not in _workdirs or not os.path.isdir(_workdirs[key]):
         home = os.path.expanduser("~")
         sandbox_root = os.path.join(home, "studio_sandbox")
-        if session_id and _SESSION_ID_RE.match(session_id):
+        project_workdir = (
+            _get_project_workdir(session_id)
+            if session_id and _SESSION_ID_RE.match(session_id)
+            else None
+        )
+        if project_workdir:
+            workdir = project_workdir
+        elif session_id and _SESSION_ID_RE.match(session_id):
             workdir = os.path.join(sandbox_root, session_id)
             if not os.path.realpath(workdir).startswith(
                 os.path.realpath(sandbox_root) + os.sep
@@ -439,6 +487,10 @@ def _get_workdir(session_id: str | None = None) -> str:
             pass
         _workdirs[key] = workdir
     return _workdirs[key]
+
+
+def get_sandbox_workdir(session_id: str | None = None) -> str:
+    return _get_workdir(session_id)
 
 
 WEB_SEARCH_TOOL = {
@@ -502,10 +554,145 @@ TERMINAL_TOOL = {
     },
 }
 
-ALL_TOOLS = [WEB_SEARCH_TOOL, PYTHON_TOOL, TERMINAL_TOOL]
+RENDER_HTML_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "render_html",
+        "description": (
+            "Render a self-contained HTML/CSS/JavaScript artifact for the user. "
+            "Call this at most once per assistant response unless the user "
+            "explicitly asks for changes in that response. Future user requests "
+            "for new artifacts may call render_html once. Put the entire document "
+            "in code, including any CSS in <style> tags and JavaScript in <script> tags."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "code": {
+                    "type": "string",
+                    "description": "A complete self-contained HTML document.",
+                },
+                "title": {
+                    "type": "string",
+                    "description": "Short display title for the artifact.",
+                },
+            },
+            "required": ["code"],
+        },
+    },
+}
+
+ALL_TOOLS = [WEB_SEARCH_TOOL, PYTHON_TOOL, TERMINAL_TOOL, RENDER_HTML_TOOL]
+
+
+# OpenAI's function.name regex: ^[a-zA-Z0-9_-]{1,64}$ -- enforced before
+# streaming starts. MCP servers can return tool names containing '.', '/',
+# spaces, etc., which the prefix scheme would forward to OpenAI verbatim
+# and 400 the whole request. Validate up front and skip with a warning.
+_OPENAI_FN_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
+
+
+def _mcp_specs_for_server(server: dict, mcp_tools: list[dict]) -> list[dict]:
+    """Convert an MCP server's tool list into OpenAI function specs."""
+    display = server.get("display_name") or server["id"]
+    specs: list[dict] = []
+    seen_names: set[str] = set()
+    for tool in mcp_tools:
+        raw_name = tool.get("name") or ""
+        if not raw_name:
+            logger.warning("Skipping MCP tool on '%s': empty name.", display)
+            continue
+        name = f"{MCP_TOOL_PREFIX}{server['id']}__{raw_name}"
+        # OpenAI requires function.name ^[a-zA-Z0-9_-]{1,64}$; bad chars
+        # (., /, spaces, etc.) or oversized names would 400 the whole
+        # request. Skip + warn so the rest of the tools still ship.
+        if not _OPENAI_FN_NAME_RE.fullmatch(name):
+            logger.warning(
+                "Skipping MCP tool '%s' on '%s': composed name '%s' is not "
+                "valid OpenAI function.name (regex ^[a-zA-Z0-9_-]{1,64}$).",
+                raw_name,
+                display,
+                name,
+            )
+            continue
+        # Same MCP server returning duplicate tool names would also 400
+        # OpenAI ("tools[N].function.name duplicates ..."). Drop dupes.
+        if name in seen_names:
+            logger.warning(
+                "Skipping duplicate MCP tool '%s' on '%s'.", raw_name, display
+            )
+            continue
+        seen_names.add(name)
+        specs.append(
+            {
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "description": f"[{display}] {tool.get('description') or ''}".strip(),
+                    "parameters": tool.get("inputSchema")
+                    or {"type": "object", "properties": {}},
+                },
+            }
+        )
+    return specs
+
+
+async def get_enabled_mcp_tools() -> list[dict]:
+    servers = [s for s in mcp_servers_db.list_servers() if s.get("is_enabled")]
+    # Never spawn stdio servers when stdio is disabled on this host (e.g. a DB
+    # carried over from a desktop install onto a Colab / network deployment).
+    if not stdio_mcp_enabled():
+        servers = [s for s in servers if not is_stdio(s["url"])]
+    if not servers:
+        return []
+
+    results = await asyncio.gather(
+        *(
+            list_tools_async(
+                url = s["url"],
+                headers = parse_server_headers(s),
+                timeout = probe_timeout(s["url"], bool(s.get("use_oauth"))),
+                use_oauth = bool(s.get("use_oauth")),
+            )
+            for s in servers
+        ),
+        return_exceptions = True,
+    )
+
+    specs: list[dict] = []
+    for server, payload in zip(servers, results):
+        if isinstance(payload, BaseException):
+            logger.warning(
+                "MCP server '%s' (%s) discovery failed: %s",
+                server.get("display_name") or server["id"],
+                server.get("url"),
+                payload,
+            )
+            continue
+        specs.extend(_mcp_specs_for_server(server, payload))
+    return specs
 
 
 _TIMEOUT_UNSET = object()
+
+
+def _render_html_result(arguments: dict) -> str:
+    code = arguments.get("code")
+    if not isinstance(code, str) or not code.strip():
+        return "Error: render_html requires a non-empty code string."
+    title = arguments.get("title")
+    if isinstance(title, str) and title.strip():
+        safe_title = title.strip()[:120]
+        return (
+            f"Rendered HTML artifact: {safe_title}. Do not call render_html "
+            "again in this response unless the user asks for changes. For a later "
+            "user request for a new artifact, call render_html once."
+        )
+    return (
+        "Rendered HTML artifact. Do not call render_html again in this response "
+        "unless the user asks for changes. For a later user request for a new "
+        "artifact, call render_html once."
+    )
 
 
 def execute_tool(
@@ -525,6 +712,29 @@ def execute_tool(
         f"execute_tool: name={name}, session_id={session_id}, timeout={timeout}"
     )
     effective_timeout = _EXEC_TIMEOUT if timeout is _TIMEOUT_UNSET else timeout
+    if name == "render_html":
+        return _render_html_result(arguments)
+    if name.startswith(MCP_TOOL_PREFIX):
+        try:
+            _, server_id, tool_name = name.split("__", 2)
+        except ValueError:
+            return f"Error: malformed MCP tool name '{name}'"
+        server = mcp_servers_db.get_server(server_id)
+        if not server:
+            return f"Error: MCP server '{server_id}' not found"
+        if not server.get("is_enabled"):
+            return f"Error: MCP server '{server_id}' is disabled"
+        if is_stdio(server["url"]) and not stdio_mcp_enabled():
+            return f"Error: stdio MCP server '{server_id}' is disabled on this host"
+        return call_tool_sync(
+            url = server["url"],
+            headers = parse_server_headers(server),
+            name = tool_name,
+            args = arguments,
+            timeout = effective_timeout,
+            use_oauth = bool(server.get("use_oauth")),
+            cancel_event = cancel_event,
+        )
     if name == "web_search":
         return _web_search(
             arguments.get("query", ""),
@@ -632,8 +842,17 @@ def _validate_and_resolve_host(hostname: str, port: int) -> tuple[bool, str, str
 
     for *_, sockaddr in infos:
         ip = ipaddress.ip_address(sockaddr[0])
+        # `not ip.is_global` rejects every category the denylist below
+        # also rejects PLUS shared address space (100.64.0.0/10 carrier-
+        # grade NAT) and benchmarking/documentation/exchange ranges that
+        # Python classifies with `is_private=False` and `is_global=False`
+        # (see https://docs.python.org/3/library/ipaddress.html#ipaddress.IPv4Address.is_global).
+        # The explicit predicates after it give human-readable categories
+        # in the error message, but a single non-global check is the
+        # source of truth and prevents future ranges from leaking.
         if (
-            ip.is_private
+            not ip.is_global
+            or ip.is_private
             or ip.is_loopback
             or ip.is_link_local
             or ip.is_multicast

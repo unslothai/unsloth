@@ -14,7 +14,9 @@ import {
   DEFAULT_INFERENCE_PARAMS,
   type InferenceParams,
 } from "../types/runtime";
-import { isExternalModelId } from "../external-providers";
+import { isExternalModelId, parseExternalModelId } from "../external-providers";
+import { getExternalMaxOutputTokens } from "../provider-capabilities";
+import { useExternalProvidersStore } from "./external-providers-store";
 import {
   loadChatSettingsWithLegacyImport,
   savePersistedChatSettingsPatch,
@@ -25,6 +27,14 @@ export const CHAT_REASONING_ENABLED_KEY = "unsloth_chat_reasoning_enabled";
 export const CHAT_TOOLS_ENABLED_KEY = "unsloth_chat_tools_enabled";
 export const CHAT_CODE_TOOLS_ENABLED_KEY = "unsloth_chat_code_tools_enabled";
 export const CHAT_IMAGE_TOOLS_ENABLED_KEY = "unsloth_chat_image_tools_enabled";
+export const CHAT_ARTIFACTS_ENABLED_KEY = "unsloth_chat_artifacts_enabled";
+export const CHAT_COLLAPSE_HTML_ARTIFACTS_KEY =
+  "unsloth_chat_collapse_html_artifacts";
+export const CHAT_ALLOW_ARTIFACT_NETWORK_ACCESS_KEY =
+  "unsloth_chat_allow_artifact_network_access";
+export const CHAT_MCP_ENABLED_KEY = "unsloth_chat_mcp_enabled";
+export const CHAT_WEB_FETCH_TOOLS_ENABLED_KEY =
+  "unsloth_chat_web_fetch_tools_enabled";
 
 // External provider selection is encoded into `params.checkpoint` as
 // `external::<providerId>::<modelId>`. PersistedChatSettings deliberately
@@ -62,6 +72,12 @@ function saveLastExternalCheckpoint(value: string | null): void {
 }
 
 export type ReasoningStyle = "enable_thinking" | "reasoning_effort";
+export type PendingImageEditReference = {
+  threadId: string | null;
+  openaiImageGenerationCallId: string;
+  openaiResponseId?: string;
+  openaiReasoningItem?: unknown;
+};
 export type ReasoningEffort =
   | "none"
   | "minimal"
@@ -173,6 +189,23 @@ export function loadOptionalBool(key: string): boolean | null {
   }
 }
 
+/**
+ * Resolve the web-search / code-execution pill state to apply when a model
+ * loads. Honors the user's persisted preference so loading a tool-capable
+ * model never silently re-enables a pill the user turned off; falls back to
+ * the model's capability only when no preference has been expressed.
+ */
+export function resolveToolsEnabledOnLoad(supportsTools: boolean): {
+  toolsEnabled: boolean;
+  codeToolsEnabled: boolean;
+} {
+  if (!supportsTools) return { toolsEnabled: false, codeToolsEnabled: false };
+  return {
+    toolsEnabled: loadOptionalBool(CHAT_TOOLS_ENABLED_KEY) ?? true,
+    codeToolsEnabled: loadOptionalBool(CHAT_CODE_TOOLS_ENABLED_KEY) ?? true,
+  };
+}
+
 function saveBool(key: string, value: boolean): void {
   if (!canUseStorage()) return;
   try {
@@ -262,9 +295,25 @@ type ChatRuntimeStore = {
    * receive the tool because their runtime cannot dispatch it.
    */
   supportsBuiltinImageGeneration: boolean;
+  /**
+   * Whether the active external provider exposes a server-side
+   * web_fetch tool (Anthropic's `web_fetch_20250910` /
+   * `web_fetch_20260209`). Gates the composer's Fetch pill,
+   * independent of Search.
+   */
+  supportsBuiltinWebFetch: boolean;
   toolsEnabled: boolean;
   codeToolsEnabled: boolean;
   imageToolsEnabled: boolean;
+  artifactsEnabled: boolean;
+  collapseHtmlArtifacts: boolean;
+  allowArtifactNetworkAccess: boolean;
+  mcpEnabledForChat: boolean;
+  /**
+   * Fetch pill state, independent of `toolsEnabled` (Search). Only
+   * consulted when `providerSupportsBuiltinWebFetch` is true.
+   */
+  webFetchToolsEnabled: boolean;
   toolStatus: string | null;
   generatingStatus: string | null;
   autoHealToolCalls: boolean;
@@ -283,14 +332,18 @@ type ChatRuntimeStore = {
   chatTemplateOverride: string | null;
   loadedChatTemplateOverride: string | null;
   activeThreadId: string | null;
+  activeProjectId: string | null;
   settingsPanelOpen: boolean;
   pendingAudioBase64: string | null;
   pendingAudioName: string | null;
+  pendingImageEditReference: PendingImageEditReference | null;
   contextUsage: {
     promptTokens: number;
     completionTokens: number;
     totalTokens: number;
     cachedTokens: number;
+    // Anthropic-only; optional so pre-cache-stats persisted entries load.
+    cacheWriteTokens?: number;
   } | null;
   modelLoading: boolean;
   activeNativePathToken: string | null;
@@ -311,6 +364,7 @@ type ChatRuntimeStore = {
   setModelsError: (error: string | null) => void;
   setCheckpoint: (modelId: string, ggufVariant?: string | null) => void;
   setActiveThreadId: (threadId: string | null) => void;
+  setActiveProjectId: (projectId: string | null) => void;
   setSettingsPanelOpen: (open: boolean) => void;
   clearCheckpoint: () => void;
   setReasoningEnabled: (
@@ -324,6 +378,14 @@ type ChatRuntimeStore = {
   setToolsEnabled: (enabled: boolean, options?: { persist?: boolean }) => void;
   setCodeToolsEnabled: (enabled: boolean) => void;
   setImageToolsEnabled: (enabled: boolean) => void;
+  setArtifactsEnabled: (
+    enabled: boolean,
+    options?: { persist?: boolean },
+  ) => void;
+  setCollapseHtmlArtifacts: (enabled: boolean) => void;
+  setAllowArtifactNetworkAccess: (enabled: boolean) => void;
+  setMcpEnabledForChat: (enabled: boolean) => void;
+  setWebFetchToolsEnabled: (enabled: boolean) => void;
   setToolStatus: (status: string | null) => void;
   setGeneratingStatus: (status: string | null) => void;
   setAutoHealToolCalls: (enabled: boolean) => void;
@@ -336,6 +398,10 @@ type ChatRuntimeStore = {
   setChatTemplateOverride: (template: string | null) => void;
   setPendingAudio: (base64: string, name: string) => void;
   clearPendingAudio: () => void;
+  setPendingImageEditReference: (
+    reference: PendingImageEditReference | null,
+  ) => void;
+  clearPendingImageEditReference: () => void;
   setContextUsage: (usage: ChatRuntimeStore["contextUsage"]) => void;
 };
 
@@ -350,6 +416,8 @@ type ScalarSettingKey =
   | "autoTitle"
   | "reasoningEffort"
   | "preserveThinking"
+  | "collapseHtmlArtifacts"
+  | "allowArtifactNetworkAccess"
   | "autoHealToolCalls"
   | "maxToolCallsPerMessage"
   | "toolCallTimeout";
@@ -377,12 +445,15 @@ const PERSISTED_INFERENCE_PARAM_KEYS = [
   "maxTokens",
   "systemPrompt",
   "trustRemoteCode",
+  "fastMode",
 ] as const satisfies readonly PersistedInferenceParamKey[];
 
 const SCALAR_SETTING_KEYS = [
   "autoTitle",
   "reasoningEffort",
   "preserveThinking",
+  "collapseHtmlArtifacts",
+  "allowArtifactNetworkAccess",
   "autoHealToolCalls",
   "maxToolCallsPerMessage",
   "toolCallTimeout",
@@ -564,9 +635,18 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   supportsBuiltinWebSearch: false,
   supportsBuiltinCodeExecution: false,
   supportsBuiltinImageGeneration: false,
+  supportsBuiltinWebFetch: false,
   toolsEnabled: loadBool(CHAT_TOOLS_ENABLED_KEY, false),
   codeToolsEnabled: loadBool(CHAT_CODE_TOOLS_ENABLED_KEY, false),
   imageToolsEnabled: loadBool(CHAT_IMAGE_TOOLS_ENABLED_KEY, false),
+  artifactsEnabled: loadBool(CHAT_ARTIFACTS_ENABLED_KEY, false),
+  collapseHtmlArtifacts: loadBool(CHAT_COLLAPSE_HTML_ARTIFACTS_KEY, false),
+  allowArtifactNetworkAccess: loadBool(
+    CHAT_ALLOW_ARTIFACT_NETWORK_ACCESS_KEY,
+    false,
+  ),
+  mcpEnabledForChat: loadBool(CHAT_MCP_ENABLED_KEY, false),
+  webFetchToolsEnabled: loadBool(CHAT_WEB_FETCH_TOOLS_ENABLED_KEY, false),
   toolStatus: null,
   generatingStatus: null,
   autoHealToolCalls: true,
@@ -584,9 +664,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   chatTemplateOverride: null,
   loadedChatTemplateOverride: null,
   activeThreadId: null,
+  activeProjectId: null,
   settingsPanelOpen: false,
   pendingAudioBase64: null,
   pendingAudioName: null,
+  pendingImageEditReference: null,
   contextUsage: null,
   modelLoading: false,
   activeNativePathToken: null,
@@ -640,7 +722,14 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       if (state.settingsHydrated && hasKeys(changedParams)) {
         saveSettingsPatch({ inferenceParams: changedParams });
       }
-      return { params };
+      // Mirror setCheckpoint: the local model load path can mutate
+      // params.checkpoint via setParams() before setCheckpoint runs,
+      // leaving stale per-turn counters under the new checkpoint.
+      const checkpointChanged = state.params.checkpoint !== params.checkpoint;
+      return {
+        params,
+        ...(checkpointChanged ? { contextUsage: null } : {}),
+      };
     }),
   setCustomPresets: (customPresets) =>
     set(() => {
@@ -704,16 +793,42 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       // mount, and a stale persisted local id would race against the
       // freshly-loaded model. See LAST_EXTERNAL_CHECKPOINT_KEY notes.
       saveLastExternalCheckpoint(isExternalModelId(modelId) ? modelId : null);
+      // Clear stale per-turn usage when the model changes; the relaxed
+      // external-provider render gate would otherwise show old counters
+      // until the next completion overwrites them.
+      const checkpointChanged = state.params.checkpoint !== modelId;
+      // Clamp maxTokens to the new model's cap on switch into an
+      // external model so a value carried over from a prior local
+      // session does not render above the slider's max.
+      let nextMaxTokens = state.params.maxTokens;
+      if (checkpointChanged && isExternalModelId(modelId)) {
+        const parsed = parseExternalModelId(modelId);
+        const provider = parsed
+          ? useExternalProvidersStore
+              .getState()
+              .providers.find((p) => p.id === parsed.providerId)
+          : null;
+        const cap = getExternalMaxOutputTokens(
+          provider?.providerType,
+          parsed?.modelId,
+        );
+        if (nextMaxTokens > cap) {
+          nextMaxTokens = cap;
+        }
+      }
       return {
         params: {
           ...state.params,
           checkpoint: modelId,
+          maxTokens: nextMaxTokens,
         },
         activeGgufVariant: ggufVariant ?? null,
+        ...(checkpointChanged ? { contextUsage: null } : {}),
       };
     }),
   setActiveThreadId: (activeThreadId) =>
     set({ activeThreadId, contextUsage: null }),
+  setActiveProjectId: (activeProjectId) => set({ activeProjectId }),
   setSettingsPanelOpen: (settingsPanelOpen) => set({ settingsPanelOpen }),
   clearCheckpoint: () => {
     // Mirror setCheckpoint's persistence behavior: dropping the
@@ -744,9 +859,13 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       supportsBuiltinWebSearch: false,
       supportsBuiltinCodeExecution: false,
       supportsBuiltinImageGeneration: false,
+      supportsBuiltinWebFetch: false,
       toolsEnabled: false,
       codeToolsEnabled: false,
       imageToolsEnabled: false,
+      artifactsEnabled: false,
+      mcpEnabledForChat: false,
+      webFetchToolsEnabled: false,
       toolStatus: null,
       kvCacheDtype: null,
       loadedKvCacheDtype: null,
@@ -759,6 +878,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       defaultChatTemplate: null,
       chatTemplateOverride: null,
       loadedChatTemplateOverride: null,
+      pendingImageEditReference: null,
     }));
   },
   setReasoningEnabled: (reasoningEnabled, options) =>
@@ -806,6 +926,46 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       saveBool(CHAT_IMAGE_TOOLS_ENABLED_KEY, imageToolsEnabled);
       return { imageToolsEnabled };
     }),
+  setArtifactsEnabled: (artifactsEnabled, options) =>
+    set(() => {
+      if (options?.persist !== false) {
+        saveBool(CHAT_ARTIFACTS_ENABLED_KEY, artifactsEnabled);
+      }
+      return { artifactsEnabled };
+    }),
+  setCollapseHtmlArtifacts: (collapseHtmlArtifacts) =>
+    set((state) => {
+      saveBool(CHAT_COLLAPSE_HTML_ARTIFACTS_KEY, collapseHtmlArtifacts);
+      setScalarSettingVersion(
+        "collapseHtmlArtifacts",
+        collapseHtmlArtifacts,
+        state.collapseHtmlArtifacts,
+      );
+      return { collapseHtmlArtifacts };
+    }),
+  setAllowArtifactNetworkAccess: (allowArtifactNetworkAccess) =>
+    set((state) => {
+      saveBool(
+        CHAT_ALLOW_ARTIFACT_NETWORK_ACCESS_KEY,
+        allowArtifactNetworkAccess,
+      );
+      setScalarSettingVersion(
+        "allowArtifactNetworkAccess",
+        allowArtifactNetworkAccess,
+        state.allowArtifactNetworkAccess,
+      );
+      return { allowArtifactNetworkAccess };
+    }),
+  setMcpEnabledForChat: (mcpEnabledForChat) =>
+    set(() => {
+      saveBool(CHAT_MCP_ENABLED_KEY, mcpEnabledForChat);
+      return { mcpEnabledForChat };
+    }),
+  setWebFetchToolsEnabled: (webFetchToolsEnabled) =>
+    set(() => {
+      saveBool(CHAT_WEB_FETCH_TOOLS_ENABLED_KEY, webFetchToolsEnabled);
+      return { webFetchToolsEnabled };
+    }),
   setToolStatus: (toolStatus) => set({ toolStatus }),
   setGeneratingStatus: (generatingStatus) => set({ generatingStatus }),
   setAutoHealToolCalls: (autoHealToolCalls) =>
@@ -845,5 +1005,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     set({ pendingAudioBase64: base64, pendingAudioName: name }),
   clearPendingAudio: () =>
     set({ pendingAudioBase64: null, pendingAudioName: null }),
+  setPendingImageEditReference: (pendingImageEditReference) =>
+    set({ pendingImageEditReference }),
+  clearPendingImageEditReference: () =>
+    set({ pendingImageEditReference: null }),
   setContextUsage: (contextUsage) => set({ contextUsage }),
 }));

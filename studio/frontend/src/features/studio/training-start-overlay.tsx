@@ -33,8 +33,15 @@ import {
 import { Cancel01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useState, type ReactElement } from "react";
+import { useT } from "@/i18n";
 
 const HF_REPO_REGEX = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
+
+// Tracks which jobs have already played the terminal intro animation. The
+// overlay unmounts when you navigate away from the training page, so without
+// this its typing/fade-in would replay on every return even though the run
+// itself is still going. Module-level so it survives remounts.
+const animatedJobs = new Set<string>();
 
 function formatBytes(n: number): string {
   if (n <= 0) return "0 B";
@@ -171,6 +178,7 @@ type DownloadRowProps = {
 };
 
 function DownloadRow({ label, state }: DownloadRowProps): ReactElement | null {
+  const t = useT();
   // Compute a rolling-window rate + ETA from the same cumulative-byte
   // series the poll hook already produces, so we can show
   // "5.2 / 20.7 GB • 85.3 MB/s • 3m 12s left" instead of just the pair.
@@ -179,22 +187,25 @@ function DownloadRow({ label, state }: DownloadRowProps): ReactElement | null {
   if (state.downloadedBytes <= 0 && !state.cachePath) return null;
   const isComplete = state.totalBytes > 0 && state.percent >= 100;
   const statusLabel = isComplete
-    ? "Ready"
+    ? t("studio.trainingStart.ready")
     : state.totalBytes > 0
-      ? "Downloading"
+      ? t("studio.trainingStart.downloading")
       : state.downloadedBytes === 0
-        ? "Preparing"
+        ? t("studio.trainingStart.preparing")
         : null;
   const showRate = stats.stable && !isComplete;
   const rateSuffix = showRate ? ` • ${formatRate(stats.rateBytesPerSecond)}` : "";
   const etaStr =
     showRate && state.totalBytes > 0 ? formatEta(stats.etaSeconds) : "--";
-  const etaSuffix = etaStr !== "--" ? ` • ${etaStr} left` : "";
+  const etaSuffix =
+    etaStr !== "--" ? ` • ${t("studio.trainingStart.left", { eta: etaStr })}` : "";
   const sizeLabel =
     state.totalBytes > 0
       ? `${formatBytes(state.downloadedBytes)} / ${formatBytes(state.totalBytes)}${rateSuffix}${etaSuffix}`
       : state.downloadedBytes > 0
-        ? `${formatBytes(state.downloadedBytes)} downloaded${rateSuffix}`
+        ? `${t("studio.trainingStart.downloaded", {
+            size: formatBytes(state.downloadedBytes),
+          })}${rateSuffix}`
         : null;
   return (
     <div className="flex flex-col gap-1.5 rounded-md border border-border/50 bg-muted/20 px-3 py-2">
@@ -245,9 +256,11 @@ export function TrainingStartOverlay({
   message,
   currentStep,
 }: TrainingStartOverlayProps): ReactElement {
+  const t = useT();
   const { stopTrainingRun, dismissTrainingRun } = useTrainingActions();
   const isStarting = useTrainingRuntimeStore((s) => s.isStarting);
   const phase = useTrainingRuntimeStore((s) => s.phase);
+  const jobId = useTrainingRuntimeStore((s) => s.jobId);
   const startModelName = useTrainingRuntimeStore((s) => s.startModelName);
   const startDatasetName = useTrainingRuntimeStore((s) => s.startDatasetName);
   const startFromResume = useTrainingRuntimeStore((s) => s.startFromResume);
@@ -273,8 +286,8 @@ export function TrainingStartOverlay({
       : null;
   const displayMessage =
     startFromResume && !isDownloadPhase && /^download/i.test(message)
-      ? "Resuming training..."
-      : message || "starting training...";
+      ? t("studio.trainingStart.resumingTraining")
+      : message || t("studio.trainingStart.startingTraining");
   const rawModelDownload = useModelDownloadProgress(modelName);
   const rawDatasetDownload = useDatasetDownloadProgress(datasetName);
   const modelDownload = isDownloadPhase
@@ -292,12 +305,22 @@ export function TrainingStartOverlay({
     }
   }, [isStarting]);
 
+  // Play the intro animation only the first time we mount for a given job.
+  // On later remounts (e.g. leaving the training page and coming back) the
+  // terminal renders its final state instantly so the logs don't restart.
+  const alreadyAnimated = jobId != null && animatedJobs.has(jobId);
+  useEffect(() => {
+    if (jobId != null) {
+      animatedJobs.add(jobId);
+    }
+  }, [jobId]);
+
   return (
     <div className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center rounded-2xl bg-background/45 backdrop-blur-[1px]">
       <div className="pointer-events-auto relative flex w-[860px] max-w-[calc(100%-2rem)] flex-col items-center gap-4">
         <img
           src="/unsloth-gem.png"
-          alt="Unsloth mascot"
+          alt="Unsloth Studio"
           className="size-24 object-contain"
         />
         <div className="relative w-full">
@@ -305,7 +328,7 @@ export function TrainingStartOverlay({
             <Button
               variant="ghost"
               size="icon"
-              className="absolute right-3 top-3 z-10 size-7 cursor-pointer rounded-full text-muted-foreground/60 hover:bg-destructive/10 hover:text-destructive"
+              className="absolute right-3 top-3 z-10 size-7 cursor-pointer rounded-full text-muted-foreground/90 hover:bg-destructive/10 hover:text-destructive"
               onClick={() => setCancelDialogOpen(true)}
               disabled={cancelRequested}
             >
@@ -313,13 +336,13 @@ export function TrainingStartOverlay({
             </Button>
             <AlertDialogContent overlayClassName="bg-background/40 supports-backdrop-filter:backdrop-blur-[1px]">
               <AlertDialogHeader>
-                <AlertDialogTitle>Cancel Training</AlertDialogTitle>
+                <AlertDialogTitle>{t("studio.training.cancelTitle")}</AlertDialogTitle>
                 <AlertDialogDescription>
-                  Do you want to cancel the current training run?
+                  {t("studio.training.cancelDescription")}
                 </AlertDialogDescription>
               </AlertDialogHeader>
               <AlertDialogFooter>
-                <AlertDialogCancel>Continue Training</AlertDialogCancel>
+                <AlertDialogCancel>{t("studio.training.continueAction")}</AlertDialogCancel>
                 <AlertDialogAction
                   variant="destructive"
                   onClick={() => {
@@ -335,7 +358,7 @@ export function TrainingStartOverlay({
                     });
                   }}
                 >
-                  Cancel Training
+                  {t("studio.training.cancelAction")}
                 </AlertDialogAction>
               </AlertDialogFooter>
             </AlertDialogContent>
@@ -343,29 +366,33 @@ export function TrainingStartOverlay({
           <Terminal
             className="w-full min-h-[390px] rounded-2xl px-7 py-6 text-left"
             startOnView={false}
+            instant={alreadyAnimated}
           >
           <TypingAnimation
             duration={36}
             className="bg-gradient-to-r from-emerald-300 via-lime-300 to-teal-300 bg-clip-text font-semibold text-transparent"
           >
-            {"> unsloth training starts..."}
+            {t("studio.trainingStart.terminalStart")}
           </TypingAnimation>
           <AnimatedSpan className="my-2">
             <pre className="whitespace-pre text-muted-foreground inline-block">{`==((====))==\n   \\\\   /|\nO^O/ \\_/ \\\n\\        /\n "-____-"`}</pre>
           </AnimatedSpan>
           <TypingAnimation duration={44}>
-            {"> Preparing model and dataset..."}
+            {t("studio.trainingStart.preparingResources")}
           </TypingAnimation>
           <TypingAnimation duration={44}>
-            {"> We are getting everything ready for your run..."}
+            {t("studio.trainingStart.gettingReady")}
           </TypingAnimation>
           <AnimatedSpan className="mt-2 text-muted-foreground">
-            {`> ${displayMessage} | waiting for first step... (${currentStep})`}
+            {t("studio.trainingStart.waitingForFirstStep", {
+              message: displayMessage,
+              step: currentStep,
+            })}
           </AnimatedSpan>
           {datasetDownload.downloadedBytes > 0 || datasetDownload.cachePath ? (
             <AnimatedSpan className="mt-3">
               <DownloadRow
-                label="Dataset"
+                label={t("studio.trainingStart.dataset")}
                 state={datasetDownload}
               />
             </AnimatedSpan>
@@ -373,7 +400,7 @@ export function TrainingStartOverlay({
           {modelDownload.downloadedBytes > 0 || modelDownload.cachePath ? (
             <AnimatedSpan className="mt-3">
               <DownloadRow
-                label="Model weights"
+                label={t("studio.trainingStart.modelWeights")}
                 state={modelDownload}
               />
             </AnimatedSpan>

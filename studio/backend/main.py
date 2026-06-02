@@ -12,11 +12,126 @@ from pathlib import Path as _Path
 # Suppress annoying C-level dependency warnings globally
 os.environ["PYTHONWARNINGS"] = "ignore"
 
+# ── Windows AMD ROCm DLL injection ──────────────────────────────────────────
+# Python 3.8+ ignores PATH for extension modules; register ROCm bin dirs with
+# os.add_dll_directory() so amdhip64.dll etc. are found before any torch import.
+if sys.platform == "win32":
+    # Retained at module scope -- os.add_dll_directory returns a handle that
+    # removes the search-path entry when garbage collected.
+    _ROCM_DLL_HANDLES: list = []
+
+    def _add_rocm_dll_dirs() -> None:
+        candidates = []
+        # 1. HIP_PATH / ROCM_PATH -- set by the AMD HIP SDK installer
+        for _var in ("HIP_PATH", "ROCM_PATH"):
+            _val = os.environ.get(_var)
+            if _val:
+                candidates.append(os.path.join(_val, "bin"))
+        # 2. Standard AMD installer location: C:\Program Files\AMD\ROCm\<ver>\bin
+        #    Scan all installed versions, newest first.
+        _default_root = os.path.join(
+            os.environ.get("ProgramFiles", r"C:\Program Files"), "AMD", "ROCm"
+        )
+
+        def _ver_key(name: str) -> tuple:
+            # Numeric tuple key so "10.0" sorts after "7.0"; non-numeric chunks fall back to string.
+            parts = []
+            for chunk in name.split("."):
+                try:
+                    parts.append((0, int(chunk)))
+                except ValueError:
+                    parts.append((1, chunk))
+            return tuple(parts)
+
+        try:
+            if os.path.isdir(_default_root):
+                for _ver in sorted(
+                    os.listdir(_default_root), key = _ver_key, reverse = True
+                ):
+                    _bin = os.path.join(_default_root, _ver, "bin")
+                    if os.path.isdir(_bin):
+                        candidates.append(_bin)
+        except OSError:
+            pass
+        for _d in candidates:
+            if os.path.isdir(_d):
+                try:
+                    _ROCM_DLL_HANDLES.append(os.add_dll_directory(_d))
+                except (OSError, AttributeError):
+                    pass
+
+    _add_rocm_dll_dirs()
+    del _add_rocm_dll_dirs
+
+    # ── Windows AMD ROCm: set BNB_ROCM_VERSION before any bitsandbytes import ─
+    # bitsandbytes on Windows ROCm tries to load libbitsandbytes_rocm<ver>.dll
+    # where <ver> comes from torch.version.hip (e.g. "7.13..." → "713").
+    # The installed BNB wheel ships rocm72.dll (not rocm713.dll), so without
+    # this the server process crashes with "Configured ROCm binary not found".
+    # Detect the available DLL, fall back to "72", and set BNB_ROCM_VERSION
+    # before any import that pulls in bitsandbytes (mirrors worker.py logic).
+    # Gate on the rocm bnb DLL (the exact file this configures) or HIP_PATH/
+    # ROCM_PATH, not on torch.version.hip: that needed importing torch on every
+    # Windows host (NVIDIA/CPU included), adding seconds to startup. Radeon
+    # wheels without HIP_PATH still ship the rocm bnb DLL, so they are covered.
+    if "BNB_ROCM_VERSION" not in os.environ:
+        import glob as _glob
+        import logging as _logging
+
+        _hip_env = bool(os.environ.get("HIP_PATH") or os.environ.get("ROCM_PATH"))
+        _bnb_rocm_ver = None
+        _found_rocm_bnb = False
+        try:
+            import importlib.util as _ilu
+
+            _bnb_spec = _ilu.find_spec("bitsandbytes")
+            # submodule_search_locations (not spec.origin) handles editable installs.
+            if _bnb_spec and _bnb_spec.submodule_search_locations:
+                import re as _re_bnb
+
+                _all_vers_main: list[str] = []
+                for _pkg_dir in _bnb_spec.submodule_search_locations:
+                    for _dll in _glob.glob(
+                        os.path.join(_pkg_dir, "libbitsandbytes_rocm*.dll")
+                    ):
+                        _found_rocm_bnb = True
+                        _km = _re_bnb.search(
+                            r"libbitsandbytes_rocm(\d+)\.dll", os.path.basename(_dll)
+                        )
+                        if _km:
+                            _all_vers_main.append(_km.group(1))
+                if _all_vers_main:
+                    _bnb_rocm_ver = max(_all_vers_main, key = lambda v: int(v))
+        except Exception as _e:
+            _logging.getLogger(__name__).warning(
+                "Windows ROCm: BNB DLL detection failed (%s); falling back to version '72'",
+                _e,
+            )
+        # rocm bnb DLL present, or HIP_PATH/ROCM_PATH set (DLL unparsable -> "72").
+        if _found_rocm_bnb or _hip_env:
+            _bnb_rocm_ver_final = _bnb_rocm_ver or "72"
+            os.environ["BNB_ROCM_VERSION"] = _bnb_rocm_ver_final
+            _logging.getLogger(__name__).info(
+                "Windows ROCm: set BNB_ROCM_VERSION=%s (from installed BNB wheel)",
+                _bnb_rocm_ver_final,
+            )
+
 # Ensure backend dir is on sys.path so _platform_compat is importable when
 # main.py is launched directly (e.g. `uvicorn main:app`).
 _backend_dir = str(_Path(__file__).parent)
 if _backend_dir not in sys.path:
     sys.path.insert(0, _backend_dir)
+
+# `uvicorn main:app` bypasses run.py; seed thread caps here too.
+from utils.cpu_threads import configure_cpu_threads
+
+try:
+    configure_cpu_threads()
+except ValueError as exc:
+    _raw = os.environ.get("UNSLOTH_CPU_THREADS")
+    raise SystemExit(
+        f"Error: Invalid UNSLOTH_CPU_THREADS value {_raw!r}: {exc}"
+    ) from None
 
 # Fix for Anaconda/conda-forge Python: seed platform._sys_version_cache before
 # any library imports that trigger attrs -> rich -> structlog -> platform crash.
@@ -49,6 +164,8 @@ import shutil
 import warnings
 from contextlib import asynccontextmanager
 from importlib.metadata import PackageNotFoundError, version as package_version
+from typing import Optional
+from urllib.parse import urlparse
 
 
 _STUDIO_INSTALL_ID_RE = _re.compile(r"^[0-9a-f]{64}$")
@@ -120,11 +237,13 @@ from routes import (
     export_router,
     inference_router,
     inference_studio_router,
+    mcp_servers_router,
     models_router,
     providers_router,
     training_history_router,
     training_router,
 )
+from routes.settings import router as settings_router
 from auth import storage
 from auth.authentication import get_current_subject
 from utils.hardware import (
@@ -178,6 +297,11 @@ def _load_desktop_owner() -> dict[str, str] | None:
 
 
 _DESKTOP_OWNER = _load_desktop_owner()
+
+# The Tauri desktop app runs the backend on the owner's own machine, so local
+# stdio MCP servers are safe there. setdefault lets an explicit "0" opt out.
+if _DESKTOP_OWNER:
+    os.environ.setdefault("UNSLOTH_STUDIO_ALLOW_STDIO_MCP", "1")
 
 
 def _desktop_owner() -> dict[str, str] | None:
@@ -312,22 +436,62 @@ from starlette.requests import Request as _StarletteRequest  # noqa: E402
 
 
 _CSP_SCRIPT_NONCE_HEADER = "x-internal-script-nonce"
+_ARTIFACT_PREVIEW_FRAME_PATH = "/api/inference/artifact-preview-frame"
+
+
+# /content is Colab's working directory — more reliable than env vars which
+# aren't always set depending on Colab runtime version.
+import importlib.util as _importlib_util
+
+_IS_COLAB = os.path.isdir("/content") and (
+    bool(os.environ.get("COLAB_BACKEND_URL"))
+    or bool(os.environ.get("COLAB_JUPYTER_IP"))
+    or _importlib_util.find_spec("google.colab") is not None
+)
 
 
 def _build_csp(script_nonce: "str | None" = None) -> str:
     script_src = "script-src 'self'"
     if script_nonce:
         script_src += f" 'nonce-{script_nonce}'"
+    # In Colab the parent frame can be colab.research.google.com, a multi-level
+    # *.prod.colab.dev subdomain (e.g. foo.region.prod.colab.dev — note: CSP
+    # wildcards only match one level, so *.prod.colab.dev misses these), or a
+    # sandboxed null-origin output iframe. Use '*' so any ancestor is allowed;
+    # Colab is already a sandboxed single-user environment.
+    frame_ancestors = "*" if _IS_COLAB else "'none'"
+
+    # In Colab the frontend is served over the Colab reverse-proxy at an HTTPS
+    # *.prod.colab.dev URL. Colab's kernel communication layer and the output
+    # iframe scaffolding inject scripts from *.prod.colab.dev and
+    # *.googleusercontent.com, and make fetch/WebSocket connections to those
+    # same origins. Widen script-src and connect-src in Colab mode so those
+    # requests are not blocked. 'unsafe-inline' for scripts is still omitted;
+    # our own inline script uses a nonce.
+    if _IS_COLAB:
+        script_src += " https://*.prod.colab.dev https://*.googleusercontent.com"
+        connect_src = (
+            "'self' blob: data: "
+            "https://huggingface.co https://datasets-server.huggingface.co "
+            "https://*.prod.colab.dev wss://*.prod.colab.dev "
+            "https://*.googleusercontent.com wss://*.googleusercontent.com"
+        )
+    else:
+        connect_src = (
+            "'self' https://huggingface.co https://datasets-server.huggingface.co"
+        )
+
     return (
         "default-src 'self'; "
         "img-src 'self' data: blob: https://t0.gstatic.com "
         "https://t1.gstatic.com https://t2.gstatic.com "
         "https://t3.gstatic.com https://www.google.com; "
-        "connect-src 'self' https://huggingface.co https://datasets-server.huggingface.co; "
+        f"connect-src {connect_src}; "
         "style-src 'self' 'unsafe-inline'; "
         f"{script_src}; "
         "font-src 'self' data:; "
-        "frame-ancestors 'none'; "
+        "frame-src 'self'; "
+        f"frame-ancestors {frame_ancestors}; "
         "form-action 'self'; "
         "base-uri 'self'"
     )
@@ -343,12 +507,15 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         if nonce is not None:
             del response.headers[_CSP_SCRIPT_NONCE_HEADER]
         response.headers.setdefault("Content-Security-Policy", _build_csp(nonce))
-        response.headers.setdefault("X-Frame-Options", "DENY")
+        # Omit X-Frame-Options in Colab — CSP frame-ancestors handles it, and
+        # DENY would block serve_kernel_port_as_iframe regardless of CSP.
+        if not _IS_COLAB and request.url.path != _ARTIFACT_PREVIEW_FRAME_PATH:
+            response.headers.setdefault("X-Frame-Options", "DENY")
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         response.headers.setdefault("Referrer-Policy", "no-referrer")
         response.headers.setdefault(
             "Permissions-Policy",
-            "camera=(), microphone=(), geolocation=(), interest-cohort=()",
+            "camera=(), microphone=(), geolocation=()",
         )
         response.headers["server"] = "unsloth-studio"
         return response
@@ -357,11 +524,15 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 app.add_middleware(SecurityHeadersMiddleware)
 
 
-# Cap upload body on protected POSTs; default 500 MB, env-tunable.
+# Cap request bodies on protected POSTs. Upload routes get explicit multipart
+# headroom, while non-upload routes keep the default body cap.
 import json as _json_for_413  # noqa: E402
+from utils.upload_limits import (  # noqa: E402
+    UNSTRUCTURED_RECIPE_UPLOAD_MAX_BYTES,
+    default_request_body_limit_bytes,
+    upload_request_limit_bytes,
+)
 
-
-_MAX_BODY_BYTES = int(os.environ.get("UNSLOTH_STUDIO_MAX_BODY_MB", "500")) * 1024 * 1024
 _BODY_PROTECTED_PREFIXES = (
     "/v1/chat/completions",
     "/v1/completions",
@@ -369,17 +540,50 @@ _BODY_PROTECTED_PREFIXES = (
     "/api/data-recipe",
     "/api/datasets",
     "/api/chat",
+    "/api/settings",
     "/api/train",
     "/api/export",
 )
+_DATASET_UPLOAD_PASSTHROUGH_PREFIX = "/api/datasets/upload"
+_DATA_RECIPE_UNSTRUCTURED_UPLOAD_PASSTHROUGH_PREFIX = (
+    "/api/data-recipe/seed/upload-unstructured-file"
+)
+_BODY_UPLOAD_PASSTHROUGH_PREFIXES = (
+    _DATASET_UPLOAD_PASSTHROUGH_PREFIX,
+    _DATA_RECIPE_UNSTRUCTURED_UPLOAD_PASSTHROUGH_PREFIX,
+)
 
 
-async def _send_413(send, total_bytes: int) -> None:
+def _get_upload_passthrough_request_max_bytes(path: str) -> int:
+    if path.startswith(_DATA_RECIPE_UNSTRUCTURED_UPLOAD_PASSTHROUGH_PREFIX):
+        return upload_request_limit_bytes(UNSTRUCTURED_RECIPE_UPLOAD_MAX_BYTES)
+    if path.startswith(_DATASET_UPLOAD_PASSTHROUGH_PREFIX):
+        return upload_request_limit_bytes()
+    return default_request_body_limit_bytes()
+
+
+async def _send_411(send) -> None:
+    payload = _json_for_413.dumps(
+        {"detail": "Content-Length required for upload requests."},
+    ).encode("utf-8")
+    await send(
+        {
+            "type": "http.response.start",
+            "status": 411,
+            "headers": [
+                (b"content-type", b"application/json"),
+                (b"content-length", str(len(payload)).encode("ascii")),
+            ],
+        }
+    )
+    await send({"type": "http.response.body", "body": payload, "more_body": False})
+
+
+async def _send_413(send, total_bytes: int, max_bytes: int) -> None:
     payload = _json_for_413.dumps(
         {
             "detail": (
-                f"Request body too large "
-                f"({total_bytes:,} bytes; max {_MAX_BODY_BYTES:,})."
+                f"Request body too large ({total_bytes:,} bytes; max {max_bytes:,})."
             )
         },
     ).encode("utf-8")
@@ -399,10 +603,32 @@ async def _send_413(send, total_bytes: int) -> None:
 class MaxBodyMiddleware:
     """Reject oversized bodies on protected POST/PUT/PATCH; raw ASGI so chunked uploads cannot bypass the cap."""
 
-    def __init__(self, app, max_bytes: int, protected_prefixes: tuple):
+    def __init__(
+        self,
+        app,
+        max_bytes_getter,
+        protected_prefixes: tuple,
+        upload_passthrough_prefixes: tuple = (),
+        upload_passthrough_max_bytes_getter = None,
+    ):
         self.app = app
-        self.max_bytes = max_bytes
+        self.max_bytes_getter = max_bytes_getter
         self.protected_prefixes = protected_prefixes
+        self.upload_passthrough_prefixes = upload_passthrough_prefixes
+        self.upload_passthrough_max_bytes_getter = upload_passthrough_max_bytes_getter
+
+    def _upload_passthrough_max_bytes(self, path: str) -> int:
+        if self.upload_passthrough_max_bytes_getter is None:
+            return int(self.max_bytes_getter())
+        try:
+            return int(self.upload_passthrough_max_bytes_getter(path))
+        except TypeError:
+            try:
+                return int(self.upload_passthrough_max_bytes_getter())
+            except Exception:
+                return int(self.max_bytes_getter())
+        except Exception:
+            return int(self.max_bytes_getter())
 
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
@@ -416,6 +642,7 @@ class MaxBodyMiddleware:
             await self.app(scope, receive, send)
             return
 
+        max_bytes = int(self.max_bytes_getter())
         declared = None
         for name, value in scope.get("headers", []):
             if name == b"content-length":
@@ -424,8 +651,20 @@ class MaxBodyMiddleware:
                 except (ValueError, UnicodeDecodeError):
                     declared = None
                 break
-        if declared is not None and declared > self.max_bytes:
-            await _send_413(send, declared)
+
+        if any(path.startswith(p) for p in self.upload_passthrough_prefixes):
+            upload_max_bytes = self._upload_passthrough_max_bytes(path)
+            if declared is None:
+                await _send_411(send)
+                return
+            if declared > upload_max_bytes:
+                await _send_413(send, declared, upload_max_bytes)
+                return
+            await self.app(scope, receive, send)
+            return
+
+        if declared is not None and declared > max_bytes:
+            await _send_413(send, declared, max_bytes)
             return
 
         chunks: list = []
@@ -441,8 +680,8 @@ class MaxBodyMiddleware:
             body = msg.get("body", b"") or b""
             if body:
                 total += len(body)
-                if total > self.max_bytes:
-                    await _send_413(send, total)
+                if total > max_bytes:
+                    await _send_413(send, total, max_bytes)
                     return
                 chunks.append(body)
             if not msg.get("more_body", False):
@@ -466,8 +705,10 @@ class MaxBodyMiddleware:
 
 app.add_middleware(
     MaxBodyMiddleware,
-    max_bytes = _MAX_BODY_BYTES,
+    max_bytes_getter = default_request_body_limit_bytes,
     protected_prefixes = _BODY_PROTECTED_PREFIXES,
+    upload_passthrough_prefixes = _BODY_UPLOAD_PASSTHROUGH_PREFIXES,
+    upload_passthrough_max_bytes_getter = _get_upload_passthrough_request_max_bytes,
 )
 
 
@@ -522,6 +763,8 @@ app.include_router(inference_studio_router, prefix = "/api/inference", tags = ["
 # standard /v1/chat/completions path.
 app.include_router(inference_router, prefix = "/v1", tags = ["openai-compat"])
 app.include_router(providers_router, prefix = "/api/providers", tags = ["providers"])
+app.include_router(settings_router, prefix = "/api/settings", tags = ["settings"])
+app.include_router(mcp_servers_router, prefix = "/api/mcp/servers", tags = ["mcp"])
 app.include_router(datasets_router, prefix = "/api/datasets", tags = ["datasets"])
 app.include_router(data_recipe_router, prefix = "/api/data-recipe", tags = ["data-recipe"])
 app.include_router(export_router, prefix = "/api/export", tags = ["export"])
@@ -706,8 +949,6 @@ def _strip_crossorigin(html_bytes: bytes) -> bytes:
     @font-face downloads to fail silently.  Stripping the attribute
     makes them regular same-origin fetches that work on any protocol.
     """
-    import re as _re
-
     html = html_bytes.decode("utf-8")
     html = _re.sub(r'\s+crossorigin(?:="[^"]*")?', "", html)
     return html.encode("utf-8")
@@ -715,10 +956,8 @@ def _strip_crossorigin(html_bytes: bytes) -> bytes:
 
 def _inject_bootstrap(html_bytes: bytes, app: FastAPI):
     """Inject bootstrap credentials when password change is pending.
-
-    Returns ``(html_bytes, script_nonce_or_None)``. Callers must forward
-    the nonce via ``_CSP_SCRIPT_NONCE_HEADER`` so the inline script is
-    not blocked by CSP.
+    Returns ``(html_bytes, script_nonce_or_None)``; callers forward the
+    nonce via ``_CSP_SCRIPT_NONCE_HEADER`` so CSP allows the inline script.
     """
     import json as _json
     import secrets as _secrets
@@ -743,6 +982,86 @@ def _inject_bootstrap(html_bytes: bytes, app: FastAPI):
     return html.encode("utf-8"), nonce
 
 
+_DEFAULT_PORTS = {"http": 80, "https": 443, "ws": 80, "wss": 443}
+
+
+def _canonical_origin(scheme: str, netloc: str) -> Optional[tuple[str, str, int]]:
+    """Canonicalise an Origin to ``(scheme, host, port)`` for equality.
+    Browsers strip default ports (RFC 6454 sec 6.1) and scheme/host are
+    case-insensitive (RFC 3986), so bare string compare misclassifies
+    same-origin requests as cross-origin. Returns ``None`` on unparseable
+    input so callers fall to the safer cross-origin default.
+    """
+    scheme = (scheme or "").strip().lower()
+    if not scheme or not netloc:
+        return None
+    # Strip userinfo (RFC 3986); Origin never carries credentials.
+    if "@" in netloc:
+        netloc = netloc.rsplit("@", 1)[1]
+    # IPv6 hosts use brackets (RFC 3986 sec 3.2.2): ``[::1]:8902``. Bare
+    # ``partition(":")`` mis-parses these and breaks ``unsloth studio -H ::1``.
+    if netloc.startswith("["):
+        close = netloc.find("]")
+        if close == -1:
+            return None
+        host = netloc[1:close]
+        rest = netloc[close + 1 :]
+        if rest.startswith(":"):
+            port_str = rest[1:]
+        elif rest == "":
+            port_str = ""
+        else:
+            return None
+    else:
+        host, _, port_str = netloc.partition(":")
+    host = host.strip().lower()
+    if not host:
+        return None
+    if port_str:
+        try:
+            port = int(port_str)
+        except ValueError:
+            return None
+    else:
+        port = _DEFAULT_PORTS.get(scheme, 0)
+    return (scheme, host, port)
+
+
+def _is_same_origin_request(request: Request) -> bool:
+    """True when Origin is missing or matches request's scheme://host:port.
+    Top-level same-document GETs omit Origin, so missing counts as same-origin.
+    Callers must also emit ``Vary: Origin``. Both sides are canonicalised via
+    :func:`_canonical_origin` so default-port stripping and scheme/host case
+    do not misclassify same-origin requests as cross-origin.
+    """
+    origin = request.headers.get("origin")
+    if origin is None:
+        # Missing header: top-level same-document GETs omit Origin.
+        return True
+    # Empty string is not a valid serialised origin (RFC 6454 sec 6.1).
+    if not origin:
+        return False
+    # "null" token (sandboxed iframes, file:// pages) is never same-origin.
+    if origin == "null":
+        return False
+    # ``urlparse`` raises ``ValueError`` on malformed IPv6 brackets; swallow
+    # so a garbage Origin doesn't 500 the SPA handler.
+    try:
+        parsed = urlparse(origin)
+    except ValueError:
+        return False
+    origin_canon = _canonical_origin(parsed.scheme, parsed.netloc)
+    if origin_canon is None:
+        return False
+    try:
+        self_canon = _canonical_origin(request.url.scheme, request.url.netloc)
+    except ValueError:
+        return False
+    if self_canon is None:
+        return False
+    return origin_canon == self_canon
+
+
 def setup_frontend(app: FastAPI, build_path: Path):
     """Mount frontend static files (optional)"""
     if not build_path.exists():
@@ -753,11 +1072,18 @@ def setup_frontend(app: FastAPI, build_path: Path):
     if assets_dir.exists():
         app.mount("/assets", StaticFiles(directory = assets_dir), name = "assets")
 
-    def _build_index_response() -> Response:
+    def _build_index_response(request: Request) -> Response:
         content = (build_path / "index.html").read_bytes()
         content = _strip_crossorigin(content)
-        content, nonce = _inject_bootstrap(content, app)
-        headers = {"Cache-Control": "no-cache, no-store, must-revalidate"}
+        # Bootstrap pw is same-origin only; Vary: Origin keeps caches honest.
+        if _is_same_origin_request(request):
+            content, nonce = _inject_bootstrap(content, app)
+        else:
+            nonce = None
+        headers = {
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Vary": "Origin",
+        }
         if nonce:
             headers[_CSP_SCRIPT_NONCE_HEADER] = nonce
         return Response(
@@ -767,11 +1093,11 @@ def setup_frontend(app: FastAPI, build_path: Path):
         )
 
     @app.get("/")
-    async def serve_root():
-        return _build_index_response()
+    async def serve_root(request: Request):
+        return _build_index_response(request)
 
     @app.get("/{full_path:path}")
-    async def serve_frontend(full_path: str):
+    async def serve_frontend(request: Request, full_path: str):
         if full_path in {"api", "v1"} or full_path.startswith(("api/", "v1/")):
             return {"error": "API endpoint not found"}
 
@@ -785,6 +1111,6 @@ def setup_frontend(app: FastAPI, build_path: Path):
             return FileResponse(file_path)
 
         # Serve index.html as bytes — avoids Content-Length mismatch
-        return _build_index_response()
+        return _build_index_response(request)
 
     return True
