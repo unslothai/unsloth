@@ -420,6 +420,9 @@ export function SharedComposer({
     (s) => !!s.params.checkpoint && !s.modelLoading,
   );
   const loadedIsMultimodal = useChatRuntimeStore((s) => s.loadedIsMultimodal);
+  const loadedVisionProjectorEnabled = useChatRuntimeStore(
+    (s) => s.loadedVisionProjectorEnabled,
+  );
   const supportsReasoning = useChatRuntimeStore((s) => s.supportsReasoning);
   const reasoningAlwaysOn = useChatRuntimeStore((s) => s.reasoningAlwaysOn);
   const reasoningEnabled = useChatRuntimeStore((s) => s.reasoningEnabled);
@@ -484,6 +487,20 @@ export function SharedComposer({
   // entry after ensureModelLoaded runs at send time. Single mode uses
   // the loaded model's runtime capability.
   const attachUnavailableReason = isCompareMode ? null : imageUnavailableReason;
+  useEffect(() => {
+    if (
+      isCompareMode ||
+      loadedVisionProjectorEnabled !== false ||
+      pendingImages.length === 0
+    ) {
+      return;
+    }
+    setPendingImages([]);
+    toast.error("Image attachment removed", {
+      description:
+        "Vision Projector is disabled on the loaded model. Enable it and apply settings to send images.",
+    });
+  }, [isCompareMode, loadedVisionProjectorEnabled, pendingImages.length]);
   const effectiveExternalModelId =
     selectedExternalProvider?.providerType === "openrouter" &&
     externalSelection?.modelId === "openrouter/free" &&
@@ -881,6 +898,7 @@ export function SharedComposer({
           gguf_variant: sel.ggufVariant ?? null,
           trust_remote_code: trustRemoteCode,
           chat_template_override: effectiveChatTemplateOverride,
+          load_mmproj: currentStore.visionProjectorEnabled,
         });
         const store = useChatRuntimeStore.getState();
         store.setCheckpoint(
@@ -896,6 +914,8 @@ export function SharedComposer({
           reasoningStyle: resp.reasoning_style ?? "enable_thinking",
           supportsPreserveThinking: resp.supports_preserve_thinking ?? false,
           supportsTools: resp.supports_tools ?? false,
+          visionProjectorEnabled: resp.load_mmproj ?? true,
+          loadedVisionProjectorEnabled: resp.load_mmproj ?? true,
           loadedIsMultimodal: isMultimodalResponse(resp),
         });
         // Sync the models[] entry with the load response so the
@@ -1139,18 +1159,24 @@ export function SharedComposer({
             }}
           />
           <TooltipIconButton
-            tooltip="Add Attachment"
+            tooltip={attachUnavailableReason ?? "Add Attachment"}
             side="bottom"
             variant="ghost"
             size="icon"
-            className="size-8.5 rounded-full p-1 font-semibold text-xs hover:bg-muted-foreground/15 dark:hover:bg-muted-foreground/30"
+            className={cn(
+              "size-8.5 rounded-full p-1 font-semibold text-xs hover:bg-muted-foreground/15 dark:hover:bg-muted-foreground/30",
+              attachUnavailableReason && "cursor-not-allowed opacity-50",
+            )}
             onClick={() => {
-              // The picker accepts both image and audio. Don't gate the
-              // button on image-availability — addFiles still filters
-              // image files per-file when the loaded model can't take
-              // them, while audio attach always works.
+              if (attachUnavailableReason) {
+                toast.error(attachUnavailableReason);
+                return;
+              }
+              // Keep addFiles guarded too: drag/drop can still provide
+              // image files even when the picker is unavailable.
               fileInputRef.current?.click();
             }}
+            aria-disabled={attachUnavailableReason ? "true" : undefined}
             aria-label="Add Attachment"
           >
             <PlusIcon className="size-5 stroke-[1.5px]" />

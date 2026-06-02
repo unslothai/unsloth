@@ -57,6 +57,8 @@ export interface LoadModelRequest {
    * applied when speculative_type resolves to "mtp" or "mtp+ngram".
    */
   spec_draft_n_max?: number | null;
+  /** For GGUF vision models, load the mmproj vision projector. Defaults on. */
+  load_mmproj?: boolean;
 }
 
 export interface ValidateModelResponse {
@@ -135,6 +137,7 @@ export interface LoadModelResponse {
   /** Canonical UI-facing mode the load request resolved to. See LoadModelRequest. */
   speculative_type?: string | null;
   spec_draft_n_max?: number | null;
+  load_mmproj?: boolean;
 }
 
 export interface UnloadModelRequest {
@@ -175,6 +178,7 @@ export interface InferenceStatusResponse {
   /** Canonical UI-facing mode currently active. See LoadModelRequest. */
   speculative_type?: string | null;
   spec_draft_n_max?: number | null;
+  load_mmproj?: boolean;
 }
 
 export interface AudioGenerationResponse {

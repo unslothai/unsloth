@@ -467,6 +467,15 @@ export function ChatSettingsPanel({
   const loadedSpecDraftNMax = useChatRuntimeStore(
     (s) => s.loadedSpecDraftNMax,
   );
+  const visionProjectorEnabled = useChatRuntimeStore(
+    (s) => s.visionProjectorEnabled,
+  );
+  const setVisionProjectorEnabled = useChatRuntimeStore(
+    (s) => s.setVisionProjectorEnabled,
+  );
+  const loadedVisionProjectorEnabled = useChatRuntimeStore(
+    (s) => s.loadedVisionProjectorEnabled,
+  );
   const modelRequiresTrustRemoteCode = useChatRuntimeStore(
     (s) => s.modelRequiresTrustRemoteCode,
   );
@@ -501,7 +510,11 @@ export function ChatSettingsPanel({
   const ctxDirty = customContextLength !== null;
   const specDirty = speculativeType !== loadedSpeculativeType;
   const specDraftDirty = specDraftNMax !== loadedSpecDraftNMax;
-  const modelSettingsDirty = kvDirty || ctxDirty || specDirty || specDraftDirty;
+  const visionProjectorDirty =
+    loadedVisionProjectorEnabled !== null &&
+    visionProjectorEnabled !== loadedVisionProjectorEnabled;
+  const modelSettingsDirty =
+    kvDirty || ctxDirty || specDirty || specDraftDirty || visionProjectorDirty;
   const chatTemplateOverride = useChatRuntimeStore(
     (s) => s.chatTemplateOverride,
   );
@@ -940,6 +953,24 @@ export function ChatSettingsPanel({
                     />
                   </div>
                 )}
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex min-w-0 items-center gap-1.5">
+                    <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
+                      Vision Projector
+                    </span>
+                    <InfoHint>
+                      Loads the GGUF mmproj file for image input. Disable to run
+                      vision-capable models as text-only and avoid the extra VRAM
+                      cost.
+                    </InfoHint>
+                  </div>
+                  <Switch
+                    className="panel-switch shrink-0"
+                    checked={visionProjectorEnabled}
+                    onCheckedChange={setVisionProjectorEnabled}
+                    aria-label="Load vision projector"
+                  />
+                </div>
               </>
             )}
             {!isGguf && params.checkpoint && (
@@ -994,6 +1025,9 @@ export function ChatSettingsPanel({
                     setKvCacheDtype(loadedKvCacheDtype);
                     setSpeculativeType(loadedSpeculativeType);
                     setSpecDraftNMax(loadedSpecDraftNMax);
+                    setVisionProjectorEnabled(
+                      loadedVisionProjectorEnabled ?? true,
+                    );
                     setChatTemplateOverride(loadedChatTemplateOverride);
                   }}
                   className="h-7 px-3 text-[12px] font-medium tracking-nav text-muted-foreground"

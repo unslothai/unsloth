@@ -93,6 +93,13 @@ class LoadRequest(BaseModel):
             "'mtp' or 'mtp+ngram'."
         ),
     )
+    load_mmproj: bool = Field(
+        True,
+        description = (
+            "For GGUF vision models, load the mmproj vision projector. "
+            "Disable to run the model as text-only and avoid the extra VRAM cost."
+        ),
+    )
     llama_extra_args: Optional[List[str]] = Field(
         None,
         description = (
@@ -253,6 +260,10 @@ class LoadResponse(BaseModel):
             "None when the platform default is in effect."
         ),
     )
+    load_mmproj: bool = Field(
+        True,
+        description = "Whether the current GGUF load requested mmproj vision projector support.",
+    )
 
 
 class UnloadResponse(BaseModel):
@@ -390,6 +401,10 @@ class InferenceStatusResponse(BaseModel):
             "Active --spec-draft-n-max for MTP speculative decoding, or "
             "None when the platform default is in effect."
         ),
+    )
+    load_mmproj: bool = Field(
+        True,
+        description = "Whether the current GGUF load requested mmproj vision projector support.",
     )
     llama_cpp_supports_mtp: bool = Field(
         True,
