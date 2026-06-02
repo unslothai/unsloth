@@ -841,8 +841,26 @@
 		box-shadow: none;
 	}
 
-	/* Settings dialog: pointer cursor on every clickable control. */
-	.settings-surface :is(button, a, [role="switch"], [role="tab"]):not(:disabled) {
+	/* App-wide: every clickable control shows the hand cursor. Disabled ones
+	   (native :disabled, aria-disabled, Radix data-disabled) keep the default. */
+	button:not(:disabled):not([aria-disabled="true"]),
+	summary,
+	label[for],
+	select:not(:disabled),
+	a[href],
+	:is(
+		[role="button"],
+		[role="tab"],
+		[role="switch"],
+		[role="radio"],
+		[role="checkbox"],
+		[role="menuitem"],
+		[role="menuitemcheckbox"],
+		[role="menuitemradio"],
+		[role="option"],
+		[role="combobox"],
+		[role="link"]
+	):not([aria-disabled="true"]):not([data-disabled]):not(:disabled) {
 		cursor: pointer;
 	}
 
