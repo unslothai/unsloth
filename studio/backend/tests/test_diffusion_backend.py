@@ -355,6 +355,7 @@ def test_status_shape_unloaded():
         "offload_policy",
         "gguf_execution_backend",
         "gguf_prepared_module_counts",
+        "load_timings",
         "device",
         "dtype",
         "loaded_at",

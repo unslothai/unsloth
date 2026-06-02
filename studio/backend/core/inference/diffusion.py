@@ -3091,6 +3091,7 @@ class DiffusionBackend:
         self._gguf_pin_cpu_resident: bool = False
         self._gguf_execution_backend: Optional[str] = None
         self._gguf_prepared_module_counts: dict[str, int] = {}
+        self._load_timings: dict[str, float] = {}
         self._prompt_embedding_cache_key: Optional[tuple[Any, ...]] = None
         self._prompt_embedding_cache_value: Optional[
             tuple[Any, Any, Any, Any]
@@ -3269,6 +3270,7 @@ class DiffusionBackend:
                 "offload_policy": self._offload_policy,
                 "gguf_execution_backend": self._gguf_execution_backend,
                 "gguf_prepared_module_counts": dict(self._gguf_prepared_module_counts),
+                "load_timings": dict(self._load_timings),
                 "device": self._device,
                 "dtype": self._dtype,
                 "loaded_at": self._loaded_at,
@@ -3495,6 +3497,17 @@ class DiffusionBackend:
                 "before loading an image model."
             )
         _guard_transformers_tokenizers_backend()
+        load_started = time.perf_counter()
+        load_timings: dict[str, float] = {}
+
+        @contextlib.contextmanager
+        def _load_phase(name: str):
+            phase_started = time.perf_counter()
+            try:
+                yield
+            finally:
+                elapsed = time.perf_counter() - phase_started
+                load_timings[name] = load_timings.get(name, 0.0) + elapsed
 
         if transformer_gguf_filename and gguf_filename and transformer_gguf_filename != gguf_filename:
             raise ValueError(
@@ -3794,29 +3807,31 @@ class DiffusionBackend:
                     # BEFORE the file is opened, which also keeps the
                     # delete-ownership guards aligned with what was
                     # actually loaded.
-                    diffusion_gguf_repo_path = Path(diffusion_gguf_repo or "").expanduser()
-                    if diffusion_gguf_repo_path.is_dir():
-                        local_gguf_path = str(
-                            _resolve_local_gguf_child(
-                                diffusion_gguf_repo_path,
-                                diffusion_gguf_filename,
+                    with _load_phase("resolve_diffusion_gguf"):
+                        diffusion_gguf_repo_path = Path(diffusion_gguf_repo or "").expanduser()
+                        if diffusion_gguf_repo_path.is_dir():
+                            local_gguf_path = str(
+                                _resolve_local_gguf_child(
+                                    diffusion_gguf_repo_path,
+                                    diffusion_gguf_filename,
+                                )
                             )
-                        )
-                    else:
-                        local_gguf_path = hf_hub_download(
-                            repo_id = diffusion_gguf_repo,
-                            filename = diffusion_gguf_filename,
-                            token = hf_token,
-                        )
+                        else:
+                            local_gguf_path = hf_hub_download(
+                                repo_id = diffusion_gguf_repo,
+                                filename = diffusion_gguf_filename,
+                                token = hf_token,
+                            )
                     local_diffusion_gguf = Path(local_gguf_path)
                     if (
                         local_diffusion_gguf.is_file()
                         and base_repo is None
                         and not explicit_transformer_swap
                     ):
-                        diffusion_gguf_inspection = _inspect_diffusion_gguf_file(
-                            local_diffusion_gguf
-                        )
+                        with _load_phase("inspect_diffusion_gguf"):
+                            diffusion_gguf_inspection = _inspect_diffusion_gguf_file(
+                                local_diffusion_gguf
+                            )
                         if not _gguf_inspection_matches_family(
                             diffusion_gguf_inspection,
                             fam,
@@ -3877,22 +3892,24 @@ class DiffusionBackend:
                     )
                     with self._lock:
                         self._pending_text_encoder_gguf_repo = effective_text_encoder_gguf_repo
-                    te_repo_path = Path(effective_text_encoder_gguf_repo).expanduser()
-                    if te_repo_path.is_dir():
-                        local_text_encoder_gguf_path = str(
-                            _resolve_local_gguf_child(te_repo_path, text_encoder_gguf_filename)
-                        )
-                    else:
-                        local_text_encoder_gguf_path = hf_hub_download(
-                            repo_id = effective_text_encoder_gguf_repo,
-                            filename = text_encoder_gguf_filename,
-                            token = hf_token,
-                        )
+                    with _load_phase("resolve_text_encoder_gguf"):
+                        te_repo_path = Path(effective_text_encoder_gguf_repo).expanduser()
+                        if te_repo_path.is_dir():
+                            local_text_encoder_gguf_path = str(
+                                _resolve_local_gguf_child(te_repo_path, text_encoder_gguf_filename)
+                            )
+                        else:
+                            local_text_encoder_gguf_path = hf_hub_download(
+                                repo_id = effective_text_encoder_gguf_repo,
+                                filename = text_encoder_gguf_filename,
+                                token = hf_token,
+                            )
                     local_te_path = Path(local_text_encoder_gguf_path)
                     if local_te_path.is_file():
                         from .gguf_text_encoder import inspect_text_encoder_gguf
 
-                        text_encoder_gguf_info = inspect_text_encoder_gguf(local_te_path)
+                        with _load_phase("inspect_text_encoder_gguf"):
+                            text_encoder_gguf_info = inspect_text_encoder_gguf(local_te_path)
                         text_encoder_mmproj_path = getattr(
                             text_encoder_gguf_info,
                             "mmproj_path",
@@ -3908,12 +3925,13 @@ class DiffusionBackend:
                         and text_encoder_mmproj_path is None
                         and not te_repo_path.is_dir()
                     ):
-                        text_encoder_mmproj_path = _download_text_encoder_mmproj_from_hub(
-                            hf_hub_download,
-                            repo_id = effective_text_encoder_gguf_repo,
-                            text_encoder_gguf_filename = text_encoder_gguf_filename,
-                            token = hf_token,
-                        )
+                        with _load_phase("resolve_text_encoder_mmproj"):
+                            text_encoder_mmproj_path = _download_text_encoder_mmproj_from_hub(
+                                hf_hub_download,
+                                repo_id = effective_text_encoder_gguf_repo,
+                                text_encoder_gguf_filename = text_encoder_gguf_filename,
+                                token = hf_token,
+                            )
                     text_encoder_gguf_plan = _resolve_text_encoder_gguf_plan(
                         fam,
                         architecture = text_encoder_gguf_arch,
@@ -3984,7 +4002,8 @@ class DiffusionBackend:
                 # before the load failed. Always preflight
                 # ``effective_base`` so a bad companion repo is
                 # caught BEFORE chat / export are released.
-                _preflight_full_diffusers_repo(effective_base, hf_token)
+                with _load_phase("preflight_pipeline_repo"):
+                    _preflight_full_diffusers_repo(effective_base, hf_token)
                 # Round 21 P2 #6: the GGUF transformer path also
                 # consumes ``effective_base`` via
                 # ``from_single_file(config=effective_base,
@@ -3995,11 +4014,12 @@ class DiffusionBackend:
                 # unload. Run the subfolder probe too so the
                 # second cheap failure mode is also caught early.
                 if diffusion_gguf_filename and fam.transformer_class:
-                    _preflight_diffusers_subfolder_config(
-                        effective_base,
-                        "transformer",
-                        hf_token,
-                    )
+                    with _load_phase("preflight_transformer_config"):
+                        _preflight_diffusers_subfolder_config(
+                            effective_base,
+                            "transformer",
+                            hf_token,
+                        )
 
                 # Round 20 P1 #2: ``diffusers.GGUFQuantizationConfig``
                 # imports the ``gguf`` package lazily at construction
@@ -4066,12 +4086,13 @@ class DiffusionBackend:
                 # route's "diffusion" tag and this "diffusion-
                 # backend" tag refcount independently; both
                 # contribute to public_load_pending().
-                backend_pending_published = _raise_if_helper_advisor_busy_for_diffusion(
-                    publish_pending = True,
-                    ignore_pending_workload = (ignore_public_load_pending_workload),
-                )
-                _release_other_gpu_owners_for_diffusion()
-                _release_chat_backend_for_diffusion(check_helper_advisor = False)
+                with _load_phase("release_other_backends"):
+                    backend_pending_published = _raise_if_helper_advisor_busy_for_diffusion(
+                        publish_pending = True,
+                        ignore_pending_workload = (ignore_public_load_pending_workload),
+                    )
+                    _release_other_gpu_owners_for_diffusion()
+                    _release_chat_backend_for_diffusion(check_helper_advisor = False)
 
                 old = self._pipe
                 if old is not None:
@@ -4109,17 +4130,19 @@ class DiffusionBackend:
                         self._gguf_pin_cpu_resident = False
                         self._gguf_execution_backend = None
                         self._gguf_prepared_module_counts = {}
+                        self._load_timings = {}
                         self._prompt_embedding_cache_key = None
                         self._prompt_embedding_cache_value = None
                         self._loaded_at = None
-                    _release(old)
-                    old = None
-                    # Now that both the attribute and the local
-                    # have been nulled, the pipeline is unreachable;
-                    # ask the CUDA allocator to release its slabs so
-                    # the next from_pretrained does not OOM behind
-                    # an already-freed-but-cached arena.
-                    _drain_cuda_cache()
+                    with _load_phase("release_previous_pipeline"):
+                        _release(old)
+                        old = None
+                        # Now that both the attribute and the local
+                        # have been nulled, the pipeline is unreachable;
+                        # ask the CUDA allocator to release its slabs so
+                        # the next from_pretrained does not OOM behind
+                        # an already-freed-but-cached arena.
+                        _drain_cuda_cache()
 
                 if diffusion_gguf_filename:
                     # ``quant_config`` was already constructed above
@@ -4139,25 +4162,28 @@ class DiffusionBackend:
                         }
                         if hf_token:
                             single_file_kwargs["token"] = hf_token
-                        with _patch_diffusers_gguf_checkpoint_loader_no_copy():
-                            transformer = transformer_cls.from_single_file(
-                                local_gguf_path,
-                                **single_file_kwargs,
-                            )
+                        with _load_phase("load_diffusion_transformer"):
+                            with _patch_diffusers_gguf_checkpoint_loader_no_copy():
+                                transformer = transformer_cls.from_single_file(
+                                    local_gguf_path,
+                                    **single_file_kwargs,
+                                )
                     else:
-                        transformer = _load_transformer_gguf_from_state_dict(
-                            transformer_cls,
-                            local_gguf_path,
-                            base_repo = effective_base,
-                            dtype = dtype,
-                            quant_config = quant_config,
-                            token = hf_token,
+                        with _load_phase("load_diffusion_transformer"):
+                            transformer = _load_transformer_gguf_from_state_dict(
+                                transformer_cls,
+                                local_gguf_path,
+                                base_repo = effective_base,
+                                dtype = dtype,
+                                quant_config = quant_config,
+                                token = hf_token,
+                            )
+                    with _load_phase("prepare_diffusion_gguf_linear"):
+                        lazy_linear_count = _replace_diffusers_gguf_linear_parameters(
+                            transformer,
+                            dtype,
+                            resident_device = diffusion_gguf_resident_device,
                         )
-                    lazy_linear_count = _replace_diffusers_gguf_linear_parameters(
-                        transformer,
-                        dtype,
-                        resident_device = diffusion_gguf_resident_device,
-                    )
                     if lazy_linear_count:
                         prepared_gguf_module_counts["diffusion_linear_lazy"] = lazy_linear_count
                         logger.info(
@@ -4165,11 +4191,12 @@ class DiffusionBackend:
                             "lazy GGUF linear modules.",
                             lazy_linear_count,
                         )
-                    prepared_gguf_non_linear = _prepare_gguf_non_linear_parameters(
-                        transformer,
-                        dtype,
-                        resident_device = diffusion_gguf_resident_device,
-                    )
+                    with _load_phase("prepare_diffusion_gguf_non_linear"):
+                        prepared_gguf_non_linear = _prepare_gguf_non_linear_parameters(
+                            transformer,
+                            dtype,
+                            resident_device = diffusion_gguf_resident_device,
+                        )
                     for key, count in prepared_gguf_non_linear.items():
                         prepared_gguf_module_counts[f"diffusion_{key}"] = count
                     if prepared_gguf_non_linear:
@@ -4179,10 +4206,11 @@ class DiffusionBackend:
                             prepared_gguf_non_linear,
                         )
                     if diffusion_gguf_resident_device is not None:
-                        patched_gguf_modules = _patch_gguf_modules_for_resident_device(
-                            transformer,
-                            diffusion_gguf_resident_device,
-                            pin_memory = gguf_pin_cpu_resident_active,
+                        with _load_phase("patch_diffusion_cpu_resident"):
+                            patched_gguf_modules = _patch_gguf_modules_for_resident_device(
+                                transformer,
+                                diffusion_gguf_resident_device,
+                                pin_memory = gguf_pin_cpu_resident_active,
                             )
                         if patched_gguf_modules:
                             prepared_gguf_module_counts[
@@ -4208,10 +4236,11 @@ class DiffusionBackend:
                                     exc,
                                 )
                             else:
-                                cache_stats = configure_lazy_gguf_cuda_cache(
-                                    transformer,
-                                    cuda_cache_bytes,
-                                )
+                                with _load_phase("configure_balanced_cuda_cache"):
+                                    cache_stats = configure_lazy_gguf_cuda_cache(
+                                        transformer,
+                                        cuda_cache_bytes,
+                                    )
                                 if cache_stats.get("modules", 0):
                                     prepared_gguf_module_counts[
                                         "diffusion_cuda_cache_modules"
@@ -4232,16 +4261,17 @@ class DiffusionBackend:
                         raise RuntimeError(
                             "Internal error: missing text GGUF load plan."
                         )
-                    text_encoder = _load_text_encoder_gguf_from_plan(
-                        gguf_text_encoder_mod,
-                        text_encoder_gguf_plan,
-                        local_text_encoder_gguf_path,
-                        base_repo_or_path = effective_base,
-                        mmproj_gguf_path = text_encoder_mmproj_path,
-                        compute_dtype = dtype,
-                        resident_device = text_encoder_resident_device,
-                        token = hf_token,
-                    )
+                    with _load_phase("load_text_encoder_gguf"):
+                        text_encoder = _load_text_encoder_gguf_from_plan(
+                            gguf_text_encoder_mod,
+                            text_encoder_gguf_plan,
+                            local_text_encoder_gguf_path,
+                            base_repo_or_path = effective_base,
+                            mmproj_gguf_path = text_encoder_mmproj_path,
+                            compute_dtype = dtype,
+                            resident_device = text_encoder_resident_device,
+                            token = hf_token,
+                        )
                     if text_encoder_resident_device is not None:
                         patch_text_encoder = getattr(
                             gguf_text_encoder_mod,
@@ -4249,11 +4279,12 @@ class DiffusionBackend:
                             None,
                         )
                         if patch_text_encoder is not None:
-                            patched_text_modules = patch_text_encoder(
-                            text_encoder,
-                            text_encoder_resident_device,
-                            pin_memory = gguf_pin_cpu_resident_active,
-                            )
+                            with _load_phase("patch_text_encoder_cpu_resident"):
+                                patched_text_modules = patch_text_encoder(
+                                text_encoder,
+                                text_encoder_resident_device,
+                                pin_memory = gguf_pin_cpu_resident_active,
+                                )
                             if patched_text_modules:
                                 prepared_gguf_module_counts[
                                     "text_cpu_resident_modules"
@@ -4270,16 +4301,17 @@ class DiffusionBackend:
                         raise RuntimeError(
                             "Internal error: missing prompt-enhancer GGUF load plan."
                         )
-                    prompt_enhancer = _load_text_encoder_gguf_from_plan(
-                        gguf_text_encoder_mod,
-                        prompt_enhancer_gguf_plan,
-                        local_prompt_enhancer_gguf_path,
-                        base_repo_or_path = effective_base,
-                        mmproj_gguf_path = None,
-                        compute_dtype = dtype,
-                        resident_device = text_encoder_resident_device,
-                        token = hf_token,
-                    )
+                    with _load_phase("load_prompt_enhancer_gguf"):
+                        prompt_enhancer = _load_text_encoder_gguf_from_plan(
+                            gguf_text_encoder_mod,
+                            prompt_enhancer_gguf_plan,
+                            local_prompt_enhancer_gguf_path,
+                            base_repo_or_path = effective_base,
+                            mmproj_gguf_path = None,
+                            compute_dtype = dtype,
+                            resident_device = text_encoder_resident_device,
+                            token = hf_token,
+                        )
                     if text_encoder_resident_device is not None:
                         patch_text_encoder = getattr(
                             gguf_text_encoder_mod,
@@ -4287,11 +4319,12 @@ class DiffusionBackend:
                             None,
                         )
                         if patch_text_encoder is not None:
-                            patched_pe_modules = patch_text_encoder(
-                                prompt_enhancer,
-                                text_encoder_resident_device,
-                                pin_memory = gguf_pin_cpu_resident_active,
-                            )
+                            with _load_phase("patch_prompt_enhancer_cpu_resident"):
+                                patched_pe_modules = patch_text_encoder(
+                                    prompt_enhancer,
+                                    text_encoder_resident_device,
+                                    pin_memory = gguf_pin_cpu_resident_active,
+                                )
                             if patched_pe_modules:
                                 prepared_gguf_module_counts[
                                     "prompt_enhancer_cpu_resident_modules"
@@ -4302,13 +4335,14 @@ class DiffusionBackend:
                                     patched_pe_modules,
                                 )
 
-                extra_components = _family_load_components(
-                    diffusers,
-                    fam,
-                    effective_base,
-                    dtype,
-                    hf_token,
-                )
+                with _load_phase("load_family_components"):
+                    extra_components = _family_load_components(
+                        diffusers,
+                        fam,
+                        effective_base,
+                        dtype,
+                        hf_token,
+                    )
                 pipe_kwargs: dict[str, Any] = {
                     "torch_dtype": dtype,
                     # use_safetensors=True refuses pickle-backed .bin
@@ -4361,23 +4395,25 @@ class DiffusionBackend:
                     enable_model_cpu_offload and device == "cuda"
                 )
                 try:
-                    pipe = pipeline_cls.from_pretrained(effective_base, **pipe_kwargs)
+                    with _load_phase("pipeline_from_pretrained"):
+                        pipe = pipeline_cls.from_pretrained(effective_base, **pipe_kwargs)
                     if lora_repo:
-                        lora_state = _apply_diffusion_lora(
-                            pipe,
-                            lora_repo = lora_repo,
-                            lora_weight_name = lora_weight_name,
-                            lora_adapter_name = lora_adapter_name,
-                            lora_scale = lora_scale,
-                            lora_fuse = bool(lora_fuse),
-                            hf_token = hf_token,
-                            gguf_filename = diffusion_gguf_filename,
-                            uses_studio_lazy_gguf_modules = bool(
-                                prepared_gguf_module_counts.get("diffusion_linear_lazy")
-                                or text_encoder_gguf_filename
-                                or prompt_enhancer_gguf_filename
-                            ),
-                        )
+                        with _load_phase("apply_lora"):
+                            lora_state = _apply_diffusion_lora(
+                                pipe,
+                                lora_repo = lora_repo,
+                                lora_weight_name = lora_weight_name,
+                                lora_adapter_name = lora_adapter_name,
+                                lora_scale = lora_scale,
+                                lora_fuse = bool(lora_fuse),
+                                hf_token = hf_token,
+                                gguf_filename = diffusion_gguf_filename,
+                                uses_studio_lazy_gguf_modules = bool(
+                                    prepared_gguf_module_counts.get("diffusion_linear_lazy")
+                                    or text_encoder_gguf_filename
+                                    or prompt_enhancer_gguf_filename
+                                ),
+                            )
                     # Device placement / offload can ALSO raise after
                     # from_pretrained succeeded (OOM at the .to(device)
                     # copy, accelerate offload hook misconfigured, etc.).
@@ -4387,16 +4423,17 @@ class DiffusionBackend:
                     # the next load attempt. Explicitly release both
                     # pipe and transformer in the same try (round 13
                     # P2 #11).
-                    if cpu_offload_enabled:
-                        pipe.enable_model_cpu_offload()
-                    else:
-                        pipe.to(device)
-                        if (
-                            text_encoder is not None
-                            and text_encoder_resident_device is not None
-                            and hasattr(text_encoder, "to")
-                        ):
-                            text_encoder.to(device)
+                    with _load_phase("device_placement"):
+                        if cpu_offload_enabled:
+                            pipe.enable_model_cpu_offload()
+                        else:
+                            pipe.to(device)
+                            if (
+                                text_encoder is not None
+                                and text_encoder_resident_device is not None
+                                and hasattr(text_encoder, "to")
+                            ):
+                                text_encoder.to(device)
                     if _enable_flux2_klein_embedded_guidance(pipe, fam):
                         logger.info(
                             "Enabled single-pass embedded guidance for Flux2 Klein."
@@ -4405,7 +4442,8 @@ class DiffusionBackend:
                         logger.info(
                             "Enabled batched classifier-free guidance for Flux2 Klein."
                         )
-                    _apply_diffusion_memory_policy(pipe, resolved_offload_policy)
+                    with _load_phase("apply_memory_policy"):
+                        _apply_diffusion_memory_policy(pipe, resolved_offload_policy)
                 except Exception:
                     if pipe is not None:
                         _release(pipe)
@@ -4509,6 +4547,11 @@ class DiffusionBackend:
                     self._gguf_prepared_module_counts = dict(
                         prepared_gguf_module_counts
                     )
+                    load_timings["total"] = time.perf_counter() - load_started
+                    self._load_timings = {
+                        key: round(value, 6)
+                        for key, value in load_timings.items()
+                    }
                     self._prompt_embedding_cache_key = None
                     self._prompt_embedding_cache_value = None
                     self._loaded_at = time.time()
@@ -4733,6 +4776,7 @@ class DiffusionBackend:
                 self._gguf_pin_cpu_resident = False
                 self._gguf_execution_backend = None
                 self._gguf_prepared_module_counts = {}
+                self._load_timings = {}
                 self._prompt_embedding_cache_key = None
                 self._prompt_embedding_cache_value = None
                 self._loaded_at = None
