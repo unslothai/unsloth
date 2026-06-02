@@ -324,6 +324,7 @@ def test_supported_optimization_options_payload_shape():
     assert recommended["gguf_image"]["use_balanced_cuda_cache"] is True
     assert recommended["safetensors_image"]["safetensors_quantization"] == "none"
     assert recommended["safetensors_image"]["enable_model_cpu_offload"] is False
+    assert recommended["safetensors_image"]["torch_compile"] == "regional"
     assert (
         recommended["safetensors_low_vram"]["safetensors_quantization"]
         == "bitsandbytes_4bit_nf4"
@@ -331,13 +332,18 @@ def test_supported_optimization_options_payload_shape():
     assert recommended["safetensors_low_vram"][
         "safetensors_quantization_components"
     ] == ["transformer", "unet"]
-    assert (
-        recommended["safetensors_quality_quantized"][
-            "safetensors_quantization"
-        ]
-        == "torchao_int8_weight_only"
-    )
-    assert recommended["denoiser_torch_compile"]["default_enabled"] is False
+    assert recommended["safetensors_low_vram"]["torch_compile"] == "regional"
+    assert "safetensors_quality_quantized" not in recommended
+    assert recommended["denoiser_torch_compile"]["default_enabled"] is True
+    assert recommended["denoiser_torch_compile"]["default_scope"] == "regional"
+    assert recommended["denoiser_torch_compile"]["default_when"] == [
+        "safetensors_bf16",
+        "safetensors_bitsandbytes_4bit_nf4",
+    ]
+    assert recommended["denoiser_torch_compile"]["default_disabled_when"] == [
+        "gguf_dequant_on_the_fly",
+        "safetensors_torchao",
+    ]
     assert recommended["group_offload"]["image_default"] is False
     assert recommended["group_offload"]["media_kind"] == "video"
 
@@ -390,13 +396,17 @@ def test_supported_optimization_options_payload_shape():
             "gguf_prepared_module_counts.diffusion_cuda_cache_selected_mib"
         ),
     }
-    assert compile_options["denoiser_torch_compile"]["default_enabled"] is False
+    assert compile_options["denoiser_torch_compile"]["default_enabled"] is True
+    assert compile_options["denoiser_torch_compile"]["default_scope"] == "regional"
     assert compile_options["denoiser_torch_compile"]["recommended_for"] == [
+        "safetensors_bf16",
         "safetensors_bf16_long_session",
+        "safetensors_bitsandbytes_4bit_nf4",
         "safetensors_bitsandbytes_4bit_nf4_long_session",
     ]
     assert compile_options["denoiser_torch_compile"]["not_recommended_for"] == [
         "gguf_dequant_on_the_fly",
+        "safetensors_torchao",
     ]
     assert compile_options["group_offload"]["image_default"] is False
     assert compile_options["group_offload"]["media_kind"] == "video"
@@ -1357,7 +1367,7 @@ def _install_fake_diffusers(monkeypatch, *, raise_on_pipeline = False):
             inst.lora_loads = []
             inst.adapter_calls = []
             inst.fuse_calls = []
-            inst.transformer = kwargs.get("transformer")
+            inst.transformer = kwargs.get("transformer") or _FakeTransformer()
             inst.unet = kwargs.get("unet")
             inst.vae = kwargs.get("vae")
             inst.text_encoder = kwargs.get("text_encoder")
@@ -1510,6 +1520,141 @@ def test_load_model_full_repo_uses_safetensors_quantization(monkeypatch):
         "transformer",
         "text_encoder_2",
     ]
+    assert pipe.transformer.compile_repeated_blocks_calls == [{}]
+    assert status["torch_compile_config"] == {
+        "scope": "regional",
+        "source": "default",
+        "mode": None,
+        "fullgraph": None,
+        "dynamic": None,
+        "options": {},
+    }
+    assert status["torch_compile_stats"]["compiled_components"][0]["component"] == "transformer"
+
+
+def test_load_model_full_repo_defaults_to_regional_torch_compile(monkeypatch):
+    _install_fake_diffusers(monkeypatch)
+    from core.inference.diffusion import get_diffusion_backend
+
+    backend = get_diffusion_backend()
+    status = backend.load_model(
+        "owner/my-flux-diffusers",
+        family_override = "flux.1",
+        enable_model_cpu_offload = False,
+    )
+
+    pipe = backend._pipe
+    assert pipe.transformer.compile_repeated_blocks_calls == [{}]
+    assert pipe.transformer.compile_calls == []
+    assert status["torch_compile_config"]["scope"] == "regional"
+    assert status["torch_compile_config"]["source"] == "default"
+    assert status["torch_compile_stats"]["compiled_components"][0]["method"] == (
+        "compile_repeated_blocks"
+    )
+
+
+def test_load_model_cpu_offload_defaults_to_regional_torch_compile(monkeypatch):
+    _install_fake_diffusers(monkeypatch)
+    import core.inference.diffusion as d
+    from core.inference.diffusion import get_diffusion_backend
+
+    monkeypatch.setattr(
+        d.DiffusionBackend,
+        "_pick_device_and_dtype",
+        lambda self: ("cuda", "fake_dtype"),
+    )
+
+    backend = get_diffusion_backend()
+    status = backend.load_model(
+        "owner/my-flux-diffusers",
+        family_override = "flux.1",
+        enable_model_cpu_offload = True,
+    )
+
+    pipe = backend._pipe
+    assert backend._cpu_offload_enabled is True
+    assert pipe.cpu_offload is True
+    assert pipe.transformer.compile_repeated_blocks_calls == [{}]
+    assert status["torch_compile_config"]["scope"] == "regional"
+    assert status["torch_compile_config"]["source"] == "default"
+
+
+def test_load_model_full_repo_respects_explicit_torch_compile_off(monkeypatch):
+    _install_fake_diffusers(monkeypatch)
+    from core.inference.diffusion import get_diffusion_backend
+
+    backend = get_diffusion_backend()
+    status = backend.load_model(
+        "owner/my-flux-diffusers",
+        family_override = "flux.1",
+        enable_model_cpu_offload = False,
+        torch_compile = "none",
+    )
+
+    pipe = backend._pipe
+    assert pipe.transformer.compile_repeated_blocks_calls == []
+    assert pipe.transformer.compile_calls == []
+    assert status["torch_compile_config"] is None
+    assert status["torch_compile_stats"] is None
+
+
+def test_default_torch_compile_policy_skips_gguf_torchao_and_video():
+    import core.inference.diffusion as d
+
+    assert (
+        d._default_diffusion_torch_compile_scope(
+            requested = None,
+            has_gguf_components = False,
+            safetensors_quantization = None,
+            media_kind = "image",
+        )
+        == "regional"
+    )
+    assert (
+        d._default_diffusion_torch_compile_scope(
+            requested = None,
+            has_gguf_components = False,
+            safetensors_quantization = "bitsandbytes_4bit_nf4",
+            media_kind = "image",
+        )
+        == "regional"
+    )
+    assert (
+        d._default_diffusion_torch_compile_scope(
+            requested = None,
+            has_gguf_components = True,
+            safetensors_quantization = None,
+            media_kind = "image",
+        )
+        == "none"
+    )
+    assert (
+        d._default_diffusion_torch_compile_scope(
+            requested = None,
+            has_gguf_components = False,
+            safetensors_quantization = "torchao_int8_weight_only",
+            media_kind = "image",
+        )
+        == "none"
+    )
+    assert (
+        d._default_diffusion_torch_compile_scope(
+            requested = None,
+            has_gguf_components = False,
+            safetensors_quantization = None,
+            media_kind = "video",
+        )
+        == "none"
+    )
+    assert (
+        d._default_diffusion_torch_compile_scope(
+            requested = "transformer",
+            has_gguf_components = True,
+            safetensors_quantization = "torchao_int8_weight_only",
+            media_kind = "video",
+        )
+        == "transformer"
+    )
 
 
 def test_load_model_rejects_safetensors_quantization_with_gguf(monkeypatch):

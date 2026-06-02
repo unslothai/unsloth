@@ -2586,10 +2586,13 @@ def supported_optimization_options() -> dict[str, Any]:
             "safetensors_image": {
                 "safetensors_quantization": DIFFUSION_SAFETENSORS_QUANT_NONE,
                 "enable_model_cpu_offload": False,
+                "torch_compile": DIFFUSION_TORCH_COMPILE_REGIONAL,
                 "reason": (
                     "Quality baseline for regular Diffusers safetensors repos. "
-                    "Use model CPU offload or explicit quantization only when "
-                    "the model does not fit or the user chooses a lower-VRAM mode."
+                    "Denoiser repeated-block torch.compile is enabled by default "
+                    "for better steady-state throughput. Use model CPU offload "
+                    "or explicit quantization only when the model does not fit "
+                    "or the user chooses a lower-VRAM mode."
                 ),
             },
             "safetensors_low_vram": {
@@ -2599,36 +2602,31 @@ def supported_optimization_options() -> dict[str, Any]:
                     "unet",
                 ],
                 "enable_model_cpu_offload": True,
+                "torch_compile": DIFFUSION_TORCH_COMPILE_REGIONAL,
                 "reason": (
-                    "Lowest practical safetensors VRAM path measured so far, "
-                    "but quality can drift from BF16 and should remain explicit."
-                ),
-            },
-            "safetensors_quality_quantized": {
-                "safetensors_quantization": (
-                    DIFFUSION_SAFETENSORS_QUANT_TORCHAO_INT8_WEIGHT_ONLY
-                ),
-                "safetensors_quantization_components": [
-                    "transformer",
-                    "unet",
-                ],
-                "enable_model_cpu_offload": False,
-                "reason": (
-                    "Optional quantized safetensors path that was closer to "
-                    "BF16 in pixel metrics than BnB NF4, but with weaker "
-                    "speed/VRAM tradeoff."
+                    "Lowest practical safetensors VRAM path measured so far. "
+                    "Denoiser repeated-block torch.compile stays enabled because "
+                    "it measured faster for BnB NF4 as well; quality can drift "
+                    "from BF16 and should remain explicit."
                 ),
             },
             "denoiser_torch_compile": {
-                "default_enabled": False,
+                "default_enabled": True,
+                "default_scope": DIFFUSION_TORCH_COMPILE_REGIONAL,
+                "default_when": [
+                    "safetensors_bf16",
+                    "safetensors_bitsandbytes_4bit_nf4",
+                ],
+                "default_disabled_when": [
+                    "gguf_dequant_on_the_fly",
+                    "safetensors_torchao",
+                ],
                 "reason": (
                     "Transformer/denoiser compile improves measured steady-state "
                     "throughput for BF16 safetensors and BnB NF4 safetensors "
-                    "long sessions, but cold-start cost makes it an advanced "
-                    "option rather than the default image path. GGUF image loads "
-                    "use the separate GGUF dequant compile path by default; "
-                    "denoiser compile is not currently recommended for GGUF "
-                    "dequant-on-the-fly."
+                    "loads, including long-session CPU-offload runs. GGUF image "
+                    "loads use the separate GGUF dequant compile path by default; "
+                    "TorchAO and GGUF denoiser compile are not default paths."
                 ),
             },
             "group_offload": {
@@ -2786,15 +2784,19 @@ def supported_optimization_options() -> dict[str, Any]:
                 },
             },
             "denoiser_torch_compile": {
-                "default_enabled": False,
+                "default_enabled": True,
+                "default_scope": DIFFUSION_TORCH_COMPILE_REGIONAL,
                 "recommended_scope": "denoiser_or_repeated_blocks_only",
                 "backend_load_arg": "torch_compile",
                 "recommended_for": [
+                    "safetensors_bf16",
                     "safetensors_bf16_long_session",
+                    "safetensors_bitsandbytes_4bit_nf4",
                     "safetensors_bitsandbytes_4bit_nf4_long_session",
                 ],
                 "not_recommended_for": [
                     "gguf_dequant_on_the_fly",
+                    "safetensors_torchao",
                 ],
                 "available_scopes": [
                     DIFFUSION_TORCH_COMPILE_NONE,
@@ -2803,11 +2805,11 @@ def supported_optimization_options() -> dict[str, Any]:
                     DIFFUSION_TORCH_COMPILE_PIPELINE,
                 ],
                 "reason": (
-                    "Useful for long resident safetensors sessions, but cold-start "
-                    "cost needs per-model benchmarking. GGUF dequant-on-the-fly "
-                    "uses gguf_balanced_dequant_compile instead; denoiser compile "
-                    "is kept opt-in because measured GGUF runs had high compile "
-                    "warmup and no second-image speedup."
+                    "Default for regular safetensors and BnB NF4 safetensors "
+                    "loads. GGUF dequant-on-the-fly uses "
+                    "gguf_balanced_dequant_compile instead; denoiser compile "
+                    "stays opt-in for GGUF because measured GGUF runs had high "
+                    "compile warmup and no second-image speedup."
                 ),
             },
             "group_offload": {
@@ -3487,6 +3489,39 @@ def _normalize_diffusion_torch_compile_scope(value: Optional[str]) -> str:
         allowed = ", ".join(sorted(DIFFUSION_TORCH_COMPILE_SCOPES))
         raise ValueError(f"torch_compile must be one of: {allowed}")
     return normalized
+
+
+def _default_diffusion_torch_compile_scope(
+    *,
+    requested: Optional[str],
+    has_gguf_components: bool,
+    safetensors_quantization: Optional[str],
+    media_kind: str,
+) -> str:
+    """Resolve the implicit denoiser compile policy.
+
+    Explicit caller values always win. When omitted, default to Diffusers'
+    repeated-block compilation for regular safetensors and BnB NF4 loads. Do
+    not enable denoiser compile for GGUF dequant-on-the-fly or TorchAO loads:
+    GGUF has its own dequant compile path, and measured TorchAO compile was not
+    competitive in this backend.
+    """
+
+    if requested is not None:
+        return _normalize_diffusion_torch_compile_scope(requested)
+    if media_kind != "image":
+        return DIFFUSION_TORCH_COMPILE_NONE
+    if has_gguf_components:
+        return DIFFUSION_TORCH_COMPILE_NONE
+    normalized_quantization = _normalize_safetensors_quantization(
+        safetensors_quantization
+    )
+    if normalized_quantization in {
+        DIFFUSION_SAFETENSORS_QUANT_TORCHAO_INT8_WEIGHT_ONLY,
+        DIFFUSION_SAFETENSORS_QUANT_TORCHAO_INT4_WEIGHT_ONLY,
+    }:
+        return DIFFUSION_TORCH_COMPILE_NONE
+    return DIFFUSION_TORCH_COMPILE_REGIONAL
 
 
 def _diffusion_torch_compile_kwargs(
@@ -4204,10 +4239,12 @@ class DiffusionBackend:
 
         ``torch_compile`` is an experimental backend-only compile scope
         for the denoising modules inside the loaded Diffusers pipeline.
-        Supported values are ``none`` (default), ``regional`` (Diffusers
+        Supported values are ``none``, ``regional`` (Diffusers
         compile_repeated_blocks), ``transformer`` (compile transformer /
-        UNet), and ``pipeline`` (compile major pipeline modules). This
-        is intentionally not wired to the Studio UI yet.
+        UNet), and ``pipeline`` (compile major pipeline modules). When
+        omitted, regular safetensors and BnB NF4 safetensors loads default
+        to ``regional``; GGUF and TorchAO loads default to ``none``.
+        This is intentionally not wired to the Studio UI yet.
 
         ``lora_repo`` optionally points at a Diffusers LoRA adapter repo
         or local path. When provided, the adapter is attached after the
@@ -4405,11 +4442,20 @@ class DiffusionBackend:
             gguf_quantized_cpu_resident = gguf_quantized_cpu_resident,
             gguf_pin_cpu_resident = gguf_pin_cpu_resident,
         )
-        resolved_torch_compile = _normalize_diffusion_torch_compile_scope(
-            torch_compile
+        has_gguf_components = bool(
+            diffusion_gguf_filename
+            or text_encoder_gguf_filename
+            or prompt_enhancer_gguf_filename
+        )
+        resolved_torch_compile = _default_diffusion_torch_compile_scope(
+            requested = torch_compile,
+            has_gguf_components = has_gguf_components,
+            safetensors_quantization = resolved_safetensors_quantization,
+            media_kind = fam.media_kind,
         )
         torch_compile_config = {
             "scope": resolved_torch_compile,
+            "source": "explicit" if torch_compile is not None else "default",
             "mode": torch_compile_mode,
             "fullgraph": torch_compile_fullgraph,
             "dynamic": torch_compile_dynamic,
