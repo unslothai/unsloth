@@ -1009,7 +1009,32 @@ def patch_dgx_spark_caching_allocator_warmup():
     _mu.caching_allocator_warmup = _noop
 
 
+def patch_dgx_spark_memory_config():
+    """Memory-efficiency default for Spark UMA (accuracy-neutral, gated).
 
+    Enables the CUDA caching allocator's `expandable_segments` mode so segments can
+    grow in virtual address space instead of fragmenting the shared unified-memory
+    pool -- more of the pool stays usable for weights/activations (fewer
+    fragmentation OOMs; headroom for larger models / longer sequences). Pure memory
+    management: it never changes any computed value, so accuracy is unaffected.
+
+    Strictly no-op off-Spark (gated by `is_dgx_spark()`). Respects an existing
+    PYTORCH_CUDA_ALLOC_CONF (only appends `expandable_segments` when absent, never
+    overrides a user's setting) and an explicit opt-out
+    (UNSLOTH_NO_EXPANDABLE_SEGMENTS=1). Must run before the first CUDA allocation;
+    `import unsloth` precedes model load, so it is set in time for normal use.
+    """
+    if not is_dgx_spark():
+        return
+    if os.environ.get("UNSLOTH_NO_EXPANDABLE_SEGMENTS") == "1":
+        return
+    conf = os.environ.get("PYTORCH_CUDA_ALLOC_CONF", "")
+    if "expandable_segments" in conf:
+        return  # user already configured it -- do not override
+    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = (conf + "," if conf else "") + "expandable_segments:True"
+
+
+patch_dgx_spark_memory_config()
 patch_dgx_spark_caching_allocator_warmup()
 
 
