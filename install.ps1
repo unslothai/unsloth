@@ -1459,15 +1459,27 @@ shell.Run cmd, 0, False
 
     # ===== Windows-on-ARM + NVIDIA GPU -> automatic WSL2 fallback (N1X "RTX Spark" / DGX Spark-class) =====
     # Native Windows-ARM64 has no CUDA PyTorch wheel and no Triton wheel for win_arm64, so the GPU
-    # training/inference stack cannot run natively. When an NVIDIA GPU is present on ARM64, transparently
-    # set up the supported path for an average user: enable/install WSL2 and run the Linux installer there
-    # (full GPU). STRICTLY gated on ARM64 + NVIDIA -> normal x86_64 Windows (NVIDIA or AMD) and
-    # ARM64-without-NVIDIA are byte-for-byte unaffected and continue the native install below.
+    # stack can't run natively today. When an NVIDIA GPU is present on ARM64 AND native CUDA PyTorch is
+    # NOT installable for this platform, set up the supported path: enable/install WSL2, run the Linux
+    # installer there (full GPU), and create a Windows `unsloth` shim that forwards into WSL.
+    # STRICTLY gated -> normal x86_64 Windows (NVIDIA or AMD) and ARM64-without-NVIDIA are byte-for-byte
+    # unaffected and continue the native install below. FUTURE-PROOF: if NVIDIA ships a win_arm64 CUDA
+    # torch wheel, the probe below passes and the native install is kept automatically.
     # Opt out with UNSLOTH_NO_WSL_FALLBACK=1; choose the distro with UNSLOTH_WSL_DISTRO.
     try { $_winArm64 = ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString() -ieq 'Arm64') } catch { $_winArm64 = $false }
-    if ($_winArm64 -and $HasNvidiaSmi -and (-not $SkipTorch) -and ($env:UNSLOTH_NO_WSL_FALLBACK -ne '1')) {
-        step "wsl" "Windows on ARM + NVIDIA detected -- routing GPU setup through WSL2 (supported path)"
-        substep "native Windows-ARM64 has no CUDA PyTorch/Triton yet; WSL2 delivers full GPU." "Yellow"
+    $_nativeCudaTorchOk = $false
+    if ($_winArm64 -and $HasNvidiaSmi -and (-not $SkipTorch)) {
+        # Future-proof check: can a CUDA-capable torch wheel be resolved natively for this platform/index?
+        $prevEapProbe = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+        try {
+            & uv pip install --python $VenvPython --dry-run torch --index-url $TorchIndexUrl *> $null
+            $_nativeCudaTorchOk = ($LASTEXITCODE -eq 0)
+        } catch { $_nativeCudaTorchOk = $false } finally { $ErrorActionPreference = $prevEapProbe }
+        if ($_nativeCudaTorchOk) { step "gpu" "native CUDA PyTorch now available for win_arm64 -- keeping native install" "Green" }
+    }
+    if ($_winArm64 -and $HasNvidiaSmi -and (-not $_nativeCudaTorchOk) -and (-not $SkipTorch) -and ($env:UNSLOTH_NO_WSL_FALLBACK -ne '1')) {
+        step "wsl" "Windows on ARM + NVIDIA, native CUDA unavailable -- routing GPU setup through WSL2"
+        substep "no win_arm64 CUDA PyTorch/Triton yet; WSL2 delivers full GPU (DGX Spark / RTX Spark path)." "Yellow"
 
         $wslReady = $false
         if (Get-Command wsl.exe -ErrorAction SilentlyContinue) {
@@ -1523,11 +1535,33 @@ shell.Run cmd, 0, False
         } catch {} finally { $ErrorActionPreference = $prevEapChk }
         if ($torchOk) {
             step "done" "Unsloth Studio installed in WSL '$distro' -- GPU ready (torch.cuda available)." "Green"
+            # Native Windows `unsloth` shim: forward every `unsloth ...` into the WSL GPU env so the user
+            # never has to touch WSL. `unsloth studio` runs inside WSL and streams output + URL back here;
+            # WSL2 forwards 127.0.0.1, so http://localhost:8888 works in the Windows browser.
+            try {
+                $shimDir = Join-Path $env:LOCALAPPDATA "Unsloth\bin"
+                New-Item -ItemType Directory -Force -Path $shimDir *> $null
+                $shimLines = @(
+                    '@echo off',
+                    "wsl.exe -d $distro -u root -- /root/.unsloth/studio/unsloth_studio/bin/unsloth %*"
+                )
+                Set-Content -LiteralPath (Join-Path $shimDir "unsloth.cmd") -Value $shimLines -Encoding ASCII
+                $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+                if (($userPath -split ';') -notcontains $shimDir) {
+                    [Environment]::SetEnvironmentVariable("Path", ($userPath.TrimEnd(';') + ";" + $shimDir), "User")
+                }
+                $env:Path = $env:Path.TrimEnd(';') + ";" + $shimDir
+                step "shim" "created native 'unsloth' command -> forwards to WSL '$distro'" "Green"
+                substep "open a NEW terminal, then (no WSL knowledge needed):" "Cyan"
+                substep "    unsloth studio        # runs in WSL; opens http://localhost:8888" "Cyan"
+                substep "    unsloth studio run    # also forwarded into WSL" "Cyan"
+            } catch {
+                substep "(shim creation failed; launch manually):  wsl -d $distro -u root -- bash -lic 'unsloth studio -p 8888'" "Yellow"
+            }
         } else {
             step "wsl" "WSL Studio install did not finish cleanly (torch.cuda not detected; inner exit $wslRc) -- see log above." "Yellow"
+            substep "retry, or launch manually:  wsl -d $distro -u root -- bash -lic 'unsloth studio -p 8888'" "Cyan"
         }
-        substep "Launch it from Windows (then open http://localhost:8888):" "Cyan"
-        substep "    wsl -d $distro -u root -- bash -lic 'unsloth studio -p 8888'" "Cyan"
         substep "GPU training + GGUF export run inside WSL. (GGUF *inference* additionally needs a CUDA llama.cpp build.)" "Yellow"
         if ($torchOk) { $global:LASTEXITCODE = 0 }
         return
