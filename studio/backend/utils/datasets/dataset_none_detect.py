@@ -809,11 +809,19 @@ def show_row(dataset: Dataset, row_indices: list[int], fmt: str, col: str = None
                 def _is_bad_turn(t):
                     if not isinstance(t, dict):
                         return True
-                    c = t.get("content") if "content" in t else t.get("value")
-                    # Valid tool-calling assistant turns have empty content
-                    # but a populated tool_calls array; scan_dataset ignores
-                    # them, so the display should too.
-                    if is_none_or_empty(c) and not t.get("tool_calls"):
+                    # Mirror scanner logic: prefer "value" for ShareGPT turns
+                    # (identified by the presence of "from"), "content" for chatml.
+                    if "from" in t:
+                        c = t.get("value")
+                    else:
+                        c = t.get("content") if "content" in t else t.get("value")
+                    # Mirror scanner logic: tool_calls exemption applies to
+                    # assistant role only — user/other turns with empty content
+                    # and incidental tool_calls metadata are still bad.
+                    r = t.get("role") if t.get("role") is not None else t.get("from")
+                    if is_none_or_empty(c) and not (
+                        str(r) == "assistant" and t.get("tool_calls")
+                    ):
                         return True
                     return False
 
@@ -830,10 +838,16 @@ def show_row(dataset: Dataset, row_indices: list[int], fmt: str, col: str = None
                     if r is None:
                         r = turn.get("from")
                     role = "?" if r is None else str(r)
-                    content = (
-                        turn.get("content") if "content" in turn else turn.get("value")
-                    )
-                    if is_none_or_empty(content) and not turn.get("tool_calls"):
+                    # Mirror scanner logic: prefer "value" for ShareGPT turns.
+                    if "from" in turn:
+                        content = turn.get("value")
+                    else:
+                        content = (
+                            turn.get("content") if "content" in turn else turn.get("value")
+                        )
+                    if is_none_or_empty(content) and not (
+                        role == "assistant" and turn.get("tool_calls")
+                    ):
                         status = "  << NONE"
                     else:
                         status = ""
