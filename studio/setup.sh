@@ -857,6 +857,16 @@ else
     if [ -n "${UNSLOTH_LLAMA_RELEASE_TAG:-}" ]; then
         _PREBUILT_CMD+=(--published-release-tag "$UNSLOTH_LLAMA_RELEASE_TAG")
     fi
+    # Forward the gfx arch resolved above so the lemonade HIP prebuilt is picked
+    # even when the installer's own probe cannot report it (amd-smi-only hosts,
+    # name-inferred arch). Implies --has-rocm on the installer side.
+    if [ -n "${_setup_gfx:-}" ]; then
+        _PREBUILT_CMD+=(--rocm-gfx "$_setup_gfx")
+    elif [ "$_setup_amd_detected" = true ]; then
+        # AMD was detected but gfx resolution failed; tell the installer ROCm is
+        # present so it can still attempt a prebuilt. Mirrors setup.ps1 behaviour.
+        _PREBUILT_CMD+=(--has-rocm)
+    fi
     _PREBUILT_LOG="$(mktemp)"
     set +e
     if _is_verbose; then
@@ -1362,6 +1372,32 @@ else
     fi
 }
 fi  # end _SKIP_GGUF_BUILD check
+
+# ── arm64 Linux GPU: CPU prebuilt as a last resort ──
+# arm64 Linux with a GPU has no CUDA prebuilt anywhere (the unslothai fork is
+# x64 only; ggml-org ships no Linux CUDA build), so it source-builds for the
+# GPU above. If that produced no binary, install ggml-org's arm64 CPU prebuilt
+# instead of leaving the host without llama.cpp.
+if [ "$_LLAMA_CPP_DEGRADED" = true ] \
+        && [ "$_HOST_SYSTEM" = "Linux" ] \
+        && { [ "$_HOST_MACHINE" = "aarch64" ] || [ "$_HOST_MACHINE" = "arm64" ]; }; then
+    substep "GPU source build unavailable; trying ggml-org arm64 CPU prebuilt..."
+    _ARM64_CPU_CMD=(
+        python "$SCRIPT_DIR/install_llama_prebuilt.py"
+        --install-dir "$LLAMA_CPP_DIR"
+        --llama-tag "$_REQUESTED_LLAMA_TAG"
+        --published-repo "ggml-org/llama.cpp"
+        --simple-policy
+        --cpu-fallback
+    )
+    # Trust the installer's exit code: it validates the server before exiting 0,
+    # the same signal the primary prebuilt path above relies on.
+    if run_quiet_no_exit "arm64 CPU prebuilt" "${_ARM64_CPU_CMD[@]}"; then
+        step "llama.cpp" "arm64 CPU prebuilt installed (GPU build unavailable)" "$C_WARN"
+        _LLAMA_CPP_DEGRADED=false
+        print_installed_llama_prebuilt_release "$LLAMA_CPP_DIR"
+    fi
+fi
 
 # ── Footer ──
 if [ "$_LLAMA_ONLY" = "1" ]; then

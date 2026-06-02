@@ -17,7 +17,7 @@ import {
   CloudIcon,
   DashboardSquare01Icon,
   FolderSearchIcon,
-  Logout01Icon,
+  RemoveCircleIcon,
   Search01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -326,7 +326,7 @@ function ModelSelectorContent({
             className="flex w-full items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-destructive transition-colors hover:bg-destructive/10"
             title="Eject model"
           >
-            <HugeiconsIcon icon={Logout01Icon} className="size-3.5" />
+            <HugeiconsIcon icon={RemoveCircleIcon} className="size-3.5" />
             Eject loaded model
           </button>
         </div>
