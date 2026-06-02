@@ -7,7 +7,8 @@ import { Label } from "@/components/ui/label";
 import { getAuthToken } from "@/features/auth";
 import { useT } from "@/i18n";
 import { toastError, toastSuccess } from "@/shared/toast";
-import { Camera } from "lucide-react";
+import { Camera01Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { useMemo, useRef, useState } from "react";
 import { decodeJwtSubject } from "../utils/jwt-subject";
 import { resizeImageFileToDataUrl } from "../utils/resize-image-file";
@@ -117,10 +118,10 @@ export function ProfilePersonalizationPanel() {
         <button
           type="button"
           onClick={() => fileInputRef.current?.click()}
-          className="absolute right-0 bottom-0 -translate-x-[15.625%] -translate-y-[15.625%] flex size-8 items-center justify-center rounded-full border border-border bg-background text-foreground shadow-sm transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+          className="absolute right-0 bottom-0 -translate-x-[15.625%] -translate-y-[15.625%] flex size-8 items-center justify-center rounded-full border border-border bg-background text-foreground shadow-[0_2px_8px_-2px_rgba(27,27,31,0.16)] transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
           aria-label={t("settings.profile.changePicture")}
         >
-          <Camera className="size-3.5" strokeWidth={2} />
+          <HugeiconsIcon icon={Camera01Icon} className="size-3.5" strokeWidth={2} />
         </button>
       </div>
 
