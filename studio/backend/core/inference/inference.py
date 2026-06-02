@@ -1268,7 +1268,7 @@ class InferenceBackend:
             )
 
             # SSM models (Mamba, LFM, etc.) use recurrent state, not KV cache
-            use_cache = not _is_ssm_model(self.active_model_name)
+            use_cache = not self._is_active_model_ssm()
 
             generation_kwargs = dict(
                 **inputs,
@@ -1409,7 +1409,7 @@ class InferenceBackend:
             )
 
             # SSM models (Mamba, LFM, etc.) use recurrent state, not KV cache
-            use_cache = not _is_ssm_model(self.active_model_name)
+            use_cache = not self._is_active_model_ssm()
 
             # Notebook uses do_sample=False for ASR (greedy decoding for accuracy)
             generation_kwargs = dict(
@@ -1500,6 +1500,29 @@ class InferenceBackend:
 
         return is_gpt_oss_model_name(model_name or self.active_model_name or "")
 
+    def _is_active_model_ssm(self) -> bool:
+        """Check if the currently active model is a State Space Model (SSM).
+
+        For LoRA adapters, checks both the adapter name and the base model,
+        since the adapter path may not contain SSM architecture identifiers
+        even when the underlying base model is an SSM architecture.
+        """
+        if not self.active_model_name:
+            return False
+
+        # First check the active model name
+        if _is_ssm_model(self.active_model_name):
+            return True
+
+        # For LoRA adapters, also check the base model
+        model_info = self.models.get(self.active_model_name)
+        if model_info:
+            base_model = model_info.get("base_model")
+            if base_model and _is_ssm_model(base_model):
+                return True
+
+        return False
+
     def generate_stream(
         self,
         prompt: str,
@@ -1563,7 +1586,7 @@ class InferenceBackend:
                 )
 
             # SSM models (Mamba, LFM, etc.) use recurrent state, not KV cache
-            use_cache = not _is_ssm_model(self.active_model_name)
+            use_cache = not self._is_active_model_ssm()
 
             generation_kwargs = dict(
                 **inputs,
@@ -1748,7 +1771,7 @@ class InferenceBackend:
         attention_mask = torch.ones_like(input_ids)
 
         # SSM models (Mamba, LFM, etc.) use recurrent state, not KV cache
-        use_cache = not _is_ssm_model(self.active_model_name)
+        use_cache = not self._is_active_model_ssm()
 
         generated = model.generate(
             input_ids = input_ids,
