@@ -65,17 +65,21 @@ jobs:
         with:
           persist-credentials: false
 
-      # Fast GPU-free gate: parse setup.ps1 and run the Resolve-CudaToolkit unit
-      # test (deferred Windows CUDA Toolkit check) before the heavy GGUF smoke.
-      - name: setup.ps1 unit test (Resolve-CudaToolkit)
+      # Fast GPU-free gate: parse install.ps1 + setup.ps1 and run the PowerShell
+      # unit tests (Resolve-CudaToolkit deferred-toolkit check, torch-flavor
+      # repair helpers) before the heavy GGUF smoke.
+      - name: PowerShell installer unit tests
         shell: pwsh
         run: |
-          $errs = $null
-          [void][System.Management.Automation.Language.Parser]::ParseFile(
-            (Resolve-Path studio/setup.ps1).Path, [ref]$null, [ref]$errs)
-          if ($errs) { $errs | ForEach-Object { $_.ToString() }; exit 1 }
-          Write-Host "setup.ps1 parsed with no errors"
+          foreach ($f in @('install.ps1', 'studio/setup.ps1')) {
+            $errs = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $f).Path, [ref]$null, [ref]$errs)
+            if ($errs) { $errs | ForEach-Object { $_.ToString() }; exit 1 }
+            Write-Host "$f parsed with no errors"
+          }
           pwsh -NoProfile -File tests/studio/test_resolve_cuda_toolkit.ps1
+          pwsh -NoProfile -File tests/studio/test_torch_flavor.ps1
 
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
         with:
