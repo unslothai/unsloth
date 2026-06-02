@@ -1761,6 +1761,8 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         outboundMessages.unshift({
           role: "system",
           content: systemPromptParts.join("\n\n"),
+        });
+      }
 
       if (ragPrefetchEnabled && ragToolEnabled && ragSource.kind !== "off") {
         const lastUser = [...outboundMessages]
