@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { LibraryBigIcon, PaperclipIcon } from "lucide-react";
 import { useAui } from "@assistant-ui/react";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
+import { useRagToolAvailable } from "@/features/chat/hooks/use-rag-tool-available";
 import { toast } from "@/lib/toast";
 import { listKnowledgeBases, listThreadDocuments } from "../api/rag-api";
 import { RAG_UPLOAD_ACCEPT } from "../types/rag";
@@ -50,6 +51,7 @@ function KnowledgeBaseSourceChip({ kbId }: { kbId: string }) {
  */
 export function ThreadDocumentsBar({ threadId }: { threadId: string | null }) {
   const ragEnabled = useChatRuntimeStore((s) => s.ragEnabled);
+  const ragAvailable = useRagToolAvailable();
   const ragSource = useChatRuntimeStore((s) => s.ragSource);
   const setActiveThreadId = useChatRuntimeStore((s) => s.setActiveThreadId);
   const aui = useAui();
@@ -112,7 +114,11 @@ export function ThreadDocumentsBar({ threadId }: { threadId: string | null }) {
     fileInputRef.current?.click();
   }, [ensureThreadId]);
 
-  if (!ragEnabled) return null;
+  // Show only when the RAG pill is effectively on: enabled AND a local
+  // tool-capable model is loaded (matches the pill's disabled gate). Without
+  // ragAvailable the bar appeared on a fresh chat with no model, while the pill
+  // sat inert.
+  if (!ragEnabled || !ragAvailable) return null;
   // A KB source uploads via the KB dialog, not here; show which KB is active so
   // the composer never silently swaps to a KB with no indication.
   if (ragSource.type === "kb") {

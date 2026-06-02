@@ -47,6 +47,7 @@ import { sentAudioNames } from "@/features/chat/api/chat-adapter";
 import { parseExternalModelId } from "@/features/chat/external-providers";
 import { McpComposerButton } from "@/features/chat/mcp-composer-button";
 import { getExternalReasoningCapabilities } from "@/features/chat/provider-capabilities";
+import { useRagToolAvailable } from "@/features/chat/hooks/use-rag-tool-available";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { useExternalProvidersStore } from "@/features/chat/stores/external-providers-store";
 import { deleteThreadMessage } from "@/features/chat/utils/delete-thread-message";
@@ -1162,17 +1163,10 @@ const ImagesToggle: FC = () => {
 };
 
 const RagToggle: FC = () => {
-  const modelLoaded = useChatRuntimeStore(
-    (s) => !!s.params.checkpoint && !s.modelLoading,
-  );
-  const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
-  // search_knowledge_base is local-only; gate the pill on local tool support +
-  // a non-external checkpoint (like the Code/Search pills).
-  const supportsTools = useChatRuntimeStore((s) => s.supportsTools);
   const ragEnabled = useChatRuntimeStore((s) => s.ragEnabled);
   const setRagEnabled = useChatRuntimeStore((s) => s.setRagEnabled);
-  const isExternal = parseExternalModelId(checkpoint) !== null;
-  const disabled = !modelLoaded || isExternal || !supportsTools;
+  // search_knowledge_base is local-only; the bar and pill share this gate.
+  const disabled = !useRagToolAvailable();
 
   return (
     <button
