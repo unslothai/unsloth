@@ -4441,7 +4441,13 @@ class DiffusionBackend:
                         if cpu_offload_enabled:
                             pipe.enable_model_cpu_offload()
                         else:
-                            pipe.to(device)
+                            try:
+                                pipe.to(
+                                    device,
+                                    non_blocking = str(device).split(":", 1)[0] == "cuda",
+                                )
+                            except TypeError:
+                                pipe.to(device)
                     if _enable_flux2_klein_embedded_guidance(pipe, fam):
                         logger.info(
                             "Enabled single-pass embedded guidance for Flux2 Klein."
