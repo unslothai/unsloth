@@ -4428,12 +4428,6 @@ class DiffusionBackend:
                             pipe.enable_model_cpu_offload()
                         else:
                             pipe.to(device)
-                            if (
-                                text_encoder is not None
-                                and text_encoder_resident_device is not None
-                                and hasattr(text_encoder, "to")
-                            ):
-                                text_encoder.to(device)
                     if _enable_flux2_klein_embedded_guidance(pipe, fam):
                         logger.info(
                             "Enabled single-pass embedded guidance for Flux2 Klein."

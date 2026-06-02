@@ -1258,6 +1258,10 @@ def _install_fake_diffusers(monkeypatch, *, raise_on_pipeline = False):
 
         def to(self, device):
             self.device = device
+            for component in self.kwargs.values():
+                to = getattr(component, "to", None)
+                if callable(to):
+                    to(device)
             return self
 
         def load_lora_weights(self, repo, **kwargs):
@@ -2168,6 +2172,7 @@ def test_load_model_text_encoder_gguf_cpu_resident_without_full_cpu_offload(monk
             inst = cls()
             inst.path = path
             inst.resident_device = resident_device
+            inst.to_calls = []
             cls.calls.append(
                 {
                     "path": path,
@@ -2178,6 +2183,10 @@ def test_load_model_text_encoder_gguf_cpu_resident_without_full_cpu_offload(monk
                 }
             )
             return inst
+
+        def to(self, device):
+            self.to_calls.append(device)
+            return self
 
     fake_text_mod.LazyFlux2MistralTextEncoder = _FakeLazyTextEncoder
     fake_text_mod.patch_gguf_text_encoder_for_resident_device = (
@@ -2215,6 +2224,7 @@ def test_load_model_text_encoder_gguf_cpu_resident_without_full_cpu_offload(monk
     assert backend._pipe.device == "cuda"
     assert _FakeLazyTextEncoder.calls[-1]["resident_device"] == "cpu"
     assert backend._pipe.kwargs["text_encoder"].resident_device == "cpu"
+    assert backend._pipe.kwargs["text_encoder"].to_calls == ["cuda"]
     assert patch_calls == [
         (backend._pipe.kwargs["transformer"], "cpu", True),
         (backend._pipe.kwargs["text_encoder"], "cpu", True),
