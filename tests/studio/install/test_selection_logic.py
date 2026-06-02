@@ -487,6 +487,14 @@ class TestCompatibleWindowsRuntimeLines:
         host = make_host(driver_cuda_version = (12, 4))
         assert compatible_windows_runtime_lines(host) == ["cuda12"]
 
+    @pytest.mark.parametrize("minor", [0, 1, 2, 3])
+    def test_cuda12_runs_on_any_12_x_driver(self, minor):
+        # cuda12 app bundles are toolkit-12.8 builds with bundled runtime; CUDA
+        # minor-version compatibility runs them on any 12.x driver, same as Linux.
+        # Previously Windows wrongly gated cuda12 below a 12.4 driver.
+        host = make_host(driver_cuda_version = (12, minor))
+        assert compatible_windows_runtime_lines(host) == ["cuda12"]
+
     def test_driver_13_1(self):
         host = make_host(driver_cuda_version = (13, 1))
         assert compatible_windows_runtime_lines(host) == ["cuda13", "cuda12"]
