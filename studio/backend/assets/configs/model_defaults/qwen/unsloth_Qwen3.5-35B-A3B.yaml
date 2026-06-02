@@ -31,6 +31,7 @@ lora:
     - "gate_proj"
     - "up_proj"
     - "down_proj"
+    - "gate_up_proj"  # Fused expert projection for MoE layers
   use_rslora: false
   use_loftq: false
 
