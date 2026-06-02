@@ -47,6 +47,15 @@ EXIT_FALLBACK = 2
 EXIT_ERROR = 1
 EXIT_BUSY = 3
 
+# DiskPart-prompt suppression: amd-smi auto-elevates on Windows, popping a
+# UAC/DiskPart prompt. This installer only spawns download / extract / probe
+# subprocesses (amd-smi, llama-server validation, git/cmake source builds) --
+# none of which need elevation -- so force __COMPAT_LAYER=RunAsInvoker
+# process-wide so every amd-smi call runs un-elevated. Belt-and-suspenders with
+# run_capture's per-command guard; mirrors install_python_stack.py.
+if platform.system() == "Windows":
+    os.environ.setdefault("__COMPAT_LAYER", "RunAsInvoker")
+
 
 def windows_hidden_subprocess_kwargs() -> dict[str, object]:
     """Return Windows-only subprocess kwargs that suppress console windows."""

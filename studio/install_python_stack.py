@@ -41,6 +41,16 @@ IS_MACOS = sys.platform == "darwin"
 IS_MAC_INTEL = IS_MACOS and platform.machine() == "x86_64"
 IS_MAC_ARM = IS_MACOS and platform.machine() == "arm64"
 IS_LINUX = sys.platform.startswith("linux")
+
+# DiskPart-prompt suppression: amd-smi auto-elevates on Windows to read GPU/APU
+# memory, popping a confusing UAC/DiskPart prompt mid-install. This installer
+# only spawns amd-smi/rocminfo/hipinfo probes and pip/uv (none of which need
+# elevation), so force __COMPAT_LAYER=RunAsInvoker process-wide -- every amd-smi
+# subprocess here (current and future) then runs un-elevated, with no per-call
+# guard required. setup.ps1 keeps per-call guards because it ALSO spawns winget
+# installers that legitimately need elevation.
+if IS_WINDOWS:
+    os.environ.setdefault("__COMPAT_LAYER", "RunAsInvoker")
 # torchcodec ships wheels only for manylinux_2_28_x86_64,
 # macosx_12_0_arm64, and win_amd64 (visible in the 0.10.0 PyPI page).
 # Trying to install it on any other host fails the whole
