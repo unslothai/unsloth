@@ -1030,7 +1030,7 @@ def test_install_prebuilt_falls_back_to_older_release_plan(
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "detect_host", lambda: host)
     monkeypatch.setattr(
         INSTALL_LLAMA_PREBUILT,
-        "resolve_install_release_plans",
+        "resolve_simple_install_release_plans",
         lambda llama_tag, host, published_repo, published_release_tag: (
             "latest",
             [first_plan, second_plan],
@@ -1975,7 +1975,7 @@ def test_install_prebuilt_skips_download_when_existing_install_matches(
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "detect_host", lambda: host)
     monkeypatch.setattr(
         INSTALL_LLAMA_PREBUILT,
-        "resolve_install_release_plans",
+        "resolve_simple_install_release_plans",
         lambda llama_tag, host, published_repo, published_release_tag: (
             "latest",
             [plan],
@@ -2067,7 +2067,7 @@ def test_install_prebuilt_does_not_skip_unhealthy_existing_install(
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "detect_host", lambda: host)
     monkeypatch.setattr(
         INSTALL_LLAMA_PREBUILT,
-        "resolve_install_release_plans",
+        "resolve_simple_install_release_plans",
         lambda llama_tag, host, published_repo, published_release_tag: (
             "latest",
             [plan],
@@ -2195,7 +2195,7 @@ def test_install_prebuilt_skips_when_older_release_fallback_matches_existing_ins
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "detect_host", lambda: host)
     monkeypatch.setattr(
         INSTALL_LLAMA_PREBUILT,
-        "resolve_install_release_plans",
+        "resolve_simple_install_release_plans",
         lambda llama_tag, host, published_repo, published_release_tag: (
             "latest",
             [latest_plan, fallback_plan],
@@ -2342,7 +2342,7 @@ def test_install_prebuilt_skips_same_release_fallback_attempt_when_installed(
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "detect_host", lambda: host)
     monkeypatch.setattr(
         INSTALL_LLAMA_PREBUILT,
-        "resolve_install_release_plans",
+        "resolve_simple_install_release_plans",
         lambda llama_tag, host, published_repo, published_release_tag: (
             "latest",
             [plan],
@@ -2461,7 +2461,7 @@ def test_install_prebuilt_same_tag_upstream_failure_uses_older_unsloth_release_p
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "detect_host", lambda: host)
     monkeypatch.setattr(
         INSTALL_LLAMA_PREBUILT,
-        "resolve_install_release_plans",
+        "resolve_simple_install_release_plans",
         lambda llama_tag, host, published_repo, published_release_tag: (
             "latest",
             [latest_plan, older_plan],

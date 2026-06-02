@@ -1694,13 +1694,13 @@ def resolve_simple_install_release_plans(
     max_release_fallbacks: int = DEFAULT_MAX_PREBUILT_RELEASE_FALLBACKS,
 ) -> tuple[str, list[InstallReleasePlan]]:
     repo = published_repo or DEFAULT_PUBLISHED_REPO
-    # The fork now ships multi-platform bundles (linux-arm64 CUDA, ROCm, Windows
-    # CUDA, macOS), not just linux-x64. Only plain linux-x64 keeps this fast
-    # manifest-light path; every other host delegates to the manifest-aware
-    # resolver, which reads llama-prebuilt-manifest.json to pick the right
-    # install_kind (arm64 CUDA, per-gfx ROCm, Windows CUDA, fork macOS).
+    # Fork linux-x64 (CUDA + ROCm + CPU) uses the fast filename path below. The
+    # fork's other bundles -- arm64 CUDA, Windows CUDA, per-gfx ROCm, macOS --
+    # have GPU/arch coverage that can't be reconstructed from filenames, so they
+    # take the manifest-reading branch of this same resolver (reads
+    # llama-prebuilt-manifest.json). Upstream (ggml-org) always uses filenames.
     if repo == DEFAULT_PUBLISHED_REPO and not (host.is_linux and host.is_x86_64):
-        return resolve_install_release_plans(
+        return _fork_manifest_release_plans(
             llama_tag,
             host,
             published_repo,
@@ -1729,7 +1729,7 @@ def resolve_simple_install_release_plans(
         )
         for release in releases:
             try:
-                if host.is_linux and repo == "unslothai/llama.cpp":
+                if host.is_linux and repo == DEFAULT_PUBLISHED_REPO:
                     plan = direct_linux_release_plan(release, host, repo, requested_tag)
                 else:
                     plan = direct_upstream_release_plan(
@@ -6165,7 +6165,7 @@ def resolve_install_attempts(
     published_repo: str,
     published_release_tag: str,
 ) -> tuple[str, str, list[AssetChoice], ApprovedReleaseChecksums]:
-    requested_tag, plans = resolve_install_release_plans(
+    requested_tag, plans = _fork_manifest_release_plans(
         llama_tag,
         host,
         published_repo,
@@ -6177,7 +6177,7 @@ def resolve_install_attempts(
     return requested_tag, plan.llama_tag, plan.attempts, plan.approved_checksums
 
 
-def resolve_install_release_plans(
+def _fork_manifest_release_plans(
     llama_tag: str,
     host: HostInfo,
     published_repo: str,
@@ -6185,6 +6185,10 @@ def resolve_install_release_plans(
     *,
     max_release_fallbacks: int = DEFAULT_MAX_PREBUILT_RELEASE_FALLBACKS,
 ) -> tuple[str, list[InstallReleasePlan]]:
+    """Manifest-reading branch of resolve_simple_install_release_plans, used for
+    the fork's bundles whose GPU/arch coverage lives in
+    llama-prebuilt-manifest.json rather than in the filename: arm64 CUDA, Windows
+    CUDA, per-gfx ROCm, and macOS. Linux x64 takes the faster filename path."""
     requested_tag = normalized_requested_llama_tag(llama_tag)
     allow_older_release_fallback = (
         requested_tag == "latest" and not published_release_tag
@@ -6724,20 +6728,15 @@ def install_prebuilt(
                 log(
                     f"no existing llama.cpp install detected at {install_dir}; performing fresh prebuilt install"
                 )
-            if simple_policy:
-                requested_tag, release_plans = resolve_simple_install_release_plans(
-                    llama_tag,
-                    host,
-                    published_repo,
-                    published_release_tag,
-                )
-            else:
-                requested_tag, release_plans = resolve_install_release_plans(
-                    llama_tag,
-                    host,
-                    published_repo,
-                    published_release_tag,
-                )
+            # Single resolver: linux-x64 takes the fast filename path internally,
+            # every other fork host reads the manifest. --simple-policy is retained
+            # for CLI back-compat but no longer selects a separate resolver.
+            requested_tag, release_plans = resolve_simple_install_release_plans(
+                llama_tag,
+                host,
+                published_repo,
+                published_release_tag,
+            )
             if release_plans and existing_install_matches_plan(
                 install_dir, host, release_plans[0]
             ):

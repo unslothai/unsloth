@@ -59,7 +59,7 @@ windows_cuda_attempts = INSTALL_LLAMA_PREBUILT.windows_cuda_attempts
 resolve_upstream_asset_choice = INSTALL_LLAMA_PREBUILT.resolve_upstream_asset_choice
 resolve_requested_install_tag = INSTALL_LLAMA_PREBUILT.resolve_requested_install_tag
 resolve_install_attempts = INSTALL_LLAMA_PREBUILT.resolve_install_attempts
-resolve_install_release_plans = INSTALL_LLAMA_PREBUILT.resolve_install_release_plans
+_fork_manifest_release_plans = INSTALL_LLAMA_PREBUILT._fork_manifest_release_plans
 resolve_published_release = INSTALL_LLAMA_PREBUILT.resolve_published_release
 resolve_source_build_plan = INSTALL_LLAMA_PREBUILT.resolve_source_build_plan
 validated_checksums_for_bundle = INSTALL_LLAMA_PREBUILT.validated_checksums_for_bundle
@@ -1818,7 +1818,7 @@ class TestResolveInstallReleasePlans:
             },
         )
 
-        requested_tag, plans = resolve_install_release_plans(
+        requested_tag, plans = _fork_manifest_release_plans(
             "latest",
             host,
             "unslothai/llama.cpp",
@@ -1876,7 +1876,7 @@ class TestResolveInstallReleasePlans:
             ),
         )
 
-        _requested_tag, plans = resolve_install_release_plans(
+        _requested_tag, plans = _fork_manifest_release_plans(
             "latest",
             host,
             "unslothai/llama.cpp",
@@ -3175,7 +3175,7 @@ class TestLinuxArm64ForkFallsBackToSource:
             return "b9457", ["plan"]
 
         monkeypatch.setattr(
-            INSTALL_LLAMA_PREBUILT, "resolve_install_release_plans", _full
+            INSTALL_LLAMA_PREBUILT, "_fork_manifest_release_plans", _full
         )
         host = make_host(system = "Linux", machine = "aarch64")
         tag, plans = resolve_simple_install_release_plans(
