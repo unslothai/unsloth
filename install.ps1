@@ -927,6 +927,59 @@ shell.Run cmd, 0, False
         return $false
     }
 
+    # ── Check for Windows App Execution Aliases that may block Python ──
+    # Windows App Execution Aliases (WindowsApps stubs) can intercept python.exe
+    # commands and redirect to the Microsoft Store instead of real Python.
+    # Returns @{ Blocking = $true/$false; Aliases = @("python.exe", ...) }
+    function Test-AppExecutionAliasesBlocking {
+        $windowsAppsPath = Join-Path $env:LOCALAPPDATA "Microsoft\WindowsApps"
+        $blockingAliases = @()
+
+        foreach ($exe in @("python.exe", "python3.exe")) {
+            $aliasPath = Join-Path $windowsAppsPath $exe
+            if (Test-Path $aliasPath) {
+                # Check if this is a stub (small file, typically < 10KB) that redirects to Store
+                $fileInfo = Get-Item $aliasPath -ErrorAction SilentlyContinue
+                if ($fileInfo -and $fileInfo.Length -lt 10240) {
+                    $blockingAliases += $exe
+                }
+            }
+        }
+
+        # Check if WindowsApps appears before real Python in PATH
+        $pathDirs = $env:PATH -split ';'
+        $windowsAppsIndex = -1
+        $realPythonIndex = -1
+        for ($i = 0; $i -lt $pathDirs.Count; $i++) {
+            $dir = $pathDirs[$i].Trim()
+            if ($dir -like "*\WindowsApps*" -or $dir -like "*\WindowsApps") {
+                if ($windowsAppsIndex -eq -1) { $windowsAppsIndex = $i }
+            }
+            # Check for common Python installation paths
+            if ($dir -match '\\Python3\d+\\?' -or $dir -match '\\Python\\Python3\d+') {
+                if ($realPythonIndex -eq -1) { $realPythonIndex = $i }
+            }
+        }
+
+        # Aliases are blocking if: stubs exist AND (no real Python OR WindowsApps comes first)
+        $isBlocking = ($blockingAliases.Count -gt 0) -and (($realPythonIndex -eq -1) -or ($windowsAppsIndex -ne -1 -and $windowsAppsIndex -lt $realPythonIndex))
+
+        return @{ Blocking = $isBlocking; Aliases = $blockingAliases; WindowsAppsIndex = $windowsAppsIndex; RealPythonIndex = $realPythonIndex }
+    }
+
+    function Show-AppAliasWarning {
+        param([array]$Aliases)
+        Write-Host ""
+        Write-Host "[WARNING] Windows App Execution Aliases may be blocking Python" -ForegroundColor Yellow
+        Write-Host "          The following aliases were detected: $($Aliases -join ', ')" -ForegroundColor Yellow
+        Write-Host ""
+        Write-Host "          To fix this, disable 'App Installer' aliases in Windows Settings:" -ForegroundColor Cyan
+        Write-Host "          1. Open Settings > Apps > Advanced app settings > App execution aliases" -ForegroundColor White
+        Write-Host "          2. Turn OFF 'python.exe' and 'python3.exe' under 'App Installer'" -ForegroundColor White
+        Write-Host "          3. Re-run this installer" -ForegroundColor White
+        Write-Host ""
+    }
+
     # Returns @{ Version = "3.13"; Path = "C:\...\python.exe" } or $null.
     # The resolved Path is passed to `uv venv --python` to prevent uv from
     # re-resolving the version string back to a conda interpreter.
@@ -975,6 +1028,14 @@ shell.Run cmd, 0, False
     # ── Install Python if no compatible version (3.11-3.13) found ──
     # Find-CompatiblePython returns @{ Version = "3.13"; Path = "C:\...\python.exe" } or $null.
     Write-TauriLog "STEP" "Installing Python"
+
+    # Pre-check for App Execution Aliases that might block Python detection
+    $preAliasCheck = Test-AppExecutionAliasesBlocking
+    if ($preAliasCheck.Blocking) {
+        Show-AppAliasWarning -Aliases $preAliasCheck.Aliases
+        substep "attempting to detect Python despite aliases..." "Yellow"
+    }
+
     $DetectedPython = Find-CompatiblePython
 
     if ($DetectedPython) {
@@ -983,8 +1044,14 @@ shell.Run cmd, 0, False
     if (-not $DetectedPython) {
         if (-not $script:WingetAvailable) {
             Write-Host "[ERROR] No compatible Python (3.11-3.13) found and winget is unavailable on this host." -ForegroundColor Red
-            Write-Host "        Install Python $PythonVersion from https://www.python.org/downloads/" -ForegroundColor Yellow
-            Write-Host "        and re-run this installer (make sure 'Add Python to PATH' is checked)." -ForegroundColor Yellow
+            # Check if aliases might be the issue
+            if ($preAliasCheck.Blocking) {
+                Write-Host "        App Execution Aliases may be blocking Python detection." -ForegroundColor Yellow
+                Write-Host "        Disable them first (see instructions above), then either:" -ForegroundColor Yellow
+            } else {
+                Write-Host "        Install Python $PythonVersion from https://www.python.org/downloads/" -ForegroundColor Yellow
+                Write-Host "        and re-run this installer (make sure 'Add Python to PATH' is checked)." -ForegroundColor Yellow
+            }
             return (Exit-InstallFailure "winget required to install Python on this host")
         }
         substep "installing Python ${PythonVersion}..."
@@ -1022,9 +1089,16 @@ shell.Run cmd, 0, False
 
         if (-not $DetectedPython) {
             Write-Host "[ERROR] Python installation failed (exit code $wingetExit)" -ForegroundColor Red
-            Write-Host "        Please install Python $PythonVersion manually from https://www.python.org/downloads/" -ForegroundColor Yellow
-            Write-Host "        Make sure to check 'Add Python to PATH' during installation." -ForegroundColor Yellow
-            Write-Host "        Then re-run this installer." -ForegroundColor Yellow
+
+            # Check if App Execution Aliases might be the cause
+            $aliasCheck = Test-AppExecutionAliasesBlocking
+            if ($aliasCheck.Blocking) {
+                Show-AppAliasWarning -Aliases $aliasCheck.Aliases
+            } else {
+                Write-Host "        Please install Python $PythonVersion manually from https://www.python.org/downloads/" -ForegroundColor Yellow
+                Write-Host "        Make sure to check 'Add Python to PATH' during installation." -ForegroundColor Yellow
+                Write-Host "        Then re-run this installer." -ForegroundColor Yellow
+            }
             return (Exit-InstallFailure "Python installation failed")
         }
     }
