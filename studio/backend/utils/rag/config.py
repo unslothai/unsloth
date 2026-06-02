@@ -31,6 +31,7 @@ RAG_EMBEDDING_MODEL: str = (
     or "BAAI/bge-small-en-v1.5"
 )
 
+
 # A single text embedder handles retrieval. PDF figures are captioned at ingest
 # (chat VLM or helper gemma-3n fallback) and spliced into the page markdown
 # before chunking, so the 384-d text embedder covers figure content too.
