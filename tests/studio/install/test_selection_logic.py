@@ -2564,6 +2564,77 @@ class TestPublishedWindowsCudaAppBundleSmSelection:
         assert result[0].name == f"app-{self.TAG}-windows-x64-cuda12-newer.zip"
 
 
+class TestPublishedRocmGfxSelection:
+    """Published ROCm bundles are matched by the host's detected gfx family, not
+    by rank -- rank ties would alphabetically hand every AMD GPU the gfx103X
+    bundle (e.g. a gfx1151 Strix Halo host)."""
+
+    GFX = ["gfx103X", "gfx110X", "gfx120X", "gfx1150", "gfx1151"]
+
+    def _release(self, install_kind, prefix):
+        artifacts = [
+            make_artifact(
+                f"{prefix}-{gfx}.{'zip' if 'windows' in install_kind else 'tar.gz'}",
+                install_kind = install_kind,
+                runtime_line = None,
+                coverage_class = None,
+                supported_sms = [],
+                min_sm = None,
+                max_sm = None,
+                bundle_profile = None,
+                rank = 1000,
+                gfx_target = gfx,
+            )
+            for gfx in self.GFX
+        ]
+        return make_release(artifacts, upstream_tag = "b9457")
+
+    def _host(self, gfx):
+        return make_host(
+            machine = "x86_64",
+            nvidia_smi = None,
+            driver_cuda_version = None,
+            compute_caps = [],
+            has_physical_nvidia = False,
+            has_usable_nvidia = False,
+            has_rocm = True,
+            rocm_gfx_target = gfx,
+        )
+
+    def test_gfx1100_selects_gfx110X_family(self):
+        release = self._release("linux-rocm", "app-b9457-linux-x64-rocm")
+        choice = INSTALL_LLAMA_PREBUILT.published_rocm_choice_for_host(
+            release, self._host("gfx1100"), "linux-rocm"
+        )
+        assert choice is not None
+        assert choice.name == "app-b9457-linux-x64-rocm-gfx110X.tar.gz"
+
+    def test_gfx1151_strix_halo_not_handed_gfx103X(self):
+        release = self._release("linux-rocm", "app-b9457-linux-x64-rocm")
+        choice = INSTALL_LLAMA_PREBUILT.published_rocm_choice_for_host(
+            release, self._host("gfx1151"), "linux-rocm"
+        )
+        assert choice is not None
+        assert choice.name == "app-b9457-linux-x64-rocm-gfx1151.tar.gz"
+
+    def test_windows_rocm_gfx_match(self):
+        release = self._release("windows-rocm", "app-b9457-windows-x64-rocm")
+        choice = INSTALL_LLAMA_PREBUILT.published_rocm_choice_for_host(
+            release, self._host("gfx1201"), "windows-rocm"
+        )
+        assert choice is not None
+        assert choice.name == "app-b9457-windows-x64-rocm-gfx120X.zip"
+
+    def test_uncovered_gpu_returns_none(self):
+        release = self._release("linux-rocm", "app-b9457-linux-x64-rocm")
+        assert (
+            INSTALL_LLAMA_PREBUILT.published_rocm_choice_for_host(
+                release, self._host("gfx900"), "linux-rocm"
+            )
+            is None
+        )
+
+
 # ===========================================================================
 # N.1. apply_approved_hashes -- runtime archive checksum threading
 # ===========================================================================

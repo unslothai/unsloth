@@ -358,6 +358,10 @@ class PublishedLlamaArtifact:
     max_sm: int | None
     bundle_profile: str | None
     rank: int
+    # ROCm bundles only: the umbrella gfx target (e.g. "gfx110X") and the
+    # concrete gfx archs it covers (e.g. ["gfx1100", "gfx1101", ...]).
+    gfx_target: str | None = None
+    mapped_targets: list[str] = field(default_factory = list)
 
 
 @dataclass
@@ -1322,7 +1326,9 @@ def parse_direct_linux_release_bundle(
     inferred_labels: list[str] = []
 
     linux_asset_re = re.compile(
-        r"^app-(?P<label>.+)-(?P<target>linux-x64(?:-cpu)?|linux-x64-cuda\d+-(?:older|newer|portable))\.tar\.gz$"
+        r"^app-(?P<label>.+)-(?P<target>linux-x64(?:-cpu)?"
+        r"|linux-x64-cuda\d+-(?:older|newer|portable)"
+        r"|linux-x64-rocm-gfx[0-9a-zA-Z]+)\.tar\.gz$"
     )
     for asset_name in sorted(assets):
         match = linux_asset_re.fullmatch(asset_name)
@@ -1342,6 +1348,23 @@ def parse_direct_linux_release_bundle(
                     max_sm = None,
                     bundle_profile = None,
                     rank = 1000,
+                )
+            )
+            continue
+
+        if target.startswith("linux-x64-rocm-"):
+            artifacts.append(
+                PublishedLlamaArtifact(
+                    asset_name = asset_name,
+                    install_kind = "linux-rocm",
+                    runtime_line = None,
+                    coverage_class = None,
+                    supported_sms = [],
+                    min_sm = None,
+                    max_sm = None,
+                    bundle_profile = None,
+                    rank = 1000,
+                    gfx_target = target.removeprefix("linux-x64-rocm-"),
                 )
             )
             continue
@@ -1432,6 +1455,11 @@ def direct_linux_release_plan(
         # validation we want validate_prebuilt_attempts to raise PrebuiltFallback
         # so the caller triggers the HIP source build, not silently install a
         # CPU-only binary.
+        # Prefer the fork's own per-gfx ROCm bundle (hash-approved, ships the
+        # full ROCm runtime) and fall back to the external lemonade prebuilt.
+        published_rocm = published_rocm_choice_for_host(bundle, host, "linux-rocm")
+        if published_rocm is not None:
+            attempts.append(published_rocm)
         lemonade_choice = resolve_lemonade_rocm_choice(
             host, "ubuntu", "linux-rocm", llama_tag = requested_tag
         )
@@ -1995,6 +2023,16 @@ def parse_published_artifact(raw: Any) -> PublishedLlamaArtifact | None:
         rank = int(rank_raw)
     except (TypeError, ValueError):
         raise ValueError(f"artifact {asset_name} rank was not an integer")
+    gfx_target_raw = raw.get("gfx_target")
+    gfx_target = (
+        gfx_target_raw if isinstance(gfx_target_raw, str) and gfx_target_raw else None
+    )
+    mapped_raw = raw.get("mapped_targets", [])
+    mapped_targets = (
+        [str(value) for value in mapped_raw if isinstance(value, str) and value]
+        if isinstance(mapped_raw, (list, tuple))
+        else []
+    )
     return PublishedLlamaArtifact(
         asset_name = asset_name,
         install_kind = install_kind,
@@ -2011,6 +2049,8 @@ def parse_published_artifact(raw: Any) -> PublishedLlamaArtifact | None:
         if isinstance(bundle_profile, str) and bundle_profile
         else None,
         rank = rank,
+        gfx_target = gfx_target,
+        mapped_targets = mapped_targets,
     )
 
 
@@ -3848,6 +3888,45 @@ def _lemonade_gfx_family(gfx_id: str) -> str | None:
     return None
 
 
+def published_rocm_choice_for_host(
+    release: PublishedReleaseBundle, host: HostInfo, install_kind: str
+) -> AssetChoice | None:
+    """Select the published ROCm bundle whose gfx target covers the host GPU.
+
+    The manifest's gfx_target uses the same umbrella family labels that
+    _lemonade_gfx_family produces (gfx110X, gfx120X, ...), so the host's detected
+    gfx is matched either to that family or to the bundle's concrete
+    mapped_targets list. Returns None when no published bundle covers the GPU, so
+    the caller can fall back (lemonade / upstream HIP)."""
+    if not host.rocm_gfx_target:
+        return None
+    gfx_family = _lemonade_gfx_family(host.rocm_gfx_target)
+    for artifact in release.artifacts:
+        if artifact.install_kind != install_kind:
+            continue
+        if artifact.gfx_target != gfx_family and (
+            host.rocm_gfx_target not in artifact.mapped_targets
+        ):
+            continue
+        asset_url = release.assets.get(artifact.asset_name)
+        if not asset_url:
+            continue
+        return AssetChoice(
+            repo = release.repo,
+            tag = release.release_tag,
+            name = artifact.asset_name,
+            url = asset_url,
+            source_label = "published",
+            install_kind = install_kind,
+            selection_log = list(release.selection_log)
+            + [
+                f"rocm_selection: gpu={host.rocm_gfx_target} family={gfx_family} "
+                f"selected published {artifact.asset_name}"
+            ],
+        )
+    return None
+
+
 def _is_trusted_github_release_url(url: str, expected_repo: str) -> bool:
     """Validate a release asset URL points at GitHub's expected hosts.
 
@@ -4215,14 +4294,15 @@ def resolve_release_asset_choice(
 
     published_choice: AssetChoice | None = None
     if host.is_windows and host.is_x86_64:
-        # AMD Windows hosts should prefer a hash-approved published
-        # Windows HIP bundle when one exists, but otherwise fall through
-        # to resolve_asset_choice() so the upstream HIP prebuilt is
+        # AMD Windows hosts should prefer the fork's per-gfx published
+        # windows-rocm bundle when one covers the GPU, but otherwise fall
+        # through to resolve_asset_choice() so the upstream HIP prebuilt is
         # tried before the CPU fallback. Hard-pinning the published
-        # windows-cpu bundle here would make the new HIP path
-        # unreachable.
+        # windows-cpu bundle here would make the HIP path unreachable.
         if host.has_rocm:
-            published_choice = published_asset_choice_for_kind(release, "windows-hip")
+            published_choice = published_rocm_choice_for_host(
+                release, host, "windows-rocm"
+            )
         else:
             published_choice = published_asset_choice_for_kind(release, "windows-cpu")
     elif host.is_macos and host.is_arm64:
@@ -4655,6 +4735,7 @@ def runtime_patterns_for_choice(choice: AssetChoice) -> list[str]:
         "windows-cpu",
         "windows-cuda",
         "windows-hip",
+        "windows-rocm",
         "windows-arm64",
     }:
         return ["llama-server.exe", "llama-quantize.exe", "*.dll"]
@@ -4671,10 +4752,7 @@ def runtime_subdirs_for_choice(choice: AssetChoice) -> list[str]:
     (hipblaslt/library/<gfx>/ and rocblas/library/<gfx>/) to sit next to
     their shared libraries at runtime.  These trees are multi-level and
     cannot be handled by copy_globs (filename-only matching, flat copy)."""
-    if choice.source_label == "lemonade" and choice.install_kind in {
-        "linux-rocm",
-        "windows-hip",
-    }:
+    if choice.install_kind in {"linux-rocm", "windows-rocm", "windows-hip"}:
         return ["hipblaslt", "rocblas"]
     return []
 
@@ -5689,6 +5767,7 @@ def validate_server(
             "linux-rocm",
             "windows-cuda",
             "windows-hip",
+            "windows-rocm",
             "macos-arm64",
         }
         if install_kind is not None:
@@ -6294,7 +6373,7 @@ def runtime_payload_health_groups(choice: AssetChoice) -> list[list[str]]:
             groups.append(["cublas64_*.dll"])
             groups.append(["cublasLt64_*.dll"])
         return groups
-    if choice.install_kind == "windows-hip":
+    if choice.install_kind in {"windows-hip", "windows-rocm"}:
         return [["llama.dll"], ["*hip*.dll"]]
     return []
 
