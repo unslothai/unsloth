@@ -1558,6 +1558,38 @@ shell.Run cmd, 0, False
             } catch {
                 substep "(shim creation failed; launch manually):  wsl -d $distro -u root -- bash -lic 'unsloth studio -p 8888'" "Yellow"
             }
+            # Desktop + Start Menu shortcuts: launch the WSL Studio and open the browser when ready.
+            try {
+                $appDir = Join-Path $env:LOCALAPPDATA "Unsloth"
+                New-Item -ItemType Directory -Force -Path $appDir *> $null
+                $launcher = Join-Path $appDir "launch-studio-wsl.ps1"
+                $L = @(
+                    '$ErrorActionPreference = "SilentlyContinue"',
+                    ('$distro = "' + $distro + '"'),
+                    'Start-Job { for ($i=0; $i -lt 120; $i++) { try { if ((Invoke-WebRequest "http://localhost:8888/api/health" -UseBasicParsing -TimeoutSec 2).StatusCode -eq 200) { Start-Process "http://localhost:8888"; break } } catch {}; Start-Sleep 1 } } | Out-Null',
+                    'Write-Host "Starting Unsloth Studio in WSL ($distro); browser opens at http://localhost:8888 when ready (Ctrl+C to stop)..."',
+                    'wsl.exe -d $distro -u root -- bash -lic "unsloth studio -p 8888"'
+                )
+                Set-Content -LiteralPath $launcher -Value $L -Encoding UTF8
+                $icon = Join-Path $appDir "unsloth.ico"
+                try { if (-not (Test-Path -LiteralPath $icon)) { Invoke-WebRequest "https://raw.githubusercontent.com/unslothai/unsloth/main/studio/frontend/public/unsloth.ico" -OutFile $icon -UseBasicParsing -TimeoutSec 15 *> $null } } catch {}
+                $wsh = New-Object -ComObject WScript.Shell
+                $lnks = @()
+                $dd = [Environment]::GetFolderPath("Desktop"); if ($dd -and $dd.Trim()) { $lnks += (Join-Path $dd "Unsloth Studio.lnk") }
+                if ($env:APPDATA -and $env:APPDATA.Trim()) { $smd = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs"; New-Item -ItemType Directory -Force -Path $smd *> $null; $lnks += (Join-Path $smd "Unsloth Studio.lnk") }
+                foreach ($lnk in $lnks) {
+                    $sc = $wsh.CreateShortcut($lnk)
+                    $sc.TargetPath = (Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe")
+                    $sc.Arguments = "-NoExit -NoProfile -ExecutionPolicy Bypass -File `"$launcher`""
+                    $sc.WorkingDirectory = $appDir
+                    if (Test-Path -LiteralPath $icon) { $sc.IconLocation = $icon }
+                    $sc.Description = "Unsloth Studio (GPU via WSL)"
+                    $sc.Save()
+                }
+                step "shortcuts" "created Desktop + Start Menu shortcuts (launch WSL Studio + open browser)" "Green"
+            } catch {
+                substep "(could not create shortcuts: $($_.Exception.Message))" "Yellow"
+            }
         } else {
             step "wsl" "WSL Studio install did not finish cleanly (torch.cuda not detected; inner exit $wslRc) -- see log above." "Yellow"
             substep "retry, or launch manually:  wsl -d $distro -u root -- bash -lic 'unsloth studio -p 8888'" "Cyan"
