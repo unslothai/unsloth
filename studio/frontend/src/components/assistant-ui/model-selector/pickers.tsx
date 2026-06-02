@@ -145,8 +145,8 @@ function ModelRow({
       type="button"
       onClick={onClick}
       className={cn(
-        "flex w-full items-center gap-2 rounded-[8px] px-2.5 py-1.5 text-left text-sm transition-colors hover:bg-[#ececec] dark:hover:bg-[#2e3035]",
-        selected && "bg-[#ececec] dark:bg-[#2e3035]",
+        "flex w-full items-center gap-2 rounded-[8px] px-2.5 py-1.5 text-left text-sm transition-colors hover:bg-[#ececec] dark:hover:bg-[#3a3d44]",
+        selected && "bg-[#ececec] dark:bg-[#3a3d44]",
       )}
     >
       <span
@@ -385,7 +385,7 @@ function GgufVariantExpander({
                 handleVariantClick(v.quant, v.downloaded, v.size_bytes)
               }
               className={cn(
-                "flex min-w-0 flex-1 items-center justify-between gap-2 rounded-[8px] px-2.5 py-1 text-left text-sm transition-colors hover:bg-[#ececec] dark:hover:bg-[#2e3035]",
+                "flex min-w-0 flex-1 items-center justify-between gap-2 rounded-[8px] px-2.5 py-1 text-left text-sm transition-colors hover:bg-[#ececec] dark:hover:bg-[#3a3d44]",
               )}
             >
               <span className="min-w-0 flex-1 truncate font-mono text-xs">

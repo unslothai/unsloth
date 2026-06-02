@@ -893,10 +893,16 @@
 		--menu-soft-shadow: rgba(0, 0, 0, 0.28);
 	}
 
-	/* Model selector: drop the inset edge ring, keep the soft drop shadow. */
+	/* Model selector: drop the inset edge ring, keep the soft drop shadow.
+	   Pin --radius to the light value so the corners match in both themes. */
 	.unsloth-model-selector-menu.menu-soft-surface {
+		--radius: 1.1rem;
 		box-shadow: 0 var(--menu-soft-offset-y) var(--menu-soft-blur)
 			var(--menu-soft-spread) var(--menu-soft-shadow);
+	}
+
+	.dark .unsloth-model-selector-menu.menu-soft-surface {
+		box-shadow: none;
 	}
 
 	/* Context menus (chat, run, project): drop the inset edge ring, keep the soft shadow. */
