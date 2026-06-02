@@ -601,9 +601,9 @@ export function AppSidebar() {
           </DropdownMenuTrigger>
           <DropdownMenuContent
             side="bottom"
-            align="end"
-            sideOffset={4}
-            className="unsloth-plus-menu menu-flat-destructive w-48"
+            align="start"
+            sideOffset={6}
+            className="unsloth-plus-menu menu-flat-destructive w-60"
           >
             <DropdownMenuItem onSelect={() => openRenameChat(item)}>
               <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
