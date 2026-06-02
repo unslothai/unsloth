@@ -977,8 +977,6 @@ def is_dgx_spark():
         return False
 
 
-
-
 def patch_dgx_spark_caching_allocator_warmup():
     """No-op `transformers.modeling_utils.caching_allocator_warmup` on Spark UMA.
 
@@ -1031,7 +1029,9 @@ def patch_dgx_spark_memory_config():
     conf = os.environ.get("PYTORCH_CUDA_ALLOC_CONF", "")
     if "expandable_segments" in conf:
         return  # user already configured it -- do not override
-    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = (conf + "," if conf else "") + "expandable_segments:True"
+    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = (
+        conf + "," if conf else ""
+    ) + "expandable_segments:True"
 
 
 patch_dgx_spark_memory_config()
