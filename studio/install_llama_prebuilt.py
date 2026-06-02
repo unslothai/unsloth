@@ -5046,6 +5046,50 @@ def validated_validation_model_bytes(data: bytes) -> bytes:
     return data
 
 
+def _hf_resolve_url_parts(url: str) -> tuple[str, str, str] | None:
+    """Parse a huggingface.co .../resolve/<rev>/<path> URL into
+    (repo_id, revision, filename); None if it is not such a URL."""
+    try:
+        parsed = urllib.parse.urlparse(url)
+    except Exception:
+        return None
+    if (parsed.netloc or "").lower() not in ("huggingface.co", "www.huggingface.co"):
+        return None
+    parts = parsed.path.strip("/").split("/")
+    # <owner>/<name>/resolve/<rev>/<path...>
+    if len(parts) >= 5 and parts[2] == "resolve":
+        return f"{parts[0]}/{parts[1]}", parts[3], "/".join(parts[4:])
+    return None
+
+
+def _fetch_validation_model_bytes() -> bytes:
+    """Fetch the tiny GGUF validation model. Prefer huggingface_hub, which
+    completes TLS chains (AIA intermediate fetching) that bare urllib cannot on
+    some Windows / proxy setups -- the same path Studio uses for model
+    downloads. Fall back to the direct URL when hf_hub is unavailable or fails."""
+    parts = _hf_resolve_url_parts(TEST_MODEL_URL)
+    if parts is not None:
+        repo_id, revision, filename = parts
+        try:
+            from huggingface_hub import hf_hub_download
+
+            local = hf_hub_download(
+                repo_id = repo_id, filename = filename, revision = revision
+            )
+            return validated_validation_model_bytes(Path(local).read_bytes())
+        except Exception as exc:
+            log(
+                f"huggingface_hub fetch of validation model failed ({exc}); "
+                "falling back to direct URL"
+            )
+    return validated_validation_model_bytes(
+        download_bytes(
+            TEST_MODEL_URL,
+            progress_label = f"Downloading {download_label_from_url(TEST_MODEL_URL)}",
+        )
+    )
+
+
 def download_validation_model(path: Path, cache_path: Path | None = None) -> None:
     try:
         data: bytes | None = None
@@ -5060,12 +5104,7 @@ def download_validation_model(path: Path, cache_path: Path | None = None) -> Non
                 data = None
         if data is None:
             log("downloading tiny GGUF validation model")
-            data = validated_validation_model_bytes(
-                download_bytes(
-                    TEST_MODEL_URL,
-                    progress_label = f"Downloading {download_label_from_url(TEST_MODEL_URL)}",
-                )
-            )
+            data = _fetch_validation_model_bytes()
             if cache_path is not None:
                 atomic_write_bytes(cache_path, data)
         atomic_write_bytes(path, data)
