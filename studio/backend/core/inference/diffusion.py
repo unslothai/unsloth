@@ -68,6 +68,12 @@ MID_BALANCED_GGUF_CUDA_CACHE_MIB = 2048
 MIN_BALANCED_GGUF_CUDA_CACHE_TOTAL_MIB = 24 * 1024
 MID_BALANCED_GGUF_CUDA_CACHE_TOTAL_MIB = 32 * 1024
 BALANCED_GGUF_CUDA_CACHE_HEADROOM_MIB = 8 * 1024
+AUTO_FAST_GGUF_POLICY_MIN_TOTAL_MIB = 40 * 1024
+AUTO_FAST_GGUF_POLICY_MIN_FREE_MIB = 36 * 1024
+AUTO_FAST_GGUF_POLICY_FAMILIES = {
+    "qwen-image",
+    "qwen-image-2512",
+}
 
 
 # ─── Pipeline registry ────────────────────────────────────────────────
@@ -1161,20 +1167,58 @@ def _curated_gguf_recommended_offload_policy(
     gguf_filename: Optional[str] = None,
     transformer_gguf_repo: Optional[str] = None,
     transformer_gguf_filename: Optional[str] = None,
+    device: Optional[str] = "cuda",
+    free_bytes: Optional[int] = None,
+    total_bytes: Optional[int] = None,
 ) -> Optional[str]:
     """Return Studio's curated policy for recognized GGUF component loads."""
 
+    spec: Optional[CuratedDiffusionGGUF] = None
     if transformer_gguf_repo and transformer_gguf_filename:
         spec = _CURATED_UNSLOTH_DIFFUSION_GGUFS_BY_REPO.get(
             str(transformer_gguf_repo).lower()
         )
-        if spec is not None:
-            return spec.recommended_offload_policy
-    if repo_id and gguf_filename:
+    if spec is None and repo_id and gguf_filename:
         spec = _CURATED_UNSLOTH_DIFFUSION_GGUFS_BY_REPO.get(str(repo_id).lower())
-        if spec is not None:
-            return spec.recommended_offload_policy
-    return None
+    if spec is None:
+        return None
+
+    policy = spec.recommended_offload_policy
+    if (
+        policy == DIFFUSION_OFFLOAD_POLICY_BALANCED
+        and spec.family in AUTO_FAST_GGUF_POLICY_FAMILIES
+        and _cuda_memory_meets_mib_floor(
+            device = device,
+            free_bytes = free_bytes,
+            total_bytes = total_bytes,
+            min_free_mib = AUTO_FAST_GGUF_POLICY_MIN_FREE_MIB,
+            min_total_mib = AUTO_FAST_GGUF_POLICY_MIN_TOTAL_MIB,
+        )
+    ):
+        return DIFFUSION_OFFLOAD_POLICY_LESS_AGGRESSIVE
+    return policy
+
+
+def _cuda_memory_meets_mib_floor(
+    *,
+    device: Optional[str],
+    free_bytes: Optional[int],
+    total_bytes: Optional[int],
+    min_free_mib: int,
+    min_total_mib: int,
+) -> bool:
+    if str(device or "").split(":", 1)[0] != "cuda":
+        return False
+    if free_bytes is None or total_bytes is None:
+        try:
+            import torch
+
+            free_bytes, total_bytes = torch.cuda.mem_get_info()
+        except Exception:
+            return False
+    free_mib = int(free_bytes) // (1024 * 1024)
+    total_mib = int(total_bytes) // (1024 * 1024)
+    return free_mib >= int(min_free_mib) and total_mib >= int(min_total_mib)
 
 
 def _preset_id_from_curated_diffusion_gguf(spec: CuratedDiffusionGGUF) -> str:
@@ -3392,30 +3436,6 @@ class DiffusionBackend:
             ) from exc
         _guard_diffusers_optional_bitsandbytes()
 
-        if (
-            offload_policy is None
-            and gguf_quantized_cpu_resident is None
-            and gguf_pin_cpu_resident is None
-        ):
-            offload_policy = _curated_gguf_recommended_offload_policy(
-                repo_id = repo_id,
-                gguf_filename = gguf_filename,
-                transformer_gguf_repo = transformer_gguf_repo,
-                transformer_gguf_filename = transformer_gguf_filename,
-            )
-
-        (
-            resolved_offload_policy,
-            enable_model_cpu_offload,
-            gguf_quantized_cpu_resident,
-            gguf_pin_cpu_resident,
-        ) = _resolve_diffusion_offload_policy(
-            offload_policy = offload_policy,
-            enable_model_cpu_offload = enable_model_cpu_offload,
-            gguf_quantized_cpu_resident = gguf_quantized_cpu_resident,
-            gguf_pin_cpu_resident = gguf_pin_cpu_resident,
-        )
-
         # Round 30 P1 #11: also preflight transformers BEFORE any
         # destructive unload. Diffusers can expose stub pipeline
         # classes when transformers is missing or broken, so the load
@@ -3521,6 +3541,31 @@ class DiffusionBackend:
             )
 
         device, dtype = self._pick_device_and_dtype()
+
+        if (
+            offload_policy is None
+            and gguf_quantized_cpu_resident is None
+            and gguf_pin_cpu_resident is None
+        ):
+            offload_policy = _curated_gguf_recommended_offload_policy(
+                repo_id = repo_id,
+                gguf_filename = gguf_filename,
+                transformer_gguf_repo = transformer_gguf_repo,
+                transformer_gguf_filename = transformer_gguf_filename,
+                device = device,
+            )
+
+        (
+            resolved_offload_policy,
+            enable_model_cpu_offload,
+            gguf_quantized_cpu_resident,
+            gguf_pin_cpu_resident,
+        ) = _resolve_diffusion_offload_policy(
+            offload_policy = offload_policy,
+            enable_model_cpu_offload = enable_model_cpu_offload,
+            gguf_quantized_cpu_resident = gguf_quantized_cpu_resident,
+            gguf_pin_cpu_resident = gguf_pin_cpu_resident,
+        )
 
         # Round 32 P1 #3: track whether the backend-side
         # helper-busy check published a "diffusion-backend" pending

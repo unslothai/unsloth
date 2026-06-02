@@ -1554,6 +1554,25 @@ def test_curated_gguf_recommended_offload_policy_for_direct_loads():
     assert d._curated_gguf_recommended_offload_policy(
         repo_id = "unsloth/Qwen-Image-GGUF",
         gguf_filename = "qwen-image-Q4_K_M.gguf",
+        device = "cpu",
+    ) == "balanced"
+    assert d._curated_gguf_recommended_offload_policy(
+        repo_id = "unsloth/Qwen-Image-GGUF",
+        gguf_filename = "qwen-image-Q4_K_M.gguf",
+        free_bytes = 64 * 1024**3,
+        total_bytes = 80 * 1024**3,
+    ) == "less_aggressive"
+    assert d._curated_gguf_recommended_offload_policy(
+        repo_id = "unsloth/Qwen-Image-GGUF",
+        gguf_filename = "qwen-image-Q4_K_M.gguf",
+        free_bytes = 30 * 1024**3,
+        total_bytes = 48 * 1024**3,
+    ) == "balanced"
+    assert d._curated_gguf_recommended_offload_policy(
+        repo_id = "unsloth/Qwen-Image-Edit-GGUF",
+        gguf_filename = "qwen-image-edit-Q4_K_M.gguf",
+        free_bytes = 64 * 1024**3,
+        total_bytes = 80 * 1024**3,
     ) == "balanced"
     assert d._curated_gguf_recommended_offload_policy(
         repo_id = "unsloth/Z-Image-Turbo-GGUF",
@@ -1563,6 +1582,15 @@ def test_curated_gguf_recommended_offload_policy_for_direct_loads():
         repo_id = "Qwen/Qwen-Image",
         transformer_gguf_repo = "unsloth/Qwen-Image-GGUF",
         transformer_gguf_filename = "qwen-image-Q4_K_M.gguf",
+        free_bytes = 64 * 1024**3,
+        total_bytes = 80 * 1024**3,
+    ) == "less_aggressive"
+    assert d._curated_gguf_recommended_offload_policy(
+        repo_id = "Qwen/Qwen-Image",
+        transformer_gguf_repo = "unsloth/Qwen-Image-GGUF",
+        transformer_gguf_filename = "qwen-image-Q4_K_M.gguf",
+        free_bytes = 30 * 1024**3,
+        total_bytes = 48 * 1024**3,
     ) == "balanced"
     assert d._curated_gguf_recommended_offload_policy(
         repo_id = "Qwen/Qwen-Image",
@@ -2231,6 +2259,43 @@ def test_load_model_auto_uses_curated_gguf_policy(monkeypatch):
     status = backend.load_model(
         "unsloth/Z-Image-Turbo-GGUF",
         gguf_filename = "z-image-turbo-Q4_K_M.gguf",
+        enable_model_cpu_offload = True,
+        offload_policy = None,
+    )
+
+    assert status["offload_policy"] == "less_aggressive"
+    assert status["gguf_quantized_cpu_resident"] is False
+    assert status["gguf_pin_cpu_resident"] is False
+    assert backend._cpu_offload_enabled is False
+    assert getattr(backend._pipe, "cpu_offload", False) is False
+    assert backend._pipe.device == "cuda"
+    assert calls == []
+
+
+def test_load_model_auto_uses_fast_qwen_policy_when_memory_allows(monkeypatch):
+    _install_fake_diffusers(monkeypatch)
+
+    import core.inference.diffusion as d
+    from core.inference.diffusion import get_diffusion_backend
+
+    calls: list[tuple[Any, str, bool | None]] = []
+
+    def _fake_patch(root, resident_device, *, pin_memory = None):
+        calls.append((root, resident_device, pin_memory))
+        return 123
+
+    monkeypatch.setattr(
+        d.DiffusionBackend,
+        "_pick_device_and_dtype",
+        lambda self: ("cuda", "fake_dtype"),
+    )
+    monkeypatch.setattr(d, "_patch_gguf_modules_for_resident_device", _fake_patch)
+    monkeypatch.setattr(d, "_cuda_memory_meets_mib_floor", lambda **_kwargs: True)
+
+    backend = get_diffusion_backend()
+    status = backend.load_model(
+        "unsloth/Qwen-Image-GGUF",
+        gguf_filename = "qwen-image-Q4_K_M.gguf",
         enable_model_cpu_offload = True,
         offload_policy = None,
     )
