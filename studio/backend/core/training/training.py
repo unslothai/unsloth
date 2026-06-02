@@ -323,7 +323,9 @@ class TrainingBackend:
         self._db_run_created = False
         self._db_total_steps_set = False
         self._db_config = {
-            k: v for k, v in config.items() if k not in {"hf_token", "wandb_token"}
+            k: v
+            for k, v in config.items()
+            if k not in {"hf_token", "wandb_token", "s3_config"}
         }
         self._db_started_at = datetime.now(timezone.utc).isoformat()
 
