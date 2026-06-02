@@ -43,9 +43,17 @@ logger = get_logger(__name__)
 # architectures causes errors or degraded performance.
 
 _SSM_MODEL_SUBSTRINGS = (
-    "nemotron_h", "nemotron-h", "nemotron-3-nano",
-    "falcon_h1", "falcon-h1", "granite-4.0-h",
-    "granitemoehybrid", "lfm2", "lfm-2", "mamba", "jamba",
+    "nemotron_h",
+    "nemotron-h",
+    "nemotron-3-nano",
+    "falcon_h1",
+    "falcon-h1",
+    "granite-4.0-h",
+    "granitemoehybrid",
+    "lfm2",
+    "lfm-2",
+    "mamba",
+    "jamba",
 )
 
 
