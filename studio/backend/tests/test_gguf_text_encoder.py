@@ -1562,6 +1562,96 @@ def test_lazy_gguf_linear_dequantizes_quantized_bias(monkeypatch):
     torch.testing.assert_close(out, torch.tensor([[6.0, 9.0]]))
 
 
+def test_install_compiled_lazy_gguf_linear_dequant(monkeypatch):
+    import core.inference.gguf_text_encoder as g
+
+    compile_calls: list[dict] = []
+
+    def fake_compile(fn, **kwargs):
+        compile_calls.append(kwargs)
+
+        def compiled(blocks):
+            return fn(blocks)
+
+        return compiled
+
+    monkeypatch.setattr(g.torch, "compile", fake_compile)
+    monkeypatch.setattr(
+        g,
+        "_diffusers_gguf_dequant_tables",
+        lambda: (
+            {"Q4": (2, 2)},
+            {
+                "Q4": (
+                    lambda blocks, block_size, type_size, dtype: blocks.to(torch.float32)
+                )
+            },
+        ),
+    )
+    layer = g.LazyGGUFLinear(
+        torch.tensor([[1, 0], [0, 1]], dtype = torch.uint8),
+        "Q4",
+        in_features = 2,
+        out_features = 2,
+        compute_dtype = torch.float32,
+    )
+
+    stats = g.install_compiled_lazy_gguf_linear_dequant(layer)
+    out = layer(torch.tensor([[2.0, 3.0]], dtype = torch.float32))
+
+    assert stats["modules"] == 1
+    assert getattr(layer, "_unsloth_compiled_gguf_dequant") is True
+    assert compile_calls == [
+        {
+            "mode": "reduce-overhead",
+            "dynamic": True,
+            "fullgraph": False,
+        }
+    ]
+    torch.testing.assert_close(out, torch.tensor([[2.0, 3.0]]))
+
+
+def test_install_compiled_lazy_gguf_linear_dequant_respects_env_disable(monkeypatch):
+    import core.inference.gguf_text_encoder as g
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_GGUF_COMPILE_DEQUANT", "0")
+    layer = g.LazyGGUFLinear(
+        torch.ones(2, 2, dtype = torch.uint8),
+        "Q4",
+        in_features = 2,
+        out_features = 2,
+        compute_dtype = torch.float32,
+    )
+
+    stats = g.install_compiled_lazy_gguf_linear_dequant(layer)
+
+    assert stats["modules"] == 0
+    assert not getattr(layer, "_unsloth_compiled_gguf_dequant", False)
+
+
+def test_install_compiled_lazy_gguf_linear_dequant_skips_unsupported_quant(monkeypatch):
+    import core.inference.gguf_text_encoder as g
+
+    monkeypatch.setattr(
+        g,
+        "_diffusers_gguf_dequant_tables",
+        lambda: ({"Q4": (2, 2)}, {"Q4": lambda *args, **kwargs: None}),
+    )
+    layer = g.LazyGGUFLinear(
+        torch.ones(2, 2, dtype = torch.uint8),
+        "IQ1_M",
+        in_features = 2,
+        out_features = 2,
+        compute_dtype = torch.float32,
+    )
+
+    stats = g.install_compiled_lazy_gguf_linear_dequant(layer)
+
+    assert stats["modules"] == 0
+    assert stats["unsupported"] == 1
+    assert not getattr(layer, "_unsloth_compiled_gguf_dequant", False)
+
+
 def test_replace_mapped_text_modules_with_lazy_gguf_handles_qwen2vl_biases(
     monkeypatch,
 ):

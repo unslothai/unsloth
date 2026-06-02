@@ -4198,7 +4198,10 @@ class DiffusionBackend:
                         cuda_cache_bytes = _balanced_gguf_cuda_cache_bytes(device = device)
                         if cuda_cache_bytes > 0:
                             try:
-                                from .gguf_text_encoder import configure_lazy_gguf_cuda_cache
+                                from .gguf_text_encoder import (
+                                    configure_lazy_gguf_cuda_cache,
+                                    install_compiled_lazy_gguf_linear_dequant,
+                                )
                             except Exception as exc:
                                 logger.debug(
                                     "Skipping optional balanced GGUF CUDA cache: %s",
@@ -4222,6 +4225,19 @@ class DiffusionBackend:
                                         "for %d CPU-resident modules with budget %d MiB.",
                                         cache_stats["modules"],
                                         cache_stats["budget_bytes"] // (1024 * 1024),
+                                    )
+                                with _load_phase("compile_balanced_gguf_dequant"):
+                                    compile_stats = install_compiled_lazy_gguf_linear_dequant(
+                                        transformer
+                                    )
+                                if compile_stats.get("modules", 0):
+                                    prepared_gguf_module_counts[
+                                        "diffusion_compiled_dequant_modules"
+                                    ] = int(compile_stats["modules"])
+                                    logger.info(
+                                        "Installed compiled balanced diffusion GGUF "
+                                        "dequant for %d lazy Linear modules.",
+                                        compile_stats["modules"],
                                     )
                 if local_text_encoder_gguf_path:
                     from . import gguf_text_encoder as gguf_text_encoder_mod

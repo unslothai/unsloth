@@ -133,6 +133,11 @@ def _eager_pin_cpu_resident_gguf_tensors_enabled() -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _compile_lazy_gguf_dequant_enabled() -> bool:
+    value = os.environ.get("UNSLOTH_STUDIO_GGUF_COMPILE_DEQUANT", "")
+    return value.strip().lower() not in {"0", "false", "no", "off"}
+
+
 def _pin_cpu_tensor_for_transfer(
     tensor: torch.Tensor,
     *,
@@ -1039,6 +1044,131 @@ def configure_lazy_gguf_cuda_cache(root: Any, max_bytes: int) -> dict[str, int]:
         "candidate_bytes": int(candidate_bytes),
         "selected_bytes": int(selected_bytes),
     }
+
+
+def install_compiled_lazy_gguf_linear_dequant(root: Any) -> dict[str, int]:
+    """Install torch.compile wrappers for lazy GGUF Linear dequantization.
+
+    The packed GGUF buffers stay quantized and keep their existing resident
+    device policy. Only the Torch dequant block helper is compiled, so failure
+    to compile can fall back to the normal lazy dequant path module by module.
+    """
+
+    stats = {
+        "modules": 0,
+        "skipped": 0,
+        "unsupported": 0,
+    }
+    if not _compile_lazy_gguf_dequant_enabled():
+        return stats
+    compile_fn = getattr(torch, "compile", None)
+    if not callable(compile_fn):
+        return stats
+    dequant_tables = _diffusers_gguf_dequant_tables()
+    if dequant_tables is None:
+        return stats
+    GGML_QUANT_SIZES, dequantize_functions = dequant_tables
+    if not hasattr(root, "modules"):
+        return stats
+
+    compiled_cache: dict[tuple[Any, int, int, tuple[str, int | None]], Any] = {}
+
+    def _compiled_dequantize(
+        qweight: torch.Tensor,
+        quant_type: Any,
+        *,
+        logical_shape: tuple[int, ...] | None = None,
+    ) -> torch.Tensor:
+        dequant_fn = dequantize_functions.get(quant_type)
+        quant_size = GGML_QUANT_SIZES.get(quant_type)
+        if dequant_fn is None or quant_size is None:
+            return _dequantize_gguf_bytes(
+                qweight,
+                quant_type,
+                logical_shape = logical_shape,
+            )
+        block_size, type_size = quant_size
+        shape = logical_shape or (
+            *qweight.shape[:-1],
+            qweight.shape[-1] // type_size * block_size,
+        )
+        blocks = qweight.view(torch.uint8).reshape((-1, type_size))
+        cache_key = (
+            quant_type,
+            int(type_size),
+            int(block_size),
+            _cuda_cache_key(qweight.device),
+        )
+        compiled = compiled_cache.get(cache_key)
+        if compiled is None:
+            def _dequantize_blocks(inner_blocks: torch.Tensor) -> torch.Tensor:
+                return dequant_fn(inner_blocks, block_size, type_size, None)
+
+            try:
+                compiled = compile_fn(
+                    _dequantize_blocks,
+                    mode = "reduce-overhead",
+                    dynamic = True,
+                    fullgraph = False,
+                )
+            except Exception:
+                return _dequantize_gguf_bytes(
+                    qweight,
+                    quant_type,
+                    logical_shape = logical_shape,
+                )
+            compiled_cache[cache_key] = compiled
+        try:
+            return compiled(blocks).reshape(shape)
+        except Exception:
+            return _dequantize_gguf_bytes(
+                qweight,
+                quant_type,
+                logical_shape = logical_shape,
+            )
+
+    for module in root.modules():
+        if not isinstance(module, LazyGGUFLinear):
+            continue
+        if getattr(module, "_unsloth_compiled_gguf_dequant", False):
+            stats["skipped"] += 1
+            continue
+        if (
+            module.quant_type not in dequantize_functions
+            or module.quant_type not in GGML_QUANT_SIZES
+        ):
+            stats["unsupported"] += 1
+            continue
+
+        def _compiled_forward(
+            inputs: torch.Tensor,
+            *,
+            _module: LazyGGUFLinear = module,
+        ) -> torch.Tensor:
+            qweight = _module._compute_qweight(inputs.device)
+            weight = _compiled_dequantize(qweight, _module.quant_type)
+            if _module.reverse_permute_heads is not None:
+                weight = _reverse_permute_qk(weight, _module.reverse_permute_heads)
+            weight = weight.to(dtype = _module.compute_dtype)
+            if "qbias" in _module._buffers:
+                qbias = _module._compute_quant_buffer("qbias", inputs.device)
+                bias = _compiled_dequantize(
+                    qbias,
+                    _module.bias_quant_type,
+                    logical_shape = _module.bias_logical_shape,
+                )
+            else:
+                bias = _module.bias
+            if bias is not None and _module.reverse_permute_heads is not None:
+                bias = _reverse_permute_qk(bias, _module.reverse_permute_heads)
+            if bias is not None:
+                bias = bias.to(device = inputs.device, dtype = _module.compute_dtype)
+            return F.linear(inputs, weight, bias)
+
+        module.forward = _compiled_forward
+        module._unsloth_compiled_gguf_dequant = True
+        stats["modules"] += 1
+    return stats
 
 
 def _require_gguf():
