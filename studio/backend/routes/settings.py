@@ -3,6 +3,7 @@
 
 import logging
 from pathlib import Path
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import PlainTextResponse
@@ -66,7 +67,7 @@ def update_upload_limit(
 
 
 # Documentation export endpoint for RAG and offline use
-_DOCS_CACHE: str | None = None
+_DOCS_CACHE: Optional[str] = None
 
 
 def _get_bundled_docs() -> str:

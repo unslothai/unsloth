@@ -4,7 +4,7 @@
 import { ShutdownDialog } from "@/components/shutdown-dialog";
 import { Button } from "@/components/ui/button";
 import { usePlatformStore } from "@/config/env";
-import { getAuthToken } from "@/features/auth";
+import { authFetch, getAuthToken } from "@/features/auth";
 import { removeTrainingUnloadGuard } from "@/features/training";
 import { useT } from "@/i18n";
 import { apiUrl, isTauri } from "@/lib/api-base";
@@ -96,12 +96,8 @@ async function fetchInstallSource(): Promise<UpdateInstallSource> {
 }
 
 async function downloadDocs(): Promise<void> {
-  const token = getAuthToken();
-  const headers = new Headers();
-  if (token) headers.set("Authorization", `Bearer ${token}`);
-
   try {
-    const res = await fetch(apiUrl("/api/settings/docs/download"), { headers });
+    const res = await authFetch("/api/settings/docs/download");
     if (!res.ok) {
       throw new Error("Failed to download documentation");
     }
