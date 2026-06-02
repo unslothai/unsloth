@@ -138,7 +138,7 @@ def _probe_dns_dead(host: str = "huggingface.co", timeout: float = 2.0) -> bool:
         except Exception:
             result[0] = True
 
-    t = threading.Thread(target=_probe, daemon=True)
+    t = threading.Thread(target = _probe, daemon = True)
     t.start()
     t.join(timeout)
     # Thread still running -> resolver wedged -> treat as dead.
@@ -195,10 +195,10 @@ def _load_swa_cache() -> dict:
 def _save_swa_cache(cache: dict) -> None:
     try:
         path = _swa_cache_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
+        path.parent.mkdir(parents = True, exist_ok = True)
         tmp = path.with_suffix(".json.tmp")
         with open(tmp, "w") as f:
-            json.dump(cache, f, indent=2, sort_keys=True)
+            json.dump(cache, f, indent = 2, sort_keys = True)
         tmp.replace(path)
     except OSError:
         pass
@@ -221,7 +221,7 @@ def _fetch_swa_entry_from_hf(repo_id: str) -> Optional[object]:
     try:
         from huggingface_hub import hf_hub_download
 
-        cfg_path = hf_hub_download(repo_id, "config.json", repo_type="model")
+        cfg_path = hf_hub_download(repo_id, "config.json", repo_type = "model")
         with open(cfg_path) as f:
             cfg = json.load(f)
     except Exception:
@@ -845,7 +845,7 @@ class LlamaCppBackend:
         # Read VmRSS from /proc/<pid>/status. Kilobytes on Linux.
         bytes_loaded = 0
         try:
-            with open(f"/proc/{pid}/status", "r", encoding="utf-8") as f:
+            with open(f"/proc/{pid}/status", "r", encoding = "utf-8") as f:
                 for line in f:
                     if line.startswith("VmRSS:"):
                         kb = int(line.split()[1])
@@ -1112,10 +1112,10 @@ class LlamaCppBackend:
         try:
             result = subprocess.run(
                 [bin_path, "--help"],
-                capture_output=True,
-                text=True,
-                timeout=10,
-                check=False,
+                capture_output = True,
+                text = True,
+                timeout = 10,
+                check = False,
             )
             help_text = (result.stdout or "") + "\n" + (result.stderr or "")
             # Split into per-flag blocks: each --flag line plus its
@@ -1289,10 +1289,10 @@ class LlamaCppBackend:
                     "--query-gpu=index,memory.free",
                     "--format=csv,noheader,nounits",
                 ],
-                capture_output=True,
-                text=True,
-                timeout=10,
-                env=child_env_without_native_path_secret(),
+                capture_output = True,
+                text = True,
+                timeout = 10,
+                env = child_env_without_native_path_secret(),
                 **_windows_hidden_subprocess_kwargs(),
             )
             if result.returncode == 0:
@@ -1322,7 +1322,7 @@ class LlamaCppBackend:
                 # Match the docstring's sort-by-id guarantee. nvidia-smi
                 # almost always returns sorted output, but driver order
                 # is not formally guaranteed.
-                gpus.sort(key=lambda g: g[0])
+                gpus.sort(key = lambda g: g[0])
                 if gpus:
                     return gpus
         except Exception as e:
@@ -1381,7 +1381,7 @@ class LlamaCppBackend:
                 )
                 gpus.append((idx, free_bytes // (1024 * 1024)))
             # Match the nvidia-smi path's docstring guarantee of sorted-by-id.
-            return sorted(gpus, key=lambda g: g[0])
+            return sorted(gpus, key = lambda g: g[0])
         except Exception as e:
             logger.debug(f"torch GPU probe failed: {e}")
             return []
@@ -1566,7 +1566,7 @@ class LlamaCppBackend:
         usable_fraction = LlamaCppBackend._GPU_PIN_VRAM_FRACTION
 
         # Sort GPUs by free memory descending
-        ranked = sorted(gpus, key=lambda g: g[1], reverse=True)
+        ranked = sorted(gpus, key = lambda g: g[1], reverse = True)
 
         # Try fitting on 1 GPU at the usable-VRAM threshold.
         if ranked[0][1] * usable_fraction >= model_size_mib:
@@ -1584,8 +1584,8 @@ class LlamaCppBackend:
         # Model is too large even for all GPUs, let --fit handle it
         logger.debug(
             "Model does not fit in available GPU memory, falling back to --fit",
-            model_size_mib=round(model_size_mib, 2),
-            ranked_gpus=ranked,
+            model_size_mib = round(model_size_mib, 2),
+            ranked_gpus = ranked,
         )
         return None, True
 
@@ -1831,8 +1831,8 @@ class LlamaCppBackend:
         if not self._can_estimate_kv():
             logger.debug(
                 "Skipping context fit because KV cache metadata is unavailable",
-                requested_ctx=requested_ctx,
-                available_mib=available_mib,
+                requested_ctx = requested_ctx,
+                available_mib = available_mib,
             )
             return requested_ctx
 
@@ -1841,10 +1841,10 @@ class LlamaCppBackend:
             return requested_ctx
 
         kv_kwargs = dict(
-            swa_full=swa_full,
-            n_parallel=n_parallel,
-            kv_unified=kv_unified,
-            ctx_checkpoints=ctx_checkpoints,
+            swa_full = swa_full,
+            n_parallel = n_parallel,
+            kv_unified = kv_unified,
+            ctx_checkpoints = ctx_checkpoints,
         )
 
         # MTP needs a tighter budget; drop from 0.90 to 0.85.
@@ -1862,9 +1862,9 @@ class LlamaCppBackend:
         if model_footprint >= budget_bytes:
             logger.debug(
                 "Model footprint exceeds GPU budget before KV cache",
-                requested_ctx=requested_ctx,
-                available_mib=available_mib,
-                model_size_gb=round(model_footprint / (1024**3), 2),
+                requested_ctx = requested_ctx,
+                available_mib = available_mib,
+                model_size_gb = round(model_footprint / (1024**3), 2),
             )
             return requested_ctx
 
@@ -1906,7 +1906,7 @@ class LlamaCppBackend:
         try:
             from huggingface_hub import get_paths_info, list_repo_files
 
-            files = list_repo_files(hf_repo, token=hf_token)
+            files = list_repo_files(hf_repo, token = hf_token)
             gguf_files = [
                 f for f in files if f.endswith(".gguf") and "mmproj" not in f.lower()
             ]
@@ -1914,7 +1914,7 @@ class LlamaCppBackend:
                 return None
 
             # Get sizes for all GGUF files
-            path_infos = list(get_paths_info(hf_repo, gguf_files, token=hf_token))
+            path_infos = list(get_paths_info(hf_repo, gguf_files, token = hf_token))
             size_map = {p.path: (p.size or 0) for p in path_infos}
 
             # Group files by variant: shards share a prefix before -NNNNN-of-NNNNN
@@ -1932,7 +1932,7 @@ class LlamaCppBackend:
                 variant_sizes.append((first, total, shard_files))
 
             # Sort by total size ascending and pick the smallest that fits
-            variant_sizes.sort(key=lambda x: x[1])
+            variant_sizes.sort(key = lambda x: x[1])
             for first_file, total_size, _ in variant_sizes:
                 if total_size > 0 and total_size <= free_bytes:
                     return first_file, total_size
@@ -2247,7 +2247,7 @@ class LlamaCppBackend:
                 flags = detect_reasoning_flags(
                     self._chat_template,
                     self._model_identifier,
-                    log_source="GGUF metadata",
+                    log_source = "GGUF metadata",
                 )
                 self._supports_reasoning = flags["supports_reasoning"]
                 self._reasoning_style = flags["reasoning_style"]
@@ -2287,7 +2287,7 @@ class LlamaCppBackend:
             try:
                 from huggingface_hub import list_repo_files
 
-                files = list_repo_files(hf_repo, token=hf_token)
+                files = list_repo_files(hf_repo, token = hf_token)
                 variant_lower = hf_variant.lower()
                 boundary = re.compile(
                     r"(?<![a-zA-Z0-9])" + re.escape(variant_lower) + r"(?![a-zA-Z0-9])"
@@ -2374,7 +2374,7 @@ class LlamaCppBackend:
         try:
             from huggingface_hub import get_paths_info, try_to_load_from_cache
 
-            path_infos = list(get_paths_info(hf_repo, all_gguf_files, token=hf_token))
+            path_infos = list(get_paths_info(hf_repo, all_gguf_files, token = hf_token))
             total_bytes = sum((p.size or 0) for p in path_infos)
 
             # Subtract bytes already present in the HF cache so we only
@@ -2406,7 +2406,7 @@ class LlamaCppBackend:
                     "HF_HUB_CACHE",
                     str(Path.home() / ".cache" / "huggingface" / "hub"),
                 )
-                Path(cache_dir).mkdir(parents=True, exist_ok=True)
+                Path(cache_dir).mkdir(parents = True, exist_ok = True)
                 free_bytes = shutil.disk_usage(cache_dir).free
 
                 total_gb = total_download_bytes / (1024**3)
@@ -2463,18 +2463,18 @@ class LlamaCppBackend:
                 raise RuntimeError("Cancelled")
             dl_start = time.monotonic()
             local_path = hf_hub_download(
-                repo_id=hf_repo,
-                filename=gguf_filename,
-                token=hf_token,
+                repo_id = hf_repo,
+                filename = gguf_filename,
+                token = hf_token,
             )
             for shard in gguf_extra_shards:
                 if self._cancel_event.is_set():
                     raise RuntimeError("Cancelled")
                 logger.info(f"Resolving GGUF shard: {shard}")
                 hf_hub_download(
-                    repo_id=hf_repo,
-                    filename=shard,
-                    token=hf_token,
+                    repo_id = hf_repo,
+                    filename = shard,
+                    token = hf_token,
                 )
         except RuntimeError as e:
             if "Cancelled" in str(e):
@@ -2523,7 +2523,7 @@ class LlamaCppBackend:
         try:
             from huggingface_hub import list_repo_files
 
-            target = _pick_mmproj(list_repo_files(hf_repo, token=hf_token))
+            target = _pick_mmproj(list_repo_files(hf_repo, token = hf_token))
         except Exception as e:
             logger.debug(f"Could not list repo files for mmproj: {e}")
 
@@ -2552,9 +2552,9 @@ class LlamaCppBackend:
 
             logger.info(f"Downloading mmproj: {hf_repo}/{target}")
             local_path = hf_hub_download(
-                repo_id=hf_repo,
-                filename=target,
-                token=hf_token,
+                repo_id = hf_repo,
+                filename = target,
+                token = hf_token,
             )
             return local_path
         except Exception as e:
@@ -2735,16 +2735,16 @@ class LlamaCppBackend:
             # (the first one hadn't published _healthy=True yet). If the
             # live server already satisfies this request, do nothing.
             if self._already_in_target_state(
-                gguf_path=gguf_path,
-                model_identifier=model_identifier,
-                hf_variant=hf_variant,
-                n_ctx=n_ctx,
-                cache_type_kv=cache_type_kv,
-                speculative_type=speculative_type,
-                spec_draft_n_max=spec_draft_n_max,
-                chat_template_override=chat_template_override,
-                extra_args=extra_args,
-                is_vision=is_vision,
+                gguf_path = gguf_path,
+                model_identifier = model_identifier,
+                hf_variant = hf_variant,
+                n_ctx = n_ctx,
+                cache_type_kv = cache_type_kv,
+                speculative_type = speculative_type,
+                spec_draft_n_max = spec_draft_n_max,
+                chat_template_override = chat_template_override,
+                extra_args = extra_args,
+                is_vision = is_vision,
             ):
                 logger.info(
                     f"load_model: backend already in target state for "
@@ -2807,15 +2807,15 @@ class LlamaCppBackend:
             if hf_repo:
                 with _hf_offline_if_dns_dead():
                     model_path = self._download_gguf(
-                        hf_repo=hf_repo,
-                        hf_variant=hf_variant,
-                        hf_token=hf_token,
+                        hf_repo = hf_repo,
+                        hf_variant = hf_variant,
+                        hf_token = hf_token,
                     )
                     # Auto-download mmproj for vision models
                     if is_vision and not mmproj_path:
                         mmproj_path = self._download_mmproj(
-                            hf_repo=hf_repo,
-                            hf_token=hf_token,
+                            hf_repo = hf_repo,
+                            hf_token = hf_token,
                         )
             elif gguf_path:
                 if not Path(gguf_path).is_file():
@@ -2839,7 +2839,7 @@ class LlamaCppBackend:
             # not blocked. ``unload_model`` also records the kill, so
             # the frontend /unload+/load Apply path engages the wait
             # here even though no in-process kill happened.
-            self._wait_for_vram_settle(since_kill=self._last_kill_monotonic)
+            self._wait_for_vram_settle(since_kill = self._last_kill_monotonic)
 
             # ── Phase 3: start llama-server (under lock) ──────────────
             with self._lock:
@@ -2941,7 +2941,7 @@ class LlamaCppBackend:
                         native_ctx_for_cap = self._context_length or effective_ctx
                         if native_ctx_for_cap > 0:
                             ranked_for_cap = sorted(
-                                gpus, key=lambda g: g[1], reverse=True
+                                gpus, key = lambda g: g[1], reverse = True
                             )
                             best_cap = 0
                             for n_gpus in range(1, len(ranked_for_cap) + 1):
@@ -2952,11 +2952,11 @@ class LlamaCppBackend:
                                     pool_mib,
                                     model_size,
                                     cache_type_kv,
-                                    n_parallel=n_parallel,
-                                    mtp_engaged=_mtp_will_engage,
+                                    n_parallel = n_parallel,
+                                    mtp_engaged = _mtp_will_engage,
                                 )
                                 kv = self._estimate_kv_cache_bytes(
-                                    capped, cache_type_kv, n_parallel=n_parallel
+                                    capped, cache_type_kv, n_parallel = n_parallel
                                 )
                                 total_mib = (model_size + kv) / (1024 * 1024)
                                 if total_mib <= pool_mib * 0.90:
@@ -2983,7 +2983,7 @@ class LlamaCppBackend:
                             requested_total = (
                                 model_size
                                 + self._estimate_kv_cache_bytes(
-                                    effective_ctx, cache_type_kv, n_parallel=n_parallel
+                                    effective_ctx, cache_type_kv, n_parallel = n_parallel
                                 )
                             )
                             gpu_indices, use_fit = self._select_gpus(
@@ -2994,7 +2994,7 @@ class LlamaCppBackend:
                             # Auto context: prefer fewer GPUs, cap context
                             # to fit. Same headroom threshold as
                             # _select_gpus (#5106).
-                            ranked = sorted(gpus, key=lambda g: g[1], reverse=True)
+                            ranked = sorted(gpus, key = lambda g: g[1], reverse = True)
                             pin_fraction = self._GPU_PIN_VRAM_FRACTION
                             for n_gpus in range(1, len(ranked) + 1):
                                 subset = ranked[:n_gpus]
@@ -3004,11 +3004,11 @@ class LlamaCppBackend:
                                     pool_mib,
                                     model_size,
                                     cache_type_kv,
-                                    n_parallel=n_parallel,
-                                    mtp_engaged=_mtp_will_engage,
+                                    n_parallel = n_parallel,
+                                    mtp_engaged = _mtp_will_engage,
                                 )
                                 kv = self._estimate_kv_cache_bytes(
-                                    capped, cache_type_kv, n_parallel=n_parallel
+                                    capped, cache_type_kv, n_parallel = n_parallel
                                 )
                                 total_mib = (model_size + kv) / (1024 * 1024)
                                 if total_mib <= pool_mib * pin_fraction:
@@ -3029,7 +3029,7 @@ class LlamaCppBackend:
                                         kv = self._estimate_kv_cache_bytes(
                                             effective_ctx,
                                             cache_type_kv,
-                                            n_parallel=n_parallel,
+                                            n_parallel = n_parallel,
                                         )
                                         total_mib = (model_size + kv) / (1024 * 1024)
                                         if total_mib <= pool_mib * pin_fraction:
@@ -3045,7 +3045,7 @@ class LlamaCppBackend:
                         # keep the ceiling at the native context (already the default).
                         logger.debug(
                             "Falling back to file-size-only GPU selection",
-                            model_size_gb=round(model_size / (1024**3), 2),
+                            model_size_gb = round(model_size / (1024**3), 2),
                         )
                         gpu_indices, use_fit = self._select_gpus(model_size, gpus)
                         if use_fit and not explicit_ctx:
@@ -3058,7 +3058,7 @@ class LlamaCppBackend:
 
                     if effective_ctx < original_ctx:
                         kv_est = self._estimate_kv_cache_bytes(
-                            effective_ctx, cache_type_kv, n_parallel=n_parallel
+                            effective_ctx, cache_type_kv, n_parallel = n_parallel
                         )
                         logger.info(
                             f"Context auto-reduced: {original_ctx} -> {effective_ctx} "
@@ -3067,7 +3067,7 @@ class LlamaCppBackend:
                         )
 
                     kv_cache_bytes = self._estimate_kv_cache_bytes(
-                        effective_ctx, cache_type_kv, n_parallel=n_parallel
+                        effective_ctx, cache_type_kv, n_parallel = n_parallel
                     )
                     logger.info(
                         f"GGUF size: {model_size / (1024**3):.1f} GB, "
@@ -3081,8 +3081,8 @@ class LlamaCppBackend:
                     effective_ctx = requested_ctx  # fall back to original
 
                 launch_mmproj_path = self._resolve_launch_mmproj_path(
-                    model_path=model_path,
-                    mmproj_path=mmproj_path,
+                    model_path = model_path,
+                    mmproj_path = mmproj_path,
                 )
                 # Need both a resolved mmproj AND the config vision flag; a stray
                 # mmproj passing the family-name heuristic must not flip a non-VLM
@@ -3176,13 +3176,13 @@ class LlamaCppBackend:
                 # fallback to -MTP in name. GPU: MTP-only. CPU/Mac: chain
                 # with ngram-mod. See unsloth.ai/docs/models/qwen3.6#mtp-guide.
                 spec_flags = self._build_speculative_flags(
-                    speculative_type=speculative_type,
-                    spec_draft_n_max=spec_draft_n_max,
-                    extra_args=extra_args,
-                    model_identifier=model_identifier,
-                    model_path=model_path,
-                    gpus=bool(gpus),
-                    binary=binary,
+                    speculative_type = speculative_type,
+                    spec_draft_n_max = spec_draft_n_max,
+                    extra_args = extra_args,
+                    model_identifier = model_identifier,
+                    model_path = model_path,
+                    gpus = bool(gpus),
+                    binary = binary,
                 )
                 cmd.extend(spec_flags)
 
@@ -3194,7 +3194,7 @@ class LlamaCppBackend:
                     flags = detect_reasoning_flags(
                         chat_template_override,
                         self._model_identifier,
-                        log_source="GGUF chat template override",
+                        log_source = "GGUF chat template override",
                     )
                     self._supports_reasoning = flags["supports_reasoning"]
                     self._reasoning_style = flags["reasoning_style"]
@@ -3205,10 +3205,10 @@ class LlamaCppBackend:
                     self._supports_tools = flags["supports_tools"]
 
                     self._chat_template_file = tempfile.NamedTemporaryFile(
-                        mode="w",
-                        suffix=".jinja",
-                        delete=False,
-                        prefix="unsloth_chat_template_",
+                        mode = "w",
+                        suffix = ".jinja",
+                        delete = False,
+                        prefix = "unsloth_chat_template_",
                     )
                     self._chat_template_file.write(chat_template_override)
                     self._chat_template_file.close()
@@ -3415,15 +3415,15 @@ class LlamaCppBackend:
                 self._llama_log_fh = None
                 try:
                     log_dir = _swa_cache_path().parent / "logs" / "llama-server"
-                    log_dir.mkdir(parents=True, exist_ok=True)
+                    log_dir.mkdir(parents = True, exist_ok = True)
                     self._llama_log_path = (
                         log_dir / f"llama-{int(time.time())}-port-{self._port}.log"
                     )
                     self._llama_log_fh = open(
                         self._llama_log_path,
                         "w",
-                        encoding="utf-8",
-                        buffering=1,
+                        encoding = "utf-8",
+                        buffering = 1,
                     )
                     logger.info(f"llama-server stdout/stderr -> {self._llama_log_path}")
                 except OSError as e:
@@ -3432,16 +3432,16 @@ class LlamaCppBackend:
                     self._llama_log_path = None
                 self._process = subprocess.Popen(
                     cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    env=env,
+                    stdout = subprocess.PIPE,
+                    stderr = subprocess.STDOUT,
+                    text = True,
+                    env = env,
                     **_windows_hidden_subprocess_kwargs(),
                 )
 
                 # Start background thread to drain stdout and prevent pipe deadlock
                 self._stdout_thread = threading.Thread(
-                    target=self._drain_stdout, daemon=True, name="llama-stdout"
+                    target = self._drain_stdout, daemon = True, name = "llama-stdout"
                 )
                 self._stdout_thread.start()
 
@@ -3480,7 +3480,7 @@ class LlamaCppBackend:
                 )
 
                 # Wait for llama-server to become healthy
-                if not self._wait_for_health(timeout=600.0):
+                if not self._wait_for_health(timeout = 600.0):
                     self._kill_process()
                     raise RuntimeError(
                         self._classify_llama_start_failure(
@@ -3726,7 +3726,7 @@ class LlamaCppBackend:
                     "fall back to spec-off if no nextn head is present. "
                     "Engaging anyway (user override)."
                 )
-            _emit_mtp(chain_ngram=False)
+            _emit_mtp(chain_ngram = False)
             return flags
         if effective_mode == "mtp+ngram":
             if _mtp_too_small:
@@ -3741,14 +3741,14 @@ class LlamaCppBackend:
                     "may fall back to ngram-only if no nextn head is "
                     "present. Engaging anyway (user override)."
                 )
-            _emit_mtp(chain_ngram=True)
+            _emit_mtp(chain_ngram = True)
             return flags
 
         # effective_mode == "auto": today's promotion path. llama.cpp
         # #22673: MTP is compatible with mmproj, so there's no vision gate.
         if is_mtp_model and not _mtp_too_small:
             # GPU: MTP-only. CPU/Mac: chain ngram-mod + MTP.
-            _emit_mtp(chain_ngram=not gpus)
+            _emit_mtp(chain_ngram = not gpus)
         elif is_mtp_model and _mtp_too_small:
             # Sub-3B fallback: drop the MTP draft head, keep ngram-mod
             # when the binary supports it.
@@ -3960,11 +3960,11 @@ class LlamaCppBackend:
             return
         try:
             self._process.terminate()
-            self._process.wait(timeout=5)
+            self._process.wait(timeout = 5)
         except subprocess.TimeoutExpired:
             logger.warning("llama-server did not exit on SIGTERM, sending SIGKILL")
             self._process.kill()
-            self._process.wait(timeout=5)
+            self._process.wait(timeout = 5)
         except Exception as e:
             logger.warning(f"Error killing llama-server process: {e}")
         finally:
@@ -3978,7 +3978,7 @@ class LlamaCppBackend:
             # /unload+/load Apply paths record the kill.
             self._last_kill_monotonic = time.monotonic()
             if self._stdout_thread is not None:
-                self._stdout_thread.join(timeout=2)
+                self._stdout_thread.join(timeout = 2)
                 self._stdout_thread = None
             fh = getattr(self, "_llama_log_fh", None)
             if fh is not None:
@@ -4117,10 +4117,10 @@ class LlamaCppBackend:
                     return
                 result = subprocess.run(
                     ["pgrep", "-a", "-f", "llama-server"],
-                    capture_output=True,
-                    text=True,
-                    timeout=5,
-                    env=child_env_without_native_path_secret(),
+                    capture_output = True,
+                    text = True,
+                    timeout = 5,
+                    env = child_env_without_native_path_secret(),
                 )
                 if result.returncode != 0:
                     return
@@ -4140,13 +4140,13 @@ class LlamaCppBackend:
                     # unavailable.
                     proc_exe = Path(f"/proc/{pid}/exe")
                     try:
-                        binary = proc_exe.resolve(strict=True)
+                        binary = proc_exe.resolve(strict = True)
                     except (OSError, ValueError):
                         cmdline = parts[1]
                         token = cmdline.split()[0] if cmdline.strip() else ""
                         if not token:
                             continue
-                        binary = Path(token).resolve(strict=False)
+                        binary = Path(token).resolve(strict = False)
 
                     owned = binary in exact_binaries or any(
                         binary.is_relative_to(root) for root in resolved_roots
@@ -4162,7 +4162,7 @@ class LlamaCppBackend:
                     except PermissionError:
                         pass
         except Exception:
-            logger.warning("Error during orphan server cleanup", exc_info=True)
+            logger.warning("Error during orphan server cleanup", exc_info = True)
 
     def _cleanup(self):
         """atexit handler to ensure llama-server is terminated."""
@@ -4182,7 +4182,7 @@ class LlamaCppBackend:
             if self._process.poll() is not None:
                 # Give the drain thread a moment to collect final output
                 if self._stdout_thread is not None:
-                    self._stdout_thread.join(timeout=2)
+                    self._stdout_thread.join(timeout = 2)
                 output = "\n".join(self._stdout_lines[-50:])
                 logger.error(
                     f"llama-server exited with code {self._process.returncode}. "
@@ -4191,7 +4191,7 @@ class LlamaCppBackend:
                 return False
 
             try:
-                resp = httpx.get(url, timeout=2.0)
+                resp = httpx.get(url, timeout = 2.0)
                 if resp.status_code == 200:
                     return True
             except (
@@ -4322,7 +4322,7 @@ class LlamaCppBackend:
 
         def _cancel_watcher():
             while not _cancel_closed.is_set():
-                if cancel_event.wait(timeout=0.3):
+                if cancel_event.wait(timeout = 0.3):
                     # Cancel requested. Keep polling until the response object
                     # exists so we can close it, or until the main thread
                     # finishes on its own (_cancel_closed is set in finally).
@@ -4337,13 +4337,13 @@ class LlamaCppBackend:
                                     f"Error closing response in cancel watcher: {e}"
                                 )
                         # Response not created yet -- wait briefly and retry
-                        _cancel_closed.wait(timeout=0.1)
+                        _cancel_closed.wait(timeout = 0.1)
                     return
 
         watcher = None
         if cancel_event is not None:
             watcher = threading.Thread(
-                target=_cancel_watcher, daemon=True, name="prefill-cancel"
+                target = _cancel_watcher, daemon = True, name = "prefill-cancel"
             )
             watcher.start()
 
@@ -4353,17 +4353,17 @@ class LlamaCppBackend:
             # prefill and streaming is handled by the watcher thread
             # which closes the response, unblocking any httpx read.
             prefill_timeout = httpx.Timeout(
-                connect=30,
-                read=120.0,
-                write=10,
-                pool=10,
+                connect = 30,
+                read = 120.0,
+                write = 10,
+                pool = 10,
             )
             with client.stream(
                 "POST",
                 url,
-                json=payload,
-                timeout=prefill_timeout,
-                headers=headers,
+                json = payload,
+                timeout = prefill_timeout,
+                headers = headers,
             ) as response:
                 _response_ref[0] = response
                 if cancel_event is not None and cancel_event.is_set():
@@ -4448,19 +4448,19 @@ class LlamaCppBackend:
             # _stream_with_retry uses a 120 s read timeout so prefill
             # can finish.  Cancel during streaming is handled by the
             # watcher thread (closes the response on cancel_event).
-            stream_timeout = httpx.Timeout(connect=10, read=0.5, write=10, pool=10)
+            stream_timeout = httpx.Timeout(connect = 10, read = 0.5, write = 10, pool = 10)
             _auth_headers = (
                 {"Authorization": f"Bearer {self._api_key}"} if self._api_key else None
             )
             with httpx.Client(
-                timeout=stream_timeout, limits=httpx.Limits(max_keepalive_connections=0)
+                timeout = stream_timeout, limits = httpx.Limits(max_keepalive_connections = 0)
             ) as client:
                 with self._stream_with_retry(
                     client,
                     url,
                     payload,
                     cancel_event,
-                    headers=_auth_headers,
+                    headers = _auth_headers,
                 ) as response:
                     if response.status_code != 200:
                         error_body = response.read().decode()
@@ -4600,7 +4600,7 @@ class LlamaCppBackend:
         def _strip_tool_markup(text: str, *, final: bool = False) -> str:
             if not auto_heal_tool_calls:
                 return text
-            return strip_tool_call_markup(text, final=final)
+            return strip_tool_call_markup(text, final = final)
 
         def _strip_tool_markup_streaming(text: str) -> str:
             if not auto_heal_tool_calls:
@@ -4709,21 +4709,21 @@ class LlamaCppBackend:
                 provisional_render_html_tool_call_ids = set()
 
                 stream_timeout = httpx.Timeout(
-                    connect=10,
-                    read=0.5,
-                    write=10,
-                    pool=10,
+                    connect = 10,
+                    read = 0.5,
+                    write = 10,
+                    pool = 10,
                 )
                 with httpx.Client(
-                    timeout=stream_timeout,
-                    limits=httpx.Limits(max_keepalive_connections=0),
+                    timeout = stream_timeout,
+                    limits = httpx.Limits(max_keepalive_connections = 0),
                 ) as client:
                     with self._stream_with_retry(
                         client,
                         url,
                         payload,
                         cancel_event,
-                        headers=_auth_headers,
+                        headers = _auth_headers,
                     ) as response:
                         if response.status_code != 200:
                             error_body = response.read().decode()
@@ -4753,7 +4753,7 @@ class LlamaCppBackend:
                                                 "type": "content",
                                                 "text": _strip_tool_markup(
                                                     cumulative_display,
-                                                    final=True,
+                                                    final = True,
                                                 ),
                                             }
                                         else:
@@ -4986,7 +4986,7 @@ class LlamaCppBackend:
                                 "type": "content",
                                 "text": _strip_tool_markup(
                                     cumulative_display,
-                                    final=True,
+                                    final = True,
                                 ),
                             }
                         elif reasoning_accum and not has_content_tokens:
@@ -5126,7 +5126,7 @@ class LlamaCppBackend:
                     tool_calls = _safety_tc
                     content_text = _strip_tool_markup(
                         content_accum,
-                        final=True,
+                        final = True,
                     )
                     logger.info(
                         f"Safety net: parsed {len(tool_calls)} tool call(s) "
@@ -5160,7 +5160,7 @@ class LlamaCppBackend:
                     if tool_calls and not has_structured_tc:
                         content_text = _strip_tool_markup(
                             content_text,
-                            final=True,
+                            final = True,
                         )
                     if tool_calls:
                         logger.info(
@@ -5175,7 +5175,7 @@ class LlamaCppBackend:
                         if content_accum:
                             # Strip leaked tool-call XML before yielding
                             content_accum = _strip_tool_markup(
-                                content_accum, final=True
+                                content_accum, final = True
                             )
                         if content_accum:
                             yield {"type": "content", "text": content_accum}
@@ -5352,9 +5352,9 @@ class LlamaCppBackend:
                             result = execute_tool(
                                 tool_name,
                                 arguments,
-                                cancel_event=cancel_event,
-                                timeout=_effective_timeout,
-                                session_id=session_id,
+                                cancel_event = cancel_event,
+                                timeout = _effective_timeout,
+                                session_id = session_id,
                             )
 
                     if not _repeat_render_html:
@@ -5474,19 +5474,19 @@ class LlamaCppBackend:
         _stream_done = False
 
         try:
-            stream_timeout = httpx.Timeout(connect=10, read=0.5, write=10, pool=10)
+            stream_timeout = httpx.Timeout(connect = 10, read = 0.5, write = 10, pool = 10)
             _auth_headers = (
                 {"Authorization": f"Bearer {self._api_key}"} if self._api_key else None
             )
             with httpx.Client(
-                timeout=stream_timeout, limits=httpx.Limits(max_keepalive_connections=0)
+                timeout = stream_timeout, limits = httpx.Limits(max_keepalive_connections = 0)
             ) as client:
                 with self._stream_with_retry(
                     client,
                     url,
                     stream_payload,
                     cancel_event,
-                    headers=_auth_headers,
+                    headers = _auth_headers,
                 ) as response:
                     if response.status_code != 200:
                         error_body = response.read().decode()
@@ -5512,7 +5512,7 @@ class LlamaCppBackend:
                                         yield {
                                             "type": "content",
                                             "text": _strip_tool_markup(
-                                                cumulative, final=True
+                                                cumulative, final = True
                                             ),
                                         }
                                     else:
@@ -5622,12 +5622,12 @@ class LlamaCppBackend:
         _auth_headers = (
             {"Authorization": f"Bearer {self._api_key}"} if self._api_key else None
         )
-        with httpx.Client(timeout=10, headers=_auth_headers) as client:
+        with httpx.Client(timeout = 10, headers = _auth_headers) as client:
 
             def _detok(tid: int) -> str:
                 # Non-200 means "marker not in vocab" -- keep probing.
                 # Transport / JSON errors still raise.
-                r = client.post(f"{self.base_url}/detokenize", json={"tokens": [tid]})
+                r = client.post(f"{self.base_url}/detokenize", json = {"tokens": [tid]})
                 if r.status_code != 200:
                     return ""
                 return r.json().get("content", "")
@@ -5635,7 +5635,7 @@ class LlamaCppBackend:
             def _tok(text: str) -> list[int]:
                 r = client.post(
                     f"{self.base_url}/tokenize",
-                    json={"content": text, "add_special": False},
+                    json = {"content": text, "add_special": False},
                 )
                 if r.status_code != 200:
                     return []
@@ -5700,12 +5700,12 @@ class LlamaCppBackend:
             import os
 
             repo_path = snapshot_download(
-                "unsloth/Spark-TTS-0.5B", local_dir="Spark-TTS-0.5B"
+                "unsloth/Spark-TTS-0.5B", local_dir = "Spark-TTS-0.5B"
             )
             model_repo_path = os.path.abspath(repo_path)
 
         LlamaCppBackend._codec_mgr.load_codec(
-            audio_type, device, model_repo_path=model_repo_path
+            audio_type, device, model_repo_path = model_repo_path
         )
         logger.info(f"Loaded audio codec for GGUF TTS: {audio_type}")
 
@@ -5730,7 +5730,7 @@ class LlamaCppBackend:
         tpl, stop, need_ids = self._TTS_PROMPTS[audio_type]
 
         payload: dict = {
-            "prompt": tpl.format(text=text),
+            "prompt": tpl.format(text = text),
             "stream": False,
             "n_predict": max_new_tokens,
             "temperature": temperature,
@@ -5748,9 +5748,9 @@ class LlamaCppBackend:
             {"Authorization": f"Bearer {self._api_key}"} if self._api_key else None
         )
         with httpx.Client(
-            timeout=httpx.Timeout(300, connect=10), headers=_auth_headers
+            timeout = httpx.Timeout(300, connect = 10), headers = _auth_headers
         ) as client:
-            resp = client.post(f"{self.base_url}/completion", json=payload)
+            resp = client.post(f"{self.base_url}/completion", json = payload)
             if resp.status_code != 200:
                 raise RuntimeError(
                     f"llama-server returned {resp.status_code}: {resp.text}"
@@ -5767,5 +5767,5 @@ class LlamaCppBackend:
 
         device = "cuda" if torch.cuda.is_available() else "cpu"
         return LlamaCppBackend._codec_mgr.decode(
-            audio_type, device, token_ids=token_ids, text=data.get("content", "")
+            audio_type, device, token_ids = token_ids, text = data.get("content", "")
         )

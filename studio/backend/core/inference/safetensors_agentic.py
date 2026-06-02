@@ -355,7 +355,7 @@ def run_safetensors_tool_loop(
                     cumulative_display += content_buffer
                     yield {
                         "type": "content",
-                        "text": strip_tool_markup(cumulative_display, final=True),
+                        "text": strip_tool_markup(cumulative_display, final = True),
                     }
                 yield {"type": "status", "text": ""}
                 return
@@ -366,7 +366,7 @@ def run_safetensors_tool_loop(
             if has_tool_signal(content_accum):
                 safety_tc = parse_tool_calls_from_text(
                     content_accum,
-                    id_offset=next_call_id,
+                    id_offset = next_call_id,
                 )
             if not safety_tc:
                 # Final answer: streaming already emitted content.
@@ -375,7 +375,7 @@ def run_safetensors_tool_loop(
                 yield {"type": "status", "text": ""}
                 return
             tool_calls = safety_tc
-            content_text = strip_tool_markup(content_accum, final=True)
+            content_text = strip_tool_markup(content_accum, final = True)
             logger.info(
                 "Safetensors safety net: parsed %d tool call(s) from streamed content",
                 len(tool_calls),
@@ -384,7 +384,7 @@ def run_safetensors_tool_loop(
             # DRAINING: parse tool calls out of full content.
             tool_calls = parse_tool_calls_from_text(
                 content_accum,
-                id_offset=next_call_id,
+                id_offset = next_call_id,
             )
             if not tool_calls and auto_heal_tool_calls:
                 # Parser found nothing -- surface raw content so any
@@ -401,7 +401,7 @@ def run_safetensors_tool_loop(
                     }
                 yield {"type": "status", "text": ""}
                 return
-            content_text = strip_tool_markup(content_accum, final=True)
+            content_text = strip_tool_markup(content_accum, final = True)
 
         if final_attempt_done:
             # Final-answer turn re-called a tool -- stop the loop.
@@ -421,12 +421,12 @@ def run_safetensors_tool_loop(
             tool_name = func.get("name", "") or ""
             arguments, args_healed = _coerce_arguments_with_provenance(
                 func.get("arguments", {}),
-                heal=auto_heal_tool_calls,
-                tool_name=tool_name,
+                heal = auto_heal_tool_calls,
+                tool_name = tool_name,
             )
             tool_provenance = _tool_event_provenance(
-                healed=args_healed,
-                provisional=(
+                healed = args_healed,
+                provisional = (
                     provisional_render_html_started
                     and tool_name == "render_html"
                     and tc.get("id", "") == provisional_render_html_id
@@ -467,9 +467,9 @@ def run_safetensors_tool_loop(
                         result = execute_tool(
                             tool_name,
                             arguments,
-                            cancel_event=cancel_event,
-                            timeout=eff_timeout,
-                            session_id=session_id,
+                            cancel_event = cancel_event,
+                            timeout = eff_timeout,
+                            session_id = session_id,
                         )
                     except Exception as exc:
                         logger.exception("Tool %s raised: %s", tool_name, exc)
