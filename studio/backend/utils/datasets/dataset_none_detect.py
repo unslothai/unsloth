@@ -843,7 +843,9 @@ def show_row(dataset: Dataset, row_indices: list[int], fmt: str, col: str = None
                         content = turn.get("value")
                     else:
                         content = (
-                            turn.get("content") if "content" in turn else turn.get("value")
+                            turn.get("content")
+                            if "content" in turn
+                            else turn.get("value")
                         )
                     if is_none_or_empty(content) and not (
                         role == "assistant" and turn.get("tool_calls")
