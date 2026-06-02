@@ -948,6 +948,7 @@ from transformers.modeling_utils import logger as transformers_logger
 # non-matching names and/or are not aarch64, so behaviour there is unchanged.
 _DGX_SPARK_DEVICE_TOKENS = ("GB10", "JMJWOA", "N1X", "DGX SPARK", "GB110")
 
+
 @functools.lru_cache(maxsize = None)
 def is_dgx_spark():
     """True only on a DGX Spark / N1X Spark-class machine.
@@ -956,10 +957,13 @@ def is_dgx_spark():
     testing via UNSLOTH_FORCE_DGX_SPARK=1 (force on) / =0 (force off).
     """
     _force = os.environ.get("UNSLOTH_FORCE_DGX_SPARK")
-    if _force == "1": return True
-    if _force == "0": return False
+    if _force == "1":
+        return True
+    if _force == "0":
+        return False
     try:
         import platform
+
         if platform.machine().lower() not in ("aarch64", "arm64"):
             return False
         if not (hasattr(torch, "cuda") and torch.cuda.is_available()):
@@ -971,7 +975,8 @@ def is_dgx_spark():
         return any(token in names for token in _DGX_SPARK_DEVICE_TOKENS)
     except Exception:
         return False
-pass
+
+
 
 
 def patch_dgx_spark_caching_allocator_warmup():
@@ -996,11 +1001,14 @@ def patch_dgx_spark_caching_allocator_warmup():
         return
     if getattr(_mu.caching_allocator_warmup, "_unsloth_spark_noop", False):
         return
+
     def _noop(*args, **kwargs):
         return None
+
     _noop._unsloth_spark_noop = True
     _mu.caching_allocator_warmup = _noop
-pass
+
+
 
 patch_dgx_spark_caching_allocator_warmup()
 
