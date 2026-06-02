@@ -912,6 +912,34 @@ class _LazyGGUFOffloadMixin:
         self._cuda_quant_cache_state = cache_state
         self._cuda_quant_cache = {}
 
+    def _prefill_cuda_quant_cache(self, target_device: Any) -> tuple[int, int]:
+        target_device = torch.device(target_device)
+        if target_device.type != "cuda":
+            return 0, 0
+        cached_tensors = 0
+        cached_bytes = 0
+        for name in ("qweight", "qbias"):
+            qbuffer = self._buffers.get(name)
+            if qbuffer is None or qbuffer.device.type != "cpu":
+                continue
+            pinned = _pin_cpu_tensor_for_transfer(
+                qbuffer,
+                pin_memory = getattr(self, "_pin_cpu_resident", None),
+            )
+            if pinned is not qbuffer:
+                self._buffers[name] = pinned
+                qbuffer = pinned
+            cached = self._maybe_cuda_cached_quant_buffer(
+                name,
+                target_device,
+                qbuffer,
+            )
+            if cached is None:
+                continue
+            cached_tensors += 1
+            cached_bytes += qbuffer.numel() * qbuffer.element_size()
+        return cached_tensors, cached_bytes
+
     def _maybe_cuda_cached_quant_buffer(
         self,
         name: str,
@@ -993,7 +1021,12 @@ class _LazyGGUFOffloadMixin:
         return result
 
 
-def configure_lazy_gguf_cuda_cache(root: Any, max_bytes: int) -> dict[str, int]:
+def configure_lazy_gguf_cuda_cache(
+    root: Any,
+    max_bytes: int,
+    *,
+    prefill_device: Any = None,
+) -> dict[str, int]:
     cache_state = LazyGGUFCudaCache(max_bytes)
     candidates: list[tuple[int, _LazyGGUFOffloadMixin]] = []
     candidate_bytes = 0
@@ -1003,6 +1036,8 @@ def configure_lazy_gguf_cuda_cache(root: Any, max_bytes: int) -> dict[str, int]:
             "budget_bytes": cache_state.max_bytes,
             "candidate_bytes": 0,
             "selected_bytes": 0,
+            "prefilled_tensors": 0,
+            "prefilled_bytes": 0,
         }
     for module in root.modules():
         if not isinstance(module, _LazyGGUFOffloadMixin):
@@ -1025,6 +1060,7 @@ def configure_lazy_gguf_cuda_cache(root: Any, max_bytes: int) -> dict[str, int]:
 
     selected_modules = 0
     selected_bytes = 0
+    selected: list[_LazyGGUFOffloadMixin] = []
     for module_bytes, module in sorted(candidates, key = lambda item: item[0], reverse = True):
         if module_bytes <= 0:
             continue
@@ -1033,11 +1069,23 @@ def configure_lazy_gguf_cuda_cache(root: Any, max_bytes: int) -> dict[str, int]:
         module._set_cuda_quant_cache(cache_state)
         selected_modules += 1
         selected_bytes += module_bytes
+        selected.append(module)
+    prefilled_tensors = 0
+    prefilled_bytes = 0
+    if prefill_device is not None:
+        for module in selected:
+            module_tensors, module_bytes = module._prefill_cuda_quant_cache(
+                prefill_device,
+            )
+            prefilled_tensors += module_tensors
+            prefilled_bytes += module_bytes
     return {
         "modules": selected_modules,
         "budget_bytes": cache_state.max_bytes,
         "candidate_bytes": int(candidate_bytes),
         "selected_bytes": int(selected_bytes),
+        "prefilled_tensors": int(prefilled_tensors),
+        "prefilled_bytes": int(prefilled_bytes),
     }
 
 
