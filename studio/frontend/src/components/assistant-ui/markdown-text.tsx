@@ -391,15 +391,14 @@ function useRafCoalescedText(text: string, isStreaming: boolean): string {
   const [displayed, setDisplayed] = useState(text);
   const pendingRef = useRef(text);
   const rafRef = useRef<number | null>(null);
-  pendingRef.current = text;
 
   useEffect(() => {
+    pendingRef.current = text;
     if (!isStreaming) {
       if (rafRef.current !== null) {
         cancelAnimationFrame(rafRef.current);
         rafRef.current = null;
       }
-      setDisplayed(text);
       return;
     }
     if (rafRef.current === null) {
@@ -422,7 +421,10 @@ function useRafCoalescedText(text: string, isStreaming: boolean): string {
     };
   }, []);
 
-  return isStreaming ? displayed : text;
+  if (isStreaming && text.startsWith(displayed)) {
+    return displayed;
+  }
+  return text;
 }
 
 const MarkdownTextImpl = () => {
