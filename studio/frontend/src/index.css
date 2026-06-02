@@ -1174,6 +1174,12 @@
 			0 6px 18px oklch(0 0 0 / 0.08);
 	}
 
+	/* MCP menu is wider (232px), so nudge the radius up so it reads as round as
+	   the narrower + menu (18 * 232/212 ~= 20px). */
+	.unsloth-plus-menu.mcp-menu[data-slot] {
+		border-radius: 20px;
+	}
+
 	.dark .unsloth-plus-menu[data-slot] {
 		background-color: #2a2a2c;
 		/* Shadow tinted to the page bg so it blends, not a dark halo. */

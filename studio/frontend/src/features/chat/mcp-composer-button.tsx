@@ -261,7 +261,7 @@ export function McpComposerButton({
             align="start"
             sideOffset={2}
             avoidCollisions={true}
-            className="unsloth-plus-menu w-[232px]"
+            className="unsloth-plus-menu mcp-menu w-[232px]"
           >
             <DropdownMenuLabel>MCP Servers</DropdownMenuLabel>
             {MCP_PRESETS.map((preset) => {
