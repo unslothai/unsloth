@@ -1006,7 +1006,7 @@ export function AppSidebar() {
                 <SidebarMenuButton
                   size="lg"
                   aria-label={t("shell.accountMenu", { name: displayTitle })}
-                  className="sidebar-nav-btn !h-[48px] gap-[9px] px-2 py-[7px] rounded-[13px]"
+                  className="sidebar-nav-btn !h-[46px] gap-[9px] px-2 py-[6px] rounded-[13px]"
                 >
                   <div className="shrink-0">
                     <UserAvatar
