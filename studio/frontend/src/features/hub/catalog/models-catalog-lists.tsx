@@ -10,7 +10,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import type { RefObject } from "react";
 import { useMemo } from "react";
-import { inventoryRowMatches } from "../lib/inventory-search";
+import { inventoryRowMatches, scoreInventoryRow } from "../lib/inventory-search";
 import type {
   CachedInventoryRow,
   DiscoverRow,
@@ -214,13 +214,21 @@ export function DownloadedList({
   deviceType: string | null;
   onInventoryChange?: (hint?: InventoryHint) => void;
 }) {
-  const inventoryItems = useMemo<InventoryItem[]>(
-    () => [
+  const inventoryItems = useMemo<InventoryItem[]>(() => {
+    const merged: InventoryItem[] = [
       ...cachedRows.map((row) => ({ variant: "cached" as const, row })),
       ...localRows.map((row) => ({ variant: "local" as const, row })),
-    ],
-    [cachedRows, localRows],
-  );
+    ];
+    if (inventoryTokens.length === 0) return merged;
+    return merged
+      .map((item, index) => ({
+        item,
+        index,
+        score: scoreInventoryRow(item.row, inventoryTokens),
+      }))
+      .sort((a, b) => b.score - a.score || a.index - b.index)
+      .map((entry) => entry.item);
+  }, [cachedRows, localRows, inventoryTokens]);
   const hasInventoryRows = cachedRows.length > 0 || localRows.length > 0;
 
   if (!downloadedReady && !hasInventoryRows) {

@@ -301,6 +301,16 @@
 		background-color: color-mix(in srgb, var(--status-success) 12%, transparent);
 		box-shadow: inset 2px 0 0 0 var(--primary);
 	}
+
+	.hub-page [data-hub-scroll="true"] ul[data-animating="true"] > li {
+		transition: transform 220ms cubic-bezier(0.22, 0.72, 0.18, 1);
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		.hub-page [data-hub-scroll="true"] ul[data-animating="true"] > li {
+			transition: none;
+		}
+	}
 }
 
 @layer utilities {

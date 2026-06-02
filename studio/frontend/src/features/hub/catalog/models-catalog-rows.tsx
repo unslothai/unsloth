@@ -35,6 +35,8 @@ import {
   memo,
   useCallback,
   useContext,
+  useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -717,6 +719,20 @@ export const InventoryRow = memo(function InventoryRow({
 
 const ROW_HEIGHT_PX = 57;
 
+const ORDER_SIGNATURE_SEP = "";
+const REORDER_ANIMATION_MS = 240;
+
+function isReorder(previous: string, next: string): boolean {
+  if (previous === next) return false;
+  const a = previous.split(ORDER_SIGNATURE_SEP);
+  const b = next.split(ORDER_SIGNATURE_SEP);
+  if (a.length !== b.length) return false;
+  return (
+    [...a].sort().join(ORDER_SIGNATURE_SEP) ===
+    [...b].sort().join(ORDER_SIGNATURE_SEP)
+  );
+}
+
 export function VirtualRows<T>({
   items,
   scrollElement,
@@ -737,8 +753,45 @@ export function VirtualRows<T>({
     getItemKey: (index) => getKey(items[index], index),
   });
 
+  const getKeyRef = useRef(getKey);
+  getKeyRef.current = getKey;
+  const orderSignature = useMemo(
+    () =>
+      items
+        .map((item, index) => getKeyRef.current(item, index))
+        .join(ORDER_SIGNATURE_SEP),
+    [items],
+  );
+  const previousSignatureRef = useRef(orderSignature);
+  const animateTimerRef = useRef<number | null>(null);
+  const [animating, setAnimating] = useState(false);
+
+  useLayoutEffect(() => {
+    const previous = previousSignatureRef.current;
+    previousSignatureRef.current = orderSignature;
+    if (!isReorder(previous, orderSignature)) return;
+    setAnimating(true);
+    if (animateTimerRef.current !== null) {
+      window.clearTimeout(animateTimerRef.current);
+    }
+    animateTimerRef.current = window.setTimeout(() => {
+      setAnimating(false);
+      animateTimerRef.current = null;
+    }, REORDER_ANIMATION_MS);
+  }, [orderSignature]);
+
+  useEffect(
+    () => () => {
+      if (animateTimerRef.current !== null) {
+        window.clearTimeout(animateTimerRef.current);
+      }
+    },
+    [],
+  );
+
   return (
     <ul
+      data-animating={animating || undefined}
       style={{
         height: virtualizer.getTotalSize(),
         position: "relative",
