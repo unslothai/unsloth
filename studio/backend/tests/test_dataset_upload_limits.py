@@ -29,7 +29,7 @@ class FakeUploadFile:
         return self._chunks.pop(0)
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture(autouse = True)
 def isolate_upload_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(datasets_route, "DATASET_UPLOAD_DIR", tmp_path)
     monkeypatch.setattr(datasets_route, "get_upload_limit_bytes", lambda: 1024 * 1024)
@@ -41,7 +41,7 @@ def test_dataset_upload_under_configured_cap_succeeds(isolate_upload_dir):
     upload = FakeUploadFile("sample.csv", [b"a,b\n1,2\n"])
     response = asyncio.run(
         datasets_route.upload_dataset(
-            cast(UploadFile, upload), current_subject="test-user"
+            cast(UploadFile, upload), current_subject = "test-user"
         )
     )
     stored = Path(response.stored_path)
@@ -59,7 +59,7 @@ def test_dataset_upload_over_configured_cap_removes_partial_file(isolate_upload_
     with pytest.raises(HTTPException) as exc:
         asyncio.run(
             datasets_route.upload_dataset(
-                cast(UploadFile, upload), current_subject="test-user"
+                cast(UploadFile, upload), current_subject = "test-user"
             )
         )
     assert exc.value.status_code == 413
