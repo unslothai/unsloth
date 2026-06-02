@@ -91,6 +91,7 @@ export const en = {
       chat: "Chat",
       connections: "Connections",
       apiKeys: "API",
+      models: "Models",
       about: "Help",
     },
     general: {

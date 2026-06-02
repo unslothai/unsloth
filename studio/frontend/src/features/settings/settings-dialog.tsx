@@ -18,6 +18,7 @@ import {
   PaintBrush02Icon,
   Settings02Icon,
   UserIcon,
+  Database02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { motion, useReducedMotion } from "motion/react";
@@ -32,6 +33,7 @@ import { AppearanceTab } from "./tabs/appearance-tab";
 import { ChatTab } from "./tabs/chat-tab";
 import { ConnectionsTab } from "./tabs/connections-tab";
 import { GeneralTab } from "./tabs/general-tab";
+import { ModelsTab } from "./tabs/models-tab";
 import { ProfileTab } from "./tabs/profile-tab";
 
 interface TabDef {
@@ -62,6 +64,12 @@ const TABS: TabDef[] = [
     icon: Globe02Icon,
     badgeKey: "common.new",
   },
+  {
+    id: "models",
+    labelKey: "settings.tabs.models",
+    icon: Database02Icon,
+    badgeKey: "common.new",
+  },
   { id: "about", labelKey: "settings.tabs.about", icon: HelpCircleIcon },
 ];
 
@@ -79,6 +87,8 @@ function renderTab(tab: SettingsTab) {
       return <ConnectionsTab />;
     case "api-keys":
       return <ApiKeysTab />;
+    case "models":
+      return <ModelsTab />;
     case "about":
       return <AboutTab />;
   }
@@ -99,6 +109,7 @@ export function SettingsDialog() {
     chat: null,
     connections: null,
     "api-keys": null,
+    models: null,
     about: null,
   });
 

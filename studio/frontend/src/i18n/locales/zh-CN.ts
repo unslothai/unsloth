@@ -91,6 +91,7 @@ export const zhCN = {
       chat: "聊天",
       connections: "连接",
       apiKeys: "API",
+      models: "模型",
       about: "帮助",
     },
     general: {

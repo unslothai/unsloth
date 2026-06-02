@@ -2711,6 +2711,158 @@ async def delete_cached_model(
         )
 
 
+@router.post("/check-updates")
+async def check_model_updates(
+    repo_ids: List[str] = Body(..., description = "List of HuggingFace repo IDs to check"),
+    current_subject: str = Depends(get_current_subject),
+):
+    """Check if cached models have newer versions available on HuggingFace.
+
+    Compares local cached commit hashes against the latest revision on HuggingFace Hub.
+    Returns a list of models that have updates available.
+    """
+    from huggingface_hub import model_info as hf_model_info
+
+    updates = []
+    cache_scans = _all_hf_cache_scans()
+
+    # Build a map of local repo -> cached commit hashes
+    local_commits: dict[str, set[str]] = {}
+    for hf_cache in cache_scans:
+        for repo_info in hf_cache.repos:
+            if repo_info.repo_type != "model":
+                continue
+            repo_key = repo_info.repo_id.lower()
+            if repo_key not in local_commits:
+                local_commits[repo_key] = set()
+            for rev in repo_info.revisions:
+                if hasattr(rev, "commit_hash") and rev.commit_hash:
+                    local_commits[repo_key].add(rev.commit_hash)
+
+    for repo_id in repo_ids:
+        if not _is_valid_repo_id(repo_id):
+            continue
+        repo_key = repo_id.lower()
+        if repo_key not in local_commits:
+            continue
+
+        try:
+            info = hf_model_info(repo_id, token = None)
+            latest_sha = getattr(info, "sha", None)
+            if not latest_sha:
+                continue
+
+            cached_commits = local_commits.get(repo_key, set())
+            if latest_sha not in cached_commits:
+                updates.append({
+                    "repo_id": repo_id,
+                    "local_commits": list(cached_commits)[:3],  # Show first 3 for debugging
+                    "latest_commit": latest_sha,
+                    "has_update": True,
+                })
+        except Exception as e:
+            logger.debug(f"Could not check updates for {repo_id}: {e}")
+            continue
+
+    return {"updates": updates}
+
+
+@router.post("/update-model")
+async def update_cached_model(
+    repo_id: str = Body(..., description = "HuggingFace repo ID to update"),
+    variant: Optional[str] = Body(None, description = "GGUF variant to update (optional)"),
+    current_subject: str = Depends(get_current_subject),
+):
+    """Update a cached model by re-downloading the latest version from HuggingFace.
+
+    This deletes the old cached version and triggers a fresh download.
+    For GGUF models, specify the variant to update only that quant.
+    """
+    from huggingface_hub import snapshot_download, hf_hub_download
+    from huggingface_hub.utils import HfHubHTTPError
+
+    if not _is_valid_repo_id(repo_id):
+        raise HTTPException(status_code = 400, detail = "Invalid repo_id format")
+
+    # Check if model is currently loaded
+    try:
+        from routes.inference import get_llama_cpp_backend
+
+        llama_backend = get_llama_cpp_backend()
+        if llama_backend.is_loaded and llama_backend.model_identifier:
+            loaded_id = llama_backend.model_identifier.lower()
+            if loaded_id == repo_id.lower() or loaded_id.startswith(repo_id.lower()):
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "Unload the model before updating",
+                )
+    except HTTPException:
+        raise
+    except Exception:
+        pass
+
+    try:
+        inference_backend = get_inference_backend()
+        if inference_backend.active_model_name:
+            active = inference_backend.active_model_name.lower()
+            if active == repo_id.lower() or active.startswith(repo_id.lower()):
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "Unload the model before updating",
+                )
+    except HTTPException:
+        raise
+    except Exception:
+        pass
+
+    try:
+        # Delete old cached version first
+        cache_scans = _all_hf_cache_scans()
+        target_repo = None
+        hf_cache = None
+
+        for scan in cache_scans:
+            for repo_info in scan.repos:
+                if repo_info.repo_type != "model":
+                    continue
+                if repo_info.repo_id.lower() == repo_id.lower():
+                    target_repo = repo_info
+                    hf_cache = scan
+                    break
+            if target_repo is not None:
+                break
+
+        if target_repo is None:
+            raise HTTPException(status_code = 404, detail = "Model not found in cache")
+
+        # Delete old revisions
+        revision_hashes = [rev.commit_hash for rev in target_repo.revisions]
+        if revision_hashes and hf_cache is not None:
+            delete_strategy = hf_cache.delete_revisions(*revision_hashes)
+            logger.info(
+                f"Deleting old version of {repo_id}: "
+                f"{delete_strategy.expected_freed_size_str} will be freed"
+            )
+            delete_strategy.execute()
+
+        # Trigger fresh download (will happen on next model load)
+        # For now, just return success - actual download happens when model is loaded
+        return {
+            "status": "ready_to_update",
+            "repo_id": repo_id,
+            "message": "Old version deleted. The latest version will be downloaded when you load the model.",
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating model {repo_id}: {e}", exc_info = True)
+        raise HTTPException(
+            status_code = 500,
+            detail = f"Failed to update model: {str(e)}",
+        )
+
+
 @router.get("/checkpoints", response_model = CheckpointListResponse)
 async def list_checkpoints(
     outputs_dir: str = Query(

@@ -10,6 +10,7 @@ export type SettingsTab =
   | "chat"
   | "connections"
   | "api-keys"
+  | "models"
   | "about";
 
 interface SettingsDialogState {
@@ -42,6 +43,7 @@ function loadInitialTab(): SettingsTab {
     "chat",
     "connections",
     "api-keys",
+    "models",
     "about",
   ];
   return valid.includes(stored as SettingsTab)

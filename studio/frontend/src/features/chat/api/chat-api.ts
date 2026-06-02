@@ -241,6 +241,39 @@ export async function deleteCachedModel(
   await parseJsonOrThrow<unknown>(response);
 }
 
+export interface ModelUpdateInfo {
+  repo_id: string;
+  local_commits: string[];
+  latest_commit: string;
+  has_update: boolean;
+}
+
+export async function checkModelUpdates(
+  repoIds: string[],
+): Promise<ModelUpdateInfo[]> {
+  const response = await authFetch("/api/models/check-updates", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(repoIds),
+  });
+  const data = await parseJsonOrThrow<{ updates: ModelUpdateInfo[] }>(response);
+  return data.updates;
+}
+
+export async function updateCachedModel(
+  repoId: string,
+  variant?: string,
+): Promise<{ status: string; repo_id: string; message: string }> {
+  const payload: Record<string, string> = { repo_id: repoId };
+  if (variant) payload.variant = variant;
+  const response = await authFetch("/api/models/update-model", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  return parseJsonOrThrow(response);
+}
+
 export async function deleteFineTunedModel(args: {
   modelPath: string;
   source: "training" | "exported";
