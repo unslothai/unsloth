@@ -1529,7 +1529,17 @@ fi
 if [ ! -x "$VENV_DIR/bin/python" ]; then
     step "venv" "creating Python ${PYTHON_VERSION} virtual environment"
     substep "$VENV_DIR"
-    run_install_cmd "create venv" uv venv "$VENV_DIR" --python "$PYTHON_VERSION"
+    if [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ] && [ -z "$_USER_PYTHON" ]; then
+        # Apple Silicon: request an arch-explicit arm64 CPython so uv cannot
+        # reuse a cached x86_64 (Rosetta) build. torch ships no macOS x86_64
+        # wheels since 2.2.2, so an x86_64 venv makes the torch install
+        # unresolvable. The arm64 guard below is kept as a backstop for
+        # migrated / pre-existing venvs.
+        run_install_cmd "create venv" uv venv "$VENV_DIR" \
+            --python "cpython-${PYTHON_VERSION}-macos-aarch64-none"
+    else
+        run_install_cmd "create venv" uv venv "$VENV_DIR" --python "$PYTHON_VERSION"
+    fi
 fi
 
 # Mark the freshly-created venv as Studio-owned so a partial install can be
@@ -1561,6 +1571,18 @@ if [ -z "$_USER_PYTHON" ] && [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ]; then
     _info=$(_inspect_venv)
     _VENV_ARCH=${_info%% *}
     _PY_VER=${_info##* }
+    # If the interpreter could not be executed (an x86_64 venv python on a Mac
+    # without Rosetta installed), the probe above yields an empty arch. Fall
+    # back to reading the binary's Mach-O arch statically so the x86_64
+    # recreate below still triggers instead of letting uv fail later.
+    if [ -z "$_VENV_ARCH" ] && [ -x "$VENV_DIR/bin/python" ]; then
+        _archs=$(lipo -archs "$VENV_DIR/bin/python" 2>/dev/null \
+            || file "$VENV_DIR/bin/python" 2>/dev/null)
+        case "$_archs" in
+            *arm64*)  _VENV_ARCH=arm64 ;;
+            *x86_64*) _VENV_ARCH=x86_64 ;;
+        esac
+    fi
 
     if [ "$_VENV_ARCH" = "x86_64" ]; then
         echo "  WARNING: venv was created with an x86_64 (Rosetta) Python on Apple Silicon."
