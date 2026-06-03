@@ -17,7 +17,7 @@ import warnings
 from pathlib import Path
 
 import pytest
-from datasets import Dataset
+
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -121,16 +121,14 @@ def make_auto_validating_collator(check_dataset_for_missing_videos):
 
 
 def _make_video_dataset(*video_paths):
-    return Dataset.from_list(
-        [
-            {"messages": [{"role": "user", "content": [{"type": "video", "video": p}]}]}
-            for p in video_paths
-        ]
-    )
+    return [
+        {"messages": [{"role": "user", "content": [{"type": "video", "video": p}]}]}
+        for p in video_paths
+    ]
 
 
 def _batch(*video_paths):
-    return list(_make_video_dataset(*video_paths))
+    return _make_video_dataset(*video_paths)
 
 
 # ── Tests: check_dataset_for_missing_videos ───────────────────────────────────
@@ -451,7 +449,7 @@ def test_windows_style_absolute_path_not_mistaken_for_scheme(
 def test_iterable_dataset_warns_and_skips(check_dataset_for_missing_videos):
     """Passing a streaming IterableDataset must warn and return [] without
     exhausting the iterator."""
-    from datasets import IterableDataset
+    IterableDataset = pytest.importorskip("datasets", reason="real datasets package required").IterableDataset
 
     def gen():
         for p in ("/nonexistent/a.mp4", "/nonexistent/b.mp4"):
