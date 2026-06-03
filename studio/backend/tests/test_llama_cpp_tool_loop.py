@@ -292,3 +292,201 @@ def test_repeat_render_html_nudge_is_not_user_visible_error(monkeypatch):
     assert "Error" not in repeat_message
     assert "already called for this response" not in repeat_message
     assert "limitation" not in repeat_message.lower()
+
+
+def test_render_html_success_does_not_reprompt_render_html_intent(monkeypatch):
+    """After render_html succeeds, do not force another render_html call.
+
+    The post-tool model pass can say it will use render_html again without
+    emitting a tool call. That should be accepted as a final model mistake,
+    not turned into repeated internal re-prompts after the artifact already
+    exists.
+    """
+
+    first_stream = [
+        _sse(
+            {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "call_first",
+                        "type": "function",
+                        "function": {
+                            "name": "render_html",
+                            "arguments": json.dumps(
+                                {
+                                    "code": "<html><body>first</body></html>",
+                                    "title": "First",
+                                }
+                            ),
+                        },
+                    }
+                ]
+            }
+        ),
+        _done(),
+    ]
+    post_tool_stream = [
+        _sse({"content": "I will now use render_html again."}),
+        _done(),
+    ]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [first_stream, post_tool_stream], payloads)
+
+    calls: list[tuple[str, dict]] = []
+
+    def fake_execute_tool(name, arguments, **_kwargs):
+        calls.append((name, arguments))
+        return "Rendered HTML artifact: First."
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "render_html",
+                "description": "Render HTML.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"code": {"type": "string"}},
+                    "required": ["code"],
+                },
+            },
+        }
+    ]
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "Make a red square."}],
+            tools = tools,
+            max_tool_iterations = 1,
+        )
+    )
+
+    assert len(payloads) == 2
+    assert len(calls) == 1
+    assert any(
+        event.get("type") == "content"
+        and event.get("text") == "I will now use render_html again."
+        for event in events
+    )
+
+
+def test_internal_reprompt_attempts_do_not_duplicate_visible_text(monkeypatch):
+    """No-tool re-prompt attempts should not concatenate into the UI."""
+
+    streams = [
+        [_sse({"content": "I will use render_html now."}), _done()],
+        [_sse({"content": "Understood. I will use render_html now."}), _done()],
+        [_sse({"content": "Understood. I will use render_html now."}), _done()],
+        [_sse({"content": "Understood. I will use render_html now."}), _done()],
+    ]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, streams, payloads)
+
+    def fake_execute_tool(name, arguments, **_kwargs):
+        raise AssertionError(f"unexpected tool execution: {name} {arguments}")
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "render_html",
+                "description": "Render HTML.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"code": {"type": "string"}},
+                    "required": ["code"],
+                },
+            },
+        }
+    ]
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "Make a red square."}],
+            tools = tools,
+            max_tool_iterations = 1,
+        )
+    )
+
+    content_texts = [
+        event.get("text", "") for event in events if event.get("type") == "content"
+    ]
+    assert content_texts == ["I will use render_html now."]
+    assert len(payloads) == 4
+
+
+def test_reprompted_tool_call_still_streams_final_answer(monkeypatch):
+    """Suppression ends once a forced re-prompt actually calls a tool."""
+
+    streams = [
+        [_sse({"content": "I will use render_html now."}), _done()],
+        [
+            _sse(
+                {
+                    "tool_calls": [
+                        {
+                            "index": 0,
+                            "id": "call_forced",
+                            "type": "function",
+                            "function": {
+                                "name": "render_html",
+                                "arguments": json.dumps(
+                                    {
+                                        "code": "<html><body>forced</body></html>",
+                                        "title": "Forced",
+                                    }
+                                ),
+                            },
+                        }
+                    ]
+                }
+            ),
+            _done(),
+        ],
+        [_sse({"content": "Final note after tool."}), _done()],
+    ]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, streams, payloads)
+
+    calls: list[tuple[str, dict]] = []
+
+    def fake_execute_tool(name, arguments, **_kwargs):
+        calls.append((name, arguments))
+        return "Rendered HTML artifact: Forced."
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "render_html",
+                "description": "Render HTML.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"code": {"type": "string"}},
+                    "required": ["code"],
+                },
+            },
+        }
+    ]
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "Make a red square."}],
+            tools = tools,
+            max_tool_iterations = 1,
+        )
+    )
+
+    assert len(calls) == 1
+    content_texts = [
+        event.get("text", "") for event in events if event.get("type") == "content"
+    ]
+    assert content_texts == ["I will use render_html now.", "Final note after tool."]
+    assert len(payloads) == 3

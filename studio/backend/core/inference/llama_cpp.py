@@ -4706,6 +4706,7 @@ class LlamaCppBackend:
                 _stream_done = False
                 _last_emitted = ""
                 provisional_render_html_tool_call_ids = set()
+                _suppress_visible_output = _forced_tool_call_pending
 
                 stream_timeout = httpx.Timeout(
                     connect = 10,
@@ -4748,19 +4749,21 @@ class LlamaCppBackend:
                                     if detect_state == _S_STREAMING and in_thinking:
                                         if has_content_tokens:
                                             cumulative_display += "</think>"
-                                            yield {
-                                                "type": "content",
-                                                "text": _strip_tool_markup(
-                                                    cumulative_display,
-                                                    final = True,
-                                                ),
-                                            }
+                                            if not _suppress_visible_output:
+                                                yield {
+                                                    "type": "content",
+                                                    "text": _strip_tool_markup(
+                                                        cumulative_display,
+                                                        final = True,
+                                                    ),
+                                                }
                                         else:
                                             cumulative_display = reasoning_accum
-                                            yield {
-                                                "type": "content",
-                                                "text": cumulative_display,
-                                            }
+                                            if not _suppress_visible_output:
+                                                yield {
+                                                    "type": "content",
+                                                    "text": cumulative_display,
+                                                }
                                     _stream_done = True
                                     break  # exit inner while
                                 if not line.startswith("data: "):
@@ -4861,10 +4864,11 @@ class LlamaCppBackend:
                                                 cumulative_display += "<think>"
                                                 in_thinking = True
                                             cumulative_display += reasoning
-                                            yield {
-                                                "type": "content",
-                                                "text": cumulative_display,
-                                            }
+                                            if not _suppress_visible_output:
+                                                yield {
+                                                    "type": "content",
+                                                    "text": cumulative_display,
+                                                }
 
                                     # ── Content tokens ──
                                     token = delta.get("content", "")
@@ -4885,10 +4889,11 @@ class LlamaCppBackend:
                                             )
                                             if len(cleaned) > len(_last_emitted):
                                                 _last_emitted = cleaned
-                                                yield {
-                                                    "type": "content",
-                                                    "text": cleaned,
-                                                }
+                                                if not _suppress_visible_output:
+                                                    yield {
+                                                        "type": "content",
+                                                        "text": cleaned,
+                                                    }
 
                                         elif detect_state == _S_BUFFERING:
                                             content_buffer += token
@@ -4923,10 +4928,11 @@ class LlamaCppBackend:
                                                 )
                                                 if len(cleaned) > len(_last_emitted):
                                                     _last_emitted = cleaned
-                                                    yield {
-                                                        "type": "content",
-                                                        "text": cleaned,
-                                                    }
+                                                    if not _suppress_visible_output:
+                                                        yield {
+                                                            "type": "content",
+                                                            "text": cleaned,
+                                                        }
                                                 detect_state = _S_DRAINING
                                             elif (
                                                 is_prefix
@@ -4951,10 +4957,11 @@ class LlamaCppBackend:
                                                 )
                                                 if len(cleaned) > len(_last_emitted):
                                                     _last_emitted = cleaned
-                                                    yield {
-                                                        "type": "content",
-                                                        "text": cleaned,
-                                                    }
+                                                    if not _suppress_visible_output:
+                                                        yield {
+                                                            "type": "content",
+                                                            "text": cleaned,
+                                                        }
 
                                 except json.JSONDecodeError:
                                     logger.debug(
@@ -4981,23 +4988,25 @@ class LlamaCppBackend:
                                 cumulative_display += reasoning_accum
                                 cumulative_display += "</think>"
                             cumulative_display += content_buffer
-                            yield {
-                                "type": "content",
-                                "text": _strip_tool_markup(
-                                    cumulative_display,
-                                    final = True,
-                                ),
-                            }
+                            if not _suppress_visible_output:
+                                yield {
+                                    "type": "content",
+                                    "text": _strip_tool_markup(
+                                        cumulative_display,
+                                        final = True,
+                                    ),
+                                }
                         elif reasoning_accum and not has_content_tokens:
                             # Reasoning-only response (no content tokens):
                             # show reasoning as plain text, matching
                             # the final streaming pass behavior for
                             # models that put everything in reasoning.
                             cumulative_display = reasoning_accum
-                            yield {
-                                "type": "content",
-                                "text": cumulative_display,
-                            }
+                            if not _suppress_visible_output:
+                                yield {
+                                    "type": "content",
+                                    "text": cumulative_display,
+                                }
                     else:
                         return
 
@@ -5027,8 +5036,16 @@ class LlamaCppBackend:
                         _stripped = content_accum.strip()
                         if not _stripped:
                             _stripped = reasoning_accum.strip()
+                        _render_html_already_done_intent = (
+                            _render_html_succeeded
+                            and re.search(
+                                r"(?i)\brender[_\s-]?html\b",
+                                _stripped,
+                            )
+                        )
                         if (
                             tools
+                            and not _render_html_already_done_intent
                             and _reprompt_count < _MAX_REPROMPTS
                             and 0 < len(_stripped) < _REPROMPT_MAX_CHARS
                             and _INTENT_SIGNAL.search(_stripped)
