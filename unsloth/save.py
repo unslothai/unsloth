@@ -1082,6 +1082,63 @@ def get_executable(executables):
     return None
 
 
+def _finalize_gguf_file_list(
+    all_saved_locations,
+    initial_files,
+    quantization_method,
+    first_conversion,
+    is_vlm,
+    quants_created,
+):
+    """Compute the final ordered GGUF file list and which intermediates to delete.
+
+    Pure (no filesystem side effects): returns ``(final_locations, files_to_delete)``.
+    The caller is responsible for unlinking ``files_to_delete`` from disk.
+
+    Layout assumptions:
+    - ``initial_files`` is ``[text_part(s)..., mmproj]`` for VLMs (mmproj last) and
+      ``[text_part(s)...]`` for text models. It may hold multiple text shards.
+    - ``all_saved_locations`` starts as a copy of ``initial_files`` with the quantized
+      outputs appended after it.
+
+    Ordering guarantees consumed by the call site:
+    - index 0 is always a runnable text model (a quant, or the kept full-precision
+      file) — used for the Ollama Modelfile / llama-cli example.
+    - for VLMs, index -1 is always the mmproj file — used for the ``--mmproj`` flag.
+    """
+    locations = list(all_saved_locations)
+    files_to_delete = []
+    if not quants_created:
+        return locations, files_to_delete
+
+    if first_conversion not in quantization_method:
+        # The first_conversion (e.g. bf16) file was only a quantization intermediate,
+        # not a requested output: drop every text shard from the list and mark it for
+        # deletion. mmproj (if present) is a final output and is always kept.
+        n_text = (len(initial_files) - 1) if is_vlm else len(initial_files)
+        for text_part in initial_files[:n_text]:
+            locations.remove(text_part)
+            files_to_delete.append(text_part)
+    elif is_vlm:
+        # first_conversion IS a requested output and this is a VLM. Rebuild as
+        # [mmproj, text_parts_reversed, quants] so the trailing reverse() below yields
+        # [quants_reversed, text_parts_in_original_order, mmproj]. The double reversal
+        # of the text parts restores their original shard order; quants end up in
+        # reverse iteration order (only index 0 is consumed, so this is harmless).
+        # Generalises the single-text-shard case to multi-shard text outputs.
+        n_text = len(initial_files) - 1
+        text_parts = locations[:n_text]
+        mmproj_file = locations[n_text]
+        quants = locations[len(initial_files):]
+        locations = [mmproj_file] + list(reversed(text_parts)) + quants
+
+    # Reverse so mmproj lands at index -1 (VLMs) and the last-appended quant lands at
+    # index 0. For text models with the full-precision file kept, that file moves to
+    # index -1 and a quant takes index 0.
+    locations.reverse()
+    return locations, files_to_delete
+
+
 def save_to_gguf(
     model_name: str,
     model_type: str,
@@ -1348,31 +1405,16 @@ def save_to_gguf(
                             f"Error: {e}"
                         )
         print("Unsloth: Model files cleanup...")
-        if quants_created:
-            if first_conversion not in quantization_method:
-                # Remove all text intermediates from the returned list AND disk.
-                # For sharded outputs there may be multiple text shards; mmproj
-                # (if present) stays — it is not part of the text parts slice.
-                n_text = (len(initial_files) - 1) if is_vlm else len(initial_files)
-                for text_part in initial_files[:n_text]:
-                    all_saved_locations.remove(text_part)
-                    Path(text_part).unlink(missing_ok = True)
-            elif is_vlm:
-                # VLM case: initial_files = [text_part(s)..., mmproj], with quants
-                # appended after. For the trailing reverse() to yield the desired
-                # [quants_desc, text_parts_in_order, mmproj] we rebuild the list
-                # as [mmproj, text_parts_reversed, quants]. This generalises the
-                # non-sharded case (one text part) to multi-shard text outputs.
-                n_text = len(initial_files) - 1
-                text_parts = all_saved_locations[:n_text]
-                mmproj_file = all_saved_locations[n_text]
-                quants = all_saved_locations[len(initial_files) :]
-                all_saved_locations[:] = (
-                    [mmproj_file] + list(reversed(text_parts)) + quants
-                )
-
-            # flip the list to get [text_model, mmproj] order. for text models stays the same.
-            all_saved_locations.reverse()
+        all_saved_locations, files_to_delete = _finalize_gguf_file_list(
+            all_saved_locations = all_saved_locations,
+            initial_files = initial_files,
+            quantization_method = quantization_method,
+            first_conversion = first_conversion,
+            is_vlm = is_vlm,
+            quants_created = quants_created,
+        )
+        for text_part in files_to_delete:
+            Path(text_part).unlink(missing_ok = True)
     else:
         print("Unsloth: GPT-OSS model - skipping additional quantizations")
 
