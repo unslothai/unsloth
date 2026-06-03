@@ -163,7 +163,9 @@ PublishedLlamaArtifact = _mod.PublishedLlamaArtifact
 PublishedReleaseBundle = _mod.PublishedReleaseBundle
 
 
-def _rocm_bundle(gfx_family: str, mapped_targets: list[str]) -> "PublishedReleaseBundle":
+def _rocm_bundle(
+    gfx_family: str, mapped_targets: list[str]
+) -> "PublishedReleaseBundle":
     """A fork manifest bundle exposing a per-gfx linux-rocm artifact, so
     published_rocm_choice_for_host can match the host before the lemonade
     fallback is appended."""
@@ -208,9 +210,7 @@ def test_linux_attempts_include_fork_rocm_and_lemonade_for_rocm_host():
     # the fallback -- both must be present for a covered ROCm host.
     assert "published" in sources, f"fork ROCm bundle missing; got {sources}"
     assert "lemonade" in sources, f"lemonade ROCm fallback missing; got {sources}"
-    lemonade_attempt = next(
-        a for a in attempts if a.source_label == "lemonade"
-    )
+    lemonade_attempt = next(a for a in attempts if a.source_label == "lemonade")
     assert "gfx1151" in lemonade_attempt.name
 
 
