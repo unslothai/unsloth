@@ -176,64 +176,6 @@ _PINNED_MACOS_FALLBACK_TAG = "b9415"
 _PINNED_MACOS_LATEST_FLOOR = (26, 0)
 FORCE_COMPILE_DEFAULT_REF = os.environ.get("UNSLOTH_LLAMA_FORCE_COMPILE_REF", "master")
 
-# sm_103 (B300 / GB300 Blackwell Ultra) is not built natively but runs on the
-# bundled base compute_100 PTX, which the driver JIT-compiles forward to sm_103.
-# It is listed in every bundle that ships the sm_100 build (the "newer" and
-# "portable" classes) so those hosts get a prebuilt instead of a source compile.
-# This mirrors the producer manifest, which declares sm_103 for the same sm_100
-# bundles (package_bundle.py), so this linux-x64 filename path and the manifest
-# path used for arm64/Windows agree.
-DIRECT_LINUX_BUNDLE_PROFILES: dict[str, dict[str, Any]] = {
-    "cuda12-older": {
-        "runtime_line": "cuda12",
-        "coverage_class": "older",
-        "supported_sms": ["70", "75", "80", "86", "89"],
-        "min_sm": 70,
-        "max_sm": 89,
-        "rank": 10,
-    },
-    "cuda12-newer": {
-        "runtime_line": "cuda12",
-        "coverage_class": "newer",
-        "supported_sms": ["86", "89", "90", "100", "103", "120"],
-        "min_sm": 86,
-        "max_sm": 120,
-        "rank": 20,
-    },
-    "cuda12-portable": {
-        "runtime_line": "cuda12",
-        "coverage_class": "portable",
-        "supported_sms": ["70", "75", "80", "86", "89", "90", "100", "103", "120"],
-        "min_sm": 70,
-        "max_sm": 120,
-        "rank": 30,
-    },
-    "cuda13-older": {
-        "runtime_line": "cuda13",
-        "coverage_class": "older",
-        "supported_sms": ["75", "80", "86", "89"],
-        "min_sm": 75,
-        "max_sm": 89,
-        "rank": 40,
-    },
-    "cuda13-newer": {
-        "runtime_line": "cuda13",
-        "coverage_class": "newer",
-        "supported_sms": ["86", "89", "90", "100", "103", "120"],
-        "min_sm": 86,
-        "max_sm": 120,
-        "rank": 50,
-    },
-    "cuda13-portable": {
-        "runtime_line": "cuda13",
-        "coverage_class": "portable",
-        "supported_sms": ["75", "80", "86", "89", "90", "100", "103", "120"],
-        "min_sm": 75,
-        "max_sm": 120,
-        "rank": 60,
-    },
-}
-
 # Lowest CUDA major we ship prebuilts for, and the highest major we probe for
 # installed runtime libraries. Detection and runtime-line derivation are
 # generated per major so a new toolkit (cuda14, ...) needs no code change while
@@ -272,35 +214,6 @@ def _cuda_runtime_lines_for_major(major: int) -> list[str]:
     down to the minimum we ship. A driver runs its own major and any older one
     (backward compatibility)."""
     return [f"cuda{m}" for m in range(major, _MIN_CUDA_MAJOR - 1, -1)]
-
-
-def _resolve_linux_bundle_profile(bundle_profile: str) -> "dict[str, Any] | None":
-    """Profile (runtime line + sm coverage) for a linux-x64-cuda<major>-<class>
-    bundle. Known majors use their published coverage; an unknown future major
-    reuses the newest known major's coverage for the same class as a forward
-    default, with the post-build GPU smoke test as the backstop."""
-    known = DIRECT_LINUX_BUNDLE_PROFILES.get(bundle_profile)
-    if known is not None:
-        return known
-    m = re.fullmatch(
-        r"cuda(?P<major>\d+)-(?P<klass>older|newer|portable)", bundle_profile
-    )
-    if not m:
-        return None
-    base_key = max(
-        (
-            k
-            for k, v in DIRECT_LINUX_BUNDLE_PROFILES.items()
-            if v["coverage_class"] == m.group("klass")
-        ),
-        key = lambda k: int(re.match(r"cuda(\d+)-", k).group(1)),
-        default = None,
-    )
-    if base_key is None:
-        return None
-    profile = dict(DIRECT_LINUX_BUNDLE_PROFILES[base_key])
-    profile["runtime_line"] = f"cuda{m.group('major')}"
-    return profile
 
 
 @dataclass
@@ -1317,198 +1230,6 @@ def synthetic_checksums_for_release(
     )
 
 
-def parse_direct_linux_release_bundle(
-    repo: str, release: dict[str, Any]
-) -> PublishedReleaseBundle | None:
-    release_tag = release.get("tag_name")
-    if not isinstance(release_tag, str) or not release_tag:
-        return None
-
-    assets = release_asset_map(release)
-    artifacts: list[PublishedLlamaArtifact] = []
-    inferred_labels: list[str] = []
-
-    linux_asset_re = re.compile(
-        r"^app-(?P<label>.+)-(?P<target>linux-x64(?:-cpu)?"
-        r"|linux-x64-cuda\d+-(?:older|newer|portable)"
-        r"|linux-x64-rocm-gfx[0-9a-zA-Z]+)\.tar\.gz$"
-    )
-    for asset_name in sorted(assets):
-        match = linux_asset_re.fullmatch(asset_name)
-        if not match:
-            continue
-        inferred_labels.append(match.group("label"))
-        target = match.group("target")
-        if target in {"linux-x64", "linux-x64-cpu"}:
-            artifacts.append(
-                PublishedLlamaArtifact(
-                    asset_name = asset_name,
-                    install_kind = "linux-cpu",
-                    runtime_line = None,
-                    coverage_class = None,
-                    supported_sms = [],
-                    min_sm = None,
-                    max_sm = None,
-                    bundle_profile = None,
-                    rank = 1000,
-                )
-            )
-            continue
-
-        if target.startswith("linux-x64-rocm-"):
-            gfx_family = target.removeprefix("linux-x64-rocm-")
-            artifacts.append(
-                PublishedLlamaArtifact(
-                    asset_name = asset_name,
-                    install_kind = "linux-rocm",
-                    runtime_line = None,
-                    coverage_class = None,
-                    supported_sms = [],
-                    min_sm = None,
-                    max_sm = None,
-                    bundle_profile = None,
-                    rank = 1000,
-                    gfx_target = gfx_family,
-                    mapped_targets = _GFX_TARGET_MEMBERS.get(gfx_family, [gfx_family]),
-                )
-            )
-            continue
-
-        bundle_profile = target.removeprefix("linux-x64-")
-        profile = _resolve_linux_bundle_profile(bundle_profile)
-        if profile is None:
-            continue
-        artifacts.append(
-            PublishedLlamaArtifact(
-                asset_name = asset_name,
-                install_kind = "linux-cuda",
-                runtime_line = str(profile["runtime_line"]),
-                coverage_class = str(profile["coverage_class"]),
-                supported_sms = [str(value) for value in profile["supported_sms"]],
-                min_sm = int(profile["min_sm"]),
-                max_sm = int(profile["max_sm"]),
-                bundle_profile = bundle_profile,
-                rank = int(profile["rank"]),
-            )
-        )
-
-    if not artifacts:
-        return None
-
-    upstream_tag = (
-        release_tag
-        if is_release_tag_like(release_tag)
-        else inferred_labels[0]
-        if len(set(inferred_labels)) == 1 and inferred_labels
-        else release_tag
-    )
-    selection_log = [
-        f"published_release: repo={repo}",
-        f"published_release: tag={release_tag}",
-        f"published_release: upstream_tag={upstream_tag}",
-        "published_release: direct_asset_scan=linux",
-    ]
-    return PublishedReleaseBundle(
-        repo = repo,
-        release_tag = release_tag,
-        upstream_tag = upstream_tag,
-        assets = assets,
-        manifest_asset_name = DEFAULT_PUBLISHED_MANIFEST_ASSET,
-        artifacts = artifacts,
-        selection_log = selection_log,
-    )
-
-
-def direct_linux_release_plan(
-    release: dict[str, Any],
-    host: HostInfo,
-    repo: str,
-    requested_tag: str,
-) -> InstallReleasePlan | None:
-    bundle = parse_direct_linux_release_bundle(repo, release)
-    if bundle is None:
-        return None
-    if not direct_release_matches_request(
-        release_tag = bundle.release_tag,
-        llama_tag = bundle.upstream_tag,
-        requested_tag = requested_tag,
-    ):
-        return None
-
-    attempts: list[AssetChoice] = []
-    if host.has_usable_nvidia:
-        # Prefer the cudart major Studio loads at runtime (torch's bundled
-        # libcudart), not the newest detected on disk. Without this a stray
-        # cuda13 runtime outranks the torch cuda12 the binary links against.
-        torch_preference = detect_torch_cuda_runtime_preference(host)
-        selection = linux_cuda_choice_from_release(
-            host,
-            bundle,
-            preferred_runtime_line = torch_preference.runtime_line,
-            selection_preamble = torch_preference.selection_log,
-        )
-        if selection is not None:
-            attempts.extend(selection.attempts)
-    if host.has_rocm and not host.has_usable_nvidia:
-        # Per-GPU lemonade prebuilts ship the ROCm runtime libs alongside
-        # llama.cpp, so they install cleanly even on hosts (e.g. gfx1151
-        # Strix Halo) that the upstream combined-ROCm tarball doesn't cover.
-        # The "ubuntu" label is lemonade's asset naming convention only --
-        # the binary is a manylinux-style glibc build that runs on Arch,
-        # Fedora, openSUSE, etc. as long as the host glibc is recent enough.
-        # Do NOT append the CPU asset for ROCm-only hosts: if lemonade fails
-        # validation we want validate_prebuilt_attempts to raise PrebuiltFallback
-        # so the caller triggers the HIP source build, not silently install a
-        # CPU-only binary.
-        # Prefer the fork's own per-gfx ROCm bundle (hash-approved, ships the
-        # full ROCm runtime) and fall back to the external lemonade prebuilt.
-        published_rocm = published_rocm_choice_for_host(bundle, host, "linux-rocm")
-        if published_rocm is not None:
-            attempts.append(published_rocm)
-        lemonade_choice = resolve_lemonade_rocm_choice(
-            host, "ubuntu", "linux-rocm", llama_tag = requested_tag
-        )
-        if lemonade_choice is not None:
-            attempts.append(lemonade_choice)
-    else:
-        cpu_choice = published_asset_choice_for_kind(bundle, "linux-cpu")
-        if cpu_choice is not None:
-            attempts.append(cpu_choice)
-    if not attempts:
-        raise PrebuiltFallback("no compatible Linux prebuilt asset was found")
-    approved_checksums = synthetic_checksums_for_release(
-        repo,
-        bundle.release_tag,
-        bundle.upstream_tag,
-    )
-    resolved_upstream_tag = bundle.upstream_tag
-    if DEFAULT_PUBLISHED_SHA256_ASSET in bundle.assets and not is_release_tag_like(
-        bundle.upstream_tag
-    ):
-        approved_checksums = load_approved_release_checksums(repo, bundle.release_tag)
-        # Require exact source provenance for branch/pull/commit releases.
-        # Mirrors validated_checksums_for_bundle so incomplete metadata
-        # fails closed instead of degrading to the legacy branch-as-tag
-        # source hydration path that this PR is meant to eliminate.
-        if (
-            not approved_checksums.source_commit
-            or exact_source_archive_hash(approved_checksums) is None
-            or source_clone_url_from_checksums(approved_checksums) is None
-        ):
-            raise PrebuiltFallback(
-                f"approved checksum asset {DEFAULT_PUBLISHED_SHA256_ASSET} for "
-                f"{repo}@{bundle.release_tag} did not contain exact source provenance"
-            )
-        attempts = apply_approved_hashes(attempts, approved_checksums)
-    return InstallReleasePlan(
-        requested_tag = requested_tag,
-        llama_tag = resolved_upstream_tag,
-        release_tag = bundle.release_tag,
-        attempts = attempts,
-        approved_checksums = approved_checksums,
-    )
-
-
 def direct_upstream_release_plan(
     release: dict[str, Any],
     host: HostInfo,
@@ -1697,12 +1418,10 @@ def resolve_simple_install_release_plans(
     max_release_fallbacks: int = DEFAULT_MAX_PREBUILT_RELEASE_FALLBACKS,
 ) -> tuple[str, list[InstallReleasePlan]]:
     repo = published_repo or DEFAULT_PUBLISHED_REPO
-    # Fork linux-x64 (CUDA + ROCm + CPU) uses the fast filename path below. The
-    # fork's other bundles -- arm64 CUDA, Windows CUDA, per-gfx ROCm, macOS --
-    # have GPU/arch coverage that can't be reconstructed from filenames, so they
-    # take the manifest-reading branch of this same resolver (reads
-    # llama-prebuilt-manifest.json). Upstream (ggml-org) always uses filenames.
-    if repo == DEFAULT_PUBLISHED_REPO and not (host.is_linux and host.is_x86_64):
+    # The fork (unslothai) ships a manifest describing every bundle's GPU/arch
+    # coverage, so all fork hosts select from it. Upstream (ggml-org) ships no
+    # manifest and is selected by asset filename in the loop below.
+    if repo == DEFAULT_PUBLISHED_REPO:
         return _fork_manifest_release_plans(
             llama_tag,
             host,
@@ -1732,12 +1451,7 @@ def resolve_simple_install_release_plans(
         )
         for release in releases:
             try:
-                if host.is_linux and repo == DEFAULT_PUBLISHED_REPO:
-                    plan = direct_linux_release_plan(release, host, repo, requested_tag)
-                else:
-                    plan = direct_upstream_release_plan(
-                        release, host, repo, requested_tag
-                    )
+                plan = direct_upstream_release_plan(release, host, repo, requested_tag)
                 if plan is None:
                     continue
             except PrebuiltFallback as exc:
@@ -3917,19 +3631,6 @@ _LEMONADE_GFX_FAMILIES: list[tuple[str, str]] = [
     ("gfx110", "gfx110X"),
     ("gfx103", "gfx103X"),
 ]
-
-# Concrete gfx archs each umbrella family bundle was actually compiled for
-# (mirrors the producer's ROCM_TARGET_MAP). Used to populate mapped_targets for
-# simple-path ROCm artifacts, which are parsed from filenames and can't read the
-# manifest. Matching on this -- not the family prefix -- prevents serving a
-# bundle to an in-generation-but-unbuilt arch (e.g. gfx1033).
-_GFX_TARGET_MEMBERS: dict[str, list[str]] = {
-    "gfx1151": ["gfx1151"],
-    "gfx1150": ["gfx1150"],
-    "gfx120X": ["gfx1200", "gfx1201"],
-    "gfx110X": ["gfx1100", "gfx1101", "gfx1102", "gfx1103"],
-    "gfx103X": ["gfx1030", "gfx1031", "gfx1032", "gfx1034"],
-}
 
 
 def _lemonade_gfx_family(gfx_id: str) -> str | None:
@@ -6180,6 +5881,49 @@ def resolve_install_attempts(
     return requested_tag, plan.llama_tag, plan.attempts, plan.approved_checksums
 
 
+def _linux_published_attempts(
+    host: HostInfo, bundle: PublishedReleaseBundle, requested_tag: str
+) -> list[AssetChoice]:
+    """Build the install attempts for a fork Linux host from a manifest-described
+    bundle: CUDA (with a CPU fallback), per-gfx ROCm (with a lemonade fallback),
+    or CPU. Same selection the upstream filename path used, just sourced from the
+    manifest instead of reconstructed from asset names."""
+    attempts: list[AssetChoice] = []
+    if host.has_usable_nvidia:
+        # Prefer the cudart major Studio loads at runtime (torch's bundled
+        # libcudart), not the newest detected on disk. Without this a stray
+        # cuda13 runtime outranks the torch cuda12 the binary links against.
+        torch_preference = detect_torch_cuda_runtime_preference(host)
+        selection = linux_cuda_choice_from_release(
+            host,
+            bundle,
+            preferred_runtime_line = torch_preference.runtime_line,
+            selection_preamble = torch_preference.selection_log,
+        )
+        if selection is not None:
+            attempts.extend(selection.attempts)
+    if host.has_rocm and not host.has_usable_nvidia:
+        # Prefer the fork's own per-gfx ROCm bundle (hash-approved, ships the
+        # full ROCm runtime) and fall back to the external lemonade prebuilt.
+        # Do NOT append the CPU asset for ROCm-only hosts: if lemonade fails
+        # validation we want validate_prebuilt_attempts to raise PrebuiltFallback
+        # so the caller triggers the HIP source build, not silently install a
+        # CPU-only binary.
+        published_rocm = published_rocm_choice_for_host(bundle, host, "linux-rocm")
+        if published_rocm is not None:
+            attempts.append(published_rocm)
+        lemonade_choice = resolve_lemonade_rocm_choice(
+            host, "ubuntu", "linux-rocm", llama_tag = requested_tag
+        )
+        if lemonade_choice is not None:
+            attempts.append(lemonade_choice)
+    else:
+        cpu_choice = published_asset_choice_for_kind(bundle, "linux-cpu")
+        if cpu_choice is not None:
+            attempts.append(cpu_choice)
+    return attempts
+
+
 def _fork_manifest_release_plans(
     llama_tag: str,
     host: HostInfo,
@@ -6217,14 +5961,19 @@ def _fork_manifest_release_plans(
         checksums = resolved_release.checksums
         resolved_tag = bundle.upstream_tag
         try:
-            if host.is_linux and host.has_usable_nvidia:
-                linux_cuda_selection = resolve_linux_cuda_choice(host, bundle)
-                attempts = apply_approved_hashes(
-                    linux_cuda_selection.attempts, checksums
-                )
+            if host.is_linux:
+                linux_attempts = _linux_published_attempts(host, bundle, requested_tag)
+                if not linux_attempts:
+                    raise PrebuiltFallback(
+                        "no compatible Linux prebuilt asset was found"
+                    )
+                attempts = apply_approved_hashes(linux_attempts, checksums)
                 if not attempts:
-                    raise PrebuiltFallback("no compatible Linux CUDA asset was found")
-                log_lines(linux_cuda_selection.selection_log)
+                    raise PrebuiltFallback(
+                        "no compatible Linux prebuilt asset was found"
+                    )
+                if attempts[0].selection_log:
+                    log_lines(attempts[0].selection_log)
             else:
                 attempts = resolve_release_asset_choice(
                     host,
