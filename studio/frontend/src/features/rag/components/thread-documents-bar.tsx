@@ -53,13 +53,17 @@ export function ThreadDocumentsBar({ threadId }: { threadId: string | null }) {
   const ragEnabled = useChatRuntimeStore((s) => s.ragEnabled);
   const ragAvailable = useRagToolAvailable();
   const ragSource = useChatRuntimeStore((s) => s.ragSource);
-  const setActiveThreadId = useChatRuntimeStore((s) => s.setActiveThreadId);
   const aui = useAui();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // A fresh chat has no thread id until the first message. Materialize one on
   // demand so docs can attach before sending; the first message reuses it (see
-  // append() in runtime-provider), keeping docs with the conversation.
+  // append() in runtime-provider), keeping docs with the conversation. We track
+  // the id locally only and deliberately do NOT push it to the global
+  // activeThreadId here: in a project, that flips ProjectLanding into its
+  // pendingNewThreadId branch and swaps the composer out for a fresh <Thread>,
+  // remounting this bar mid-upload and dropping the just-attached chips.
+  // append() sets activeThreadId when the first message is actually sent.
   const [materializedId, setMaterializedId] = useState<string | null>(null);
   const effectiveThreadId = threadId ?? materializedId;
   useEffect(() => {
@@ -91,7 +95,6 @@ export function ThreadDocumentsBar({ threadId }: { threadId: string | null }) {
       .initialize()
       .then(({ remoteId }) => {
         setMaterializedId(remoteId);
-        setActiveThreadId(remoteId);
         return remoteId;
       })
       .catch(() => {
@@ -103,7 +106,7 @@ export function ThreadDocumentsBar({ threadId }: { threadId: string | null }) {
       });
     initPromiseRef.current = pending;
     return pending;
-  }, [aui, effectiveThreadId, setActiveThreadId]);
+  }, [aui, effectiveThreadId]);
 
   // Just open the picker (synchronously, so the click's user activation
   // survives). Deliberately do NOT materialize the thread here: that fires
