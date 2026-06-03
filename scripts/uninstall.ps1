@@ -414,6 +414,15 @@ function Uninstall-UnslothStudio {
         Write-Host "set to also remove that install tree, e.g.:"
         Write-Host "  `$env:UNSLOTH_STUDIO_HOME = 'C:\your\path'; irm https://raw.githubusercontent.com/unslothai/unsloth/main/scripts/uninstall.ps1 | iex"
     }
+
+    # A successful uninstall must report success. The WSL distro-probe loop above
+    # leaves $LASTEXITCODE set by the last `wsl -d <name> -- true` probe, and the
+    # candidate list intentionally includes distros that may not exist (their
+    # probes fail by design) -- so without this reset `& .\uninstall.ps1` would
+    # exit non-zero (255) even though every cleanup step succeeded. Set the var
+    # rather than calling `exit 0` so the `irm ... | iex` usage does not terminate
+    # the caller's shell.
+    $global:LASTEXITCODE = 0
 }
 
 Uninstall-UnslothStudio @args
