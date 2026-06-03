@@ -110,8 +110,9 @@ export function McpComposerButton({
   const [pendingUrl, setPendingUrl] = useState<string | null>(null);
   const [hintKey, setHintKey] = useState<string | null>(null);
 
-  // mcp_enabled only applies on the local tool-capable send path; grey out otherwise.
-  const usable = modelLoaded && supportsTools;
+  // Grey out only when a loaded model lacks tool support; with no model yet MCP
+  // can still be pre-selected, matching the other composer tools.
+  const usable = !modelLoaded || supportsTools;
 
   const refresh = useCallback(async () => {
     try {

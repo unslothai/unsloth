@@ -577,11 +577,6 @@ const Composer: FC<{
   );
   const artifactsEnabled = useChatRuntimeStore((s) => s.artifactsEnabled);
   const mcpEnabledForChat = useChatRuntimeStore((s) => s.mcpEnabledForChat);
-  // Tool pills only surface once a model is loaded, so persisted toggles stay
-  // hidden on a fresh composer (matching the just-ejected state).
-  const modelLoaded = useChatRuntimeStore(
-    (s) => !!s.params.checkpoint && !s.modelLoading,
-  );
   // With more than 4 pills showing, collapse them to icons only to cut clutter.
   // Search and Code always show; Images, Canvas and MCP are conditional.
   const pillsCompact =
@@ -642,17 +637,17 @@ const Composer: FC<{
   const referenceThreadId = threadId ?? activeThreadId ?? null;
   const hasSendableContent =
     composerText.trim().length > 0 || hasAttachments || hasPendingAudio;
-  // Two-row layout shows once the input wraps to a second line or a tool is on.
+  // Two-row layout shows once the input wraps or a tool is on. Tools pre-select
+  // before a model loads, so an active toggle expands the composer either way.
   const composerExpanded =
     isMultiline ||
     hasAttachments ||
     hasPendingAudio ||
-    (modelLoaded &&
-      (toolsEnabled ||
-        codeToolsEnabled ||
-        imageToolsEnabled ||
-        artifactsEnabled ||
-        mcpEnabledForChat));
+    toolsEnabled ||
+    codeToolsEnabled ||
+    imageToolsEnabled ||
+    artifactsEnabled ||
+    mcpEnabledForChat;
   // react-textarea-autosize re-measures only on value change or window resize,
   // not on the width swap from expanding, so it keeps the taller height and
   // leaves a stray blank row. Nudge a resize whenever the input width changes.
@@ -1643,6 +1638,8 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
   const codeDisabled =
     modelLoaded && !(supportsTools || supportsBuiltinCodeExecution);
   const imageDisabled = !modelLoaded;
+  // Like Search/Code: disabled only when a loaded model lacks tool support.
+  const mcpDisabled = modelLoaded && !supportsTools;
   // Three most recently updated projects for the quick-access submenu.
   const { projects } = useChatProjects();
   const recentProjects = [...projects]
@@ -1765,13 +1762,19 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
           {artifactsEnabled ? <CheckIcon className="ml-auto" /> : null}
         </DropdownMenuItem>
         <DropdownMenuItem
-          disabled={!supportsTools}
-          className={mcpEnabledForChat ? "text-primary font-medium" : undefined}
+          disabled={mcpDisabled}
+          className={
+            mcpEnabledForChat && !mcpDisabled
+              ? "text-primary font-medium"
+              : undefined
+          }
           onSelect={() => setMcpEnabledForChat(!mcpEnabledForChat)}
         >
           <HugeiconsIcon icon={McpServerIcon} strokeWidth={2} />
           MCP
-          {mcpEnabledForChat ? <CheckIcon className="ml-auto" /> : null}
+          {mcpEnabledForChat && !mcpDisabled ? (
+            <CheckIcon className="ml-auto" />
+          ) : null}
         </DropdownMenuItem>
         {/* RAG hidden temporarily */}
         <DropdownMenuItem onSelect={() => startCompare()}>
