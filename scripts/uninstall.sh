@@ -258,14 +258,16 @@ case "$_os" in
             echo "Removing WSL Windows-side shortcuts..."
             # install.sh creates 'Unsloth Studio.lnk' on the Windows Desktop and
             # Start Menu Programs folder via powershell.exe; mirror that path.
-            if command -v powershell.exe >/dev/null 2>&1; then
+            # Prefer powershell.exe (matches each shortcut by TARGET=wsl.exe, so a
+            # native install's "Unsloth Studio.lnk" is never touched). We must test
+            # it can actually EXECUTE: `command -v` succeeds even when WSL interop
+            # is OFF (the .exe is on PATH via drvfs but fails with "Exec format
+            # error"), which is common on systemd-enabled WSL distros.
+            _ps_ran=0
+            if command -v powershell.exe >/dev/null 2>&1 && \
+               powershell.exe -NoProfile -Command "exit 0" >/dev/null 2>&1; then
+                _ps_ran=1
                 # shellcheck disable=SC2016
-                # $env:APPDATA etc. are PowerShell expansions; intentionally literal at shell level.
-                # Remove every "Unsloth Studio*.lnk" whose target launches WSL
-                # (wsl.exe), covering both the legacy "Unsloth Studio.lnk" name and
-                # the current "Unsloth Studio (WSL - <distro>).lnk". We match on the
-                # target, NOT the name, so a native-Windows install's shortcut
-                # (which launches wscript.exe) is never removed by the WSL uninstall.
                 powershell.exe -NoProfile -Command '
                     $dirs = @(
                         [Environment]::GetFolderPath("Desktop"),
@@ -283,6 +285,28 @@ case "$_os" in
                             } catch { }
                         }
                     }' >/dev/null 2>&1 || true
+            fi
+            # Fallback when powershell.exe can't run (WSL interop disabled): remove
+            # the WSL .lnk files directly via drvfs. The name "Unsloth Studio (WSL...)
+            # .lnk" is WSL-install-specific, so this never matches a native-Windows
+            # install's "Unsloth Studio.lnk".
+            if [ "$_ps_ran" = "0" ]; then
+                for _drive in /mnt/c /mnt/d /mnt/e; do
+                    [ -d "$_drive/Users" ] || continue
+                    for _udir in "$_drive"/Users/*; do
+                        [ -d "$_udir" ] || continue
+                        for _scdir in \
+                            "$_udir/Desktop" \
+                            "$_udir/OneDrive/Desktop" \
+                            "$_udir"/OneDrive*/Desktop \
+                            "$_udir/AppData/Roaming/Microsoft/Windows/Start Menu/Programs"; do
+                            [ -d "$_scdir" ] || continue
+                            for _lnk in "$_scdir"/"Unsloth Studio (WSL"*.lnk; do
+                                [ -e "$_lnk" ] && rm -f "$_lnk" 2>/dev/null && echo "  removed: $_lnk" || true
+                            done
+                        done
+                    done
+                done
             fi
             # ── ROCm-on-WSL config (install_rocm_wsl_strixhalo.sh) ──
             # Remove Unsloth's own ROCDXG config (the env it persisted). The

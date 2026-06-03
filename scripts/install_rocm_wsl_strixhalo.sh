@@ -127,11 +127,21 @@ fi
 # librocdxg make-install), it blocks the symlink -- repair that here.
 _real="$(ls -d /opt/rocm-* 2>/dev/null | sort -V | tail -1 || true)"
 if [ -n "$_real" ] && [ ! -L /opt/rocm ] && [ -d /opt/rocm ]; then
-    note "Repairing /opt/rocm (was a real dir) -> $_real"
-    # preserve anything previously dropped under the stub (e.g. librocdxg)
-    $SUDO cp -an /opt/rocm/. "$_real"/ 2>/dev/null || true
-    $SUDO rm -rf /opt/rocm
-    $SUDO ln -s "$_real" /opt/rocm
+    # /opt/rocm is a real directory blocking the canonical symlink. ONLY treat it
+    # as a removable stray stub (e.g. a librocdxg make-install that dropped just
+    # lib/ + share/) if it is NOT a real ROCm install -- a real one has
+    # bin/rocminfo / bin/hipcc / .info/version. This guards against ever deleting
+    # a user's pre-existing ROCm (amdgpu-install / manual install that lays down a
+    # real /opt/rocm). And even for a stub we MOVE IT ASIDE, never rm -rf, so a
+    # wrong guess can never lose data.
+    if [ -e /opt/rocm/bin/rocminfo ] || [ -e /opt/rocm/bin/hipcc ] || [ -e /opt/rocm/.info/version ]; then
+        note "/opt/rocm is a real ROCm install -- leaving it untouched (will install librocdxg into it)."
+    else
+        note "Moving stray /opt/rocm stub aside -> $_real (not deleting it)"
+        $SUDO cp -an /opt/rocm/. "$_real"/ 2>/dev/null || true
+        $SUDO mv /opt/rocm "/opt/rocm.unsloth-stub-bak.$(date +%s)" 2>/dev/null || true
+        [ -e /opt/rocm ] || $SUDO ln -s "$_real" /opt/rocm
+    fi
 elif [ -n "$_real" ] && [ ! -e /opt/rocm ]; then
     $SUDO ln -s "$_real" /opt/rocm
 fi

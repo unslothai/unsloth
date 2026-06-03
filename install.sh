@@ -1255,6 +1255,15 @@ WSLPS1_EOF
             fi
             rm -f "$_css_ps1_tmp"
         fi
+        # If WSL interop is disabled (common on systemd distros: powershell.exe
+        # fails with "Exec format error"), the shortcut couldn't be created. Don't
+        # fail silently -- the generic "Created" line below only prints on success,
+        # so tell the user how to launch and how to re-enable shortcuts.
+        if [ "$_css_created" -ne 1 ]; then
+            substep "Couldn't create the Windows shortcut (WSL interop may be disabled)." "$C_WARN"
+            substep "  Launch Studio from Windows:  wsl -d \"$_css_distro\" -- bash -lc 'unsloth studio'" "$C_WARN"
+            substep "  (re-enable shortcuts: turn WSL interop back on, e.g. run 'wsl --shutdown' then reopen WSL.)" "$C_WARN"
+        fi
     fi
 
     if [ "$_css_created" -eq 1 ]; then
