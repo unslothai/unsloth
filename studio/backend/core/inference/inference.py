@@ -44,21 +44,23 @@ logger = get_logger(__name__)
 
 # Model type values from transformers config (model.config.model_type)
 # This is more reliable than name matching as suggested by reviewer.
-_SSM_MODEL_TYPES = frozenset({
-    "mamba",
-    "mamba2",
-    "falcon_mamba",
-    "falcon_h1",
-    "jamba",
-    "zamba",
-    "zamba2",
-    "nemotron_h",
-    "nemotron_nas",
-    "lfm",
-    "lfm2",
-    "granite_hybrid",
-    "granitemoehybrid",
-})
+_SSM_MODEL_TYPES = frozenset(
+    {
+        "mamba",
+        "mamba2",
+        "falcon_mamba",
+        "falcon_h1",
+        "jamba",
+        "zamba",
+        "zamba2",
+        "nemotron_h",
+        "nemotron_nas",
+        "lfm",
+        "lfm2",
+        "granite_hybrid",
+        "granitemoehybrid",
+    }
+)
 
 # Fallback substrings for name-based detection (when config is unavailable)
 _SSM_MODEL_SUBSTRINGS = (
@@ -132,7 +134,7 @@ def _is_ssm_by_config(model) -> bool:
     return False
 
 
-def _is_ssm_model(model_name: str, model=None) -> bool:
+def _is_ssm_model(model_name: str, model = None) -> bool:
     """Check if a model is a State Space Model (SSM) architecture.
 
     SSM architectures (Mamba, LFM, Falcon-H1, NemotronH, Jamba) use recurrent
