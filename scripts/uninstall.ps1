@@ -337,9 +337,8 @@ function Uninstall-UnslothStudio {
     } catch { }
 
     # ── Windows-on-Arm WSL-fallback artifacts ──
-    # The ARM64+NVIDIA fallback installs Studio INSIDE WSL and drops a native shim + launcher under
-    # %LOCALAPPDATA%\Unsloth (note: "Unsloth", not "Unsloth Studio") with a PATH entry, while the real
-    # install lives in the WSL distro(s). The native cleanup above misses all of that -- handle it here.
+    # The ARM64+NVIDIA fallback puts Studio inside WSL plus a native shim + launcher under
+    # %LOCALAPPDATA%\Unsloth (not "Unsloth Studio") with a PATH entry -- all missed by the cleanup above.
     _Step "Removing WSL-fallback artifacts (shim, launcher, PATH entry, WSL install)..."
     $unslothDir = if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA "Unsloth" } else { $null }
     if ($unslothDir) {
@@ -366,26 +365,13 @@ function Uninstall-UnslothStudio {
     # Remove the Studio install inside each WSL distro (the real GPU install + any CUDA llama.cpp build).
     if (Get-Command wsl.exe -ErrorAction SilentlyContinue) {
         try {
-            # `wsl --list` emits UTF-16 that PowerShell frequently mis-parses (yielding an
-            # EMPTY list -> the cleanup silently skipped, leaving the WSL install behind).
-            # So probe a candidate set by exit code instead ('' = the default distro),
-            # which is encoding-proof. In the cleanup, rm runs FIRST: `pkill -f "<pattern>"`
-            # matches this very bash -lc (its argv contains the pattern) and would SIGKILL
-            # the shell before a trailing rm -- so remove files first (guaranteed), then
-            # best-effort kill via fuser by port (does not self-match) + pkill.
-            # Also remove the `unsloth` launcher symlink install.sh drops at
-            # ~/.local/bin/unsloth -> <venv>/bin/unsloth. rm -rf of ~/.unsloth
-            # above deletes its target but leaves the symlink dangling, so the
-            # `unsloth` command still resolves on PATH after an uninstall.
-            # The pkill patterns use the [x]-regex self-exclusion trick: this very
-            # `bash -lc <cmd>` shell's own argv contains the literal pattern text, so a
-            # plain `pkill -f unsloth_studio` would match (and SIGKILL) the shell itself
-            # before the next command runs -- which is why rm goes first AND why the second
-            # pkill (llama-server, a dynamic port not covered by `fuser -k 8888`) never
-            # fired. Writing the pattern as '[u]nsloth_studio' means the shell's argv holds
-            # "[u]nsloth_studio" (no literal "unsloth_studio" substring) so it no longer
-            # self-matches, while real target processes (cmdline contains "unsloth_studio")
-            # still match. Same for '[l]lama-server'.
+            # `wsl --list` emits UTF-16 PowerShell mis-parses (empty list -> cleanup skipped), so probe a
+            # candidate set by exit code instead ('' = default distro), which is encoding-proof.
+            # rm runs FIRST (guaranteed) since the kills could SIGKILL this shell. Also rm the dangling
+            # ~/.local/bin/unsloth symlink (its target under ~/.unsloth is gone but the link still resolves
+            # on PATH). pkill patterns use the [x]-regex self-exclusion trick: '[u]nsloth_studio' keeps the
+            # shell's own argv from matching (no literal "unsloth_studio" substring) while real processes
+            # still match. Same for '[l]lama-server' (a dynamic port not covered by fuser -k 8888).
             $_clean = 'rm -rf /root/.unsloth /home/*/.unsloth /root/llama-cuda /root/provision_llama_cuda.sh /root/llama_cuda_build.log 2>/dev/null; rm -f /root/.local/bin/unsloth /home/*/.local/bin/unsloth 2>/dev/null; fuser -k 8888/tcp 2>/dev/null; pkill -9 -f ''[u]nsloth_studio'' 2>/dev/null; pkill -9 -f ''[l]lama-server'' 2>/dev/null; true'
             $_cands = @('', 'Ubuntu', 'Ubuntu-24.04', 'Ubuntu-22.04', 'Debian')
             if ($env:UNSLOTH_WSL_DISTRO) { $_cands = @($env:UNSLOTH_WSL_DISTRO) + $_cands }
@@ -415,13 +401,9 @@ function Uninstall-UnslothStudio {
         Write-Host "  `$env:UNSLOTH_STUDIO_HOME = 'C:\your\path'; irm https://raw.githubusercontent.com/unslothai/unsloth/main/scripts/uninstall.ps1 | iex"
     }
 
-    # A successful uninstall must report success. The WSL distro-probe loop above
-    # leaves $LASTEXITCODE set by the last `wsl -d <name> -- true` probe, and the
-    # candidate list intentionally includes distros that may not exist (their
-    # probes fail by design) -- so without this reset `& .\uninstall.ps1` would
-    # exit non-zero (255) even though every cleanup step succeeded. Set the var
-    # rather than calling `exit 0` so the `irm ... | iex` usage does not terminate
-    # the caller's shell.
+    # The distro-probe loop leaves $LASTEXITCODE from its last probe, which fails by design for
+    # absent distros -- reset it so a successful uninstall exits 0. Set the var rather than `exit 0`
+    # so `irm ... | iex` doesn't terminate the caller's shell.
     $global:LASTEXITCODE = 0
 }
 

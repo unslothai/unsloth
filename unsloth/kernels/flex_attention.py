@@ -27,9 +27,8 @@ torch_compile_options = {
 
 
 def _flex_is_dgx_spark():
-    # Mirror of unsloth.models._utils.is_dgx_spark(), inlined to avoid importing
-    # `unsloth.models` from this low-level `kernels` module (circular at import).
-    # DGX Spark / N1X = aarch64 + NVIDIA CUDA + a Spark device-name token.
+    # Inlined copy of _utils.is_dgx_spark() to avoid a circular import.
+    # Spark = aarch64 + NVIDIA CUDA + a Spark device-name token.
     _force = os.environ.get("UNSLOTH_FORCE_DGX_SPARK")
     if _force == "1":
         return True
@@ -51,9 +50,8 @@ def _flex_is_dgx_spark():
         return False
 
 
-# DGX Spark / N1X has 48 SMs (< inductor's 68-SM is_big_gpu threshold), so
-# max_autotune_gemm is already skipped; dropping max_autotune only saves the
-# wasted compile-time search -- identical kernels, no accuracy/throughput change.
+# Spark's 48 SMs are below inductor's 68-SM is_big_gpu threshold, so max_autotune
+# is already skipped; disabling it just avoids a wasted compile-time search.
 if _flex_is_dgx_spark():
     torch_compile_options["max_autotune"] = False
 

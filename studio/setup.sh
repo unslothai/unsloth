@@ -756,11 +756,10 @@ LLAMA_CPP_DIR="$UNSLOTH_HOME/llama.cpp"
 LLAMA_SERVER_BIN="$LLAMA_CPP_DIR/build/bin/llama-server"
 _NEED_LLAMA_SOURCE_BUILD=false
 _LLAMA_CPP_DEGRADED=false
-# Distinct from _LLAMA_CPP_DEGRADED: on WSL2 aarch64+NVIDIA with no nvcc yet, the
-# CPU source build is skipped because install.ps1 builds the real CUDA server in
-# the BACKGROUND. There is temporarily no llama-server, but that is a SUCCESS
-# (CUDA build in progress), NOT a degraded/failed install -- so it must not trip
-# the arm64 CPU-prebuilt last-resort or the install-failure exit 1.
+# Distinct from _LLAMA_CPP_DEGRADED: on WSL2 aarch64+NVIDIA with no nvcc, the CPU
+# build is skipped because install.ps1 builds the real CUDA server in the background.
+# A temporarily-absent server here is success, not failure, so it must not trip the
+# arm64 CPU-prebuilt last-resort or the exit 1.
 _LLAMA_CPP_DEFERRED=false
 _LLAMA_FORCE_COMPILE="${UNSLOTH_LLAMA_FORCE_COMPILE:-0}"
 _REQUESTED_LLAMA_TAG="${UNSLOTH_LLAMA_TAG:-${_DEFAULT_LLAMA_TAG}}"
@@ -934,26 +933,12 @@ if [ "$_NEED_LLAMA_SOURCE_BUILD" = true ] && \
 fi
 
 # ── WSL2 aarch64 + NVIDIA, no nvcc yet: defer to the background CUDA build ──
-# On Windows-on-ARM + NVIDIA (DGX Spark / N1X "RTX Spark"), install.ps1 routes
-# through WSL2 and, after this install finishes, launches provision_llama_cuda.sh
-# in the BACKGROUND (installs CUDA 13.3 + gcc-14, builds the real sm_121 CUDA
-# llama-server into ~/.unsloth/llama.cpp, replacing whatever is here). On a fresh
-# WSL distro there is no CUDA toolkit (nvcc) yet, so the section-9 source build
-# below can only produce a CPU-only server ("building (CPU, CUDA driver found but
-# nvcc missing)") -- which is SLOW and immediately thrown away by that background
-# CUDA build. So skip the source build entirely on this exact path: the
-# background CUDA provision is the sole builder, and the CPU build is pure waste.
-#
-# Strictly gated. ALL must hold:
-#   - running under WSL                         (grep microsoft /proc/version)
-#   - aarch64/arm64                             ($_HOST_MACHINE)
-#   - an NVIDIA GPU is present                  (nvidia-smi lists a GPU)
-#   - nvcc is MISSING                           (no nvcc on PATH, none under /usr/local/cuda*)
-#   - the CUDA provision is NOT opted out       (UNSLOTH_NO_LLAMA_CUDA != 1)
-#   - user did not force a compile / pin a PR   (_LLAMA_FORCE_COMPILE != 1, no _LLAMA_PR)
-# If nvcc IS already present we fall through to section 9 and build CUDA directly.
-# If UNSLOTH_NO_LLAMA_CUDA=1 the background build never runs, so we KEEP the CPU
-# source build as the user's only llama-server (do not defer).
+# On Windows-on-ARM + NVIDIA, install.ps1 builds the real CUDA llama-server in the
+# background after this install. Without nvcc yet the section-9 build can only make a
+# slow CPU server that the background build throws away, so skip it on this exact path.
+# Gated: WSL + aarch64/arm64 + NVIDIA GPU + nvcc missing + CUDA not opted out
+# (UNSLOTH_NO_LLAMA_CUDA!=1) + no forced compile / PR pin. If nvcc is present we fall
+# through to section 9; if opted out we keep the CPU build as the only server.
 if [ "$_NEED_LLAMA_SOURCE_BUILD" = true ] \
         && [ "$_LLAMA_FORCE_COMPILE" != "1" ] \
         && [ -z "$_LLAMA_PR" ] \
@@ -967,9 +952,8 @@ if [ "$_NEED_LLAMA_SOURCE_BUILD" = true ] \
     step "llama.cpp" "GGUF engine: CUDA build running in background (WSL aarch64 + NVIDIA)" "$C_WARN"
     substep "skipping slow CPU build; the background CUDA llama.cpp will provide the server"
     substep "(opt out / keep CPU build with UNSLOTH_NO_LLAMA_CUDA=1)"
-    # Sole builder is install.ps1's background provision_llama_cuda.sh. Do NOT set
-    # _LLAMA_CPP_DEGRADED (that would trigger the arm64 CPU-prebuilt last resort
-    # and the install-failure exit 1); use the distinct DEFERRED state instead.
+    # Use DEFERRED, not DEGRADED: DEGRADED would trigger the CPU-prebuilt last
+    # resort + exit 1, but install.ps1's background build is the intended builder.
     _NEED_LLAMA_SOURCE_BUILD=false
     _LLAMA_CPP_DEFERRED=true
 fi
@@ -1211,13 +1195,10 @@ else
                 else
                     CMAKE_ARGS="$CMAKE_ARGS -DGGML_CUDA=ON"
 
-                    # glibc >= 2.41 added rsqrt()/rsqrtf() (gated by __GLIBC_USE(IEC_60559_FUNCS_EXT_C23),
-                    # which g++ enables via _GNU_SOURCE). CUDA Toolkits < 13.3 declare these in
-                    # <crt/math_functions.h> without a matching exception specifier -> every .cu fails
-                    # "exception specification is incompatible", and the GPU build silently drops to CPU.
-                    # -allow-unsupported-compiler does NOT fix this (header clash, not the GNU-version
-                    # #error); no host gcc avoids it. NVIDIA fixed it in CUDA 13.3 (_NV_RSQRT_SPECIFIER).
-                    # Diagnostic only: never changes flags / never aborts -> cannot regress any platform.
+                    # glibc >= 2.41 vs CUDA < 13.3: rsqrt/rsqrtf header clash makes every .cu
+                    # fail "exception specification is incompatible" and the GPU build drops to
+                    # CPU. No workaround but CUDA >= 13.3. Diagnostic only: never changes flags
+                    # or aborts, so it cannot regress any platform.
                     _GLIBC_VER="$(getconf GNU_LIBC_VERSION 2>/dev/null | awk '{print $2}')" || _GLIBC_VER=""
                     if [ -n "$_GLIBC_VER" ]; then
                         _GLIBC_MAJ="${_GLIBC_VER%%.*}"; _GLIBC_MIN="${_GLIBC_VER#*.}"; _GLIBC_MIN="${_GLIBC_MIN%%.*}"
@@ -1442,26 +1423,19 @@ fi  # end _SKIP_GGUF_BUILD check
 
 # ── aarch64 + NVIDIA (DGX Spark / GB10 / N1X "RTX Spark"): provision a CUDA
 #    llama.cpp when the source build above could not (no CUDA toolkit found) ──
-# There is no published aarch64+CUDA llama.cpp prebuilt, so these hosts always
-# source-build for the GPU above. But that build only emits a CUDA llama-server
-# when a CUDA toolkit (nvcc) is already present; on a fresh Spark that ships only
-# the driver + nvidia-smi, the build silently falls back to CPU. The Windows path
-# closes this exact gap from its WSL2 fallback by invoking provision_llama_cuda.sh
-# (installs CUDA 13.3 + gcc-14, then builds a CUDA-linked server). Mirror that here
-# so native-Linux Spark users get the same GGUF *inference* robustness, shared by
-# every Linux install instead of bolted onto the Windows installer.
+# No aarch64+CUDA prebuilt exists, and the source build above only emits a CUDA
+# server when nvcc is already present (a fresh Spark ships only driver + nvidia-smi,
+# so it falls back to CPU). The Windows/WSL path closes this gap via
+# provision_llama_cuda.sh; mirror it here so native-Linux Spark gets the same.
 #
-# Strictly gated + additive: only fires on Linux aarch64/arm64 WITH an NVIDIA GPU
-# AND when we do NOT already have a CUDA-linked llama-server. x86_64 (CUDA prebuilt
-# or its own source build), ROCm, macOS/Metal, CPU-only ARM, and any ARM host that
-# already built a CUDA server are byte-for-byte unaffected. Opt out with
-# UNSLOTH_NO_LLAMA_CUDA=1. Best-effort: never aborts setup (provision script always
-# exits 0; failures leave the prior CPU/degraded state for the fallback below).
-# CUDA-capable in either build layout: old monolithic (libggml-cuda is a direct
-# ldd dependency) or current split build (CUDA is a dlopen-ed backend, libggml-cuda.so*,
-# beside the binary -- ldd will NOT list it). Checking only ldd is a false negative on
-# current llama.cpp and would force a needless rebuild; a CPU-only build has no
-# libggml-cuda.so at all, so its presence beside the binary is the reliable signal.
+# Gated + additive: only on Linux aarch64/arm64 + NVIDIA GPU with no CUDA server
+# yet (opt out via UNSLOTH_NO_LLAMA_CUDA=1). x86_64, ROCm, Metal, CPU-only ARM, and
+# ARM hosts that already built CUDA are unaffected. Best-effort: provision always
+# exits 0; on failure the prior CPU/degraded state stands for the fallback below.
+# CUDA-capable in two layouts: old monolithic (libggml-cuda is a direct ldd dep) or
+# split build (dlopen-ed backend libggml-cuda.so* beside the binary, not in ldd). ldd
+# alone false-negatives; a CPU-only build has no libggml-cuda.so, so its presence is
+# the reliable signal.
 _have_cuda_llama_server() {
     [ -x "$LLAMA_SERVER_BIN" ] || return 1
     ldd "$LLAMA_SERVER_BIN" 2>/dev/null | grep -qi 'libggml-cuda' && return 0
@@ -1475,15 +1449,11 @@ if [ "$_HOST_SYSTEM" = "Linux" ] \
         && command -v nvidia-smi >/dev/null 2>&1 \
         && nvidia-smi -L 2>/dev/null | awk '/^GPU[[:space:]]+[0-9]+:/{found=1} END{exit !found}' \
         && ! _have_cuda_llama_server; then
-    # NOTE: WSL2 is intentionally excluded above (grep microsoft /proc/version) --
-    # under WSL the Windows installer (install.ps1) provisions the CUDA llama.cpp
-    # in the BACKGROUND after setup completes, so doing it here too would (a) run a
-    # heavy build in the FOREGROUND during install and (b) duplicate that work.
-    # This block is for NATIVE Linux (DGX Spark / GB10) only.
-    # Resolve provision_llama_cuda.sh: prefer the copy shipped beside setup.sh
-    # (packaged via studio/scripts/*.sh), then the local-dev repo, else fetch
-    # the pinned raw copy from GitHub (mirrors install.ps1's WSL fetch) so the
-    # normal `curl | sh` install works even on an older wheel without the script.
+    # WSL2 is excluded above: there install.ps1 runs this in the background after
+    # setup, so doing it here would duplicate the work in the foreground. Native
+    # Linux (DGX Spark / GB10) only.
+    # Resolve provision_llama_cuda.sh: copy beside setup.sh, then local-dev repo,
+    # else fetch from GitHub so `curl | sh` works on an older wheel without it.
     _PROV_SH=""
     if [ -f "$SCRIPT_DIR/scripts/provision_llama_cuda.sh" ]; then
         _PROV_SH="$SCRIPT_DIR/scripts/provision_llama_cuda.sh"
@@ -1499,9 +1469,8 @@ if [ "$_HOST_SYSTEM" = "Linux" ] \
     if [ -n "$_PROV_SH" ]; then
         step "llama.cpp" "aarch64 + NVIDIA: provisioning CUDA toolkit + building CUDA llama.cpp for GGUF inference..." "$C_WARN"
         substep "(opt out with UNSLOTH_NO_LLAMA_CUDA=1; lower load with UNSLOTH_LLAMA_BUILD_JOBS=N)"
-        # provision_llama_cuda.sh installs the toolkit + gcc-14 and builds into
-        # $LLAMA_CPP_DIR. It always exits 0; honor UNSLOTH_LLAMA_CPP_PATH so a
-        # custom STUDIO_HOME build lands in the same dir setup.sh validates.
+        # Builds into $LLAMA_CPP_DIR (via UNSLOTH_LLAMA_CPP_PATH so a custom
+        # STUDIO_HOME lands where setup.sh validates); always exits 0.
         UNSLOTH_LLAMA_CPP_PATH="$LLAMA_CPP_DIR" bash "$_PROV_SH" || true
         if _have_cuda_llama_server; then
             step "llama.cpp" "CUDA llama-server ready (aarch64 + NVIDIA)"

@@ -940,12 +940,9 @@ from transformers.modeling_utils import logger as transformers_logger
 
 
 # ---- NVIDIA DGX Spark (GB10) / N1X "RTX Spark" (Blackwell unified-memory) support ----
-# These Blackwell unified-memory (UMA) machines report different device names:
-# "NVIDIA GB10" on DGX Spark, "JMJWOA-Generic-GPU" on the pre-launch N1X laptop.
-# One shared detector so every Spark-specific workaround uses the same definition.
-# The aarch64 + CUDA gate makes this a strict no-op on x86_64 NVIDIA, AMD/ROCm,
-# Intel/XPU, Mac/MLX, and discrete aarch64 GPUs (GH200/GB200) -- those report
-# non-matching names and/or are not aarch64, so behaviour there is unchanged.
+# Shared detector for Spark-class UMA machines, which report varying device names
+# ("NVIDIA GB10" on DGX Spark, "JMJWOA-Generic-GPU" on the N1X laptop). The
+# aarch64 + CUDA gate keeps every Spark workaround a strict no-op elsewhere.
 _DGX_SPARK_DEVICE_TOKENS = ("GB10", "JMJWOA", "N1X", "DGX SPARK", "GB110")
 
 
@@ -1028,7 +1025,7 @@ def patch_dgx_spark_memory_config():
         return
     conf = os.environ.get("PYTORCH_CUDA_ALLOC_CONF", "")
     if "expandable_segments" in conf:
-        return  # user already configured it -- do not override
+        return  # respect user's setting
     os.environ["PYTORCH_CUDA_ALLOC_CONF"] = (
         conf + "," if conf else ""
     ) + "expandable_segments:True"
@@ -1686,12 +1683,8 @@ torch_compile_options = {
     "trace.enabled": UNSLOTH_COMPILE_DEBUG,
     "triton.cudagraphs": False,
 }
-# DGX Spark / N1X: this GPU has 48 SMs, below inductor's hardcoded 68-SM
-# `is_big_gpu` threshold, so `max_autotune_gemm` is already skipped by inductor
-# (the "Not enough SMs to use max_autotune_gemm mode" warning). Dropping
-# max_autotune on Spark only avoids the wasted compile-time autotuning search --
-# the produced Triton/inductor kernels are identical, so steady-state throughput
-# and accuracy are unchanged. Strict no-op off-Spark (gated by is_dgx_spark()).
+# Spark's 48 SMs are below inductor's 68-SM is_big_gpu threshold, so max_autotune
+# is already skipped; disabling it just avoids a wasted compile-time search.
 if is_dgx_spark():
     torch_compile_options["max_autotune"] = False
 
