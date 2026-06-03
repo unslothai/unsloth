@@ -64,7 +64,7 @@ export function ChatSearchDialog() {
     <CommandDialog
       open={isOpen}
       onOpenChange={setOpen}
-      className="corner-squircle top-[25%] w-[635px] max-w-[calc(100%-2rem)] gap-0 p-0 sm:max-w-[635px] border-0 ring-0 shadow-[0_10px_34px_rgba(0,0,0,0.12)] dark:border dark:border-border dark:ring-0 dark:shadow-none"
+      className="chat-search-surface corner-squircle top-[25%] w-[635px] max-w-[calc(100%-2rem)] gap-0 p-0 sm:max-w-[635px]"
       overlayClassName="bg-transparent"
     >
       <Command className="rounded-4xl p-0" filter={chatSearchFilter}>
@@ -87,7 +87,7 @@ export function ChatSearchDialog() {
             <HugeiconsIcon icon={Cancel01Icon} strokeWidth={2} className="size-4" />
           </button>
         </div>
-        <CommandList className="cmd-native-scrollbar max-h-[420px] p-1">
+        <CommandList className="cmd-native-scrollbar hover-scrollbar max-h-[420px] p-1">
           <CommandEmpty className="py-6 text-center text-xs text-muted-foreground">
             {loading
               ? "Loading…"
