@@ -214,16 +214,16 @@ export function useRagDocuments(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scopeKey]);
 
-  // Upload one file: optimistic chip -> POST -> swap to the real id. If the
-  // backend deduped to an existing document, drop the chip. `seenIds` holds
-  // ids present/added this batch.
+  // POST one file, then swap its already-shown optimistic chip (`tempId`) to the
+  // real id. If the backend deduped to an existing document, drop the chip.
+  // `seenIds` holds ids present/added this batch.
   const uploadOne = useCallback(
-    async (file: File, seenIds: Set<string>, activeScope: RagDocumentScope) => {
-      const tempId = `pending_${Math.random().toString(36).slice(2)}`;
-      setDocuments((rows) => [
-        ...rows,
-        { id: tempId, filename: file.name, status: "pending", progress: null },
-      ]);
+    async (
+      file: File,
+      seenIds: Set<string>,
+      activeScope: RagDocumentScope,
+      tempId: string,
+    ) => {
       try {
         const result =
           activeScope.type === "kb"
@@ -274,19 +274,54 @@ export function useRagDocuments(
       uploadInFlightRef.current = true;
       setUploading(true);
       try {
-        const resolved =
-          overrideScope instanceof Promise ? await overrideScope : overrideScope;
-        const activeScope = resolved ?? scope;
-        if (!activeScope) return;
-        const seenIds = new Set(documentsRef.current.map((d) => d.id));
+        // Show an optimistic chip per accepted file NOW, before awaiting the
+        // thread id. Materializing a new thread is a backend round-trip; gating
+        // the chips behind it makes a slow round-trip look like "nothing
+        // happened" on click. Dedup identical re-selections up front.
+        const fresh: Array<{ tempId: string; file: File }> = [];
         for (const file of Array.from(files)) {
-          // Skip an identical re-selection pre-upload; an edited same-name file
-          // still uploads.
           if (sigAttached(fileSignature(file))) {
             toast.info(`${file.name} is already indexed - skipping`);
             continue;
           }
-          await uploadOne(file, seenIds, activeScope);
+          fresh.push({
+            tempId: `pending_${Math.random().toString(36).slice(2)}`,
+            file,
+          });
+        }
+        if (fresh.length === 0) return;
+        setDocuments((rows) => [
+          ...rows,
+          ...fresh.map(({ tempId, file }) => ({
+            id: tempId,
+            filename: file.name,
+            status: "pending" as const,
+            progress: null,
+          })),
+        ]);
+
+        const resolved =
+          overrideScope instanceof Promise ? await overrideScope : overrideScope;
+        const activeScope = resolved ?? scope;
+        if (!activeScope) {
+          // Materialization failed: drop the optimistic chips and say so rather
+          // than leaving them stuck "pending" forever.
+          const tempIds = new Set(fresh.map((f) => f.tempId));
+          setDocuments((rows) => rows.filter((row) => !tempIds.has(row.id)));
+          toast.error("Couldn't attach documents", {
+            description: "Could not start a chat to attach them to.",
+          });
+          return;
+        }
+
+        // Dedup within the batch against real (non-pending) document ids.
+        const seenIds = new Set(
+          documentsRef.current
+            .filter((d) => !d.id.startsWith("pending_"))
+            .map((d) => d.id),
+        );
+        for (const { tempId, file } of fresh) {
+          await uploadOne(file, seenIds, activeScope, tempId);
         }
       } finally {
         setUploading(false);

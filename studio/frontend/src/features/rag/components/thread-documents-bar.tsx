@@ -105,14 +105,15 @@ export function ThreadDocumentsBar({ threadId }: { threadId: string | null }) {
     return pending;
   }, [aui, effectiveThreadId, setActiveThreadId]);
 
-  // Open the picker synchronously so the click's user activation survives;
-  // awaiting thread-id materialization first drops it and the browser blocks
-  // the open. The id is only needed to upload, so start materialization here
-  // and await it in onChange (the dialog outlives the init).
+  // Just open the picker (synchronously, so the click's user activation
+  // survives). Deliberately do NOT materialize the thread here: that fires
+  // setActiveThreadId while the native dialog sits open for seconds, which can
+  // switch/remount the composer and orphan this <input> so the eventual file
+  // selection lands on a detached node and silently uploads nothing. We
+  // materialize in onChange instead, once files are actually in hand.
   const handleAddDocs = useCallback(() => {
-    void ensureThreadId();
     fileInputRef.current?.click();
-  }, [ensureThreadId]);
+  }, []);
 
   // Show only when the RAG pill is effectively on: enabled AND a local
   // tool-capable model is loaded (matches the pill's disabled gate). Without
