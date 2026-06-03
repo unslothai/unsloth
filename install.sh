@@ -2064,7 +2064,8 @@ case "$TORCH_INDEX_URL" in
                 echo "  [WARN] Capping to ${_rdna2_rocm_tag} (torch ${_rdna2_torch_ver}) -- the last stable wheel." >&2
                 echo "" >&2
                 TORCH_INDEX_URL="${_pytorch_base}/${_rdna2_rocm_tag}"
-                TORCH_CONSTRAINT="torch>=2.4,<2.11.0"
+                # TORCH_CONSTRAINT keeps its default (torch>=2.4,<2.11.0) which
+                # covers both the rocm6.2 and rocm6.4 wheel ranges.
                 ;;
         esac
         ;;
