@@ -19,6 +19,8 @@ import structlog
 from loggers import get_logger
 import asyncio
 import threading
+from dataclasses import dataclass
+import inspect
 
 
 import re as _re
@@ -2439,6 +2441,456 @@ def _decode_diffusion_input_images(payload: DiffusionGenerateRequest) -> Optiona
     return decoded
 
 
+def _first_component(
+    payload: DiffusionLoadRequest,
+    *names: str,
+) -> Any:
+    if not payload.components:
+        return None
+    for name in names:
+        component = payload.components.get(name)
+        if component is not None:
+            return component
+    return None
+
+
+def _first_lora_adapter(payload: DiffusionLoadRequest) -> Any:
+    if not payload.adapters:
+        return None
+    for adapter in payload.adapters:
+        if adapter.type == "lora":
+            return adapter
+    return None
+
+
+def _runtime_offload_policy(payload: DiffusionLoadRequest) -> Optional[str]:
+    if payload.runtime and payload.runtime.offload_policy:
+        if payload.runtime.offload_policy == "auto":
+            return None
+        return payload.runtime.offload_policy
+    return payload.offload_policy
+
+
+def _runtime_torch_compile(payload: DiffusionLoadRequest) -> Optional[str]:
+    if payload.runtime and payload.runtime.torch_compile:
+        if payload.runtime.torch_compile == "auto":
+            return None
+        return payload.runtime.torch_compile
+    return None
+
+
+@dataclass(frozen = True)
+class _NormalizedDiffusionLoad:
+    repo_id: Optional[str]
+    gguf_filename: Optional[str]
+    transformer_gguf_repo: Optional[str]
+    transformer_gguf_filename: Optional[str]
+    transformer_quant: Optional[str]
+    base_repo: Optional[str]
+    text_encoder_gguf_repo: Optional[str]
+    text_encoder_gguf_filename: Optional[str]
+    text_encoder_gguf_component: Optional[str]
+    prompt_enhancer_gguf_repo: Optional[str]
+    prompt_enhancer_gguf_filename: Optional[str]
+    lora_repo: Optional[str]
+    lora_weight_name: Optional[str]
+    lora_adapter_name: Optional[str]
+    lora_scale: Optional[float]
+    lora_fuse: bool
+    family: Optional[str]
+    enable_model_cpu_offload: bool
+    offload_policy: Optional[str]
+    gguf_quantized_cpu_resident: Optional[bool]
+    gguf_pin_cpu_resident: Optional[bool]
+    safetensors_quantization: Optional[str]
+    safetensors_quantization_components: Optional[list[str]]
+    torch_compile: Optional[str]
+
+
+def _normalize_diffusion_load_request(
+    payload: DiffusionLoadRequest,
+) -> _NormalizedDiffusionLoad:
+    model = payload.model
+    transformer = _first_component(payload, "transformer", "denoiser", "diffusion")
+    text_encoder = _first_component(
+        payload,
+        "text_encoder",
+        "text_encoder_2",
+        "text_encoder_3",
+        "pe",
+    )
+    prompt_enhancer = _first_component(payload, "prompt_enhancer")
+    lora = _first_lora_adapter(payload)
+    runtime = payload.runtime
+
+    transformer_filename = payload.transformer_gguf_filename
+    transformer_repo = payload.transformer_gguf_repo
+    legacy_gguf_filename = payload.gguf_filename
+    if transformer is not None:
+        transformer_repo = transformer_repo or transformer.repo_id
+        transformer_filename = transformer_filename or transformer.filename
+        if legacy_gguf_filename is None and transformer.repo_id is None:
+            legacy_gguf_filename = transformer.filename
+
+    text_encoder_repo = payload.text_encoder_gguf_repo
+    text_encoder_filename = payload.text_encoder_gguf_filename
+    text_encoder_component = payload.text_encoder_gguf_component
+    if text_encoder is not None:
+        text_encoder_repo = text_encoder_repo or text_encoder.repo_id
+        text_encoder_filename = text_encoder_filename or text_encoder.filename
+        text_encoder_component = text_encoder_component or text_encoder.component
+
+    prompt_enhancer_repo = payload.prompt_enhancer_gguf_repo
+    prompt_enhancer_filename = payload.prompt_enhancer_gguf_filename
+    if prompt_enhancer is not None:
+        prompt_enhancer_repo = prompt_enhancer_repo or prompt_enhancer.repo_id
+        prompt_enhancer_filename = prompt_enhancer_filename or prompt_enhancer.filename
+
+    runtime_quant = runtime.safetensors_quantization if runtime is not None else None
+    runtime_components = (
+        runtime.safetensors_quantization_components if runtime is not None else None
+    )
+    return _NormalizedDiffusionLoad(
+        repo_id = payload.repo_id or (model.repo_id if model is not None else None),
+        gguf_filename = legacy_gguf_filename,
+        transformer_gguf_repo = transformer_repo,
+        transformer_gguf_filename = transformer_filename,
+        transformer_quant = payload.transformer_quant
+        or (transformer.quantization if transformer is not None else None),
+        base_repo = payload.base_repo or (model.base_repo if model is not None else None),
+        text_encoder_gguf_repo = text_encoder_repo,
+        text_encoder_gguf_filename = text_encoder_filename,
+        text_encoder_gguf_component = text_encoder_component,
+        prompt_enhancer_gguf_repo = prompt_enhancer_repo,
+        prompt_enhancer_gguf_filename = prompt_enhancer_filename,
+        lora_repo = payload.lora_repo or (lora.repo_id if lora is not None else None),
+        lora_weight_name = payload.lora_weight_name
+        or (lora.weight_name if lora is not None else None),
+        lora_adapter_name = payload.lora_adapter_name
+        or (lora.adapter_name if lora is not None else None),
+        lora_scale = payload.lora_scale if payload.lora_scale is not None else (
+            lora.scale if lora is not None else None
+        ),
+        lora_fuse = payload.lora_fuse or bool(lora.fuse if lora is not None else False),
+        family = payload.family or (model.family if model is not None else None),
+        enable_model_cpu_offload = (
+            runtime.enable_model_cpu_offload
+            if runtime is not None and runtime.enable_model_cpu_offload is not None
+            else payload.enable_model_cpu_offload
+        ),
+        offload_policy = _runtime_offload_policy(payload),
+        gguf_quantized_cpu_resident = (
+            runtime.gguf_quantized_cpu_resident
+            if runtime is not None and runtime.gguf_quantized_cpu_resident is not None
+            else payload.gguf_quantized_cpu_resident
+        ),
+        gguf_pin_cpu_resident = (
+            runtime.gguf_pin_cpu_resident
+            if runtime is not None and runtime.gguf_pin_cpu_resident is not None
+            else payload.gguf_pin_cpu_resident
+        ),
+        safetensors_quantization = (
+            payload.safetensors_quantization or runtime_quant
+        ),
+        safetensors_quantization_components = (
+            payload.safetensors_quantization_components or runtime_components
+        ),
+        torch_compile = _runtime_torch_compile(payload),
+    )
+
+
+def _prompt_from_inputs(inputs: Optional[list[Any]]) -> Optional[str]:
+    if not inputs:
+        return None
+    for item in inputs:
+        if item.type == "text" and item.role in (None, "prompt") and item.text:
+            text = item.text.strip()
+            if text:
+                return text
+    return None
+
+
+def _image_b64s_from_inputs(inputs: Optional[list[Any]]) -> list[str]:
+    if not inputs:
+        return []
+    return [
+        item.b64
+        for item in inputs
+        if item.type == "image"
+        and item.b64
+        and item.role not in ("output", "generated")
+    ]
+
+
+@dataclass(frozen = True)
+class _NormalizedImageGenerate:
+    prompt: str
+    negative_prompt: Optional[str]
+    input_images: Optional[list[Any]]
+    num_inference_steps: int
+    guidance_scale: float
+    width: int
+    height: int
+    seed: Optional[int]
+    warnings: list[str]
+
+
+def _normalize_diffusion_image_generate_request(
+    payload: DiffusionGenerateRequest,
+    defaults: dict[str, Any],
+) -> _NormalizedImageGenerate:
+    prompt = payload.prompt or _prompt_from_inputs(payload.inputs)
+    if not prompt:
+        raise HTTPException(status_code = 400, detail = "prompt is required")
+    params = payload.parameters
+    sampler = payload.sampler
+    requested_steps = (
+        params.num_inference_steps
+        if params is not None and params.num_inference_steps is not None
+        else (
+            payload.num_inference_steps
+            if payload.num_inference_steps is not None
+            else int(defaults["num_inference_steps"])
+        )
+    )
+    requested_guidance = (
+        sampler.guidance_scale
+        if sampler is not None and sampler.guidance_scale is not None
+        else (
+            sampler.true_cfg_scale
+            if sampler is not None and sampler.true_cfg_scale is not None
+            else (
+                params.guidance_scale
+                if params is not None and params.guidance_scale is not None
+                else (
+                    payload.guidance_scale
+                    if payload.guidance_scale is not None
+                    else float(defaults["guidance_scale"])
+                )
+            )
+        )
+    )
+    requested_width = (
+        params.width
+        if params is not None and params.width is not None
+        else (payload.width if payload.width is not None else int(defaults["width"]))
+    )
+    requested_height = (
+        params.height
+        if params is not None and params.height is not None
+        else (payload.height if payload.height is not None else int(defaults["height"]))
+    )
+    seed = (
+        params.seed
+        if params is not None and params.seed is not None
+        else payload.seed
+    )
+    input_b64s = _image_b64s_from_inputs(payload.inputs)
+    if input_b64s:
+        decode_payload = payload.model_copy(
+            update = {"image_b64": None, "images_b64": input_b64s}
+        )
+        input_images = _decode_diffusion_input_images(decode_payload)
+    else:
+        input_images = _decode_diffusion_input_images(payload)
+    return _NormalizedImageGenerate(
+        prompt = prompt,
+        negative_prompt = (
+            sampler.negative_prompt
+            if sampler is not None and sampler.negative_prompt is not None
+            else payload.negative_prompt
+        ),
+        input_images = input_images,
+        num_inference_steps = int(requested_steps),
+        guidance_scale = float(requested_guidance),
+        width = int(requested_width),
+        height = int(requested_height),
+        seed = seed,
+        warnings = [],
+    )
+
+
+@dataclass(frozen = True)
+class _NormalizedVideoGenerate:
+    prompt: str
+    negative_prompt: Optional[str]
+    num_inference_steps: int
+    guidance_scale: float
+    guidance_scale_2: Optional[float]
+    width: int
+    height: int
+    num_frames: Optional[int]
+    frame_rate: Optional[float]
+    seed: Optional[int]
+    warnings: list[str]
+
+
+def _normalize_diffusion_video_generate_request(
+    payload: DiffusionVideoGenerateRequest,
+    defaults: dict[str, Any],
+) -> _NormalizedVideoGenerate:
+    prompt = payload.prompt or _prompt_from_inputs(payload.inputs)
+    if not prompt:
+        raise HTTPException(status_code = 400, detail = "prompt is required")
+    params = payload.parameters
+    sampler = payload.sampler
+    requested_steps = (
+        params.num_inference_steps
+        if params is not None and params.num_inference_steps is not None
+        else (
+            payload.num_inference_steps
+            if payload.num_inference_steps is not None
+            else int(defaults["num_inference_steps"])
+        )
+    )
+    requested_guidance = (
+        sampler.guidance_scale
+        if sampler is not None and sampler.guidance_scale is not None
+        else (
+            params.guidance_scale
+            if params is not None and params.guidance_scale is not None
+            else (
+                payload.guidance_scale
+                if payload.guidance_scale is not None
+                else float(defaults["guidance_scale"])
+            )
+        )
+    )
+    requested_width = (
+        params.width
+        if params is not None and params.width is not None
+        else (payload.width if payload.width is not None else int(defaults["width"]))
+    )
+    requested_height = (
+        params.height
+        if params is not None and params.height is not None
+        else (payload.height if payload.height is not None else int(defaults["height"]))
+    )
+    return _NormalizedVideoGenerate(
+        prompt = prompt,
+        negative_prompt = (
+            sampler.negative_prompt
+            if sampler is not None and sampler.negative_prompt is not None
+            else payload.negative_prompt
+        ),
+        num_inference_steps = int(requested_steps),
+        guidance_scale = float(requested_guidance),
+        guidance_scale_2 = (
+            sampler.guidance_scale_2
+            if sampler is not None and sampler.guidance_scale_2 is not None
+            else payload.guidance_scale_2
+        ),
+        width = int(requested_width),
+        height = int(requested_height),
+        num_frames = (
+            params.num_frames
+            if params is not None and params.num_frames is not None
+            else payload.num_frames
+        ),
+        frame_rate = (
+            params.frame_rate
+            if params is not None and params.frame_rate is not None
+            else payload.frame_rate
+        ),
+        seed = (
+            params.seed
+            if params is not None and params.seed is not None
+            else payload.seed
+        ),
+        warnings = [],
+    )
+
+
+def _diffusion_capabilities(*, media_kind: str) -> dict[str, Any]:
+    backend = _get_diffusion_backend()
+    status = backend.status()
+    pipe = getattr(backend, "_pipe", None)
+    call_kwargs: list[str] = []
+    accepts_var_kwargs = False
+    if pipe is not None:
+        try:
+            signature = inspect.signature(pipe.__call__)
+            for name, parameter in signature.parameters.items():
+                if name == "self":
+                    continue
+                if parameter.kind == inspect.Parameter.VAR_KEYWORD:
+                    accepts_var_kwargs = True
+                    continue
+                if parameter.kind in (
+                    inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                    inspect.Parameter.KEYWORD_ONLY,
+                ):
+                    call_kwargs.append(name)
+        except (TypeError, ValueError):
+            call_kwargs = []
+            accepts_var_kwargs = False
+    families = [
+        family
+        for family in status.get("supported_families", [])
+        if family.get("media_kind", "image") == media_kind
+    ]
+    defaults: dict[str, Any] = {}
+    if status.get("is_loaded") and status.get("media_kind") == media_kind:
+        defaults = backend.generation_defaults()
+    elif families:
+        family = families[0]
+        defaults = {
+            "num_inference_steps": family.get("default_steps"),
+            "guidance_scale": family.get("default_guidance_scale"),
+            "width": family.get("default_width"),
+            "height": family.get("default_height"),
+            "num_frames": family.get("default_num_frames"),
+            "frame_rate": family.get("default_frame_rate"),
+        }
+    input_roles = ["prompt", "negative_prompt"]
+    if media_kind == "image":
+        input_roles.extend(["source", "reference", "mask"])
+        outputs = [{"type": "image", "formats": ["png"], "supports_multiple": True}]
+    else:
+        input_roles.extend(["init_frame", "conditioning_audio", "source_video"])
+        outputs = [{"type": "video", "formats": ["mp4"], "supports_multiple": False}]
+    return {
+        "api_version": "2026-06-03",
+        "media_kind": media_kind,
+        "is_loaded": status.get("is_loaded", False),
+        "family": status.get("family") if status.get("media_kind") == media_kind else None,
+        "pipeline_class": (
+            status.get("pipeline_class") if status.get("media_kind") == media_kind else None
+        ),
+        "tasks": (
+            ["text_to_image", "image_edit", "multi_image_edit", "layered_image"]
+            if media_kind == "image"
+            else ["text_to_video", "image_to_video", "video_to_video"]
+        ),
+        "inputs": {
+            "roles": input_roles,
+            "max_items": 16,
+            "accepted_types": (
+                ["text", "image"] if media_kind == "image" else ["text", "image", "audio", "video"]
+            ),
+        },
+        "outputs": outputs,
+        "parameters": {
+            "width": {"type": "int", "min": 64, "max": 2048, "multiple_of": 8, "default": defaults.get("width")},
+            "height": {"type": "int", "min": 64, "max": 2048, "multiple_of": 8, "default": defaults.get("height")},
+            "num_inference_steps": {"type": "int", "min": 1, "max": 200, "default": defaults.get("num_inference_steps")},
+            "guidance_scale": {"type": "float", "min": 0, "max": 20, "default": defaults.get("guidance_scale")},
+            "seed": {"type": "uint64_or_int64", "default": None},
+            "num_frames": {"type": "int", "min": 1, "max": 513, "default": defaults.get("num_frames")},
+            "frame_rate": {"type": "float", "min": 0, "max": 240, "default": defaults.get("frame_rate")},
+        },
+        "sampler": status.get("sampling_contract"),
+        "pipeline_signature": {
+            "call_kwargs": sorted(call_kwargs),
+            "accepts_var_kwargs": accepts_var_kwargs,
+        },
+        "runtime": status.get("optimization_options", {}),
+        "families": families,
+        "options_schema": {},
+        "warnings": [],
+    }
+
+
 @studio_router.post("/images/load")
 async def diffusion_load(
     payload: DiffusionLoadRequest,
@@ -2484,54 +2936,56 @@ async def diffusion_load(
         # boundary the chat load path uses so local-path repo_id /
         # base_repo cannot be probed without a frontend-issued grant.
         # Hub ids pass through.
-        planned_repo_id = payload.repo_id
-        planned_gguf_filename = payload.gguf_filename
-        planned_transformer_gguf_repo = payload.transformer_gguf_repo
-        planned_transformer_gguf_filename = payload.transformer_gguf_filename
-        planned_base_repo = payload.base_repo
-        planned_text_encoder_gguf_repo = payload.text_encoder_gguf_repo
-        planned_text_encoder_gguf_filename = payload.text_encoder_gguf_filename
-        planned_text_encoder_gguf_component = payload.text_encoder_gguf_component
-        planned_prompt_enhancer_gguf_repo = payload.prompt_enhancer_gguf_repo
-        planned_prompt_enhancer_gguf_filename = payload.prompt_enhancer_gguf_filename
-        planned_lora_repo = payload.lora_repo
-        planned_lora_weight_name = payload.lora_weight_name
-        planned_lora_adapter_name = payload.lora_adapter_name
-        planned_lora_scale = payload.lora_scale
-        planned_lora_fuse = payload.lora_fuse
-        planned_family = payload.family
-        planned_offload_policy = payload.offload_policy
-        planned_safetensors_quantization = payload.safetensors_quantization
+        normalized = _normalize_diffusion_load_request(payload)
+        planned_repo_id = normalized.repo_id
+        planned_gguf_filename = normalized.gguf_filename
+        planned_transformer_gguf_repo = normalized.transformer_gguf_repo
+        planned_transformer_gguf_filename = normalized.transformer_gguf_filename
+        planned_base_repo = normalized.base_repo
+        planned_text_encoder_gguf_repo = normalized.text_encoder_gguf_repo
+        planned_text_encoder_gguf_filename = normalized.text_encoder_gguf_filename
+        planned_text_encoder_gguf_component = normalized.text_encoder_gguf_component
+        planned_prompt_enhancer_gguf_repo = normalized.prompt_enhancer_gguf_repo
+        planned_prompt_enhancer_gguf_filename = normalized.prompt_enhancer_gguf_filename
+        planned_lora_repo = normalized.lora_repo
+        planned_lora_weight_name = normalized.lora_weight_name
+        planned_lora_adapter_name = normalized.lora_adapter_name
+        planned_lora_scale = normalized.lora_scale
+        planned_lora_fuse = normalized.lora_fuse
+        planned_family = normalized.family
+        planned_offload_policy = normalized.offload_policy
+        planned_safetensors_quantization = normalized.safetensors_quantization
         planned_safetensors_quantization_components = (
-            payload.safetensors_quantization_components
+            normalized.safetensors_quantization_components
         )
+        planned_torch_compile = normalized.torch_compile
         if payload.preset_id:
             try:
                 from core.inference.diffusion import resolve_diffusion_load_plan
 
                 load_plan = resolve_diffusion_load_plan(
                     preset_id = payload.preset_id,
-                    repo_id = payload.repo_id,
-                    gguf_filename = payload.gguf_filename,
-                    transformer_gguf_repo = payload.transformer_gguf_repo,
-                    transformer_gguf_filename = payload.transformer_gguf_filename,
-                    transformer_quant = payload.transformer_quant,
-                    base_repo = payload.base_repo,
-                    text_encoder_gguf_repo = payload.text_encoder_gguf_repo,
-                    text_encoder_gguf_filename = payload.text_encoder_gguf_filename,
-                    text_encoder_gguf_component = payload.text_encoder_gguf_component,
-                    prompt_enhancer_gguf_repo = payload.prompt_enhancer_gguf_repo,
-                    prompt_enhancer_gguf_filename = payload.prompt_enhancer_gguf_filename,
-                    lora_repo = payload.lora_repo,
-                    lora_weight_name = payload.lora_weight_name,
-                    lora_adapter_name = payload.lora_adapter_name,
-                    lora_scale = payload.lora_scale,
-                    lora_fuse = payload.lora_fuse,
-                    family_override = payload.family,
-                    offload_policy = payload.offload_policy,
-                    safetensors_quantization = payload.safetensors_quantization,
+                    repo_id = normalized.repo_id,
+                    gguf_filename = normalized.gguf_filename,
+                    transformer_gguf_repo = normalized.transformer_gguf_repo,
+                    transformer_gguf_filename = normalized.transformer_gguf_filename,
+                    transformer_quant = normalized.transformer_quant,
+                    base_repo = normalized.base_repo,
+                    text_encoder_gguf_repo = normalized.text_encoder_gguf_repo,
+                    text_encoder_gguf_filename = normalized.text_encoder_gguf_filename,
+                    text_encoder_gguf_component = normalized.text_encoder_gguf_component,
+                    prompt_enhancer_gguf_repo = normalized.prompt_enhancer_gguf_repo,
+                    prompt_enhancer_gguf_filename = normalized.prompt_enhancer_gguf_filename,
+                    lora_repo = normalized.lora_repo,
+                    lora_weight_name = normalized.lora_weight_name,
+                    lora_adapter_name = normalized.lora_adapter_name,
+                    lora_scale = normalized.lora_scale,
+                    lora_fuse = normalized.lora_fuse,
+                    family_override = normalized.family,
+                    offload_policy = normalized.offload_policy,
+                    safetensors_quantization = normalized.safetensors_quantization,
                     safetensors_quantization_components = (
-                        payload.safetensors_quantization_components
+                        normalized.safetensors_quantization_components
                     ),
                     require_loadable = True,
                 )
@@ -2559,6 +3013,7 @@ async def diffusion_load(
             planned_safetensors_quantization_components = load_kwargs[
                 "safetensors_quantization_components"
             ]
+            planned_torch_compile = normalized.torch_compile
         resolved_repo_id = (
             _resolve_diffusion_repo_for_request(
                 planned_repo_id,
@@ -2608,41 +3063,39 @@ async def diffusion_load(
         # AFTER validation.
         backend = _get_diffusion_backend()
         try:
+            backend_load_kwargs = {
+                "repo_id": resolved_repo_id,
+                "gguf_filename": planned_gguf_filename,
+                "transformer_gguf_repo": resolved_transformer_gguf_repo,
+                "transformer_gguf_filename": planned_transformer_gguf_filename,
+                "base_repo": resolved_base_repo,
+                "text_encoder_gguf_repo": resolved_text_encoder_gguf_repo,
+                "text_encoder_gguf_filename": planned_text_encoder_gguf_filename,
+                "text_encoder_gguf_component": planned_text_encoder_gguf_component,
+                "prompt_enhancer_gguf_repo": resolved_prompt_enhancer_gguf_repo,
+                "prompt_enhancer_gguf_filename": planned_prompt_enhancer_gguf_filename,
+                "lora_repo": resolved_lora_repo,
+                "lora_weight_name": planned_lora_weight_name,
+                "lora_adapter_name": planned_lora_adapter_name,
+                "lora_scale": planned_lora_scale,
+                "lora_fuse": planned_lora_fuse,
+                "family_override": planned_family,
+                "hf_token": payload.hf_token,
+                "enable_model_cpu_offload": normalized.enable_model_cpu_offload,
+                "offload_policy": planned_offload_policy,
+                "gguf_quantized_cpu_resident": normalized.gguf_quantized_cpu_resident,
+                "gguf_pin_cpu_resident": normalized.gguf_pin_cpu_resident,
+                "safetensors_quantization": planned_safetensors_quantization,
+                "safetensors_quantization_components": (
+                    planned_safetensors_quantization_components
+                ),
+                "ignore_public_load_pending_workload": "diffusion",
+            }
+            if planned_torch_compile is not None:
+                backend_load_kwargs["torch_compile"] = planned_torch_compile
             status = await asyncio.get_running_loop().run_in_executor(
                 None,
-                lambda: backend.load_model(
-                    repo_id = resolved_repo_id,
-                    gguf_filename = planned_gguf_filename,
-                    transformer_gguf_repo = resolved_transformer_gguf_repo,
-                    transformer_gguf_filename = planned_transformer_gguf_filename,
-                    base_repo = resolved_base_repo,
-                    text_encoder_gguf_repo = resolved_text_encoder_gguf_repo,
-                    text_encoder_gguf_filename = planned_text_encoder_gguf_filename,
-                    text_encoder_gguf_component = planned_text_encoder_gguf_component,
-                    prompt_enhancer_gguf_repo = resolved_prompt_enhancer_gguf_repo,
-                    prompt_enhancer_gguf_filename = planned_prompt_enhancer_gguf_filename,
-                    lora_repo = resolved_lora_repo,
-                    lora_weight_name = planned_lora_weight_name,
-                    lora_adapter_name = planned_lora_adapter_name,
-                    lora_scale = planned_lora_scale,
-                    lora_fuse = planned_lora_fuse,
-                    family_override = planned_family,
-                    hf_token = payload.hf_token,
-                    enable_model_cpu_offload = payload.enable_model_cpu_offload,
-                    offload_policy = planned_offload_policy,
-                    gguf_quantized_cpu_resident = payload.gguf_quantized_cpu_resident,
-                    gguf_pin_cpu_resident = payload.gguf_pin_cpu_resident,
-                    safetensors_quantization = planned_safetensors_quantization,
-                    safetensors_quantization_components = (
-                        planned_safetensors_quantization_components
-                    ),
-                    # Round 38 P1: this route already published the
-                    # "diffusion" pending marker above; tell the
-                    # backend to ignore it so the parity check it
-                    # now applies does not self-block on our own
-                    # publication.
-                    ignore_public_load_pending_workload = "diffusion",
-                ),
+                lambda: backend.load_model(**backend_load_kwargs),
             )
             return JSONResponse(content = status)
         except RuntimeError as exc:
@@ -2748,34 +3201,97 @@ async def diffusion_load_plan(
     from core.inference.diffusion import resolve_diffusion_load_plan
 
     try:
+        normalized = _normalize_diffusion_load_request(payload)
         return resolve_diffusion_load_plan(
             preset_id = payload.preset_id,
-            repo_id = payload.repo_id,
-            gguf_filename = payload.gguf_filename,
-            transformer_gguf_repo = payload.transformer_gguf_repo,
-            transformer_gguf_filename = payload.transformer_gguf_filename,
-            transformer_quant = payload.transformer_quant,
-            base_repo = payload.base_repo,
-            text_encoder_gguf_repo = payload.text_encoder_gguf_repo,
-            text_encoder_gguf_filename = payload.text_encoder_gguf_filename,
-            text_encoder_gguf_component = payload.text_encoder_gguf_component,
-            prompt_enhancer_gguf_repo = payload.prompt_enhancer_gguf_repo,
-            prompt_enhancer_gguf_filename = payload.prompt_enhancer_gguf_filename,
-            lora_repo = payload.lora_repo,
-            lora_weight_name = payload.lora_weight_name,
-            lora_adapter_name = payload.lora_adapter_name,
-            lora_scale = payload.lora_scale,
-            lora_fuse = payload.lora_fuse,
-            family_override = payload.family,
-            offload_policy = payload.offload_policy,
-            safetensors_quantization = payload.safetensors_quantization,
+            repo_id = normalized.repo_id,
+            gguf_filename = normalized.gguf_filename,
+            transformer_gguf_repo = normalized.transformer_gguf_repo,
+            transformer_gguf_filename = normalized.transformer_gguf_filename,
+            transformer_quant = normalized.transformer_quant,
+            base_repo = normalized.base_repo,
+            text_encoder_gguf_repo = normalized.text_encoder_gguf_repo,
+            text_encoder_gguf_filename = normalized.text_encoder_gguf_filename,
+            text_encoder_gguf_component = normalized.text_encoder_gguf_component,
+            prompt_enhancer_gguf_repo = normalized.prompt_enhancer_gguf_repo,
+            prompt_enhancer_gguf_filename = normalized.prompt_enhancer_gguf_filename,
+            lora_repo = normalized.lora_repo,
+            lora_weight_name = normalized.lora_weight_name,
+            lora_adapter_name = normalized.lora_adapter_name,
+            lora_scale = normalized.lora_scale,
+            lora_fuse = normalized.lora_fuse,
+            family_override = normalized.family,
+            offload_policy = normalized.offload_policy,
+            safetensors_quantization = normalized.safetensors_quantization,
             safetensors_quantization_components = (
-                payload.safetensors_quantization_components
+                normalized.safetensors_quantization_components
             ),
             require_loadable = False,
         )
     except ValueError as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from exc
+
+
+@studio_router.get("/images/capabilities")
+async def diffusion_image_capabilities(
+    current_subject: str = Depends(get_current_subject),
+):
+    """Return image diffusion capabilities for the current backend/runtime."""
+    return _diffusion_capabilities(media_kind = "image")
+
+
+@studio_router.post("/videos/load")
+async def diffusion_video_load(
+    payload: DiffusionLoadRequest,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Load a diffusion video model.
+
+    This intentionally reuses the same backend slot as images today;
+    the route namespace is media-specific for frontend/API clarity.
+    """
+    return await diffusion_load(payload, current_subject)
+
+
+@studio_router.post("/videos/unload")
+async def diffusion_video_unload(
+    current_subject: str = Depends(get_current_subject),
+):
+    """Unload the current diffusion video/image model and free GPU memory."""
+    return await diffusion_unload(current_subject)
+
+
+@studio_router.get("/videos/status")
+async def diffusion_video_status(
+    current_subject: str = Depends(get_current_subject),
+):
+    """Return diffusion backend status through the video namespace."""
+    return await diffusion_status(current_subject)
+
+
+@studio_router.get("/videos/presets")
+async def diffusion_video_presets(
+    current_subject: str = Depends(get_current_subject),
+):
+    """Return curated Studio diffusion presets through the video namespace."""
+    return await diffusion_presets(current_subject)
+
+
+@studio_router.post("/videos/load-plan")
+async def diffusion_video_load_plan(
+    payload: DiffusionLoadRequest,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Return the concrete video diffusion load plan without loading."""
+    return await diffusion_load_plan(payload, current_subject)
+
+
+@studio_router.get("/videos/capabilities")
+async def diffusion_video_capabilities(
+    current_subject: str = Depends(get_current_subject),
+):
+    """Return video diffusion capabilities for the current backend/runtime."""
+    return _diffusion_capabilities(media_kind = "video")
 
 
 @studio_router.post("/images/generate", response_model = DiffusionGenerateResponse)
@@ -2798,23 +3314,7 @@ async def diffusion_generate(
 
     start = time.time()
     defaults = backend.generation_defaults()
-    requested_steps = (
-        payload.num_inference_steps
-        if payload.num_inference_steps is not None
-        else int(defaults["num_inference_steps"])
-    )
-    requested_guidance = (
-        payload.guidance_scale
-        if payload.guidance_scale is not None
-        else float(defaults["guidance_scale"])
-    )
-    requested_width = (
-        payload.width if payload.width is not None else int(defaults["width"])
-    )
-    requested_height = (
-        payload.height if payload.height is not None else int(defaults["height"])
-    )
-    input_images = _decode_diffusion_input_images(payload)
+    normalized = _normalize_diffusion_image_generate_request(payload, defaults)
     try:
         from core.inference.diffusion import (
             async_generate_images_with_metadata,
@@ -2827,14 +3327,14 @@ async def diffusion_generate(
         # generation end and response assembly (round 13 P2 #9).
         images, meta = await async_generate_images_with_metadata(
             backend,
-            prompt = payload.prompt,
-            negative_prompt = payload.negative_prompt,
-            input_images = input_images,
-            num_inference_steps = requested_steps,
-            guidance_scale = requested_guidance,
-            width = requested_width,
-            height = requested_height,
-            seed = payload.seed,
+            prompt = normalized.prompt,
+            negative_prompt = normalized.negative_prompt,
+            input_images = normalized.input_images,
+            num_inference_steps = normalized.num_inference_steps,
+            guidance_scale = normalized.guidance_scale,
+            width = normalized.width,
+            height = normalized.height,
+            seed = normalized.seed,
         )
         image = images[0]
     except ValueError as exc:
@@ -2851,28 +3351,53 @@ async def diffusion_generate(
     # differ from the requested dims. Report the real image size so
     # the metadata caption matches the bytes on the wire.
     actual_w, actual_h = (
-        image.size if hasattr(image, "size") else (requested_width, requested_height)
+        image.size if hasattr(image, "size") else (normalized.width, normalized.height)
     )
     encoded_images = [encode_png_base64(item) for item in images]
+    outputs = [
+        {
+            "type": "image",
+            "mime": "image/png",
+            "b64": encoded,
+            "width": int(getattr(item, "size", (actual_w, actual_h))[0]),
+            "height": int(getattr(item, "size", (actual_w, actual_h))[1]),
+            "role": "primary" if index == 0 else "additional",
+        }
+        for index, (encoded, item) in enumerate(zip(encoded_images, images))
+    ]
+    effective_parameters = {
+        "width": int(actual_w),
+        "height": int(actual_h),
+        "requested_width": normalized.width,
+        "requested_height": normalized.height,
+        "num_inference_steps": normalized.num_inference_steps,
+        "guidance_scale": normalized.guidance_scale,
+        "seed": str(normalized.seed) if normalized.seed is not None else None,
+    }
+    metrics = {"duration_ms": duration_ms}
     return DiffusionGenerateResponse(
         image_b64 = encoded_images[0],
         images_b64 = encoded_images if len(encoded_images) > 1 else None,
         image_mime = "image/png",
         width = int(actual_w),
         height = int(actual_h),
-        num_inference_steps = requested_steps,
-        guidance_scale = requested_guidance,
-        seed = payload.seed,
+        num_inference_steps = normalized.num_inference_steps,
+        guidance_scale = normalized.guidance_scale,
+        seed = normalized.seed,
         # str() of a Python int has full precision; JavaScript can
         # display it via BigInt without rounding. The numeric ``seed``
         # field above is kept for backwards compatibility with older
         # clients but is unsafe to use for seeds above 2**53 on the
         # browser side.
-        seed_str = str(payload.seed) if payload.seed is not None else None,
+        seed_str = str(normalized.seed) if normalized.seed is not None else None,
         duration_ms = duration_ms,
         model = meta.get("model"),
         family = meta.get("family"),
         output_count = int(meta.get("output_count") or len(encoded_images)),
+        outputs = outputs,
+        effective_parameters = effective_parameters,
+        metrics = metrics,
+        warnings = normalized.warnings,
     )
 
 
@@ -2895,22 +3420,7 @@ async def diffusion_video_generate(
 
     start = time.time()
     defaults = backend.generation_defaults()
-    requested_steps = (
-        payload.num_inference_steps
-        if payload.num_inference_steps is not None
-        else int(defaults["num_inference_steps"])
-    )
-    requested_guidance = (
-        payload.guidance_scale
-        if payload.guidance_scale is not None
-        else float(defaults["guidance_scale"])
-    )
-    requested_width = (
-        payload.width if payload.width is not None else int(defaults["width"])
-    )
-    requested_height = (
-        payload.height if payload.height is not None else int(defaults["height"])
-    )
+    normalized = _normalize_diffusion_video_generate_request(payload, defaults)
     try:
         from core.inference.diffusion import (
             async_generate_video_with_metadata,
@@ -2919,18 +3429,18 @@ async def diffusion_video_generate(
 
         video, meta = await async_generate_video_with_metadata(
             backend,
-            prompt = payload.prompt,
-            negative_prompt = payload.negative_prompt,
-            num_inference_steps = requested_steps,
-            guidance_scale = requested_guidance,
-            guidance_scale_2 = payload.guidance_scale_2,
-            width = requested_width,
-            height = requested_height,
-            num_frames = payload.num_frames,
-            frame_rate = payload.frame_rate,
-            seed = payload.seed,
+            prompt = normalized.prompt,
+            negative_prompt = normalized.negative_prompt,
+            num_inference_steps = normalized.num_inference_steps,
+            guidance_scale = normalized.guidance_scale,
+            guidance_scale_2 = normalized.guidance_scale_2,
+            width = normalized.width,
+            height = normalized.height,
+            num_frames = normalized.num_frames,
+            frame_rate = normalized.frame_rate,
+            seed = normalized.seed,
         )
-        frame_rate = float(meta.get("frame_rate") or payload.frame_rate or 16.0)
+        frame_rate = float(meta.get("frame_rate") or normalized.frame_rate or 16.0)
         video_b64 = encode_mp4_base64(video, fps = frame_rate)
     except ValueError as exc:
         raise HTTPException(status_code = 400, detail = str(exc))
@@ -2941,21 +3451,54 @@ async def diffusion_video_generate(
         raise HTTPException(status_code = 500, detail = str(exc))
 
     duration_ms = int((time.time() - start) * 1000)
+    width = int(meta.get("width") or normalized.width)
+    height = int(meta.get("height") or normalized.height)
+    num_frames = int(meta.get("num_frames") or normalized.num_frames or 0)
+    num_inference_steps = int(
+        meta.get("num_inference_steps") or normalized.num_inference_steps
+    )
+    guidance_scale = float(meta.get("guidance_scale") or normalized.guidance_scale)
+    effective_parameters = {
+        "width": width,
+        "height": height,
+        "num_frames": num_frames,
+        "frame_rate": frame_rate,
+        "num_inference_steps": num_inference_steps,
+        "guidance_scale": guidance_scale,
+        "guidance_scale_2": meta.get("guidance_scale_2"),
+        "seed": str(normalized.seed) if normalized.seed is not None else None,
+    }
+    metrics = {"duration_ms": duration_ms}
     return DiffusionVideoGenerateResponse(
         video_b64 = video_b64,
         video_mime = "video/mp4",
-        width = int(meta.get("width") or requested_width),
-        height = int(meta.get("height") or requested_height),
-        num_frames = int(meta.get("num_frames") or payload.num_frames or 0),
+        width = width,
+        height = height,
+        num_frames = num_frames,
         frame_rate = frame_rate,
-        num_inference_steps = int(meta.get("num_inference_steps") or requested_steps),
-        guidance_scale = float(meta.get("guidance_scale") or requested_guidance),
+        num_inference_steps = num_inference_steps,
+        guidance_scale = guidance_scale,
         guidance_scale_2 = meta.get("guidance_scale_2"),
-        seed = payload.seed,
-        seed_str = str(payload.seed) if payload.seed is not None else None,
+        seed = normalized.seed,
+        seed_str = str(normalized.seed) if normalized.seed is not None else None,
         duration_ms = duration_ms,
         model = meta.get("model"),
         family = meta.get("family"),
+        outputs = [
+            {
+                "type": "video",
+                "mime": "video/mp4",
+                "b64": video_b64,
+                "width": width,
+                "height": height,
+                "num_frames": num_frames,
+                "frame_rate": frame_rate,
+                "role": "primary",
+            }
+        ],
+        effective_parameters = effective_parameters,
+        metrics = metrics,
+        warnings = normalized.warnings,
     )
 
 

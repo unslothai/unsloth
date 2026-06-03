@@ -73,6 +73,21 @@ class _FakeBackend:
     def __init__(self) -> None:
         self._loaded = False
         self._repo: str | None = None
+        self._media_kind: str | None = None
+        class _FakePipe:
+            def __call__(
+                self,
+                *,
+                prompt,
+                width = None,
+                height = None,
+                num_inference_steps = None,
+                guidance_scale = None,
+                **kwargs,
+            ):
+                return None
+
+        self._pipe = _FakePipe()
         self.calls: list[dict] = []
 
     @property
@@ -80,13 +95,23 @@ class _FakeBackend:
         return self._loaded
 
     def status(self) -> dict:
+        family = (
+            "ltx2-3-distilled"
+            if self._media_kind == "video"
+            else ("flux.2-klein" if self._loaded else None)
+        )
+        pipeline_class = (
+            "LTX2Pipeline"
+            if self._media_kind == "video"
+            else ("Flux2KleinPipeline" if self._loaded else None)
+        )
         return {
             "is_loaded": self._loaded,
             "is_loading": False,
             "repo_id": self._repo,
-            "family": "flux.2-klein" if self._loaded else None,
-            "pipeline_class": "Flux2KleinPipeline" if self._loaded else None,
-            "media_kind": "image" if self._loaded else None,
+            "family": family,
+            "pipeline_class": pipeline_class,
+            "media_kind": self._media_kind if self._loaded else None,
             "base_repo": "black-forest-labs/FLUX.2-klein" if self._loaded else None,
             "gguf_filename": None,
             "text_encoder_gguf_repo": None,
@@ -126,19 +151,45 @@ class _FakeBackend:
             "dtype": "torch.bfloat16",
             "loaded_at": 0,
             "last_error": None,
-            "supported_families": [],
-            "optimization_options": {},
+            "supported_families": [
+                {
+                    "name": "flux.2-klein",
+                    "pipeline_class": "Flux2KleinPipeline",
+                    "media_kind": "image",
+                    "default_steps": 24,
+                    "default_guidance_scale": 3.5,
+                    "default_width": 1024,
+                    "default_height": 1024,
+                    "default_num_frames": None,
+                    "default_frame_rate": None,
+                },
+                {
+                    "name": "ltx2-3-distilled",
+                    "pipeline_class": "LTX2Pipeline",
+                    "media_kind": "video",
+                    "default_steps": 8,
+                    "default_guidance_scale": 1.0,
+                    "default_width": 1536,
+                    "default_height": 1024,
+                    "default_num_frames": 121,
+                    "default_frame_rate": 24.0,
+                },
+            ],
+            "optimization_options": {"compile": {"torch_compile_available": True}},
         }
 
     def load_model(self, repo_id, **kw):
         self.calls.append({"op": "load", "repo_id": repo_id, **kw})
         self._loaded = True
         self._repo = repo_id
+        family = kw.get("family_override")
+        self._media_kind = "video" if family and family.startswith("ltx") else "image"
         return self.status()
 
     def unload_model(self) -> dict:
         self._loaded = False
         self._repo = None
+        self._media_kind = None
         return {"is_loaded": False}
 
     def generation_defaults(self) -> dict:
@@ -316,7 +367,121 @@ def test_video_generate_round_trip(app_with_stub, monkeypatch):
     assert body["guidance_scale"] == 1.0
     assert body["seed"] == 3407
     assert body["seed_str"] == "3407"
+    assert body["outputs"][0]["type"] == "video"
+    assert body["outputs"][0]["mime"] == "video/mp4"
+    assert body["effective_parameters"]["num_frames"] == 121
+    assert body["metrics"]["duration_ms"] >= 0
+    assert body["warnings"] == []
     assert stub.calls[-1]["op"] == "generate_video"
+
+
+def test_image_generate_v2_contract_normalizes_inputs_and_parameters(app_with_stub):
+    app, stub = app_with_stub
+    c = TestClient(app)
+    stub._loaded = True
+    stub._repo = "Tongyi-MAI/Z-Image-Turbo"
+    stub._media_kind = "image"
+
+    r = c.post(
+        "/api/inference/images/generate",
+        json = {
+            "api_version": "2026-06-03",
+            "inputs": [
+                {
+                    "type": "text",
+                    "role": "prompt",
+                    "text": "a bright studio product shot",
+                }
+            ],
+            "parameters": {
+                "width": 768,
+                "height": 512,
+                "num_inference_steps": 9,
+                "guidance_scale": 0,
+                "seed": 123,
+            },
+            "sampler": {"name": "auto", "scheduler": "auto"},
+            "output": {"format": "png", "return_b64": True},
+            "options": {"future_knob": "accepted"},
+        },
+    )
+
+    assert r.status_code == 200, r.text
+    call = stub.calls[-1]
+    assert call["op"] == "generate"
+    assert call["prompt"] == "a bright studio product shot"
+    assert call["width"] == 768
+    assert call["height"] == 512
+    assert call["num_inference_steps"] == 9
+    assert call["guidance_scale"] == 0.0
+    assert call["seed"] == 123
+    body = r.json()
+    assert body["image_b64"]
+    assert body["outputs"][0]["type"] == "image"
+    assert body["outputs"][0]["mime"] == "image/png"
+    assert body["effective_parameters"]["seed"] == "123"
+    assert body["metrics"]["duration_ms"] >= 0
+    assert body["warnings"] == []
+
+
+def test_video_generate_v2_contract_normalizes_parameters(app_with_stub, monkeypatch):
+    app, stub = app_with_stub
+    c = TestClient(app)
+    stub._loaded = True
+    stub._repo = "diffusers/LTX-2.3-Distilled-Diffusers"
+    stub._media_kind = "video"
+
+    import base64
+    import core.inference.diffusion as d
+
+    monkeypatch.setattr(
+        d,
+        "encode_mp4_base64",
+        lambda frames, *, fps: base64.b64encode(b"fake-mp4").decode("ascii"),
+    )
+
+    r = c.post(
+        "/api/inference/videos/generate",
+        json = {
+            "api_version": "2026-06-03",
+            "inputs": [
+                {
+                    "type": "text",
+                    "role": "prompt",
+                    "text": "a slow dolly shot through a lab",
+                }
+            ],
+            "parameters": {
+                "width": 640,
+                "height": 384,
+                "num_frames": 25,
+                "frame_rate": 12,
+                "num_inference_steps": 8,
+                "guidance_scale": 1,
+                "seed": 456,
+            },
+            "sampler": {"guidance_scale_2": 3},
+            "output": {"format": "mp4", "return_b64": True},
+            "options": {"future_video_knob": True},
+        },
+    )
+
+    assert r.status_code == 200, r.text
+    call = stub.calls[-1]
+    assert call["op"] == "generate_video"
+    assert call["prompt"] == "a slow dolly shot through a lab"
+    assert call["width"] == 640
+    assert call["height"] == 384
+    assert call["num_frames"] == 25
+    assert call["frame_rate"] == 12
+    assert call["num_inference_steps"] == 8
+    assert call["guidance_scale"] == 1.0
+    assert call["guidance_scale_2"] == 3.0
+    assert call["seed"] == 456
+    body = r.json()
+    assert body["outputs"][0]["type"] == "video"
+    assert body["outputs"][0]["num_frames"] == 25
+    assert body["effective_parameters"]["seed"] == "456"
 
 
 def test_generate_decodes_base64_image_input(app_with_stub):
@@ -436,6 +601,137 @@ def test_load_forwards_transformer_gguf_component_fields(app_with_stub):
     assert stub.calls[-1]["transformer_gguf_repo"] == "unsloth/FLUX.2-dev-GGUF"
     assert stub.calls[-1]["transformer_gguf_filename"] == "flux2-dev-Q4_K_M.gguf"
     assert stub.calls[-1]["base_repo"] is None
+
+
+def test_load_v2_contract_normalizes_model_components_runtime_and_adapter(app_with_stub):
+    app, stub = app_with_stub
+    c = TestClient(app)
+
+    r = c.post(
+        "/api/inference/images/load",
+        json = {
+            "api_version": "2026-06-03",
+            "model": {
+                "repo_id": "black-forest-labs/FLUX.2-dev",
+                "family": "flux.2",
+                "base_repo": "black-forest-labs/FLUX.2-dev",
+            },
+            "components": {
+                "transformer": {
+                    "format": "gguf",
+                    "repo_id": "unsloth/FLUX.2-dev-GGUF",
+                    "filename": "flux2-dev-Q4_K_M.gguf",
+                    "quantization": "Q4_K_M",
+                },
+                "text_encoder": {
+                    "format": "gguf",
+                    "repo_id": "unsloth/Qwen3-4B-GGUF",
+                    "filename": "Qwen3-4B-BF16.gguf",
+                    "component": "text_encoder",
+                },
+            },
+            "runtime": {
+                "offload_policy": "balanced",
+                "enable_model_cpu_offload": False,
+                "gguf_quantized_cpu_resident": True,
+                "gguf_pin_cpu_resident": True,
+                "torch_compile": "none",
+            },
+            "adapters": [
+                {
+                    "type": "lora",
+                    "repo_id": "owner/lora",
+                    "weight_name": "adapter.safetensors",
+                    "adapter_name": "style",
+                    "scale": 0.8,
+                    "fuse": False,
+                }
+            ],
+            "options": {"future_load_knob": "accepted"},
+        },
+    )
+
+    assert r.status_code == 200, r.text
+    call = stub.calls[-1]
+    assert call["repo_id"] == "black-forest-labs/FLUX.2-dev"
+    assert call["transformer_gguf_repo"] == "unsloth/FLUX.2-dev-GGUF"
+    assert call["transformer_gguf_filename"] == "flux2-dev-Q4_K_M.gguf"
+    assert call["text_encoder_gguf_repo"] == "unsloth/Qwen3-4B-GGUF"
+    assert call["text_encoder_gguf_filename"] == "Qwen3-4B-BF16.gguf"
+    assert call["text_encoder_gguf_component"] == "text_encoder"
+    assert call["lora_repo"] == "owner/lora"
+    assert call["lora_weight_name"] == "adapter.safetensors"
+    assert call["lora_adapter_name"] == "style"
+    assert call["lora_scale"] == 0.8
+    assert call["family_override"] == "flux.2"
+    assert call["enable_model_cpu_offload"] is False
+    assert call["offload_policy"] == "balanced"
+    assert call["gguf_quantized_cpu_resident"] is True
+    assert call["gguf_pin_cpu_resident"] is True
+    assert call["torch_compile"] == "none"
+
+
+def test_video_lifecycle_routes_delegate_to_diffusion_backend(app_with_stub):
+    app, stub = app_with_stub
+    c = TestClient(app)
+
+    r = c.post(
+        "/api/inference/videos/load",
+        json = {
+            "repo_id": "diffusers/LTX-2.3-Distilled-Diffusers",
+            "family": "ltx2-3-distilled",
+        },
+    )
+    assert r.status_code == 200, r.text
+    assert stub.calls[-1]["op"] == "load"
+    assert stub.calls[-1]["family_override"] == "ltx2-3-distilled"
+
+    r = c.get("/api/inference/videos/status")
+    assert r.status_code == 200, r.text
+    assert r.json()["media_kind"] == "video"
+
+    r = c.post(
+        "/api/inference/videos/load-plan",
+        json = {
+            "repo_id": "diffusers/LTX-2.3-Distilled-Diffusers",
+            "family": "ltx2-3-distilled",
+        },
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["load_kwargs"]["repo_id"] == (
+        "diffusers/LTX-2.3-Distilled-Diffusers"
+    )
+
+    r = c.get("/api/inference/videos/presets")
+    assert r.status_code == 200, r.text
+    assert "presets" in r.json()
+
+    r = c.post("/api/inference/videos/unload")
+    assert r.status_code == 200, r.text
+    assert r.json()["is_loaded"] is False
+
+
+def test_image_and_video_capabilities_endpoints(app_with_stub):
+    app, _ = app_with_stub
+    c = TestClient(app)
+
+    r = c.get("/api/inference/images/capabilities")
+    assert r.status_code == 200, r.text
+    image_caps = r.json()
+    assert image_caps["media_kind"] == "image"
+    assert "text_to_image" in image_caps["tasks"]
+    assert image_caps["parameters"]["width"]["multiple_of"] == 8
+    assert "prompt" in image_caps["pipeline_signature"]["call_kwargs"]
+    assert image_caps["pipeline_signature"]["accepts_var_kwargs"] is True
+    assert any(fam["name"] == "flux.2-klein" for fam in image_caps["families"])
+
+    r = c.get("/api/inference/videos/capabilities")
+    assert r.status_code == 200, r.text
+    video_caps = r.json()
+    assert video_caps["media_kind"] == "video"
+    assert "text_to_video" in video_caps["tasks"]
+    assert video_caps["parameters"]["num_frames"]["max"] == 513
+    assert any(fam["name"] == "ltx2-3-distilled" for fam in video_caps["families"])
 
 
 def test_load_preset_expands_to_component_swap(app_with_stub):

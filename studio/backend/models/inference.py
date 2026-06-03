@@ -21,6 +21,183 @@ from pydantic import (
 )
 
 
+class DiffusionModelSpec(BaseModel):
+    repo_id: Optional[str] = Field(None, min_length = 1, max_length = 1024)
+    family: Optional[str] = Field(None, max_length = 64)
+    base_repo: Optional[str] = Field(None, max_length = 1024)
+    revision: Optional[str] = Field(None, max_length = 128)
+
+    @field_validator("repo_id", "family", "base_repo", "revision")
+    @classmethod
+    def _no_control_chars(cls, v, info):
+        return _no_control_chars(v, info.field_name)
+
+    @field_validator("repo_id", "base_repo")
+    @classmethod
+    def _no_embedded_hf_tokens(cls, v, info):
+        return _reject_embedded_hf_token(v, info.field_name)
+
+
+class DiffusionComponentSpec(BaseModel):
+    format: Optional[
+        Literal["auto", "safetensors", "gguf", "diffusers"]
+    ] = Field(None, description = "Component weight format")
+    repo_id: Optional[str] = Field(None, max_length = 1024)
+    filename: Optional[str] = Field(None, max_length = 512)
+    quantization: Optional[str] = Field(None, max_length = 64)
+    component: Optional[str] = Field(None, max_length = 64)
+
+    @field_validator("format", "repo_id", "filename", "quantization", "component")
+    @classmethod
+    def _no_control_chars(cls, v, info):
+        return _no_control_chars(v, info.field_name)
+
+    @field_validator("repo_id", "filename")
+    @classmethod
+    def _no_embedded_hf_tokens(cls, v, info):
+        return _reject_embedded_hf_token(v, info.field_name)
+
+
+class DiffusionAdapterSpec(BaseModel):
+    type: Literal["lora"] = "lora"
+    repo_id: Optional[str] = Field(None, max_length = 1024)
+    weight_name: Optional[str] = Field(None, max_length = 512)
+    adapter_name: Optional[str] = Field(None, max_length = 128)
+    scale: Optional[float] = Field(None, ge = 0.0, le = 10.0)
+    fuse: bool = False
+
+    @field_validator("repo_id", "weight_name", "adapter_name")
+    @classmethod
+    def _no_control_chars(cls, v, info):
+        return _no_control_chars(v, info.field_name)
+
+    @field_validator("repo_id", "weight_name", "adapter_name")
+    @classmethod
+    def _no_embedded_hf_tokens(cls, v, info):
+        return _reject_embedded_hf_token(v, info.field_name)
+
+    @field_validator("weight_name")
+    @classmethod
+    def _weight_must_be_safetensors(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and not v.lower().endswith(".safetensors"):
+            raise ValueError("LoRA weight_name must point to a .safetensors file")
+        return v
+
+
+class DiffusionRuntimeSpec(BaseModel):
+    device: Optional[Literal["auto", "cpu", "cuda", "mps"]] = None
+    dtype: Optional[Literal["auto", "float16", "bfloat16", "float32"]] = None
+    offload_policy: Optional[
+        Literal["auto", "aggressive", "balanced", "less_aggressive", "hybrid", "none"]
+    ] = None
+    enable_model_cpu_offload: Optional[bool] = None
+    gguf_quantized_cpu_resident: Optional[bool] = None
+    gguf_pin_cpu_resident: Optional[bool] = None
+    safetensors_quantization: Optional[
+        Literal[
+            "none",
+            "bitsandbytes_4bit",
+            "bitsandbytes_4bit_nf4",
+            "bitsandbytes_8bit",
+            "torchao_int8_weight_only",
+            "torchao_int4_weight_only",
+        ]
+    ] = None
+    safetensors_quantization_components: Optional[
+        List[
+            Literal[
+                "transformer",
+                "unet",
+                "text_encoder",
+                "text_encoder_2",
+                "text_encoder_3",
+                "pe",
+            ]
+        ]
+    ] = None
+    torch_compile: Optional[Literal["auto", "none", "regional", "transformer", "pipeline"]] = None
+
+
+class DiffusionInputSpec(BaseModel):
+    id: Optional[str] = Field(None, max_length = 128)
+    type: Literal["text", "image", "audio", "video"] = "image"
+    role: Optional[str] = Field(None, max_length = 64)
+    text: Optional[str] = Field(None, max_length = 4000)
+    mime: Optional[str] = Field(None, max_length = 128)
+    b64: Optional[str] = Field(None, max_length = 50_000_000)
+
+    @field_validator("id", "role", "mime")
+    @classmethod
+    def _no_control_chars(cls, v, info):
+        return _no_control_chars(v, info.field_name)
+
+
+class DiffusionImageParametersSpec(BaseModel):
+    width: Optional[int] = Field(None, ge = 64, le = 2048)
+    height: Optional[int] = Field(None, ge = 64, le = 2048)
+    num_inference_steps: Optional[int] = Field(None, ge = 1, le = 200)
+    guidance_scale: Optional[float] = Field(None, ge = 0.0, le = 20.0)
+    seed: Optional[int] = Field(None, ge = -(2**63), le = (2**64) - 1)
+    batch_size: Optional[int] = Field(None, ge = 1, le = 16)
+    num_outputs: Optional[int] = Field(None, ge = 1, le = 16)
+
+    @field_validator("width", "height")
+    @classmethod
+    def _multiple_of_eight(cls, v: Optional[int]) -> Optional[int]:
+        if v is not None and v % 8:
+            raise ValueError("width and height must be multiples of 8")
+        return v
+
+
+class DiffusionVideoParametersSpec(BaseModel):
+    width: Optional[int] = Field(None, ge = 64, le = 2048)
+    height: Optional[int] = Field(None, ge = 64, le = 2048)
+    num_frames: Optional[int] = Field(None, ge = 1, le = 513)
+    frame_rate: Optional[float] = Field(None, gt = 0.0, le = 240.0)
+    num_inference_steps: Optional[int] = Field(None, ge = 1, le = 200)
+    guidance_scale: Optional[float] = Field(None, ge = 0.0, le = 20.0)
+    seed: Optional[int] = Field(None, ge = -(2**63), le = (2**64) - 1)
+
+    @field_validator("width", "height")
+    @classmethod
+    def _multiple_of_eight(cls, v: Optional[int]) -> Optional[int]:
+        if v is not None and v % 8:
+            raise ValueError("width and height must be multiples of 8")
+        return v
+
+
+class DiffusionSamplerSpec(BaseModel):
+    name: Optional[str] = Field(None, max_length = 128)
+    scheduler: Optional[str] = Field(None, max_length = 128)
+    guidance_scale: Optional[float] = Field(None, ge = 0.0, le = 20.0)
+    true_cfg_scale: Optional[float] = Field(None, ge = 0.0, le = 20.0)
+    guidance_scale_2: Optional[float] = Field(None, ge = 0.0, le = 20.0)
+    negative_prompt: Optional[str] = Field(None, max_length = 4000)
+
+    @field_validator("name", "scheduler")
+    @classmethod
+    def _no_control_chars(cls, v, info):
+        return _no_control_chars(v, info.field_name)
+
+
+class DiffusionOutputSpec(BaseModel):
+    types: Optional[List[Literal["image", "video"]]] = None
+    format: Optional[Literal["png", "jpeg", "mp4"]] = None
+    return_b64: bool = True
+    return_layers: Optional[Literal["auto", "always", "never"]] = None
+
+
+class DiffusionOutputItem(BaseModel):
+    type: Literal["image", "video"]
+    mime: str
+    b64: str
+    width: Optional[int] = None
+    height: Optional[int] = None
+    num_frames: Optional[int] = None
+    frame_rate: Optional[float] = None
+    role: str = "primary"
+
+
 class LoadRequest(BaseModel):
     """Request to load a model for inference"""
 
@@ -1557,6 +1734,33 @@ class DiffusionLoadRequest(BaseModel):
     VAE / text encoders when loading a GGUF-only repo.
     """
 
+    api_version: Optional[str] = Field(
+        None,
+        max_length = 32,
+        description = "Optional version tag for the structured diffusion load contract",
+    )
+    model: Optional[DiffusionModelSpec] = Field(
+        None,
+        description = "Structured model identity for the v2 load contract",
+    )
+    components: Optional[Dict[str, DiffusionComponentSpec]] = Field(
+        None,
+        description = "Structured component overrides keyed by transformer/text_encoder/vae/etc.",
+    )
+    runtime: Optional[DiffusionRuntimeSpec] = Field(
+        None,
+        description = "Structured runtime/optimization choices for the v2 load contract",
+    )
+    adapters: Optional[List[DiffusionAdapterSpec]] = Field(
+        None,
+        max_length = 16,
+        description = "Structured adapter list. The first LoRA maps to legacy lora_* fields.",
+    )
+    options: Optional[Dict[str, Any]] = Field(
+        None,
+        description = "Forward-compatible model-specific load options.",
+    )
+
     # repo_id and base_repo are HF Hub identifiers in this release.
     # Local-path support is gated behind a frontend / Tauri
     # ``load-diffusion-model`` directory lease producer that has not
@@ -1807,6 +2011,7 @@ class DiffusionLoadRequest(BaseModel):
 
     @field_validator(
         "repo_id",
+        "api_version",
         "preset_id",
         "gguf_filename",
         "transformer_gguf_repo",
@@ -1856,20 +2061,36 @@ class DiffusionLoadRequest(BaseModel):
 
     @model_validator(mode = "after")
     def _requires_repo_or_preset(self):
-        if not self.repo_id and not self.preset_id:
-            raise ValueError("Either repo_id or preset_id is required")
+        if not self.repo_id and not self.preset_id and not (
+            self.model and self.model.repo_id
+        ):
+            raise ValueError("Either repo_id, preset_id, or model.repo_id is required")
         return self
 
     @model_validator(mode = "after")
     def _safetensors_quantization_requires_full_repo(self):
-        if self.safetensors_quantization in (None, "none"):
+        runtime_quant = (
+            self.runtime.safetensors_quantization
+            if self.runtime is not None
+            else None
+        )
+        effective_quant = self.safetensors_quantization or runtime_quant
+        if effective_quant in (None, "none"):
             return self
+        component_swaps = bool(
+            self.components
+            and any(
+                component.format == "gguf" or component.filename
+                for component in self.components.values()
+            )
+        )
         if (
             self.gguf_filename
             or self.transformer_gguf_filename
             or self.text_encoder_gguf_filename
             or self.prompt_enhancer_gguf_filename
             or self.preset_id
+            or component_swaps
         ):
             raise ValueError(
                 "safetensors_quantization is only supported for regular "
@@ -1897,8 +2118,31 @@ _SEED_MAX = (2**64) - 1
 class DiffusionGenerateRequest(BaseModel):
     """Generate a single image from the currently-loaded diffusion model."""
 
-    prompt: str = Field(..., min_length = 1, max_length = 4000)
+    api_version: Optional[str] = Field(None, max_length = 32)
+    prompt: Optional[str] = Field(None, min_length = 1, max_length = 4000)
     negative_prompt: Optional[str] = Field(None, max_length = 4000)
+    inputs: Optional[List[DiffusionInputSpec]] = Field(
+        None,
+        min_length = 1,
+        max_length = 16,
+        description = "Structured text/image inputs for the v2 image contract",
+    )
+    parameters: Optional[DiffusionImageParametersSpec] = Field(
+        None,
+        description = "Structured generation parameters for the v2 image contract",
+    )
+    sampler: Optional[DiffusionSamplerSpec] = Field(
+        None,
+        description = "Structured sampler/guidance parameters for the v2 image contract",
+    )
+    output: Optional[DiffusionOutputSpec] = Field(
+        None,
+        description = "Structured output preferences for the v2 image contract",
+    )
+    options: Optional[Dict[str, Any]] = Field(
+        None,
+        description = "Forward-compatible model-specific image generation options",
+    )
     image_b64: Optional[str] = Field(
         None,
         max_length = 50_000_000,
@@ -1940,6 +2184,18 @@ class DiffusionGenerateRequest(BaseModel):
     def _no_duplicate_image_inputs(self):
         if self.image_b64 is not None and self.images_b64 is not None:
             raise ValueError("Pass either image_b64 or images_b64, not both")
+        has_prompt_input = bool(
+            self.inputs
+            and any(
+                item.type == "text"
+                and (item.role in (None, "prompt"))
+                and item.text
+                and item.text.strip()
+                for item in self.inputs
+            )
+        )
+        if not (self.prompt and self.prompt.strip()) and not has_prompt_input:
+            raise ValueError("prompt is required")
         return self
 
 
@@ -1970,13 +2226,40 @@ class DiffusionGenerateResponse(BaseModel):
     model: Optional[str] = None
     family: Optional[str] = None
     output_count: int = 1
+    outputs: Optional[List[DiffusionOutputItem]] = None
+    effective_parameters: Optional[Dict[str, Any]] = None
+    metrics: Optional[Dict[str, Any]] = None
+    warnings: List[str] = Field(default_factory = list)
 
 
 class DiffusionVideoGenerateRequest(BaseModel):
     """Generate a video from the currently-loaded diffusion video model."""
 
-    prompt: str = Field(..., min_length = 1, max_length = 4000)
+    api_version: Optional[str] = Field(None, max_length = 32)
+    prompt: Optional[str] = Field(None, min_length = 1, max_length = 4000)
     negative_prompt: Optional[str] = Field(None, max_length = 4000)
+    inputs: Optional[List[DiffusionInputSpec]] = Field(
+        None,
+        min_length = 1,
+        max_length = 16,
+        description = "Structured text/image/audio/video inputs for the v2 video contract",
+    )
+    parameters: Optional[DiffusionVideoParametersSpec] = Field(
+        None,
+        description = "Structured generation parameters for the v2 video contract",
+    )
+    sampler: Optional[DiffusionSamplerSpec] = Field(
+        None,
+        description = "Structured sampler/guidance parameters for the v2 video contract",
+    )
+    output: Optional[DiffusionOutputSpec] = Field(
+        None,
+        description = "Structured output preferences for the v2 video contract",
+    )
+    options: Optional[Dict[str, Any]] = Field(
+        None,
+        description = "Forward-compatible model-specific video generation options",
+    )
     num_inference_steps: Optional[int] = Field(None, ge = 1, le = 200)
     guidance_scale: Optional[float] = Field(None, ge = 0.0, le = 20.0)
     guidance_scale_2: Optional[float] = Field(None, ge = 0.0, le = 20.0)
@@ -2000,6 +2283,22 @@ class DiffusionVideoGenerateRequest(BaseModel):
             raise ValueError("width and height must be multiples of 8")
         return v
 
+    @model_validator(mode = "after")
+    def _requires_prompt(self):
+        has_prompt_input = bool(
+            self.inputs
+            and any(
+                item.type == "text"
+                and (item.role in (None, "prompt"))
+                and item.text
+                and item.text.strip()
+                for item in self.inputs
+            )
+        )
+        if not (self.prompt and self.prompt.strip()) and not has_prompt_input:
+            raise ValueError("prompt is required")
+        return self
+
 
 class DiffusionVideoGenerateResponse(BaseModel):
     video_b64: str = Field(..., description = "Base64-encoded MP4")
@@ -2016,3 +2315,7 @@ class DiffusionVideoGenerateResponse(BaseModel):
     duration_ms: int
     model: Optional[str] = None
     family: Optional[str] = None
+    outputs: Optional[List[DiffusionOutputItem]] = None
+    effective_parameters: Optional[Dict[str, Any]] = None
+    metrics: Optional[Dict[str, Any]] = None
+    warnings: List[str] = Field(default_factory = list)
