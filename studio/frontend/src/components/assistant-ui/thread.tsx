@@ -2,11 +2,9 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import {
-  ComposerAddAttachment,
   ComposerAttachments,
   UserMessageAttachments,
 } from "@/components/assistant-ui/attachment";
-import { CodeToggleIcon } from "@/components/assistant-ui/code-toggle-icon";
 import {
   GeneratedImageOverlayProvider,
   useGeneratedImageOverlay,
@@ -40,15 +38,23 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { sentAudioNames } from "@/features/chat/api/chat-adapter";
+import { useChatProjects } from "@/features/chat/hooks/use-chat-projects";
+import { NewProjectDialog } from "@/features/chat/components/new-project-dialog";
 import { parseExternalModelId } from "@/features/chat/external-providers";
 import { McpComposerButton } from "@/features/chat/mcp-composer-button";
 import { getExternalReasoningCapabilities } from "@/features/chat/provider-capabilities";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { useExternalProvidersStore } from "@/features/chat/stores/external-providers-store";
 import { deleteThreadMessage } from "@/features/chat/utils/delete-thread-message";
+import { useUserProfileStore } from "@/features/profile/stores/user-profile-store";
 import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
 import { isTauri } from "@/lib/api-base";
 import { AUDIO_ACCEPT, MAX_AUDIO_SIZE, fileToBase64 } from "@/lib/audio-utils";
@@ -70,42 +76,56 @@ import {
 } from "@assistant-ui/react";
 import { flushResourcesSync } from "@assistant-ui/tap";
 import {
+  AttachmentIcon,
+  CodeIcon,
+  Copy01Icon,
+  Delete02Icon,
+  Download01Icon,
+  Edit03Icon,
+  Folder01Icon,
+  FolderAddIcon,
+  Image03Icon,
+  McpServerIcon,
+  PencilRulerIcon,
+  Tick02Icon,
+} from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
+import { useNavigate } from "@tanstack/react-router";
+import {
   ArrowDownIcon,
   ArrowUpIcon,
+  CheckIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
-  DownloadIcon,
-  FileTextIcon,
+  Columns2Icon,
   GlobeIcon,
   HeadphonesIcon,
-  LightbulbIcon,
-  LightbulbOffIcon,
-  MicIcon,
   MoreHorizontalIcon,
+  PlusIcon,
   RefreshCwIcon,
   SquareIcon,
   TerminalIcon,
   XIcon,
 } from "lucide-react";
 import {
-  Copy01Icon,
-  Delete02Icon,
-  Edit03Icon,
-  Image03Icon,
-  Tick02Icon,
-} from "@hugeicons/core-free-icons";
-import { HugeiconsIcon } from "@hugeicons/react";
-import {
   type ChangeEvent,
   type ComponentProps,
   type CompositionEvent,
   type FC,
   type KeyboardEvent,
+  type DragEvent as ReactDragEvent,
+  type ReactNode,
+  createContext,
   useCallback,
+  useContext,
   useEffect,
   useRef,
   useState,
 } from "react";
+
+// True while a file is dragged anywhere over the chat page (not just the
+// composer), so the composer can show its "Drop files here" affordance.
+const PageDragContext = createContext(false);
 
 export const Thread: FC<{
   hideComposer?: boolean;
@@ -125,8 +145,55 @@ export const Thread: FC<{
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const threadId = targetThreadId ?? activeThreadId ?? null;
 
+  // Page-wide drag-and-drop: dropping a file anywhere on the chat page (not
+  // just on the composer) attaches it and shows the composer drop affordance.
+  // The composer's own dropzone still handles drops on the box itself; its
+  // handler calls preventDefault, so the page handler skips them (no double-add).
+  const aui = useAui();
+  const [pageDragging, setPageDragging] = useState(false);
+  const dragDepth = useRef(0);
+  const hasFiles = (e: ReactDragEvent) =>
+    Array.from(e.dataTransfer?.types ?? []).includes("Files");
+  const onDragEnter = (e: ReactDragEvent) => {
+    if (isTauri || !hasFiles(e)) return;
+    dragDepth.current += 1;
+    setPageDragging(true);
+  };
+  const onDragOver = (e: ReactDragEvent) => {
+    if (isTauri || !hasFiles(e)) return;
+    e.preventDefault();
+  };
+  const onDragLeave = (e: ReactDragEvent) => {
+    if (isTauri || !hasFiles(e)) return;
+    dragDepth.current = Math.max(0, dragDepth.current - 1);
+    if (dragDepth.current === 0) setPageDragging(false);
+  };
+  const onDrop = (e: ReactDragEvent) => {
+    if (isTauri) return;
+    dragDepth.current = 0;
+    setPageDragging(false);
+    // Compare panes hide this composer and use the shared composer's own
+    // dropzone, so don't capture drops into a hidden composer here.
+    if (hideComposer) return;
+    // Drops on the composer box are handled by its own dropzone, which calls
+    // preventDefault; skip those here so the file isn't added twice.
+    if (e.defaultPrevented) return;
+    const files = Array.from(e.dataTransfer.files);
+    if (files.length === 0) return;
+    e.preventDefault();
+    for (const file of files) {
+      aui
+        .composer()
+        .addAttachment(file)
+        .catch(() => {
+          // Adapter shows its own toast (e.g. "Load a model before adding images").
+        });
+    }
+  };
+
   return (
     <GeneratedImageOverlayProvider key={threadId ?? "default"} threadId={threadId}>
+      <PageDragContext.Provider value={pageDragging}>
       <ThreadPrimitive.Root
         className="aui-root aui-thread-root @container relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden"
         style={{
@@ -134,6 +201,10 @@ export const Thread: FC<{
           ["--thread-content-max-width" as string]:
             "calc(var(--thread-max-width) - 1.5rem)",
         }}
+        onDragEnter={onDragEnter}
+        onDragOver={onDragOver}
+        onDragLeave={onDragLeave}
+        onDrop={onDrop}
       >
         <IntentAwareScrollProvider value={autoScrollContext}>
           <ThreadPrimitive.Viewport
@@ -199,6 +270,7 @@ export const Thread: FC<{
           )}
         </IntentAwareScrollProvider>
       </ThreadPrimitive.Root>
+      </PageDragContext.Provider>
     </GeneratedImageOverlayProvider>
   );
 };
@@ -250,7 +322,7 @@ const GeneratedImageViewportOverlay: FC<{ hideComposer?: boolean }> = ({
                 }
                 aria-label="Download generated image"
               >
-                <DownloadIcon className="size-3.5" />
+                <HugeiconsIcon icon={Download01Icon} className="size-3.5" />
               </Button>
               <Button
                 type="button"
@@ -314,7 +386,11 @@ const ThreadComposerDock: FC<{
       />
       <div className="relative px-5 pb-2">
         <div className="pointer-events-auto mx-auto w-full max-w-(--thread-max-width)">
-          <ComposerAnimated disabled={disabled} threadId={threadId} />
+          <ComposerAnimated
+            disabled={disabled}
+            threadId={threadId}
+            menuSide="top"
+          />
         </div>
         <p className="composer-footer-note">
           LLMs can make mistakes. Double-check responses.
@@ -348,38 +424,81 @@ const ThreadScrollToBottom: FC = () => {
   );
 };
 
+const pickRandom = <T,>(arr: T[]): T =>
+  arr[Math.floor(Math.random() * arr.length)];
+
+// Each greeting carries the sloth picture that best fits it, so a given line
+// always shows the same mascot. Greeting varies by local time; name-bearing
+// lines drop the name when none is set.
+type Welcome = { text: string; sloth: string };
+const DEFAULT_WELCOME: Welcome = {
+  text: "What’s on your mind today?",
+  sloth: "sloth magnify final.png",
+};
+
+function buildWelcome(hour: number, name: string): Welcome {
+  const g = (text: string, sloth: string): Welcome => ({ text, sloth });
+  // Use the name on roughly a third of the lines per time of day: only the
+  // direct salutations where it reads most naturally. Everything else stays
+  // name-free so the greeting doesn't feel repetitive.
+  const base: Welcome[] = [
+    g(name ? `Good to see you, ${name}.` : "Good to see you.", "large sloth wave.png"),
+    g("Ready when you are.", "large sloth thumbs.png"),
+    DEFAULT_WELCOME,
+    g("How can I help?", "sloth sir large.png"),
+  ];
+  if (hour >= 4 && hour < 9) {
+    const morning = g(name ? `Good morning, ${name}` : "Good morning", "large sloth drink.png");
+    return pickRandom([...base, morning]);
+  }
+  if (hour >= 17 && hour < 23) {
+    const evening: Welcome[] = [
+      g(name ? `Good evening, ${name}` : "Good evening", "sloth shy large.png"),
+      g("What’s on for tonight?", "large sloth glasses.png"),
+    ];
+    // Lean toward an evening line, but a base greeting can still appear.
+    return pickRandom(Math.random() < 0.75 ? evening : base);
+  }
+  if (hour >= 23 || hour < 4) {
+    return pickRandom([
+      g("Night owl mode?", "large sloth glasses.png"),
+      g("Late night ideas?", "large sloth yay.png"),
+      g("Up late with an idea?", "large sloth heart.png"),
+      g(name ? `The night shift begins, ${name}` : "The night shift begins", "large sloth drink.png"),
+    ]);
+  }
+  return pickRandom(base);
+}
+
 const ThreadWelcome: FC<{
   hideComposer?: boolean;
   threadId?: string | null;
 }> = ({ hideComposer, threadId }) => {
-  const [currentEmoji, setCurrentEmoji] = useState("large sloth drink.png");
+  const displayName = useUserProfileStore((s) => s.displayName);
+  const [welcome, setWelcome] = useState<Welcome>(DEFAULT_WELCOME);
 
   useEffect(() => {
-    const hour = new Date().getHours();
-    if (hour >= 6 && hour < 12) setCurrentEmoji("large sloth drink.png");
-    else if (hour >= 12 && hour < 17)
-      setCurrentEmoji("sloth magnify final.png");
-    else if (hour >= 17 && hour < 21) setCurrentEmoji("sloth shy large.png");
-    else setCurrentEmoji("unsloth-gem.png");
-  }, []);
+    // First name only, for a natural greeting; blank falls back to no name.
+    const name = displayName.trim().split(/\s+/)[0] ?? "";
+    setWelcome(buildWelcome(new Date().getHours(), name));
+  }, [displayName]);
 
-  const currentEmojiSrc =
-    currentEmoji === "unsloth-gem.png"
-      ? `/${currentEmoji}`
-      : `/Sloth emojis/${currentEmoji}`;
+  const currentEmojiSrc = `/Sloth emojis/${welcome.sloth}`;
 
   return (
     <div className="aui-thread-welcome-root mx-auto my-auto flex w-full max-w-(--thread-max-width) grow flex-col">
-      <div className="aui-thread-welcome-center flex w-full grow flex-col items-center justify-center pb-[48px]">
-        <div className="aui-thread-welcome-message flex w-full flex-col justify-center gap-6 px-4">
-          <div className="flex flex-col items-center gap-2 text-center">
-            <img src={currentEmojiSrc} alt="Sloth mascot" className="size-20" />
-            <h1 className="aui-thread-welcome-message-inner fade-in slide-in-from-bottom-1 animate-in font-heading font-semibold text-2xl tracking-[-0.02em] duration-200">
-              Chat with your model
+      <div className="aui-thread-welcome-center flex w-full grow flex-col items-center justify-start pt-[28vh]">
+        <div className="aui-thread-welcome-message flex w-full flex-col justify-center gap-9 px-4">
+          {/* Center the whole greeting (sloth + title) over the composer. */}
+          <div className="flex flex-row items-center justify-center gap-[15px]">
+            <img
+              src={currentEmojiSrc}
+              alt="Sloth mascot"
+              className="size-[44px] -translate-y-[2px]"
+            />
+            <h1 className="aui-thread-welcome-message-inner unsloth-welcome-title fade-in slide-in-from-bottom-1 animate-in text-3xl tracking-[-0.02em] duration-200">
+              {welcome.text}
             </h1>
-            <p className="aui-thread-welcome-message-inner fade-in slide-in-from-bottom-1 -mt-1 animate-in font-heading font-normal text-muted-foreground text-sm delay-75 duration-200">
-              Run GGUFs, safetensors, vision and audio models
-            </p>
           </div>
           {!hideComposer && <ComposerAnimated threadId={threadId} />}
         </div>
@@ -388,14 +507,27 @@ const ThreadWelcome: FC<{
   );
 };
 
+export const ProjectComposer: FC<{
+  disabled?: boolean;
+  placeholder?: string;
+}> = ({ disabled, placeholder }) => {
+  return (
+    <GeneratedImageOverlayProvider>
+      <ComposerAnimated disabled={disabled} placeholder={placeholder} />
+    </GeneratedImageOverlayProvider>
+  );
+};
+
 const ComposerAnimated: FC<{
   disabled?: boolean;
+  placeholder?: string;
   threadId?: string | null;
-}> = ({ disabled, threadId }) => {
+  menuSide?: "top" | "bottom";
+}> = ({ disabled, threadId, menuSide }) => {
   return (
-    <div className="relative mx-auto min-w-0 w-full max-w-(--thread-max-width)">
+    <div className="relative mx-auto min-w-0 w-full max-w-[46rem]">
       <div className="relative z-10 w-full">
-        <Composer disabled={disabled} threadId={threadId} />
+        <Composer disabled={disabled} threadId={threadId} menuSide={menuSide} />
       </div>
     </div>
   );
@@ -427,13 +559,32 @@ const PendingAudioChip: FC = () => {
 
 const Composer: FC<{
   disabled?: boolean;
+  placeholder?: string;
   threadId?: string | null;
-}> = ({ disabled, threadId }) => {
+  menuSide?: "top" | "bottom";
+}> = ({ disabled, threadId, menuSide }) => {
   const aui = useAui();
+  const pageDragging = useContext(PageDragContext);
   const { overlay, closeOverlay } = useGeneratedImageOverlay();
   const setImageToolsEnabled = useChatRuntimeStore(
     (s) => s.setImageToolsEnabled,
   );
+  const toolsEnabled = useChatRuntimeStore((s) => s.toolsEnabled);
+  const codeToolsEnabled = useChatRuntimeStore((s) => s.codeToolsEnabled);
+  const imageToolsEnabled = useChatRuntimeStore((s) => s.imageToolsEnabled);
+  const supportsBuiltinImageGeneration = useChatRuntimeStore(
+    (s) => s.supportsBuiltinImageGeneration,
+  );
+  const artifactsEnabled = useChatRuntimeStore((s) => s.artifactsEnabled);
+  const mcpEnabledForChat = useChatRuntimeStore((s) => s.mcpEnabledForChat);
+  // With more than 4 pills showing, collapse them to icons only to cut clutter.
+  // Search and Code always show; Images, Canvas and MCP are conditional.
+  const pillsCompact =
+    2 +
+      (supportsBuiltinImageGeneration ? 1 : 0) +
+      (artifactsEnabled ? 1 : 0) +
+      (mcpEnabledForChat ? 1 : 0) >
+    4;
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const setPendingImageEditReference = useChatRuntimeStore(
     (s) => s.setPendingImageEditReference,
@@ -441,6 +592,37 @@ const Composer: FC<{
   const { inputProps, isComposing, isComposingRef } =
     useImeComposerInputHandlers();
   const composerText = useAuiState(({ composer }) => composer.text);
+  // Expand only once the input wraps to a second line, not on first keystroke.
+  // Latch until cleared so it can't flip-flop at the wrap boundary.
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  // Cache line metrics so getComputedStyle runs once, not on every keystroke.
+  const lineMetricsRef = useRef<{ lineHeight: number; padding: number } | null>(
+    null,
+  );
+  const [isMultiline, setIsMultiline] = useState(false);
+  useEffect(() => {
+    if (composerText.length === 0) {
+      setIsMultiline(false);
+      lineMetricsRef.current = null;
+      return;
+    }
+    // Latched on: stays until the text clears, so skip re-measuring.
+    if (isMultiline) return;
+    const el = inputRef.current;
+    if (!el) {
+      return;
+    }
+    if (!lineMetricsRef.current) {
+      const cs = getComputedStyle(el);
+      const lineHeight = Number.parseFloat(cs.lineHeight) || 24;
+      const padTop = Number.parseFloat(cs.paddingTop) || 0;
+      const padBottom = Number.parseFloat(cs.paddingBottom) || 0;
+      lineMetricsRef.current = { lineHeight, padding: padTop + padBottom };
+    }
+    const { lineHeight, padding } = lineMetricsRef.current;
+    const contentHeight = el.scrollHeight - padding;
+    if (contentHeight > lineHeight * 1.5) setIsMultiline(true);
+  }, [composerText, isMultiline]);
   const hasAttachments = useAuiState(
     ({ composer }) => composer.attachments.length > 0,
   );
@@ -455,6 +637,58 @@ const Composer: FC<{
   const referenceThreadId = threadId ?? activeThreadId ?? null;
   const hasSendableContent =
     composerText.trim().length > 0 || hasAttachments || hasPendingAudio;
+  // Two-row layout shows once the input wraps or a tool is on. Tools pre-select
+  // before a model loads, so an active toggle expands the composer either way.
+  const composerExpanded =
+    isMultiline ||
+    hasAttachments ||
+    hasPendingAudio ||
+    toolsEnabled ||
+    codeToolsEnabled ||
+    imageToolsEnabled ||
+    artifactsEnabled ||
+    mcpEnabledForChat;
+  // react-textarea-autosize re-measures only on value change or window resize,
+  // not on the width swap from expanding, so it keeps the taller height and
+  // leaves a stray blank row. Nudge a resize whenever the input width changes.
+  useEffect(() => {
+    const el = inputRef.current;
+    if (!el || typeof ResizeObserver === "undefined") {
+      return;
+    }
+    let lastWidth = -1;
+    const pending: Array<ReturnType<typeof setTimeout>> = [];
+    const observer = new ResizeObserver((entries) => {
+      const width = Math.round(entries[0]?.contentRect.width ?? 0);
+      // Width changes only; reacting to autosize's height change would loop.
+      if (width === lastWidth) {
+        return;
+      }
+      lastWidth = width;
+      // Re-measure after layout settles. An immediate dispatch races autosize's
+      // own measurement (stale pre-expand width); 0ms + 64ms wins it, no flash.
+      while (pending.length) {
+        clearTimeout(pending.pop());
+      }
+      for (const delay of [0, 64]) {
+        pending.push(
+          setTimeout(() => {
+            window.dispatchEvent(new Event("resize"));
+          }, delay),
+        );
+      }
+    });
+    observer.observe(el);
+    return () => {
+      while (pending.length) {
+        clearTimeout(pending.pop());
+      }
+      observer.disconnect();
+    };
+  }, []);
+  // Docked composer opens upward; the centered welcome composer opens downward
+  // by default and only flips up via collision detection when it would not fit.
+  const effectiveMenuSide = menuSide ?? "bottom";
   const shouldBlockSend = useCallback(
     () =>
       !hasSendableContent || isComposingRef.current || hasPendingAttachments,
@@ -528,30 +762,54 @@ const Composer: FC<{
       <ComposerAttachments />
       <PendingAudioChip />
       <ToolStatusDisplay />
-      <ComposerPrimitive.Input
-        placeholder={
-          overlay ? "Type your edits for your image" : "Send a message..."
-        }
-        className="aui-composer-input composer-input"
-        minRows={1}
-        maxRows={12}
-        autoFocus={!disabled}
-        disabled={disabled}
-        aria-label={overlay ? "Image edit instructions" : "Message input"}
-        // dir="auto": browser picks LTR/RTL from the first strong char;
-        // no effect on Latin / CJK / Devanagari.
-        dir="auto"
-        {...inputProps}
-      />
-      <ComposerAction
-        disabled={
-          disabled ||
-          !hasSendableContent ||
-          isComposing ||
-          hasPendingAttachments
-        }
-        shouldBlockSend={shouldBlockSend}
-      />
+      <div
+        className="unsloth-composer-line"
+        data-expanded={composerExpanded ? "true" : "false"}
+      >
+        <div
+          className="unsloth-composer-left"
+          data-pill-compact={pillsCompact ? "true" : undefined}
+        >
+          <ComposerToolsMenu side={effectiveMenuSide} />
+          {composerExpanded ? (
+            <>
+              <WebSearchToggle />
+              <CodeToolsToggle />
+              <ImagesToggle />
+              {artifactsEnabled ? <ArtifactsToggle /> : null}
+              {mcpEnabledForChat ? (
+                <McpComposerButton side={effectiveMenuSide} />
+              ) : null}
+            </>
+          ) : null}
+        </div>
+        <ComposerPrimitive.Input
+          placeholder={
+            overlay ? "Type your edits for your image" : "Ask anything"
+          }
+          ref={inputRef}
+          className="aui-composer-input unsloth-composer-input"
+          minRows={1}
+          maxRows={12}
+          autoFocus={!disabled}
+          disabled={disabled}
+          aria-label={overlay ? "Image edit instructions" : "Message input"}
+          // dir="auto": browser picks LTR/RTL from the first strong char;
+          // no effect on Latin / CJK / Devanagari.
+          dir="auto"
+          {...inputProps}
+        />
+        <ComposerRightControls
+          disabled={
+            disabled ||
+            !hasSendableContent ||
+            isComposing ||
+            hasPendingAttachments
+          }
+          shouldBlockSend={shouldBlockSend}
+          menuSide={effectiveMenuSide}
+        />
+      </div>
     </>
   );
 
@@ -564,12 +822,30 @@ const Composer: FC<{
       {isTauri ? (
         // Phase 1 native model drops own Tauri local-path drops. Restore browser
         // attachment drops in Tauri when Phase 1d adds attachment-token bridging.
-        <div className="aui-composer-attachment-dropzone chat-composer-surface">
+        <div className="aui-composer-attachment-dropzone unsloth-composer-surface">
           {composerContent}
         </div>
       ) : (
-        <ComposerPrimitive.AttachmentDropzone className="aui-composer-attachment-dropzone chat-composer-surface data-[dragging=true]:border-ring data-[dragging=true]:bg-accent/50">
+        <ComposerPrimitive.AttachmentDropzone className="group/dropzone aui-composer-attachment-dropzone unsloth-composer-surface relative">
           {composerContent}
+          {/* Gemini-style drop affordance: shown only while a file is dragged
+              over the composer. Absolutely positioned + pointer-events-none so
+              the dashed outline adds no layout shift and the drop still lands. */}
+          <div
+            className={cn(
+              "aui-composer-drop-overlay pointer-events-none absolute inset-0 z-20 flex flex-col items-center justify-center gap-1 overflow-hidden rounded-[32px] bg-background/90 opacity-0 backdrop-blur-sm transition-opacity duration-150 group-data-[dragging=true]/dropzone:opacity-100 dark:bg-card/90",
+              pageDragging && "opacity-100",
+            )}
+          >
+            <HugeiconsIcon
+              icon={AttachmentIcon}
+              strokeWidth={2}
+              className="size-6 text-primary"
+            />
+            <span className="text-sm font-medium text-primary">
+              Drop files here
+            </span>
+          </div>
         </ComposerPrimitive.AttachmentDropzone>
       )}
     </ComposerPrimitive.Root>
@@ -700,8 +976,8 @@ function useImeComposerInputHandlers() {
   };
 }
 
-const ComposerAudioUpload: FC = () => {
-  const audioInputRef = useRef<HTMLInputElement>(null);
+// Audio upload row, only for audio-input models.
+const ComposerAudioMenuItem: FC = () => {
   const setPendingAudio = useChatRuntimeStore((s) => s.setPendingAudio);
   const activeModel = useChatRuntimeStore((s) => {
     const checkpoint = s.params.checkpoint;
@@ -723,41 +999,91 @@ const ComposerAudioUpload: FC = () => {
     [setPendingAudio],
   );
 
+  // Build the input on document.body, not in the menu: selecting the item
+  // closes the dropdown, which would unmount a menu-rendered input before the
+  // OS picker returns and drop the file.
+  const pickAudio = useCallback(() => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = AUDIO_ACCEPT;
+    input.hidden = true;
+    document.body.appendChild(input);
+    input.onchange = () => {
+      const file = input.files?.[0];
+      if (file) handleAudioFile(file);
+      document.body.removeChild(input);
+    };
+    input.oncancel = () => {
+      if (!input.files || input.files.length === 0) {
+        document.body.removeChild(input);
+      }
+    };
+    input.click();
+  }, [handleAudioFile]);
+
   if (!activeModel?.hasAudioInput) {
     return null;
   }
 
   return (
-    <>
-      <input
-        ref={audioInputRef}
-        type="file"
-        accept={AUDIO_ACCEPT}
-        className="hidden"
-        onChange={(e) => {
-          const file = e.target.files?.[0];
-          if (file) {
-            handleAudioFile(file);
-          }
-          e.target.value = "";
-        }}
-      />
-      <TooltipIconButton
-        tooltip="Upload audio"
-        side="bottom"
-        variant="ghost"
-        size="icon"
-        className="size-8.5 rounded-full p-1 text-muted-foreground hover:bg-muted-foreground/15"
-        onClick={() => audioInputRef.current?.click()}
-        aria-label="Upload audio"
-      >
-        <HeadphonesIcon className="size-4.5 stroke-[1.5px]" />
-      </TooltipIconButton>
-    </>
+    <DropdownMenuItem onSelect={() => pickAudio()}>
+      <HeadphonesIcon />
+      Upload audio
+    </DropdownMenuItem>
   );
 };
 
-const ReasoningToggle: FC = () => {
+// Phosphor microphone. Inlined to avoid a new icon dependency.
+const MicIcon: FC<{ className?: string }> = ({ className }) => (
+  <svg
+    className={className}
+    viewBox="0 0 256 256"
+    fill="currentColor"
+    xmlns="http://www.w3.org/2000/svg"
+    aria-hidden={true}
+  >
+    <path d="M128,176a48.05,48.05,0,0,0,48-48V64a48,48,0,0,0-96,0v64A48.05,48.05,0,0,0,128,176ZM96,64a32,32,0,0,1,64,0v64a32,32,0,0,1-64,0Zm40,143.6V232a8,8,0,0,1-16,0V207.6A80.11,80.11,0,0,1,48,128a8,8,0,0,1,16,0,64,64,0,0,0,128,0,8,8,0,0,1,16,0A80.11,80.11,0,0,1,136,207.6Z" />
+  </svg>
+);
+
+// HugeIcons arrow-down-01 (stroke-standard): straight-line chevron.
+const ArrowDownStandardIcon: FC<{ className?: string }> = ({ className }) => (
+  <svg
+    className={className}
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth={1.5}
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    xmlns="http://www.w3.org/2000/svg"
+    aria-hidden={true}
+  >
+    <path d="M5.99977 9.00005L11.9998 15L17.9998 9" />
+  </svg>
+);
+
+// svgrepo.com lightbulb (filled, with base).
+const BulbIcon: FC<{ className?: string }> = ({ className }) => (
+  <svg
+    className={className}
+    viewBox="-10.24 -10.24 1044.48 1044.48"
+    fill="currentColor"
+    stroke="currentColor"
+    strokeWidth={16.384}
+    xmlns="http://www.w3.org/2000/svg"
+    aria-hidden={true}
+  >
+    <path d="M511.984 0c-198.032 0-353.12 161.104-353.12 359.136 0 149.2 73.28 220.256 131.185 272.128 37.28 33.424 62.368 53.552 62.368 78.352v54.255c0 1.392.193 2.752.368 4.128h-.72v92.624c.016 97.712 63.2 163.376 161.072 163.376 94.464 0 158.944-65.664 158.944-163.376V768h-.928c.176-1.376.416-2.736.416-4.128v-54.255c0-37.76 28.032-60.592 70.528-97.696 57.504-50.208 123.023-112.688 123.023-252.784C865.136 161.104 710.016 0 511.983 0zm-1.215 960c-59.904 0-94.689-37.152-94.689-99.376l-.463-42.672C438.64 825.824 470 832 512 832c41.424 0 72.848-6.624 96.08-14.768v43.392c0 63.152-35.247 99.376-97.312 99.376zm189.248-396.288c-43.472 37.968-92.433 77.216-92.433 145.904v40.432c-15.183 8.48-43.183 18.56-96.127 18.56-55.569 0-81.92-9.856-95.024-17.473V709.6c0-54.608-42.688-89.297-83.68-126.017-54.32-48.672-109.873-103.84-109.873-224.464-.015-162.72 126.385-295.12 289.104-295.12 162.752 0 289.152 132.4 289.152 295.137 0 111.024-48.463 158.576-101.12 204.576z" />
+  </svg>
+);
+
+// Same bulb in every state; greyed by the pill's muted color when off.
+const ThinkIcon: FC = () => <BulbIcon className="size-[15.5px]" />;
+
+const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
+  side = "bottom",
+}) => {
   const modelLoaded = useChatRuntimeStore(
     (s) => !!s.params.checkpoint && !s.modelLoading,
   );
@@ -791,6 +1117,11 @@ const ReasoningToggle: FC = () => {
   const isKimiExternal = selectedExternalProvider?.providerType === "kimi";
   const toolsEnabled = useChatRuntimeStore((s) => s.toolsEnabled);
   const setToolsEnabled = useChatRuntimeStore((s) => s.setToolsEnabled);
+  const supportsPreserveThinking = useChatRuntimeStore(
+    (s) => s.supportsPreserveThinking,
+  );
+  const preserveThinking = useChatRuntimeStore((s) => s.preserveThinking);
+  const setPreserveThinking = useChatRuntimeStore((s) => s.setPreserveThinking);
   const effectiveExternalModelId =
     selectedExternalProvider?.providerType === "openrouter" &&
     externalSelection?.modelId === "openrouter/free" &&
@@ -805,6 +1136,7 @@ const ReasoningToggle: FC = () => {
           {
             isReasoningProvider:
               selectedExternalProvider?.isReasoningModel === true,
+            // Lets the resolver detect custom Gemini OAI-compat gateways.
             baseUrl: selectedExternalProvider?.baseUrl ?? null,
           },
         )
@@ -840,71 +1172,143 @@ const ReasoningToggle: FC = () => {
   };
   const effortLabel = formatEffortLabel(reasoningEffort);
 
-  if (effectiveReasoningStyle === "reasoning_effort") {
+  // Only rendered for models that can reason.
+  if (!effectiveSupportsReasoning) {
+    return null;
+  }
+
+  const isEffort = effectiveReasoningStyle === "reasoning_effort";
+  // Dropdown when there are effort levels or preserve-thinking; else a toggle.
+  const useDropdown = isEffort || supportsPreserveThinking;
+  const activeLook = isEffort
+    ? reasoningLockedOn || (effectiveReasoningVisualEnabled && !disabled)
+    : reasoningLockedOn || (effectiveReasoningEnabled && !disabled);
+
+  if (useDropdown) {
     return (
       <DropdownMenu>
         <DropdownMenuTrigger asChild={true}>
           <button
             type="button"
             disabled={disabled}
-            className={cn(
-              "flex items-center gap-1.5 rounded-full px-1.5 py-1.5 text-[13px] font-medium text-muted-foreground/70 transition-colors",
-              disabled
-                ? "cursor-not-allowed opacity-40"
-                : effectiveReasoningVisualEnabled
-                  ? "text-primary hover:bg-primary/10 dark:hover:bg-white/[0.08]"
-                  : "hover:bg-primary/10 dark:hover:bg-white/[0.08]",
-            )}
+            className="unsloth-thinking-pill"
+            data-active={activeLook ? "true" : "false"}
             aria-label={thinkEffortAriaLabel({
               modelLoaded,
               reasoningDisabled: disabled,
               reasoningEffort,
             })}
           >
-            {effectiveReasoningVisualEnabled ? (
-              <LightbulbIcon className="size-3.5" />
-            ) : (
-              <LightbulbOffIcon className="size-3.5" />
-            )}
-            <span>
-              Think: {effectiveReasoningVisualEnabled ? effortLabel : "None"}
-            </span>
+            <ThinkIcon />
+            {activeLook ? (
+              <span>{isEffort ? `Thinking · ${effortLabel}` : "Thinking"}</span>
+            ) : null}
+            <ArrowDownStandardIcon className="size-[15px]" />
           </button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="end">
-          {effectiveSupportsReasoningOff && (
-            <DropdownMenuItem
-              onSelect={() => {
-                setReasoningEnabled(false);
-                applyQwenThinkingParams(false);
-              }}
-            >
-              None
-              {!effectiveReasoningVisualEnabled ? " \u2713" : ""}
-            </DropdownMenuItem>
-          )}
-          {effectiveReasoningEffortLevels
-            .filter((level) => level !== "none")
-            .map((level) => (
+        <DropdownMenuContent
+          side={side}
+          align="end"
+          avoidCollisions={true}
+          className="unsloth-plus-menu unsloth-thinking-menu min-w-0 w-[160px]"
+        >
+          {isEffort ? (
+            <>
+              {effectiveSupportsReasoningOff && (
+                <DropdownMenuItem
+                  onSelect={() => {
+                    setReasoningEnabled(false);
+                    applyQwenThinkingParams(false);
+                    // Preserve thinking needs thinking on, so turn it off too.
+                    setPreserveThinking(false);
+                  }}
+                >
+                  <CheckIcon
+                    className={cn(
+                      "unsloth-tick size-4",
+                      effectiveReasoningVisualEnabled && "opacity-0",
+                    )}
+                  />
+                  None
+                </DropdownMenuItem>
+              )}
+              {effectiveReasoningEffortLevels
+                .filter((level) => level !== "none")
+                .map((level) => (
+                  <DropdownMenuItem
+                    key={level}
+                    onSelect={() => {
+                      setReasoningEffort(level);
+                      setReasoningEnabled(true);
+                      applyQwenThinkingParams(true);
+                      // Kimi's $web_search builtin forbids thinking, so
+                      // enabling thinking flips the Search pill off.
+                      if (isKimiExternal && toolsEnabled) {
+                        setToolsEnabled(false, { persist: false });
+                      }
+                    }}
+                  >
+                    <CheckIcon
+                      className={cn(
+                        "unsloth-tick size-4",
+                        !(
+                          effectiveReasoningVisualEnabled &&
+                          reasoningEffort === level
+                        ) && "opacity-0",
+                      )}
+                    />
+                    {formatEffortLabel(level)}
+                  </DropdownMenuItem>
+                ))}
+            </>
+          ) : (
+            effectiveSupportsReasoningOff &&
+            !reasoningLockedOn && (
               <DropdownMenuItem
-                key={level}
                 onSelect={() => {
-                  setReasoningEffort(level);
-                  setReasoningEnabled(true);
-                  applyQwenThinkingParams(true);
-                  // Kimi's $web_search builtin forbids thinking, so
-                  // enabling thinking flips the Search pill off.
-                  if (isKimiExternal && toolsEnabled) {
-                    setToolsEnabled(false);
+                  const next = !reasoningEnabled;
+                  setReasoningEnabled(next);
+                  applyQwenThinkingParams(next);
+                  // Preserve thinking cannot run without thinking.
+                  if (!next) setPreserveThinking(false);
+                  if (isKimiExternal && next && toolsEnabled) {
+                    setToolsEnabled(false, { persist: false });
                   }
                 }}
               >
-                {formatEffortLabel(level)}
-                {effectiveReasoningVisualEnabled && reasoningEffort === level
-                  ? " \u2713"
-                  : ""}
+                <CheckIcon
+                  className={cn(
+                    "unsloth-tick size-4",
+                    !effectiveReasoningEnabled && "opacity-0",
+                  )}
+                />
+                Thinking
               </DropdownMenuItem>
-            ))}
+            )
+          )}
+          {supportsPreserveThinking && (
+            <DropdownMenuItem
+              disabled={disabled}
+              onSelect={(e) => {
+                e.preventDefault();
+                const next = !preserveThinking;
+                setPreserveThinking(next);
+                // Preserve thinking requires thinking on.
+                if (next) {
+                  setReasoningEnabled(true);
+                  applyQwenThinkingParams(true);
+                }
+              }}
+            >
+              <CheckIcon
+                className={cn(
+                  "unsloth-tick size-4",
+                  !preserveThinking && "opacity-0",
+                )}
+              />
+              Preserve thinking
+            </DropdownMenuItem>
+          )}
         </DropdownMenuContent>
       </DropdownMenu>
     );
@@ -925,18 +1329,13 @@ const ReasoningToggle: FC = () => {
         const next = !reasoningEnabled;
         setReasoningEnabled(next);
         applyQwenThinkingParams(next);
-        // Mutual exclusion with the Search pill on Kimi — see the
-        // dropdown branch above and shared-composer for the same rule.
+        // Mutually exclusive with Search on Kimi (see dropdown branch).
         if (isKimiExternal && next && toolsEnabled) {
-          setToolsEnabled(false);
+          setToolsEnabled(false, { persist: false });
         }
       }}
-      className="composer-pill-btn"
-      data-active={
-        reasoningLockedOn || (effectiveReasoningEnabled && !disabled)
-          ? "true"
-          : "false"
-      }
+      className="unsloth-thinking-pill"
+      data-active={activeLook ? "true" : "false"}
       aria-label={thinkToggleAriaLabel({
         reasoningLockedOn,
         modelLoaded,
@@ -944,53 +1343,21 @@ const ReasoningToggle: FC = () => {
         effectiveReasoningEnabled,
       })}
     >
-      {reasoningLockedOn || (effectiveReasoningEnabled && !disabled) ? (
-        <LightbulbIcon className="size-3.5" />
-      ) : (
-        <LightbulbOffIcon className="size-3.5" />
-      )}
-      <span>Think</span>
+      <PillGlyph>
+        <ThinkIcon />
+      </PillGlyph>
+      {activeLook ? <span>Thinking</span> : null}
     </button>
   );
 };
 
-const PreserveThinkingToggle: FC = () => {
-  const modelLoaded = useChatRuntimeStore(
-    (s) => !!s.params.checkpoint && !s.modelLoading,
-  );
-  const supportsPreserveThinking = useChatRuntimeStore(
-    (s) => s.supportsPreserveThinking,
-  );
-  const preserveThinking = useChatRuntimeStore((s) => s.preserveThinking);
-  const setPreserveThinking = useChatRuntimeStore((s) => s.setPreserveThinking);
-  if (!supportsPreserveThinking) return null;
-  const disabled = !modelLoaded;
-  return (
-    <button
-      type="button"
-      disabled={disabled}
-      onClick={() => setPreserveThinking(!preserveThinking)}
-      className={cn(
-        "flex items-center gap-1.5 rounded-full px-1.5 py-1.5 text-[13px] font-medium text-muted-foreground/70 transition-colors",
-        disabled
-          ? "cursor-not-allowed opacity-40"
-          : preserveThinking
-            ? "text-primary hover:bg-primary/10 dark:hover:bg-white/[0.08]"
-            : "hover:bg-primary/10 dark:hover:bg-white/[0.08]",
-      )}
-      aria-label={
-        preserveThinking ? "Disable preserve think" : "Enable preserve think"
-      }
-    >
-      {preserveThinking && !disabled ? (
-        <LightbulbIcon className="size-3.5" />
-      ) : (
-        <LightbulbOffIcon className="size-3.5" />
-      )}
-      <span>Preserve Think</span>
-    </button>
-  );
-};
+// Tool icon plus an X overlay the CSS reveals on hover when the pill is active.
+const PillGlyph: FC<{ children: ReactNode }> = ({ children }) => (
+  <span className="composer-pill-glyph">
+    {children}
+    <XIcon className="composer-pill-x" />
+  </span>
+);
 
 const WebSearchToggle: FC = () => {
   const modelLoaded = useChatRuntimeStore(
@@ -1019,7 +1386,9 @@ const WebSearchToggle: FC = () => {
       ? externalProviders.find((p) => p.id === externalSelection.providerId)
       : undefined;
   const isKimiExternal = selectedExternalProvider?.providerType === "kimi";
-  const disabled = !modelLoaded || !(supportsTools || supportsBuiltinWebSearch);
+  // Disable only when a loaded model lacks the capability; with no model the
+  // tool can still be pre-selected and reflected, matching the + menu.
+  const disabled = modelLoaded && !(supportsTools || supportsBuiltinWebSearch);
 
   return (
     <button
@@ -1033,7 +1402,7 @@ const WebSearchToggle: FC = () => {
         // the two pills mutually exclusive so the visible state always
         // matches what the backend ends up sending.
         if (isKimiExternal) {
-          setReasoningEnabled(!next);
+          setReasoningEnabled(!next, { persist: false });
           applyQwenThinkingParams(!next);
         }
       }}
@@ -1041,7 +1410,9 @@ const WebSearchToggle: FC = () => {
       data-active={toolsEnabled && !disabled ? "true" : "false"}
       aria-label={toolsEnabled ? "Disable web search" : "Enable web search"}
     >
-      <GlobeIcon className="size-3.5" />
+      <PillGlyph>
+        <GlobeIcon className="size-[15px]" />
+      </PillGlyph>
       <span>Search</span>
     </button>
   );
@@ -1062,8 +1433,9 @@ const CodeToolsToggle: FC = () => {
   );
   const codeToolsEnabled = useChatRuntimeStore((s) => s.codeToolsEnabled);
   const setCodeToolsEnabled = useChatRuntimeStore((s) => s.setCodeToolsEnabled);
-  const disabled =
-    !modelLoaded || !(supportsTools || supportsBuiltinCodeExecution);
+  // Disable only when a loaded model lacks the capability; with no model the
+  // tool can still be pre-selected and reflected, matching the + menu.
+  const disabled = modelLoaded && !(supportsTools || supportsBuiltinCodeExecution);
 
   return (
     <button
@@ -1076,7 +1448,13 @@ const CodeToolsToggle: FC = () => {
         codeToolsEnabled ? "Disable code execution" : "Enable code execution"
       }
     >
-      <CodeToggleIcon className="size-3.5" />
+      <PillGlyph>
+        <HugeiconsIcon
+          icon={CodeIcon}
+          className="size-[18.5px]"
+          strokeWidth={2}
+        />
+      </PillGlyph>
       <span>Code</span>
     </button>
   );
@@ -1114,31 +1492,36 @@ const ImagesToggle: FC = () => {
           : "Enable image generation"
       }
     >
-      <HugeiconsIcon icon={Image03Icon} className="size-3.5" strokeWidth={2} />
+      <PillGlyph>
+        <HugeiconsIcon icon={Image03Icon} className="size-3.5" strokeWidth={2} />
+      </PillGlyph>
       <span>Images</span>
     </button>
   );
 };
 
 const ArtifactsToggle: FC = () => {
-  const modelLoaded = useChatRuntimeStore(
-    (s) => !!s.params.checkpoint && !s.modelLoading,
-  );
   const artifactsEnabled = useChatRuntimeStore((s) => s.artifactsEnabled);
   const setArtifactsEnabled = useChatRuntimeStore((s) => s.setArtifactsEnabled);
-  const disabled = !modelLoaded;
+  // Canvas is opt-in; the pill only shows once it is toggled on from the menu.
+  if (!artifactsEnabled) return null;
 
   return (
     <button
       type="button"
-      disabled={disabled}
-      onClick={() => setArtifactsEnabled(!artifactsEnabled)}
+      onClick={() => setArtifactsEnabled(false)}
       className="composer-pill-btn"
-      data-active={artifactsEnabled && !disabled ? "true" : "false"}
-      aria-label={artifactsEnabled ? "Disable artifacts" : "Enable artifacts"}
+      data-active="true"
+      aria-label="Disable canvas"
     >
-      <FileTextIcon className="size-3.5" />
-      <span>Artifacts</span>
+      <PillGlyph>
+        <HugeiconsIcon
+          icon={PencilRulerIcon}
+          className="size-[15.5px]"
+          strokeWidth={2}
+        />
+      </PillGlyph>
+      <span>Canvas</span>
     </button>
   );
 };
@@ -1200,84 +1583,309 @@ const ToolStatusDisplay: FC = () => {
     </div>
   );
 };
+// Plus menu: attachment and workflow actions. Opens downward in the centered
+// welcome composer; the docked composer passes side="top" to open upward.
+const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
+  side = "bottom",
+}) => {
+  const navigate = useNavigate();
+  const toolsEnabled = useChatRuntimeStore((s) => s.toolsEnabled);
+  const setToolsEnabled = useChatRuntimeStore((s) => s.setToolsEnabled);
+  const codeToolsEnabled = useChatRuntimeStore((s) => s.codeToolsEnabled);
+  const setCodeToolsEnabled = useChatRuntimeStore((s) => s.setCodeToolsEnabled);
+  const artifactsEnabled = useChatRuntimeStore((s) => s.artifactsEnabled);
+  const setArtifactsEnabled = useChatRuntimeStore((s) => s.setArtifactsEnabled);
+  const mcpEnabledForChat = useChatRuntimeStore((s) => s.mcpEnabledForChat);
+  const setMcpEnabledForChat = useChatRuntimeStore(
+    (s) => s.setMcpEnabledForChat,
+  );
+  // Capability gating, mirroring the visible pills so menu and pills agree on
+  // what a loaded model supports (a tool the backend drops must not look on).
+  const modelLoaded = useChatRuntimeStore(
+    (s) => !!s.params.checkpoint && !s.modelLoading,
+  );
+  const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
+  const supportsTools = useChatRuntimeStore((s) => s.supportsTools);
+  const supportsBuiltinWebSearch = useChatRuntimeStore(
+    (s) => s.supportsBuiltinWebSearch,
+  );
+  const supportsBuiltinCodeExecution = useChatRuntimeStore(
+    (s) => s.supportsBuiltinCodeExecution,
+  );
+  const supportsBuiltinImageGeneration = useChatRuntimeStore(
+    (s) => s.supportsBuiltinImageGeneration,
+  );
+  const imageToolsEnabled = useChatRuntimeStore((s) => s.imageToolsEnabled);
+  const setImageToolsEnabled = useChatRuntimeStore(
+    (s) => s.setImageToolsEnabled,
+  );
+  const setReasoningEnabled = useChatRuntimeStore((s) => s.setReasoningEnabled);
+  const connectionsEnabled = useExternalProvidersStore(
+    (s) => s.connectionsEnabled,
+  );
+  const externalProvidersAll = useExternalProvidersStore((s) => s.providers);
+  const externalProviders = connectionsEnabled ? externalProvidersAll : [];
+  const externalSelection = parseExternalModelId(checkpoint);
+  const selectedExternalProvider =
+    externalSelection != null
+      ? externalProviders.find((p) => p.id === externalSelection.providerId)
+      : undefined;
+  const isKimiExternal = selectedExternalProvider?.providerType === "kimi";
+  // Disable only when a loaded model lacks the capability; with no model the
+  // tool can still be pre-selected, matching the pill logic above.
+  const searchDisabled =
+    modelLoaded && !(supportsTools || supportsBuiltinWebSearch);
+  const codeDisabled =
+    modelLoaded && !(supportsTools || supportsBuiltinCodeExecution);
+  const imageDisabled = !modelLoaded;
+  // Like Search/Code: disabled only when a loaded model lacks tool support.
+  const mcpDisabled = modelLoaded && !supportsTools;
+  // Three most recently updated projects for the quick-access submenu.
+  const { projects } = useChatProjects();
+  const recentProjects = [...projects]
+    .sort((a, b) => b.updatedAt - a.updatedAt)
+    .slice(0, 3);
+  const openProject = (projectId: string) => {
+    useChatRuntimeStore.getState().setActiveProjectId(projectId);
+    navigate({ to: "/chat", search: { project: projectId } });
+  };
 
-const ComposerAction: FC<{
+  const startCompare = useCallback(() => {
+    const store = useChatRuntimeStore.getState();
+    store.setActiveThreadId(null);
+    store.setContextUsage(null);
+    // crypto.randomUUID is undefined in non-secure contexts (HTTP over a LAN IP).
+    const compareId =
+      typeof globalThis.crypto?.randomUUID === "function"
+        ? globalThis.crypto.randomUUID()
+        : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    navigate({ to: "/chat", search: { compare: compareId } });
+  }, [navigate]);
+
+  const [newProjectOpen, setNewProjectOpen] = useState(false);
+
+  return (
+    <>
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild={true}>
+        <button
+          type="button"
+          aria-label="Tools and attachments"
+          className="unsloth-composer-plus"
+        >
+          <PlusIcon className="size-[22px] stroke-[1.75px]" />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent
+        side={side}
+        align="start"
+        sideOffset={2}
+        avoidCollisions={true}
+        className="unsloth-plus-menu w-[212px]"
+        // Don't refocus the + on close; the restored focus showed a stray
+        // focus-visible ring.
+        onCloseAutoFocus={(event) => event.preventDefault()}
+      >
+        <ComposerPrimitive.AddAttachment asChild={true}>
+          <DropdownMenuItem>
+            <HugeiconsIcon icon={AttachmentIcon} strokeWidth={2} />
+            Add photos &amp; files
+          </DropdownMenuItem>
+        </ComposerPrimitive.AddAttachment>
+        <ComposerAudioMenuItem />
+        <DropdownMenuItem
+          disabled={searchDisabled}
+          className={
+            toolsEnabled && !searchDisabled
+              ? "text-primary font-medium"
+              : undefined
+          }
+          onSelect={() => {
+            const next = !toolsEnabled;
+            setToolsEnabled(next);
+            // Mirror the Search pill: Kimi forbids search + thinking together.
+            if (isKimiExternal) {
+              setReasoningEnabled(!next, { persist: false });
+              applyQwenThinkingParams(!next);
+            }
+          }}
+        >
+          <GlobeIcon />
+          Web search
+          {toolsEnabled && !searchDisabled ? (
+            <CheckIcon className="ml-auto" />
+          ) : null}
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          disabled={codeDisabled}
+          className={
+            codeToolsEnabled && !codeDisabled
+              ? "text-primary font-medium"
+              : undefined
+          }
+          onSelect={() => setCodeToolsEnabled(!codeToolsEnabled)}
+        >
+          <HugeiconsIcon
+            icon={CodeIcon}
+            strokeWidth={2}
+            className="size-[1.175rem]!"
+          />
+          Code
+          {codeToolsEnabled && !codeDisabled ? (
+            <CheckIcon className="ml-auto" />
+          ) : null}
+        </DropdownMenuItem>
+        {supportsBuiltinImageGeneration && (
+          <DropdownMenuItem
+            disabled={imageDisabled}
+            className={
+              imageToolsEnabled && !imageDisabled
+                ? "text-primary font-medium"
+                : undefined
+            }
+            onSelect={() => setImageToolsEnabled(!imageToolsEnabled)}
+          >
+            <HugeiconsIcon icon={Image03Icon} strokeWidth={2} />
+            Images
+            {imageToolsEnabled && !imageDisabled ? (
+              <CheckIcon className="ml-auto" />
+            ) : null}
+          </DropdownMenuItem>
+        )}
+        <DropdownMenuSeparator />
+        <DropdownMenuItem
+          className={artifactsEnabled ? "text-primary font-medium" : undefined}
+          onSelect={() => setArtifactsEnabled(!artifactsEnabled)}
+        >
+          <HugeiconsIcon icon={PencilRulerIcon} strokeWidth={2} />
+          Canvas
+          {artifactsEnabled ? <CheckIcon className="ml-auto" /> : null}
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          disabled={mcpDisabled}
+          className={
+            mcpEnabledForChat && !mcpDisabled
+              ? "text-primary font-medium"
+              : undefined
+          }
+          onSelect={() => setMcpEnabledForChat(!mcpEnabledForChat)}
+        >
+          <HugeiconsIcon icon={McpServerIcon} strokeWidth={2} />
+          MCP
+          {mcpEnabledForChat && !mcpDisabled ? (
+            <CheckIcon className="ml-auto" />
+          ) : null}
+        </DropdownMenuItem>
+        {/* RAG hidden temporarily */}
+        <DropdownMenuItem onSelect={() => startCompare()}>
+          <Columns2Icon />
+          Compare chat
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
+        <DropdownMenuSub>
+          <DropdownMenuSubTrigger>
+            <HugeiconsIcon icon={Folder01Icon} strokeWidth={2} />
+            Projects
+          </DropdownMenuSubTrigger>
+          <DropdownMenuSubContent className="unsloth-plus-menu w-[200px]">
+            <DropdownMenuItem onSelect={() => setNewProjectOpen(true)}>
+              <HugeiconsIcon icon={FolderAddIcon} strokeWidth={2} />
+              New project
+            </DropdownMenuItem>
+            <DropdownMenuLabel>Recents</DropdownMenuLabel>
+            {recentProjects.length > 0 ? (
+              recentProjects.map((project) => (
+                <DropdownMenuItem
+                  key={project.id}
+                  onSelect={() => openProject(project.id)}
+                >
+                  <HugeiconsIcon icon={Folder01Icon} strokeWidth={2} />
+                  <span className="truncate">{project.name}</span>
+                </DropdownMenuItem>
+              ))
+            ) : (
+              <DropdownMenuItem disabled={true}>
+                No recent projects
+              </DropdownMenuItem>
+            )}
+          </DropdownMenuSubContent>
+        </DropdownMenuSub>
+      </DropdownMenuContent>
+    </DropdownMenu>
+      <NewProjectDialog
+        open={newProjectOpen}
+        onOpenChange={setNewProjectOpen}
+      />
+    </>
+  );
+};
+
+const ComposerRightControls: FC<{
   disabled?: boolean;
   shouldBlockSend?: () => boolean;
-}> = ({ disabled, shouldBlockSend }) => {
+  menuSide?: "top" | "bottom";
+}> = ({ disabled, shouldBlockSend, menuSide }) => {
   return (
-    <div className="aui-composer-action-wrapper composer-action-wrapper">
-      <div className="flex items-center gap-0.5">
-        <ComposerAddAttachment />
-        <ComposerAudioUpload />
-        <ReasoningToggle />
-        <PreserveThinkingToggle />
-        <WebSearchToggle />
-        <CodeToolsToggle />
-        <ImagesToggle />
-        <ArtifactsToggle />
-        <McpComposerButton />
-      </div>
-      <div className="flex items-center gap-1">
-        <ComposerPrimitive.If dictation={false}>
-          <ComposerPrimitive.Dictate asChild={true}>
-            <TooltipIconButton
-              tooltip="Dictate"
-              aria-label="Dictate"
-              variant="ghost"
-              className="size-8 rounded-full text-muted-foreground"
-            >
-              <MicIcon className="size-4" />
-            </TooltipIconButton>
-          </ComposerPrimitive.Dictate>
-        </ComposerPrimitive.If>
-        <ComposerPrimitive.If dictation={true}>
-          <ComposerPrimitive.StopDictation asChild={true}>
-            <TooltipIconButton
-              tooltip="Stop dictation"
-              aria-label="Stop dictation"
-              variant="ghost"
-              className="size-8 rounded-full text-destructive"
-            >
-              <SquareIcon className="size-3 animate-pulse fill-current" />
-            </TooltipIconButton>
-          </ComposerPrimitive.StopDictation>
-        </ComposerPrimitive.If>
-        <AuiIf condition={({ thread }) => !thread.isRunning}>
-          <ComposerPrimitive.Send asChild={true}>
-            <TooltipIconButton
-              tooltip="Send message"
-              side="bottom"
-              type="submit"
-              variant="default"
-              size="icon"
-              disabled={disabled}
-              onClick={(event) => {
-                if (shouldBlockSend?.()) {
-                  event.preventDefault();
-                }
-              }}
-              className="aui-composer-send size-8 rounded-full"
-              aria-label="Send message"
-            >
-              <ArrowUpIcon className="aui-composer-send-icon size-4" />
-            </TooltipIconButton>
-          </ComposerPrimitive.Send>
-        </AuiIf>
-        <AuiIf condition={({ thread }) => thread.isRunning}>
-          <ComposerPrimitive.Cancel asChild={true}>
-            <Button
-              type="button"
-              variant="default"
-              size="icon"
-              className="aui-composer-cancel size-8 rounded-full"
-              aria-label="Stop generating"
-            >
-              <SquareIcon className="aui-composer-cancel-icon size-3 fill-current" />
-            </Button>
-          </ComposerPrimitive.Cancel>
-        </AuiIf>
-      </div>
+    <div className="aui-composer-action-wrapper flex shrink-0 items-center gap-1.5">
+      <ReasoningToggle side={menuSide} />
+      <ComposerPrimitive.If dictation={false}>
+        <ComposerPrimitive.Dictate asChild={true}>
+          <TooltipIconButton
+            tooltip="Dictate"
+            aria-label="Dictate"
+            variant="ghost"
+            className="size-8 rounded-full text-foreground"
+          >
+            <MicIcon className="size-5" />
+          </TooltipIconButton>
+        </ComposerPrimitive.Dictate>
+      </ComposerPrimitive.If>
+      <ComposerPrimitive.If dictation={true}>
+        <ComposerPrimitive.StopDictation asChild={true}>
+          <TooltipIconButton
+            tooltip="Stop dictation"
+            aria-label="Stop dictation"
+            variant="ghost"
+            className="size-8 rounded-full text-destructive"
+          >
+            <SquareIcon className="size-3 animate-pulse fill-current" />
+          </TooltipIconButton>
+        </ComposerPrimitive.StopDictation>
+      </ComposerPrimitive.If>
+      <AuiIf condition={({ thread }) => !thread.isRunning}>
+        <ComposerPrimitive.Send asChild={true}>
+          <TooltipIconButton
+            tooltip="Send message"
+            side="bottom"
+            type="submit"
+            variant="default"
+            size="icon"
+            disabled={disabled}
+            onClick={(event) => {
+              if (shouldBlockSend?.()) {
+                event.preventDefault();
+              }
+            }}
+            className="aui-composer-send ml-1.5 size-8 rounded-full"
+            aria-label="Send message"
+          >
+            <ArrowUpIcon className="aui-composer-send-icon size-[21px] stroke-2" />
+          </TooltipIconButton>
+        </ComposerPrimitive.Send>
+      </AuiIf>
+      <AuiIf condition={({ thread }) => thread.isRunning}>
+        <ComposerPrimitive.Cancel asChild={true}>
+          <Button
+            type="button"
+            variant="default"
+            size="icon"
+            className="aui-composer-cancel ml-1.5 size-8 rounded-full"
+            aria-label="Stop generating"
+          >
+            <SquareIcon className="aui-composer-cancel-icon size-3 fill-current" />
+          </Button>
+        </ComposerPrimitive.Cancel>
+      </AuiIf>
     </div>
   );
 };
@@ -1459,11 +2067,11 @@ const AssistantActionBar: FC = () => {
           side="bottom"
           align="start"
           onCloseAutoFocus={(e) => e.preventDefault()}
-          className="aui-action-bar-more-content z-50 min-w-32 overflow-hidden rounded-md border bg-popover p-1 text-popover-foreground shadow-md"
+          className="aui-action-bar-more-content z-50 min-w-32 overflow-hidden rounded-md [--radius:1.1rem] bg-popover p-1 text-popover-foreground shadow-[0_2px_8px_-2px_rgba(27,27,31,0.16)] dark:shadow-none"
         >
           <ActionBarPrimitive.ExportMarkdown asChild={true}>
             <ActionBarMorePrimitive.Item className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground">
-              <DownloadIcon strokeWidth={1.75} className="size-icon" />
+              <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-icon" />
               Export as Markdown
             </ActionBarMorePrimitive.Item>
           </ActionBarPrimitive.ExportMarkdown>

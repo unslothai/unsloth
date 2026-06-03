@@ -78,7 +78,7 @@ function HighlightedCode({ code: source, language }: { code: string; language: s
     [source, language],
   );
   return (
-    <div className="max-h-48 overflow-auto text-xs [&_pre]:!m-0 [&_pre]:!bg-transparent [&_pre]:!p-0 [&_pre]:!text-xs [&_[data-streamdown=code-block]]:!my-0 [&_[data-streamdown=code-block]]:!p-0 [&_[data-streamdown=code-block]]:!border-0">
+    <div className="max-h-48 overflow-auto text-xs [&_pre]:!m-0 [&_pre]:!bg-transparent [&_pre]:!p-0 [&_pre]:!text-xs [&_[data-streamdown=code-block]]:!my-0 [&_[data-streamdown=code-block]]:!p-3 [&_[data-streamdown=code-block]]:!border-0">
       <Streamdown
         mode="static"
         plugins={{ code: codePlugin }}

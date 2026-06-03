@@ -17,15 +17,21 @@ from storage.studio_db import (
     clear_chat_history,
     count_chat_threads,
     delete_chat_threads,
+    delete_chat_project,
+    ensure_chat_project_workspace,
+    get_chat_project,
     get_chat_thread,
     get_chat_message,
+    list_chat_projects,
     list_chat_legacy_imports,
     list_chat_settings,
     list_chat_messages,
     list_chat_messages_for_threads,
     list_chat_threads,
     sync_chat_messages,
+    update_chat_project,
     update_chat_thread,
+    upsert_chat_project,
     upsert_chat_legacy_imports,
     upsert_chat_message,
     upsert_chat_settings_merge,
@@ -41,6 +47,7 @@ class ChatThread(BaseModel):
     modelType: Literal["base", "lora", "model1", "model2"]
     modelId: str = ""
     pairId: Optional[str] = None
+    projectId: Optional[str] = None
     archived: bool = False
     createdAt: int
     openaiCodeExecContainerId: Optional[str] = None
@@ -52,6 +59,7 @@ class ChatThreadPatch(BaseModel):
     modelType: Optional[Literal["base", "lora", "model1", "model2"]] = None
     modelId: Optional[str] = None
     pairId: Optional[str] = None
+    projectId: Optional[str] = None
     archived: Optional[bool] = None
     createdAt: Optional[int] = None
     openaiCodeExecContainerId: Optional[str] = None
@@ -69,8 +77,31 @@ class ChatMessage(BaseModel):
     createdAt: int
 
 
+class ChatProject(BaseModel):
+    id: str
+    name: str
+    instructions: str = ""
+    rootPath: Optional[str] = None
+    sandboxPath: Optional[str] = None
+    archived: bool = False
+    createdAt: int
+    updatedAt: int
+
+
+class ChatProjectPatch(BaseModel):
+    name: Optional[str] = None
+    instructions: Optional[str] = None
+    archived: Optional[bool] = None
+    createdAt: Optional[int] = None
+    updatedAt: Optional[int] = None
+
+
 class ChatThreadListResponse(BaseModel):
     threads: list[ChatThread]
+
+
+class ChatProjectListResponse(BaseModel):
+    projects: list[ChatProject]
 
 
 class ChatMessageListResponse(BaseModel):
@@ -94,6 +125,7 @@ class ChatExportResponse(BaseModel):
     exportedAt: str
     version: int
     threadCount: int
+    projects: list[ChatProject] = Field(default_factory = list)
     threads: list[ChatThread]
     messages: list[ChatMessage]
 
@@ -177,12 +209,14 @@ class ChatImportLedgerRecordResponse(BaseModel):
 async def list_threads(
     model_type: Optional[str] = Query(None),
     pair_id: Optional[str] = Query(None),
+    project_id: Optional[str] = Query(None),
     include_archived: bool = Query(True),
     current_subject: str = Depends(get_current_subject),
 ):
     threads = list_chat_threads(
         model_type = model_type,
         pair_id = pair_id,
+        project_id = project_id,
         include_archived = include_archived,
     )
     return ChatThreadListResponse(threads = [ChatThread(**t) for t in threads])
@@ -193,6 +227,11 @@ async def save_thread(
     payload: ChatThread,
     current_subject: str = Depends(get_current_subject),
 ):
+    if payload.projectId and get_chat_project(payload.projectId) is None:
+        raise HTTPException(
+            status_code = 404,
+            detail = f"Project {payload.projectId} not found",
+        )
     return ChatThread(**upsert_chat_thread(payload.model_dump()))
 
 
@@ -217,6 +256,11 @@ async def patch_thread(
     for field in ("title", "modelType", "modelId", "archived", "createdAt"):
         if field in patch and patch[field] is None:
             raise HTTPException(status_code = 400, detail = f"{field} cannot be null")
+    if patch.get("projectId") and get_chat_project(patch["projectId"]) is None:
+        raise HTTPException(
+            status_code = 404,
+            detail = f"Project {patch['projectId']} not found",
+        )
     thread = update_chat_thread(
         thread_id,
         patch,
@@ -233,6 +277,77 @@ async def delete_threads(
 ):
     delete_chat_threads(payload.ids)
     return {"status": "deleted"}
+
+
+@router.get("/projects", response_model = ChatProjectListResponse)
+async def list_projects(
+    include_archived: bool = Query(False),
+    current_subject: str = Depends(get_current_subject),
+):
+    return ChatProjectListResponse(
+        projects = [
+            ChatProject(**(ensure_chat_project_workspace(project["id"]) or project))
+            for project in list_chat_projects(include_archived = include_archived)
+        ]
+    )
+
+
+@router.post("/projects", response_model = ChatProject)
+async def save_project(
+    payload: ChatProject,
+    current_subject: str = Depends(get_current_subject),
+):
+    return ChatProject(**upsert_chat_project(payload.model_dump()))
+
+
+@router.get("/projects/{project_id}", response_model = ChatProject)
+async def get_project(
+    project_id: str,
+    current_subject: str = Depends(get_current_subject),
+):
+    project = ensure_chat_project_workspace(project_id)
+    if project is None:
+        raise HTTPException(
+            status_code = 404,
+            detail = f"Project {project_id} not found",
+        )
+    return ChatProject(**project)
+
+
+@router.patch("/projects/{project_id}", response_model = ChatProject)
+async def patch_project(
+    project_id: str,
+    payload: ChatProjectPatch,
+    current_subject: str = Depends(get_current_subject),
+):
+    patch = payload.model_dump(exclude_unset = True)
+    for field in ("name", "archived", "createdAt", "updatedAt"):
+        if field in patch and patch[field] is None:
+            raise HTTPException(status_code = 400, detail = f"{field} cannot be null")
+    project = update_chat_project(project_id, patch)
+    if project is not None:
+        project = ensure_chat_project_workspace(project_id)
+    if project is None:
+        raise HTTPException(
+            status_code = 404,
+            detail = f"Project {project_id} not found",
+        )
+    return ChatProject(**project)
+
+
+@router.delete("/projects/{project_id}", response_model = ChatProject)
+async def delete_project(
+    project_id: str,
+    delete_files: bool = Query(False),
+    current_subject: str = Depends(get_current_subject),
+):
+    project = delete_chat_project(project_id, delete_files = delete_files)
+    if project is None:
+        raise HTTPException(
+            status_code = 404,
+            detail = f"Project {project_id} not found",
+        )
+    return ChatProject(**project)
 
 
 @router.get("/threads/{thread_id}/messages", response_model = ChatMessageListResponse)
@@ -389,11 +504,13 @@ async def export_history(current_subject: str = Depends(get_current_subject)):
     from datetime import datetime, timezone
 
     threads = list_chat_threads(include_archived = True)
+    projects = list_chat_projects(include_archived = True)
     messages = list_chat_messages_for_threads([thread["id"] for thread in threads])
     return ChatExportResponse(
         exportedAt = datetime.now(timezone.utc).isoformat(),
         version = 1,
         threadCount = len(threads),
+        projects = [ChatProject(**project) for project in projects],
         threads = [ChatThread(**thread) for thread in threads],
         messages = [ChatMessage(**message) for message in messages],
     )

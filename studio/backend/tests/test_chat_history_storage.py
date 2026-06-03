@@ -1,16 +1,47 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import os
+import platform
+import shutil
 import threading
+import uuid
+from pathlib import Path
 
 import pytest
 
 from storage import studio_db
 
 
-def _reset_studio_db(tmp_path, monkeypatch):
+def _reset_studio_db(tmp_path, monkeypatch, projects_home = None):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    monkeypatch.setenv(
+        "UNSLOTH_STUDIO_PROJECTS_HOME",
+        str(projects_home if projects_home is not None else tmp_path / "Projects"),
+    )
     monkeypatch.setattr(studio_db, "_schema_ready", False)
+
+
+@pytest.fixture
+def workspace_projects_home(tmp_path):
+    """Projects root outside the platform delete denylist.
+
+    tmp_path resolves under /private/tmp on macOS, which the workspace
+    delete guard refuses by design. Linux/Windows tmp is not denied and is
+    used as-is; only the denied case falls back to a home subdir.
+    """
+    candidate = tmp_path / "Projects"
+    resolved = str(candidate.resolve())
+    check = os.path.normcase(resolved) if platform.system() == "Windows" else resolved
+    denied = studio_db._denied_path_prefixes()
+    if any(check == p or check.startswith(p + os.sep) for p in denied):
+        candidate = Path.home() / ".unsloth-studio-tests" / uuid.uuid4().hex
+    candidate.mkdir(parents = True, exist_ok = True)
+    try:
+        yield candidate
+    finally:
+        if ".unsloth-studio-tests" in candidate.parts:
+            shutil.rmtree(candidate, ignore_errors = True)
 
 
 def _thread(thread_id: str = "thread-1") -> dict:
@@ -41,6 +72,17 @@ def _message(
     }
 
 
+def _project(project_id: str = "project-1") -> dict:
+    return {
+        "id": project_id,
+        "name": "Research",
+        "instructions": "Use terse answers.",
+        "archived": False,
+        "createdAt": 1_700_000_000_000,
+        "updatedAt": 1_700_000_000_000,
+    }
+
+
 def test_sync_chat_messages_upserts_without_pruning(tmp_path, monkeypatch):
     _reset_studio_db(tmp_path, monkeypatch)
     studio_db.upsert_chat_thread(_thread())
@@ -61,6 +103,53 @@ def test_sync_chat_messages_upserts_without_pruning(tmp_path, monkeypatch):
     by_id = {message["id"]: message for message in messages}
     assert set(by_id) == {"msg-1", "msg-2"}
     assert by_id["msg-2"]["content"] == [{"type": "text", "text": "updated text"}]
+
+
+def test_chat_projects_delete_cascades_threads_and_messages(
+    tmp_path,
+    monkeypatch,
+):
+    _reset_studio_db(tmp_path, monkeypatch)
+    project = studio_db.upsert_chat_project(_project())
+    assert project["rootPath"].startswith(str(tmp_path / "Projects"))
+    assert (tmp_path / "Projects" / "Research-project").exists()
+    assert (tmp_path / "Projects" / "Research-project" / "sandbox").is_dir()
+    assert not (tmp_path / "Projects" / "Research-project" / "chats").exists()
+    assert not (tmp_path / "Projects" / "Research-project" / "files").exists()
+    assert not (tmp_path / "Projects" / "Research-project" / "exports").exists()
+    studio_db.upsert_chat_thread({**_thread(), "projectId": "project-1"})
+    studio_db.upsert_chat_message(_message("msg-1", 1, "delete with project"))
+
+    [thread] = studio_db.list_chat_threads(project_id = "project-1")
+    assert thread["projectId"] == "project-1"
+
+    deleted = studio_db.delete_chat_project("project-1")
+
+    assert deleted is not None
+    assert deleted["id"] == "project-1"
+    assert studio_db.get_chat_project("project-1") is None
+    assert studio_db.list_chat_threads(project_id = "project-1") == []
+    assert studio_db.get_chat_thread("thread-1") is None
+    assert studio_db.list_chat_messages("thread-1") == []
+    assert (tmp_path / "Projects" / "Research-project").exists()
+
+
+def test_chat_project_delete_files_removes_workspace(
+    tmp_path, monkeypatch, workspace_projects_home
+):
+    _reset_studio_db(tmp_path, monkeypatch, projects_home = workspace_projects_home)
+    project = studio_db.upsert_chat_project(_project())
+    # Derive root from the created project so it tracks the projects home.
+    root = Path(project["rootPath"])
+    marker = root / "sandbox" / "marker.txt"
+    marker.write_text("created by code execution", encoding = "utf-8")
+
+    deleted = studio_db.delete_chat_project(project["id"], delete_files = True)
+
+    assert deleted is not None
+    assert deleted["rootPath"] == project["rootPath"]
+    assert not root.exists()
+    assert studio_db.get_chat_project(project["id"]) is None
 
 
 def test_sync_chat_messages_prunes_when_requested(tmp_path, monkeypatch):
