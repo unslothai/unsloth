@@ -549,6 +549,9 @@ FORMAT_REGISTRY = [
 # Derived list of known format names (used by CLI --format choices).
 FORMAT_NAMES = [entry["name"] for entry in FORMAT_REGISTRY]
 
+# Documented aliases accepted by both the Python API and the CLI.
+FORMAT_ALIASES = {"gpt-oss": "gptoss"}
+
 
 def detect_format(dataset: Dataset) -> str:
     """
@@ -619,6 +622,7 @@ def scan_dataset(dataset: Dataset, fmt: str = "auto") -> dict:
             )
     except ImportError:
         pass
+    fmt = FORMAT_ALIASES.get(fmt, fmt)
     was_auto = fmt == "auto"
     # Zero-row datasets have nothing to scan and would otherwise fall
     # through the probe to an "unknown format" error.  Return a trivially
@@ -895,14 +899,12 @@ examples:
     parser.add_argument(
         "--split", default = "train", help = "Dataset split to load (default: train)"
     )
-    # gpt-oss is documented as an alias for gptoss; accept both at the CLI.
-    _CLI_FORMAT_ALIASES = {"gpt-oss": "gptoss"}
     parser.add_argument(
         "--format",
         default = "auto",
-        choices = ["auto"] + FORMAT_NAMES + list(_CLI_FORMAT_ALIASES),
+        choices = ["auto"] + FORMAT_NAMES + list(FORMAT_ALIASES),
         help = "Force a specific format instead of auto-detecting (default: auto). "
-        "'gpt-oss' is accepted as an alias for 'gptoss'.",
+        "Documented aliases (e.g. 'gpt-oss' for 'gptoss') are also accepted.",
     )
     parser.add_argument(
         "--summary-only",
@@ -943,9 +945,8 @@ examples:
 
     print(f"Loaded {len(ds)} rows, columns: {ds.column_names}")
 
-    fmt = _CLI_FORMAT_ALIASES.get(args.format, args.format)
     try:
-        stats = scan_dataset(ds, fmt = fmt)
+        stats = scan_dataset(ds, fmt = args.format)
     except ValueError as exc:
         print(f"Error: {exc}", file = sys.stderr)
         sys.exit(1)
