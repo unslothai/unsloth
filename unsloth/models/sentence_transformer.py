@@ -21,7 +21,9 @@ from ._utils import (
     SUPPORTS_BFLOAT16,
     resolve_model_class,
     resolve_encoder_attention_implementation,
+    HAS_FLASH_ATTENTION_VARLEN,
 )
+from unsloth_zoo.hf_utils import add_dtype_kwargs
 import inspect
 import json
 import os
@@ -92,7 +94,14 @@ def get_encoder_seq_info(attention_mask):
 
 
 def unpad_input(input_ids, seq_info, token_type_ids = None):
-    """Remove padding tokens from a (B, S) batch."""
+    """Remove padding tokens from a (B, S) batch.
+
+    This is a deliberate 3-line gather that reuses ``seq_info.indices`` (already
+    computed once in ``get_encoder_seq_info``), so there is no per-call recompute
+    of ``cu_seqlens``/``indices``. We intentionally do NOT use
+    ``flash_attn.bert_padding.unpad_input`` (pulls a hard flash-attn dependency
+    and recomputes the metadata) or transformers' private ``_upad_input``.
+    """
     unpadded_ids = input_ids.flatten()[seq_info.indices]
     unpadded_token_type_ids = None
     if token_type_ids is not None:
@@ -163,7 +172,7 @@ class GuidedProjection(nn.Module):
 
 
 class GuidedProjectionPooling(nn.Module):
-    """Pooling + GuidedProjection as a single ST pipeline module."""
+    """Pooling + GuidedProjection as a single sentence transformers pipeline module."""
 
     PROJECTION_WEIGHTS_NAME = "guided_projection.pt"
     PROJECTION_CONFIG_NAME = "guided_projection_config.json"
@@ -212,7 +221,7 @@ class GuidedProjectionPooling(nn.Module):
     def load(
         cls, input_path: str, pooling_module: Optional[nn.Module] = None, **kwargs
     ) -> "GuidedProjectionPooling":
-        # ST >= 5.4 / resume call this as load(path) or load(path, **kwargs)
+        # sentence transformers >= 5.4 / resume call this as load(path) or load(path, **kwargs)
         # (e.g. subfolder=...) with no pooling_module, so accept both and stay
         # self-contained.
         subfolder = kwargs.get("subfolder", "") or ""
@@ -314,18 +323,14 @@ except ImportError:
     pass
 
 
-_FLASH_ATTN_VARLEN_AVAILABLE = False
-try:
+# Flash-attention varlen availability is centralised in _utils
+# (HAS_FLASH_ATTENTION_VARLEN is already SM80-gated and reuses unsloth's single
+# flash-attn install check). We only import the kernel itself here for the
+# call sites below; it stays None when unavailable.
+_FLASH_ATTN_VARLEN_AVAILABLE = HAS_FLASH_ATTENTION_VARLEN
+_flash_attn_varlen_func = None
+if _FLASH_ATTN_VARLEN_AVAILABLE:
     from flash_attn import flash_attn_varlen_func as _flash_attn_varlen_func
-
-    # Requires Ampere+
-    if torch.cuda.is_available():
-        _major, _ = torch.cuda.get_device_capability()
-        _FLASH_ATTN_VARLEN_AVAILABLE = _major >= 8
-    else:
-        _FLASH_ATTN_VARLEN_AVAILABLE = True
-except ImportError:
-    pass
 
 _XFORMERS_ATTN_AVAILABLE = False
 _XFORMERS_DROPOUT_SAFE = True
@@ -539,7 +544,10 @@ def _check_sparsity_support():
 
     try:
         SparseSemiStructuredTensor._FORCE_CUTLASS = True
-        test_w = torch.zeros(32, 32, device = "cuda", dtype = torch.float16)
+        # CUTLASS 2:4 requires dimensions that are a multiple of (32, 64); a 32x32
+        # probe fails the column constraint and wrongly reports "unsupported" on
+        # otherwise-capable Ampere GPUs, so use a 128x128 probe instead.
+        test_w = torch.zeros(128, 128, device = "cuda", dtype = torch.float16)
         test_w[:, 0::4] = 1.0
         test_w[:, 1::4] = 1.0
         _ = to_sparse_semi_structured(test_w)
@@ -580,7 +588,13 @@ def _apply_sparsity_to_base_weights(peft_model, target_modules = None):
             continue
 
         w = base.weight.data
-        if w.shape[0] % 4 != 0 or w.shape[1] % 4 != 0:
+        # CUTLASS 2:4 sparse GEMM is a fp16/bf16/int8 tensor-core path (fp32 gets
+        # no speedup), and to_sparse_semi_structured requires the weight dims to be
+        # multiples of (32, 64) - a plain "% 4" check lets through shapes (e.g.
+        # 384x100) that then crash. Skip anything that does not qualify.
+        if w.dtype not in (torch.float16, torch.bfloat16, torch.int8):
+            continue
+        if w.shape[0] % 32 != 0 or w.shape[1] % 64 != 0:
             continue
 
         _rg = base.weight.requires_grad
@@ -594,8 +608,12 @@ def _apply_sparsity_to_base_weights(peft_model, target_modules = None):
         mask = mask.view(w.shape)
         w.mul_(mask)
 
-        # Dense copy of the PRUNED weights (after mul_) for save/merge.
-        base._dense_weight = w.clone()
+        # Mark as sparsified. We do NOT keep a resident dense clone of the pruned
+        # weights: pruning (w.mul_) already happened before to_sparse_semi_structured,
+        # so the dense form is reconstructed losslessly via .to_dense() at save/merge
+        # (see _remove_sparsity_from_base_weights). This avoids holding ~1x the base
+        # weight in memory for the whole run.
+        base._unsloth_sparsified = True
 
         base.weight = torch.nn.Parameter(
             to_sparse_semi_structured(w), requires_grad = _rg
@@ -612,13 +630,34 @@ def _remove_sparsity_from_base_weights(peft_model):
         base = getattr(module, "base_layer", None)
         if base is None or not isinstance(base, torch.nn.Linear):
             continue
-        if hasattr(base, "_dense_weight"):
+
+        w = base.weight
+        is_sparse = "SparseSemiStructured" in type(w).__name__ or (
+            "SparseSemiStructured" in type(getattr(w, "data", w)).__name__
+        )
+
+        if getattr(base, "_unsloth_sparsified", False):
             _rg = getattr(base, "_dense_weight_rg", False)
-            base.weight = torch.nn.Parameter(base._dense_weight, requires_grad = _rg)
-            del base._dense_weight
+            # Reconstruct the dense (already-pruned) weight from the semi-structured
+            # tensor; pruning happened before sparsifying, so this is lossless.
+            dense = w.to_dense() if is_sparse else w.data
+            base.weight = torch.nn.Parameter(
+                dense.contiguous(), requires_grad = _rg
+            )
+            del base._unsloth_sparsified
             if hasattr(base, "_dense_weight_rg"):
                 del base._dense_weight_rg
             count += 1
+        elif is_sparse:
+            # Backstop (currently unreachable): a base layer holds a 2:4 sparse
+            # weight but was never tagged by _apply_sparsity_to_base_weights, so we
+            # cannot safely restore it. Warn rather than silently save a non-standard
+            # sparse artifact.
+            logging.getLogger(__name__).warning(
+                "Unsloth Warning: %s holds a 2:4 sparse weight but is not tagged "
+                "_unsloth_sparsified; skipping dense restore for save/merge.",
+                _name,
+            )
     return count
 
 
@@ -1323,7 +1362,7 @@ def _ensure_pooling_flags(pooling_mod):
     """sentence-transformers >= 5.x dropped the boolean ``pooling_mode_*``
     attributes in favour of a single ``pooling_mode`` string. The efficient /
     fused pooling patches read those booleans, so reconstruct them when absent
-    (otherwise _efficient_forward raises AttributeError on ST 5.x)."""
+    (otherwise _efficient_forward raises AttributeError on sentence transformers 5.x)."""
     if hasattr(pooling_mod, "pooling_mode_cls_token"):
         return
     mode = getattr(pooling_mod, "pooling_mode", None)
@@ -1349,7 +1388,7 @@ def _patch_efficient_pooling():
         _original_forward = Pooling.forward
 
         def _efficient_forward(self, features):
-            _ensure_pooling_flags(self)  # ST 5.x compat (booleans dropped)
+            _ensure_pooling_flags(self)  # sentence transformers 5.x compat (booleans dropped)
             token_embeddings = features["token_embeddings"]
             attention_mask = features.get(
                 "attention_mask",
@@ -3088,60 +3127,52 @@ class FastSentenceTransformer(FastModel):
             ):
                 st_device = "cuda"
 
-            supports_sdpa = False
+            # dtype kwarg: delegate the torch_dtype/dtype version gating to the
+            # shared helper (keys off the actual config doc, not a hardcoded
+            # transformers version).
+            model_kwargs = add_dtype_kwargs(dtype, {})
+
+            auto_model = kwargs.get("auto_model", AutoModel)
+            _disable_sdpa = any(
+                _m in model_type.lower() for _m in DISABLE_SDPA_MODEL_NAMES
+            )
+
+            # flash_attn_2 selection stays layered on top of the shared resolver:
+            # enable for models that natively support it, and force-enable for the
+            # known encoder types in _UNPAD_SUPPORTED_TYPES (our varlen path).
             supports_flash_attn_2 = False
-            if config is not None:
-                try:
-                    model_class = resolve_model_class(
-                        kwargs.get("auto_model", AutoModel), config
-                    )
-                    supports_sdpa = getattr(model_class, "_supports_sdpa", False)
-                    supports_flash_attn_2 = getattr(
-                        model_class, "_supports_flash_attn_2", False
-                    )
-                except:
-                    pass
-
-            if supports_flash_attn_2:
-                try:
-                    import flash_attn  # noqa: F401
-                except ImportError:
-                    supports_flash_attn_2 = False
-
-            # force-enable flash_attn_2 for known encoder types
-            if not supports_flash_attn_2 and model_type in _UNPAD_SUPPORTED_TYPES:
-                try:
-                    import flash_attn  # noqa: F401
-
+            if not _disable_sdpa:
+                if config is not None:
+                    try:
+                        model_class = resolve_model_class(auto_model, config)
+                        supports_flash_attn_2 = getattr(
+                            model_class, "_supports_flash_attn_2", False
+                        )
+                    except:
+                        supports_flash_attn_2 = False
+                if not supports_flash_attn_2 and model_type in _UNPAD_SUPPORTED_TYPES:
                     supports_flash_attn_2 = True
-                except ImportError:
-                    pass
-
-            _use_new_dtype_kwarg = Version(transformers.__version__) >= Version(
-                "4.48.0"
-            )
-            model_kwargs = (
-                {"dtype": dtype} if _use_new_dtype_kwarg else {"torch_dtype": dtype}
-            )
-
-            _force_eager = False
-            for _sdpa_model in DISABLE_SDPA_MODEL_NAMES:
-                if _sdpa_model in model_type.lower():
-                    supports_sdpa = False
-                    supports_flash_attn_2 = False
-                    _force_eager = True
-                    break
+                if supports_flash_attn_2:
+                    try:
+                        import flash_attn  # noqa: F401
+                    except ImportError:
+                        supports_flash_attn_2 = False
 
             if supports_flash_attn_2:
-                model_kwargs["attn_implementation"] = "flash_attention_2"
-            elif supports_sdpa:
-                model_kwargs["attn_implementation"] = "sdpa"
-            elif _force_eager:
-                model_kwargs["attn_implementation"] = "eager"
+                attn_impl = "flash_attention_2"
+            else:
+                # sdpa / eager / None (incl. DISABLE_SDPA_MODEL_NAMES handling) via
+                # the shared encoder resolver in _utils.
+                attn_impl = resolve_encoder_attention_implementation(
+                    auto_model, config, model_type, DISABLE_SDPA_MODEL_NAMES
+                )
 
-            if supports_flash_attn_2:
+            if attn_impl is not None:
+                model_kwargs["attn_implementation"] = attn_impl
+
+            if attn_impl == "flash_attention_2":
                 attn_str = " + FlashAttention 2"
-            elif supports_sdpa:
+            elif attn_impl == "sdpa":
                 attn_str = " + SDPA"
             else:
                 attn_str = ""
@@ -3722,15 +3753,14 @@ class FastSentenceTransformer(FastModel):
                     transformer_module, getattr(inner_model, "config", None)
                 )
 
-                sparsity_env = os.environ.get("UNSLOTH_SPARSITY", "auto")
-                if sparsity_env.lower() == "1":
-                    do_sparsity = True
-                elif sparsity_env.lower() == "0":
-                    do_sparsity = False
-                else:
-                    do_sparsity = True
+                sparsity_env = os.environ.get("UNSLOTH_SPARSITY", "auto").lower()
+                # Opt-in: 2:4 magnitude pruning alters the frozen base weights, so
+                # it is only applied when explicitly enabled with UNSLOTH_SPARSITY=1.
+                # The default ("auto") and "0" leave the base weights untouched.
+                do_sparsity = sparsity_env == "1"
+                _is_full_ft = getattr(model, "_full_finetuning", False)
 
-                if do_sparsity and not getattr(model, "_full_finetuning", False):
+                if do_sparsity and not _is_full_ft:
                     supported, sparsity_msg = _check_sparsity_support()
                     if supported:
                         sparse_count = _apply_sparsity_to_base_weights(peft_model)
@@ -3739,9 +3769,17 @@ class FastSentenceTransformer(FastModel):
                             print(
                                 f"Unsloth: Applied 2:4 sparsity to {sparse_count} base layer(s) ({sparsity_msg})"
                             )
-                    elif sparsity_env.lower() == "1":
+                    else:
                         print(
                             f"Unsloth Warning: UNSLOTH_SPARSITY=1 but not supported: {sparsity_msg}"
+                        )
+                elif sparsity_env == "auto" and not _is_full_ft:
+                    # One-time discoverability hint (sparsity is opt-in).
+                    supported, _sparsity_msg = _check_sparsity_support()
+                    if supported:
+                        print(
+                            "Unsloth: 2:4 sparsity is available (disabled by default). It can speed up training but may lower accuracy. "
+                            "Set UNSLOTH_SPARSITY=1 to enable (alters frozen base weights)."
                         )
 
                 if compile_mode is not None:

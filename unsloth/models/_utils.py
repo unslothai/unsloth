@@ -26,6 +26,7 @@ __all__ = [
     "importlib_version",
     "HAS_FLASH_ATTENTION",
     "HAS_FLASH_ATTENTION_SOFTCAPPING",
+    "HAS_FLASH_ATTENTION_VARLEN",
     "USE_MODELSCOPE",
     "platform_system",
     "resolve_hip_gpu_stats_name",
@@ -1320,6 +1321,18 @@ elif DEVICE_TYPE == "hip":
             HAS_FLASH_ATTENTION = False
 elif DEVICE_TYPE == "xpu":
     SUPPORTS_BFLOAT16 = True
+
+# Flash-attention varlen entrypoint (used by the encoder / sentence-transformers
+# path). HAS_FLASH_ATTENTION is already SM80-gated above, so we only need to
+# additionally confirm the varlen kernel is importable.
+HAS_FLASH_ATTENTION_VARLEN = False
+if HAS_FLASH_ATTENTION:
+    try:
+        from flash_attn import flash_attn_varlen_func as _flash_attn_varlen_func  # noqa: F401
+
+        HAS_FLASH_ATTENTION_VARLEN = True
+    except ImportError:
+        HAS_FLASH_ATTENTION_VARLEN = False
 
 # =============================================
 # Get Xformers
