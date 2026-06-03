@@ -727,9 +727,7 @@ def studio_default(
     run_server = run_mod.run_server
 
     if not silent:
-        display_host = (
-            run_mod._resolve_external_ip() if host == "0.0.0.0" else host
-        )
+        display_host = run_mod._resolve_external_ip() if host == "0.0.0.0" else host
         typer.echo(f"Starting Unsloth Studio on http://{display_host}:{port}")
 
     run_kwargs = dict(
