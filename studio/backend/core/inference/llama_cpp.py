@@ -4785,11 +4785,11 @@ class LlamaCppBackend:
                                     # ── Structured tool_calls ──
                                     tc_deltas = delta.get("tool_calls")
                                     if tc_deltas:
-                                        # Once visible content has been
-                                        # emitted, do not reclassify this
-                                        # turn as a tool call.
-                                        if _last_emitted:
-                                            continue
+                                        # llama-server can emit visible assistant
+                                        # preface content before native structured
+                                        # tool_calls. Preserve content_accum as
+                                        # the assistant pre-tool text and still
+                                        # drain/execute the structured call.
                                         has_structured_tc = True
                                         detect_state = _S_DRAINING
                                         for tc_d in tc_deltas:
