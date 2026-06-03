@@ -141,7 +141,12 @@ function RootLayout() {
             <div
               className={`flex min-h-0 min-w-0 flex-1 basis-0 flex-col ${isChatRoute ? "overflow-hidden" : "overflow-visible"} ${isChatRoute ? "" : "pt-14 md:pt-0"}`}
             >
-              <AnimatePresence initial={false} mode="wait">
+              {/* Use mode="popLayout" instead of "wait" to prevent UI freezes when
+                  switching from heavy pages (like Export with many checkpoints).
+                  "popLayout" allows the new route to mount immediately while the
+                  old one animates out, avoiding blocking on expensive exit renders.
+                  See issue #5850. */}
+              <AnimatePresence initial={false} mode="popLayout">
                 <motion.div
                   key={pathname}
                   initial={{ opacity: 0 }}
