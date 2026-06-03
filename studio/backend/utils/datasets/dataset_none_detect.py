@@ -181,9 +181,7 @@ def is_none_or_empty(value) -> bool:
         dict_blocks = [item for item in value if isinstance(item, dict)]
         if not dict_blocks:
             return True
-        non_text_blocks = [
-            item for item in dict_blocks if item.get("type") != "text"
-        ]
+        non_text_blocks = [item for item in dict_blocks if item.get("type") != "text"]
         if non_text_blocks:
             return False
         text_values = [
