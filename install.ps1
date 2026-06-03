@@ -1,14 +1,19 @@
 # Unsloth Studio Installer for Windows PowerShell
-# Usage:  irm https://raw.githubusercontent.com/unslothai/unsloth/main/install.ps1 | iex
-# Local:  Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass; .\install.ps1 --local
-# NoTorch: .\install.ps1 --no-torch  (skip PyTorch, GGUF-only mode)
-# Test:   .\install.ps1 --package roland-sloth
 #
-# Env vars (priority: UNSLOTH_STUDIO_HOME > STUDIO_HOME > USERPROFILE-redirect > default):
-#   UNSLOTH_STUDIO_HOME / STUDIO_HOME = path -> install under that path
-#   (DataDir nests inside; user PATH not modified persistently).
-# Default ($USERPROFILE\.unsloth\studio) is preserved when no env var is set.
-
+# Usage:  irm https://unsloth.ai/install.ps1 | iex
+#         Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass; .\install.ps1 --local
+#
+# irm | iex cannot forward arguments, so web installs take options as env vars set
+# before the pipe (flags still work via .\install.ps1):
+#   $env:UNSLOTH_NO_TORCH=1; irm https://unsloth.ai/install.ps1 | iex       # skip PyTorch (GGUF-only)
+#   $env:UNSLOTH_STUDIO_HOME='C:\path'; irm https://unsloth.ai/install.ps1 | iex
+#   .\install.ps1 --no-torch                                                # equivalent flag
+# Or pass flags to a scriptblock: & ([scriptblock]::Create((irm https://unsloth.ai/install.ps1))) --no-torch
+#
+# Install dir priority: UNSLOTH_STUDIO_HOME > STUDIO_HOME (alias) > $USERPROFILE\.unsloth\studio
+#
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 function Install-UnslothStudio {
     $ErrorActionPreference = "Stop"
     $script:UnslothVerbose = ($env:UNSLOTH_VERBOSE -eq "1")
@@ -112,6 +117,10 @@ function Install-UnslothStudio {
             }
         }
     }
+
+    # Env-var equivalent for web installs; an explicit flag still wins.
+    if ($env:UNSLOTH_NO_TORCH -in @('1', 'true', 'yes', 'on')) { $SkipTorch = $true }
+
     # Propagate to child processes so they also respect verbose mode.
     # Process-scoped -- does not persist.
     if ($script:UnslothVerbose) {
