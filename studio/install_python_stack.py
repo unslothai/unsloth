@@ -1674,6 +1674,15 @@ def install_python_stack() -> int:
             _wexe = shutil.which(_wcmd[0])
             if not _wexe:
                 continue
+            # On Windows w/o a HIP SDK (and no explicit opt-in), amd-smi elevates
+            # a child at runtime and pops a UAC/DiskPart prompt RunAsInvoker can't
+            # suppress -- skip it here, exactly as _has_rocm_gpu()/_detect_amd_gfx_codes
+            # do. hipinfo, when present, already implies a HIP SDK and runs
+            # un-elevated. The ROCm-torch state below is determined from the
+            # install itself, so the only loss when amd-smi is skipped is the
+            # best-effort "AMD GPU detected" note on HIP-SDK-less hosts.
+            if _wcmd[0] == "amd-smi" and not _amd_smi_allowed():
+                continue
             try:
                 _wr = subprocess.run(
                     [_wexe, *_wcmd[1:]],
@@ -1681,6 +1690,7 @@ def install_python_stack() -> int:
                     stderr = subprocess.DEVNULL,
                     text = True,
                     timeout = 10,
+                    env = _amd_smi_env() if _wcmd[0] == "amd-smi" else None,
                 )
             except Exception:
                 continue

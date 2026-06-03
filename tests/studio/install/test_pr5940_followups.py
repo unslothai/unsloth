@@ -224,5 +224,62 @@ def test_ps_installers_gate_amd_smi_on_windows():
         assert "amdSmiAllowed" in text, f"{ps.name} missing amd-smi gate variable"
 
 
+def test_install_python_stack_gates_every_amd_smi_spawn():
+    # Regression for the recurring DiskPart UAC prompt: EVERY function in
+    # install_python_stack.py that both (a) names the `amd-smi` command and
+    # (b) spawns a subprocess must also gate it behind _amd_smi_allowed().
+    # The Windows "AMD GPU detected but ROCm torch missing" warning probe
+    # spawned `amd-smi list` on Adrenalin-only hosts WITHOUT this gate, popping
+    # the UAC/DiskPart prompt the rest of the PR avoids (RunAsInvoker cannot
+    # suppress it, so not-spawning is the only fix).
+    import ast
+
+    src = (PACKAGE_ROOT / "studio" / "install_python_stack.py").read_text(
+        encoding = "utf-8"
+    )
+    tree = ast.parse(src)
+
+    def _names_amd_smi_command(node):
+        # An EXACT "amd-smi"/"amd-smi.exe" string constant (command list or
+        # shutil.which arg) -- not a substring inside a longer log message.
+        return any(
+            isinstance(n, ast.Constant)
+            and isinstance(n.value, str)
+            and n.value.lower() in ("amd-smi", "amd-smi.exe")
+            for n in ast.walk(node)
+        )
+
+    def _spawns_subprocess(node):
+        for n in ast.walk(node):
+            if (
+                isinstance(n, ast.Call)
+                and isinstance(n.func, ast.Attribute)
+                and isinstance(n.func.value, ast.Name)
+                and n.func.value.id == "subprocess"
+            ):
+                return True
+        return False
+
+    def _references_gate(node):
+        return any(
+            isinstance(n, ast.Name) and n.id == "_amd_smi_allowed"
+            for n in ast.walk(node)
+        )
+
+    offenders = [
+        node.name
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and _names_amd_smi_command(node)
+        and _spawns_subprocess(node)
+        and not _references_gate(node)
+    ]
+    assert not offenders, (
+        "install_python_stack.py spawns amd-smi without an _amd_smi_allowed() "
+        f"gate in: {offenders} -- this pops the Windows UAC/DiskPart prompt on "
+        "Adrenalin-only (no HIP SDK) hosts."
+    )
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
