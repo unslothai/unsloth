@@ -430,13 +430,26 @@ function useRafCoalescedText(text: string, isStreaming: boolean): string {
 const safeImageUrl: UrlTransform = (url, _key, node) => {
   // Only restrict image src; leave link hrefs and other attributes alone.
   if (node.tagName !== "img") return url;
-  // Trim whitespace first — a leading space or newline would otherwise let
-  // " //attacker.com/pixel" bypass the protocol-relative guard below.
-  const trimmed = url.trim();
-  const lower = trimmed.toLowerCase();
-  if (lower.startsWith("data:") || lower.startsWith("blob:")) return trimmed;
-  if (trimmed.startsWith("//")) return null;
-  if (!trimmed.includes(":")) return trimmed;
+
+  // Strip ASCII control characters (U+0000–U+001F, U+007F) before any
+  // checks.  Browsers remove these during URL parsing, so a raw value like
+  // "/\n/attacker.com" or "\t//attacker.com" would otherwise pass the guards
+  // below and still resolve to an external origin.
+  // eslint-disable-next-line no-control-regex
+  const normalized = url.replace(/[\x00-\x1f\x7f]/g, "").trim();
+  const lower = normalized.toLowerCase();
+
+  if (lower.startsWith("data:") || lower.startsWith("blob:")) return normalized;
+
+  // Block protocol-relative and backslash-normalised forms: //, \\, /\, \/
+  // Browsers treat a leading pair of any combination of / and \ as a
+  // network-path reference and resolve it against the current origin scheme.
+  if (/^[/\\]{2}/.test(normalized)) return null;
+
+  // Plain relative paths (no scheme) are same-origin and safe.
+  if (!normalized.includes(":")) return normalized;
+
+  // Everything else carries an explicit scheme → external origin → drop.
   return null;
 };
 
