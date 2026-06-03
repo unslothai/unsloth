@@ -366,14 +366,26 @@ function Uninstall-UnslothStudio {
     # Remove the Studio install inside each WSL distro (the real GPU install + any CUDA llama.cpp build).
     if (Get-Command wsl.exe -ErrorAction SilentlyContinue) {
         try {
-            $distros = @(((& wsl.exe --list --quiet 2>$null) -join "`n").Replace([char]0, '') -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ })
-            foreach ($d in $distros) {
-                # IMPORTANT: rm runs FIRST. `pkill -f "<pattern>"` matches this very
-                # bash -lc (its argv contains the pattern) and would SIGKILL the shell
-                # before a trailing rm could run. So remove files first (guaranteed),
-                # then best-effort kill: fuser by port (does not self-match) + pkill.
-                & wsl.exe -d $d -u root -- bash -lc 'rm -rf /root/.unsloth /home/*/.unsloth /root/llama-cuda /root/provision_llama_cuda.sh /root/llama_cuda_build.log 2>/dev/null; fuser -k 8888/tcp 2>/dev/null; pkill -9 -f unsloth_studio 2>/dev/null; pkill -9 -f llama-server 2>/dev/null; true' 2>$null
-                if ($LASTEXITCODE -eq 0) { _Substep "cleaned Unsloth from WSL distro: $d" "Green" }
+            # `wsl --list` emits UTF-16 that PowerShell frequently mis-parses (yielding an
+            # EMPTY list -> the cleanup silently skipped, leaving the WSL install behind).
+            # So probe a candidate set by exit code instead ('' = the default distro),
+            # which is encoding-proof. In the cleanup, rm runs FIRST: `pkill -f "<pattern>"`
+            # matches this very bash -lc (its argv contains the pattern) and would SIGKILL
+            # the shell before a trailing rm -- so remove files first (guaranteed), then
+            # best-effort kill via fuser by port (does not self-match) + pkill.
+            $_clean = 'rm -rf /root/.unsloth /home/*/.unsloth /root/llama-cuda /root/provision_llama_cuda.sh /root/llama_cuda_build.log 2>/dev/null; fuser -k 8888/tcp 2>/dev/null; pkill -9 -f unsloth_studio 2>/dev/null; pkill -9 -f llama-server 2>/dev/null; true'
+            $_cands = @('', 'Ubuntu', 'Ubuntu-24.04', 'Ubuntu-22.04', 'Debian')
+            if ($env:UNSLOTH_WSL_DISTRO) { $_cands = @($env:UNSLOTH_WSL_DISTRO) + $_cands }
+            $_done = @{}
+            foreach ($d in $_cands) {
+                if ($d) { & wsl.exe -d $d -- true *> $null } else { & wsl.exe -- true *> $null }
+                if ($LASTEXITCODE -ne 0) { continue }
+                $_label = if ($d) { $d } else { "(default)" }
+                if ($_done[$_label]) { continue }
+                $_done[$_label] = $true
+                if ($d) { & wsl.exe -d $d -u root -- bash -lc $_clean *> $null }
+                else    { & wsl.exe -u root -- bash -lc $_clean *> $null }
+                _Substep "cleaned Unsloth from WSL distro: $_label" "Green"
             }
         } catch { }
     }
