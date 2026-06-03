@@ -2794,7 +2794,7 @@ class TestResolveSimpleMacosPin:
                 ],
             }
 
-        def fake_iter(repo, published_release_tag = "", requested_tag = ""):
+        def fake_iter(repo, published_release_tag = "", requested_tag = "", host = None):
             calls.append((repo, published_release_tag, requested_tag))
             # Emulate the real iterator: a specific tag yields only that release.
             if requested_tag and requested_tag != "latest":

@@ -247,7 +247,7 @@ class TestMacosReleasePin:
     TAGS = [f"b{n}" for n in range(9442, 9400, -1)]  # newest-first, includes b9415
 
     def _patch_releases(self, monkeypatch):
-        def fake_iter(repo, published_release_tag, requested_tag):
+        def fake_iter(repo, published_release_tag, requested_tag, host = None):
             # The real iterator yields only the requested tag when one is pinned.
             if requested_tag and requested_tag != "latest":
                 return _fake_macos_releases([requested_tag])
