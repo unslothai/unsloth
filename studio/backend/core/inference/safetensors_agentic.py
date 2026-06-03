@@ -17,25 +17,25 @@ such structured channel, so this loop parses tool calls from the
 cumulative text and dispatches them via ``core.inference.tools``.
 """
 
-import json
 import re
 import threading
 from typing import Callable, Generator, Optional
-from urllib.parse import urlparse
 
 from loggers import get_logger
 
 from core.inference.tool_call_parser import (
     _TOOL_ALL_PATS,
     BUDGET_EXHAUSTED_NUDGE,
-    DUPLICATE_CALL_NUDGE,
-    RENDER_HTML_REPEAT_NUDGE,
-    TOOL_ERROR_NUDGE,
-    TOOL_ERROR_PREFIXES,
     TOOL_XML_SIGNALS,
     has_tool_signal,
     parse_tool_calls_from_text,
     strip_tool_markup,
+)
+from core.inference.tool_loop_controller import (
+    ToolLoopController,
+    coerce_tool_arguments,
+    status_for_tool,
+    tool_event_provenance,
 )
 
 
@@ -57,32 +57,7 @@ def strip_tool_markup_streaming(text: str, *, auto_heal_tool_calls: bool = True)
 
 def _status_for_tool(tool_name: str, arguments: dict) -> str:
     """Return a human-readable status line matching the GGUF path."""
-    if tool_name == "web_search":
-        url = (arguments.get("url") or "").strip()
-        if url:
-            parsed = urlparse(url)
-            if parsed.scheme in ("http", "https") and parsed.hostname:
-                host = parsed.hostname
-                if host.startswith("www."):
-                    host = host[4:]
-                return f"Reading: {host}"
-            return "Reading page..."
-        query = arguments.get("query", "")
-        return f"Searching: {query}"
-    if tool_name == "python":
-        preview = (arguments.get("code") or "").strip().split("\n")[0][:60]
-        return f"Running Python: {preview}" if preview else "Running Python..."
-    if tool_name == "terminal":
-        preview = (arguments.get("command") or "")[:60]
-        return f"Running: {preview}" if preview else "Running command..."
-    return f"Calling: {tool_name}"
-
-
-_CANONICAL_HEAL_ARG = {
-    "python": "code",
-    "terminal": "command",
-    "render_html": "code",
-}
+    return status_for_tool(tool_name, arguments)
 
 
 _FUNCTION_SIGNAL_RE = re.compile(r"<function=([\w-]+)>")
@@ -110,20 +85,8 @@ def _detect_render_html_tool_start(content: str) -> bool:
 
 def _coerce_arguments_with_provenance(raw_args, *, heal: bool, tool_name: str = ""):
     """Normalise tool ``arguments`` and report whether healing was applied."""
-    if isinstance(raw_args, dict):
-        return raw_args, False
-    if isinstance(raw_args, str):
-        try:
-            parsed = json.loads(raw_args)
-            if isinstance(parsed, dict):
-                return parsed, False
-        except (json.JSONDecodeError, ValueError):
-            pass
-        if heal:
-            key = _CANONICAL_HEAL_ARG.get(tool_name, "query")
-            return {key: raw_args}, True
-        return {"raw": raw_args}, False
-    return {}, False
+    coerced = coerce_tool_arguments(raw_args, heal = heal, tool_name = tool_name)
+    return coerced.arguments, coerced.healed
 
 
 def _coerce_arguments(raw_args, *, heal: bool, tool_name: str = "") -> dict:
@@ -136,11 +99,17 @@ def _coerce_arguments(raw_args, *, heal: bool, tool_name: str = "") -> dict:
 
 
 def _tool_event_provenance(**flags: object) -> dict[str, object]:
-    provenance: dict[str, object] = {"source": "local"}
-    for key, value in flags.items():
-        if value is not None and value is not False:
-            provenance[key] = value
-    return provenance
+    return tool_event_provenance(**flags)
+
+
+def _call_single_turn(single_turn, conversation: list, active_tools: list[dict]):
+    """Call a single-turn generator with active tool schemas when supported."""
+    try:
+        return single_turn(conversation, active_tools = active_tools)
+    except TypeError as exc:
+        if "active_tools" not in str(exc):
+            raise
+        return single_turn(conversation)
 
 
 def run_safetensors_tool_loop(
@@ -183,15 +152,21 @@ def run_safetensors_tool_loop(
     * ``{"type": "tool_end", "tool_name", "tool_call_id", "result"}``
     """
     conversation = list(messages)
-    tool_call_history: list[tuple[str, bool]] = []
-    render_html_succeeded = False
+    tool_controller = ToolLoopController(
+        tools = tools,
+        auto_heal_tool_calls = auto_heal_tool_calls,
+    )
     final_attempt_done = False
-    allowed_tool_names = {
-        (tool.get("function") or {}).get("name")
-        for tool in (tools or [])
-        if (tool.get("function") or {}).get("name")
-    }
     next_call_id = 0
+
+    def _tool_succeeded(tool_name: str) -> bool:
+        key_prefix = f"{tool_name}:"
+        return any(
+            record.executed
+            and not record.is_error
+            and record.key.startswith(key_prefix)
+            for record in tool_controller.history
+        )
 
     if max_tool_iterations <= 0:
         # 0 = disabled (same contract as the GGUF loop).
@@ -206,6 +181,14 @@ def run_safetensors_tool_loop(
         if cancel_event is not None and cancel_event.is_set():
             return
 
+        if final_attempt_done:
+            active_tools: list[dict] = []
+        else:
+            active_tools = tool_controller.active_tools()
+            if not active_tools:
+                final_attempt_done = True
+                active_tools = []
+
         detect_state = _state_buffering
         content_buffer = ""
         content_accum = ""
@@ -214,7 +197,7 @@ def run_safetensors_tool_loop(
         provisional_render_html_started = False
         provisional_render_html_id = f"call_{next_call_id}"
 
-        gen = single_turn(conversation)
+        gen = _call_single_turn(single_turn, conversation, active_tools)
         prev_cumulative = ""
 
         for cumulative in gen:
@@ -232,7 +215,11 @@ def run_safetensors_tool_loop(
 
             if detect_state == _state_draining:
                 if (
-                    not render_html_succeeded
+                    not _tool_succeeded("render_html")
+                    and any(
+                        ((tool.get("function") or {}).get("name") == "render_html")
+                        for tool in active_tools
+                    )
                     and not provisional_render_html_started
                     and _detect_render_html_tool_start(content_accum)
                 ):
@@ -265,7 +252,11 @@ def run_safetensors_tool_loop(
                     cumulative_display = candidate
                     detect_state = _state_draining
                     if (
-                        not render_html_succeeded
+                        not _tool_succeeded("render_html")
+                        and any(
+                            ((tool.get("function") or {}).get("name") == "render_html")
+                            for tool in active_tools
+                        )
                         and not provisional_render_html_started
                         and _detect_render_html_tool_start(content_accum)
                     ):
@@ -317,7 +308,11 @@ def run_safetensors_tool_loop(
                     yield {"type": "content", "text": cleaned}
                 detect_state = _state_draining
                 if (
-                    not render_html_succeeded
+                    not _tool_succeeded("render_html")
+                    and any(
+                        ((tool.get("function") or {}).get("name") == "render_html")
+                        for tool in active_tools
+                    )
                     and not provisional_render_html_started
                     and _detect_render_html_tool_start(content_accum)
                 ):
@@ -401,6 +396,9 @@ def run_safetensors_tool_loop(
                 return
             content_text = strip_tool_markup(content_accum, final = True)
 
+        if tool_calls:
+            next_call_id += len(tool_calls)
+
         if final_attempt_done:
             # Final-answer turn re-called a tool -- stop the loop.
             if content_text:
@@ -409,116 +407,71 @@ def run_safetensors_tool_loop(
             return
 
         assistant_msg: dict = {"role": "assistant", "content": content_text}
-        if tool_calls:
-            assistant_msg["tool_calls"] = tool_calls
-            next_call_id += len(tool_calls)
-        conversation.append(assistant_msg)
+        assistant_appended = False
 
         for tc in tool_calls or []:
             func = tc.get("function", {}) or {}
             tool_name = func.get("name", "") or ""
-            arguments, args_healed = _coerce_arguments_with_provenance(
-                func.get("arguments", {}),
-                heal = auto_heal_tool_calls,
-                tool_name = tool_name,
+            provisional_match = (
+                provisional_render_html_started
+                and tool_name == "render_html"
+                and tc.get("id", "") == provisional_render_html_id
             )
-            tool_provenance = _tool_event_provenance(
-                healed = args_healed,
-                provisional = (
-                    provisional_render_html_started
-                    and tool_name == "render_html"
-                    and tc.get("id", "") == provisional_render_html_id
-                ),
-            )
+            decision = tool_controller.prepare_call(tc, provisional = provisional_match)
 
-            repeat_render_html = tool_name == "render_html" and render_html_succeeded
-            if not repeat_render_html:
-                yield {"type": "status", "text": _status_for_tool(tool_name, arguments)}
-                yield {
-                    "type": "tool_start",
-                    "tool_name": tool_name,
-                    "tool_call_id": tc.get("id", ""),
-                    "arguments": arguments,
-                    "provenance": tool_provenance,
-                }
-
-            tc_key = tool_name + str(arguments)
-            if repeat_render_html:
-                result = RENDER_HTML_REPEAT_NUDGE
-            elif allowed_tool_names and tool_name not in allowed_tool_names:
-                result = (
-                    f"Error: tool '{tool_name}' is not enabled for this "
-                    "request. Use one of the enabled tools or provide a "
-                    "final answer."
+            if not decision.should_execute:
+                if content_text and not assistant_appended:
+                    conversation.append(assistant_msg)
+                    assistant_appended = True
+                completion = tool_controller.record_noop(decision)
+                conversation.append(completion.model_message())
+                logger.info(
+                    "Suppressed local safetensors tool call as internal no-op: "
+                    f"action={decision.action} tool={decision.tool_name}"
                 )
+                break
+
+            if not assistant_appended:
+                assistant_msg["tool_calls"] = [decision.as_assistant_tool_call()]
+                conversation.append(assistant_msg)
+                assistant_appended = True
             else:
-                already_ran_ok = any(
-                    k == tc_key and not err for k, err in tool_call_history
+                assistant_msg.setdefault("tool_calls", []).append(
+                    decision.as_assistant_tool_call()
                 )
-                if already_ran_ok:
-                    result = DUPLICATE_CALL_NUDGE
-                else:
-                    eff_timeout = (
-                        None if tool_call_timeout >= 9999 else tool_call_timeout
-                    )
-                    try:
-                        result = execute_tool(
-                            tool_name,
-                            arguments,
-                            cancel_event = cancel_event,
-                            timeout = eff_timeout,
-                            session_id = session_id,
-                        )
-                    except Exception as exc:
-                        logger.exception("Tool %s raised: %s", tool_name, exc)
-                        result = f"Error: tool raised an exception: {exc}"
 
-            if not repeat_render_html:
-                yield {
-                    "type": "tool_end",
-                    "tool_name": tool_name,
-                    "tool_call_id": tc.get("id", ""),
-                    "result": result,
-                    "provenance": tool_provenance,
-                }
+            yield {"type": "status", "text": decision.status_text}
+            yield decision.tool_start_event()
 
-            is_error = isinstance(result, str) and result.lstrip().startswith(
-                TOOL_ERROR_PREFIXES
-            )
-            if tool_name == "render_html" and not is_error:
-                render_html_succeeded = True
-            tool_call_history.append((tc_key, is_error))
+            eff_timeout = None if tool_call_timeout >= 9999 else tool_call_timeout
+            try:
+                result = execute_tool(
+                    decision.tool_name,
+                    decision.arguments,
+                    cancel_event = cancel_event,
+                    timeout = eff_timeout,
+                    session_id = session_id,
+                )
+            except Exception as exc:
+                logger.exception("Tool %s raised: %s", decision.tool_name, exc)
+                result = f"Error: tool raised an exception: {exc}"
 
-            # Strip frontend image sentinel from the model's view.
-            # Cut at the first occurrence so leading and consecutive
-            # sentinels are both removed.
-            result_for_model = result
-            if isinstance(result_for_model, str) and "__IMAGES__:" in result_for_model:
-                result_for_model = result_for_model.split("__IMAGES__:", 1)[0].rstrip()
-            if is_error:
-                result_for_model = result_for_model + TOOL_ERROR_NUDGE
-
-            tool_msg: dict = {
-                "role": "tool",
-                "name": tool_name,
-                "content": result_for_model,
-            }
-            tool_call_id = tc.get("id")
-            if tool_call_id:
-                tool_msg["tool_call_id"] = tool_call_id
-            conversation.append(tool_msg)
+            completion = tool_controller.record_result(decision, result)
+            yield completion.tool_end_event()
+            conversation.append(completion.tool_message())
 
         # Clear the status badge before the next turn.
         yield {"type": "status", "text": ""}
 
+        if tool_controller.force_final_answer:
+            final_attempt_done = True
+            continue
+        if not tool_controller.active_tools():
+            final_attempt_done = True
+            continue
         if iteration + 1 >= max_tool_iterations and not final_attempt_done:
             # Budget exhausted; nudge a final plain answer.
             final_attempt_done = True
-            conversation.append(
-                {
-                    "role": "user",
-                    "content": BUDGET_EXHAUSTED_NUDGE,
-                }
-            )
+            conversation.append({"role": "user", "content": BUDGET_EXHAUSTED_NUDGE})
 
     yield {"type": "status", "text": ""}

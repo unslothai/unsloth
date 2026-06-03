@@ -873,8 +873,11 @@ class InferenceBackend:
         from core.inference.safetensors_agentic import run_safetensors_tool_loop
         from core.inference.tools import execute_tool
 
-        def _single_turn(conv: list):
+        def _single_turn(conv: list, *, active_tools: Optional[list[dict]] = None):
             # conv already has the system message -- avoid double-prepend.
+            # `active_tools` is supplied by run_safetensors_tool_loop so one-shot
+            # tools such as render_html can be removed from later same-response prompts.
+            turn_tools = active_tools if active_tools is not None else tools
             yield from self._generate_chat_response_inner(
                 messages = conv,
                 system_prompt = "",
@@ -885,7 +888,7 @@ class InferenceBackend:
                 max_new_tokens = max_new_tokens,
                 repetition_penalty = repetition_penalty,
                 cancel_event = cancel_event,
-                tools = tools,
+                tools = turn_tools,
                 enable_thinking = enable_thinking,
                 reasoning_effort = reasoning_effort,
                 preserve_thinking = preserve_thinking,
