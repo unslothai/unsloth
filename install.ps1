@@ -1655,7 +1655,12 @@ shell.Run cmd, 0, False
                 $prevEapL = $ErrorActionPreference; $ErrorActionPreference = "Continue"
                 try {
                     $_llamaUrl = "https://raw.githubusercontent.com/unslothai/unsloth/main/studio/scripts/provision_llama_cuda.sh"
-                    $_provCmd = 'mkdir -p /root/.unsloth; if curl -fsSL "' + $_llamaUrl + '" -o /root/.unsloth/provision_llama_cuda.sh && [ -s /root/.unsloth/provision_llama_cuda.sh ]; then chmod +x /root/.unsloth/provision_llama_cuda.sh; nohup setsid bash /root/.unsloth/provision_llama_cuda.sh > /root/.unsloth/llama_cuda_build.log 2>&1 < /dev/null & echo PROV_STARTED; else echo PROV_NOSCRIPT; fi'
+                    # Propagate UNSLOTH_LLAMA_BUILD_JOBS into the WSL build (Windows env
+                    # vars do not cross into WSL by default), so thermally/power-limited
+                    # laptops can cap the CUDA build's parallelism (`env` with no
+                    # assignment is a harmless passthrough when the var is unset).
+                    $_jobsEnv = if ($env:UNSLOTH_LLAMA_BUILD_JOBS) { "UNSLOTH_LLAMA_BUILD_JOBS=$($env:UNSLOTH_LLAMA_BUILD_JOBS) " } else { "" }
+                    $_provCmd = 'mkdir -p /root/.unsloth; if curl -fsSL "' + $_llamaUrl + '" -o /root/.unsloth/provision_llama_cuda.sh && [ -s /root/.unsloth/provision_llama_cuda.sh ]; then chmod +x /root/.unsloth/provision_llama_cuda.sh; nohup setsid env ' + $_jobsEnv + 'bash /root/.unsloth/provision_llama_cuda.sh > /root/.unsloth/llama_cuda_build.log 2>&1 < /dev/null & echo PROV_STARTED; else echo PROV_NOSCRIPT; fi'
                     $_provOut = & wsl.exe -d $distro -u root -- bash -lc $_provCmd 2>$null
                     if ("$_provOut" -match 'PROV_STARTED') {
                         step "llama.cpp" "building CUDA llama.cpp for GGUF inference in the background (a few min); log: ~/.unsloth/llama_cuda_build.log" "Green"
