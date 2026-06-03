@@ -42,6 +42,25 @@ logger = get_logger(__name__)
 # recurrent state instead of KV caches. Setting use_cache=True on these
 # architectures causes errors or degraded performance.
 
+# Model type values from transformers config (model.config.model_type)
+# This is more reliable than name matching as suggested by reviewer.
+_SSM_MODEL_TYPES = frozenset({
+    "mamba",
+    "mamba2",
+    "falcon_mamba",
+    "falcon_h1",
+    "jamba",
+    "zamba",
+    "zamba2",
+    "nemotron_h",
+    "nemotron_nas",
+    "lfm",
+    "lfm2",
+    "granite_hybrid",
+    "granitemoehybrid",
+})
+
+# Fallback substrings for name-based detection (when config is unavailable)
 _SSM_MODEL_SUBSTRINGS = (
     "nemotron_h",
     "nemotron-h",
@@ -98,17 +117,42 @@ def _extract_model_identifier(model_name: str) -> str:
     return model_name
 
 
-def _is_ssm_model(model_name: str) -> bool:
+def _is_ssm_by_config(model) -> bool:
+    """Check if a model is SSM by examining model.config.model_type.
+
+    This is the preferred method as it's more reliable than name matching.
+    Returns False if config is unavailable.
+    """
+    try:
+        model_type = getattr(getattr(model, "config", None), "model_type", None)
+        if model_type:
+            return model_type.lower() in _SSM_MODEL_TYPES
+    except Exception:
+        pass
+    return False
+
+
+def _is_ssm_model(model_name: str, model=None) -> bool:
     """Check if a model is a State Space Model (SSM) architecture.
 
     SSM architectures (Mamba, LFM, Falcon-H1, NemotronH, Jamba) use recurrent
     state instead of traditional KV caches and require use_cache=False.
+
+    Args:
+        model_name: The model name/path (used as fallback for name matching)
+        model: Optional model object to check config.model_type (preferred)
+
+    Note: Prefers checking model.config.model_type when model is provided,
+    falls back to name matching otherwise.
     """
+    # Prefer config check when model is available (more reliable)
+    if model is not None and _is_ssm_by_config(model):
+        return True
+
     if not model_name:
         return False
 
-    # Extract the model identifier to avoid false positives from paths
-    # e.g., '/home/mamba/models/llama' should not match 'mamba'
+    # Fallback to name-based detection
     identifier = _extract_model_identifier(model_name)
     identifier_lower = identifier.lower()
 
@@ -1505,18 +1549,25 @@ class InferenceBackend:
 
         Checks multiple sources since SSM architecture identifiers may not be
         present in the model name itself:
-        1. The active model name
-        2. The base_model field (for LoRA adapters)
-        3. The export_metadata.json file (for exported/merged models)
+        1. model.config.model_type (most reliable, per reviewer feedback)
+        2. The active model name
+        3. The base_model field (for LoRA adapters)
+        4. The export_metadata.json file (for exported/merged models)
         """
         if not self.active_model_name:
             return False
 
-        # First check the active model name
+        model_info = self.models.get(self.active_model_name)
+        model = model_info.get("model") if model_info else None
+
+        # Prefer config-based check (most reliable per reviewer)
+        if model is not None and _is_ssm_by_config(model):
+            return True
+
+        # Check the active model name
         if _is_ssm_model(self.active_model_name):
             return True
 
-        model_info = self.models.get(self.active_model_name)
         if model_info:
             # For LoRA adapters, check the base model
             base_model = model_info.get("base_model")
