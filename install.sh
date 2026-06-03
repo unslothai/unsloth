@@ -1,17 +1,22 @@
 #!/bin/sh
-# Unsloth Studio Installer
-# Usage (curl):  curl -fsSL https://unsloth.ai/install.sh | sh
-# Usage (wget):  wget -qO- https://unsloth.ai/install.sh | sh
-# Usage (local): ./install.sh --local   (install from local repo instead of PyPI)
-# Usage (no-torch): ./install.sh --no-torch  (skip PyTorch, GGUF-only mode)
-# Usage (test):  ./install.sh --package roland-sloth  (install a different package name)
-# Usage (py):    ./install.sh --python 3.12  (override auto-detected Python version)
 #
-# Env vars (priority: UNSLOTH_STUDIO_HOME > STUDIO_HOME > HOME-redirect > default):
-#   UNSLOTH_STUDIO_HOME=/abs/path  -> install under that path
-#   STUDIO_HOME=/abs/path          -> alias, same effect (UNSLOTH_STUDIO_HOME wins)
-#   (DATA_DIR + unsloth CLI shim nest inside; no shell rc-file append.)
-# Default ($HOME/.unsloth/studio) is preserved when no env var is set.
+# Unsloth Studio Installer
+#
+# Usage:  curl -fsSL https://unsloth.ai/install.sh | sh
+#         wget  -qO- https://unsloth.ai/install.sh | sh
+#         ./install.sh --local   (install from a cloned repo instead of PyPI)
+#
+# Piped installs take options as env vars after the pipe (a bare `| sh --no-torch`
+# makes sh reject --no-torch as its own option). Flags still work via ./install.sh:
+#   curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_NO_TORCH=1 sh    # skip PyTorch (GGUF-only)
+#   curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_PYTHON=3.12 sh   # pin Python version
+#   curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_STUDIO_HOME=/abs/path sh
+# Equivalent flags: ./install.sh --no-torch --python 3.12  (or pipe them: sh -s -- --no-torch)
+#
+# Install dir priority: UNSLOTH_STUDIO_HOME > STUDIO_HOME (alias) > $HOME/.unsloth/studio
+#
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 set -e
 
 # ── Output style (aligned with studio/setup.sh) ──
@@ -69,6 +74,10 @@ for arg in "$@"; do
         --shortcuts-only) _SHORTCUTS_ONLY=true ;;
     esac
 done
+
+# Env-var equivalents for piped installs; an explicit flag still wins.
+case "${UNSLOTH_NO_TORCH:-}" in 1|true|TRUE|yes|YES|on|ON) _NO_TORCH_FLAG=true ;; esac
+[ -z "$_USER_PYTHON" ] && [ -n "${UNSLOTH_PYTHON:-}" ] && _USER_PYTHON="$UNSLOTH_PYTHON"
 
 if [ "$_VERBOSE" = true ]; then
     export UNSLOTH_VERBOSE=1

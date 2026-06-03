@@ -2016,7 +2016,7 @@ if ($env:SKIP_STUDIO_BASE -ne "1" -and $env:STUDIO_LOCAL_INSTALL -ne "1") {
 #     # the fresh .venv. Install it so run_install() can find its modules
 #     # and bundled requirements files.
 #     Write-Host "   Installing package into venv..." -ForegroundColor Cyan
-#     pip install unsloth-roland-test 2>&1 | Out-Null
+#     pip install unsloth 2>&1 | Out-Null
 # }
 
 if (-not $SkipPythonDeps) {
