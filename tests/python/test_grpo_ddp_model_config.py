@@ -18,11 +18,10 @@ def _read_source() -> str:
 def test_grpo_logit_scaling_uses_model_config_helper():
     src = _read_source()
     assert "def _unsloth_get_model_config(model):" in src
-    assert "_cfg = _unsloth_get_model_config(model)" in src
-    assert "logit_softcapping = _unsloth_get_final_logit_softcapping(_cfg)" in src
-    assert 'getattr(_cfg, "logit_scale", 0)' in src
-    assert 'getattr(_cfg, "logits_scaling", 0)' in src
-    assert src.count("_unsloth_get_model_config(model)") >= 2
+    assert "logit_softcapping = _unsloth_get_final_logit_softcapping(model)" in src
+    assert 'getattr(_unsloth_get_model_config(model), "logit_scale", 0)' in src
+    assert 'getattr(_unsloth_get_model_config(model), "logits_scaling", 0)' in src
+    assert src.count("_unsloth_get_model_config(model)") >= 5
     assert "inspect.getsource(_unsloth_get_model_config)" in src
     assert (
         "if config is None:" in src.split("def _unsloth_get_final_logit_softcapping")[1]
