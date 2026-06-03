@@ -144,7 +144,21 @@ def _probe_conversation(dataset: Dataset, candidates = None):
                         if r:
                             roles.add(str(r))
         # Reject columns that don't match a known chat schema.
+        # If the column has dict turns but they lack the expected keys (e.g.
+        # [{"role":"user"}] with no content), save it as an all_corrupt fallback
+        # so find_none_chatml can flag the missing fields rather than leaving
+        # the dataset undiagnosed as "unknown format".
         if not any(keys <= turn_keys for keys in _CHAT_KEY_SETS):
+            if all_corrupt_fallback is None or not all_corrupt_fallback.get(
+                "has_plausible_turns"
+            ):
+                all_corrupt_fallback = {
+                    "column": col,
+                    "turn_keys": turn_keys,
+                    "roles": roles,
+                    "all_corrupt": True,
+                    "has_plausible_turns": True,
+                }
             continue
         return {"column": col, "turn_keys": turn_keys, "roles": roles}
     # No healthy column found; return the all_corrupt fallback if any.
@@ -378,12 +392,16 @@ def find_none_chatml(dataset: Dataset, col: str = None) -> dict:
                 role = r
             else:
                 role = str(r)
-            # Key off the turn's own structure: ShareGPT turns use "from"/"value";
-            # chatml turns use "role"/"content".  When a turn has both keys (e.g.
-            # a mixed row {"from":"human","content":null,"value":"hello"}), the
-            # presence of "from" marks it as ShareGPT so we prefer "value" to
-            # avoid false positives where content=null but value is valid.
-            if "from" in turn:
+            # Key selection: prefer role/content (chatml) over from/value (ShareGPT).
+            # "role" takes priority — if present, this is a chatml turn regardless
+            # of whether "from" is also set (e.g. exporter metadata).  Only fall
+            # back to "value" when "from" is present and "role" is absent, which
+            # is the canonical ShareGPT shape.
+            if "role" in turn:
+                content = (
+                    turn.get("content") if "content" in turn else turn.get("value")
+                )
+            elif "from" in turn:
                 content = turn.get("value")
             else:
                 content = (
@@ -815,9 +833,10 @@ def show_row(dataset: Dataset, row_indices: list[int], fmt: str, col: str = None
                 def _is_bad_turn(t):
                     if not isinstance(t, dict):
                         return True
-                    # Mirror scanner logic: prefer "value" for ShareGPT turns
-                    # (identified by the presence of "from"), "content" for chatml.
-                    if "from" in t:
+                    # Mirror scanner logic: role takes priority over from.
+                    if "role" in t:
+                        c = t.get("content") if "content" in t else t.get("value")
+                    elif "from" in t:
                         c = t.get("value")
                     else:
                         c = t.get("content") if "content" in t else t.get("value")
@@ -844,8 +863,10 @@ def show_row(dataset: Dataset, row_indices: list[int], fmt: str, col: str = None
                     if r is None:
                         r = turn.get("from")
                     role = "?" if r is None else str(r)
-                    # Mirror scanner logic: prefer "value" for ShareGPT turns.
-                    if "from" in turn:
+                    # Mirror scanner logic: role takes priority over from.
+                    if "role" in turn:
+                        content = turn.get("content") if "content" in turn else turn.get("value")
+                    elif "from" in turn:
                         content = turn.get("value")
                     else:
                         content = (
