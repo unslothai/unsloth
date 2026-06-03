@@ -608,7 +608,7 @@ def _resolve_frontend_path(frontend_path: Path) -> tuple[Optional[Path], list[Pa
 
 
 def run_server(
-    host: str = "127.0.0.1",
+    host: str = "0.0.0.0",
     port: int = 8888,
     frontend_path: Path = _DEFAULT_FRONTEND_PATH,
     silent: bool = False,
@@ -855,8 +855,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description = "Run Unsloth UI Backend server")
     parser.add_argument(
         "--host",
-        default = "127.0.0.1",
-        help = "Host to bind to (default: 127.0.0.1; use 0.0.0.0 for network/cloud access)",
+        default = "0.0.0.0",
+        help = "Host to bind to (default: 0.0.0.0; use 0.0.0.0 with -H for network/cloud access)",
     )
     parser.add_argument("--port", type = int, default = 8888, help = "Port to bind to")
     parser.add_argument(
