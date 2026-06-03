@@ -25,9 +25,8 @@ function formatRelative(createdAt: number): string {
   return "Older";
 }
 
-// Strict substring-token filter. cmdk's default fuzzy scorer matches
-// unrelated rows on shared characters; require every query token to be
-// a case-insensitive substring of the item.
+// Strict substring filter (issue #5572): cmdk's fuzzy scorer matches unrelated
+// rows, so require every query token to be a case-insensitive substring.
 function strictFilter(value: string, search: string): number {
   const query = search.trim().toLowerCase();
   if (query.length === 0) return 1;
