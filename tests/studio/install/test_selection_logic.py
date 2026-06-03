@@ -1076,9 +1076,7 @@ class TestLinuxCudaChoiceFromRelease:
         result = linux_cuda_choice_from_release(host, release)
         assert result is not None
         assert result.primary.install_kind == "linux-arm64-cuda"
-        assert (
-            result.primary.name == "app-b9457-linux-arm64-cuda13-portable.tar.gz"
-        )
+        assert result.primary.name == "app-b9457-linux-arm64-cuda13-portable.tar.gz"
 
     # --- SM matching ---
 
@@ -2308,9 +2306,9 @@ class TestPinnedBlackwellCudaFallback:
     @pytest.mark.parametrize(
         "profile, runtime_line, max_sm, covers",
         [
-            ("newer", "cuda13", 120, True),   # native Blackwell build
-            ("newer", "cuda12", 120, True),   # 12.8 toolkit app bundle reaches sm120
-            ("older", "cuda12", 89, False),   # 12.4 toolkit app bundle stops at Ada
+            ("newer", "cuda13", 120, True),  # native Blackwell build
+            ("newer", "cuda12", 120, True),  # 12.8 toolkit app bundle reaches sm120
+            ("older", "cuda12", 89, False),  # 12.4 toolkit app bundle stops at Ada
         ],
     )
     def test_attempt_covers_blackwell_app_bundle(

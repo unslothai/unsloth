@@ -2315,11 +2315,7 @@ def _artifact_covers_sms(
 ) -> bool:
     """True when every host SM is listed in the artifact's supported_sms and
     falls within its [min_sm, max_sm] range."""
-    if (
-        not artifact.supported_sms
-        or artifact.min_sm is None
-        or artifact.max_sm is None
-    ):
+    if not artifact.supported_sms or artifact.min_sm is None or artifact.max_sm is None:
         return False
     supported = {str(value) for value in artifact.supported_sms}
     return all(
@@ -3643,9 +3639,9 @@ def published_windows_cuda_attempts(
         # the driver major is the real constraint. Mirrors the legacy
         # windows_cuda_attempts fallback; without it a torch-only host gets no
         # fork attempt and silently drops to the upstream build.
-        ordered_lines = [
-            line for line in compatible if line in detected
-        ] or list(compatible)
+        ordered_lines = [line for line in compatible if line in detected] or list(
+            compatible
+        )
         if preferred_runtime_line and preferred_runtime_line in ordered_lines:
             ordered_lines = [preferred_runtime_line] + [
                 line for line in ordered_lines if line != preferred_runtime_line
@@ -3690,7 +3686,11 @@ def published_windows_cuda_attempts(
                 and artifact.min_sm is not None
                 and artifact.max_sm is not None
             )
-            if host_sms and has_sm_info and not _artifact_covers_sms(artifact, host_sms):
+            if (
+                host_sms
+                and has_sm_info
+                and not _artifact_covers_sms(artifact, host_sms)
+            ):
                 continue
             if not host_sms and has_sm_info and artifact.coverage_class != "portable":
                 continue

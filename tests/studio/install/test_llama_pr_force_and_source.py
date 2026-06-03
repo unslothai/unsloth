@@ -476,9 +476,8 @@ class TestSourcePatternsPs1:
             not in self.content
         )
         assert (
-            '$HelperReleaseRepo = if ($HasNvidiaSmi -or $HasROCm) '
-            '{ "unslothai/llama.cpp" } else { "ggml-org/llama.cpp" }'
-            in self.content
+            "$HelperReleaseRepo = if ($HasNvidiaSmi -or $HasROCm) "
+            '{ "unslothai/llama.cpp" } else { "ggml-org/llama.cpp" }' in self.content
         )
 
     def test_force_compile_skips_prebuilt_resolution_early(self):
