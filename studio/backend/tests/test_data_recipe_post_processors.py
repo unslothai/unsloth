@@ -234,8 +234,8 @@ def test_build_config_builder_skips_studio_owned_processors(monkeypatch):
     fake_config.DataDesignerConfigBuilder = _StubBuilderFactory
     fake_processors = types.ModuleType("data_designer.config.processors")
     fake_processors.ProcessorType = _StubProcessorType
-    sys.modules["data_designer.config"] = fake_config
-    sys.modules["data_designer.config.processors"] = fake_processors
+    monkeypatch.setitem(sys.modules, "data_designer.config", fake_config)
+    monkeypatch.setitem(sys.modules, "data_designer.config.processors", fake_processors)
 
     service.build_config_builder({
         "processors": [
