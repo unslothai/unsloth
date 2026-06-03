@@ -1576,8 +1576,11 @@ if [ -z "$_USER_PYTHON" ] && [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ]; then
     # back to reading the binary's Mach-O arch statically so the x86_64
     # recreate below still triggers instead of letting uv fail later.
     if [ -z "$_VENV_ARCH" ] && [ -x "$VENV_DIR/bin/python" ]; then
+        # uv symlinks bin/python to the base interpreter, so dereference with
+        # file -L (lipo already follows the link). Trailing || true keeps the
+        # installer alive under set -e when neither tool is present.
         _archs=$(lipo -archs "$VENV_DIR/bin/python" 2>/dev/null \
-            || file "$VENV_DIR/bin/python" 2>/dev/null)
+            || file -L "$VENV_DIR/bin/python" 2>/dev/null || true)
         case "$_archs" in
             *arm64*)  _VENV_ARCH=arm64 ;;
             *x86_64*) _VENV_ARCH=x86_64 ;;
