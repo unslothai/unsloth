@@ -1744,11 +1744,17 @@ def parse_published_artifact(raw: Any) -> PublishedLlamaArtifact | None:
         raise ValueError(f"artifact {asset_name} rank was not an integer")
     gfx_target_raw = raw.get("gfx_target")
     gfx_target = (
-        gfx_target_raw if isinstance(gfx_target_raw, str) and gfx_target_raw else None
+        gfx_target_raw.strip()
+        if isinstance(gfx_target_raw, str) and gfx_target_raw.strip()
+        else None
     )
     mapped_raw = raw.get("mapped_targets", [])
     mapped_targets = (
-        [str(value) for value in mapped_raw if isinstance(value, str) and value]
+        [
+            value.strip()
+            for value in mapped_raw
+            if isinstance(value, str) and value.strip()
+        ]
         if isinstance(mapped_raw, (list, tuple))
         else []
     )
