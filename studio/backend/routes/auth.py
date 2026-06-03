@@ -260,7 +260,7 @@ async def login(payload: AuthLoginRequest, request: Request) -> Token:
         _record_login_failure(unknown_key)
         raise HTTPException(
             status_code = status.HTTP_401_UNAUTHORIZED,
-            detail = f"Incorrect password. Run '{_reset_password_command()}' in your terminal to reset it.",
+            detail = f"Incorrect password. To reset it, run this in your terminal: {_reset_password_command()}",
         )
 
     salt, pwd_hash, _jwt_secret, must_change_password = record
@@ -268,7 +268,7 @@ async def login(payload: AuthLoginRequest, request: Request) -> Token:
         _record_login_failure(key)
         raise HTTPException(
             status_code = status.HTTP_401_UNAUTHORIZED,
-            detail = f"Incorrect password. Run '{_reset_password_command()}' in your terminal to reset it.",
+            detail = f"Incorrect password. To reset it, run this in your terminal: {_reset_password_command()}",
         )
 
     _clear_login_bucket(key)
