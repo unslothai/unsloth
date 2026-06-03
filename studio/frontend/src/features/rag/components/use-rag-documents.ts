@@ -164,14 +164,21 @@ export function useRagDocuments(
       // Merge server truth with local progress so a refresh mid-index keeps a
       // live "running %" chip. Failed docs are hidden (toast warned at upload).
       const rows = (await lister()).filter((row) => row.status !== "failed");
-      setDocuments((prev) =>
-        rows.map((row) => {
+      setDocuments((prev) => {
+        const merged = rows.map((row) => {
           const tracked = prev.find((p) => p.id === row.id);
           return tracked && tracked.progress != null && row.status !== "completed"
             ? { ...row, progress: tracked.progress }
             : row;
-        }),
-      );
+        });
+        // Keep optimistic chips for uploads still in flight (not yet listed by
+        // the server) so a refresh racing an upload can't make them vanish.
+        const serverIds = new Set(rows.map((row) => row.id));
+        const pendingLocal = prev.filter(
+          (row) => row.id.startsWith("pending_") && !serverIds.has(row.id),
+        );
+        return [...merged, ...pendingLocal];
+      });
     } catch (err) {
       toast.error("Failed to load documents", {
         description: err instanceof Error ? err.message : String(err),
@@ -252,17 +259,26 @@ export function useRagDocuments(
     [trackJob],
   );
 
-  // `overrideScope` lets a caller pass a freshly-resolved scope (the thread bar
-  // materializes its thread id at upload time, so the hook's `scope` prop is
-  // still null on the first click); falls back to the hook scope otherwise.
+  // `overrideScope` lets a caller pass a freshly-resolved scope, or a promise of
+  // one (the thread bar materializes its id at upload time, so the hook's
+  // `scope` is still null on the first click); falls back to the hook scope.
   const upload = useCallback(
-    async (files: FileList | File[], overrideScope?: RagDocumentScope) => {
-      const activeScope = overrideScope ?? scope;
-      if (!activeScope) return;
+    async (
+      files: FileList | File[],
+      overrideScope?: RagDocumentScope | Promise<RagDocumentScope | null>,
+    ) => {
+      // Flip the in-flight guard synchronously, before awaiting a thread id that
+      // may still be materializing. The scope-change effect reads it to tell a
+      // real context switch from the null -> new-thread flip that fires
+      // mid-upload, so it neither aborts job tracking nor wipes optimistic chips.
       uploadInFlightRef.current = true;
       setUploading(true);
-      const seenIds = new Set(documentsRef.current.map((d) => d.id));
       try {
+        const resolved =
+          overrideScope instanceof Promise ? await overrideScope : overrideScope;
+        const activeScope = resolved ?? scope;
+        if (!activeScope) return;
+        const seenIds = new Set(documentsRef.current.map((d) => d.id));
         for (const file of Array.from(files)) {
           // Skip an identical re-selection pre-upload; an edited same-name file
           // still uploads.

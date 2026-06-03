@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import type { ReactNode } from "react";
 import { useEffect, useState } from "react";
 import {
   Select,
@@ -16,8 +17,13 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { Button } from "@/components/ui/button";
-import { ChevronDownIcon } from "lucide-react";
+import { ChevronDownIcon, InfoIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   type RagMode,
@@ -36,6 +42,24 @@ const MODE_LABEL: Record<RagMode, string> = {
   lexical: "BM25 only",
 };
 
+/** Info icon revealing a short tooltip; click-toggles so touch works too. */
+function InfoHint({ children }: { children: ReactNode }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild={true}>
+        <button
+          type="button"
+          aria-label="More info"
+          className="text-muted-foreground/50 hover:text-muted-foreground"
+        >
+          <InfoIcon className="size-3.5" />
+        </button>
+      </TooltipTrigger>
+      <TooltipContent className="max-w-xs">{children}</TooltipContent>
+    </Tooltip>
+  );
+}
+
 /** Labeled slider with a value readout, matching the section's other rows. */
 function SliderRow({
   label,
@@ -46,6 +70,7 @@ function SliderRow({
   onChange,
   disabled = false,
   format = (v: number) => String(v),
+  tooltip,
 }: {
   label: string;
   value: number;
@@ -55,6 +80,7 @@ function SliderRow({
   onChange: (v: number) => void;
   disabled?: boolean;
   format?: (v: number) => string;
+  tooltip?: ReactNode;
 }) {
   return (
     <div
@@ -64,8 +90,9 @@ function SliderRow({
       )}
     >
       <div className="flex items-center justify-between">
-        <span className="text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
+        <span className="flex items-center gap-1.5 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
           {label}
+          {tooltip ? <InfoHint>{tooltip}</InfoHint> : null}
         </span>
         <span className="text-[13px] tabular-nums text-muted-foreground">
           {format(value)}
@@ -221,8 +248,12 @@ export function RetrievalSettingsSection() {
       <div className="flex flex-col gap-3">
         <div className="flex items-center justify-between gap-3">
           <div className="flex flex-col">
-            <span className="text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
+            <span className="flex items-center gap-1.5 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
               Auto-retrieve documents
+              <InfoHint>
+                Small models (under ~4B) often answer from memory instead of
+                searching. Keep this on so attachments are always consulted.
+              </InfoHint>
             </span>
             <span className="text-[12px] leading-[1.3] text-muted-foreground">
               Always search attached documents before answering.
@@ -260,6 +291,7 @@ export function RetrievalSettingsSection() {
             step={0.05}
             onChange={setRagMinScore}
             format={(v) => v.toFixed(2)}
+            tooltip="Hide passages scoring below this. Raise it to keep only strong matches."
           />
           <SliderRow
             label="Fusion constant (RRF k)"
@@ -269,6 +301,7 @@ export function RetrievalSettingsSection() {
             step={1}
             disabled={!hybrid}
             onChange={setRagRrfK}
+            tooltip="Blends keyword and semantic rankings in hybrid search. Higher mixes them more evenly."
           />
           <SliderRow
             label="Lexical candidates"
@@ -278,6 +311,7 @@ export function RetrievalSettingsSection() {
             step={1}
             disabled={!hybrid}
             onChange={setRagTopKLexical}
+            tooltip="How many keyword (BM25) matches to gather before ranking."
           />
           <SliderRow
             label="Dense candidates"
@@ -287,15 +321,10 @@ export function RetrievalSettingsSection() {
             step={1}
             disabled={!hybrid}
             onChange={setRagTopKDense}
+            tooltip="How many semantic (embedding) matches to gather before ranking."
           />
         </CollapsibleContent>
       </Collapsible>
-
-      <p className="text-[12px] leading-[1.4] text-muted-foreground">
-        Document tool-calling works best with capable models (roughly 4B
-        parameters or more). Smaller models often answer from memory instead of
-        searching, so keep Auto-retrieve on to consult attachments either way.
-      </p>
 
       <div className="flex justify-end">
         <Button

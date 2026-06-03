@@ -148,12 +148,16 @@ export function ThreadDocumentsBar({ threadId }: { threadId: string | null }) {
           const files = Array.from(e.target.files ?? []);
           e.target.value = "";
           if (files.length === 0) return;
-          // Resolve the thread id, then upload to it explicitly: on the first
-          // click the hook's `scope` is still null (materialization just ran),
-          // so pass the id as an override rather than rely on the stale scope.
-          void ensureThreadId().then((id) => {
-            if (id) void upload(files, { type: "thread", threadId: id });
-          });
+          // Pass the thread id as a promise so upload() flips its in-flight
+          // guard synchronously, before materialization's setActiveThreadId
+          // re-renders us. On the first click the hook's `scope` is still null,
+          // so the resolved id (not the stale scope) is what we upload to.
+          void upload(
+            files,
+            ensureThreadId().then((id) =>
+              id ? ({ type: "thread", threadId: id } as const) : null,
+            ),
+          );
         }}
       />
       {/* Cap the chip area so a large set scrolls instead of overflowing. */}
