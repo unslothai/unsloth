@@ -99,9 +99,13 @@ def _make_backend(native_ctx = 131072):
     inst._kv_value_length = 128
     inst._kv_lora_rank = None
     inst._sliding_window = None
+    inst._sliding_window_pattern = None
     inst._ssm_inner_size = None
     inst._full_attention_interval = None
     inst._key_length_mla = None
+    inst._n_kv_heads_by_layer = None
+    inst._kv_key_length_swa = None
+    inst._kv_value_length_swa = None
     return inst
 
 
@@ -114,7 +118,7 @@ def _compute_max_available_ctx(native_ctx, model_gib, gpus, kv_per_token_bytes =
     model_size = int(model_gib * GIB)
 
     inst._estimate_kv_cache_bytes = (
-        lambda n, _t = None: 0 if n <= 0 else n * kv_per_token_bytes
+        lambda n, _t = None, **_kw: 0 if n <= 0 else n * kv_per_token_bytes
     )
     inst._can_estimate_kv = lambda: True
 

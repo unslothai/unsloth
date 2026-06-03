@@ -8,6 +8,21 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 RULE=$(printf '\342\224\200%.0s' {1..52})
 
+# ── Parse flags ──
+# --local: install from the local repo checkout (overlays unsloth as editable
+# and unsloth-zoo from git main). Mirrors install.sh --local for the Colab
+# path that runs setup.sh directly without going through install.sh.
+if [ "$#" -gt 0 ]; then
+    for _arg in "$@"; do
+        case "$_arg" in
+            --local)
+                export STUDIO_LOCAL_INSTALL=1
+                export STUDIO_LOCAL_REPO="$REPO_ROOT"
+                ;;
+        esac
+    done
+fi
+
 # ── Maintainer-editable defaults ──────────────────────────────────────────
 # Change these in the GitHub-hosted script so all users get updated defaults.
 # User environment variables always override these baked-in values.
@@ -115,6 +130,30 @@ run_quiet_no_exit() {
     _run_quiet return "$@"
 }
 
+_nvcc_meets_llama_minimum() {
+    # Echo "ok|too_old|unknown" then the parsed "X.Y" version, one per line.
+    # llama.cpp needs CUDA toolkit >= 12.4 (#4437; setup.ps1 aborts via #4517).
+    _nvcc_bin=$1
+    [ -n "$_nvcc_bin" ] || { echo "unknown"; echo ""; return 0; }
+    _raw=$("$_nvcc_bin" --version 2>/dev/null \
+        | sed -n 's/.*release \([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' \
+        | head -1)
+    if [ -z "$_raw" ]; then
+        echo "unknown"; echo ""; return 0
+    fi
+    _maj=${_raw%%.*}
+    _min_raw=${_raw#*.}
+    _min=${_min_raw%%.*}
+    if [ "$_maj" -lt 12 ] 2>/dev/null; then
+        echo "too_old"
+    elif [ "$_maj" -eq 12 ] && [ "$_min" -lt 4 ] 2>/dev/null; then
+        echo "too_old"
+    else
+        echo "ok"
+    fi
+    echo "$_raw"
+}
+
 print_llama_error_log() {
     local log_file=$1
     [ -s "$log_file" ] || return 0
@@ -142,12 +181,21 @@ if not isinstance(payload, dict):
 repo = str(payload.get("published_repo") or "").strip()
 release_tag = str(payload.get("release_tag") or "").strip()
 llama_tag = str(payload.get("tag") or "").strip()
+source = str(payload.get("source") or "").strip()
+binary_repo = str(payload.get("binary_repo") or "").strip()
+binary_tag = str(payload.get("binary_release_tag") or "").strip()
 if not repo or not release_tag:
     raise SystemExit(0)
 
-message = f"installed release: {repo}@{release_tag}"
-if llama_tag and llama_tag != release_tag:
-    message += f" (tag {llama_tag})"
+# For non-upstream sources (e.g. lemonade) the published_repo/release_tag
+# refer to the unsloth source tree while the actual binaries came from a
+# different repo. Show both so the log is unambiguous.
+if source and source != "upstream" and binary_repo and binary_tag and binary_repo != repo:
+    message = f"installed release: {repo}@{release_tag} + {source}@{binary_tag}"
+else:
+    message = f"installed release: {repo}@{release_tag}"
+    if llama_tag and llama_tag != release_tag:
+        message += f" (tag {llama_tag})"
 print(message)
 PY
 }
@@ -169,6 +217,9 @@ verbose_substep "verbose diagnostics enabled"
 _LLAMA_ONLY="${UNSLOTH_STUDIO_LLAMA_ONLY:-0}"
 if [ "$_LLAMA_ONLY" = "1" ]; then
     substep "llama.cpp only mode"
+fi
+if [ "${STUDIO_LOCAL_INSTALL:-0}" = "1" ]; then
+    substep "local mode: overlaying $REPO_ROOT (editable) + unsloth-zoo from git main"
 fi
 # ── Clean up stale caches ──
 rm -rf "$REPO_ROOT/unsloth_compiled_cache"
@@ -399,7 +450,36 @@ if [ -d "$SCRIPT_DIR/backend/core/data_recipe/oxc-validator" ] && command -v npm
 fi
 
 # ── Python venv + deps ──
-STUDIO_HOME="$HOME/.unsloth/studio"
+# UNSLOTH_STUDIO_HOME (or STUDIO_HOME alias) overrides the install root
+# (mirrors install.sh). UNSLOTH_STUDIO_HOME wins when both are set.
+_studio_override_var=""
+_studio_override="${UNSLOTH_STUDIO_HOME:-}"
+if [ -n "$_studio_override" ]; then
+    _studio_override_var="UNSLOTH_STUDIO_HOME"
+else
+    _studio_override="${STUDIO_HOME:-}"
+    [ -n "$_studio_override" ] && _studio_override_var="STUDIO_HOME"
+fi
+# Strip whitespace so " " is treated as unset (matches Python .strip()).
+_studio_override=$(printf '%s' "$_studio_override" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+case "$_studio_override" in
+    "~") _studio_override="$HOME" ;;
+    "~/"*) _studio_override="$HOME/${_studio_override#'~/'}" ;;
+esac
+if [ -n "$_studio_override" ]; then
+    # setup.sh runs against an existing install (via 'unsloth studio update');
+    # a typo in the override must fail fast instead of materializing an
+    # empty workspace dir. Mirrors setup.ps1 behavior.
+    if [ ! -d "$_studio_override" ]; then
+        echo "ERROR: $_studio_override_var=$_studio_override does not exist." >&2
+        echo "       Run install.sh to create the install root before 'unsloth studio update'." >&2
+        exit 1
+    fi
+    [ -w "$_studio_override" ] || { echo "ERROR: $_studio_override_var=$_studio_override is not writable." >&2; exit 1; }
+    STUDIO_HOME="$(CDPATH= cd -P -- "$_studio_override" && pwd -P)" || exit 1
+else
+    STUDIO_HOME="$HOME/.unsloth/studio"
+fi
 VENV_DIR="$STUDIO_HOME/unsloth_studio"
 VENV_T5_530_DIR="$STUDIO_HOME/.venv_t5_530"
 VENV_T5_550_DIR="$STUDIO_HOME/.venv_t5_550"
@@ -524,9 +604,39 @@ fi
 #
 # Runs outside the _SKIP_PYTHON_DEPS gate so that upgrades from legacy
 # single .venv_t5 are always migrated to the tiered layout.
+# why: in env-override mode $STUDIO_HOME is user-chosen; require the
+# ownership marker before rm -rf so unrelated dirs survive. Gated on the
+# canonical comparison so an override pointing at the legacy default still
+# behaves like a default install.
+_STUDIO_OWNED_MARKER=".unsloth-studio-owned"
+_LEGACY_STUDIO_HOME="$HOME/.unsloth/studio"
+_studio_home_canon="$STUDIO_HOME"
+if [ -d "$_studio_home_canon" ]; then
+    _studio_home_canon=$(CDPATH= cd -P -- "$_studio_home_canon" 2>/dev/null && pwd -P) \
+        || _studio_home_canon="$STUDIO_HOME"
+fi
+if [ -d "$_LEGACY_STUDIO_HOME" ]; then
+    _LEGACY_STUDIO_HOME=$(CDPATH= cd -P -- "$_LEGACY_STUDIO_HOME" 2>/dev/null && pwd -P) \
+        || _LEGACY_STUDIO_HOME="$HOME/.unsloth/studio"
+fi
+_STUDIO_HOME_IS_CUSTOM=false
+if [ "$_studio_home_canon" != "$_LEGACY_STUDIO_HOME" ]; then
+    _STUDIO_HOME_IS_CUSTOM=true
+fi
+_assert_studio_owned_or_absent() {
+    _aso_dir="$1"
+    _aso_label="$2"
+    [ -d "$_aso_dir" ] || return 0
+    if [ "$_STUDIO_HOME_IS_CUSTOM" = true ] && [ ! -f "$_aso_dir/$_STUDIO_OWNED_MARKER" ]; then
+        echo "ERROR: $_aso_dir already exists and is not marked as a Studio-owned $_aso_label." >&2
+        echo "       Move it aside or choose an empty UNSLOTH_STUDIO_HOME before re-running." >&2
+        exit 1
+    fi
+}
 _NEED_T5_INSTALL=false
 if [ -d "$STUDIO_HOME/.venv_t5" ]; then
     # Legacy layout — migrate
+    _assert_studio_owned_or_absent "$STUDIO_HOME/.venv_t5" "legacy transformers sidecar venv"
     rm -rf "$STUDIO_HOME/.venv_t5"
     _NEED_T5_INSTALL=true
 fi
@@ -536,16 +646,20 @@ fi
 [ "$_SKIP_PYTHON_DEPS" = false ] && _NEED_T5_INSTALL=true
 
 if [ "$_NEED_T5_INSTALL" = true ]; then
+    _assert_studio_owned_or_absent "$VENV_T5_530_DIR" "transformers 5.3 sidecar venv"
     [ -d "$VENV_T5_530_DIR" ] && rm -rf "$VENV_T5_530_DIR"
     mkdir -p "$VENV_T5_530_DIR"
+    : > "$VENV_T5_530_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
     run_quiet "install transformers 5.3.0" fast_install --target "$VENV_T5_530_DIR" --no-deps "transformers==5.3.0"
     run_quiet "install huggingface_hub for t5_530" fast_install --target "$VENV_T5_530_DIR" --no-deps "huggingface_hub==1.8.0"
     run_quiet "install hf_xet for t5_530" fast_install --target "$VENV_T5_530_DIR" --no-deps "hf_xet==1.4.2"
     run_quiet "install tiktoken for t5_530" fast_install --target "$VENV_T5_530_DIR" "tiktoken"
     step "transformers" "5.3.0 pre-installed"
 
+    _assert_studio_owned_or_absent "$VENV_T5_550_DIR" "transformers 5.5 sidecar venv"
     [ -d "$VENV_T5_550_DIR" ] && rm -rf "$VENV_T5_550_DIR"
     mkdir -p "$VENV_T5_550_DIR"
+    : > "$VENV_T5_550_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
     run_quiet "install transformers 5.5.0" fast_install --target "$VENV_T5_550_DIR" --no-deps "transformers==5.5.0"
     run_quiet "install huggingface_hub for t5_550" fast_install --target "$VENV_T5_550_DIR" --no-deps "huggingface_hub==1.8.0"
     run_quiet "install hf_xet for t5_550" fast_install --target "$VENV_T5_550_DIR" --no-deps "hf_xet==1.4.2"
@@ -554,8 +668,89 @@ if [ "$_NEED_T5_INSTALL" = true ]; then
 fi
 fi
 
+# ── GPU detection summary (mirrors setup.ps1 step "gpu" block) ──
+_setup_amd_detected=false
+_setup_gfx_all=""
+_setup_mkt=""
+if command -v rocminfo >/dev/null 2>&1 && \
+   rocminfo 2>/dev/null | awk '/Name:[[:space:]]*gfx[1-9][0-9]/{found=1} END{exit !found}'; then
+    _setup_amd_detected=true
+    _setup_gfx_all=$(rocminfo 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
+    _setup_mkt=$(rocminfo 2>/dev/null | awk -F': ' \
+        '/Marketing Name:/{gsub(/^[[:space:]]+|[[:space:]]+$/,"", $2); if($2){print $2; exit}}' || true)
+elif command -v amd-smi >/dev/null 2>&1 && \
+     amd-smi list 2>/dev/null | awk '/^GPU[[:space:]]*[:\[][[:space:]]*[0-9]/{ found=1 } END{ exit !found }'; then
+    _setup_amd_detected=true
+    _setup_gfx_all=$(amd-smi list 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
+    [ -z "$_setup_gfx_all" ] && \
+        _setup_gfx_all=$(amd-smi static --asic 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
+    _setup_mkt=$(amd-smi static --asic 2>/dev/null | awk -F'[:|]' \
+        '/[Mm]arket.?[Nn]ame/{gsub(/^[[:space:]]+|[[:space:]]+$/,"", $2); if($2){print $2; exit}}' || true)
+fi
+
+if command -v nvidia-smi >/dev/null 2>&1 && \
+   nvidia-smi -L 2>/dev/null | awk '/^GPU[[:space:]]+[0-9]+:/{found=1} END{exit !found}'; then
+    step "gpu" "NVIDIA GPU detected"
+elif [ "$_setup_amd_detected" = true ]; then
+    _setup_vis="${HIP_VISIBLE_DEVICES:-${ROCR_VISIBLE_DEVICES:-}}"
+    _setup_vis_idx=0
+    if [ -n "$_setup_vis" ] && [ "$_setup_vis" != "-1" ]; then
+        _setup_first="${_setup_vis%%,*}"
+        case "$_setup_first" in ''|*[!0-9]*) ;; *) _setup_vis_idx=$_setup_first ;; esac
+    fi
+    _setup_gfx=$(printf '%s\n' "$_setup_gfx_all" | awk -v idx="$_setup_vis_idx" \
+        'NF && !seen[$0]++ { a[n++]=$0 } END { if(idx>=n) idx=0; if(n>0) print a[idx] }')
+    # UNSLOTH_ROCM_GFX_ARCH env override (mirrors setup.ps1)
+    if [ -n "${UNSLOTH_ROCM_GFX_ARCH:-}" ]; then
+        _setup_gfx="${UNSLOTH_ROCM_GFX_ARCH}"
+        substep "gfx arch from UNSLOTH_ROCM_GFX_ARCH env override: $_setup_gfx"
+    # Name-based arch inference when tools don't report gfx (mirrors setup.ps1 nameArchTable)
+    elif [ -z "$_setup_gfx" ] && [ -n "$_setup_mkt" ]; then
+        case "$_setup_mkt" in
+            *"9070 XT"*|*9080*)                                                 _setup_gfx="gfx1201" ;;  # RDNA 4
+            *9070*|*9060*)                                                      _setup_gfx="gfx1200" ;;  # RDNA 4
+            *"8060S"*|*"890M"*|*"Strix Halo"*|*"HX 37"*|*"HX 38"*|*"AI 9 HX"*)  _setup_gfx="gfx1151" ;;  # RDNA 3.5 iGPU
+            *"880M"*|*"Strix Point"*|*"AI 9 36"*|*"AI 7 35"*|*"AI 5 34"*)       _setup_gfx="gfx1150" ;;  # RDNA 3.5 iGPU
+            *"RX 7900"*|*"RX 7800"*|*"RX 7700"*)                                _setup_gfx="gfx1100" ;;  # RDNA 3 desktop
+            *"RX 7600"*)                                                        _setup_gfx="gfx1102" ;;  # RDNA 3
+            *"780M"*|*"760M"*|*"740M"*|*"Phoenix"*)                             _setup_gfx="gfx1103" ;;  # RDNA 3 iGPU
+        esac
+        if [ -n "$_setup_gfx" ]; then
+            substep "gfx arch inferred from GPU name: $_setup_gfx"
+            substep "Tip: set UNSLOTH_ROCM_GFX_ARCH=$_setup_gfx to skip inference next time"
+        fi
+    fi
+    # ROCm version via hipconfig, then amd-smi
+    _setup_rocm_ver=""
+    if command -v hipconfig >/dev/null 2>&1; then
+        _setup_rocm_ver=$(hipconfig --version 2>/dev/null | awk 'NR==1 && /^[0-9]/{print; exit}' || true)
+    fi
+    if [ -z "$_setup_rocm_ver" ] && command -v amd-smi >/dev/null 2>&1; then
+        _setup_rocm_ver=$(amd-smi version 2>/dev/null | awk -F'ROCm version: ' \
+            'NF>1{gsub(/[[:space:]]/,"", $2); print $2; exit}' || true)
+    fi
+    if [ -n "$_setup_gfx" ]; then
+        step "gpu" "AMD ROCm ($_setup_gfx)"
+    else
+        step "gpu" "AMD ROCm"
+    fi
+    _setup_rocm_root="${ROCM_PATH:-${HIP_PATH:-/opt/rocm}}"
+    substep "ROCm: $_setup_rocm_root"
+    [ -n "$_setup_rocm_ver" ] && substep "hipconfig: $_setup_rocm_ver"
+    [ -n "$_setup_mkt" ] && [ -n "$_setup_gfx" ] && substep "GPU: $_setup_mkt"
+else
+    step "gpu" "none (chat-only / GGUF)" "$C_WARN"
+    substep "Training and GPU inference require an NVIDIA or AMD ROCm GPU."
+fi
+
 # ── 7. Prefer prebuilt llama.cpp bundles before any source build path ──
-UNSLOTH_HOME="$HOME/.unsloth"
+# Nest llama.cpp under $STUDIO_HOME only for real env-overrides; legacy
+# default keeps ~/.unsloth/llama.cpp so pre-PR builds are still discovered.
+if [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
+    UNSLOTH_HOME="$STUDIO_HOME"
+else
+    UNSLOTH_HOME="$HOME/.unsloth"
+fi
 mkdir -p "$UNSLOTH_HOME"
 LLAMA_CPP_DIR="$UNSLOTH_HOME/llama.cpp"
 LLAMA_SERVER_BIN="$LLAMA_CPP_DIR/build/bin/llama-server"
@@ -564,11 +759,40 @@ _LLAMA_CPP_DEGRADED=false
 _LLAMA_FORCE_COMPILE="${UNSLOTH_LLAMA_FORCE_COMPILE:-0}"
 _REQUESTED_LLAMA_TAG="${UNSLOTH_LLAMA_TAG:-${_DEFAULT_LLAMA_TAG}}"
 _HOST_SYSTEM="$(uname -s 2>/dev/null || true)"
+_HOST_MACHINE="$(uname -m 2>/dev/null || true)"
+
+# Pick the release repo install_llama_prebuilt.py plans against.
+# unslothai/llama.cpp ships only Linux CUDA bundles, so CPU-only Linux
+# x86_64 routes to ggml-org for bin-ubuntu-x64.tar.gz. Anything with a
+# GPU tool installed stays on unslothai (CUDA bundle / ROCm source build).
+_LINUX_HAS_GPU=false
+for _GPU_TOOL in nvidia-smi rocminfo amd-smi hipconfig hipinfo; do
+    if command -v "$_GPU_TOOL" >/dev/null 2>&1; then
+        _LINUX_HAS_GPU=true
+        break
+    fi
+done
+
 if [ "$_HOST_SYSTEM" = "Darwin" ]; then
+    _HELPER_RELEASE_REPO="ggml-org/llama.cpp"
+elif [ "$_HOST_SYSTEM" = "Linux" ] \
+        && [ "$_HOST_MACHINE" = "x86_64" ] \
+        && [ "$_LINUX_HAS_GPU" = false ]; then
+    _HELPER_RELEASE_REPO="ggml-org/llama.cpp"
+elif [ "$_HOST_SYSTEM" = "Linux" ] \
+        && { [ "$_HOST_MACHINE" = "aarch64" ] || [ "$_HOST_MACHINE" = "arm64" ]; } \
+        && [ "$_LINUX_HAS_GPU" = false ]; then
+    # Linux ARM64 (Ampere Altra, Raspberry Pi 5, GitHub `ubuntu-24.04-arm`,
+    # CPU-only Jetson rescue mode, ...). unslothai/llama.cpp only ships
+    # the Linux CUDA bundles, so without this branch the prebuilt
+    # resolver returns 0 attempts on every release and the installer
+    # falls all the way back to a source build. Upstream ggml-org ships
+    # llama-bNNNN-bin-ubuntu-arm64.tar.gz from at least b9072 onward.
     _HELPER_RELEASE_REPO="ggml-org/llama.cpp"
 else
     _HELPER_RELEASE_REPO="unslothai/llama.cpp"
 fi
+unset _GPU_TOOL
 _LLAMA_PR="${UNSLOTH_LLAMA_PR:-}"
 _SKIP_PREBUILT_INSTALL=false
 _LLAMA_PR_FORCE="${UNSLOTH_LLAMA_PR_FORCE:-${_DEFAULT_LLAMA_PR_FORCE}}"
@@ -617,6 +841,12 @@ else
     if [ -d "$LLAMA_CPP_DIR" ]; then
         substep "existing install detected -- validating update"
     fi
+    # why: install_llama_prebuilt.py uses os.replace(), which would displace
+    # an unrelated $UNSLOTH_STUDIO_HOME/llama.cpp before the source-build
+    # ownership check below ever runs.
+    if [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
+        _assert_studio_owned_or_absent "$LLAMA_CPP_DIR" "llama.cpp install"
+    fi
     _PREBUILT_CMD=(
         python "$SCRIPT_DIR/install_llama_prebuilt.py"
         --install-dir "$LLAMA_CPP_DIR"
@@ -626,6 +856,16 @@ else
     )
     if [ -n "${UNSLOTH_LLAMA_RELEASE_TAG:-}" ]; then
         _PREBUILT_CMD+=(--published-release-tag "$UNSLOTH_LLAMA_RELEASE_TAG")
+    fi
+    # Forward the gfx arch resolved above so the lemonade HIP prebuilt is picked
+    # even when the installer's own probe cannot report it (amd-smi-only hosts,
+    # name-inferred arch). Implies --has-rocm on the installer side.
+    if [ -n "${_setup_gfx:-}" ]; then
+        _PREBUILT_CMD+=(--rocm-gfx "$_setup_gfx")
+    elif [ "$_setup_amd_detected" = true ]; then
+        # AMD was detected but gfx resolution failed; tell the installer ROCm is
+        # present so it can still attempt a prebuilt. Mirrors setup.ps1 behaviour.
+        _PREBUILT_CMD+=(--has-rocm)
     fi
     _PREBUILT_LOG="$(mktemp)"
     set +e
@@ -643,6 +883,9 @@ else
             step "llama.cpp" "prebuilt up to date and validated"
         else
             step "llama.cpp" "prebuilt installed and validated"
+        fi
+        if [ "$_STUDIO_HOME_IS_CUSTOM" = true ] && [ -d "$LLAMA_CPP_DIR" ]; then
+            : > "$LLAMA_CPP_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
         fi
         print_installed_llama_prebuilt_release "$LLAMA_CPP_DIR"
         verbose_substep "llama.cpp install dir: $LLAMA_CPP_DIR"
@@ -668,6 +911,22 @@ else
     fi
 fi
 
+# Source-built llama.cpp installs do not have the prebuilt metadata used above
+# for exact release matching. Reuse a complete local source build unless the
+# caller explicitly requested a rebuild or a PR-specific llama.cpp checkout.
+if [ "$_NEED_LLAMA_SOURCE_BUILD" = true ] && \
+   [ "$_LLAMA_FORCE_COMPILE" != "1" ] && \
+   [ -z "$_LLAMA_PR" ] && \
+   [ -x "$LLAMA_CPP_DIR/build/bin/llama-server" ] && \
+   [ -x "$LLAMA_CPP_DIR/build/bin/llama-quantize" ]; then
+    step "llama.cpp" "existing source build found; skipping rebuild"
+    ln -sf build/bin/llama-quantize "$LLAMA_CPP_DIR/llama-quantize"
+    if [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
+        : > "$LLAMA_CPP_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
+    fi
+    _NEED_LLAMA_SOURCE_BUILD=false
+fi
+
 # ── 8. WSL: pre-install GGUF build dependencies for fallback source builds ──
 # On WSL, sudo requires a password and can't be entered during GGUF export
 # (runs in a non-interactive subprocess). Install build deps here instead.
@@ -681,7 +940,7 @@ if [ "$_NEED_LLAMA_SOURCE_BUILD" = true ] && grep -qi microsoft /proc/version 2>
         case "$_pkg" in
             build-essential) command -v gcc >/dev/null 2>&1 || _STILL_MISSING="$_STILL_MISSING $_pkg" ;;
             pciutils) command -v lspci >/dev/null 2>&1 || _STILL_MISSING="$_STILL_MISSING $_pkg" ;;
-            libcurl4-openssl-dev) dpkg -s "$_pkg" >/dev/null 2>&1 || _STILL_MISSING="$_STILL_MISSING $_pkg" ;;
+            libcurl4-openssl-dev) command -v curl-config >/dev/null 2>&1 || _STILL_MISSING="$_STILL_MISSING $_pkg" ;;
             *) command -v "$_pkg" >/dev/null 2>&1 || _STILL_MISSING="$_STILL_MISSING $_pkg" ;;
         esac
     done
@@ -825,13 +1084,23 @@ else
         fi
 
         if [ "$BUILD_OK" = true ]; then
-            CMAKE_ARGS="-DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=ON -DGGML_NATIVE=ON"
+            # Set Release explicitly (llama.cpp only defaults to it on non-MSVC/Xcode).
+            CMAKE_ARGS="-DCMAKE_BUILD_TYPE=Release -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=ON -DGGML_NATIVE=ON"
             _TRY_METAL_CPU_FALLBACK=false
             _HOST_SYSTEM="$(uname -s 2>/dev/null || true)"
             _HOST_MACHINE="$(uname -m 2>/dev/null || true)"
             _IS_MACOS_ARM64=false
             if [ "$_HOST_SYSTEM" = "Darwin" ] && { [ "$_HOST_MACHINE" = "arm64" ] || [ "$_HOST_MACHINE" = "aarch64" ]; }; then
                 _IS_MACOS_ARM64=true
+            fi
+
+            # macOS: pin a low deployment target so the source build loads on
+            # older macOS too (else a macOS 26 host stamps minos=26). Set before
+            # CPU_FALLBACK_CMAKE_ARGS copies CMAKE_ARGS so both paths inherit it.
+            if [ "$_HOST_SYSTEM" = "Darwin" ]; then
+                _MACOS_DEPLOYMENT_TARGET="${UNSLOTH_MACOS_DEPLOYMENT_TARGET:-13.3}"
+                CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_OSX_DEPLOYMENT_TARGET=${_MACOS_DEPLOYMENT_TARGET}"
+                export MACOSX_DEPLOYMENT_TARGET="${_MACOS_DEPLOYMENT_TARGET}"
             fi
 
             if command -v ccache &>/dev/null; then
@@ -880,32 +1149,52 @@ else
                 CPU_FALLBACK_CMAKE_ARGS="$CPU_FALLBACK_CMAKE_ARGS -DGGML_METAL=OFF"
                 _TRY_METAL_CPU_FALLBACK=true
             elif [ -n "$NVCC_PATH" ]; then
-                CMAKE_ARGS="$CMAKE_ARGS -DGGML_CUDA=ON"
+                # Returns "ok|too_old|unknown\nX.Y" on stdout.
+                _NVCC_CHECK="$(_nvcc_meets_llama_minimum "$NVCC_PATH")"
+                _NVCC_STATUS="$(printf '%s\n' "$_NVCC_CHECK" | sed -n '1p')"
+                _NVCC_VER="$(printf '%s\n' "$_NVCC_CHECK" | sed -n '2p')"
 
-                CUDA_ARCHS=""
-                if command -v nvidia-smi &>/dev/null; then
-                    _raw_caps=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null || true)
-                    while IFS= read -r _cap; do
-                        _cap=$(echo "$_cap" | tr -d '[:space:]')
-                        if [[ "$_cap" =~ ^([0-9]+)\.([0-9]+)$ ]]; then
-                            _arch="${BASH_REMATCH[1]}${BASH_REMATCH[2]}"
-                            # Append if not already present
-                            case ";$CUDA_ARCHS;" in
-                                *";$_arch;"*) ;;
-                                *) CUDA_ARCHS="${CUDA_ARCHS:+$CUDA_ARCHS;}$_arch" ;;
-                            esac
-                        fi
-                    done <<< "$_raw_caps"
-                fi
-
-                if [ -n "$CUDA_ARCHS" ]; then
-                    CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_CUDA_ARCHITECTURES=${CUDA_ARCHS}"
-                    _BUILD_DESC="building (CUDA, sm_${CUDA_ARCHS//;/+sm_})"
+                if [ "$_NVCC_STATUS" = "too_old" ]; then
+                    substep "CUDA toolkit $_NVCC_VER is below llama.cpp minimum (12.4)." "$C_ERR"
+                    substep "install a newer CUDA toolkit: https://developer.nvidia.com/cuda-toolkit-archive" "$C_WARN"
+                    substep "falling back to CPU llama.cpp build for this run." "$C_WARN"
+                    NVCC_PATH=""
+                    GPU_BACKEND=""
+                    _BUILD_DESC="building (CPU, CUDA toolkit < 12.4)"
                 else
-                    _BUILD_DESC="building (CUDA)"
-                fi
+                    CMAKE_ARGS="$CMAKE_ARGS -DGGML_CUDA=ON"
 
-                CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_CUDA_FLAGS=--threads=0"
+                    CUDA_ARCHS=""
+                    if command -v nvidia-smi &>/dev/null; then
+                        _raw_caps=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null || true)
+                        while IFS= read -r _cap; do
+                            _cap=$(echo "$_cap" | tr -d '[:space:]')
+                            if [[ "$_cap" =~ ^([0-9]+)\.([0-9]+)$ ]]; then
+                                _arch="${BASH_REMATCH[1]}${BASH_REMATCH[2]}"
+                                # Append if not already present
+                                case ";$CUDA_ARCHS;" in
+                                    *";$_arch;"*) ;;
+                                    *) CUDA_ARCHS="${CUDA_ARCHS:+$CUDA_ARCHS;}$_arch" ;;
+                                esac
+                            fi
+                        done <<< "$_raw_caps"
+                    fi
+
+                    if [ -n "$CUDA_ARCHS" ]; then
+                        CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_CUDA_ARCHITECTURES=${CUDA_ARCHS}"
+                        _BUILD_DESC="building (CUDA, sm_${CUDA_ARCHS//;/+sm_})"
+                    else
+                        _BUILD_DESC="building (CUDA)"
+                    fi
+
+                    CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_CUDA_FLAGS=--threads=0"
+
+                    # Accept a host gcc/clang newer than nvcc's whitelist; a fresh
+                    # toolkit (e.g. CUDA 13.3) otherwise aborts with "#error --
+                    # unsupported GNU version". Via env, not CMAKE_ARGS, to avoid
+                    # word-splitting.
+                    export NVCC_PREPEND_FLAGS="${NVCC_PREPEND_FLAGS:+$NVCC_PREPEND_FLAGS }-allow-unsupported-compiler"
+                fi
             elif [ "$GPU_BACKEND" = "rocm" ]; then
                 # Resolve hipcc symlinks to find the real ROCm root
                 _HIPCC_REAL="$(readlink -f "$ROCM_HIPCC" 2>/dev/null || printf '%s' "$ROCM_HIPCC")"
@@ -919,6 +1208,32 @@ else
 
                 _BUILD_DESC="building (ROCm)"
                 CMAKE_ARGS="$CMAKE_ARGS -DGGML_HIP=ON"
+
+                # ROCm 7.x ships clang-20 which on Ubuntu 24.04+ defaults to the
+                # highest-numbered gcc lib dir (/usr/lib/gcc/x86_64-linux-gnu/14/)
+                # which contains runtime objects but NOT C++ headers, causing:
+                #   fatal error: 'cstdlib' file not found
+                # Find the newest gcc install dir that actually has both the
+                # runtime dir AND /usr/include/c++/<ver> headers, then pass it
+                # to clang via --gcc-install-dir so HIP builds succeed.
+                _GCC_INSTALL_DIR=""
+                _gcc_pm="$(gcc -print-multiarch 2>/dev/null)"
+                case "$_gcc_pm" in
+                    *-linux-gnu*) _GCC_MULTIARCH="$_gcc_pm" ;;
+                    *) _GCC_MULTIARCH="$(uname -m)-linux-gnu" ;;
+                esac
+                for _gcc_ver in 14 13 12 11; do
+                    if [ -d "/usr/lib/gcc/$_GCC_MULTIARCH/$_gcc_ver/include" ] && \
+                       [ -d "/usr/include/c++/$_gcc_ver" ]; then
+                        _GCC_INSTALL_DIR="/usr/lib/gcc/$_GCC_MULTIARCH/$_gcc_ver"
+                        break
+                    fi
+                done
+                if [ -n "$_GCC_INSTALL_DIR" ]; then
+                    CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_HIP_FLAGS=--gcc-install-dir=\"$_GCC_INSTALL_DIR\""
+                    substep "ROCm HIP gcc install dir: $_GCC_INSTALL_DIR"
+                fi
+
                 export ROCM_PATH="$ROCM_ROOT"
                 export HIP_PATH="$ROCM_ROOT"
 
@@ -975,14 +1290,29 @@ else
                 CMAKE_GENERATOR_ARGS="-G Ninja"
             fi
 
-            if ! run_quiet_no_exit "cmake llama.cpp" cmake $CMAKE_GENERATOR_ARGS -S "$_BUILD_TMP" -B "$_BUILD_TMP/build" $CMAKE_ARGS; then
+            # GPU label for the CPU-fallback message: Metal, else GPU_BACKEND
+            # (cuda/rocm). Empty on a bare CPU build (nothing to fall back from).
+            _gpu_fallback_label() {
                 if [ "$_TRY_METAL_CPU_FALLBACK" = true ]; then
+                    echo "Metal"
+                elif [ -n "$GPU_BACKEND" ]; then
+                    printf '%s' "$GPU_BACKEND" | tr '[:lower:]' '[:upper:]'
+                fi
+            }
+
+            if ! run_quiet_no_exit "cmake llama.cpp" cmake $CMAKE_GENERATOR_ARGS -S "$_BUILD_TMP" -B "$_BUILD_TMP/build" $CMAKE_ARGS; then
+                _FB_LABEL="$(_gpu_fallback_label)"
+                if [ -n "$_FB_LABEL" ]; then
                     _TRY_METAL_CPU_FALLBACK=false
-                    substep "Metal configure failed; retrying CPU build..." "$C_WARN"
+                    substep "$_FB_LABEL configure failed; retrying CPU build..." "$C_WARN"
                     rm -rf "$_BUILD_TMP/build"
-                    run_quiet_no_exit "cmake llama.cpp (cpu fallback)" cmake $CMAKE_GENERATOR_ARGS -S "$_BUILD_TMP" -B "$_BUILD_TMP/build" $CPU_FALLBACK_CMAKE_ARGS || BUILD_OK=false
-                    if [ "$BUILD_OK" = true ]; then
-                        _BUILD_DESC="building (CPU fallback)"
+                    if run_quiet_no_exit "cmake llama.cpp (cpu fallback)" cmake $CMAKE_GENERATOR_ARGS -S "$_BUILD_TMP" -B "$_BUILD_TMP/build" $CPU_FALLBACK_CMAKE_ARGS; then
+                        _BUILD_DESC="building (CPU fallback after $_FB_LABEL configure failed)"
+                        # Now configured for CPU; clear GPU_BACKEND so a later
+                        # build-step failure won't re-enter fallback on this config.
+                        GPU_BACKEND=""
+                    else
+                        BUILD_OK=false
                     fi
                 else
                     BUILD_OK=false
@@ -992,12 +1322,14 @@ else
 
         if [ "$BUILD_OK" = true ]; then
             if ! run_quiet_no_exit "build llama-server" cmake --build "$_BUILD_TMP/build" --config Release --target llama-server -j"$NCPU"; then
-                if [ "$_TRY_METAL_CPU_FALLBACK" = true ]; then
+                _FB_LABEL="$(_gpu_fallback_label)"
+                if [ -n "$_FB_LABEL" ]; then
                     _TRY_METAL_CPU_FALLBACK=false
-                    substep "Metal build failed; retrying CPU build..." "$C_WARN"
+                    substep "$_FB_LABEL build failed; retrying CPU build..." "$C_WARN"
                     rm -rf "$_BUILD_TMP/build"
                     if run_quiet_no_exit "cmake llama.cpp (cpu fallback)" cmake $CMAKE_GENERATOR_ARGS -S "$_BUILD_TMP" -B "$_BUILD_TMP/build" $CPU_FALLBACK_CMAKE_ARGS; then
-                        _BUILD_DESC="building (CPU fallback)"
+                        _BUILD_DESC="building (CPU fallback after $_FB_LABEL build failed)"
+                        GPU_BACKEND=""
                         run_quiet_no_exit "build llama-server (cpu fallback)" cmake --build "$_BUILD_TMP/build" --config Release --target llama-server -j"$NCPU" || BUILD_OK=false
                     else
                         BUILD_OK=false
@@ -1014,8 +1346,10 @@ else
 
         # Swap only after build succeeds -- preserves existing install on failure
         if [ "$BUILD_OK" = true ]; then
+            _assert_studio_owned_or_absent "$LLAMA_CPP_DIR" "llama.cpp install"
             rm -rf "$LLAMA_CPP_DIR"
             mv "$_BUILD_TMP" "$LLAMA_CPP_DIR"
+            : > "$LLAMA_CPP_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
             # Symlink to llama.cpp root -- check_llama_cpp() looks for the binary there
             QUANTIZE_BIN="$LLAMA_CPP_DIR/build/bin/llama-quantize"
             if [ -f "$QUANTIZE_BIN" ]; then
@@ -1038,6 +1372,32 @@ else
     fi
 }
 fi  # end _SKIP_GGUF_BUILD check
+
+# ── arm64 Linux GPU: CPU prebuilt as a last resort ──
+# arm64 Linux with a GPU has no CUDA prebuilt anywhere (the unslothai fork is
+# x64 only; ggml-org ships no Linux CUDA build), so it source-builds for the
+# GPU above. If that produced no binary, install ggml-org's arm64 CPU prebuilt
+# instead of leaving the host without llama.cpp.
+if [ "$_LLAMA_CPP_DEGRADED" = true ] \
+        && [ "$_HOST_SYSTEM" = "Linux" ] \
+        && { [ "$_HOST_MACHINE" = "aarch64" ] || [ "$_HOST_MACHINE" = "arm64" ]; }; then
+    substep "GPU source build unavailable; trying ggml-org arm64 CPU prebuilt..."
+    _ARM64_CPU_CMD=(
+        python "$SCRIPT_DIR/install_llama_prebuilt.py"
+        --install-dir "$LLAMA_CPP_DIR"
+        --llama-tag "$_REQUESTED_LLAMA_TAG"
+        --published-repo "ggml-org/llama.cpp"
+        --simple-policy
+        --cpu-fallback
+    )
+    # Trust the installer's exit code: it validates the server before exiting 0,
+    # the same signal the primary prebuilt path above relies on.
+    if run_quiet_no_exit "arm64 CPU prebuilt" "${_ARM64_CPU_CMD[@]}"; then
+        step "llama.cpp" "arm64 CPU prebuilt installed (GPU build unavailable)" "$C_WARN"
+        _LLAMA_CPP_DEGRADED=false
+        print_installed_llama_prebuilt_release "$LLAMA_CPP_DIR"
+    fi
+fi
 
 # ── Footer ──
 if [ "$_LLAMA_ONLY" = "1" ]; then
@@ -1069,10 +1429,11 @@ else
     fi
     printf "  ${C_DIM}%s${C_RST}\n" "$RULE"
     if [ "$_LLAMA_CPP_DEGRADED" = true ]; then
-        printf "  ${C_DIM}%-15s${C_WARN}%s${C_RST}\n" "launch" "unsloth studio -H 0.0.0.0 -p 8888"
+        printf "  ${C_DIM}%-15s${C_WARN}%s${C_RST}\n" "launch" "unsloth studio -p 8888"
     else
-        printf "  ${C_DIM}%-15s${C_OK}%s${C_RST}\n" "launch" "unsloth studio -H 0.0.0.0 -p 8888"
+        printf "  ${C_DIM}%-15s${C_OK}%s${C_RST}\n" "launch" "unsloth studio -p 8888"
     fi
+    printf "  ${C_DIM}%-15s%s${C_RST}\n" "" "(add -H 0.0.0.0 to allow network / cloud access)"
 fi
 echo ""
 

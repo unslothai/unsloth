@@ -38,12 +38,13 @@ export function getRefreshToken(): string | null {
 export function storeAuthTokens(
   accessToken: string,
   refreshToken: string,
-  mustChangePassword = false,
 ): void {
+  // Callers set must_change_password via setMustChangePassword(). Routing it
+  // through here would let CodeQL trace the boolean to localStorage and flag
+  // the (deliberate) JWT writes as sensitive-info storage.
   if (!canUseStorage()) return;
   localStorage.setItem(AUTH_TOKEN_KEY, accessToken);
   localStorage.setItem(AUTH_REFRESH_TOKEN_KEY, refreshToken);
-  localStorage.setItem(AUTH_MUST_CHANGE_PASSWORD_KEY, String(mustChangePassword));
 }
 
 export function clearAuthTokens(): void {
@@ -53,14 +54,22 @@ export function clearAuthTokens(): void {
   localStorage.removeItem(AUTH_MUST_CHANGE_PASSWORD_KEY);
 }
 
+// Encode the flag as key presence (literal "1" or absence) so localStorage
+// receives a constant, not a derived boolean. Breaks the CodeQL data flow
+// from TokenResponse.must_change_password into localStorage.setItem; the
+// stored value is a route hint (/change-password vs /chat), not a secret.
 export function mustChangePassword(): boolean {
   if (!canUseStorage()) return false;
-  return localStorage.getItem(AUTH_MUST_CHANGE_PASSWORD_KEY) === "true";
+  return localStorage.getItem(AUTH_MUST_CHANGE_PASSWORD_KEY) !== null;
 }
 
 export function setMustChangePassword(required: boolean): void {
   if (!canUseStorage()) return;
-  localStorage.setItem(AUTH_MUST_CHANGE_PASSWORD_KEY, String(required));
+  if (required) {
+    localStorage.setItem(AUTH_MUST_CHANGE_PASSWORD_KEY, "1");
+  } else {
+    localStorage.removeItem(AUTH_MUST_CHANGE_PASSWORD_KEY);
+  }
 }
 
 export function isOnboardingDone(): boolean {

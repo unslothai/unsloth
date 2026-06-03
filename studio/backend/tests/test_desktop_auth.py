@@ -9,7 +9,7 @@ import sqlite3
 import subprocess
 import sys
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import jwt
 import pytest
@@ -227,6 +227,60 @@ def test_desktop_refresh_preserves_desktop_marker():
     assert payload["desktop"] is True
 
 
+def test_consume_refresh_token_second_call_returns_none():
+    """Single-use rotation rejects the same token on a second consume."""
+    seed_user()
+    from datetime import datetime, timedelta, timezone
+
+    raw = secrets.token_urlsafe(48)
+    expires = (datetime.now(timezone.utc) + timedelta(days = 30)).isoformat()
+    storage.save_refresh_token(raw, storage.DEFAULT_ADMIN_USERNAME, expires)
+
+    first = storage.consume_refresh_token(raw)
+    assert first == (storage.DEFAULT_ADMIN_USERNAME, False)
+    second = storage.consume_refresh_token(raw)
+    assert second is None
+
+
+def test_consume_refresh_token_concurrent_only_one_succeeds(tmp_path, monkeypatch):
+    """64-thread pile-up against one token; DELETE RETURNING permits one winner."""
+    seed_user()
+    from concurrent.futures import ThreadPoolExecutor
+    from datetime import datetime, timedelta, timezone
+
+    raw = secrets.token_urlsafe(48)
+    expires = (datetime.now(timezone.utc) + timedelta(days = 30)).isoformat()
+    storage.save_refresh_token(raw, storage.DEFAULT_ADMIN_USERNAME, expires)
+
+    workers = 64
+
+    def attempt(_idx: int):
+        try:
+            return storage.consume_refresh_token(raw)
+        except sqlite3.OperationalError:
+            # "database is locked" under heavy contention; treat as losing the race.
+            return None
+
+    with ThreadPoolExecutor(max_workers = workers) as pool:
+        results = list(pool.map(attempt, range(workers)))
+
+    successes = [r for r in results if r is not None]
+    assert (
+        len(successes) == 1
+    ), f"expected exactly one consumer to win, got {len(successes)}"
+    assert successes[0] == (storage.DEFAULT_ADMIN_USERNAME, False)
+
+
+def test_consume_refresh_token_expired_returns_none():
+    seed_user()
+    from datetime import datetime, timedelta, timezone
+
+    raw = secrets.token_urlsafe(48)
+    expires = (datetime.now(timezone.utc) - timedelta(hours = 1)).isoformat()
+    storage.save_refresh_token(raw, storage.DEFAULT_ADMIN_USERNAME, expires)
+    assert storage.consume_refresh_token(raw) is None
+
+
 def test_desktop_session_uses_real_admin_identity_for_api_keys():
     seed_user(must_change_password = True)
     raw = storage.create_desktop_secret()
@@ -246,7 +300,10 @@ def test_desktop_session_uses_real_admin_identity_for_api_keys():
     assert [row["name"] for row in rows] == ["desktop"]
 
 
-def test_local_recipe_token_preserves_desktop_marker(loaded_local_model):
+def test_local_recipe_token_authenticates_as_admin_for_desktop_user(loaded_local_model):
+    # _inject_local_providers mints an internal sk-unsloth-* API key (not a
+    # forwarded JWT). The unified API-key path validates as the real admin
+    # user regardless of whether the incoming session was desktop or web.
     from auth.authentication import create_access_token, get_current_subject
 
     seed_user(must_change_password = True)
@@ -260,13 +317,7 @@ def test_local_recipe_token_preserves_desktop_marker(loaded_local_model):
     jobs_route._inject_local_providers(recipe, local_recipe_request(incoming_token))
 
     local_token = recipe["model_providers"][0]["api_key"]
-    payload = jwt.decode(
-        local_token,
-        storage.get_jwt_secret(storage.DEFAULT_ADMIN_USERNAME),
-        algorithms = ["HS256"],
-    )
-    assert payload["sub"] == storage.DEFAULT_ADMIN_USERNAME
-    assert payload["desktop"] is True
+    assert local_token.startswith(storage.API_KEY_PREFIX)
     credentials = HTTPAuthorizationCredentials(
         scheme = "Bearer",
         credentials = local_token,
@@ -276,8 +327,10 @@ def test_local_recipe_token_preserves_desktop_marker(loaded_local_model):
     )
 
 
-def test_local_recipe_token_keeps_web_marker_absent(loaded_local_model):
-    from auth.authentication import create_access_token
+def test_local_recipe_token_authenticates_as_admin_for_web_user(loaded_local_model):
+    # Mirror of the desktop variant: API-key issuance is identical for web
+    # and desktop incoming tokens; auth via get_current_subject works the same.
+    from auth.authentication import create_access_token, get_current_subject
 
     seed_user(must_change_password = False)
     jobs_route = data_recipe_jobs_module()
@@ -287,13 +340,14 @@ def test_local_recipe_token_keeps_web_marker_absent(loaded_local_model):
     jobs_route._inject_local_providers(recipe, local_recipe_request(incoming_token))
 
     local_token = recipe["model_providers"][0]["api_key"]
-    payload = jwt.decode(
-        local_token,
-        storage.get_jwt_secret(storage.DEFAULT_ADMIN_USERNAME),
-        algorithms = ["HS256"],
+    assert local_token.startswith(storage.API_KEY_PREFIX)
+    credentials = HTTPAuthorizationCredentials(
+        scheme = "Bearer",
+        credentials = local_token,
     )
-    assert payload["sub"] == storage.DEFAULT_ADMIN_USERNAME
-    assert "desktop" not in payload
+    assert (
+        asyncio.run(get_current_subject(credentials)) == storage.DEFAULT_ADMIN_USERNAME
+    )
 
 
 def test_desktop_login_rejects_invalid_secret():
@@ -375,23 +429,51 @@ def test_desktop_capabilities_json_reports_rollout_safe_flags():
 
 
 def test_health_response_reports_desktop_capability_fields(monkeypatch):
-    router_stub = SimpleNamespace(
-        auth_router = APIRouter(),
-        data_recipe_router = APIRouter(),
-        datasets_router = APIRouter(),
-        export_router = APIRouter(),
-        inference_router = APIRouter(),
-        models_router = APIRouter(),
-        training_history_router = APIRouter(),
-        training_router = APIRouter(),
-    )
-    monkeypatch.setitem(sys.modules, "routes", router_stub)
+    routes_module = ModuleType("routes")
+    routes_module.__path__ = []
+    settings_module = ModuleType("routes.settings")
+    settings_module.router = APIRouter()
+
+    for name, router in {
+        "auth_router": APIRouter(),
+        "chat_history_router": APIRouter(),
+        "data_recipe_router": APIRouter(),
+        "datasets_router": APIRouter(),
+        "export_router": APIRouter(),
+        "inference_router": APIRouter(),
+        "inference_studio_router": APIRouter(),
+        "mcp_servers_router": APIRouter(),
+        "models_router": APIRouter(),
+        "providers_router": APIRouter(),
+        "settings_router": settings_module.router,
+        "training_history_router": APIRouter(),
+        "training_router": APIRouter(),
+    }.items():
+        setattr(routes_module, name, router)
+    routes_module.settings = settings_module
+
+    monkeypatch.setitem(sys.modules, "routes", routes_module)
+    monkeypatch.setitem(sys.modules, "routes.settings", settings_module)
 
     import studio.backend.main as backend_main
 
     monkeypatch.setattr(backend_main._hw_module, "CHAT_ONLY", False)
 
-    body = asyncio.run(backend_main.health_check())
+    seed_user()
+    from auth.authentication import create_access_token
+
+    token = create_access_token(storage.DEFAULT_ADMIN_USERNAME)
+
+    app = FastAPI()
+    app.add_api_route("/api/health", backend_main.health_check, methods = ["GET"])
+    client = TestClient(app)
+
+    response = client.get(
+        "/api/health",
+        headers = {"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 200
+    body = response.json()
 
     assert body["desktop_protocol_version"] == 1
     assert body["supports_desktop_auth"] is True
@@ -413,11 +495,14 @@ from typer.testing import CliRunner
 studio_home = Path(sys.argv[1])
 real_import = builtins.__import__
 
-def guarded_import(name, *args, **kwargs):
+def guarded_import(name, globals = None, locals = None, fromlist = (), level = 0):
+    # Only gate absolute imports; relative `from .utils import x` inside
+    # third-party packages (e.g. typer._click.decorators) hits level > 0
+    # with name="utils" and must pass through.
     blocked = ("auth", "fastapi", "structlog", "utils")
-    if name in blocked or name.startswith(("auth.", "utils.")):
+    if level == 0 and (name in blocked or name.startswith(("auth.", "utils."))):
         raise ModuleNotFoundError(name)
-    return real_import(name, *args, **kwargs)
+    return real_import(name, globals, locals, fromlist, level)
 
 builtins.__import__ = guarded_import
 from unsloth_cli.commands import studio as studio_cli

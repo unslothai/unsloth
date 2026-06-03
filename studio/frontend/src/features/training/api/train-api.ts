@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
+import { readFastApiError } from "@/lib/format-fastapi-error";
 import type {
   TrainingStartRequest,
   TrainingStartResponse,
@@ -17,14 +18,7 @@ function isAbortError(error: unknown): boolean {
   return error instanceof DOMException && error.name === "AbortError";
 }
 
-async function readError(response: Response): Promise<string> {
-  try {
-    const payload = (await response.json()) as { detail?: string; message?: string };
-    return payload.detail || payload.message || `Request failed (${response.status})`;
-  } catch {
-    return `Request failed (${response.status})`;
-  }
-}
+const readError = (r: Response): Promise<string> => readFastApiError(r);
 
 async function parseJson<T>(response: Response): Promise<T> {
   if (!response.ok) {

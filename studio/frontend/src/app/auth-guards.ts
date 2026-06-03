@@ -9,7 +9,7 @@ import {
   hasRefreshToken,
   mustChangePassword,
   refreshSession,
-  tauriAutoAuth,
+  setMustChangePassword,
 } from "@/features/auth";
 
 async function hasActiveSession(): Promise<boolean> {
@@ -27,7 +27,12 @@ async function fetchAuthStatus(): Promise<AuthStatus> {
   try {
     const res = await fetch(apiUrl("/api/auth/status"));
     if (!res.ok) return { initialized: true, requires_password_change: mustChangePassword() };
-    return (await res.json()) as AuthStatus;
+    const status = (await res.json()) as AuthStatus;
+    // Server truth wins; keep localStorage in sync both ways.
+    if (status.requires_password_change !== mustChangePassword()) {
+      setMustChangePassword(status.requires_password_change);
+    }
+    return status;
   } catch {
     return { initialized: true, requires_password_change: mustChangePassword() };
   }
@@ -39,7 +44,7 @@ function authRedirect(to: "/login" | "/change-password"): never {
 
 export async function requireAuth(): Promise<void> {
   if (isTauri) {
-    await tauriAutoAuth();
+    // AppProvider owns backend startup + desktop auth; route guards run before it mounts.
     return;
   }
 
@@ -59,16 +64,16 @@ export async function requireAuth(): Promise<void> {
 
 export async function requireGuest(): Promise<void> {
   if (isTauri) {
-    await tauriAutoAuth();
     throw redirect({ to: "/chat" });
   }
   if (!(await hasActiveSession())) return;
+  // Reconcile localStorage before routing.
+  await fetchAuthStatus();
   throw redirect({ to: getPostAuthRoute() });
 }
 
 export async function requirePasswordChangeFlow(): Promise<void> {
   if (isTauri) {
-    await tauriAutoAuth();
     throw redirect({ to: "/chat" });
   }
 

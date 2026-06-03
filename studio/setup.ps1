@@ -50,6 +50,12 @@ if ($script:UnslothVerbose) {
     $env:UNSLOTH_VERBOSE = '1'
 }
 $script:LlamaCppDegraded = $false
+# CUDA toolkit state, published by Resolve-CudaToolkit. Only the Phase 4 source
+# build consumes these; the prebuilt path leaves them at these defaults.
+$script:CudaToolkitReady = $false
+$script:NvccPath = $null
+$script:CudaToolkitRoot = $null
+$script:CudaArch = $null
 
 # Detect if running from pip install (no frontend/ dir in studio)
 $FrontendDir = Join-Path $ScriptDir "frontend"
@@ -352,7 +358,10 @@ function Get-PytorchCudaTag {
         # string.  Plain 2>$null doesn't fully suppress stderr in PS 5.1 --
         # ErrorRecord objects leak into $output and break the -match.
         $output = & $smiExe 2>&1 | Out-String
-        if ($output -match 'CUDA Version:\s+(\d+)\.(\d+)') {
+        # Newer NVIDIA drivers (e.g. 610.x on Windows) print
+        # "CUDA UMD Version: X.Y" instead of the legacy "CUDA Version: X.Y".
+        # Accept both spellings so we don't fall through to the cu126 default.
+        if ($output -match 'CUDA(?: UMD)? Version:\s+(\d+)\.(\d+)') {
             $major = [int]$Matches[1]
             $minor = [int]$Matches[2]
             # PyTorch 2.10 offers: cu124, cu126, cu128, cu130
@@ -530,12 +539,33 @@ function Write-LlamaFailureLog {
         Write-Host "   | $line" -ForegroundColor DarkGray
     }
 }
+# Mirror the plain (no ANSI) form of step/substep messages to the
+# OS-level stdout handle when a parent is consuming our stdout via
+# a pipe (CI `tee`, Python subprocess.PIPE, CREATE_NO_WINDOW grandchild).
+# Write-Host on PS 5.1 routes through $Host.UI / the Information
+# stream, neither of which propagates reliably across the
+# install.ps1 -> unsloth.exe -> python -> powershell.exe ->
+# setup.ps1 process chain. [Console]::Out always lands on the OS
+# stdout file handle. Gated on IsOutputRedirected so the
+# interactive-console path keeps the colorized Write-Host output
+# only (no double-print).
+function Write-StudioStdoutMirror {
+    param([Parameter(Mandatory = $true)][string]$Line)
+    try {
+        if ([Console]::IsOutputRedirected) {
+            [Console]::Out.WriteLine($Line)
+            [Console]::Out.Flush()
+        }
+    } catch {}
+}
+
 function step {
     param(
         [Parameter(Mandatory = $true)][string]$Label,
         [Parameter(Mandatory = $true)][string]$Value,
         [string]$Color = "Green"
     )
+    $padded = if ($Label.Length -ge 15) { $Label.Substring(0, 15) } else { $Label.PadRight(15) }
     if ($script:StudioVtOk -and -not $env:NO_COLOR) {
         $dim = Get-StudioAnsi Dim
         $rst = Get-StudioAnsi Reset
@@ -546,10 +576,8 @@ function step {
             'DarkGray' { Get-StudioAnsi Dim }
             default { Get-StudioAnsi Ok }
         }
-        $padded = if ($Label.Length -ge 15) { $Label.Substring(0, 15) } else { $Label.PadRight(15) }
         Write-Host ("  {0}{1}{2}{3}{4}{2}" -f $dim, $padded, $rst, $val, $Value)
     } else {
-        $padded = if ($Label.Length -ge 15) { $Label.Substring(0, 15) } else { $Label.PadRight(15) }
         Write-Host ("  {0}" -f $padded) -NoNewline -ForegroundColor DarkGray
         $fc = switch ($Color) {
             'Green' { 'DarkGreen' }
@@ -560,6 +588,7 @@ function step {
         }
         Write-Host $Value -ForegroundColor $fc
     }
+    Write-StudioStdoutMirror ("  {0}{1}" -f $padded, $Value)
 }
 
 function substep {
@@ -581,6 +610,7 @@ function substep {
         }
         Write-Host ("  {0,-15}{1}" -f "", $Message) -ForegroundColor $fc
     }
+    Write-StudioStdoutMirror ("  {0,-15}{1}" -f "", $Message)
 }
 
 # ─────────────────────────────────────────────
@@ -661,13 +691,228 @@ if (-not $HasNvidiaSmi) {
         }
     }
 }
+# ── AMD ROCm detection (Windows): probe hipinfo/amd-smi for actual GPU ──
+$HasROCm = $false
+$HipSdkInstalled = $false   # HIP SDK binary found (independent of device accessibility)
+$ROCmGpuLabel = $null
+$script:ROCmGfxArch = $null
 if (-not $HasNvidiaSmi) {
+    # hipinfo: PATH first, then HIP_PATH/ROCM_PATH bin fallback (mirrors NVIDIA smi path resolution).
+    # AMD HIP SDK sets HIP_PATH but may not add the bin dir to PATH depending on install type.
+    $hipinfoExe = Get-Command hipinfo -ErrorAction SilentlyContinue
+    if (-not $hipinfoExe) {
+        $hipRoot     = if ($env:HIP_PATH) { $env:HIP_PATH } elseif ($env:ROCM_PATH) { $env:ROCM_PATH } else { $null }
+        $hipEnvLabel = if ($env:HIP_PATH) { "HIP_PATH"    } else                    { "ROCM_PATH"    }
+        if ($hipRoot) {
+            $hipinfoCandidate = Join-Path $hipRoot "bin\hipinfo.exe"
+            if (Test-Path $hipinfoCandidate) {
+                substep "[WARN] hipinfo not on PATH -- located via ${hipEnvLabel}: $hipinfoCandidate" "Yellow"
+                substep "       Add '$(Join-Path $hipRoot 'bin')' to your PATH to suppress this warning" "Yellow"
+                substep "       Quick fix: [Environment]::SetEnvironmentVariable('PATH',`$env:PATH+';$(Join-Path $hipRoot 'bin')','User')" "Yellow"
+                $hipinfoExe = [PSCustomObject]@{ Source = $hipinfoCandidate }
+            } else {
+                substep "[WARN] ${hipEnvLabel}=$hipRoot is set but hipinfo.exe not found at $hipinfoCandidate" "Yellow"
+                substep "       HIP SDK install may be incomplete -- re-install from:" "Yellow"
+                substep "       https://rocm.docs.amd.com/en/latest/deploy/windows/index.html" "Yellow"
+            }
+        }
+    }
+    if ($hipinfoExe) {
+        $HipSdkInstalled = $true   # binary found → SDK is installed regardless of device state
+        try {
+            $hipOut = & $hipinfoExe.Source 2>&1 | Out-String
+            if ($LASTEXITCODE -eq 0 -and $hipOut -match "(?i)gcnArchName") {
+                $HasROCm = $true
+                $_hipAllArches = @([regex]::Matches($hipOut, "(?im)^\s*gcnArchName\s*:\s*(\S+)") | ForEach-Object { ($_.Groups[1].Value -split ':')[0].Trim().ToLower() })
+                $_hipVisIdx = if ($env:HIP_VISIBLE_DEVICES -match '^\d') { [int]($env:HIP_VISIBLE_DEVICES -split ',')[0] } elseif ($env:ROCR_VISIBLE_DEVICES -match '^\d') { [int]($env:ROCR_VISIBLE_DEVICES -split ',')[0] } else { 0 }
+                if ($_hipAllArches.Count -gt 0) {
+                    $script:ROCmGfxArch = if ($_hipVisIdx -lt $_hipAllArches.Count) { $_hipAllArches[$_hipVisIdx] } else { $_hipAllArches[0] }
+                    $ROCmGpuLabel = "AMD ROCm ($script:ROCmGfxArch)"
+                } else {
+                    $ROCmGpuLabel = "AMD ROCm"
+                }
+            } elseif ($LASTEXITCODE -ne 0) {
+                # hipinfo ran but returned a HIP runtime error (e.g. "no ROCm-capable device detected")
+                $firstLine = ($hipOut -split '\r?\n' | Where-Object { $_.Trim() } | Select-Object -First 1)
+                substep "[WARN] hipinfo returned a HIP runtime error (exit $LASTEXITCODE)" "Yellow"
+                substep "       $firstLine" "Yellow"
+                substep "       Ensure ROCm drivers are installed: https://rocm.docs.amd.com/en/latest/deploy/windows/index.html" "Yellow"
+            }
+        } catch {}
+    }
+    # amd-smi fallback: HIP runtime present but hipinfo unavailable (no full HIP SDK).
+    # Confirms GPU visibility via 'list', then attempts 'static --asic' to extract
+    # the gfx arch that hipinfo would have provided.  Critical for Strix Halo
+    # (gfx1151) and other iGPUs where only the HIP runtime is installed.
+    if (-not $HasROCm) {
+        $amdSmiExe = Get-Command "amd-smi" -ErrorAction SilentlyContinue
+        if ($amdSmiExe) {
+            try {
+                $smiOut = & $amdSmiExe.Source list 2>&1 | Out-String
+                if ($LASTEXITCODE -eq 0 -and $smiOut -match "(?im)^GPU\s*[:\[]\s*\d") {
+                    $HasROCm = $true
+                    # Attempt 1: newer amd-smi versions embed the gfx arch in list output.
+                    # Collect ALL gfx tokens in output order so that on mixed-arch systems
+                    # we can honour HIP_VISIBLE_DEVICES / ROCR_VISIBLE_DEVICES and pick the
+                    # arch for the *runtime-visible* GPU rather than always the first one.
+                    # Do NOT deduplicate: a dual same-arch system (e.g. two gfx1151 APUs)
+                    # must produce a 2-element array so HIP_VISIBLE_DEVICES=1 selects the
+                    # second GPU rather than triggering a false out-of-range warning.
+                    # Note: this mapping assumes amd-smi lists GPUs in the same order as
+                    # HIP enumerates them (both follow PCI bus order in practice); it may
+                    # give the wrong arch when GPU indices are non-contiguous (very rare).
+                    $allGfxArches = @([regex]::Matches($smiOut, '(?i)\b(gfx\d+[a-z]?)\b') |
+                        ForEach-Object { $_.Groups[1].Value.ToLower() })
+                    if ($allGfxArches.Count -gt 0) {
+                        # Resolve which GPU index is runtime-visible.  When a single
+                        # integer index is set, use it; fall back to index 0 otherwise
+                        # (comma-separated lists or unset → first GPU, same as before).
+                        $visGpu = if ($env:HIP_VISIBLE_DEVICES) { $env:HIP_VISIBLE_DEVICES }
+                                  elseif ($env:ROCR_VISIBLE_DEVICES) { $env:ROCR_VISIBLE_DEVICES }
+                                  else { $null }
+                        $gpuIdx = 0
+                        if ($visGpu -match '^\s*(\d+)\s*$') { $gpuIdx = [int]$Matches[1] }
+                        if ($gpuIdx -ge $allGfxArches.Count) {
+                            substep "[WARN] HIP/ROCR_VISIBLE_DEVICES index $gpuIdx is out of range ($($allGfxArches.Count) GPU(s) detected); defaulting to GPU 0 for arch selection" "Yellow"
+                            $gpuIdx = 0
+                        }
+                        $script:ROCmGfxArch = $allGfxArches[$gpuIdx]
+                        $ROCmGpuLabel = "AMD ROCm ($script:ROCmGfxArch)"
+                    } else {
+                        # Attempt 2: 'static --asic' exposes ASIC details on ROCm 6+,
+                        # including the GFX target needed for wheel index selection.
+                        $smiAsicOut = ""
+                        try { $smiAsicOut = & $amdSmiExe.Source static --asic 2>&1 | Out-String } catch {}
+                        if ($smiAsicOut -match "(?i)\b(gfx\d+[a-z]?)\b") {
+                            $script:ROCmGfxArch = $Matches[1].ToLower()
+                            $ROCmGpuLabel = "AMD ROCm ($script:ROCmGfxArch)"
+                        } elseif ($smiAsicOut -match "(?im)Market.?Name\s*[:\|]\s*([^\r\n]+)") {
+                            $ROCmGpuLabel = "AMD ROCm ($($Matches[1].Trim()))"
+                        } else {
+                            $ROCmGpuLabel = "AMD ROCm"
+                        }
+                    }
+                }
+            } catch {}
+        }
+    }
+    # WMI fallback: AMD GPU in device list but no HIP SDK → guide the user.
+    # WMI gives a marketing name (e.g. "AMD Radeon 890M") but never a gfx arch.
+    # $HasROCm is intentionally NOT set here — we cannot confirm ROCm runtime
+    # support without hipinfo or amd-smi.  The name is saved to $ROCmGpuLabel
+    # so the name-based inference below can still attempt an arch lookup.
+    if (-not $HasROCm) {
+        try {
+            $wmiGpu = Get-WmiObject Win32_VideoController -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -match "AMD|Radeon" } |
+                Select-Object -First 1
+            if ($wmiGpu) { $ROCmGpuLabel = $wmiGpu.Name }
+        } catch {}
+    }
+    # ── Arch resolution: env-var override → name inference ──────────────────
+    # Runs after all probe methods.  Covers users whose amd-smi version is too
+    # old to report the GFX target and who don't have hipinfo (HIP-runtime-only
+    # installs, common on Strix Halo / iGPU systems).
+    if ($HasROCm -and -not $script:ROCmGfxArch) {
+        # 1. Manual override: set UNSLOTH_ROCM_GFX_ARCH=gfx1151 before running.
+        if ($env:UNSLOTH_ROCM_GFX_ARCH) {
+            $script:ROCmGfxArch = $env:UNSLOTH_ROCM_GFX_ARCH.Trim().ToLower()
+            $ROCmGpuLabel = "AMD ROCm ($script:ROCmGfxArch)"
+            substep "gfx arch from UNSLOTH_ROCM_GFX_ARCH env override: $script:ROCmGfxArch" "Cyan"
+        }
+        # 2. Best-effort name → arch lookup from marketing name (amd-smi / WMI).
+        #    Ordered most-specific first; first match wins.
+        elseif ($ROCmGpuLabel) {
+            $nameArchTable = @(
+                @{ P = "9070 XT|9080";                                         A = "gfx1201" }  # RDNA 4
+                @{ P = "9070|9060";                                            A = "gfx1200" }  # RDNA 4
+                @{ P = "8060S|890M|Strix Halo|HX 37[05]|HX 38[05]|AI 9 HX";    A = "gfx1151" }  # RDNA 3.5 iGPU (Strix Halo / Radeon 8060S retail)
+                @{ P = "880M|Strix Point|AI 9 36[05]|AI 7 35[05]|AI 5 34[05]"; A = "gfx1150" }  # RDNA 3.5 iGPU (Strix Point)
+                @{ P = "RX 7900|RX 7800|RX 7700(?! S)";                        A = "gfx1100" }  # RDNA 3 desktop
+                @{ P = "RX 7600";                                              A = "gfx1102" }  # RDNA 3
+                @{ P = "780M|760M|740M|Phoenix";                               A = "gfx1103" }  # RDNA 3 iGPU (Phoenix)
+            )
+            foreach ($row in $nameArchTable) {
+                if ($ROCmGpuLabel -match $row.P) {
+                    $script:ROCmGfxArch = $row.A
+                    $ROCmGpuLabel = "AMD ROCm ($script:ROCmGfxArch)"
+                    substep "gfx arch inferred from GPU name: $script:ROCmGfxArch" "Cyan"
+                    substep "Tip: set UNSLOTH_ROCM_GFX_ARCH=$script:ROCmGfxArch to skip inference next time" "Cyan"
+                    break
+                }
+            }
+        }
+    }
+    # Capture ROCm version early for display and wheel selection.
+    # Run whenever the HIP SDK binary is present, not just when the device is accessible --
+    # hipconfig --version works even when hipinfo reports no ROCm device (driver issue).
+    if ($HasROCm -or $HipSdkInstalled) {
+        $script:ROCmVersion = $null
+        $hipConfigExe = Get-Command hipconfig -ErrorAction SilentlyContinue
+        if (-not $hipConfigExe) {
+            $hipRoot = if ($env:HIP_PATH) { $env:HIP_PATH } elseif ($env:ROCM_PATH) { $env:ROCM_PATH } else { $null }
+            if ($hipRoot) {
+                $hipConfigCandidate = Join-Path $hipRoot "bin\hipconfig.exe"
+                if (Test-Path $hipConfigCandidate) {
+                    $hipConfigEnvLabel = if ($env:HIP_PATH) { "HIP_PATH" } else { "ROCM_PATH" }
+                    substep "[WARN] hipconfig not on PATH -- located via ${hipConfigEnvLabel}: $hipConfigCandidate" "Yellow"
+                    $hipConfigExe = [PSCustomObject]@{ Source = $hipConfigCandidate }
+                }
+            }
+        }
+        if ($hipConfigExe) {
+            try {
+                $hipVerOut = & $hipConfigExe.Source --version 2>&1 | Out-String
+                if ($LASTEXITCODE -eq 0) {
+                    $hipVerLine = ($hipVerOut -split '\r?\n' | Where-Object { $_.Trim() } | Select-Object -First 1).Trim()
+                    if ($hipVerLine -match '(\d+\.\d+)') {
+                        $script:ROCmVersion     = $Matches[1]
+                        $script:ROCmVersionFull = $hipVerLine
+                    }
+                }
+            } catch {}
+        }
+        if (-not $script:ROCmVersion) {
+            $amdSmiVer = Get-Command "amd-smi" -ErrorAction SilentlyContinue
+            if ($amdSmiVer) {
+                try {
+                    $smiVerOut = & $amdSmiVer.Source version 2>&1 | Out-String
+                    if ($LASTEXITCODE -eq 0 -and $smiVerOut -match 'ROCm version:\s*(\d+\.\d+)') { $script:ROCmVersion = $Matches[1] }
+                } catch {}
+            }
+        }
+    }
+}
+
+if ($HasNvidiaSmi) {
+    step "gpu" "NVIDIA GPU detected"
+} elseif ($HasROCm) {
+    step "gpu" $ROCmGpuLabel
+    $hipSdkPath = if ($env:HIP_PATH) { $env:HIP_PATH } elseif ($env:ROCM_PATH) { $env:ROCM_PATH } else { "on system PATH" }
+    substep "HIP SDK: $hipSdkPath"
+    if ($script:ROCmVersionFull) { substep "hipconfig: $script:ROCmVersionFull" }
+} elseif ($HipSdkInstalled -and $ROCmGpuLabel) {
+    # HIP SDK is installed but ROCm can't see the device (driver issue, not SDK issue)
+    $sdkVer = if ($script:ROCmVersionFull) { " (HIP $script:ROCmVersionFull)" } else { "" }
     Write-Host ""
-    step "gpu" "none (chat-only / GGUF)" "Yellow"
-    substep "Training and GPU inference require an NVIDIA GPU with drivers installed." "Yellow"
+    step "gpu" "AMD GPU detected -- not ROCm-accessible$sdkVer" "Yellow"
+    substep "Detected: $ROCmGpuLabel" "Yellow"
+    substep "[WARN] HIP SDK is installed but hipinfo reports no ROCm-capable device." "Yellow"
+    substep "       This is a driver issue, not an SDK issue." "Yellow"
+    substep "       Ensure the ROCm compute driver is installed alongside the display driver:" "Yellow"
+    substep "       https://rocm.docs.amd.com/en/latest/deploy/windows/index.html" "Yellow"
+} elseif ($ROCmGpuLabel) {
+    Write-Host ""
+    step "gpu" "AMD GPU detected -- HIP SDK not found" "Yellow"
+    substep "Detected: $ROCmGpuLabel" "Yellow"
+    substep "Install the HIP SDK for ROCm GPU inference:" "Yellow"
+    substep "https://rocm.docs.amd.com/en/latest/deploy/windows/index.html" "Yellow"
     Write-Host ""
 } else {
-    step "gpu" "NVIDIA GPU detected"
+    Write-Host ""
+    step "gpu" "none (chat-only / GGUF)" "Yellow"
+    substep "Training and GPU inference require an NVIDIA or AMD ROCm GPU." "Yellow"
+    Write-Host ""
 }
 
 # ============================================
@@ -811,7 +1056,12 @@ if ($vsResult) {
 # ============================================
 # 1e. CUDA Toolkit (nvcc for llama.cpp build + env vars)
 # ============================================
-if ($HasNvidiaSmi) {
+# Defined here but invoked lazily right before a Phase 4 source build; the
+# prebuilt llama.cpp path needs no local toolkit. With -RequireOrExit a source
+# build is committed, so hard-fail if no driver-compatible toolkit can be found
+# or installed. Without it, detection is best-effort and only sets the flag.
+function Resolve-CudaToolkit {
+    param([switch]$RequireOrExit)
 # IMPORTANT: The CUDA Toolkit version must be <= the max CUDA version the
 # NVIDIA driver supports.  nvidia-smi reports this as "CUDA Version: X.Y".
 # If we install a toolkit newer than the driver supports, llama-server will
@@ -821,7 +1071,9 @@ if ($HasNvidiaSmi) {
 $DriverMaxCuda = $null
 try {
     $smiOut = & $NvidiaSmiExe 2>&1 | Out-String
-    if ($smiOut -match "CUDA Version:\s+([\d]+)\.([\d]+)") {
+    # Newer NVIDIA drivers (e.g. 610.x) report the driver max CUDA as
+    # "CUDA UMD Version: X.Y" rather than "CUDA Version: X.Y"; accept both.
+    if ($smiOut -match "CUDA(?: UMD)? Version:\s+([\d]+)\.([\d]+)") {
         $DriverMaxCuda = "$($Matches[1]).$($Matches[2])"
         substep "driver supports up to CUDA $DriverMaxCuda"
     }
@@ -905,6 +1157,11 @@ if ($DriverMaxCuda) {
 
 # -- If incompatible toolkit is blocking, tell user to uninstall it --
 if (-not $NvccPath -and $IncompatibleToolkit) {
+    if (-not $RequireOrExit) {
+        substep "CUDA Toolkit $IncompatibleToolkit exceeds driver max $DriverMaxCuda -- skipping; prebuilt llama.cpp needs no local toolkit" "Yellow"
+        $script:CudaToolkitReady = $false
+        return
+    }
     Write-Host "" -ForegroundColor Red
     Write-Host "========================================================================" -ForegroundColor Red
     Write-Host "[ERROR] CUDA Toolkit $IncompatibleToolkit is installed but INCOMPATIBLE" -ForegroundColor Red
@@ -922,8 +1179,8 @@ if (-not $NvccPath -and $IncompatibleToolkit) {
     exit 1
 }
 
-# -- No toolkit at all: install via winget --
-if (-not $NvccPath) {
+# -- No toolkit at all: install via winget (only when a source build needs it) --
+if (-not $NvccPath -and $RequireOrExit) {
     Write-Host "CUDA toolkit (nvcc) not found -- installing via winget..." -ForegroundColor Yellow
     $HasWinget = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
     if ($HasWinget) {
@@ -982,6 +1239,11 @@ if (-not $NvccPath) {
 }
 
 if (-not $NvccPath) {
+    if (-not $RequireOrExit) {
+        substep "no driver-compatible CUDA Toolkit found -- skipping; prebuilt llama.cpp needs no local toolkit" "Yellow"
+        $script:CudaToolkitReady = $false
+        return
+    }
     Write-Host "[ERROR] CUDA Toolkit (nvcc) is required but could not be found or installed." -ForegroundColor Red
     if ($DriverMaxCuda) {
         Write-Host "        Install CUDA Toolkit $DriverMaxCuda from https://developer.nvidia.com/cuda-toolkit-archive" -ForegroundColor Yellow
@@ -1072,8 +1334,18 @@ substep "CudaToolkitDir = $CudaToolkitRoot\"
 if (-not $CudaArch) {
     substep "could not detect compute capability -- cmake will use defaults" "Yellow"
 }
-} else {
-    step "cuda" "skipped (no NVIDIA GPU detected)" "Yellow"
+# Publish the resolved toolkit to script scope for the Phase 4 build.
+$script:NvccPath = $NvccPath
+$script:CudaToolkitRoot = $CudaToolkitRoot
+$script:CudaArch = $CudaArch
+$script:CudaToolkitReady = $true
+}
+
+if ($HasROCm) {
+    $rocmVerLabel = if ($script:ROCmVersionFull) { "ROCm $script:ROCmVersionFull" } elseif ($script:ROCmVersion) { "ROCm $script:ROCmVersion" } else { "ROCm (version unknown)" }
+    step "rocm" $rocmVerLabel
+} elseif ($ROCmGpuLabel) {
+    step "rocm" "HIP SDK not found -- GPU-accelerated training unavailable" "Yellow"
 }
 
 # ============================================
@@ -1145,28 +1417,58 @@ if ($IsPipInstall) {
     }
 }
 
-# ============================================
-# 1g. Python (>= 3.11 and < 3.14, matching setup.sh)
-# ============================================
+# 1g. Python (>= 3.11 and < 3.14). Prefer py.exe so a 3.14 ahead of 3.13 on PATH does not trip the gate.
 $HasPython = $null -ne (Get-Command python -ErrorAction SilentlyContinue)
+$PyLauncher = Get-Command py -CommandType Application -ErrorAction SilentlyContinue
 $PythonOk = $false
+$DetectedPyVer = $null
 
-if ($HasPython) {
+if ($PyLauncher) {
+    foreach ($minor in @("3.13", "3.12", "3.11")) {
+        try {
+            $out = & $PyLauncher.Source "-$minor" --version 2>&1 | Out-String
+            if ($out -match 'Python (3\.\d+\.\d+)') {
+                $DetectedPyVer = $Matches[1]
+                # Make `python` resolvable for the rest of setup. Without this,
+                # py-launcher-only installs (no python.exe on PATH) pass the gate
+                # and then crash on the first bare `python` call below.
+                try {
+                    $resolvedExe = (& $PyLauncher.Source "-$minor" -c "import sys; print(sys.executable)" 2>$null | Select-Object -First 1)
+                    if ($resolvedExe -and (Test-Path $resolvedExe)) {
+                        $resolvedDir = Split-Path -Parent $resolvedExe
+                        $alreadyOnPath = ($env:PATH -split ';' | Where-Object { $_.TrimEnd('\') -ieq $resolvedDir.TrimEnd('\') }).Count -gt 0
+                        if (-not $alreadyOnPath) {
+                            $env:PATH = "$resolvedDir;$env:PATH"
+                        }
+                        $HasPython = $true
+                    }
+                } catch { }
+                $PythonOk = $true
+                break
+            }
+        } catch { }
+    }
+}
+
+if (-not $PythonOk -and $HasPython) {
     $PyVer = python --version 2>&1
     if ($PyVer -match "(\d+)\.(\d+)") {
         $PyMajor = [int]$Matches[1]; $PyMinor = [int]$Matches[2]
         if ($PyMajor -eq 3 -and $PyMinor -ge 11 -and $PyMinor -lt 14) {
-            substep "Python $PyVer"
+            $DetectedPyVer = "$PyMajor.$PyMinor"
             $PythonOk = $true
-        } else {
-            Write-Host "[ERROR] Python $PyVer is outside supported range (need >= 3.11 and < 3.14)." -ForegroundColor Red
-            Write-Host "        Install Python 3.12 from https://python.org/downloads/" -ForegroundColor Yellow
-            exit 1
         }
     }
-} else {
-    # No Python at all -- install 3.12
-    Write-Host "Python not found -- installing Python 3.12 via winget..." -ForegroundColor Yellow
+}
+
+if ($PythonOk) {
+    substep "Python $DetectedPyVer"
+} elseif (-not $HasPython) {
+    # No `python` on PATH (and py.exe either absent or only had unsupported
+    # minors). Try winget as before -- gating on $HasPython alone, not also
+    # on $PyLauncher, so a launcher-only install with just 3.14 still gets
+    # an automatic 3.12 install instead of a hard error.
+    Write-Host "Python 3.11-3.13 not found -- installing Python 3.12 via winget..." -ForegroundColor Yellow
     $HasWinget = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
     if ($HasWinget) {
         winget install -e --id Python.Python.3.12 --source winget --accept-package-agreements --accept-source-agreements
@@ -1180,6 +1482,13 @@ if ($HasPython) {
     }
     step "python" "$(python --version 2>&1)"
     $PythonOk = $true
+} else {
+    # python.exe is on PATH but its version is unsupported, and py.exe (if
+    # present) had no supported minor either.
+    Write-Host "[ERROR] No supported Python (3.11-3.13) found on this system." -ForegroundColor Red
+    Write-Host "        py.exe could not locate -3.11/-3.12/-3.13 and `python` on PATH is unsupported." -ForegroundColor Yellow
+    Write-Host "        Install Python 3.12 from https://python.org/downloads/" -ForegroundColor Yellow
+    exit 1
 }
 
 # Add user-scheme Python Scripts dir to PATH (nt_user only, no venv fallback).
@@ -1453,20 +1762,96 @@ if (-not $PythonCmd) {
     exit 1
 }
 
-substep "Using $PythonCmd ($(& $PythonCmd --version 2>&1))"
+substep "Python found: $PythonCmd"
 
-# The venv must already exist (created by install.ps1).
-# This script (setup.ps1 / "unsloth studio update") only updates packages.
-$VenvDir = Join-Path $env:USERPROFILE ".unsloth\studio\unsloth_studio"
+# The venv must already exist (created by install.ps1); this script only
+# updates packages. UNSLOTH_STUDIO_HOME (or STUDIO_HOME alias) overrides the
+# root. UNSLOTH_STUDIO_HOME wins when both are set. Whitespace-only values
+# are treated as unset to match Python .strip() semantics.
+$_studioOverrideVar = $null
+$_studioOverride = $null
+if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_STUDIO_HOME)) {
+    $_studioOverrideVar = "UNSLOTH_STUDIO_HOME"
+    $_studioOverride = $env:UNSLOTH_STUDIO_HOME.Trim()
+} elseif (-not [string]::IsNullOrWhiteSpace($env:STUDIO_HOME)) {
+    $_studioOverrideVar = "STUDIO_HOME"
+    $_studioOverride = $env:STUDIO_HOME.Trim()
+}
+if ($_studioOverride) {
+    if ($_studioOverride -eq "~" -or $_studioOverride -like "~/*" -or $_studioOverride -like "~\*") {
+        $_studioOverride = (Join-Path $env:USERPROFILE $_studioOverride.Substring(1).TrimStart('/','\'))
+    }
+    if (Test-Path -LiteralPath $_studioOverride -PathType Container) {
+        $StudioHome = (Resolve-Path -LiteralPath $_studioOverride).Path
+        # why: mirror setup.sh:417 and install.ps1:130 -- fail fast when the
+        # custom root is read-only instead of erroring later while creating
+        # sidecar venvs / installing packages.
+        $_setupWriteProbe = Join-Path $StudioHome (".unsloth-write-probe-" + [guid]::NewGuid())
+        try {
+            [System.IO.File]::WriteAllText($_setupWriteProbe, "")
+            Remove-Item -LiteralPath $_setupWriteProbe -Force -ErrorAction SilentlyContinue
+        } catch {
+            Write-Host "ERROR: $_studioOverrideVar=$StudioHome is not writable." -ForegroundColor Red
+            exit 1
+        }
+    } else {
+        Write-Host "ERROR: $_studioOverrideVar=$_studioOverride does not exist." -ForegroundColor Red
+        Write-Host "       Run install.ps1 to create the install root before 'unsloth studio update'." -ForegroundColor Red
+        exit 1
+    }
+} else {
+    $StudioHome = Join-Path $env:USERPROFILE ".unsloth\studio"
+}
+$VenvDir = Join-Path $StudioHome "unsloth_studio"
+
+# why: in env-override mode $StudioHome is user-chosen; require the
+# ownership marker before Remove-Item so unrelated dirs survive. Gated on
+# the canonical comparison so an override pointing at the legacy default
+# still behaves like a default install.
+$StudioOwnedMarker = ".unsloth-studio-owned"
+$LegacyStudioHome = Join-Path $env:USERPROFILE ".unsloth\studio"
+$_studioHomeCanon = $StudioHome
+if (Test-Path -LiteralPath $_studioHomeCanon -PathType Container) {
+    $_studioHomeCanon = (Resolve-Path -LiteralPath $_studioHomeCanon).Path
+}
+if (Test-Path -LiteralPath $LegacyStudioHome -PathType Container) {
+    $LegacyStudioHome = (Resolve-Path -LiteralPath $LegacyStudioHome).Path
+}
+$StudioHomeIsCustom = ($_studioHomeCanon -ne $LegacyStudioHome)
+function Assert-StudioOwnedOrAbsent {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+    if (-not (Test-Path -LiteralPath $Path -PathType Container)) { return }
+    if ($StudioHomeIsCustom -and -not (Test-Path -LiteralPath (Join-Path $Path $StudioOwnedMarker) -PathType Leaf)) {
+        Write-Host "[ERROR] $Path already exists and is not marked as a Studio-owned $Label." -ForegroundColor Red
+        Write-Host "        Move it aside or choose an empty UNSLOTH_STUDIO_HOME before re-running." -ForegroundColor Yellow
+        exit 1
+    }
+}
+function Mark-StudioOwned {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    if (-not (Test-Path -LiteralPath $Path -PathType Container)) { return }
+    try {
+        [System.IO.File]::WriteAllText((Join-Path $Path $StudioOwnedMarker), "")
+    } catch {}
+}
 
 # Stale-venv detection: if the venv exists but its torch flavor no longer
-# matches the current machine, wipe it so we get a clean install.
-if (Test-Path $VenvDir -PathType Container) {
+# matches the current machine, repair according to invocation context.
+# - install.ps1 sets UNSLOTH_INSTALL_ROLLBACK_MANAGED=1 so setup can delegate
+#   to the installer-level rollback that restores the previous environment.
+# - direct `unsloth studio update` keeps the pre-existing self-repair behavior.
+# In no-torch mode, a missing torch package is expected.
+$NoTorchMode = $env:UNSLOTH_NO_TORCH -match '^(?i:true|1|yes)$'
+$InstallerManagedSetup = $env:UNSLOTH_INSTALL_ROLLBACK_MANAGED -match '^(?i:true|1|yes)$'
+if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode) {
     $VenvPyExe = Join-Path $VenvDir "Scripts\python.exe"
     $installedTorchTag = $null
     $shouldRebuild = $false
 
-    if (Test-Path $VenvPyExe) {
+    if (Test-Path -LiteralPath $VenvPyExe) {
         try {
             $psi = New-Object System.Diagnostics.ProcessStartInfo
             $psi.FileName = $VenvPyExe
@@ -1508,9 +1893,28 @@ if (Test-Path $VenvDir -PathType Container) {
 
     if ($shouldRebuild) {
         $reason = if ($installedTorchTag) { "torch $installedTorchTag != required $expectedTorchTag" } else { "torch could not be imported" }
+        if ($InstallerManagedSetup) {
+            substep "Stale venv detected ($reason)." "Yellow"
+            Write-Host "   [ERROR] The existing Studio environment needs repair." -ForegroundColor Red
+            Write-Host "           Re-run install.ps1 so it can replace the environment safely with rollback." -ForegroundColor Yellow
+            exit 1
+        }
         substep "Stale venv detected ($reason) -- rebuilding..." "Yellow"
+        # why: mirror install.ps1 env-mode guard so an update against a custom
+        # UNSLOTH_STUDIO_HOME never wipes an unrelated unsloth_studio venv;
+        # -PathType Leaf rejects a directory masquerading as the sentinel.
+        if (
+            $StudioHomeIsCustom -and
+            -not (Test-Path -LiteralPath (Join-Path $VenvDir $StudioOwnedMarker) -PathType Leaf) -and
+            -not (Test-Path -LiteralPath (Join-Path $StudioHome "share\studio.conf") -PathType Leaf) -and
+            -not (Test-Path -LiteralPath (Join-Path $StudioHome "bin\unsloth.exe") -PathType Leaf)
+        ) {
+            Write-Host "[ERROR] $VenvDir already exists but does not look like an Unsloth Studio install." -ForegroundColor Red
+            Write-Host "        Move it aside or choose an empty UNSLOTH_STUDIO_HOME before re-running." -ForegroundColor Yellow
+            exit 1
+        }
         try {
-            Remove-Item $VenvDir -Recurse -Force -ErrorAction Stop
+            Remove-Item -LiteralPath $VenvDir -Recurse -Force -ErrorAction Stop
         } catch {
             Write-Host "   [ERROR] Could not remove stale venv: $($_.Exception.Message)" -ForegroundColor Red
             Write-Host "           Close any running Studio/Python processes and re-run setup." -ForegroundColor Red
@@ -1519,13 +1923,20 @@ if (Test-Path $VenvDir -PathType Container) {
     }
 }
 
-if (-not (Test-Path $VenvDir)) {
+if (-not (Test-Path -LiteralPath $VenvDir)) {
     Write-Host "[ERROR] Virtual environment not found at $VenvDir" -ForegroundColor Red
     Write-Host "        Run install.ps1 first to create the environment:" -ForegroundColor Yellow
     Write-Host "        irm https://unsloth.ai/install.ps1 | iex" -ForegroundColor Yellow
     exit 1
 } else {
     substep "reusing existing virtual environment at $VenvDir"
+    $_venvPyExe = Join-Path $VenvDir "Scripts\python.exe"
+    if (Test-Path -LiteralPath $_venvPyExe) {
+        try {
+            $_venvPyVer = (& $_venvPyExe --version 2>&1 | Out-String).Trim()
+            if ($_venvPyVer) { substep $_venvPyVer }
+        } catch {}
+    }
 }
 
 # pip and python write to stderr even on success (progress bars, warnings).
@@ -1605,7 +2016,7 @@ if ($env:SKIP_STUDIO_BASE -ne "1" -and $env:STUDIO_LOCAL_INSTALL -ne "1") {
 #     # the fresh .venv. Install it so run_install() can find its modules
 #     # and bundled requirements files.
 #     Write-Host "   Installing package into venv..." -ForegroundColor Cyan
-#     pip install unsloth-roland-test 2>&1 | Out-Null
+#     pip install unsloth 2>&1 | Out-Null
 # }
 
 if (-not $SkipPythonDeps) {
@@ -1637,9 +2048,91 @@ if ($HasNvidiaSmi) {
     $CuTag = "cpu"
 }
 
+# ── GPU arch → newest compatible Windows ROCm wheel release ──
+# Wheels bundle their own ROCm runtime; the installed HIP SDK version does
+# not constrain which release to use.  Always picks the newest release that
+# supports the GPU architecture.
+# ── AMD Windows ROCm torch override ──────────────────────────────────────────
+# Uses AMD's arch-specific pip index (repo.amd.com/rocm/whl/{arch}/).
+# Wheels bundle their own ROCm runtime; HIP SDK version is irrelevant.
+$ROCmGfxArch = $script:ROCmGfxArch
+$ROCmIndexUrl = $null
+if ($HasROCm -and $CuTag -eq "cpu") {
+    $amdIndexBase = if ($env:UNSLOTH_ROCM_WINDOWS_MIRROR) { $env:UNSLOTH_ROCM_WINDOWS_MIRROR.TrimEnd('/') } else { "https://repo.amd.com/rocm/whl" }
+    $archFamilyMap = @{
+        "gfx1201" = "gfx120X-all"; "gfx1200" = "gfx120X-all"  # RDNA 4
+        "gfx1151" = "gfx1151";     "gfx1150" = "gfx1150"      # RDNA 3.5 (Strix Halo/Point)
+        "gfx1103" = "gfx110X-all"; "gfx1102" = "gfx110X-all"  # RDNA 3
+        "gfx1101" = "gfx110X-all"; "gfx1100" = "gfx110X-all"
+        "gfx90a"  = "gfx90a";      "gfx908"  = "gfx908"       # MI200/MI100
+    }
+    # gfx120X and Strix have a null _grouped_mm kernel on torch <2.11.0.
+    # Mirrors the $torchFloorMap in install.ps1 so both installers enforce
+    # the same floor and ceiling when pulling from AMD's per-arch index.
+    $torchFloorMap = @{
+        "gfx1201" = "torch>=2.11.0,<2.12.0"; "gfx1200" = "torch>=2.11.0,<2.12.0"
+        "gfx1151" = "torch>=2.11.0,<2.12.0"; "gfx1150" = "torch>=2.11.0,<2.12.0"
+    }
+    # Companion ranges for torchvision/torchaudio -- must stay in sync with the
+    # torch ceiling so pip can always find a consistent trio on AMD's per-arch
+    # index.  AMD publishes each package independently and may add a newer
+    # torchvision (e.g. 0.27 for torch 2.12) before removing 0.26, which would
+    # cause pip to resolve an ABI-incompatible set if these are left bare.
+    # Matches _ROCM_TORCH_PKG_SPECS["rocm7.2"] in install_python_stack.py.
+    # Bump all three ceilings together when torch 2.12.x is validated.
+    $torchvisionFloorMap = @{
+        "gfx1201" = "torchvision>=0.26.0,<0.27.0"; "gfx1200" = "torchvision>=0.26.0,<0.27.0"
+        "gfx1151" = "torchvision>=0.26.0,<0.27.0"; "gfx1150" = "torchvision>=0.26.0,<0.27.0"
+    }
+    $torchaudioFloorMap = @{
+        "gfx1201" = "torchaudio>=2.11.0,<2.12.0"; "gfx1200" = "torchaudio>=2.11.0,<2.12.0"
+        "gfx1151" = "torchaudio>=2.11.0,<2.12.0"; "gfx1150" = "torchaudio>=2.11.0,<2.12.0"
+    }
+    $archFamily = if ($ROCmGfxArch -and $archFamilyMap.ContainsKey($ROCmGfxArch)) { $archFamilyMap[$ROCmGfxArch] } else { $null }
+    $ROCmTorchSpec  = if ($ROCmGfxArch -and $torchFloorMap.ContainsKey($ROCmGfxArch))        { $torchFloorMap[$ROCmGfxArch]        } else { "torch" }
+    $ROCmVisionSpec = if ($ROCmGfxArch -and $torchvisionFloorMap.ContainsKey($ROCmGfxArch))  { $torchvisionFloorMap[$ROCmGfxArch]  } else { "torchvision" }
+    $ROCmAudioSpec  = if ($ROCmGfxArch -and $torchaudioFloorMap.ContainsKey($ROCmGfxArch))   { $torchaudioFloorMap[$ROCmGfxArch]   } else { "torchaudio" }
+    if ($archFamily) {
+        $ROCmIndexUrl = "$amdIndexBase/$archFamily/"
+    } elseif ($ROCmGfxArch) {
+        # GPU arch detected but not in the supported wheel map — warn explicitly
+        # so the user knows why they are getting CPU PyTorch instead of ROCm.
+        substep "[WARN] AMD GPU ($ROCmGfxArch) not in supported arch list -- falling back to CPU-only PyTorch" "Yellow"
+        substep "       Supported: gfx1200/1201 (RDNA 4), gfx1150/1151 (RDNA 3.5), gfx1100-1103 (RDNA 3), gfx90a, gfx908" "Yellow"
+    } else {
+        # HIP SDK present ($HasROCm=true via amd-smi) but gcnArchName was not
+        # readable — warn rather than silently falling back to CPU PyTorch.
+        substep "[WARN] AMD GPU detected (HIP SDK present) but GPU arch could not be read -- falling back to CPU-only PyTorch" "Yellow"
+        substep "       Arch detection requires hipinfo to report gcnArchName. Re-install the HIP SDK if this is unexpected." "Yellow"
+    }
+}
+
 $PyTorchWhlBase = if ($env:UNSLOTH_PYTORCH_MIRROR) { $env:UNSLOTH_PYTORCH_MIRROR.TrimEnd('/') } else { "https://download.pytorch.org/whl" }
 
-if ($CuTag -eq "cpu") {
+if ($ROCmIndexUrl) {
+    substep "installing PyTorch (AMD ROCm, $ROCmGfxArch)..."
+    if ($ROCmTorchSpec -ne "torch") {
+        substep "  enforcing $ROCmTorchSpec $ROCmVisionSpec $ROCmAudioSpec (known _grouped_mm bug in older wheels)" "Cyan"
+    }
+    if ($script:UnslothVerbose) {
+        Fast-Install $ROCmTorchSpec $ROCmVisionSpec $ROCmAudioSpec --force-reinstall --index-url $ROCmIndexUrl
+        $torchInstallExit = $LASTEXITCODE
+        $output = ""
+    } else {
+        $output = Fast-Install $ROCmTorchSpec $ROCmVisionSpec $ROCmAudioSpec --force-reinstall --index-url $ROCmIndexUrl | Out-String
+        $torchInstallExit = $LASTEXITCODE
+    }
+    if ($torchInstallExit -ne 0) {
+        Write-Host "[WARN] AMD ROCm PyTorch install failed -- falling back to CPU" -ForegroundColor Yellow
+        Write-Host $output -ForegroundColor Yellow
+        $ROCmIndexUrl = $null
+    } else {
+        # Tell install_python_stack.py to skip probe + suppress manual-install warning.
+        $env:UNSLOTH_ROCM_TORCH_INSTALLED = "1"
+    }
+}
+
+if (-not $ROCmIndexUrl -and $CuTag -eq "cpu") {
     substep "installing PyTorch (CPU-only)..."
     if ($script:UnslothVerbose) {
         Fast-Install torch torchvision torchaudio --index-url "$PyTorchWhlBase/cpu"
@@ -1654,7 +2147,7 @@ if ($CuTag -eq "cpu") {
         Write-Host $output -ForegroundColor Red
         exit 1
     }
-} else {
+} elseif (-not $ROCmIndexUrl) {
     substep "installing PyTorch with CUDA support ($CuTag)..."
     substep "(This download is ~2.8 GB -- may take a few minutes)"
     if ($script:UnslothVerbose) {
@@ -1689,6 +2182,21 @@ if ($CuTag -eq "cpu") {
     }
 }
 
+# Rename running unsloth.exe so pip can replace it (Windows refuses to delete a mapped .exe).
+$VenvScriptsDir = Join-Path $VenvDir "Scripts"
+$RunningUnslothExe = Join-Path $VenvScriptsDir "unsloth.exe"
+if (Test-Path -LiteralPath $RunningUnslothExe -PathType Leaf) {
+    $StaleUnslothExe = "$RunningUnslothExe.deleteme"
+    if (Test-Path -LiteralPath $StaleUnslothExe) {
+        Remove-Item -LiteralPath $StaleUnslothExe -Force -ErrorAction SilentlyContinue
+    }
+    try {
+        Rename-Item -LiteralPath $RunningUnslothExe -NewName "unsloth.exe.deleteme" -Force -ErrorAction Stop
+    } catch {
+        substep "could not rename unsloth.exe ($($_.Exception.Message)); pip may fail with WinError 32" "Yellow"
+    }
+}
+
 # Ordered heavy dependency installation -- shared cross-platform script
 substep "running ordered dependency installation..."
 python "$PSScriptRoot\install_python_stack.py"
@@ -1698,6 +2206,28 @@ $ErrorActionPreference = $prevEAP
 if ($stackExit -ne 0) {
     Write-Host "[FAILED] Python dependency installation failed (exit code $stackExit)" -ForegroundColor Red
     Write-Host "   Re-run the installer or check the error above for details." -ForegroundColor Red
+    # Restore the pre-rename unsloth.exe so the user keeps a working CLI.
+    # Treat a zero-byte exe as "pip half-wrote a broken binary" -- prefer the
+    # stale-but-working copy in .deleteme.
+    if (Test-Path -LiteralPath "$RunningUnslothExe.deleteme") {
+        $needRestore = -not (Test-Path -LiteralPath $RunningUnslothExe)
+        if (-not $needRestore) {
+            try {
+                $needRestore = (Get-Item -LiteralPath $RunningUnslothExe -ErrorAction Stop).Length -eq 0
+            } catch { $needRestore = $true }
+        }
+        if ($needRestore) {
+            try {
+                if (Test-Path -LiteralPath $RunningUnslothExe) {
+                    Remove-Item -LiteralPath $RunningUnslothExe -Force -ErrorAction SilentlyContinue
+                }
+                Rename-Item -LiteralPath "$RunningUnslothExe.deleteme" -NewName "unsloth.exe" -Force -ErrorAction Stop
+                substep "restored unsloth.exe after failed install"
+            } catch {
+                substep "could not restore unsloth.exe ($($_.Exception.Message))" "Yellow"
+            }
+        }
+    }
     exit 1
 }
 
@@ -1710,17 +2240,19 @@ if ($stackExit -ne 0) {
 # ── Pre-install transformers 5.x into .venv_t5_530/ and .venv_t5_550/ ──
 # Runs outside the deps fast-path gate so that upgrades from the legacy
 # single .venv_t5 are always migrated to the tiered layout.
-$VenvT5_530Dir = Join-Path $env:USERPROFILE ".unsloth\studio\.venv_t5_530"
-$VenvT5_550Dir = Join-Path $env:USERPROFILE ".unsloth\studio\.venv_t5_550"
-$VenvT5Legacy = Join-Path $env:USERPROFILE ".unsloth\studio\.venv_t5"
+# T5 sidecar venvs live under the resolved $StudioHome so custom installs are self-contained.
+$VenvT5_530Dir = Join-Path $StudioHome ".venv_t5_530"
+$VenvT5_550Dir = Join-Path $StudioHome ".venv_t5_550"
+$VenvT5Legacy = Join-Path $StudioHome ".venv_t5"
 
 $_NeedT5Install = $false
-if (Test-Path $VenvT5Legacy) {
-    Remove-Item -Recurse -Force $VenvT5Legacy
+if (Test-Path -LiteralPath $VenvT5Legacy) {
+    Assert-StudioOwnedOrAbsent -Path $VenvT5Legacy -Label "legacy transformers sidecar venv"
+    Remove-Item -LiteralPath $VenvT5Legacy -Recurse -Force
     $_NeedT5Install = $true
 }
-if (-not (Test-Path $VenvT5_530Dir)) { $_NeedT5Install = $true }
-if (-not (Test-Path $VenvT5_550Dir)) { $_NeedT5Install = $true }
+if (-not (Test-Path -LiteralPath $VenvT5_530Dir)) { $_NeedT5Install = $true }
+if (-not (Test-Path -LiteralPath $VenvT5_550Dir)) { $_NeedT5Install = $true }
 # Also reinstall when python deps were updated
 if (-not $SkipPythonDeps) { $_NeedT5Install = $true }
 
@@ -1732,8 +2264,10 @@ $ErrorActionPreference = "Continue"
 
 # --- .venv_t5_530 (transformers 5.3.0) ---
 substep "pre-installing transformers 5.3.0 for newer model support..."
-if (Test-Path $VenvT5_530Dir) { Remove-Item -Recurse -Force $VenvT5_530Dir }
-New-Item -ItemType Directory -Path $VenvT5_530Dir -Force | Out-Null
+Assert-StudioOwnedOrAbsent -Path $VenvT5_530Dir -Label "transformers 5.3 sidecar venv"
+if (Test-Path -LiteralPath $VenvT5_530Dir) { Remove-Item -LiteralPath $VenvT5_530Dir -Recurse -Force }
+[System.IO.Directory]::CreateDirectory($VenvT5_530Dir) | Out-Null
+Mark-StudioOwned -Path $VenvT5_530Dir
 foreach ($pkg in @("transformers==5.3.0", "huggingface_hub==1.8.0", "hf_xet==1.4.2")) {
     if ($script:UnslothVerbose) {
         Fast-Install --target $VenvT5_530Dir --no-deps $pkg
@@ -1765,8 +2299,10 @@ step "transformers" "5.3.0 pre-installed"
 
 # --- .venv_t5_550 (transformers 5.5.0) ---
 substep "pre-installing transformers 5.5.0 for Gemma 4 support..."
-if (Test-Path $VenvT5_550Dir) { Remove-Item -Recurse -Force $VenvT5_550Dir }
-New-Item -ItemType Directory -Path $VenvT5_550Dir -Force | Out-Null
+Assert-StudioOwnedOrAbsent -Path $VenvT5_550Dir -Label "transformers 5.5 sidecar venv"
+if (Test-Path -LiteralPath $VenvT5_550Dir) { Remove-Item -LiteralPath $VenvT5_550Dir -Recurse -Force }
+[System.IO.Directory]::CreateDirectory($VenvT5_550Dir) | Out-Null
+Mark-StudioOwned -Path $VenvT5_550Dir
 foreach ($pkg in @("transformers==5.5.0", "huggingface_hub==1.8.0", "hf_xet==1.4.2")) {
     if ($script:UnslothVerbose) {
         Fast-Install --target $VenvT5_550Dir --no-deps $pkg
@@ -1802,8 +2338,15 @@ step "transformers" "5.5.0 pre-installed"
 # ==========================================================================
 #  PHASE 3.4: Prefer prebuilt llama.cpp bundles before source build
 # ==========================================================================
-$UnslothHome = Join-Path $env:USERPROFILE ".unsloth"
-if (-not (Test-Path $UnslothHome)) { New-Item -ItemType Directory -Force $UnslothHome | Out-Null }
+# Nest llama.cpp under $StudioHome only for real env-overrides, never the
+# legacy default. Reuses $StudioHomeIsCustom from the canonical comparison
+# computed above so the llama.cpp nest matches ownership-guard semantics.
+if ($StudioHomeIsCustom) {
+    $UnslothHome = $StudioHome
+} else {
+    $UnslothHome = Join-Path $env:USERPROFILE ".unsloth"
+}
+if (-not (Test-Path -LiteralPath $UnslothHome)) { [System.IO.Directory]::CreateDirectory($UnslothHome) | Out-Null }
 $LlamaCppDir = Join-Path $UnslothHome "llama.cpp"
 $NeedLlamaSourceBuild = $false
 $SkipPrebuiltInstall = $false
@@ -1905,8 +2448,31 @@ if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
 } else {
     Write-Host ""
     substep "installing prebuilt llama.cpp bundle (preferred path)..."
-    if (Test-Path $LlamaCppDir) {
+    if (Test-Path -LiteralPath $LlamaCppDir) {
         substep "Existing llama.cpp install detected -- validating staged prebuilt update before replacement"
+        # If the existing install is the wrong kind (e.g. windows-cpu on a ROCm
+        # machine that should have windows-hip), remove it so the installer is
+        # forced to download the correct variant rather than skipping on tag match.
+        $existingMetaPath = Join-Path $LlamaCppDir "UNSLOTH_PREBUILT_INFO.json"
+        if (Test-Path $existingMetaPath) {
+            try {
+                $existingMeta = Get-Content $existingMetaPath -Raw | ConvertFrom-Json
+                $existingKind = $existingMeta.install_kind
+                $expectedKind = if ($HasROCm) { "windows-hip" } elseif ($HasNvidiaSmi) { "windows-cuda" } else { "windows-cpu" }
+                if ($existingKind -and $existingKind -ne $expectedKind) {
+                    substep "Removing mismatched llama.cpp install (found '$existingKind', need '$expectedKind')..."
+                    Remove-Item -Recurse -Force -LiteralPath $LlamaCppDir -ErrorAction SilentlyContinue
+                }
+            } catch {
+                # unreadable metadata -- let the installer handle it
+            }
+        }
+    }
+    # why: install_llama_prebuilt.py uses os.replace(), which would displace
+    # an unrelated $env:UNSLOTH_STUDIO_HOME\llama.cpp before the source-build
+    # ownership check below ever runs.
+    if ($StudioHomeIsCustom) {
+        Assert-StudioOwnedOrAbsent -Path $LlamaCppDir -Label "llama.cpp install"
     }
     $prebuiltArgs = @(
             "$PSScriptRoot\install_llama_prebuilt.py",
@@ -1915,6 +2481,15 @@ if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
             "--published-repo", $HelperReleaseRepo,
             "--simple-policy"
         )
+        if ($HasROCm) {
+            $prebuiltArgs += "--has-rocm"
+            # Forward the resolved gfx arch so the lemonade HIP prebuilt is picked
+            # even when the installer's own probe cannot report it (amd-smi-only
+            # hosts, name-inferred arch).
+            if ($script:ROCmGfxArch) {
+                $prebuiltArgs += @("--rocm-gfx", $script:ROCmGfxArch)
+            }
+        }
         if ($env:UNSLOTH_LLAMA_RELEASE_TAG) {
             $prebuiltArgs += @("--published-release-tag", $env:UNSLOTH_LLAMA_RELEASE_TAG)
         }
@@ -1952,6 +2527,9 @@ if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
             } else {
                 step "llama.cpp" "prebuilt installed and validated"
             }
+            if ($StudioHomeIsCustom -and (Test-Path -LiteralPath $LlamaCppDir -PathType Container)) {
+                Mark-StudioOwned -Path $LlamaCppDir
+            }
             $installedRelease = Get-InstalledLlamaPrebuiltRelease -InstallDir $LlamaCppDir
             if ($installedRelease) {
                 substep $installedRelease
@@ -1959,7 +2537,7 @@ if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
         } elseif ($prebuiltExit -eq 3) {
             step "llama.cpp" "install blocked by active llama.cpp process" "Yellow"
             Write-LlamaFailureLog -Output $prebuiltOutput
-            if (Test-Path $LlamaCppDir) {
+            if (Test-Path -LiteralPath $LlamaCppDir) {
                 substep "Existing install was restored" "Yellow"
             }
             substep "Close Studio or other llama.cpp users and retry" "Yellow"
@@ -1967,7 +2545,7 @@ if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
         } else {
             step "llama.cpp" "prebuilt install failed (continuing)" "Yellow"
             Write-LlamaFailureLog -Output $prebuiltOutput
-            if (Test-Path $LlamaCppDir) {
+            if (Test-Path -LiteralPath $LlamaCppDir) {
                 substep "Prebuilt update failed; existing install was restored or cleaned before source build fallback" "Yellow"
             }
             substep "Prebuilt llama.cpp path unavailable or failed validation -- falling back to source build" "Yellow"
@@ -2033,7 +2611,8 @@ if ($NeedLlamaSourceBuild) {
 # We build:
 #   - llama-server:   for GGUF model inference (with HTTPS if OpenSSL available)
 #   - llama-quantize: for GGUF export quantization
-# Prerequisites (git, cmake, VS Build Tools, CUDA Toolkit) already installed in Phase 1.
+# Prerequisites git, cmake, VS Build Tools were installed in Phase 1; the CUDA
+# Toolkit is resolved lazily just below via Resolve-CudaToolkit (source build only).
 $OriginalLlamaCppDir = $LlamaCppDir
 $BuildDir = Join-Path $LlamaCppDir "build"
 $LlamaServerBin = Join-Path $BuildDir "bin\Release\llama-server.exe"
@@ -2043,10 +2622,10 @@ $HasCmakeForBuild = $null -ne (Get-Command cmake -ErrorAction SilentlyContinue)
 # Check if existing llama-server matches current GPU mode. A CUDA-built binary
 # on a now-CPU-only machine (or vice versa) needs to be rebuilt.
 $NeedRebuild = $false
-if (Test-Path $LlamaServerBin) {
+if (Test-Path -LiteralPath $LlamaServerBin) {
     $CmakeCacheFile = Join-Path $BuildDir "CMakeCache.txt"
-    if (Test-Path $CmakeCacheFile) {
-        $cachedCuda = Select-String -Path $CmakeCacheFile -Pattern 'GGML_CUDA:BOOL=ON' -Quiet
+    if (Test-Path -LiteralPath $CmakeCacheFile) {
+        $cachedCuda = Select-String -LiteralPath $CmakeCacheFile -Pattern 'GGML_CUDA:BOOL=ON' -Quiet
         if ($HasNvidiaSmi -and -not $cachedCuda) {
             Write-Host "   Existing llama-server is CPU-only but GPU is available -- rebuilding" -ForegroundColor Yellow
             $NeedRebuild = $true
@@ -2060,7 +2639,7 @@ if (Test-Path $LlamaServerBin) {
 if (-not $NeedLlamaSourceBuild) {
     Write-Host ""
     step "llama.cpp" "prebuilt (validated)"
-} elseif ((Test-Path $LlamaServerBin) -and -not $NeedRebuild -and $RequestedLlamaTag -ne "master") {
+} elseif ((Test-Path -LiteralPath $LlamaServerBin) -and -not $NeedRebuild -and $RequestedLlamaTag -ne "master") {
     # Skip rebuild only for pinned tags (e.g. b8635).  When the requested
     # tag is "master" (a moving target), always rebuild so the binary picks
     # up new model architecture support (e.g. Gemma 4).
@@ -2079,6 +2658,10 @@ if (-not $NeedLlamaSourceBuild) {
     substep "Install CMake from https://cmake.org/download/ and re-run setup." "Yellow"
     $script:LlamaCppDegraded = $true
 } else {
+    # A source build is committed here. The CUDA toolkit is only needed now, so
+    # resolve (and winget-install if needed) it lazily, failing fast if no
+    # driver-compatible toolkit exists. The prebuilt path never reaches this.
+    if ($HasNvidiaSmi) { Resolve-CudaToolkit -RequireOrExit }
     Write-Host ""
     if ($HasNvidiaSmi) {
         substep "building llama.cpp with CUDA support..."
@@ -2162,7 +2745,13 @@ if (-not $NeedLlamaSourceBuild) {
 
     $UseConcreteRef = ($ResolvedSourceRef -ne "latest" -and -not [string]::IsNullOrWhiteSpace($ResolvedSourceRef))
 
-    if (Test-Path (Join-Path $LlamaCppDir ".git")) {
+    if (Test-Path -LiteralPath (Join-Path $LlamaCppDir ".git")) {
+        # why: in-place git mutation (remote set-url, checkout -B, clean -fdx)
+        # rewrites $LlamaCppDir; mirror the prebuilt and temp-dir-swap guards
+        # so an unrelated workspace .git tree is never silently overwritten.
+        if ($StudioHomeIsCustom) {
+            Assert-StudioOwnedOrAbsent -Path $LlamaCppDir -Label "llama.cpp install"
+        }
         Write-Host "   Syncing llama.cpp to $ResolvedSourceRef..." -ForegroundColor Gray
         # Always sync the remote URL so switching between default/fork sources works
         Invoke-SetupCommand -AlwaysQuiet { git -C $LlamaCppDir remote set-url origin "$ResolvedSourceUrl.git" } | Out-Null
@@ -2233,24 +2822,30 @@ if (-not $NeedLlamaSourceBuild) {
                 }
             }
         }
+        # why: in-place git-sync (the temp-dir clone path calls Mark-StudioOwned
+        # at swap-time) must mark the existing tree so a subsequent prebuilt
+        # update path's Assert-StudioOwnedOrAbsent does not exit on the same root.
+        if ($BuildOk -and $StudioHomeIsCustom) {
+            Mark-StudioOwned -Path $LlamaCppDir
+        }
     } else {
         Write-Host "   Cloning llama.cpp @ $ResolvedSourceRef..." -ForegroundColor Gray
         $buildTmp = "$LlamaCppDir.build.$PID"
-        $null = New-Item -ItemType Directory -Force -Path (Split-Path $LlamaCppDir -Parent)
-        if (Test-Path $buildTmp) { Remove-Item -Recurse -Force $buildTmp }
+        $null = [System.IO.Directory]::CreateDirectory((Split-Path -LiteralPath $LlamaCppDir))
+        if (Test-Path -LiteralPath $buildTmp) { Remove-Item -LiteralPath $buildTmp -Recurse -Force }
         if ($LlamaPr) {
             $cloneExit = Invoke-SetupCommand -AlwaysQuiet { git clone --depth 1 "$LlamaSource.git" $buildTmp }
             if ($cloneExit -ne 0) {
                 $BuildOk = $false
                 $FailedStep = "git clone"
-                if (Test-Path $buildTmp) { Remove-Item -Recurse -Force $buildTmp }
+                if (Test-Path -LiteralPath $buildTmp) { Remove-Item -LiteralPath $buildTmp -Recurse -Force }
             }
             if ($BuildOk) {
                 $fetchExit = Invoke-SetupCommand -AlwaysQuiet { git -C $buildTmp fetch --depth 1 origin "pull/$LlamaPr/head:pr-$LlamaPr" }
                 if ($fetchExit -ne 0) {
                     $BuildOk = $false
                     $FailedStep = "git fetch PR #$LlamaPr"
-                    if (Test-Path $buildTmp) { Remove-Item -Recurse -Force $buildTmp }
+                    if (Test-Path -LiteralPath $buildTmp) { Remove-Item -LiteralPath $buildTmp -Recurse -Force }
                 }
             }
             if ($BuildOk) {
@@ -2258,7 +2853,7 @@ if (-not $NeedLlamaSourceBuild) {
                 if ($checkoutExit -ne 0) {
                     $BuildOk = $false
                     $FailedStep = "git checkout PR #$LlamaPr"
-                    if (Test-Path $buildTmp) { Remove-Item -Recurse -Force $buildTmp }
+                    if (Test-Path -LiteralPath $buildTmp) { Remove-Item -LiteralPath $buildTmp -Recurse -Force }
                 }
             }
         } elseif ($ResolvedSourceRefKind -eq "pull") {
@@ -2266,14 +2861,14 @@ if (-not $NeedLlamaSourceBuild) {
             if ($cloneExit -ne 0) {
                 $BuildOk = $false
                 $FailedStep = "git clone"
-                if (Test-Path $buildTmp) { Remove-Item -Recurse -Force $buildTmp }
+                if (Test-Path -LiteralPath $buildTmp) { Remove-Item -LiteralPath $buildTmp -Recurse -Force }
             }
             if ($BuildOk) {
                 $fetchExit = Invoke-SetupCommand -AlwaysQuiet { git -C $buildTmp fetch --depth 1 origin $ResolvedSourceRef }
                 if ($fetchExit -ne 0) {
                     $BuildOk = $false
                     $FailedStep = "git fetch source PR ref"
-                    if (Test-Path $buildTmp) { Remove-Item -Recurse -Force $buildTmp }
+                    if (Test-Path -LiteralPath $buildTmp) { Remove-Item -LiteralPath $buildTmp -Recurse -Force }
                 }
             }
             if ($BuildOk) {
@@ -2281,7 +2876,7 @@ if (-not $NeedLlamaSourceBuild) {
                 if ($checkoutExit -ne 0) {
                     $BuildOk = $false
                     $FailedStep = "git checkout source PR ref"
-                    if (Test-Path $buildTmp) { Remove-Item -Recurse -Force $buildTmp }
+                    if (Test-Path -LiteralPath $buildTmp) { Remove-Item -LiteralPath $buildTmp -Recurse -Force }
                 }
             }
         } elseif ($ResolvedSourceRefKind -eq "commit") {
@@ -2289,14 +2884,14 @@ if (-not $NeedLlamaSourceBuild) {
             if ($cloneExit -ne 0) {
                 $BuildOk = $false
                 $FailedStep = "git clone"
-                if (Test-Path $buildTmp) { Remove-Item -Recurse -Force $buildTmp }
+                if (Test-Path -LiteralPath $buildTmp) { Remove-Item -LiteralPath $buildTmp -Recurse -Force }
             }
             if ($BuildOk) {
                 $fetchExit = Invoke-SetupCommand -AlwaysQuiet { git -C $buildTmp fetch --depth 1 origin $ResolvedSourceRef }
                 if ($fetchExit -ne 0) {
                     $BuildOk = $false
                     $FailedStep = "git fetch source commit"
-                    if (Test-Path $buildTmp) { Remove-Item -Recurse -Force $buildTmp }
+                    if (Test-Path -LiteralPath $buildTmp) { Remove-Item -LiteralPath $buildTmp -Recurse -Force }
                 }
             }
             if ($BuildOk) {
@@ -2304,7 +2899,7 @@ if (-not $NeedLlamaSourceBuild) {
                 if ($checkoutExit -ne 0) {
                     $BuildOk = $false
                     $FailedStep = "git checkout source commit"
-                    if (Test-Path $buildTmp) { Remove-Item -Recurse -Force $buildTmp }
+                    if (Test-Path -LiteralPath $buildTmp) { Remove-Item -LiteralPath $buildTmp -Recurse -Force }
                 }
             }
         } else {
@@ -2317,7 +2912,7 @@ if (-not $NeedLlamaSourceBuild) {
             if ($cloneExit -ne 0) {
                 $BuildOk = $false
                 $FailedStep = "git clone"
-                if (Test-Path $buildTmp) { Remove-Item -Recurse -Force $buildTmp }
+                if (Test-Path -LiteralPath $buildTmp) { Remove-Item -LiteralPath $buildTmp -Recurse -Force }
             }
         }
         # Use temp dir for build; swap into $LlamaCppDir only after build succeeds
@@ -2360,6 +2955,17 @@ if (-not $NeedLlamaSourceBuild) {
         # CUDA flags -- only if GPU available, otherwise explicitly disable
         if ($HasNvidiaSmi -and $NvccPath) {
             $CmakeArgs += '-DGGML_CUDA=ON'
+            # Accept a host MSVC newer than nvcc's whitelist; a fresh toolkit
+            # (e.g. CUDA 13.3) otherwise aborts with "#error -- unsupported
+            # Microsoft Visual Studio version!". Mirrors the Linux fix. Via env
+            # (covers the configure probe + build), after Refresh-Environment, idempotent.
+            $nvccAllowFlag = '-allow-unsupported-compiler'
+            if ([string]::IsNullOrEmpty($env:NVCC_PREPEND_FLAGS)) {
+                $env:NVCC_PREPEND_FLAGS = $nvccAllowFlag
+            } elseif ($env:NVCC_PREPEND_FLAGS -notlike "*$nvccAllowFlag*") {
+                $env:NVCC_PREPEND_FLAGS = "$($env:NVCC_PREPEND_FLAGS) $nvccAllowFlag"
+            }
+            substep "NVCC_PREPEND_FLAGS = $env:NVCC_PREPEND_FLAGS"
             $CmakeArgs += "-DCUDAToolkit_ROOT=$CudaToolkitRoot"
             $CmakeArgs += "-DCUDA_TOOLKIT_ROOT_DIR=$CudaToolkitRoot"
             $CmakeArgs += "-DCMAKE_CUDA_COMPILER=$NvccPath"
@@ -2433,14 +3039,16 @@ if (-not $NeedLlamaSourceBuild) {
 
     # Swap temp build dir into final location (only if we built in a temp dir)
     if ($BuildOk -and $LlamaCppDir -ne $OriginalLlamaCppDir) {
-        if (Test-Path $OriginalLlamaCppDir) { Remove-Item -Recurse -Force $OriginalLlamaCppDir }
-        Move-Item $LlamaCppDir $OriginalLlamaCppDir
+        Assert-StudioOwnedOrAbsent -Path $OriginalLlamaCppDir -Label "llama.cpp install"
+        if (Test-Path -LiteralPath $OriginalLlamaCppDir) { Remove-Item -LiteralPath $OriginalLlamaCppDir -Recurse -Force }
+        Move-Item -LiteralPath $LlamaCppDir -Destination $OriginalLlamaCppDir
         $LlamaCppDir = $OriginalLlamaCppDir
         $BuildDir = Join-Path $LlamaCppDir "build"
         $LlamaServerBin = Join-Path $BuildDir "bin\Release\llama-server.exe"
+        Mark-StudioOwned -Path $LlamaCppDir
     } elseif (-not $BuildOk -and $LlamaCppDir -ne $OriginalLlamaCppDir) {
         # Build failed -- clean up temp dir, preserve existing install
-        if (Test-Path $LlamaCppDir) { Remove-Item -Recurse -Force $LlamaCppDir }
+        if (Test-Path -LiteralPath $LlamaCppDir) { Remove-Item -LiteralPath $LlamaCppDir -Recurse -Force }
         $LlamaCppDir = $OriginalLlamaCppDir
         $BuildDir = Join-Path $LlamaCppDir "build"
         $LlamaServerBin = Join-Path $BuildDir "bin\Release\llama-server.exe"
@@ -2455,16 +3063,16 @@ if (-not $NeedLlamaSourceBuild) {
     $totalSec = [math]::Round($totalSw.Elapsed.TotalSeconds % 60, 1)
 
     # -- Summary --
-    if ($BuildOk -and (Test-Path $LlamaServerBin)) {
+    if ($BuildOk -and (Test-Path -LiteralPath $LlamaServerBin)) {
         step "llama.cpp" "built"
         $QuantizeBin = Join-Path $BuildDir "bin\Release\llama-quantize.exe"
-        if (Test-Path $QuantizeBin) {
+        if (Test-Path -LiteralPath $QuantizeBin) {
             step "llama-quantize" "built"
         }
         step "build time" "${totalMin}m ${totalSec}s" "DarkGray"
     } else {
         $altBin = Join-Path $BuildDir "bin\llama-server.exe"
-        if ($BuildOk -and (Test-Path $altBin)) {
+        if ($BuildOk -and (Test-Path -LiteralPath $altBin)) {
             step "llama.cpp" "built"
             step "build time" "${totalMin}m ${totalSec}s" "DarkGray"
         } else {

@@ -2,12 +2,17 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { cn } from "@/lib/utils"
-import { HugeiconsIcon } from "@hugeicons/react"
-import { Loading03Icon } from "@hugeicons/core-free-icons"
 
 function Spinner({ className }: { className?: string }) {
   return (
-    <HugeiconsIcon icon={Loading03Icon} strokeWidth={2} role="status" aria-label="Loading" className={cn("size-4 animate-spin", className)} />
+    <span
+      role="status"
+      aria-label="Loading"
+      className={cn(
+        "inline-block size-4 shrink-0 animate-spin rounded-full border-2 border-current border-t-transparent",
+        className,
+      )}
+    />
   )
 }
 

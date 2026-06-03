@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useEffect } from "react";
-import { useTrainingRuntimeStore } from "@/features/training";
+import { useTrainingRuntimeStore } from "../stores/training-runtime-store";
 
 let currentHandler: ((e: BeforeUnloadEvent) => void) | null = null;
 
@@ -13,14 +13,18 @@ let currentHandler: ((e: BeforeUnloadEvent) => void) | null = null;
 export function useTrainingUnloadGuard() {
   useEffect(() => {
     const handler = (e: BeforeUnloadEvent) => {
-      if (!useTrainingRuntimeStore.getState().isTrainingRunning) return;
+      if (!useTrainingRuntimeStore.getState().isTrainingRunning) {
+        return;
+      }
       e.preventDefault();
       e.returnValue = "";
     };
     currentHandler = handler;
     window.addEventListener("beforeunload", handler);
     return () => {
-      if (currentHandler === handler) currentHandler = null;
+      if (currentHandler === handler) {
+        currentHandler = null;
+      }
       window.removeEventListener("beforeunload", handler);
     };
   }, []);

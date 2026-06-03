@@ -1,12 +1,96 @@
 # Unsloth Studio Installer for Windows PowerShell
-# Usage:  irm https://raw.githubusercontent.com/unslothai/unsloth/main/install.ps1 | iex
-# Local:  Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass; .\install.ps1 --local
-# NoTorch: .\install.ps1 --no-torch  (skip PyTorch, GGUF-only mode)
-# Test:   .\install.ps1 --package roland-sloth
-
+#
+# Usage:  irm https://unsloth.ai/install.ps1 | iex
+#         Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass; .\install.ps1 --local
+#
+# irm | iex cannot forward arguments, so web installs take options as env vars set
+# before the pipe (flags still work via .\install.ps1):
+#   $env:UNSLOTH_NO_TORCH=1; irm https://unsloth.ai/install.ps1 | iex       # skip PyTorch (GGUF-only)
+#   $env:UNSLOTH_PYTHON='3.12'; irm https://unsloth.ai/install.ps1 | iex    # pin Python version
+#   $env:UNSLOTH_STUDIO_HOME='C:\path'; irm https://unsloth.ai/install.ps1 | iex
+#   .\install.ps1 --no-torch                                                # equivalent flag
+# Or pass flags to a scriptblock: & ([scriptblock]::Create((irm https://unsloth.ai/install.ps1))) --no-torch
+#
+# Install dir priority: UNSLOTH_STUDIO_HOME > STUDIO_HOME (alias) > $USERPROFILE\.unsloth\studio
+#
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 function Install-UnslothStudio {
     $ErrorActionPreference = "Stop"
     $script:UnslothVerbose = ($env:UNSLOTH_VERBOSE -eq "1")
+
+    # ── Tauri structured output ──
+    function Write-TauriLog {
+        param([string]$Tag, [string]$Message)
+        if ($TauriMode) {
+            Write-Host "[TAURI:$Tag] $Message"
+        }
+    }
+
+    function Format-TauriDiagBool {
+        param([bool]$Value)
+        if ($Value) { return "true" }
+        return "false"
+    }
+
+    function Get-TauriDiagArch {
+        $arch = [string]$env:PROCESSOR_ARCHITECTURE
+        if ([string]::IsNullOrWhiteSpace($arch)) {
+            try { $arch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString() } catch { $arch = "unknown" }
+        }
+        $arch = $arch.ToLowerInvariant()
+        switch ($arch) {
+            "amd64" { return "x86_64" }
+            "x64" { return "x86_64" }
+            "arm64" { return "arm64" }
+            "x86" { return "x86" }
+            default { return ($arch -replace '[^a-z0-9_.-]', '_') }
+        }
+    }
+
+    function Get-TauriTorchIndexFamily {
+        param([string]$TorchIndexUrl)
+        if ($SkipTorch) { return "none" }
+        if ([string]::IsNullOrWhiteSpace($TorchIndexUrl)) { return "none" }
+        $leaf = ($TorchIndexUrl.TrimEnd('/') -split '/')[-1].ToLowerInvariant()
+        if (@("cpu", "cu118", "cu124", "cu126", "cu128", "cu130") -contains $leaf) { return $leaf }
+        if ($leaf -match '^rocm[0-9]+\.[0-9]+$') { return $leaf }
+        return "auto"
+    }
+
+    function Get-TauriGpuBranch {
+        param([string]$TorchIndexFamily)
+        if ($SkipTorch) { return "no_torch" }
+        if ($TorchIndexFamily -like "cu*") { return "cuda" }
+        if ($TorchIndexFamily -like "rocm*") { return "rocm" }
+        if ($TorchIndexFamily -eq "cpu") { return "cpu" }
+        return "unknown"
+    }
+
+    function Write-TauriDiag {
+        param(
+            [string]$GpuBranch = "unknown",
+            [string]$TorchIndexFamily = "none",
+            [string]$PythonVersionForDiag = $PythonVersion
+        )
+        if ([string]::IsNullOrWhiteSpace($PythonVersionForDiag)) { $PythonVersionForDiag = "unknown" }
+        Write-TauriLog "DIAG" "diag_schema=1 platform=windows arch=$(Get-TauriDiagArch) python_version=$($PythonVersionForDiag.ToLowerInvariant()) skip_torch=$(Format-TauriDiagBool $SkipTorch) mac_intel=false gpu_branch=$GpuBranch torch_index_family=$TorchIndexFamily"
+    }
+
+    function Exit-InstallFailure {
+        param(
+            [Parameter(Mandatory = $true)][string]$Message,
+            [int]$Code = 1
+        )
+        if ($Code -eq 0) { $Code = 1 }
+        Write-TauriLog "ERROR" $Message
+        if (Get-Command Restore-StudioVenvRollback -CommandType Function -ErrorAction SilentlyContinue) {
+            Restore-StudioVenvRollback
+        }
+        if ($TauriMode) {
+            exit $Code
+        }
+    }
 
     # ── Parse flags ──
     $StudioLocalInstall = $false
@@ -14,6 +98,7 @@ function Install-UnslothStudio {
     $RepoRoot = ""
     $TauriMode = $false
     $SkipTorch = $false
+    $ShortcutsOnly = $false
     $argList = $args
     for ($i = 0; $i -lt $argList.Count; $i++) {
         switch ($argList[$i]) {
@@ -22,16 +107,21 @@ function Install-UnslothStudio {
             "--no-torch" { $SkipTorch = $true }
             "--verbose"  { $script:UnslothVerbose = $true }
             "-v"         { $script:UnslothVerbose = $true }
+            "--shortcuts-only" { $ShortcutsOnly = $true }
             "--package"  {
                 $i++
                 if ($i -ge $argList.Count) {
                     Write-Host "[ERROR] --package requires an argument." -ForegroundColor Red
-                    return
+                    return (Exit-InstallFailure "--package requires an argument.")
                 }
                 $PackageName = $argList[$i]
             }
         }
     }
+
+    # Env-var equivalent for web installs; an explicit flag still wins.
+    if ($env:UNSLOTH_NO_TORCH -in @('1', 'true', 'yes', 'on')) { $SkipTorch = $true }
+
     # Propagate to child processes so they also respect verbose mode.
     # Process-scoped -- does not persist.
     if ($script:UnslothVerbose) {
@@ -42,26 +132,106 @@ function Install-UnslothStudio {
         $RepoRoot = (Resolve-Path (Split-Path -Parent $PSCommandPath)).Path
         if (-not (Test-Path (Join-Path $RepoRoot "pyproject.toml"))) {
             Write-Host "[ERROR] --local must be run from the unsloth repo root (pyproject.toml not found at $RepoRoot)" -ForegroundColor Red
-            return
+            return (Exit-InstallFailure "--local must be run from the unsloth repo root")
         }
     }
 
     # Validate --package to prevent injection into shell/Python commands
     if ($PackageName -notmatch '^[a-zA-Z0-9][a-zA-Z0-9._-]*$') {
         Write-Host "[ERROR] --package name contains invalid characters (allowed: a-z A-Z 0-9 . _ -)" -ForegroundColor Red
-        return
+        return (Exit-InstallFailure "--package name contains invalid characters")
     }
 
-    # ── Tauri structured output ──
-    function Write-TauriLog {
-        param([string]$Tag, [string]$Message)
-        if ($TauriMode) {
-            Write-Host "[TAURI:$Tag] $Message"
+    # UNSLOTH_PYTHON pins the version (mirrors install.sh --python); default 3.13.
+    $PythonVersion = if ($env:UNSLOTH_PYTHON) { $env:UNSLOTH_PYTHON } else { "3.13" }
+
+    # Resolve install destinations. Priority: UNSLOTH_STUDIO_HOME, then
+    # STUDIO_HOME alias, then USERPROFILE-redirect, then default.
+    # Reject whitespace-only values so " " is treated as unset (matches the
+    # Python resolvers' .strip()), preventing install/runtime layout drift.
+    $envOverrideVar = $null
+    $envOverride = $null
+    if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_STUDIO_HOME)) {
+        $envOverrideVar = "UNSLOTH_STUDIO_HOME"
+        $envOverride = $env:UNSLOTH_STUDIO_HOME.Trim()
+    } elseif (-not [string]::IsNullOrWhiteSpace($env:STUDIO_HOME)) {
+        $envOverrideVar = "STUDIO_HOME"
+        $envOverride = $env:STUDIO_HOME.Trim()
+    }
+
+    # Custom Studio roots are not supported with --tauri (desktop app still
+    # resolves %USERPROFILE%\.unsloth\studio). Pass through if override == legacy.
+    if ($TauriMode -and $envOverride) {
+        $_tauriOverride = $envOverride
+        if ($_tauriOverride -eq "~" -or $_tauriOverride -like "~/*" -or $_tauriOverride -like "~\*") {
+            $_tauriOverride = (Join-Path $env:USERPROFILE $_tauriOverride.Substring(1).TrimStart('/','\'))
+        }
+        try {
+            $_tauriOverride = [System.IO.Path]::GetFullPath($_tauriOverride)
+        } catch {}
+        $_legacyTauriRoot = Join-Path $env:USERPROFILE ".unsloth\studio"
+        try {
+            $_legacyTauriRoot = [System.IO.Path]::GetFullPath($_legacyTauriRoot)
+        } catch {}
+        # Strip trailing separators so ".../studio\" matches ".../studio".
+        $_trimSeps = @(
+            [System.IO.Path]::DirectorySeparatorChar,
+            [System.IO.Path]::AltDirectorySeparatorChar
+        )
+        $_tauriOverride = $_tauriOverride.TrimEnd($_trimSeps)
+        $_legacyTauriRoot = $_legacyTauriRoot.TrimEnd($_trimSeps)
+        if ($_tauriOverride -ne $_legacyTauriRoot) {
+            Write-Host "ERROR: $envOverrideVar is not supported with --tauri." -ForegroundColor Red
+            Write-Host "       The desktop app still uses the legacy %USERPROFILE%\.unsloth\studio root." -ForegroundColor Red
+            Write-Host "       Run install.ps1 without --tauri for custom-root shell installs," -ForegroundColor Yellow
+            Write-Host "       or unset the env var for default desktop installs." -ForegroundColor Yellow
+            throw "$envOverrideVar is not supported with --tauri."
         }
     }
 
-    $PythonVersion = "3.13"
-    $StudioHome = Join-Path $env:USERPROFILE ".unsloth\studio"
+    $defaultProfile = $null
+    try { $defaultProfile = [Environment]::GetFolderPath("UserProfile") } catch {}
+
+    # LOCALAPPDATA may be unset in service / CI contexts; Join-Path would abort
+    # under ErrorActionPreference=Stop without this guard.
+    $defaultDataDir = if ($env:LOCALAPPDATA -and -not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+        Join-Path $env:LOCALAPPDATA "Unsloth Studio"
+    } else { $null }
+
+    if ($envOverride) {
+        # Tilde expansion: env vars aren't subject to it when quoted on assignment.
+        if ($envOverride -eq "~" -or $envOverride -like "~/*" -or $envOverride -like "~\*") {
+            $envOverride = (Join-Path $env:USERPROFILE $envOverride.Substring(1).TrimStart('/','\'))
+        }
+        try {
+            # .NET API: New-Item -Path treats brackets as wildcards and has no
+            # -LiteralPath in PS 5.1, so a root like C:\studio[abc] would fail.
+            [System.IO.Directory]::CreateDirectory($envOverride) | Out-Null
+            $StudioHome = (Resolve-Path -LiteralPath $envOverride).Path
+        } catch {
+            Write-Host "ERROR: $envOverrideVar=$envOverride cannot be created or accessed." -ForegroundColor Red
+            throw "$envOverrideVar=$envOverride cannot be created or accessed."
+        }
+        $probe = Join-Path $StudioHome (".unsloth-write-probe-" + [guid]::NewGuid())
+        try {
+            # WriteAllText: literal-path safe + closes handle so Remove-Item works.
+            [System.IO.File]::WriteAllText($probe, "")
+            Remove-Item -LiteralPath $probe -Force -ErrorAction SilentlyContinue
+        } catch {
+            Write-Host "ERROR: $envOverrideVar=$StudioHome is not writable." -ForegroundColor Red
+            throw "$envOverrideVar=$StudioHome is not writable."
+        }
+        $StudioDataDir = Join-Path $StudioHome "share"
+        $StudioRedirectMode = 'env'
+    } elseif ($defaultProfile -and $env:USERPROFILE -and ($env:USERPROFILE -ne $defaultProfile)) {
+        $StudioHome = Join-Path $env:USERPROFILE ".unsloth\studio"
+        $StudioDataDir = $defaultDataDir
+        $StudioRedirectMode = 'profile'
+    } else {
+        $StudioHome = Join-Path $env:USERPROFILE ".unsloth\studio"
+        $StudioDataDir = $defaultDataDir
+        $StudioRedirectMode = 'default'
+    }
     $VenvDir = Join-Path $StudioHome "unsloth_studio"
 
     $Rule = [string]::new([char]0x2500, 52)
@@ -313,24 +483,24 @@ function Install-UnslothStudio {
             [Parameter(Mandatory = $true)][string]$UnslothExePath
         )
 
-        if (-not (Test-Path $UnslothExePath)) {
+        if (-not (Test-Path -LiteralPath $UnslothExePath)) {
             substep "cannot create shortcuts, unsloth.exe not found at $UnslothExePath" "Yellow"
             return
         }
         try {
             # Persist an absolute path in launcher scripts so shortcut working
             # directory changes do not break process startup.
-            $UnslothExePath = (Resolve-Path $UnslothExePath).Path
+            $UnslothExePath = (Resolve-Path -LiteralPath $UnslothExePath).Path
             # Escape for single-quoted embedding in generated launcher script.
             # This prevents runtime variable expansion for paths containing '$'.
             $SingleQuotedExePath = $UnslothExePath -replace "'", "''"
 
-            $localAppDataDir = $env:LOCALAPPDATA
-            if (-not $localAppDataDir -or [string]::IsNullOrWhiteSpace($localAppDataDir)) {
-                substep "LOCALAPPDATA path unavailable; skipped shortcut creation" "Yellow"
+            # $StudioDataDir = LOCALAPPDATA\Unsloth Studio, or $StudioHome\share in env-mode.
+            if (-not $StudioDataDir -or [string]::IsNullOrWhiteSpace($StudioDataDir)) {
+                substep "DataDir path unavailable; skipped shortcut creation" "Yellow"
                 return
             }
-            $appDir = Join-Path $localAppDataDir "Unsloth Studio"
+            $appDir = $StudioDataDir
             $launcherPs1 = Join-Path $appDir "launch-studio.ps1"
             $launcherVbs = Join-Path $appDir "launch-studio.vbs"
             $desktopDir = [Environment]::GetFolderPath("Desktop")
@@ -362,23 +532,89 @@ function Install-UnslothStudio {
             }
             $iconUrl = "https://raw.githubusercontent.com/unslothai/unsloth/main/studio/frontend/public/unsloth.ico"
 
-            if (-not (Test-Path $appDir)) {
-                New-Item -ItemType Directory -Path $appDir -Force | Out-Null
+            if (-not (Test-Path -LiteralPath $appDir)) {
+                [System.IO.Directory]::CreateDirectory($appDir) | Out-Null
+            }
+
+            # Same-install discriminator: per-install opaque id written once at
+            # install time and read by both this launcher and the backend
+            # (/api/health). Replaces the older sha256(resolved $StudioHome)
+            # scheme to (a) avoid leaking the install path on -H 0.0.0.0
+            # deployments and (b) sidestep launcher/backend canonicalization
+            # drift (Resolve-Path vs Path.resolve() junction handling). Lives
+            # at $StudioHome\share\ (not $appDir) so the backend can find it
+            # via _STUDIO_ROOT_RESOLVED / "share" / "studio_install_id"
+            # regardless of mode. 32 bytes of crypto random -> 64 hex chars.
+            $_studioIdDir = Join-Path $StudioHome "share"
+            if (-not (Test-Path -LiteralPath $_studioIdDir)) {
+                [System.IO.Directory]::CreateDirectory($_studioIdDir) | Out-Null
+            }
+            $_studioIdFile = Join-Path $_studioIdDir "studio_install_id"
+            $_studioRootId = ""
+            if ((Test-Path -LiteralPath $_studioIdFile) -and `
+                ((Get-Item -LiteralPath $_studioIdFile).Length -gt 0)) {
+                $_studioRootId = ([System.IO.File]::ReadAllText($_studioIdFile)).Trim()
+            }
+            if (-not $_studioRootId) {
+                $_idBytes = New-Object byte[] 32
+                [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($_idBytes)
+                $_studioRootId = -join ($_idBytes | ForEach-Object { $_.ToString('x2') })
+                # Atomic write: write to a temp sibling then rename, so a partial
+                # install cannot leave a half-written id.
+                $_idTmp = $_studioIdFile + ".$PID.tmp"
+                [System.IO.File]::WriteAllText($_idTmp, $_studioRootId)
+                Move-Item -LiteralPath $_idTmp -Destination $_studioIdFile -Force
+            }
+
+            # Env-mode: persist UNSLOTH_STUDIO_HOME (and llama path) so fresh
+            # shells don't need to re-export, and bake per-install $portFile /
+            # $mutexName so concurrent custom-root launchers cannot serialize
+            # through one global mutex on 8888..8908. Default installs get an
+            # empty prefix to match pre-PR behavior.
+            $studioHomeExport = if ($StudioRedirectMode -eq 'env') {
+                # When override == legacy default, llama.cpp stays at
+                # ~/.unsloth/llama.cpp (one shared build). Canonicalize the
+                # legacy side so the comparison survives path normalization.
+                $_legacyStudio = Join-Path $env:USERPROFILE ".unsloth\studio"
+                if (Test-Path -LiteralPath $_legacyStudio -PathType Container) {
+                    $_legacyStudio = (Resolve-Path -LiteralPath $_legacyStudio).Path
+                }
+                $_llamaPath = if ($StudioHome -eq $_legacyStudio) {
+                    Join-Path $env:USERPROFILE ".unsloth\llama.cpp"
+                } else {
+                    Join-Path $StudioHome "llama.cpp"
+                }
+                $_sq = $StudioHome -replace "'", "''"
+                $_llama = $_llamaPath -replace "'", "''"
+                $_appDirSq = $appDir -replace "'", "''"
+                $_appBytes = [Text.Encoding]::UTF8.GetBytes($appDir)
+                $_appHash = ([BitConverter]::ToString(
+                    [Security.Cryptography.SHA256]::Create().ComputeHash($_appBytes)
+                ) -replace '-', '').Substring(0, 16)
+                # UNSLOTH_LLAMA_CPP_PATH is a pre-existing user override; only default if unset.
+                "`$env:UNSLOTH_STUDIO_HOME = '$_sq'`nif (-not `$env:UNSLOTH_LLAMA_CPP_PATH) {`n    `$env:UNSLOTH_LLAMA_CPP_PATH = '$_llama'`n}`n`$portFile = '$_appDirSq\studio.port'`n`$mutexName = 'Local\UnslothStudioLauncher-$_appHash'`n"
+            } else {
+                "`$portFile = `$null`n`$mutexName = 'Local\UnslothStudioLauncher'`n"
             }
 
             $launcherContent = @"
-`$ErrorActionPreference = 'Stop'
+$studioHomeExport`$ErrorActionPreference = 'Stop'
 `$basePort = 8888
 `$maxPortOffset = 20
 `$timeoutSec = 60
 `$pollIntervalMs = 1000
+`$_ExpectedStudioRootId = '$_studioRootId'
 
 function Test-StudioHealth {
     param([Parameter(Mandatory = `$true)][int]`$Port)
     try {
         `$url = "http://127.0.0.1:`$Port/api/health"
         `$resp = Invoke-RestMethod -Uri `$url -TimeoutSec 1 -Method Get
-        return (`$resp -and `$resp.status -eq 'healthy' -and `$resp.service -eq 'Unsloth UI Backend')
+        if (-not (`$resp -and `$resp.status -eq 'healthy' -and `$resp.service -eq 'Unsloth UI Backend')) { return `$false }
+        # why: verify the backend belongs to THIS install via the install-time
+        # hex digest; raw path is not leaked over /api/health.
+        if (`$_ExpectedStudioRootId -and `$resp.studio_root_id -ne `$_ExpectedStudioRootId) { return `$false }
+        return `$true
     } catch {
         return `$false
     }
@@ -404,6 +640,17 @@ function Get-CandidatePorts {
 }
 
 function Find-HealthyStudioPort {
+    if (`$portFile) {
+        if (Test-Path -LiteralPath `$portFile) {
+            `$cached = Get-Content -LiteralPath `$portFile -ErrorAction SilentlyContinue | Select-Object -First 1
+            if (`$cached -match '^\d+`$') {
+                `$cachedPort = [int]`$cached
+                if (Test-StudioHealth -Port `$cachedPort) { return `$cachedPort }
+                Remove-Item -LiteralPath `$portFile -Force -ErrorAction SilentlyContinue
+            }
+        }
+        return `$null
+    }
     foreach (`$candidate in (Get-CandidatePorts)) {
         if (Test-StudioHealth -Port `$candidate) {
             return `$candidate
@@ -457,7 +704,7 @@ if (`$existingPort) {
     exit 0
 }
 
-`$launchMutex = [System.Threading.Mutex]::new(`$false, 'Local\UnslothStudioLauncher')
+`$launchMutex = [System.Threading.Mutex]::new(`$false, `$mutexName)
 `$haveMutex = `$false
 try {
     try {
@@ -487,7 +734,9 @@ try {
         } catch {}
         exit 1
     }
-    `$studioCommand = '& "' + `$studioExe + '" studio -H 0.0.0.0 -p ' + `$launchPort
+    # Single-quote the path in the child -Command so `$` / backtick in custom
+    # roots don't get reparsed; double any apostrophes so 'O''Brien' survives.
+    `$studioCommand = "& '" + (`$studioExe -replace "'", "''") + "' studio -p " + `$launchPort
     `$launchArgs = @(
         '-NoExit',
         '-NoProfile',
@@ -511,9 +760,13 @@ try {
     `$browserOpened = `$false
     `$deadline = (Get-Date).AddSeconds(`$timeoutSec)
     while ((Get-Date) -lt `$deadline) {
-        `$healthyPort = Find-HealthyStudioPort
-        if (`$healthyPort) {
-            Start-Process "http://localhost:`$healthyPort"
+        if (Test-StudioHealth -Port `$launchPort) {
+            if (`$portFile) {
+                try {
+                    [System.IO.File]::WriteAllText(`$portFile, "`$launchPort`n")
+                } catch {}
+            }
+            Start-Process "http://localhost:`$launchPort"
             `$browserOpened = `$true
             break
         }
@@ -548,19 +801,19 @@ cmd = "powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "
 shell.Run cmd, 0, False
 "@
             # WSH handles UTF-16LE reliably for .vbs files with non-ASCII paths.
-            Set-Content -Path $launcherVbs -Value $vbsContent -Encoding Unicode -Force
+            Set-Content -LiteralPath $launcherVbs -Value $vbsContent -Encoding Unicode -Force
 
             # Prefer bundled icon from local clone/dev installs.
             # If not available, best-effort download from raw GitHub.
             # We only attach the icon if the resulting file has a valid ICO header.
             $hasValidIcon = $false
-            if ($bundledIcon -and (Test-Path $bundledIcon)) {
+            if ($bundledIcon -and (Test-Path -LiteralPath $bundledIcon)) {
                 try {
-                    Copy-Item -Path $bundledIcon -Destination $iconPath -Force
+                    Copy-Item -LiteralPath $bundledIcon -Destination $iconPath -Force
                 } catch {
                     Write-Host "[DEBUG] Error copying bundled icon: $($_.Exception.Message)" -ForegroundColor DarkGray
                 }
-            } elseif (-not (Test-Path $iconPath)) {
+            } elseif (-not (Test-Path -LiteralPath $iconPath)) {
                 try {
                     Invoke-WebRequest -Uri $iconUrl -OutFile $iconPath -UseBasicParsing
                 } catch {
@@ -568,7 +821,7 @@ shell.Run cmd, 0, False
                 }
             }
 
-            if (Test-Path $iconPath) {
+            if (Test-Path -LiteralPath $iconPath) {
                 try {
                     $bytes = [System.IO.File]::ReadAllBytes($iconPath)
                     if (
@@ -580,12 +833,19 @@ shell.Run cmd, 0, False
                     ) {
                         $hasValidIcon = $true
                     } else {
-                        Remove-Item $iconPath -Force -ErrorAction SilentlyContinue
+                        Remove-Item -LiteralPath $iconPath -Force -ErrorAction SilentlyContinue
                     }
                 } catch {
                     Write-Host "[DEBUG] Error validating or removing icon: $($_.Exception.Message)" -ForegroundColor DarkGray
-                    Remove-Item $iconPath -Force -ErrorAction SilentlyContinue
+                    Remove-Item -LiteralPath $iconPath -Force -ErrorAction SilentlyContinue
                 }
+            }
+
+            # Env-mode: skip persistent Desktop / Start Menu .lnk shortcuts
+            # that may point at a deleted workspace; launcher + icon stay.
+            if ($StudioRedirectMode -eq 'env') {
+                substep "wrote launcher at $launcherPs1 (persistent shortcuts skipped in env-override mode)"
+                return
             }
 
             $wscriptExe = Join-Path $env:SystemRoot "System32\wscript.exe"
@@ -624,13 +884,33 @@ shell.Run cmd, 0, False
         }
     }
 
-    # ── Check winget ──
-    Write-TauriLog "STEP" "Checking system dependencies"
-    if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
-        step "winget" "not available" "Red"
-        substep "Install it from https://aka.ms/getwinget" "Yellow"
-        substep "or install Python $PythonVersion and uv manually, then re-run." "Yellow"
+    # Regen .lnk + launcher only; used by `unsloth studio update`.
+    if ($ShortcutsOnly) {
+        if ($TauriMode) { return }
+        $UnslothExe = Join-Path $VenvDir "Scripts\unsloth.exe"
+        if (-not (Test-Path -LiteralPath $UnslothExe)) {
+            Write-Host "[ERROR] unsloth.exe missing at $UnslothExe; run install.ps1 first." -ForegroundColor Red
+            # throw (not Exit-InstallFailure) so non-Tauri callers see rc != 0.
+            throw "unsloth.exe missing"
+        }
+        New-StudioShortcuts -UnslothExePath $UnslothExe
         return
+    }
+
+    # ── Check winget ──
+    # winget is only needed to install Python or uv. If both are
+    # already on PATH (Windows ARM64 GitHub-hosted runners, manual
+    # python.org + Astral uv installs, corporate locked-down hosts
+    # without the Store, etc.) the script can proceed without it.
+    # We defer the hard failure to the Python / uv install branches
+    # below, where winget is actually invoked.
+    Write-TauriLog "STEP" "Checking system dependencies"
+    $script:WingetAvailable = [bool](Get-Command winget -ErrorAction SilentlyContinue)
+    if ($script:WingetAvailable) {
+        step "winget" "available"
+    } else {
+        step "winget" "not available -- will require Python + uv to be already installed" "Yellow"
+        substep "Get it from https://aka.ms/getwinget if Python / uv are not already on PATH." "Yellow"
     }
 
     # ── Helper: detect a working Python 3.11-3.13 on the system ──
@@ -666,7 +946,9 @@ shell.Run cmd, 0, False
         # py.exe resolves to the standard CPython install, not conda.
         $pyLauncher = Get-Command py -CommandType Application -ErrorAction SilentlyContinue
         if ($pyLauncher -and $pyLauncher.Source -notmatch $script:CondaSkipPattern) {
-            foreach ($minor in @("3.13", "3.12", "3.11")) {
+            # Prefer the requested $PythonVersion, then newest-first fallback.
+            $minors = @($PythonVersion) + (@("3.13", "3.12", "3.11") | Where-Object { $_ -ne $PythonVersion })
+            foreach ($minor in $minors) {
                 try {
                     $out = & $pyLauncher.Source "-$minor" --version 2>&1 | Out-String
                     if ($out -match "Python (3\.1[1-3])\.\d+") {
@@ -707,10 +989,17 @@ shell.Run cmd, 0, False
     # Find-CompatiblePython returns @{ Version = "3.13"; Path = "C:\...\python.exe" } or $null.
     Write-TauriLog "STEP" "Installing Python"
     $DetectedPython = Find-CompatiblePython
+
     if ($DetectedPython) {
         step "python" "Python $($DetectedPython.Version) already installed"
     }
     if (-not $DetectedPython) {
+        if (-not $script:WingetAvailable) {
+            Write-Host "[ERROR] No compatible Python (3.11-3.13) found and winget is unavailable on this host." -ForegroundColor Red
+            Write-Host "        Install Python $PythonVersion from https://www.python.org/downloads/" -ForegroundColor Yellow
+            Write-Host "        and re-run this installer (make sure 'Add Python to PATH' is checked)." -ForegroundColor Yellow
+            return (Exit-InstallFailure "winget required to install Python on this host")
+        }
         substep "installing Python ${PythonVersion}..."
         $pythonPackageId = "Python.Python.$PythonVersion"
         # Temporarily lower ErrorActionPreference so that winget stderr
@@ -749,22 +1038,32 @@ shell.Run cmd, 0, False
             Write-Host "        Please install Python $PythonVersion manually from https://www.python.org/downloads/" -ForegroundColor Yellow
             Write-Host "        Make sure to check 'Add Python to PATH' during installation." -ForegroundColor Yellow
             Write-Host "        Then re-run this installer." -ForegroundColor Yellow
-            return
+            return (Exit-InstallFailure "Python installation failed")
         }
     }
+    $DiagPythonVersion = $PythonVersion
+    if ($DetectedPython) { $DiagPythonVersion = $DetectedPython.Version }
+    $InitialGpuBranch = "unknown"
+    if ($SkipTorch) { $InitialGpuBranch = "no_torch" }
+    Write-TauriDiag -GpuBranch $InitialGpuBranch -TorchIndexFamily "none" -PythonVersionForDiag $DiagPythonVersion
 
     # ── Install uv if not present ──
     Write-TauriLog "STEP" "Installing uv package manager"
     if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
         substep "installing uv package manager..."
-        $prevEAP = $ErrorActionPreference
-        $ErrorActionPreference = "Continue"
-        try { winget install --id=astral-sh.uv -e --accept-package-agreements --accept-source-agreements } catch {}
-        $ErrorActionPreference = $prevEAP
-        Refresh-SessionPath
-        # Fallback: if winget didn't put uv on PATH, try the PowerShell installer
+        if ($script:WingetAvailable) {
+            $prevEAP = $ErrorActionPreference
+            $ErrorActionPreference = "Continue"
+            try { winget install --id=astral-sh.uv -e --accept-package-agreements --accept-source-agreements } catch {}
+            $ErrorActionPreference = $prevEAP
+            Refresh-SessionPath
+        }
+        # Fallback: if winget is unavailable or didn't put uv on PATH,
+        # use Astral's official PowerShell installer. This is the only
+        # supported path on hosts without winget (Windows ARM64 runners,
+        # corporate machines without the Store, etc.).
         if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
-            substep "trying alternative uv installer..." "Yellow"
+            substep "installing uv via https://astral.sh/uv/install.ps1..." "Yellow"
             Invoke-Expression (Invoke-RestMethod -Uri "https://astral.sh/uv/install.ps1")
             Refresh-SessionPath
         }
@@ -773,66 +1072,162 @@ shell.Run cmd, 0, False
     if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
         step "uv" "could not be installed" "Red"
         substep "Install it from https://docs.astral.sh/uv/" "Yellow"
-        return
+        return (Exit-InstallFailure "uv could not be installed")
     }
 
     # ── Create venv (migrate old layout if possible, otherwise fresh) ──
     # Pass the resolved executable path to uv so it does not re-resolve
     # a version string back to a conda interpreter.
     Write-TauriLog "STEP" "Creating virtual environment"
-    if (-not (Test-Path $StudioHome)) {
-        New-Item -ItemType Directory -Path $StudioHome -Force | Out-Null
+    if (-not (Test-Path -LiteralPath $StudioHome)) {
+        # .NET API: New-Item -Path treats brackets as wildcards.
+        [System.IO.Directory]::CreateDirectory($StudioHome) | Out-Null
     }
 
     $VenvPython = Join-Path $VenvDir "Scripts\python.exe"
     $_Migrated = $false
+    $script:StudioVenvRollbackDir = $null
+    $script:StudioVenvRollbackTarget = $VenvDir
+    $script:StudioVenvRollbackActive = $false
 
-    if (Test-Path $VenvPython) {
-        # New layout already exists -- nuke for fresh install
-        substep "removing existing environment for fresh install..."
-        Remove-Item -Recurse -Force $VenvDir
-    } elseif (Test-Path (Join-Path $StudioHome ".venv\Scripts\python.exe")) {
-        # Old layout (~/.unsloth/studio/.venv) exists -- validate before migrating
+    function Start-StudioVenvRollback {
+        param([Parameter(Mandatory = $true)][string]$ExistingDir)
+        $stamp = Get-Date -Format "yyyyMMddHHmmss"
+        $candidate = Join-Path $StudioHome "unsloth_studio.rollback.$stamp.$PID"
+        $suffix = 0
+        # -LiteralPath: a custom $StudioHome may contain [ ] * ? which
+        # plain Test-Path / Move-Item would interpret as wildcards.
+        while (Test-Path -LiteralPath $candidate) {
+            $suffix++
+            $candidate = Join-Path $StudioHome "unsloth_studio.rollback.$stamp.$PID.$suffix"
+        }
+        Move-Item -LiteralPath $ExistingDir -Destination $candidate -ErrorAction Stop
+        $script:StudioVenvRollbackDir = $candidate
+        $script:StudioVenvRollbackTarget = $ExistingDir
+        $script:StudioVenvRollbackActive = $true
+        substep "previous environment preserved for rollback"
+    }
+
+    function Restore-StudioVenvRollback {
+        if (-not $script:StudioVenvRollbackActive) { return }
+        $backup = $script:StudioVenvRollbackDir
+        $target = $script:StudioVenvRollbackTarget
+        if (-not $backup -or -not (Test-Path -LiteralPath $backup)) {
+            $script:StudioVenvRollbackActive = $false
+            return
+        }
+        substep "restoring previous environment after failed install..." "Yellow"
+        try {
+            if (Test-Path -LiteralPath $target) {
+                Remove-Item -LiteralPath $target -Recurse -Force -ErrorAction SilentlyContinue
+            }
+            Move-Item -LiteralPath $backup -Destination $target -Force -ErrorAction Stop
+            substep "restored previous environment"
+            $script:StudioVenvRollbackActive = $false
+            $script:StudioVenvRollbackDir = $null
+        } catch {
+            Write-Host "[WARN] Could not restore previous environment from $backup to $target" -ForegroundColor Yellow
+            Write-Host "       $($_.Exception.Message)" -ForegroundColor Yellow
+        }
+    }
+
+    function Complete-StudioVenvRollback {
+        if (-not $script:StudioVenvRollbackActive) { return }
+        $backup = $script:StudioVenvRollbackDir
+        if ($backup -and (Test-Path -LiteralPath $backup)) {
+            Remove-Item -LiteralPath $backup -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        $script:StudioVenvRollbackActive = $false
+        $script:StudioVenvRollbackDir = $null
+    }
+
+    if (Test-Path -LiteralPath $VenvPython) {
+        # why: matching guard to the .venv branch below -- in env-mode
+        # $StudioHome is a user-chosen workspace, so refuse to nuke an
+        # existing $StudioHome\unsloth_studio that lacks Studio sentinels.
+        # -PathType Leaf rejects a directory at the sentinel path. Accept the
+        # in-VENV ownership marker so partial-install retries are not blocked.
+        if (
+            $StudioRedirectMode -eq 'env' -and
+            -not (Test-Path -LiteralPath (Join-Path $VenvDir ".unsloth-studio-owned") -PathType Leaf) -and
+            -not (Test-Path -LiteralPath (Join-Path $StudioHome "share\studio.conf") -PathType Leaf) -and
+            -not (Test-Path -LiteralPath (Join-Path $StudioHome "bin\unsloth.exe") -PathType Leaf)
+        ) {
+            Write-Host "[ERROR] $VenvDir already exists but does not look like an Unsloth Studio install." -ForegroundColor Red
+            Write-Host "        Move it aside or choose an empty UNSLOTH_STUDIO_HOME." -ForegroundColor Yellow
+            throw "Refusing to delete non-Studio venv at $VenvDir"
+        }
+        # New layout already exists -- replace only after preserving rollback copy.
+        substep "preserving existing environment for rollback..."
+        try {
+            Start-StudioVenvRollback -ExistingDir $VenvDir
+        } catch {
+            Write-Host "[ERROR] Could not prepare existing environment for reinstall: $($_.Exception.Message)" -ForegroundColor Red
+            return (Exit-InstallFailure "Could not prepare existing environment for reinstall")
+        }
+    } elseif (
+        $StudioRedirectMode -ne 'env' `
+        -and (Test-Path -LiteralPath (Join-Path $StudioHome ".venv\Scripts\python.exe"))
+    ) {
+        # Old layout (~/.unsloth/studio/.venv) exists -- validate before migrating.
+        # Skip in env-mode so we don't blow away an unrelated .venv at the
+        # workspace root (e.g. user's existing project Python venv).
         $OldVenv = Join-Path $StudioHome ".venv"
         $OldPy = Join-Path $OldVenv "Scripts\python.exe"
         substep "found legacy Studio environment, validating..."
         $prevEAP2 = $ErrorActionPreference
         $ErrorActionPreference = "Continue"
         try {
-            & $OldPy -c "import torch; A = torch.ones((2,2)); B = A + A" 2>$null | Out-Null
-            $torchOk = ($LASTEXITCODE -eq 0)
-        } catch { $torchOk = $false }
+            if ($SkipTorch) {
+                & $OldPy -c "import sys; print(sys.executable)" 2>$null | Out-Null
+            } else {
+                & $OldPy -c "import torch; A = torch.ones((2,2)); B = A + A" 2>$null | Out-Null
+            }
+            $legacyOk = ($LASTEXITCODE -eq 0)
+        } catch { $legacyOk = $false }
         $ErrorActionPreference = $prevEAP2
-        if ($torchOk) {
+        if ($legacyOk) {
             substep "legacy environment is healthy -- migrating..."
-            Move-Item -Path $OldVenv -Destination $VenvDir -Force
+            Move-Item -LiteralPath $OldVenv -Destination $VenvDir -Force
             substep "moved .venv -> unsloth_studio"
             $_Migrated = $true
         } else {
             substep "legacy environment failed validation -- creating fresh environment" "Yellow"
-            Remove-Item -Recurse -Force $OldVenv -ErrorAction SilentlyContinue
+            $invalidVenv = Join-Path $StudioHome (".venv.invalid.{0}.{1}" -f (Get-Date -Format "yyyyMMddHHmmss"), $PID)
+            Move-Item -LiteralPath $OldVenv -Destination $invalidVenv -Force -ErrorAction SilentlyContinue
         }
-    } elseif (Test-Path (Join-Path $env:USERPROFILE "unsloth_studio\Scripts\python.exe")) {
-        # CWD-relative venv from old install.ps1 -- migrate to absolute path
+    } elseif (
+        $StudioRedirectMode -ne 'env' `
+        -and (Test-Path -LiteralPath (Join-Path $env:USERPROFILE "unsloth_studio\Scripts\python.exe"))
+    ) {
+        # CWD-relative venv from old install.ps1 -> migrate to absolute path.
+        # Skip in env-mode so we don't relocate the default-install venv into
+        # the workspace root.
         $CwdVenv = Join-Path $env:USERPROFILE "unsloth_studio"
         substep "found CWD-relative Studio environment, migrating to $VenvDir..."
-        Move-Item -Path $CwdVenv -Destination $VenvDir -Force
+        Move-Item -LiteralPath $CwdVenv -Destination $VenvDir -Force
         substep "moved ~/unsloth_studio -> ~/.unsloth/studio/unsloth_studio"
         $_Migrated = $true
     }
 
-    if (-not (Test-Path $VenvPython)) {
+    if (-not (Test-Path -LiteralPath $VenvPython)) {
         step "venv" "creating Python $($DetectedPython.Version) virtual environment"
         substep "$VenvDir"
         $venvExit = Invoke-InstallCommand { uv venv $VenvDir --python "$($DetectedPython.Path)" }
         if ($venvExit -ne 0) {
-            Write-TauriLog "ERROR" "Failed to create virtual environment (exit code $venvExit)"
             Write-Host "[ERROR] Failed to create virtual environment (exit code $venvExit)" -ForegroundColor Red
-            return
+            return (Exit-InstallFailure "Failed to create virtual environment (exit code $venvExit)" $venvExit)
         }
     } else {
         step "venv" "using migrated environment"
         substep "$VenvDir"
+    }
+
+    # Mark the freshly-created venv as Studio-owned so a partial install can be
+    # repaired by re-running install.ps1; the env-mode deletion guard above
+    # accepts this marker as the primary sentinel.
+    if (Test-Path -LiteralPath $VenvDir -PathType Container) {
+        try { [System.IO.File]::WriteAllText((Join-Path $VenvDir ".unsloth-studio-owned"), "") } catch {}
     }
 
     # ── Detect GPU (robust: PATH + hardcoded fallback paths, mirrors setup.ps1) ──
@@ -858,11 +1253,196 @@ shell.Run cmd, 0, False
             }
         }
     }
+    # ── AMD ROCm detection (Windows) — mirrors setup.ps1 ──
+    $HasROCm = $false
+    $HipSdkInstalled = $false   # HIP SDK binary found (independent of device accessibility)
+    $ROCmGpuLabel = $null
+    $ROCmVersion = $null
+    $ROCmGfxArch = $null
+    if (-not $HasNvidiaSmi) {
+        # hipinfo: PATH first, then HIP_PATH/ROCM_PATH bin fallback (mirrors NVIDIA smi path resolution).
+        # AMD HIP SDK sets HIP_PATH but may not add the bin dir to PATH depending on install type.
+        $hipinfoExe = Get-Command hipinfo -ErrorAction SilentlyContinue
+        if (-not $hipinfoExe) {
+            $hipRoot     = if ($env:HIP_PATH) { $env:HIP_PATH } elseif ($env:ROCM_PATH) { $env:ROCM_PATH } else { $null }
+            $hipEnvLabel = if ($env:HIP_PATH) { "HIP_PATH"    } else                    { "ROCM_PATH"    }
+            if ($hipRoot) {
+                $hipinfoCandidate = Join-Path $hipRoot "bin\hipinfo.exe"
+                if (Test-Path $hipinfoCandidate) {
+                    Write-Host "  [WARN] hipinfo not on PATH -- located via ${hipEnvLabel}: $hipinfoCandidate" -ForegroundColor Yellow
+                    Write-Host "         Add '$(Join-Path $hipRoot 'bin')' to your PATH to suppress this warning" -ForegroundColor Yellow
+                    Write-Host "         Quick fix: [Environment]::SetEnvironmentVariable('PATH',`$env:PATH+';$(Join-Path $hipRoot 'bin')','User')" -ForegroundColor Yellow
+                    $hipinfoExe = [PSCustomObject]@{ Source = $hipinfoCandidate }
+                } else {
+                    Write-Host "  [WARN] ${hipEnvLabel}=$hipRoot is set but hipinfo.exe not found at $hipinfoCandidate" -ForegroundColor Yellow
+                    Write-Host "         HIP SDK install may be incomplete -- re-install from:" -ForegroundColor Yellow
+                    Write-Host "         https://rocm.docs.amd.com/en/latest/deploy/windows/index.html" -ForegroundColor Yellow
+                }
+            }
+        }
+        if ($hipinfoExe) {
+            $HipSdkInstalled = $true   # binary found → SDK is installed regardless of device state
+            try {
+                $hipOut = & $hipinfoExe.Source 2>&1 | Out-String
+                if ($LASTEXITCODE -eq 0 -and $hipOut -match "(?i)gcnArchName") {
+                    $HasROCm = $true
+                    $_hipAllArches = @([regex]::Matches($hipOut, "(?im)^\s*gcnArchName\s*:\s*(\S+)") | ForEach-Object { ($_.Groups[1].Value -split ':')[0].Trim().ToLower() })
+                    $_hipVisIdx = if ($env:HIP_VISIBLE_DEVICES -match '^\d') { [int]($env:HIP_VISIBLE_DEVICES -split ',')[0] } elseif ($env:ROCR_VISIBLE_DEVICES -match '^\d') { [int]($env:ROCR_VISIBLE_DEVICES -split ',')[0] } else { 0 }
+                    if ($_hipAllArches.Count -gt 0) {
+                        $ROCmGfxArch  = if ($_hipVisIdx -lt $_hipAllArches.Count) { $_hipAllArches[$_hipVisIdx] } else { $_hipAllArches[0] }
+                        $ROCmGpuLabel = "AMD ROCm ($ROCmGfxArch)"
+                    } else {
+                        $ROCmGpuLabel = "AMD ROCm"
+                    }
+                } elseif ($LASTEXITCODE -ne 0) {
+                    # hipinfo ran but returned a HIP runtime error (e.g. "no ROCm-capable device detected")
+                    $firstLine = ($hipOut -split '\r?\n' | Where-Object { $_.Trim() } | Select-Object -First 1)
+                    Write-Host "  [WARN] hipinfo returned a HIP runtime error (exit $LASTEXITCODE)" -ForegroundColor Yellow
+                    Write-Host "         $firstLine" -ForegroundColor Yellow
+                    Write-Host "         Ensure ROCm drivers are installed: https://rocm.docs.amd.com/en/latest/deploy/windows/index.html" -ForegroundColor Yellow
+                }
+            } catch {}
+        }
+        if (-not $HasROCm) {
+            $amdSmiExe = Get-Command "amd-smi" -ErrorAction SilentlyContinue
+            if ($amdSmiExe) {
+                try {
+                    $smiOut = & $amdSmiExe.Source list 2>&1 | Out-String
+                    if ($LASTEXITCODE -eq 0 -and $smiOut -match "(?im)^GPU\s*[:\[]\s*\d") {
+                        $HasROCm = $true
+                        # Mirror the hipinfo path: collect all gfx tokens in enumeration
+                        # order and pick the runtime-visible one via HIP_VISIBLE_DEVICES.
+                        $_smiVisIdx = if ($env:HIP_VISIBLE_DEVICES -match '^\d') { [int]($env:HIP_VISIBLE_DEVICES -split ',')[0] } elseif ($env:ROCR_VISIBLE_DEVICES -match '^\d') { [int]($env:ROCR_VISIBLE_DEVICES -split ',')[0] } else { 0 }
+                        # Attempt 1: newer amd-smi versions embed the gfx arch in list output.
+                        $_smiGfxTokens = @([regex]::Matches($smiOut, "(?i)\b(gfx\d+[a-z]?)\b") | ForEach-Object { $_.Groups[1].Value.ToLower() })
+                        if ($_smiGfxTokens.Count -gt 0) {
+                            $ROCmGfxArch = if ($_smiVisIdx -lt $_smiGfxTokens.Count) { $_smiGfxTokens[$_smiVisIdx] } else { $_smiGfxTokens[0] }
+                            $ROCmGpuLabel = "AMD ROCm ($ROCmGfxArch)"
+                        } else {
+                            # Attempt 2: 'static --asic' exposes ASIC details on ROCm 6+,
+                            # including the GFX target needed for wheel index selection.
+                            $smiAsicOut = ""
+                            try { $smiAsicOut = & $amdSmiExe.Source static --asic 2>&1 | Out-String } catch {}
+                            $_asicGfxTokens = @([regex]::Matches($smiAsicOut, "(?i)\b(gfx\d+[a-z]?)\b") | ForEach-Object { $_.Groups[1].Value.ToLower() })
+                            if ($_asicGfxTokens.Count -gt 0) {
+                                $ROCmGfxArch = if ($_smiVisIdx -lt $_asicGfxTokens.Count) { $_asicGfxTokens[$_smiVisIdx] } else { $_asicGfxTokens[0] }
+                                $ROCmGpuLabel = "AMD ROCm ($ROCmGfxArch)"
+                            } elseif ($smiAsicOut -match "(?im)Market.?Name\s*[:\|]\s*([^\r\n]+)") {
+                                $ROCmGpuLabel = "AMD ROCm ($($Matches[1].Trim()))"
+                            } else {
+                                $ROCmGpuLabel = "AMD ROCm"
+                            }
+                        }
+                    }
+                } catch {}
+            }
+        }
+        if (-not $HasROCm) {
+            try {
+                $wmiGpu = Get-WmiObject Win32_VideoController -ErrorAction SilentlyContinue |
+                    Where-Object { $_.Name -match "AMD|Radeon" } |
+                    Select-Object -First 1
+                if ($wmiGpu) { $ROCmGpuLabel = $wmiGpu.Name }
+            } catch {}
+        }
+        # ── Arch resolution: env-var override → name inference ──────────────
+        # Covers users whose amd-smi is too old to report the GFX target and
+        # who don't have hipinfo (HIP-runtime-only, common on Strix Halo / iGPU).
+        if ($HasROCm -and -not $ROCmGfxArch) {
+            # 1. Manual override: set UNSLOTH_ROCM_GFX_ARCH=gfx1151 before running.
+            if ($env:UNSLOTH_ROCM_GFX_ARCH) {
+                $ROCmGfxArch = $env:UNSLOTH_ROCM_GFX_ARCH.Trim().ToLower()
+                $ROCmGpuLabel = "AMD ROCm ($ROCmGfxArch)"
+                substep "gfx arch from UNSLOTH_ROCM_GFX_ARCH env override: $ROCmGfxArch" "Cyan"
+            }
+            # 2. Best-effort name → arch lookup from marketing name (amd-smi / WMI).
+            elseif ($ROCmGpuLabel) {
+                $nameArchTable = @(
+                    @{ P = "9070 XT|9080";                                        A = "gfx1201" }  # RDNA 4
+                    @{ P = "9070|9060";                                            A = "gfx1200" }  # RDNA 4
+                    @{ P = "8060S|890M|Strix Halo|HX 37[05]|HX 38[05]|AI 9 HX";  A = "gfx1151" }  # RDNA 3.5 iGPU (Strix Halo / Radeon 8060S retail)
+                    @{ P = "880M|Strix Point|AI 9 36[05]|AI 7 35[05]|AI 5 34[05]"; A = "gfx1150" } # RDNA 3.5 iGPU (Strix Point)
+                    @{ P = "RX 7900|RX 7800|RX 7700(?! S)";                       A = "gfx1100" }  # RDNA 3 desktop
+                    @{ P = "RX 7600";                                              A = "gfx1102" }  # RDNA 3
+                    @{ P = "780M|760M|740M|Phoenix";                               A = "gfx1103" }  # RDNA 3 iGPU (Phoenix)
+                )
+                foreach ($row in $nameArchTable) {
+                    if ($ROCmGpuLabel -match $row.P) {
+                        $ROCmGfxArch = $row.A
+                        $ROCmGpuLabel = "AMD ROCm ($ROCmGfxArch)"
+                        substep "gfx arch inferred from GPU name: $ROCmGfxArch" "Cyan"
+                        substep "Tip: set UNSLOTH_ROCM_GFX_ARCH=$ROCmGfxArch to skip inference next time" "Cyan"
+                        break
+                    }
+                }
+            }
+        }
+        # Capture ROCm version for wheel selection (hipconfig, then amd-smi).
+        # Run whenever the HIP SDK binary is present, not just when the device is accessible --
+        # hipconfig --version works even when hipinfo reports no ROCm device (driver issue).
+        if ($HasROCm -or $HipSdkInstalled) {
+            $hipConfigExe = Get-Command hipconfig -ErrorAction SilentlyContinue
+            if (-not $hipConfigExe) {
+                $hipRoot = if ($env:HIP_PATH) { $env:HIP_PATH } elseif ($env:ROCM_PATH) { $env:ROCM_PATH } else { $null }
+                if ($hipRoot) {
+                    $hipConfigCandidate = Join-Path $hipRoot "bin\hipconfig.exe"
+                    if (Test-Path $hipConfigCandidate) {
+                        $hipConfigEnvLabel = if ($env:HIP_PATH) { "HIP_PATH" } else { "ROCM_PATH" }
+                        Write-Host "  [WARN] hipconfig not on PATH -- located via ${hipConfigEnvLabel}: $hipConfigCandidate" -ForegroundColor Yellow
+                        $hipConfigExe = [PSCustomObject]@{ Source = $hipConfigCandidate }
+                    }
+                }
+            }
+            if ($hipConfigExe) {
+                try {
+                    $hipVerOut = & $hipConfigExe.Source --version 2>&1 | Out-String
+                    if ($LASTEXITCODE -eq 0) {
+                        $hipVerLine = ($hipVerOut -split '\r?\n' | Where-Object { $_.Trim() } | Select-Object -First 1).Trim()
+                        if ($hipVerLine -match '(\d+\.\d+)') {
+                            $ROCmVersion     = $Matches[1]
+                            $ROCmVersionFull = $hipVerLine
+                        }
+                    }
+                } catch {}
+            }
+            if (-not $ROCmVersion) {
+                $amdSmiVer = Get-Command "amd-smi" -ErrorAction SilentlyContinue
+                if ($amdSmiVer) {
+                    try {
+                        $smiVerOut = & $amdSmiVer.Source version 2>&1 | Out-String
+                        if ($LASTEXITCODE -eq 0 -and $smiVerOut -match 'ROCm version:\s*(\d+\.\d+)') {
+                            $ROCmVersion = $Matches[1]
+                        }
+                    } catch {}
+                }
+            }
+        }
+    }
+
     if ($HasNvidiaSmi) {
         step "gpu" "NVIDIA GPU detected"
+    } elseif ($HasROCm) {
+        step "gpu" $ROCmGpuLabel
+        $hipSdkPath = if ($env:HIP_PATH) { $env:HIP_PATH } elseif ($env:ROCM_PATH) { $env:ROCM_PATH } else { "on system PATH" }
+        substep "HIP SDK: $hipSdkPath"
+        if ($ROCmVersionFull) { substep "hipconfig: $ROCmVersionFull" }
+    } elseif ($HipSdkInstalled -and $ROCmGpuLabel) {
+        # HIP SDK is installed but ROCm can't see the device (driver issue, not SDK issue)
+        $sdkVer = if ($ROCmVersionFull) { " (HIP $ROCmVersionFull)" } else { "" }
+        step "gpu" "AMD GPU detected -- not ROCm-accessible$sdkVer" "Yellow"
+        substep "Detected: $ROCmGpuLabel" "Yellow"
+        substep "[WARN] HIP SDK is installed but hipinfo reports no ROCm-capable device." "Yellow"
+        substep "       This is a driver issue, not an SDK issue." "Yellow"
+        substep "       Ensure the ROCm compute driver is installed alongside the display driver:" "Yellow"
+        substep "       https://rocm.docs.amd.com/en/latest/deploy/windows/index.html" "Yellow"
+    } elseif ($ROCmGpuLabel) {
+        step "gpu" "AMD GPU detected -- HIP SDK not found" "Yellow"
+        substep "Detected: $ROCmGpuLabel" "Yellow"
+        substep "Install the HIP SDK for ROCm GPU inference:" "Yellow"
+        substep "https://rocm.docs.amd.com/en/latest/deploy/windows/index.html" "Yellow"
     } else {
         step "gpu" "none (chat-only / GGUF)" "Yellow"
-        substep "Training and GPU inference require an NVIDIA GPU with drivers installed." "Yellow"
+        substep "Training and GPU inference require an NVIDIA or AMD ROCm GPU." "Yellow"
     }
 
     # ── Choose the correct PyTorch index URL based on driver CUDA version ──
@@ -872,7 +1452,10 @@ shell.Run cmd, 0, False
         if (-not $NvidiaSmiExe) { return "$baseUrl/cpu" }
         try {
             $output = & $NvidiaSmiExe 2>&1 | Out-String
-            if ($output -match 'CUDA Version:\s+(\d+)\.(\d+)') {
+            # Newer NVIDIA drivers (e.g. 610.x on Windows) print
+            # "CUDA UMD Version: X.Y" instead of the legacy "CUDA Version: X.Y".
+            # Accept both spellings so we don't fall through to the cu126 default.
+            if ($output -match 'CUDA(?: UMD)? Version:\s+(\d+)\.(\d+)') {
                 $major = [int]$Matches[1]; $minor = [int]$Matches[2]
                 if ($major -ge 13)                    { return "$baseUrl/cu130" }
                 if ($major -eq 12 -and $minor -ge 8)  { return "$baseUrl/cu128" }
@@ -887,10 +1470,72 @@ shell.Run cmd, 0, False
     }
     $TorchIndexUrl = Get-TorchIndexUrl
 
+    # ── GPU arch → newest compatible Windows ROCm wheel release ──
+    # Wheels bundle their own ROCm runtime; the installed HIP SDK version does
+    # not constrain which release to use.  Always picks the newest release that
+    # supports the GPU architecture.
+    # ── AMD Windows ROCm: arch-aware pip index (repo.amd.com) ──
+    # Wheels bundle their own ROCm runtime and support all Python versions.
+    # Override with UNSLOTH_ROCM_WINDOWS_MIRROR for air-gapped / mirror installs.
+    $ROCmIndexUrl = $null
+    $ROCmTorchFloor = $null
+    if ($HasROCm -and $TorchIndexUrl -like "*/cpu" -and -not $SkipTorch) {
+        $amdIndexBase = if ($env:UNSLOTH_ROCM_WINDOWS_MIRROR) { $env:UNSLOTH_ROCM_WINDOWS_MIRROR.TrimEnd('/') } else { "https://repo.amd.com/rocm/whl" }
+        $archFamilyMap = @{
+            "gfx1201" = "gfx120X-all"; "gfx1200" = "gfx120X-all"  # RDNA 4
+            "gfx1151" = "gfx1151";     "gfx1150" = "gfx1150"       # RDNA 3.5 (Strix Halo/Point)
+            "gfx1103" = "gfx110X-all"; "gfx1102" = "gfx110X-all"   # RDNA 3
+            "gfx1101" = "gfx110X-all"; "gfx1100" = "gfx110X-all"
+            "gfx90a"  = "gfx90a";      "gfx908"  = "gfx908"        # MI200/MI100
+        }
+        # gfx120X (RDNA 4) and gfx1151/gfx1150 (Strix) have a null-pointer bug in
+        # torch._C._grouped_mm on torch <2.11.0 (rocm7.12 and rocm7.1 respectively).
+        # TheRock issues #5284 and #3284. Force torch>=2.11.0 so pip never resolves
+        # to the broken 2.10.0 wheels even though they exist on the AMD index.
+        # The <2.12.0 ceiling matches the Linux install_python_stack.py constraint
+        # for the same arches: AMD actively publishes new versions on their index,
+        # so without a ceiling a future 2.12.0+rocmX.Y wheel would be pulled in
+        # automatically before it has been validated on these architectures.
+        # Bump the ceiling here (and in install_python_stack.py) when 2.12.x is
+        # confirmed working on gfx120X / Strix.
+        $torchFloorMap = @{
+            "gfx1201" = "torch>=2.11.0,<2.12.0"; "gfx1200" = "torch>=2.11.0,<2.12.0"
+            "gfx1151" = "torch>=2.11.0,<2.12.0"; "gfx1150" = "torch>=2.11.0,<2.12.0"
+        }
+        $archFamily = if ($ROCmGfxArch -and $archFamilyMap.ContainsKey($ROCmGfxArch)) { $archFamilyMap[$ROCmGfxArch] } else { $null }
+        if ($archFamily) {
+            $ROCmIndexUrl = "$amdIndexBase/$archFamily/"
+            $ROCmTorchFloor = if ($ROCmGfxArch -and $torchFloorMap.ContainsKey($ROCmGfxArch)) { $torchFloorMap[$ROCmGfxArch] } else { $null }
+            $archLabel = if ($ROCmGfxArch) { $ROCmGfxArch } else { "AMD GPU" }
+            substep "$archLabel -- AMD repo.amd.com index selected" "Cyan"
+            if ($ROCmTorchFloor) {
+                substep "  enforcing $ROCmTorchFloor (known _grouped_mm bug in older wheels)" "Cyan"
+            }
+        } elseif ($ROCmGfxArch) {
+            substep "AMD GPU ($ROCmGfxArch) not in supported arch list -- falling back to CPU-only PyTorch" "Yellow"
+        } else {
+            substep "AMD GPU detected but arch unknown -- falling back to CPU-only PyTorch" "Yellow"
+        }
+    }
+
+    if ($ROCmIndexUrl) {
+        $TorchIndexFamily = "rocm"
+    } else {
+        $TorchIndexFamily = Get-TauriTorchIndexFamily $TorchIndexUrl
+    }
+    $GpuBranch = Get-TauriGpuBranch $TorchIndexFamily
+    Write-TauriDiag -GpuBranch $GpuBranch -TorchIndexFamily $TorchIndexFamily -PythonVersionForDiag $DetectedPython.Version
+
     # ── Print CPU-only hint when no GPU detected ──
-    if (-not $SkipTorch -and $TorchIndexUrl -like "*/cpu") {
+    if (-not $SkipTorch -and -not $ROCmIndexUrl -and $TorchIndexUrl -like "*/cpu") {
         Write-Host ""
-        substep "No NVIDIA GPU detected." "Yellow"
+        if ($HipSdkInstalled -and -not $HasROCm) {
+            substep "Installing CPU-only PyTorch (HIP SDK found but GPU not ROCm-accessible)." "Yellow"
+        } elseif ($ROCmGpuLabel) {
+            substep "Installing CPU-only PyTorch (ROCm wheels require the HIP SDK)." "Yellow"
+        } else {
+            substep "No NVIDIA GPU detected." "Yellow"
+        }
         substep "Installing CPU-only PyTorch. If you only need GGUF chat/inference," "Yellow"
         substep "re-run with --no-torch for a faster, lighter install:" "Yellow"
         substep ".\install.ps1 --no-torch" "Yellow"
@@ -920,7 +1565,7 @@ shell.Run cmd, 0, False
         if ($StudioLocalInstall -and (Test-Path (Join-Path $RepoRoot "studio\backend\requirements\no-torch-runtime.txt"))) {
             return Join-Path $RepoRoot "studio\backend\requirements\no-torch-runtime.txt"
         }
-        $installed = Get-ChildItem -Path $VenvDir -Recurse -Filter "no-torch-runtime.txt" -ErrorAction SilentlyContinue |
+        $installed = Get-ChildItem -LiteralPath $VenvDir -Recurse -Filter "no-torch-runtime.txt" -ErrorAction SilentlyContinue |
             Where-Object { $_.FullName -like "*studio*backend*requirements*no-torch-runtime.txt" } |
             Select-Object -ExpandProperty FullName -First 1
         return $installed
@@ -934,7 +1579,13 @@ shell.Run cmd, 0, False
         if ($SkipTorch) {
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
-            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.4.8" unsloth-zoo }
+            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.6.1" unsloth-zoo }
+            if ($baseInstallExit -eq 0) {
+                # Resolve pydantic WITH deps so pip pins pydantic-core
+                # to the matching version (no-torch-runtime.txt below
+                # is --no-deps). All transitive deps are torch-free.
+                $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython pydantic }
+            }
             if ($baseInstallExit -eq 0) {
                 $NoTorchReq = Find-NoTorchRuntimeFile
                 if ($NoTorchReq) {
@@ -942,31 +1593,45 @@ shell.Run cmd, 0, False
                 }
             }
         } else {
-            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.4.8" unsloth-zoo }
+            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.6.1" unsloth-zoo }
         }
         if ($baseInstallExit -ne 0) {
             Write-Host "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
-            return
+            return (Exit-InstallFailure "Failed to install unsloth (exit code $baseInstallExit)" $baseInstallExit)
         }
         if ($StudioLocalInstall) {
             substep "overlaying local repo (editable)..."
             $overlayExit = Invoke-InstallCommand { uv pip install --python $VenvPython -e $RepoRoot --no-deps }
             if ($overlayExit -ne 0) {
                 Write-Host "[ERROR] Failed to overlay local repo (exit code $overlayExit)" -ForegroundColor Red
-                return
+                return (Exit-InstallFailure "Failed to overlay local repo (exit code $overlayExit)" $overlayExit)
+            }
+            substep "overlaying unsloth-zoo from git main..."
+            $zooOverlayExit = Invoke-InstallCommand { uv pip install --python $VenvPython --no-deps --reinstall-package unsloth-zoo "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo" }
+            if ($zooOverlayExit -ne 0) {
+                Write-Host "[ERROR] Failed to overlay unsloth-zoo (exit code $zooOverlayExit)" -ForegroundColor Red
+                return (Exit-InstallFailure "Failed to overlay unsloth-zoo (exit code $zooOverlayExit)" $zooOverlayExit)
             }
         }
-    } elseif ($TorchIndexUrl) {
+    } elseif ($TorchIndexUrl -or $ROCmIndexUrl) {
         if ($SkipTorch) {
             substep "skipping PyTorch (--no-torch flag set)." "Yellow"
+        } elseif ($ROCmIndexUrl) {
+            Write-TauriLog "STEP" "Installing PyTorch (AMD ROCm Windows)"
+            substep "installing PyTorch from $ROCmIndexUrl..."
+            $torchSpec = if ($ROCmTorchFloor) { $ROCmTorchFloor } else { "torch" }
+            $torchInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --force-reinstall --index-url $ROCmIndexUrl $torchSpec torchvision torchaudio }
+            if ($torchInstallExit -ne 0) {
+                Write-Host "[ERROR] Failed to install AMD ROCm PyTorch (exit code $torchInstallExit)" -ForegroundColor Red
+                return (Exit-InstallFailure "Failed to install AMD ROCm PyTorch (exit code $torchInstallExit)" $torchInstallExit)
+            }
         } else {
             Write-TauriLog "STEP" "Installing PyTorch"
             substep "installing PyTorch ($TorchIndexUrl)..."
             $torchInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython "torch>=2.4,<2.11.0" torchvision torchaudio --index-url $TorchIndexUrl }
             if ($torchInstallExit -ne 0) {
-                Write-TauriLog "ERROR" "Failed to install PyTorch (exit code $torchInstallExit)"
                 Write-Host "[ERROR] Failed to install PyTorch (exit code $torchInstallExit)" -ForegroundColor Red
-                return
+                return (Exit-InstallFailure "Failed to install PyTorch (exit code $torchInstallExit)" $torchInstallExit)
             }
         }
 
@@ -975,7 +1640,11 @@ shell.Run cmd, 0, False
         if ($SkipTorch) {
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
-            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "unsloth>=2026.4.8" unsloth-zoo }
+            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "unsloth>=2026.6.1" unsloth-zoo }
+            if ($baseInstallExit -eq 0) {
+                # Same pydantic-with-deps trick as the migrated branch.
+                $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython pydantic }
+            }
             if ($baseInstallExit -eq 0) {
                 $NoTorchReq = Find-NoTorchRuntimeFile
                 if ($NoTorchReq) {
@@ -983,14 +1652,13 @@ shell.Run cmd, 0, False
                 }
             }
         } elseif ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --upgrade-package unsloth "unsloth>=2026.4.8" unsloth-zoo }
+            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --upgrade-package unsloth "unsloth>=2026.6.1" unsloth-zoo }
         } else {
             $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --upgrade-package unsloth -- "$PackageName" }
         }
         if ($baseInstallExit -ne 0) {
-            Write-TauriLog "ERROR" "Failed to install unsloth (exit code $baseInstallExit)"
             Write-Host "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
-            return
+            return (Exit-InstallFailure "Failed to install unsloth (exit code $baseInstallExit)" $baseInstallExit)
         }
 
         if ($StudioLocalInstall) {
@@ -998,7 +1666,13 @@ shell.Run cmd, 0, False
             $overlayExit = Invoke-InstallCommand { uv pip install --python $VenvPython -e $RepoRoot --no-deps }
             if ($overlayExit -ne 0) {
                 Write-Host "[ERROR] Failed to overlay local repo (exit code $overlayExit)" -ForegroundColor Red
-                return
+                return (Exit-InstallFailure "Failed to overlay local repo (exit code $overlayExit)" $overlayExit)
+            }
+            substep "overlaying unsloth-zoo from git main..."
+            $zooOverlayExit = Invoke-InstallCommand { uv pip install --python $VenvPython --no-deps --reinstall-package unsloth-zoo "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo" }
+            if ($zooOverlayExit -ne 0) {
+                Write-Host "[ERROR] Failed to overlay unsloth-zoo (exit code $zooOverlayExit)" -ForegroundColor Red
+                return (Exit-InstallFailure "Failed to overlay unsloth-zoo (exit code $zooOverlayExit)" $zooOverlayExit)
             }
         }
     } else {
@@ -1006,53 +1680,74 @@ shell.Run cmd, 0, False
         Write-TauriLog "STEP" "Installing unsloth"
         substep "installing unsloth (this may take a few minutes)..."
         if ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython unsloth-zoo "unsloth>=2026.4.8" --torch-backend=auto }
+            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython unsloth-zoo "unsloth>=2026.6.1" --torch-backend=auto }
             if ($baseInstallExit -ne 0) {
                 Write-Host "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
-                return
+                return (Exit-InstallFailure "Failed to install unsloth (exit code $baseInstallExit)" $baseInstallExit)
             }
             substep "overlaying local repo (editable)..."
             $overlayExit = Invoke-InstallCommand { uv pip install --python $VenvPython -e $RepoRoot --no-deps }
             if ($overlayExit -ne 0) {
                 Write-Host "[ERROR] Failed to overlay local repo (exit code $overlayExit)" -ForegroundColor Red
-                return
+                return (Exit-InstallFailure "Failed to overlay local repo (exit code $overlayExit)" $overlayExit)
+            }
+            substep "overlaying unsloth-zoo from git main..."
+            $zooOverlayExit = Invoke-InstallCommand { uv pip install --python $VenvPython --no-deps --reinstall-package unsloth-zoo "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo" }
+            if ($zooOverlayExit -ne 0) {
+                Write-Host "[ERROR] Failed to overlay unsloth-zoo (exit code $zooOverlayExit)" -ForegroundColor Red
+                return (Exit-InstallFailure "Failed to overlay unsloth-zoo (exit code $zooOverlayExit)" $zooOverlayExit)
             }
         } else {
             $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --torch-backend=auto -- "$PackageName" }
             if ($baseInstallExit -ne 0) {
-                Write-TauriLog "ERROR" "Failed to install unsloth (exit code $baseInstallExit)"
                 Write-Host "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
-                return
+                return (Exit-InstallFailure "Failed to install unsloth (exit code $baseInstallExit)" $baseInstallExit)
             }
         }
     }
 
-    # Hotfix: patch install_python_stack.py for Windows GUI stdout
-    # The PyPI version crashes with OSError when stdout is piped from a GUI app.
-    # Copy our fixed version (bundled by Tauri) over the installed one.
-    # Remove this block once PyPI ships the fix from commit 18c5aae7.
+    # Overlay Tauri-bundled studio fixes that may be ahead of PyPI. Skipped
+    # for --local: the editable install above already makes _PACKAGE_ROOT in
+    # unsloth_cli/commands/studio.py resolve to the repo (PEP 660 __file__).
+    # Source paths match the Tauri bundle layout in studio/src-tauri/tauri.conf.json,
+    # which bundles install_python_stack.py at the bundle root next to install.ps1.
     if ($TauriMode) {
         $rawPath = if ($PSCommandPath) { $PSCommandPath } else { $MyInvocation.ScriptName }
-        $scriptDir = Split-Path -Parent ($rawPath -replace '^\\\\\?\\', '')
-        $fixedPy = Join-Path $scriptDir "install_python_stack.py"
-        $target = Join-Path $VenvDir "Lib\site-packages\studio\install_python_stack.py"
-        $sentinel = "# UNSLOTH_DESKTOP_HOTFIX_APPLIED_v1"
-        $sentinelPattern = [regex]::Escape($sentinel)
-        if ((Test-Path $fixedPy) -and (Test-Path $target)) {
-            $installed = Get-Content $target -Raw
-            if ($installed -notmatch $sentinelPattern) {
-                Copy-Item $fixedPy $target -Force
-                Add-Content -Path $target -Value "`n$sentinel"
-                substep "patched install_python_stack.py (stdout fix)"
-            } else {
-                substep "install_python_stack.py already has stdout fix"
+        if ($rawPath) {
+            # Strip leading \\?\ extended-length prefix if the launcher passed one.
+            $scriptDir = Split-Path -Parent ($rawPath -replace '^\\\\\?\\', '')
+            $overlayMap = [ordered]@{
+                "install_python_stack.py" = "Lib\site-packages\studio\install_python_stack.py"
             }
-        } elseif ((Test-Path $fixedPy) -and (Test-Path (Split-Path $target))) {
-            Copy-Item $fixedPy $target -Force
-            Add-Content -Path $target -Value "`n$sentinel"
-            substep "patched install_python_stack.py (stdout fix)"
-        } else {
-            Write-Host "[WARN] Could not patch install_python_stack.py (bundled file or target dir missing)" -ForegroundColor Yellow
+            foreach ($rel in $overlayMap.Keys) {
+                $src = Join-Path $scriptDir $rel
+                $dst = Join-Path $VenvDir $overlayMap[$rel]
+                # -LiteralPath: $VenvDir derives from $StudioHome which may
+                # contain [ ] * ? when the user overrode UNSLOTH_STUDIO_HOME.
+                if (-not (Test-Path -LiteralPath $src)) { continue }
+                $dstParent = Split-Path -Parent $dst
+                if (-not (Test-Path -LiteralPath $dstParent)) {
+                    Write-Host "[WARN] Overlay target dir missing: $dstParent; studio setup may use stale bundled file" -ForegroundColor Yellow
+                    continue
+                }
+                try {
+                    if (-not (Test-Path -LiteralPath $dst)) {
+                        # Backfill: target file missing but parent dir exists.
+                        Copy-Item -LiteralPath $src -Destination $dst -Force
+                        substep ("backfilled bundled " + (Split-Path -Leaf $rel))
+                    } else {
+                        # Hash-compare so re-runs are no-ops when files already match.
+                        $srcHash = (Get-FileHash -LiteralPath $src -Algorithm SHA256).Hash
+                        $dstHash = (Get-FileHash -LiteralPath $dst -Algorithm SHA256).Hash
+                        if ($srcHash -ne $dstHash) {
+                            Copy-Item -LiteralPath $src -Destination $dst -Force
+                            substep ("applied bundled " + (Split-Path -Leaf $rel))
+                        }
+                    }
+                } catch {
+                    Write-Host "[WARN] Could not overlay $($rel): $($_.Exception.Message); studio setup may use stale bundled file" -ForegroundColor Yellow
+                }
+            }
         }
     }
 
@@ -1062,13 +1757,13 @@ shell.Run cmd, 0, False
     Write-TauriLog "STEP" "Running studio setup"
     step "setup" "running unsloth studio setup..."
     $UnslothExe = Join-Path $VenvDir "Scripts\unsloth.exe"
-    if (-not (Test-Path $UnslothExe)) {
+    if (-not (Test-Path -LiteralPath $UnslothExe)) {
         Write-TauriLog "ERROR" "unsloth CLI was not installed correctly"
         Write-Host "[ERROR] unsloth CLI was not installed correctly." -ForegroundColor Red
         Write-Host "        Expected: $UnslothExe" -ForegroundColor Yellow
         Write-Host "        This usually means an older unsloth version was installed that does not include the Studio CLI." -ForegroundColor Yellow
         Write-Host "        Try re-running the installer or see: https://github.com/unslothai/unsloth?tab=readme-ov-file#-quickstart" -ForegroundColor Yellow
-        return
+        return (Exit-InstallFailure "unsloth CLI was not installed correctly")
     }
     # Tell setup.ps1 to skip base package installation (install.ps1 already did it)
     $env:SKIP_STUDIO_BASE = "1"
@@ -1088,14 +1783,32 @@ shell.Run cmd, 0, False
     # Use 'studio setup' (not 'studio update') because 'update' pops
     # SKIP_STUDIO_BASE, which would cause redundant package reinstallation
     # and bypass the fast-path version check from PR #4667.
+    # Propagate UNSLOTH_STUDIO_HOME only for env-override installs; otherwise
+    # an inherited value would put llama.cpp in the wrong place.
+    $previousUnslothStudioHome = $env:UNSLOTH_STUDIO_HOME
+    $hadPreviousUnslothStudioHome = ($null -ne $previousUnslothStudioHome)
+    if ($StudioRedirectMode -eq 'env') {
+        $env:UNSLOTH_STUDIO_HOME = $StudioHome
+    } else {
+        Remove-Item Env:UNSLOTH_STUDIO_HOME -ErrorAction SilentlyContinue
+    }
     $studioArgs = @('studio', 'setup')
     if ($script:UnslothVerbose) { $studioArgs += '--verbose' }
-    & $UnslothExe @studioArgs
-    $setupExit = $LASTEXITCODE
+    $env:UNSLOTH_INSTALL_ROLLBACK_MANAGED = "1"
+    try {
+        & $UnslothExe @studioArgs
+        $setupExit = $LASTEXITCODE
+    } finally {
+        if ($hadPreviousUnslothStudioHome) {
+            $env:UNSLOTH_STUDIO_HOME = $previousUnslothStudioHome
+        } else {
+            Remove-Item Env:UNSLOTH_STUDIO_HOME -ErrorAction SilentlyContinue
+        }
+        Remove-Item Env:UNSLOTH_INSTALL_ROLLBACK_MANAGED -ErrorAction SilentlyContinue
+    }
     if ($setupExit -ne 0) {
-        Write-TauriLog "ERROR" "unsloth studio setup failed (exit code $setupExit)"
         Write-Host "[ERROR] unsloth studio setup failed (exit code $setupExit)" -ForegroundColor Red
-        return
+        return (Exit-InstallFailure "unsloth studio setup failed (exit code $setupExit)" $setupExit)
     }
 
     # ── Expose `unsloth` via a shim dir containing only unsloth.exe ──
@@ -1135,20 +1848,32 @@ shell.Run cmd, 0, False
         }
     } catch { }
     $ShimDir = Join-Path $StudioHome "bin"
-    New-Item -ItemType Directory -Force -Path $ShimDir | Out-Null
+    [System.IO.Directory]::CreateDirectory($ShimDir) | Out-Null
     $ShimExe = Join-Path $ShimDir "unsloth.exe"
+    # Fatal preflight outside the lock-handling try/catch -- a directory at
+    # the shim path must not be downgraded to "Continuing with the existing
+    # launcher", or the install finishes with no usable shim.
+    if (Test-Path -LiteralPath $ShimExe -PathType Container) {
+        Write-Host "[ERROR] Cannot create unsloth launcher: $ShimExe is a directory." -ForegroundColor Red
+        Write-Host "        Move or remove it manually, then re-run the installer." -ForegroundColor Yellow
+        throw "Cannot create unsloth launcher: $ShimExe is a directory."
+    }
     # try/catch: if unsloth.exe is locked (Studio running), keep the old shim.
     $shimUpdated = $false
     try {
-        if (Test-Path $ShimExe) { Remove-Item $ShimExe -Force -ErrorAction Stop }
+        if (Test-Path -LiteralPath $ShimExe) { Remove-Item -LiteralPath $ShimExe -Force -ErrorAction Stop }
         try {
+            # New-Item -ItemType HardLink does NOT accept -LiteralPath in any
+            # PowerShell version, so use -Path. Wildcards in $ShimExe (e.g.
+            # brackets in custom roots) glob-expand here and fall through to
+            # the Copy-Item -LiteralPath fallback below.
             New-Item -ItemType HardLink -Path $ShimExe -Target $UnslothExe -ErrorAction Stop | Out-Null
         } catch {
-            Copy-Item -Path $UnslothExe -Destination $ShimExe -Force -ErrorAction Stop # fallback: copy
+            Copy-Item -LiteralPath $UnslothExe -Destination $ShimExe -Force -ErrorAction Stop # fallback: copy
         }
         $shimUpdated = $true
     } catch {
-        if (Test-Path $ShimExe) {
+        if (Test-Path -LiteralPath $ShimExe) {
             Write-Host "[WARN] Could not refresh unsloth launcher at $ShimExe." -ForegroundColor Yellow
             Write-Host "       This usually means a running 'unsloth studio' process still holds the file open." -ForegroundColor Yellow
             Write-Host "       Close Studio and re-run the installer to pick up the latest launcher." -ForegroundColor Yellow
@@ -1159,15 +1884,26 @@ shell.Run cmd, 0, False
             Write-Host "       Launch unsloth studio directly via '$UnslothExe' until the next successful install." -ForegroundColor Yellow
         }
     }
-    # Only add to PATH when the launcher actually exists on disk.
+    # Add to PATH only when launcher exists. Env-mode: session-only export,
+    # no registry change (workspace path may be deleted later).
     $pathAdded = $false
-    if (Test-Path $ShimExe) {
-        $pathAdded = Add-ToUserPath -Directory $ShimDir -Position 'Prepend'
+    if (Test-Path -LiteralPath $ShimExe) {
+        if ($StudioRedirectMode -ne 'env') {
+            $pathAdded = Add-ToUserPath -Directory $ShimDir -Position 'Prepend'
+        }
     }
     if ($shimUpdated -and $pathAdded) {
         step "path" "added unsloth launcher to PATH"
     }
     Refresh-SessionPath  # sync current session with registry
+    Complete-StudioVenvRollback
+
+    # Env-mode session export AFTER Refresh-SessionPath; otherwise a legacy
+    # User PATH entry (Machine > User > current $env:Path) would win.
+    if ($StudioRedirectMode -eq 'env' -and (Test-Path -LiteralPath $ShimExe)) {
+        $env:Path = "$ShimDir;$env:Path"
+        step "path" "exported $ShimDir for this session (no registry PATH change in env-override mode)"
+    }
 
     # ── Tauri mode: done, skip shortcuts and auto-launch ──
     if ($TauriMode) {
@@ -1175,17 +1911,68 @@ shell.Run cmd, 0, False
         return
     }
 
+    # New-StudioShortcuts gates the .lnk shortcuts on env-mode internally.
     New-StudioShortcuts -UnslothExePath $UnslothExe
 
-    # Launch studio automatically in interactive terminals;
-    # in non-interactive environments (CI, Docker) just print instructions.
+    # Warn if another 'unsloth' wins on PATH (different venv, system pip).
+    # Mirrors install.sh; absolute path is still the most reliable launch.
+    # Uses content-hash equality (Get-FileHash) so hardlinks, symlinks, and
+    # identical copies of the installer's shim don't false-trigger. CommandType
+    # Application restricts the probe to real executables (skips aliases,
+    # functions, scripts).
+    try {
+        $_pathCmd = Get-Command unsloth -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($_pathCmd) {
+            $_pathExe = $_pathCmd.Source
+            $_installedHash = (Get-FileHash -LiteralPath $UnslothExe -Algorithm SHA256 -ErrorAction SilentlyContinue).Hash
+            $_pathHash      = (Get-FileHash -LiteralPath $_pathExe   -Algorithm SHA256 -ErrorAction SilentlyContinue).Hash
+            if ($_installedHash -and $_pathHash -and ($_installedHash -ne $_pathHash)) {
+                Write-Host ""
+                step "warning" "another 'unsloth' wins on PATH:" "Yellow"
+                substep $_pathExe
+                substep "this installer's binary is at:"
+                substep $UnslothExe
+                substep "to use this install, call the absolute path above,"
+                substep "or put its dir earlier on PATH."
+                Write-Host ""
+            }
+        }
+    } catch {
+        # Diagnostic only; never block install on a probe failure.
+    }
+
+    # In interactive terminals, ask the user before starting Studio.
+    # In non-interactive environments (CI, Docker) just print instructions.
     $IsInteractive = [Environment]::UserInteractive -and (-not [Console]::IsInputRedirected)
     if ($IsInteractive) {
-        & $UnslothExe studio -H 0.0.0.0 -p 8888
+        Write-Host ""
+        $reply = Read-Host "  Start Unsloth Studio now? [Y/n]"
+        if ([string]::IsNullOrWhiteSpace($reply) -or $reply -match '^[Yy]') {
+            & $UnslothExe studio -p 8888
+        } else {
+            step "launch" "to start later, run:"
+            substep "unsloth studio -p 8888"
+            substep "(add -H 0.0.0.0 to allow network / cloud access)"
+            Write-Host ""
+        }
     } else {
         step "launch" "manual commands:"
-        substep "& `"$VenvDir\Scripts\Activate.ps1`""
-        substep "unsloth studio -H 0.0.0.0 -p 8888"
+        # Single-quote the printed paths so $-vars / backticks in custom roots
+        # do not reparse when the user pastes the command.
+        $_actLiteral = "'" + ((Join-Path $VenvDir "Scripts\Activate.ps1") -replace "'", "''") + "'"
+        if ($StudioRedirectMode -eq 'env') {
+            # Env-mode skips registry PATH; print the absolute shim path.
+            $_shim = Join-Path $StudioHome "bin\unsloth.exe"
+            $_shimLiteral = "'" + ($_shim -replace "'", "''") + "'"
+            substep "& $_shimLiteral studio -p 8888"
+            substep "or activate env first:"
+            substep "& $_actLiteral"
+            substep "unsloth studio -p 8888"
+        } else {
+            substep "& $_actLiteral"
+            substep "unsloth studio -p 8888"
+        }
+        substep "(add -H 0.0.0.0 to allow network / cloud access)"
         Write-Host ""
     }
 }
