@@ -1103,6 +1103,12 @@
 		padding-bottom: 0.5rem;
 	}
 
+	/* Two-row gap between text and controls. On the line, not the input, so
+	   the placeholder max-height clamp never crops it like padding would. */
+	.unsloth-composer-line[data-expanded="true"] {
+		row-gap: 0.75rem;
+	}
+
 	.unsloth-composer-line[data-expanded="true"] .unsloth-composer-left {
 		order: 2;
 	}
@@ -1131,10 +1137,10 @@
 		cursor: pointer;
 	}
 
-	/* Open menu rotates the plus 45deg into an x. Slow ease-in-out for a smooth
+	/* Open menu rotates the plus 45deg into an x. Ease-in-out for a smooth
 	   spin; keep it at 45deg so it never passes back through a "+". */
 	.unsloth-composer-plus svg {
-		transition: transform 480ms cubic-bezier(0.65, 0, 0.35, 1);
+		transition: transform 300ms cubic-bezier(0.65, 0, 0.35, 1);
 		will-change: transform;
 	}
 
@@ -2003,6 +2009,6 @@
 	/* Keep the plus/x morph animating under reduced motion (small rotation,
 	   like the spinners above). */
 	.unsloth-composer-plus svg {
-		transition-duration: 480ms !important;
+		transition-duration: 300ms !important;
 	}
 }
