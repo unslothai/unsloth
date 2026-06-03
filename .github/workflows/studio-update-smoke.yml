@@ -15,7 +15,7 @@ on:
   pull_request:
     paths:
       - 'install.sh'
-      - 'uninstall.sh'
+      - 'scripts/uninstall.sh'
       - 'studio/setup.sh'
       - 'studio/install_python_stack.py'
       - 'studio/install_llama_prebuilt.py'
@@ -141,22 +141,22 @@ jobs:
           echo "post-update Studio /api/health OK"
 
       - name: Uninstall and verify clean
-        # Round-trip the installer through uninstall.sh: confirms the
+        # Round-trip the installer through scripts/uninstall.sh: confirms the
         # uninstaller actually finds and removes everything install.sh +
         # update wrote. Safety-guard scenarios (refuse-$HOME etc.) belong
         # in a separate fast smoke job; this is the happy-path cleanup
         # assertion that catches regressions where install.sh starts
-        # writing to a new location and uninstall.sh hasn't caught up.
-        # Skips gracefully if uninstall.sh has not landed yet (lets this
-        # workflow merge before #5497).
+        # writing to a new location and scripts/uninstall.sh hasn't caught up.
+        # Skips gracefully if scripts/uninstall.sh has not landed yet (lets
+        # this workflow merge before #5497).
         run: |
           set -o pipefail
-          if [ ! -f uninstall.sh ]; then
-            echo "uninstall.sh not present in this tree; skipping round-trip"
+          if [ ! -f scripts/uninstall.sh ]; then
+            echo "scripts/uninstall.sh not present in this tree; skipping round-trip"
             : > logs/uninstall.log
             exit 0
           fi
-          sh uninstall.sh 2>&1 | tee logs/uninstall.log
+          sh scripts/uninstall.sh 2>&1 | tee logs/uninstall.log
           leak=0
           for p in \
             "$HOME/.unsloth/studio" \
@@ -171,8 +171,8 @@ jobs:
           done
           [ "$leak" -eq 0 ] || exit 1
           # Idempotent: re-runs exit 0 on an empty $HOME.
-          sh uninstall.sh 2>&1 | tail -5
-          sh uninstall.sh 2>&1 | tail -5
+          sh scripts/uninstall.sh 2>&1 | tail -5
+          sh scripts/uninstall.sh 2>&1 | tail -5
           echo "PASS: install -> update -> uninstall round-trip clean"
 
       - name: Upload update logs

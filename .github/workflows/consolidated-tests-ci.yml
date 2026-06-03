@@ -356,11 +356,19 @@ jobs:
         # cases below auto-skip on a GPU-less runner; deselect them
         # explicitly so the no-CUDA outcome is "deselected", not "skipped",
         # making intent visible in the report. Env inherited from job block.
+        #
+        # test_get_peft_model_passes_finetune_last_n_layers_through is
+        # deselected because unsloth_zoo/mlx/loader.py at line 2972 calls
+        # model.trainable_parameters() on the fake-model fixture, which
+        # the test never stubbed; this fails on every platform regardless
+        # of CUDA. Tracked upstream as an unsloth_zoo bug; deselecting
+        # here unblocks unsloth CI until the loader fixture is fixed.
         working-directory: ${{ runner.temp }}/unsloth-zoo
         run: |
           python -m pytest -q --tb=short tests/ \
             --deselect tests/test_unsloth_zoo_lora_merge.py::test_active_merge_device_returns_string_on_cuda_host \
-            --deselect tests/test_unsloth_zoo_lora_merge.py::test_merge_lora_moves_cpu_inputs_to_active_device
+            --deselect tests/test_unsloth_zoo_lora_merge.py::test_merge_lora_moves_cpu_inputs_to_active_device \
+            --deselect tests/test_mlx_finetune_last_n_layers.py::test_get_peft_model_passes_finetune_last_n_layers_through
 
       - name: unsloth_zoo — test_apply_fused_lm_head (lives in compiler.py)
         # `test_apply_fused_lm_head` lives at unsloth_zoo/compiler.py:1983,

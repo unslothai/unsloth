@@ -114,13 +114,8 @@ jobs:
           set -o pipefail
           bash install.sh --local --no-torch 2>&1 | tee logs/install.log
 
-      - name: Assert install.sh used the Mac llama.cpp prebuilt
-        run: |
-          if grep -q "falling back to source build" logs/install.log; then
-            echo "::error::install.sh fell back to source-build llama.cpp on Mac. Studio must install the prebuilt llama-bNNNN-bin-macos-arm64 on Apple Silicon."
-            grep -E "llama-prebuilt|llama.cpp" logs/install.log | tail -60
-            exit 1
-          fi
+      - name: Assert llama.cpp loads on this macOS
+        run: bash .github/scripts/assert-llama-loads.sh
 
       - name: Install OpenAI + Anthropic Python SDKs
         run: pip install 'openai>=1.50' 'anthropic>=0.40'
@@ -263,7 +258,14 @@ jobs:
               for i, (a, b) in enumerate(zip(first, second), start = 1):
                   print(f"[{label} turn {i}] {a!r}")
                   assert a, f"{label}: empty turn {i} response"
-                  assert a == b, (
+                  # Compare on stripped content: llama-server can vary
+                  # trailing whitespace (specifically a final '\n') between
+                  # otherwise-identical greedy runs depending on the
+                  # batch-flush boundary at which the stream is closed. The
+                  # generated tokens are identical; only the trailing
+                  # whitespace differs. Keep the raw repr in the failure
+                  # message so a real divergence is still legible.
+                  assert a.strip() == b.strip(), (
                       f"{label} non-deterministic at turn {i} with temperature=0.0:\n"
                       f"  run1: {a!r}\n  run2: {b!r}"
                   )
@@ -287,6 +289,8 @@ jobs:
       - name: Upload logs
         # Always upload so green runs are still reviewable.
         if: always()
+        # Diagnostic only: a transient artifact-service drop must not fail a green job.
+        continue-on-error: true
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: openai-anthropic-log
@@ -362,13 +366,8 @@ jobs:
           set -o pipefail
           bash install.sh --local --no-torch 2>&1 | tee logs/install.log
 
-      - name: Assert install.sh used the Mac llama.cpp prebuilt
-        run: |
-          if grep -q "falling back to source build" logs/install.log; then
-            echo "::error::install.sh fell back to source-build llama.cpp on Mac. Studio must install the prebuilt llama-bNNNN-bin-macos-arm64 on Apple Silicon."
-            grep -E "llama-prebuilt|llama.cpp" logs/install.log | tail -60
-            exit 1
-          fi
+      - name: Assert llama.cpp loads on this macOS
+        run: bash .github/scripts/assert-llama-loads.sh
 
       - name: Reset auth + boot Studio (API-only, default tool policy)
         # We deliberately use the API-only mode rather than
@@ -652,6 +651,8 @@ jobs:
       - name: Upload logs
         # Always upload so green runs are still reviewable.
         if: always()
+        # Diagnostic only: a transient artifact-service drop must not fail a green job.
+        continue-on-error: true
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: tool-calling-log
@@ -753,13 +754,8 @@ jobs:
           set -o pipefail
           bash install.sh --local --no-torch 2>&1 | tee logs/install.log
 
-      - name: Assert install.sh used the Mac llama.cpp prebuilt
-        run: |
-          if grep -q "falling back to source build" logs/install.log; then
-            echo "::error::install.sh fell back to source-build llama.cpp on Mac. Studio must install the prebuilt llama-bNNNN-bin-macos-arm64 on Apple Silicon."
-            grep -E "llama-prebuilt|llama.cpp" logs/install.log | tail -60
-            exit 1
-          fi
+      - name: Assert llama.cpp loads on this macOS
+        run: bash .github/scripts/assert-llama-loads.sh
 
       - name: Install OpenAI + Anthropic Python SDKs
         run: pip install 'openai>=1.50' 'anthropic>=0.40'
@@ -1033,6 +1029,8 @@ jobs:
       - name: Upload logs
         # Always upload so green runs are still reviewable.
         if: always()
+        # Diagnostic only: a transient artifact-service drop must not fail a green job.
+        continue-on-error: true
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: json-images-log

@@ -269,7 +269,15 @@ def test_shell_call_emits_tool_start_and_end(monkeypatch):
     assert len(ends) == 1
     assert starts[0]["tool_name"] == "code_execution"
     assert starts[0]["tool_call_id"] == "scall_1"
-    assert starts[0]["arguments"] == {"kind": "bash", "command": "ls -la"}
+    # `_server_tool: True` is the synthetic-builtin marker the
+    # backend stamps onto every provider-side tool_start so the
+    # frontend serializer can distinguish hosted tools from
+    # user-declared functions on history replay.
+    assert starts[0]["arguments"] == {
+        "kind": "bash",
+        "command": "ls -la",
+        "_server_tool": True,
+    }
     assert ends[0]["tool_call_id"] == "scall_1"
     assert "total 24" in ends[0]["result"]
 

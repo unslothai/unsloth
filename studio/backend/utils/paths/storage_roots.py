@@ -96,6 +96,38 @@ def studio_db_path() -> Path:
     return studio_root() / "studio.db"
 
 
+def _xdg_user_dir(key: str) -> Path | None:
+    config = Path.home() / ".config" / "user-dirs.dirs"
+    try:
+        lines = config.read_text(encoding = "utf-8").splitlines()
+    except OSError:
+        return None
+    prefix = f"{key}="
+    for line in lines:
+        line = line.strip()
+        if not line.startswith(prefix):
+            continue
+        value = line[len(prefix) :].strip().strip('"')
+        if not value:
+            return None
+        return Path(value.replace("$HOME", str(Path.home()))).expanduser()
+    return None
+
+
+def documents_root() -> Path:
+    override = (os.environ.get("UNSLOTH_STUDIO_DOCUMENTS_HOME") or "").strip()
+    if override:
+        return Path(override).expanduser()
+    return _xdg_user_dir("XDG_DOCUMENTS_DIR") or (Path.home() / "Documents")
+
+
+def project_workspaces_root() -> Path:
+    override = (os.environ.get("UNSLOTH_STUDIO_PROJECTS_HOME") or "").strip()
+    if override:
+        return Path(override).expanduser()
+    return documents_root() / "Unsloth Studio" / "Projects"
+
+
 def tmp_root() -> Path:
     return Path(tempfile.gettempdir()) / "unsloth-studio"
 

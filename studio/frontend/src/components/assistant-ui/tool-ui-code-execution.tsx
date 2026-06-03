@@ -3,9 +3,19 @@
 
 "use client";
 
-import { type ToolCallMessagePartComponent, useAuiState } from "@assistant-ui/react";
-import { FileTextIcon, LoaderIcon, TerminalIcon } from "lucide-react";
-import { memo, useEffect, useState } from "react";
+import { copyToClipboard } from "@/lib/copy-to-clipboard";
+import {
+  type ToolCallMessagePartComponent,
+  useAuiState,
+} from "@assistant-ui/react";
+import {
+  CheckIcon,
+  CopyIcon,
+  FileTextIcon,
+  LoaderIcon,
+  TerminalIcon,
+} from "lucide-react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ToolFallbackContent,
   ToolFallbackRoot,
@@ -36,6 +46,65 @@ interface CodeExecutionArgs {
   path?: string;
 }
 
+const MAX_COMMAND_LABEL = 80;
+const MAX_RESULT_DISPLAY = 10_000;
+const COPY_RESET_MS = 2000;
+
+function truncateCommandLabel(text: string): string {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (normalized.length <= MAX_COMMAND_LABEL) {
+    return normalized;
+  }
+  const head = Math.ceil((MAX_COMMAND_LABEL - 3) * 0.65);
+  const tail = MAX_COMMAND_LABEL - head - 3;
+  return `${normalized.slice(0, head)}...${normalized.slice(-tail)}`;
+}
+
+function truncateResult(text: string): string {
+  return text.length <= MAX_RESULT_DISPLAY
+    ? text
+    : `${text.slice(0, MAX_RESULT_DISPLAY)}\n... (truncated)`;
+}
+
+function CopyBtn({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (timer.current) {
+        clearTimeout(timer.current);
+      }
+    };
+  }, []);
+
+  const copy = useCallback(async () => {
+    if (await copyToClipboard(text)) {
+      setCopied(true);
+      if (timer.current) {
+        clearTimeout(timer.current);
+      }
+      timer.current = setTimeout(() => setCopied(false), COPY_RESET_MS);
+    }
+  }, [text]);
+
+  return (
+    <button
+      type="button"
+      onClick={copy}
+      className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+      aria-label="Copy to clipboard"
+    >
+      {copied ? (
+        <CheckIcon className="size-3" />
+      ) : (
+        <CopyIcon className="size-3" />
+      )}
+      {copied ? "Copied" : "Copy"}
+    </button>
+  );
+}
+
 const CodeExecutionToolUIImpl: ToolCallMessagePartComponent = ({
   args,
   result,
@@ -46,6 +115,8 @@ const CodeExecutionToolUIImpl: ToolCallMessagePartComponent = ({
   const command = parsedArgs.command ?? "";
   const path = parsedArgs.path ?? "";
   const isRunning = status?.type === "running";
+
+  const commandLabel = command ? truncateCommandLabel(command) : "";
 
   let runningLabel: string;
   let completedLabel: string;
@@ -67,7 +138,7 @@ const CodeExecutionToolUIImpl: ToolCallMessagePartComponent = ({
     }
   } else {
     runningLabel = "Running command…";
-    completedLabel = command ? `Ran \`${command}\`` : "Ran command";
+    completedLabel = commandLabel ? `Ran \`${commandLabel}\`` : "Ran command";
   }
 
   // Collapse the card once the model has resumed streaming prose after
@@ -90,12 +161,19 @@ const CodeExecutionToolUIImpl: ToolCallMessagePartComponent = ({
     }
   }, [isRunning, hasText]);
 
-  const resultText =
-    typeof result === "string"
-      ? result
-      : result != null
-        ? JSON.stringify(result, null, 2)
-        : "";
+  const resultText = useMemo(
+    () =>
+      typeof result === "string"
+        ? result
+        : result != null
+          ? JSON.stringify(result, null, 2)
+          : "",
+    [result],
+  );
+  const displayedResult = useMemo(
+    () => truncateResult(resultText),
+    [resultText],
+  );
 
   return (
     <ToolFallbackRoot open={open} onOpenChange={setOpen}>
@@ -111,9 +189,14 @@ const CodeExecutionToolUIImpl: ToolCallMessagePartComponent = ({
             <span>{runningLabel}</span>
           </div>
         ) : resultText ? (
-          <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded bg-muted/50 p-2 text-xs">
-            {resultText}
-          </pre>
+          <div>
+            <div className="flex justify-end">
+              <CopyBtn text={resultText} />
+            </div>
+            <pre className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded bg-muted/50 p-2 text-xs">
+              {displayedResult}
+            </pre>
+          </div>
         ) : null}
       </ToolFallbackContent>
     </ToolFallbackRoot>
