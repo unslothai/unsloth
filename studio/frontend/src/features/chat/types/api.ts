@@ -285,12 +285,7 @@ export interface OpenAIChatCompletionsRequest {
     kb_id?: string;
     thread_id?: string;
     default_top_k: number;
-    min_score: number;
     mode: "hybrid" | "lexical" | "dense";
-    // Query-time knobs; the backend falls back to config when omitted.
-    rrf_k?: number;
-    top_k_lexical?: number;
-    top_k_dense?: number;
     autoinject?: boolean;
     autoinject_min_score?: number;
   };

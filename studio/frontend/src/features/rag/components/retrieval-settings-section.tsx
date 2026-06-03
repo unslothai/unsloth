@@ -13,17 +13,12 @@ import {
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@/components/ui/collapsible";
-import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { Button } from "@/components/ui/button";
-import { ChevronDownIcon, InfoIcon } from "lucide-react";
+import { InfoIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   type RagMode,
@@ -70,7 +65,6 @@ function SliderRow({
   onChange,
   disabled = false,
   format = (v: number) => String(v),
-  tooltip,
 }: {
   label: string;
   value: number;
@@ -80,7 +74,6 @@ function SliderRow({
   onChange: (v: number) => void;
   disabled?: boolean;
   format?: (v: number) => string;
-  tooltip?: ReactNode;
 }) {
   return (
     <div
@@ -90,9 +83,8 @@ function SliderRow({
       )}
     >
       <div className="flex items-center justify-between">
-        <span className="flex items-center gap-1.5 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
+        <span className="text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
           {label}
-          {tooltip ? <InfoHint>{tooltip}</InfoHint> : null}
         </span>
         <span className="text-[13px] tabular-nums text-muted-foreground">
           {format(value)}
@@ -130,16 +122,6 @@ export function RetrievalSettingsSection() {
   const setRagAutoInjectMinScore = useChatRuntimeStore(
     (s) => s.setRagAutoInjectMinScore,
   );
-  const ragMinScore = useChatRuntimeStore((s) => s.ragMinScore);
-  const setRagMinScore = useChatRuntimeStore((s) => s.setRagMinScore);
-  const ragRrfK = useChatRuntimeStore((s) => s.ragRrfK);
-  const setRagRrfK = useChatRuntimeStore((s) => s.setRagRrfK);
-  const ragTopKLexical = useChatRuntimeStore((s) => s.ragTopKLexical);
-  const setRagTopKLexical = useChatRuntimeStore((s) => s.setRagTopKLexical);
-  const ragTopKDense = useChatRuntimeStore((s) => s.ragTopKDense);
-  const setRagTopKDense = useChatRuntimeStore((s) => s.setRagTopKDense);
-  // RRF + candidate pools apply only to hybrid; dim them otherwise.
-  const hybrid = ragMode === "hybrid";
 
   const [kbs, setKbs] = useState<KnowledgeBase[]>([]);
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -276,55 +258,6 @@ export function RetrievalSettingsSection() {
           format={(v) => v.toFixed(2)}
         />
       </div>
-
-      <Collapsible className="flex flex-col gap-5">
-        <CollapsibleTrigger className="group flex items-center justify-between text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
-          Advanced
-          <ChevronDownIcon className="size-4 text-muted-foreground transition-transform group-data-[state=open]:rotate-180" />
-        </CollapsibleTrigger>
-        <CollapsibleContent className="flex flex-col gap-5">
-          <SliderRow
-            label="Minimum score"
-            value={ragMinScore}
-            min={0}
-            max={1}
-            step={0.05}
-            onChange={setRagMinScore}
-            format={(v) => v.toFixed(2)}
-            tooltip="Hide passages scoring below this. Raise it to keep only strong matches."
-          />
-          <SliderRow
-            label="Fusion constant (RRF k)"
-            value={ragRrfK}
-            min={1}
-            max={120}
-            step={1}
-            disabled={!hybrid}
-            onChange={setRagRrfK}
-            tooltip="Blends keyword and semantic rankings in hybrid search. Higher mixes them more evenly."
-          />
-          <SliderRow
-            label="Lexical candidates"
-            value={ragTopKLexical}
-            min={1}
-            max={100}
-            step={1}
-            disabled={!hybrid}
-            onChange={setRagTopKLexical}
-            tooltip="How many keyword (BM25) matches to gather before ranking."
-          />
-          <SliderRow
-            label="Dense candidates"
-            value={ragTopKDense}
-            min={1}
-            max={100}
-            step={1}
-            disabled={!hybrid}
-            onChange={setRagTopKDense}
-            tooltip="How many semantic (embedding) matches to gather before ranking."
-          />
-        </CollapsibleContent>
-      </Collapsible>
 
       <div className="flex justify-end">
         <Button

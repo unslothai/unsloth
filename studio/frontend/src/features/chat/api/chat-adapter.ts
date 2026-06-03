@@ -1322,10 +1322,6 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         ragTopK,
         ragAutoInject,
         ragAutoInjectMinScore,
-        ragMinScore,
-        ragRrfK,
-        ragTopKLexical,
-        ragTopKDense,
       } = runtime;
       const externalSelection = parseExternalModelId(params.checkpoint);
       const isExternalRequest = externalSelection !== null;
@@ -2180,11 +2176,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                               ? { thread_id: resolvedThreadId }
                               : {}),
                           default_top_k: ragTopK,
-                          min_score: ragMinScore,
                           mode: ragMode,
-                          rrf_k: ragRrfK,
-                          top_k_lexical: ragTopKLexical,
-                          top_k_dense: ragTopKDense,
                           autoinject: ragAutoInject,
                           autoinject_min_score: ragAutoInjectMinScore,
                         },
