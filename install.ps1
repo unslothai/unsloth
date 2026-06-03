@@ -1646,6 +1646,13 @@ shell.Run cmd, 0, False
             substep "  Your current driver predates it; native Windows GPU is unaffected. Get it from AMD:" "Cyan"
             substep "    https://www.amd.com/en/resources/support-articles/release-notes/RN-RAD-WIN-26-2-2.html" "Cyan"
             substep "  Then reboot and run this installer inside an Ubuntu-24.04 WSL distro." "Cyan"
+            # If WSL isn't installed yet, point the user at the one command that
+            # provisions it (best-effort detection; wsl.exe absent => no WSL).
+            $hasWsl = $false
+            try { $hasWsl = [bool](Get-Command wsl.exe -ErrorAction SilentlyContinue) } catch {}
+            if (-not $hasWsl) {
+                substep "  No WSL yet? Install it first:  wsl --install -d Ubuntu-24.04" "Cyan"
+            }
             substep "  (suppress: set UNSLOTH_SKIP_AMD_DRIVER_HINT=1)" "Cyan"
         } catch {}
     }

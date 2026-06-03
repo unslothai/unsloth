@@ -914,7 +914,19 @@ class TestInstallShStructure:
     """Verify install.sh structural properties without running it."""
 
     def test_no_here_strings(self):
-        """install.sh must not use <<< (not POSIX)."""
+        """install.sh must not use <<< (not POSIX).
+
+        A here-string is the redirection operator `cmd <<< word`, which is
+        bash-only and breaks dash. `<<<` appearing *inside* a quoted string
+        literal (e.g. printf '# <<< marker <<<') is NOT a here-string -- it is
+        just data (here, a conda-style block marker written into the
+        /etc/profile.d drop-in and matched as a sed delimiter by uninstall.sh).
+        Strip single- and double-quoted spans before checking so the lint
+        stays accurate: it still catches a real `cmd <<< word` (the operator is
+        outside any quotes) but does not false-positive on quoted literals.
+        """
+        import re
+
         sh_path = PACKAGE_ROOT / "install.sh"
         source = sh_path.read_text(encoding = "utf-8")
         # <<< is bash-only; breaks dash
@@ -922,7 +934,11 @@ class TestInstallShStructure:
             stripped = line.lstrip()
             if stripped.startswith("#"):
                 continue
-            assert "<<<" not in line, f"install.sh:{i} uses non-POSIX <<< here-string"
+            # Remove quoted string literals so `<<<` inside them is ignored;
+            # a genuine here-string operator lives outside any quotes.
+            unquoted = re.sub(r"'[^']*'", "", line)
+            unquoted = re.sub(r'"[^"]*"', "", unquoted)
+            assert "<<<" not in unquoted, f"install.sh:{i} uses non-POSIX <<< here-string"
 
     def test_rocm_detection_present(self):
         """install.sh should have ROCm detection in get_torch_index_url."""
