@@ -350,6 +350,18 @@ function Uninstall-UnslothStudio {
     if ($env:APPDATA) {
         _RemovePath (Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Unsloth Studio.lnk")
     }
+    # Invalidate the Win11 Start Menu tile cache so the removed shortcut's tile
+    # disappears promptly instead of lingering as a stale/blank entry (mirrors
+    # install.ps1's New-StudioShortcuts). Preserves start2.bin (the pin layout).
+    try {
+        $smehTemp = Join-Path $env:LOCALAPPDATA "Packages\Microsoft.Windows.StartMenuExperienceHost_cw5n1h2txyewy\TempState"
+        if (Test-Path -LiteralPath $smehTemp) {
+            Get-ChildItem -LiteralPath $smehTemp -Filter "TileCache_*" -ErrorAction SilentlyContinue |
+                Remove-Item -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath (Join-Path $smehTemp "StartUnifiedTileModelCache.dat") -Force -ErrorAction SilentlyContinue
+            Stop-Process -Name StartMenuExperienceHost -Force -ErrorAction SilentlyContinue
+        }
+    } catch { }
 
     # ── Clean user PATH and registry backup ──
     _Step "Cleaning user PATH and registry..."

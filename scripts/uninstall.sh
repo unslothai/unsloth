@@ -216,6 +216,11 @@ _remove_path "$HOME/.unsloth/studio"
 # UNSLOTH_LLAMA_CPP_PATH points at the user's own dir and is intentionally kept.
 _remove_path "$HOME/.unsloth/llama.cpp"
 _remove_path "$HOME/.unsloth/.cache"
+# ROCm-on-WSL helper artifacts (install_rocm_wsl_strixhalo.sh): the librocdxg
+# build clone and the throwaway smoke-test venv. No-ops on macOS / non-Strix
+# Linux where they never exist; removing them lets the rmdir below succeed.
+_remove_path "$HOME/.unsloth/librocdxg"
+_remove_path "$HOME/.unsloth/rocm-smoketest"
 # Drop ~/.unsloth itself only if it is now empty (rmdir refuses a non-empty dir,
 # so unrelated content a user may keep there is never removed).
 rmdir "$HOME/.unsloth" 2>/dev/null || true
@@ -278,6 +283,34 @@ case "$_os" in
                             } catch { }
                         }
                     }' >/dev/null 2>&1 || true
+            fi
+            # ── ROCm-on-WSL config (install_rocm_wsl_strixhalo.sh) ──
+            # Remove Unsloth's own ROCDXG config (the env it persisted). The
+            # system ROCm userspace (/opt/rocm*, apt repo) is a shared
+            # prerequisite like CUDA and is LEFT IN PLACE by default; set
+            # UNSLOTH_UNINSTALL_ROCM=1 to remove it too.
+            echo "Removing ROCm-on-WSL config..."
+            _sudo=""
+            if [ "$_uid" != "0" ] && command -v sudo >/dev/null 2>&1; then _sudo="sudo"; fi
+            $_sudo rm -f /etc/profile.d/unsloth-rocm-wsl.sh 2>/dev/null || true
+            if [ -f "$HOME/.bashrc" ] && grep -q "Unsloth ROCm-on-WSL" "$HOME/.bashrc" 2>/dev/null; then
+                _bk=$(mktemp 2>/dev/null || echo "$HOME/.bashrc.unsloth.tmp")
+                if sed '/# >>> Unsloth ROCm-on-WSL/,/# <<< Unsloth ROCm-on-WSL/d' "$HOME/.bashrc" > "$_bk" 2>/dev/null; then
+                    cat "$_bk" > "$HOME/.bashrc" 2>/dev/null || true
+                    echo "  cleaned ROCm-on-WSL block from ~/.bashrc"
+                fi
+                rm -f "$_bk" 2>/dev/null || true
+            fi
+            if [ "${UNSLOTH_UNINSTALL_ROCM:-0}" = "1" ]; then
+                echo "  removing system ROCm (UNSLOTH_UNINSTALL_ROCM=1)..."
+                $_sudo rm -f /etc/apt/sources.list.d/rocm.list /etc/apt/preferences.d/rocm-pin-600 \
+                    /etc/apt/keyrings/rocm.gpg /etc/ld.so.conf.d/rocm.conf 2>/dev/null || true
+                $_sudo sh -c 'rm -rf /opt/rocm /opt/rocm-*' 2>/dev/null || true
+                if command -v ldconfig >/dev/null 2>&1; then $_sudo ldconfig 2>/dev/null || true; fi
+            elif [ -d /opt/rocm ]; then
+                echo "  Note: ROCm userspace (/opt/rocm*) left in place (shared prereq)."
+                echo "        Remove it by re-running with UNSLOTH_UNINSTALL_ROCM=1, or manually:"
+                echo "          sudo rm -rf /opt/rocm /opt/rocm-* && sudo ldconfig"
             fi
         fi
         echo "Removing Linux .desktop entry..."
