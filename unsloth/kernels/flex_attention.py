@@ -46,9 +46,7 @@ def _flex_is_dgx_spark():
             str(torch.cuda.get_device_name(i)).upper()
             for i in range(torch.cuda.device_count())
         )
-        return any(
-            t in names for t in ("GB10", "JMJWOA", "N1X", "DGX SPARK", "GB110")
-        )
+        return any(t in names for t in ("GB10", "JMJWOA", "N1X", "DGX SPARK", "GB110"))
     except Exception:
         return False
 
