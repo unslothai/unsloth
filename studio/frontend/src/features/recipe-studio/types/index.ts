@@ -383,7 +383,28 @@ export type SchemaTransformProcessorConfig = {
   template: string;
 };
 
-export type RecipeProcessorConfig = SchemaTransformProcessorConfig;
+export type JsonDocumentScoreProcessorConfig = {
+  id: string;
+  // biome-ignore lint/style/useNamingConvention: api schema
+  processor_type: "json_document_score";
+  name: string;
+  // biome-ignore lint/style/useNamingConvention: api schema
+  prediction_column: string;
+  // biome-ignore lint/style/useNamingConvention: api schema
+  reference_column: string;
+  // JSON Schema or studio field-comparator map; raw text so the user can paste.
+  schema: string;
+  // biome-ignore lint/style/useNamingConvention: api schema
+  default_comparator: string;
+  // biome-ignore lint/style/useNamingConvention: api schema
+  score_column: string;
+  // biome-ignore lint/style/useNamingConvention: api schema
+  breakdown_column: string;
+};
+
+export type RecipeProcessorConfig =
+  | SchemaTransformProcessorConfig
+  | JsonDocumentScoreProcessorConfig;
 
 export type NodeConfig =
   | SamplerConfig
