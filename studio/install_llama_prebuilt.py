@@ -2044,6 +2044,16 @@ def _artifact_covers_sms(
     )
 
 
+def _sm_range(artifact: PublishedLlamaArtifact) -> int:
+    """SM-coverage span used as a sort key, where a tighter (smaller) range wins.
+    A bundle with no SM metadata (legacy/upstream-named) gets a max range so it
+    sorts last and can't outrank a real targeted bundle whose tight range would
+    otherwise sort first."""
+    if artifact.min_sm is not None and artifact.max_sm is not None:
+        return artifact.max_sm - artifact.min_sm
+    return 9999
+
+
 def linux_cuda_choice_from_release(
     host: HostInfo,
     release: PublishedReleaseBundle,
@@ -2231,7 +2241,7 @@ def linux_cuda_choice_from_release(
             artifact, url = sorted(
                 coverage_candidates,
                 key = lambda item: (
-                    (item[0].max_sm or 0) - (item[0].min_sm or 0),
+                    _sm_range(item[0]),
                     item[0].rank,
                     item[0].max_sm or 0,
                 ),
@@ -3423,13 +3433,7 @@ def published_windows_cuda_attempts(
             chosen = sorted(
                 targeted,
                 key = lambda item: (
-                    # A bundle whose SM coverage is unknown (legacy/upstream-named,
-                    # no metadata) must not outrank a real targeted bundle whose
-                    # tight range would sort first -- give it a max range so it
-                    # sorts last instead.
-                    (item[0].max_sm - item[0].min_sm)
-                    if item[0].max_sm is not None and item[0].min_sm is not None
-                    else 9999,
+                    _sm_range(item[0]),
                     item[0].rank,
                     item[0].max_sm or 0,
                 ),
