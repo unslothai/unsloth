@@ -578,6 +578,11 @@ const Composer: FC<{
   );
   const artifactsEnabled = useChatRuntimeStore((s) => s.artifactsEnabled);
   const mcpEnabledForChat = useChatRuntimeStore((s) => s.mcpEnabledForChat);
+  // Tool pills only surface once a model is loaded, so persisted toggles stay
+  // hidden on a fresh composer (matching the just-ejected state).
+  const modelLoaded = useChatRuntimeStore(
+    (s) => !!s.params.checkpoint && !s.modelLoading,
+  );
   // With more than 4 pills showing, collapse them to icons only to cut clutter.
   // Search and Code always show; Images, Canvas and MCP are conditional.
   const pillsCompact =
@@ -643,11 +648,12 @@ const Composer: FC<{
     isMultiline ||
     hasAttachments ||
     hasPendingAudio ||
-    toolsEnabled ||
-    codeToolsEnabled ||
-    imageToolsEnabled ||
-    artifactsEnabled ||
-    mcpEnabledForChat;
+    (modelLoaded &&
+      (toolsEnabled ||
+        codeToolsEnabled ||
+        imageToolsEnabled ||
+        artifactsEnabled ||
+        mcpEnabledForChat));
   // react-textarea-autosize re-measures only on value change or window resize,
   // not on the width swap from expanding, so it keeps the taller height and
   // leaves a stray blank row. Nudge a resize whenever the input width changes.
