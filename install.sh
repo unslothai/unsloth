@@ -1951,7 +1951,24 @@ _maybe_bootstrap_rocm_wsl() {
             # shellcheck disable=SC1091
             . /etc/profile.d/unsloth-rocm-wsl.sh || true
         else
+            # librocdxg is present but the persisted env drop-in is gone (e.g. a
+            # Studio uninstall removed it while keeping the shared ROCm). Restore
+            # the FULL env inline -- not just HSA -- so rocminfo is on PATH and the
+            # detection below routes to the GPU; then recreate the drop-in so
+            # future shells + the Studio worker get it too.
+            _rw_rocm=/opt/rocm
             export HSA_ENABLE_DXG_DETECTION=1
+            export TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1
+            export PATH="${_rw_rocm}/bin:${PATH}"
+            export LD_LIBRARY_PATH="${_rw_rocm}/lib:${LD_LIBRARY_PATH:-}"
+            {
+                printf '# >>> Unsloth ROCm-on-WSL (gfx1151) >>>\n'
+                printf 'export HSA_ENABLE_DXG_DETECTION=1\n'
+                printf 'export TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1\n'
+                printf 'export PATH="%s/bin:${PATH}"\n' "${_rw_rocm}"
+                printf 'export LD_LIBRARY_PATH="%s/lib:${LD_LIBRARY_PATH:-}"\n' "${_rw_rocm}"
+                printf '# <<< Unsloth ROCm-on-WSL (gfx1151) <<<\n'
+            } > /etc/profile.d/unsloth-rocm-wsl.sh 2>/dev/null || true
         fi
         return 0
     fi
