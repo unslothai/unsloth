@@ -756,6 +756,12 @@ LLAMA_CPP_DIR="$UNSLOTH_HOME/llama.cpp"
 LLAMA_SERVER_BIN="$LLAMA_CPP_DIR/build/bin/llama-server"
 _NEED_LLAMA_SOURCE_BUILD=false
 _LLAMA_CPP_DEGRADED=false
+# Distinct from _LLAMA_CPP_DEGRADED: on WSL2 aarch64+NVIDIA with no nvcc yet, the
+# CPU source build is skipped because install.ps1 builds the real CUDA server in
+# the BACKGROUND. There is temporarily no llama-server, but that is a SUCCESS
+# (CUDA build in progress), NOT a degraded/failed install -- so it must not trip
+# the arm64 CPU-prebuilt last-resort or the install-failure exit 1.
+_LLAMA_CPP_DEFERRED=false
 _LLAMA_FORCE_COMPILE="${UNSLOTH_LLAMA_FORCE_COMPILE:-0}"
 _REQUESTED_LLAMA_TAG="${UNSLOTH_LLAMA_TAG:-${_DEFAULT_LLAMA_TAG}}"
 _HOST_SYSTEM="$(uname -s 2>/dev/null || true)"
@@ -925,6 +931,47 @@ if [ "$_NEED_LLAMA_SOURCE_BUILD" = true ] && \
         : > "$LLAMA_CPP_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
     fi
     _NEED_LLAMA_SOURCE_BUILD=false
+fi
+
+# ── WSL2 aarch64 + NVIDIA, no nvcc yet: defer to the background CUDA build ──
+# On Windows-on-ARM + NVIDIA (DGX Spark / N1X "RTX Spark"), install.ps1 routes
+# through WSL2 and, after this install finishes, launches provision_llama_cuda.sh
+# in the BACKGROUND (installs CUDA 13.3 + gcc-14, builds the real sm_121 CUDA
+# llama-server into ~/.unsloth/llama.cpp, replacing whatever is here). On a fresh
+# WSL distro there is no CUDA toolkit (nvcc) yet, so the section-9 source build
+# below can only produce a CPU-only server ("building (CPU, CUDA driver found but
+# nvcc missing)") -- which is SLOW and immediately thrown away by that background
+# CUDA build. So skip the source build entirely on this exact path: the
+# background CUDA provision is the sole builder, and the CPU build is pure waste.
+#
+# Strictly gated. ALL must hold:
+#   - running under WSL                         (grep microsoft /proc/version)
+#   - aarch64/arm64                             ($_HOST_MACHINE)
+#   - an NVIDIA GPU is present                  (nvidia-smi lists a GPU)
+#   - nvcc is MISSING                           (no nvcc on PATH, none under /usr/local/cuda*)
+#   - the CUDA provision is NOT opted out       (UNSLOTH_NO_LLAMA_CUDA != 1)
+#   - user did not force a compile / pin a PR   (_LLAMA_FORCE_COMPILE != 1, no _LLAMA_PR)
+# If nvcc IS already present we fall through to section 9 and build CUDA directly.
+# If UNSLOTH_NO_LLAMA_CUDA=1 the background build never runs, so we KEEP the CPU
+# source build as the user's only llama-server (do not defer).
+if [ "$_NEED_LLAMA_SOURCE_BUILD" = true ] \
+        && [ "$_LLAMA_FORCE_COMPILE" != "1" ] \
+        && [ -z "$_LLAMA_PR" ] \
+        && [ "${UNSLOTH_NO_LLAMA_CUDA:-0}" != "1" ] \
+        && grep -qi microsoft /proc/version 2>/dev/null \
+        && { [ "$_HOST_MACHINE" = "aarch64" ] || [ "$_HOST_MACHINE" = "arm64" ]; } \
+        && command -v nvidia-smi >/dev/null 2>&1 \
+        && nvidia-smi -L 2>/dev/null | awk '/^GPU[[:space:]]+[0-9]+:/{found=1} END{exit !found}' \
+        && ! command -v nvcc >/dev/null 2>&1 \
+        && ! ls /usr/local/cuda*/bin/nvcc >/dev/null 2>&1; then
+    step "llama.cpp" "GGUF engine: CUDA build running in background (WSL aarch64 + NVIDIA)" "$C_WARN"
+    substep "skipping slow CPU build; the background CUDA llama.cpp will provide the server"
+    substep "(opt out / keep CPU build with UNSLOTH_NO_LLAMA_CUDA=1)"
+    # Sole builder is install.ps1's background provision_llama_cuda.sh. Do NOT set
+    # _LLAMA_CPP_DEGRADED (that would trigger the arm64 CPU-prebuilt last resort
+    # and the install-failure exit 1); use the distinct DEFERRED state instead.
+    _NEED_LLAMA_SOURCE_BUILD=false
+    _LLAMA_CPP_DEFERRED=true
 fi
 
 # ── 8. WSL: pre-install GGUF build dependencies for fallback source builds ──
@@ -1497,7 +1544,9 @@ fi
 if [ "$_LLAMA_ONLY" = "1" ]; then
     echo ""
     printf "  ${C_DIM}%s${C_RST}\n" "$RULE"
-    if [ "$_LLAMA_CPP_DEGRADED" = true ]; then
+    if [ "$_LLAMA_CPP_DEFERRED" = true ]; then
+        printf "  ${C_TITLE}%s${C_RST}\n" "llama.cpp update finished (GGUF engine: CUDA build running in background)"
+    elif [ "$_LLAMA_CPP_DEGRADED" = true ]; then
         printf "  ${C_WARN}%s${C_RST}\n" "llama.cpp update finished (limited: llama.cpp unavailable)"
     else
         printf "  ${C_TITLE}%s${C_RST}\n" "llama.cpp update finished"
@@ -1506,7 +1555,9 @@ if [ "$_LLAMA_ONLY" = "1" ]; then
 elif [ "$IS_COLAB" = true ]; then
     echo ""
     printf "  ${C_DIM}%s${C_RST}\n" "$RULE"
-    if [ "$_LLAMA_CPP_DEGRADED" = true ]; then
+    if [ "$_LLAMA_CPP_DEFERRED" = true ]; then
+        printf "  ${C_TITLE}%s${C_RST}\n" "Unsloth Studio Setup Complete (GGUF engine: CUDA build running in background)"
+    elif [ "$_LLAMA_CPP_DEGRADED" = true ]; then
         printf "  ${C_WARN}%s${C_RST}\n" "Unsloth Studio Setup Complete (limited: llama.cpp unavailable)"
     else
         printf "  ${C_TITLE}%s${C_RST}\n" "Unsloth Studio Setup Complete"
@@ -1516,7 +1567,9 @@ elif [ "$IS_COLAB" = true ]; then
     substep "start()"
 else
     printf "  ${C_DIM}%s${C_RST}\n" "$RULE"
-    if [ "$_LLAMA_CPP_DEGRADED" = true ]; then
+    if [ "$_LLAMA_CPP_DEFERRED" = true ]; then
+        printf "  ${C_TITLE}%s${C_RST}\n" "Unsloth Studio Installed (GGUF engine: CUDA build running in background)"
+    elif [ "$_LLAMA_CPP_DEGRADED" = true ]; then
         printf "  ${C_WARN}%s${C_RST}\n" "Unsloth Studio Installed (limited: llama.cpp unavailable)"
     else
         printf "  ${C_TITLE}%s${C_RST}\n" "Unsloth Studio Installed"
