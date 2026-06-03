@@ -3423,7 +3423,13 @@ def published_windows_cuda_attempts(
             chosen = sorted(
                 targeted,
                 key = lambda item: (
-                    (item[0].max_sm or 0) - (item[0].min_sm or 0),
+                    # A bundle whose SM coverage is unknown (legacy/upstream-named,
+                    # no metadata) must not outrank a real targeted bundle whose
+                    # tight range would sort first -- give it a max range so it
+                    # sorts last instead.
+                    (item[0].max_sm - item[0].min_sm)
+                    if item[0].max_sm is not None and item[0].min_sm is not None
+                    else 9999,
                     item[0].rank,
                     item[0].max_sm or 0,
                 ),
