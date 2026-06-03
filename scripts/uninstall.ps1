@@ -373,7 +373,11 @@ function Uninstall-UnslothStudio {
             # matches this very bash -lc (its argv contains the pattern) and would SIGKILL
             # the shell before a trailing rm -- so remove files first (guaranteed), then
             # best-effort kill via fuser by port (does not self-match) + pkill.
-            $_clean = 'rm -rf /root/.unsloth /home/*/.unsloth /root/llama-cuda /root/provision_llama_cuda.sh /root/llama_cuda_build.log 2>/dev/null; fuser -k 8888/tcp 2>/dev/null; pkill -9 -f unsloth_studio 2>/dev/null; pkill -9 -f llama-server 2>/dev/null; true'
+            # Also remove the `unsloth` launcher symlink install.sh drops at
+            # ~/.local/bin/unsloth -> <venv>/bin/unsloth. rm -rf of ~/.unsloth
+            # above deletes its target but leaves the symlink dangling, so the
+            # `unsloth` command still resolves on PATH after an uninstall.
+            $_clean = 'rm -rf /root/.unsloth /home/*/.unsloth /root/llama-cuda /root/provision_llama_cuda.sh /root/llama_cuda_build.log 2>/dev/null; rm -f /root/.local/bin/unsloth /home/*/.local/bin/unsloth 2>/dev/null; fuser -k 8888/tcp 2>/dev/null; pkill -9 -f unsloth_studio 2>/dev/null; pkill -9 -f llama-server 2>/dev/null; true'
             $_cands = @('', 'Ubuntu', 'Ubuntu-24.04', 'Ubuntu-22.04', 'Debian')
             if ($env:UNSLOTH_WSL_DISTRO) { $_cands = @($env:UNSLOTH_WSL_DISTRO) + $_cands }
             $_done = @{}

@@ -8,6 +8,9 @@
 #   UNSLOTH_STUDIO_HOME / STUDIO_HOME = path -> install under that path
 #   (DataDir nests inside; user PATH not modified persistently).
 # Default ($USERPROFILE\.unsloth\studio) is preserved when no env var is set.
+#   UNSLOTH_INSTALL_REF = branch/tag/sha to fetch repo-versioned install assets
+#   from (provision_llama_cuda.sh, the .ico); defaults to 'main'. Lets the
+#   WSL-fallback GPU path be tested on a branch before it merges.
 
 function Install-UnslothStudio {
     $ErrorActionPreference = "Stop"
@@ -40,6 +43,15 @@ function Install-UnslothStudio {
             "x86" { return "x86" }
             default { return ($arch -replace '[^a-z0-9_.-]', '_') }
         }
+    }
+
+    # Git ref (branch/tag/sha) used to fetch repo-versioned install assets from
+    # raw.githubusercontent.com: provision_llama_cuda.sh and the .ico. Defaults to
+    # 'main' so existing users are byte-for-byte unaffected; set UNSLOTH_INSTALL_REF
+    # to a branch to exercise the WSL-fallback path end-to-end before a PR merges.
+    function Get-UnslothInstallRef {
+        if ($env:UNSLOTH_INSTALL_REF -and $env:UNSLOTH_INSTALL_REF.Trim()) { return $env:UNSLOTH_INSTALL_REF.Trim() }
+        return 'main'
     }
 
     function Get-TauriTorchIndexFamily {
@@ -519,7 +531,7 @@ function Install-UnslothStudio {
             if ($PSScriptRoot -and $PSScriptRoot.Trim()) {
                 $bundledIcon = Join-Path $PSScriptRoot "studio\frontend\public\unsloth.ico"
             }
-            $iconUrl = "https://raw.githubusercontent.com/unslothai/unsloth/main/studio/frontend/public/unsloth.ico"
+            $iconUrl = "https://raw.githubusercontent.com/unslothai/unsloth/$(Get-UnslothInstallRef)/studio/frontend/public/unsloth.ico"
 
             if (-not (Test-Path -LiteralPath $appDir)) {
                 [System.IO.Directory]::CreateDirectory($appDir) | Out-Null
@@ -1640,7 +1652,7 @@ shell.Run cmd, 0, False
                 )
                 Set-Content -LiteralPath $launcher -Value $L -Encoding UTF8
                 $icon = Join-Path $appDir "unsloth.ico"
-                try { if (-not (Test-Path -LiteralPath $icon)) { Invoke-WebRequest "https://raw.githubusercontent.com/unslothai/unsloth/main/studio/frontend/public/unsloth.ico" -OutFile $icon -UseBasicParsing -TimeoutSec 15 *> $null } } catch {}
+                try { if (-not (Test-Path -LiteralPath $icon)) { Invoke-WebRequest "https://raw.githubusercontent.com/unslothai/unsloth/$(Get-UnslothInstallRef)/studio/frontend/public/unsloth.ico" -OutFile $icon -UseBasicParsing -TimeoutSec 15 *> $null } } catch {}
                 $wsh = New-Object -ComObject WScript.Shell
                 $lnks = @()
                 $dd = [Environment]::GetFolderPath("Desktop"); if ($dd -and $dd.Trim()) { $lnks += (Join-Path $dd "Unsloth Studio.lnk") }
@@ -1678,7 +1690,7 @@ shell.Run cmd, 0, False
             if ($env:UNSLOTH_NO_LLAMA_CUDA -ne '1') {
                 $prevEapL = $ErrorActionPreference; $ErrorActionPreference = "Continue"
                 try {
-                    $_llamaUrl = "https://raw.githubusercontent.com/unslothai/unsloth/main/studio/scripts/provision_llama_cuda.sh"
+                    $_llamaUrl = "https://raw.githubusercontent.com/unslothai/unsloth/$(Get-UnslothInstallRef)/studio/scripts/provision_llama_cuda.sh"
                     # Propagate UNSLOTH_LLAMA_BUILD_JOBS into the WSL build (Windows env
                     # vars do not cross into WSL by default), so thermally/power-limited
                     # laptops can cap the CUDA build's parallelism (`env` with no
