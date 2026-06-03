@@ -45,6 +45,7 @@ studio = [
     "*.sh",
     "*.ps1",
     "*.bat",
+    "scripts/*.sh",
     "frontend/dist/**/*",
     "frontend/*.json",
     "frontend/*.ts",
