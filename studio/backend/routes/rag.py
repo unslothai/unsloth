@@ -1181,6 +1181,12 @@ def _iter_file_range(path: Path, start: int, end: int):
             yield chunk
 
 
+# Origins allowed to embed the preview file in an iframe: the web app (same
+# origin) and the desktop Tauri webview. Mirrors routes/inference.py's
+# artifact-preview frame ancestors.
+_PREVIEW_FRAME_ANCESTORS = "'self' tauri://localhost http://tauri.localhost"
+
+
 def _serve_document_file_row(
     doc_row: Any,
     document_id: str,
@@ -1194,6 +1200,11 @@ def _serve_document_file_row(
         "X-Content-Type-Options": "nosniff",
         "Cache-Control": "private, max-age=0, must-revalidate",
         "Accept-Ranges": "bytes",
+        # The PDF preview embeds this file in a same-origin / Tauri iframe shown
+        # in the browser's native viewer. The global SecurityHeadersMiddleware
+        # sets frame-ancestors 'none'; override it here (and this path is exempt
+        # from X-Frame-Options: DENY in main.py) so the iframe can load.
+        "Content-Security-Policy": f"frame-ancestors {_PREVIEW_FRAME_ANCESTORS}",
     }
     size = resolved.stat().st_size
 

@@ -440,6 +440,18 @@ _CSP_SCRIPT_NONCE_HEADER = "x-internal-script-nonce"
 _ARTIFACT_PREVIEW_FRAME_PATH = "/api/inference/artifact-preview-frame"
 
 
+def _is_frameable_path(path: str) -> bool:
+    """Paths allowed to be embedded in a same-origin / Tauri iframe. These
+    responses set their own CSP frame-ancestors; X-Frame-Options: DENY would
+    override that, so it is skipped for them."""
+    if path == _ARTIFACT_PREVIEW_FRAME_PATH:
+        return True
+    # RAG PDF preview is shown in the browser's native viewer inside an iframe.
+    return path.startswith("/api/rag/documents/") and path.endswith(
+        ("/file", "/file-signed")
+    )
+
+
 # /content is Colab's working directory — more reliable than env vars which
 # aren't always set depending on Colab runtime version.
 import importlib.util as _importlib_util
@@ -510,7 +522,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers.setdefault("Content-Security-Policy", _build_csp(nonce))
         # Omit X-Frame-Options in Colab — CSP frame-ancestors handles it, and
         # DENY would block serve_kernel_port_as_iframe regardless of CSP.
-        if not _IS_COLAB and request.url.path != _ARTIFACT_PREVIEW_FRAME_PATH:
+        if not _IS_COLAB and not _is_frameable_path(request.url.path):
             response.headers.setdefault("X-Frame-Options", "DENY")
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         response.headers.setdefault("Referrer-Policy", "no-referrer")
