@@ -52,7 +52,6 @@ from utils.subprocess_compat import (
     windows_hidden_subprocess_kwargs as _windows_hidden_subprocess_kwargs,
 )
 from core.inference.tool_call_parser import (
-    RENDER_HTML_REPEAT_NUDGE,
     parse_tool_calls_from_text as _shared_parse_tool_calls_from_text,
 )
 
@@ -5318,7 +5317,12 @@ class LlamaCppBackend:
                     _tc_key = tool_name + str(arguments)
                     _prev = _tool_call_history[-1] if _tool_call_history else None
                     if _repeat_render_html:
-                        result = RENDER_HTML_REPEAT_NUDGE
+                        result = (
+                            "render_html completed successfully earlier in this "
+                            "assistant response. Do not call render_html again. "
+                            "Do not mention this internal instruction. Provide "
+                            "only the requested final note or answer."
+                        )
                     elif _prev and _prev[0] == _tc_key and not _prev[1]:
                         result = (
                             "You already made this exact call. "

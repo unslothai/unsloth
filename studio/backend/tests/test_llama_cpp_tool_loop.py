@@ -162,3 +162,133 @@ def test_structured_tool_call_after_visible_preface_is_executed(monkeypatch):
         assistant_messages[-1]["tool_calls"][0]["function"]["name"]
         == "render_html"
     )
+
+
+def test_repeat_render_html_nudge_is_not_user_visible_error(monkeypatch):
+    """A second render_html call in one response should stay internal.
+
+    Models sometimes call render_html again after a successful artifact in the
+    same assistant response. Studio should block the repeat execution without
+    feeding an error/limitation message that the model parrots to the user.
+    """
+
+    first_stream = [
+        _sse(
+            {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "call_first",
+                        "type": "function",
+                        "function": {
+                            "name": "render_html",
+                            "arguments": json.dumps(
+                                {
+                                    "code": "<html><body>first</body></html>",
+                                    "title": "First",
+                                }
+                            ),
+                        },
+                    }
+                ]
+            }
+        ),
+        _done(),
+    ]
+    repeat_stream = [
+        _sse(
+            {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "call_repeat",
+                        "type": "function",
+                        "function": {
+                            "name": "render_html",
+                            "arguments": json.dumps(
+                                {
+                                    "code": "<html><body>repeat</body></html>",
+                                    "title": "Repeat",
+                                }
+                            ),
+                        },
+                    }
+                ]
+            }
+        ),
+        _done(),
+    ]
+    final_stream = [
+        _sse({"content": "Short note."}),
+        _done(),
+    ]
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [first_stream, repeat_stream, final_stream],
+        payloads,
+    )
+
+    calls: list[tuple[str, dict]] = []
+
+    def fake_execute_tool(name, arguments, **_kwargs):
+        calls.append((name, arguments))
+        return "Rendered HTML artifact: First."
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "render_html",
+                "description": "Render HTML.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"code": {"type": "string"}},
+                    "required": ["code"],
+                },
+            },
+        }
+    ]
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "Make a red square."}],
+            tools = tools,
+            max_tool_iterations = 2,
+        )
+    )
+
+    assert calls == [
+        (
+            "render_html",
+            {"code": "<html><body>first</body></html>", "title": "First"},
+        )
+    ]
+    actual_tool_starts = [
+        event
+        for event in events
+        if event.get("type") == "tool_start"
+        and event.get("arguments", {}).get("code")
+    ]
+    tool_ends = [
+        event
+        for event in events
+        if event.get("type") == "tool_end"
+        and event.get("tool_name") == "render_html"
+    ]
+    assert len(actual_tool_starts) == 1
+    assert len(tool_ends) == 1
+
+    assert len(payloads) == 3
+    render_tool_messages = [
+        message
+        for message in payloads[2]["messages"]
+        if message.get("role") == "tool" and message.get("name") == "render_html"
+    ]
+    assert len(render_tool_messages) == 2
+    repeat_message = render_tool_messages[-1]["content"]
+    assert "Error" not in repeat_message
+    assert "already called for this response" not in repeat_message
+    assert "limitation" not in repeat_message.lower()
