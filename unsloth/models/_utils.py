@@ -1034,8 +1034,74 @@ def patch_dgx_spark_memory_config():
     ) + "expandable_segments:True"
 
 
+def patch_dgx_spark_runtime_defaults():
+    """Spark UMA runtime defaults (accuracy-neutral, gated, env-overridable).
+
+    - `UNSLOTH_DISABLE_DOUBLE_BUFFER=1`: unsloth-zoo's gradient-checkpointing
+      double-buffer is enabled via a `torch.cuda.mem_get_info` free-memory check
+      that UNDERCOUNTS on UMA, and it stages an extra GPU buffer to overlap a
+      host<->device copy that is physically free on a shared pool. Default it off
+      on Spark (`setdefault`, so a user can still force it back on). Must be set
+      before unsloth-zoo initializes gradient checkpointing -- `import unsloth`
+      precedes that, so this is in time.
+    - `set_per_process_memory_fraction`: OPT-IN safety valve. On Spark UMA an
+      over-allocation can wedge the box (untracked UMA allocations may never trip
+      a catchable OOM). If the user sets `UNSLOTH_SPARK_MEM_FRACTION=<0..1>`, cap
+      the caching allocator so it raises OutOfMemoryError early. Default unset ->
+      NO cap (no capacity loss); purely opt-in.
+    Strict no-op off-Spark.
+    """
+    if not is_dgx_spark():
+        return
+    os.environ.setdefault("UNSLOTH_DISABLE_DOUBLE_BUFFER", "1")
+    _frac = os.environ.get("UNSLOTH_SPARK_MEM_FRACTION")
+    if _frac:
+        try:
+            torch.cuda.set_per_process_memory_fraction(float(_frac))
+        except Exception:
+            pass
+
+
+def patch_dgx_spark_dataloader_defaults():
+    """On Spark UMA, default `dataloader_pin_memory` to False (accuracy-neutral).
+
+    Page-locked host memory exists to speed host->device DMA; on unified memory
+    there is no separate device memory, so pinning only reserves non-pageable RAM
+    from the shared pool and adds a staging copy -- pure waste. Mirrors
+    transformers' own `if self.use_cpu: self.dataloader_pin_memory = False`
+    precedent. Wraps the base `TrainingArguments.__post_init__`, so SFT + every
+    TRL trainer (whose configs call `super().__post_init__()`) are covered with
+    one idempotent patch. Only flips the library default `True`; opt out with
+    `UNSLOTH_SPARK_KEEP_PIN_MEMORY=1`. Strict no-op off-Spark; never changes any
+    computed value, so accuracy is unaffected.
+    """
+    if not is_dgx_spark():
+        return
+    if os.environ.get("UNSLOTH_SPARK_KEEP_PIN_MEMORY") == "1":
+        return
+    try:
+        from transformers import training_args as _ta
+
+        Base = _ta.TrainingArguments
+    except Exception:
+        return
+    if getattr(Base.__post_init__, "_unsloth_spark_uma", False):
+        return
+    _orig_post_init = Base.__post_init__
+
+    def __post_init__(self):
+        _orig_post_init(self)
+        if getattr(self, "dataloader_pin_memory", None) is True:
+            self.dataloader_pin_memory = False
+
+    __post_init__._unsloth_spark_uma = True
+    Base.__post_init__ = __post_init__
+
+
 patch_dgx_spark_memory_config()
 patch_dgx_spark_caching_allocator_warmup()
+patch_dgx_spark_runtime_defaults()
+patch_dgx_spark_dataloader_defaults()
 
 
 class _RaiseUninitialized(logging.Handler):
@@ -1620,6 +1686,14 @@ torch_compile_options = {
     "trace.enabled": UNSLOTH_COMPILE_DEBUG,
     "triton.cudagraphs": False,
 }
+# DGX Spark / N1X: this GPU has 48 SMs, below inductor's hardcoded 68-SM
+# `is_big_gpu` threshold, so `max_autotune_gemm` is already skipped by inductor
+# (the "Not enough SMs to use max_autotune_gemm mode" warning). Dropping
+# max_autotune on Spark only avoids the wasted compile-time autotuning search --
+# the produced Triton/inductor kernels are identical, so steady-state throughput
+# and accuracy are unchanged. Strict no-op off-Spark (gated by is_dgx_spark()).
+if is_dgx_spark():
+    torch_compile_options["max_autotune"] = False
 
 import accelerate
 

@@ -25,6 +25,40 @@ torch_compile_options = {
     "triton.cudagraphs": False,
 }
 
+
+def _flex_is_dgx_spark():
+    # Mirror of unsloth.models._utils.is_dgx_spark(), inlined to avoid importing
+    # `unsloth.models` from this low-level `kernels` module (circular at import).
+    # DGX Spark / N1X = aarch64 + NVIDIA CUDA + a Spark device-name token.
+    _force = os.environ.get("UNSLOTH_FORCE_DGX_SPARK")
+    if _force == "1":
+        return True
+    if _force == "0":
+        return False
+    try:
+        import platform
+
+        if platform.machine().lower() not in ("aarch64", "arm64"):
+            return False
+        if not (hasattr(torch, "cuda") and torch.cuda.is_available()):
+            return False
+        names = " ".join(
+            str(torch.cuda.get_device_name(i)).upper()
+            for i in range(torch.cuda.device_count())
+        )
+        return any(
+            t in names for t in ("GB10", "JMJWOA", "N1X", "DGX SPARK", "GB110")
+        )
+    except Exception:
+        return False
+
+
+# DGX Spark / N1X has 48 SMs (< inductor's 68-SM is_big_gpu threshold), so
+# max_autotune_gemm is already skipped; dropping max_autotune only saves the
+# wasted compile-time search -- identical kernels, no accuracy/throughput change.
+if _flex_is_dgx_spark():
+    torch_compile_options["max_autotune"] = False
+
 # Flex Attention supported from torch 2.5 onwards only
 try:
     from torch.nn.attention.flex_attention import (
