@@ -1236,6 +1236,7 @@ if (Test-Path -LiteralPath \$iconPath) {
     [Environment]::GetFolderPath('Desktop'),
     (Join-Path \$env:APPDATA 'Microsoft\Windows\Start Menu\Programs')
 )
+\$created = @()
 foreach (\$dir in \$locations) {
     if (-not \$dir -or -not (Test-Path \$dir)) { continue }
     \$linkPath = Join-Path \$dir '$_css_lnk_name_ps'
@@ -1245,16 +1246,19 @@ foreach (\$dir in \$locations) {
     \$shortcut.Description = 'Launch Unsloth Studio (WSL)'
     if (\$hasIcon) { \$shortcut.IconLocation = "\$iconPath,0" }
     \$shortcut.Save()
+    \$created += \$linkPath
 }
-# Refresh the shell icon cache so the new WSL shortcut renders immediately
-# instead of a stale/blank icon (a same-name .lnk recreated across reinstalls
-# is the common trigger; -ClearIconCache is more thorough than -show, and the
-# SHChangeNotify broadcast forces a live refresh without restarting explorer).
+# Force Explorer to re-read EACH new shortcut's icon so it renders immediately
+# instead of a stale/blank (generic) icon. The reliable, NON-disruptive fix
+# (no explorer restart) is a PER-ITEM SHChangeNotify(SHCNE_UPDATEITEM,
+# SHCNF_PATHW, <lnk>) -- the global SHCNE_ASSOCCHANGED alone does not recover a
+# stale item. Also clear the on-disk icon cache for heavier staleness.
 try { & "\$env:SystemRoot\System32\ie4uinit.exe" -ClearIconCache } catch {}
 try { & "\$env:SystemRoot\System32\ie4uinit.exe" -show } catch {}
 try {
-    Add-Type -Namespace UnslothShell -Name IconRefresh -MemberDefinition '[System.Runtime.InteropServices.DllImport("shell32.dll")] public static extern void SHChangeNotify(int e, uint f, System.IntPtr a, System.IntPtr b);' -ErrorAction SilentlyContinue
-    [UnslothShell.IconRefresh]::SHChangeNotify(0x08000000, 0, [System.IntPtr]::Zero, [System.IntPtr]::Zero)
+    Add-Type -Namespace UnslothShell -Name IconRefresh -MemberDefinition '[System.Runtime.InteropServices.DllImport("shell32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)] public static extern void SHChangeNotify(int e, uint f, string a, System.IntPtr b);' -ErrorAction SilentlyContinue
+    foreach (\$p in \$created) { try { [UnslothShell.IconRefresh]::SHChangeNotify(0x00002000, 0x0005, \$p, [System.IntPtr]::Zero) } catch {} }
+    [UnslothShell.IconRefresh]::SHChangeNotify(0x08000000, 0, \$null, [System.IntPtr]::Zero)
 } catch {}
 # Win11 Start Menu keeps its own tile-icon cache (preserve start2.bin).
 try {

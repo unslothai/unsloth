@@ -848,6 +848,7 @@ shell.Run cmd, 0, False
             try {
                 $wshell = New-Object -ComObject WScript.Shell
                 $createdShortcutCount = 0
+                $createdShortcutPaths = @()
                 foreach ($linkPath in @($desktopLink, $startMenuLink)) {
                     if (-not $linkPath -or [string]::IsNullOrWhiteSpace($linkPath)) { continue }
                     try {
@@ -861,26 +862,32 @@ shell.Run cmd, 0, False
                         }
                         $shortcut.Save()
                         $createdShortcutCount++
+                        $createdShortcutPaths += $linkPath
                     } catch {
                         substep "could not create shortcut at ${linkPath}: $($_.Exception.Message)" "Yellow"
                     }
                 }
                 if ($createdShortcutCount -gt 0) {
                     substep "Created Unsloth Studio shortcut"
-                    # Refresh the shell icon cache so the new shortcut's icon renders
-                    # immediately instead of a stale/blank entry. The common trigger
-                    # is a same-name .lnk recreated across reinstalls: Explorer keeps
-                    # a per-item cache entry in iconcache_*.db and won't re-read the
-                    # .ico on its own. `-ClearIconCache` is far more thorough than the
-                    # old `-show` (which left the desktop icon blank), and the
-                    # SHChangeNotify(SHCNE_ASSOCCHANGED) broadcast forces a live
-                    # desktop/taskbar refresh WITHOUT restarting explorer.
+                    # Force Explorer to re-read EACH new shortcut's icon so it renders
+                    # immediately instead of a stale/blank (generic) entry. The trigger
+                    # is a same-name .lnk recreated across reinstalls: Explorer caches
+                    # the per-item icon and won't re-extract the .ico on its own. The
+                    # reliable, NON-disruptive fix (verified to recover a stale icon
+                    # with NO explorer restart) is a PER-ITEM SHChangeNotify with
+                    # SHCNE_UPDATEITEM + SHCNF_PATHW pointed at each .lnk -- the global
+                    # SHCNE_ASSOCCHANGED broadcast alone does NOT recover a stale item.
+                    # We also clear the on-disk icon cache (covers heavier staleness).
                     try { & "$env:SystemRoot\System32\ie4uinit.exe" -ClearIconCache 2>$null } catch {}
                     try { & "$env:SystemRoot\System32\ie4uinit.exe" -show 2>$null } catch {}
                     try {
-                        Add-Type -Namespace UnslothShell -Name IconRefresh -MemberDefinition '[System.Runtime.InteropServices.DllImport("shell32.dll")] public static extern void SHChangeNotify(int eventId, uint flags, System.IntPtr item1, System.IntPtr item2);' -ErrorAction SilentlyContinue
-                        # SHCNE_ASSOCCHANGED (0x08000000), SHCNF_IDLIST (0)
-                        [UnslothShell.IconRefresh]::SHChangeNotify(0x08000000, 0, [System.IntPtr]::Zero, [System.IntPtr]::Zero)
+                        Add-Type -Namespace UnslothShell -Name IconRefresh -MemberDefinition '[System.Runtime.InteropServices.DllImport("shell32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)] public static extern void SHChangeNotify(int eventId, uint flags, string item1, System.IntPtr item2);' -ErrorAction SilentlyContinue
+                        # SHCNE_UPDATEITEM (0x00002000) + SHCNF_PATHW (0x0005) per shortcut
+                        foreach ($scPath in $createdShortcutPaths) {
+                            try { [UnslothShell.IconRefresh]::SHChangeNotify(0x00002000, 0x0005, $scPath, [System.IntPtr]::Zero) } catch {}
+                        }
+                        # SHCNE_ASSOCCHANGED (0x08000000) global refresh (belt-and-suspenders)
+                        [UnslothShell.IconRefresh]::SHChangeNotify(0x08000000, 0, $null, [System.IntPtr]::Zero)
                     } catch {}
                     # Win11's Start Menu (StartMenuExperienceHost) keeps its OWN
                     # pre-rendered tile-icon cache, separate from Explorer's
