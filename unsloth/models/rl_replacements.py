@@ -1362,10 +1362,14 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
 
             temperature = self.temperature
             logit_softcapping = _unsloth_get_final_logit_softcapping(model)
-            logit_scale_multiply = getattr(_unsloth_get_model_config(model), "logit_scale", 0)
+            logit_scale_multiply = getattr(
+                _unsloth_get_model_config(model), "logit_scale", 0
+            )
             if logit_scale_multiply is None:
                 logit_scale_multiply = 0
-            logit_scale_divide = getattr(_unsloth_get_model_config(model), "logits_scaling", 0)
+            logit_scale_divide = getattr(
+                _unsloth_get_model_config(model), "logits_scaling", 0
+            )
             if logit_scale_divide is None:
                 logit_scale_divide = 0
 
@@ -1659,10 +1663,14 @@ def grpo_trainer_compute_loss(function_name, function):
 
         # Get logit softcapping and logit scale
         logit_softcapping = _unsloth_get_final_logit_softcapping(model)  # Gemma
-        logit_scale_multiply = getattr(_unsloth_get_model_config(model), "logit_scale", 0)  # Cohere
+        logit_scale_multiply = getattr(
+            _unsloth_get_model_config(model), "logit_scale", 0
+        )  # Cohere
         if logit_scale_multiply is None:
             logit_scale_multiply = 0
-        logit_scale_divide = getattr(_unsloth_get_model_config(model), "logits_scaling", 0)  # Granite
+        logit_scale_divide = getattr(
+            _unsloth_get_model_config(model), "logits_scaling", 0
+        )  # Granite
         if logit_scale_divide is None:
             logit_scale_divide = 0
 
