@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type {
+  EvaluationDocumentScoreConfig,
   LlmConfig,
   LlmMcpProviderConfig,
   LlmToolConfig,
@@ -79,34 +80,6 @@ function parseProcessors(input: unknown): RecipeProcessorConfig[] {
     }
     const type = readString(item.processor_type);
 
-    if (type === "json_document_score") {
-      const schemaValue = item.schema;
-      const schemaText =
-        schemaValue == null
-          ? ""
-          : typeof schemaValue === "string"
-            ? schemaValue
-            : JSON.stringify(schemaValue, null, 2);
-      processors.push({
-        id: `p${index + 1}`,
-        // biome-ignore lint/style/useNamingConvention: api schema
-        processor_type: "json_document_score",
-        name: readString(item.name) ?? `doc_score_${index + 1}`,
-        // biome-ignore lint/style/useNamingConvention: api schema
-        prediction_column: readString(item.prediction_column) ?? "",
-        // biome-ignore lint/style/useNamingConvention: api schema
-        reference_column: readString(item.reference_column) ?? "",
-        schema: schemaText,
-        // biome-ignore lint/style/useNamingConvention: api schema
-        default_comparator: readString(item.default_comparator) ?? "string",
-        // biome-ignore lint/style/useNamingConvention: api schema
-        score_column: readString(item.score_column) ?? "doc_score",
-        // biome-ignore lint/style/useNamingConvention: api schema
-        breakdown_column: readString(item.breakdown_column) ?? "",
-      });
-      return;
-    }
-
     // Schema transform — accept either an explicit processor_type or a legacy
     // payload where only `template` is present (matches the prior behavior).
     const templateRaw = item.template;
@@ -131,6 +104,48 @@ function parseProcessors(input: unknown): RecipeProcessorConfig[] {
     });
   });
   return processors;
+}
+
+function parseEvaluations(input: unknown): EvaluationDocumentScoreConfig[] {
+  if (!Array.isArray(input)) {
+    return [];
+  }
+  const evaluations: EvaluationDocumentScoreConfig[] = [];
+  input.forEach((item, index) => {
+    if (!isRecord(item)) {
+      return;
+    }
+    const type = readString(item.processor_type);
+    if (type !== "json_document_score") {
+      return;
+    }
+    const schemaValue = item.schema;
+    const schemaText =
+      schemaValue == null
+        ? ""
+        : typeof schemaValue === "string"
+          ? schemaValue
+          : JSON.stringify(schemaValue, null, 2);
+    evaluations.push({
+      id: `eval${index + 1}`,
+      kind: "evaluation",
+      // biome-ignore lint/style/useNamingConvention: api schema
+      evaluation_type: "json_document_score",
+      name: readString(item.name) ?? `doc_score_${index + 1}`,
+      // biome-ignore lint/style/useNamingConvention: api schema
+      prediction_column: readString(item.prediction_column) ?? "",
+      // biome-ignore lint/style/useNamingConvention: api schema
+      reference_column: readString(item.reference_column) ?? "",
+      schema: schemaText,
+      // biome-ignore lint/style/useNamingConvention: api schema
+      default_comparator: readString(item.default_comparator) ?? "string",
+      // biome-ignore lint/style/useNamingConvention: api schema
+      score_column: readString(item.score_column) ?? "doc_score",
+      // biome-ignore lint/style/useNamingConvention: api schema
+      breakdown_column: readString(item.breakdown_column) ?? "",
+    });
+  });
+  return evaluations;
 }
 
 function parseSeedDropColumns(input: unknown): string[] {
@@ -412,6 +427,7 @@ export function importRecipePayload(input: string): ImportResult {
   const errors: string[] = [];
   const configs: NodeConfig[] = [];
   const processors = parseProcessors(recipe.processors);
+  const evaluations = parseEvaluations(recipe.processors);
   const mcpProvidersByName = parseMcpProviders(recipe.mcp_providers);
   const toolConfigsByAlias = parseToolConfigs(recipe.tool_configs);
   const nameToId = new Map<string, string>();
@@ -590,6 +606,18 @@ export function importRecipePayload(input: string): ImportResult {
     nameToId.set(config.name, config.id);
     configs.push(config);
   });
+
+  for (const evaluation of evaluations) {
+    const id = `n${nextId}`;
+    nextId += 1;
+    const config: EvaluationDocumentScoreConfig = { ...evaluation, id };
+    if (nameToId.has(config.name)) {
+      errors.push(`Duplicate column name: ${config.name}.`);
+      continue;
+    }
+    nameToId.set(config.name, config.id);
+    configs.push(config);
+  }
 
   if (errors.length > 0) {
     return { errors, snapshot: null };

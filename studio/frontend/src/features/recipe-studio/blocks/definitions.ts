@@ -3,6 +3,7 @@
 
 import {
   BalanceScaleIcon,
+  ChartLineData01Icon,
   Clock01Icon,
   CodeIcon,
   CodeSimpleIcon,
@@ -29,6 +30,7 @@ import type {
   SeedSourceType,
 } from "../types";
 import {
+  makeEvaluationDocumentScoreConfig,
   makeExpressionConfig,
   makeLlmConfig,
   makeMarkdownNoteConfig,
@@ -46,6 +48,7 @@ export type BlockKind =
   | "validator"
   | "expression"
   | "seed"
+  | "evaluation"
   | "note";
 export type BlockType =
   | SamplerType
@@ -55,6 +58,7 @@ export type BlockType =
   | "validator_oxc"
   | "expression"
   | "markdown_note"
+  | "evaluation_document_score"
   | "seed"
   | "seed_hf"
   | "seed_local"
@@ -96,6 +100,7 @@ export type BlockDialogKey =
   | "model_provider"
   | "model_config"
   | "tool_config"
+  | "evaluation_document_score"
   | "expression";
 
 export type BlockDefinition = {
@@ -132,6 +137,12 @@ export const BLOCK_GROUPS: BlockGroup[] = [
     title: "Checks",
     description: "Lint or filter generated code as it moves through the recipe.",
     icon: Shield02Icon,
+  },
+  {
+    kind: "evaluation",
+    title: "Evaluation",
+    description: "Score generated columns against reference data.",
+    icon: ChartLineData01Icon,
   },
   {
     kind: "expression",
@@ -359,6 +370,16 @@ const BLOCK_DEFINITIONS: BlockDefinition[] = [
       makeValidatorConfig(id, "oxc", "javascript", existing),
   },
   {
+    kind: "evaluation",
+    type: "evaluation_document_score",
+    title: "Document score",
+    description: "Score a JSON prediction column against a reference column.",
+    icon: ChartLineData01Icon,
+    dialogKey: "evaluation_document_score",
+    createConfig: (id, existing) =>
+      makeEvaluationDocumentScoreConfig(id, existing),
+  },
+  {
     kind: "expression",
     type: "expression",
     title: "Formula",
@@ -436,6 +457,9 @@ export function getBlockDefinitionForConfig(
   }
   if (config.kind === "markdown_note") {
     return getBlockDefinition("note", "markdown_note");
+  }
+  if (config.kind === "evaluation") {
+    return getBlockDefinition("evaluation", "evaluation_document_score");
   }
   return getBlockDefinition("expression", "expression");
 }

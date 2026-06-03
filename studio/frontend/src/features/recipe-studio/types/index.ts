@@ -58,6 +58,7 @@ export type RecipeNodeData = {
     | "expression"
     | "seed"
     | "note"
+    | "evaluation"
     | "model_provider"
     | "model_config"
     | "tool_config";
@@ -71,6 +72,7 @@ export type RecipeNodeData = {
     | "expression"
     | "seed"
     | "markdown_note"
+    | "evaluation_document_score"
     | "model_provider"
     | "model_config"
     | "tool_config";
@@ -383,10 +385,11 @@ export type SchemaTransformProcessorConfig = {
   template: string;
 };
 
-export type JsonDocumentScoreProcessorConfig = {
+export type EvaluationDocumentScoreConfig = {
   id: string;
+  kind: "evaluation";
   // biome-ignore lint/style/useNamingConvention: api schema
-  processor_type: "json_document_score";
+  evaluation_type: "json_document_score";
   name: string;
   // biome-ignore lint/style/useNamingConvention: api schema
   prediction_column: string;
@@ -402,9 +405,7 @@ export type JsonDocumentScoreProcessorConfig = {
   breakdown_column: string;
 };
 
-export type RecipeProcessorConfig =
-  | SchemaTransformProcessorConfig
-  | JsonDocumentScoreProcessorConfig;
+export type RecipeProcessorConfig = SchemaTransformProcessorConfig;
 
 export type NodeConfig =
   | SamplerConfig
@@ -415,4 +416,5 @@ export type NodeConfig =
   | SeedConfig
   | ModelProviderConfig
   | ModelConfig
-  | ToolProfileConfig;
+  | ToolProfileConfig
+  | EvaluationDocumentScoreConfig;

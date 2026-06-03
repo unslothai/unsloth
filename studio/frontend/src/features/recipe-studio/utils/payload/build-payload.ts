@@ -25,6 +25,7 @@ import {
 } from "../handles";
 import { readNodeWidth } from "../rf-node-dimensions";
 import {
+  buildEvaluationDocumentScoreProcessor,
   buildExpressionColumn,
   buildLlmColumn,
   buildModelConfig,
@@ -102,6 +103,7 @@ export function buildRecipePayload(
 ): RecipePayloadResult {
   const errors: string[] = [];
   const columns: Record<string, unknown>[] = [];
+  const evaluationProcessors: Record<string, unknown>[] = [];
   const modelAliases = new Set<string>();
   const modelProviderNames = new Set<string>();
   const localProviderNames = new Set<string>();
@@ -197,6 +199,15 @@ export function buildRecipePayload(
       continue;
     }
     if (config.kind === "markdown_note") {
+      continue;
+    }
+    if (config.kind === "evaluation") {
+      if (config.evaluation_type === "json_document_score") {
+        const built = buildEvaluationDocumentScoreProcessor(config, errors);
+        if (built) {
+          evaluationProcessors.push(built);
+        }
+      }
       continue;
     }
     if (config.kind === "model_provider") {
@@ -385,6 +396,7 @@ export function buildRecipePayload(
     },
   );
   const recipeProcessors = buildProcessors(processors, errors);
+  recipeProcessors.push(...evaluationProcessors);
   const seedConfig = firstSeed ? buildSeedConfig(firstSeed, errors) : undefined;
   const seedDropProcessor = firstSeed
     ? buildSeedDropProcessor(firstSeed, errors)

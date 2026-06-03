@@ -8,6 +8,7 @@ export {
   buildToolProfilePayload,
 } from "./builders-llm";
 export { buildModelConfig, buildModelProvider } from "./builders-model";
+export { buildEvaluationDocumentScoreProcessor } from "./builders-evaluation";
 export { buildExpressionColumn, buildProcessors } from "./builders-processors";
 export { buildSamplerColumn } from "./builders-sampler";
 export { buildValidatorColumn } from "./builders-validator";

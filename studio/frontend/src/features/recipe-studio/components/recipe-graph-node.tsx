@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import {
   BalanceScaleIcon,
+  ChartLineData01Icon,
   Clock01Icon,
   CodeIcon,
   CodeSimpleIcon,
@@ -116,6 +117,9 @@ const NODE_META = {
   tool_config: {
     tone: RECIPE_STUDIO_NODE_TONES.tool_config,
   },
+  evaluation: {
+    tone: RECIPE_STUDIO_NODE_TONES.evaluation,
+  },
 } as const;
 const SAMPLER_ICONS: Record<SamplerType, IconType> = {
   category: Tag01Icon,
@@ -149,6 +153,9 @@ function resolveNodeIcon(
   }
   if (kind === "validator") {
     return Shield02Icon;
+  }
+  if (kind === "evaluation") {
+    return ChartLineData01Icon;
   }
   if (kind === "expression") {
     return FunctionIcon;

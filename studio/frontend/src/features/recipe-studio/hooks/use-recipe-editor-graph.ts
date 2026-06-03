@@ -33,6 +33,7 @@ const SUPPORTED_DRAG_KINDS: RecipeBlockDragPayload["kind"][] = [
   "llm",
   "validator",
   "expression",
+  "evaluation",
   "note",
 ];
 
@@ -77,6 +78,11 @@ type UseRecipeEditorGraphArgs = {
     position?: XYPosition,
     openDialog?: boolean,
   ) => void;
+  addEvaluationNode: (
+    type: "evaluation_document_score",
+    position?: XYPosition,
+    openDialog?: boolean,
+  ) => void;
   addMarkdownNoteNode: (position?: XYPosition, openDialog?: boolean) => void;
 };
 
@@ -99,6 +105,7 @@ type UseRecipeEditorGraphResult = {
   handleAddValidatorFromSheet: (
     type: "validator_python" | "validator_sql" | "validator_oxc",
   ) => void;
+  handleAddEvaluationFromSheet: (type: "evaluation_document_score") => void;
   handleAddMarkdownNoteFromSheet: () => void;
 };
 
@@ -121,6 +128,7 @@ export function useRecipeEditorGraph({
   addToolProfileNode,
   addExpressionNode,
   addValidatorNode,
+  addEvaluationNode,
   addMarkdownNoteNode,
 }: UseRecipeEditorGraphArgs): UseRecipeEditorGraphResult {
   const baseNodeIds = useMemo(() => new Set(nodes.map((node) => node.id)), [nodes]);
@@ -225,6 +233,14 @@ export function useRecipeEditorGraph({
         );
         return;
       }
+      if (payload.kind === "evaluation") {
+        addEvaluationNode(
+          payload.type as "evaluation_document_score",
+          position,
+          false,
+        );
+        return;
+      }
       if (payload.kind === "note") {
         addMarkdownNoteNode(position, false);
         return;
@@ -244,6 +260,7 @@ export function useRecipeEditorGraph({
       addLlmNode(payload.type as LlmType, position, false);
     },
     [
+      addEvaluationNode,
       addExpressionNode,
       addLlmNode,
       addMarkdownNoteNode,
@@ -312,6 +329,13 @@ export function useRecipeEditorGraph({
     [addValidatorNode, getViewportCenterPosition],
   );
 
+  const handleAddEvaluationFromSheet = useCallback(
+    (type: "evaluation_document_score") => {
+      addEvaluationNode(type, getViewportCenterPosition());
+    },
+    [addEvaluationNode, getViewportCenterPosition],
+  );
+
   const handleAddMarkdownNoteFromSheet = useCallback(() => {
     addMarkdownNoteNode(getViewportCenterPosition());
   }, [addMarkdownNoteNode, getViewportCenterPosition]);
@@ -331,6 +355,7 @@ export function useRecipeEditorGraph({
     handleAddToolProfileFromSheet,
     handleAddExpressionFromSheet,
     handleAddValidatorFromSheet,
+    handleAddEvaluationFromSheet,
     handleAddMarkdownNoteFromSheet,
   };
 }

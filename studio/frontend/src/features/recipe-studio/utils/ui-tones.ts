@@ -20,6 +20,8 @@ export const RECIPE_STUDIO_NODE_TONES = {
     "bg-orange-50 text-orange-700 border-orange-100 dark:bg-orange-950/30 dark:text-orange-300 dark:border-orange-900/60",
   tool_config:
     "bg-cyan-50 text-cyan-700 border-cyan-100 dark:bg-cyan-950/30 dark:text-cyan-300 dark:border-cyan-900/60",
+  evaluation:
+    "bg-teal-50 text-teal-700 border-teal-100 dark:bg-teal-950/30 dark:text-teal-300 dark:border-teal-900/60",
 } as const;
 
 export const RECIPE_STUDIO_USER_NODE_TONE =
