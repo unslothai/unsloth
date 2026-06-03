@@ -78,6 +78,37 @@ function parseProcessors(input: unknown): RecipeProcessorConfig[] {
       return;
     }
     const type = readString(item.processor_type);
+
+    if (type === "json_document_score") {
+      const schemaValue = item.schema;
+      const schemaText =
+        schemaValue == null
+          ? ""
+          : typeof schemaValue === "string"
+            ? schemaValue
+            : JSON.stringify(schemaValue, null, 2);
+      processors.push({
+        id: `p${index + 1}`,
+        // biome-ignore lint/style/useNamingConvention: api schema
+        processor_type: "json_document_score",
+        name: readString(item.name) ?? `doc_score_${index + 1}`,
+        // biome-ignore lint/style/useNamingConvention: api schema
+        prediction_column: readString(item.prediction_column) ?? "",
+        // biome-ignore lint/style/useNamingConvention: api schema
+        reference_column: readString(item.reference_column) ?? "",
+        schema: schemaText,
+        // biome-ignore lint/style/useNamingConvention: api schema
+        default_comparator: readString(item.default_comparator) ?? "string",
+        // biome-ignore lint/style/useNamingConvention: api schema
+        score_column: readString(item.score_column) ?? "doc_score",
+        // biome-ignore lint/style/useNamingConvention: api schema
+        breakdown_column: readString(item.breakdown_column) ?? "",
+      });
+      return;
+    }
+
+    // Schema transform — accept either an explicit processor_type or a legacy
+    // payload where only `template` is present (matches the prior behavior).
     const templateRaw = item.template;
     const isSchemaTransform =
       type === "schema_transform" || isRecord(templateRaw);
