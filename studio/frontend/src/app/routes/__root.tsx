@@ -139,7 +139,7 @@ function RootLayout() {
           <SidebarInset className={isChatRoute ? "overflow-hidden" : "overflow-y-auto"}>
             <Navbar />
             <div
-              className={`flex min-h-0 min-w-0 flex-1 basis-0 flex-col ${isChatRoute ? "overflow-hidden" : "overflow-visible"} ${isChatRoute ? "" : "pt-14 md:pt-0"}`}
+              className={`relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col ${isChatRoute ? "overflow-hidden" : "overflow-visible"} ${isChatRoute ? "" : "pt-14 md:pt-0"}`}
             >
               {/* Use mode="popLayout" instead of "wait" to prevent UI freezes when
                   switching from heavy pages (like Export with many checkpoints).
