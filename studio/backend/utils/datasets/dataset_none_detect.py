@@ -176,17 +176,18 @@ def is_none_or_empty(value) -> bool:
         # corrupt — the image itself is the content.
         if len(value) == 0:
             return True
+        # If the list contains no dict elements at all (e.g. [None], ['   '])
+        # it is malformed / empty — flag it so callers don't silently pass it.
+        dict_blocks = [item for item in value if isinstance(item, dict)]
+        if not dict_blocks:
+            return True
         non_text_blocks = [
-            item
-            for item in value
-            if isinstance(item, dict) and item.get("type") != "text"
+            item for item in dict_blocks if item.get("type") != "text"
         ]
         if non_text_blocks:
             return False
         text_values = [
-            item.get("text")
-            for item in value
-            if isinstance(item, dict) and item.get("type") == "text"
+            item.get("text") for item in dict_blocks if item.get("type") == "text"
         ]
         if text_values and all(
             t is None
@@ -892,11 +893,14 @@ examples:
     parser.add_argument(
         "--split", default = "train", help = "Dataset split to load (default: train)"
     )
+    # gpt-oss is documented as an alias for gptoss; accept both at the CLI.
+    _CLI_FORMAT_ALIASES = {"gpt-oss": "gptoss"}
     parser.add_argument(
         "--format",
         default = "auto",
-        choices = ["auto"] + FORMAT_NAMES,
-        help = "Force a specific format instead of auto-detecting (default: auto)",
+        choices = ["auto"] + FORMAT_NAMES + list(_CLI_FORMAT_ALIASES),
+        help = "Force a specific format instead of auto-detecting (default: auto). "
+        "'gpt-oss' is accepted as an alias for 'gptoss'.",
     )
     parser.add_argument(
         "--summary-only",
@@ -937,8 +941,9 @@ examples:
 
     print(f"Loaded {len(ds)} rows, columns: {ds.column_names}")
 
+    fmt = _CLI_FORMAT_ALIASES.get(args.format, args.format)
     try:
-        stats = scan_dataset(ds, fmt = args.format)
+        stats = scan_dataset(ds, fmt = fmt)
     except ValueError as exc:
         print(f"Error: {exc}", file = sys.stderr)
         sys.exit(1)
