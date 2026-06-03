@@ -1908,6 +1908,101 @@ _pick_radeon_wheel() {
     esac
 }
 
+# ── ROCm-on-WSL bootstrap for AMD Strix Halo (gfx1151) ───────────────────────
+# STRICTLY a no-op for every other configuration. It returns immediately unless
+# ALL hold: we are on WSL, the user wants a GPU (not --no-torch), there is NO
+# usable GPU yet (neither NVIDIA nor a working ROCm device), the WSL GPU
+# paravirt device /dev/dxg exists, AND the CPU is an AMD Strix Halo APU. So
+# NVIDIA/CUDA hosts, discrete + native-Linux AMD ROCm, macOS/MLX, Windows
+# (install.ps1), plain CPU boxes, and non-Strix WSL distros all skip it and the
+# normal detection below runs unchanged. It can NEVER abort the installer: on
+# decline, missing tools, or failure it just returns 0 and the CPU/GPU fallback
+# proceeds. Runs the (idempotent) helper that installs ROCm 7.2 + builds
+# librocdxg, then sources the env it persisted so the detection below sees the
+# GPU and routes to the normal gfx1151 wheels.
+_maybe_bootstrap_rocm_wsl() {
+    [ "${OS:-}" = "wsl" ] || return 0
+    [ "${SKIP_TORCH:-false}" = "false" ] || return 0
+    [ "${UNSLOTH_SKIP_ROCM_WSL_SETUP:-0}" = "1" ] && return 0
+    # Leave any already-usable GPU completely alone (NVIDIA, or working ROCm).
+    if _has_usable_nvidia_gpu; then return 0; fi
+    if _has_amd_rocm_gpu;     then return 0; fi
+    # WSL GPU passthrough device must exist (present on any WSL2 GPU host).
+    [ -e /dev/dxg ] || return 0
+    # Only Strix Halo (gfx1151): rocminfo can't tell us the arch yet, so match
+    # the CPU model string WSL exposes (e.g. "AMD Ryzen AI Max+ ... Radeon 8060S").
+    grep -qiE 'Ryzen AI Max|Radeon 80[0-9]0S|Strix Halo' /proc/cpuinfo 2>/dev/null || return 0
+    command -v bash >/dev/null 2>&1 || return 0
+
+    # Fast path: already configured (librocdxg present) but we were launched from
+    # a non-login shell so the persisted env wasn't loaded -- just load it and
+    # let the normal detection below enumerate the GPU. No helper re-run.
+    if [ -e /opt/rocm/lib/librocdxg.so ] || [ -e /opt/rocm/lib64/librocdxg.so ]; then
+        if [ -r /etc/profile.d/unsloth-rocm-wsl.sh ]; then
+            # shellcheck disable=SC1091
+            . /etc/profile.d/unsloth-rocm-wsl.sh || true
+        else
+            export HSA_ENABLE_DXG_DETECTION=1
+        fi
+        return 0
+    fi
+
+    echo ""
+    substep "Detected AMD Strix Halo (Radeon 8000S) in WSL with no ROCm runtime yet." "$C_WARN"
+    substep "Unsloth can set up ROCm-on-WSL (ROCm 7.2 + librocdxg) to make this GPU usable."
+    substep "One-time, needs sudo and a large download. (skip: UNSLOTH_SKIP_ROCM_WSL_SETUP=1)"
+
+    # Locate the helper: prefer the copy shipped beside install.sh, else fetch it.
+    _rw_helper="${_REPO_ROOT:-.}/scripts/install_rocm_wsl_strixhalo.sh"
+    _rw_tmp=""
+    if [ ! -r "$_rw_helper" ]; then
+        _rw_tmp="$(mktemp 2>/dev/null || echo /tmp/_unsloth_rocm_wsl.sh)"
+        if download "https://raw.githubusercontent.com/unslothai/unsloth/main/scripts/install_rocm_wsl_strixhalo.sh" "$_rw_tmp" 2>/dev/null; then
+            _rw_helper="$_rw_tmp"
+        else
+            substep "Could not fetch the ROCm-on-WSL helper; using CPU fallback." "$C_WARN"
+            [ -n "$_rw_tmp" ] && rm -f "$_rw_tmp"
+            return 0
+        fi
+    fi
+
+    # Consent. UNSLOTH_ROCM_WSL_AUTO=1 runs without prompting; Tauri lets the app
+    # decide (just flag it); a TTY gets a [Y/n] prompt; otherwise we don't
+    # surprise-install and just point at the helper.
+    _rw_go=0
+    if [ "${UNSLOTH_ROCM_WSL_AUTO:-0}" = "1" ]; then
+        _rw_go=1
+    elif [ "${TAURI_MODE:-false}" = "true" ]; then
+        tauri_log "ROCM_WSL_AVAILABLE" "strixhalo"
+        substep "Run scripts/install_rocm_wsl_strixhalo.sh (or set UNSLOTH_ROCM_WSL_AUTO=1) to enable the GPU." "$C_WARN"
+    elif [ -r /dev/tty ]; then
+        printf "    Set up ROCm-on-WSL for this GPU now? [Y/n] "
+        read -r _rw_reply </dev/tty || _rw_reply="y"
+        case "$_rw_reply" in [nN]*) _rw_go=0 ;; *) _rw_go=1 ;; esac
+    else
+        substep "Non-interactive: skipping. Run scripts/install_rocm_wsl_strixhalo.sh or set UNSLOTH_ROCM_WSL_AUTO=1." "$C_WARN"
+    fi
+
+    if [ "$_rw_go" = "1" ]; then
+        # Helper does its own sudo + is idempotent. SMOKE_TEST=0: install.sh
+        # installs torch itself right after, into the real venv.
+        if UNSLOTH_WSL_SMOKE_TEST=0 bash "$_rw_helper"; then
+            # Pull the env the helper persisted into THIS shell so the detection
+            # below (rocminfo) now enumerates the GPU and routes to gfx1151.
+            if [ -r /etc/profile.d/unsloth-rocm-wsl.sh ]; then
+                # shellcheck disable=SC1091
+                . /etc/profile.d/unsloth-rocm-wsl.sh || true
+            fi
+            substep "ROCm-on-WSL ready; continuing with GPU install." "$C_OK"
+        else
+            substep "ROCm-on-WSL setup did not complete; falling back to CPU-only." "$C_WARN"
+        fi
+    fi
+    [ -n "$_rw_tmp" ] && rm -f "$_rw_tmp"
+    return 0
+}
+_maybe_bootstrap_rocm_wsl || true
+
 TORCH_INDEX_URL=$(get_torch_index_url)
 
 # rocm7.2 ships torch 2.11.0 -- adjust the constraint to allow it.
@@ -2103,7 +2198,7 @@ case "$TORCH_INDEX_URL" in
                 fi
                 substep "For an AMD GPU, ROCm-on-WSL currently needs ALL of:"
                 substep "  1. AMD Adrenalin Edition 26.1.1+ on Windows (26.2.2+ for Strix Halo / Ryzen AI Max+)."
-                substep "     Older drivers don't inject the ROCm/DXG runtime into /usr/lib/wsl/lib."
+                substep "     Older drivers lack production ROCDXG/WSL support, so ROCm can't see the GPU."
                 substep "     Get it from AMD (open in a browser -- direct downloads are referrer-gated):"
                 substep "       https://www.amd.com/en/resources/support-articles/release-notes/RN-RAD-WIN-26-2-2.html"
                 substep "  2. ROCm 7.2.1 + librocdxg inside WSL (with HSA_ENABLE_DXG_DETECTION=1)."
@@ -2115,7 +2210,8 @@ case "$TORCH_INDEX_URL" in
                 substep "  wsl --install Ubuntu-24.04        # run in Windows PowerShell, then reopen WSL"
                 substep "  # then re-run this installer inside Ubuntu-24.04 -- it will detect the GPU."
                 substep "AMD ROCm-on-WSL docs: https://rocm.docs.amd.com/projects/radeon-ryzen/en/latest/"
-                substep "Strix Halo (gfx1151) helper (experimental): unsloth/scripts/install_rocm_wsl_strixhalo.sh"
+                substep "Strix Halo (gfx1151): this installer auto-offers ROCm-on-WSL setup once the"
+                substep "  driver is current; or run unsloth/scripts/install_rocm_wsl_strixhalo.sh yourself."
             else
                 substep "AMD ROCm users: see https://docs.unsloth.ai/get-started/install-and-update/amd"
             fi
