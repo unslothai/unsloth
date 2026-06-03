@@ -79,7 +79,6 @@ import {
   AttachmentIcon,
   CodeIcon,
   Copy01Icon,
-  DatabaseIcon,
   Delete02Icon,
   Download01Icon,
   Edit03Icon,
@@ -1774,10 +1773,7 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
           MCP
           {mcpEnabledForChat ? <CheckIcon className="ml-auto" /> : null}
         </DropdownMenuItem>
-        <DropdownMenuItem>
-          <HugeiconsIcon icon={DatabaseIcon} strokeWidth={2} />
-          RAG
-        </DropdownMenuItem>
+        {/* RAG hidden temporarily */}
         <DropdownMenuItem onSelect={() => startCompare()}>
           <Columns2Icon />
           Compare chat

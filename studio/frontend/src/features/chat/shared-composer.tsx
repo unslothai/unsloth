@@ -38,7 +38,6 @@ import {
 import {
   AttachmentIcon,
   CodeIcon,
-  DatabaseIcon,
   Download01Icon,
   Folder01Icon,
   FolderAddIcon,
@@ -1241,10 +1240,7 @@ export function SharedComposer({
                 MCP
                 {mcpEnabledForChat ? <CheckIcon className="ml-auto" /> : null}
               </DropdownMenuItem>
-              <DropdownMenuItem>
-                <HugeiconsIcon icon={DatabaseIcon} strokeWidth={2} />
-                RAG
-              </DropdownMenuItem>
+              {/* RAG hidden temporarily */}
               {/* Always active: this menu only renders in compare mode.
                   Ticked like Web search/Code; click toggles it off. */}
               <DropdownMenuItem
