@@ -2006,6 +2006,58 @@ case "$TORCH_INDEX_URL" in
         fi
         ;;
 esac
+# ── RDNA2 (gfx1030-gfx1036, e.g. RX 6600/6700/6800/6900): cap to rocm6.2 ────
+# ROCm 7.x PyTorch wheels for gfx103x are dev/nightly builds (version string
+# contains a git hash like 2.10.0+rocm7.2.0.gitXXXXXXXX) that segfault during
+# unsloth import on RDNA2.  The last stable, tested wheel is rocm6.2 (torch
+# 2.7.x).  When the system has ROCm 7.x but the runtime GPU is RDNA2, override
+# TORCH_INDEX_URL to the rocm6.2 index so users get a stable install.
+case "$TORCH_INDEX_URL" in
+    */rocm7.*)
+        _rdna2_gfx_all=""
+        if command -v rocminfo >/dev/null 2>&1; then
+            _rdna2_gfx_all=$(rocminfo 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}')
+        fi
+        if [ -z "$_rdna2_gfx_all" ] && command -v amd-smi >/dev/null 2>&1; then
+            _rdna2_gfx_all=$(amd-smi list 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}')
+            if [ -z "$_rdna2_gfx_all" ]; then
+                _rdna2_gfx_all=$(amd-smi static --asic 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}')
+            fi
+        fi
+        _rdna2_runtime_gfx=""
+        if [ -n "$_rdna2_gfx_all" ]; then
+            _vis="${HIP_VISIBLE_DEVICES:-${ROCR_VISIBLE_DEVICES:-}}"
+            _idx=0
+            if [ -n "$_vis" ] && [ "$_vis" != "-1" ]; then
+                _first=${_vis%%,*}
+                case "$_first" in
+                    ''|*[!0-9]*) _idx=0 ;;
+                    *) _idx=$_first ;;
+                esac
+            fi
+            _rdna2_runtime_gfx=$(printf '%s\n' "$_rdna2_gfx_all" | awk -v idx="$_idx" '
+                NF && !seen[$0]++ { vals[n++] = $0 }
+                END {
+                    if (idx < 0 || idx >= n) idx = 0
+                    if (n > 0) print vals[idx]
+                }')
+        fi
+        case "$_rdna2_runtime_gfx" in
+            gfx1030|gfx1031|gfx1032|gfx1033|gfx1034|gfx1035|gfx1036)
+                _pytorch_base="${UNSLOTH_PYTORCH_MIRROR:-https://download.pytorch.org/whl}"
+                _pytorch_base="${_pytorch_base%/}"
+                echo "" >&2
+                echo "  [WARN] $_rdna2_runtime_gfx (RDNA2) + ROCm 7.x detected" >&2
+                echo "  [WARN] ROCm 7.x PyTorch wheels are dev/nightly builds on gfx103x" >&2
+                echo "  [WARN] and cause segfaults during unsloth import on RDNA2 hardware." >&2
+                echo "  [WARN] Capping to rocm6.2 (torch 2.7.x) -- the last stable wheel." >&2
+                echo "" >&2
+                TORCH_INDEX_URL="${_pytorch_base}/rocm6.2"
+                TORCH_CONSTRAINT="torch>=2.4,<2.11.0"
+                ;;
+        esac
+        ;;
+esac
 _TAURI_TORCH_INDEX_FAMILY=$(_tauri_torch_index_family "$TORCH_INDEX_URL")
 if [ "$_amd_gpu_radeon" = true ] && [ "$SKIP_TORCH" = false ]; then
     _TAURI_TORCH_INDEX_FAMILY="radeon"

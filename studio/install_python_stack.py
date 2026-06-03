@@ -672,6 +672,30 @@ def _ensure_rocm_torch() -> None:
 
     rocm_torch_ready = has_hip_torch
 
+    # RDNA2 (gfx1030-gfx1036, e.g. RX 6600/6700/6800/6900) cap
+    # ─────────────────────────────────────────────────────────────
+    # ROCm 7.x PyTorch builds are unstable on RDNA2: the gfx103x PyTorch wheels
+    # for ROCm 7.x are dev/nightly builds (version suffix .gitXXXXXXXX) that
+    # segfault during unsloth import on these GPUs.  The last stable, tested
+    # PyTorch for RDNA2 is the rocm6.2 wheel.  When the runtime GPU is RDNA2
+    # and the system has ROCm 7.x installed, override the tag selection to
+    # rocm6.2 so users get a stable torch regardless of their ROCm stack version.
+    _RDNA2_GFX = {"gfx1030", "gfx1031", "gfx1032", "gfx1033", "gfx1034", "gfx1035", "gfx1036"}
+    _rdna2_cap_tag: "str | None" = None
+    if ver >= (7, 0):
+        gfx_codes = _detect_amd_gfx_codes()
+        _runtime_gfx = (
+            gfx_codes[_pick_visible_index(len(gfx_codes))] if gfx_codes else None
+        )
+        if _runtime_gfx in _RDNA2_GFX:
+            _rdna2_cap_tag = "rocm6.2"
+            print(
+                f"\n   {_runtime_gfx} (RDNA2) detected with ROCm {ver[0]}.{ver[1]}.\n"
+                f"   ROCm 7.x PyTorch wheels are unstable on RDNA2 (dev builds that\n"
+                f"   segfault on import). Capping torch install to the last known-good\n"
+                f"   wheel: pytorch.org/whl/rocm6.2 (torch 2.7.x).\n"
+            )
+
     # Strix Halo / Strix Point (gfx1151 / gfx1150) segfault under ROCm 7.1
     # in torch._grouped_mm. AMD's per-gfx repo ships torch 2.11.0+rocm7.13.0
     # with the real fix, so route those hosts there instead of the generic
@@ -743,16 +767,22 @@ def _ensure_rocm_torch() -> None:
             constrain = False,
         )
         rocm_torch_ready = True
-    elif not has_hip_torch:
-        # Select best matching wheel tag (newest ROCm version <= installed)
-        tag = next(
-            (
-                t
-                for (maj, mn), t in sorted(_ROCM_TORCH_INDEX.items(), reverse = True)
-                if ver >= (maj, mn)
-            ),
-            None,
-        )
+    elif _rdna2_cap_tag is not None or not has_hip_torch:
+        # RDNA2 with ROCm 7.x: force the capped tag regardless of whether
+        # a hip torch is already present -- the dev build that ends up there
+        # is exactly what we need to replace.
+        # Otherwise: select best matching wheel tag (newest ROCm version <= installed).
+        if _rdna2_cap_tag is not None:
+            tag = _rdna2_cap_tag
+        else:
+            tag = next(
+                (
+                    t
+                    for (maj, mn), t in sorted(_ROCM_TORCH_INDEX.items(), reverse = True)
+                    if ver >= (maj, mn)
+                ),
+                None,
+            )
         if tag is None:
             print(f"   No PyTorch wheel for ROCm {ver[0]}.{ver[1]} -- " f"skipping torch reinstall")
         else:
