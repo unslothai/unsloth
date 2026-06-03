@@ -1415,10 +1415,16 @@ _have_cuda_llama_server() {
 }
 if [ "$_HOST_SYSTEM" = "Linux" ] \
         && { [ "$_HOST_MACHINE" = "aarch64" ] || [ "$_HOST_MACHINE" = "arm64" ]; } \
+        && ! grep -qi microsoft /proc/version 2>/dev/null \
         && [ "${UNSLOTH_NO_LLAMA_CUDA:-0}" != "1" ] \
         && command -v nvidia-smi >/dev/null 2>&1 \
         && nvidia-smi -L 2>/dev/null | awk '/^GPU[[:space:]]+[0-9]+:/{found=1} END{exit !found}' \
         && ! _have_cuda_llama_server; then
+    # NOTE: WSL2 is intentionally excluded above (grep microsoft /proc/version) --
+    # under WSL the Windows installer (install.ps1) provisions the CUDA llama.cpp
+    # in the BACKGROUND after setup completes, so doing it here too would (a) run a
+    # heavy build in the FOREGROUND during install and (b) duplicate that work.
+    # This block is for NATIVE Linux (DGX Spark / GB10) only.
     # Resolve provision_llama_cuda.sh: prefer the copy shipped beside setup.sh
     # (packaged via studio/scripts/*.sh), then the local-dev repo, else fetch
     # the pinned raw copy from GitHub (mirrors install.ps1's WSL fetch) so the
