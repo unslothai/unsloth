@@ -14,7 +14,7 @@ import { createMathPlugin } from "@streamdown/math";
 import { mermaid } from "@streamdown/mermaid";
 import { DownloadIcon } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Block, type BlockProps, Streamdown, type UrlTransform } from "streamdown";
+import { Block, type BlockProps, Streamdown, defaultUrlTransform, type UrlTransform } from "streamdown";
 import { createCodePlugin } from "./code-plugin";
 import "katex/dist/katex.min.css";
 import { AudioPlayer } from "./audio-player";
@@ -428,8 +428,9 @@ function useRafCoalescedText(text: string, isStreaming: boolean): string {
 }
 
 const safeImageUrl: UrlTransform = (url, _key, node) => {
-  // Only restrict image src; leave link hrefs and other attributes alone.
-  if (node.tagName !== "img") return url;
+  // For non-image nodes, delegate to the library default so Streamdown's
+  // built-in javascript: / data: link sanitization remains intact.
+  if (node.tagName !== "img") return defaultUrlTransform(url, _key, node);
 
   // Strip ASCII control characters (U+0000–U+001F, U+007F) before any
   // checks.  Browsers remove these during URL parsing, so a raw value like
