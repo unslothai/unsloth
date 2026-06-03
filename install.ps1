@@ -1470,9 +1470,13 @@ shell.Run cmd, 0, False
     $_nativeCudaTorchOk = $false
     if ($_winArm64 -and $HasNvidiaSmi -and (-not $SkipTorch)) {
         # Future-proof check: can a CUDA-capable torch wheel be resolved natively for this platform/index?
+        # MUST use the SAME spec as the real native install below ("torch>=2.4,<2.11.0"). A bare `torch`
+        # probe is too loose -- the cu130 index can carry an out-of-range version (e.g. torch<2.4 or a
+        # nightly >2.11) whose win_arm64 wheel makes the dry-run pass, giving a FALSE POSITIVE that skips
+        # the WSL fallback and then fails the real install at the pinned range.
         $prevEapProbe = $ErrorActionPreference; $ErrorActionPreference = "Continue"
         try {
-            & uv pip install --python $VenvPython --dry-run torch --index-url $TorchIndexUrl *> $null
+            & uv pip install --python $VenvPython --dry-run "torch>=2.4,<2.11.0" --index-url $TorchIndexUrl *> $null
             $_nativeCudaTorchOk = ($LASTEXITCODE -eq 0)
         } catch { $_nativeCudaTorchOk = $false } finally { $ErrorActionPreference = $prevEapProbe }
         if ($_nativeCudaTorchOk) { step "gpu" "native CUDA PyTorch now available for win_arm64 -- keeping native install" "Green" }
