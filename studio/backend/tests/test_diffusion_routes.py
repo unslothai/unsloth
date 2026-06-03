@@ -175,7 +175,15 @@ class _FakeBackend:
                     "default_frame_rate": 24.0,
                 },
             ],
-            "optimization_options": {"compile": {"torch_compile_available": True}},
+            "optimization_options": {
+                "attention": {
+                    "available": ["auto", "flash", "sdpa", "flex", "xformers"],
+                    "default": "auto",
+                    "fallback_order": ["flash", "sdpa", "flex", "xformers", "default"],
+                },
+                "compile": {"torch_compile_available": True},
+            },
+            "attention_backend": None,
         }
 
     def load_model(self, repo_id, **kw):
@@ -636,6 +644,7 @@ def test_load_v2_contract_normalizes_model_components_runtime_and_adapter(app_wi
                 "gguf_quantized_cpu_resident": True,
                 "gguf_pin_cpu_resident": True,
                 "torch_compile": "none",
+                "attention_backend": "flash",
             },
             "adapters": [
                 {
@@ -669,6 +678,7 @@ def test_load_v2_contract_normalizes_model_components_runtime_and_adapter(app_wi
     assert call["gguf_quantized_cpu_resident"] is True
     assert call["gguf_pin_cpu_resident"] is True
     assert call["torch_compile"] == "none"
+    assert call["attention_backend"] == "flash"
 
 
 def test_video_lifecycle_routes_delegate_to_diffusion_backend(app_with_stub):
@@ -723,6 +733,8 @@ def test_image_and_video_capabilities_endpoints(app_with_stub):
     assert image_caps["parameters"]["width"]["multiple_of"] == 8
     assert "prompt" in image_caps["pipeline_signature"]["call_kwargs"]
     assert image_caps["pipeline_signature"]["accepts_var_kwargs"] is True
+    assert image_caps["attention_backend"]["options"]["default"] == "auto"
+    assert "flash" in image_caps["attention_backend"]["options"]["available"]
     assert any(fam["name"] == "flux.2-klein" for fam in image_caps["families"])
 
     r = c.get("/api/inference/videos/capabilities")

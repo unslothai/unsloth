@@ -354,6 +354,7 @@ def test_supported_optimization_options_payload_shape():
         "offload_policies",
         "safetensors_quantizations",
         "safetensors_quantization_components",
+        "attention",
         "compile",
     }
 
@@ -419,6 +420,19 @@ def test_supported_optimization_options_payload_shape():
         "pe",
     ]
 
+    attention_options = payload["attention"]
+    assert attention_options["available"] == ["auto", "flash", "sdpa", "flex", "xformers"]
+    assert attention_options["default"] == "auto"
+    assert attention_options["fallback_order"] == [
+        "flash",
+        "sdpa",
+        "flex",
+        "xformers",
+        "default",
+    ]
+    assert attention_options["backend_load_arg"] == "attention_backend"
+    assert attention_options["diffusers_backend_candidates"]["sdpa"] == ["native"]
+
     compile_options = payload["compile"]
     assert compile_options["gguf_balanced_dequant_compile"]["default_enabled"] is True
     cache_options = compile_options["gguf_balanced_cuda_cache"]
@@ -459,6 +473,77 @@ def test_supported_optimization_options_payload_shape():
     ]
     assert compile_options["group_offload"]["image_default"] is False
     assert compile_options["group_offload"]["media_kind"] == "video"
+
+
+def test_attention_fallback_policy_matches_studio_order():
+    from core.inference.attention_policy import (
+        attention_fallback_order,
+        normalize_attention_backend,
+    )
+
+    assert normalize_attention_backend(None) == "auto"
+    assert attention_fallback_order("auto") == (
+        "flash",
+        "sdpa",
+        "flex",
+        "xformers",
+        "default",
+    )
+    assert attention_fallback_order("sdpa") == (
+        "sdpa",
+        "flex",
+        "xformers",
+        "default",
+    )
+    with pytest.raises(ValueError, match = "attention_backend must be one of"):
+        normalize_attention_backend("unknown")
+
+
+def test_diffusers_attention_adapter_falls_back_to_sdpa():
+    from core.inference.diffusion_attention import apply_diffusers_attention_backend
+
+    class FakeTransformer:
+        def __init__(self):
+            self.backend = None
+            self.reset_count = 0
+
+        def set_attention_backend(self, backend):
+            if backend in {"_flash_3_hub", "flash", "_native_flash"}:
+                raise RuntimeError(f"{backend} unavailable")
+            self.backend = backend
+
+        def reset_attention_backend(self):
+            self.reset_count += 1
+            self.backend = None
+
+    class FakePipe:
+        def __init__(self):
+            self.transformer = FakeTransformer()
+
+    pipe = FakePipe()
+    result = apply_diffusers_attention_backend(pipe, "flash")
+
+    assert result["requested"] == "flash"
+    assert result["effective"] == "sdpa"
+    assert result["diffusers_backend"] == "native"
+    assert result["applied"] is True
+    assert pipe.transformer.backend == "native"
+    assert result["errors"]
+
+
+def test_diffusers_attention_adapter_falls_back_to_default_without_targets():
+    from core.inference.diffusion_attention import apply_diffusers_attention_backend
+
+    class FakePipe:
+        pass
+
+    result = apply_diffusers_attention_backend(FakePipe(), "xformers")
+
+    assert result["requested"] == "xformers"
+    assert result["effective"] == "default"
+    assert result["diffusers_backend"] == "default"
+    assert result["applied"] is False
+    assert result["warnings"]
 
 
 # ── singleton ───────────────────────────────────────────────────
@@ -510,6 +595,7 @@ def test_status_shape_unloaded():
         "offload_policy",
         "gguf_execution_backend",
         "gguf_prepared_module_counts",
+        "attention_backend",
         "safetensors_quantization",
         "safetensors_quantization_components",
         "load_timings",

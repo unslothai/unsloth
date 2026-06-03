@@ -2479,6 +2479,14 @@ def _runtime_torch_compile(payload: DiffusionLoadRequest) -> Optional[str]:
     return None
 
 
+def _runtime_attention_backend(payload: DiffusionLoadRequest) -> Optional[str]:
+    if payload.runtime and payload.runtime.attention_backend:
+        if payload.runtime.attention_backend == "auto":
+            return None
+        return payload.runtime.attention_backend
+    return None
+
+
 @dataclass(frozen = True)
 class _NormalizedDiffusionLoad:
     repo_id: Optional[str]
@@ -2505,6 +2513,7 @@ class _NormalizedDiffusionLoad:
     safetensors_quantization: Optional[str]
     safetensors_quantization_components: Optional[list[str]]
     torch_compile: Optional[str]
+    attention_backend: Optional[str]
 
 
 def _normalize_diffusion_load_request(
@@ -2596,6 +2605,7 @@ def _normalize_diffusion_load_request(
             payload.safetensors_quantization_components or runtime_components
         ),
         torch_compile = _runtime_torch_compile(payload),
+        attention_backend = _runtime_attention_backend(payload),
     )
 
 
@@ -2849,6 +2859,8 @@ def _diffusion_capabilities(*, media_kind: str) -> dict[str, Any]:
     else:
         input_roles.extend(["init_frame", "conditioning_audio", "source_video"])
         outputs = [{"type": "video", "formats": ["mp4"], "supports_multiple": False}]
+    runtime_options = status.get("optimization_options") or {}
+    attention_options = runtime_options.get("attention", {})
     return {
         "api_version": "2026-06-03",
         "media_kind": media_kind,
@@ -2880,11 +2892,15 @@ def _diffusion_capabilities(*, media_kind: str) -> dict[str, Any]:
             "frame_rate": {"type": "float", "min": 0, "max": 240, "default": defaults.get("frame_rate")},
         },
         "sampler": status.get("sampling_contract"),
+        "attention_backend": {
+            "current": status.get("attention_backend"),
+            "options": attention_options,
+        },
         "pipeline_signature": {
             "call_kwargs": sorted(call_kwargs),
             "accepts_var_kwargs": accepts_var_kwargs,
         },
-        "runtime": status.get("optimization_options", {}),
+        "runtime": runtime_options,
         "families": families,
         "options_schema": {},
         "warnings": [],
@@ -2959,6 +2975,7 @@ async def diffusion_load(
             normalized.safetensors_quantization_components
         )
         planned_torch_compile = normalized.torch_compile
+        planned_attention_backend = normalized.attention_backend
         if payload.preset_id:
             try:
                 from core.inference.diffusion import resolve_diffusion_load_plan
@@ -2987,6 +3004,7 @@ async def diffusion_load(
                     safetensors_quantization_components = (
                         normalized.safetensors_quantization_components
                     ),
+                    attention_backend = normalized.attention_backend,
                     require_loadable = True,
                 )
             except ValueError as exc:
@@ -3014,6 +3032,7 @@ async def diffusion_load(
                 "safetensors_quantization_components"
             ]
             planned_torch_compile = normalized.torch_compile
+            planned_attention_backend = normalized.attention_backend
         resolved_repo_id = (
             _resolve_diffusion_repo_for_request(
                 planned_repo_id,
@@ -3093,6 +3112,8 @@ async def diffusion_load(
             }
             if planned_torch_compile is not None:
                 backend_load_kwargs["torch_compile"] = planned_torch_compile
+            if planned_attention_backend is not None:
+                backend_load_kwargs["attention_backend"] = planned_attention_backend
             status = await asyncio.get_running_loop().run_in_executor(
                 None,
                 lambda: backend.load_model(**backend_load_kwargs),
@@ -3226,6 +3247,7 @@ async def diffusion_load_plan(
             safetensors_quantization_components = (
                 normalized.safetensors_quantization_components
             ),
+            attention_backend = normalized.attention_backend,
             require_loadable = False,
         )
     except ValueError as exc:

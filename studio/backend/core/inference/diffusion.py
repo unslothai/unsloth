@@ -50,6 +50,14 @@ from typing import Any, Callable, Optional
 
 from loggers import get_logger
 
+from .attention_policy import (
+    normalize_attention_backend,
+    supported_attention_options,
+)
+from .diffusion_attention import (
+    DIFFUSERS_ATTENTION_BACKEND_CANDIDATES,
+    apply_diffusers_attention_backend,
+)
 from .diffusion_video import (
     disable_ltx2_distilled_lora_adapter,
     enable_ltx2_distilled_lora_adapter,
@@ -1812,6 +1820,7 @@ def resolve_diffusion_load_plan(
     offload_policy: Optional[str] = None,
     safetensors_quantization: Optional[str] = None,
     safetensors_quantization_components: Optional[list[str]] = None,
+    attention_backend: Optional[str] = None,
     require_loadable: bool = False,
 ) -> dict[str, Any]:
     """Expand a Studio preset into concrete DiffusionBackend kwargs.
@@ -1833,6 +1842,11 @@ def resolve_diffusion_load_plan(
             _normalize_safetensors_quantization_components(
                 safetensors_quantization_components
             )
+        )
+        normalized_attention_backend = (
+            normalize_attention_backend(attention_backend)
+            if attention_backend is not None
+            else None
         )
         if (
             normalized_safetensors_quantization
@@ -1872,6 +1886,7 @@ def resolve_diffusion_load_plan(
             "safetensors_quantization_components": (
                 normalized_safetensors_quantization_components
             ),
+            "attention_backend": normalized_attention_backend,
         }
         return {
             "preset": None,
@@ -1889,6 +1904,11 @@ def resolve_diffusion_load_plan(
         _normalize_safetensors_quantization_components(
             safetensors_quantization_components
         )
+    )
+    normalized_attention_backend = (
+        normalize_attention_backend(attention_backend)
+        if attention_backend is not None
+        else None
     )
     fam = _family_by_name(preset.family)
     if fam is None:
@@ -1984,6 +2004,7 @@ def resolve_diffusion_load_plan(
         "safetensors_quantization_components": (
             normalized_safetensors_quantization_components
         ),
+        "attention_backend": normalized_attention_backend,
     }
     ready_to_load = bool(planned_transformer_filename)
     return {
@@ -2930,6 +2951,20 @@ def supported_optimization_options() -> dict[str, Any]:
         "safetensors_quantization_components": list(
             DIFFUSION_SAFETENSORS_QUANT_DEFAULT_COMPONENTS
         ),
+        "attention": {
+            **supported_attention_options(),
+            "backend_load_arg": "attention_backend",
+            "diffusers_backend_candidates": {
+                logical: list(candidates)
+                for logical, candidates in DIFFUSERS_ATTENTION_BACKEND_CANDIDATES.items()
+            },
+            "reason": (
+                "Studio exposes logical attention choices and maps them to "
+                "Diffusers implementation names at load time. Unavailable "
+                "backends fall through to the next logical backend and are "
+                "reported in status instead of making the load fail."
+            ),
+        },
         "compile": {
             "torch_compile_available": torch_compile_available,
             "gguf_balanced_dequant_compile": {
@@ -4066,6 +4101,7 @@ class DiffusionBackend:
         self._gguf_prepared_module_counts: dict[str, int] = {}
         self._torch_compile_config: Optional[dict[str, Any]] = None
         self._torch_compile_stats: Optional[dict[str, Any]] = None
+        self._attention_backend_config: Optional[dict[str, Any]] = None
         self._safetensors_quantization: Optional[str] = None
         self._safetensors_quantization_components: Optional[list[str]] = None
         self._ltx2_latent_upsampler: Any = None
@@ -4260,6 +4296,11 @@ class DiffusionBackend:
                     if self._torch_compile_stats is not None
                     else None
                 ),
+                "attention_backend": (
+                    dict(self._attention_backend_config)
+                    if self._attention_backend_config is not None
+                    else None
+                ),
                 "safetensors_quantization": self._safetensors_quantization,
                 "safetensors_quantization_components": (
                     list(self._safetensors_quantization_components)
@@ -4406,6 +4447,7 @@ class DiffusionBackend:
         torch_compile_fullgraph: Optional[bool] = None,
         torch_compile_dynamic: Optional[bool] = None,
         torch_compile_options: Optional[dict[str, Any]] = None,
+        attention_backend: Optional[str] = None,
         ignore_public_load_pending_workload: Optional[str] = None,
     ) -> dict[str, Any]:
         """Load a diffusion model.
@@ -4457,6 +4499,11 @@ class DiffusionBackend:
         omitted, regular safetensors and BnB NF4 safetensors loads default
         to ``regional``; GGUF and TorchAO loads default to ``none``.
         This is intentionally not wired to the Studio UI yet.
+
+        ``attention_backend`` is Studio's logical attention request:
+        ``auto``, ``flash``, ``sdpa``, ``flex``, or ``xformers``. The
+        Diffusers adapter maps that to version-specific backend names
+        and falls back without failing the load when one is unavailable.
 
         ``lora_repo`` optionally points at a Diffusers LoRA adapter repo
         or local path. When provided, the adapter is attached after the
@@ -4689,6 +4736,8 @@ class DiffusionBackend:
             "dynamic": effective_torch_compile_dynamic,
             "options": dict(effective_torch_compile_options or {}),
         }
+        resolved_attention_backend = normalize_attention_backend(attention_backend)
+        attention_backend_config: Optional[dict[str, Any]] = None
 
         # Round 32 P1 #3: track whether the backend-side
         # helper-busy check published a "diffusion-backend" pending
@@ -5232,6 +5281,7 @@ class DiffusionBackend:
                         self._gguf_prepared_module_counts = {}
                         self._torch_compile_config = None
                         self._torch_compile_stats = None
+                        self._attention_backend_config = None
                         self._safetensors_quantization = None
                         self._safetensors_quantization_components = None
                         self._load_timings = {}
@@ -5576,6 +5626,11 @@ class DiffusionBackend:
                         )
                     with _load_phase("apply_memory_policy"):
                         _apply_diffusion_memory_policy(pipe, resolved_offload_policy)
+                    with _load_phase("attention_backend"):
+                        attention_backend_config = apply_diffusers_attention_backend(
+                            pipe,
+                            resolved_attention_backend,
+                        )
                     if resolved_torch_compile != DIFFUSION_TORCH_COMPILE_NONE:
                         if diffusion_gguf_filename and device == "cuda":
                             try:
@@ -5715,6 +5770,11 @@ class DiffusionBackend:
                     self._torch_compile_stats = (
                         dict(torch_compile_stats)
                         if torch_compile_stats is not None
+                        else None
+                    )
+                    self._attention_backend_config = (
+                        dict(attention_backend_config)
+                        if attention_backend_config is not None
                         else None
                     )
                     self._safetensors_quantization = (
@@ -5968,6 +6028,7 @@ class DiffusionBackend:
                 self._gguf_prepared_module_counts = {}
                 self._torch_compile_config = None
                 self._torch_compile_stats = None
+                self._attention_backend_config = None
                 self._safetensors_quantization = None
                 self._safetensors_quantization_components = None
                 self._load_timings = {}

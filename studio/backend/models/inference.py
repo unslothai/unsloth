@@ -116,6 +116,9 @@ class DiffusionRuntimeSpec(BaseModel):
         ]
     ] = None
     torch_compile: Optional[Literal["auto", "none", "regional", "transformer", "pipeline"]] = None
+    attention_backend: Optional[
+        Literal["auto", "flash", "sdpa", "flex", "xformers"]
+    ] = None
 
 
 class DiffusionInputSpec(BaseModel):
