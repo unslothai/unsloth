@@ -201,10 +201,10 @@ export function ArtifactSurface({
       tabIndex={variant === "overlay" ? -1 : undefined}
       onKeyDown={handleDialogKeyDown}
       className={cn(
-        "relative flex min-h-0 flex-col border border-border bg-background",
+        "relative flex min-h-0 flex-col bg-background",
         variant === "panel"
-          ? "artifact-panel-shell mx-2 mt-[72px] mb-8 h-[calc(100%_-_104px)] overflow-visible rounded-[28px] border-border/70 bg-card/95 [box-shadow:rgba(0,0,0,0.16)_0px_2px_8px_-2px]"
-          : "h-[min(92vh,900px)] w-[min(96vw,1200px)] overflow-hidden rounded-2xl shadow-xl",
+          ? "artifact-panel-shell mx-2 mt-[72px] mb-8 h-[calc(100%_-_104px)] overflow-visible rounded-[28px] border-t border-border/70 bg-card/95"
+          : "h-[min(92vh,900px)] w-[min(96vw,1200px)] overflow-hidden rounded-2xl border border-border shadow-xl",
       )}
       aria-label={`${artifact.title} artifact`}
     >
@@ -330,7 +330,7 @@ export function ArtifactSurface({
             className="h-full"
           />
         ) : (
-          <div className="h-full overflow-auto text-xs leading-relaxed [&_[data-streamdown=code-block]]:!rounded-none [&_pre]:!m-0 [&_pre]:!bg-transparent [&_pre]:!p-0 [&_pre]:text-xs [&_pre]:leading-relaxed [&_code]:text-xs">
+          <div className="h-full overflow-auto text-xs leading-relaxed [&_[data-streamdown=code-block]]:!my-0 [&_[data-streamdown=code-block]]:!gap-0 [&_[data-streamdown=code-block]]:!rounded-none [&_[data-streamdown=code-block]]:!border-0 [&_[data-streamdown=code-block]]:!bg-transparent [&_[data-streamdown=code-block]]:!p-0 [&_[data-streamdown=code-block-body]]:!border-0 [&_[data-streamdown=code-block-body]]:!bg-transparent [&_[data-streamdown=code-block-body]]:!p-0 [&_pre]:!m-0 [&_pre]:!bg-transparent [&_pre]:!p-0 [&_pre]:text-xs [&_pre]:leading-relaxed [&_code]:text-xs">
             <Streamdown
               mode="streaming"
               plugins={{ code: artifactSourceCodePlugin }}

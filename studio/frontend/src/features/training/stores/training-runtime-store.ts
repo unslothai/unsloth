@@ -46,6 +46,7 @@ const initialState: TrainingRuntimeState = {
   resetGeneration: 0,
   stopRequested: false,
   selectedHistoryRunId: null,
+  currentRunViewActive: false,
 };
 
 function sortSeries(points: TrainingSeriesPoint[]): TrainingSeriesPoint[] {
@@ -181,6 +182,9 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()((set) => (
 
   setSelectedHistoryRunId: (selectedHistoryRunId) =>
     set({ selectedHistoryRunId }),
+
+  setCurrentRunViewActive: (currentRunViewActive) =>
+    set({ currentRunViewActive }),
 
   applyStatus: (payload) =>
     set((state) => {

@@ -334,6 +334,7 @@ type ChatRuntimeStore = {
   chatTemplateOverride: string | null;
   loadedChatTemplateOverride: string | null;
   activeThreadId: string | null;
+  activeProjectId: string | null;
   settingsPanelOpen: boolean;
   pendingAudioBase64: string | null;
   pendingAudioName: string | null;
@@ -365,6 +366,7 @@ type ChatRuntimeStore = {
   setModelsError: (error: string | null) => void;
   setCheckpoint: (modelId: string, ggufVariant?: string | null) => void;
   setActiveThreadId: (threadId: string | null) => void;
+  setActiveProjectId: (projectId: string | null) => void;
   setSettingsPanelOpen: (open: boolean) => void;
   clearCheckpoint: () => void;
   setReasoningEnabled: (
@@ -665,6 +667,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   chatTemplateOverride: null,
   loadedChatTemplateOverride: null,
   activeThreadId: null,
+  activeProjectId: null,
   settingsPanelOpen: false,
   pendingAudioBase64: null,
   pendingAudioName: null,
@@ -828,6 +831,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     }),
   setActiveThreadId: (activeThreadId) =>
     set({ activeThreadId, contextUsage: null }),
+  setActiveProjectId: (activeProjectId) => set({ activeProjectId }),
   setSettingsPanelOpen: (settingsPanelOpen) => set({ settingsPanelOpen }),
   clearCheckpoint: () => {
     // Mirror setCheckpoint's persistence behavior: dropping the

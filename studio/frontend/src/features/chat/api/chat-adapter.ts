@@ -47,6 +47,7 @@ import type {
 import type { ChatModelSummary } from "../types/runtime";
 import {
   getStoredChatThread,
+  getStoredChatProject,
   listStoredChatThreads,
   updateStoredChatThread,
 } from "../utils/chat-history-storage";
@@ -866,6 +867,45 @@ async function resolveUseAdapter(
   }
 }
 
+async function resolveProjectInstructions(
+  threadId: string | undefined,
+): Promise<string> {
+  const projectId = await resolveProjectId(threadId);
+  if (!projectId) {
+    return "";
+  }
+
+  const project = await getStoredChatProject(projectId).catch(() => null);
+  if (!project || project.archived) {
+    return "";
+  }
+  return project.instructions?.trim() ?? "";
+}
+
+async function resolveProjectId(
+  threadId: string | undefined,
+): Promise<string | null> {
+  let projectId: string | null | undefined;
+  if (threadId) {
+    const thread = await getStoredChatThread(threadId).catch(() => null);
+    projectId = thread?.projectId ?? null;
+  }
+  if (!projectId) {
+    projectId = useChatRuntimeStore.getState().activeProjectId;
+  }
+  if (!projectId) {
+    return null;
+  }
+  return projectId;
+}
+
+async function resolveSandboxSessionId(
+  threadId: string | undefined,
+): Promise<string | undefined> {
+  const projectId = await resolveProjectId(threadId);
+  return projectId ? `project-${projectId}` : threadId;
+}
+
 /** Wait for an in-progress model load to finish (polls store every 500ms). */
 function waitForModelReady(abortSignal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -1205,6 +1245,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       // the user switches chats while waiting for model load / auto-load.
       const resolvedThreadId =
         (unstable_threadId ?? runtime.activeThreadId) || undefined;
+      const sandboxSessionId = await resolveSandboxSessionId(resolvedThreadId);
       const resolvedThreadKey = resolvedThreadId ?? null;
       const pendingImageEditReferenceForRun = runtime.pendingImageEditReference;
       const selectedImageEditReference =
@@ -1445,10 +1486,20 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
 
       const safeSystemPrompt =
         typeof params.systemPrompt === "string" ? params.systemPrompt : "";
-      if (safeSystemPrompt.trim()) {
+      const projectInstructions =
+        await resolveProjectInstructions(resolvedThreadId);
+      const combinedSystemPrompt = [
+        projectInstructions
+          ? `<project_instructions>\n${projectInstructions}\n</project_instructions>`
+          : "",
+        safeSystemPrompt.trim(),
+      ]
+        .filter(Boolean)
+        .join("\n\n");
+      if (combinedSystemPrompt) {
         outboundMessages.unshift({
           role: "system",
-          content: safeSystemPrompt.trim(),
+          content: combinedSystemPrompt,
         });
       }
       let disabledToolGuard: string | null = null;
@@ -1765,7 +1816,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       // /inference/cancel explicitly on abort.
       const onAbortCancel = () => {
         const body: Record<string, string> = { cancel_id: cancelId };
-        if (resolvedThreadId) body.session_id = resolvedThreadId;
+        if (sandboxSessionId) body.session_id = sandboxSessionId;
         // Plain fetch, not authFetch: authFetch redirects to login on
         // 401, which would kick the user out mid-stop.
         const token = getAuthToken();
@@ -2080,7 +2131,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             image_base64: imageBase64,
             audio_base64: audioBase64,
             cancel_id: cancelId,
-            ...(resolvedThreadId ? { session_id: resolvedThreadId } : {}),
+            ...(sandboxSessionId ? { session_id: sandboxSessionId } : {}),
             ...(useAdapter === undefined ? {} : { use_adapter: useAdapter }),
             ...(supportsReasoning
               ? reasoningStyle === "reasoning_effort"
@@ -2275,7 +2326,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                       const text = rawResult.slice(0, imgIdx);
                       // Fall back to "_default" to match the backend sandbox directory
                       // used when no session_id is provided (see tools.py _get_workdir).
-                      const sessionId = resolvedThreadId || "_default";
+                      const sessionId = sandboxSessionId || "_default";
                       try {
                         const images = JSON.parse(
                           rawResult.slice(imgIdx + imgMarker.length),
