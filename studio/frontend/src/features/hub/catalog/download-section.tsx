@@ -3,9 +3,7 @@
 
 import { GgufDownloadCard } from "./gguf-download-card";
 import { SafetensorsDownloadCard } from "./safetensors-download-card";
-import type { InventoryHint, ModelInventoryFormat } from "../inventory";
-
-export type { InventoryHint } from "../inventory";
+import type { ModelInventoryFormat } from "../inventory";
 
 export function DownloadSection({
   repoId,
@@ -44,7 +42,7 @@ export function DownloadSection({
   onLoad: (opts: { ggufVariant?: string; expectedBytes?: number }) => void;
   onUseInChat?: () => void;
   onTrain?: () => void;
-  onChange?: (hint?: InventoryHint) => void;
+  onChange?: () => void;
 }) {
   if (isGguf) {
     return (

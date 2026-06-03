@@ -32,7 +32,6 @@ export type PendingHintReconciliationCommit = {
 type InventoryHintState = {
   pending: PendingInventoryHints;
   observedKeys: ObservedInventoryKeys;
-  rememberHint: (hint: InventoryHint) => void;
   pruneExpiredHints: () => void;
   commitReconciliations: (
     completedHints: readonly InventoryHint[],
@@ -179,14 +178,6 @@ export const useInventoryHintStore = create<InventoryHintState>()(
   (set, get) => ({
     pending: createPendingInventoryHints(),
     observedKeys: createObservedInventoryKeys(),
-    rememberHint: (hint) => {
-      const current = get().pending;
-      const next = rememberInventoryHint(current, hint);
-      if (pendingInventoryHintsEqual(current, next)) {
-        return;
-      }
-      set({ pending: next });
-    },
     pruneExpiredHints: () => {
       const current = get().pending;
       const next = pruneExpiredInventoryHints(current);

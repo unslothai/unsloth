@@ -14,7 +14,6 @@ import { inventoryRowMatches, scoreInventoryRow } from "../lib/inventory-search"
 import type {
   CachedInventoryRow,
   DiscoverRow,
-  InventoryHint,
   LocalInventoryRow,
 } from "../types";
 import {
@@ -212,7 +211,7 @@ export function DownloadedList({
   isDataset: boolean;
   inventoryTokens: readonly string[];
   deviceType: string | null;
-  onInventoryChange?: (hint?: InventoryHint) => void;
+  onInventoryChange?: () => void;
 }) {
   const inventoryItems = useMemo<InventoryItem[]>(() => {
     const merged: InventoryItem[] = [

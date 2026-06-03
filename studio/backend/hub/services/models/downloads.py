@@ -89,7 +89,9 @@ async def download_model_response(
             detail = f"Invalid repo_id: {repo_id!r}",
         )
     # Canonicalize so two different-cased paste-ins share one job + cache dir.
-    repo_id = resolve_cached_repo_id_case(repo_id, repo_type = "model")
+    repo_id = await asyncio.to_thread(
+        resolve_cached_repo_id_case, repo_id, repo_type = "model"
+    )
 
     variant = (body.gguf_variant or "").strip() or None
     if variant is not None and not _is_valid_gguf_variant(variant):
@@ -203,7 +205,9 @@ async def cancel_download_model_response(body: CancelDownloadRequest):
             status_code = 400,
             detail = f"Invalid repo_id: {repo_id!r}",
         )
-    repo_id = resolve_cached_repo_id_case(repo_id, repo_type = "model")
+    repo_id = await asyncio.to_thread(
+        resolve_cached_repo_id_case, repo_id, repo_type = "model"
+    )
     variant = (body.gguf_variant or "").strip() or None
     if variant is not None and not _is_valid_gguf_variant(variant):
         raise HTTPException(
@@ -229,7 +233,9 @@ async def get_download_status_response(
     repo_id = repo_id.strip()
     if not _is_valid_repo_id(repo_id):
         return DownloadJobStatus(state = "idle")
-    repo_id = resolve_cached_repo_id_case(repo_id, repo_type = "model")
+    repo_id = await asyncio.to_thread(
+        resolve_cached_repo_id_case, repo_id, repo_type = "model"
+    )
     variant = (gguf_variant or "").strip() or None
     key = _download_job_key(repo_id, variant)
     return _job_status(key, repo_id = repo_id, variant = variant)
@@ -241,7 +247,9 @@ async def get_active_downloads_response(repo_id: str = "") -> ActiveDownloadsRes
     if repo_id and not _is_valid_repo_id(repo_id):
         return ActiveDownloadsResponse(downloads = [])
     canonical_repo_id = (
-        resolve_cached_repo_id_case(repo_id, repo_type = "model") if repo_id else None
+        await asyncio.to_thread(resolve_cached_repo_id_case, repo_id, repo_type = "model")
+        if repo_id
+        else None
     )
     return ActiveDownloadsResponse(
         downloads = download_lifecycle.active_download_refs(

@@ -114,14 +114,22 @@ def _parent_is_alive(parent_pid: int) -> bool:
     """
     if sys.platform == "win32":
         import ctypes
+        from ctypes import wintypes
 
         SYNCHRONIZE = 0x00100000
         WAIT_OBJECT_0 = 0x0
         ERROR_INVALID_PARAMETER = 87
-        kernel32 = ctypes.windll.kernel32
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)
+        kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        kernel32.WaitForSingleObject.restype = wintypes.DWORD
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        ctypes.set_last_error(0)
         handle = kernel32.OpenProcess(SYNCHRONIZE, False, parent_pid)
         if not handle:
-            return kernel32.GetLastError() != ERROR_INVALID_PARAMETER
+            return ctypes.get_last_error() != ERROR_INVALID_PARAMETER
         try:
             return kernel32.WaitForSingleObject(handle, 0) != WAIT_OBJECT_0
         finally:

@@ -25,7 +25,6 @@ import {
   DownloadActionButton,
   DownloadCard,
 } from "./download-card";
-import type { InventoryHint } from "../inventory";
 import { useCardDelete } from "./use-card-delete";
 import { useDownloadCardState } from "./use-download-card-state";
 
@@ -46,7 +45,7 @@ export function DatasetDownloadSection({
   cachePath?: string | null;
   knownBytes?: number | null;
   onTrain?: () => void;
-  onChange?: (hint?: InventoryHint) => void;
+  onChange?: () => void;
 }) {
   const hfToken = useHfTokenStore((s) => s.token);
   const [deleteOpen, setDeleteOpen] = useState(false);

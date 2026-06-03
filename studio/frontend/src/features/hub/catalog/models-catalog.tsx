@@ -15,7 +15,6 @@ import {
 import type {
   CachedInventoryRow,
   DiscoverRow,
-  InventoryHint,
   LocalInventoryRow,
   ModelsTab,
 } from "../types";
@@ -60,7 +59,7 @@ export interface ModelsCatalogHandlers {
   onFetchMore: () => void;
   onClearFilters: () => void;
   onRetry: () => void;
-  onInventoryChange?: (hint?: InventoryHint) => void;
+  onInventoryChange?: () => void;
   onSwitchDevice?: () => void;
 }
 

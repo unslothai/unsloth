@@ -34,7 +34,7 @@ import {
 import { DotTag } from "./dot-tag";
 import { PathInfoButton } from "./path-info-button";
 import { useCardDelete } from "./use-card-delete";
-import type { InventoryHint, ModelInventoryFormat } from "../inventory";
+import type { ModelInventoryFormat } from "../inventory";
 import { useDownloadCardState } from "./use-download-card-state";
 
 function formatModelLabel(modelFormat?: ModelInventoryFormat | null): string {
@@ -79,7 +79,7 @@ export function SafetensorsDownloadCard({
   onLoad: (opts: { ggufVariant?: string; expectedBytes?: number }) => void;
   onUseInChat?: () => void;
   onTrain?: () => void;
-  onChange?: (hint?: InventoryHint) => void;
+  onChange?: () => void;
 }) {
   const hfToken = useHfTokenStore((s) => s.token);
   const online = useOnlineStatus();

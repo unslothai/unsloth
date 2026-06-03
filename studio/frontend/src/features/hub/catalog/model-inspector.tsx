@@ -48,7 +48,7 @@ import {
   useDownloadManagerStore,
 } from "../download-manager";
 import { DatasetDownloadSection } from "./dataset-download-section";
-import { DownloadSection, type InventoryHint } from "./download-section";
+import { DownloadSection } from "./download-section";
 import { LocalDatasetCard } from "./local-dataset-card";
 import { LocalOnDeviceCard } from "./local-on-device-card";
 import { ModelReadme } from "./model-readme";
@@ -314,7 +314,7 @@ export type ModelInspectorActions = {
   }) => void;
   onUseInChat: () => void;
   onTrain?: () => void;
-  onInventoryChange?: (hint?: InventoryHint) => void;
+  onInventoryChange?: () => void;
 };
 
 export const ModelInspector = memo(function ModelInspector({

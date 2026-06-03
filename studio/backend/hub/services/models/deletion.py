@@ -359,7 +359,9 @@ async def delete_cached_model_response(
             detail = "Unload the model before deleting",
         )
 
-    repo_key = resolve_cached_repo_id_case(repo_id, repo_type = "model")
+    repo_key = await asyncio.to_thread(
+        resolve_cached_repo_id_case, repo_id, repo_type = "model"
+    )
     if not downloads.registry.begin_delete(repo_key, variant):
         detail = (
             f"Cancel the {variant} download before deleting it."

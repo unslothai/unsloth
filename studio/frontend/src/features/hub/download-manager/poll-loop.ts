@@ -147,9 +147,10 @@ export function resolveProgressUpdate(
   madeProgress: boolean;
 } {
   const reported = progressResp.expected_bytes;
-  const backendOwnsGgufProgress =
-    job.kind === DOWNLOAD_KIND.MODEL && job.variant !== null && reported > 0;
-  // GGUF progress is already backend-owned (non-monotonic). For model/dataset
+  const isGgufVariantJob =
+    job.kind === DOWNLOAD_KIND.MODEL && job.variant !== null;
+  const backendOwnsGgufProgress = isGgufVariantJob && reported > 0;
+  // GGUF byte totals are backend-owned (non-monotonic). For model/dataset
   // snapshots we normally keep the displayed total monotonic to absorb
   // per-poll jitter, but a fresh attempt (server generation changed: XET
   // redownload, restart, re-adoption) must drop the stale high-water mark and
@@ -178,7 +179,15 @@ export function resolveProgressUpdate(
       : expected > 0
         ? downloadedBytes / expected
         : 0;
-  const fraction = Math.min(rawFraction, MAX_PROGRESS_FRACTION);
+  const cappedFraction = Math.min(rawFraction, MAX_PROGRESS_FRACTION);
+  // Keep the GGUF variant bar monotonic. Its backend progress is recomputed from
+  // the shared per-repo blobs/ dir each poll, so a sibling quant downloading into
+  // that dir, a generation bump as the variant finalizes, or a no-metadata poll
+  // can make a single reading read low. The displayed bar never moves backward
+  // within a job; a brand-new download resets it through startJob's seed fraction.
+  const fraction = isGgufVariantJob
+    ? Math.max(cappedFraction, job.fraction)
+    : cappedFraction;
   return {
     expected,
     downloadedBytes,

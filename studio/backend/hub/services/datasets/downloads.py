@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import threading
 import time
 from collections import OrderedDict
@@ -162,7 +163,9 @@ async def download_dataset_response(
             detail = f"Invalid repo_id: {repo_id!r}",
         )
     # Canonicalize so two different-cased paste-ins share one job + cache dir.
-    repo_id = resolve_cached_repo_id_case(repo_id, repo_type = "dataset")
+    repo_id = await asyncio.to_thread(
+        resolve_cached_repo_id_case, repo_id, repo_type = "dataset"
+    )
     key = _download_job_key(repo_id)
 
     transport = download_lifecycle.resolve_transport(body.use_xet)
@@ -219,7 +222,9 @@ async def cancel_dataset_download_response(body: CancelDatasetDownloadRequest) -
             status_code = 400,
             detail = f"Invalid repo_id: {repo_id!r}",
         )
-    repo_id = resolve_cached_repo_id_case(repo_id, repo_type = "dataset")
+    repo_id = await asyncio.to_thread(
+        resolve_cached_repo_id_case, repo_id, repo_type = "dataset"
+    )
     key = _download_job_key(repo_id)
 
     state = download_lifecycle.cancel_worker(
@@ -239,7 +244,9 @@ async def get_dataset_download_status_response(
     repo_id = repo_id.strip()
     if not _is_valid_repo_id(repo_id):
         return DatasetDownloadJobStatus(state = "idle")
-    repo_id = resolve_cached_repo_id_case(repo_id, repo_type = "dataset")
+    repo_id = await asyncio.to_thread(
+        resolve_cached_repo_id_case, repo_id, repo_type = "dataset"
+    )
     return _dataset_status(_download_job_key(repo_id), repo_id = repo_id)
 
 
@@ -250,7 +257,9 @@ async def get_active_dataset_downloads_response(
     if repo_id and not _is_valid_repo_id(repo_id):
         return ActiveDownloadsResponse(downloads = [])
     canonical_repo_id = (
-        resolve_cached_repo_id_case(repo_id, repo_type = "dataset") if repo_id else None
+        await asyncio.to_thread(resolve_cached_repo_id_case, repo_id, repo_type = "dataset")
+        if repo_id
+        else None
     )
     return ActiveDownloadsResponse(
         downloads = download_lifecycle.active_download_refs(

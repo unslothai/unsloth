@@ -25,11 +25,7 @@ import {
   type PendingInventoryHints,
   nextInventoryHintExpiryDelay,
 } from "./inventory-hints";
-import type {
-  CachedInventoryRow,
-  InventoryHint,
-  LocalInventoryRow,
-} from "./types";
+import type { CachedInventoryRow, LocalInventoryRow } from "./types";
 import {
   type DeviceInventorySource,
   inventoryEmptyRevalidationSignature,
@@ -50,7 +46,7 @@ export interface HubInventory {
   downloadedReady: boolean;
   inventoryError: boolean;
   inventoryWarning: boolean;
-  refreshInventory: (hint?: InventoryHint) => Promise<void>;
+  refreshInventory: () => Promise<void>;
 }
 
 export type HubInventoryKind = "models" | "datasets";
@@ -260,9 +256,6 @@ export function useHubInventory(
   const pendingHints = useInventoryHintStore((state) => state.pending);
   const observedInventoryKeys = useInventoryHintStore(
     (state) => state.observedKeys,
-  );
-  const rememberPendingInventoryHint = useInventoryHintStore(
-    (state) => state.rememberHint,
   );
   const pruneExpiredPendingHints = useInventoryHintStore(
     (state) => state.pruneExpiredHints,
@@ -541,13 +534,9 @@ export function useHubInventory(
     refreshLocalModelInventory,
     refreshModelInventory,
   ]);
-  const refreshInventory = useCallback(
-    async (hint?: InventoryHint) => {
-      if (hint) rememberPendingInventoryHint(hint);
-      await refreshDeviceInventory();
-    },
-    [refreshDeviceInventory, rememberPendingInventoryHint],
-  );
+  const refreshInventory = useCallback(async () => {
+    await refreshDeviceInventory();
+  }, [refreshDeviceInventory]);
   const downloadedReady = isDatasetMode ? datasetReady : modelReady;
   const hasInventoryRows =
     cachedRows.length > 0 || effectiveLocalRows.length > 0;

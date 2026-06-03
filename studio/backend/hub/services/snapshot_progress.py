@@ -109,9 +109,12 @@ def compute_snapshot_progress(
     meta_total, expected_hashes = metadata_resolver(repo_id, hf_token)
     expected_total = max(expected_total, meta_total)
 
-    # When hashes aren't resolved yet, a variant must not count finalized blobs
-    # unscoped: sibling quants share one blobs/ dir and would inflate a fresh
-    # variant. In-progress (.incomplete) blobs are always counted (own writes).
+    # When hashes aren't resolved yet, a variant must not count UNSCOPED blobs
+    # (finalized or .incomplete): sibling quants share one blobs/ dir, so a
+    # sibling's bytes would be attributed to this variant. Counting a sibling's
+    # .incomplete is what makes the bar jump backward (e.g. ~99% -> ~78%) the
+    # instant this variant finalizes and its own finalized blob is dropped
+    # unscoped. A no-variant snapshot owns the whole dir, so it counts unscoped.
     count_finalized_unscoped = variant is None
 
     readings: list[tuple[int, int, Optional[str], bool]] = []
@@ -137,7 +140,10 @@ def compute_snapshot_progress(
                         continue
                     if f.name.endswith(INCOMPLETE_SUFFIX):
                         blob_hash = f.name[: -len(INCOMPLETE_SUFFIX)]
-                        if expected_hashes and blob_hash not in expected_hashes:
+                        if expected_hashes:
+                            if blob_hash not in expected_hashes:
+                                continue
+                        elif not count_finalized_unscoped:
                             continue
                         in_progress_bytes += blob_bytes_present(f)
                     else:

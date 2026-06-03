@@ -58,7 +58,6 @@ import {
   GgufDownloadStatusCard,
   GgufDownloadingFallbackCard,
 } from "./gguf-status-cards";
-import type { InventoryHint } from "../inventory";
 import { PathInfoButton } from "./path-info-button";
 import { useDeleteConfirmAction } from "./use-delete-confirm-action";
 import { useDownloadCardState } from "./use-download-card-state";
@@ -194,16 +193,17 @@ export function GgufDownloadCard({
   isPartial?: boolean;
   onLoad: (opts: { ggufVariant?: string; expectedBytes?: number }) => void;
   onUseInChat?: () => void;
-  onChange?: (hint?: InventoryHint) => void;
+  onChange?: () => void;
 }) {
   const hfToken = useHfTokenStore((s) => s.token);
   const localVariantPath = cachePath?.trim() || null;
-  const { variants, loading, error, refresh } = useGgufVariantFetchState({
-    repoId,
-    hfToken,
-    preferLocalCache,
-    localPath: localVariantPath,
-  });
+  const { variants, loading, error, refreshError, refresh } =
+    useGgufVariantFetchState({
+      repoId,
+      hfToken,
+      preferLocalCache,
+      localPath: localVariantPath,
+    });
   const [selectedQuantState, setSelectedQuantState] = useState<{
     repoId: string;
     quant: string | null;
@@ -213,6 +213,9 @@ export function GgufDownloadCard({
     selectedQuantState.repoId === repoId ? selectedQuantState.quant : null;
   const [open, setOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
+  const [completedVariantKeys, setCompletedVariantKeys] = useState<
+    ReadonlySet<string>
+  >(() => new Set<string>());
 
   const rawSortedVariants = useMemo(() => {
     if (!variants) return null;
@@ -225,8 +228,17 @@ export function GgufDownloadCard({
   const liveVariantStates = useDownloadManagerStore(selectLiveGgufVariantStates);
   const sortedVariants = useMemo(() => {
     if (!rawSortedVariants) return null;
-    return applyLiveGgufVariantStates(rawSortedVariants, liveVariantStates);
-  }, [liveVariantStates, rawSortedVariants]);
+    const withLive = applyLiveGgufVariantStates(
+      rawSortedVariants,
+      liveVariantStates,
+    );
+    if (completedVariantKeys.size === 0) return withLive;
+    return withLive.map((v) =>
+      completedVariantKeys.has(normalizeGgufVariantIdentity(v.quant))
+        ? { ...v, downloaded: true, partial: false }
+        : v,
+    );
+  }, [completedVariantKeys, liveVariantStates, rawSortedVariants]);
 
   const selectedQuant =
     (selectedQuantOverride
@@ -241,6 +253,13 @@ export function GgufDownloadCard({
     kind: "model",
     repoId,
     activeVariant: selectedQuant ?? undefined,
+    onComplete: (variant) => {
+      if (!variant) return;
+      const key = normalizeGgufVariantIdentity(variant);
+      setCompletedVariantKeys((prev) =>
+        prev.has(key) ? prev : new Set(prev).add(key),
+      );
+    },
   });
   const progress = job.progress;
   const cancelling = job.cancelling;
@@ -284,6 +303,17 @@ export function GgufDownloadCard({
     progress?.expectedBytes,
     setExpectedBytes,
   ]);
+
+  useEffect(() => {
+    setCompletedVariantKeys(new Set<string>());
+  }, [repoId]);
+
+  useEffect(() => {
+    if (loading || error || refreshError || !variants) return;
+    setCompletedVariantKeys((prev) =>
+      prev.size === 0 ? prev : new Set<string>(),
+    );
+  }, [loading, error, refreshError, variants]);
 
   const selected =
     sortedVariants?.find((v) => ggufVariantsMatch(v.quant, selectedQuant)) ??
@@ -342,15 +372,14 @@ export function GgufDownloadCard({
       setDeleteTarget(null);
     },
   });
+  const variantListUnavailable = !sortedVariants || sortedVariants.length === 0;
+  const showVariantLoadingState = loading && variantListUnavailable;
 
   // A live download for this repo must keep showing progress even while the
   // variant list is still loading, failed to load, or cannot identify the
   // running variant. A remount (On Device tab, page refresh) must never hide an
   // in-flight download behind the variant status card.
-  if (
-    progress &&
-    (loading || error || !sortedVariants || sortedVariants.length === 0)
-  ) {
+  if (progress && variantListUnavailable) {
     return (
       <GgufDownloadingFallbackCard
         job={job}
@@ -360,7 +389,7 @@ export function GgufDownloadCard({
     );
   }
 
-  if (loading) {
+  if (showVariantLoadingState) {
     return (
       <GgufDownloadStatusCard
         job={job}
@@ -370,7 +399,7 @@ export function GgufDownloadCard({
     );
   }
 
-  if (error || !sortedVariants || sortedVariants.length === 0) {
+  if (variantListUnavailable) {
     if (isPartial) {
       return (
         <GgufDownloadStatusCard
@@ -683,6 +712,15 @@ export function GgufDownloadCard({
           )}
         </button>
       </DownloadCard>
+      {refreshError && (
+        <button
+          type="button"
+          onClick={() => void refresh()}
+          className="self-start px-1 text-[11px] text-status-warning underline-offset-2 transition-colors hover:underline"
+        >
+          Couldn't refresh quantizations. Retry
+        </button>
+      )}
     </div>
   );
 }

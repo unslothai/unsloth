@@ -385,7 +385,9 @@ async def delete_cached_dataset_response(repo_id: str) -> dict:
     if not _is_valid_repo_id(repo_id):
         raise HTTPException(status_code = 400, detail = "Invalid repo_id format")
 
-    repo_key = resolve_cached_repo_id_case(repo_id, repo_type = "dataset")
+    repo_key = await asyncio.to_thread(
+        resolve_cached_repo_id_case, repo_id, repo_type = "dataset"
+    )
     if not downloads.registry.begin_delete(repo_key):
         raise HTTPException(
             status_code = 400,

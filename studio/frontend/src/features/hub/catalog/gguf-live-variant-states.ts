@@ -19,6 +19,12 @@ function terminalPartialState(state: ManagedDownload["state"] | undefined): bool
   return state === "cancelled" || state === "error";
 }
 
+function completedDownloadState(
+  state: ManagedDownload["state"] | undefined,
+): boolean {
+  return state === "complete";
+}
+
 export function createLiveGgufVariantStatesSelector(repoId: string): (state: {
   jobs: Record<string, ManagedDownload>;
 }) => Map<string, LiveGgufVariantState> {
@@ -34,6 +40,7 @@ export function createLiveGgufVariantStatesSelector(repoId: string): (state: {
       if (job.repoId.trim().toLowerCase() !== repoKey) continue;
       const live =
         activeDownloadState(job.state) ||
+        completedDownloadState(job.state) ||
         (terminalPartialState(job.state) &&
           Math.max(job.downloadedBytes, job.completedBytes) > 0);
       if (!live) continue;
@@ -61,6 +68,7 @@ export function applyLiveGgufVariantStates(
   return variants.map((variant) => {
     const live = liveStates.get(normalizeGgufVariantIdentity(variant.quant));
     if (!live) return variant;
+    const liveComplete = completedDownloadState(live.state);
     const livePartial =
       activeDownloadState(live.state) || terminalPartialState(live.state);
     const expectedBytes = Math.max(
@@ -70,8 +78,8 @@ export function applyLiveGgufVariantStates(
     );
     return {
       ...variant,
-      downloaded: livePartial ? false : variant.downloaded,
-      partial: livePartial || variant.partial,
+      downloaded: liveComplete ? true : livePartial ? false : variant.downloaded,
+      partial: liveComplete ? false : livePartial || variant.partial,
       download_size_bytes:
         expectedBytes > 0 ? expectedBytes : variant.download_size_bytes,
     };

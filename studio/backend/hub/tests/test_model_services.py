@@ -1152,19 +1152,25 @@ def test_gguf_progress_unknown_hashes_does_not_count_foreign_blobs(
     assert result["complete_on_disk"] is False
 
 
-def test_gguf_progress_unknown_hashes_still_counts_in_progress_blob(
+def test_gguf_progress_unknown_hashes_drops_unscoped_incomplete_blob(
     monkeypatch,
     tmp_path,
 ):
-    # Even when the variant's hashes are unresolved, an in-progress
-    # (.incomplete) blob is this download's own active write and MUST be
-    # counted, so the bar shows real progress instead of a stuck 0% while the
-    # worker downloads and metadata/the manifest are still resolving. A
-    # finalized sibling blob present at the same time must still be ignored.
+    # When a variant's hashes are unresolved, an .incomplete blob in the shared
+    # per-repo blobs/ dir CANNOT be attributed to this variant: with two quants
+    # of one repo downloading at once, that .incomplete may be a sibling's own
+    # active write. Counting it leaks the sibling's bytes into this variant's
+    # numerator, which is what makes the bar jump backward (e.g. to ~78%) the
+    # instant this variant finalizes and its finalized blob is dropped unscoped.
+    # So an unscoped .incomplete is dropped for a variant, mirroring how the
+    # finalized-blob branch already drops unscoped blobs (the "instant ~900 MB"
+    # guard). In production the worker writes the variant manifest BEFORE any
+    # .incomplete blob exists, so hashes resolve via the manifest backstop and
+    # this empty-hashes window does not actually suppress real own progress.
     entry = tmp_path / "models--Org--Model-GGUF"
     blobs = entry / "blobs"
     blobs.mkdir(parents = True)
-    (blobs / "activehash.incomplete").write_bytes(b"x" * 50)  # this download
+    (blobs / "activehash.incomplete").write_bytes(b"x" * 50)  # unattributable
     (blobs / "siblinghash").write_bytes(b"z" * 900)  # finalized sibling
 
     async def _run_inline(fn, *args, **kwargs):
@@ -1200,8 +1206,73 @@ def test_gguf_progress_unknown_hashes_still_counts_in_progress_blob(
         )
     )
 
-    assert result["downloaded_bytes"] == 50  # the .incomplete, not the sibling
-    assert result["completed_bytes"] == 0  # finalized sibling ignored
+    assert result["downloaded_bytes"] == 0  # unscoped .incomplete not leaked
+    assert result["completed_bytes"] == 0  # finalized sibling still ignored
+
+
+def test_gguf_progress_unknown_hashes_no_backward_dip_when_variant_finalizes(
+    monkeypatch,
+    tmp_path,
+):
+    # Regression for the two-variant dip: with hashes unresolved (empty), the
+    # first quant finalizes (its finalized blob is correctly dropped unscoped)
+    # while the sibling quant is still writing its own .incomplete. Before the
+    # fix the sibling's in-progress bytes leaked into this variant's numerator,
+    # so the bar jumped from ~99% backward to ~78% (sibling_partial / own_total)
+    # for one poll before flipping to On Device. The unscoped .incomplete must
+    # be dropped so the reading stays 0 (no leak) instead of the sibling ratio.
+    entry = tmp_path / "models--unsloth--SmolLM2-360M-Instruct-GGUF"
+    blobs = entry / "blobs"
+    snap = entry / "snapshots" / "rev0"
+    blobs.mkdir(parents = True)
+    snap.mkdir(parents = True)
+    own_total = 218_673_760  # Q2_K finished blob size (denominator)
+    sibling_total = 234_686_560  # Q3_K_M total
+    def _sparse_file(path: Path, size: int) -> None:
+        with path.open("wb") as handle:
+            handle.truncate(size)
+
+    own_finalized = blobs / "q2hash"
+    _sparse_file(own_finalized, own_total)
+    # ~72.7% of the sibling => sibling_partial / own_total == 0.78 pre-fix.
+    sibling_incomplete = blobs / "q3hash.incomplete"
+    _sparse_file(sibling_incomplete, int(sibling_total * 0.727))
+
+    async def _run_inline(fn, *args, **kwargs):
+        return fn(*args, **kwargs)
+
+    monkeypatch.setattr(downloads.asyncio, "to_thread", _run_inline)
+    monkeypatch.setattr(
+        downloads.gguf_variants,
+        "_gguf_variant_requirements",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        downloads.gguf_variants,
+        "_gguf_variant_blob_hashes",
+        lambda *_args, **_kwargs: frozenset(),
+    )
+    monkeypatch.setattr(
+        snapshot_progress,
+        "preferred_repo_cache_dirs",
+        lambda *_args, **_kwargs: [entry],
+    )
+    monkeypatch.setattr(
+        downloads,
+        "_registry",
+        SimpleNamespace(get_job = lambda _key: SimpleNamespace(state = "running")),
+    )
+
+    result = asyncio.run(
+        downloads.get_gguf_download_progress_response(
+            "unsloth/SmolLM2-360M-Instruct-GGUF",
+            variant = "Q2_K",
+            expected_bytes = own_total,
+        )
+    )
+
+    assert result["downloaded_bytes"] == 0  # sibling .incomplete did not leak
+    assert result["progress"] == 0  # no ~0.78 backward dip
 
 
 def test_hf_cache_model_file_probe_is_bounded(monkeypatch, tmp_path):
@@ -2349,6 +2420,11 @@ def test_model_download_watcher_invalidates_hf_cache_scan(monkeypatch):
         "invalidate_hf_cache_scans",
         lambda: invalidated.append(True),
     )
+
+    async def _inline_to_thread(func, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(downloads.asyncio, "to_thread", _inline_to_thread)
 
     result = asyncio.run(
         downloads.download_model_response(
