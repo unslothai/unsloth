@@ -273,7 +273,10 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()((set) => (
         ...state,
         jobId: payload.job_id || state.jobId,
         currentStep: step,
-        totalSteps: Math.max(payload.total_steps, state.totalSteps),
+        totalSteps:
+          typeof payload.total_steps === "number" && payload.total_steps > 0
+            ? payload.total_steps
+            : state.totalSteps,
         currentLoss: currentLoss ?? state.currentLoss,
         currentLearningRate: currentLearningRate ?? state.currentLearningRate,
         progressPercent: payload.progress_percent,

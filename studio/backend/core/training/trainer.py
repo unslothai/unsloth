@@ -3584,9 +3584,18 @@ class UnslothTrainer:
             # ========== PROGRESS TRACKING ==========
             self.trainer.add_callback(self._create_progress_callback())
 
-            num_samples = len(
-                dataset["dataset"] if isinstance(dataset, dict) else dataset
-            )
+            num_samples = None
+            if hasattr(self.trainer, "train_dataset") and self.trainer.train_dataset is not None:
+                try:
+                    num_samples = len(self.trainer.train_dataset)
+                except TypeError:
+                    pass
+
+            if num_samples is None:
+                num_samples = len(
+                    dataset["dataset"] if isinstance(dataset, dict) else dataset
+                )
+
             batch_size = training_args.get("batch_size", 2)
             total_steps = self._calculate_total_steps(
                 num_samples,
