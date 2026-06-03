@@ -73,9 +73,7 @@ def _backfill_fts(conn: sqlite3.Connection) -> None:
     """One-time: seed FTS from existing vectors for rag.db files created before
     FTS5 replaced the on-disk bm25s index. Runs only when FTS is empty but
     vectors exist; idempotent thereafter."""
-    fts_seeded = conn.execute(
-        "SELECT 1 FROM rag_chunks_fts LIMIT 1"
-    ).fetchone()
+    fts_seeded = conn.execute("SELECT 1 FROM rag_chunks_fts LIMIT 1").fetchone()
     if fts_seeded is not None:
         return
     has_vectors = conn.execute("SELECT 1 FROM rag_vectors LIMIT 1").fetchone()

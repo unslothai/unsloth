@@ -46,7 +46,9 @@ def test_lexical_search_roundtrip(isolated_rag_db):
         scope,
         [
             _chunk("c1", "the quick brown fox jumps over the lazy dog", index = 0),
-            _chunk("c2", "machine learning models predict outputs from inputs", index = 1),
+            _chunk(
+                "c2", "machine learning models predict outputs from inputs", index = 1
+            ),
             _chunk("c3", "fox terriers are small dogs", index = 2),
         ],
     )
