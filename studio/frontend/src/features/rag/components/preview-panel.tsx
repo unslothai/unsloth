@@ -22,7 +22,7 @@ import {
   isInlineBlobAllowed,
   usePreviewStore,
 } from "../stores/preview-store";
-import { PreviewPdfView } from "./preview-pdf-view";
+import { PreviewPdfNativeView } from "./preview-pdf-native";
 import { PreviewTextView } from "./preview-text-view";
 import { PreviewUnavailable } from "./preview-unavailable";
 
@@ -107,7 +107,7 @@ function renderPreviewBody({
       pdfFile &&
       isInlineBlobAllowed(target.mediaKind)
     ) {
-      return <PreviewPdfView target={target} file={pdfFile} />;
+      return <PreviewPdfNativeView target={target} file={pdfFile} />;
     }
 
     // text/image/docx/html/unknown all route through text-view: text

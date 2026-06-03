@@ -159,7 +159,7 @@ function findFuzzyMatch(
   );
 }
 
-const renderHighlightedSnippet = (
+export const renderHighlightedSnippet = (
   snippet: string,
   target: PreviewTarget,
 ): ReactNode => {
