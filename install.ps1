@@ -1467,6 +1467,20 @@ shell.Run cmd, 0, False
     # torch wheel, the probe below passes and the native install is kept automatically.
     # Opt out with UNSLOTH_NO_WSL_FALLBACK=1; choose the distro with UNSLOTH_WSL_DISTRO.
     try { $_winArm64 = ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString() -ieq 'Arm64') } catch { $_winArm64 = $false }
+    # Robust against x64-EMULATED PowerShell on Windows-on-ARM: under emulation .NET's
+    # OSArchitecture and $env:PROCESSOR_ARCHITECTURE both report X64/AMD64, which would
+    # mis-skip the WSL fallback. Win32_Processor.Architecture (12 = ARM64) and the
+    # machine-level PROCESSOR_ARCHITECTURE read the true OS arch even under emulation.
+    # Additive: can only turn $_winArm64 ON for genuine ARM64 hosts; x86_64 is unaffected.
+    if (-not $_winArm64) {
+        try { if ((@(Get-CimInstance Win32_Processor -ErrorAction Stop))[0].Architecture -eq 12) { $_winArm64 = $true } } catch {}
+    }
+    if (-not $_winArm64) {
+        try {
+            $_machArch = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment' -Name PROCESSOR_ARCHITECTURE -ErrorAction Stop).PROCESSOR_ARCHITECTURE
+            if ($_machArch -ieq 'ARM64') { $_winArm64 = $true }
+        } catch {}
+    }
     $_nativeCudaTorchOk = $false
     if ($_winArm64 -and $HasNvidiaSmi -and (-not $SkipTorch)) {
         # Future-proof check: can a CUDA-capable torch wheel be resolved natively for this platform/index?
