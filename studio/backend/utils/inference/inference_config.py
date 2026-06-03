@@ -9,6 +9,8 @@ from model YAML configuration files, with fallback to default.yaml.
 Includes family-based lookup from inference_defaults.json for GGUF models.
 """
 
+from copy import deepcopy
+from functools import lru_cache
 from pathlib import Path
 from typing import Dict, Any, Optional
 import json
@@ -83,8 +85,16 @@ def get_family_inference_params(model_id: str) -> Dict[str, Any]:
     return {}
 
 
+@lru_cache(maxsize = 256)
 def _has_specific_yaml(model_identifier: str) -> bool:
-    """Check if a model has its own YAML config (not just default.yaml)."""
+    """Check if a model has its own YAML config (not just default.yaml).
+
+    Cached because the lookup walks ``defaults_dir`` recursively via
+    ``rglob`` on every miss, and every chat-completion / Responses
+    passthrough request asks the same question for the same loaded
+    model. The defaults directory is shipped with the package and does
+    not mutate at runtime, so an LRU cache is safe.
+    """
     from utils.models.model_config import _REVERSE_MODEL_MAPPING
 
     script_dir = Path(__file__).parent.parent.parent
@@ -144,6 +154,17 @@ def load_inference_config(model_identifier: str) -> Dict[str, Any]:
             "min_p": float
         }
     """
+    # The heavy work (YAML reads + recursive scan inside
+    # `_has_specific_yaml`) is memoised on the model identifier; this
+    # function is called from the hot path of every passthrough
+    # request. Callers are documented to treat the returned dict as
+    # immutable, but tests historically mutate it — so deepcopy the
+    # snapshot before returning to preserve that contract.
+    return deepcopy(_load_inference_config_cached(model_identifier))
+
+
+@lru_cache(maxsize = 256)
+def _load_inference_config_cached(model_identifier: str) -> Dict[str, Any]:
     # Load model defaults to get inference parameters
     model_defaults = load_model_defaults(model_identifier)
 
@@ -185,12 +206,29 @@ def load_inference_config(model_identifier: str) -> Dict[str, Any]:
                 return family_params[key]
             return default_inference.get(key, hardcoded_default)
 
+    def _get_dict_param(key):
+        # Dict-valued defaults (e.g. ``chat_template_kwargs``). Same
+        # priority chain as _get_param but with type-safe dict checks.
+        # Returns None when nothing is configured anywhere.
+        if has_own_yaml:
+            val = model_inference.get(key)
+            if isinstance(val, dict) and val:
+                return dict(val)
+        fam = family_params.get(key)
+        if isinstance(fam, dict) and fam:
+            return dict(fam)
+        dfl = default_inference.get(key)
+        if isinstance(dfl, dict) and dfl:
+            return dict(dfl)
+        return None
+
     inference_config = {
         "temperature": _get_param("temperature", 0.7),
         "top_p": _get_param("top_p", 0.95),
         "top_k": _get_param("top_k", -1),
         "min_p": _get_param("min_p", 0.01),
         "presence_penalty": _get_param("presence_penalty", 0.0),
+        "chat_template_kwargs": _get_dict_param("chat_template_kwargs"),
         "trust_remote_code": model_inference.get(
             "trust_remote_code", default_inference.get("trust_remote_code", False)
         ),
