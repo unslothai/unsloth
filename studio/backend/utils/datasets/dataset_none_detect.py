@@ -144,11 +144,16 @@ def _probe_conversation(dataset: Dataset, candidates = None):
                         if r:
                             roles.add(str(r))
         # Reject columns that don't match a known chat schema.
-        # If the column has dict turns but they lack the expected keys (e.g.
+        # If the column has dict turns with at least one conversational key
+        # (role/from/content/value) but the full required pair is absent (e.g.
         # [{"role":"user"}] with no content), save it as an all_corrupt fallback
-        # so find_none_chatml can flag the missing fields rather than leaving
-        # the dataset undiagnosed as "unknown format".
+        # so find_none_chatml can flag the missing fields.  Pure metadata columns
+        # (e.g. messages=[{"id":1}]) have no conversational keys and must NOT be
+        # saved as plausible fallbacks — they would prevent a later real-but-corrupt
+        # conversation column (e.g. conversations=None) from being selected.
+        _CONV_KEYS = {"role", "from", "content", "value"}
         if not any(keys <= turn_keys for keys in _CHAT_KEY_SETS):
+            schema_less_plausible = bool(turn_keys & _CONV_KEYS)
             if all_corrupt_fallback is None or not all_corrupt_fallback.get(
                 "has_plausible_turns"
             ):
@@ -157,7 +162,7 @@ def _probe_conversation(dataset: Dataset, candidates = None):
                     "turn_keys": turn_keys,
                     "roles": roles,
                     "all_corrupt": True,
-                    "has_plausible_turns": True,
+                    "has_plausible_turns": schema_less_plausible,
                 }
             continue
         return {"column": col, "turn_keys": turn_keys, "roles": roles}
