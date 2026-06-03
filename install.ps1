@@ -1649,10 +1649,18 @@ shell.Run cmd, 0, False
         substep "       This is a driver issue, not an SDK issue." "Yellow"
         substep "       Ensure the ROCm compute driver is installed alongside the display driver:" "Yellow"
         substep "       https://rocm.docs.amd.com/en/latest/deploy/windows/index.html" "Yellow"
+    } elseif ($ROCmGfxArch) {
+        # AMD GPU with a known arch: Studio setup installs AMD's bundled-runtime
+        # ROCm PyTorch wheels (repo.amd.com), which do NOT require the HIP SDK --
+        # they ship their own ROCm runtime. The HIP SDK is optional.
+        step "gpu" "AMD ROCm ($ROCmGfxArch)" "Cyan"
+        substep "Detected: $ROCmGpuLabel" "Cyan"
+        substep "GPU PyTorch uses AMD's bundled-runtime ROCm wheels -- HIP SDK not required (optional)." "Cyan"
     } elseif ($ROCmGpuLabel) {
-        step "gpu" "AMD GPU detected -- HIP SDK not found" "Yellow"
+        step "gpu" "AMD GPU detected -- arch unknown" "Yellow"
         substep "Detected: $ROCmGpuLabel" "Yellow"
-        substep "Install the HIP SDK for ROCm GPU inference:" "Yellow"
+        substep "Could not determine the GPU arch -- install the HIP SDK or set" "Yellow"
+        substep "UNSLOTH_ROCM_GFX_ARCH to enable GPU ROCm PyTorch:" "Yellow"
         substep "https://rocm.docs.amd.com/en/latest/deploy/windows/index.html" "Yellow"
     } else {
         step "gpu" "none (chat-only / GGUF)" "Yellow"
@@ -1745,16 +1753,25 @@ shell.Run cmd, 0, False
     # ── Print CPU-only hint when no GPU detected ──
     if (-not $SkipTorch -and -not $ROCmIndexUrl -and $TorchIndexUrl -like "*/cpu") {
         Write-Host ""
-        if ($HipSdkInstalled -and -not $HasROCm) {
-            substep "Installing CPU-only PyTorch (HIP SDK found but GPU not ROCm-accessible)." "Yellow"
-        } elseif ($ROCmGpuLabel) {
-            substep "Installing CPU-only PyTorch (ROCm wheels require the HIP SDK)." "Yellow"
+        if ($ROCmGfxArch) {
+            # Detected an AMD GPU arch: install.ps1 lays down CPU PyTorch as a
+            # base, then Studio setup (setup.ps1) swaps in AMD's bundled-runtime
+            # GPU ROCm wheels -- the HIP SDK is not required for that.
+            substep "Installing CPU PyTorch as a base -- Studio setup installs GPU ROCm" "Cyan"
+            substep "wheels for $ROCmGfxArch next (bundled runtime; HIP SDK not required)." "Cyan"
         } else {
-            substep "No NVIDIA GPU detected." "Yellow"
+            if ($HipSdkInstalled -and -not $HasROCm) {
+                substep "Installing CPU-only PyTorch (HIP SDK found but GPU not ROCm-accessible)." "Yellow"
+            } elseif ($ROCmGpuLabel) {
+                substep "Installing CPU-only PyTorch (AMD GPU arch unknown -- install the HIP SDK" "Yellow"
+                substep "or set UNSLOTH_ROCM_GFX_ARCH to enable GPU ROCm)." "Yellow"
+            } else {
+                substep "No NVIDIA GPU detected." "Yellow"
+            }
+            substep "Installing CPU-only PyTorch. If you only need GGUF chat/inference," "Yellow"
+            substep "re-run with --no-torch for a faster, lighter install:" "Yellow"
+            substep ".\install.ps1 --no-torch" "Yellow"
         }
-        substep "Installing CPU-only PyTorch. If you only need GGUF chat/inference," "Yellow"
-        substep "re-run with --no-torch for a faster, lighter install:" "Yellow"
-        substep ".\install.ps1 --no-torch" "Yellow"
         Write-Host ""
     }
 

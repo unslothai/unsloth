@@ -976,11 +976,21 @@ if ($HasNvidiaSmi) {
     substep "       This is a driver issue, not an SDK issue." "Yellow"
     substep "       Ensure the ROCm compute driver is installed alongside the display driver:" "Yellow"
     substep "       https://rocm.docs.amd.com/en/latest/deploy/windows/index.html" "Yellow"
+} elseif ($script:ROCmGfxArch) {
+    # AMD GPU with a known arch: PyTorch comes from AMD's bundled-runtime ROCm
+    # wheels (repo.amd.com), which do NOT require the HIP SDK -- they ship their
+    # own ROCm runtime. The HIP SDK is optional (only adds the system toolchain).
+    Write-Host ""
+    step "gpu" "AMD ROCm ($script:ROCmGfxArch)" "Cyan"
+    substep "Detected: $ROCmGpuLabel" "Cyan"
+    substep "GPU PyTorch uses AMD's bundled-runtime ROCm wheels -- HIP SDK not required (optional)." "Cyan"
+    Write-Host ""
 } elseif ($ROCmGpuLabel) {
     Write-Host ""
-    step "gpu" "AMD GPU detected -- HIP SDK not found" "Yellow"
+    step "gpu" "AMD GPU detected -- arch unknown" "Yellow"
     substep "Detected: $ROCmGpuLabel" "Yellow"
-    substep "Install the HIP SDK for ROCm GPU inference:" "Yellow"
+    substep "Could not determine the GPU arch (gfx...). Install the HIP SDK or set" "Yellow"
+    substep "UNSLOTH_ROCM_GFX_ARCH to enable GPU ROCm PyTorch:" "Yellow"
     substep "https://rocm.docs.amd.com/en/latest/deploy/windows/index.html" "Yellow"
     Write-Host ""
 } else {
@@ -1419,8 +1429,12 @@ $script:CudaToolkitReady = $true
 if ($HasROCm) {
     $rocmVerLabel = if ($script:ROCmVersionFull) { "ROCm $script:ROCmVersionFull" } elseif ($script:ROCmVersion) { "ROCm $script:ROCmVersion" } else { "ROCm (version unknown)" }
     step "rocm" $rocmVerLabel
+} elseif ($script:ROCmGfxArch) {
+    # GPU training/inference works via AMD's bundled-runtime ROCm PyTorch wheels;
+    # the HIP SDK is optional (only the system ROCm toolchain).
+    step "rocm" "GPU via bundled ROCm wheels ($script:ROCmGfxArch) -- HIP SDK optional" "Cyan"
 } elseif ($ROCmGpuLabel) {
-    step "rocm" "HIP SDK not found -- GPU-accelerated training unavailable" "Yellow"
+    step "rocm" "AMD GPU detected -- arch unknown; HIP SDK not found" "Yellow"
 }
 
 # ============================================
