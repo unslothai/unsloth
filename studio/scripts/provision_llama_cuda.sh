@@ -144,10 +144,24 @@ fi
 # Build the full set unsloth-zoo's GGUF exporter expects too (llama-mtmd-cli,
 # llama-gguf-split), so a pre-provisioned build satisfies both Studio inference
 # AND save_pretrained_gguf without triggering a --clean-first rebuild later.
-# Job count is overridable (UNSLOTH_LLAMA_BUILD_JOBS) -- lower it on thermally /
-# power-constrained laptops (e.g. N1X) where a full -j(nproc) CUDA build can trip
-# thermal/power shutdowns. cmake --build is incremental, so re-running resumes.
-JOBS="${UNSLOTH_LLAMA_BUILD_JOBS:-$(nproc)}"
+# Build parallelism: use ALL cores by default. The single-arch CUDA compile is the
+# slow step, and -j(nproc) is dramatically faster than a conservative cap (e.g. -j4
+# is ~5x slower on a 20-core box). We only back off when RAM is tight: nvcc jobs are
+# memory-hungry (~1.5 GB each), so on a unified-memory machine we cap jobs at
+# mem/1.5GB to avoid an OOM-kill mid-build. Override explicitly with
+# UNSLOTH_LLAMA_BUILD_JOBS=N (e.g. to throttle a thermally limited laptop).
+# cmake --build is incremental, so a re-run simply resumes where it left off.
+_ncpu="$(nproc 2>/dev/null || echo 4)"
+if [ -n "${UNSLOTH_LLAMA_BUILD_JOBS:-}" ]; then
+    JOBS="$UNSLOTH_LLAMA_BUILD_JOBS"
+else
+    _memkb="$(awk '/MemTotal/{print $2}' /proc/meminfo 2>/dev/null || echo 0)"
+    _memjobs=$(( _memkb / 1572864 ))   # 1.5 GB per nvcc job
+    if [ "$_memjobs" -lt 1 ]; then _memjobs=1; fi
+    JOBS="$_ncpu"
+    if [ "$_memjobs" -lt "$JOBS" ]; then JOBS="$_memjobs"; fi
+fi
+log "building with -j${JOBS} (cores=${_ncpu})"
 cmake --build build -j"$JOBS" --target \
     llama-server llama-cli llama-quantize llama-mtmd-cli llama-gguf-split >/dev/null 2>&1 \
     || { log "cmake build failed"; exit 0; }
