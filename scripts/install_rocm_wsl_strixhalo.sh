@@ -75,6 +75,58 @@ if [ "$(id -u)" -ne 0 ]; then
     SUDO="sudo"
 fi
 
+# ── Windows 11 SDK (headers for the librocdxg build) ─────────────────────────
+# librocdxg's cmake build needs the Windows SDK 'shared' headers, which live on
+# the Windows HOST under C:\Program Files (x86)\Windows Kits\10\Include\<ver>\.
+_WIN_SDK_INC_BASE="/mnt/c/Program Files (x86)/Windows Kits/10/Include"
+
+# Print the newest installed SDK include dir that ships the 'shared' headers (no
+# trailing slash), or nothing. NB: the base path contains a space, so we use
+# find + a read loop -- a `for ... in $(ls)` form would word-split it.
+_find_win_sdk() {
+    [ -d "$_WIN_SDK_INC_BASE" ] || return 0
+    while IFS= read -r _inc; do
+        [ -n "$_inc" ] || continue
+        if [ -d "$_inc/shared" ]; then printf '%s' "$_inc"; return 0; fi
+    done < <(find "$_WIN_SDK_INC_BASE" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort -Vr)
+    return 0
+}
+
+# Best-effort: install the Windows 11 SDK on the Windows HOST from inside WSL via
+# winget, so the build has its headers with no manual download. The SDK installer
+# elevates -> ONE UAC prompt on the Windows desktop; the headers then appear
+# under /mnt/c immediately (drvfs is live, no reboot). Never fatal: any failure
+# falls through to a clear manual-install message. Opt out with
+# UNSLOTH_SKIP_WIN_SDK_INSTALL=1. The user already consented to the ROCm-on-WSL
+# setup, so this needs no extra prompt beyond the OS UAC gate.
+_install_windows_sdk_via_winget() {
+    [ "${UNSLOTH_SKIP_WIN_SDK_INSTALL:-0}" = "1" ] && { note "Skipping Windows SDK auto-install (UNSLOTH_SKIP_WIN_SDK_INSTALL=1)."; return 0; }
+    command -v powershell.exe >/dev/null 2>&1 || return 0
+    # `command -v` succeeds even when WSL interop is OFF (the .exe is on PATH via
+    # drvfs but fails with "Exec format error"); verify it actually executes.
+    powershell.exe -NoProfile -Command "exit 0" >/dev/null 2>&1 || return 0
+    if ! powershell.exe -NoProfile -Command "if (Get-Command winget -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }" >/dev/null 2>&1; then
+        note "winget not available on the Windows host -- cannot auto-install the Windows SDK."
+        return 0
+    fi
+    say "Installing the Windows 11 SDK on the Windows host via winget"
+    note "librocdxg needs its headers. Approve the UAC prompt on the Windows desktop."
+    note "One-time (~1-3 GB download); opt out with UNSLOTH_SKIP_WIN_SDK_INSTALL=1."
+    # Newest stable Win11 SDK first, then a fallback. The actual presence of the
+    # headers is the source of truth (re-check after each attempt), not winget's
+    # exit code. </dev/null so winget never consumes a piped `curl | sh` stdin.
+    for _sdk_id in Microsoft.WindowsSDK.10.0.26100 Microsoft.WindowsSDK.10.0.22621; do
+        note "winget install ${_sdk_id} ..."
+        powershell.exe -NoProfile -Command "winget install --id ${_sdk_id} -e --accept-source-agreements --accept-package-agreements --disable-interactivity" </dev/null || true
+        if [ -n "$(_find_win_sdk)" ]; then
+            note "Windows SDK headers present after install."
+            return 0
+        fi
+    done
+    note "Automatic Windows SDK install did not complete."
+    return 0
+}
+
 # ── PREFLIGHT ────────────────────────────────────────────────────────────────
 say "Preflight checks"
 
@@ -157,21 +209,17 @@ say "Building librocdxg (${LIBROCDXG_REF})"
 if [ -e "${ROCM_DIR}/lib/librocdxg.so" ]; then
     note "librocdxg already installed -- skipping build."
 else
-    # Auto-discover the newest Windows 11 SDK that ships the 'shared' headers
-    # librocdxg needs (do not hardcode a version -- it differs per machine).
-    _win_sdk=""
-    _sdk_inc_base="/mnt/c/Program Files (x86)/Windows Kits/10/Include"
-    # Newest SDK first. NB: the path contains a space ("Program Files (x86)"), so
-    # a `for ... in $(ls -d .../*/)` form word-splits each entry into "/mnt/c/Program",
-    # "Files", "(x86)/..." and never matches. Use find + a read loop instead, which
-    # preserves spaces. (bash process substitution; this script is #!/usr/bin/env bash.)
-    if [ -d "$_sdk_inc_base" ]; then
-        while IFS= read -r _inc; do
-            [ -n "$_inc" ] || continue
-            if [ -d "$_inc/shared" ]; then _win_sdk="$_inc"; break; fi
-        done < <(find "$_sdk_inc_base" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort -Vr)
+    # Discover the newest installed Windows 11 SDK (do not hardcode a version --
+    # it differs per machine). If absent, auto-install it on the Windows host via
+    # winget (one UAC prompt) so the user has nothing manual to do, then
+    # re-discover. Only if that ALSO fails do we stop with manual instructions.
+    _win_sdk="$(_find_win_sdk)"
+    if [ -z "$_win_sdk" ]; then
+        note "Windows 11 SDK headers not found -- attempting automatic install..."
+        _install_windows_sdk_via_winget
+        _win_sdk="$(_find_win_sdk)"
     fi
-    [ -n "$_win_sdk" ] || die "Windows 11 SDK headers not found under 'C:\\Program Files (x86)\\Windows Kits\\10\\Include\\*\\shared'. Install the Windows 11 SDK on the Windows host, then re-run."
+    [ -n "$_win_sdk" ] || die "Windows 11 SDK headers not found under 'C:\\Program Files (x86)\\Windows Kits\\10\\Include\\*\\shared', and the automatic winget install did not complete. Install it on the Windows host (e.g. 'winget install Microsoft.WindowsSDK.10.0.26100') and re-run."
     note "Windows SDK: ${_win_sdk}"
     _src="${HOME}/.unsloth/librocdxg"
     rm -rf "$_src"
