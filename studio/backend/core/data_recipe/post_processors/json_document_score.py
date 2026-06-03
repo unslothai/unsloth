@@ -54,6 +54,52 @@ def _score_row(
     return float(score), breakdown
 
 
+def _score_dataframe(
+    df: "pd.DataFrame",
+    *,
+    prediction_column: str,
+    reference_column: str,
+    schema: Any,
+    default_comparator: str,
+    score_column: str,
+    breakdown_column: str | None,
+) -> "pd.DataFrame":
+    """Add score (and optionally breakdown) columns to `df` in place and return it."""
+    if prediction_column not in df.columns:
+        raise ValueError(
+            f"prediction_column {prediction_column!r} not in dataset "
+            f"(have: {list(df.columns)})"
+        )
+    if reference_column not in df.columns:
+        raise ValueError(
+            f"reference_column {reference_column!r} not in dataset "
+            f"(have: {list(df.columns)})"
+        )
+
+    want_breakdown = bool(breakdown_column)
+    predictions = df[prediction_column].to_numpy()
+    references = df[reference_column].to_numpy()
+
+    scores: list[float] = []
+    breakdowns: list[str] = []
+    for prediction_value, reference_value in zip(predictions, references):
+        score, breakdown = _score_row(
+            prediction=prediction_value,
+            reference=reference_value,
+            schema=schema,
+            default_comparator=default_comparator,
+            want_breakdown=want_breakdown,
+        )
+        scores.append(score)
+        if want_breakdown:
+            breakdowns.append(json.dumps(breakdown))
+
+    df[score_column] = scores
+    if want_breakdown and breakdown_column:
+        df[breakdown_column] = breakdowns
+    return df
+
+
 def run_json_document_score(
     parquet_dir: Path,
     *,
@@ -71,41 +117,39 @@ def run_json_document_score(
     if not parquet_files:
         raise ValueError(f"No parquet files under {parquet_dir}")
 
-    want_breakdown = bool(breakdown_column)
-
     for parquet_file in parquet_files:
         df = pd.read_parquet(parquet_file)
-        if prediction_column not in df.columns:
-            raise ValueError(
-                f"prediction_column {prediction_column!r} not in dataset "
-                f"(have: {list(df.columns)})"
-            )
-        if reference_column not in df.columns:
-            raise ValueError(
-                f"reference_column {reference_column!r} not in dataset "
-                f"(have: {list(df.columns)})"
-            )
-
-        predictions = df[prediction_column].to_numpy()
-        references = df[reference_column].to_numpy()
-        scores: list[float] = []
-        breakdowns: list[str] = []
-        for prediction_value, reference_value in zip(predictions, references):
-            score, breakdown = _score_row(
-                prediction=prediction_value,
-                reference=reference_value,
-                schema=schema,
-                default_comparator=default_comparator,
-                want_breakdown=want_breakdown,
-            )
-            scores.append(score)
-            if want_breakdown:
-                breakdowns.append(json.dumps(breakdown))
-
-        df[score_column] = scores
-        if want_breakdown and breakdown_column:
-            df[breakdown_column] = breakdowns
-
+        _score_dataframe(
+            df,
+            prediction_column=prediction_column,
+            reference_column=reference_column,
+            schema=schema,
+            default_comparator=default_comparator,
+            score_column=score_column,
+            breakdown_column=breakdown_column,
+        )
         tmp_file = parquet_file.with_suffix(parquet_file.suffix + ".tmp")
         df.to_parquet(tmp_file, index=False)
         os.replace(tmp_file, parquet_file)
+
+
+def run_json_document_score_on_dataframe(
+    df: "pd.DataFrame",
+    *,
+    prediction_column: str,
+    reference_column: str,
+    schema: Any,
+    default_comparator: str,
+    score_column: str,
+    breakdown_column: str | None,
+) -> "pd.DataFrame":
+    """In-memory entrypoint for the preview path. Returns the (mutated) df."""
+    return _score_dataframe(
+        df,
+        prediction_column=prediction_column,
+        reference_column=reference_column,
+        schema=schema,
+        default_comparator=default_comparator,
+        score_column=score_column,
+        breakdown_column=breakdown_column,
+    )

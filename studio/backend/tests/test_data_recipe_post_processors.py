@@ -287,3 +287,58 @@ def test_apply_runs_in_declaration_order(tmp_path: Path) -> None:
     out = pd.read_parquet(parquet_dir / "batch_00000.parquet")
     assert "score_a" in out.columns
     assert "score_b" in out.columns
+
+
+def test_run_json_document_score_on_dataframe_adds_score_column() -> None:
+    from core.data_recipe.post_processors.json_document_score import (
+        run_json_document_score_on_dataframe,
+    )
+
+    df = pd.DataFrame(
+        {
+            "prediction": [json.dumps({"a": 1})],
+            "reference": [{"a": 1}],
+        }
+    )
+    out = run_json_document_score_on_dataframe(
+        df,
+        prediction_column="prediction",
+        reference_column="reference",
+        schema=None,
+        default_comparator="categorical",
+        score_column="doc_score",
+        breakdown_column=None,
+    )
+    assert "doc_score" in out.columns
+    assert out["doc_score"].iloc[0] == pytest.approx(1.0)
+
+
+def test_apply_studio_post_processors_to_dataframe_dispatches_by_type() -> None:
+    from core.data_recipe.post_processors import (
+        apply_studio_post_processors_to_dataframe,
+    )
+
+    df = pd.DataFrame(
+        {
+            "prediction": [json.dumps({"a": 1})],
+            "reference": [{"a": 1}],
+        }
+    )
+    apply_studio_post_processors_to_dataframe(
+        df=df,
+        processors=[
+            # non-studio entry is ignored
+            {"processor_type": "schema_transform", "name": "x", "template": {}},
+            {
+                "processor_type": "json_document_score",
+                "name": "score",
+                "prediction_column": "prediction",
+                "reference_column": "reference",
+                "schema": None,
+                "default_comparator": "categorical",
+                "score_column": "doc_score",
+                "breakdown_column": None,
+            },
+        ],
+    )
+    assert "doc_score" in df.columns

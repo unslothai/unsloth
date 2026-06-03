@@ -150,10 +150,22 @@ def run_job_process(
                 if results.analysis is None
                 else to_jsonable(results.analysis.model_dump(mode = "json"))
             )
+
+            # Run studio-owned post-processors on the preview DataFrame so the
+            # user sees the same score columns that a full run would produce.
+            from ..post_processors import apply_studio_post_processors_to_dataframe
+
+            preview_df = results.dataset
+            if preview_df is not None:
+                preview_df = apply_studio_post_processors_to_dataframe(
+                    df = preview_df,
+                    processors = recipe.get("processors") or [],
+                )
+
             dataset = (
                 []
-                if results.dataset is None
-                else to_preview_jsonable(results.dataset.to_dict(orient = "records"))
+                if preview_df is None
+                else to_preview_jsonable(preview_df.to_dict(orient = "records"))
             )
             processor_artifacts = (
                 None

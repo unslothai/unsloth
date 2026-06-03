@@ -56,3 +56,36 @@ def apply_studio_post_processors(
                     else None
                 ),
             )
+
+
+def apply_studio_post_processors_to_dataframe(
+    *,
+    df,
+    processors: list[dict[str, Any]],
+):
+    """In-memory variant of apply_studio_post_processors. Runs studio-owned
+    processors against an in-memory DataFrame (used by the preview path).
+    Non-studio entries are ignored. Returns the (mutated) df."""
+    from .json_document_score import run_json_document_score_on_dataframe
+
+    for processor in processors:
+        if not isinstance(processor, dict):
+            continue
+        processor_type = processor.get("processor_type")
+        if not is_studio_processor_type(processor_type):
+            continue
+        if processor_type == "json_document_score":
+            df = run_json_document_score_on_dataframe(
+                df,
+                prediction_column=str(processor.get("prediction_column", "")),
+                reference_column=str(processor.get("reference_column", "")),
+                schema=processor.get("schema"),
+                default_comparator=str(processor.get("default_comparator", "string")),
+                score_column=str(processor.get("score_column", "doc_score")),
+                breakdown_column=(
+                    processor.get("breakdown_column")
+                    if processor.get("breakdown_column")
+                    else None
+                ),
+            )
+    return df
