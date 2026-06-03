@@ -21,7 +21,19 @@ LLAMA_DIR="${UNSLOTH_LLAMA_CPP_PATH:-$HOME/.unsloth/llama.cpp}"
 SERVER="$LLAMA_DIR/build/bin/llama-server"
 log() { printf '  - %s\n' "$*"; }
 
-is_cuda_server() { [ -x "$1" ] && ldd "$1" 2>/dev/null | grep -qi 'libggml-cuda'; }
+# A llama-server is CUDA-capable in either of two build layouts:
+#   * old monolithic build -> libggml-cuda is a direct load-time dependency (ldd shows it)
+#   * current split build   -> CUDA ships as a dlopen-ed backend plugin, libggml-cuda.so*,
+#                              sitting next to the binary; ldd will NOT list it
+# Checking only ldd (the old behaviour) is a false negative on current llama.cpp and would
+# force a pointless full rebuild every run. A CPU-only build has no libggml-cuda.so at all,
+# so the presence of that backend beside the binary is the reliable CUDA signal.
+is_cuda_server() {
+    [ -x "$1" ] || return 1
+    ldd "$1" 2>/dev/null | grep -qi 'libggml-cuda' && return 0
+    for _so in "$(dirname "$1")"/libggml-cuda.so*; do [ -e "$_so" ] && return 0; done
+    return 1
+}
 
 # 0. Already provisioned?
 if is_cuda_server "$SERVER"; then

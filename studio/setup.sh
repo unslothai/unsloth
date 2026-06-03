@@ -1410,8 +1410,16 @@ fi  # end _SKIP_GGUF_BUILD check
 # already built a CUDA server are byte-for-byte unaffected. Opt out with
 # UNSLOTH_NO_LLAMA_CUDA=1. Best-effort: never aborts setup (provision script always
 # exits 0; failures leave the prior CPU/degraded state for the fallback below).
+# CUDA-capable in either build layout: old monolithic (libggml-cuda is a direct
+# ldd dependency) or current split build (CUDA is a dlopen-ed backend, libggml-cuda.so*,
+# beside the binary -- ldd will NOT list it). Checking only ldd is a false negative on
+# current llama.cpp and would force a needless rebuild; a CPU-only build has no
+# libggml-cuda.so at all, so its presence beside the binary is the reliable signal.
 _have_cuda_llama_server() {
-    [ -x "$LLAMA_SERVER_BIN" ] && ldd "$LLAMA_SERVER_BIN" 2>/dev/null | grep -qi 'libggml-cuda'
+    [ -x "$LLAMA_SERVER_BIN" ] || return 1
+    ldd "$LLAMA_SERVER_BIN" 2>/dev/null | grep -qi 'libggml-cuda' && return 0
+    for _so in "$(dirname "$LLAMA_SERVER_BIN")"/libggml-cuda.so*; do [ -e "$_so" ] && return 0; done
+    return 1
 }
 if [ "$_HOST_SYSTEM" = "Linux" ] \
         && { [ "$_HOST_MACHINE" = "aarch64" ] || [ "$_HOST_MACHINE" = "arm64" ]; } \
