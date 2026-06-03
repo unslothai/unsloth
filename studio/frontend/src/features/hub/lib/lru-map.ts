@@ -44,3 +44,29 @@ export class LruMap<K, V> {
     this.map.clear();
   }
 }
+
+/**
+ * Trim an insertion-ordered Set to `max` entries, evicting oldest-first but
+ * never an entry `isProtected` reports as still live. Protected entries are
+ * re-inserted at the back; `protectedScans` caps the walk at one full pass so
+ * a fully-protected set over capacity exits instead of looping forever.
+ */
+export function evictOldestUnprotected(
+  set: Set<string>,
+  max: number,
+  isProtected: (key: string) => boolean,
+): void {
+  let protectedScans = 0;
+  while (set.size > max && protectedScans < set.size) {
+    const oldest = set.values().next().value;
+    if (oldest === undefined) break;
+    if (isProtected(oldest)) {
+      set.delete(oldest);
+      set.add(oldest);
+      protectedScans += 1;
+      continue;
+    }
+    set.delete(oldest);
+    protectedScans = 0;
+  }
+}

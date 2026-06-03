@@ -33,11 +33,6 @@ export interface DownloadJob {
     expectedBytes: number,
   ) => Promise<void>;
   cancelDownload: (variant: string | null) => void;
-  adoptRunningJob: (
-    variant: string | null,
-    expectedBytes: number,
-    generation?: number,
-  ) => void;
   setExpectedBytes: (bytes: number, variant?: string | null) => void;
   resumeConflict: () => void;
   restartConflict: () => void;
@@ -149,13 +144,6 @@ export function useRepoDownload(config: RepoDownloadConfig): DownloadJob {
     [kind, repoId],
   );
 
-  const adoptRunningJob = useCallback(
-    (variant: string | null, expectedBytes: number, generation?: number) => {
-      downloadManager.adopt({ kind, repoId, variant, expectedBytes }, generation);
-    },
-    [kind, repoId],
-  );
-
   const setExpectedBytes = useCallback(
     (bytes: number, variant: string | null = null) =>
       downloadManager.setExpected(kind, repoId, variant, bytes),
@@ -196,7 +184,6 @@ export function useRepoDownload(config: RepoDownloadConfig): DownloadJob {
     transportConflict,
     requestStartDownload,
     cancelDownload,
-    adoptRunningJob,
     setExpectedBytes,
     resumeConflict,
     restartConflict,

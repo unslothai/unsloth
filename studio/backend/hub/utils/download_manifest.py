@@ -477,14 +477,11 @@ def _variant_from_state_file(path: Path, fallback: str) -> str:
     return variant if isinstance(variant, str) and variant else fallback
 
 
-def iter_variant_manifests(
+def _iter_variant_state_files(
+    parent: Optional[Path],
     repo_type: RepoType,
     repo_id: str,
 ) -> Iterator[tuple[str, Path]]:
-    """Yield (variant, manifest_path) for every variant-keyed manifest
-    written for this repo. Used by is_gguf_repo_partial to enumerate all
-    variants present on disk so the all-variants-broken gate can run."""
-    parent = manifests_dir()
     if parent is None:
         return
     prefix = variant_filename_prefix(repo_type, repo_id)
@@ -501,6 +498,16 @@ def iter_variant_manifests(
         variant = stem[len(prefix) :]
         if variant:
             yield _variant_from_state_file(entry, variant), entry
+
+
+def iter_variant_manifests(
+    repo_type: RepoType,
+    repo_id: str,
+) -> Iterator[tuple[str, Path]]:
+    """Yield (variant, manifest_path) for every variant-keyed manifest
+    written for this repo. Used by is_gguf_repo_partial to enumerate all
+    variants present on disk so the all-variants-broken gate can run."""
+    yield from _iter_variant_state_files(manifests_dir(), repo_type, repo_id)
 
 
 def iter_variant_markers(
@@ -510,20 +517,4 @@ def iter_variant_markers(
     """Yield (variant, marker_path) for every variant-keyed cancel marker.
     Companion to iter_variant_manifests: catches variants cancelled
     before download-start ever wrote a manifest (very early failures)."""
-    parent = cancelled_dir()
-    if parent is None:
-        return
-    prefix = variant_filename_prefix(repo_type, repo_id)
-    try:
-        entries = list(parent.iterdir())
-    except OSError:
-        return
-    for entry in entries:
-        if not entry.is_file() or not entry.name.endswith(".json"):
-            continue
-        stem = entry.name[: -len(".json")]
-        if not stem.lower().startswith(prefix):
-            continue
-        variant = stem[len(prefix) :]
-        if variant:
-            yield _variant_from_state_file(entry, variant), entry
+    yield from _iter_variant_state_files(cancelled_dir(), repo_type, repo_id)

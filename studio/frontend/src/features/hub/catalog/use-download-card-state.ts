@@ -10,6 +10,20 @@ export function partialResumeLabel(transport: string | null | undefined): string
   return "Retry";
 }
 
+export function downloadActionAriaLabel(
+  downloading: boolean,
+  cancelling: boolean,
+): string | undefined {
+  return cancelling ? "Cancelling…" : downloading ? "Cancel download" : undefined;
+}
+
+export function downloadActionLabel(
+  isPartial: boolean,
+  partialTransport: string | null | undefined,
+): string {
+  return isPartial ? partialResumeLabel(partialTransport) : "Download";
+}
+
 export function useDownloadCardState({
   job,
   variant,
@@ -74,12 +88,8 @@ export function useDownloadCardState({
     partialTransport,
     progressPercent,
     disabled: effectiveDisabled,
-    ariaLabel: cancelling
-      ? "Cancelling…"
-      : downloading
-        ? "Cancel download"
-        : undefined,
-    downloadLabel: isPartial ? partialResumeLabel(partialTransport) : "Download",
+    ariaLabel: downloadActionAriaLabel(downloading, cancelling),
+    downloadLabel: downloadActionLabel(isPartial, partialTransport),
     onClick,
   };
 }

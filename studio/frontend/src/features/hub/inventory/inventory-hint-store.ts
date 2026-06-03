@@ -15,6 +15,7 @@ import {
   repoKey,
 } from "./inventory-hints.ts";
 import type { InventoryHint } from "./types.ts";
+import { evictOldestUnprotected } from "../lib/lru-map.ts";
 
 export const MAX_OBSERVED_INVENTORY_KEYS_PER_KIND = 1024;
 
@@ -163,24 +164,11 @@ function rememberObservedInventoryKeys(
     observed.delete(key);
     observed.add(key);
   }
-  let protectedScans = 0;
-  while (
-    observed.size > MAX_OBSERVED_INVENTORY_KEYS_PER_KIND &&
-    protectedScans < observed.size
-  ) {
-    const oldest = observed.values().next().value;
-    if (!oldest) {
-      break;
-    }
-    if (pending[kind].has(oldest)) {
-      observed.delete(oldest);
-      observed.add(oldest);
-      protectedScans += 1;
-      continue;
-    }
-    observed.delete(oldest);
-    protectedScans = 0;
-  }
+  evictOldestUnprotected(
+    observed,
+    MAX_OBSERVED_INVENTORY_KEYS_PER_KIND,
+    (key) => pending[kind].has(key),
+  );
   if (setEqual(current[kind], observed)) {
     return current;
   }

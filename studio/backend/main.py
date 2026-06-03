@@ -9,6 +9,7 @@ import os
 import sys
 from pathlib import Path as _Path
 import asyncio
+from dataclasses import asdict
 
 # Suppress annoying C-level dependency warnings globally
 os.environ["PYTHONWARNINGS"] = "ignore"
@@ -419,8 +420,6 @@ async def lifespan(app: FastAPI):
         app.state.bootstrap_password = storage.get_bootstrap_password()
     yield
     # Cleanup
-    import asyncio
-
     await asyncio.to_thread(terminate_hub_downloads)
     _hw_module.DEVICE = None
     clear_unsloth_compiled_cache()
@@ -795,17 +794,7 @@ def studio_update_status(_current_subject: str = Depends(get_current_subject)):
 def studio_download_transport_capabilities(
     _current_subject: str = Depends(get_current_subject),
 ):
-    caps = get_download_transport_capabilities()
-    return {
-        "http": {
-            "available": caps.http.available,
-            "reason": caps.http.reason,
-        },
-        "xet": {
-            "available": caps.xet.available,
-            "reason": caps.xet.reason,
-        },
-    }
+    return asdict(get_download_transport_capabilities())
 
 
 @app.post("/api/shutdown")

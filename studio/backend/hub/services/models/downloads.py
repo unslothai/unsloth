@@ -252,10 +252,6 @@ async def get_active_downloads_response(repo_id: str = "") -> ActiveDownloadsRes
     )
 
 
-def _variant_partial_transport(repo_id: str, variant: str) -> Optional[str]:
-    return hf_cache_scan.partial_transport_for("model", repo_id, variant)
-
-
 def _variant_transport_status(
     repo_id: str,
     variant: str,
@@ -278,7 +274,7 @@ def _variant_transport_status(
         incomplete_blob_hashes = incomplete_hashes,
         variant_blob_hashes = variant_hashes,
     )
-    last_transport = _variant_partial_transport(repo_id, variant)
+    last_transport = hf_cache_scan.partial_transport_for("model", repo_id, variant)
     if (
         last_transport is None
         and has_partial

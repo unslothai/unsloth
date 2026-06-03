@@ -11,12 +11,7 @@ import {
   hydrateDownloadManager,
   resetHydrationState,
 } from "./hydration";
-import {
-  adoptJob,
-  cancelJob,
-  probeAndAdopt,
-  setExpected,
-} from "./poll-loop";
+import { cancelJob, probeAndAdopt, setExpected } from "./poll-loop";
 import { runtimeRegistry } from "./runtime-registry";
 import {
   cancelConflict,
@@ -51,7 +46,6 @@ export function __resetDownloadManagerForTests(): void {
 export interface DownloadManagerController {
   requestStart: typeof requestStart;
   cancel: typeof cancelJob;
-  adopt: typeof adoptJob;
   probeAndAdopt: typeof probeAndAdopt;
   setExpected: typeof setExpected;
   resumeConflict: typeof resumeConflict;
@@ -63,7 +57,6 @@ export interface DownloadManagerController {
 export const downloadManager: DownloadManagerController = {
   requestStart,
   cancel: cancelJob,
-  adopt: adoptJob,
   probeAndAdopt,
   setExpected,
   resumeConflict,

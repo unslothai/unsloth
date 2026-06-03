@@ -44,13 +44,8 @@ function hasScrollableOverflow(root: HTMLElement): boolean {
 export function useHubInfiniteScroll(
   fetchMore: () => boolean | void,
   signal: number,
-  enabledOrOptions: boolean | InfiniteScrollOptions = true,
-  legacyOnFetchIntent?: () => void,
+  options: InfiniteScrollOptions = {},
 ) {
-  const options =
-    typeof enabledOrOptions === "boolean"
-      ? { enabled: enabledOrOptions, onFetchIntent: legacyOnFetchIntent }
-      : enabledOrOptions;
   const enabled = options.enabled ?? true;
   const onFetchIntent = options.onFetchIntent;
   const resultCount = options.resultCount ?? signal;

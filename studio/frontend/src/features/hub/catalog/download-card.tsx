@@ -28,7 +28,10 @@ import {
 } from "../download-manager";
 import { DownloadCancelIndicator } from "./download-cancel-indicator";
 import { TransportConflictDialog } from "./transport-conflict-dialog";
-import { partialResumeLabel } from "./use-download-card-state";
+import {
+  downloadActionAriaLabel,
+  downloadActionLabel,
+} from "./use-download-card-state";
 
 /**
  * Shared shell for every download surface (safetensors, GGUF, dataset): card
@@ -138,9 +141,7 @@ export function DownloadActionButton({
       type="button"
       disabled={disabled}
       onClick={onClick}
-      aria-label={
-        cancelling ? "Cancelling…" : downloading ? "Cancel download" : undefined
-      }
+      aria-label={downloadActionAriaLabel(downloading, cancelling)}
       className={cn(
         "hub-action-btn w-28",
         (loading || cancelling) && "opacity-70",
@@ -168,7 +169,7 @@ export function DownloadActionButton({
       ) : (
         <>
           <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} />
-          {isPartial ? partialResumeLabel(partialTransport) : "Download"}
+          {downloadActionLabel(isPartial, partialTransport)}
         </>
       )}
     </button>

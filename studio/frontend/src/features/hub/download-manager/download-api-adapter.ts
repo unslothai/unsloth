@@ -217,16 +217,7 @@ export function accessErrorMessage(raw: string): string | null {
   return "Couldn't access this Hugging Face repo with the token used for this download. Update the HF token and restart the download, or delete the partial download if you no longer need it.";
 }
 
-export function pollAccessErrorMessage(raw: string): string | null {
-  const lower = raw.toLowerCase();
-  const hasFatalAccessSignal =
-    lower.includes("unauthorized") ||
-    lower.includes("forbidden") ||
-    lower.includes("gated") ||
-    lower.includes("repository not found");
-  if (!hasFatalAccessSignal) return null;
-  return accessErrorMessage(raw);
-}
+export const pollAccessErrorMessage = accessErrorMessage;
 
 export function normalizeDownloadError(
   error: unknown,

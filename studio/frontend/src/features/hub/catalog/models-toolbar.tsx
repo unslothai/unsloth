@@ -159,6 +159,8 @@ export const ModelsToolbar = memo(function ModelsToolbar({
         className={cn(
           "hub-menu-trigger hub-tab-toggle relative inline-flex h-9 w-full shrink-0 items-center rounded-full lg:w-[240px]",
         )}
+        role="radiogroup"
+        aria-label="View"
       >
         <span
           aria-hidden="true"
@@ -170,6 +172,8 @@ export const ModelsToolbar = memo(function ModelsToolbar({
         />
         <button
           type="button"
+          role="radio"
+          aria-checked={tab === "discover"}
           onClick={() => onTabChange("discover")}
           className={cn(
             "relative z-10 inline-flex h-9 flex-1 items-center justify-center rounded-full px-3 text-[12.5px] transition-colors",
@@ -182,6 +186,8 @@ export const ModelsToolbar = memo(function ModelsToolbar({
         </button>
         <button
           type="button"
+          role="radio"
+          aria-checked={tab === "downloaded"}
           onClick={() => onTabChange("downloaded")}
           className={cn(
             "relative z-10 inline-flex h-9 flex-1 items-center justify-center rounded-full px-3 text-[12.5px] transition-colors",

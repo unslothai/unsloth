@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { JobListeners, JobRuntime } from "./download-manager-types";
+import { evictOldestUnprotected } from "../lib/lru-map";
 
 const MAX_SUPPRESSED_COMPLETED_INVENTORY_HINTS = 64;
 
@@ -74,22 +75,9 @@ export function teardownRuntime(key: string): void {
 export function pruneSuppressedCompletedInventoryHints(
   liveCompletedKeys: Set<string>,
 ): void {
-  let protectedScans = 0;
-  while (
-    runtimeRegistry.suppressedCompletedInventoryHints.size >
-      MAX_SUPPRESSED_COMPLETED_INVENTORY_HINTS &&
-    protectedScans < runtimeRegistry.suppressedCompletedInventoryHints.size
-  ) {
-    const oldest =
-      runtimeRegistry.suppressedCompletedInventoryHints.values().next().value;
-    if (!oldest) break;
-    if (liveCompletedKeys.has(oldest)) {
-      runtimeRegistry.suppressedCompletedInventoryHints.delete(oldest);
-      runtimeRegistry.suppressedCompletedInventoryHints.add(oldest);
-      protectedScans += 1;
-      continue;
-    }
-    runtimeRegistry.suppressedCompletedInventoryHints.delete(oldest);
-    protectedScans = 0;
-  }
+  evictOldestUnprotected(
+    runtimeRegistry.suppressedCompletedInventoryHints,
+    MAX_SUPPRESSED_COMPLETED_INVENTORY_HINTS,
+    (key) => liveCompletedKeys.has(key),
+  );
 }
