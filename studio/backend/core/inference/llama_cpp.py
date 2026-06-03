@@ -1016,7 +1016,7 @@ class LlamaCppBackend:
                     custom_dir / "build-cuda" / "bin" / "Release" / binary_name
                 )
                 win_bin = custom_dir / "build" / "bin" / "Release" / binary_name
-                if win_cuda_bin.is_file() and LlamaCppServer._nvidia_available():
+                if win_cuda_bin.is_file() and LlamaCppBackend._nvidia_available():
                     logger.info(
                         "Preferring CUDA llama-server build over CPU build: %s",
                         win_cuda_bin,
@@ -1066,7 +1066,7 @@ class LlamaCppBackend:
                     unsloth_home / "build-cuda" / "bin" / "Release" / binary_name
                 )
                 home_win = unsloth_home / "build" / "bin" / "Release" / binary_name
-                if home_win_cuda.is_file() and LlamaCppServer._nvidia_available():
+                if home_win_cuda.is_file() and LlamaCppBackend._nvidia_available():
                     logger.info(
                         "Preferring CUDA llama-server build over CPU build: %s",
                         home_win_cuda,
@@ -1097,7 +1097,7 @@ class LlamaCppBackend:
             win_path = (
                 project_root / "llama.cpp" / "build" / "bin" / "Release" / binary_name
             )
-            if win_cuda_path.is_file() and LlamaCppServer._nvidia_available():
+            if win_cuda_path.is_file() and LlamaCppBackend._nvidia_available():
                 logger.info(
                     "Preferring CUDA llama-server build over CPU build: %s",
                     win_cuda_path,
