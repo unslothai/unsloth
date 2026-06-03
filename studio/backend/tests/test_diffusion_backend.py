@@ -3418,35 +3418,6 @@ def test_replace_diffusers_gguf_linear_keeps_fused_diffusers_module(monkeypatch)
     assert isinstance(root[0], GGUFLinear)
 
 
-def test_materialize_gguf_embedding_parameters_dequantizes_logical_shape(monkeypatch):
-    import torch
-
-    import core.inference.diffusion as d
-
-    calls: list[Any] = []
-
-    def _fake_dequantize_gguf_parameter(weight, dtype = None):
-        calls.append(weight)
-        assert dtype is torch.bfloat16
-        return torch.arange(6, dtype = torch.bfloat16).reshape(2, 3)
-
-    monkeypatch.setattr(d, "_dequantize_diffusers_gguf_parameter", _fake_dequantize_gguf_parameter)
-
-    root = torch.nn.Sequential(torch.nn.Embedding(2, 6))
-    raw_weight = torch.nn.Parameter(torch.zeros(2, 6, dtype = torch.uint8), requires_grad = False)
-    raw_weight.quant_type = "BF16"
-    root[0].weight = raw_weight
-
-    assert d._materialize_gguf_embedding_parameters(root, torch.bfloat16) == 1
-    assert calls == [raw_weight]
-    assert root[0].weight.shape == (2, 3)
-    assert root[0].weight.dtype == torch.bfloat16
-    assert root[0].weight.requires_grad is False
-    assert not hasattr(root[0].weight, "quant_type")
-    out = root(torch.tensor([0, 1]))
-    assert out.shape == (2, 3)
-
-
 def test_replace_gguf_conv2d_parameters_wraps_lazy_module(monkeypatch):
     import torch
 
@@ -6638,6 +6609,7 @@ def test_generate_video_with_metadata_uses_ltx23_family_defaults(
     expected_profile,
 ):
     import core.inference.diffusion as d
+    import core.inference.diffusion_video as dv
 
     fake_diffusers = types.ModuleType("diffusers")
     fake_pipelines = types.ModuleType("diffusers.pipelines")
@@ -6716,7 +6688,7 @@ def test_generate_video_with_metadata_uses_ltx23_family_defaults(
         def _fake_base_two_stage(self, **kwargs):
             self.two_stage_kwargs = kwargs
             return ["frame0", "frame1"], {
-                "sampling_profile": d.LTX2_3_BASE_TWO_STAGE_PROFILE,
+                "sampling_profile": dv.LTX2_3_BASE_TWO_STAGE_PROFILE,
                 "stage_1_width": kwargs["resolved_width"] // 2,
                 "stage_1_height": kwargs["resolved_height"] // 2,
             }
@@ -6731,7 +6703,7 @@ def test_generate_video_with_metadata_uses_ltx23_family_defaults(
         def _fake_two_stage(self, **kwargs):
             self.two_stage_kwargs = kwargs
             return ["frame0", "frame1"], {
-                "sampling_profile": d.LTX2_3_DISTILLED_TWO_STAGE_PROFILE,
+                "sampling_profile": dv.LTX2_3_DISTILLED_TWO_STAGE_PROFILE,
                 "stage_1_width": kwargs["resolved_width"] // 2,
                 "stage_1_height": kwargs["resolved_height"] // 2,
             }
@@ -6789,6 +6761,7 @@ def test_ltx23_distilled_stage_two_passes_nonterminal_sigmas_to_diffusers(
     monkeypatch,
 ):
     import core.inference.diffusion as d
+    import core.inference.diffusion_video as dv
     import torch
 
     fake_utils = types.ModuleType("diffusers.pipelines.ltx2.utils")
@@ -6848,10 +6821,10 @@ def test_ltx23_distilled_stage_two_passes_nonterminal_sigmas_to_diffusers(
     assert video == ["frame0"]
     assert len(pipe.calls) == 2
     stage_2_kwargs = pipe.calls[1]
-    assert stage_2_kwargs["sigmas"] == d.LTX2_3_DISTILLED_STAGE_2_SIGMAS
+    assert stage_2_kwargs["sigmas"] == dv.LTX2_3_DISTILLED_STAGE_2_SIGMAS
     assert stage_2_kwargs["sigmas"][-1] != 0.0
     assert stage_2_kwargs["num_inference_steps"] == 3
-    assert meta["stage_2_sigmas"] == d.LTX2_3_DISTILLED_STAGE_2_OFFICIAL_SIGMAS
+    assert meta["stage_2_sigmas"] == dv.LTX2_3_DISTILLED_STAGE_2_OFFICIAL_SIGMAS
     assert meta["stage_2_sigmas"][-1] == 0.0
 
 
