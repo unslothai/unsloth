@@ -1913,9 +1913,10 @@ def check_dataset_for_missing_videos(
                     path = _local_path_from_video_value(video_path)
                     if path is None or path in checked:
                         continue
-                    checked.add(path)
                     if not os.path.isfile(path):
                         missing.append(path)
+                    else:
+                        checked.add(path)
 
     if missing:
         missing_list = "\n".join(f"  - {p}" for p in missing)
