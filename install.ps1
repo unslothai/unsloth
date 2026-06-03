@@ -1571,7 +1571,13 @@ shell.Run cmd, 0, False
                 substep "Studio web-server deps incomplete (install.sh step cut short) -- installing them now..." "Cyan"
                 # Mirrors studio/backend/requirements/studio.txt MINUS the huggingface-hub
                 # pin (protected above). Prefer uv (matches install.sh); fall back to pip.
-                $_deps = 'typer fastapi uvicorn matplotlib pandas nest_asyncio pyjwt easydict addict "structlog>=24.1.0" diceware ddgs "cryptography>=42.0.0" "httpx>=0.27.0" "fastmcp>=3.0.2"'
+                # Bare package names only -- NO version specifiers / embedded quotes.
+                # The whole repair string is passed PowerShell -> wsl.exe -> bash -lc, and
+                # PowerShell's native-arg quoting mangles embedded double-quotes, so a
+                # "structlog>=24.1.0" loses its quotes and bash parses `>=` as a redirection,
+                # failing the whole install. uv resolves the latest of each (which satisfies
+                # the studio.txt minimums anyway), so bare names are sufficient and safe.
+                $_deps = 'typer fastapi uvicorn matplotlib pandas nest_asyncio pyjwt easydict addict structlog diceware ddgs cryptography httpx fastmcp'
                 $_repair = 'PY=/root/.unsloth/studio/unsloth_studio/bin/python; UV="$(command -v uv 2>/dev/null || echo /root/.local/bin/uv)"; if [ -x "$UV" ] || command -v uv >/dev/null 2>&1; then "$UV" pip install --python "$PY" ' + $_deps + '; else "$PY" -m pip install ' + $_deps + '; fi'
                 $prevEapR = $ErrorActionPreference; $ErrorActionPreference = "Continue"
                 try { & wsl.exe -d $distro -u root -- bash -lc $_repair } catch {} finally { $ErrorActionPreference = $prevEapR }
