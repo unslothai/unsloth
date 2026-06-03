@@ -164,7 +164,10 @@ def is_none_or_empty(value) -> bool:
         # zero-width/BOM format characters (U+FEFF, U+200B, U+200C, U+200D,
         # U+2060) intact.  Those are invisible when rendered, so treat them
         # as empty too — BOM artifacts are common in Windows-produced CSVs.
-        stripped = value.strip().strip("\ufeff\u200b\u200c\u200d\u2060")
+        # Two-pass strip: whitespace first, then invisible chars, then
+        # whitespace again \u2014 handles mixed cases like "\u200b \u200b" where
+        # stripping invisible chars at the edges exposes a plain space.
+        stripped = value.strip().strip("\ufeff\u200b\u200c\u200d\u2060").strip()
         if not stripped:
             return True
     if isinstance(value, list):
@@ -191,7 +194,7 @@ def is_none_or_empty(value) -> bool:
             t is None
             or (
                 isinstance(t, str)
-                and not t.strip().strip("\ufeff\u200b\u200c\u200d\u2060")
+                and not t.strip().strip("\ufeff\u200b\u200c\u200d\u2060").strip()
             )
             for t in text_values
         ):
@@ -208,7 +211,7 @@ def _classify_empty(value) -> str:
             return "empty_string"
         # Strings that are only whitespace or only invisible format
         # characters (BOM / zero-width joiners) render as empty to users.
-        if not value.strip().strip("\ufeff\u200b\u200c\u200d\u2060"):
+        if not value.strip().strip("\ufeff\u200b\u200c\u200d\u2060").strip():
             return "whitespace_only"
     if isinstance(value, list):
         # Mirrors the VLM/OpenAI content-block handling in is_none_or_empty.
