@@ -1708,20 +1708,28 @@ shell.Run cmd, 0, False
                     # vars do not cross into WSL by default), so thermally/power-limited
                     # laptops can cap the CUDA build's parallelism (`env` with no
                     # assignment is a harmless passthrough when the var is unset).
-                    # Step 1: fetch the provision script (quick; a transient WSL session is fine).
-                    $_fetchCmd = 'mkdir -p /root/.unsloth; if curl -fsSL "' + $_llamaUrl + '" -o /root/.unsloth/provision_llama_cuda.sh && [ -s /root/.unsloth/provision_llama_cuda.sh ]; then chmod +x /root/.unsloth/provision_llama_cuda.sh; echo PROV_FETCHED; else echo PROV_NOSCRIPT; fi'
+                    # Step 1: fetch the provision script + write a small runner (quick session).
+                    # The runner is built here and shipped as base64 (dodges every quoting layer).
+                    # It (a) restores a sane PATH so a NON-login shell still finds nvidia-smi
+                    # (/usr/lib/wsl/lib) and apt (/usr/bin) -- otherwise provision would early-exit
+                    # "no nvidia-smi"; (b) caps build jobs; (c) runs provision with logging. Using a
+                    # runner FILE lets the detached launcher below pass ONLY space-free args, avoiding
+                    # Start-Process arg-quoting (a space-containing `bash -lc <str>` gets mis-split and
+                    # silently runs just `env`).
+                    $_pathLine = 'export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/lib/wsl/lib:$PATH"' + "`n"
+                    $_jobsLine = if ($env:UNSLOTH_LLAMA_BUILD_JOBS) { "export UNSLOTH_LLAMA_BUILD_JOBS=$($env:UNSLOTH_LLAMA_BUILD_JOBS)`n" } else { "" }
+                    $_runner = "#!/usr/bin/env bash`n" + $_pathLine + $_jobsLine + "exec bash /root/.unsloth/provision_llama_cuda.sh > /root/.unsloth/llama_cuda_build.log 2>&1`n"
+                    $_runnerB64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($_runner))
+                    $_fetchCmd = 'mkdir -p /root/.unsloth; if curl -fsSL "' + $_llamaUrl + '" -o /root/.unsloth/provision_llama_cuda.sh && [ -s /root/.unsloth/provision_llama_cuda.sh ]; then chmod +x /root/.unsloth/provision_llama_cuda.sh; echo ' + $_runnerB64 + ' | base64 -d > /root/.unsloth/run_llama_build.sh; chmod +x /root/.unsloth/run_llama_build.sh; echo PROV_FETCHED; else echo PROV_NOSCRIPT; fi'
                     $_fetchOut = & wsl.exe -d $distro -u root -- bash -lc $_fetchCmd 2>$null
                     if ("$_fetchOut" -match 'PROV_FETCHED') {
                         # Step 2: run the build anchored to a DETACHED WINDOWS process. A WSL-side
-                        # `nohup setsid ... &` does NOT survive here: WSL shuts the distro's VM down
-                        # once the launching wsl.exe session exits, killing any backgrounded build
-                        # (observed: no build log, only the CPU server left behind). A persistent
-                        # Windows-side wsl.exe (Start-Process, no -Wait) holds the VM up for the whole
-                        # build while install.ps1 returns immediately. Job count crosses via `env`.
-                        # No double-quotes in the bash string -> clean through Start-Process arg array.
-                        $_jobsPrefix = if ($env:UNSLOTH_LLAMA_BUILD_JOBS) { "env UNSLOTH_LLAMA_BUILD_JOBS=$($env:UNSLOTH_LLAMA_BUILD_JOBS) " } else { "" }
-                        $_buildCmd = $_jobsPrefix + 'bash /root/.unsloth/provision_llama_cuda.sh > /root/.unsloth/llama_cuda_build.log 2>&1'
-                        Start-Process -WindowStyle Hidden -FilePath 'wsl.exe' -ArgumentList @('-d', $distro, '-u', 'root', '--', 'bash', '-lc', $_buildCmd) | Out-Null
+                        # `nohup setsid ... &` does NOT survive: WSL shuts the distro's VM down once
+                        # the launching wsl.exe session exits, killing any backgrounded build
+                        # (observed: no log, only a CPU server left behind). A persistent Windows-side
+                        # wsl.exe (Start-Process, no -Wait) holds the VM up for the whole build while
+                        # install.ps1 returns immediately. All ArgumentList tokens are space-free.
+                        Start-Process -WindowStyle Hidden -FilePath 'wsl.exe' -ArgumentList @('-d', $distro, '-u', 'root', '--', 'bash', '/root/.unsloth/run_llama_build.sh') | Out-Null
                         step "llama.cpp" "building CUDA llama.cpp for GGUF inference in the background (a few min); log: ~/.unsloth/llama_cuda_build.log" "Green"
                     } else {
                         substep "(GGUF inference needs a CUDA llama.cpp build; build later:  wsl -d $distro -u root -- bash ~/.unsloth/provision_llama_cuda.sh)" "Yellow"
