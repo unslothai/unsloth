@@ -368,7 +368,11 @@ function Uninstall-UnslothStudio {
         try {
             $distros = @(((& wsl.exe --list --quiet 2>$null) -join "`n").Replace([char]0, '') -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ })
             foreach ($d in $distros) {
-                & wsl.exe -d $d -u root -- bash -lc 'pkill -9 -f "unsloth studio" 2>/dev/null; pkill -9 -f "llama-server" 2>/dev/null; rm -rf /root/.unsloth /home/*/.unsloth /root/llama-cuda 2>/dev/null; true' 2>$null
+                # IMPORTANT: rm runs FIRST. `pkill -f "<pattern>"` matches this very
+                # bash -lc (its argv contains the pattern) and would SIGKILL the shell
+                # before a trailing rm could run. So remove files first (guaranteed),
+                # then best-effort kill: fuser by port (does not self-match) + pkill.
+                & wsl.exe -d $d -u root -- bash -lc 'rm -rf /root/.unsloth /home/*/.unsloth /root/llama-cuda /root/provision_llama_cuda.sh /root/llama_cuda_build.log 2>/dev/null; fuser -k 8888/tcp 2>/dev/null; pkill -9 -f unsloth_studio 2>/dev/null; pkill -9 -f llama-server 2>/dev/null; true' 2>$null
                 if ($LASTEXITCODE -eq 0) { _Substep "cleaned Unsloth from WSL distro: $d" "Green" }
             }
         } catch { }

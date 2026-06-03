@@ -209,6 +209,12 @@ _custom_studio_roots | while IFS= read -r _custom_root; do
     _remove_path "$_custom_root"
 done
 _remove_path "$HOME/.unsloth/studio"
+# CUDA llama.cpp built by provision_llama_cuda.sh on native-Linux Spark/aarch64
+# (and the fetched provision script). On WSL ~/.unsloth/llama.cpp is a symlink to
+# the real build, which install.ps1's uninstall removes; here rm -rf clears the
+# native-Linux build dir / the symlink.
+_remove_path "$HOME/.unsloth/llama.cpp"
+_remove_path "$HOME/.unsloth/provision_llama_cuda.sh"
 _remove_path "$HOME/.local/share/unsloth"
 # CLI shim: only the symlink Studio created, never a pip-installed file.
 _remove_cli_shim
