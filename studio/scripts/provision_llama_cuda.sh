@@ -113,7 +113,11 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
 # Build the full set unsloth-zoo's GGUF exporter expects too (llama-mtmd-cli,
 # llama-gguf-split), so a pre-provisioned build satisfies both Studio inference
 # AND save_pretrained_gguf without triggering a --clean-first rebuild later.
-cmake --build build -j"$(nproc)" --target \
+# Job count is overridable (UNSLOTH_LLAMA_BUILD_JOBS) -- lower it on thermally /
+# power-constrained laptops (e.g. N1X) where a full -j(nproc) CUDA build can trip
+# thermal/power shutdowns. cmake --build is incremental, so re-running resumes.
+JOBS="${UNSLOTH_LLAMA_BUILD_JOBS:-$(nproc)}"
+cmake --build build -j"$JOBS" --target \
     llama-server llama-cli llama-quantize llama-mtmd-cli llama-gguf-split >/dev/null 2>&1 \
     || { log "cmake build failed"; exit 0; }
 
