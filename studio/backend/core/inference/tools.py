@@ -802,15 +802,9 @@ def _opt_int(v) -> int | None:
 
 
 def _scope_retrieval_kwargs(scope: dict) -> dict:
-    """Per-request retrieval overrides from rag_scope; absent keys stay None so
-    the retrieval layer falls back to config."""
+    """Retrieval mode from rag_scope; candidate pools and RRF come from config."""
     mode = scope.get("mode")
-    return {
-        "mode": mode if mode in ("hybrid", "dense", "lexical") else "hybrid",
-        "rrf_k": _opt_int(scope.get("rrf_k")),
-        "top_k_lexical": _opt_int(scope.get("top_k_lexical")),
-        "top_k_dense": _opt_int(scope.get("top_k_dense")),
-    }
+    return {"mode": mode if mode in ("hybrid", "dense", "lexical") else "hybrid"}
 
 
 def _search_knowledge_base(arguments: dict, rag_scope: dict | None) -> str:
@@ -837,7 +831,6 @@ def _search_knowledge_base(arguments: dict, rag_scope: dict | None) -> str:
         scope_kb_id = scope.get("kb_id"),
         scope_thread_id = scope.get("thread_id"),
         top_k = top_k,
-        min_score = float(scope.get("min_score") or 0.0),
         **_scope_retrieval_kwargs(scope),
     )
     # Append the UI source-map after the sentinel; loops strip it before the model.

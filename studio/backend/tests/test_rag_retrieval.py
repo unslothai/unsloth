@@ -9,7 +9,7 @@ import math
 
 import pytest
 
-from core.rag import retrieval, store, tool
+from core.rag import config, retrieval, store, tool
 from core.rag.chunking import Chunk
 
 VOCAB = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel"]
@@ -384,8 +384,8 @@ def test_build_rag_autoinject_disabled_by_env(monkeypatch):
 # Per-request query-time overrides (rag_scope -> retrieval)
 # --------------------------------------------------------------------------
 def test_retrieve_hybrid_mode_selects_backend(monkeypatch):
-    """``mode`` runs only the chosen backend; hybrid threads candidate counts +
-    rrf_k. Sub-functions stubbed, no db/embedder needed."""
+    """``mode`` runs only the chosen backend; hybrid uses config candidate counts
+    + rrf_k. Sub-functions stubbed, no db/embedder needed."""
     calls: list = []
     monkeypatch.setattr(
         retrieval,
@@ -412,23 +412,16 @@ def test_retrieve_hybrid_mode_selects_backend(monkeypatch):
     assert [c[0] for c in calls] == ["dense"]
 
     calls.clear()
-    retrieval.retrieve_hybrid(
-        None,
-        "kb_a",
-        "q",
-        k = 5,
-        mode = "hybrid",
-        rrf_k = 99,
-        top_k_lexical = 7,
-        top_k_dense = 8,
-    )
-    assert ("lex", 7) in calls and ("dense", 8) in calls
+    retrieval.retrieve_hybrid(None, "kb_a", "q", k = 5, mode = "hybrid")
+    # Candidate pools + rrf_k come from config (no per-request override).
+    assert ("lex", config.TOP_K_LEXICAL) in calls
+    assert ("dense", config.TOP_K_DENSE) in calls
     rrf = next(c for c in calls if c[0] == "rrf")
-    assert rrf[1] == 99 and rrf[2] == 5  # overridden rrf_k + final top_k
+    assert rrf[1] == config.RRF_K and rrf[2] == 5  # config rrf_k + final top_k
 
 
 def test_scope_overrides_reach_retrieval(monkeypatch):
-    """rag_scope knobs flow through _search_knowledge_base into the search."""
+    """rag_scope mode + default_top_k flow through _search_knowledge_base."""
     from core.inference import tools
     from storage import rag_db
 
@@ -442,20 +435,9 @@ def test_scope_overrides_reach_retrieval(monkeypatch):
     monkeypatch.setattr(tool, "search_knowledge_base_with_sources", fake_search)
     tools._search_knowledge_base(
         {"query": "q"},
-        {
-            "kb_id": "a",
-            "mode": "dense",
-            "rrf_k": 99,
-            "top_k_lexical": 7,
-            "top_k_dense": 8,
-            "min_score": 0.4,
-            "default_top_k": 11,
-        },
+        {"kb_id": "a", "mode": "dense", "default_top_k": 11},
     )
     assert seen["mode"] == "dense"
-    assert seen["rrf_k"] == 99
-    assert seen["top_k_lexical"] == 7 and seen["top_k_dense"] == 8
-    assert seen["min_score"] == 0.4
     assert seen["top_k"] == 11
     # Unknown mode falls back to hybrid, not propagated garbage.
     seen.clear()
@@ -464,7 +446,7 @@ def test_scope_overrides_reach_retrieval(monkeypatch):
 
 
 def test_build_rag_autoinject_scope_overrides_env(monkeypatch):
-    """rag_scope wins over env: explicit enabled/floor + retrieval knobs flow,
+    """rag_scope wins over env: explicit enabled/floor + mode flow,
     ``autoinject=False`` disables even with env on."""
     from core.inference import tools
     from storage import rag_db
@@ -488,15 +470,11 @@ def test_build_rag_autoinject_scope_overrides_env(monkeypatch):
             "autoinject": True,
             "autoinject_min_score": 0.8,
             "mode": "dense",
-            "rrf_k": 12,
-            "top_k_lexical": 3,
-            "top_k_dense": 4,
         },
     )
     assert out is not None
     assert seen["min_dense_score"] == 0.8
-    assert seen["mode"] == "dense" and seen["rrf_k"] == 12
-    assert seen["top_k_lexical"] == 3 and seen["top_k_dense"] == 4
+    assert seen["mode"] == "dense"
 
     # Explicit False disables even with the env default on.
     monkeypatch.setenv("RAG_AUTOINJECT", "1")

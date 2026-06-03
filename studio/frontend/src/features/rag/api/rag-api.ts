@@ -10,8 +10,6 @@ import type {
   KnowledgeBase,
   PreviewTarget,
   RagDocument,
-  RagSearchMode,
-  RagSearchResult,
 } from "../types/rag";
 
 const RAG_BASE = "/api/rag";
@@ -211,28 +209,4 @@ export async function getDocumentFileUrl(documentId: string): Promise<string> {
     `/documents/${encodeURIComponent(documentId)}/file-url`,
   );
   return data.url;
-}
-
-// ── Search ───────────────────────────────────────────────────
-
-export async function searchRag(payload: {
-  query: string;
-  kbId?: string;
-  threadId?: string;
-  topK?: number;
-  minScore?: number;
-  mode?: RagSearchMode;
-}): Promise<RagSearchResult[]> {
-  const data = await ragRequest<{ results: RagSearchResult[] }>("/search", {
-    method: "POST",
-    body: {
-      query: payload.query,
-      ...(payload.kbId ? { kb_id: payload.kbId } : {}),
-      ...(payload.threadId ? { thread_id: payload.threadId } : {}),
-      ...(payload.topK !== undefined ? { top_k: payload.topK } : {}),
-      ...(payload.minScore !== undefined ? { min_score: payload.minScore } : {}),
-      ...(payload.mode ? { mode: payload.mode } : {}),
-    },
-  });
-  return data.results ?? [];
 }

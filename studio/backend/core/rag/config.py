@@ -18,7 +18,6 @@ TOP_K_LEXICAL = int(os.environ.get("RAG_TOP_K_LEXICAL", "30"))
 TOP_K_DENSE = int(os.environ.get("RAG_TOP_K_DENSE", "30"))
 TOP_K_HYBRID = int(os.environ.get("RAG_TOP_K_HYBRID", "10"))
 RRF_K = int(os.environ.get("RAG_RRF_K", "60"))
-MIN_SCORE = float(os.environ.get("RAG_MIN_SCORE", "0.0"))
 
 # Extensions accepted for ingestion.
 UPLOAD_EXTS = {".pdf", ".txt", ".md", ".markdown", ".docx", ".html", ".htm"}

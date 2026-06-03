@@ -1,12 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** Source the search_knowledge_base tool runs against. */
-export type RagSourceType = "kb" | "thread";
-
-/** Backends the retriever can run a query through. */
-export type RagSearchMode = "hybrid" | "lexical" | "dense";
-
 export interface KnowledgeBase {
   id: string;
   name: string;
@@ -55,15 +49,6 @@ export interface JobEvent {
   error?: string | null;
 }
 
-export interface RagSearchResult {
-  chunkId: string;
-  documentId: string;
-  filename: string;
-  page?: number | null;
-  score: number;
-  text: string;
-}
-
 /** A chunk's highlight rect on a PDF page; coords 0..1, top-left origin. */
 export interface PdfRegion {
   pageIndex: number;
@@ -82,15 +67,6 @@ export interface PreviewTarget {
   targetPage?: number | null;
   pdfRegions: PdfRegion[];
   text?: string | null;
-}
-
-/** Retrieval scope on the chat request; set kb_id or thread_id. */
-export interface RagScope {
-  kb_id?: string;
-  thread_id?: string;
-  default_top_k: number;
-  min_score: number;
-  mode: RagSearchMode;
 }
 
 /** File types the indexer accepts. */

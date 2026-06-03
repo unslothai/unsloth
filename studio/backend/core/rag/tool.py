@@ -88,12 +88,9 @@ def search_knowledge_base_with_sources(
     min_score: float = 0.0,
     model_name: str | None = None,
     mode: str = "hybrid",
-    rrf_k: int | None = None,
-    top_k_lexical: int | None = None,
-    top_k_dense: int | None = None,
 ) -> tuple[str, list[dict]]:
     """Search -> ``(rendered_text, citation_sources)``; each source aligns with a
-    rendered ``<chunk>`` block's ``id``. Retrieval knobs fall back to config."""
+    rendered ``<chunk>`` block's ``id``. Candidate pools come from config."""
     if not query or not query.strip():
         return "Error: query is empty.", []
     scope = _resolve_scope(scope_kb_id, scope_thread_id)
@@ -109,9 +106,6 @@ def search_knowledge_base_with_sources(
             k = top_k or config.TOP_K_HYBRID,
             model_name = model_name,
             mode = mode,
-            rrf_k = rrf_k,
-            top_k_lexical = top_k_lexical,
-            top_k_dense = top_k_dense,
         )
         hits = retrieval.filter_min_score(hits, min_score)
         rows = store_rows(conn, hits)
@@ -136,9 +130,6 @@ def search_for_autoinject(
     min_dense_score: float = 0.70,
     model_name: str | None = None,
     mode: str = "hybrid",
-    rrf_k: int | None = None,
-    top_k_lexical: int | None = None,
-    top_k_dense: int | None = None,
 ) -> tuple[str, list[dict]] | None:
     """Forced-retrieval variant for auto-injection.
 
@@ -163,9 +154,6 @@ def search_for_autoinject(
             k = k,
             model_name = model_name,
             mode = mode,
-            rrf_k = rrf_k,
-            top_k_lexical = top_k_lexical,
-            top_k_dense = top_k_dense,
         )
         strong = [
             h
