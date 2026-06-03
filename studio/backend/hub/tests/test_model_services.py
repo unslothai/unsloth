@@ -584,6 +584,9 @@ def test_download_dataset_continues_without_metadata_manifest(monkeypatch, tmp_p
     monkeypatch.setattr(
         download_manifest, "write_manifest", lambda *args: written.append(args) or True
     )
+    monkeypatch.setattr(
+        hf_cache_state, "has_active_incomplete_blobs", lambda *_args, **_kwargs: False
+    )
     monkeypatch.setitem(
         sys.modules,
         "huggingface_hub",
@@ -607,6 +610,48 @@ def test_download_dataset_continues_without_metadata_manifest(monkeypatch, tmp_p
         }
     ]
     assert verified == [("dataset", "Org/Data", None, str(tmp_path))]
+
+
+def test_download_snapshot_fails_when_metadata_unavailable_and_partial_remains(
+    monkeypatch, tmp_path
+):
+    """No prior manifest + metadata still unavailable on resume + leftover
+    .incomplete blobs means snapshot_download returned a cached partial without
+    downloading. The worker must exit 1 (honest, resumable error) instead of
+    deriving a self-certifying manifest from the finalized subset."""
+    written = []
+    verified = []
+
+    def _metadata(*_args, **_kwargs):
+        raise RuntimeError("metadata down")
+
+    monkeypatch.setattr(hf_download, "_model_info_with_retry", _metadata)
+    monkeypatch.setattr(
+        hf_download, "_verify_completed_download", lambda *args, **kwargs: verified.append(args)
+    )
+    monkeypatch.setattr(
+        download_registry, "prepare_cache_for_transport", lambda *_args, **_kwargs: 0
+    )
+    monkeypatch.setattr(download_manifest, "clear_cancel_marker", lambda *_args: None)
+    monkeypatch.setattr(download_manifest, "read_manifest", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        download_manifest, "write_manifest", lambda *args: written.append(args) or True
+    )
+    monkeypatch.setattr(
+        hf_cache_state, "has_active_incomplete_blobs", lambda *_args, **_kwargs: True
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "huggingface_hub",
+        SimpleNamespace(snapshot_download = lambda **_kwargs: str(tmp_path)),
+    )
+
+    with pytest.raises(SystemExit) as excinfo:
+        hf_download._download_snapshot("Org/Model", None, "http")
+
+    assert excinfo.value.code == 1
+    assert written == []
+    assert verified == []
 
 
 def test_purge_repo_cache_dirs_skips_top_level_symlink(monkeypatch, tmp_path):

@@ -413,8 +413,16 @@ def _recover_manifest_after_download(
     (huggingface_hub's auth/connection fallback returns snapshots/<sha> as-is),
     so rebuilding the manifest from the on-disk files here would record the
     partial set as the expected set and let _verify_completed_download certify a
-    half-finished download as complete."""
+    half-finished download as complete.
+
+    The same hazard exists with NO prior manifest: if metadata was unavailable on
+    the first attempt too, none was written, so the guard above can't fire. When
+    metadata is still unavailable here, leftover ``.incomplete`` blobs prove
+    snapshot_download returned a cached partial without downloading, so we fail
+    (exit 1) instead of deriving a self-certifying manifest from the finalized
+    subset. The partial is left intact for a later resume."""
     from hub.utils import download_manifest
+    from hub.utils.hf_cache_state import has_active_incomplete_blobs
 
     if download_manifest.read_manifest(repo_type, repo_id, None) is not None:
         return
@@ -431,6 +439,17 @@ def _recover_manifest_after_download(
         reason = "manifest write failed"
     except Exception as e:
         reason = f"{type(e).__name__}: {e}"
+
+    if has_active_incomplete_blobs(repo_type, repo_id):
+        print(
+            f"{label}could not reach Hugging Face for {repo_id} and the copy on "
+            "disk is still incomplete. Access to a private or restricted repo may "
+            "have been lost (HF token removed or changed), the connection dropped, "
+            "or Hugging Face is temporarily unavailable. Set a valid HF token or "
+            "reconnect, then resume the download.",
+            file = sys.stderr,
+        )
+        sys.exit(1)
 
     fallback_files = download_manifest.expected_files_from_snapshot_dir(
         Path(snapshot_path)

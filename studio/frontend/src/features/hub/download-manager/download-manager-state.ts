@@ -138,7 +138,7 @@ function sanitizePersistedState(
 
 function toPersistedJob(
   job: ManagedDownload,
-): Omit<ManagedDownload, "bytesPerSec"> {
+): Omit<ManagedDownload, "bytesPerSec" | "completeOnDisk"> {
   return {
     key: job.key,
     kind: job.kind,
@@ -147,7 +147,6 @@ function toPersistedJob(
     state: job.state,
     downloadedBytes: job.downloadedBytes,
     completedBytes: job.completedBytes,
-    completeOnDisk: job.completeOnDisk,
     expectedBytes: job.expectedBytes,
     fraction: job.fraction,
     error: job.error,

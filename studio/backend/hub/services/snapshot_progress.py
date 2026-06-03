@@ -84,7 +84,6 @@ def compute_snapshot_progress(
     registry,
     metadata_resolver: SnapshotMetadataResolver,
     variant: Optional[str] = None,
-    use_metadata_total_max: bool = False,
 ) -> dict:
     """Synchronous progress reading. Safe to run under ``asyncio.to_thread``."""
     empty = _empty_progress(expected_bytes)
@@ -104,11 +103,11 @@ def compute_snapshot_progress(
     # Always resolve the revision's blob hashes (cached) so stale blobs from a
     # superseded revision can't inflate the count even when the caller supplied
     # a total. Hashes degrade to empty (count-all) only when metadata is
-    # unavailable, e.g. offline. ``expected_total`` falls back to the resolved
-    # total only when the caller didn't supply a trustworthy one.
+    # unavailable, e.g. offline. ``expected_total`` is the larger of the caller's
+    # figure and the resolved total, so a stale or low caller hint can't cap the
+    # bar below the revision's real size.
     meta_total, expected_hashes = metadata_resolver(repo_id, hf_token)
-    if expected_total <= 0 or use_metadata_total_max:
-        expected_total = max(expected_total, meta_total)
+    expected_total = max(expected_total, meta_total)
 
     # When hashes aren't resolved yet, a variant must not count finalized blobs
     # unscoped: sibling quants share one blobs/ dir and would inflate a fresh
@@ -240,7 +239,6 @@ async def snapshot_progress_response(
     registry,
     metadata_resolver: SnapshotMetadataResolver,
     variant: Optional[str] = None,
-    use_metadata_total_max: bool = False,
 ) -> dict:
     """Async wrapper: offloads the blocking cache walk and never raises."""
     try:
@@ -254,7 +252,6 @@ async def snapshot_progress_response(
             registry = registry,
             metadata_resolver = metadata_resolver,
             variant = variant,
-            use_metadata_total_max = use_metadata_total_max,
         )
     except Exception as e:
         logger.warning(

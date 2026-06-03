@@ -395,7 +395,6 @@ async def get_gguf_download_progress_response(
         registry = _registry,
         metadata_resolver = _metadata_resolver,
         variant = progress_variant,
-        use_metadata_total_max = True,
     )
 
 
@@ -419,7 +418,6 @@ async def get_download_progress_response(
         hf_token = hf_token,
         registry = _registry,
         metadata_resolver = cache_inventory.get_repo_snapshot_metadata_cached,
-        use_metadata_total_max = True,
     )
 
 

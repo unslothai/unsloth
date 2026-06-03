@@ -903,27 +903,6 @@ class DownloadRegistry:
         with self._lock:
             return self._metadata.get(key)
 
-    def persist_cancel_for_key(
-        self,
-        key: str,
-        *,
-        repo_type: Optional[RepoType] = None,
-        repo_id: Optional[str] = None,
-        variant: Optional[str] = None,
-        transport: Optional[str] = None,
-    ) -> None:
-        key = normalize_job_key(key)
-        metadata = self.get_job_metadata(key)
-        if metadata is not None:
-            persist_cancel_marker(
-                metadata.repo_type,
-                metadata.repo_id,
-                metadata.variant,
-                metadata.transport,
-            )
-            return
-        persist_cancel_marker(repo_type, repo_id, variant, transport)
-
     def _generation_matches_locked(
         self,
         key: str,

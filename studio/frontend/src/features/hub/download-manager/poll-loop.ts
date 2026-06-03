@@ -718,10 +718,29 @@ function armCancelWatchdog(
   cancelEpoch: number,
 ): void {
   rt.watchdog = window.setTimeout(() => {
-    const live = runtimeRegistry.runtimes.get(key);
-    if (!live || live.epoch !== cancelEpoch || !live.cancelRequested) return;
-    finalize(key, "cancelled");
+    void resolveCancelWatchdog(key, cancelEpoch);
   }, CANCEL_WATCHDOG_MS);
+}
+
+async function resolveCancelWatchdog(
+  key: string,
+  cancelEpoch: number,
+): Promise<void> {
+  const rt = runtimeRegistry.runtimes.get(key);
+  if (!rt || rt.epoch !== cancelEpoch || !rt.cancelRequested) return;
+  const job = getState().jobs[key];
+  if (!job) return;
+  const probe = await probeCancelOutcome(key, job, rt, cancelEpoch);
+  if (probe === "stale") return;
+  const live = runtimeRegistry.runtimes.get(key);
+  if (!live || live.epoch !== cancelEpoch || !live.cancelRequested) return;
+  if (probe.terminal === "complete") {
+    finalize(key, "complete", { bytes: getState().jobs[key]?.downloadedBytes ?? 0 });
+  } else if (probe.terminal === "error") {
+    finalize(key, "error", { error: probe.error });
+  } else {
+    finalize(key, "cancelled");
+  }
 }
 
 function applyCancelResult(

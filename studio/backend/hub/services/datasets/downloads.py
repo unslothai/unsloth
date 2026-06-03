@@ -135,7 +135,6 @@ async def get_dataset_download_progress_response(
         hf_token = hf_token,
         registry = _registry,
         metadata_resolver = get_dataset_snapshot_metadata_cached,
-        use_metadata_total_max = True,
     )
 
 
