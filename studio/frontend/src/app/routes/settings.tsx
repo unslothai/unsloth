@@ -8,9 +8,13 @@ import { requireAuth } from "../auth-guards";
 import { Route as rootRoute } from "./__root";
 
 // /settings is a deep link to the modal. Open it, then redirect home.
+// Tab title is driven by useSettingsDialogStore in __root.tsx since the
+// redirect means /settings never stays matched; staticData is just a
+// safety net if beforeLoad ever stops throwing.
 export const Route = createRoute({
   getParentRoute: () => rootRoute,
   path: "/settings",
+  staticData: { title: "Settings" },
   beforeLoad: async () => {
     await requireAuth();
     useSettingsDialogStore.getState().openDialog();

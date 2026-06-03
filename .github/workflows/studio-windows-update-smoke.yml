@@ -176,32 +176,6 @@ jobs:
           fi
           cygpath -w "$SHIM_DIR" >> "$GITHUB_PATH"
 
-      - name: Patch Studio venv with full typer / pydantic dep trees
-        # install.ps1 runs `uv pip install --no-deps -r
-        # no-torch-runtime.txt` to keep torch out of transitive
-        # resolution from accelerate/peft/trl. That also drops
-        # typer's and pydantic's runtime deps unless they're
-        # explicitly pinned in no-torch-runtime.txt. We pin the
-        # known ones (click, shellingham, annotated-doc, rich,
-        # pydantic-core, annotated-types, typing-inspection, ...)
-        # but typer / pydantic minor versions can introduce new
-        # transitive deps that are NOT in our pin list.
-        #
-        # Belt-and-suspenders: re-install typer + pydantic +
-        # huggingface_hub WITH their deps into the Studio venv.
-        # `pip install --upgrade` only adds missing packages; it
-        # never down-shifts an installed version. Cannot pull
-        # torch (none of typer / pydantic / huggingface_hub depend
-        # on it).
-        run: |
-          STUDIO_PY=~/.unsloth/studio/unsloth_studio/Scripts/python.exe
-          if [ ! -f "$STUDIO_PY" ]; then
-            echo "::error::Studio venv python not at $STUDIO_PY"
-            ls -la ~/.unsloth/studio/ || true
-            exit 1
-          fi
-          "$STUDIO_PY" -m pip install --upgrade typer pydantic huggingface_hub
-
       - name: First update should be a no-op (prebuilt already validated)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

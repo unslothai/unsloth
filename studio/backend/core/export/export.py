@@ -475,6 +475,7 @@ class ExportBackend:
                     self.current_model.save_pretrained_merged(
                         save_directory,
                         self.current_tokenizer,
+                        save_method = "merged_16bit",
                     )
                 else:
                     self.current_model.save_pretrained(save_directory)
@@ -510,6 +511,7 @@ class ExportBackend:
                             self.current_model.save_pretrained_merged(
                                 tmp_dir,
                                 self.current_tokenizer,
+                                save_method = "merged_16bit",
                             )
                             self.current_model.push_to_hub_merged(
                                 repo_id,

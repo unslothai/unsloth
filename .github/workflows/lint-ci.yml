@@ -79,6 +79,56 @@ jobs:
         run: |
           ruff check unsloth unsloth_cli studio tests cli.py unsloth-cli.py
 
+      - name: Import-hoist verifier self-test
+        # scripts/verify_import_hoist.py is a scope-aware (LEGB) AST
+        # resolver that gates import-hoisting / alias-rename refactors
+        # against two bugs ruff and pyflakes both miss:
+        #   1. dangling alias  -- `from a import b as _b` hoisted to
+        #      `from a import b` but a leftover `_b` reference now
+        #      resolves to nothing (or to some other module-level `_b`).
+        #   2. rename clash    -- `_b -> b` silently re-points at a
+        #      different object already named `b` in that scope.
+        # This step runs the tool's 8 negative-control cases so a
+        # regression in the verifier itself fails before we trust it on
+        # a diff. Hermetic, stdlib-only, sub-second. Hard gate.
+        run: |
+          python scripts/verify_import_hoist.py --self-test
+
+      - name: Import-hoist / alias-rename safety (changed Python files)
+        # Runs the verifier in compare mode on every in-place-modified
+        # .py in the PR: parses each file BEFORE (base branch) and AFTER
+        # (this diff), resolves every name load, and fails on a BLOCKER
+        # (dangling alias / rename clash / re-pointed import). INFO
+        # findings (a helper relocated to another file) do not fail.
+        #
+        # --diff-filter=M (in-place edits only) is deliberate: that is
+        # exactly where a hoist refactor lives, and it skips brand-new
+        # files whose re-export imports would otherwise look "unused".
+        #
+        # actions/checkout uses fetch-depth: 1, so the base branch is not
+        # present locally. Fetch the single base commit with an explicit
+        # refspec so origin/<base> is reliably created (a bare
+        # `git fetch origin <ref>` only updates FETCH_HEAD in some
+        # configs). Two-dot diff avoids needing a merge-base on a shallow
+        # clone.
+        if: github.event_name == 'pull_request'
+        run: |
+          git fetch --no-tags --depth=1 origin \
+            "${{ github.base_ref }}:refs/remotes/origin/${{ github.base_ref }}"
+          mapfile -t CHANGED < <(
+            git diff --name-only --diff-filter=M \
+              "origin/${{ github.base_ref }}" HEAD -- '*.py' \
+              | grep -vE '(^|/)(unsloth_compiled_cache|node_modules|build|dist)/' || true
+          )
+          if [ "${#CHANGED[@]}" -eq 0 ]; then
+            echo "no in-place-modified Python files to check"
+            exit 0
+          fi
+          printf 'checking %d file(s):\n' "${#CHANGED[@]}"
+          printf '  %s\n' "${CHANGED[@]}"
+          python scripts/verify_import_hoist.py \
+            --before "origin/${{ github.base_ref }}" --after HEAD "${CHANGED[@]}"
+
       - name: No leftover debugger / pdb / breakpoint calls
         # Catches the "I'll just stick a breakpoint() here" mistake
         # before it ships. AST-based so commented-out debugger

@@ -390,6 +390,8 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                 error instanceof Error
                   ? error.message
                   : "Failed to load model defaults",
+              // Defaults load failed; reset so no prior model's value lingers.
+              visionImageSize: DEFAULT_HYPERPARAMS.visionImageSize,
             });
 
             // Fallback vision check if config endpoint fails.
@@ -498,7 +500,16 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         },
         setSelectedModel: (selectedModel) => {
           const previousModel = get().selectedModel;
-          set({ selectedModel, modelDefaultsError: null });
+          // Reset vision_image_size on a true switch only; same-model reloads
+          // go through the mapper, which preserves the user's choice.
+          const patch: { selectedModel: string | null; modelDefaultsError: null; visionImageSize?: number | null } = {
+            selectedModel,
+            modelDefaultsError: null,
+          };
+          if (selectedModel !== previousModel) {
+            patch.visionImageSize = DEFAULT_HYPERPARAMS.visionImageSize;
+          }
+          set(patch);
 
           if (!selectedModel) {
             _modelConfigController?.abort();
@@ -701,6 +712,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         }),
         setEpochs: (epochs) => set({ epochs }),
         setContextLength: (contextLength) => set({ contextLength }),
+        setVisionImageSize: (visionImageSize) => set({ visionImageSize }),
         setLearningRate: (learningRate) => {
           _learningRateManuallySet = true;
           set({ learningRate });
@@ -755,7 +767,10 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         resetToModelDefaults: () => {
           const { selectedModel } = get();
           if (!selectedModel) return;
-          set({ modelDefaultsAppliedFor: null });
+          set({
+            modelDefaultsAppliedFor: null,
+            visionImageSize: DEFAULT_HYPERPARAMS.visionImageSize,
+          });
           loadAndApplyModelDefaults(selectedModel);
         },
         applyConfigPatch: (config: BackendModelConfig) => {

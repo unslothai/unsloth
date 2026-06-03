@@ -345,8 +345,9 @@ class TestSandboxCpuRlimitDefault:
 
 class TestMaxBodyDefault:
     def test_default_is_500_mb(self):
-        src = (_BACKEND_ROOT / "main.py").read_text()
-        assert 'UNSLOTH_STUDIO_MAX_BODY_MB", "500"' in src
+        src = (_BACKEND_ROOT / "utils" / "upload_limits.py").read_text()
+        assert "DEFAULT_UPLOAD_LIMIT_MB = 500" in src
+        assert "UNSLOTH_STUDIO_MAX_BODY_MB" in src
 
 
 class TestBashBlocklistPosition:

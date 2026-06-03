@@ -439,6 +439,15 @@ def run_export_process(
                 'Install for better performance: pip install "triton-windows<3.7"'
             )
 
+    # ── 1c. Stub torchao on Windows ROCm ──
+    # Shared with the training worker; see core/_torchao_stub.py for the full
+    # rationale (torchao -> torch.distributed._functional_collectives crashes on
+    # Windows ROCm because the RCCL backend is absent). No-op off Windows ROCm.
+    # Must run before any import of transformers / unsloth_zoo.
+    from core._torchao_stub import install_torchao_windows_rocm_stub
+
+    install_torchao_windows_rocm_stub()
+
     # ── 2. Import ML libraries (fresh in this clean process) ──
     try:
         _send_response(

@@ -194,7 +194,10 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
   const hasBootstrapPassword = Boolean(window.__UNSLOTH_BOOTSTRAP__?.password);
   const invalidChangePasswordForm =
     !isLoginMode &&
-    (newPassword.length < 8 || newPassword !== confirmPassword || currentPassword === newPassword);
+    (currentPassword.length < 8 ||
+      newPassword.length < 8 ||
+      newPassword !== confirmPassword ||
+      currentPassword === newPassword);
   const showPasswordMismatchWarning =
     !isLoginMode &&
     newPassword.length > 0 &&
@@ -206,8 +209,13 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
     setError(null);
 
     if (!isLoginMode) {
-      if (!currentPassword) {
-        setError("Unable to initialize setup. Reload the page and try again.");
+      // Mirror the disable gate: Enter / autofill can bypass the button.
+      if (currentPassword.length < 8) {
+        setError(
+          currentPassword
+            ? "Current password must be at least 8 characters."
+            : "Unable to initialize setup. Reload the page and try again.",
+        );
         return;
       }
       if (newPassword.length < 8) {

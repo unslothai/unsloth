@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { getAuthToken } from "@/features/auth";
+import { useT } from "@/i18n";
 import { toastError, toastSuccess } from "@/shared/toast";
 import { Camera } from "lucide-react";
 import { useMemo, useRef, useState } from "react";
@@ -37,6 +38,7 @@ function readPersistedProfile(): { displayName: string; avatarDataUrl: string | 
 }
 
 export function ProfilePersonalizationPanel() {
+  const t = useT();
   const displayName = useUserProfileStore((s) => s.displayName);
   const avatarDataUrl = useUserProfileStore((s) => s.avatarDataUrl);
   const setDisplayName = useUserProfileStore((s) => s.setDisplayName);
@@ -60,11 +62,11 @@ export function ProfilePersonalizationPanel() {
       setDisplayName(trimmed);
       const persisted = readPersistedProfile();
       if (persisted && persisted.displayName === trimmed) {
-        toastSuccess("Profile name saved");
+        toastSuccess(t("settings.profile.nameSaved"));
       } else {
         toastError(
-          "Could not persist profile name",
-          "Name updated for this session, but may not persist after reload.",
+          t("settings.profile.namePersistErrorTitle"),
+          t("settings.profile.namePersistErrorDescription"),
         );
       }
     }
@@ -78,17 +80,18 @@ export function ProfilePersonalizationPanel() {
       setAvatarDataUrl(dataUrl);
       const persisted = readPersistedProfile();
       if (persisted && persisted.avatarDataUrl === dataUrl) {
-        toastSuccess("Profile photo updated");
+        toastSuccess(t("settings.profile.photoUpdated"));
       } else {
         toastError(
-          "Could not persist profile photo",
-          "Photo updated for this session, but may not persist after reload.",
+          t("settings.profile.photoPersistErrorTitle"),
+          t("settings.profile.photoPersistErrorDescription"),
         );
       }
     } catch (e) {
-      const message = e instanceof Error ? e.message : "Could not use this image.";
+      const message =
+        e instanceof Error ? e.message : t("settings.profile.imageUseError");
       setImageError(message);
-      toastError("Could not update profile photo", message);
+      toastError(t("settings.profile.photoUpdateErrorTitle"), message);
     }
   };
 
@@ -115,7 +118,7 @@ export function ProfilePersonalizationPanel() {
           type="button"
           onClick={() => fileInputRef.current?.click()}
           className="absolute right-0 bottom-0 -translate-x-[15.625%] -translate-y-[15.625%] flex size-8 items-center justify-center rounded-full border border-border bg-background text-foreground shadow-sm transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
-          aria-label="Change profile picture"
+          aria-label={t("settings.profile.changePicture")}
         >
           <Camera className="size-3.5" strokeWidth={2} />
         </button>
@@ -123,7 +126,7 @@ export function ProfilePersonalizationPanel() {
 
       <div className="flex w-full max-w-[560px] flex-col gap-2">
         <Label htmlFor="profile-display-name" className="text-xs font-medium text-muted-foreground">
-          Display name
+          {t("settings.profile.displayName")}
         </Label>
         <div className="flex items-center gap-2">
           <Input
@@ -142,7 +145,7 @@ export function ProfilePersonalizationPanel() {
             className="h-10 min-w-0 flex-1 rounded-full text-sm"
           />
           <Button type="button" size="sm" className="h-10 px-5" onClick={saveName} disabled={!hasNameChanges}>
-            Save
+            {t("common.save")}
           </Button>
         </div>
       </div>
