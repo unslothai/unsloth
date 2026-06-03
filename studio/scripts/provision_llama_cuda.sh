@@ -83,7 +83,12 @@ if [ -z "$NVCC" ]; then
 fi
 
 CUDA_HOME="$(dirname "$(dirname "$NVCC")")"
-export PATH="$CUDA_HOME/bin:$PATH"
+# Put the CUDA toolkit + standard Linux dirs FIRST so the build always uses the
+# Linux cmake/gcc/git, never a Windows tool that leaked into PATH via WSL interop
+# when the installer is launched from a Windows shell (those /mnt/c entries also
+# contain spaces that can confuse the build). Original PATH kept after so things
+# like nvidia-smi still resolve.
+export PATH="$CUDA_HOME/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
 export CUDAToolkit_ROOT="$CUDA_HOME"
 
 # 4. Host compiler: prefer gcc-14 / g++-14 (nvcc rejects 15).
