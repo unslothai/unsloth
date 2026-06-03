@@ -128,6 +128,7 @@ export function RetrievalSettingsSection() {
   );
 
   const [kbs, setKbs] = useState<KnowledgeBase[]>([]);
+  const [kbsLoaded, setKbsLoaded] = useState(false);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [refreshTick, setRefreshTick] = useState(0);
 
@@ -135,10 +136,16 @@ export function RetrievalSettingsSection() {
     let cancelled = false;
     listKnowledgeBases()
       .then((rows) => {
-        if (!cancelled) setKbs(rows);
+        if (!cancelled) {
+          setKbs(rows);
+          setKbsLoaded(true);
+        }
       })
       .catch(() => {
-        if (!cancelled) setKbs([]);
+        if (!cancelled) {
+          setKbs([]);
+          setKbsLoaded(true);
+        }
       });
     return () => {
       cancelled = true;
@@ -146,16 +153,18 @@ export function RetrievalSettingsSection() {
   }, [refreshTick]);
 
   // If the selected KB was deleted, fall back to thread source so we never send
-  // a stale kb_id.
+  // a stale kb_id. Gate on kbsLoaded (not kbs.length): deleting the *last* KB
+  // empties the list, and a length>0 guard would then skip the fallback and
+  // leave the composer stuck on a ghost KB (no Add Files, retrieval misses).
   useEffect(() => {
     if (
+      kbsLoaded &&
       ragSource.type === "kb" &&
-      kbs.length > 0 &&
       !kbs.some((kb) => kb.id === ragSource.kbId)
     ) {
       setRagSource({ type: "thread" });
     }
-  }, [kbs, ragSource, setRagSource]);
+  }, [kbs, kbsLoaded, ragSource, setRagSource]);
 
   const sourceValue =
     ragSource.type === "kb" ? ragSource.kbId : THREAD_VALUE;
