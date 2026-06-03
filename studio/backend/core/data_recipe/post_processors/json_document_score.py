@@ -13,20 +13,22 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import os
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 from eval.json_score.api import score_from_text
 
 
-def _score_node_to_dict(node: Any) -> Any:
-    """ScoreNode is a dataclass; recurse into its `children`."""
-    if dataclasses.is_dataclass(node):
-        d = dataclasses.asdict(node)
-        return d
-    return node
+def _coerce_value(value: Any) -> Any:
+    """Parquet list columns come back as numpy.ndarray — convert to list so
+    json_score's isinstance(value, list) check works. Other types pass through."""
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    return value
 
 
 def _score_row(
@@ -38,13 +40,17 @@ def _score_row(
     want_breakdown: bool,
 ) -> tuple[float, Any]:
     score, node = score_from_text(
-        reference,
-        prediction,
+        _coerce_value(reference),
+        _coerce_value(prediction),
         schema,
         default_comparator=default_comparator,
         return_key_scores=True,
     )
-    breakdown = _score_node_to_dict(node) if want_breakdown else None
+    breakdown = (
+        dataclasses.asdict(node)
+        if want_breakdown and dataclasses.is_dataclass(node)
+        else (node if want_breakdown else None)
+    )
     return float(score), breakdown
 
 
@@ -80,12 +86,14 @@ def run_json_document_score(
                 f"(have: {list(df.columns)})"
             )
 
+        predictions = df[prediction_column].to_numpy()
+        references = df[reference_column].to_numpy()
         scores: list[float] = []
-        breakdowns: list[str | None] = []
-        for _, row in df.iterrows():
+        breakdowns: list[str] = []
+        for prediction_value, reference_value in zip(predictions, references):
             score, breakdown = _score_row(
-                prediction=row[prediction_column],
-                reference=row[reference_column],
+                prediction=prediction_value,
+                reference=reference_value,
                 schema=schema,
                 default_comparator=default_comparator,
                 want_breakdown=want_breakdown,
@@ -98,4 +106,6 @@ def run_json_document_score(
         if want_breakdown and breakdown_column:
             df[breakdown_column] = breakdowns
 
-        df.to_parquet(parquet_file, index=False)
+        tmp_file = parquet_file.with_suffix(parquet_file.suffix + ".tmp")
+        df.to_parquet(tmp_file, index=False)
+        os.replace(tmp_file, parquet_file)
