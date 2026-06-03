@@ -6,6 +6,7 @@
 # irm | iex cannot forward arguments, so web installs take options as env vars set
 # before the pipe (flags still work via .\install.ps1):
 #   $env:UNSLOTH_NO_TORCH=1; irm https://unsloth.ai/install.ps1 | iex       # skip PyTorch (GGUF-only)
+#   $env:UNSLOTH_PYTHON='3.12'; irm https://unsloth.ai/install.ps1 | iex    # pin Python version
 #   $env:UNSLOTH_STUDIO_HOME='C:\path'; irm https://unsloth.ai/install.ps1 | iex
 #   .\install.ps1 --no-torch                                                # equivalent flag
 # Or pass flags to a scriptblock: & ([scriptblock]::Create((irm https://unsloth.ai/install.ps1))) --no-torch
@@ -141,7 +142,8 @@ function Install-UnslothStudio {
         return (Exit-InstallFailure "--package name contains invalid characters")
     }
 
-    $PythonVersion = "3.13"
+    # UNSLOTH_PYTHON pins the version (mirrors install.sh --python); default 3.13.
+    $PythonVersion = if ($env:UNSLOTH_PYTHON) { $env:UNSLOTH_PYTHON } else { "3.13" }
 
     # Resolve install destinations. Priority: UNSLOTH_STUDIO_HOME, then
     # STUDIO_HOME alias, then USERPROFILE-redirect, then default.
@@ -944,7 +946,9 @@ shell.Run cmd, 0, False
         # py.exe resolves to the standard CPython install, not conda.
         $pyLauncher = Get-Command py -CommandType Application -ErrorAction SilentlyContinue
         if ($pyLauncher -and $pyLauncher.Source -notmatch $script:CondaSkipPattern) {
-            foreach ($minor in @("3.13", "3.12", "3.11")) {
+            # Prefer the requested $PythonVersion, then newest-first fallback.
+            $minors = @($PythonVersion) + (@("3.13", "3.12", "3.11") | Where-Object { $_ -ne $PythonVersion })
+            foreach ($minor in $minors) {
                 try {
                     $out = & $pyLauncher.Source "-$minor" --version 2>&1 | Out-String
                     if ($out -match "Python (3\.1[1-3])\.\d+") {
