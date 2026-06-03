@@ -9,6 +9,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 
 import ipaddress
 import os
+import shlex
+import sys
 import threading
 import time
 from collections import deque
@@ -36,6 +38,36 @@ from auth.authentication import (
 )
 
 router = APIRouter()
+
+
+def _reset_password_command() -> str:
+    """Shell command shown in the 'incorrect password' hint.
+
+    Prefer the ABSOLUTE path to this install's ``unsloth`` launcher (a sibling
+    of the running interpreter) so the hint works even when the launcher's
+    directory is not on PATH -- e.g. a terminal opened before install, a stale
+    Windows PATH, or ``~/.local/bin`` not on PATH (the default on macOS) -- and
+    regardless of the current working directory.
+
+    On POSIX the path is shell-quoted so spaces are handled. On Windows we only
+    use the bare absolute path when it has no spaces, because a quoted path needs
+    different syntax in cmd (``"..."``) vs PowerShell (``& "..."``); when it has
+    a space we fall back to the PATH-based form to stay unambiguous across
+    shells. If the launcher can't be located we fall back to the PATH form too.
+    """
+    try:
+        bin_dir = os.path.dirname(os.path.abspath(sys.executable))
+        if os.name == "nt":
+            exe = os.path.join(bin_dir, "unsloth.exe")
+            if os.path.isfile(exe) and " " not in exe:
+                return f"{exe} studio reset-password"
+        else:
+            exe = os.path.join(bin_dir, "unsloth")
+            if os.path.isfile(exe):
+                return f"{shlex.quote(exe)} studio reset-password"
+    except Exception:
+        pass
+    return "unsloth studio reset-password"
 
 
 # Per-(ip, username) bucket + per-IP aggregate. Account bucket stops one user's
@@ -228,7 +260,7 @@ async def login(payload: AuthLoginRequest, request: Request) -> Token:
         _record_login_failure(unknown_key)
         raise HTTPException(
             status_code = status.HTTP_401_UNAUTHORIZED,
-            detail = "Incorrect password. Run 'unsloth studio reset-password' in your terminal to reset it.",
+            detail = f"Incorrect password. Run '{_reset_password_command()}' in your terminal to reset it.",
         )
 
     salt, pwd_hash, _jwt_secret, must_change_password = record
@@ -236,7 +268,7 @@ async def login(payload: AuthLoginRequest, request: Request) -> Token:
         _record_login_failure(key)
         raise HTTPException(
             status_code = status.HTTP_401_UNAUTHORIZED,
-            detail = "Incorrect password. Run 'unsloth studio reset-password' in your terminal to reset it.",
+            detail = f"Incorrect password. Run '{_reset_password_command()}' in your terminal to reset it.",
         )
 
     _clear_login_bucket(key)

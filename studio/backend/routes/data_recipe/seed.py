@@ -31,6 +31,14 @@ except ImportError:
     resolve_chunking = None
 from core.data_recipe.jsonable import to_preview_jsonable
 from utils.paths import ensure_dir, seed_uploads_root, unstructured_uploads_root
+from utils.upload_limits import (
+    LOCAL_SEED_UPLOAD_MAX_BYTES,
+    LOCAL_SEED_UPLOAD_MAX_LABEL,
+    UNSTRUCTURED_RECIPE_UPLOAD_MAX_BYTES,
+    UNSTRUCTURED_RECIPE_UPLOAD_MAX_LABEL,
+    UNSTRUCTURED_RECIPE_UPLOAD_TOTAL_MAX_BYTES,
+    UNSTRUCTURED_RECIPE_UPLOAD_TOTAL_MAX_LABEL,
+)
 
 from models.data_recipe import (
     SeedInspectRequest,
@@ -47,9 +55,6 @@ LOCAL_UPLOAD_EXTS = {".csv", ".json", ".jsonl"}
 UNSTRUCTURED_ALLOWED_EXTS = {".pdf", ".docx", ".txt", ".md"}
 SEED_UPLOAD_DIR = seed_uploads_root()
 UNSTRUCTURED_UPLOAD_ROOT = unstructured_uploads_root()
-MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB
-MAX_TOTAL_SIZE = 100 * 1024 * 1024  # 100MB
-
 _SAFE_ID_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
 
 
@@ -405,20 +410,17 @@ def _extract_text_from_file(file_path: Path, ext: str) -> str:
     return normalize_unstructured_text(raw)
 
 
-def _get_block_total_size(block_dir: Path, file_ids: list[str]) -> int:
-    """Sum raw upload sizes for tracked file IDs only."""
-    if not block_dir.exists() or not file_ids:
+def _get_block_total_size(block_dir: Path) -> int:
+    """Sum raw upload sizes for the whole block from server-owned files."""
+    if not block_dir.exists():
         return 0
-    id_set = set(file_ids)
     total = 0
     for f in block_dir.iterdir():
         if not f.is_file():
             continue
         if f.name.endswith(".extracted.txt") or f.name.endswith(".meta.json"):
             continue
-        stem = f.name.split(".")[0]
-        if stem in id_set:
-            total += f.stat().st_size
+        total += f.stat().st_size
     return total
 
 
@@ -426,11 +428,8 @@ def _get_block_total_size(block_dir: Path, file_ids: list[str]) -> int:
 async def upload_unstructured_file(
     file: UploadFile = FastAPIFile(...),
     block_id: str = Form(...),
-    existing_file_ids: str = Form(""),
 ) -> UnstructuredFileUploadResponse:
     _validate_safe_id(block_id, "block_id")
-
-    tracked_ids = [fid.strip() for fid in existing_file_ids.split(",") if fid.strip()]
 
     original_filename = file.filename or "upload"
     ext = Path(original_filename).suffix.lower()
@@ -446,17 +445,19 @@ async def upload_unstructured_file(
     if size_bytes == 0:
         raise HTTPException(400, "Empty file not allowed")
 
-    if size_bytes > MAX_FILE_SIZE:
+    if size_bytes > UNSTRUCTURED_RECIPE_UPLOAD_MAX_BYTES:
         raise HTTPException(
-            413, f"File too large ({size_bytes} bytes). Maximum is 50MB."
+            413,
+            f"File too large ({size_bytes} bytes). Maximum is {UNSTRUCTURED_RECIPE_UPLOAD_MAX_LABEL}.",
         )
 
     block_dir = UNSTRUCTURED_UPLOAD_ROOT / block_id
     ensure_dir(block_dir)
-    current_total = _get_block_total_size(block_dir, file_ids = tracked_ids)
-    if current_total + size_bytes > MAX_TOTAL_SIZE:
+    current_total = _get_block_total_size(block_dir)
+    if current_total + size_bytes > UNSTRUCTURED_RECIPE_UPLOAD_TOTAL_MAX_BYTES:
         raise HTTPException(
-            413, f"Total upload limit ({MAX_TOTAL_SIZE // (1024 * 1024)}MB) exceeded"
+            413,
+            f"Total upload limit ({UNSTRUCTURED_RECIPE_UPLOAD_TOTAL_MAX_LABEL}) exceeded",
         )
 
     file_id = uuid4().hex
@@ -594,8 +595,11 @@ def inspect_seed_upload(payload: SeedInspectUploadRequest) -> SeedInspectRespons
     file_bytes = _decode_base64_payload(payload.content_base64)
     if not file_bytes:
         raise HTTPException(status_code = 400, detail = "empty upload payload")
-    if len(file_bytes) > MAX_FILE_SIZE:
-        raise HTTPException(status_code = 413, detail = "file too large (max 50MB)")
+    if len(file_bytes) > LOCAL_SEED_UPLOAD_MAX_BYTES:
+        raise HTTPException(
+            status_code = 413,
+            detail = f"file too large (max {LOCAL_SEED_UPLOAD_MAX_LABEL})",
+        )
 
     ensure_dir(SEED_UPLOAD_DIR)
     stored_name = f"{uuid4().hex}_{filename}"

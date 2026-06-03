@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+#
 # Unsloth Studio uninstaller for Windows PowerShell.
 # Stops running servers and removes install dir, launcher data, CLI shim,
 # desktop and Start Menu shortcuts, the user PATH entry, and the PathBackup
