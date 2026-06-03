@@ -1665,7 +1665,25 @@ shell.Run cmd, 0, False
                 )
                 Set-Content -LiteralPath $launcher -Value $L -Encoding UTF8
                 $icon = Join-Path $appDir "unsloth.ico"
-                try { if (-not (Test-Path -LiteralPath $icon)) { Invoke-WebRequest "https://raw.githubusercontent.com/unslothai/unsloth/$(Get-UnslothInstallRef)/studio/frontend/public/unsloth.ico" -OutFile $icon -UseBasicParsing -TimeoutSec 15 *> $null } } catch {}
+                # Prefer the icon bundled in the local clone (instant + reliable); fall back to a
+                # best-effort GitHub download only when no bundle is present. Then validate the ICO
+                # header (00 00 01 00) before attaching it: a partial/empty/HTML-404 download must
+                # never leave the shortcut pointing at a non-icon (which renders blank).
+                $bundledIcon = $null
+                if ($PSScriptRoot -and $PSScriptRoot.Trim()) { $bundledIcon = Join-Path $PSScriptRoot "studio\frontend\public\unsloth.ico" }
+                if ($bundledIcon -and (Test-Path -LiteralPath $bundledIcon)) {
+                    try { Copy-Item -LiteralPath $bundledIcon -Destination $icon -Force } catch {}
+                } elseif (-not (Test-Path -LiteralPath $icon)) {
+                    try { Invoke-WebRequest "https://raw.githubusercontent.com/unslothai/unsloth/$(Get-UnslothInstallRef)/studio/frontend/public/unsloth.ico" -OutFile $icon -UseBasicParsing -TimeoutSec 15 *> $null } catch {}
+                }
+                $hasValidIcon = $false
+                if (Test-Path -LiteralPath $icon) {
+                    try {
+                        $ib = [System.IO.File]::ReadAllBytes($icon)
+                        if ($ib.Length -ge 4 -and $ib[0] -eq 0 -and $ib[1] -eq 0 -and $ib[2] -eq 1 -and $ib[3] -eq 0) { $hasValidIcon = $true }
+                        else { Remove-Item -LiteralPath $icon -Force -ErrorAction SilentlyContinue }
+                    } catch { Remove-Item -LiteralPath $icon -Force -ErrorAction SilentlyContinue }
+                }
                 $wsh = New-Object -ComObject WScript.Shell
                 $lnks = @()
                 $dd = [Environment]::GetFolderPath("Desktop"); if ($dd -and $dd.Trim()) { $lnks += (Join-Path $dd "Unsloth Studio.lnk") }
@@ -1675,7 +1693,7 @@ shell.Run cmd, 0, False
                     $sc.TargetPath = (Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe")
                     $sc.Arguments = "-NoExit -NoProfile -ExecutionPolicy Bypass -File `"$launcher`""
                     $sc.WorkingDirectory = $appDir
-                    if (Test-Path -LiteralPath $icon) { $sc.IconLocation = $icon }
+                    if ($hasValidIcon) { $sc.IconLocation = "$icon,0" }
                     $sc.Description = "Unsloth Studio (GPU via WSL)"
                     $sc.Save()
                 }
@@ -1687,10 +1705,14 @@ shell.Run cmd, 0, False
                 try { & "$env:SystemRoot\System32\ie4uinit.exe" -show 2>$null } catch {}
                 try {
                     if (-not ("UnslothShell.Notify" -as [type])) {
-                        Add-Type -Namespace UnslothShell -Name Notify -MemberDefinition '[System.Runtime.InteropServices.DllImport("shell32.dll")] public static extern void SHChangeNotify(int eventId, uint flags, System.IntPtr item1, System.IntPtr item2);'
+                        Add-Type -Namespace UnslothShell -Name Notify -MemberDefinition '[System.Runtime.InteropServices.DllImport("shell32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)] public static extern void SHChangeNotify(int eventId, uint flags, string item1, System.IntPtr item2);'
                     }
-                    # SHCNE_ASSOCCHANGED (0x08000000) with SHCNF_IDLIST (0) -> flush shell icon associations.
-                    [UnslothShell.Notify]::SHChangeNotify(0x08000000, 0, [System.IntPtr]::Zero, [System.IntPtr]::Zero)
+                    # Per-.lnk SHCNE_UPDATEITEM (0x00002000) + SHCNF_PATHW (0x0005): force Explorer to
+                    # re-read each shortcut's icon NOW, clearing any stale "blank" entry cached for that
+                    # exact path (the global notify alone often does not refresh an existing .lnk).
+                    foreach ($lnk in $lnks) { try { [UnslothShell.Notify]::SHChangeNotify(0x00002000, 0x0005, $lnk, [System.IntPtr]::Zero) } catch {} }
+                    # SHCNE_ASSOCCHANGED (0x08000000) -> flush global shell icon associations.
+                    [UnslothShell.Notify]::SHChangeNotify(0x08000000, 0x0005, $null, [System.IntPtr]::Zero)
                 } catch {}
             } catch {
                 substep "(could not create shortcuts: $($_.Exception.Message))" "Yellow"
