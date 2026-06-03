@@ -641,9 +641,7 @@ def _remove_sparsity_from_base_weights(peft_model):
             # Reconstruct the dense (already-pruned) weight from the semi-structured
             # tensor; pruning happened before sparsifying, so this is lossless.
             dense = w.to_dense() if is_sparse else w.data
-            base.weight = torch.nn.Parameter(
-                dense.contiguous(), requires_grad = _rg
-            )
+            base.weight = torch.nn.Parameter(dense.contiguous(), requires_grad = _rg)
             del base._unsloth_sparsified
             if hasattr(base, "_dense_weight_rg"):
                 del base._dense_weight_rg
@@ -1388,7 +1386,9 @@ def _patch_efficient_pooling():
         _original_forward = Pooling.forward
 
         def _efficient_forward(self, features):
-            _ensure_pooling_flags(self)  # sentence transformers 5.x compat (booleans dropped)
+            _ensure_pooling_flags(
+                self
+            )  # sentence transformers 5.x compat (booleans dropped)
             token_embeddings = features["token_embeddings"]
             attention_mask = features.get(
                 "attention_mask",
