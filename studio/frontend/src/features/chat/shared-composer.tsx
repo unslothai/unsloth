@@ -2,7 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
-import { CodeToggleIcon } from "@/components/assistant-ui/code-toggle-icon";
 import {
   thinkEffortAriaLabel,
   thinkToggleAriaLabel,
@@ -13,6 +12,11 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
@@ -23,27 +27,36 @@ import { getImageInputUnavailableReason } from "./utils/image-input-support";
 import { useAui } from "@assistant-ui/react";
 import {
   ArrowUpIcon,
-  DownloadIcon,
-  FileTextIcon,
+  CheckIcon,
+  Columns2Icon,
   GlobeIcon,
   HeadphonesIcon,
-  LightbulbIcon,
-  LightbulbOffIcon,
-  MicIcon,
   PlusIcon,
   SquareIcon,
   XIcon,
 } from "lucide-react";
-import { Image03Icon } from "@hugeicons/core-free-icons";
+import {
+  AttachmentIcon,
+  CodeIcon,
+  Download01Icon,
+  Folder01Icon,
+  FolderAddIcon,
+  Image03Icon,
+  McpServerIcon,
+  PencilRulerIcon,
+} from "@hugeicons/core-free-icons";
+import { useNavigate } from "@tanstack/react-router";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { toast } from "@/lib/toast";
+import { McpComposerButton } from "./mcp-composer-button";
+import { NewProjectDialog } from "./components/new-project-dialog";
+import { useChatProjects } from "./hooks/use-chat-projects";
 import { loadModel, validateModel } from "./api/chat-api";
 import {
   parseExternalModelId,
   providerTypeSupportsVision,
 } from "./external-providers";
 import { useExternalProvidersStore } from "./stores/external-providers-store";
-import { McpComposerButton } from "./mcp-composer-button";
 import {
   type ReasoningEffort,
   useChatRuntimeStore,
@@ -52,11 +65,11 @@ import {
   getExternalReasoningCapabilities,
   providerSupportsBuiltinCodeExecution,
   providerSupportsBuiltinImageGeneration,
-  providerSupportsBuiltinWebSearch,
   providerSupportsBuiltinWebFetch,
 } from "./provider-capabilities";
 import {
   type CompositionEvent,
+  type FC,
   type KeyboardEvent,
   type MutableRefObject,
   type ReactElement,
@@ -77,9 +90,9 @@ export type CompareMessagePart =
 export interface CompareHandle {
   append: (content: CompareMessagePart[]) => void;
   /** Append a user message without triggering generation. */
-  appendMessage: (content: CompareMessagePart[]) => Promise<string | null>;
+  appendMessage: (content: CompareMessagePart[]) => void;
   /** Trigger generation on the current thread (after appendMessage). */
-  startRun: (parentId?: string | null) => void;
+  startRun: () => void;
   cancel: () => void;
   isRunning: () => boolean;
   /** Returns a promise that resolves when the current or next run finishes. */
@@ -88,7 +101,49 @@ export interface CompareHandle {
 
 const IMAGE_ACCEPT = "image/jpeg,image/png,image/webp,image/gif";
 const MAX_IMAGE_SIZE = 20 * 1024 * 1024;
-const COMPARE_APPEND_MESSAGE_TIMEOUT_MS = 10_000;
+
+// Inlined to avoid a new icon dependency. Kept in sync with the main composer.
+const ArrowDownStandardIcon: FC<{ className?: string }> = ({ className }) => (
+  <svg
+    className={className}
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth={1.5}
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    xmlns="http://www.w3.org/2000/svg"
+    aria-hidden={true}
+  >
+    <path d="M5.99977 9.00005L11.9998 15L17.9998 9" />
+  </svg>
+);
+
+const MicIcon: FC<{ className?: string }> = ({ className }) => (
+  <svg
+    className={className}
+    viewBox="0 0 256 256"
+    fill="currentColor"
+    xmlns="http://www.w3.org/2000/svg"
+    aria-hidden={true}
+  >
+    <path d="M128,176a48.05,48.05,0,0,0,48-48V64a48,48,0,0,0-96,0v64A48.05,48.05,0,0,0,128,176ZM96,64a32,32,0,0,1,64,0v64a32,32,0,0,1-64,0Zm40,143.6V232a8,8,0,0,1-16,0V207.6A80.11,80.11,0,0,1,48,128a8,8,0,0,1,16,0,64,64,0,0,0,128,0,8,8,0,0,1,16,0A80.11,80.11,0,0,1,136,207.6Z" />
+  </svg>
+);
+
+const BulbIcon: FC<{ className?: string }> = ({ className }) => (
+  <svg
+    className={className}
+    viewBox="-10.24 -10.24 1044.48 1044.48"
+    fill="currentColor"
+    stroke="currentColor"
+    strokeWidth={16.384}
+    xmlns="http://www.w3.org/2000/svg"
+    aria-hidden={true}
+  >
+    <path d="M511.984 0c-198.032 0-353.12 161.104-353.12 359.136 0 149.2 73.28 220.256 131.185 272.128 37.28 33.424 62.368 53.552 62.368 78.352v54.255c0 1.392.193 2.752.368 4.128h-.72v92.624c.016 97.712 63.2 163.376 161.072 163.376 94.464 0 158.944-65.664 158.944-163.376V768h-.928c.176-1.376.416-2.736.416-4.128v-54.255c0-37.76 28.032-60.592 70.528-97.696 57.504-50.208 123.023-112.688 123.023-252.784C865.136 161.104 710.016 0 511.983 0zm-1.215 960c-59.904 0-94.689-37.152-94.689-99.376l-.463-42.672C438.64 825.824 470 832 512 832c41.424 0 72.848-6.624 96.08-14.768v43.392c0 63.152-35.247 99.376-97.312 99.376zm189.248-396.288c-43.472 37.968-92.433 77.216-92.433 145.904v40.432c-15.183 8.48-43.183 18.56-96.127 18.56-55.569 0-81.92-9.856-95.024-17.473V709.6c0-54.608-42.688-89.297-83.68-126.017-54.32-48.672-109.873-103.84-109.873-224.464-.015-162.72 126.385-295.12 289.104-295.12 162.752 0 289.152 132.4 289.152 295.137 0 111.024-48.463 158.576-101.12 204.576z" />
+  </svg>
+);
 
 function isNativeComposing(event: Event) {
   return "isComposing" in event && (event as InputEvent).isComposing === true;
@@ -232,7 +287,6 @@ export function RegisterCompareHandle({
 }): ReactElement | null {
   const handlesRef = useContext(CompareHandlesContext);
   const aui = useAui();
-  const pendingAppendWaitersRef = useRef<Set<() => void>>(new Set());
 
   useEffect(() => {
     if (!handlesRef) {
@@ -245,76 +299,19 @@ export function RegisterCompareHandle({
         aui
           .thread()
           .append({ role: "user", content, createdAt: new Date() } as never),
-      appendMessage: (content) => {
-        const thread = aui.thread();
-        const beforeIds = new Set(
-          thread.getState().messages.map((message) => message.id),
-        );
-        thread.append({
-          role: "user",
-          content,
-          createdAt: new Date(),
-          startRun: false,
-        } as never);
-
-        const findAppendedUserMessageId = () => {
-          const messages = thread.getState().messages;
-          for (let index = messages.length - 1; index >= 0; index -= 1) {
-            const message = messages[index];
-            if (beforeIds.has(message.id) || message.role !== "user") {
-              continue;
-            }
-            return message.id;
-          }
-          return null;
-        };
-
-        const appendedId = findAppendedUserMessageId();
-        if (appendedId) {
-          return Promise.resolve(appendedId);
-        }
-
-        return new Promise<string | null>((resolve) => {
-          const startedAt = Date.now();
-          let settled = false;
-          let timer: number | null = null;
-          let cancel: (() => void) | null = null;
-          const cleanup = () => {
-            if (timer !== null) {
-              window.clearTimeout(timer);
-              timer = null;
-            }
-            if (cancel) {
-              pendingAppendWaitersRef.current.delete(cancel);
-            }
-          };
-          const finish = (messageId: string | null) => {
-            if (settled) return;
-            settled = true;
-            cleanup();
-            resolve(messageId);
-          };
-          cancel = () => finish(null);
-          const poll = () => {
-            timer = null;
-            const messageId = findAppendedUserMessageId();
-            if (
-              messageId ||
-              Date.now() - startedAt >= COMPARE_APPEND_MESSAGE_TIMEOUT_MS
-            ) {
-              finish(messageId);
-              return;
-            }
-            timer = window.setTimeout(poll, 16);
-          };
-          pendingAppendWaitersRef.current.add(cancel);
-          timer = window.setTimeout(poll, 0);
-        });
-      },
-      startRun: (parentId) => {
+      appendMessage: (content) =>
+        aui
+          .thread()
+          .append({
+            role: "user",
+            content,
+            createdAt: new Date(),
+            startRun: false,
+          } as never),
+      startRun: () => {
         const msgs = aui.thread().getState().messages;
-        const fallbackId = msgs.length > 0 ? msgs[msgs.length - 1].id : null;
-        aui.thread().startRun({ parentId: parentId ?? fallbackId });
+        const lastId = msgs.length > 0 ? msgs[msgs.length - 1].id : null;
+        aui.thread().startRun({ parentId: lastId });
       },
       cancel: () => aui.thread().cancelRun(),
       isRunning: () => aui.thread().getState().isRunning,
@@ -332,10 +329,6 @@ export function RegisterCompareHandle({
         }),
     };
     return () => {
-      for (const cancel of pendingAppendWaitersRef.current) {
-        cancel();
-      }
-      pendingAppendWaitersRef.current.clear();
       delete currentHandles[name];
     };
   }, [handlesRef, name, aui]);
@@ -381,15 +374,37 @@ type CompareModelSelection = {
   ggufVariant?: string;
 };
 
+// Tool icon plus an X overlay the CSS reveals on hover when the pill is active.
+function PillGlyph({ children }: { children: ReactNode }) {
+  return (
+    <span className="composer-pill-glyph">
+      {children}
+      <XIcon className="composer-pill-x" />
+    </span>
+  );
+}
+
 export function SharedComposer({
   handlesRef,
   model1,
   model2,
+  onExitCompare,
 }: {
   handlesRef: CompareHandles;
   model1?: CompareModelSelection;
   model2?: CompareModelSelection;
+  onExitCompare?: () => void;
 }): ReactElement {
+  const navigate = useNavigate();
+  // Exit compare. Uses the parent's restore handler, or a fresh chat when
+  // compare was opened by direct URL.
+  const handleExitCompare = useCallback(() => {
+    if (onExitCompare) {
+      onExitCompare();
+      return;
+    }
+    navigate({ to: "/chat" });
+  }, [navigate, onExitCompare]);
   const [text, setText] = useState("");
   const [running, setRunning] = useState(false);
   const [comparing, setComparing] = useState(false);
@@ -400,6 +415,7 @@ export function SharedComposer({
   } | null>(null);
   const [dragging, setDragging] = useState(false);
   const [isComposing, setIsComposing] = useState(false);
+  const [newProjectOpen, setNewProjectOpen] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const composingRef = useRef(false);
   const stuckImeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -452,6 +468,19 @@ export function SharedComposer({
   );
   const artifactsEnabled = useChatRuntimeStore((s) => s.artifactsEnabled);
   const setArtifactsEnabled = useChatRuntimeStore((s) => s.setArtifactsEnabled);
+  const mcpEnabledForChat = useChatRuntimeStore((s) => s.mcpEnabledForChat);
+  const setMcpEnabledForChat = useChatRuntimeStore(
+    (s) => s.setMcpEnabledForChat,
+  );
+  // Three most recently updated projects for the quick-access submenu.
+  const { projects } = useChatProjects();
+  const recentProjects = [...projects]
+    .sort((a, b) => b.updatedAt - a.updatedAt)
+    .slice(0, 3);
+  const openProject = (projectId: string) => {
+    useChatRuntimeStore.getState().setActiveProjectId(projectId);
+    navigate({ to: "/chat", search: { project: projectId } });
+  };
   const webFetchToolsEnabled = useChatRuntimeStore(
     (s) => s.webFetchToolsEnabled,
   );
@@ -530,6 +559,10 @@ export function SharedComposer({
   const reasoningDisabled = !modelLoaded || !effectiveSupportsReasoning;
   const showReasoningControl =
     effectiveSupportsReasoning || effectiveReasoningAlwaysOn;
+  const isEffort = effectiveReasoningStyle === "reasoning_effort";
+  const thinkingActiveLook = isEffort
+    ? reasoningLockedOn || (effectiveReasoningVisualEnabled && !reasoningDisabled)
+    : reasoningLockedOn || (effectiveReasoningEnabled && !reasoningDisabled);
   // Two-pill gating: Search pill lights up when the runtime has either
   // a local tool runtime (supportsTools, gives us our Code/python + local
   // web_search) OR a server-side web_search the provider runs for us
@@ -569,24 +602,34 @@ export function SharedComposer({
   // and gate strictly on the provider builtin support.
   const isGeminiImageTier =
     isExternalGemini && supportsBuiltinImageGeneration;
+  // Disable only when a loaded model lacks the capability; with no model the
+  // tool can still be pre-selected and reflected, matching the + menu.
   const searchDisabled =
-    !modelLoaded ||
+    modelLoaded &&
     (isGeminiImageTier
       ? !supportsBuiltinWebSearch
       : !(supportsTools || supportsBuiltinWebSearch));
   const codeDisabled =
-    !modelLoaded ||
-    (isGeminiImageTier
-      ? true
-      : !(supportsTools || supportsBuiltinCodeExecution)) ||
+    (modelLoaded &&
+      (isGeminiImageTier
+        ? true
+        : !(supportsTools || supportsBuiltinCodeExecution))) ||
     imageModeDisablesCode;
   // Images pill is only ever lit on OpenAI cloud's Responses-API models
   // and Gemini Nano Banana family. No local tool runtime fallback.
   const showImagePill = supportsBuiltinImageGeneration;
-  const artifactDisabled = !modelLoaded;
   // Fetch pill: Anthropic-only (web_fetch_20250910 / web_fetch_20260209).
   const webFetchDisabled = !modelLoaded || !supportsBuiltinWebFetch;
   const showWebFetchPill = supportsBuiltinWebFetch;
+  // With more than 4 pills showing, collapse them to icons only to cut clutter.
+  // Compare, Search and Code always show; the rest are conditional.
+  const pillsCompact =
+    3 +
+      (showImagePill ? 1 : 0) +
+      (showWebFetchPill ? 1 : 0) +
+      (artifactsEnabled ? 1 : 0) +
+      (mcpEnabledForChat ? 1 : 0) >
+    4;
   // Backwards-compatible alias for any other call site that may still
   // reference `toolsDisabled` (rare; both pills used it before).
   const toolsDisabled = codeDisabled;
@@ -770,8 +813,6 @@ export function SharedComposer({
         : null;
 
       function modelDisplayName(id: string): string {
-        const external = parseExternalModelId(id);
-        if (external) return external.modelId;
         const parts = id.split("/");
         return parts[parts.length - 1] || id;
       }
@@ -780,76 +821,6 @@ export function SharedComposer({
       async function ensureModelLoaded(
         sel: CompareModelSelection,
       ): Promise<string> {
-        const external = parseExternalModelId(sel.id);
-        if (external) {
-          const externalStore = useExternalProvidersStore.getState();
-          if (!externalStore.connectionsEnabled) {
-            throw new Error(
-              "Connections are disabled. Turn on Enable connections in Settings -> Connections to use hosted models.",
-            );
-          }
-          const provider = externalStore.providers.find(
-            (p) => p.id === external.providerId,
-          );
-          if (!provider) {
-            throw new Error(
-              "Connection not found. Open Settings -> Connections and add it again.",
-            );
-          }
-
-          const reasoningCaps = getExternalReasoningCapabilities(
-            provider.providerType,
-            external.modelId,
-            {
-              isReasoningProvider: provider.isReasoningModel === true,
-              baseUrl: provider.baseUrl ?? null,
-            },
-          );
-          const supportsBuiltinWebSearch = providerSupportsBuiltinWebSearch(
-            provider.providerType,
-            external.modelId,
-            provider.baseUrl,
-          );
-          const supportsBuiltinCodeExecution =
-            providerSupportsBuiltinCodeExecution(
-              provider.providerType,
-              external.modelId,
-              provider.baseUrl,
-            );
-          const supportsBuiltinImageGeneration =
-            providerSupportsBuiltinImageGeneration(
-              provider.providerType,
-              external.modelId,
-              provider.baseUrl,
-            );
-          const supportsBuiltinWebFetch = providerSupportsBuiltinWebFetch(
-            provider.providerType,
-          );
-          const currentStore = useChatRuntimeStore.getState();
-          currentStore.setCheckpoint(sel.id, null);
-          useChatRuntimeStore.setState({
-            activeGgufVariant: null,
-            ggufContextLength: null,
-            ggufMaxContextLength: null,
-            ggufNativeContextLength: null,
-            activeNativePathToken: null,
-            supportsReasoning: reasoningCaps.supportsReasoning,
-            reasoningAlwaysOn: reasoningCaps.reasoningAlwaysOn,
-            reasoningStyle: reasoningCaps.reasoningStyle,
-            supportsReasoningOff: reasoningCaps.supportsReasoningOff,
-            reasoningEffortLevels: reasoningCaps.reasoningEffortLevels,
-            supportsPreserveThinking: false,
-            supportsTools: false,
-            supportsBuiltinWebSearch,
-            supportsBuiltinCodeExecution,
-            supportsBuiltinImageGeneration,
-            supportsBuiltinWebFetch,
-            loadedIsMultimodal:
-              providerTypeSupportsVision(provider.providerType) === true,
-          });
-          return "external";
-        }
-
         const currentStore = useChatRuntimeStore.getState();
         const isAlreadyActive =
           currentStore.params.checkpoint === sel.id &&
@@ -932,19 +903,9 @@ export function SharedComposer({
       const handle1 = handlesRef.current["model1"];
       const handle2 = handlesRef.current["model2"];
 
-      // Show user messages immediately on both sides and keep the ids
-      // so delayed model loads can start the run from the intended turn.
-      const [parentId1, parentId2] = await Promise.all([
-        handle1 ? handle1.appendMessage(content) : Promise.resolve(null),
-        handle2 ? handle2.appendMessage(content) : Promise.resolve(null),
-      ]);
-      if ((handle1 && !parentId1) || (handle2 && !parentId2)) {
-        toast.error("Compare failed", {
-          description:
-            "The prompt could not be added to both compare panes. Try sending it again.",
-        });
-        return;
-      }
+      // Show user messages immediately on both sides
+      if (handle1) handle1.appendMessage(content);
+      if (handle2) handle2.appendMessage(content);
 
       const name1 = model1?.id ? modelDisplayName(model1.id) : "";
       const name2 = model2?.id ? modelDisplayName(model2.id) : "";
@@ -966,7 +927,7 @@ export function SharedComposer({
             duration: Infinity,
           });
           const done = handle1.waitForRunEnd();
-          handle1.startRun(parentId1);
+          handle1.startRun();
           await done;
         }
 
@@ -989,7 +950,7 @@ export function SharedComposer({
             duration: Infinity,
           });
           const done = handle2.waitForRunEnd();
-          handle2.startRun(parentId2);
+          handle2.startRun();
           await done;
         }
 
@@ -1050,7 +1011,7 @@ export function SharedComposer({
 
   return (
     <div
-      className={`chat-composer-surface ${dragging ? "border-ring bg-accent/50" : ""}`}
+      className="chat-composer-surface"
       onDragOver={(e) => {
         if (isTauri) return;
         e.preventDefault();
@@ -1066,6 +1027,17 @@ export function SharedComposer({
         addFiles(e.dataTransfer.files);
       }}
     >
+      {/* Gemini-style drop affordance, mirrored from the single composer. */}
+      <div
+        className={`pointer-events-none absolute inset-0 z-20 flex flex-col items-center justify-center gap-1 overflow-hidden rounded-[32px] bg-background/90 backdrop-blur-sm transition-opacity duration-150 dark:bg-card/90 ${dragging ? "opacity-100" : "opacity-0"}`}
+      >
+        <HugeiconsIcon
+          icon={AttachmentIcon}
+          strokeWidth={2}
+          className="size-6 text-primary"
+        />
+        <span className="text-sm font-medium text-primary">Drop files here</span>
+      </div>
       {(pendingImages.length > 0 || pendingAudio) && (
         <div className="mb-2 flex w-full flex-row flex-wrap items-center gap-2 px-1.5 pt-0.5 pb-1">
           {pendingImages.map(({ id, file }) => (
@@ -1126,7 +1098,10 @@ export function SharedComposer({
         dir="auto"
       />
       <div className="composer-action-wrapper">
-        <div className="flex items-center gap-0.5">
+        <div
+          className="flex items-center gap-0.5"
+          data-pill-compact={pillsCompact ? "true" : undefined}
+        >
           <input
             ref={fileInputRef}
             type="file"
@@ -1138,131 +1113,440 @@ export function SharedComposer({
               e.target.value = "";
             }}
           />
-          <TooltipIconButton
-            tooltip="Add Attachment"
-            side="bottom"
-            variant="ghost"
-            size="icon"
-            className="size-8.5 rounded-full p-1 font-semibold text-xs hover:bg-muted-foreground/15 dark:hover:bg-muted-foreground/30"
-            onClick={() => {
-              // The picker accepts both image and audio. Don't gate the
-              // button on image-availability — addFiles still filters
-              // image files per-file when the loaded model can't take
-              // them, while audio attach always works.
-              fileInputRef.current?.click();
+          <input
+            ref={audioInputRef}
+            type="file"
+            accept={AUDIO_ACCEPT}
+            className="hidden"
+            onChange={(e) => {
+              addFiles(e.target.files);
+              e.target.value = "";
             }}
-            aria-label="Add Attachment"
-          >
-            <PlusIcon className="size-5 stroke-[1.5px]" />
-          </TooltipIconButton>
-          {activeModel?.hasAudioInput && (
-            <>
-              <input
-                ref={audioInputRef}
-                type="file"
-                accept={AUDIO_ACCEPT}
-                className="hidden"
-                onChange={(e) => {
-                  addFiles(e.target.files);
-                  e.target.value = "";
-                }}
-              />
-              <TooltipIconButton
-                tooltip="Upload audio"
-                side="bottom"
-                variant="ghost"
-                size="icon"
-                className="size-8.5 rounded-full p-1 text-muted-foreground hover:bg-muted-foreground/15"
-                onClick={() => audioInputRef.current?.click()}
-                aria-label="Upload audio"
+          />
+          <NewProjectDialog
+            open={newProjectOpen}
+            onOpenChange={setNewProjectOpen}
+          />
+          {/* Same + side menu as the single-chat composer (ComposerToolsMenu),
+              wired to the compare composer's own file/audio inputs and tools. */}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild={true}>
+              <button
+                type="button"
+                aria-label="Tools and attachments"
+                className="unsloth-composer-plus"
               >
-                <HeadphonesIcon className="size-4.5 stroke-[1.5px]" />
-              </TooltipIconButton>
-            </>
+                <PlusIcon className="size-[22px] stroke-[1.75px]" />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent
+              side="top"
+              align="start"
+              sideOffset={2}
+              avoidCollisions={true}
+              className="unsloth-plus-menu w-[212px]"
+              onCloseAutoFocus={(event) => event.preventDefault()}
+            >
+              <DropdownMenuItem onSelect={() => fileInputRef.current?.click()}>
+                <HugeiconsIcon icon={AttachmentIcon} strokeWidth={2} />
+                Add photos &amp; files
+              </DropdownMenuItem>
+              {activeModel?.hasAudioInput && (
+                <DropdownMenuItem
+                  onSelect={() => audioInputRef.current?.click()}
+                >
+                  <HeadphonesIcon />
+                  Upload audio
+                </DropdownMenuItem>
+              )}
+              <DropdownMenuItem
+                disabled={searchDisabled}
+                className={
+                  toolsEnabled && !searchDisabled
+                    ? "text-primary font-medium"
+                    : undefined
+                }
+                onSelect={() => {
+                  const next = !toolsEnabled;
+                  setToolsEnabled(next);
+                  // Mirror the Search pill: Kimi forbids search + thinking together.
+                  if (isKimiExternal) {
+                    setReasoningEnabled(!next, { persist: false });
+                    applyQwenThinkingParams(!next);
+                  }
+                }}
+              >
+                <GlobeIcon />
+                Web search
+                {toolsEnabled && !searchDisabled ? (
+                  <CheckIcon className="ml-auto" />
+                ) : null}
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                disabled={codeDisabled}
+                className={
+                  codeToolsEnabled && !codeDisabled
+                    ? "text-primary font-medium"
+                    : undefined
+                }
+                onSelect={() => setCodeToolsEnabled(!codeToolsEnabled)}
+              >
+                <HugeiconsIcon
+                  icon={CodeIcon}
+                  strokeWidth={2}
+                  className="size-[1.175rem]!"
+                />
+                Code
+                {codeToolsEnabled && !codeDisabled ? (
+                  <CheckIcon className="ml-auto" />
+                ) : null}
+              </DropdownMenuItem>
+              {showImagePill && (
+                <DropdownMenuItem
+                  disabled={imageDisabled}
+                  className={
+                    imageToolsEnabled && !imageDisabled
+                      ? "text-primary font-medium"
+                      : undefined
+                  }
+                  onSelect={() => setImageToolsEnabled(!imageToolsEnabled)}
+                >
+                  <HugeiconsIcon icon={Image03Icon} strokeWidth={2} />
+                  Images
+                  {imageToolsEnabled && !imageDisabled ? (
+                    <CheckIcon className="ml-auto" />
+                  ) : null}
+                </DropdownMenuItem>
+              )}
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                className={
+                  artifactsEnabled ? "text-primary font-medium" : undefined
+                }
+                onSelect={() => setArtifactsEnabled(!artifactsEnabled)}
+              >
+                <HugeiconsIcon icon={PencilRulerIcon} strokeWidth={2} />
+                Canvas
+                {artifactsEnabled ? <CheckIcon className="ml-auto" /> : null}
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                disabled={!supportsTools}
+                className={
+                  mcpEnabledForChat ? "text-primary font-medium" : undefined
+                }
+                onSelect={() => setMcpEnabledForChat(!mcpEnabledForChat)}
+              >
+                <HugeiconsIcon icon={McpServerIcon} strokeWidth={2} />
+                MCP
+                {mcpEnabledForChat ? <CheckIcon className="ml-auto" /> : null}
+              </DropdownMenuItem>
+              {/* RAG hidden temporarily */}
+              {/* Always active: this menu only renders in compare mode.
+                  Ticked like Web search/Code; click toggles it off. */}
+              <DropdownMenuItem
+                className="text-primary font-medium"
+                onSelect={handleExitCompare}
+              >
+                <Columns2Icon />
+                Compare chat
+                <CheckIcon className="ml-auto" />
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuSub>
+                <DropdownMenuSubTrigger>
+                  <HugeiconsIcon icon={Folder01Icon} strokeWidth={2} />
+                  Projects
+                </DropdownMenuSubTrigger>
+                <DropdownMenuSubContent className="unsloth-plus-menu w-[200px]">
+                  <DropdownMenuItem onSelect={() => setNewProjectOpen(true)}>
+                    <HugeiconsIcon icon={FolderAddIcon} strokeWidth={2} />
+                    New project
+                  </DropdownMenuItem>
+                  <DropdownMenuLabel>Recents</DropdownMenuLabel>
+                  {recentProjects.length > 0 ? (
+                    recentProjects.map((project) => (
+                      <DropdownMenuItem
+                        key={project.id}
+                        onSelect={() => openProject(project.id)}
+                      >
+                        <HugeiconsIcon icon={Folder01Icon} strokeWidth={2} />
+                        <span className="truncate">{project.name}</span>
+                      </DropdownMenuItem>
+                    ))
+                  ) : (
+                    <DropdownMenuItem disabled={true}>
+                      No recent projects
+                    </DropdownMenuItem>
+                  )}
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
+            </DropdownMenuContent>
+          </DropdownMenu>
+          {/* Active in compare mode; sits first. Click to exit back to single chat. */}
+          <button
+            type="button"
+            onClick={handleExitCompare}
+            className="composer-pill-btn"
+            data-active="true"
+            data-keep-label="true"
+            aria-label="Exit compare chat"
+          >
+            <PillGlyph>
+              <Columns2Icon className="size-[14px]" />
+            </PillGlyph>
+            <span>Compare</span>
+          </button>
+          <button
+            type="button"
+            disabled={searchDisabled}
+            onClick={() => {
+              const next = !toolsEnabled;
+              setToolsEnabled(next);
+              // Kimi's $web_search builtin requires thinking=disabled
+              // (https://platform.kimi.ai/docs/guide/use-web-search). Toggle
+              // the Think pill off when Search is on, mirroring the backend.
+              if (isKimiExternal) {
+                setReasoningEnabled(!next, { persist: false });
+                applyQwenThinkingParams(!next);
+              }
+            }}
+            className="composer-pill-btn"
+            data-active={toolsEnabled && !searchDisabled ? "true" : "false"}
+            aria-label={
+              toolsEnabled ? "Disable web search" : "Enable web search"
+            }
+          >
+            <PillGlyph>
+              <GlobeIcon className="size-[15px]" />
+            </PillGlyph>
+            <span>Search</span>
+          </button>
+          <button
+            type="button"
+            disabled={codeDisabled}
+            onClick={() => setCodeToolsEnabled(!codeToolsEnabled)}
+            className="composer-pill-btn"
+            data-active={codeToolsEnabled && !codeDisabled ? "true" : "false"}
+            aria-label={
+              codeToolsEnabled
+                ? "Disable code execution"
+                : "Enable code execution"
+            }
+          >
+            <PillGlyph>
+              <HugeiconsIcon
+                icon={CodeIcon}
+                className="size-[18.5px]"
+                strokeWidth={2}
+              />
+            </PillGlyph>
+            <span>Code</span>
+          </button>
+          {showImagePill && (
+            <button
+              type="button"
+              disabled={imageDisabled}
+              onClick={() => setImageToolsEnabled(!imageToolsEnabled)}
+              className="composer-pill-btn"
+              data-active={
+                imageToolsEnabled && !imageDisabled ? "true" : "false"
+              }
+              aria-label={
+                imageToolsEnabled
+                  ? "Disable image generation"
+                  : "Enable image generation"
+              }
+            >
+              <PillGlyph>
+                <HugeiconsIcon
+                  icon={Image03Icon}
+                  className="size-3.5"
+                  strokeWidth={2}
+                />
+              </PillGlyph>
+              <span>Images</span>
+            </button>
           )}
+          {showWebFetchPill && (
+            <button
+              type="button"
+              disabled={webFetchDisabled}
+              onClick={() => setWebFetchToolsEnabled(!webFetchToolsEnabled)}
+              className="composer-pill-btn"
+              data-active={
+                webFetchToolsEnabled && !webFetchDisabled ? "true" : "false"
+              }
+              aria-label={
+                webFetchToolsEnabled ? "Disable URL fetch" : "Enable URL fetch"
+              }
+            >
+              <PillGlyph>
+                <HugeiconsIcon icon={Download01Icon} className="size-3.5" />
+              </PillGlyph>
+              <span>Fetch</span>
+            </button>
+          )}
+          {artifactsEnabled ? (
+            <button
+              type="button"
+              onClick={() => setArtifactsEnabled(false)}
+              className="composer-pill-btn"
+              data-active="true"
+              aria-label="Disable canvas"
+            >
+              <PillGlyph>
+                <HugeiconsIcon
+                  icon={PencilRulerIcon}
+                  className="size-[15.5px]"
+                  strokeWidth={2}
+                />
+              </PillGlyph>
+              <span>Canvas</span>
+            </button>
+          ) : null}
+          {mcpEnabledForChat ? <McpComposerButton side="top" /> : null}
+        </div>
+        {/* mr-0.5 matches the send button inset from the edge in normal chat;
+            gap-1.5 matches its control spacing. */}
+        <div className="ml-auto mr-0.5 flex items-center gap-1.5">
           {showReasoningControl ? (
-            effectiveReasoningStyle === "reasoning_effort" ? (
+            isEffort || supportsPreserveThinking ? (
               <DropdownMenu>
                 <DropdownMenuTrigger asChild={true}>
                   <button
                     type="button"
                     disabled={reasoningDisabled}
-                    className={cn(
-                      "flex items-center gap-1.5 rounded-full px-1.5 py-1.5 text-[13px] font-medium text-muted-foreground/70 transition-colors",
-                      reasoningDisabled
-                        ? "cursor-not-allowed opacity-40"
-                        : effectiveReasoningVisualEnabled
-                          ? "text-primary hover:bg-primary/10 dark:hover:bg-white/[0.08]"
-                          : "hover:bg-primary/10 dark:hover:bg-white/[0.08]",
-                    )}
+                    className="unsloth-thinking-pill"
+                    data-active={thinkingActiveLook ? "true" : "false"}
                     aria-label={thinkEffortAriaLabel({
                       modelLoaded,
                       reasoningDisabled,
                       reasoningEffort,
                     })}
                   >
-                    {effectiveReasoningVisualEnabled ? (
-                      <LightbulbIcon className="size-3.5" />
-                    ) : (
-                      <LightbulbOffIcon className="size-3.5" />
-                    )}
-                    <span>
-                      Think:{" "}
-                      {effectiveReasoningVisualEnabled
-                        ? formatReasoningEffortLabel(
-                            reasoningEffort,
-                            externalSelection?.modelId,
-                          )
-                        : formatReasoningDisabledLabel(
+                    <BulbIcon className="size-[15.5px]" />
+                    {thinkingActiveLook ? (
+                      <span>
+                        {isEffort
+                          ? `Thinking · ${formatReasoningEffortLabel(
+                              reasoningEffort,
+                              externalSelection?.modelId,
+                            )}`
+                          : "Thinking"}
+                      </span>
+                    ) : null}
+                    <ArrowDownStandardIcon className="size-[15px]" />
+                  </button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent
+                  side="top"
+                  align="end"
+                  className="unsloth-plus-menu min-w-44"
+                >
+                  {isEffort ? (
+                    <>
+                      {effectiveSupportsReasoningOff && (
+                        <DropdownMenuItem
+                          onSelect={() => {
+                            setReasoningEnabled(false);
+                            applyQwenThinkingParams(false);
+                            // Preserve thinking needs thinking on, so turn it off too.
+                            setPreserveThinking(false);
+                          }}
+                        >
+                          <CheckIcon
+                            className={cn(
+                              "unsloth-tick size-4",
+                              effectiveReasoningVisualEnabled && "opacity-0",
+                            )}
+                          />
+                          {formatReasoningDisabledLabel(
                             effectiveSupportsReasoningOff,
                             isExternalOpenAIReasoning,
                             checkpoint,
                           )}
-                    </span>
-                  </button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end">
-                  {effectiveSupportsReasoningOff && (
-                    <DropdownMenuItem
-                      onSelect={() => {
-                        setReasoningEnabled(false);
-                        applyQwenThinkingParams(false);
-                      }}
-                    >
-                      {formatReasoningDisabledLabel(
-                        effectiveSupportsReasoningOff,
-                        isExternalOpenAIReasoning,
-                        checkpoint,
+                        </DropdownMenuItem>
                       )}
-                      {!effectiveReasoningVisualEnabled ? " \u2713" : ""}
-                    </DropdownMenuItem>
-                  )}
-                  {effectiveReasoningEffortLevels
-                    .filter((level) => level !== "none")
-                    .map((level) => (
+                      {effectiveReasoningEffortLevels
+                        .filter((level) => level !== "none")
+                        .map((level) => (
+                          <DropdownMenuItem
+                            key={level}
+                            onSelect={() => {
+                              setReasoningEffort(level);
+                              setReasoningEnabled(true);
+                              applyQwenThinkingParams(true);
+                              // Mutual exclusion: turning thinking on for a
+                              // Kimi model forces the web_search builtin off.
+                              if (isKimiExternal && toolsEnabled) {
+                                setToolsEnabled(false, { persist: false });
+                              }
+                            }}
+                          >
+                            <CheckIcon
+                              className={cn(
+                                "unsloth-tick size-4",
+                                !(
+                                  effectiveReasoningVisualEnabled &&
+                                  reasoningEffort === level
+                                ) && "opacity-0",
+                              )}
+                            />
+                            {formatReasoningEffortLabel(
+                              level,
+                              externalSelection?.modelId,
+                            )}
+                          </DropdownMenuItem>
+                        ))}
+                    </>
+                  ) : (
+                    effectiveSupportsReasoningOff &&
+                    !reasoningLockedOn && (
                       <DropdownMenuItem
-                        key={level}
                         onSelect={() => {
-                          setReasoningEffort(level);
-                          setReasoningEnabled(true);
-                          applyQwenThinkingParams(true);
-                          // Mutual exclusion: turning thinking on for a
-                          // Kimi model forces the web_search builtin off.
-                          if (isKimiExternal && toolsEnabled) {
+                          const next = !reasoningEnabled;
+                          setReasoningEnabled(next);
+                          applyQwenThinkingParams(next);
+                          // Preserve thinking cannot run without thinking.
+                          if (!next) setPreserveThinking(false);
+                          if (isKimiExternal && next && toolsEnabled) {
                             setToolsEnabled(false, { persist: false });
                           }
                         }}
                       >
-                        {formatReasoningEffortLabel(
-                          level,
-                          externalSelection?.modelId,
-                        )}
-                        {effectiveReasoningVisualEnabled &&
-                        reasoningEffort === level
-                          ? " \u2713"
-                          : ""}
+                        <CheckIcon
+                          className={cn(
+                            "unsloth-tick size-4",
+                            !effectiveReasoningEnabled && "opacity-0",
+                          )}
+                        />
+                        Thinking
                       </DropdownMenuItem>
-                    ))}
+                    )
+                  )}
+                  {supportsPreserveThinking && (
+                    <DropdownMenuItem
+                      disabled={!modelLoaded}
+                      onSelect={(e) => {
+                        e.preventDefault();
+                        const next = !preserveThinking;
+                        setPreserveThinking(next);
+                        // Preserve thinking requires thinking on.
+                        if (next) {
+                          setReasoningEnabled(true);
+                          applyQwenThinkingParams(true);
+                        }
+                      }}
+                    >
+                      <CheckIcon
+                        className={cn(
+                          "unsloth-tick size-4",
+                          !preserveThinking && "opacity-0",
+                        )}
+                      />
+                      Preserve thinking
+                    </DropdownMenuItem>
+                  )}
                 </DropdownMenuContent>
               </DropdownMenu>
             ) : (
@@ -1287,16 +1571,8 @@ export function SharedComposer({
                     setToolsEnabled(false, { persist: false });
                   }
                 }}
-                className={cn(
-                  "flex items-center gap-1.5 rounded-full px-1.5 py-1.5 text-[13px] font-medium text-muted-foreground/70 transition-colors",
-                  reasoningLockedOn
-                    ? "cursor-not-allowed text-primary"
-                    : reasoningDisabled
-                      ? "cursor-not-allowed opacity-40"
-                      : effectiveReasoningEnabled
-                        ? "cursor-pointer text-primary hover:bg-primary/10 dark:hover:bg-white/[0.08]"
-                        : "cursor-pointer hover:bg-primary/10 dark:hover:bg-white/[0.08]",
-                )}
+                className="unsloth-thinking-pill"
+                data-active={thinkingActiveLook ? "true" : "false"}
                 aria-label={thinkToggleAriaLabel({
                   reasoningLockedOn,
                   modelLoaded,
@@ -1304,141 +1580,13 @@ export function SharedComposer({
                   effectiveReasoningEnabled,
                 })}
               >
-                {reasoningLockedOn ||
-                (effectiveReasoningEnabled && !reasoningDisabled) ? (
-                  <LightbulbIcon className="size-3.5" />
-                ) : (
-                  <LightbulbOffIcon className="size-3.5" />
-                )}
-                <span>Think</span>
+                <PillGlyph>
+                  <BulbIcon className="size-[15.5px]" />
+                </PillGlyph>
+                {thinkingActiveLook ? <span>Thinking</span> : null}
               </button>
             )
           ) : null}
-          {supportsPreserveThinking && (
-            <button
-              type="button"
-              disabled={!modelLoaded}
-              onClick={() => setPreserveThinking(!preserveThinking)}
-              className={cn(
-                "flex items-center gap-1.5 rounded-full px-1.5 py-1.5 text-[13px] font-medium text-muted-foreground/70 transition-colors",
-                !modelLoaded
-                  ? "cursor-not-allowed opacity-40"
-                  : preserveThinking
-                    ? "cursor-pointer text-primary hover:bg-primary/10 dark:hover:bg-white/[0.08]"
-                    : "cursor-pointer hover:bg-primary/10 dark:hover:bg-white/[0.08]",
-              )}
-              aria-label={
-                preserveThinking
-                  ? "Disable preserve think"
-                  : "Enable preserve think"
-              }
-            >
-              {preserveThinking && modelLoaded ? (
-                <LightbulbIcon className="size-3.5" />
-              ) : (
-                <LightbulbOffIcon className="size-3.5" />
-              )}
-              <span>Preserve Think</span>
-            </button>
-          )}
-          <button
-            type="button"
-            disabled={searchDisabled}
-            onClick={() => {
-              const next = !toolsEnabled;
-              setToolsEnabled(next);
-              // Kimi's $web_search builtin requires thinking=disabled
-              // (https://platform.kimi.ai/docs/guide/use-web-search).
-              // Toggle the Think pill off when Search comes on, and
-              // back on when Search goes off — mutual exclusion that
-              // mirrors what the backend enforces.
-              if (isKimiExternal) {
-                setReasoningEnabled(!next, { persist: false });
-                applyQwenThinkingParams(!next);
-              }
-            }}
-            className="composer-pill-btn"
-            data-active={toolsEnabled && !searchDisabled ? "true" : "false"}
-            aria-label={
-              toolsEnabled ? "Disable web search" : "Enable web search"
-            }
-          >
-            <GlobeIcon className="size-3.5" />
-            <span>Search</span>
-          </button>
-          <button
-            type="button"
-            disabled={codeDisabled}
-            onClick={() => setCodeToolsEnabled(!codeToolsEnabled)}
-            className="composer-pill-btn"
-            data-active={codeToolsEnabled && !codeDisabled ? "true" : "false"}
-            aria-label={
-              codeToolsEnabled
-                ? "Disable code execution"
-                : "Enable code execution"
-            }
-          >
-            <CodeToggleIcon className="size-3.5" />
-            <span>Code</span>
-          </button>
-          {showImagePill && (
-            <button
-              type="button"
-              disabled={imageDisabled}
-              onClick={() => setImageToolsEnabled(!imageToolsEnabled)}
-              className="composer-pill-btn"
-              data-active={
-                imageToolsEnabled && !imageDisabled ? "true" : "false"
-              }
-              aria-label={
-                imageToolsEnabled
-                  ? "Disable image generation"
-                  : "Enable image generation"
-              }
-            >
-              <HugeiconsIcon
-                icon={Image03Icon}
-                className="size-3.5"
-                strokeWidth={2}
-              />
-              <span>Images</span>
-            </button>
-          )}
-          <button
-            type="button"
-            disabled={artifactDisabled}
-            onClick={() => setArtifactsEnabled(!artifactsEnabled)}
-            className="composer-pill-btn"
-            data-active={
-              artifactsEnabled && !artifactDisabled ? "true" : "false"
-            }
-            aria-label={
-              artifactsEnabled ? "Disable artifacts" : "Enable artifacts"
-            }
-          >
-            <FileTextIcon className="size-3.5" />
-            <span>Artifacts</span>
-          </button>
-          <McpComposerButton />
-          {showWebFetchPill && (
-            <button
-              type="button"
-              disabled={webFetchDisabled}
-              onClick={() => setWebFetchToolsEnabled(!webFetchToolsEnabled)}
-              className="composer-pill-btn"
-              data-active={
-                webFetchToolsEnabled && !webFetchDisabled ? "true" : "false"
-              }
-              aria-label={
-                webFetchToolsEnabled ? "Disable URL fetch" : "Enable URL fetch"
-              }
-            >
-              <DownloadIcon className="size-3.5" />
-              <span>Fetch</span>
-            </button>
-          )}
-        </div>
-        <div className="flex items-center gap-1">
           {dictationSupported && (
             <>
               {!isDictating ? (
@@ -1473,7 +1621,7 @@ export function SharedComposer({
               type="button"
               variant="default"
               size="icon"
-              className="size-8 rounded-full"
+              className="ml-1.5 size-8 rounded-full"
               onClick={stop}
             >
               <SquareIcon className="size-3 fill-current" />
@@ -1484,12 +1632,12 @@ export function SharedComposer({
               side="bottom"
               variant="default"
               size="icon"
-              className="size-8 rounded-full"
+              className="ml-1.5 size-8 rounded-full"
               onClick={send}
               disabled={!canSend}
               aria-label="Send message"
             >
-              <ArrowUpIcon className="size-4" />
+              <ArrowUpIcon className="size-[22px] stroke-2" />
             </TooltipIconButton>
           )}
         </div>

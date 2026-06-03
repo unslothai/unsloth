@@ -63,7 +63,8 @@ const Toaster = ({ ...props }: ToasterProps) => {
         {
           "--normal-bg": "var(--popover)",
           "--normal-text": "var(--popover-foreground)",
-          "--normal-border": "var(--border)",
+          // No border line; elevation comes from the composer's drop shadow.
+          "--normal-border": "transparent",
           "--border-radius": "var(--radius)",
           // Pin the close button inside the toast's top-right corner.
           // Sonner defaults to the left/outside edge, so keep the horizontal
