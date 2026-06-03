@@ -1,33 +1,25 @@
 #!/usr/bin/env bash
-# Provision a CUDA-enabled llama.cpp for Unsloth Studio GGUF *inference*.
+# Build a CUDA llama.cpp for Unsloth Studio GGUF *inference* into
+# ~/.unsloth/llama.cpp (resolver checks <dir>/build/bin/llama-server).
+# Idempotent, best-effort: safe to re-run, always exits 0.
 #
-# Builds into ~/.unsloth/llama.cpp (the dir Unsloth Studio's llama-server
-# resolver checks: <dir>/build/bin/llama-server). Best-effort and idempotent:
-# safe to re-run, never hard-fails the caller (always exits 0).
-#
-# Why this exists: torch ships its own bundled CUDA runtime, so training +
-# GGUF *export* work without a system CUDA toolkit. But GGUF *inference* needs
-# a CUDA-linked llama-server, and on NVIDIA ARM machines (NVIDIA DGX Spark /
-# GB10, N1X "RTX" laptops) there is no published aarch64+CUDA prebuilt, so we
-# build one. Handles the known gotchas on these platforms:
+# Needed because no aarch64+CUDA llama.cpp prebuilt exists for NVIDIA ARM hosts
+# (DGX Spark / GB10, N1X "RTX" laptops). Handles the platform gotchas:
 #   * nvcc rejects gcc-15            -> force gcc-14 / g++-14 as the host compiler
 #   * glibc >= 2.41 vs CUDA < 13.3   -> install CUDA 13.3 (rsqrt header clash)
 #   * sm_121 (Blackwell) GPUs        -> derive arch from the GPU's compute_cap
 #
-# Opt out entirely with UNSLOTH_NO_LLAMA_CUDA=1 (handled by the caller).
+# Opt out with UNSLOTH_NO_LLAMA_CUDA=1 (handled by the caller).
 set -uo pipefail
 
 LLAMA_DIR="${UNSLOTH_LLAMA_CPP_PATH:-$HOME/.unsloth/llama.cpp}"
 SERVER="$LLAMA_DIR/build/bin/llama-server"
 log() { printf '  - %s\n' "$*"; }
 
-# A llama-server is CUDA-capable in either of two build layouts:
-#   * old monolithic build -> libggml-cuda is a direct load-time dependency (ldd shows it)
-#   * current split build   -> CUDA ships as a dlopen-ed backend plugin, libggml-cuda.so*,
-#                              sitting next to the binary; ldd will NOT list it
-# Checking only ldd (the old behaviour) is a false negative on current llama.cpp and would
-# force a pointless full rebuild every run. A CPU-only build has no libggml-cuda.so at all,
-# so the presence of that backend beside the binary is the reliable CUDA signal.
+# CUDA-capable in two layouts: old monolithic (libggml-cuda is a direct ldd dep)
+# or current split build (CUDA is a dlopen-ed backend libggml-cuda.so* beside the
+# binary, not shown by ldd). ldd alone false-negatives on current llama.cpp; a
+# CPU-only build has no libggml-cuda.so, so its presence is the reliable signal.
 is_cuda_server() {
     [ -x "$1" ] || return 1
     ldd "$1" 2>/dev/null | grep -qi 'libggml-cuda' && return 0
@@ -95,11 +87,9 @@ if [ -z "$NVCC" ]; then
 fi
 
 CUDA_HOME="$(dirname "$(dirname "$NVCC")")"
-# Put the CUDA toolkit + standard Linux dirs FIRST so the build always uses the
-# Linux cmake/gcc/git, never a Windows tool that leaked into PATH via WSL interop
-# when the installer is launched from a Windows shell (those /mnt/c entries also
-# contain spaces that can confuse the build). Original PATH kept after so things
-# like nvidia-smi still resolve.
+# CUDA toolkit + Linux dirs FIRST so the build uses Linux cmake/gcc/git, not a
+# Windows tool leaked into PATH via WSL interop (/mnt/c, also has spaces). Keep
+# the original PATH after so nvidia-smi etc. still resolve.
 export PATH="$CUDA_HOME/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
 export CUDAToolkit_ROOT="$CUDA_HOME"
 
@@ -129,28 +119,20 @@ _cmake_configure() {
         -DCMAKE_CUDA_HOST_COMPILER="$HCXX" \
         -DLLAMA_CURL=ON >/dev/null 2>&1
 }
-# A pre-existing build/ may carry an INCOMPATIBLE CMake cache. The common case: the
-# Studio installer (setup.sh / install_llama_prebuilt.py) stages its llama.cpp build in
-# a versioned dir (llama.cpp.build.NNNN) then RELOCATES it here, leaving a cache whose
-# baked-in absolute source/build paths no longer match (and GGML_CUDA=OFF). Re-running
-# CUDA configure over that fails ("CMakeCache directory is different" / "source does not
-# match"). So try to reuse build/ first (fast incremental resume on a re-run after a
-# partial CUDA build), and only if configure fails, wipe build/ and configure clean once.
+# A pre-existing build/ may carry an incompatible CMake cache (e.g. the installer
+# relocates a versioned build dir here, leaving stale absolute paths + GGML_CUDA=OFF),
+# making CUDA configure fail. Try to reuse build/ first (fast incremental resume);
+# only wipe and configure clean if that fails.
 if ! _cmake_configure; then
     log "stale/incompatible CMake cache detected; wiping build dir for a clean CUDA configure"
     rm -rf build
     _cmake_configure || { log "cmake configure failed"; exit 0; }
 fi
-# Build the full set unsloth-zoo's GGUF exporter expects too (llama-mtmd-cli,
-# llama-gguf-split), so a pre-provisioned build satisfies both Studio inference
-# AND save_pretrained_gguf without triggering a --clean-first rebuild later.
-# Build parallelism: use ALL cores by default. The single-arch CUDA compile is the
-# slow step, and -j(nproc) is dramatically faster than a conservative cap (e.g. -j4
-# is ~5x slower on a 20-core box). We only back off when RAM is tight: nvcc jobs are
-# memory-hungry (~1.5 GB each), so on a unified-memory machine we cap jobs at
-# mem/1.5GB to avoid an OOM-kill mid-build. Override explicitly with
-# UNSLOTH_LLAMA_BUILD_JOBS=N (e.g. to throttle a thermally limited laptop).
-# cmake --build is incremental, so a re-run simply resumes where it left off.
+# Build the full target set unsloth-zoo's GGUF exporter also needs (llama-mtmd-cli,
+# llama-gguf-split) so one build serves both Studio inference and save_pretrained_gguf.
+# Parallelism: all cores by default (-j(nproc) is far faster than a conservative cap),
+# but cap at mem/1.5GB when RAM is tight (nvcc uses ~1.5 GB/job) to avoid OOM-kill.
+# Override with UNSLOTH_LLAMA_BUILD_JOBS=N. Incremental: a re-run resumes.
 _ncpu="$(nproc 2>/dev/null || echo 4)"
 if [ -n "${UNSLOTH_LLAMA_BUILD_JOBS:-}" ]; then
     JOBS="$UNSLOTH_LLAMA_BUILD_JOBS"
@@ -162,7 +144,12 @@ else
     if [ "$_memjobs" -lt "$JOBS" ]; then JOBS="$_memjobs"; fi
 fi
 log "building with -j${JOBS} (cores=${_ncpu})"
-cmake --build build -j"$JOBS" --target \
+# Lowest CPU + idle I/O priority so this background build keeps full speed when the
+# box is idle but instantly yields to a foreground `unsloth studio` / training run.
+_NICE=""
+command -v nice   >/dev/null 2>&1 && _NICE="nice -n 19"
+command -v ionice >/dev/null 2>&1 && _NICE="$_NICE ionice -c 3"
+$_NICE cmake --build build -j"$JOBS" --target \
     llama-server llama-cli llama-quantize llama-mtmd-cli llama-gguf-split >/dev/null 2>&1 \
     || { log "cmake build failed"; exit 0; }
 
