@@ -3585,7 +3585,10 @@ class UnslothTrainer:
             self.trainer.add_callback(self._create_progress_callback())
 
             num_samples = None
-            if hasattr(self.trainer, "train_dataset") and self.trainer.train_dataset is not None:
+            if (
+                hasattr(self.trainer, "train_dataset")
+                and self.trainer.train_dataset is not None
+            ):
                 try:
                     num_samples = len(self.trainer.train_dataset)
                 except TypeError:
