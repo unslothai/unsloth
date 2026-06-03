@@ -89,9 +89,7 @@ def upsert_chunks(scope: str, points: Iterable[dict]) -> None:
         rows,
     )
     if fts_rows:
-        conn.executemany(
-            "DELETE FROM rag_chunks_fts WHERE chunk_id = ?", fts_delete
-        )
+        conn.executemany("DELETE FROM rag_chunks_fts WHERE chunk_id = ?", fts_delete)
         conn.executemany(
             "INSERT INTO rag_chunks_fts (text, chunk_id, scope) VALUES (?, ?, ?)",
             fts_rows,
