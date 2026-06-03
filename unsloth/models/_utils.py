@@ -786,6 +786,7 @@ del transformers_trainer_logger
 try:
     try:
         import transformers.utils.logging as _tf_log
+
         _tf_log._configure_library_root_logger()
     except Exception:
         pass
