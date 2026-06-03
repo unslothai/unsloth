@@ -180,6 +180,17 @@ def run_job_process(
                 _merge_batches_to_single_parquet(
                     results.artifact_storage.base_dataset_path
                 )
+
+            # Run studio-owned post-processors (e.g. json_document_score) on
+            # the parquet output. data_designer doesn't know about these
+            # types — they were filtered out in service.build_config_builder.
+            from ..post_processors import apply_studio_post_processors
+
+            apply_studio_post_processors(
+                base_dataset_path = results.artifact_storage.base_dataset_path,
+                processors = recipe.get("processors") or [],
+            )
+
             artifact_path = str(results.artifact_storage.base_dataset_path)
             event_queue.put(
                 {

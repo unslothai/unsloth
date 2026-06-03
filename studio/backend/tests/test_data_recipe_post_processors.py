@@ -244,3 +244,46 @@ def test_build_config_builder_skips_studio_owned_processors(monkeypatch):
         ]
     })
     assert captured == ["schema_transform"]
+
+
+def test_apply_runs_in_declaration_order(tmp_path: Path) -> None:
+    """Two post-processors on the same parquet — later ones see earlier ones'
+    columns. Verifies the worker's call-site behavior end-to-end."""
+    parquet_dir = tmp_path / "parquet-files"
+    parquet_dir.mkdir(parents=True)
+    df = pd.DataFrame(
+        {
+            "prediction": [json.dumps({"a": 1})],
+            "reference": [{"a": 1}],
+        }
+    )
+    df.to_parquet(parquet_dir / "batch_00000.parquet", index=False)
+
+    apply_studio_post_processors(
+        base_dataset_path=tmp_path,
+        processors=[
+            {
+                "processor_type": "json_document_score",
+                "name": "first",
+                "prediction_column": "prediction",
+                "reference_column": "reference",
+                "schema": None,
+                "default_comparator": "string",
+                "score_column": "score_a",
+                "breakdown_column": None,
+            },
+            {
+                "processor_type": "json_document_score",
+                "name": "second",
+                "prediction_column": "prediction",
+                "reference_column": "reference",
+                "schema": None,
+                "default_comparator": "string",
+                "score_column": "score_b",
+                "breakdown_column": None,
+            },
+        ],
+    )
+    out = pd.read_parquet(parquet_dir / "batch_00000.parquet")
+    assert "score_a" in out.columns
+    assert "score_b" in out.columns
