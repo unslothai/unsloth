@@ -2325,6 +2325,15 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
         run_install_cmd "overlay unsloth-zoo (git main)" uv pip install --python "$_VENV_PY" \
             --no-deps --reinstall-package unsloth-zoo \
             "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo"
+    elif [ -n "${UNSLOTH_INSTALL_REF:-}" ] && [ "${UNSLOTH_INSTALL_REF}" != "main" ] && [ "$PACKAGE_NAME" = "unsloth" ]; then
+        # Pre-merge branch testing: install unsloth from the requested git ref so its
+        # bundled studio/setup.sh + unsloth Python patches are exercised (released PyPI
+        # would not have them yet). Gated: only the default package ("unsloth") and only a
+        # non-"main" ref; install.ps1 sets UNSLOTH_INSTALL_REF when testing a branch. The
+        # ref is a bare git ref; the URL is a fixed literal -- no --package injection path.
+        substep "installing unsloth from git ref '$UNSLOTH_INSTALL_REF'..."
+        run_install_cmd "install unsloth (@$UNSLOTH_INSTALL_REF)" uv pip install --python "$_VENV_PY" \
+            --upgrade-package unsloth "unsloth @ git+https://github.com/unslothai/unsloth@${UNSLOTH_INSTALL_REF}"
     else
         run_install_cmd "install unsloth" uv pip install --python "$_VENV_PY" \
             --upgrade-package unsloth -- "$PACKAGE_NAME"

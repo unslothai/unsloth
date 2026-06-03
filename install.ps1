@@ -1541,15 +1541,20 @@ shell.Run cmd, 0, False
             try { & wsl.exe --install -d $distro --no-launch } catch {}
         }
         substep "installing Unsloth Studio inside WSL '$distro' with full GPU (this downloads PyTorch)..." "Cyan"
-        # When UNSLOTH_INSTALL_REF is a branch/tag/sha (not "main"), install unsloth FROM that
-        # ref via install.sh's --package, so the WSL studio package carries THIS ref's
-        # studio/setup.sh + unsloth Python patches. Otherwise install.sh pulls released PyPI
-        # unsloth and the branch's setup.sh (e.g. the WSL CPU-build skip) would not run
-        # pre-merge. Default (ref = main) is byte-identical to before: plain `... | sh`.
-        # The git URL has no spaces, so it passes cleanly PowerShell -> wsl.exe -> bash -lc.
+        # When UNSLOTH_INSTALL_REF is a branch/tag/sha (not "main"), fetch THAT ref's
+        # install.sh (which honors UNSLOTH_INSTALL_REF) and export the ref, so install.sh
+        # installs unsloth from that ref -> the WSL studio venv carries this ref's
+        # studio/setup.sh + unsloth Python patches (e.g. the WSL CPU-build skip). Otherwise
+        # install.sh would pull released PyPI unsloth and the branch's setup.sh would never
+        # run pre-merge. Default (ref = main) is byte-identical to before: plain
+        # `curl https://unsloth.ai/install.sh | sh`. The ref is a bare git ref (no spaces),
+        # so it passes cleanly PowerShell -> wsl.exe -> bash -lc.
         $_instRef = Get-UnslothInstallRef
-        $_pkgArg = if ($_instRef -eq 'main') { '' } else { ' -s -- --package git+https://github.com/unslothai/unsloth@' + $_instRef }
-        $wslInstall = 'export DEBIAN_FRONTEND=noninteractive; apt-get update -y >/dev/null 2>&1; apt-get install -y build-essential cmake git curl pciutils >/dev/null 2>&1; curl -fsSL https://unsloth.ai/install.sh | sh' + $_pkgArg
+        if ($_instRef -eq 'main') {
+            $wslInstall = 'export DEBIAN_FRONTEND=noninteractive; apt-get update -y >/dev/null 2>&1; apt-get install -y build-essential cmake git curl pciutils >/dev/null 2>&1; curl -fsSL https://unsloth.ai/install.sh | sh'
+        } else {
+            $wslInstall = 'export DEBIAN_FRONTEND=noninteractive; export UNSLOTH_INSTALL_REF=' + $_instRef + '; apt-get update -y >/dev/null 2>&1; apt-get install -y build-essential cmake git curl pciutils >/dev/null 2>&1; curl -fsSL https://raw.githubusercontent.com/unslothai/unsloth/' + $_instRef + '/install.sh | sh'
+        }
         # install.sh writes diagnostics to stderr and may exit non-zero on the optional llama.cpp
         # prebuilt step (no aarch64 prebuilt exists) -- that must NOT abort us under -ErrorAction Stop,
         # since torch + unsloth + Studio still install. Lower EAP around the call (same idiom as above).
