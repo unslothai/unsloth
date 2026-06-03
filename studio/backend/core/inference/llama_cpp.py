@@ -952,6 +952,28 @@ class LlamaCppBackend:
     # ── Binary discovery ──────────────────────────────────────────
 
     @staticmethod
+    def _nvidia_available() -> bool:
+        """Quick check for an NVIDIA GPU via nvidia-smi.
+
+        Used only to break ties between a CPU-only cmake build
+        (build/bin/Release/) and a CUDA cmake build (build-cuda/bin/Release/)
+        when both exist under the same install root on Windows.  Intentionally
+        avoids importing torch so it runs before the heavy inference stack is
+        initialised.  Returns False on any error or timeout.
+        """
+        try:
+            result = subprocess.run(
+                ["nvidia-smi", "-L"],
+                capture_output = True,
+                text = True,
+                timeout = 5,
+                **_windows_hidden_subprocess_kwargs(),
+            )
+            return result.returncode == 0 and "GPU" in result.stdout
+        except Exception:
+            return False
+
+    @staticmethod
     def _find_llama_server_binary() -> Optional[str]:
         """
         Locate the llama-server binary.
@@ -961,7 +983,8 @@ class LlamaCppBackend:
         1b. UNSLOTH_LLAMA_CPP_PATH env var (custom llama.cpp install dir)
         2.  ~/.unsloth/llama.cpp/llama-server        (make build, root dir)
         3.  ~/.unsloth/llama.cpp/build/bin/llama-server  (cmake build, Linux)
-        4.  ~/.unsloth/llama.cpp/build/bin/Release/llama-server.exe  (cmake build, Windows)
+        4a. ~/.unsloth/llama.cpp/build-cuda/bin/Release/llama-server.exe  (cmake CUDA build, Windows — preferred when NVIDIA present)
+        4b. ~/.unsloth/llama.cpp/build/bin/Release/llama-server.exe  (cmake CPU build, Windows)
         5.  ./llama.cpp/llama-server                 (legacy: make build, root dir)
         6.  ./llama.cpp/build/bin/llama-server        (legacy: cmake in-tree build)
         7.  llama-server on PATH                     (system install)
@@ -986,9 +1009,16 @@ class LlamaCppBackend:
             cmake_bin = custom_dir / "build" / "bin" / binary_name
             if cmake_bin.is_file():
                 return str(cmake_bin)
-            # build/bin/Release/ (cmake builds on Windows)
+            # build-cuda/bin/Release/ preferred over build/bin/Release/ on
+            # Windows when NVIDIA is present (cmake CUDA vs CPU build).
             if sys.platform == "win32":
+                win_cuda_bin = custom_dir / "build-cuda" / "bin" / "Release" / binary_name
                 win_bin = custom_dir / "build" / "bin" / "Release" / binary_name
+                if win_cuda_bin.is_file() and LlamaCppServer._nvidia_available():
+                    logger.info(
+                        "Preferring CUDA llama-server build over CPU build: %s", win_cuda_bin
+                    )
+                    return str(win_cuda_bin)
                 if win_bin.is_file():
                     return str(win_bin)
 
@@ -1029,7 +1059,13 @@ class LlamaCppBackend:
             if home_linux.is_file():
                 return str(home_linux)
             if sys.platform == "win32":
+                home_win_cuda = unsloth_home / "build-cuda" / "bin" / "Release" / binary_name
                 home_win = unsloth_home / "build" / "bin" / "Release" / binary_name
+                if home_win_cuda.is_file() and LlamaCppServer._nvidia_available():
+                    logger.info(
+                        "Preferring CUDA llama-server build over CPU build: %s", home_win_cuda
+                    )
+                    return str(home_win_cuda)
                 if home_win.is_file():
                     return str(home_win)
 
@@ -1044,9 +1080,17 @@ class LlamaCppBackend:
         if build_path.is_file():
             return str(build_path)
         if sys.platform == "win32":
+            win_cuda_path = (
+                project_root / "llama.cpp" / "build-cuda" / "bin" / "Release" / binary_name
+            )
             win_path = (
                 project_root / "llama.cpp" / "build" / "bin" / "Release" / binary_name
             )
+            if win_cuda_path.is_file() and LlamaCppServer._nvidia_available():
+                logger.info(
+                    "Preferring CUDA llama-server build over CPU build: %s", win_cuda_path
+                )
+                return str(win_cuda_path)
             if win_path.is_file():
                 return str(win_path)
 
