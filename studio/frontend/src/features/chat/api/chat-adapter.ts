@@ -18,6 +18,7 @@ import {
   supportsProviderPromptCaching,
   toExternalBackendProviderType,
 } from "../external-providers";
+import { tryAdoptServerActiveModel } from "../lib/apply-inference-status-to-store";
 import { pickFriendlyContainerName } from "../lib/friendly-names";
 import {
   EXTERNAL_MAX_OUTPUT_TOKENS,
@@ -59,7 +60,6 @@ import {
 } from "../utils/parse-assistant-content";
 import {
   generateAudio,
-  getInferenceStatus,
   listCachedGguf,
   listCachedModels,
   listGgufVariants,
@@ -899,25 +899,6 @@ async function resolveUseAdapter(
   }
 }
 
-/**
- * Adopt the model already loaded on the inference server (e.g. via
- * ``unsloth studio run -m``) into the chat UI checkpoint without
- * triggering a new /api/inference/load.
- */
-async function tryAdoptServerActiveModel(): Promise<boolean> {
-  const store = useChatRuntimeStore.getState();
-  if (store.params.checkpoint || isExternalModelId(store.params.checkpoint)) {
-    return Boolean(store.params.checkpoint);
-  }
-  const status = await getInferenceStatus();
-  if (!status.active_model) {
-    return false;
-  }
-  const modelId = status.model_identifier ?? status.active_model;
-  store.setCheckpoint(modelId, status.gguf_variant);
-  return true;
-}
-
 /** Wait for a model to be ready: UI-initiated loads or external CLI loads. */
 async function waitForModelReady(abortSignal?: AbortSignal): Promise<void> {
   const deadline = Date.now() + 120_000;
@@ -1289,8 +1270,8 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         }
       };
 
-      // Wait for in-progress model load to finish before inferring
-      if (runtime.modelLoading) {
+      const checkpointEmpty = !runtime.params.checkpoint;
+      if (runtime.modelLoading || checkpointEmpty) {
         toast.info("Waiting for model to finish loading…");
         try {
           await waitForModelReady(abortSignal);
@@ -1301,16 +1282,13 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       }
 
       if (!useChatRuntimeStore.getState().params.checkpoint) {
-        // Prefer a model already loaded by the CLI/API before auto-loading.
-        let loaded = await tryAdoptServerActiveModel();
+        let loaded = false;
         let blockedByTrustRemoteCode = false;
-        if (!loaded) {
-          try {
-            ({ loaded, blockedByTrustRemoteCode } = await autoLoadSmallestModel());
-          } catch (error) {
-            clearSelectedImageEditReference();
-            throw error;
-          }
+        try {
+          ({ loaded, blockedByTrustRemoteCode } = await autoLoadSmallestModel());
+        } catch (error) {
+          clearSelectedImageEditReference();
+          throw error;
         }
         if (!loaded) {
           toast.error(

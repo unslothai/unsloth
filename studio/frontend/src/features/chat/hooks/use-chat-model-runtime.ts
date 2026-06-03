@@ -24,8 +24,6 @@ import {
 } from "../api/chat-api";
 import { formatEta, formatRate } from "../utils/format-transfer";
 import {
-  CHAT_REASONING_ENABLED_KEY,
-  loadOptionalBool,
   type ReasoningEffort,
   resolveToolsEnabledOnLoad,
   useChatRuntimeStore,
@@ -34,6 +32,12 @@ import {
   mergeBackendRecommendedInference,
   resolveLoadMaxSeqLength,
 } from "../presets/preset-policy";
+import {
+  applyActiveModelStatusToStore,
+  clampLocalReasoningEffort,
+  normalizeSpeculativeType,
+  resolveInferenceCheckpointId,
+} from "../lib/apply-inference-status-to-store";
 import {
   isMultimodalResponse,
 } from "../types/api";
@@ -144,41 +148,6 @@ function getTrustRemoteCodeRequiredMessage(modelName: string): string {
   return `${modelName} needs custom code enabled to load. Turn on "Enable custom code" in Chat Settings, then try again.`;
 }
 
-// Canonicalises any value the backend reports (or persisted state holds)
-// onto the five UI-facing modes the Speculative Decoding dropdown
-// understands: "auto" / "mtp" / "ngram" / "mtp+ngram" / "off" / null.
-// Mirrors backend _canonicalize_spec_mode so old persisted "default" /
-// "draft-mtp" / "ngram-mod" / chain values round-trip cleanly.
-function normalizeSpeculativeType(v: string | null | undefined): string | null {
-  if (v == null) return null;
-  const s = String(v).trim().toLowerCase();
-  if (!s) return null;
-  if (s === "auto" || s === "default") return "auto";
-  if (s === "off") return "off";
-  if (s === "ngram-simple") return "ngram-simple";
-  if (s === "mtp" || s === "draft-mtp") return "mtp";
-  if (s === "ngram" || s === "ngram-mod") return "ngram";
-  if (s === "mtp+ngram") return "mtp+ngram";
-  // Comma-chained legacy values (e.g. from older persisted state).
-  const parts = s.split(",").map((p) => p.trim()).filter(Boolean);
-  const hasMtp = parts.some((p) => p === "mtp" || p === "draft-mtp");
-  const hasNgram = parts.some((p) => p === "ngram" || p === "ngram-mod");
-  if (hasMtp && hasNgram) return "mtp+ngram";
-  if (hasMtp) return "mtp";
-  if (hasNgram) return "ngram";
-  // Unknown -> safe fallback to Auto so the dropdown stays controlled.
-  return "auto";
-}
-
-type LocalReasoningEffort = Extract<ReasoningEffort, "low" | "medium" | "high">;
-
-function clampLocalReasoningEffort(value: ReasoningEffort): LocalReasoningEffort {
-  if (value === "low" || value === "medium" || value === "high") {
-    return value;
-  }
-  return "low";
-}
-
 export function useChatModelRuntime() {
   const params = useChatRuntimeStore((state) => state.params);
   const models = useChatRuntimeStore((state) => state.models);
@@ -248,164 +217,52 @@ export function useChatModelRuntime() {
   const refresh = useCallback(async (options?: { pollUntilActiveModel?: boolean }) => {
     setModelsError(null);
     try {
-      const listResPromise = listModels();
-      const lorasResPromise = listLoras();
-
-      let statusRes = await getInferenceStatus();
       const selectedCheckpoint = useChatRuntimeStore.getState().params.checkpoint;
       const isExternalSelectionActive = isExternalModelId(selectedCheckpoint);
-      if (
+      const shouldPollForCliLoad =
         options?.pollUntilActiveModel &&
-        !statusRes.active_model &&
         !selectedCheckpoint &&
-        !isExternalSelectionActive
-      ) {
+        !isExternalSelectionActive;
+
+      let statusRes = shouldPollForCliLoad
+        ? await getInferenceStatus().catch(() => ({ active_model: undefined }))
+        : null;
+
+      if (shouldPollForCliLoad) {
         const deadline = Date.now() + 60_000;
-        while (Date.now() < deadline && !statusRes.active_model) {
+        while (
+          Date.now() < deadline &&
+          !(statusRes && statusRes.active_model)
+        ) {
           await new Promise((resolve) => setTimeout(resolve, 500));
-          statusRes = await getInferenceStatus();
+          try {
+            statusRes = await getInferenceStatus();
+          } catch {
+            // Keep polling through transient status errors.
+          }
         }
       }
 
-      const [listRes, lorasRes] = await Promise.all([
-        listResPromise,
-        lorasResPromise,
+      const [listRes, lorasRes, fetchedStatus] = await Promise.all([
+        listModels(),
+        listLoras(),
+        statusRes ? Promise.resolve(statusRes) : getInferenceStatus(),
       ]);
+      statusRes = fetchedStatus;
 
       setModels(listRes.models.map(toChatModelSummary));
       setLoras(lorasRes.loras.map(toLoraSummary));
 
-      if (statusRes.active_model && !isExternalSelectionActive) {
-        setCheckpoint(
-          statusRes.model_identifier ?? statusRes.active_model,
-          statusRes.gguf_variant,
-        );
-
-        // Apply inference defaults on reconnect (page refresh with model already loaded)
-        if (statusRes.inference) {
-          const currentParams = useChatRuntimeStore.getState().params;
-          setParams(
-            mergeBackendRecommendedInference({
-              current: currentParams,
-              response: statusRes,
-              modelId: statusRes.active_model,
-              presetSource: useChatRuntimeStore.getState().activePresetSource,
-            }),
-          );
-        }
-
-        // Restore reasoning/tools support flags and context length
-        const hydratingExistingModel =
-          selectedCheckpoint !== statusRes.active_model ||
-          useChatRuntimeStore.getState().activeGgufVariant !==
-            (statusRes.gguf_variant ?? null);
-        const supportsReasoning = statusRes.supports_reasoning ?? false;
-        const reasoningAlwaysOn = statusRes.reasoning_always_on ?? false;
-        const reasoningStyle = statusRes.reasoning_style ?? "enable_thinking";
-        const reasoningEffortLevels =
-          reasoningStyle === "reasoning_effort"
-            ? (["low", "medium", "high"] as const)
-            : (["low", "medium", "high"] as const);
-        const supportsPreserveThinking = statusRes.supports_preserve_thinking ?? false;
-        const supportsTools = statusRes.supports_tools ?? false;
-        const storedReasoningEnabled = loadOptionalBool(
-          CHAT_REASONING_ENABLED_KEY,
-        );
-        const currentGgufContextLength = statusRes.is_gguf
-          ? (statusRes.context_length ?? null)
-          : null;
-        const ggufMaxContextLength = statusRes.is_gguf
-          ? (statusRes.max_context_length ?? null)
-          : null;
-        const ggufNativeContextLength = statusRes.is_gguf
-          ? (statusRes.native_context_length ?? null)
-          : null;
-        const currentSpecType = normalizeSpeculativeType(
-          statusRes.speculative_type,
-        );
-        // Refresh runs both on F5 (fresh store needs hydration) AND right
-        // after a fresh load (store was already set by the load path). For
-        // the user-configurable model params we only hydrate when the shadow
-        // `loaded*` field is still null -- that signals "not yet hydrated".
-        // Otherwise we'd clobber the values the load path just applied and
-        // the UI would appear to revert the user's changes.
-        const prevState = useChatRuntimeStore.getState();
-        const clampedReasoningEffort = clampLocalReasoningEffort(
-          prevState.reasoningEffort,
-        );
-        const nextDefaultChatTemplate =
-          statusRes.chat_template === undefined
-            ? prevState.defaultChatTemplate
-            : statusRes.chat_template;
-        useChatRuntimeStore.setState({
-          supportsReasoning,
-          reasoningAlwaysOn,
-          reasoningStyle,
-          supportsReasoningOff: reasoningStyle !== "reasoning_effort",
-          reasoningEffortLevels,
-          reasoningEffort: clampedReasoningEffort,
-          supportsPreserveThinking,
-          supportsTools,
-          // Reset per-turn reasoning flag so:
-          //   1. models that do not support reasoning do not inherit a stale
-          //      off state from a prior model, and
-          //   2. local reasoning-effort models (where the composer hides
-          //      the Off option via supportsReasoningOff=false) cannot end
-          //      up with reasoningEnabled=false carried over from an
-          //      external model where Off was selected — the composer would
-          //      keep showing "Think: <level>" via effectiveReasoningEnabled,
-          //      but the chat-adapter would omit the kwarg and the Harmony
-          //      template would fall back to its own default effort.
-          reasoningEnabled: supportsReasoning
-            ? reasoningStyle === "reasoning_effort"
-              ? true
-              : useChatRuntimeStore.getState().reasoningEnabled
-            : true,
-          ggufContextLength: currentGgufContextLength,
-          ggufMaxContextLength,
-          ggufNativeContextLength,
-          modelRequiresTrustRemoteCode:
-            statusRes.requires_trust_remote_code ?? false,
-          defaultChatTemplate: nextDefaultChatTemplate,
-          loadedIsMultimodal: isMultimodalResponse(statusRes),
-          ...(prevState.loadedSpeculativeType === null && {
-            speculativeType: currentSpecType,
-            loadedSpeculativeType: currentSpecType,
-          }),
-          ...(statusRes.spec_draft_n_max !== undefined &&
-            prevState.loadedSpecDraftNMax === null &&
-            prevState.specDraftNMax === null && {
-              specDraftNMax: statusRes.spec_draft_n_max ?? null,
-              loadedSpecDraftNMax: statusRes.spec_draft_n_max ?? null,
-            }),
-          ...(statusRes.cache_type_kv !== undefined &&
-            prevState.loadedKvCacheDtype === null && {
-              kvCacheDtype: statusRes.cache_type_kv,
-              loadedKvCacheDtype: statusRes.cache_type_kv,
-            }),
-          ...(statusRes.chat_template_override !== undefined &&
-            prevState.loadedChatTemplateOverride === null &&
-            prevState.chatTemplateOverride === null && {
-              chatTemplateOverride: statusRes.chat_template_override,
-              loadedChatTemplateOverride: statusRes.chat_template_override,
-            }),
-        });
-
-        // Set reasoning default for Qwen3.5/3.6 small models
-        if (
-          supportsReasoning &&
-          hydratingExistingModel &&
-          storedReasoningEnabled === null
-        ) {
-          let reasoningDefault = true;
-          const mid = statusRes.active_model.toLowerCase();
-          if (mid.includes("qwen3.5") || mid.includes("qwen3.6")) {
-            const sizeMatch = mid.match(/(\d+\.?\d*)\s*b/);
-            if (sizeMatch && parseFloat(sizeMatch[1]) < 9) {
-              reasoningDefault = false;
-            }
-          }
-          useChatRuntimeStore.setState({ reasoningEnabled: reasoningDefault });
+      const checkpointAfterPoll =
+        useChatRuntimeStore.getState().params.checkpoint;
+      const isExternalAfterPoll = isExternalModelId(checkpointAfterPoll);
+      if (statusRes.active_model && !isExternalAfterPoll) {
+        const checkpointId = resolveInferenceCheckpointId(statusRes);
+        if (checkpointId) {
+          setCheckpoint(checkpointId, statusRes.gguf_variant);
+          applyActiveModelStatusToStore(statusRes, {
+            previousCheckpoint: checkpointAfterPoll,
+          });
         }
       } else if (!statusRes.active_model && !isExternalSelectionActive) {
         useChatRuntimeStore.setState({
@@ -421,7 +278,7 @@ export function useChatModelRuntime() {
         description: message,
       });
     }
-  }, [setCheckpoint, setLoras, setModels, setModelsError, setParams]);
+  }, [setCheckpoint, setLoras, setModels, setModelsError]);
 
   const cancelLoading = useCallback(() => {
     const model = loadingModelRef.current;
