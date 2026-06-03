@@ -53,9 +53,11 @@ export type RagMode = "hybrid" | "lexical" | "dense";
 export const DEFAULT_RAG_SOURCE: RagSource = { type: "thread" };
 export const DEFAULT_RAG_MODE: RagMode = "hybrid";
 export const DEFAULT_RAG_TOP_K = 5;
-// Mirror the backend defaults: auto-inject on but gated by a high cosine floor,
-// so it fires on on-topic queries and skips weak ones (left to the model's search).
-export const DEFAULT_RAG_AUTOINJECT = true;
+// Auto-retrieve mode. `auto` forces retrieval for smaller models (<=9B) that
+// tend to answer from memory instead of calling search, and leaves it to the
+// model on larger ones; `on`/`off` force it. Gated by a high cosine floor.
+export type RagAutoInject = "auto" | "on" | "off";
+export const DEFAULT_RAG_AUTOINJECT: RagAutoInject = "auto";
 export const DEFAULT_RAG_AUTOINJECT_MIN_SCORE = 0.7;
 
 function loadRagSource(): RagSource {
@@ -86,6 +88,13 @@ function saveRagSource(value: RagSource): void {
 function loadRagMode(): RagMode {
   const raw = loadString(CHAT_RAG_MODE_KEY, DEFAULT_RAG_MODE);
   return raw === "lexical" || raw === "dense" ? raw : "hybrid";
+}
+
+function loadRagAutoInject(): RagAutoInject {
+  const raw = loadString(CHAT_RAG_AUTOINJECT_KEY, DEFAULT_RAG_AUTOINJECT);
+  if (raw === "auto" || raw === "on" || raw === "off") return raw;
+  // Migrate the legacy boolean: the old on-by-default becomes Auto, false -> Off.
+  return raw === "false" ? "off" : "auto";
 }
 
 function loadRagTopK(): number {
@@ -400,7 +409,7 @@ type ChatRuntimeStore = {
   ragTopK: number;
   // Query-time retrieval knobs sent in rag_scope; absent ones fall back to
   // server config. autoInject = forced first-pass retrieval before answering.
-  ragAutoInject: boolean;
+  ragAutoInject: RagAutoInject;
   ragAutoInjectMinScore: number;
   /**
    * Fetch pill state, independent of `toolsEnabled` (Search). Only
@@ -483,7 +492,7 @@ type ChatRuntimeStore = {
   setRagSource: (source: RagSource) => void;
   setRagMode: (mode: RagMode) => void;
   setRagTopK: (topK: number) => void;
-  setRagAutoInject: (enabled: boolean) => void;
+  setRagAutoInject: (value: RagAutoInject) => void;
   setRagAutoInjectMinScore: (score: number) => void;
   setToolStatus: (status: string | null) => void;
   setGeneratingStatus: (status: string | null) => void;
@@ -750,7 +759,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   ragSource: loadRagSource(),
   ragMode: loadRagMode(),
   ragTopK: loadRagTopK(),
-  ragAutoInject: loadBool(CHAT_RAG_AUTOINJECT_KEY, DEFAULT_RAG_AUTOINJECT),
+  ragAutoInject: loadRagAutoInject(),
   ragAutoInjectMinScore: loadRagNumber(
     CHAT_RAG_AUTOINJECT_MIN_SCORE_KEY,
     DEFAULT_RAG_AUTOINJECT_MIN_SCORE,
@@ -1102,7 +1111,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     }),
   setRagAutoInject: (ragAutoInject) =>
     set(() => {
-      saveBool(CHAT_RAG_AUTOINJECT_KEY, ragAutoInject);
+      saveString(CHAT_RAG_AUTOINJECT_KEY, ragAutoInject);
       return { ragAutoInject };
     }),
   setRagAutoInjectMinScore: (ragAutoInjectMinScore) =>

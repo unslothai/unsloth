@@ -11,7 +11,10 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
-import { Switch } from "@/components/ui/switch";
+import {
+  ToggleGroup,
+  ToggleGroupItem,
+} from "@/components/ui/toggle-group";
 import {
   Tooltip,
   TooltipContent,
@@ -21,6 +24,7 @@ import { Button } from "@/components/ui/button";
 import { InfoIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
+  type RagAutoInject,
   type RagMode,
   type RagSource,
   useChatRuntimeStore,
@@ -228,32 +232,47 @@ export function RetrievalSettingsSection() {
       </div>
 
       <div className="flex flex-col gap-3">
-        <div className="flex items-center justify-between gap-3">
-          <div className="flex flex-col">
-            <span className="flex items-center gap-1.5 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
-              Auto-retrieve documents
-              <InfoHint>
-                Small models (under ~4B) often answer from memory instead of
-                searching. Keep this on so attachments are always consulted.
-              </InfoHint>
-            </span>
-            <span className="text-[12px] leading-[1.3] text-muted-foreground">
-              Always search attached documents before answering.
-            </span>
-          </div>
-          <Switch
-            checked={ragAutoInject}
-            onCheckedChange={setRagAutoInject}
-            aria-label="Auto-retrieve documents"
-          />
+        <div className="flex flex-col">
+          <span className="flex items-center gap-1.5 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
+            Auto-retrieve documents
+            <InfoHint>
+              Auto turns retrieval on for smaller models (9B and below), which
+              tend to answer from memory instead of searching, and leaves it to
+              larger ones. On and Off force it either way.
+            </InfoHint>
+          </span>
+          <span className="text-[12px] leading-[1.3] text-muted-foreground">
+            Search attached documents before answering.
+          </span>
         </div>
+        <ToggleGroup
+          type="single"
+          variant="outline"
+          value={ragAutoInject}
+          onValueChange={(value) => {
+            // Radix clears on re-click; ignore empty so one stays selected.
+            if (value) setRagAutoInject(value as RagAutoInject);
+          }}
+          className="w-full"
+          aria-label="Auto-retrieve documents"
+        >
+          <ToggleGroupItem value="auto" className="flex-1">
+            Auto
+          </ToggleGroupItem>
+          <ToggleGroupItem value="on" className="flex-1">
+            On
+          </ToggleGroupItem>
+          <ToggleGroupItem value="off" className="flex-1">
+            Off
+          </ToggleGroupItem>
+        </ToggleGroup>
         <SliderRow
           label="Auto-retrieve threshold"
           value={ragAutoInjectMinScore}
           min={0}
           max={1}
           step={0.05}
-          disabled={!ragAutoInject}
+          disabled={ragAutoInject === "off"}
           onChange={setRagAutoInjectMinScore}
           format={(v) => v.toFixed(2)}
         />

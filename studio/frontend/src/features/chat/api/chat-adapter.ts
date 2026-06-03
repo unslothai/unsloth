@@ -33,6 +33,7 @@ import {
 } from "../provider-capabilities";
 import {
   type PendingImageEditReference,
+  type RagAutoInject,
   resolveToolsEnabledOnLoad,
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
@@ -73,6 +74,32 @@ import {
   encryptProviderApiKey,
   isProviderKeyRotationError,
 } from "./providers-api";
+
+// "Auto" auto-retrieve resolves by the loaded model's total size: small models
+// (<=9B) tend to answer from memory instead of calling search, so force
+// retrieval; leave it to larger ones. Sizes take the largest plain <n>B/<n>M
+// token in the id, ignoring MoE active-param notation (A3B), so 35B-A3B is 35.
+const AUTOINJECT_AUTO_MAX_SIZE_B = 9;
+const MODEL_SIZE_RE = /(?:^|[-_/])(\d+\.?\d*)\s*([bm])(?=$|[-_/])/gi;
+
+function modelTotalSizeB(modelId: string): number | null {
+  let max: number | null = null;
+  for (const m of modelId.toLowerCase().matchAll(MODEL_SIZE_RE)) {
+    const v =
+      m[2] === "m" ? Number.parseFloat(m[1]) / 1000 : Number.parseFloat(m[1]);
+    if (Number.isFinite(v) && (max === null || v > max)) max = v;
+  }
+  return max;
+}
+
+/** Resolve the tri-state auto-retrieve to the boolean the backend expects. */
+function resolveAutoInject(mode: RagAutoInject, checkpoint: string): boolean {
+  if (mode === "on") return true;
+  if (mode === "off") return false;
+  const size = modelTotalSizeB(checkpoint);
+  // Unknown size -> enable (err toward consulting attachments).
+  return size === null || size <= AUTOINJECT_AUTO_MAX_SIZE_B;
+}
 
 /** Server-side usage data from llama-server (via stream_options.include_usage). */
 interface ServerUsage {
@@ -2177,7 +2204,10 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                               : {}),
                           default_top_k: ragTopK,
                           mode: ragMode,
-                          autoinject: ragAutoInject,
+                          autoinject: resolveAutoInject(
+                            ragAutoInject,
+                            params.checkpoint,
+                          ),
                           autoinject_min_score: ragAutoInjectMinScore,
                         },
                       }
