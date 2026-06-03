@@ -97,7 +97,10 @@ note "Ubuntu 24.04 + /dev/dxg present."
 say "Installing build prerequisites"
 export DEBIAN_FRONTEND=noninteractive
 $SUDO apt-get update -y
-$SUDO apt-get install -y cmake gcc g++ git wget gpg ca-certificates python3-venv python3-pip
+# `make` is listed explicitly: cmake's Unix Makefiles generator shells out to it,
+# but Ubuntu only *recommends* make, so minimal/--no-install-recommends images can
+# lack it and the librocdxg `make -j` build below would fail with "make: not found".
+$SUDO apt-get install -y cmake make gcc g++ git wget gpg ca-certificates python3-venv python3-pip
 
 # ── Step 2: ROCm ${ROCM_VER} userspace (no DKMS -- WSL uses the Windows driver) ─
 say "Installing ROCm ${ROCM_VER} userspace"
@@ -157,9 +160,17 @@ else
     # Auto-discover the newest Windows 11 SDK that ships the 'shared' headers
     # librocdxg needs (do not hardcode a version -- it differs per machine).
     _win_sdk=""
-    for _inc in $(ls -d "/mnt/c/Program Files (x86)/Windows Kits/10/Include/"*/ 2>/dev/null | sort -Vr); do
-        if [ -d "${_inc}shared" ]; then _win_sdk="${_inc%/}"; break; fi
-    done
+    _sdk_inc_base="/mnt/c/Program Files (x86)/Windows Kits/10/Include"
+    # Newest SDK first. NB: the path contains a space ("Program Files (x86)"), so
+    # a `for ... in $(ls -d .../*/)` form word-splits each entry into "/mnt/c/Program",
+    # "Files", "(x86)/..." and never matches. Use find + a read loop instead, which
+    # preserves spaces. (bash process substitution; this script is #!/usr/bin/env bash.)
+    if [ -d "$_sdk_inc_base" ]; then
+        while IFS= read -r _inc; do
+            [ -n "$_inc" ] || continue
+            if [ -d "$_inc/shared" ]; then _win_sdk="$_inc"; break; fi
+        done < <(find "$_sdk_inc_base" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort -Vr)
+    fi
     [ -n "$_win_sdk" ] || die "Windows 11 SDK headers not found under 'C:\\Program Files (x86)\\Windows Kits\\10\\Include\\*\\shared'. Install the Windows 11 SDK on the Windows host, then re-run."
     note "Windows SDK: ${_win_sdk}"
     _src="${HOME}/.unsloth/librocdxg"
@@ -212,9 +223,12 @@ say "Verifying rocminfo sees ${GFX}"
 # `grep -q` makes grep close the pipe on first match, which SIGPIPEs rocminfo
 # (exit 141); under `set -o pipefail` that turns a *successful* match into a
 # pipeline failure. The GPU's marketing name also contains "Radeon" on the CPU
-# agent line, so we look specifically for a GPU "gfx" agent.
+# agent line, so we look specifically for the gfx1151 ISA "Name:" agent. Require
+# gfx1151 exactly (not a broad gfx1[0-9]) so a generic fallback ISA
+# (e.g. gfx11-generic) or an unrelated RDNA GPU does not pass this Strix-Halo
+# verification while the real GPU is absent.
 _rocminfo_out="$(rocminfo 2>/dev/null || true)"
-if ! printf '%s\n' "$_rocminfo_out" | grep -qE "Name:[[:space:]]*${GFX}|Name:[[:space:]]*gfx1[0-9]"; then
+if ! printf '%s\n' "$_rocminfo_out" | grep -qE "Name:[[:space:]]*${GFX}([^0-9]|$)"; then
     printf '%s\n' "$_rocminfo_out" | head -25 >&2 || true
     die "rocminfo did not enumerate a ${GFX} GPU agent. Most common cause: the Windows AMD driver predates production ROCDXG -- update Adrenalin (install.ps1 offers this), reboot, and re-run."
 fi

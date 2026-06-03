@@ -1502,7 +1502,13 @@ shell.Run cmd, 0, False
         # a HIP SDK is present (hipinfo found -> amd-smi runs un-elevated) or the
         # user opts in. Otherwise we fall through to WMI name inference, which is
         # enough to select the ROCm wheels + lemonade llama.cpp.
-        $amdSmiAllowed = $HipSdkInstalled -or ($env:UNSLOTH_ENABLE_AMD_SMI -match '^(?i)(1|true|yes|on)$')
+        # An explicit opt-out (UNSLOTH_ENABLE_AMD_SMI=0/false/no/off) takes
+        # precedence over the HIP-SDK heuristic: a host can have a HIP SDK binary
+        # but a broken runtime where even probing amd-smi pops the DiskPart/UAC
+        # prompt this opt-out exists to avoid, so $HipSdkInstalled must NOT
+        # silently re-enable it.
+        $amdSmiOptOut = $env:UNSLOTH_ENABLE_AMD_SMI -match '^(?i)(0|false|no|off)$'
+        $amdSmiAllowed = (-not $amdSmiOptOut) -and ($HipSdkInstalled -or ($env:UNSLOTH_ENABLE_AMD_SMI -match '^(?i)(1|true|yes|on)$'))
         if (-not $HasROCm -and $amdSmiAllowed) {
             $amdSmiExe = Get-Command "amd-smi" -ErrorAction SilentlyContinue
             if ($amdSmiExe) {
@@ -1565,8 +1571,8 @@ shell.Run cmd, 0, False
                 $nameArchTable = @(
                     @{ P = "9070 XT|9080";                                        A = "gfx1201" }  # RDNA 4 (RX 9070 XT / 9080)
                     @{ P = "9070|9060";                                           A = "gfx1200" }  # RDNA 4 (RX 9070 / 9060)
-                    @{ P = "8060S|8050S|8040S|890M|Strix Halo|Ryzen AI Max|HX 37[05]|HX 38[05]|AI 9 HX|AI Max"; A = "gfx1151" }  # RDNA 3.5 (Strix Halo / Radeon 8000S)
-                    @{ P = "880M|860M|840M|Strix Point|Krackan|AI 9 36[05]|AI 7 35[05]|AI 5 34[05]|AI 7 PRO 35|AI 5 33"; A = "gfx1150" }  # RDNA 3.5 (Strix/Krackan Point)
+                    @{ P = "8060S|8050S|8040S|Strix Halo|Ryzen AI Max|AI Max"; A = "gfx1151" }  # RDNA 3.5 (Strix Halo: Radeon 8060S/8050S/8040S iGPU, Ryzen AI Max+)
+                    @{ P = "890M|880M|860M|840M|Strix Point|Krackan|HX 37[05]|AI 9 HX|AI 9 36[05]|AI 7 35[05]|AI 5 34[05]|AI 7 PRO 35|AI 5 33"; A = "gfx1150" }  # RDNA 3.5 (Strix/Krackan Point: Radeon 890M/880M iGPU, Ryzen AI 9 HX 370/375)
                     @{ P = "RX 7900|RX 7800|RX 7700(?!S)|PRO W7900|PRO W7800|PRO W7700"; A = "gfx1100" }  # RDNA 3 desktop/workstation (Navi 31)
                     @{ P = "RX 7600|RX 7700S|RX 7650|PRO W7600|PRO W7500|PRO V710"; A = "gfx1102" }  # RDNA 3 (Navi 33)
                     @{ P = "780M|760M|740M|Phoenix|Hawk Point|Z1 Extreme|Z2 Extreme"; A = "gfx1103" }  # RDNA 3 iGPU (Phoenix / Hawk Point)

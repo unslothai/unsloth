@@ -455,6 +455,11 @@ def _has_rocm_gpu() -> bool:
         exe = shutil.which(cmd[0])
         if not exe:
             continue
+        # On Windows w/o a HIP SDK (and no explicit opt-in), amd-smi elevates a
+        # child at runtime and pops a UAC/DiskPart prompt RunAsInvoker can't
+        # suppress -- skip it there and rely on rocminfo / the sysfs fallback.
+        if cmd[0] == "amd-smi" and not _amd_smi_allowed():
+            continue
         try:
             result = subprocess.run(
                 [exe, *cmd[1:]],
@@ -526,7 +531,9 @@ def _detect_amd_gfx_codes() -> list[str]:
     probes: list[list[str]] = []
     if shutil.which("rocminfo"):
         probes.append(["rocminfo"])
-    if shutil.which("amd-smi"):
+    # Gate amd-smi: on Windows w/o a HIP SDK (and no opt-in) it elevates a child
+    # at runtime and pops a UAC/DiskPart prompt RunAsInvoker can't suppress.
+    if shutil.which("amd-smi") and _amd_smi_allowed():
         probes.append(["amd-smi", "list"])
         probes.append(["amd-smi", "static", "--asic"])
     for cmd in probes:
@@ -537,6 +544,7 @@ def _detect_amd_gfx_codes() -> list[str]:
                 stderr = subprocess.DEVNULL,
                 text = True,
                 timeout = 15,
+                env = _amd_smi_env() if cmd[0] == "amd-smi" else None,
             )
         except Exception:
             continue

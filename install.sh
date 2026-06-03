@@ -1967,7 +1967,17 @@ _maybe_bootstrap_rocm_wsl() {
     [ "${UNSLOTH_SKIP_ROCM_WSL_SETUP:-0}" = "1" ] && return 0
     # Leave any already-usable GPU completely alone (NVIDIA, or working ROCm).
     if _has_usable_nvidia_gpu; then return 0; fi
-    if _has_amd_rocm_gpu;     then return 0; fi
+    # "Already-usable ROCm" on this WSL box specifically means rocminfo enumerates
+    # the Strix Halo gfx1151 agent (which needs librocdxg + HSA_ENABLE_DXG_DETECTION).
+    # Do NOT use the generic _has_amd_rocm_gpu here: its broad gfx[1-9][0-9] awk
+    # match also accepts a fallback "gfx11-generic" ISA line, so it could skip this
+    # bootstrap while the real GPU is still unusable. (amd-smi and /dev/kfd don't
+    # apply under WSL -- the GPU is reached via /dev/dxg.) awk consumes all input,
+    # so rocminfo is not SIGPIPE'd the way `grep -q` would do under pipefail.
+    if command -v rocminfo >/dev/null 2>&1 && \
+       rocminfo 2>/dev/null | awk '/Name:[[:space:]]*gfx1151/{found=1} END{exit !found}'; then
+        return 0
+    fi
     # WSL GPU passthrough device must exist (present on any WSL2 GPU host).
     [ -e /dev/dxg ] || return 0
     # Only Strix Halo (gfx1151): rocminfo can't tell us the arch yet, so match
