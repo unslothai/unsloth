@@ -417,7 +417,7 @@ async def get_gguf_variants_response(
                         quant = v.quant,
                         display_label = v.display_label,
                         size_bytes = v.size_bytes,
-                        download_size_bytes = v.size_bytes,
+                        download_size_bytes = v.download_size_bytes or v.size_bytes,
                         downloaded = False,
                         partial = True,
                         partial_transport = _partial_transport_for_variant(

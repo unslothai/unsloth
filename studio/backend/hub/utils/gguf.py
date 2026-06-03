@@ -23,6 +23,7 @@ class GgufVariantInfo:
     quant: str
     size_bytes: int
     display_label: Optional[str] = None
+    download_size_bytes: int = 0
 
 
 GGUF_QUANT_PREFERENCE = [
@@ -64,7 +65,7 @@ GGUF_QUANT_PREFERENCE = [
     "F32",
 ]
 
-_GGUF_SPLIT_RE = re.compile(r"-\d{3,}-of-\d{3,}", re.IGNORECASE)
+_GGUF_SPLIT_SUFFIX_RE = re.compile(r"-\d{3,}-of-\d{3,}", re.IGNORECASE)
 _GGUF_QUANT_RE = re.compile(
     r"(UD-)?"
     r"(MXFP[0-9]+(?:_[A-Z0-9]+)*"
@@ -136,7 +137,7 @@ def pick_best_gguf(filenames: list[str]) -> Optional[str]:
 
 def _gguf_stem(filename: str) -> str:
     basename = filename.rsplit("/", 1)[-1]
-    return _GGUF_SPLIT_RE.sub("", basename.rsplit(".", 1)[0]).strip()
+    return _GGUF_SPLIT_SUFFIX_RE.sub("", basename.rsplit(".", 1)[0]).strip()
 
 
 def extract_quant_token(filename: str) -> Optional[str]:
@@ -254,12 +255,14 @@ def list_partial_gguf_variants_from_state(
         manifest = download_manifest.read_manifest("model", repo_id, variant)
         main_filename: Optional[str] = None
         size_bytes = 0
+        companion_bytes = 0
         if manifest is not None:
             for expected in manifest.expected_files:
                 if not is_gguf_filename(expected.path):
                     continue
                 if is_mmproj_filename(expected.path):
                     has_vision = True
+                    companion_bytes += max(0, int(expected.size or 0))
                     continue
                 if main_filename is None:
                     main_filename = expected.path
@@ -271,6 +274,7 @@ def list_partial_gguf_variants_from_state(
                 filename = main_filename,
                 quant = variant,
                 size_bytes = size_bytes,
+                download_size_bytes = size_bytes + companion_bytes,
             )
         )
 

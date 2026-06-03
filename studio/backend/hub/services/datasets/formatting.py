@@ -30,6 +30,7 @@ from hub.services.datasets.local import (
 from hub.utils.dataset_cache import (
     cached_dataset_candidates as _shared_cached_dataset_candidates,
     latest_cached_dataset_snapshot as _shared_latest_cached_dataset_snapshot,
+    split_label_matches as _split_label_matches,
 )
 from hub.utils import download_registry
 from hub.utils.dataset_format import check_dataset_format, format_dataset_preview
@@ -168,14 +169,6 @@ def _cached_dataset_candidates(
     )
 
 
-_SPLIT_ALIASES = {
-    "validation": frozenset({"validation", "valid", "val"}),
-    "valid": frozenset({"validation", "valid", "val"}),
-    "val": frozenset({"validation", "valid", "val"}),
-    "eval": frozenset({"eval", "validation", "valid", "val"}),
-}
-
-
 def _repo_file_label_tokens(path: str) -> set[str]:
     return {token for token in re.split(r"[^a-z0-9]+", path.lower()) if token}
 
@@ -185,10 +178,7 @@ def _repo_file_matches_label(path: str, label: str) -> bool:
 
 
 def _repo_file_matches_split(path: str, split: str) -> bool:
-    normalized = split.strip().lower()
-    labels = _SPLIT_ALIASES.get(normalized, frozenset({normalized}))
-    tokens = _repo_file_label_tokens(path)
-    return bool(labels.intersection(tokens))
+    return _split_label_matches(path, split)
 
 
 def _select_tier1_repo_file(

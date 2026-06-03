@@ -15,6 +15,28 @@ def _rel_lower(snapshot: Path, path: Path) -> str:
     return path.relative_to(snapshot).as_posix().lower()
 
 
+_SPLIT_ALIASES = {
+    "validation": frozenset({"validation", "valid", "val"}),
+    "valid": frozenset({"validation", "valid", "val"}),
+    "val": frozenset({"validation", "valid", "val"}),
+    "eval": frozenset({"eval", "validation", "valid", "val"}),
+}
+
+
+def _label_tokens(text: str) -> set[str]:
+    return {token for token in re.split(r"[^a-z0-9]+", text.lower()) if token}
+
+
+def split_label_matches(text: str, split: str) -> bool:
+    """Match a split name against a file path's tokens, expanding split aliases
+    (validation/valid/val, eval) so cached and remote selection agree."""
+    normalized = split.strip().lower()
+    if not normalized:
+        return False
+    labels = _SPLIT_ALIASES.get(normalized, frozenset({normalized}))
+    return bool(labels.intersection(_label_tokens(text)))
+
+
 def _matches_label(snapshot: Path, path: Path, label: str) -> bool:
     label = label.strip().lower()
     if not label:
@@ -114,7 +136,7 @@ def cached_dataset_candidates(
         subset_match = bool(
             subset_lower and _matches_label(snapshot, path, subset_lower)
         )
-        split_match = bool(split_lower and _matches_label(snapshot, path, split_lower))
+        split_match = bool(split_lower and split_label_matches(rel, split_lower))
         location_rank = 3
         if split_match and (not subset_lower or subset_match):
             location_rank = 0

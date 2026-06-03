@@ -297,11 +297,18 @@ def _scan_hf_dataset_caches() -> list[dict]:
                     continue
                 total_size = int(getattr(repo_info, "size_on_disk", 0) or 0)
                 if total_size == 0:
-                    total_size = sum(
-                        int(f.size_on_disk or 0)
-                        for rev in repo_info.revisions
-                        for f in rev.files
-                    )
+                    unique_blobs: dict[str, int] = {}
+                    for rev in repo_info.revisions:
+                        rev_id = getattr(rev, "commit_hash", None) or str(id(rev))
+                        for f in rev.files:
+                            blob_path = getattr(f, "blob_path", None)
+                            key = (
+                                str(blob_path)
+                                if blob_path
+                                else f"{rev_id}:{f.file_name}"
+                            )
+                            unique_blobs[key] = int(f.size_on_disk or 0)
+                    total_size = sum(unique_blobs.values())
                 key = repo_info.repo_id.lower()
                 existing = seen_lower.get(key)
                 cache_dir = Path(repo_info.repo_path)

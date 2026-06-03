@@ -404,11 +404,6 @@ def is_snapshot_partial(
     from hub.utils import download_manifest
 
     state_applies = _state_applies_to_repo_cache_dir(repo_cache_dir)
-    snapshot_dir = resolve_snapshot_dir_for_scan(
-        repo_type,
-        repo_id,
-        repo_cache_dir,
-    )
     return _compose_partial(
         lambda: state_applies
         and download_manifest.has_cancel_marker(repo_type, repo_id, None),
@@ -417,7 +412,7 @@ def is_snapshot_partial(
             repo_type,
             repo_id,
             None,
-            snapshot_dir,
+            None,
             repo_cache_dir,
         ),
     )
