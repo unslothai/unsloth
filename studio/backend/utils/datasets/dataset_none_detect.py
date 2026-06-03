@@ -870,7 +870,11 @@ def show_row(dataset: Dataset, row_indices: list[int], fmt: str, col: str = None
                     role = "?" if r is None else str(r)
                     # Mirror scanner logic: role takes priority over from.
                     if "role" in turn:
-                        content = turn.get("content") if "content" in turn else turn.get("value")
+                        content = (
+                            turn.get("content")
+                            if "content" in turn
+                            else turn.get("value")
+                        )
                     elif "from" in turn:
                         content = turn.get("value")
                     else:
