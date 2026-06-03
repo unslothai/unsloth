@@ -546,6 +546,28 @@ def test_diffusers_attention_adapter_falls_back_to_default_without_targets():
     assert result["warnings"]
 
 
+def test_diffusers_attention_adapter_default_resets_global_backend():
+    from diffusers.models.attention_dispatch import (
+        AttentionBackendName,
+        _AttentionBackendRegistry,
+    )
+
+    from core.inference.diffusion_attention import apply_diffusers_attention_backend
+
+    class FakePipe:
+        pass
+
+    old_backend = _AttentionBackendRegistry._active_backend
+    try:
+        _AttentionBackendRegistry.set_active_backend(AttentionBackendName._NATIVE_FLASH)
+        result = apply_diffusers_attention_backend(FakePipe(), "xformers")
+
+        assert result["effective"] == "default"
+        assert _AttentionBackendRegistry._active_backend == AttentionBackendName.NATIVE
+    finally:
+        _AttentionBackendRegistry.set_active_backend(old_backend)
+
+
 # ── singleton ───────────────────────────────────────────────────
 
 

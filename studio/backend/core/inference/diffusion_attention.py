@@ -54,6 +54,13 @@ def _reset_attention_targets(targets: list[tuple[str, Any]]) -> None:
         if callable(reset):
             with contextlib.suppress(Exception):
                 reset()
+    with contextlib.suppress(Exception):
+        from diffusers.models.attention_dispatch import (
+            AttentionBackendName,
+            _AttentionBackendRegistry,
+        )
+
+        _AttentionBackendRegistry.set_active_backend(AttentionBackendName.NATIVE)
 
 
 def _try_pipeline_xformers(pipe: Any) -> bool:
