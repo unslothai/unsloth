@@ -122,11 +122,25 @@ fi
 cd "$LLAMA_DIR" || exit 0
 
 log "building CUDA llama.cpp (arch=$CUDA_ARCH, host=$HCXX) - this takes a few minutes..."
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
-    -DGGML_CUDA=ON -DGGML_CUDA_F16=ON \
-    -DCMAKE_CUDA_ARCHITECTURES="$CUDA_ARCH" \
-    -DCMAKE_CUDA_HOST_COMPILER="$HCXX" \
-    -DLLAMA_CURL=ON >/dev/null 2>&1 || { log "cmake configure failed"; exit 0; }
+_cmake_configure() {
+    cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+        -DGGML_CUDA=ON -DGGML_CUDA_F16=ON \
+        -DCMAKE_CUDA_ARCHITECTURES="$CUDA_ARCH" \
+        -DCMAKE_CUDA_HOST_COMPILER="$HCXX" \
+        -DLLAMA_CURL=ON >/dev/null 2>&1
+}
+# A pre-existing build/ may carry an INCOMPATIBLE CMake cache. The common case: the
+# Studio installer (setup.sh / install_llama_prebuilt.py) stages its llama.cpp build in
+# a versioned dir (llama.cpp.build.NNNN) then RELOCATES it here, leaving a cache whose
+# baked-in absolute source/build paths no longer match (and GGML_CUDA=OFF). Re-running
+# CUDA configure over that fails ("CMakeCache directory is different" / "source does not
+# match"). So try to reuse build/ first (fast incremental resume on a re-run after a
+# partial CUDA build), and only if configure fails, wipe build/ and configure clean once.
+if ! _cmake_configure; then
+    log "stale/incompatible CMake cache detected; wiping build dir for a clean CUDA configure"
+    rm -rf build
+    _cmake_configure || { log "cmake configure failed"; exit 0; }
+fi
 # Build the full set unsloth-zoo's GGUF exporter expects too (llama-mtmd-cli,
 # llama-gguf-split), so a pre-provisioned build satisfies both Studio inference
 # AND save_pretrained_gguf without triggering a --clean-first rebuild later.
