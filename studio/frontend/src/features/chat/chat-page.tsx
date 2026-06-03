@@ -1650,6 +1650,7 @@ export function ChatPage(): ReactElement {
           ggufMaxContextLength: null,
           ggufNativeContextLength: null,
           ggufRequestedContextLength: null,
+          ggufLaunchContextLength: null,
           activeNativePathToken: null,
           // Clear previous-model counters; the relaxed external-provider
           // render gate would otherwise show stale stats until the next

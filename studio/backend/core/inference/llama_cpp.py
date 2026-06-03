@@ -764,6 +764,12 @@ class LlamaCppBackend:
         """Per-slot context before ``--fit`` shrink; omitted when unchanged."""
         return self._requested_context_length
 
+    @property
+    def launch_context_length(self) -> Optional[int]:
+        """Total ``-c`` passed to llama-server on the last successful load."""
+        n_ctx = self._requested_n_ctx
+        return n_ctx if n_ctx > 0 else None
+
     @staticmethod
     def _expected_per_slot_context(total_ctx: int, n_parallel: int) -> int:
         """Split total ``-c`` across llama-server parallel slots."""
@@ -4236,7 +4242,12 @@ class LlamaCppBackend:
 
     def _parse_runtime_n_ctx_from_stdout(self) -> Optional[int]:
         """Parse per-slot ``n_ctx`` from llama-server startup logs."""
-        for line in self._stdout_lines:
+        lines = self._stdout_lines
+        for i in range(len(lines)):
+            try:
+                line = lines[i]
+            except IndexError:
+                break
             match = self._RUNTIME_N_CTX_STDOUT_RE.search(line)
             if match:
                 return int(match.group(1))
@@ -4253,9 +4264,11 @@ class LlamaCppBackend:
             if resp.status_code == 200:
                 data = resp.json()
                 if isinstance(data, list) and data:
-                    n_ctx = data[0].get("n_ctx")
-                    if isinstance(n_ctx, int) and n_ctx > 0:
-                        return n_ctx
+                    slot = data[0]
+                    if isinstance(slot, dict):
+                        n_ctx = slot.get("n_ctx")
+                        if isinstance(n_ctx, int) and n_ctx > 0:
+                            return n_ctx
         except Exception as exc:
             logger.debug("Runtime context probe via /slots failed: %s", exc)
 
@@ -4264,10 +4277,12 @@ class LlamaCppBackend:
             resp = httpx.get(props_url, timeout = 2.0)
             if resp.status_code == 200:
                 data = resp.json()
-                settings = data.get("default_generation_settings") or {}
-                n_ctx = settings.get("n_ctx")
-                if isinstance(n_ctx, int) and n_ctx > 0:
-                    return n_ctx
+                if isinstance(data, dict):
+                    settings = data.get("default_generation_settings")
+                    if isinstance(settings, dict):
+                        n_ctx = settings.get("n_ctx")
+                        if isinstance(n_ctx, int) and n_ctx > 0:
+                            return n_ctx
         except Exception as exc:
             logger.debug("Runtime context probe via /props failed: %s", exc)
 

@@ -220,6 +220,13 @@ class LoadResponse(BaseModel):
             "(``-c / --parallel``); omitted when effective matches that expectation"
         ),
     )
+    launch_context_length: Optional[int] = Field(
+        None,
+        description = (
+            "Total ``-c`` passed to llama-server on the last load; use for reload "
+            "round-trip while ``context_length`` reports effective per-slot ``n_ctx``"
+        ),
+    )
     supports_reasoning: bool = Field(
         False,
         description = "Whether model supports thinking/reasoning mode (enable_thinking or reasoning_effort)",
@@ -384,6 +391,13 @@ class InferenceStatusResponse(BaseModel):
         description = (
             "Expected per-slot context before ``--fit`` shrank runtime ``n_ctx`` "
             "(``-c / --parallel``); omitted when effective matches that expectation"
+        ),
+    )
+    launch_context_length: Optional[int] = Field(
+        None,
+        description = (
+            "Total ``-c`` passed to llama-server on the last load; use for reload "
+            "round-trip while ``context_length`` reports effective per-slot ``n_ctx``"
         ),
     )
     cache_type_kv: Optional[str] = Field(

@@ -832,6 +832,8 @@ export function SharedComposer({
             ggufContextLength: null,
             ggufMaxContextLength: null,
             ggufNativeContextLength: null,
+            ggufRequestedContextLength: null,
+            ggufLaunchContextLength: null,
             activeNativePathToken: null,
             supportsReasoning: reasoningCaps.supportsReasoning,
             reasoningAlwaysOn: reasoningCaps.reasoningAlwaysOn,

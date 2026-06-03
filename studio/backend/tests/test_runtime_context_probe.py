@@ -64,6 +64,7 @@ def _backend(**kwargs):
     inst._requested_context_length = kwargs.get("requested_context_length")
     inst._launch_use_fit = kwargs.get("launch_use_fit")
     inst._launch_n_parallel = kwargs.get("launch_n_parallel")
+    inst._requested_n_ctx = kwargs.get("requested_n_ctx", 0)
     return inst
 
 
@@ -172,6 +173,21 @@ class TestProbeRuntimeContextLength:
         monkeypatch.setattr("core.inference.llama_cpp.httpx.get", fake_get)
         assert inst._probe_runtime_context_length() == 3072
 
+    def test_ignores_malformed_slots_payload(self, monkeypatch):
+        inst = _backend()
+
+        class _Resp:
+            status_code = 200
+
+            def json(self):
+                return ["not-a-dict"]
+
+        monkeypatch.setattr(
+            "core.inference.llama_cpp.httpx.get",
+            lambda url, timeout: _Resp(),
+        )
+        assert inst._probe_runtime_context_length() is None
+
     def test_falls_back_to_stdout(self, monkeypatch):
         inst = _backend(stdout_lines = ["new slot, n_ctx = 1024"])
 
@@ -184,3 +200,29 @@ class TestProbeRuntimeContextLength:
     def test_returns_none_without_port(self):
         inst = _backend(port = None)
         assert inst._probe_runtime_context_length() is None
+
+
+class TestLaunchContextLength:
+    def test_exposes_total_c_from_last_load(self):
+        inst = _backend(requested_n_ctx = 8192)
+        assert inst.launch_context_length == 8192
+
+    def test_auto_load_returns_none(self):
+        inst = _backend(requested_n_ctx = 0)
+        assert inst.launch_context_length is None
+
+
+class TestReloadMaxSeqLengthContract:
+    """Document reload semantics: per-slot context_length must not shrink total -c."""
+
+    def test_parallel_launch_keeps_total_c_for_reload(self):
+        inst = _backend(requested_n_ctx = 8192)
+        inst._apply_runtime_context_probe(
+            2048,
+            launch_ctx = 8192,
+            use_fit = False,
+            n_parallel = 4,
+        )
+        assert inst.context_length == 2048
+        assert inst.launch_context_length == 8192
+        assert inst.requested_context_length is None
