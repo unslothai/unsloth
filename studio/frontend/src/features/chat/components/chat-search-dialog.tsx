@@ -16,14 +16,9 @@ import { useEffect } from "react";
 import { useChatSearchIndex } from "../hooks/use-chat-search-index";
 import { useChatSearchStore } from "../stores/chat-search-store";
 
-// cmdk's default `commandScore` returns a small non-zero score when a few query
-// characters happen to appear out of order, so a unique marker that matches no
-// title/preview still keeps rows visible and never shows "No chats match".
-// Require every whitespace-separated token to appear as a substring instead.
-//
-// Each item's `value` is its (unique) thread id used for cmdk selection/keyboard
-// navigation, so the searchable title/preview text is supplied via `keywords`
-// and matched here.
+// cmdk's default fuzzy scorer keeps non-matching rows visible (issue #5572), so
+// require every whitespace token to be a substring of the item's keywords.
+// `value` is the unique thread id (cmdk selection); title/preview come via keywords.
 export function chatSearchFilter(
   _value: string,
   search: string,
