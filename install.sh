@@ -2046,13 +2046,24 @@ case "$TORCH_INDEX_URL" in
             gfx1030|gfx1031|gfx1032|gfx1033|gfx1034|gfx1035|gfx1036)
                 _pytorch_base="${UNSLOTH_PYTORCH_MIRROR:-https://download.pytorch.org/whl}"
                 _pytorch_base="${_pytorch_base%/}"
+                # rocm6.2 wheels only go up to Python 3.12 (cp312). For Python 3.13+
+                # use rocm6.4 which ships torch 2.7.x with cp313 wheels and is also
+                # a stable (non-dev) build that works on RDNA2.
+                _py_minor=$(python3 -c "import sys; print(sys.version_info.minor)" 2>/dev/null || echo "12")
+                if [ "$_py_minor" -ge 13 ] 2>/dev/null; then
+                    _rdna2_rocm_tag="rocm6.4"
+                    _rdna2_torch_ver="2.7.x"
+                else
+                    _rdna2_rocm_tag="rocm6.2"
+                    _rdna2_torch_ver="2.5.x"
+                fi
                 echo "" >&2
                 echo "  [WARN] $_rdna2_runtime_gfx (RDNA2) + ROCm 7.x detected" >&2
                 echo "  [WARN] ROCm 7.x PyTorch wheels are dev/nightly builds on gfx103x" >&2
                 echo "  [WARN] and cause segfaults during unsloth import on RDNA2 hardware." >&2
-                echo "  [WARN] Capping to rocm6.2 (torch 2.7.x) -- the last stable wheel." >&2
+                echo "  [WARN] Capping to ${_rdna2_rocm_tag} (torch ${_rdna2_torch_ver}) -- the last stable wheel." >&2
                 echo "" >&2
-                TORCH_INDEX_URL="${_pytorch_base}/rocm6.2"
+                TORCH_INDEX_URL="${_pytorch_base}/${_rdna2_rocm_tag}"
                 TORCH_CONSTRAINT="torch>=2.4,<2.11.0"
                 ;;
         esac

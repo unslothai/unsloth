@@ -688,12 +688,17 @@ def _ensure_rocm_torch() -> None:
             gfx_codes[_pick_visible_index(len(gfx_codes))] if gfx_codes else None
         )
         if _runtime_gfx in _RDNA2_GFX:
-            _rdna2_cap_tag = "rocm6.2"
+            # rocm6.2 only has wheels up to Python 3.12 (cp312). For Python 3.13+
+            # use rocm6.4 which ships torch 2.7.x with cp313 wheels and is also a
+            # stable (non-dev) build that works on RDNA2.
+            _py = sys.version_info
+            _rdna2_cap_tag = "rocm6.2" if (_py.major, _py.minor) <= (3, 12) else "rocm6.4"
+            _cap_torch = "2.5.x" if _rdna2_cap_tag == "rocm6.2" else "2.7.x"
             print(
                 f"\n   {_runtime_gfx} (RDNA2) detected with ROCm {ver[0]}.{ver[1]}.\n"
                 f"   ROCm 7.x PyTorch wheels are unstable on RDNA2 (dev builds that\n"
                 f"   segfault on import). Capping torch install to the last known-good\n"
-                f"   wheel: pytorch.org/whl/rocm6.2 (torch 2.7.x).\n"
+                f"   wheel: pytorch.org/whl/{_rdna2_cap_tag} (torch {_cap_torch}).\n"
             )
 
     # Strix Halo / Strix Point (gfx1151 / gfx1150) segfault under ROCm 7.1
