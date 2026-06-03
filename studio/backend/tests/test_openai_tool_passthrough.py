@@ -531,7 +531,52 @@ class TestFriendlyErrorHttpx:
         )
 
 
+class TestFriendlyErrorChatTemplate:
+    """llama-server wraps a strict-template raise_exception(...) into the
+    error body of a 400/500, surfaced here as
+    ``RuntimeError("llama-server returned <code>: <body>")``. Before the fix
+    these fell through to the bare "An internal error occurred"; now they
+    map to an actionable message keyed on the body text, not the status."""
+
+    def test_roles_must_alternate_400_mapped(self):
+        # Exact body Gemma 3 / the chat_templates.py Jinja raise produces.
+        exc = RuntimeError(
+            'llama-server returned 400: {"error":{"code":400,"message":'
+            '"Conversation roles must alternate user/assistant/user/assistant/...",'
+            '"type":"server_error"}}'
+        )
+        msg = _friendly_error(exc)
+        assert "alternating user/assistant" in msg
+        assert msg != "An internal error occurred"
+
+    def test_roles_must_alternate_500_also_mapped(self):
+        # Some llama.cpp builds return 500 for the same template raise —
+        # the mapping keys on the message text, not the status code.
+        exc = RuntimeError(
+            "llama-server returned 500: roles must alternate user/assistant"
+        )
+        assert "alternating user/assistant" in _friendly_error(exc)
+
+    def test_generic_template_apply_failure_mapped(self):
+        exc = RuntimeError(
+            'llama-server returned 500: {"error":{"message":'
+            '"Failed to apply Jinja chat template"}}'
+        )
+        msg = _friendly_error(exc)
+        assert "chat template" in msg
+        assert msg != "An internal error occurred"
+
+    def test_unrelated_template_word_not_overmatched(self):
+        # A message that merely contains the word "template" without a
+        # render/apply failure must not be hijacked by the heuristic.
+        assert (
+            _friendly_error(RuntimeError("could not load template.gguf"))
+            == "An internal error occurred"
+        )
+
+
 from routes.inference import (  # noqa: E402
+    _coalesce_consecutive_user_turns,
     _drop_empty_assistant_sentinels,
     _openai_messages_for_gguf_chat,
     _openai_messages_for_passthrough,
@@ -618,6 +663,116 @@ class TestDropEmptyAssistantSentinels:
         assert roles == ["user", "user"]
         for m in out:
             assert m.get("content"), m
+
+
+class TestCoalesceConsecutiveUserTurns:
+    def test_merges_two_string_user_turns(self):
+        msgs = [
+            {"role": "user", "content": "hi"},
+            {"role": "user", "content": "again"},
+        ]
+        out = _coalesce_consecutive_user_turns(msgs)
+        assert out == [{"role": "user", "content": "hi\n\nagain"}]
+
+    def test_merges_three_consecutive_user_turns(self):
+        msgs = [
+            {"role": "user", "content": "a"},
+            {"role": "user", "content": "b"},
+            {"role": "user", "content": "c"},
+        ]
+        out = _coalesce_consecutive_user_turns(msgs)
+        assert out == [{"role": "user", "content": "a\n\nb\n\nc"}]
+
+    def test_alternating_history_is_unchanged(self):
+        msgs = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "hello"},
+            {"role": "user", "content": "bye"},
+        ]
+        out = _coalesce_consecutive_user_turns(msgs)
+        assert out == msgs
+
+    def test_assistant_and_tool_turns_untouched(self):
+        # Only consecutive user turns merge; tool_calls / tool replies that
+        # happen to neighbor must never be concatenated.
+        msgs = [
+            {"role": "user", "content": "weather?"},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "get_weather", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "{}"},
+        ]
+        out = _coalesce_consecutive_user_turns(msgs)
+        assert out == msgs
+
+    def test_multimodal_parts_survive_merge(self):
+        img_part = {
+            "type": "image_url",
+            "image_url": {"url": "data:image/png;base64,AAAA"},
+        }
+        msgs = [
+            {"role": "user", "content": [{"type": "text", "text": "look"}, img_part]},
+            {"role": "user", "content": "and this?"},
+        ]
+        out = _coalesce_consecutive_user_turns(msgs)
+        assert len(out) == 1
+        assert out[0]["role"] == "user"
+        assert out[0]["content"] == [
+            {"type": "text", "text": "look"},
+            img_part,
+            {"type": "text", "text": "and this?"},
+        ]
+
+    def test_does_not_mutate_input(self):
+        msgs = [
+            {"role": "user", "content": "hi"},
+            {"role": "user", "content": "again"},
+        ]
+        _coalesce_consecutive_user_turns(msgs)
+        assert msgs[0]["content"] == "hi"  # original dict untouched
+
+    def test_gguf_path_keeps_history_alternating_after_empty_turn(self):
+        """End-to-end repro: an empty assistant turn (0-token reply / Stop
+        sentinel) is dropped, and the orphaned user turns are coalesced so
+        the GGUF chat path no longer ships a non-alternating history that a
+        strict template (Gemma 3) would 400 on."""
+        req = ChatCompletionRequest(
+            model = "default",
+            messages = [
+                ChatMessage(role = "user", content = "hi"),
+                ChatMessage(role = "assistant", content = ""),
+                ChatMessage(role = "user", content = "again"),
+            ],
+        )
+        out, _ = _openai_messages_for_gguf_chat(req, is_vision = False)
+        roles = [m["role"] for m in out]
+        # strictly alternating: no two same-role turns in a row
+        assert all(roles[i] != roles[i + 1] for i in range(len(roles) - 1)), roles
+        assert roles == ["user"]
+        assert out[0]["content"] == "hi\n\nagain"
+
+    def test_gguf_path_coalesces_with_system_prompt(self):
+        req = ChatCompletionRequest(
+            model = "default",
+            messages = [
+                ChatMessage(role = "system", content = "be brief"),
+                ChatMessage(role = "user", content = "hi"),
+                ChatMessage(role = "assistant", content = ""),
+                ChatMessage(role = "user", content = "again"),
+            ],
+        )
+        out, _ = _openai_messages_for_gguf_chat(req, is_vision = False)
+        roles = [m["role"] for m in out]
+        assert roles == ["system", "user"]
+        assert out[1]["content"] == "hi\n\nagain"
 
 
 class TestGgufVisionMessages:
