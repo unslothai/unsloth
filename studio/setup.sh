@@ -851,7 +851,6 @@ else
         --install-dir "$LLAMA_CPP_DIR"
         --llama-tag "$_REQUESTED_LLAMA_TAG"
         --published-repo "$_HELPER_RELEASE_REPO"
-        --simple-policy
     )
     if [ -n "${UNSLOTH_LLAMA_RELEASE_TAG:-}" ]; then
         _PREBUILT_CMD+=(--published-release-tag "$UNSLOTH_LLAMA_RELEASE_TAG")
@@ -1386,7 +1385,6 @@ if [ "$_LLAMA_CPP_DEGRADED" = true ] \
         --install-dir "$LLAMA_CPP_DIR"
         --llama-tag "$_REQUESTED_LLAMA_TAG"
         --published-repo "ggml-org/llama.cpp"
-        --simple-policy
         --cpu-fallback
     )
     # Trust the installer's exit code: it validates the server before exiting 0,

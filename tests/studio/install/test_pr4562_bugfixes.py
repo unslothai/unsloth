@@ -700,10 +700,10 @@ class TestSourceCodePatterns:
         assert "_RESOLVED_SOURCE_REF_KIND" in content
         assert "_RESOLVED_SOURCE_REF" in content
 
-    def test_setup_sh_prebuilt_install_uses_simple_policy_only(self):
-        """Shell prebuilt path should use the simplified helper install entrypoint."""
+    def test_setup_sh_prebuilt_install_entrypoint(self):
+        """Shell prebuilt path should call the helper install entrypoint, not the
+        old tag-resolution / releases-latest flow."""
         content = SETUP_SH.read_text()
-        assert "--simple-policy" in content
         assert "--resolve-install-tag" not in content
         assert "_HELPER_RELEASE_REPO}/releases/latest" not in content
         assert "ggml-org/llama.cpp/releases/latest" not in content
@@ -858,10 +858,10 @@ class TestSourceCodePatterns:
                         f"Found 'git pull' in llama.cpp build section at line {i+1}"
                     )
 
-    def test_setup_ps1_prebuilt_install_uses_simple_policy_only(self):
-        """PS1 prebuilt path should use the simplified helper install entrypoint."""
+    def test_setup_ps1_prebuilt_install_entrypoint(self):
+        """PS1 prebuilt path should call the helper install entrypoint, not the
+        old tag-resolution / releases-latest flow."""
         content = SETUP_PS1.read_text()
-        assert '"--simple-policy"' in content
         assert "--resolve-install-tag" not in content
         assert "$HelperReleaseRepo/releases/latest" not in content
         assert "ggml-org/llama.cpp/releases/latest" not in content

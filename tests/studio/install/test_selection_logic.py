@@ -2480,8 +2480,8 @@ class TestPublishedWindowsCudaAttemptsDynamicMajor:
 
 
 class TestResolveReleaseAssetChoicePin:
-    """The published (non --simple-policy) install path reaches the same b9360
-    Blackwell pin as the simple path, with its verified hash threaded."""
+    """The manifest install path reaches the same b9360 Blackwell pin as the
+    filename path, with its verified hash threaded."""
 
     TAG = "b8508"
 
@@ -3264,7 +3264,6 @@ class TestCpuFallback:
                 llama_tag = "latest",
                 published_repo = "ggml-org/llama.cpp",
                 published_release_tag = "",
-                simple_policy = True,
                 force_cpu = True,
             )
         host = captured["host"]

@@ -2480,8 +2480,7 @@ if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
             "$PSScriptRoot\install_llama_prebuilt.py",
             "--install-dir", $LlamaCppDir,
             "--llama-tag", $RequestedLlamaTag,
-            "--published-repo", $HelperReleaseRepo,
-            "--simple-policy"
+            "--published-repo", $HelperReleaseRepo
         )
         if ($HasROCm) {
             $prebuiltArgs += "--has-rocm"

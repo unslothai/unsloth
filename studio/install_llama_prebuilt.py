@@ -6708,7 +6708,6 @@ def install_prebuilt(
     published_repo: str,
     published_release_tag: str,
     *,
-    simple_policy: bool = False,
     override_has_rocm: bool = False,
     override_rocm_gfx: str | None = None,
     force_cpu: bool = False,
@@ -6732,8 +6731,7 @@ def install_prebuilt(
                     f"no existing llama.cpp install detected at {install_dir}; performing fresh prebuilt install"
                 )
             # Single resolver: linux-x64 takes the fast filename path internally,
-            # every other fork host reads the manifest. --simple-policy is retained
-            # for CLI back-compat but no longer selects a separate resolver.
+            # every other fork host reads the manifest.
             requested_tag, release_plans = resolve_simple_install_release_plans(
                 llama_tag,
                 host,
@@ -6842,11 +6840,6 @@ def parse_args() -> argparse.Namespace:
             "Published GitHub release tag to pin. By default, scan releases "
             "until a usable published llama.cpp release bundle is found."
         ),
-    )
-    parser.add_argument(
-        "--simple-policy",
-        action = "store_true",
-        help = "Deprecated no-op (kept for back-compat); one resolver now handles all hosts.",
     )
     parser.add_argument(
         "--has-rocm",
@@ -6998,7 +6991,6 @@ def main() -> int:
         llama_tag = args.llama_tag,
         published_repo = args.published_repo,
         published_release_tag = args.published_release_tag or "",
-        simple_policy = args.simple_policy,
         override_has_rocm = args.has_rocm,
         override_rocm_gfx = args.rocm_gfx,
         force_cpu = args.cpu_fallback,
