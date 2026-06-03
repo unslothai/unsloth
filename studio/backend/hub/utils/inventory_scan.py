@@ -178,7 +178,7 @@ def resolve_hf_cache_realpath(repo_dir: Path) -> Optional[str]:
         return None
 
 
-def _resolve_snapshot_dir_for_scan(
+def resolve_snapshot_dir_for_scan(
     repo_type: str,
     repo_id: str,
     repo_cache_dir: Optional[Path] = None,
@@ -379,7 +379,7 @@ def _manifest_partial(
     resolved = (
         snapshot_dir
         if snapshot_dir is not None
-        else _resolve_snapshot_dir_for_scan(repo_type, repo_id, repo_cache_dir)
+        else resolve_snapshot_dir_for_scan(repo_type, repo_id, repo_cache_dir)
     )
     if resolved is None:
         return True
@@ -404,7 +404,7 @@ def is_snapshot_partial(
     from hub.utils import download_manifest
 
     state_applies = _state_applies_to_repo_cache_dir(repo_cache_dir)
-    snapshot_dir = _resolve_snapshot_dir_for_scan(
+    snapshot_dir = resolve_snapshot_dir_for_scan(
         repo_type,
         repo_id,
         repo_cache_dir,
@@ -494,7 +494,7 @@ def is_gguf_repo_partial(
 
     has_legacy_partial = _legacy_partial("model", repo_id, repo_cache_dir)
     state_applies = _state_applies_to_repo_cache_dir(repo_cache_dir)
-    snapshot_dir = _resolve_snapshot_dir_for_scan(
+    snapshot_dir = resolve_snapshot_dir_for_scan(
         "model",
         repo_id,
         repo_cache_dir,

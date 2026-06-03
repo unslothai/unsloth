@@ -392,6 +392,7 @@ export function patchJob(key: string, patch: Partial<ManagedDownload>): void {
 }
 
 export function putJob(job: ManagedDownload): void {
+  runtimeRegistry.clearRemovalTimer(job.key);
   const suppressionChanged =
     runtimeRegistry.suppressedCompletedInventoryHints.delete(
       inventoryHintKey(

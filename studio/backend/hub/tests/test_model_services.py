@@ -1337,7 +1337,7 @@ def test_gguf_repo_partial_treats_completed_disk_variant_as_clean(
     )
     monkeypatch.setattr(
         inventory_scan,
-        "_resolve_snapshot_dir_for_scan",
+        "resolve_snapshot_dir_for_scan",
         lambda *_args: snapshot,
     )
 
@@ -1361,7 +1361,7 @@ def test_gguf_repo_partial_flags_vision_variant_missing_mmproj(monkeypatch, tmp_
     )
     monkeypatch.setattr(
         inventory_scan,
-        "_resolve_snapshot_dir_for_scan",
+        "resolve_snapshot_dir_for_scan",
         lambda *_args: snapshot,
     )
 
@@ -1463,6 +1463,7 @@ def test_gguf_variants_partial_marker_overrides_size_only_downloaded(
                 )
             ],
             False,
+            None,
         ),
     )
     monkeypatch.setattr(

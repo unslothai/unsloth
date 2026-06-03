@@ -282,13 +282,13 @@ def list_partial_gguf_variants_from_state(
 def list_gguf_variants(
     repo_id: str,
     hf_token: Optional[str] = None,
-) -> tuple[list[GgufVariantInfo], bool]:
+) -> tuple[list[GgufVariantInfo], bool, Optional[list]]:
     from huggingface_hub import HfApi
 
     if _env_offline():
         cached = list_gguf_variants_from_hf_cache(repo_id)
         if cached is not None:
-            return cached
+            return (*cached, None)
 
     try:
         info = HfApi(token = hf_token).model_info(
@@ -311,7 +311,7 @@ def list_gguf_variants(
                 repo_id,
                 exc.__class__.__name__,
             )
-            return cached
+            return (*cached, None)
         raise
 
     variants: list[GgufVariantInfo] = []
@@ -343,7 +343,7 @@ def list_gguf_variants(
 
     variants.sort(key = lambda variant: -variant.size_bytes)
     _apply_gguf_display_labels(variants)
-    return variants, has_vision
+    return variants, has_vision, list(info.siblings)
 
 
 def _resolve_gguf_dir(path: Path) -> Optional[Path]:

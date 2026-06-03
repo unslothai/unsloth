@@ -72,7 +72,6 @@ export function applyLiveGgufVariantStates(
       ...variant,
       downloaded: livePartial ? false : variant.downloaded,
       partial: livePartial || variant.partial,
-      size_bytes: expectedBytes > 0 ? expectedBytes : variant.size_bytes,
       download_size_bytes:
         expectedBytes > 0 ? expectedBytes : variant.download_size_bytes,
     };

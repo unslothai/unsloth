@@ -203,27 +203,31 @@ def _gguf_variant_requirements(
 def _fetch_gguf_variant_requirements(
     repo_id: str,
     hf_token: Optional[str] = None,
+    *,
+    siblings: Optional[list] = None,
 ) -> dict[str, _GgufVariantRequirement]:
     repo_key = _variant_repo_cache_key(repo_id, hf_token)
-    if _variant_requirement_neg_cache_active(repo_key):
-        return {}
-    try:
-        from huggingface_hub import HfApi
+    if siblings is None:
+        if _variant_requirement_neg_cache_active(repo_key):
+            return {}
+        try:
+            from huggingface_hub import HfApi
 
-        info = HfApi(token = hf_token).model_info(
-            repo_id,
-            files_metadata = True,
-            timeout = _GGUF_METADATA_TIMEOUT_SECONDS,
-        )
-    except Exception as e:
-        logger.warning(
-            "model_info failed resolving GGUF files for %s: %s",
-            repo_id,
-            download_registry.scrub_secrets(str(e), hf_token = hf_token),
-        )
-        _variant_requirement_neg_cache_set(repo_key)
-        return {}
-    requirements = _build_gguf_variant_requirements(list(info.siblings))
+            info = HfApi(token = hf_token).model_info(
+                repo_id,
+                files_metadata = True,
+                timeout = _GGUF_METADATA_TIMEOUT_SECONDS,
+            )
+        except Exception as e:
+            logger.warning(
+                "model_info failed resolving GGUF files for %s: %s",
+                repo_id,
+                download_registry.scrub_secrets(str(e), hf_token = hf_token),
+            )
+            _variant_requirement_neg_cache_set(repo_key)
+            return {}
+        siblings = list(info.siblings)
+    requirements = _build_gguf_variant_requirements(siblings)
     if requirements:
         _variant_requirement_cache_set_many(repo_id, hf_token, requirements)
     _variant_requirement_neg_cache_clear(repo_key)
@@ -233,8 +237,10 @@ def _fetch_gguf_variant_requirements(
 def _gguf_all_variant_requirements(
     repo_id: str,
     hf_token: Optional[str] = None,
+    *,
+    siblings: Optional[list] = None,
 ) -> dict[str, _GgufVariantRequirement]:
-    return _fetch_gguf_variant_requirements(repo_id, hf_token)
+    return _fetch_gguf_variant_requirements(repo_id, hf_token, siblings = siblings)
 
 
 def _manifest_variant_blob_hashes(
@@ -464,7 +470,9 @@ async def get_gguf_variants_response(
                 )
 
         try:
-            variants, has_vision = list_gguf_variants(repo_id, hf_token = hf_token)
+            variants, has_vision, siblings = list_gguf_variants(
+                repo_id, hf_token = hf_token
+            )
         except Exception:
             cached = list_gguf_variants_from_hf_cache(repo_id)
             if cached is not None:
@@ -522,7 +530,9 @@ async def get_gguf_variants_response(
             for v in variants
         }
         if any(req is None for req in requirements_by_quant.values()):
-            fetched_requirements = _gguf_all_variant_requirements(repo_id, hf_token)
+            fetched_requirements = _gguf_all_variant_requirements(
+                repo_id, hf_token, siblings = siblings
+            )
             for v in variants:
                 key = v.quant.lower()
                 if requirements_by_quant.get(key) is None:
@@ -589,6 +599,9 @@ async def get_gguf_variants_response(
                 f"Failed to compute partial GGUF variants for {repo_id}: {e}"
             )
             incomplete_hashes = set()
+        scan_snapshot_dir = hf_cache_scan.resolve_snapshot_dir_for_scan(
+            "model", repo_id
+        )
         # Manifest + marker + main incomplete-blob check: catches variants whose
         # download was cancelled or whose expected shards are missing/undersized.
         for variant in variants:
@@ -607,6 +620,7 @@ async def get_gguf_variants_response(
                 if hf_cache_scan.is_variant_partial(
                     repo_id,
                     variant.quant,
+                    scan_snapshot_dir,
                     incomplete_blob_hashes = incomplete_hashes,
                     variant_blob_hashes = variant_hashes,
                 ):
