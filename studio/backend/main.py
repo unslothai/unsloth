@@ -244,6 +244,7 @@ from routes import (
     training_history_router,
     training_router,
 )
+from routes.settings import router as settings_router
 from auth import storage
 from auth.authentication import get_current_subject
 from utils.hardware import (
@@ -524,11 +525,15 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 app.add_middleware(SecurityHeadersMiddleware)
 
 
-# Cap upload body on protected POSTs; default 500 MB, env-tunable.
+# Cap request bodies on protected POSTs. Upload routes get explicit multipart
+# headroom, while non-upload routes keep the default body cap.
 import json as _json_for_413  # noqa: E402
+from utils.upload_limits import (  # noqa: E402
+    UNSTRUCTURED_RECIPE_UPLOAD_MAX_BYTES,
+    default_request_body_limit_bytes,
+    upload_request_limit_bytes,
+)
 
-
-_MAX_BODY_BYTES = int(os.environ.get("UNSLOTH_STUDIO_MAX_BODY_MB", "500")) * 1024 * 1024
 _BODY_PROTECTED_PREFIXES = (
     "/v1/chat/completions",
     "/v1/completions",
@@ -536,17 +541,50 @@ _BODY_PROTECTED_PREFIXES = (
     "/api/data-recipe",
     "/api/datasets",
     "/api/chat",
+    "/api/settings",
     "/api/train",
     "/api/export",
 )
+_DATASET_UPLOAD_PASSTHROUGH_PREFIX = "/api/datasets/upload"
+_DATA_RECIPE_UNSTRUCTURED_UPLOAD_PASSTHROUGH_PREFIX = (
+    "/api/data-recipe/seed/upload-unstructured-file"
+)
+_BODY_UPLOAD_PASSTHROUGH_PREFIXES = (
+    _DATASET_UPLOAD_PASSTHROUGH_PREFIX,
+    _DATA_RECIPE_UNSTRUCTURED_UPLOAD_PASSTHROUGH_PREFIX,
+)
 
 
-async def _send_413(send, total_bytes: int) -> None:
+def _get_upload_passthrough_request_max_bytes(path: str) -> int:
+    if path.startswith(_DATA_RECIPE_UNSTRUCTURED_UPLOAD_PASSTHROUGH_PREFIX):
+        return upload_request_limit_bytes(UNSTRUCTURED_RECIPE_UPLOAD_MAX_BYTES)
+    if path.startswith(_DATASET_UPLOAD_PASSTHROUGH_PREFIX):
+        return upload_request_limit_bytes()
+    return default_request_body_limit_bytes()
+
+
+async def _send_411(send) -> None:
+    payload = _json_for_413.dumps(
+        {"detail": "Content-Length required for upload requests."},
+    ).encode("utf-8")
+    await send(
+        {
+            "type": "http.response.start",
+            "status": 411,
+            "headers": [
+                (b"content-type", b"application/json"),
+                (b"content-length", str(len(payload)).encode("ascii")),
+            ],
+        }
+    )
+    await send({"type": "http.response.body", "body": payload, "more_body": False})
+
+
+async def _send_413(send, total_bytes: int, max_bytes: int) -> None:
     payload = _json_for_413.dumps(
         {
             "detail": (
-                f"Request body too large "
-                f"({total_bytes:,} bytes; max {_MAX_BODY_BYTES:,})."
+                f"Request body too large ({total_bytes:,} bytes; max {max_bytes:,})."
             )
         },
     ).encode("utf-8")
@@ -566,10 +604,32 @@ async def _send_413(send, total_bytes: int) -> None:
 class MaxBodyMiddleware:
     """Reject oversized bodies on protected POST/PUT/PATCH; raw ASGI so chunked uploads cannot bypass the cap."""
 
-    def __init__(self, app, max_bytes: int, protected_prefixes: tuple):
+    def __init__(
+        self,
+        app,
+        max_bytes_getter,
+        protected_prefixes: tuple,
+        upload_passthrough_prefixes: tuple = (),
+        upload_passthrough_max_bytes_getter = None,
+    ):
         self.app = app
-        self.max_bytes = max_bytes
+        self.max_bytes_getter = max_bytes_getter
         self.protected_prefixes = protected_prefixes
+        self.upload_passthrough_prefixes = upload_passthrough_prefixes
+        self.upload_passthrough_max_bytes_getter = upload_passthrough_max_bytes_getter
+
+    def _upload_passthrough_max_bytes(self, path: str) -> int:
+        if self.upload_passthrough_max_bytes_getter is None:
+            return int(self.max_bytes_getter())
+        try:
+            return int(self.upload_passthrough_max_bytes_getter(path))
+        except TypeError:
+            try:
+                return int(self.upload_passthrough_max_bytes_getter())
+            except Exception:
+                return int(self.max_bytes_getter())
+        except Exception:
+            return int(self.max_bytes_getter())
 
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
@@ -583,6 +643,7 @@ class MaxBodyMiddleware:
             await self.app(scope, receive, send)
             return
 
+        max_bytes = int(self.max_bytes_getter())
         declared = None
         for name, value in scope.get("headers", []):
             if name == b"content-length":
@@ -591,8 +652,20 @@ class MaxBodyMiddleware:
                 except (ValueError, UnicodeDecodeError):
                     declared = None
                 break
-        if declared is not None and declared > self.max_bytes:
-            await _send_413(send, declared)
+
+        if any(path.startswith(p) for p in self.upload_passthrough_prefixes):
+            upload_max_bytes = self._upload_passthrough_max_bytes(path)
+            if declared is None:
+                await _send_411(send)
+                return
+            if declared > upload_max_bytes:
+                await _send_413(send, declared, upload_max_bytes)
+                return
+            await self.app(scope, receive, send)
+            return
+
+        if declared is not None and declared > max_bytes:
+            await _send_413(send, declared, max_bytes)
             return
 
         chunks: list = []
@@ -608,8 +681,8 @@ class MaxBodyMiddleware:
             body = msg.get("body", b"") or b""
             if body:
                 total += len(body)
-                if total > self.max_bytes:
-                    await _send_413(send, total)
+                if total > max_bytes:
+                    await _send_413(send, total, max_bytes)
                     return
                 chunks.append(body)
             if not msg.get("more_body", False):
@@ -633,8 +706,10 @@ class MaxBodyMiddleware:
 
 app.add_middleware(
     MaxBodyMiddleware,
-    max_bytes = _MAX_BODY_BYTES,
+    max_bytes_getter = default_request_body_limit_bytes,
     protected_prefixes = _BODY_PROTECTED_PREFIXES,
+    upload_passthrough_prefixes = _BODY_UPLOAD_PASSTHROUGH_PREFIXES,
+    upload_passthrough_max_bytes_getter = _get_upload_passthrough_request_max_bytes,
 )
 
 
@@ -689,6 +764,7 @@ app.include_router(inference_studio_router, prefix = "/api/inference", tags = ["
 # standard /v1/chat/completions path.
 app.include_router(inference_router, prefix = "/v1", tags = ["openai-compat"])
 app.include_router(providers_router, prefix = "/api/providers", tags = ["providers"])
+app.include_router(settings_router, prefix = "/api/settings", tags = ["settings"])
 app.include_router(mcp_servers_router, prefix = "/api/mcp/servers", tags = ["mcp"])
 app.include_router(datasets_router, prefix = "/api/datasets", tags = ["datasets"])
 app.include_router(data_recipe_router, prefix = "/api/data-recipe", tags = ["data-recipe"])

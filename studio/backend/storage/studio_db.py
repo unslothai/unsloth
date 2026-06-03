@@ -282,6 +282,15 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     )
     conn.execute(
         """
+        CREATE TABLE IF NOT EXISTS app_settings (
+            key TEXT NOT NULL PRIMARY KEY,
+            value_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
         CREATE TABLE IF NOT EXISTS chat_settings_quarantine (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             key TEXT NOT NULL,
@@ -1513,6 +1522,44 @@ def list_chat_messages_for_threads(thread_ids: list[str]) -> list[dict]:
             messages,
             key = lambda message: (message["createdAt"], message["id"]),
         )
+    finally:
+        conn.close()
+
+
+def get_app_setting(key: str, fallback = None):
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT value_json FROM app_settings WHERE key = ?", (key,)
+        ).fetchone()
+        if row is None:
+            return fallback
+        return _json_loads(row["value_json"], fallback)
+    finally:
+        conn.close()
+
+
+def upsert_app_settings(settings: dict[str, Any]) -> dict[str, Any]:
+    if not settings:
+        return {}
+    conn = get_connection()
+    try:
+        now = datetime.now(timezone.utc).isoformat()
+        conn.executemany(
+            """
+            INSERT INTO app_settings (key, value_json, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET
+                value_json = excluded.value_json,
+                updated_at = excluded.updated_at
+            """,
+            [(key, json.dumps(value), now) for key, value in settings.items()],
+        )
+        conn.commit()
+        rows = conn.execute(
+            "SELECT key, value_json FROM app_settings ORDER BY key"
+        ).fetchall()
+        return {row["key"]: _json_loads(row["value_json"], None) for row in rows}
     finally:
         conn.close()
 

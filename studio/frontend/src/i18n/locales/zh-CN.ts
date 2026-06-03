@@ -17,6 +17,7 @@ export const zhCN = {
     new: "新增",
     rename: "重命名",
     save: "保存",
+    saving: "保存中...",
     search: "搜索",
     shutdown: "关闭服务",
   },
@@ -109,15 +110,21 @@ export const zhCN = {
       startOnboarding: "开始引导",
       startOnboardingDescription: "重新打开设置向导，不会更改你的账号。",
       startOnboardingAction: "开始引导",
+      uploads: {
+        sectionTitle: "上传",
+        maxUploadSize: "训练数据集上传上限",
+        maxUploadSizeDescription:
+          "适用于训练数据集上传。默认值为 {defaultSize} MB。",
+      },
       resetPreferences: {
         sectionTitle: "危险区域",
         label: "重置所有本地偏好设置",
         description:
-          "清除仅保存在本地的偏好设置。聊天、API 访问权限和数据库中的聊天设置不会受到影响。",
+          "清除仅保存在本地的偏好设置。聊天、API 访问权限和数据库中的设置不会受到影响。",
         action: "重置偏好设置",
         confirmTitle: "重置所有本地偏好设置？",
         confirmDescription:
-          "这会清除仅保存在本地的偏好设置，然后重新加载 Studio。聊天、API 访问权限和数据库中的聊天设置不会受到影响。",
+          "这会清除仅保存在本地的偏好设置，然后重新加载 Studio。聊天、API 访问权限和数据库中的设置不会受到影响。",
         confirmAction: "重置并重新加载",
       },
     },
@@ -244,10 +251,10 @@ export const zhCN = {
       actionsFor: "{name} 的操作",
       copyPrefix: "复制前缀",
       revokeToken: "撤销 token",
-      revokeTitle: "撤销访问 token \"{name}\"？",
+      revokeTitle: '撤销访问 token "{name}"？',
       revokeDescription:
         "使用此 token 的应用会立即失去访问权限。此操作无法撤销。",
-      revokeAction: "撤销 \"{name}\"",
+      revokeAction: '撤销 "{name}"',
       revoking: "撤销中...",
     },
     about: {
@@ -408,8 +415,7 @@ export const zhCN = {
         "可选。如果未提供，将从训练数据中切分出一小部分。",
       advanced: "高级",
       targetFormat: "目标格式",
-      targetFormatTooltip:
-        "训练数据的格式。自动检测对大多数数据集都有效。",
+      targetFormatTooltip: "训练数据的格式。自动检测对大多数数据集都有效。",
       auto: "自动",
       rawText: "原始文本",
       trainSplitStart: "训练切分起始",
@@ -506,8 +512,7 @@ export const zhCN = {
       weightDecayTooltip: "L2 正则化，用于防止过拟合。",
       warmupSteps: "预热步数",
       warmupStepsTooltip: "在训练开始时逐步提高学习率，提升稳定性。",
-      scheduleEpochsTooltip:
-        "完整遍历数据集的次数。设为 0 则按最大步数运行。",
+      scheduleEpochsTooltip: "完整遍历数据集的次数。设为 0 则按最大步数运行。",
       saveSteps: "保存步数",
       saveStepsTooltip: "每 N 步保存一次检查点。0 表示禁用。",
       evalSteps: "评估步数",
