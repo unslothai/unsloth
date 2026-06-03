@@ -1561,7 +1561,7 @@ shell.Run cmd, 0, False
         $prevEapWsl = $ErrorActionPreference
         $ErrorActionPreference = "Continue"
         try {
-            & wsl.exe -d $distro -u root -- bash -lc $wslInstall
+            & wsl.exe -d $distro --cd /root -u root -- bash -lc $wslInstall
             $wslRc = $LASTEXITCODE
         } finally {
             $ErrorActionPreference = $prevEapWsl
@@ -1573,7 +1573,7 @@ shell.Run cmd, 0, False
         $prevEapChk = $ErrorActionPreference
         $ErrorActionPreference = "Continue"
         try {
-            & wsl.exe -d $distro -u root -- /root/.unsloth/studio/unsloth_studio/bin/python -c "import torch,sys; sys.exit(0 if torch.cuda.is_available() else 3)" *> $null
+            & wsl.exe -d $distro --cd /root -u root -- /root/.unsloth/studio/unsloth_studio/bin/python -c "import torch,sys; sys.exit(0 if torch.cuda.is_available() else 3)" *> $null
             $torchOk = ($LASTEXITCODE -eq 0)
         } catch {} finally { $ErrorActionPreference = $prevEapChk }
         # Self-heal Studio's web-server deps. install.sh installs them in a late step
@@ -1589,7 +1589,7 @@ shell.Run cmd, 0, False
             $_serverOk = $false
             $prevEapS = $ErrorActionPreference; $ErrorActionPreference = "Continue"
             try {
-                & wsl.exe -d $distro -u root -- $_studioPy -c "import structlog, fastapi, uvicorn, starlette" *> $null
+                & wsl.exe -d $distro --cd /root -u root -- $_studioPy -c "import structlog, fastapi, uvicorn, starlette" *> $null
                 $_serverOk = ($LASTEXITCODE -eq 0)
             } catch {} finally { $ErrorActionPreference = $prevEapS }
             if (-not $_serverOk) {
@@ -1605,10 +1605,10 @@ shell.Run cmd, 0, False
                 $_deps = 'typer fastapi uvicorn matplotlib pandas nest_asyncio pyjwt easydict addict structlog diceware ddgs cryptography httpx fastmcp'
                 $_repair = 'PY=/root/.unsloth/studio/unsloth_studio/bin/python; UV="$(command -v uv 2>/dev/null || echo /root/.local/bin/uv)"; if [ -x "$UV" ] || command -v uv >/dev/null 2>&1; then "$UV" pip install --python "$PY" ' + $_deps + '; else "$PY" -m pip install ' + $_deps + '; fi'
                 $prevEapR = $ErrorActionPreference; $ErrorActionPreference = "Continue"
-                try { & wsl.exe -d $distro -u root -- bash -lc $_repair } catch {} finally { $ErrorActionPreference = $prevEapR }
+                try { & wsl.exe -d $distro --cd /root -u root -- bash -lc $_repair } catch {} finally { $ErrorActionPreference = $prevEapR }
                 $prevEapS2 = $ErrorActionPreference; $ErrorActionPreference = "Continue"
                 try {
-                    & wsl.exe -d $distro -u root -- $_studioPy -c "import structlog, fastapi, uvicorn, starlette" *> $null
+                    & wsl.exe -d $distro --cd /root -u root -- $_studioPy -c "import structlog, fastapi, uvicorn, starlette" *> $null
                     $_serverOk = ($LASTEXITCODE -eq 0)
                 } catch {} finally { $ErrorActionPreference = $prevEapS2 }
                 if ($_serverOk) { substep "Studio web-server deps installed." "Green" }
@@ -1620,9 +1620,9 @@ shell.Run cmd, 0, False
             # Seeding pip into the venv makes `save_pretrained_gguf` work regardless.
             $prevEapP = $ErrorActionPreference; $ErrorActionPreference = "Continue"
             try {
-                & wsl.exe -d $distro -u root -- $_studioPy -m pip --version *> $null
+                & wsl.exe -d $distro --cd /root -u root -- $_studioPy -m pip --version *> $null
                 if ($LASTEXITCODE -ne 0) {
-                    & wsl.exe -d $distro -u root -- $_studioPy -m ensurepip --upgrade *> $null
+                    & wsl.exe -d $distro --cd /root -u root -- $_studioPy -m ensurepip --upgrade *> $null
                 }
             } catch {} finally { $ErrorActionPreference = $prevEapP }
         }
@@ -1661,7 +1661,7 @@ shell.Run cmd, 0, False
                     ('$distro = "' + $distro + '"'),
                     'Start-Job { for ($i=0; $i -lt 120; $i++) { try { if ((Invoke-WebRequest "http://localhost:8888/api/health" -UseBasicParsing -TimeoutSec 2).StatusCode -eq 200) { Start-Process "http://localhost:8888"; break } } catch {}; Start-Sleep 1 } } | Out-Null',
                     'Write-Host "Starting Unsloth Studio in WSL ($distro); browser opens at http://localhost:8888 when ready (Ctrl+C to stop)..."',
-                    'wsl.exe -d $distro -u root -- bash -lic "unsloth studio -p 8888"'
+                    'wsl.exe -d $distro --cd /root -u root -- bash -lic "unsloth studio -p 8888"'
                 )
                 Set-Content -LiteralPath $launcher -Value $L -Encoding UTF8
                 $icon = Join-Path $appDir "unsloth.ico"
@@ -1711,8 +1711,9 @@ shell.Run cmd, 0, False
                     # re-read each shortcut's icon NOW, clearing any stale "blank" entry cached for that
                     # exact path (the global notify alone often does not refresh an existing .lnk).
                     foreach ($lnk in $lnks) { try { [UnslothShell.Notify]::SHChangeNotify(0x00002000, 0x0005, $lnk, [System.IntPtr]::Zero) } catch {} }
-                    # SHCNE_ASSOCCHANGED (0x08000000) -> flush global shell icon associations.
-                    [UnslothShell.Notify]::SHChangeNotify(0x08000000, 0x0005, $null, [System.IntPtr]::Zero)
+                    # SHCNE_ASSOCCHANGED (0x08000000) with SHCNF_IDLIST (0) -> flush global icon
+                    # associations. Both item args are unused for this event, so pass NULL/IDLIST.
+                    [UnslothShell.Notify]::SHChangeNotify(0x08000000, 0, $null, [System.IntPtr]::Zero)
                 } catch {}
             } catch {
                 substep "(could not create shortcuts: $($_.Exception.Message))" "Yellow"
@@ -1743,7 +1744,7 @@ shell.Run cmd, 0, False
                     $_runner = "#!/usr/bin/env bash`n" + $_pathLine + $_jobsLine + "exec bash /root/.unsloth/provision_llama_cuda.sh > /root/.unsloth/llama_cuda_build.log 2>&1`n"
                     $_runnerB64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($_runner))
                     $_fetchCmd = 'mkdir -p /root/.unsloth; if curl -fsSL "' + $_llamaUrl + '" -o /root/.unsloth/provision_llama_cuda.sh && [ -s /root/.unsloth/provision_llama_cuda.sh ]; then chmod +x /root/.unsloth/provision_llama_cuda.sh; echo ' + $_runnerB64 + ' | base64 -d > /root/.unsloth/run_llama_build.sh; chmod +x /root/.unsloth/run_llama_build.sh; echo PROV_FETCHED; else echo PROV_NOSCRIPT; fi'
-                    $_fetchOut = & wsl.exe -d $distro -u root -- bash -lc $_fetchCmd 2>$null
+                    $_fetchOut = & wsl.exe -d $distro --cd /root -u root -- bash -lc $_fetchCmd 2>$null
                     if ("$_fetchOut" -match 'PROV_FETCHED') {
                         # Step 2: run the build anchored to a DETACHED WINDOWS process. A WSL-side
                         # `nohup setsid ... &` does NOT survive: WSL shuts the distro's VM down once
@@ -1751,7 +1752,7 @@ shell.Run cmd, 0, False
                         # (observed: no log, only a CPU server left behind). A persistent Windows-side
                         # wsl.exe (Start-Process, no -Wait) holds the VM up for the whole build while
                         # install.ps1 returns immediately. All ArgumentList tokens are space-free.
-                        Start-Process -WindowStyle Hidden -FilePath 'wsl.exe' -ArgumentList @('-d', $distro, '-u', 'root', '--', 'bash', '/root/.unsloth/run_llama_build.sh') | Out-Null
+                        Start-Process -WindowStyle Hidden -FilePath 'wsl.exe' -ArgumentList @('-d', $distro, '--cd', '/root', '-u', 'root', '--', 'bash', '/root/.unsloth/run_llama_build.sh') | Out-Null
                         step "llama.cpp" "building CUDA llama.cpp for GGUF inference in the background (a few min); log: ~/.unsloth/llama_cuda_build.log" "Green"
                     } else {
                         substep "(GGUF inference needs a CUDA llama.cpp build; build later:  wsl -d $distro -u root -- bash ~/.unsloth/provision_llama_cuda.sh)" "Yellow"
