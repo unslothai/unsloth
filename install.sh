@@ -1246,6 +1246,25 @@ foreach (\$dir in \$locations) {
     if (\$hasIcon) { \$shortcut.IconLocation = "\$iconPath,0" }
     \$shortcut.Save()
 }
+# Refresh the shell icon cache so the new WSL shortcut renders immediately
+# instead of a stale/blank icon (a same-name .lnk recreated across reinstalls
+# is the common trigger; -ClearIconCache is more thorough than -show, and the
+# SHChangeNotify broadcast forces a live refresh without restarting explorer).
+try { & "\$env:SystemRoot\System32\ie4uinit.exe" -ClearIconCache } catch {}
+try { & "\$env:SystemRoot\System32\ie4uinit.exe" -show } catch {}
+try {
+    Add-Type -Namespace UnslothShell -Name IconRefresh -MemberDefinition '[System.Runtime.InteropServices.DllImport("shell32.dll")] public static extern void SHChangeNotify(int e, uint f, System.IntPtr a, System.IntPtr b);' -ErrorAction SilentlyContinue
+    [UnslothShell.IconRefresh]::SHChangeNotify(0x08000000, 0, [System.IntPtr]::Zero, [System.IntPtr]::Zero)
+} catch {}
+# Win11 Start Menu keeps its own tile-icon cache (preserve start2.bin).
+try {
+    \$smeh = Join-Path \$env:LOCALAPPDATA 'Packages\Microsoft.Windows.StartMenuExperienceHost_cw5n1h2txyewy\TempState'
+    if (Test-Path -LiteralPath \$smeh) {
+        Get-ChildItem -LiteralPath \$smeh -Filter 'TileCache_*' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath (Join-Path \$smeh 'StartUnifiedTileModelCache.dat') -Force -ErrorAction SilentlyContinue
+        Stop-Process -Name StartMenuExperienceHost -Force -ErrorAction SilentlyContinue
+    }
+} catch {}
 WSLPS1_EOF
 
             # Convert WSL path to Windows path for powershell.exe

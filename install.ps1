@@ -867,11 +867,21 @@ shell.Run cmd, 0, False
                 }
                 if ($createdShortcutCount -gt 0) {
                     substep "Created Unsloth Studio shortcut"
-                    # Nudge the shell to refresh the new shortcut's icon right away.
-                    # Without this, a stale icon cache can show a blank icon until
-                    # the next explorer restart -- especially when a shortcut of the
-                    # same name was rewritten (e.g. native vs WSL installs).
+                    # Refresh the shell icon cache so the new shortcut's icon renders
+                    # immediately instead of a stale/blank entry. The common trigger
+                    # is a same-name .lnk recreated across reinstalls: Explorer keeps
+                    # a per-item cache entry in iconcache_*.db and won't re-read the
+                    # .ico on its own. `-ClearIconCache` is far more thorough than the
+                    # old `-show` (which left the desktop icon blank), and the
+                    # SHChangeNotify(SHCNE_ASSOCCHANGED) broadcast forces a live
+                    # desktop/taskbar refresh WITHOUT restarting explorer.
+                    try { & "$env:SystemRoot\System32\ie4uinit.exe" -ClearIconCache 2>$null } catch {}
                     try { & "$env:SystemRoot\System32\ie4uinit.exe" -show 2>$null } catch {}
+                    try {
+                        Add-Type -Namespace UnslothShell -Name IconRefresh -MemberDefinition '[System.Runtime.InteropServices.DllImport("shell32.dll")] public static extern void SHChangeNotify(int eventId, uint flags, System.IntPtr item1, System.IntPtr item2);' -ErrorAction SilentlyContinue
+                        # SHCNE_ASSOCCHANGED (0x08000000), SHCNF_IDLIST (0)
+                        [UnslothShell.IconRefresh]::SHChangeNotify(0x08000000, 0, [System.IntPtr]::Zero, [System.IntPtr]::Zero)
+                    } catch {}
                     # Win11's Start Menu (StartMenuExperienceHost) keeps its OWN
                     # pre-rendered tile-icon cache, separate from Explorer's
                     # iconcache_*.db; ie4uinit and an explorer restart do NOT
