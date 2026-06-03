@@ -56,6 +56,14 @@ def _make_backend(monkeypatch, streams: list[list[str]], payloads: list[dict]):
     return backend
 
 
+def _tool_names(payload: dict) -> list[str]:
+    return [
+        (tool.get("function") or {}).get("name")
+        for tool in payload.get("tools", [])
+        if (tool.get("function") or {}).get("name")
+    ]
+
+
 def test_structured_tool_call_after_visible_preface_is_executed(monkeypatch):
     """llama-server may emit content first and then native delta.tool_calls.
 
@@ -165,12 +173,7 @@ def test_structured_tool_call_after_visible_preface_is_executed(monkeypatch):
 
 
 def test_repeat_render_html_nudge_is_not_user_visible_error(monkeypatch):
-    """A second render_html call in one response should stay internal.
-
-    Models sometimes call render_html again after a successful artifact in the
-    same assistant response. Studio should block the repeat execution without
-    feeding an error/limitation message that the model parrots to the user.
-    """
+    """A repeated render_html call is an internal no-op, not a visible card."""
 
     first_stream = [
         _sse(
@@ -218,16 +221,9 @@ def test_repeat_render_html_nudge_is_not_user_visible_error(monkeypatch):
         ),
         _done(),
     ]
-    final_stream = [
-        _sse({"content": "Short note."}),
-        _done(),
-    ]
+    final_stream = [_sse({"content": "Short note."}), _done()]
     payloads: list[dict] = []
-    backend = _make_backend(
-        monkeypatch,
-        [first_stream, repeat_stream, final_stream],
-        payloads,
-    )
+    backend = _make_backend(monkeypatch, [first_stream, repeat_stream, final_stream], payloads)
 
     calls: list[tuple[str, dict]] = []
 
@@ -249,7 +245,8 @@ def test_repeat_render_html_nudge_is_not_user_visible_error(monkeypatch):
                     "required": ["code"],
                 },
             },
-        }
+        },
+        {"type": "function", "function": {"name": "web_search"}},
     ]
 
     events = list(
@@ -266,6 +263,8 @@ def test_repeat_render_html_nudge_is_not_user_visible_error(monkeypatch):
             {"code": "<html><body>first</body></html>", "title": "First"},
         )
     ]
+    assert _tool_names(payloads[1]) == ["web_search"]
+
     actual_tool_starts = [
         event
         for event in events
@@ -287,11 +286,354 @@ def test_repeat_render_html_nudge_is_not_user_visible_error(monkeypatch):
         for message in payloads[2]["messages"]
         if message.get("role") == "tool" and message.get("name") == "render_html"
     ]
-    assert len(render_tool_messages) == 2
-    repeat_message = render_tool_messages[-1]["content"]
-    assert "Error" not in repeat_message
-    assert "already called for this response" not in repeat_message
-    assert "limitation" not in repeat_message.lower()
+    assert len(render_tool_messages) == 1
+    internal_nudges = [
+        message
+        for message in payloads[2]["messages"]
+        if message.get("role") == "user"
+        and "Do not call render_html again" in message.get("content", "")
+    ]
+    assert len(internal_nudges) == 1
+
+
+def test_render_html_success_drops_tool_schema_before_final_pass(monkeypatch):
+    first_stream = [
+        _sse(
+            {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "call_first",
+                        "type": "function",
+                        "function": {
+                            "name": "render_html",
+                            "arguments": json.dumps({"code": "<html>ok</html>"}),
+                        },
+                    }
+                ]
+            }
+        ),
+        _done(),
+    ]
+    final_stream = [_sse({"content": "Done."}), _done()]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [first_stream, final_stream], payloads)
+
+    def fake_execute_tool(name, arguments, **_kwargs):
+        return "Rendered HTML artifact: Done."
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "Render this."}],
+            tools = [{"type": "function", "function": {"name": "render_html"}}],
+            max_tool_iterations = 3,
+        )
+    )
+
+    assert len(payloads) == 2
+    assert "tools" not in payloads[1]
+    assert any(event.get("type") == "content" and event.get("text") == "Done." for event in events)
+    final_user_messages = [
+        m.get("content", "") for m in payloads[1]["messages"] if m.get("role") == "user"
+    ]
+    assert not any("used all available tool calls" in message for message in final_user_messages)
+
+
+def test_non_consecutive_duplicate_web_search_is_internal_noop(monkeypatch):
+    first_search = [
+        _sse(
+            {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "call_search_1",
+                        "type": "function",
+                        "function": {
+                            "name": "web_search",
+                            "arguments": json.dumps({"query": "gpu prices 2026"}),
+                        },
+                    }
+                ]
+            }
+        ),
+        _done(),
+    ]
+    python_call = [
+        _sse(
+            {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "call_python",
+                        "type": "function",
+                        "function": {
+                            "name": "python",
+                            "arguments": json.dumps({"code": "print('ok')"}),
+                        },
+                    }
+                ]
+            }
+        ),
+        _done(),
+    ]
+    duplicate_search = [
+        _sse(
+            {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "call_search_2",
+                        "type": "function",
+                        "function": {
+                            "name": "web_search",
+                            "arguments": json.dumps({"query": "gpu prices 2026"}),
+                        },
+                    }
+                ]
+            }
+        ),
+        _done(),
+    ]
+    final_stream = [_sse({"content": "Final answer from gathered data."}), _done()]
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [first_search, python_call, duplicate_search, final_stream],
+        payloads,
+    )
+
+    calls: list[tuple[str, dict]] = []
+
+    def fake_execute_tool(name, arguments, **_kwargs):
+        calls.append((name, arguments))
+        return f"ok:{name}"
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+
+    tools = [
+        {"type": "function", "function": {"name": "web_search"}},
+        {"type": "function", "function": {"name": "python"}},
+    ]
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "search gpus in 2026 prices and use python"}],
+            tools = tools,
+            max_tool_iterations = 3,
+        )
+    )
+
+    assert calls == [
+        ("web_search", {"query": "gpu prices 2026"}),
+        ("python", {"code": "print('ok')"}),
+    ]
+    assert [
+        event.get("tool_name")
+        for event in events
+        if event.get("type") == "tool_start" and event.get("tool_name")
+    ] == ["web_search", "python"]
+    assert [
+        event.get("tool_name")
+        for event in events
+        if event.get("type") == "tool_end" and event.get("tool_name")
+    ] == ["web_search", "python"]
+    assert not [
+        event
+        for event in events
+        if event.get("tool_call_id") == "call_search_2"
+        and event.get("type") in {"tool_start", "tool_end"}
+    ]
+    assert len(payloads) == 4
+    assert "tools" not in payloads[3]
+    duplicate_nudges = [
+        message
+        for message in payloads[3]["messages"]
+        if message.get("role") == "user"
+        and "already completed successfully" in message.get("content", "")
+    ]
+    assert len(duplicate_nudges) == 1
+
+
+def test_same_turn_duplicate_web_search_is_internal_noop(monkeypatch):
+    same_turn_duplicates = [
+        _sse(
+            {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "call_search_1",
+                        "type": "function",
+                        "function": {
+                            "name": "web_search",
+                            "arguments": json.dumps({"query": "gpu prices 2026"}),
+                        },
+                    },
+                    {
+                        "index": 1,
+                        "id": "call_search_2",
+                        "type": "function",
+                        "function": {
+                            "name": "web_search",
+                            "arguments": json.dumps({"query": "gpu prices 2026"}),
+                        },
+                    },
+                ]
+            }
+        ),
+        _done(),
+    ]
+    final_stream = [_sse({"content": "Final answer."}), _done()]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [same_turn_duplicates, final_stream], payloads)
+
+    calls: list[tuple[str, dict]] = []
+
+    def fake_execute_tool(name, arguments, **_kwargs):
+        calls.append((name, arguments))
+        return "search-result"
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "search gpus"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 2,
+        )
+    )
+
+    assert calls == [("web_search", {"query": "gpu prices 2026"})]
+    assert [
+        event.get("tool_call_id")
+        for event in events
+        if event.get("type") == "tool_end"
+    ] == ["call_search_1"]
+    assert not [
+        event
+        for event in events
+        if event.get("tool_call_id") == "call_search_2"
+        and event.get("type") in {"tool_start", "tool_end"}
+    ]
+
+
+def test_same_turn_repeated_render_html_does_not_emit_second_provisional_start(monkeypatch):
+    same_turn_render_calls = [
+        _sse(
+            {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "call_html_1",
+                        "type": "function",
+                        "function": {
+                            "name": "render_html",
+                            "arguments": json.dumps({"code": "<html>one</html>"}),
+                        },
+                    },
+                    {
+                        "index": 1,
+                        "id": "call_html_2",
+                        "type": "function",
+                        "function": {
+                            "name": "render_html",
+                            "arguments": json.dumps({"code": "<html>two</html>"}),
+                        },
+                    },
+                ]
+            }
+        ),
+        _done(),
+    ]
+    final_stream = [_sse({"content": "Final answer."}), _done()]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [same_turn_render_calls, final_stream], payloads)
+
+    calls: list[tuple[str, dict]] = []
+
+    def fake_execute_tool(name, arguments, **_kwargs):
+        calls.append((name, arguments))
+        return "Rendered HTML artifact: One."
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "render html"}],
+            tools = [{"type": "function", "function": {"name": "render_html"}}],
+            max_tool_iterations = 2,
+        )
+    )
+
+    assert calls == [("render_html", {"code": "<html>one</html>"})]
+    assert [
+        event.get("tool_call_id")
+        for event in events
+        if event.get("type") == "tool_start" and not event.get("arguments")
+    ] == ["call_html_1"]
+    assert not [
+        event
+        for event in events
+        if event.get("tool_call_id") == "call_html_2"
+        and event.get("type") in {"tool_start", "tool_end"}
+    ]
+    assert len(payloads) == 2
+    assert "tools" not in payloads[1]
+    render_nudges = [
+        message
+        for message in payloads[1]["messages"]
+        if message.get("role") == "user"
+        and "Do not call render_html again" in message.get("content", "")
+    ]
+    assert len(render_nudges) == 1
+
+
+def test_disabled_tool_call_is_internal_noop(monkeypatch):
+    disabled_python = [
+        _sse(
+            {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "call_python_disabled",
+                        "type": "function",
+                        "function": {
+                            "name": "python",
+                            "arguments": json.dumps({"code": "print(1)"}),
+                        },
+                    }
+                ]
+            }
+        ),
+        _done(),
+    ]
+    final_stream = [_sse({"content": "I cannot run Python here."}), _done()]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [disabled_python, final_stream], payloads)
+
+    def fake_execute_tool(name, arguments, **_kwargs):
+        raise AssertionError(f"unexpected tool execution: {name} {arguments}")
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "run python"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 1,
+        )
+    )
+
+    assert not [event for event in events if event.get("type") in {"tool_start", "tool_end"}]
+    assert len(payloads) == 2
+    disabled_nudges = [
+        message
+        for message in payloads[1]["messages"]
+        if message.get("role") == "user"
+        and "not enabled" in message.get("content", "")
+    ]
+    assert len(disabled_nudges) == 1
 
 
 def test_render_html_success_does_not_reprompt_render_html_intent(monkeypatch):

@@ -25,7 +25,6 @@ import threading
 import time
 from pathlib import Path
 from typing import Generator, Iterable, List, Optional
-from urllib.parse import urlparse
 
 import httpx
 
@@ -54,6 +53,7 @@ from utils.subprocess_compat import (
 from core.inference.tool_call_parser import (
     parse_tool_calls_from_text as _shared_parse_tool_calls_from_text,
 )
+from core.inference.tool_loop_controller import ToolLoopController, tool_event_provenance
 
 logger = get_logger(__name__)
 
@@ -4608,12 +4608,17 @@ class LlamaCppBackend:
                 text = pat.sub("", text)
             return text
 
-        def _tool_event_provenance(**flags: object) -> dict[str, object]:
-            provenance: dict[str, object] = {"source": "local"}
-            for key, value in flags.items():
-                if value is not None and value is not False:
-                    provenance[key] = value
-            return provenance
+        tool_controller = ToolLoopController(
+            tools = tools,
+            auto_heal_tool_calls = auto_heal_tool_calls,
+        )
+
+        def _tool_succeeded(tool_name: str) -> bool:
+            key_prefix = f"{tool_name}:"
+            return any(
+                record.executed and not record.is_error and record.key.startswith(key_prefix)
+                for record in tool_controller.history
+            )
 
         # XML prefixes that signal a tool call in content.
         # Empty when auto_heal is disabled so the buffer never
@@ -4622,14 +4627,7 @@ class LlamaCppBackend:
             ("<tool_call>", "<function=") if auto_heal_tool_calls else ()
         )
         _MAX_BUFFER_CHARS = 32
-
-        # ── Duplicate tool-call detection ────────────────────────
-        # Track recent (tool_name, arguments) hashes to detect loops
-        # where the model repeats the exact same call.  Retries after
-        # a transient failure are allowed (only block when the previous
-        # identical call succeeded).
-        _tool_call_history: list[tuple[str, bool]] = []  # (key, failed)
-        _render_html_succeeded = False
+        _append_budget_exhausted_nudge = True
 
         # ── Re-prompt on plan-without-action ─────────────────
         # When the model describes what it intends to do (forward-looking
@@ -4648,6 +4646,11 @@ class LlamaCppBackend:
             if cancel_event is not None and cancel_event.is_set():
                 return
 
+            active_tools = tool_controller.active_tools()
+            if not active_tools:
+                _append_budget_exhausted_nudge = False
+                break
+
             # Build payload -- stream: True so we detect tool signals
             # in the first 1-2 chunks without a non-streaming penalty.
             payload = {
@@ -4660,7 +4663,7 @@ class LlamaCppBackend:
                 "min_p": min_p,
                 "repeat_penalty": repetition_penalty,
                 "presence_penalty": presence_penalty,
-                "tools": tools,
+                "tools": active_tools,
                 "tool_choice": "auto",
             }
             _reasoning_kw = self._request_reasoning_kwargs(
@@ -4832,8 +4835,13 @@ class LlamaCppBackend:
                                             has_real_id = current_id != fallback_id
                                             if (
                                                 current_name == "render_html"
-                                                and not _render_html_succeeded
+                                                and not _tool_succeeded("render_html")
+                                                and any(
+                                                    ((tool.get("function") or {}).get("name") == "render_html")
+                                                    for tool in active_tools
+                                                )
                                                 and not already_started
+                                                and not provisional_render_html_tool_call_ids
                                                 and has_real_id
                                             ):
                                                 provisional_render_html_tool_call_ids.add(
@@ -4844,7 +4852,7 @@ class LlamaCppBackend:
                                                     "tool_name": "render_html",
                                                     "tool_call_id": current_id,
                                                     "arguments": {},
-                                                    "provenance": _tool_event_provenance(
+                                                    "provenance": tool_event_provenance(
                                                         provisional = True,
                                                     ),
                                                 }
@@ -5037,14 +5045,14 @@ class LlamaCppBackend:
                         if not _stripped:
                             _stripped = reasoning_accum.strip()
                         _render_html_already_done_intent = (
-                            _render_html_succeeded
+                            _tool_succeeded("render_html")
                             and re.search(
                                 r"(?i)\brender[_\s-]?html\b",
                                 _stripped,
                             )
                         )
                         if (
-                            tools
+                            active_tools
                             and not _render_html_already_done_intent
                             and _reprompt_count < _MAX_REPROMPTS
                             and 0 < len(_stripped) < _REPROMPT_MAX_CHARS
@@ -5063,8 +5071,8 @@ class LlamaCppBackend:
                                 }
                             )
                             available_tool_names = [
-                                tool.get("function", {}).get("name")
-                                for tool in tools
+                                (tool.get("function") or {}).get("name")
+                                for tool in active_tools
                                 if isinstance(tool, dict)
                                 and isinstance(tool.get("function"), dict)
                             ]
@@ -5239,198 +5247,68 @@ class LlamaCppBackend:
                 _accumulated_predicted_ms += _it.get("predicted_ms", 0)
                 _accumulated_predicted_n += _it.get("predicted_n", 0)
 
-                assistant_msg = {"role": "assistant", "content": content_text}
-                if tool_calls:
-                    assistant_msg["tool_calls"] = tool_calls
-                conversation.append(assistant_msg)
+                assistant_msg: dict = {"role": "assistant", "content": content_text}
+                assistant_appended = False
 
                 for tc in tool_calls or []:
                     func = tc.get("function", {})
                     tool_name = func.get("name", "")
-                    raw_args = func.get("arguments", {})
-
-                    _args_healed = False
-                    if isinstance(raw_args, str):
-                        try:
-                            parsed_args = json.loads(raw_args)
-                        except (json.JSONDecodeError, ValueError):
-                            parsed_args = None
-                        if isinstance(parsed_args, dict):
-                            arguments = parsed_args
-                        elif auto_heal_tool_calls:
-                            heal_key = {
-                                "python": "code",
-                                "terminal": "command",
-                                "render_html": "code",
-                            }.get(tool_name, "query")
-                            arguments = {heal_key: raw_args}
-                            _args_healed = True
-                        else:
-                            arguments = {"raw": raw_args}
-                    elif isinstance(raw_args, dict):
-                        arguments = raw_args
-                    else:
-                        arguments = {}
-
-                    _provisional_render_html_match = (
+                    provisional_render_html_match = (
                         tool_name == "render_html"
                         and tc.get("id") in provisional_render_html_tool_call_ids
                     )
-                    _tool_provenance = _tool_event_provenance(
-                        healed = _args_healed,
+                    decision = tool_controller.prepare_call(
+                        tc,
                         forced = _forced_tool_call_pending,
-                        provisional = _provisional_render_html_match,
+                        provisional = provisional_render_html_match,
                     )
 
-                    if tool_name == "web_search":
-                        _ws_url = (arguments.get("url") or "").strip()
-                        if _ws_url:
-                            _parsed = urlparse(_ws_url)
-                            if _parsed.scheme in ("http", "https") and _parsed.hostname:
-                                _ws_host = _parsed.hostname
-                                if _ws_host.startswith("www."):
-                                    _ws_host = _ws_host[4:]
-                                status_text = f"Reading: {_ws_host}"
-                            else:
-                                status_text = "Reading page..."
-                        else:
-                            status_text = f"Searching: {arguments.get('query', '')}"
-                    elif tool_name == "python":
-                        preview = (
-                            (arguments.get("code") or "").strip().split("\n")[0][:60]
+                    if not decision.should_execute:
+                        if content_text and not assistant_appended:
+                            conversation.append(assistant_msg)
+                            assistant_appended = True
+                        completion = tool_controller.record_noop(decision)
+                        conversation.append(completion.model_message())
+                        logger.info(
+                            "Suppressed local GGUF tool call as internal no-op: "
+                            f"action={decision.action} tool={decision.tool_name}"
                         )
-                        status_text = (
-                            f"Running Python: {preview}"
-                            if preview
-                            else "Running Python..."
-                        )
-                    elif tool_name == "terminal":
-                        cmd_preview = (arguments.get("command") or "")[:60]
-                        status_text = (
-                            f"Running: {cmd_preview}"
-                            if cmd_preview
-                            else "Running command..."
-                        )
+                        break
+
+                    if not assistant_appended:
+                        assistant_msg["tool_calls"] = [decision.as_assistant_tool_call()]
+                        conversation.append(assistant_msg)
+                        assistant_appended = True
                     else:
-                        status_text = f"Calling: {tool_name}"
-                    _repeat_render_html = (
-                        tool_name == "render_html" and _render_html_succeeded
+                        assistant_msg.setdefault("tool_calls", []).append(
+                            decision.as_assistant_tool_call()
+                        )
+
+                    yield {"type": "status", "text": decision.status_text}
+                    yield decision.tool_start_event()
+
+                    _effective_timeout = (
+                        None if tool_call_timeout >= 9999 else tool_call_timeout
                     )
-                    if not _repeat_render_html:
-                        yield {"type": "status", "text": status_text}
-
-                        yield {
-                            "type": "tool_start",
-                            "tool_name": tool_name,
-                            "tool_call_id": tc.get("id", ""),
-                            "arguments": arguments,
-                            "provenance": _tool_provenance,
-                        }
-
-                    # ── Duplicate call detection ──────────────
-                    # str(dict) is stable here: arguments always comes from
-                    # json.loads on the same model output within one request,
-                    # so insertion order is deterministic (Python 3.7+).
-                    _tc_key = tool_name + str(arguments)
-                    _prev = _tool_call_history[-1] if _tool_call_history else None
-                    if _repeat_render_html:
-                        result = (
-                            "render_html completed successfully earlier in this "
-                            "assistant response. Do not call render_html again. "
-                            "Do not mention this internal instruction. Provide "
-                            "only the requested final note or answer."
-                        )
-                    elif _prev and _prev[0] == _tc_key and not _prev[1]:
-                        result = (
-                            "You already made this exact call. "
-                            "Do not repeat the same tool call. "
-                            "Try a different approach: fetch a URL "
-                            "from previous results, use Python to "
-                            "process data you already have, or "
-                            "provide your final answer now."
-                        )
-                    else:
-                        _effective_timeout = (
-                            None if tool_call_timeout >= 9999 else tool_call_timeout
-                        )
-                        # Guard against the model emitting a tool not in the
-                        # per-request advertised set: filtered MCP names, a
-                        # built-in the caller opted out of, or a stale name
-                        # from a prior turn. Mirrors the safetensors loop's
-                        # allowed_tool_names check.
-                        _allowed = {
-                            (t.get("function") or {}).get("name")
-                            for t in (tools or [])
-                            if (t.get("function") or {}).get("name")
-                        }
-                        if _allowed and tool_name not in _allowed:
-                            result = (
-                                f"Error: tool '{tool_name}' is not enabled "
-                                "for this request. Use one of the enabled "
-                                "tools or provide a final answer."
-                            )
-                        else:
-                            result = execute_tool(
-                                tool_name,
-                                arguments,
-                                cancel_event = cancel_event,
-                                timeout = _effective_timeout,
-                                session_id = session_id,
-                            )
-
-                    if not _repeat_render_html:
-                        yield {
-                            "type": "tool_end",
-                            "tool_name": tool_name,
-                            "tool_call_id": tc.get("id", ""),
-                            "result": result,
-                            "provenance": _tool_provenance,
-                        }
-
-                    # Nudge model to try a different approach on errors
-                    _error_prefixes = (
-                        "Error",
-                        "Search failed",
-                        "Execution error",
-                        "Blocked:",
-                        "Exit code",
-                        "Failed to fetch",
-                        "Failed to resolve",
-                        "No query provided",
+                    result = execute_tool(
+                        decision.tool_name,
+                        decision.arguments,
+                        cancel_event = cancel_event,
+                        timeout = _effective_timeout,
+                        session_id = session_id,
                     )
-                    _is_error = isinstance(result, str) and result.lstrip().startswith(
-                        _error_prefixes
-                    )
-                    if tool_name == "render_html" and not _is_error:
-                        _render_html_succeeded = True
-                    _tool_call_history.append((_tc_key, _is_error))
-                    # Strip image sentinel before feeding result to the LLM
-                    # (the full result with sentinel is still yielded via
-                    # tool_end so the frontend can extract image paths).
-                    _result_content = result
-                    if "\n__IMAGES__:" in _result_content:
-                        _result_content = _result_content.rsplit("\n__IMAGES__:", 1)[0]
-                    if _is_error:
-                        _result_content = (
-                            _result_content + "\n\nThe tool call encountered an issue. "
-                            "Please try a different approach or rephrase your request."
-                        )
+                    completion = tool_controller.record_result(decision, result)
+                    yield completion.tool_end_event()
+                    conversation.append(completion.tool_message())
 
-                    tool_msg = {
-                        "role": "tool",
-                        "name": tool_name,
-                        "content": _result_content,
-                    }
-                    tool_call_id = tc.get("id")
-                    if tool_call_id:
-                        tool_msg["tool_call_id"] = tool_call_id
-                    conversation.append(tool_msg)
-                    if not _repeat_render_html and _forced_tool_call_pending:
+                    if _forced_tool_call_pending:
                         _forced_tool_call_pending = False
 
-                # Clear tool status badge before next generation iteration
+                # Clear tool status badge before next generation/final pass.
                 yield {"type": "status", "text": ""}
-                # Continue the loop to let model respond with context
+                if tool_controller.force_final_answer or not tool_controller.active_tools():
+                    _append_budget_exhausted_nudge = False
+                    break
                 continue
 
             except httpx.ConnectError:
@@ -5444,7 +5322,7 @@ class LlamaCppBackend:
         # The model used all iterations without producing a final text
         # response. Inject a nudge so the final streaming pass produces
         # a useful answer instead of continuing to request tools.
-        if max_tool_iterations > 0:
+        if max_tool_iterations > 0 and _append_budget_exhausted_nudge:
             conversation.append(
                 {
                     "role": "user",
