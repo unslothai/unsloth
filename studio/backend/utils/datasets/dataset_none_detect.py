@@ -397,12 +397,16 @@ def find_none_chatml(dataset: Dataset, col: str = None) -> dict:
                 role = r
             else:
                 role = str(r)
-            # Key selection: prefer role/content (chatml) over from/value (ShareGPT).
-            # "role" takes priority — if present, this is a chatml turn regardless
-            # of whether "from" is also set (e.g. exporter metadata).  Only fall
-            # back to "value" when "from" is present and "role" is absent, which
-            # is the canonical ShareGPT shape.
-            if "role" in turn:
+            # Key selection for content payload:
+            # 1. "from"+"value" both present -> ShareGPT schema is complete,
+            #    use "value" even when "role" is also present (exporter metadata).
+            # 2. "role" present but "value" absent -> chatml turn, use "content".
+            # 3. Only "from" present (no "value" key) -> ShareGPT but value missing,
+            #    use turn.get("value") which will be None -> correctly flagged.
+            # 4. Neither -> fall back to content then value.
+            if "from" in turn and "value" in turn:
+                content = turn.get("value")
+            elif "role" in turn:
                 content = (
                     turn.get("content") if "content" in turn else turn.get("value")
                 )
@@ -838,8 +842,10 @@ def show_row(dataset: Dataset, row_indices: list[int], fmt: str, col: str = None
                 def _is_bad_turn(t):
                     if not isinstance(t, dict):
                         return True
-                    # Mirror scanner logic: role takes priority over from.
-                    if "role" in t:
+                    # Mirror scanner logic: from+value wins, then role, then from alone.
+                    if "from" in t and "value" in t:
+                        c = t.get("value")
+                    elif "role" in t:
                         c = t.get("content") if "content" in t else t.get("value")
                     elif "from" in t:
                         c = t.get("value")
@@ -868,8 +874,10 @@ def show_row(dataset: Dataset, row_indices: list[int], fmt: str, col: str = None
                     if r is None:
                         r = turn.get("from")
                     role = "?" if r is None else str(r)
-                    # Mirror scanner logic: role takes priority over from.
-                    if "role" in turn:
+                    # Mirror scanner logic: from+value wins, then role, then from alone.
+                    if "from" in turn and "value" in turn:
+                        content = turn.get("value")
+                    elif "role" in turn:
                         content = (
                             turn.get("content")
                             if "content" in turn
