@@ -35,6 +35,8 @@ AssetChoice = prebuilt_mod.AssetChoice
 PrebuiltFallback = prebuilt_mod.PrebuiltFallback
 resolve_upstream_asset_choice = prebuilt_mod.resolve_upstream_asset_choice
 runtime_patterns_for_choice = prebuilt_mod.runtime_patterns_for_choice
+_apply_host_overrides = prebuilt_mod._apply_host_overrides
+_normalize_forwarded_gfx = prebuilt_mod._normalize_forwarded_gfx
 
 # install_python_stack.py
 _STACK_PATH = PACKAGE_ROOT / "studio" / "install_python_stack.py"
@@ -2596,6 +2598,101 @@ class TestHipSdkInstalledButDeviceInaccessible:
         """install.ps1 CPU-only hint must say 'GPU not ROCm-accessible' not 'require the HIP SDK' when SDK found."""
         source = _INSTALL_PS1_PATH.read_text(encoding = "utf-8")
         assert "GPU not ROCm-accessible" in source
+
+
+# =============================================================================
+# TEST: --rocm-gfx forwarding -- setup.sh/setup.ps1 hand their resolved gfx arch
+# to install_llama_prebuilt.py so the lemonade HIP prebuilt is selected even when
+# the installer's own hipinfo/amd-smi probe cannot report it.
+# =============================================================================
+
+_SETUP_SH_PATH = PACKAGE_ROOT / "studio" / "setup.sh"
+
+
+class TestNormalizeForwardedGfx:
+    """A forwarded gfx string is reduced to a single clean gfx token."""
+
+    def test_plain_token(self):
+        assert _normalize_forwarded_gfx("gfx1151") == "gfx1151"
+
+    def test_uppercase_normalized(self):
+        assert _normalize_forwarded_gfx("GFX1151") == "gfx1151"
+
+    def test_extracts_from_noise(self):
+        assert _normalize_forwarded_gfx("gcnArchName: gfx942") == "gfx942"
+
+    def test_malformed_is_ignored(self):
+        assert _normalize_forwarded_gfx("not-a-gpu") is None
+
+    def test_empty_and_none(self):
+        assert _normalize_forwarded_gfx("") is None
+        assert _normalize_forwarded_gfx(None) is None
+
+
+class TestApplyHostOverrides:
+    """Forwarded ROCm detection is folded into the host profile correctly."""
+
+    def test_forwarded_gfx_fills_empty_probe(self):
+        # amd-smi-only / name-inferred host: installer probe found no gfx.
+        host = rocm_host(rocm_gfx_target = None)
+        out = _apply_host_overrides(host, override_rocm_gfx = "gfx1151")
+        assert out.has_rocm is True
+        assert out.rocm_gfx_target == "gfx1151"
+
+    def test_forwarded_gfx_implies_rocm(self):
+        # A CPU-looking host with a forwarded gfx is an AMD host.
+        out = _apply_host_overrides(cpu_host(), override_rocm_gfx = "gfx1200")
+        assert out.has_rocm is True
+        assert out.rocm_gfx_target == "gfx1200"
+
+    def test_forwarded_gfx_is_authoritative(self):
+        # setup already applied visible-device selection; its value wins.
+        host = rocm_host(rocm_gfx_target = "gfx1100")
+        out = _apply_host_overrides(host, override_rocm_gfx = "gfx1151")
+        assert out.rocm_gfx_target == "gfx1151"
+
+    def test_has_rocm_only_keeps_probe_gfx(self):
+        out = _apply_host_overrides(cpu_host(), override_has_rocm = True)
+        assert out.has_rocm is True
+        assert out.rocm_gfx_target is None
+
+    def test_malformed_forwarded_gfx_falls_back_to_has_rocm(self):
+        out = _apply_host_overrides(
+            cpu_host(), override_has_rocm = True, override_rocm_gfx = "junk"
+        )
+        assert out.has_rocm is True
+        assert out.rocm_gfx_target is None
+
+    def test_no_overrides_leaves_host_unchanged(self):
+        host = nvidia_host()
+        assert _apply_host_overrides(host) is host
+
+
+class TestRocmGfxForwarding:
+    """setup.sh / setup.ps1 forward their resolved gfx; the installer accepts it."""
+
+    def test_installer_exposes_rocm_gfx_arg(self):
+        source = _PREBUILT_PATH.read_text(encoding = "utf-8")
+        assert '"--rocm-gfx"' in source
+        # Defaults to the env override so a standalone run still works.
+        assert 'os.environ.get("UNSLOTH_ROCM_GFX_ARCH")' in source
+
+    def test_setup_sh_forwards_rocm_gfx(self):
+        source = _SETUP_SH_PATH.read_text(encoding = "utf-8")
+        assert "--rocm-gfx" in source
+        assert '"$_setup_gfx"' in source
+
+    def test_setup_sh_forwards_has_rocm(self):
+        # When AMD is detected but gfx resolution fails, setup.sh must still
+        # forward --has-rocm so the installer knows ROCm is present.
+        source = _SETUP_SH_PATH.read_text(encoding = "utf-8")
+        assert "--has-rocm" in source
+        assert "_setup_amd_detected" in source
+
+    def test_setup_ps1_forwards_rocm_gfx(self):
+        source = _SETUP_PS1_PATH.read_text(encoding = "utf-8")
+        assert "--rocm-gfx" in source
+        assert "$script:ROCmGfxArch" in source
 
 
 if __name__ == "__main__":

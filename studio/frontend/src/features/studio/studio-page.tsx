@@ -53,6 +53,10 @@ export function StudioPage(): ReactElement {
   const selectedHistoryRunId = useTrainingRuntimeStore((s) => s.selectedHistoryRunId);
   const setSelectedHistoryRunId = useTrainingRuntimeStore((s) => s.setSelectedHistoryRunId);
 
+  const setCurrentRunViewActive = useTrainingRuntimeStore(
+    (s) => s.setCurrentRunViewActive,
+  );
+
   useEffect(() => {
     return () => setSelectedHistoryRunId(null);
   }, [setSelectedHistoryRunId]);
@@ -66,6 +70,13 @@ export function StudioPage(): ReactElement {
       : requestedTab === "current-run" && !showTrainingView
         ? "configure"
         : requestedTab;
+
+  // Mirror "Current Run" tab state into the store so the sidebar can highlight
+  // the run this view refers to. Cleared on unmount (leaving the studio page).
+  useEffect(() => {
+    setCurrentRunViewActive(activeTab === "current-run");
+    return () => setCurrentRunViewActive(false);
+  }, [activeTab, setCurrentRunViewActive]);
 
   const { setPinned } = useSidebar();
   const pinSidebar = useCallback(() => setPinned(true), [setPinned]);

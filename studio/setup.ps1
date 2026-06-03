@@ -50,6 +50,12 @@ if ($script:UnslothVerbose) {
     $env:UNSLOTH_VERBOSE = '1'
 }
 $script:LlamaCppDegraded = $false
+# CUDA toolkit state, published by Resolve-CudaToolkit. Only the Phase 4 source
+# build consumes these; the prebuilt path leaves them at these defaults.
+$script:CudaToolkitReady = $false
+$script:NvccPath = $null
+$script:CudaToolkitRoot = $null
+$script:CudaArch = $null
 
 # Detect if running from pip install (no frontend/ dir in studio)
 $FrontendDir = Join-Path $ScriptDir "frontend"
@@ -1050,7 +1056,12 @@ if ($vsResult) {
 # ============================================
 # 1e. CUDA Toolkit (nvcc for llama.cpp build + env vars)
 # ============================================
-if ($HasNvidiaSmi) {
+# Defined here but invoked lazily right before a Phase 4 source build; the
+# prebuilt llama.cpp path needs no local toolkit. With -RequireOrExit a source
+# build is committed, so hard-fail if no driver-compatible toolkit can be found
+# or installed. Without it, detection is best-effort and only sets the flag.
+function Resolve-CudaToolkit {
+    param([switch]$RequireOrExit)
 # IMPORTANT: The CUDA Toolkit version must be <= the max CUDA version the
 # NVIDIA driver supports.  nvidia-smi reports this as "CUDA Version: X.Y".
 # If we install a toolkit newer than the driver supports, llama-server will
@@ -1146,6 +1157,11 @@ if ($DriverMaxCuda) {
 
 # -- If incompatible toolkit is blocking, tell user to uninstall it --
 if (-not $NvccPath -and $IncompatibleToolkit) {
+    if (-not $RequireOrExit) {
+        substep "CUDA Toolkit $IncompatibleToolkit exceeds driver max $DriverMaxCuda -- skipping; prebuilt llama.cpp needs no local toolkit" "Yellow"
+        $script:CudaToolkitReady = $false
+        return
+    }
     Write-Host "" -ForegroundColor Red
     Write-Host "========================================================================" -ForegroundColor Red
     Write-Host "[ERROR] CUDA Toolkit $IncompatibleToolkit is installed but INCOMPATIBLE" -ForegroundColor Red
@@ -1163,8 +1179,8 @@ if (-not $NvccPath -and $IncompatibleToolkit) {
     exit 1
 }
 
-# -- No toolkit at all: install via winget --
-if (-not $NvccPath) {
+# -- No toolkit at all: install via winget (only when a source build needs it) --
+if (-not $NvccPath -and $RequireOrExit) {
     Write-Host "CUDA toolkit (nvcc) not found -- installing via winget..." -ForegroundColor Yellow
     $HasWinget = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
     if ($HasWinget) {
@@ -1223,6 +1239,11 @@ if (-not $NvccPath) {
 }
 
 if (-not $NvccPath) {
+    if (-not $RequireOrExit) {
+        substep "no driver-compatible CUDA Toolkit found -- skipping; prebuilt llama.cpp needs no local toolkit" "Yellow"
+        $script:CudaToolkitReady = $false
+        return
+    }
     Write-Host "[ERROR] CUDA Toolkit (nvcc) is required but could not be found or installed." -ForegroundColor Red
     if ($DriverMaxCuda) {
         Write-Host "        Install CUDA Toolkit $DriverMaxCuda from https://developer.nvidia.com/cuda-toolkit-archive" -ForegroundColor Yellow
@@ -1313,8 +1334,11 @@ substep "CudaToolkitDir = $CudaToolkitRoot\"
 if (-not $CudaArch) {
     substep "could not detect compute capability -- cmake will use defaults" "Yellow"
 }
-} else {
-    step "cuda" "skipped (no NVIDIA GPU detected)" "Yellow"
+# Publish the resolved toolkit to script scope for the Phase 4 build.
+$script:NvccPath = $NvccPath
+$script:CudaToolkitRoot = $CudaToolkitRoot
+$script:CudaArch = $CudaArch
+$script:CudaToolkitReady = $true
 }
 
 if ($HasROCm) {
@@ -2459,6 +2483,12 @@ if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
         )
         if ($HasROCm) {
             $prebuiltArgs += "--has-rocm"
+            # Forward the resolved gfx arch so the lemonade HIP prebuilt is picked
+            # even when the installer's own probe cannot report it (amd-smi-only
+            # hosts, name-inferred arch).
+            if ($script:ROCmGfxArch) {
+                $prebuiltArgs += @("--rocm-gfx", $script:ROCmGfxArch)
+            }
         }
         if ($env:UNSLOTH_LLAMA_RELEASE_TAG) {
             $prebuiltArgs += @("--published-release-tag", $env:UNSLOTH_LLAMA_RELEASE_TAG)
@@ -2581,7 +2611,8 @@ if ($NeedLlamaSourceBuild) {
 # We build:
 #   - llama-server:   for GGUF model inference (with HTTPS if OpenSSL available)
 #   - llama-quantize: for GGUF export quantization
-# Prerequisites (git, cmake, VS Build Tools, CUDA Toolkit) already installed in Phase 1.
+# Prerequisites git, cmake, VS Build Tools were installed in Phase 1; the CUDA
+# Toolkit is resolved lazily just below via Resolve-CudaToolkit (source build only).
 $OriginalLlamaCppDir = $LlamaCppDir
 $BuildDir = Join-Path $LlamaCppDir "build"
 $LlamaServerBin = Join-Path $BuildDir "bin\Release\llama-server.exe"
@@ -2627,6 +2658,10 @@ if (-not $NeedLlamaSourceBuild) {
     substep "Install CMake from https://cmake.org/download/ and re-run setup." "Yellow"
     $script:LlamaCppDegraded = $true
 } else {
+    # A source build is committed here. The CUDA toolkit is only needed now, so
+    # resolve (and winget-install if needed) it lazily, failing fast if no
+    # driver-compatible toolkit exists. The prebuilt path never reaches this.
+    if ($HasNvidiaSmi) { Resolve-CudaToolkit -RequireOrExit }
     Write-Host ""
     if ($HasNvidiaSmi) {
         substep "building llama.cpp with CUDA support..."
