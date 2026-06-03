@@ -193,3 +193,54 @@ def test_apply_studio_post_processors_ignores_non_studio_types(parquet_dir: Path
     )
     df = pd.read_parquet(parquet_dir / "batch_00000.parquet")
     assert list(df.columns) == ["prediction", "reference"]
+
+
+def test_build_config_builder_skips_studio_owned_processors(monkeypatch):
+    """A recipe with a json_document_score processor must not crash inside
+    DataDesignerConfigBuilder.add_processor."""
+    from core.data_recipe import service
+
+    captured: list[str] = []
+
+    class _StubBuilder:
+        def add_processor(self, *, processor_type, **kwargs):
+            captured.append(processor_type.value)
+
+    class _StubBuilderFactory:
+        @staticmethod
+        def from_config(_cfg):
+            return _StubBuilder()
+
+    class _StubProcessorType:
+        SCHEMA_TRANSFORM = type("E", (), {"value": "schema_transform"})()
+
+        def __new__(cls, value):
+            if value == "schema_transform":
+                return cls.SCHEMA_TRANSFORM
+            raise ValueError(f"{value!r} is not a valid ProcessorType")
+
+    monkeypatch.setattr(service, "_apply_data_designer_image_context_patch", lambda: None)
+    monkeypatch.setattr(
+        service, "split_oxc_local_callable_validators",
+        lambda recipe_core: (recipe_core, []),
+    )
+    monkeypatch.setattr(
+        service, "register_oxc_local_callable_validators",
+        lambda **_: None,
+    )
+
+    import sys, types
+    fake_config = types.ModuleType("data_designer.config")
+    fake_config.DataDesignerConfigBuilder = _StubBuilderFactory
+    fake_processors = types.ModuleType("data_designer.config.processors")
+    fake_processors.ProcessorType = _StubProcessorType
+    sys.modules["data_designer.config"] = fake_config
+    sys.modules["data_designer.config.processors"] = fake_processors
+
+    service.build_config_builder({
+        "processors": [
+            {"processor_type": "schema_transform", "name": "a", "template": {}},
+            {"processor_type": "json_document_score", "name": "b"},
+        ]
+    })
+    assert captured == ["schema_transform"]

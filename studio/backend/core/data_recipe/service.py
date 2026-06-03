@@ -235,11 +235,18 @@ def build_config_builder(recipe: dict[str, Any]):
 
     # DataDesignerConfigBuilder.from_config currently skips processors.
     # Re-attach explicitly so drop_columns/schema_transform survive API payload.
+    # Studio-owned processors (json_document_score, etc.) are NOT part of
+    # data_designer's enum — they run out-of-band in worker.py after the
+    # recipe finishes producing rows. Skip them here.
+    from .post_processors import is_studio_processor_type
+
     for processor in recipe_core.get("processors") or []:
         if not isinstance(processor, dict):
             continue
         processor_type_raw = processor.get("processor_type")
         if not isinstance(processor_type_raw, str):
+            continue
+        if is_studio_processor_type(processor_type_raw):
             continue
         kwargs = {k: v for k, v in processor.items() if k != "processor_type"}
         builder.add_processor(
