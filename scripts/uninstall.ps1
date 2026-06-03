@@ -291,6 +291,13 @@ function Uninstall-UnslothStudio {
     $defaultUnslothHome = if ($env:USERPROFILE) { Join-Path $env:USERPROFILE ".unsloth" } else { $null }
     $defaultLlamaCpp = if ($defaultUnslothHome) { Join-Path $defaultUnslothHome "llama.cpp" } else { $null }
     $defaultCache = if ($defaultUnslothHome) { Join-Path $defaultUnslothHome ".cache" } else { $null }
+    # llama.cpp atomic-install staging root (install_llama_prebuilt.py:
+    # INSTALL_STAGING_ROOT_NAME=".staging", a sibling of the llama.cpp install
+    # dir). Normally pruned after a successful activate, but an interrupted or
+    # retained build can leave a "<name>.staging-XXXX" tree behind; removing it
+    # lets the empty-dir cleanup of ~/.unsloth below succeed. No-op in env/custom
+    # mode (staging nests under the custom root removed above) and when absent.
+    $defaultStaging = if ($defaultUnslothHome) { Join-Path $defaultUnslothHome ".staging" } else { $null }
 
     # Build known-root list FIRST so the port-file kill can verify ownership.
     $customRoots = @(_CustomStudioRoots)
@@ -334,6 +341,7 @@ function Uninstall-UnslothStudio {
     # root removed above) and when absent.
     if ($defaultLlamaCpp) { _RemovePath $defaultLlamaCpp }
     if ($defaultCache) { _RemovePath $defaultCache }
+    if ($defaultStaging) { _RemovePath $defaultStaging }
     # Finally drop ~/.unsloth itself, but ONLY if it is now empty -- never nuke
     # unrelated content a user may keep there.
     if ($defaultUnslothHome -and (Test-Path -LiteralPath $defaultUnslothHome) -and

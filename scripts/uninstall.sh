@@ -216,6 +216,13 @@ _remove_path "$HOME/.unsloth/studio"
 # UNSLOTH_LLAMA_CPP_PATH points at the user's own dir and is intentionally kept.
 _remove_path "$HOME/.unsloth/llama.cpp"
 _remove_path "$HOME/.unsloth/.cache"
+# llama.cpp atomic-install staging root (install_llama_prebuilt.py:
+# INSTALL_STAGING_ROOT_NAME=".staging", created as a sibling of the llama.cpp
+# install dir). Normally pruned after a successful activate, but an interrupted
+# or retained build can leave a "<name>.staging-XXXX" tree behind; removing it
+# lets the rmdir below succeed. No-op in env/custom mode (the staging root nests
+# under the custom root removed above) and when absent.
+_remove_path "$HOME/.unsloth/.staging"
 # ROCm-on-WSL helper artifacts (install_rocm_wsl_strixhalo.sh): the librocdxg
 # build clone and the throwaway smoke-test venv. No-ops on macOS / non-Strix
 # Linux where they never exist; removing them lets the rmdir below succeed.
