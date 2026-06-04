@@ -1983,11 +1983,11 @@ _KTO_KL_RE = re.compile(
 def _kto_completion_repl(m):
     ws, var = m.group("ws"), m.group("var")
     return (
-        f'{ws}shift_logits = completion_logits[:, :-1, :].contiguous()\n'
-        f'{ws}# Unsloth: clamp logits/ids/mask to shorter seq len (model may truncate input_ids)\n'
+        f"{ws}shift_logits = completion_logits[:, :-1, :].contiguous()\n"
+        f"{ws}# Unsloth: clamp logits/ids/mask to shorter seq len (model may truncate input_ids)\n"
         f'{ws}_uns_ids = {var}["completion_input_ids"][:, 1:].contiguous()\n'
-        f'{ws}_uns_n = min(shift_logits.shape[1], _uns_ids.shape[1])\n'
-        f'{ws}per_token_logps = selective_log_softmax(shift_logits[:, :_uns_n], _uns_ids[:, :_uns_n])\n'
+        f"{ws}_uns_n = min(shift_logits.shape[1], _uns_ids.shape[1])\n"
+        f"{ws}per_token_logps = selective_log_softmax(shift_logits[:, :_uns_n], _uns_ids[:, :_uns_n])\n"
         f'{ws}per_token_logps[{var}["completion_mask"][:, 1:][:, :_uns_n] == 0] = 0.0'
     )
 
@@ -1995,17 +1995,21 @@ def _kto_completion_repl(m):
 def _kto_kl_repl(m):
     ws, var = m.group("ws"), m.group("var")
     return (
-        f'{ws}shift_KL_logits = KL_logits[:, :-1, :].contiguous()\n'
-        f'{ws}# Unsloth: clamp logits/ids/mask to shorter seq len (model may truncate input_ids)\n'
+        f"{ws}shift_KL_logits = KL_logits[:, :-1, :].contiguous()\n"
+        f"{ws}# Unsloth: clamp logits/ids/mask to shorter seq len (model may truncate input_ids)\n"
         f'{ws}_uns_kl_ids = {var}["KL_completion_input_ids"][:, 1:].contiguous()\n'
-        f'{ws}_uns_kl_n = min(shift_KL_logits.shape[1], _uns_kl_ids.shape[1])\n'
-        f'{ws}KL_per_token_logps = selective_log_softmax(shift_KL_logits[:, :_uns_kl_n], _uns_kl_ids[:, :_uns_kl_n])\n'
+        f"{ws}_uns_kl_n = min(shift_KL_logits.shape[1], _uns_kl_ids.shape[1])\n"
+        f"{ws}KL_per_token_logps = selective_log_softmax(shift_KL_logits[:, :_uns_kl_n], _uns_kl_ids[:, :_uns_kl_n])\n"
         f'{ws}KL_per_token_logps[{var}["KL_completion_mask"][:, 1:][:, :_uns_kl_n] == 0] = 0.0'
     )
 
 
 def kto_trainer_align_completion_logps(function_name, function):
-    if function_name not in ("_compute_logps", "compute_ref_log_probs", "_compute_kl_logps"):
+    if function_name not in (
+        "_compute_logps",
+        "compute_ref_log_probs",
+        "_compute_kl_logps",
+    ):
         return function
     function = _KTO_COMPLETION_RE.sub(_kto_completion_repl, function)
     function = _KTO_KL_RE.sub(_kto_kl_repl, function)
