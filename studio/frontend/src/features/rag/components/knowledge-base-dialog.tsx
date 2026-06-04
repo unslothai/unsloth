@@ -210,7 +210,7 @@ export function KnowledgeBaseDialog({
                 No knowledge bases yet.
               </div>
             ) : (
-              <ul className="flex flex-col divide-y rounded-md border">
+              <ul className="flex max-h-[60vh] flex-col divide-y overflow-y-auto rounded-md border">
                 {kbs.map((kb) => (
                   <li
                     key={kb.id}
@@ -312,7 +312,7 @@ function KnowledgeBaseDocuments({
           No documents yet. Upload a PDF, Markdown, DOCX, HTML, or text file.
         </div>
       ) : (
-        <div className="flex flex-wrap gap-1.5">
+        <div className="flex max-h-[55vh] flex-wrap gap-1.5 overflow-y-auto pr-0.5">
           {documents.map((doc) => (
             <DocumentStatusChip
               key={doc.id}
