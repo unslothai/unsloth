@@ -1682,7 +1682,10 @@ shell.Run cmd, 0, False
                 }
                 step "shortcuts" "created Desktop + Start Menu shortcuts (launch WSL Studio + open browser)" "Green"
                 # Force the new .lnk icons to render now instead of blank: Explorer caches per-.lnk
-                # icons. ie4uinit -show alone is unreliable, so also broadcast SHChangeNotify below.
+                # icons in iconcache_*.db, and a same-name .lnk recreated across reinstalls keeps the
+                # stale (blank) entry. -ClearIconCache purges that db, -show rebuilds; both are still
+                # unreliable alone, so the per-.lnk SHChangeNotify below is the real fix.
+                try { & "$env:SystemRoot\System32\ie4uinit.exe" -ClearIconCache 2>$null } catch {}
                 try { & "$env:SystemRoot\System32\ie4uinit.exe" -show 2>$null } catch {}
                 try {
                     if (-not ("UnslothShell.Notify" -as [type])) {
