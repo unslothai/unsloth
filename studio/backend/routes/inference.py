@@ -2807,7 +2807,6 @@ async def openai_chat_completions(
         use_tools = (
             (_tools_on or _mcp_allowed)
             and llama_backend.supports_tools
-            and not has_gguf_image
         )
 
         if use_tools:
@@ -2897,11 +2896,9 @@ async def openai_chat_completions(
                     system_prompt = system_prompt.rstrip() + "\n\n" + _nudge
                 else:
                     system_prompt = _nudge
-                # Rebuild gguf_messages with updated system prompt
-                gguf_messages = []
-                if system_prompt:
-                    gguf_messages.append({"role": "system", "content": system_prompt})
-                gguf_messages.extend(chat_messages)
+                gguf_messages = _set_or_prepend_system_message(
+                    gguf_messages, system_prompt
+                )
 
             # ── Strip stale tool-call XML from conversation history ─
             for _msg in gguf_messages:
@@ -4858,6 +4855,21 @@ def _normalize_anthropic_openai_images(
             part["image_url"] = {"url": f"data:image/png;base64,{png_b64}"}
 
     return has_image
+
+
+def _set_or_prepend_system_message(
+    messages: list[dict], system_prompt: str
+) -> list[dict]:
+    """Return messages with a system prompt without dropping multimodal parts."""
+    if not system_prompt:
+        return messages
+
+    updated = [dict(msg) for msg in messages]
+    if updated and updated[0].get("role") == "system":
+        updated[0]["content"] = system_prompt
+        return updated
+
+    return [{"role": "system", "content": system_prompt}, *updated]
 
 
 @router.post("/messages")
