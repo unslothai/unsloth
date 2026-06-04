@@ -629,9 +629,7 @@ def test_real_collator_restores_formatting_func_when_super_raises(
 
     def fmt(example):
         return {
-            "messages": [
-                {"role": "user", "content": [{"type": "text", "text": "hi"}]}
-            ]
+            "messages": [{"role": "user", "content": [{"type": "text", "text": "hi"}]}]
         }
 
     collator = _make_real_collator(real_collator_classes, formatting_func = fmt)
