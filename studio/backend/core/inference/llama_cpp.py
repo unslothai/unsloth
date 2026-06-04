@@ -3586,9 +3586,9 @@ class LlamaCppBackend:
             # Audio input = token probe (audio_vlm/whisper) OR mmproj audio encoder.
             from utils.models.model_config import is_audio_input_type
 
-            self._has_audio_input = bool(
-                is_audio_input_type(self._audio_type)
-            ) or bool(self._mmproj_has_audio)
+            self._has_audio_input = bool(is_audio_input_type(self._audio_type)) or bool(
+                self._mmproj_has_audio
+            )
 
             if not self._healthy:
                 return False

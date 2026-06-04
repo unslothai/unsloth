@@ -815,8 +815,7 @@ _AUDIO_TOKEN_PATTERNS = {
     "csm": lambda tokens: "<|AUDIO|>" in tokens and "<|audio_eos|>" in tokens,
     "whisper": lambda tokens: "<|startoftranscript|>" in tokens,
     # Gemma 3n: <audio_soft_token>; Gemma 4: <|audio|> (not csm's <|AUDIO|>).
-    "audio_vlm": lambda tokens: "<audio_soft_token>" in tokens
-    or "<|audio|>" in tokens,
+    "audio_vlm": lambda tokens: "<audio_soft_token>" in tokens or "<|audio|>" in tokens,
     "bicodec": lambda tokens: any(t.startswith("<|bicodec_") for t in tokens),
     "dac": lambda tokens: (
         "<|audio_start|>" in tokens
