@@ -1328,6 +1328,7 @@ HAS_FLASH_ATTENTION_VARLEN = False
 if HAS_FLASH_ATTENTION:
     try:
         import flash_attn
+
         HAS_FLASH_ATTENTION_VARLEN = hasattr(flash_attn, "flash_attn_varlen_func")
     except ImportError:
         HAS_FLASH_ATTENTION_VARLEN = False
