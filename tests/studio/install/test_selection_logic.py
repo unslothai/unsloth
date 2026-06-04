@@ -11,8 +11,11 @@ No GPU, no network, no torch required -- all I/O is monkeypatched.
 """
 
 import importlib.util
+import os
 import socket
+import subprocess
 import sys
+import textwrap
 import types
 from pathlib import Path
 
@@ -3225,3 +3228,166 @@ class TestCpuFallback:
         # is gated on a degraded source build for arm64.
         assert "ggml-org/llama.cpp" in source
         assert "_LLAMA_CPP_DEGRADED" in source
+
+
+# ===========================================================================
+# setup.sh / setup.ps1: CUDA toolkit newer than driver diagnostics
+# ===========================================================================
+
+
+class TestCudaDriverToolkitMismatchMessage:
+    _SETUP_SH = PACKAGE_ROOT / "studio" / "setup.sh"
+    _SETUP_PS1 = PACKAGE_ROOT / "studio" / "setup.ps1"
+
+    def _setup_sh_cuda_helper_fragment(self):
+        source = self._SETUP_SH.read_text(encoding = "utf-8")
+        start = source.index("_nvcc_meets_llama_minimum()")
+        end = source.index("print_llama_error_log()")
+        return source[start:end]
+
+    def _run_bash(self, script, *, env = None):
+        proc = subprocess.run(
+            ["/bin/bash", "-c", script],
+            check = True,
+            text = True,
+            stdout = subprocess.PIPE,
+            stderr = subprocess.PIPE,
+            env = {**os.environ, **(env or {})},
+        )
+        return proc.stdout + proc.stderr
+
+    def _fake_nvidia_smi(self, tmp_path, output):
+        mock_bin = tmp_path / "bin"
+        mock_bin.mkdir()
+        nvidia_smi = mock_bin / "nvidia-smi"
+        nvidia_smi.write_text(
+            textwrap.dedent(
+                f"""\
+                #!/usr/bin/env bash
+                cat <<'OUT'
+                {output}
+                OUT
+                """
+            ),
+            encoding = "utf-8",
+        )
+        nvidia_smi.chmod(0o755)
+        return mock_bin
+
+    def test_setup_sh_driver_too_old_message_names_both_versions(self, tmp_path):
+        mock_bin = self._fake_nvidia_smi(
+            tmp_path,
+            "| NVIDIA-SMI 580.95   Driver Version: 580.95   CUDA Version: 13.1 |",
+        )
+        script = textwrap.dedent(
+            f"""\
+            set -euo pipefail
+            C_WARN=
+            substep() {{ printf '%s\\n' "$1"; }}
+            {self._setup_sh_cuda_helper_fragment()}
+            _driver="$(_cuda_driver_max_version)"
+            if _cuda_version_gt "13.3" "$_driver"; then
+                _print_cuda_driver_toolkit_mismatch "13.3" "$_driver"
+            fi
+            """
+        )
+        output = self._run_bash(
+            script,
+            env = {"PATH": f"{mock_bin}:{os.environ.get('PATH', '')}"},
+        )
+        assert (
+            "Unsloth supports CUDA Toolkit 13.3, but your NVIDIA driver only "
+            "supports up to CUDA 13.1."
+        ) in output
+        assert "Update the NVIDIA GPU driver to run CUDA Toolkit 13.3." in output
+        assert "prebuilt CUDA bundle" in output
+
+    def test_setup_sh_happy_path_does_not_print_mismatch(self, tmp_path):
+        mock_bin = self._fake_nvidia_smi(
+            tmp_path,
+            "| NVIDIA-SMI 580.95   Driver Version: 580.95   CUDA Version: 13.3 |",
+        )
+        script = textwrap.dedent(
+            f"""\
+            set -euo pipefail
+            C_WARN=
+            substep() {{ printf '%s\\n' "$1"; }}
+            {self._setup_sh_cuda_helper_fragment()}
+            _driver="$(_cuda_driver_max_version)"
+            if _cuda_version_gt "13.3" "$_driver"; then
+                _print_cuda_driver_toolkit_mismatch "13.3" "$_driver"
+            else
+                printf 'compatible:%s\\n' "$_driver"
+            fi
+            """
+        )
+        output = self._run_bash(
+            script,
+            env = {"PATH": f"{mock_bin}:{os.environ.get('PATH', '')}"},
+        )
+        assert "compatible:13.3" in output
+        assert "Unsloth supports CUDA Toolkit" not in output
+
+    def test_setup_sh_skips_check_without_nvidia_smi(self, tmp_path):
+        empty_bin = tmp_path / "empty-bin"
+        empty_bin.mkdir()
+        script = textwrap.dedent(
+            f"""\
+            set -euo pipefail
+            C_WARN=
+            substep() {{ printf '%s\\n' "$1"; }}
+            {self._setup_sh_cuda_helper_fragment()}
+            _driver="$(_cuda_driver_max_version)"
+            if [ -n "$_driver" ] && _cuda_version_gt "13.3" "$_driver"; then
+                _print_cuda_driver_toolkit_mismatch "13.3" "$_driver"
+            else
+                printf 'skipped\\n'
+            fi
+            """
+        )
+        output = self._run_bash(script, env = {"PATH": str(empty_bin)})
+        assert "skipped" in output
+        assert "Unsloth supports CUDA Toolkit" not in output
+
+    def test_setup_sh_unparsable_nvidia_smi_output_falls_back(self, tmp_path):
+        mock_bin = self._fake_nvidia_smi(
+            tmp_path,
+            "| NVIDIA-SMI 580.95   Driver Version: 580.95   CUDA Version: N/A |",
+        )
+        script = textwrap.dedent(
+            f"""\
+            set -euo pipefail
+            C_WARN=
+            substep() {{ printf '%s\\n' "$1"; }}
+            {self._setup_sh_cuda_helper_fragment()}
+            _driver="$(_cuda_driver_max_version)"
+            if [ -n "$_driver" ] && _cuda_version_gt "13.3" "$_driver"; then
+                _print_cuda_driver_toolkit_mismatch "13.3" "$_driver"
+            else
+                printf 'fallback:%s\\n' "${{_driver:-generic}}"
+            fi
+            """
+        )
+        output = self._run_bash(
+            script,
+            env = {"PATH": f"{mock_bin}:{os.environ.get('PATH', '')}"},
+        )
+        assert "fallback:generic" in output
+        assert "Unsloth supports CUDA Toolkit" not in output
+
+    def test_setup_ps1_mirrors_driver_mismatch_guidance(self):
+        source = self._SETUP_PS1.read_text(encoding = "utf-8")
+        assert "Write-CudaDriverToolkitMismatch" in source
+        assert (
+            "Unsloth supports CUDA Toolkit $ToolkitVersion, but your NVIDIA "
+            "driver only supports up to CUDA $DriverMaxCuda."
+        ) in source
+        assert "Update the NVIDIA GPU driver to run CUDA Toolkit $ToolkitVersion." in source
+        assert (
+            "Or let Studio use the prebuilt CUDA bundle; it does not need the "
+            "local toolkit."
+        ) in source
+        assert (
+            "Write-CudaDriverToolkitMismatch -ToolkitVersion $IncompatibleToolkit "
+            "-DriverMaxCuda $DriverMaxCuda"
+        ) in source

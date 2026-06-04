@@ -154,6 +154,44 @@ _nvcc_meets_llama_minimum() {
     echo "$_raw"
 }
 
+_cuda_driver_max_version() {
+    command -v nvidia-smi >/dev/null 2>&1 || return 0
+    nvidia-smi 2>/dev/null \
+        | sed -nE 's/.*CUDA( UMD)? Version:[[:space:]]*([0-9]+)\.([0-9]+).*/\2.\3/p' \
+        | head -1 || true
+}
+
+_cuda_version_gt() {
+    local _left=${1:-}
+    local _right=${2:-}
+    if ! [[ "$_left" =~ ^([0-9]+)\.([0-9]+)$ ]]; then
+        return 1
+    fi
+    local _left_major=$((10#${BASH_REMATCH[1]}))
+    local _left_minor=$((10#${BASH_REMATCH[2]}))
+    if ! [[ "$_right" =~ ^([0-9]+)\.([0-9]+)$ ]]; then
+        return 1
+    fi
+    local _right_major=$((10#${BASH_REMATCH[1]}))
+    local _right_minor=$((10#${BASH_REMATCH[2]}))
+
+    if [ "$_left_major" -gt "$_right_major" ]; then
+        return 0
+    fi
+    if [ "$_left_major" -eq "$_right_major" ] && [ "$_left_minor" -gt "$_right_minor" ]; then
+        return 0
+    fi
+    return 1
+}
+
+_print_cuda_driver_toolkit_mismatch() {
+    local _toolkit_version=$1
+    local _driver_version=$2
+    substep "Unsloth supports CUDA Toolkit $_toolkit_version, but your NVIDIA driver only supports up to CUDA $_driver_version." "$C_WARN"
+    substep "Update the NVIDIA GPU driver to run CUDA Toolkit $_toolkit_version." "$C_WARN"
+    substep "Or let Studio use the prebuilt CUDA bundle; it does not need the local toolkit." "$C_WARN"
+}
+
 print_llama_error_log() {
     local log_file=$1
     [ -s "$log_file" ] || return 0
@@ -1162,38 +1200,48 @@ else
                     GPU_BACKEND=""
                     _BUILD_DESC="building (CPU, CUDA toolkit < 12.4)"
                 else
-                    CMAKE_ARGS="$CMAKE_ARGS -DGGML_CUDA=ON"
-
-                    CUDA_ARCHS=""
-                    if command -v nvidia-smi &>/dev/null; then
-                        _raw_caps=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null || true)
-                        while IFS= read -r _cap; do
-                            _cap=$(echo "$_cap" | tr -d '[:space:]')
-                            if [[ "$_cap" =~ ^([0-9]+)\.([0-9]+)$ ]]; then
-                                _arch="${BASH_REMATCH[1]}${BASH_REMATCH[2]}"
-                                # Append if not already present
-                                case ";$CUDA_ARCHS;" in
-                                    *";$_arch;"*) ;;
-                                    *) CUDA_ARCHS="${CUDA_ARCHS:+$CUDA_ARCHS;}$_arch" ;;
-                                esac
-                            fi
-                        done <<< "$_raw_caps"
-                    fi
-
-                    if [ -n "$CUDA_ARCHS" ]; then
-                        CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_CUDA_ARCHITECTURES=${CUDA_ARCHS}"
-                        _BUILD_DESC="building (CUDA, sm_${CUDA_ARCHS//;/+sm_})"
+                    _DRIVER_MAX_CUDA="$(_cuda_driver_max_version)"
+                    if [ -n "$_NVCC_VER" ] && [ -n "$_DRIVER_MAX_CUDA" ] && \
+                       _cuda_version_gt "$_NVCC_VER" "$_DRIVER_MAX_CUDA"; then
+                        _print_cuda_driver_toolkit_mismatch "$_NVCC_VER" "$_DRIVER_MAX_CUDA"
+                        substep "falling back to CPU llama.cpp build for this run." "$C_WARN"
+                        NVCC_PATH=""
+                        GPU_BACKEND=""
+                        _BUILD_DESC="building (CPU, CUDA toolkit > driver)"
                     else
-                        _BUILD_DESC="building (CUDA)"
+                        CMAKE_ARGS="$CMAKE_ARGS -DGGML_CUDA=ON"
+
+                        CUDA_ARCHS=""
+                        if command -v nvidia-smi &>/dev/null; then
+                            _raw_caps=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null || true)
+                            while IFS= read -r _cap; do
+                                _cap=$(echo "$_cap" | tr -d '[:space:]')
+                                if [[ "$_cap" =~ ^([0-9]+)\.([0-9]+)$ ]]; then
+                                    _arch="${BASH_REMATCH[1]}${BASH_REMATCH[2]}"
+                                    # Append if not already present
+                                    case ";$CUDA_ARCHS;" in
+                                        *";$_arch;"*) ;;
+                                        *) CUDA_ARCHS="${CUDA_ARCHS:+$CUDA_ARCHS;}$_arch" ;;
+                                    esac
+                                fi
+                            done <<< "$_raw_caps"
+                        fi
+
+                        if [ -n "$CUDA_ARCHS" ]; then
+                            CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_CUDA_ARCHITECTURES=${CUDA_ARCHS}"
+                            _BUILD_DESC="building (CUDA, sm_${CUDA_ARCHS//;/+sm_})"
+                        else
+                            _BUILD_DESC="building (CUDA)"
+                        fi
+
+                        CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_CUDA_FLAGS=--threads=0"
+
+                        # Accept a host gcc/clang newer than nvcc's whitelist; a fresh
+                        # toolkit (e.g. CUDA 13.3) otherwise aborts with "#error --
+                        # unsupported GNU version". Via env, not CMAKE_ARGS, to avoid
+                        # word-splitting.
+                        export NVCC_PREPEND_FLAGS="${NVCC_PREPEND_FLAGS:+$NVCC_PREPEND_FLAGS }-allow-unsupported-compiler"
                     fi
-
-                    CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_CUDA_FLAGS=--threads=0"
-
-                    # Accept a host gcc/clang newer than nvcc's whitelist; a fresh
-                    # toolkit (e.g. CUDA 13.3) otherwise aborts with "#error --
-                    # unsupported GNU version". Via env, not CMAKE_ARGS, to avoid
-                    # word-splitting.
-                    export NVCC_PREPEND_FLAGS="${NVCC_PREPEND_FLAGS:+$NVCC_PREPEND_FLAGS }-allow-unsupported-compiler"
                 fi
             elif [ "$GPU_BACKEND" = "rocm" ]; then
                 # Resolve hipcc symlinks to find the real ROCm root

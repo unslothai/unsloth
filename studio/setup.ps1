@@ -278,6 +278,17 @@ function Find-Nvcc {
     return $null
 }
 
+function Write-CudaDriverToolkitMismatch {
+    param(
+        [Parameter(Mandatory = $true)][string]$ToolkitVersion,
+        [Parameter(Mandatory = $true)][string]$DriverMaxCuda,
+        [string]$Color = "Yellow"
+    )
+    substep "Unsloth supports CUDA Toolkit $ToolkitVersion, but your NVIDIA driver only supports up to CUDA $DriverMaxCuda." $Color
+    substep "Update the NVIDIA GPU driver to run CUDA Toolkit $ToolkitVersion." $Color
+    substep "Or let Studio use the prebuilt CUDA bundle; it does not need the local toolkit." $Color
+}
+
 # Detect CUDA Compute Capability via nvidia-smi.
 # Returns e.g. "80" for A100 (8.0), "89" for RTX 4090 (8.9), etc.
 # Returns $null if detection fails.
@@ -1155,26 +1166,16 @@ if ($DriverMaxCuda) {
     $NvccPath = Find-Nvcc
 }
 
-# -- If incompatible toolkit is blocking, tell user to uninstall it --
+# -- If a newer toolkit is blocked by the current driver, explain the mismatch --
 if (-not $NvccPath -and $IncompatibleToolkit) {
+    Write-CudaDriverToolkitMismatch -ToolkitVersion $IncompatibleToolkit -DriverMaxCuda $DriverMaxCuda
     if (-not $RequireOrExit) {
-        substep "CUDA Toolkit $IncompatibleToolkit exceeds driver max $DriverMaxCuda -- skipping; prebuilt llama.cpp needs no local toolkit" "Yellow"
         $script:CudaToolkitReady = $false
         return
     }
     Write-Host "" -ForegroundColor Red
     Write-Host "========================================================================" -ForegroundColor Red
-    Write-Host "[ERROR] CUDA Toolkit $IncompatibleToolkit is installed but INCOMPATIBLE" -ForegroundColor Red
-    Write-Host "        with your NVIDIA driver (which supports up to CUDA $DriverMaxCuda)." -ForegroundColor Red
-    Write-Host "" -ForegroundColor Red
-    Write-Host "  This will cause 'failed to initialize CUDA' errors at runtime." -ForegroundColor Red
-    Write-Host "" -ForegroundColor Red
-    Write-Host "  To fix:" -ForegroundColor Yellow
-    Write-Host "    1. Open Control Panel -> Programs -> Uninstall a program" -ForegroundColor Yellow
-    Write-Host "    2. Uninstall 'NVIDIA CUDA Toolkit $IncompatibleToolkit'" -ForegroundColor Yellow
-    Write-Host "    3. Re-run setup.bat (it will install CUDA $DriverMaxCuda automatically)" -ForegroundColor Yellow
-    Write-Host "" -ForegroundColor Yellow
-    Write-Host "  Alternatively, update your NVIDIA driver to one that supports CUDA $IncompatibleToolkit." -ForegroundColor Gray
+    Write-Host "[ERROR] CUDA source build cannot use the installed toolkit with this driver." -ForegroundColor Red
     Write-Host "========================================================================" -ForegroundColor Red
     exit 1
 }
