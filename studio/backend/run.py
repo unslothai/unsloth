@@ -157,6 +157,61 @@ def _working_local_url(port: int) -> "str | None":
     return None
 
 
+def _localhost_ipv6_mismatch_url(bind_host: str, port: int) -> "str | None":
+    """Return the IPv4 loopback URL when localhost resolves only to ::1.
+
+    Local Studio intentionally binds to 127.0.0.1. On hosts where localhost
+    resolves to IPv6 only, browsers can fail even though 127.0.0.1 works.
+    """
+    import socket
+
+    if bind_host != "127.0.0.1" or not port or port <= 0:
+        return None
+
+    ipv4_url = f"http://127.0.0.1:{port}"
+    try:
+        if _working_local_url(port) != ipv4_url:
+            return None
+        if _local_port_open("::1", port, timeout = 0.25):
+            return None
+        addr_info = socket.getaddrinfo(
+            "localhost", port, socket.AF_UNSPEC, socket.SOCK_STREAM
+        )
+    except Exception:
+        return None
+
+    if not addr_info:
+        return None
+
+    has_ipv4_loopback = False
+    has_ipv6_loopback = False
+    for family, _, _, _, sockaddr in addr_info:
+        if family == socket.AF_INET and sockaddr and sockaddr[0] == "127.0.0.1":
+            has_ipv4_loopback = True
+        elif family == socket.AF_INET6 and sockaddr:
+            host = sockaddr[0].split("%", 1)[0]
+            if host == "::1":
+                has_ipv6_loopback = True
+
+    if has_ipv6_loopback and not has_ipv4_loopback:
+        return ipv4_url
+    return None
+
+
+def _print_localhost_ipv6_mismatch_warning(local_url: str, port: int) -> None:
+    """Warn that localhost points at ::1 while Studio is bound to 127.0.0.1."""
+    use_color = _stdout_color_ok()
+    warn_c = "\033[38;5;215;1m" if use_color else ""
+    reset = "\033[0m" if use_color else ""
+
+    print(
+        f"{warn_c}  Warning: localhost resolves to IPv6 (::1), but Unsloth "
+        f"Studio is listening on 127.0.0.1 only. Open {local_url} instead of "
+        f"http://localhost:{port}.{reset}",
+        flush = True,
+    )
+
+
 def _stdout_color_ok() -> bool:
     """Whether to emit ANSI color codes on stdout. Mirrors startup_banner."""
     if os.environ.get("NO_COLOR", "").strip():
@@ -824,14 +879,18 @@ def run_server(
 
     if not silent:
         wildcard_bind = host in ("0.0.0.0", "::")
+        localhost_mismatch_url = _localhost_ipv6_mismatch_url(host, port)
         # For wildcard binds, run the reachability check between the URL
         # section and the stop hint so the stop hint stays last on screen.
         print_studio_access_banner(
             port = port,
             bind_host = host,
             display_host = display_host,
-            include_stop_hint = not wildcard_bind,
+            include_stop_hint = not wildcard_bind and not localhost_mismatch_url,
         )
+        if localhost_mismatch_url:
+            _print_localhost_ipv6_mismatch_warning(localhost_mismatch_url, port)
+            print_studio_stop_hint()
         if wildcard_bind:
             _verify_global_reachability(display_host, port)
             print_studio_stop_hint()

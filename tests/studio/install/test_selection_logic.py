@@ -11,7 +11,9 @@ No GPU, no network, no torch required -- all I/O is monkeypatched.
 """
 
 import importlib.util
+import socket
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -19,6 +21,7 @@ import pytest
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[3]
 MODULE_PATH = PACKAGE_ROOT / "studio" / "install_llama_prebuilt.py"
+RUN_MODULE_PATH = PACKAGE_ROOT / "studio" / "backend" / "run.py"
 SPEC = importlib.util.spec_from_file_location(
     "studio_install_llama_prebuilt", MODULE_PATH
 )
@@ -89,6 +92,39 @@ pinned_macos_release_tag = INSTALL_LLAMA_PREBUILT.pinned_macos_release_tag
 resolve_simple_install_release_plans = (
     INSTALL_LLAMA_PREBUILT.resolve_simple_install_release_plans
 )
+
+
+def load_studio_run_module(monkeypatch):
+    logger = types.SimpleNamespace(
+        debug = lambda *a, **k: None,
+        info = lambda *a, **k: None,
+        warning = lambda *a, **k: None,
+    )
+    loggers = types.ModuleType("loggers")
+    loggers.get_logger = lambda name: logger
+    monkeypatch.setitem(sys.modules, "loggers", loggers)
+
+    startup_banner = types.ModuleType("startup_banner")
+    startup_banner.print_studio_access_banner = lambda **k: None
+    startup_banner.print_studio_stop_hint = lambda: None
+    monkeypatch.setitem(sys.modules, "startup_banner", startup_banner)
+
+    paths = types.ModuleType("utils.paths")
+    paths.__path__ = []
+    storage_roots = types.ModuleType("utils.paths.storage_roots")
+    storage_roots.studio_root = lambda: PACKAGE_ROOT / ".studio-test-root"
+    paths.storage_roots = storage_roots
+    monkeypatch.setitem(sys.modules, "utils.paths", paths)
+    monkeypatch.setitem(sys.modules, "utils.paths.storage_roots", storage_roots)
+    monkeypatch.syspath_prepend(str(RUN_MODULE_PATH.parent))
+
+    spec = importlib.util.spec_from_file_location(
+        "studio_backend_run_warning_test", RUN_MODULE_PATH
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 # ---------------------------------------------------------------------------
@@ -253,6 +289,107 @@ def mock_windows_runtime(monkeypatch, lines):
         "detected_windows_runtime_lines",
         lambda: (list(lines), dict(dirs)),
     )
+
+
+# ===========================================================================
+# Studio run.py localhost warning
+# ===========================================================================
+
+
+class TestStudioLocalhostIpv6Warning:
+    def _prepare_loopback(self, run_module, monkeypatch, *, ipv6_open = False):
+        monkeypatch.setattr(
+            run_module,
+            "_working_local_url",
+            lambda port: f"http://127.0.0.1:{port}",
+        )
+        monkeypatch.setattr(
+            run_module,
+            "_local_port_open",
+            lambda host, port, timeout = 1.0: ipv6_open if host == "::1" else True,
+        )
+
+    def test_ipv4_localhost_does_not_warn(self, monkeypatch):
+        run_module = load_studio_run_module(monkeypatch)
+        self._prepare_loopback(run_module, monkeypatch)
+        monkeypatch.setattr(
+            socket,
+            "getaddrinfo",
+            lambda *a, **k: [
+                (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 8888))
+            ],
+        )
+
+        assert run_module._localhost_ipv6_mismatch_url("127.0.0.1", 8888) is None
+
+    def test_ipv6_only_localhost_warns_with_ipv4_url(self, monkeypatch, capsys):
+        run_module = load_studio_run_module(monkeypatch)
+        self._prepare_loopback(run_module, monkeypatch)
+        monkeypatch.setattr(
+            socket,
+            "getaddrinfo",
+            lambda *a, **k: [
+                (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("::1", 8888, 0, 0))
+            ],
+        )
+        monkeypatch.setattr(run_module, "_stdout_color_ok", lambda: False)
+
+        local_url = run_module._localhost_ipv6_mismatch_url("127.0.0.1", 8888)
+        assert local_url == "http://127.0.0.1:8888"
+
+        run_module._print_localhost_ipv6_mismatch_warning(local_url, 8888)
+        captured = capsys.readouterr()
+        assert "localhost resolves to IPv6 (::1)" in captured.out
+        assert "http://127.0.0.1:8888" in captured.out
+        assert "http://localhost:8888" in captured.out
+
+    @pytest.mark.parametrize("host", ["0.0.0.0", "::"])
+    def test_network_bind_suppresses_warning(self, monkeypatch, host):
+        run_module = load_studio_run_module(monkeypatch)
+        self._prepare_loopback(run_module, monkeypatch)
+        monkeypatch.setattr(
+            socket,
+            "getaddrinfo",
+            lambda *a, **k: [
+                (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("::1", 8888, 0, 0))
+            ],
+        )
+
+        assert run_module._localhost_ipv6_mismatch_url(host, 8888) is None
+
+    def test_ipv6_listener_suppresses_warning(self, monkeypatch):
+        run_module = load_studio_run_module(monkeypatch)
+        self._prepare_loopback(run_module, monkeypatch, ipv6_open = True)
+        monkeypatch.setattr(
+            socket,
+            "getaddrinfo",
+            lambda *a, **k: [
+                (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("::1", 8888, 0, 0))
+            ],
+        )
+
+        assert run_module._localhost_ipv6_mismatch_url("127.0.0.1", 8888) is None
+
+    @pytest.mark.parametrize("addr_info", [[], None])
+    def test_empty_or_unusable_resolver_result_suppresses_warning(
+        self, monkeypatch, addr_info
+    ):
+        run_module = load_studio_run_module(monkeypatch)
+        self._prepare_loopback(run_module, monkeypatch)
+        monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **k: addr_info)
+
+        assert run_module._localhost_ipv6_mismatch_url("127.0.0.1", 8888) is None
+
+    def test_resolver_error_suppresses_warning(self, monkeypatch):
+        run_module = load_studio_run_module(monkeypatch)
+        self._prepare_loopback(run_module, monkeypatch)
+
+        def _raise(*_a, **_k):
+            raise socket.gaierror("resolver unavailable")
+
+        monkeypatch.setattr(socket, "getaddrinfo", _raise)
+
+        assert run_module._localhost_ipv6_mismatch_url("127.0.0.1", 8888) is None
 
 
 # ===========================================================================
