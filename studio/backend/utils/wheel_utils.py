@@ -84,6 +84,13 @@ def _torch_nvidia_cuda_available() -> bool:
         return False
 
 
+def _cuda_visible_devices_hides_all_gpus() -> bool:
+    value = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if value is None:
+        return False
+    return value.strip().lower() in {"", "-1", "none", "no", "void"}
+
+
 @functools.lru_cache(maxsize = 1)
 def has_nvidia_gpu() -> bool:
     """Return True if an NVIDIA GPU is visible to this process.
@@ -100,6 +107,9 @@ def has_nvidia_gpu() -> bool:
 
     Cached for process lifetime; tests must call ``cache_clear()`` first.
     """
+    if _cuda_visible_devices_hides_all_gpus():
+        return False
+
     exe = shutil.which("nvidia-smi")
     if exe:
         try:

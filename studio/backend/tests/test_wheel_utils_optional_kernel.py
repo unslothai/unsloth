@@ -61,6 +61,47 @@ def _assert_torch_constrained(cmd: list[str]) -> None:
     assert Path(cmd[constraint_index + 1]).name.startswith("unsloth-kernel-")
 
 
+def test_has_nvidia_gpu_respects_no_device_cuda_visible_devices(monkeypatch):
+    wheel_utils.has_nvidia_gpu.cache_clear()
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "-1")
+    monkeypatch.setattr(wheel_utils.shutil, "which", lambda name: "/usr/bin/nvidia-smi")
+    run_mock = mock.Mock()
+    monkeypatch.setattr(wheel_utils.subprocess, "run", run_mock)
+    monkeypatch.setattr(wheel_utils, "_torch_nvidia_cuda_available", lambda: True)
+
+    assert wheel_utils.has_nvidia_gpu() is False
+    run_mock.assert_not_called()
+    wheel_utils.has_nvidia_gpu.cache_clear()
+
+
+def test_has_nvidia_gpu_respects_empty_cuda_visible_devices(monkeypatch):
+    wheel_utils.has_nvidia_gpu.cache_clear()
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
+    monkeypatch.setattr(wheel_utils.shutil, "which", lambda name: "/usr/bin/nvidia-smi")
+    run_mock = mock.Mock()
+    monkeypatch.setattr(wheel_utils.subprocess, "run", run_mock)
+    monkeypatch.setattr(wheel_utils, "_torch_nvidia_cuda_available", lambda: True)
+
+    assert wheel_utils.has_nvidia_gpu() is False
+    run_mock.assert_not_called()
+    wheel_utils.has_nvidia_gpu.cache_clear()
+
+
+def test_has_nvidia_gpu_allows_visible_cuda_mask(monkeypatch):
+    wheel_utils.has_nvidia_gpu.cache_clear()
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
+    monkeypatch.setattr(wheel_utils.shutil, "which", lambda name: "/usr/bin/nvidia-smi")
+
+    def fake_run(cmd, **kwargs):
+        return subprocess.CompletedProcess(cmd, 0, "NVIDIA H100\n")
+
+    monkeypatch.setattr(wheel_utils.subprocess, "run", fake_run)
+    monkeypatch.setattr(wheel_utils, "_torch_nvidia_cuda_available", lambda: False)
+
+    assert wheel_utils.has_nvidia_gpu() is True
+    wheel_utils.has_nvidia_gpu.cache_clear()
+
+
 def test_direct_wheel_success_returns_true_and_skips_pypi(monkeypatch):
     _patch_missing_package(monkeypatch)
     monkeypatch.setattr(wheel_utils, "url_exists", lambda url: True)
