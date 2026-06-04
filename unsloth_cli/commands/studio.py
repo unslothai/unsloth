@@ -1152,6 +1152,37 @@ def run(
 _PID_FILE = STUDIO_HOME / "studio.pid"
 
 
+def _pid_alive(pid: int) -> bool:
+    """Return True if a process with ``pid`` currently exists.
+
+    POSIX's ``os.kill(pid, 0)`` liveness probe is invalid on Windows:
+    CPython raises ``OSError`` (WinError 87, "The parameter is incorrect")
+    for *every* pid there, so it can neither confirm nor deny a process and
+    would crash ``stop`` (which only catches ProcessLookupError/Permission
+    Error). Use ``tasklist`` on Windows and the signal-0 probe elsewhere.
+    """
+    if sys.platform == "win32":
+        try:
+            out = subprocess.run(
+                ["tasklist", "/FI", f"PID eq {int(pid)}", "/NH", "/FO", "CSV"],
+                capture_output = True,
+                text = True,
+                timeout = 10,
+            ).stdout
+        except Exception:
+            # Can't determine -- assume alive and let taskkill be the source
+            # of truth (it no-ops cleanly when the pid is already gone).
+            return True
+        return f'"{int(pid)}"' in out
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
 @studio_app.command()
 def stop():
     """Stop a running Unsloth Studio server.
@@ -1173,17 +1204,14 @@ def stop():
 
     pid = int(pid_text)
 
-    # Check if the process is still alive
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
+    # Check if the process is still alive (cross-platform; os.kill(pid, 0)
+    # is not a valid liveness probe on Windows -- see _pid_alive).
+    if not _pid_alive(pid):
         typer.echo(
             f"Studio server (PID {pid}) is not running. Cleaning up stale PID file."
         )
         _PID_FILE.unlink(missing_ok = True)
         raise typer.Exit(0)
-    except PermissionError:
-        pass  # process exists but we may not own it; try to signal anyway
 
     # Send SIGTERM (graceful shutdown) or TerminateProcess on Windows
     try:
@@ -1200,17 +1228,13 @@ def stop():
         typer.echo(f"Failed to stop Studio server (PID {pid}): {e}", err = True)
         raise typer.Exit(1)
 
-    # Wait briefly for the process to exit and clean up
+    # Wait briefly for the process to exit and clean up.
     for _ in range(10):
         time.sleep(0.5)
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
+        if not _pid_alive(pid):
             _PID_FILE.unlink(missing_ok = True)
             typer.echo("Studio server stopped.")
             raise typer.Exit(0)
-        except PermissionError:
-            break
 
     typer.echo("Studio server is shutting down (may take a few seconds).")
 
