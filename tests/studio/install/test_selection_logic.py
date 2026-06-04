@@ -3382,7 +3382,10 @@ class TestCudaDriverToolkitMismatchMessage:
             "Unsloth supports CUDA Toolkit $ToolkitVersion, but your NVIDIA "
             "driver only supports up to CUDA $DriverMaxCuda."
         ) in source
-        assert "Update the NVIDIA GPU driver to run CUDA Toolkit $ToolkitVersion." in source
+        assert (
+            "Update the NVIDIA GPU driver to run CUDA Toolkit $ToolkitVersion."
+            in source
+        )
         assert (
             "Or let Studio use the prebuilt CUDA bundle; it does not need the "
             "local toolkit."
