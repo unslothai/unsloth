@@ -492,6 +492,10 @@ def _extra_args_set_spec_type(extra_args: Optional[Iterable[str]]) -> bool:
     return False
 
 
+def _auto_mtp_supported_platform() -> bool:
+    return sys.platform not in ("win32", "darwin")
+
+
 def _build_ngram_mod_flags(
     caps: Optional[dict],
     n_match: int = 24,
@@ -2919,6 +2923,7 @@ class LlamaCppBackend:
                             _mtp_effective in ("mtp", "mtp+ngram")
                             or (
                                 _mtp_effective == "auto"
+                                and _auto_mtp_supported_platform()
                                 and (
                                     bool(self._nextn_predict_layers)
                                     or _is_mtp_model_name(model_identifier, model_path)
@@ -3635,7 +3640,8 @@ class LlamaCppBackend:
           4B+ GPU/CPU: spec on is a net win (1.08x-1.46x).
         Auto falls back to ngram-mod (zero-VRAM, near-zero idle cost on
         diverse content); forced MTP variants engage anyway and just log
-        a warning per the user's choice.
+        a warning per the user's choice. Windows and macOS skip auto-MTP
+        until the llama.cpp MTP path no longer pegs CPU during generation.
         """
         flags: List[str] = []
         # Reset; emit branches re-set on the resolved emission.
@@ -3779,9 +3785,18 @@ class LlamaCppBackend:
 
         # effective_mode == "auto": today's promotion path. llama.cpp
         # #22673: MTP is compatible with mmproj, so there's no vision gate.
-        if is_mtp_model and not _mtp_too_small:
-            # GPU: MTP-only. CPU/Mac: chain ngram-mod + MTP.
+        if (
+            is_mtp_model
+            and not _mtp_too_small
+            and _auto_mtp_supported_platform()
+        ):
+            # Supported platforms: GPU = MTP-only; CPU = chain ngram-mod + MTP.
             _emit_mtp(chain_ngram = not gpus)
+        elif is_mtp_model and not _mtp_too_small:
+            logger.info(
+                "MTP GGUF detected; auto-disabling MTP on Windows/macOS. "
+                "Use the Studio Speculative Decoding dropdown to force it."
+            )
         elif is_mtp_model and _mtp_too_small:
             # Sub-3B fallback: drop the MTP draft head, keep ngram-mod
             # when the binary supports it.

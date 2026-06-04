@@ -1128,6 +1128,51 @@ def test_build_speculative_flags_matrix(
         assert "--spec-ngram-mod-n-match" not in parsed
 
 
+@pytest.mark.parametrize("platform_name", ["win32", "darwin"])
+def test_build_speculative_flags_auto_skips_mtp_on_windows_and_macos(
+    monkeypatch, platform_name
+):
+    monkeypatch.setattr(sys, "platform", platform_name)
+    backend = _resolver_backend(monkeypatch)
+
+    flags = backend._build_speculative_flags(
+        speculative_type = "auto",
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = _MTP_MODEL,
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+    )
+
+    parsed = _flags_dict(flags)
+    assert "--spec-type" not in parsed
+    assert "--spec-draft-n-max" not in parsed
+    assert backend.requested_spec_mode == "auto"
+    assert backend.speculative_type is None
+
+
+def test_build_speculative_flags_forced_mtp_still_works_on_windows(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "win32")
+    backend = _resolver_backend(monkeypatch)
+
+    flags = backend._build_speculative_flags(
+        speculative_type = "mtp",
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = _MTP_MODEL,
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+    )
+
+    parsed = _flags_dict(flags)
+    assert parsed.get("--spec-type") == "draft-mtp"
+    assert parsed.get("--spec-draft-n-max") == "2"
+    assert backend.requested_spec_mode == "mtp"
+    assert backend.speculative_type == "draft-mtp"
+
+
 def test_build_speculative_flags_user_extra_args_owns_spec_type(monkeypatch):
     # User --spec-type in extra_args bypasses the dropdown entirely.
     backend = _resolver_backend(monkeypatch)
