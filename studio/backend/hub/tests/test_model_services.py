@@ -923,6 +923,81 @@ def test_gguf_progress_subtracts_new_job_completed_baseline(
     assert result["progress"] == 0
 
 
+def test_gguf_progress_shows_main_when_companion_left_the_count(
+    monkeypatch,
+    tmp_path,
+):
+    # The mmproj companion that seeded the baseline is gone, so completed_bytes
+    # is main-only and below the baseline; it must not be subtracted to 0.
+    entry = tmp_path / "models--Org--Model-GGUF"
+    blobs = entry / "blobs"
+    blobs.mkdir(parents = True)
+    (blobs / "mainhash").write_bytes(b"x" * 20)
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+
+    requirement = gguf_variants._GgufVariantRequirement(
+        main_filenames = frozenset({"model-Q4_K_M.gguf"}),
+        target_filenames = ("model-Q4_K_M.gguf", "mmproj-F16.gguf"),
+        main_hashes = frozenset({"mainhash"}),
+        required_hashes = frozenset({"mainhash", "mmprojhash"}),
+        companion_hashes = frozenset({"mmprojhash"}),
+        mmproj_filenames = frozenset({"mmproj-F16.gguf"}),
+        mmproj_hashes = frozenset({"mmprojhash"}),
+        expected_files = (
+            download_manifest.ExpectedFile(
+                path = "model-Q4_K_M.gguf",
+                size = 100,
+                sha256 = "mainhash",
+            ),
+            download_manifest.ExpectedFile(
+                path = "mmproj-F16.gguf",
+                size = 30,
+                sha256 = "mmprojhash",
+            ),
+        ),
+        main_size_bytes = 100,
+        download_size_bytes = 130,
+    )
+
+    async def _run_inline(fn, *args, **kwargs):
+        return fn(*args, **kwargs)
+
+    monkeypatch.setattr(downloads.asyncio, "to_thread", _run_inline)
+    monkeypatch.setattr(
+        downloads.gguf_variants,
+        "_gguf_variant_requirements",
+        lambda *_args, **_kwargs: requirement,
+    )
+    monkeypatch.setattr(
+        snapshot_progress,
+        "preferred_repo_cache_dirs",
+        lambda *_args, **_kwargs: [entry],
+    )
+    monkeypatch.setattr(
+        downloads,
+        "_registry",
+        SimpleNamespace(
+            get_job = lambda _key: SimpleNamespace(state = "running"),
+            get_job_metadata = lambda _key: SimpleNamespace(
+                completed_baseline_bytes = 30,
+            ),
+        ),
+    )
+
+    result = asyncio.run(
+        downloads.get_gguf_download_progress_response(
+            "Org/Model-GGUF",
+            variant = "Q4_K_M",
+            expected_bytes = 130,
+        )
+    )
+
+    assert result["completed_bytes"] == 20
+    assert result["downloaded_bytes"] == 20
+    assert result["expected_bytes"] == 130
+    assert result["complete_on_disk"] is False
+
+
 def test_gguf_progress_complete_on_disk_ignores_full_baseline(
     monkeypatch,
     tmp_path,

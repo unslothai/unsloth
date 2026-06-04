@@ -853,7 +853,7 @@ class DownloadRegistry:
     def __init__(self, max_terminal: int = 64) -> None:
         self._jobs: dict[str, DownloadState] = {}
         self._processes: dict[str, subprocess.Popen] = {}
-        self._repo_active: dict[str, dict[str, str]] = {}
+        self._repo_active: dict[str, set[str]] = {}
         self._metadata: dict[str, DownloadMetadata] = {}
         self._pending_cancel: dict[str, Optional[int]] = {}
         self._generations: dict[str, int] = {}
@@ -870,6 +870,14 @@ class DownloadRegistry:
     ) -> None:
         self._jobs.pop(key, None)
         self._jobs[key] = DownloadState(state, error)
+        if len(self._jobs) > self._max_terminal:
+            for stale_key, stale in list(self._jobs.items()):
+                if stale.state in TERMINAL_STATES and stale_key != key:
+                    self._jobs.pop(stale_key, None)
+                    self._metadata.pop(stale_key, None)
+                    self._generations.pop(stale_key, None)
+                    if len(self._jobs) <= self._max_terminal:
+                        break
 
     def set_job(self, key: str, state: JobState, error: Optional[str] = None) -> None:
         key = normalize_job_key(key)
@@ -880,17 +888,9 @@ class DownloadRegistry:
                 repo = _repo_of_key(key)
                 active = self._repo_active.get(repo)
                 if active is not None:
-                    active.pop(key, None)
+                    active.discard(key)
                     if not active:
                         self._repo_active.pop(repo, None)
-                if len(self._jobs) > self._max_terminal:
-                    for stale_key, stale in list(self._jobs.items()):
-                        if stale.state in TERMINAL_STATES and stale_key != key:
-                            self._jobs.pop(stale_key, None)
-                            self._metadata.pop(stale_key, None)
-                            self._generations.pop(stale_key, None)
-                            if len(self._jobs) <= self._max_terminal:
-                                break
             else:
                 self._jobs[key] = DownloadState(state, error)
 
@@ -937,7 +937,7 @@ class DownloadRegistry:
                 repo = _repo_of_key(key)
                 active = self._repo_active.get(repo)
                 if active is not None:
-                    active.pop(key, None)
+                    active.discard(key)
                     if not active:
                         self._repo_active.pop(repo, None)
             else:
@@ -1024,7 +1024,7 @@ class DownloadRegistry:
                 None in deleting_scopes or variant_from_key(key) in deleting_scopes
             ):
                 return False, "deleting"
-            active = self._repo_active.get(repo, {})
+            active = self._repo_active.get(repo, set())
             stale_keys: list[str] = []
             conflict_state: Optional[str] = None
             for other_key in active:
@@ -1047,14 +1047,14 @@ class DownloadRegistry:
                     and other_metadata is not None
                     and other_metadata.repo_type == "model"
                     and bool(other_metadata.variant)
-                    and active.get(other_key) == transport
+                    and other_metadata.transport == transport
                 )
                 if concurrent_gguf_variants:
                     continue
                 conflict_state = other_status.state
                 break
             for stale_key in stale_keys:
-                active.pop(stale_key, None)
+                active.discard(stale_key)
             if conflict_state is not None:
                 return False, conflict_state
             current = self._jobs.get(key, DownloadState("idle")).state
@@ -1063,7 +1063,7 @@ class DownloadRegistry:
             self._generation_seq += 1
             self._generations[key] = self._generation_seq
             self._jobs[key] = DownloadState("running")
-            self._repo_active.setdefault(repo, active)[key] = transport
+            self._repo_active.setdefault(repo, active).add(key)
             if repo_type and repo_id:
                 self._metadata[key] = DownloadMetadata(
                     repo_type = repo_type,
@@ -1106,7 +1106,7 @@ class DownloadRegistry:
         download. A variant delete conflicts only with that same variant or a
         whole-repo (non-variant) download writing the shared snapshot; other
         quantizations of the repo download concurrently and never block it."""
-        for key in self._repo_active.get(repo_id, {}):
+        for key in self._repo_active.get(repo_id, set()):
             job = self._jobs.get(key)
             if job is None or job.state not in _ACTIVE_STATES:
                 continue
@@ -1126,7 +1126,7 @@ class DownloadRegistry:
         repo = _repo_of_key(key)
         out: set[str] = set()
         with self._lock:
-            for other_key in self._repo_active.get(repo, {}):
+            for other_key in self._repo_active.get(repo, set()):
                 if other_key == key:
                     continue
                 job = self._jobs.get(other_key)
@@ -1142,7 +1142,7 @@ class DownloadRegistry:
         repo_id = normalize_repo_key(repo_id)
         with self._lock:
             result: dict[str, str] = {}
-            for key in self._repo_active.get(repo_id, {}):
+            for key in self._repo_active.get(repo_id, set()):
                 job = self._jobs.get(key)
                 if job is not None and job.state in _ACTIVE_STATES:
                     metadata = self._metadata.get(key)
@@ -1158,7 +1158,7 @@ class DownloadRegistry:
         repo_key = normalize_repo_key(repo_id) if repo_id else None
         with self._lock:
             if repo_key:
-                candidate_keys = list(self._repo_active.get(repo_key, {}))
+                candidate_keys = list(self._repo_active.get(repo_key, set()))
             else:
                 candidate_keys = [
                     key for active in self._repo_active.values() for key in active
@@ -1214,7 +1214,7 @@ class DownloadRegistry:
         repo_id = normalize_repo_key(repo_id)
         target = (variant or "").strip().lower() or None
         with self._lock:
-            for key in self._repo_active.get(repo_id, {}):
+            for key in self._repo_active.get(repo_id, set()):
                 job = self._jobs.get(key)
                 if job is None or job.state not in _ACTIVE_STATES:
                     continue

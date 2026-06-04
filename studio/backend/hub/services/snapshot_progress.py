@@ -182,13 +182,14 @@ def compute_snapshot_progress(
 
     completed_bytes, in_progress_bytes, cache_path, complete_on_disk = selected
     downloaded_bytes = completed_bytes + in_progress_bytes
-    # While the variant is still downloading, the baseline hides companion bytes
-    # that were already on disk before this job started. Once it is verified
-    # complete, report the full figures instead: a baseline equal to the total
-    # would zero out expected/completed/downloaded and make the frontend read a
-    # finished variant as 0-byte and evict it as gone.
+    # Subtract the companion baseline only while it is still counted in
+    # completed_bytes (else a companion that left the count zeros genuine main
+    # progress) and the variant is not yet verified complete (else a full-size
+    # baseline reads a finished variant as 0-byte).
     effective_baseline_bytes = (
-        0 if complete_on_disk else min(completed_baseline_bytes, completed_bytes)
+        completed_baseline_bytes
+        if not complete_on_disk and completed_baseline_bytes <= completed_bytes
+        else 0
     )
     display_completed_bytes = max(0, completed_bytes - effective_baseline_bytes)
     display_downloaded_bytes = max(0, downloaded_bytes - effective_baseline_bytes)

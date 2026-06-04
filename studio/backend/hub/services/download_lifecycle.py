@@ -266,12 +266,12 @@ def finalize_worker_exit(
             except Exception as exc:
                 logger.debug(f"clear_cancel_marker failed for {repo_id} (rc=0): {exc}")
     elif state == "cancelled":
+        # Read metadata before the terminal set_job so a concurrent eviction
+        # can't drop it; its original casing is only the offline quant label
+        # (listing dedupes case-insensitively), the job key the fallback.
+        metadata = registry.get_job_metadata(key)
         registry.set_job(key, "cancelled")
         logger.info(f"{log_prefix} cancelled: {label} (rc={rc})")
-        # Persist the original variant casing from metadata so the marker matches
-        # the manifest; the lowercased job key is only a fallback once metadata is
-        # gone. Mismatched casing would otherwise double-list the variant offline.
-        metadata = registry.get_job_metadata(key)
         download_registry.persist_cancel_marker(
             repo_type,
             repo_id,

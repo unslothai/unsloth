@@ -148,11 +148,16 @@ def _terminate_orphaned_self() -> None:
     # the main thread is GIL-blocked in a C socket read (the reason the parent
     # cancel path uses SIGKILL); the partial .incomplete resumes byte-exact and
     # marker/manifest writes are atomic, so the cancelled code 130 is safe here.
-    print(
-        "Parent process exited; stopping orphaned download worker.",
-        file = sys.stderr,
-    )
-    sys.stderr.flush()
+    # The diagnostic is best-effort: a dead parent closes its stderr pipe read
+    # end, so the write can raise BrokenPipeError and must never preempt the exit.
+    try:
+        print(
+            "Parent process exited; stopping orphaned download worker.",
+            file = sys.stderr,
+        )
+        sys.stderr.flush()
+    except Exception:
+        pass
     os._exit(130)
 
 
