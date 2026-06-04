@@ -697,6 +697,9 @@ class LlamaCppBackend:
         self._is_audio: bool = False
         self._audio_type: Optional[str] = None
         self._audio_probed: bool = False
+        # Audio INPUT capability (distinct from _is_audio, which is TTS output).
+        self._has_audio_input: bool = False
+        self._mmproj_has_audio: bool = False  # clip.has_audio_encoder, set at load
         # Monotonic timestamp set in _kill_process; read by load_model
         # to decide whether to wait for the VRAM reclaim to finish.
         self._last_kill_monotonic: float = 0.0
@@ -2782,6 +2785,12 @@ class LlamaCppBackend:
                             if not self._healthy:
                                 return False
                             self._audio_type = detected
+                    # Re-derive after a retried probe (_mmproj_has_audio persists).
+                    from utils.models.model_config import is_audio_input_type
+
+                    self._has_audio_input = bool(
+                        is_audio_input_type(self._audio_type)
+                    ) or bool(self._mmproj_has_audio)
                 if not self._healthy:
                     return False
                 return True
@@ -3094,6 +3103,21 @@ class LlamaCppBackend:
                         "Vision-capable GGUF loaded without a usable mmproj; "
                         "image input will be disabled for this session"
                     )
+
+                # Audio input straight from the mmproj (clip.has_audio_encoder),
+                # independent of token names.
+                self._mmproj_has_audio = False
+                if launch_mmproj_path:
+                    try:
+                        from utils.models.gguf_metadata import (
+                            read_mmproj_audio_capability,
+                        )
+
+                        self._mmproj_has_audio = bool(
+                            read_mmproj_audio_capability(launch_mmproj_path)
+                        )
+                    except Exception as e:
+                        logger.debug(f"mmproj audio-capability read failed: {e}")
 
                 cmd = [
                     binary,
@@ -3527,6 +3551,7 @@ class LlamaCppBackend:
             self._is_audio = False
             self._audio_type = None
             self._audio_probed = False
+            self._has_audio_input = False
             try:
                 detected = self._detect_audio_type_strict()
                 self._audio_probed = True
@@ -3557,6 +3582,13 @@ class LlamaCppBackend:
                     if not self._healthy:
                         return False
                     self._audio_type = detected
+
+            # Audio input = token probe (audio_vlm/whisper) OR mmproj audio encoder.
+            from utils.models.model_config import is_audio_input_type
+
+            self._has_audio_input = bool(is_audio_input_type(self._audio_type)) or bool(
+                self._mmproj_has_audio
+            )
 
             if not self._healthy:
                 return False
@@ -3901,6 +3933,8 @@ class LlamaCppBackend:
             self._is_audio = False
             self._audio_type = None
             self._audio_probed = False
+            self._has_audio_input = False
+            self._mmproj_has_audio = False
             self._port = None
             self._healthy = False
             self._context_length = None
@@ -5697,7 +5731,8 @@ class LlamaCppBackend:
                 return "csm"
             if len(_tok("<|startoftranscript|>")) == 1:
                 return "whisper"
-            if len(_tok("<audio_soft_token>")) == 1:
+            # Gemma 3n: <audio_soft_token>; Gemma 4: <|audio|> (not csm's <|AUDIO|>).
+            if len(_tok("<audio_soft_token>")) == 1 or len(_tok("<|audio|>")) == 1:
                 return "audio_vlm"
             if (
                 len(_tok("<|bicodec_semantic_0|>")) == 1
