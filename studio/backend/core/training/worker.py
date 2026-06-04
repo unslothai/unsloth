@@ -1381,7 +1381,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
     gc_setting = config.get("gradient_checkpointing", "mlx")
     if isinstance(gc_setting, str):
         use_grad_checkpoint = (
-            gc_setting if gc_setting.lower() not in ("false", "") else False
+            gc_setting if gc_setting.lower() not in ("false", "none", "") else False
         )
     else:
         use_grad_checkpoint = gc_setting
