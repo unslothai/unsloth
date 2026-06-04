@@ -746,11 +746,19 @@ def test_resolve_compute_dtype_upgrades_fp16_for_zimage():
 
     fam = d._family_by_name("z-image-turbo")
     assert fam is not None and fam.fp16_incompatible is True
-    assert d._resolve_diffusion_compute_dtype(fam, "mps", torch.float16) == torch.float32
-    assert d._resolve_diffusion_compute_dtype(fam, "cuda", torch.float16) == torch.float32
+    assert (
+        d._resolve_diffusion_compute_dtype(fam, "mps", torch.float16) == torch.float32
+    )
+    assert (
+        d._resolve_diffusion_compute_dtype(fam, "cuda", torch.float16) == torch.float32
+    )
     # bfloat16 / float32 devices are not downgraded.
-    assert d._resolve_diffusion_compute_dtype(fam, "mps", torch.bfloat16) == torch.bfloat16
-    assert d._resolve_diffusion_compute_dtype(fam, "cpu", torch.float32) == torch.float32
+    assert (
+        d._resolve_diffusion_compute_dtype(fam, "mps", torch.bfloat16) == torch.bfloat16
+    )
+    assert (
+        d._resolve_diffusion_compute_dtype(fam, "cpu", torch.float32) == torch.float32
+    )
 
 
 def test_resolve_compute_dtype_leaves_fp16_tolerant_family():
@@ -761,7 +769,9 @@ def test_resolve_compute_dtype_leaves_fp16_tolerant_family():
 
     fam = d._family_by_name("flux.2-klein")
     assert fam is not None and not getattr(fam, "fp16_incompatible", False)
-    assert d._resolve_diffusion_compute_dtype(fam, "mps", torch.float16) == torch.float16
+    assert (
+        d._resolve_diffusion_compute_dtype(fam, "mps", torch.float16) == torch.float16
+    )
 
 
 def test_diffusion_device_target_falls_back_to_cpu_without_mps(monkeypatch):
