@@ -165,3 +165,48 @@ def test_st_success_keeps_sentence_transformers(monkeypatch):
     embeddings._reset_backend()
     backend = embeddings._get_backend()
     assert isinstance(backend, embeddings._SentenceTransformersBackend)
+
+
+class _BoomOnEncodeModel:
+    """Loads fine (so the init probe passes) but raises when actually encoding."""
+
+    tokenizer = None
+
+    def encode(self, texts, **_kw):
+        raise RuntimeError("CUDA error during encode")
+
+
+def test_st_encode_runtime_failure_switches_to_llama(monkeypatch):
+    # ST loads (probe ok) but encode() blows up mid-run. The process must switch to
+    # the llama-server embedder, satisfy the call there, and stay switched.
+    monkeypatch.setattr(
+        embeddings, "_get", lambda model_name = None: _BoomOnEncodeModel()
+    )
+    _patch_llama_backend(monkeypatch, binary = "/fake/llama-server")
+    calls = {}
+
+    def _sentinel_encode(self, texts, *, model_name = None, normalize = True):
+        calls["used"] = True
+        return np.zeros((len(texts), 4), dtype = np.float32)
+
+    monkeypatch.setattr(
+        _SentinelLlamaBackend, "encode", _sentinel_encode, raising = False
+    )
+    embeddings._reset_backend()
+
+    out = embeddings.encode(["alpha", "beta"])
+    assert calls.get("used") is True  # retried on the llama fallback
+    assert out.shape == (2, 4)
+    # Process-wide switch: later calls keep using the llama fallback, not ST.
+    assert isinstance(embeddings._get_backend(), _SentinelLlamaBackend)
+
+
+def test_st_encode_failure_without_llama_binary_reraises(monkeypatch):
+    # Encode fails and there's no llama-server binary -> surface the error.
+    monkeypatch.setattr(
+        embeddings, "_get", lambda model_name = None: _BoomOnEncodeModel()
+    )
+    _patch_llama_backend(monkeypatch, binary = None)
+    embeddings._reset_backend()
+    with pytest.raises(RuntimeError, match = "CUDA error during encode"):
+        embeddings.encode(["alpha", "beta"])

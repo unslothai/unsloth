@@ -9,13 +9,19 @@ hardware; see ``_resolve_auto``):
 * ``llama-server`` -- GGUF over the bundled llama.cpp; no torch (see
   ``embed_llama_server``).
 
-Backends produce different vectors, so switching requires rebuilding the index;
-we never silently switch *after* indexing, which would mix vector spaces. The one
-exception is at backend init: if sentence-transformers is selected but cannot load
-on this machine (missing torch, CUDA/driver mismatch, broken wheel), we fall back
-to the GGUF llama-server embedder. That happens before any vector is produced, so
-it cannot mix spaces -- and a machine where ST will not load could not query an ST
-index anyway.
+Backends produce different vectors, so switching requires rebuilding the index. We
+avoid mid-index switches where we can, but degrade to llama.cpp rather than crash
+when sentence-transformers breaks on a machine:
+
+* At backend init the ST model is loaded as a probe; if that fails (missing torch,
+  CUDA/driver mismatch, broken wheel) and the GGUF llama-server embedder is
+  available we use it instead. This runs before any vector is produced, so it
+  cannot mix spaces -- and a machine where ST will not load could not query an ST
+  index anyway.
+* If ST loads but a later ``encode`` fails at runtime (CUDA error, OOM), the
+  process switches to the llama-server embedder for the rest of its life and logs
+  a warning: any KB already embedded with ST should be reindexed, since the two
+  vector spaces differ.
 """
 
 from __future__ import annotations
@@ -139,7 +145,18 @@ class _SentenceTransformersBackend:
     existing ``_get`` monkeypatch in tests keeps working."""
 
     def encode(self, texts, *, model_name = None, normalize = True):
-        return _st_encode(texts, model_name = model_name, normalize = normalize)
+        try:
+            return _st_encode(texts, model_name = model_name, normalize = normalize)
+        except Exception as st_err:  # noqa: BLE001 - runtime ST/CUDA encode failure
+            # ST loaded but this encode blew up on this machine. Swap the whole
+            # process to the llama-server embedder (so later encodes stay in one
+            # space) and retry the batch there rather than failing the request.
+            fallback = _switch_to_llama_fallback(st_err)
+            if fallback is None:
+                raise
+            return fallback.encode(
+                texts, model_name = model_name, normalize = normalize
+            )
 
     def token_counter(self, *, model_name = None):
         return _st_token_counter(model_name)
@@ -178,6 +195,18 @@ def _resolve_auto() -> str:
     return "sentence-transformers"
 
 
+def _try_make_llama_backend():
+    """Return a llama-server GGUF embedding backend if its binary is present on
+    this machine, else None. Construction is lazy -- no server starts until warm."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    if not LlamaCppBackend._find_llama_server_binary():
+        return None
+    from .embed_llama_server import LlamaServerBackend
+
+    return LlamaServerBackend()
+
+
 def _build_st_backend_or_fallback():
     """Build the sentence-transformers backend, probing it by loading the model
     now. ST can be missing or broken on a given machine (no torch, CUDA/driver
@@ -190,18 +219,40 @@ def _build_st_backend_or_fallback():
         backend.warm(model_name = None)
         return backend
     except Exception as st_err:  # noqa: BLE001 - any ST/torch import or load failure
-        from core.inference.llama_cpp import LlamaCppBackend
-
-        if not LlamaCppBackend._find_llama_server_binary():
+        fallback = _try_make_llama_backend()
+        if fallback is None:
             raise
         logger.warning(
             "sentence-transformers embedder unavailable (%s); falling back to the "
             "llama-server GGUF embedder",
             st_err,
         )
-        from .embed_llama_server import LlamaServerBackend
+        return fallback
 
-        return LlamaServerBackend()
+
+def _switch_to_llama_fallback(err):
+    """A sentence-transformers encode failed at runtime (CUDA error, OOM, a bad
+    input) even though the model had loaded. Swap the process embedder to the
+    llama-server backend so every later encode stays in one vector space, and
+    return it (None if no llama-server binary is available). Logs loudly: vectors
+    written before the swap were ST, so any knowledge base already embedded with
+    ST should be reindexed, since the two vector spaces differ."""
+    global _backend, _backend_key
+    with _backend_lock:
+        if not isinstance(_backend, _SentenceTransformersBackend):
+            return _backend  # another thread already swapped (or was never ST)
+        fallback = _try_make_llama_backend()
+        if fallback is None:
+            return None
+        logger.warning(
+            "sentence-transformers encode failed (%s); switching to the llama-server "
+            "embedder for the rest of this process. Reindex any knowledge base that "
+            "was already embedded with sentence-transformers.",
+            err,
+        )
+        _backend = fallback
+        _backend_key = (config.EMBED_BACKEND or "auto").strip().lower()
+        return fallback
 
 
 def _get_backend():
