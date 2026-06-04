@@ -468,9 +468,7 @@ class TestStudioLocalhostIpv6Warning:
         assert calls["reachability"] == []
 
     @pytest.mark.parametrize("host", ["0.0.0.0", "::"])
-    def test_emit_startup_output_wildcard_runs_reachability(
-        self, monkeypatch, host
-    ):
+    def test_emit_startup_output_wildcard_runs_reachability(self, monkeypatch, host):
         run_module = load_studio_run_module(monkeypatch)
         calls = self._wire_recorders(run_module, monkeypatch)
         monkeypatch.setattr(
