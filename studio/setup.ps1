@@ -2564,7 +2564,6 @@ if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
     substep "Skipping prebuilt install -- falling back to source build" "Yellow"
 } else {
     Write-Host ""
-    substep "installing prebuilt llama.cpp bundle (preferred path)..."
     if (Test-Path -LiteralPath $LlamaCppDir) {
         substep "Existing llama.cpp install detected -- validating staged prebuilt update before replacement"
         # If the existing install is the wrong kind (e.g. windows-cpu on a ROCm
@@ -2589,6 +2588,7 @@ if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
             }
         }
     }
+    substep "installing prebuilt llama.cpp bundle (preferred path)..."
     # why: install_llama_prebuilt.py uses os.replace(), which would displace
     # an unrelated $env:UNSLOTH_STUDIO_HOME\llama.cpp before the source-build
     # ownership check below ever runs.
