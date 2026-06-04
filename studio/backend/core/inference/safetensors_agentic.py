@@ -167,8 +167,9 @@ def run_safetensors_tool_loop(
     * ``{"type": "tool_end", "tool_name", "tool_call_id", "result"}``
     """
     conversation = list(messages)
+    unrestricted_tools = not tools
     tool_controller = ToolLoopController(
-        tools = tools,
+        tools = None if unrestricted_tools else tools,
         auto_heal_tool_calls = auto_heal_tool_calls,
     )
     final_attempt_done = False
@@ -200,12 +201,14 @@ def run_safetensors_tool_loop(
             active_tools: list[dict] = []
         else:
             active_tools = tool_controller.active_tools()
-            if not active_tools:
+            if not active_tools and not unrestricted_tools:
                 final_attempt_done = True
                 active_tools = []
 
-        tool_xml_signals = TOOL_XML_SIGNALS if active_tools else ()
-        tool_protocol_active = bool(tool_xml_signals)
+        tool_protocol_active = not final_attempt_done and (
+            unrestricted_tools or bool(active_tools)
+        )
+        tool_xml_signals = TOOL_XML_SIGNALS if tool_protocol_active else ()
 
         detect_state = _state_buffering
         content_buffer = ""
@@ -523,7 +526,7 @@ def run_safetensors_tool_loop(
         if tool_controller.force_final_answer:
             final_attempt_done = True
             continue
-        if not tool_controller.active_tools():
+        if not unrestricted_tools and not tool_controller.active_tools():
             final_attempt_done = True
             continue
         if iteration + 1 >= max_tool_iterations and not final_attempt_done:

@@ -1006,24 +1006,35 @@ class TestGuardrails:
         ]
         assert len(disabled_nudges) == 1
 
-    def test_empty_tools_list_blocks_tool_calls(self):
-        exec_fn = FakeExecuteTool(["OK"])
-        loop = run_safetensors_tool_loop(
-            single_turn = _fake_stream(
+    def test_empty_tools_list_means_allow_all_in_core_loop(self):
+        turns = iter(
+            [
                 [
                     '<tool_call>{"name":"python","arguments":{"code":"print(1)"}}</tool_call>'
-                ]
-            ),
-            messages = [{"role": "user", "content": "hi"}],
-            tools = [],
-            execute_tool = exec_fn,
-            max_tool_iterations = 2,
+                ],
+                ["done"],
+            ]
         )
-        events = _collect_events(loop)
-        assert exec_fn.calls == []
-        assert not [
-            event for event in events if event.get("type") in {"tool_start", "tool_end"}
-        ]
+
+        def fake_single_turn(_messages, active_tools = None):
+            assert active_tools == []
+            acc = ""
+            for chunk in next(turns):
+                acc += chunk
+                yield acc
+
+        exec_fn = FakeExecuteTool(["OK"])
+        events = _collect_events(
+            run_safetensors_tool_loop(
+                single_turn = fake_single_turn,
+                messages = [{"role": "user", "content": "hi"}],
+                tools = [],
+                execute_tool = exec_fn,
+                max_tool_iterations = 2,
+            )
+        )
+        assert exec_fn.calls == [("python", {"code": "print(1)"})]
+        assert any(event.get("type") == "tool_end" for event in events)
 
     def test_max_iterations_zero_executes_no_tools(self):
         loop, exec_fn = _make_loop(
@@ -1074,20 +1085,36 @@ class TestGuardrails:
         _collect_events(loop)
         assert exec_fn.calls == [("web_search", {"query": "x"})]
 
-    def test_auto_heal_disabled_preserves_xml_when_no_tools_active(self):
-        exec_fn = FakeExecuteTool([])
-        loop = run_safetensors_tool_loop(
-            single_turn = _const_stream(
-                '<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'
-            ),
-            messages = [{"role": "user", "content": "show literal"}],
-            tools = [],
-            execute_tool = exec_fn,
-            max_tool_iterations = 2,
-            auto_heal_tool_calls = False,
+    def test_auto_heal_disabled_preserves_xml_on_final_no_tools_pass(self):
+        turns = iter(
+            [
+                [
+                    '<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'
+                ],
+                [
+                    '<tool_call>{"name":"web_search","arguments":{"query":"literal"}}</tool_call>'
+                ],
+            ]
         )
-        events = _collect_events(loop)
-        assert exec_fn.calls == []
+
+        def fake_single_turn(_messages, active_tools = None):
+            acc = ""
+            for chunk in next(turns):
+                acc += chunk
+                yield acc
+
+        exec_fn = FakeExecuteTool(["OK"])
+        events = _collect_events(
+            run_safetensors_tool_loop(
+                single_turn = fake_single_turn,
+                messages = [{"role": "user", "content": "show literal"}],
+                tools = [{"type": "function", "function": {"name": "web_search"}}],
+                execute_tool = exec_fn,
+                max_tool_iterations = 1,
+                auto_heal_tool_calls = False,
+            )
+        )
+        assert exec_fn.calls == [("web_search", {"query": "x"})]
         assert any(
             event.get("type") == "content" and "<tool_call>" in event.get("text", "")
             for event in events
