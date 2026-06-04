@@ -446,11 +446,14 @@ const safeImageUrl: UrlTransform = (url, _key, node) => {
   // network-path reference and resolve it against the current origin scheme.
   if (/^[/\\]{2}/.test(normalized)) return null;
 
-  // Plain relative paths (no scheme) are same-origin and safe.
-  if (!normalized.includes(":")) return normalized;
+  // A colon is only a scheme separator when it appears before any path
+  // separator.  A colon in the path or query string — e.g.
+  // /api/image?id=model:v2 or /snapshots/2026-06-04T12:00:00Z.png — is
+  // not a scheme and must not cause the URL to be rejected.
+  if (/^[a-zA-Z][a-zA-Z0-9+\-.]*:/.test(normalized)) return null;
 
-  // Everything else carries an explicit scheme → external origin → drop.
-  return null;
+  // Relative path (no scheme) — same-origin and safe.
+  return normalized;
 };
 
 const MarkdownTextImpl = () => {
