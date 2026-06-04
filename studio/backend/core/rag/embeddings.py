@@ -154,9 +154,7 @@ class _SentenceTransformersBackend:
             fallback = _switch_to_llama_fallback(st_err)
             if fallback is None:
                 raise
-            return fallback.encode(
-                texts, model_name = model_name, normalize = normalize
-            )
+            return fallback.encode(texts, model_name = model_name, normalize = normalize)
 
     def token_counter(self, *, model_name = None):
         return _st_token_counter(model_name)
