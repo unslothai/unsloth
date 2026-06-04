@@ -134,7 +134,7 @@ function ReasoningTrigger({
         {active ? (
           <span className="text-sm">Thinking...</span>
         ) : (
-          <span>Thought for {duration ?? 0} seconds</span>
+          <span>Thought for {duration ?? 0} {duration === 1 ? "second" : "seconds"}</span>
         )}
       </span>
       <ChevronDownIcon

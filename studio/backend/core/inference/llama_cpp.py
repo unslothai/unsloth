@@ -17,6 +17,7 @@ import struct
 import structlog
 from loggers import get_logger
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -28,6 +29,12 @@ from urllib.parse import urlparse
 
 import httpx
 
+from core.inference.llama_server_args import (
+    parse_cache_override,
+    parse_ctx_override,
+    resolve_cache_type_kv,
+    resolve_requested_ctx,
+)
 from core.tool_healing import (
     _TC_END_TAG_RE,
     _TC_FUNC_CLOSE_RE,
@@ -45,6 +52,7 @@ from utils.subprocess_compat import (
     windows_hidden_subprocess_kwargs as _windows_hidden_subprocess_kwargs,
 )
 from core.inference.tool_call_parser import (
+    RENDER_HTML_REPEAT_NUDGE,
     parse_tool_calls_from_text as _shared_parse_tool_calls_from_text,
 )
 
@@ -60,7 +68,9 @@ _INTENT_SIGNAL = re.compile(
     # Handles both straight and curly apostrophes.
     # Excludes "I can", "I should", "I want to", "let's" which
     # appear frequently in direct answers / explanations.
-    r"\b(i['\u2019](ll|m going to|m gonna)|i am (going to|gonna)|i will|i shall|let me|allow me)\b"
+    # Negative lookahead drops negated forms ("I will not", "I'll never")
+    # so a refusal doesn't trigger a re-prompt.
+    r"\b(i['\u2019](ll|m going to|m gonna)|i am (going to|gonna)|i will|i shall|let me|allow me)\b(?!\s+(?:not|never)\b)"
     r"|"
     # Step/plan framing: "First ...", "Step 1:", "Here's my plan"
     r"\b(?:first\b|step \d+:?|here['\u2019]?s (?:my |the |a )?(?:plan|approach))"
@@ -683,6 +693,13 @@ class LlamaCppBackend:
         self._llama_log_path: Optional[Path] = None
         self._cancel_event = threading.Event()
         self._api_key: Optional[str] = None
+        # True once a probe has completed; cleared on transient failure.
+        self._is_audio: bool = False
+        self._audio_type: Optional[str] = None
+        self._audio_probed: bool = False
+        # Monotonic timestamp set in _kill_process; read by load_model
+        # to decide whether to wait for the VRAM reclaim to finish.
+        self._last_kill_monotonic: float = 0.0
 
         self._kill_orphaned_servers()
         atexit.register(self._cleanup)
@@ -950,9 +967,6 @@ class LlamaCppBackend:
         7.  llama-server on PATH                     (system install)
         8.  ./bin/llama-server                       (legacy: extracted binary)
         """
-        import os
-        import sys
-
         binary_name = "llama-server.exe" if sys.platform == "win32" else "llama-server"
 
         # 1. Env var — direct path to binary
@@ -1224,6 +1238,33 @@ class LlamaCppBackend:
         return total
 
     @staticmethod
+    def _amd_apu_wants_unified_memory() -> bool:
+        """True only for AMD unified-memory APUs (gfx1150/gfx1151), where
+        GGML_CUDA_ENABLE_UNIFIED_MEMORY lets llama.cpp use shared system RAM.
+        False for discrete AMD, NVIDIA, CPU and macOS (the env hurts discrete
+        GPUs). ROCm reuses torch.cuda.*; the gcnArchName suffix is stripped."""
+        try:
+            import torch
+
+            if getattr(torch.version, "hip", None) is None:
+                return False
+            if not (hasattr(torch, "cuda") and torch.cuda.is_available()):
+                return False
+            for _i in range(torch.cuda.device_count()):
+                try:
+                    _arch = (
+                        getattr(torch.cuda.get_device_properties(_i), "gcnArchName", "")
+                        or ""
+                    )
+                except Exception:
+                    continue
+                if _arch.split(":")[0].strip().lower() in {"gfx1150", "gfx1151"}:
+                    return True
+        except Exception:
+            return False
+        return False
+
+    @staticmethod
     def _get_gpu_free_memory() -> list[tuple[int, int]]:
         """Query free memory per GPU.
 
@@ -1240,8 +1281,6 @@ class LlamaCppBackend:
         Returns list of (gpu_index, free_mib) sorted by index. Empty
         list if no supported GPU is reachable.
         """
-        import os
-
         # ── NVIDIA via nvidia-smi ────────────────────────────────────
         try:
             result = subprocess.run(
@@ -1346,6 +1385,76 @@ class LlamaCppBackend:
         except Exception as e:
             logger.debug(f"torch GPU probe failed: {e}")
             return []
+
+    # Skip the wait when the last kill is older than this; the GPU
+    # driver has already reclaimed the prior process's allocations.
+    _VRAM_SETTLE_WINDOW_S: float = 15.0
+
+    @staticmethod
+    def _wait_for_vram_settle(
+        max_wait: float = 2.0,
+        interval: float = 0.25,
+        tolerance_mib: int = 256,
+        since_kill: float = 0.0,
+    ) -> None:
+        """Poll ``_get_gpu_free_memory`` until free VRAM stabilises.
+
+        The GPU driver reclaims a dead process's allocations
+        asynchronously, so sampling free memory in the kill-to-spawn
+        window reads artificially low and pushes ``_select_gpus`` /
+        ``_fit_context_to_vram`` toward needless CPU offload -- on a
+        tight VRAM card this is the Apply-reload OOM that bare-shell
+        launches with the same flags never see.
+
+        Short-circuits on cold start (``since_kill`` zero) or stale
+        kill (older than ``_VRAM_SETTLE_WINDOW_S``); also on CPU-only
+        hosts (empty probe), probe exceptions, and GPU-set changes.
+        ``max_wait`` is a wall-clock bound that includes probe time,
+        so a wedged ``nvidia-smi`` cannot extend the reload.
+        """
+        now = time.monotonic()
+        if since_kill <= 0.0:
+            return
+        if now - since_kill > LlamaCppBackend._VRAM_SETTLE_WINDOW_S:
+            return
+        deadline = now + max_wait
+
+        def _probe_or_none():
+            if time.monotonic() >= deadline:
+                return None
+            try:
+                return LlamaCppBackend._get_gpu_free_memory()
+            except Exception:
+                return None
+
+        prev = _probe_or_none()
+        if prev is None or not prev:
+            return
+        while time.monotonic() < deadline:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            # Clip the nap so a near-zero ``max_wait`` is respected.
+            time.sleep(min(interval, remaining))
+            curr = _probe_or_none()
+            if curr is None or not curr or len(curr) != len(prev):
+                return
+            prev_map = dict(prev)
+            stable = True
+            for idx, free in curr:
+                if idx not in prev_map:
+                    stable = False
+                    break
+                prev_free = prev_map[idx]
+                # Adaptive: 2 % of the larger sample dominates the
+                # 256 MiB floor on large-VRAM cards.
+                per_gpu_tol = max(tolerance_mib, int(max(free, prev_free) * 0.02))
+                if abs(free - prev_free) >= per_gpu_tol:
+                    stable = False
+                    break
+            if stable:
+                return
+            prev = curr
 
     # Free-VRAM fraction at which Studio pins the GPU directly instead
     # of deferring to ``--fit on``. 5% headroom covers CUDA context +
@@ -2483,6 +2592,105 @@ class LlamaCppBackend:
 
     # ── Lifecycle ─────────────────────────────────────────────────
 
+    # GGUF ``general.architecture`` values for diffusion / image models.
+    # llama.cpp proper has no such architectures, so loading one as a chat
+    # model dies with "unknown model architecture: '<arch>'". These match
+    # the patched stable-diffusion.cpp / ComfyUI-GGUF enums (LLM_ARCH_FLUX,
+    # LLM_ARCH_QWEN_IMAGE, ...). Unsloth publishes FLUX and Qwen-Image GGUFs
+    # under https://huggingface.co/collections/unsloth/unsloth-diffusion-ggufs.
+    # Matched exactly (not as a substring) so a chat arch merely containing a
+    # short token like "wan"/"sd1" (e.g. "taiwan") is not misrouted to Images.
+    _DIFFUSION_ARCHES = frozenset(
+        (
+            "qwen_image",
+            "flux",
+            "sd1",
+            "sdxl",
+            "sd3",
+            "aura",
+            "hidream",
+            "cosmos",
+            "ltxv",
+            "hyvid",
+            "wan",
+            "lumina2",
+        )
+    )
+
+    @staticmethod
+    def _classify_llama_start_failure(
+        output: str,
+        gguf_path: Optional[str],
+        model_identifier: Optional[str],
+    ) -> str:
+        """Explain *why* llama-server failed to start, from its output.
+
+        Several distinct failures all otherwise collapse into the same
+        opaque "invalid GGUF or out of memory" message. The worst case is
+        a diffusion / image GGUF (FLUX, Qwen-Image, ...) loaded as a chat
+        model: the file is perfectly valid and there is plenty of memory,
+        but llama.cpp has no such architecture, so the user is told to free
+        memory that was never the problem (issue #5842). Pick the most
+        specific message the captured output supports.
+        """
+        lowered = (output or "").lower()
+
+        # Detect Ollama source up front so the arch branch can keep the
+        # Ollama hint instead of the generic "unsupported arch" message.
+        gguf = gguf_path or ""
+        is_ollama = (
+            ".studio_links" in gguf
+            or os.sep + "ollama_links" + os.sep in gguf
+            or os.sep + ".cache" + os.sep + "ollama" + os.sep in gguf
+            or (model_identifier or "").startswith("ollama/")
+        )
+
+        # "unknown model architecture: '<arch>'": diffusion -> Images page,
+        # Ollama -> Ollama hint, else a precise "unsupported" message. Exact
+        # match so chat archs are never misrouted.
+        arch_match = re.search(r"unknown model architecture:\s*'([^']+)'", lowered)
+        if arch_match:
+            arch = arch_match.group(1)
+            if arch in LlamaCppBackend._DIFFUSION_ARCHES:
+                return (
+                    f"'{arch}' is a diffusion (image-generation) GGUF, which "
+                    "llama-server cannot run as a chat/completion model. Use "
+                    "Studio's Images page to generate with local diffusion "
+                    "GGUFs such as FLUX and Qwen-Image."
+                )
+            if is_ollama:
+                return (
+                    "Some Ollama models do not work with llama.cpp. Try a "
+                    "different model, or use this model directly through "
+                    "Ollama instead."
+                )
+            return (
+                f"llama.cpp does not support this GGUF's model architecture "
+                f"('{arch}'). The file is valid, but this model type cannot "
+                "be run with llama-server."
+            )
+
+        # Other Ollama compat failures that do not name an arch. Only when
+        # the output shows a GGUF compat issue, not OOM / missing binaries.
+        if is_ollama:
+            gguf_compat_hints = (
+                "key not found",
+                "unknown model architecture",
+                "failed to load model",
+            )
+            if any(h in lowered for h in gguf_compat_hints):
+                return (
+                    "Some Ollama models do not work with llama.cpp. Try a "
+                    "different model, or use this model directly through "
+                    "Ollama instead."
+                )
+
+        # Fallback: genuinely unknown failure (OOM, missing binary, ...).
+        return (
+            "llama-server failed to start. "
+            "Check that the GGUF file is valid and you have enough memory."
+        )
+
     def load_model(
         self,
         *,
@@ -2542,6 +2750,40 @@ class LlamaCppBackend:
                     f"load_model: backend already in target state for "
                     f"'{model_identifier}', skipping reload"
                 )
+                # Retry probe only if a prior attempt didn't complete.
+                if not self._audio_probed:
+                    try:
+                        detected = self._detect_audio_type_strict()
+                        self._audio_probed = True
+                    except Exception as exc:
+                        logger.debug("Fast-path audio probe failed: %s", exc)
+                        detected = None
+                    if detected in ("snac", "bicodec", "dac"):
+                        with self._lock:
+                            if not self._healthy:
+                                return False
+                            try:
+                                self.init_audio_codec(detected)
+                                self._is_audio = True
+                                self._audio_type = detected
+                            except Exception as exc:
+                                logger.warning(
+                                    "Failed to init audio codec '%s': %s",
+                                    detected,
+                                    exc,
+                                )
+                                self._audio_probed = False
+                                return False
+                    elif detected:
+                        # csm / whisper / audio_vlm: track type but keep
+                        # _is_audio False -- GGUF TTS routing only fires
+                        # for snac/bicodec/dac.
+                        with self._lock:
+                            if not self._healthy:
+                                return False
+                            self._audio_type = detected
+                if not self._healthy:
+                    return False
                 return True
 
             self._cancel_event.clear()
@@ -2593,6 +2835,12 @@ class LlamaCppBackend:
                 logger.info("Load cancelled after download phase")
                 return False
 
+            # Outside ``self._lock`` so /unload, /cancel, /status are
+            # not blocked. ``unload_model`` also records the kill, so
+            # the frontend /unload+/load Apply path engages the wait
+            # here even though no in-process kill happened.
+            self._wait_for_vram_settle(since_kill = self._last_kill_monotonic)
+
             # ── Phase 3: start llama-server (under lock) ──────────────
             with self._lock:
                 # Re-check cancel inside lock
@@ -2605,7 +2853,23 @@ class LlamaCppBackend:
                 # Select GPU(s) based on model size + estimated KV cache.
                 # Seed safe defaults before GPU probing so the except path
                 # still has valid state to publish.
-                effective_ctx = n_ctx if n_ctx > 0 else (self._context_length or 0)
+                ctx_override = parse_ctx_override(extra_args)
+                requested_ctx = resolve_requested_ctx(extra_args, n_ctx)
+                cache_override = parse_cache_override(extra_args)
+                cache_type_kv = resolve_cache_type_kv(extra_args, cache_type_kv)
+                if ctx_override is not None and ctx_override > 0:
+                    logger.info(
+                        f"User --ctx-size {ctx_override} honored; "
+                        "skipping auto-reduce"
+                    )
+                if cache_override is not None:
+                    logger.info(
+                        f"User --cache-type-k/-v {cache_override} "
+                        "honored for KV estimate"
+                    )
+                effective_ctx = (
+                    requested_ctx if requested_ctx > 0 else (self._context_length or 0)
+                )
                 max_available_ctx = self._context_length or effective_ctx
                 gpus: list[tuple[int, int]] = []
                 try:
@@ -2615,8 +2879,8 @@ class LlamaCppBackend:
                     # Resolve effective context: 0 means let llama-server use the
                     # model's native length.  Only expand to a known native length
                     # if metadata is available; otherwise preserve 0 as a sentinel.
-                    if n_ctx > 0:
-                        effective_ctx = n_ctx
+                    if requested_ctx > 0:
+                        effective_ctx = requested_ctx
                     elif self._context_length is not None:
                         effective_ctx = self._context_length
                     else:
@@ -2669,7 +2933,7 @@ class LlamaCppBackend:
                     #   since multi-GPU is slower and the user didn't ask for a
                     #   specific context length.
                     gpu_indices, use_fit = None, True
-                    explicit_ctx = n_ctx > 0
+                    explicit_ctx = requested_ctx > 0
 
                     if gpus and self._can_estimate_kv() and effective_ctx > 0:
                         # Compute the largest hardware-aware cap from the model's
@@ -2726,7 +2990,7 @@ class LlamaCppBackend:
                             gpu_indices, use_fit = self._select_gpus(
                                 requested_total, gpus
                             )
-                            # No silent shrink: effective_ctx stays == n_ctx.
+                            # No silent shrink: effective_ctx stays == requested_ctx.
                         else:
                             # Auto context: prefer fewer GPUs, cap context
                             # to fit. Same headroom threshold as
@@ -2815,7 +3079,7 @@ class LlamaCppBackend:
                 except Exception as e:
                     logger.warning(f"GPU selection failed ({e}), using --fit on")
                     gpu_indices, use_fit = None, True
-                    effective_ctx = n_ctx  # fall back to original
+                    effective_ctx = requested_ctx  # fall back to original
 
                 launch_mmproj_path = self._resolve_launch_mmproj_path(
                     model_path = model_path,
@@ -3017,6 +3281,14 @@ class LlamaCppBackend:
                 env = child_env_without_native_path_secret()
                 binary_dir = str(Path(binary).parent)
 
+                # AMD unified-memory APUs (gfx1150/gfx1151): let llama.cpp use
+                # shared system RAM. setdefault so a user value wins.
+                if self._amd_apu_wants_unified_memory():
+                    env.setdefault("GGML_CUDA_ENABLE_UNIFIED_MEMORY", "1")
+                    logger.info(
+                        "AMD unified-memory APU: set GGML_CUDA_ENABLE_UNIFIED_MEMORY=1"
+                    )
+
                 if sys.platform == "win32":
                     # See _build_windows_path_dirs for ordering. #5106.
                     path_dirs = self._build_windows_path_dirs(
@@ -3026,6 +3298,24 @@ class LlamaCppBackend:
                     )
                     existing_path = env.get("PATH", "")
                     env["PATH"] = ";".join(path_dirs) + ";" + existing_path
+
+                    # ROCm: the llama.cpp prebuilt bundles its own rocblas.dll
+                    # but NOT the Tensile kernel library files it needs
+                    # (rocblas/library/TensileLibrary*.dat + *.hsaco).  The
+                    # bundled DLL searches relative to its own location by
+                    # default (i.e. <binary_dir>/rocblas/library/) which does
+                    # not exist, causing a silent crash on the first GEMM.
+                    # ROCBLAS_TENSILE_LIBPATH overrides that search to point at
+                    # the ROCm installation where the kernel files actually are.
+                    _hip_path = os.environ.get(
+                        "HIP_PATH", os.environ.get("ROCM_PATH", "")
+                    )
+                    if _hip_path:
+                        _rocblas_lib = os.path.join(
+                            _hip_path, "bin", "rocblas", "library"
+                        )
+                        if os.path.isdir(_rocblas_lib):
+                            env.setdefault("ROCBLAS_TENSILE_LIBPATH", _rocblas_lib)
                 else:
                     # Linux: set LD_LIBRARY_PATH for shared libs next to the binary
                     # and CUDA runtime libs (libcudart, libcublas, etc.)
@@ -3193,31 +3483,12 @@ class LlamaCppBackend:
                 # Wait for llama-server to become healthy
                 if not self._wait_for_health(timeout = 600.0):
                     self._kill_process()
-                    _gguf = gguf_path or ""
-                    _is_ollama = (
-                        ".studio_links" in _gguf
-                        or os.sep + "ollama_links" + os.sep in _gguf
-                        or os.sep + ".cache" + os.sep + "ollama" + os.sep in _gguf
-                        or (self._model_identifier or "").startswith("ollama/")
-                    )
-                    # Only show the Ollama-specific message when the server
-                    # output indicates a GGUF compatibility issue, not for
-                    # unrelated failures like OOM or missing binaries.
-                    if _is_ollama:
-                        _output = "\n".join(self._stdout_lines[-50:]).lower()
-                        _gguf_compat_hints = (
-                            "key not found",
-                            "unknown model architecture",
-                            "failed to load model",
-                        )
-                        if any(h in _output for h in _gguf_compat_hints):
-                            raise RuntimeError(
-                                "Some Ollama models do not work with llama.cpp. "
-                                "Try a different model, or use this model directly through Ollama instead."
-                            )
                     raise RuntimeError(
-                        "llama-server failed to start. "
-                        "Check that the GGUF file is valid and you have enough memory."
+                        self._classify_llama_start_failure(
+                            "\n".join(self._stdout_lines[-50:]),
+                            gguf_path,
+                            self._model_identifier,
+                        )
                     )
 
                 self._healthy = True
@@ -3251,7 +3522,45 @@ class LlamaCppBackend:
                     f"llama-server ready on port {self._port} "
                     f"for model '{model_identifier}'"
                 )
-                return True
+
+            # Probe outside _lock (interruptible by /unload); init inside.
+            self._is_audio = False
+            self._audio_type = None
+            self._audio_probed = False
+            try:
+                detected = self._detect_audio_type_strict()
+                self._audio_probed = True
+            except Exception as exc:
+                logger.debug("Audio probe failed: %s", exc)
+                detected = None
+            if detected in ("snac", "bicodec", "dac"):
+                with self._lock:
+                    if not self._healthy:
+                        return False
+                    try:
+                        self.init_audio_codec(detected)
+                        self._is_audio = True
+                        self._audio_type = detected
+                    except Exception as exc:
+                        # Surface as HTTP 500 -- matches pre-PR contract.
+                        logger.warning(
+                            "Failed to init audio codec '%s': %s",
+                            detected,
+                            exc,
+                        )
+                        self._audio_probed = False
+                        return False
+            elif detected:
+                # csm / whisper / audio_vlm: track type but keep _is_audio
+                # False -- GGUF TTS routing only fires for snac/bicodec/dac.
+                with self._lock:
+                    if not self._healthy:
+                        return False
+                    self._audio_type = detected
+
+            if not self._healthy:
+                return False
+            return True
 
     def _build_speculative_flags(
         self,
@@ -3591,6 +3900,7 @@ class LlamaCppBackend:
             self._is_vision = False
             self._is_audio = False
             self._audio_type = None
+            self._audio_probed = False
             self._port = None
             self._healthy = False
             self._context_length = None
@@ -3664,6 +3974,10 @@ class LlamaCppBackend:
             # server's warm-up window cannot short-circuit against the
             # previous server's health (#5401).
             self._healthy = False
+            # Drives _wait_for_vram_settle in the next load_model;
+            # set in finally so both in-process and frontend
+            # /unload+/load Apply paths record the kill.
+            self._last_kill_monotonic = time.monotonic()
             if self._stdout_thread is not None:
                 self._stdout_thread.join(timeout = 2)
                 self._stdout_thread = None
@@ -3691,10 +4005,6 @@ class LlamaCppBackend:
         Falls back to pgrep + /proc/<pid>/exe on Linux when psutil is
         not installed.
         """
-        import os
-        import signal
-        import sys
-
         try:
             # -- Build the ownership allowlist --------------------------------
             # Two kinds of matches:
@@ -4307,6 +4617,7 @@ class LlamaCppBackend:
         # a transient failure are allowed (only block when the previous
         # identical call succeeded).
         _tool_call_history: list[tuple[str, bool]] = []  # (key, failed)
+        _render_html_succeeded = False
 
         # ── Re-prompt on plan-without-action ─────────────────
         # When the model describes what it intends to do (forward-looking
@@ -4381,6 +4692,7 @@ class LlamaCppBackend:
                 _iter_timings = None
                 _stream_done = False
                 _last_emitted = ""
+                provisional_render_html_tool_call_ids = set()
 
                 stream_timeout = httpx.Timeout(
                     connect = 10,
@@ -4490,6 +4802,33 @@ class LlamaCppBackend:
                                                 tool_calls_acc[idx]["function"][
                                                     "arguments"
                                                 ] += func["arguments"]
+                                            current_name = tool_calls_acc[idx][
+                                                "function"
+                                            ].get("name", "")
+                                            fallback_id = f"call_{idx}"
+                                            current_id = tool_calls_acc[idx].get(
+                                                "id", fallback_id
+                                            )
+                                            already_started = (
+                                                current_id
+                                                in provisional_render_html_tool_call_ids
+                                            )
+                                            has_real_id = current_id != fallback_id
+                                            if (
+                                                current_name == "render_html"
+                                                and not _render_html_succeeded
+                                                and not already_started
+                                                and has_real_id
+                                            ):
+                                                provisional_render_html_tool_call_ids.add(
+                                                    current_id
+                                                )
+                                                yield {
+                                                    "type": "tool_start",
+                                                    "tool_name": "render_html",
+                                                    "tool_call_id": current_id,
+                                                    "arguments": {},
+                                                }
                                         continue
 
                                     # ── Reasoning tokens ──
@@ -4671,13 +5010,25 @@ class LlamaCppBackend:
                                     "content": _stripped,
                                 }
                             )
+                            available_tool_names = [
+                                tool.get("function", {}).get("name")
+                                for tool in tools
+                                if isinstance(tool, dict)
+                                and isinstance(tool.get("function"), dict)
+                            ]
+                            available_tool_names = [
+                                name for name in available_tool_names if name
+                            ]
+                            tool_hint = (
+                                " or ".join(available_tool_names) or "an available tool"
+                            )
                             conversation.append(
                                 {
                                     "role": "user",
                                     "content": (
                                         "STOP. Do NOT write code or explain. "
                                         "You MUST call a tool NOW. "
-                                        "Call web_search or python immediately."
+                                        f"Call {tool_hint} immediately."
                                     ),
                                 }
                             )
@@ -4849,7 +5200,12 @@ class LlamaCppBackend:
                             arguments = json.loads(raw_args)
                         except (json.JSONDecodeError, ValueError):
                             if auto_heal_tool_calls:
-                                arguments = {"query": raw_args}
+                                heal_key = {
+                                    "python": "code",
+                                    "terminal": "command",
+                                    "render_html": "code",
+                                }.get(tool_name, "query")
+                                arguments = {heal_key: raw_args}
                             else:
                                 arguments = {"raw": raw_args}
                     else:
@@ -4886,14 +5242,18 @@ class LlamaCppBackend:
                         )
                     else:
                         status_text = f"Calling: {tool_name}"
-                    yield {"type": "status", "text": status_text}
+                    _repeat_render_html = (
+                        tool_name == "render_html" and _render_html_succeeded
+                    )
+                    if not _repeat_render_html:
+                        yield {"type": "status", "text": status_text}
 
-                    yield {
-                        "type": "tool_start",
-                        "tool_name": tool_name,
-                        "tool_call_id": tc.get("id", ""),
-                        "arguments": arguments,
-                    }
+                        yield {
+                            "type": "tool_start",
+                            "tool_name": tool_name,
+                            "tool_call_id": tc.get("id", ""),
+                            "arguments": arguments,
+                        }
 
                     # ── Duplicate call detection ──────────────
                     # str(dict) is stable here: arguments always comes from
@@ -4901,7 +5261,9 @@ class LlamaCppBackend:
                     # so insertion order is deterministic (Python 3.7+).
                     _tc_key = tool_name + str(arguments)
                     _prev = _tool_call_history[-1] if _tool_call_history else None
-                    if _prev and _prev[0] == _tc_key and not _prev[1]:
+                    if _repeat_render_html:
+                        result = RENDER_HTML_REPEAT_NUDGE
+                    elif _prev and _prev[0] == _tc_key and not _prev[1]:
                         result = (
                             "You already made this exact call. "
                             "Do not repeat the same tool call. "
@@ -4914,20 +5276,38 @@ class LlamaCppBackend:
                         _effective_timeout = (
                             None if tool_call_timeout >= 9999 else tool_call_timeout
                         )
-                        result = execute_tool(
-                            tool_name,
-                            arguments,
-                            cancel_event = cancel_event,
-                            timeout = _effective_timeout,
-                            session_id = session_id,
-                        )
+                        # Guard against the model emitting a tool not in the
+                        # per-request advertised set: filtered MCP names, a
+                        # built-in the caller opted out of, or a stale name
+                        # from a prior turn. Mirrors the safetensors loop's
+                        # allowed_tool_names check.
+                        _allowed = {
+                            (t.get("function") or {}).get("name")
+                            for t in (tools or [])
+                            if (t.get("function") or {}).get("name")
+                        }
+                        if _allowed and tool_name not in _allowed:
+                            result = (
+                                f"Error: tool '{tool_name}' is not enabled "
+                                "for this request. Use one of the enabled "
+                                "tools or provide a final answer."
+                            )
+                        else:
+                            result = execute_tool(
+                                tool_name,
+                                arguments,
+                                cancel_event = cancel_event,
+                                timeout = _effective_timeout,
+                                session_id = session_id,
+                            )
 
-                    yield {
-                        "type": "tool_end",
-                        "tool_name": tool_name,
-                        "tool_call_id": tc.get("id", ""),
-                        "result": result,
-                    }
+                    if not _repeat_render_html:
+                        yield {
+                            "type": "tool_end",
+                            "tool_name": tool_name,
+                            "tool_call_id": tc.get("id", ""),
+                            "result": result,
+                        }
 
                     # Nudge model to try a different approach on errors
                     _error_prefixes = (
@@ -4943,6 +5323,8 @@ class LlamaCppBackend:
                     _is_error = isinstance(result, str) and result.lstrip().startswith(
                         _error_prefixes
                     )
+                    if tool_name == "render_html" and not _is_error:
+                        _render_html_succeeded = True
                     _tool_call_history.append((_tc_key, _is_error))
                     # Strip image sentinel before feeding result to the LLM
                     # (the full result with sentinel is still yielded via
@@ -5167,48 +5549,57 @@ class LlamaCppBackend:
     # ── TTS support ────────────────────────────────────────────
 
     def detect_audio_type(self) -> Optional[str]:
-        """Detect audio/TTS codec by probing the loaded model's vocabulary."""
-        if not self.is_loaded:
-            return None
+        """Detect audio/TTS codec; swallows errors (use _strict variant to distinguish)."""
         try:
-            _auth_headers = (
-                {"Authorization": f"Bearer {self._api_key}"} if self._api_key else None
-            )
-            with httpx.Client(timeout = 10, headers = _auth_headers) as client:
-
-                def _detok(tid: int) -> str:
-                    r = client.post(
-                        f"{self.base_url}/detokenize", json = {"tokens": [tid]}
-                    )
-                    return r.json().get("content", "") if r.status_code == 200 else ""
-
-                def _tok(text: str) -> list[int]:
-                    r = client.post(
-                        f"{self.base_url}/tokenize",
-                        json = {"content": text, "add_special": False},
-                    )
-                    return r.json().get("tokens", []) if r.status_code == 200 else []
-
-                # Check codec-specific tokens (not generic ones that may exist in non-audio models)
-                if "<custom_token_" in _detok(128258) and "<custom_token_" in _detok(
-                    128259
-                ):
-                    return "snac"
-                if len(_tok("<|AUDIO|>")) == 1 and len(_tok("<|audio_eos|>")) == 1:
-                    return "csm"
-                if len(_tok("<|startoftranscript|>")) == 1:
-                    return "whisper"
-                if len(_tok("<audio_soft_token>")) == 1:
-                    return "audio_vlm"
-                if (
-                    len(_tok("<|bicodec_semantic_0|>")) == 1
-                    and len(_tok("<|bicodec_global_0|>")) == 1
-                ):
-                    return "bicodec"
-                if len(_tok("<|c1_0|>")) == 1 and len(_tok("<|c2_0|>")) == 1:
-                    return "dac"
+            return self._detect_audio_type_strict()
         except Exception as e:
             logger.debug(f"Audio type detection failed: {e}")
+            return None
+
+    def _detect_audio_type_strict(self) -> Optional[str]:
+        """Codec name on match, None on definitive non-audio, raises on transport/JSON errors."""
+        if not self.is_loaded:
+            return None
+        _auth_headers = (
+            {"Authorization": f"Bearer {self._api_key}"} if self._api_key else None
+        )
+        with httpx.Client(timeout = 10, headers = _auth_headers) as client:
+
+            def _detok(tid: int) -> str:
+                # Non-200 means "marker not in vocab" -- keep probing.
+                # Transport / JSON errors still raise.
+                r = client.post(f"{self.base_url}/detokenize", json = {"tokens": [tid]})
+                if r.status_code != 200:
+                    return ""
+                return r.json().get("content", "")
+
+            def _tok(text: str) -> list[int]:
+                r = client.post(
+                    f"{self.base_url}/tokenize",
+                    json = {"content": text, "add_special": False},
+                )
+                if r.status_code != 200:
+                    return []
+                return r.json().get("tokens", [])
+
+            # Check codec-specific tokens (not generic ones that may exist in non-audio models)
+            if "<custom_token_" in _detok(128258) and "<custom_token_" in _detok(
+                128259
+            ):
+                return "snac"
+            if len(_tok("<|AUDIO|>")) == 1 and len(_tok("<|audio_eos|>")) == 1:
+                return "csm"
+            if len(_tok("<|startoftranscript|>")) == 1:
+                return "whisper"
+            if len(_tok("<audio_soft_token>")) == 1:
+                return "audio_vlm"
+            if (
+                len(_tok("<|bicodec_semantic_0|>")) == 1
+                and len(_tok("<|bicodec_global_0|>")) == 1
+            ):
+                return "bicodec"
+            if len(_tok("<|c1_0|>")) == 1 and len(_tok("<|c2_0|>")) == 1:
+                return "dac"
         return None
 
     # Prompt format per codec: (template, stop_tokens, needs_token_ids)

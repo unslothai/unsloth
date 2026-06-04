@@ -140,6 +140,7 @@ global DISABLE_SDPA_MODEL_NAMES
 DISABLE_SDPA_MODEL_NAMES = [
     "gemma3,",  # Add comma bc gemma3 will match gemma3n
     "gemma3_text",  # Gemma3TextModel (EmbeddingGemma) - substring match, keep underscore
+    "gpt_oss",
 ]
 
 
