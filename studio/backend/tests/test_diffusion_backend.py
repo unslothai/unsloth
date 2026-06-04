@@ -756,6 +756,8 @@ def test_status_shape_unloaded():
         "safetensors_quantization_components",
         "load_timings",
         "device",
+        "device_backend",
+        "device_capabilities",
         "dtype",
         "loaded_at",
         "last_error",
@@ -1684,8 +1686,9 @@ def _install_fake_diffusers(monkeypatch, *, raise_on_pipeline = False):
             ]
             return o
 
-        def enable_model_cpu_offload(self):
+        def enable_model_cpu_offload(self, device = None):
             self.cpu_offload = True
+            self.cpu_offload_device = device
 
         def to(self, device):
             self.device = device
@@ -1785,7 +1788,14 @@ def _install_fake_diffusers(monkeypatch, *, raise_on_pipeline = False):
 
 def test_load_model_full_repo_uses_safetensors_quantization(monkeypatch):
     _install_fake_diffusers(monkeypatch)
+    import core.inference.diffusion as d
     from core.inference.diffusion import get_diffusion_backend
+
+    monkeypatch.setattr(
+        d.DiffusionBackend,
+        "_pick_device_and_dtype",
+        lambda self: ("cuda", "fake_dtype"),
+    )
 
     backend = get_diffusion_backend()
     status = backend.load_model(
@@ -1831,7 +1841,14 @@ def test_load_model_full_repo_uses_safetensors_quantization(monkeypatch):
 
 def test_load_model_full_repo_defaults_to_regional_torch_compile(monkeypatch):
     _install_fake_diffusers(monkeypatch)
+    import core.inference.diffusion as d
     from core.inference.diffusion import get_diffusion_backend
+
+    monkeypatch.setattr(
+        d.DiffusionBackend,
+        "_pick_device_and_dtype",
+        lambda self: ("cuda", "fake_dtype"),
+    )
 
     backend = get_diffusion_backend()
     status = backend.load_model(
@@ -1886,6 +1903,81 @@ def test_load_model_cpu_offload_defaults_to_regional_torch_compile(monkeypatch):
     ]
     assert status["torch_compile_config"]["scope"] == "regional"
     assert status["torch_compile_config"]["source"] == "default"
+
+
+def test_load_model_xpu_uses_xpu_cpu_offload_without_default_compile(monkeypatch):
+    _install_fake_diffusers(monkeypatch)
+    import core.inference.diffusion as d
+    from core.inference.diffusion import get_diffusion_backend
+
+    monkeypatch.setattr(
+        d.DiffusionBackend,
+        "_pick_device_and_dtype",
+        lambda self: ("xpu", "fake_dtype"),
+    )
+
+    backend = get_diffusion_backend()
+    status = backend.load_model(
+        "owner/my-flux-diffusers",
+        family_override = "flux.1",
+        enable_model_cpu_offload = True,
+    )
+
+    pipe = backend._pipe
+    assert backend._cpu_offload_enabled is True
+    assert pipe.cpu_offload is True
+    assert pipe.cpu_offload_device == "xpu"
+    assert pipe.transformer.compile_repeated_blocks_calls == []
+    assert status["device"] == "xpu"
+    assert status["device_backend"] == "xpu"
+    assert status["device_capabilities"]["supports_model_cpu_offload"] is True
+    assert status["device_capabilities"]["supports_default_torch_compile"] is False
+    assert status["torch_compile_config"] is None
+
+
+def test_load_model_mps_disables_cpu_offload_by_default(monkeypatch):
+    _install_fake_diffusers(monkeypatch)
+    import core.inference.diffusion as d
+    from core.inference.diffusion import get_diffusion_backend
+
+    monkeypatch.setattr(
+        d.DiffusionBackend,
+        "_pick_device_and_dtype",
+        lambda self: ("mps", "fake_dtype"),
+    )
+
+    backend = get_diffusion_backend()
+    status = backend.load_model(
+        "owner/my-flux-diffusers",
+        family_override = "flux.1",
+        enable_model_cpu_offload = True,
+    )
+
+    pipe = backend._pipe
+    assert backend._cpu_offload_enabled is False
+    assert not hasattr(pipe, "cpu_offload")
+    assert pipe.device == "mps"
+    assert pipe.transformer.compile_repeated_blocks_calls == []
+    assert status["device"] == "mps"
+    assert status["device_backend"] == "mps"
+    assert status["device_capabilities"]["supports_model_cpu_offload"] is False
+    assert status["torch_compile_config"] is None
+
+
+def test_diffusion_device_policy_respects_studio_cpu(monkeypatch):
+    import torch
+    from core.inference.diffusion_device import resolve_diffusion_device_target
+    from utils.hardware import DeviceType
+    import utils.hardware as hw
+
+    monkeypatch.setattr(hw, "get_device", lambda: DeviceType.CPU)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+
+    target = resolve_diffusion_device_target()
+
+    assert target.torch_device == "cpu"
+    assert target.backend == "cpu"
+    assert target.supports_model_cpu_offload is False
 
 
 def test_load_model_full_repo_respects_explicit_torch_compile_off(monkeypatch):

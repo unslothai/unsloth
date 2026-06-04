@@ -149,6 +149,12 @@ class _FakeBackend:
             "pending_lora_repo": None,
             "pending_lora_weight_name": None,
             "device": "cpu",
+            "device_backend": "cpu",
+            "device_capabilities": {
+                "torch_device": "cpu",
+                "backend": "cpu",
+                "supports_model_cpu_offload": False,
+            },
             "dtype": "torch.bfloat16",
             "loaded_at": 0,
             "last_error": None,

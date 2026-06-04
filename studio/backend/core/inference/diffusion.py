@@ -58,6 +58,11 @@ from .diffusion_attention import (
     DIFFUSERS_ATTENTION_BACKEND_CANDIDATES,
     apply_diffusers_attention_backend,
 )
+from .diffusion_device import (
+    DiffusionDeviceTarget,
+    diffusion_device_target_from_torch_device,
+    resolve_diffusion_device_target,
+)
 from .diffusion_memory import (
     DiffusionWorkloadEstimate,
     ModelMemoryEstimate,
@@ -3443,6 +3448,26 @@ def _apply_diffusion_memory_policy(pipe: Any, offload_policy: Optional[str]) -> 
             method()
 
 
+def _enable_diffusers_model_cpu_offload(pipe: Any, device: str) -> None:
+    import inspect
+
+    method = pipe.enable_model_cpu_offload
+    try:
+        parameters = inspect.signature(method).parameters
+    except (TypeError, ValueError):
+        # Test doubles and older Diffusers builds may not accept the
+        # keyword. Those versions auto-detect the accelerator.
+        try:
+            method(device = device)
+        except TypeError:
+            method()
+        return
+    if "device" in parameters:
+        method(device = device)
+    else:
+        method()
+
+
 def _clone_prompt_embeds_to_device(value: Any, device: Any) -> Any:
     if value is None:
         return None
@@ -4276,6 +4301,8 @@ class DiffusionBackend:
         self._sampling_contract: Optional[DiffusionSamplingContract] = None
         self._device: Optional[str] = None
         self._dtype: Optional[str] = None
+        self._device_backend: Optional[str] = None
+        self._device_capabilities: Optional[dict[str, Any]] = None
         # True when ``enable_model_cpu_offload()`` was applied on the
         # loaded pipeline. Diffusers' offload moves the active
         # submodule between CPU and GPU on each step, so a CUDA
@@ -4505,6 +4532,12 @@ class DiffusionBackend:
                 ),
                 "load_timings": dict(self._load_timings),
                 "device": self._device,
+                "device_backend": self._device_backend,
+                "device_capabilities": (
+                    dict(self._device_capabilities)
+                    if self._device_capabilities is not None
+                    else None
+                ),
                 "dtype": self._dtype,
                 "loaded_at": self._loaded_at,
                 "last_error": self._last_error,
@@ -4581,36 +4614,26 @@ class DiffusionBackend:
         }
 
     def _pick_device_and_dtype(self) -> tuple[str, "Any"]:
-        """Pick (device, dtype) for the current host.
+        """Pick the PyTorch device string and dtype for Diffusers.
 
-        CUDA-first because that is the only path our diffusion GGUFs are
-        validated on. On macOS we use MPS in float16 to keep the pipeline
-        on the Metal GPU. CPU is allowed only as a last resort because
-        running FLUX on CPU is unusably slow (> 10 minutes per image).
-
-        BF16 is gated on ``torch.cuda.is_bf16_supported`` because the
-        Pascal / Turing class (sm_60 / sm_70 / sm_75) reports
-        ``is_available() == True`` but lacks BF16 ALUs; FLUX kernels
-        then fail inside ``from_pretrained`` or at the first denoise
-        step. Those cards still work on FP16, so fall back rather than
-        refuse to load.
+        The richer device policy lives in ``_pick_device_target``. This
+        legacy tuple method remains as a stable test/monkeypatch surface.
         """
-        import torch
 
-        if torch.cuda.is_available():
-            bf16_ok = False
-            try:
-                bf16_ok = bool(torch.cuda.is_bf16_supported())
-            except Exception:
-                bf16_ok = False
-            return "cuda", torch.bfloat16 if bf16_ok else torch.float16
+        target = resolve_diffusion_device_target()
+        self._last_diffusion_device_target = target
+        return target.torch_device, target.dtype
+
+    def _pick_device_target(self) -> DiffusionDeviceTarget:
+        device, dtype = self._pick_device_and_dtype()
+        target = getattr(self, "_last_diffusion_device_target", None)
         if (
-            hasattr(torch, "backends")
-            and getattr(torch.backends, "mps", None)
-            and torch.backends.mps.is_available()
+            isinstance(target, DiffusionDeviceTarget)
+            and target.torch_device == str(device).split(":", 1)[0]
+            and target.dtype is dtype
         ):
-            return "mps", torch.float16
-        return "cpu", torch.float32
+            return target
+        return diffusion_device_target_from_torch_device(device, dtype)
 
     def load_model(
         self,
@@ -4875,7 +4898,9 @@ class DiffusionBackend:
                 "prompt_enhancer_gguf_filename, not both."
             )
 
-        device, dtype = self._pick_device_and_dtype()
+        device_target = self._pick_device_target()
+        device = device_target.torch_device
+        dtype = device_target.dtype
 
         if (
             offload_policy is None
@@ -4912,6 +4937,12 @@ class DiffusionBackend:
             safetensors_quantization = resolved_safetensors_quantization,
             media_kind = fam.media_kind,
         )
+        if (
+            torch_compile is None
+            and resolved_torch_compile != DIFFUSION_TORCH_COMPILE_NONE
+            and not device_target.supports_default_torch_compile
+        ):
+            resolved_torch_compile = DIFFUSION_TORCH_COMPILE_NONE
         effective_torch_compile_fullgraph = torch_compile_fullgraph
         effective_torch_compile_dynamic = torch_compile_dynamic
         effective_torch_compile_options = torch_compile_options
@@ -5077,7 +5108,10 @@ class DiffusionBackend:
                 )
                 diffusion_gguf_resident_device = (
                     "cpu"
-                    if gguf_quantized_cpu_resident and device == "cuda"
+                    if (
+                        gguf_quantized_cpu_resident
+                        and device_target.supports_gguf_cpu_resident
+                    )
                     else None
                 )
                 text_encoder_resident_device = diffusion_gguf_resident_device
@@ -5087,7 +5121,7 @@ class DiffusionBackend:
                         DIFFUSION_OFFLOAD_POLICY_LESS_AGGRESSIVE,
                         DIFFUSION_OFFLOAD_POLICY_HYBRID,
                     }
-                    and device == "cuda"
+                    and device_target.supports_gguf_cpu_resident
                 ):
                     text_encoder_resident_device = "cpu"
                 gguf_pin_cpu_resident_active = bool(
@@ -5469,6 +5503,8 @@ class DiffusionBackend:
                         self._base_repo_warning = None
                         self._sampling_contract = None
                         self._device = None
+                        self._device_backend = None
+                        self._device_capabilities = None
                         self._dtype = None
                         self._cpu_offload_enabled = False
                         self._offload_policy = None
@@ -5577,7 +5613,7 @@ class DiffusionBackend:
                     if (
                         resolved_offload_policy == DIFFUSION_OFFLOAD_POLICY_BALANCED
                         and diffusion_gguf_resident_device == "cpu"
-                        and device == "cuda"
+                        and device_target.supports_gguf_cuda_cache
                     ):
                         cuda_cache_bytes = _balanced_gguf_cuda_cache_bytes(device = device)
                         if cuda_cache_bytes > 0:
@@ -5777,7 +5813,8 @@ class DiffusionBackend:
 
                 pipe = None
                 cpu_offload_enabled = bool(
-                    enable_model_cpu_offload and device == "cuda"
+                    enable_model_cpu_offload
+                    and device_target.supports_model_cpu_offload
                 )
                 try:
                     with _load_phase("pipeline_from_pretrained"):
@@ -5810,7 +5847,7 @@ class DiffusionBackend:
                     # P2 #11).
                     with _load_phase("device_placement"):
                         if cpu_offload_enabled:
-                            pipe.enable_model_cpu_offload()
+                            _enable_diffusers_model_cpu_offload(pipe, device)
                         else:
                             pipe.to(device)
                     if _enable_flux2_klein_embedded_guidance(pipe, fam):
@@ -5829,7 +5866,10 @@ class DiffusionBackend:
                             resolved_attention_backend,
                         )
                     if resolved_torch_compile != DIFFUSION_TORCH_COMPILE_NONE:
-                        if diffusion_gguf_filename and device == "cuda":
+                        if (
+                            diffusion_gguf_filename
+                            and device_target.supports_gguf_cuda_cache
+                        ):
                             try:
                                 from .gguf_text_encoder import prime_lazy_gguf_cuda_cache
                             except Exception:
@@ -5932,6 +5972,8 @@ class DiffusionBackend:
                         gguf_filename = diffusion_gguf_filename,
                     )
                     self._device = device
+                    self._device_backend = device_target.backend
+                    self._device_capabilities = device_target.as_public_dict()
                     self._dtype = str(dtype).replace("torch.", "")
                     self._cpu_offload_enabled = cpu_offload_enabled
                     self._offload_policy = resolved_offload_policy
@@ -6221,6 +6263,8 @@ class DiffusionBackend:
                 self._base_repo_warning = None
                 self._sampling_contract = None
                 self._device = None
+                self._device_backend = None
+                self._device_capabilities = None
                 self._dtype = None
                 self._cpu_offload_enabled = False
                 self._offload_policy = None
@@ -6575,9 +6619,13 @@ class DiffusionBackend:
             if cpu_offload_enabled:
                 gen_device = "cpu"
             else:
-                gen_device = (
-                    "cuda" if device == "cuda" and torch.cuda.is_available() else "cpu"
-                )
+                gen_device = "cpu"
+                if device == "cuda" and torch.cuda.is_available():
+                    gen_device = "cuda"
+                elif device == "xpu":
+                    xpu = getattr(torch, "xpu", None)
+                    if xpu is not None and xpu.is_available():
+                        gen_device = "xpu"
             generator = torch.Generator(device = gen_device).manual_seed(int(seed))
 
         call_kwargs: dict[str, Any] = {
@@ -6923,11 +6971,13 @@ class DiffusionBackend:
                 if cpu_offload_enabled:
                     gen_device = "cpu"
                 else:
-                    gen_device = (
-                        "cuda"
-                        if device == "cuda" and torch.cuda.is_available()
-                        else "cpu"
-                    )
+                    gen_device = "cpu"
+                    if device == "cuda" and torch.cuda.is_available():
+                        gen_device = "cuda"
+                    elif device == "xpu":
+                        xpu = getattr(torch, "xpu", None)
+                        if xpu is not None and xpu.is_available():
+                            gen_device = "xpu"
                 generator = torch.Generator(device = gen_device).manual_seed(int(seed))
 
             call_kwargs: dict[str, Any] = {
