@@ -130,17 +130,21 @@ if ! _cmake_configure; then
 fi
 # Build the full target set unsloth-zoo's GGUF exporter also needs (llama-mtmd-cli,
 # llama-gguf-split) so one build serves both Studio inference and save_pretrained_gguf.
-# Parallelism: all cores by default (-j(nproc) is far faster than a conservative cap),
-# but cap at mem/1.5GB when RAM is tight (nvcc uses ~1.5 GB/job) to avoid OOM-kill.
-# Override with UNSLOTH_LLAMA_BUILD_JOBS=N. Incremental: a re-run resumes.
+# Parallelism default = ~half the cores: much faster than a tiny -j4, but leaves
+# thermal/power headroom -- a full -j(nproc) CUDA build trips shutdowns on
+# thermally constrained NVIDIA-ARM laptops (e.g. N1X "RTX Spark"). Also cap by RAM
+# (~1.5 GB per nvcc job) to avoid OOM. Tune with UNSLOTH_LLAMA_BUILD_JOBS=N (raise
+# on a well-cooled box, lower if it still trips). Incremental: a re-run resumes.
 _ncpu="$(nproc 2>/dev/null || echo 4)"
 if [ -n "${UNSLOTH_LLAMA_BUILD_JOBS:-}" ]; then
     JOBS="$UNSLOTH_LLAMA_BUILD_JOBS"
 else
+    _half=$(( (_ncpu + 1) / 2 ))            # ~half the cores for thermal headroom
+    if [ "$_ncpu" -le 4 ]; then _half="$_ncpu"; fi   # tiny boxes: use all cores
     _memkb="$(awk '/MemTotal/{print $2}' /proc/meminfo 2>/dev/null || echo 0)"
-    _memjobs=$(( _memkb / 1572864 ))   # 1.5 GB per nvcc job
+    _memjobs=$(( _memkb / 1572864 ))        # 1.5 GB per nvcc job
     if [ "$_memjobs" -lt 1 ]; then _memjobs=1; fi
-    JOBS="$_ncpu"
+    JOBS="$_half"
     if [ "$_memjobs" -lt "$JOBS" ]; then JOBS="$_memjobs"; fi
 fi
 log "building with -j${JOBS} (cores=${_ncpu})"
