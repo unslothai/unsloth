@@ -17,7 +17,7 @@ import {
   useDownloadManagerStore,
   useRepoDownload,
 } from "../download-manager";
-import { deleteCachedModel } from "../inventory";
+import { type GgufVariantDetail, deleteCachedModel } from "../inventory";
 import { formatBytes } from "../lib/format";
 import { type GgufFitClass, classifyGgufFit } from "../lib/gguf-fit";
 import { HUB_POST_DOWNLOAD_ACTIONS_VISIBLE } from "../lib/hub-feature-flags";
@@ -36,7 +36,15 @@ import {
   PlayIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useEffect, useMemo, useState } from "react";
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  type KeyboardEventHandler,
+  type MouseEventHandler,
+} from "react";
 import {
   ggufVariantDisplayLabel,
   ggufVariantDownloadSizeBytes,
@@ -114,14 +122,23 @@ function QuantBadge({
   showFit = true,
   active = false,
   variant = "trigger",
+  tooltipMode = "eager",
 }: {
   quant: string;
   fit: GgufFitClass;
   showFit?: boolean;
   active?: boolean;
   variant?: "trigger" | "menu";
+  tooltipMode?: "eager" | "lazy" | "none";
 }) {
   const meta = FIT_BADGE[fit];
+  const [tooltipArmed, setTooltipArmed] = useState(false);
+  const [tooltipOpen, setTooltipOpen] = useState(false);
+  const armTooltip = useCallback(() => {
+    setTooltipArmed((armed) => (armed ? armed : true));
+    if (tooltipMode === "lazy") setTooltipOpen(true);
+  }, [tooltipMode]);
+  const tooltipActive = tooltipMode === "eager" || tooltipArmed;
   const inner =
     variant === "menu" ? (
       <span
@@ -157,16 +174,178 @@ function QuantBadge({
         <span>{quant}</span>
       </span>
     );
-  if (!showFit) return inner;
+  if (!showFit || tooltipMode === "none") return inner;
+  if (!tooltipActive) {
+    return (
+      <span
+        className="inline-flex min-w-0"
+        onPointerEnter={armTooltip}
+        onFocusCapture={armTooltip}
+      >
+        {inner}
+      </span>
+    );
+  }
   return (
-    <Tooltip>
-      <TooltipTrigger asChild>{inner}</TooltipTrigger>
+    <Tooltip
+      open={tooltipMode === "lazy" ? tooltipOpen : undefined}
+      onOpenChange={tooltipMode === "lazy" ? setTooltipOpen : undefined}
+    >
+      <TooltipTrigger
+        asChild
+        onFocusCapture={tooltipMode === "lazy" ? armTooltip : undefined}
+        onPointerEnter={tooltipMode === "lazy" ? armTooltip : undefined}
+      >
+        {inner}
+      </TooltipTrigger>
       <TooltipContent side="top" sideOffset={4}>
         {meta.tooltip}
       </TooltipContent>
     </Tooltip>
   );
 }
+
+interface GgufVariantMenuItem {
+  filename: string;
+  key: string;
+  quant: string;
+  label: string;
+  fit: GgufFitClass;
+  downloaded: boolean;
+  partial: boolean;
+  downloadSizeLabel: string;
+}
+
+function createGgufVariantMenuItems(
+  variants: readonly GgufVariantDetail[] | null,
+  resources: { gpuGb?: number; systemRamGb?: number },
+): GgufVariantMenuItem[] {
+  if (!variants) return [];
+  return variants.map((variant) => ({
+    filename: variant.filename,
+    key: normalizeGgufVariantIdentity(variant.quant),
+    quant: variant.quant,
+    label: ggufVariantDisplayLabel(variant),
+    fit: classifyGgufFit(variant.size_bytes, resources),
+    downloaded: Boolean(variant.downloaded),
+    partial: Boolean(variant.partial),
+    downloadSizeLabel: formatBytes(ggufVariantDownloadSizeBytes(variant)),
+  }));
+}
+
+const GgufVariantMenuRow = memo(function GgufVariantMenuRow({
+  item,
+  selected,
+  loaded,
+  liveActive,
+  showFitInfo,
+  onSelect,
+  onDelete,
+}: {
+  item: GgufVariantMenuItem;
+  selected: boolean;
+  loaded: boolean;
+  liveActive: boolean;
+  showFitInfo: boolean;
+  onSelect: (quant: string) => void;
+  onDelete: (quant: string) => void;
+}) {
+  const selectVariant = useCallback(() => {
+    onSelect(item.quant);
+  }, [item.quant, onSelect]);
+  const handleKeyDown = useCallback<KeyboardEventHandler<HTMLDivElement>>(
+    (e) => {
+      if (e.target !== e.currentTarget) return;
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        selectVariant();
+      }
+    },
+    [selectVariant],
+  );
+  const handleDelete = useCallback<MouseEventHandler<HTMLButtonElement>>(
+    (e) => {
+      e.stopPropagation();
+      onDelete(item.quant);
+    },
+    [item.quant, onDelete],
+  );
+  const canDelete = (item.downloaded || item.partial) && !loaded && !liveActive;
+
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      aria-pressed={selected}
+      onClick={selectVariant}
+      onKeyDown={handleKeyDown}
+      className={cn(
+        "group relative mx-2 flex cursor-pointer items-center gap-2 rounded-[12px] px-2.5 py-2 text-left transition-colors",
+        selected
+          ? "bg-foreground/[0.07] dark:bg-foreground/[0.12]"
+          : "hover:bg-foreground/[0.05] dark:hover:bg-foreground/[0.06]",
+      )}
+    >
+      <span className="flex min-w-0 flex-1 items-center gap-2">
+        <QuantBadge
+          quant={item.label}
+          fit={item.fit}
+          showFit={showFitInfo}
+          active={loaded}
+          variant="menu"
+          tooltipMode="lazy"
+        />
+      </span>
+      <span className="ml-auto flex shrink-0 items-center gap-1.5">
+        {item.downloaded && (
+          <DotTag tone="success" label={loaded ? "Loaded" : "On device"} />
+        )}
+        {!item.downloaded && item.partial && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span className="inline-flex">
+                <DotTag
+                  tone="warning"
+                  label={liveActive ? "Downloading" : "Partial"}
+                />
+              </span>
+            </TooltipTrigger>
+            <TooltipContent side="top" sideOffset={4}>
+              {liveActive
+                ? "Download is running. Select it to view progress."
+                : "Partial download. Select it to continue."}
+            </TooltipContent>
+          </Tooltip>
+        )}
+        <DotTag tone="gguf" label="GGUF" />
+        <span className="relative">
+          <span className={cn(CHIP_BASE, CHIP_DEFAULT)}>
+            {item.downloadSizeLabel}
+          </span>
+          {canDelete && (
+            <button
+              type="button"
+              onClick={handleDelete}
+              aria-label={`Delete ${item.label}${item.partial && !item.downloaded ? " (partial)" : ""}`}
+              className={cn(
+                "absolute inset-0 inline-flex cursor-pointer items-center justify-center rounded-[7px]",
+                "bg-popover text-foreground/70 ring-1 ring-border transition-colors",
+                "opacity-0 group-hover:opacity-100 focus-visible:opacity-100",
+                "hover:text-destructive hover:ring-destructive/40",
+              )}
+            >
+              <HugeiconsIcon
+                icon={Delete02Icon}
+                strokeWidth={1.75}
+                className="size-3"
+              />
+            </button>
+          )}
+        </span>
+      </span>
+    </div>
+  );
+});
 
 export function GgufDownloadCard({
   repoId,
@@ -239,6 +418,10 @@ export function GgufDownloadCard({
         : v,
     );
   }, [completedVariantKeys, liveVariantStates, rawSortedVariants]);
+  const variantMenuItems = useMemo(
+    () => createGgufVariantMenuItems(sortedVariants, { gpuGb, systemRamGb }),
+    [gpuGb, sortedVariants, systemRamGb],
+  );
 
   const selectedQuant =
     (selectedQuantOverride
@@ -334,6 +517,36 @@ export function GgufDownloadCard({
     !isLoadingThisModel &&
     !selectedIsActive;
   const showFitInfo = Boolean(gpuGb) || Boolean(systemRamGb);
+  const selectedFit = useMemo(
+    () =>
+      selected
+        ? classifyGgufFit(selected.size_bytes, { gpuGb, systemRamGb })
+        : null,
+    [gpuGb, selected?.size_bytes, systemRamGb],
+  );
+  const selectedDownloadSizeLabel = selected
+    ? formatBytes(ggufVariantDownloadSizeBytes(selected))
+    : null;
+  const selectedVariantKey = selectedQuant
+    ? normalizeGgufVariantIdentity(selectedQuant)
+    : null;
+  const activeVariantKey = activeQuant
+    ? normalizeGgufVariantIdentity(activeQuant)
+    : null;
+  const handleSelectVariant = useCallback(
+    (quant: string) => {
+      setSelectedQuantState({
+        repoId,
+        quant,
+        userPicked: true,
+      });
+      setOpen(false);
+    },
+    [repoId],
+  );
+  const handleDeleteVariant = useCallback((quant: string) => {
+    setDeleteTarget(quant);
+  }, []);
   const downloadAction = useDownloadCardState({
     job,
     variant: selectedQuant,
@@ -460,10 +673,7 @@ export function GgufDownloadCard({
               {selected ? (
                 <QuantBadge
                   quant={selectedLabel ?? selected.quant}
-                  fit={classifyGgufFit(selected.size_bytes, {
-                    gpuGb,
-                    systemRamGb,
-                  })}
+                  fit={selectedFit ?? "oom"}
                   showFit={showFitInfo}
                   active={Boolean(selectedIsActive)}
                 />
@@ -497,11 +707,13 @@ export function GgufDownloadCard({
                   </Tooltip>
                 )}
                 <DotTag tone="gguf" label="GGUF" />
-                {selected && !selected.downloaded && (
-                  <span className="tabular-nums">
-                    {formatBytes(ggufVariantDownloadSizeBytes(selected))}
-                  </span>
-                )}
+                {selected &&
+                  selectedDownloadSizeLabel &&
+                  !selected.downloaded && (
+                    <span className="tabular-nums">
+                      {selectedDownloadSizeLabel}
+                    </span>
+                  )}
                 <HugeiconsIcon
                   icon={ArrowDown01Icon}
                   strokeWidth={1.25}
@@ -518,111 +730,20 @@ export function GgufDownloadCard({
             className="hub-menu-instant menu-soft-surface w-[var(--radix-popover-trigger-width)] min-w-[200px] gap-0 overflow-hidden p-0 py-2 ring-0"
           >
             <div className="max-h-[344px] overflow-y-auto [scrollbar-width:thin]">
-              {sortedVariants.map((v) => {
-                const label = ggufVariantDisplayLabel(v);
-                const fit = classifyGgufFit(v.size_bytes, {
-                  gpuGb,
-                  systemRamGb,
-                });
-                const isSelected = ggufVariantsMatch(v.quant, selectedQuant);
-                const isLoaded =
-                  isActive && ggufVariantsMatch(activeQuant, v.quant);
-                const liveState = liveVariantStates.get(
-                  normalizeGgufVariantIdentity(v.quant),
-                );
+              {variantMenuItems.map((item) => {
+                const liveState = liveVariantStates.get(item.key);
                 const liveActive = activeDownloadState(liveState?.state);
-                const selectVariant = () => {
-                  setSelectedQuantState({
-                    repoId,
-                    quant: v.quant,
-                    userPicked: true,
-                  });
-                  setOpen(false);
-                };
                 return (
-                  <div
-                    key={v.filename}
-                    role="button"
-                    tabIndex={0}
-                    aria-pressed={isSelected}
-                    onClick={selectVariant}
-                    onKeyDown={(e) => {
-                      if (e.target !== e.currentTarget) return;
-                      if (e.key === "Enter" || e.key === " ") {
-                        e.preventDefault();
-                        selectVariant();
-                      }
-                    }}
-                    className={cn(
-                      "group relative mx-2 flex cursor-pointer items-center gap-2 rounded-[12px] px-2.5 py-2 text-left transition-colors",
-                      isSelected
-                        ? "bg-foreground/[0.07] dark:bg-foreground/[0.12]"
-                        : "hover:bg-foreground/[0.05] dark:hover:bg-foreground/[0.06]",
-                    )}
-                  >
-                    <span className="flex min-w-0 flex-1 items-center gap-2">
-                      <QuantBadge
-                        quant={label}
-                        fit={fit}
-                        showFit={showFitInfo}
-                        active={isLoaded}
-                        variant="menu"
-                      />
-                    </span>
-                    <span className="ml-auto flex shrink-0 items-center gap-1.5">
-                      {v.downloaded && (
-                        <DotTag
-                          tone="success"
-                          label={isLoaded ? "Loaded" : "On device"}
-                        />
-                      )}
-                      {!v.downloaded && v.partial && (
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <span className="inline-flex">
-                              <DotTag
-                                tone="warning"
-                                label={liveActive ? "Downloading" : "Partial"}
-                              />
-                            </span>
-                          </TooltipTrigger>
-                          <TooltipContent side="top" sideOffset={4}>
-                            {liveActive
-                              ? "Download is running. Select it to view progress."
-                              : "Partial download. Select it to continue."}
-                          </TooltipContent>
-                        </Tooltip>
-                      )}
-                      <DotTag tone="gguf" label="GGUF" />
-                      <span className="relative">
-                        <span className={cn(CHIP_BASE, CHIP_DEFAULT)}>
-                          {formatBytes(ggufVariantDownloadSizeBytes(v))}
-                        </span>
-                        {(v.downloaded || v.partial) && !isLoaded && !liveActive && (
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setDeleteTarget(v.quant);
-                            }}
-                            aria-label={`Delete ${label}${v.partial && !v.downloaded ? " (partial)" : ""}`}
-                            className={cn(
-                              "absolute inset-0 inline-flex cursor-pointer items-center justify-center rounded-[7px]",
-                              "bg-popover text-foreground/70 ring-1 ring-border transition-colors",
-                              "opacity-0 group-hover:opacity-100 focus-visible:opacity-100",
-                              "hover:text-destructive hover:ring-destructive/40",
-                            )}
-                          >
-                            <HugeiconsIcon
-                              icon={Delete02Icon}
-                              strokeWidth={1.75}
-                              className="size-3"
-                            />
-                          </button>
-                        )}
-                      </span>
-                    </span>
-                  </div>
+                  <GgufVariantMenuRow
+                    key={item.filename}
+                    item={item}
+                    selected={item.key === selectedVariantKey}
+                    loaded={isActive && item.key === activeVariantKey}
+                    liveActive={liveActive}
+                    showFitInfo={showFitInfo}
+                    onSelect={handleSelectVariant}
+                    onDelete={handleDeleteVariant}
+                  />
                 );
               })}
             </div>

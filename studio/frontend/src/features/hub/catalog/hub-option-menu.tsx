@@ -68,6 +68,10 @@ export function HubOptionMenu<T extends string>({
   const activeOptionId =
     resolvedActiveIndex >= 0 ? `${idBase}-option-${resolvedActiveIndex}` : undefined;
 
+  const activateIndex = useCallback((index: number) => {
+    setActiveIndex((current) => (current === index ? current : index));
+  }, []);
+
   const closeAndRestoreFocus = useCallback(() => {
     setOpen(false);
     requestAnimationFrame(() => triggerRef.current?.focus());
@@ -87,11 +91,11 @@ export function HubOptionMenu<T extends string>({
     (nextOpen: boolean) => {
       setOpen(nextOpen);
       if (nextOpen) {
-        setActiveIndex(selectedIndex);
+        activateIndex(selectedIndex);
         requestAnimationFrame(() => listboxRef.current?.focus());
       }
     },
-    [selectedIndex],
+    [activateIndex, selectedIndex],
   );
 
   const handleContentKeyDown = useCallback(
@@ -208,7 +212,7 @@ export function HubOptionMenu<T extends string>({
                 onClick={() => {
                   selectIndex(index);
                 }}
-                onMouseMove={() => setActiveIndex(index)}
+                onPointerEnter={() => activateIndex(index)}
                 className={cn(
                   "relative flex w-full min-w-0 cursor-pointer select-none items-center rounded-xl corner-squircle py-2 pr-8 pl-3 text-left text-sm leading-snug outline-none transition-colors",
                 )}

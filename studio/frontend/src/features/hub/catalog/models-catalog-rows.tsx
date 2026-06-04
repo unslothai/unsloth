@@ -248,7 +248,7 @@ function CatalogRow({
       </CatalogRowInteractiveContext.Provider>
     </div>
   );
-  if (!tooltip) return button;
+  if (!tooltip || !interactive) return button;
   return (
     <Tooltip>
       <TooltipTrigger asChild={true}>{button}</TooltipTrigger>
@@ -715,7 +715,7 @@ export const InventoryRow = memo(function InventoryRow({
   );
 });
 
-const ROW_HEIGHT_PX = 57;
+export const CATALOG_ROW_HEIGHT_PX = 57;
 
 export function VirtualRows<T>({
   items,
@@ -732,8 +732,8 @@ export function VirtualRows<T>({
   const virtualizer = useVirtualizer({
     count: items.length,
     getScrollElement: () => scrollElement,
-    estimateSize: () => ROW_HEIGHT_PX,
-    overscan: 24,
+    estimateSize: () => CATALOG_ROW_HEIGHT_PX,
+    overscan: 10,
     getItemKey: (index) => getKey(items[index], index),
   });
 
@@ -762,7 +762,7 @@ export function VirtualRows<T>({
             // recompute) that the user perceives as a jump while new rows
             // arrive. With a fixed height that matches estimateSize exactly,
             // appending below the viewport can never shift visible items.
-            height: `${ROW_HEIGHT_PX}px`,
+            height: `${CATALOG_ROW_HEIGHT_PX}px`,
             contain: "layout paint",
           }}
         >

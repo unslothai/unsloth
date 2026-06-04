@@ -23,6 +23,7 @@ import {
   DownloadedList,
   InventoryWarningRow,
 } from "./models-catalog-lists";
+import { CATALOG_ROW_HEIGHT_PX } from "./models-catalog-rows";
 
 export interface ModelsCatalogState {
   tab: ModelsTab;
@@ -129,6 +130,10 @@ export const ModelsCatalog = memo(function ModelsCatalog({
     discover: 0,
     downloaded: 0,
   });
+  const savedScrollHeightsRef = useRef<Record<ModelsTab, number>>({
+    discover: 0,
+    downloaded: 0,
+  });
   const deviceType = usePlatformStore((s) => s.deviceType);
 
   const setDiscoverScrollNode = useCallback((node: HTMLDivElement | null) => {
@@ -148,6 +153,18 @@ export const ModelsCatalog = memo(function ModelsCatalog({
   // engines before this effect runs. Reading after the swap would clobber the
   // saved value with 0; trusting the listener avoids that race.
   useLayoutEffect(() => {
+    let restoreFrame: number | null = null;
+    const previousTab = activeTabRef.current;
+    if (previousTab !== tab) {
+      const previousEl =
+        previousTab === "discover"
+          ? discoverScrollRef.current
+          : downloadedScrollRef.current;
+      if (previousEl) {
+        savedScrollTopsRef.current[previousTab] = previousEl.scrollTop;
+        savedScrollHeightsRef.current[previousTab] = previousEl.scrollHeight;
+      }
+    }
     const nextEl =
       tab === "discover"
         ? discoverScrollRef.current
@@ -157,11 +174,22 @@ export const ModelsCatalog = memo(function ModelsCatalog({
       if (nextEl.scrollTop !== saved) {
         nextEl.scrollTop = saved;
       }
+      savedScrollHeightsRef.current[tab] = nextEl.scrollHeight;
+      restoreFrame = window.requestAnimationFrame(() => {
+        if (activeTabRef.current === tab && nextEl.scrollTop !== saved) {
+          nextEl.scrollTop = saved;
+        }
+      });
     }
     activeTabRef.current = tab;
     assignRef(scrollRef, nextEl);
     const nextScrolled = (nextEl?.scrollTop ?? 0) > 0;
     setScrolled((current) => (current === nextScrolled ? current : nextScrolled));
+    return () => {
+      if (restoreFrame !== null) {
+        window.cancelAnimationFrame(restoreFrame);
+      }
+    };
   }, [scrollRef, tab]);
 
   useEffect(() => {
@@ -175,6 +203,7 @@ export const ModelsCatalog = memo(function ModelsCatalog({
         return;
       }
       savedScrollTopsRef.current.discover = discoverEl.scrollTop;
+      savedScrollHeightsRef.current.discover = discoverEl.scrollHeight;
       const nextScrolled = discoverEl.scrollTop > 0;
       setScrolled((current) =>
         current === nextScrolled ? current : nextScrolled,
@@ -185,6 +214,7 @@ export const ModelsCatalog = memo(function ModelsCatalog({
         return;
       }
       savedScrollTopsRef.current.downloaded = downloadedEl.scrollTop;
+      savedScrollHeightsRef.current.downloaded = downloadedEl.scrollHeight;
       const nextScrolled = downloadedEl.scrollTop > 0;
       setScrolled((current) =>
         current === nextScrolled ? current : nextScrolled,
@@ -256,6 +286,14 @@ export const ModelsCatalog = memo(function ModelsCatalog({
     "absolute inset-0 min-h-0 overflow-y-auto pb-6 pl-5 pr-3 pt-0 [overflow-anchor:none] [scrollbar-gutter:stable] [scrollbar-width:thin]";
   const discoverActive = tab === "discover";
   const downloadedActive = tab === "downloaded";
+  const discoverInactiveHeight = Math.max(
+    savedScrollHeightsRef.current.discover,
+    discoverRows.length * CATALOG_ROW_HEIGHT_PX,
+  );
+  const downloadedInactiveHeight = Math.max(
+    savedScrollHeightsRef.current.downloaded,
+    (cachedRows.length + localRows.length) * CATALOG_ROW_HEIGHT_PX,
+  );
 
   return (
     <div className="relative flex h-full min-h-0 flex-1 flex-col overflow-hidden">
@@ -285,29 +323,36 @@ export const ModelsCatalog = memo(function ModelsCatalog({
             discoverActive ? "visible" : "pointer-events-none invisible",
           )}
         >
-          <DiscoverList
-            discoverRows={discoverRows}
-            selectedId={selectedId}
-            onSelect={onSelect}
-            isLoading={isLoading}
-            query={query}
-            scrollElement={discoverScrollEl}
-            sentinelRef={sentinelRef}
-            activeCheckpoint={activeCheckpoint}
-            searchError={searchError}
-            online={online}
-            isDataset={isDataset}
-            deviceType={deviceType}
-            scannedCount={scannedCount}
-            isLoadingMore={isLoadingMore}
-            hasMore={hasMore}
-            manualFetchAvailable={manualFetchAvailable}
-            hasActiveFilters={hasActiveFilters}
-            onFetchMore={onFetchMore}
-            onClearFilters={onClearFilters}
-            onRetry={onRetry}
-            onSwitchDevice={onSwitchDevice}
-          />
+          {discoverActive ? (
+            <DiscoverList
+              discoverRows={discoverRows}
+              selectedId={selectedId}
+              onSelect={onSelect}
+              isLoading={isLoading}
+              query={query}
+              scrollElement={discoverScrollEl}
+              sentinelRef={sentinelRef}
+              activeCheckpoint={activeCheckpoint}
+              searchError={searchError}
+              online={online}
+              isDataset={isDataset}
+              deviceType={deviceType}
+              scannedCount={scannedCount}
+              isLoadingMore={isLoadingMore}
+              hasMore={hasMore}
+              manualFetchAvailable={manualFetchAvailable}
+              hasActiveFilters={hasActiveFilters}
+              onFetchMore={onFetchMore}
+              onClearFilters={onClearFilters}
+              onRetry={onRetry}
+              onSwitchDevice={onSwitchDevice}
+            />
+          ) : (
+            <div
+              aria-hidden="true"
+              style={{ height: discoverInactiveHeight }}
+            />
+          )}
         </div>
         <div
           ref={setDownloadedScrollNode}
@@ -319,22 +364,29 @@ export const ModelsCatalog = memo(function ModelsCatalog({
             downloadedActive ? "visible" : "pointer-events-none invisible",
           )}
         >
-          <DownloadedList
-            cachedRows={cachedRows}
-            localRows={localRows}
-            selectedId={selectedId}
-            onSelect={onSelect}
-            downloadedReady={downloadedReady}
-            inventoryError={inventoryError}
-            query={query}
-            scrollElement={downloadedScrollEl}
-            activeCheckpoint={activeCheckpoint}
-            activeGgufVariant={activeGgufVariant}
-            isDataset={isDataset}
-            inventoryTokens={inventoryTokens}
-            deviceType={deviceType}
-            onInventoryChange={onInventoryChange}
-          />
+          {downloadedActive ? (
+            <DownloadedList
+              cachedRows={cachedRows}
+              localRows={localRows}
+              selectedId={selectedId}
+              onSelect={onSelect}
+              downloadedReady={downloadedReady}
+              inventoryError={inventoryError}
+              query={query}
+              scrollElement={downloadedScrollEl}
+              activeCheckpoint={activeCheckpoint}
+              activeGgufVariant={activeGgufVariant}
+              isDataset={isDataset}
+              inventoryTokens={inventoryTokens}
+              deviceType={deviceType}
+              onInventoryChange={onInventoryChange}
+            />
+          ) : (
+            <div
+              aria-hidden="true"
+              style={{ height: downloadedInactiveHeight }}
+            />
+          )}
         </div>
       </div>
       <output

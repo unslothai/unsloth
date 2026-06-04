@@ -34,7 +34,14 @@ import {
 } from "@hugeicons/core-free-icons";
 import type { IconSvgElement } from "@hugeicons/react";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { memo, useEffect, useMemo, useRef, useState } from "react";
+import {
+  memo,
+  useDeferredValue,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useCopyFeedback } from "../hooks/use-copy-feedback";
 import { useDatasetSize } from "../hooks/use-dataset-size";
 import {
@@ -365,7 +372,7 @@ export const ModelInspector = memo(function ModelInspector({
       : false,
   );
   const readmeRepoId =
-    model?.hubRepoId ?? (isDataset ? null : model?.baseModelHubId);
+    model?.hubRepoId ?? (isDataset ? null : (model?.baseModelHubId ?? null));
   const readmeSubject = isDataset
     ? "dataset"
     : model?.hubRepoId
@@ -399,6 +406,8 @@ export const ModelInspector = memo(function ModelInspector({
 
   const descScrollRef = useRef<HTMLDivElement | null>(null);
   const descScrollKey = `${model?.id ?? ""}\0${readmeRepoId ?? ""}`;
+  const deferredReadmeRepoId = useDeferredValue(readmeRepoId);
+  const readmeReady = deferredReadmeRepoId === readmeRepoId;
   const [descScrollState, setDescScrollState] = useState({
     key: descScrollKey,
     scrolled: false,
@@ -709,7 +718,7 @@ export const ModelInspector = memo(function ModelInspector({
         data-hub-scroll="true"
         className="min-h-0 flex-1 space-y-4 overflow-y-auto pl-6 pr-4 pt-5 pb-0 [scrollbar-gutter:stable] [scrollbar-width:thin]"
       >
-        {readmeRepoId && (
+        {readmeReady && readmeRepoId && (
           <ModelReadme
             repoId={readmeRepoId}
             kind={isDataset ? "dataset" : "model"}

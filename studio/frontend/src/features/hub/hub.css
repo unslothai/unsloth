@@ -199,11 +199,21 @@
 
 	.hub-menu-instant {
 		animation: none !important;
+		transition: none !important;
+		transform: none !important;
 		--tw-translate-x: 0px !important;
 		--tw-translate-y: 0px !important;
+		--tw-scale-x: 1 !important;
+		--tw-scale-y: 1 !important;
 		translate: 0 0 !important;
 		user-select: none;
 		-webkit-user-select: none;
+		will-change: auto !important;
+	}
+
+	.hub-menu-instant.menu-soft-surface {
+		--menu-soft-blur: 18px;
+		--menu-soft-spread: -8px;
 	}
 
 	.hub-menu-instant [data-slot="select-item"]:focus,
@@ -225,8 +235,12 @@
 	}
 
 	.hub-menu-instant *,
+	.hub-menu-instant *::before,
+	.hub-menu-instant *::after,
 	.hub-menu-trigger,
 	.hub-menu-trigger * {
+		animation: none !important;
+		transition: none !important;
 		user-select: none;
 		-webkit-user-select: none;
 	}
