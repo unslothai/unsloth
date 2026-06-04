@@ -158,10 +158,13 @@ def _working_local_url(port: int) -> "str | None":
 
 
 def _localhost_ipv6_mismatch_url(bind_host: str, port: int) -> "str | None":
-    """Return the IPv4 loopback URL when localhost resolves only to ::1.
+    """Return the IPv4 loopback URL when localhost will not reach 127.0.0.1.
 
     Local Studio intentionally binds to 127.0.0.1. On hosts where localhost
-    resolves to IPv6 only, browsers can fail even though 127.0.0.1 works.
+    resolves to IPv6 only (::1), a browser pointed at http://localhost:<port>
+    fails -- or worse, reaches a different process listening on ::1 -- even
+    though http://127.0.0.1:<port> works. Return the IPv4 URL so the caller can
+    tell the user which address to open.
     """
     import socket
 
@@ -169,11 +172,12 @@ def _localhost_ipv6_mismatch_url(bind_host: str, port: int) -> "str | None":
         return None
 
     ipv4_url = f"http://127.0.0.1:{port}"
+
+    # Only warn once Studio is confirmed answering on the IPv4 loopback.
+    if _working_local_url(port) != ipv4_url:
+        return None
+
     try:
-        if _working_local_url(port) != ipv4_url:
-            return None
-        if _local_port_open("::1", port, timeout = 0.25):
-            return None
         addr_info = socket.getaddrinfo(
             "localhost", port, socket.AF_UNSPEC, socket.SOCK_STREAM
         )
@@ -193,9 +197,26 @@ def _localhost_ipv6_mismatch_url(bind_host: str, port: int) -> "str | None":
             if host == "::1":
                 has_ipv6_loopback = True
 
+    # A successful connection to ::1 is NOT evidence that Studio is reachable
+    # there: Studio binds 127.0.0.1 only, so anything answering on ::1 is a
+    # different process -- which is exactly when the user must be steered to
+    # 127.0.0.1. Dual-stack localhost is fine (browsers fall back to 127.0.0.1
+    # when ::1 refuses), so only the IPv6-only case strands the user.
     if has_ipv6_loopback and not has_ipv4_loopback:
         return ipv4_url
     return None
+
+
+def _stdout_color_ok() -> bool:
+    """Whether to emit ANSI color codes on stdout. Mirrors startup_banner."""
+    if os.environ.get("NO_COLOR", "").strip():
+        return False
+    if os.environ.get("FORCE_COLOR", "").strip():
+        return True
+    try:
+        return sys.stdout.isatty()
+    except (AttributeError, OSError, ValueError):
+        return False
 
 
 def _print_localhost_ipv6_mismatch_warning(local_url: str, port: int) -> None:
@@ -210,18 +231,6 @@ def _print_localhost_ipv6_mismatch_warning(local_url: str, port: int) -> None:
         f"http://localhost:{port}.{reset}",
         flush = True,
     )
-
-
-def _stdout_color_ok() -> bool:
-    """Whether to emit ANSI color codes on stdout. Mirrors startup_banner."""
-    if os.environ.get("NO_COLOR", "").strip():
-        return False
-    if os.environ.get("FORCE_COLOR", "").strip():
-        return True
-    try:
-        return sys.stdout.isatty()
-    except (AttributeError, OSError, ValueError):
-        return False
 
 
 def _verify_global_reachability(display_host: str, port: int) -> None:
@@ -387,6 +396,33 @@ def _verify_global_reachability(display_host: str, port: int) -> None:
         pass
     except Exception:
         pass
+
+
+def _emit_startup_output(host: str, port: int, display_host: str) -> None:
+    """Print the access banner plus any post-startup warnings.
+
+    Extracted from ``_run`` so the banner/warning wiring is unit-testable. The
+    ``localhost``-to-::1 mismatch warning and the wildcard reachability check
+    are mutually exclusive (the mismatch helper returns None for any non
+    127.0.0.1 bind, and wildcard binds are never 127.0.0.1), so the trailing
+    stop hint is emitted exactly once.
+    """
+    wildcard_bind = host in ("0.0.0.0", "::")
+    localhost_mismatch_url = _localhost_ipv6_mismatch_url(host, port)
+    # For wildcard binds, run the reachability check between the URL section
+    # and the stop hint so the stop hint stays last on screen.
+    print_studio_access_banner(
+        port = port,
+        bind_host = host,
+        display_host = display_host,
+        include_stop_hint = not wildcard_bind and not localhost_mismatch_url,
+    )
+    if localhost_mismatch_url:
+        _print_localhost_ipv6_mismatch_warning(localhost_mismatch_url, port)
+        print_studio_stop_hint()
+    elif wildcard_bind:
+        _verify_global_reachability(display_host, port)
+        print_studio_stop_hint()
 
 
 def _get_pid_on_port(port: int) -> "tuple[int, str] | None":
@@ -878,22 +914,7 @@ def run_server(
         print(f"TAURI_PORT={port}", flush = True)
 
     if not silent:
-        wildcard_bind = host in ("0.0.0.0", "::")
-        localhost_mismatch_url = _localhost_ipv6_mismatch_url(host, port)
-        # For wildcard binds, run the reachability check between the URL
-        # section and the stop hint so the stop hint stays last on screen.
-        print_studio_access_banner(
-            port = port,
-            bind_host = host,
-            display_host = display_host,
-            include_stop_hint = not wildcard_bind and not localhost_mismatch_url,
-        )
-        if localhost_mismatch_url:
-            _print_localhost_ipv6_mismatch_warning(localhost_mismatch_url, port)
-            print_studio_stop_hint()
-        if wildcard_bind:
-            _verify_global_reachability(display_host, port)
-            print_studio_stop_hint()
+        _emit_startup_output(host, port, display_host)
 
     return app
 

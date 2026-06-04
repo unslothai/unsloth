@@ -297,41 +297,47 @@ def mock_windows_runtime(monkeypatch, lines):
 
 
 class TestStudioLocalhostIpv6Warning:
-    def _prepare_loopback(self, run_module, monkeypatch, *, ipv6_open = False):
+    def _prepare_loopback(self, run_module, monkeypatch):
+        # Studio is confirmed answering on the IPv4 loopback.
         monkeypatch.setattr(
             run_module,
             "_working_local_url",
             lambda port: f"http://127.0.0.1:{port}",
         )
-        monkeypatch.setattr(
-            run_module,
-            "_local_port_open",
-            lambda host, port, timeout = 1.0: ipv6_open if host == "::1" else True,
-        )
+
+    def _set_getaddrinfo(self, monkeypatch, entries):
+        monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **k: entries)
+
+    @staticmethod
+    def _ipv4(port = 8888):
+        return (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", port))
+
+    @staticmethod
+    def _ipv6(port = 8888):
+        return (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("::1", port, 0, 0))
+
+    # -- _localhost_ipv6_mismatch_url ------------------------------------
 
     def test_ipv4_localhost_does_not_warn(self, monkeypatch):
         run_module = load_studio_run_module(monkeypatch)
         self._prepare_loopback(run_module, monkeypatch)
-        monkeypatch.setattr(
-            socket,
-            "getaddrinfo",
-            lambda *a, **k: [
-                (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 8888))
-            ],
-        )
+        self._set_getaddrinfo(monkeypatch, [self._ipv4()])
 
         assert run_module._localhost_ipv6_mismatch_url("127.0.0.1", 8888) is None
 
-    def test_ipv6_only_localhost_warns_with_ipv4_url(self, monkeypatch, capsys):
+    def test_dual_stack_localhost_does_not_warn(self, monkeypatch):
+        # localhost -> both ::1 and 127.0.0.1: browsers fall back to IPv4 when
+        # ::1 refuses, so the URL is reachable and no warning is needed.
         run_module = load_studio_run_module(monkeypatch)
         self._prepare_loopback(run_module, monkeypatch)
-        monkeypatch.setattr(
-            socket,
-            "getaddrinfo",
-            lambda *a, **k: [
-                (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("::1", 8888, 0, 0))
-            ],
-        )
+        self._set_getaddrinfo(monkeypatch, [self._ipv6(), self._ipv4()])
+
+        assert run_module._localhost_ipv6_mismatch_url("127.0.0.1", 8888) is None
+
+    def test_ipv6_only_localhost_returns_ipv4_url(self, monkeypatch, capsys):
+        run_module = load_studio_run_module(monkeypatch)
+        self._prepare_loopback(run_module, monkeypatch)
+        self._set_getaddrinfo(monkeypatch, [self._ipv6()])
         monkeypatch.setattr(run_module, "_stdout_color_ok", lambda: False)
 
         local_url = run_module._localhost_ipv6_mismatch_url("127.0.0.1", 8888)
@@ -343,40 +349,52 @@ class TestStudioLocalhostIpv6Warning:
         assert "http://127.0.0.1:8888" in captured.out
         assert "http://localhost:8888" in captured.out
 
+    def test_ipv6_listener_does_not_suppress_warning(self, monkeypatch):
+        # Regression for the Codex review: a process answering on ::1 is NOT
+        # Studio (Studio binds 127.0.0.1 only), so the warning must still fire
+        # -- that is exactly when http://localhost would open the wrong service.
+        run_module = load_studio_run_module(monkeypatch)
+        self._prepare_loopback(run_module, monkeypatch)
+        self._set_getaddrinfo(monkeypatch, [self._ipv6()])
+        # Even with something listening on ::1, the result is unchanged.
+        monkeypatch.setattr(
+            run_module,
+            "_local_port_open",
+            lambda host, port, timeout = 1.0: True,
+        )
+
+        assert (
+            run_module._localhost_ipv6_mismatch_url("127.0.0.1", 8888)
+            == "http://127.0.0.1:8888"
+        )
+
     @pytest.mark.parametrize("host", ["0.0.0.0", "::"])
     def test_network_bind_suppresses_warning(self, monkeypatch, host):
         run_module = load_studio_run_module(monkeypatch)
         self._prepare_loopback(run_module, monkeypatch)
-        monkeypatch.setattr(
-            socket,
-            "getaddrinfo",
-            lambda *a, **k: [
-                (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("::1", 8888, 0, 0))
-            ],
-        )
+        self._set_getaddrinfo(monkeypatch, [self._ipv6()])
 
         assert run_module._localhost_ipv6_mismatch_url(host, 8888) is None
 
-    def test_ipv6_listener_suppresses_warning(self, monkeypatch):
+    @pytest.mark.parametrize("port", [0, -1])
+    def test_non_positive_port_returns_none(self, monkeypatch, port):
         run_module = load_studio_run_module(monkeypatch)
-        self._prepare_loopback(run_module, monkeypatch, ipv6_open = True)
-        monkeypatch.setattr(
-            socket,
-            "getaddrinfo",
-            lambda *a, **k: [
-                (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("::1", 8888, 0, 0))
-            ],
-        )
+        self._prepare_loopback(run_module, monkeypatch)
+
+        assert run_module._localhost_ipv6_mismatch_url("127.0.0.1", port) is None
+
+    def test_ipv4_not_answering_suppresses_warning(self, monkeypatch):
+        # Studio not confirmed on 127.0.0.1 -> do not warn.
+        run_module = load_studio_run_module(monkeypatch)
+        monkeypatch.setattr(run_module, "_working_local_url", lambda port: None)
+        self._set_getaddrinfo(monkeypatch, [self._ipv6()])
 
         assert run_module._localhost_ipv6_mismatch_url("127.0.0.1", 8888) is None
 
-    @pytest.mark.parametrize("addr_info", [[], None])
-    def test_empty_or_unusable_resolver_result_suppresses_warning(
-        self, monkeypatch, addr_info
-    ):
+    def test_empty_resolver_result_suppresses_warning(self, monkeypatch):
         run_module = load_studio_run_module(monkeypatch)
         self._prepare_loopback(run_module, monkeypatch)
-        monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **k: addr_info)
+        self._set_getaddrinfo(monkeypatch, [])
 
         assert run_module._localhost_ipv6_mismatch_url("127.0.0.1", 8888) is None
 
@@ -390,6 +408,81 @@ class TestStudioLocalhostIpv6Warning:
         monkeypatch.setattr(socket, "getaddrinfo", _raise)
 
         assert run_module._localhost_ipv6_mismatch_url("127.0.0.1", 8888) is None
+
+    # -- _emit_startup_output (banner / warning wiring) ------------------
+
+    def _wire_recorders(self, run_module, monkeypatch):
+        calls = {"banner": [], "warning": [], "stop_hint": 0, "reachability": []}
+        monkeypatch.setattr(
+            run_module,
+            "print_studio_access_banner",
+            lambda **kwargs: calls["banner"].append(kwargs),
+        )
+        monkeypatch.setattr(
+            run_module,
+            "_print_localhost_ipv6_mismatch_warning",
+            lambda local_url, port: calls["warning"].append((local_url, port)),
+        )
+        monkeypatch.setattr(
+            run_module,
+            "print_studio_stop_hint",
+            lambda: calls.__setitem__("stop_hint", calls["stop_hint"] + 1),
+        )
+        monkeypatch.setattr(
+            run_module,
+            "_verify_global_reachability",
+            lambda display_host, port: calls["reachability"].append(
+                (display_host, port)
+            ),
+        )
+        return calls
+
+    def test_emit_startup_output_wires_mismatch_warning(self, monkeypatch):
+        run_module = load_studio_run_module(monkeypatch)
+        calls = self._wire_recorders(run_module, monkeypatch)
+        monkeypatch.setattr(
+            run_module,
+            "_localhost_ipv6_mismatch_url",
+            lambda host, port: "http://127.0.0.1:8888",
+        )
+
+        run_module._emit_startup_output("127.0.0.1", 8888, "127.0.0.1")
+
+        assert calls["banner"][0]["include_stop_hint"] is False
+        assert calls["warning"] == [("http://127.0.0.1:8888", 8888)]
+        assert calls["stop_hint"] == 1
+        assert calls["reachability"] == []
+
+    def test_emit_startup_output_plain_localhost(self, monkeypatch):
+        run_module = load_studio_run_module(monkeypatch)
+        calls = self._wire_recorders(run_module, monkeypatch)
+        monkeypatch.setattr(
+            run_module, "_localhost_ipv6_mismatch_url", lambda host, port: None
+        )
+
+        run_module._emit_startup_output("127.0.0.1", 8888, "127.0.0.1")
+
+        assert calls["banner"][0]["include_stop_hint"] is True
+        assert calls["warning"] == []
+        assert calls["stop_hint"] == 0
+        assert calls["reachability"] == []
+
+    @pytest.mark.parametrize("host", ["0.0.0.0", "::"])
+    def test_emit_startup_output_wildcard_runs_reachability(
+        self, monkeypatch, host
+    ):
+        run_module = load_studio_run_module(monkeypatch)
+        calls = self._wire_recorders(run_module, monkeypatch)
+        monkeypatch.setattr(
+            run_module, "_localhost_ipv6_mismatch_url", lambda h, port: None
+        )
+
+        run_module._emit_startup_output(host, 8888, "203.0.113.5")
+
+        assert calls["banner"][0]["include_stop_hint"] is False
+        assert calls["warning"] == []
+        assert calls["reachability"] == [("203.0.113.5", 8888)]
+        assert calls["stop_hint"] == 1
 
 
 # ===========================================================================
