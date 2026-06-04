@@ -2804,10 +2804,7 @@ async def openai_chat_completions(
         _cli_policy = _get_tool_policy_g()
         _tools_on = _effective_enable_tools(payload)
         _mcp_allowed = bool(payload.mcp_enabled) and _cli_policy is not False
-        use_tools = (
-            (_tools_on or _mcp_allowed)
-            and llama_backend.supports_tools
-        )
+        use_tools = (_tools_on or _mcp_allowed) and llama_backend.supports_tools
 
         if use_tools:
             from core.inference.tools import ALL_TOOLS, get_enabled_mcp_tools

@@ -786,9 +786,7 @@ class TestGgufVisionToolRouting:
 
         return TestGgufVisionToolRouting._drive(_consume())
 
-    def test_image_request_with_enabled_tools_enters_gguf_tool_loop(
-        self, monkeypatch
-    ):
+    def test_image_request_with_enabled_tools_enters_gguf_tool_loop(self, monkeypatch):
         import routes.inference as inf_mod
 
         reset_tool_policy()
