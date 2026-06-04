@@ -145,6 +145,28 @@ def _openai_stream_error_chunk(exc) -> dict:
     return openai_error_body(_friendly_error(exc), status = 500)
 
 
+def _openai_passthrough_error(status_code, text) -> "HTTPException":
+    """HTTPException for a non-200 upstream response on the OpenAI passthrough
+    (tools / response_format). An over-context upstream error is mapped to a 400
+    with code="context_length_exceeded" so these paths deliver the same signal as
+    the non-passthrough path; any other upstream error keeps llama-server's
+    message verbatim."""
+    if _classify_llama_generation_error(Exception(text)):
+        return HTTPException(
+            status_code = 400,
+            detail = openai_error_body(
+                _friendly_error(Exception(text)),
+                status = 400,
+                code = "context_length_exceeded",
+                param = "messages",
+            ),
+        )
+    return HTTPException(
+        status_code = status_code,
+        detail = f"llama-server error: {text[:500]}",
+    )
+
+
 def _anthropic_stream_error_event(exc):
     """Anthropic in-band SSE ``error`` event for a mid-stream failure, or ``None``
     to fall through to a normal message_delta finish. Returns an event only for a
@@ -6572,10 +6594,7 @@ async def _openai_passthrough_stream(
                 await client.aclose()
             except Exception:
                 pass
-            raise HTTPException(
-                status_code = upstream_status,
-                detail = f"llama-server error: {err_text[:500]}",
-            )
+            raise _openai_passthrough_error(upstream_status, err_text)
 
         async def _stream():
             # Same httpx lifecycle pattern as _anthropic_passthrough_stream:
@@ -6694,10 +6713,7 @@ async def _openai_passthrough_non_streaming(
         )
 
     if resp.status_code != 200:
-        raise HTTPException(
-            status_code = resp.status_code,
-            detail = f"llama-server error: {resp.text[:500]}",
-        )
+        raise _openai_passthrough_error(resp.status_code, resp.text)
 
     # The guided-decoding fence wraps each choice's JSON content in a
     # ```json ... ``` markdown fence that data_designer's structured parser

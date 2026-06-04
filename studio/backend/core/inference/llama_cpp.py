@@ -5525,7 +5525,7 @@ class LlamaCppBackend:
                     _total_completion = (
                         _final_completion + _accumulated_completion_tokens
                     )
-                    if _metadata_usage or _metadata_timings:
+                    if _metadata_usage or _metadata_timings or _metadata_finish_reason:
                         _merged_timings = (
                             dict(_metadata_timings) if _metadata_timings else {}
                         )
