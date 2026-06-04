@@ -1460,9 +1460,7 @@ def _merge_anthropic_system(system: Any, additions: list[str]) -> Any:
 
     if system is None:
         return (
-            addition_blocks[0]["text"]
-            if len(addition_blocks) == 1
-            else addition_blocks
+            addition_blocks[0]["text"] if len(addition_blocks) == 1 else addition_blocks
         )
     if isinstance(system, str):
         return "\n\n".join([system, *[block["text"] for block in addition_blocks]])
