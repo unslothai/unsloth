@@ -110,3 +110,60 @@ def test_encode_enables_parallelism_only_during_call(monkeypatch):
     embeddings.encode(["alpha", "beta"])
     assert seen["during"] == "true"  # rayon batch tokenization enabled in-call
     assert os.environ.get("TOKENIZERS_PARALLELISM") == "false"  # restored after
+
+
+# ── ST -> llama-server init fallback ──────────────────────────────
+
+
+class _SentinelLlamaBackend:
+    """Stand-in for LlamaServerBackend so the fallback test never spawns a
+    real embedding server."""
+
+
+def _force_st_load_failure(monkeypatch):
+    """Make the ST warm-probe inside _build_st_backend_or_fallback() raise."""
+
+    def _boom(model_name = None):
+        raise RuntimeError("torch is broken on this machine")
+
+    monkeypatch.setattr(embeddings, "_get", _boom)
+
+
+def _patch_llama_backend(monkeypatch, *, binary):
+    from core.inference.llama_cpp import LlamaCppBackend
+    from core.rag import embed_llama_server
+
+    monkeypatch.setattr(
+        LlamaCppBackend, "_find_llama_server_binary", staticmethod(lambda: binary)
+    )
+    monkeypatch.setattr(
+        embed_llama_server, "LlamaServerBackend", _SentinelLlamaBackend
+    )
+
+
+def test_st_failure_falls_back_to_llama_server(monkeypatch):
+    # ST can't load, but the GGUF llama-server embedder is available -> use it.
+    _force_st_load_failure(monkeypatch)
+    _patch_llama_backend(monkeypatch, binary = "/fake/llama-server")
+    embeddings._reset_backend()
+    backend = embeddings._get_backend()
+    assert isinstance(backend, _SentinelLlamaBackend)
+
+
+def test_st_failure_without_llama_binary_reraises(monkeypatch):
+    # ST can't load and there's no llama-server binary -> surface the failure
+    # rather than silently degrade to nothing.
+    _force_st_load_failure(monkeypatch)
+    _patch_llama_backend(monkeypatch, binary = None)
+    embeddings._reset_backend()
+    with pytest.raises(RuntimeError, match = "torch is broken"):
+        embeddings._get_backend()
+
+
+def test_st_success_keeps_sentence_transformers(monkeypatch):
+    # When the ST probe loads cleanly, the ST backend stays selected (no fallback).
+    monkeypatch.setattr(embeddings, "_get", lambda model_name = None: object())
+    _patch_llama_backend(monkeypatch, binary = "/fake/llama-server")
+    embeddings._reset_backend()
+    backend = embeddings._get_backend()
+    assert isinstance(backend, embeddings._SentenceTransformersBackend)

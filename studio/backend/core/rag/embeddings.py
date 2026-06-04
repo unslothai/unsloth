@@ -9,9 +9,13 @@ hardware; see ``_resolve_auto``):
 * ``llama-server`` -- GGUF over the bundled llama.cpp; no torch (see
   ``embed_llama_server``).
 
-Backends produce different vectors, so switching requires rebuilding the index.
-Startup failure raises -- never a silent cross-backend fallback, which would mix
-vector spaces.
+Backends produce different vectors, so switching requires rebuilding the index;
+we never silently switch *after* indexing, which would mix vector spaces. The one
+exception is at backend init: if sentence-transformers is selected but cannot load
+on this machine (missing torch, CUDA/driver mismatch, broken wheel), we fall back
+to the GGUF llama-server embedder. That happens before any vector is produced, so
+it cannot mix spaces -- and a machine where ST will not load could not query an ST
+index anyway.
 """
 
 from __future__ import annotations
@@ -174,6 +178,32 @@ def _resolve_auto() -> str:
     return "sentence-transformers"
 
 
+def _build_st_backend_or_fallback():
+    """Build the sentence-transformers backend, probing it by loading the model
+    now. ST can be missing or broken on a given machine (no torch, CUDA/driver
+    mismatch, bad wheel); if the probe raises and the GGUF llama-server embedder
+    is available, fall back to it so retrieval still works. The probe runs before
+    any vector is produced, so this never mixes vector spaces. Re-raises if no
+    embedder can start (the llama-server binary is also absent)."""
+    backend = _SentenceTransformersBackend()
+    try:
+        backend.warm(model_name = None)
+        return backend
+    except Exception as st_err:  # noqa: BLE001 - any ST/torch import or load failure
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        if not LlamaCppBackend._find_llama_server_binary():
+            raise
+        logger.warning(
+            "sentence-transformers embedder unavailable (%s); falling back to the "
+            "llama-server GGUF embedder",
+            st_err,
+        )
+        from .embed_llama_server import LlamaServerBackend
+
+        return LlamaServerBackend()
+
+
 def _get_backend():
     """Return the process-wide embedding backend for ``config.EMBED_BACKEND``,
     building it once. Cached by the raw config value so ``auto`` detection runs
@@ -185,7 +215,7 @@ def _get_backend():
             return _backend
         key = _resolve_auto() if raw in _AUTO_ALIASES else raw
         if key in _ST_ALIASES:
-            _backend = _SentenceTransformersBackend()
+            _backend = _build_st_backend_or_fallback()
         elif key in _LLAMA_ALIASES:
             # Imported lazily so the ST path never imports llama plumbing.
             from .embed_llama_server import LlamaServerBackend
