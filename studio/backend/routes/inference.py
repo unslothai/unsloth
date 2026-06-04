@@ -794,7 +794,7 @@ async def load_model(
                     is_gguf = True,
                     is_audio = _gguf_is_audio,
                     audio_type = _gguf_audio,
-                    has_audio_input = False,
+                    has_audio_input = getattr(llama_backend, "_has_audio_input", False),
                     inference = inference_config,
                     requires_trust_remote_code = bool(
                         inference_config.get("trust_remote_code", False)
@@ -1044,7 +1044,7 @@ async def load_model(
                 is_gguf = True,
                 is_audio = _gguf_is_audio,
                 audio_type = _gguf_audio,
-                has_audio_input = False,
+                has_audio_input = llama_backend._has_audio_input,
                 inference = inference_config,
                 requires_trust_remote_code = bool(
                     inference_config.get("trust_remote_code", False)
@@ -1531,7 +1531,7 @@ async def get_status(
                 gguf_variant = llama_backend.hf_variant,
                 is_audio = getattr(llama_backend, "_is_audio", False),
                 audio_type = _audio_type,
-                has_audio_input = False,
+                has_audio_input = getattr(llama_backend, "_has_audio_input", False),
                 loading = [],
                 loaded = [_display_model_id] if _display_model_id else [],
                 inference = _inference_cfg,
