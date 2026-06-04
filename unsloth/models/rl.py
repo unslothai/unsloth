@@ -19,6 +19,7 @@ __all__ = [
 
 import torch
 from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, Union
+import importlib
 import inspect
 import os
 import re
@@ -1845,6 +1846,17 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         locals(),
         globals(),
     )
+    try:
+        config_module_name = trainer_file.replace("_trainer", "_config")
+        config_module = importlib.import_module(f"trl.trainer.{config_module_name}")
+        if hasattr(config_module, RLConfig_name):
+            setattr(
+                config_module,
+                RLConfig_name,
+                getattr(created_module, f"Unsloth{RLConfig_name}"),
+            )
+    except Exception:
+        pass
 
     if trainer_file == "grpo_trainer":
         try:

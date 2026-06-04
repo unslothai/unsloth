@@ -1149,13 +1149,13 @@ async function autoLoadSmallestModel(): Promise<{
     toast("Downloading a small model…", {
       id: toastId,
       description:
-        "No downloaded models found. Fetching Gemma-4-E2B-it (UD-Q4_K_XL).",
+        "No downloaded models found. Fetching Qwen3.5-4B-MTP (UD-Q4_K_XL).",
       duration: 30000,
     });
     try {
       if (
         !(await canAutoLoad({
-          model_path: "unsloth/gemma-4-E2B-it-GGUF",
+          model_path: "unsloth/Qwen3.5-4B-MTP-GGUF",
           max_seq_length: 0,
           is_lora: false,
           gguf_variant: "UD-Q4_K_XL",
@@ -1166,7 +1166,7 @@ async function autoLoadSmallestModel(): Promise<{
       }
       loadAttempts += 1;
       const loadResp = await loadModel({
-        model_path: "unsloth/gemma-4-E2B-it-GGUF",
+        model_path: "unsloth/Qwen3.5-4B-MTP-GGUF",
         hf_token: hfToken,
         max_seq_length: 0,
         load_in_4bit: true,
@@ -1176,7 +1176,7 @@ async function autoLoadSmallestModel(): Promise<{
       });
       useChatRuntimeStore
         .getState()
-        .setCheckpoint("unsloth/gemma-4-E2B-it-GGUF", "UD-Q4_K_XL");
+        .setCheckpoint("unsloth/Qwen3.5-4B-MTP-GGUF", "UD-Q4_K_XL");
       const store = useChatRuntimeStore.getState();
       store.setModelRequiresTrustRemoteCode(
         loadResp.requires_trust_remote_code ?? false,
@@ -1186,13 +1186,13 @@ async function autoLoadSmallestModel(): Promise<{
         maxTokens: loadResp.context_length ?? 131072,
       });
       const defaultModel: ChatModelSummary = {
-        id: "unsloth/gemma-4-E2B-it-GGUF",
-        name: loadResp.display_name ?? "gemma-4-E2B-it-GGUF",
+        id: "unsloth/Qwen3.5-4B-MTP-GGUF",
+        name: loadResp.display_name ?? "Qwen3.5-4B-MTP-GGUF",
         isVision: loadResp.is_vision ?? false,
         isLora: false,
         isGguf: true,
       };
-      if (!store.models.some((m) => m.id === "unsloth/gemma-4-E2B-it-GGUF")) {
+      if (!store.models.some((m) => m.id === "unsloth/Qwen3.5-4B-MTP-GGUF")) {
         store.setModels([...store.models, defaultModel]);
       }
       useChatRuntimeStore.setState({
@@ -1212,7 +1212,7 @@ async function autoLoadSmallestModel(): Promise<{
         chatTemplateOverride: null,
         loadedIsMultimodal: isMultimodalResponse(loadResp),
       });
-      toast.success("Loaded Gemma-4-E2B-it (UD-Q4_K_XL)", { id: toastId });
+      toast.success("Loaded Qwen3.5-4B-MTP (UD-Q4_K_XL)", { id: toastId });
       return { loaded: true, blockedByTrustRemoteCode: false };
     } catch {
       toast.dismiss(toastId);

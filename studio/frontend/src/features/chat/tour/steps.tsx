@@ -9,7 +9,6 @@ export function buildChatTourSteps({
   closeModelSelector,
   openSettings,
   closeSettings,
-  openSidebar,
   enterCompare,
   exitCompare,
 }: {
@@ -18,7 +17,6 @@ export function buildChatTourSteps({
   closeModelSelector: () => void;
   openSettings: () => void;
   closeSettings: () => void;
-  openSidebar: () => void;
   enterCompare: () => void;
   exitCompare: () => void;
 }): TourStep[] {
@@ -64,33 +62,22 @@ export function buildChatTourSteps({
   ];
 
   if (canCompare) {
-    steps.push(
-      {
-        id: "compare-btn",
-        target: "chat-compare",
-        title: "Compare mode",
-        body: (
-          <>
-            Compare any two models side-by-side.
-            Pick a different model for each side and see how they respond to the same prompt.
-          </>
-        ),
-        onEnter: openSidebar,
-      },
-      {
-        id: "compare-view",
-        target: "chat-compare-view",
-        title: "Side-by-side threads",
-        body: (
-          <>
-            Same prompt, 2 threads. If LoRA is worse than base, it’s usually
-            data formatting, too many epochs, or a bad checkpoint choice.
-          </>
-        ),
-        onEnter: enterCompare,
-        onExit: exitCompare,
-      },
-    );
+    // Compare now lives in the + menu, so there is no sidebar button to anchor
+    // to; the view step enters compare on its own and explains it.
+    steps.push({
+      id: "compare-view",
+      target: "chat-compare-view",
+      title: "Side-by-side threads",
+      body: (
+        <>
+          Compare any two models side-by-side, available from the + menu. Same
+          prompt, 2 threads. If LoRA is worse than base, it’s usually data
+          formatting, too many epochs, or a bad checkpoint choice.
+        </>
+      ),
+      onEnter: enterCompare,
+      onExit: exitCompare,
+    });
   }
 
   return steps;

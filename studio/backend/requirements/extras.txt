@@ -11,9 +11,9 @@ hydra-core
 hypothesis
 kgb
 parameterized
-pytest<9.0
+pytest>=9.0.3,<10
 pytest-json-report
-pytest-rerunfailures==15.1
+pytest-rerunfailures>=16.2,<17
 pytest-xdist
 # Also needed by sentence_transformers (installed with --no-deps in extras-no-deps.txt)
 scikit-learn==1.7.1
