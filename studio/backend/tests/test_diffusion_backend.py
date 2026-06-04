@@ -1894,6 +1894,7 @@ def test_load_model_cpu_offload_defaults_to_regional_torch_compile(monkeypatch):
     pipe = backend._pipe
     assert backend._cpu_offload_enabled is True
     assert pipe.cpu_offload is True
+    assert pipe.cpu_offload_device == "cuda"
     assert pipe.transformer.compile_repeated_blocks_calls == [
         {
             "fullgraph": True,
@@ -1901,6 +1902,10 @@ def test_load_model_cpu_offload_defaults_to_regional_torch_compile(monkeypatch):
             "options": {"triton.cudagraphs": False},
         }
     ]
+    assert status["device"] == "cuda"
+    assert status["device_backend"] == "cuda"
+    assert status["device_capabilities"]["supports_model_cpu_offload"] is True
+    assert status["device_capabilities"]["supports_gguf_cuda_cache"] is True
     assert status["torch_compile_config"]["scope"] == "regional"
     assert status["torch_compile_config"]["source"] == "default"
 
@@ -1978,6 +1983,27 @@ def test_diffusion_device_policy_respects_studio_cpu(monkeypatch):
     assert target.torch_device == "cpu"
     assert target.backend == "cpu"
     assert target.supports_model_cpu_offload is False
+
+
+def test_diffusion_device_policy_respects_studio_cuda(monkeypatch):
+    import torch
+    from core.inference.diffusion_device import resolve_diffusion_device_target
+    from utils.hardware import DeviceType
+    import utils.hardware as hw
+
+    monkeypatch.setattr(hw, "get_device", lambda: DeviceType.CUDA)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda: True)
+
+    target = resolve_diffusion_device_target()
+
+    assert target.torch_device == "cuda"
+    assert target.backend == "cuda"
+    assert target.vendor == "nvidia"
+    assert target.supports_model_cpu_offload is True
+    assert target.supports_default_torch_compile is True
+    assert target.supports_gguf_cpu_resident is True
+    assert target.supports_gguf_cuda_cache is True
 
 
 def test_load_model_full_repo_respects_explicit_torch_compile_off(monkeypatch):
@@ -3291,7 +3317,11 @@ def test_load_model_offload_policy_aggressive(monkeypatch):
     assert status["gguf_pin_cpu_resident"] is True
     assert backend._cpu_offload_enabled is True
     assert getattr(backend._pipe, "cpu_offload", False) is True
+    assert backend._pipe.cpu_offload_device == "cuda"
     assert not hasattr(backend._pipe, "device")
+    assert status["device"] == "cuda"
+    assert status["device_backend"] == "cuda"
+    assert status["device_capabilities"]["supports_model_cpu_offload"] is True
     transformer = backend._pipe.kwargs["transformer"]
     assert calls == [(transformer, "cpu", True)]
 
@@ -3364,6 +3394,10 @@ def test_load_model_auto_keeps_qwen_balanced(monkeypatch):
     assert backend._cpu_offload_enabled is False
     assert getattr(backend._pipe, "cpu_offload", False) is False
     assert backend._pipe.device == "cuda"
+    assert status["device"] == "cuda"
+    assert status["device_backend"] == "cuda"
+    assert status["device_capabilities"]["supports_gguf_cpu_resident"] is True
+    assert status["device_capabilities"]["supports_gguf_cuda_cache"] is True
     transformer = backend._pipe.kwargs["transformer"]
     assert calls == [(transformer, "cpu", True)]
 
@@ -3442,6 +3476,8 @@ def test_load_model_offload_policy_none(monkeypatch):
     assert backend._cpu_offload_enabled is False
     assert getattr(backend._pipe, "cpu_offload", False) is False
     assert backend._pipe.device == "cuda"
+    assert status["device"] == "cuda"
+    assert status["device_backend"] == "cuda"
     assert calls == []
 
 
