@@ -136,7 +136,8 @@ fi
 # (~1.5 GB per nvcc job) to avoid OOM. Tune with UNSLOTH_LLAMA_BUILD_JOBS=N (raise
 # on a well-cooled box, lower if it still trips). Incremental: a re-run resumes.
 _ncpu="$(nproc 2>/dev/null || echo 4)"
-if [ -n "${UNSLOTH_LLAMA_BUILD_JOBS:-}" ]; then
+# Honor a valid positive-int override; ignore junk/0 (cmake reads -j0 as "all cores").
+if [ -n "${UNSLOTH_LLAMA_BUILD_JOBS:-}" ] && [ "${UNSLOTH_LLAMA_BUILD_JOBS}" -ge 1 ] 2>/dev/null; then
     JOBS="$UNSLOTH_LLAMA_BUILD_JOBS"
 else
     _half=$(( (_ncpu + 1) / 2 ))            # ~half the cores for thermal headroom
