@@ -732,9 +732,9 @@ _open_browser() {
     elif grep -qi microsoft /proc/version 2>/dev/null; then
         # WSL: xdg-open is unreliable; use Windows browser via PowerShell or cmd
         if command -v powershell.exe >/dev/null 2>&1; then
-            powershell.exe -NoProfile -Command "Start-Process '$_url'" >/dev/null 2>&1 &
+            powershell.exe -NoProfile -Command "Start-Process '$_url'" </dev/null >/dev/null 2>&1 &
         elif command -v cmd.exe >/dev/null 2>&1; then
-            cmd.exe /c start "" "$_url" >/dev/null 2>&1 &
+            cmd.exe /c start "" "$_url" </dev/null >/dev/null 2>&1 &
         elif command -v xdg-open >/dev/null 2>&1; then
             xdg-open "$_url" >/dev/null 2>&1 &
         else
@@ -1232,7 +1232,7 @@ WSLPS1_EOF
             # Convert WSL path to Windows path for powershell.exe
             _css_ps1_win=$(wslpath -w "$_css_ps1_tmp" 2>/dev/null)
             if [ -n "$_css_ps1_win" ]; then
-                powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$_css_ps1_win" >/dev/null 2>&1 && _css_created=1
+                powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$_css_ps1_win" </dev/null >/dev/null 2>&1 && _css_created=1
             fi
             rm -f "$_css_ps1_tmp"
         fi
