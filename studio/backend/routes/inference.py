@@ -193,8 +193,7 @@ def _drop_parallel_tool_call_deltas(chunk) -> bool:
         tcs = delta.get("tool_calls")
         if isinstance(tcs, list):
             kept = [
-                tc for tc in tcs
-                if isinstance(tc, dict) and (tc.get("index") or 0) == 0
+                tc for tc in tcs if isinstance(tc, dict) and (tc.get("index") or 0) == 0
             ]
             if len(kept) != len(tcs):
                 delta["tool_calls"] = kept
