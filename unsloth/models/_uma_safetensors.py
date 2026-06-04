@@ -145,9 +145,7 @@ def patch_unified_memory_safetensors_load():
         __slots__ = ("_real", "_device")
 
         def __init__(self, args, kwargs):
-            self._device = kwargs.get(
-                "device", args[2] if len(args) > 2 else "cpu"
-            )
+            self._device = kwargs.get("device", args[2] if len(args) > 2 else "cpu")
             # Re-target the real open at CPU; we do the device move ourselves.
             if len(args) > 2:
                 args = args[:2] + ("cpu",) + tuple(args[3:])
@@ -172,8 +170,8 @@ def patch_unified_memory_safetensors_load():
             return _ClonedSlice(self._real.get_slice(name), self._device)
 
         def get_tensor(self, name):
-            return self._real.get_tensor(name).clone().to(
-                self._device, non_blocking = False
+            return (
+                self._real.get_tensor(name).clone().to(self._device, non_blocking = False)
             )
 
     @functools.wraps(real_safe_open)
