@@ -192,7 +192,10 @@ def _drop_parallel_tool_call_deltas(chunk) -> bool:
         delta = ch.get("delta") or {}
         tcs = delta.get("tool_calls")
         if isinstance(tcs, list):
-            kept = [tc for tc in tcs if (tc.get("index") or 0) == 0]
+            kept = [
+                tc for tc in tcs
+                if isinstance(tc, dict) and (tc.get("index") or 0) == 0
+            ]
             if len(kept) != len(tcs):
                 delta["tool_calls"] = kept
                 changed = True
@@ -2732,6 +2735,13 @@ async def openai_chat_completions(
     - GGUF models → llama-server via LlamaCppBackend
     - Other models → Unsloth/transformers via InferenceBackend
     """
+    # OpenAI's newer "developer" role is equivalent to "system". Normalize it
+    # before provider routing so external providers (which may not accept the
+    # "developer" role) get "system" too, matching the local path.
+    for _m in payload.messages:
+        if _m.role == "developer":
+            _m.role = "system"
+
     # ── External provider routing ────────────────────────────────
     # encrypted_api_key is optional — local providers (llama.cpp / vLLM / Ollama) may run without auth.
     if payload.provider_id or payload.provider_type:
@@ -2763,13 +2773,6 @@ async def openai_chat_completions(
                         param = "tools",
                     ),
                 )
-
-    # OpenAI's newer "developer" role is equivalent to "system". Normalize it
-    # here so the downstream message processing/translation (which treats
-    # role=="system" specially) carries the instruction through to llama-server.
-    for _m in payload.messages:
-        if _m.role == "developer":
-            _m.role = "system"
 
     llama_backend = get_llama_cpp_backend()
     using_gguf = llama_backend.is_loaded
@@ -5614,6 +5617,12 @@ async def _anthropic_tool_stream(
                 if event is _sentinel:
                     break
                 etype = event.get("type")
+                if drop_until_tool_end:
+                    # disable_parallel_tool_use: a later tool call is being
+                    # dropped — skip every event until (and including) its tool_end.
+                    if etype == "tool_end":
+                        drop_until_tool_end = False
+                    continue
                 if etype == "metadata":
                     _fr = event.get("finish_reason")
                     if _fr is not None:
@@ -5632,9 +5641,6 @@ async def _anthropic_tool_stream(
                         continue
                     ends_on_tool_use = True
                 elif etype == "tool_end":
-                    if drop_until_tool_end:
-                        drop_until_tool_end = False
-                        continue
                     tool_blocks_emitted += 1
                 elif etype == "content" and event.get("text"):
                     ends_on_tool_use = False

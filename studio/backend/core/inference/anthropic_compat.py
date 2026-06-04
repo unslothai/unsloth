@@ -240,9 +240,11 @@ def build_anthropic_sse_event(event_type: str, data: dict) -> str:
     return f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
 
 
-def _message_delta_usage(usage: dict) -> dict:
+def _message_delta_usage(usage: Optional[dict]) -> dict:
     """Usage block for a message_delta event (cumulative token counts). Cache
-    fields are always 0 — no prompt caching backend."""
+    fields are always 0 — no prompt caching backend. ``usage`` may be None when a
+    metadata event carried usage=None (e.g. only finish_reason set)."""
+    usage = usage or {}
     return {
         "input_tokens": usage.get("prompt_tokens", 0),
         "cache_creation_input_tokens": 0,
