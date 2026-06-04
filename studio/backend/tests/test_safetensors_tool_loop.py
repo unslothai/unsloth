@@ -625,6 +625,55 @@ class TestLoopBehaviour:
         assert len(duplicate_nudges) == 1
         assert captured_tool_names[2] == ["web_search", "python"]
 
+    def test_repeated_duplicate_noop_transitions_to_final_attempt(self):
+        captured_tool_names: list[list[str]] = []
+        turns = iter(
+            [
+                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
+                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
+                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
+                ["final from first result"],
+            ]
+        )
+
+        def fake_single_turn(messages, active_tools = None):
+            captured_tool_names.append(
+                [
+                    (tool.get("function") or {}).get("name")
+                    for tool in (active_tools or [])
+                    if (tool.get("function") or {}).get("name")
+                ]
+            )
+            chunks = next(turns)
+            acc = ""
+            for chunk in chunks:
+                acc += chunk
+                yield acc
+
+        exec_fn = FakeExecuteTool(["search-result"])
+        events = _collect_events(
+            run_safetensors_tool_loop(
+                single_turn = fake_single_turn,
+                messages = [{"role": "user", "content": "hi"}],
+                tools = [{"type": "function", "function": {"name": "web_search"}}],
+                execute_tool = exec_fn,
+                max_tool_iterations = 10,
+            )
+        )
+
+        assert exec_fn.calls == [("web_search", {"query": "x"})]
+        assert [
+            event.get("tool_call_id")
+            for event in events
+            if event.get("type") == "tool_end"
+        ] == ["call_0"]
+        assert captured_tool_names[-1] == []
+        assert any(
+            event.get("type") == "content"
+            and "final from first result" in event.get("text", "")
+            for event in events
+        )
+
     def test_image_sentinel_stripped_from_model_feed(self):
         # The tool result has a frontend image sentinel that should be
         # stripped before being fed back into the next turn, BUT the

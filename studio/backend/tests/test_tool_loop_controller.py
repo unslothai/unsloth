@@ -127,6 +127,35 @@ def test_successful_duplicate_is_internal_noop_and_keeps_remaining_tools():
     ]
 
 
+def test_repeated_successful_duplicate_becomes_terminal_after_one_recovery_nudge():
+    controller = ToolLoopController(tools = [_tool("web_search"), _tool("python")])
+    first = controller.prepare_call(_call("web_search", {"query": "gpu prices"}, "call_a"))
+    controller.record_result(first, "ok")
+
+    duplicate_one = controller.prepare_call(
+        _call("web_search", {"query": "gpu prices"}, "call_b")
+    )
+    completion_one = controller.record_noop(duplicate_one)
+
+    assert duplicate_one.action == "duplicate"
+    assert "already completed successfully" in completion_one.model_message()["content"]
+    assert not controller.force_final_answer
+    assert [tool["function"]["name"] for tool in controller.active_tools()] == [
+        "web_search",
+        "python",
+    ]
+
+    duplicate_two = controller.prepare_call(
+        _call("web_search", {"query": "gpu prices"}, "call_c")
+    )
+    completion_two = controller.record_noop(duplicate_two)
+
+    assert duplicate_two.action == "duplicate"
+    assert "already completed successfully" in completion_two.model_message()["content"]
+    assert controller.force_final_answer
+    assert controller.active_tools() == []
+
+
 def test_failed_call_does_not_block_retry():
     controller = ToolLoopController(tools = [_tool("web_search")])
     first = controller.prepare_call(_call("web_search", {"query": "gpu prices"}))

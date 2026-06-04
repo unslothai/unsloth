@@ -579,6 +579,99 @@ def test_duplicate_web_search_noop_allows_distinct_followup_tool(monkeypatch):
     assert len(duplicate_nudges) == 1
 
 
+def test_repeated_duplicate_noop_transitions_to_final_pass(monkeypatch):
+    first_search = [
+        _sse(
+            {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "call_search_1",
+                        "type": "function",
+                        "function": {
+                            "name": "web_search",
+                            "arguments": json.dumps({"query": "gpu prices 2026"}),
+                        },
+                    }
+                ]
+            }
+        ),
+        _done(),
+    ]
+    duplicate_one = [
+        _sse(
+            {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "call_search_2",
+                        "type": "function",
+                        "function": {
+                            "name": "web_search",
+                            "arguments": json.dumps({"query": "gpu prices 2026"}),
+                        },
+                    }
+                ]
+            }
+        ),
+        _done(),
+    ]
+    duplicate_two = [
+        _sse(
+            {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "call_search_3",
+                        "type": "function",
+                        "function": {
+                            "name": "web_search",
+                            "arguments": json.dumps({"query": "gpu prices 2026"}),
+                        },
+                    }
+                ]
+            }
+        ),
+        _done(),
+    ]
+    final_stream = [_sse({"content": "Final answer from first search."}), _done()]
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [first_search, duplicate_one, duplicate_two, final_stream],
+        payloads,
+    )
+    calls: list[tuple[str, dict]] = []
+
+    def fake_execute_tool(name, arguments, **_kwargs):
+        calls.append((name, arguments))
+        return "result"
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "search gpus"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 10,
+        )
+    )
+
+    assert calls == [("web_search", {"query": "gpu prices 2026"})]
+    assert [
+        event.get("tool_call_id")
+        for event in events
+        if event.get("type") == "tool_end"
+    ] == ["call_search_1"]
+    assert len(payloads) == 4
+    assert "tools" not in payloads[-1]
+    assert any(
+        event.get("type") == "content"
+        and event.get("text") == "Final answer from first search."
+        for event in events
+    )
+
+
 def test_same_turn_duplicate_web_search_is_internal_noop(monkeypatch):
     same_turn_duplicates = [
         _sse(

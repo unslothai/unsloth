@@ -277,6 +277,7 @@ class ToolLoopController:
         tools: Sequence[Mapping[str, Any]] | None,
         auto_heal_tool_calls: bool = True,
         one_shot_tools: frozenset[str] = _ONE_SHOT_TOOLS,
+        duplicate_noop_limit: int = 2,
     ) -> None:
         self._restrict_to_allowed = tools is not None
         self._tools = [copy.deepcopy(dict(tool)) for tool in (tools or [])]
@@ -289,6 +290,8 @@ class ToolLoopController:
         self._one_shot_tools = one_shot_tools
         self._completed_one_shot_tools: set[str] = set()
         self._successful_keys: set[str] = set()
+        self._duplicate_noop_counts: dict[str, int] = {}
+        self._duplicate_noop_limit = max(1, duplicate_noop_limit)
         self._history: list[_ToolCallRecord] = []
         self._force_final_answer = False
 
@@ -393,7 +396,12 @@ class ToolLoopController:
                 action = decision.action,
             )
         )
-        if decision.action in ("disabled", "render_html_repeat"):
+        if decision.action == "duplicate":
+            duplicate_count = self._duplicate_noop_counts.get(decision.key, 0) + 1
+            self._duplicate_noop_counts[decision.key] = duplicate_count
+            if duplicate_count >= self._duplicate_noop_limit:
+                self._force_final_answer = True
+        elif decision.action in ("disabled", "render_html_repeat"):
             self._force_final_answer = True
         return ToolCallCompletion(
             decision = decision,
