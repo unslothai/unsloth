@@ -35,6 +35,7 @@ from core.inference.anthropic_compat import (
     AnthropicPassthroughEmitter,
 )
 from routes.inference import (
+    _build_tool_action_nudge,
     _normalize_anthropic_openai_images,
     _select_anthropic_server_tools,
     _anthropic_requested_studio_tools,
@@ -47,6 +48,48 @@ import asyncio
 import base64 as _b64
 from io import BytesIO as _BytesIO
 from types import SimpleNamespace
+
+
+# =====================================================================
+# Tool nudge tests
+# =====================================================================
+
+
+class TestToolActionNudge:
+    def test_balanced_nudge_uses_expanded_web_and_code_tips(self):
+        nudge = _build_tool_action_nudge(
+            tools = [
+                {"type": "function", "function": {"name": "web_search"}},
+                {"type": "function", "function": {"name": "python"}},
+            ],
+            model_name = "Llama-3.1-70B-Instruct",
+        )
+
+        assert nudge.startswith("The current date is ")
+        assert "Tools are available when they materially improve" in nudge
+        assert "prefer using tools rather than answering from memory" not in nudge
+        assert "fetch its full content by calling web_search with the url parameter" in nudge
+        assert "Use code execution for math" in nudge
+        assert "render_html" not in nudge
+
+    def test_balanced_nudge_preserves_compact_web_tip_and_artifact_gate(self):
+        nudge = _build_tool_action_nudge(
+            tools = [
+                {"type": "function", "function": {"name": "web_search"}},
+                {"type": "function", "function": {"name": "render_html"}},
+            ],
+            model_name = "Llama-3.1-8B-Instruct",
+        )
+
+        assert "When using web_search, do not repeat the same search query." in nudge
+        assert "fetch its full content" not in nudge
+        assert "call render_html once" in nudge
+
+    def test_balanced_nudge_empty_without_known_tool_categories(self):
+        assert _build_tool_action_nudge(
+            tools = [],
+            model_name = "Llama-3.1-8B-Instruct",
+        ) == ""
 
 
 # =====================================================================
