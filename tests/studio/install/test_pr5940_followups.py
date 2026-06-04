@@ -164,7 +164,7 @@ def _sh_name_arch_rows(text):
     rows = []
     for line in text.splitlines():
         m = re.search(r'_gpu_disp_gfx="(gfx[0-9a-z]+)"', line)
-        if not m or "*\"" not in line:
+        if not m or '*"' not in line:
             continue
         tokens = re.findall(r'\*"([^"]+)"\*', line)
         if tokens:
@@ -200,7 +200,9 @@ def test_install_sh_name_arch_agrees_with_ps_for_strix_and_non_amd():
         assert sh == expect, f"install.sh: {name!r} -> {sh!r}, expected {expect!r}"
         if expect is not None:  # cross-check bash agrees with the PowerShell table
             ps = next((a for p, a in ps_rows if re.search(p, name)), None)
-            assert sh == ps, f"install.sh/install.ps1 drift for {name!r}: {sh!r} vs {ps!r}"
+            assert (
+                sh == ps
+            ), f"install.sh/install.ps1 drift for {name!r}: {sh!r} vs {ps!r}"
 
 
 # ── amd-smi gating (DiskPart UAC-prompt avoidance) ───────────────────────────
