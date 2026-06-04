@@ -142,8 +142,7 @@ def test_structured_tool_call_after_visible_preface_is_executed(monkeypatch):
     actual_tool_start_index = next(
         i
         for i, event in enumerate(events)
-        if event.get("type") == "tool_start"
-        and event.get("arguments", {}).get("code")
+        if event.get("type") == "tool_start" and event.get("arguments", {}).get("code")
     )
     assert first_content_index < actual_tool_start_index
 
@@ -156,7 +155,10 @@ def test_structured_tool_call_after_visible_preface_is_executed(monkeypatch):
             },
         )
     ]
-    assert any(e.get("type") == "tool_end" and e.get("tool_name") == "render_html" for e in events)
+    assert any(
+        e.get("type") == "tool_end" and e.get("tool_name") == "render_html"
+        for e in events
+    )
 
     # The second llama-server request should include the assistant preface
     # plus the structured tool call, preserving OpenAI-compatible ordering.
@@ -166,10 +168,7 @@ def test_structured_tool_call_after_visible_preface_is_executed(monkeypatch):
     ]
     assert assistant_messages[-1]["content"] == "Here is the artifact.\n\n"
     assert assistant_messages[-1]["tool_calls"][0]["id"] == tool_call_id
-    assert (
-        assistant_messages[-1]["tool_calls"][0]["function"]["name"]
-        == "render_html"
-    )
+    assert assistant_messages[-1]["tool_calls"][0]["function"]["name"] == "render_html"
 
 
 def test_repeat_render_html_nudge_is_not_user_visible_error(monkeypatch):
@@ -223,7 +222,9 @@ def test_repeat_render_html_nudge_is_not_user_visible_error(monkeypatch):
     ]
     final_stream = [_sse({"content": "Short note."}), _done()]
     payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, [first_stream, repeat_stream, final_stream], payloads)
+    backend = _make_backend(
+        monkeypatch, [first_stream, repeat_stream, final_stream], payloads
+    )
 
     calls: list[tuple[str, dict]] = []
 
@@ -268,14 +269,12 @@ def test_repeat_render_html_nudge_is_not_user_visible_error(monkeypatch):
     actual_tool_starts = [
         event
         for event in events
-        if event.get("type") == "tool_start"
-        and event.get("arguments", {}).get("code")
+        if event.get("type") == "tool_start" and event.get("arguments", {}).get("code")
     ]
     tool_ends = [
         event
         for event in events
-        if event.get("type") == "tool_end"
-        and event.get("tool_name") == "render_html"
+        if event.get("type") == "tool_end" and event.get("tool_name") == "render_html"
     ]
     assert len(actual_tool_starts) == 1
     assert len(tool_ends) == 1
@@ -334,11 +333,16 @@ def test_render_html_success_drops_tool_schema_before_final_pass(monkeypatch):
 
     assert len(payloads) == 2
     assert "tools" not in payloads[1]
-    assert any(event.get("type") == "content" and event.get("text") == "Done." for event in events)
+    assert any(
+        event.get("type") == "content" and event.get("text") == "Done."
+        for event in events
+    )
     final_user_messages = [
         m.get("content", "") for m in payloads[1]["messages"] if m.get("role") == "user"
     ]
-    assert not any("used all available tool calls" in message for message in final_user_messages)
+    assert not any(
+        "used all available tool calls" in message for message in final_user_messages
+    )
 
 
 def test_non_consecutive_duplicate_web_search_is_internal_noop(monkeypatch):
@@ -419,7 +423,9 @@ def test_non_consecutive_duplicate_web_search_is_internal_noop(monkeypatch):
 
     events = list(
         backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "search gpus in 2026 prices and use python"}],
+            messages = [
+                {"role": "user", "content": "search gpus in 2026 prices and use python"}
+            ],
             tools = tools,
             max_tool_iterations = 3,
         )
@@ -534,7 +540,9 @@ def test_duplicate_web_search_noop_allows_distinct_followup_tool(monkeypatch):
 
     events = list(
         backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "search gpus in 2026 prices and use python"}],
+            messages = [
+                {"role": "user", "content": "search gpus in 2026 prices and use python"}
+            ],
             tools = tools,
             max_tool_iterations = 4,
         )
@@ -621,9 +629,7 @@ def test_same_turn_duplicate_web_search_is_internal_noop(monkeypatch):
 
     assert calls == [("web_search", {"query": "gpu prices 2026"})]
     assert [
-        event.get("tool_call_id")
-        for event in events
-        if event.get("type") == "tool_end"
+        event.get("tool_call_id") for event in events if event.get("type") == "tool_end"
     ] == ["call_search_1"]
     assert not [
         event
@@ -633,7 +639,9 @@ def test_same_turn_duplicate_web_search_is_internal_noop(monkeypatch):
     ]
 
 
-def test_same_turn_repeated_render_html_does_not_emit_second_provisional_start(monkeypatch):
+def test_same_turn_repeated_render_html_does_not_emit_second_provisional_start(
+    monkeypatch,
+):
     same_turn_render_calls = [
         _sse(
             {
@@ -663,7 +671,9 @@ def test_same_turn_repeated_render_html_does_not_emit_second_provisional_start(m
     ]
     final_stream = [_sse({"content": "Final answer."}), _done()]
     payloads: list[dict] = []
-    backend = _make_backend(monkeypatch, [same_turn_render_calls, final_stream], payloads)
+    backend = _make_backend(
+        monkeypatch, [same_turn_render_calls, final_stream], payloads
+    )
 
     calls: list[tuple[str, dict]] = []
 
@@ -740,13 +750,14 @@ def test_disabled_tool_call_is_internal_noop(monkeypatch):
         )
     )
 
-    assert not [event for event in events if event.get("type") in {"tool_start", "tool_end"}]
+    assert not [
+        event for event in events if event.get("type") in {"tool_start", "tool_end"}
+    ]
     assert len(payloads) == 2
     disabled_nudges = [
         message
         for message in payloads[1]["messages"]
-        if message.get("role") == "user"
-        and "not enabled" in message.get("content", "")
+        if message.get("role") == "user" and "not enabled" in message.get("content", "")
     ]
     assert len(disabled_nudges) == 1
 

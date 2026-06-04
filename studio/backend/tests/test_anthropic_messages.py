@@ -68,7 +68,10 @@ class TestToolActionNudge:
         assert nudge.startswith("The current date is ")
         assert "Tools are available when they materially improve" in nudge
         assert "prefer using tools rather than answering from memory" not in nudge
-        assert "fetch its full content by calling web_search with the url parameter" in nudge
+        assert (
+            "fetch its full content by calling web_search with the url parameter"
+            in nudge
+        )
         assert "Use code execution for math" in nudge
         assert "render_html" not in nudge
 
@@ -86,10 +89,13 @@ class TestToolActionNudge:
         assert "call render_html once" in nudge
 
     def test_balanced_nudge_empty_without_known_tool_categories(self):
-        assert _build_tool_action_nudge(
-            tools = [],
-            model_name = "Llama-3.1-8B-Instruct",
-        ) == ""
+        assert (
+            _build_tool_action_nudge(
+                tools = [],
+                model_name = "Llama-3.1-8B-Instruct",
+            )
+            == ""
+        )
 
 
 # =====================================================================

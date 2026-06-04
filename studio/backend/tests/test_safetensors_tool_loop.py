@@ -486,8 +486,12 @@ class TestLoopBehaviour:
         captured_messages: list[list[dict]] = []
         turns = iter(
             [
-                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
-                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
+                [
+                    '<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'
+                ],
+                [
+                    '<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'
+                ],
                 ["final"],
             ]
         )
@@ -534,9 +538,15 @@ class TestLoopBehaviour:
         captured_tool_names: list[list[str]] = []
         turns = iter(
             [
-                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
-                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
-                ['<tool_call>{"name":"python","arguments":{"code":"print(1)"}}</tool_call>'],
+                [
+                    '<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'
+                ],
+                [
+                    '<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'
+                ],
+                [
+                    '<tool_call>{"name":"python","arguments":{"code":"print(1)"}}</tool_call>'
+                ],
                 ["final"],
             ]
         )
@@ -934,7 +944,9 @@ class TestGuardrails:
         )
         events = _collect_events(loop)
         assert exec_fn.calls == []
-        assert not [event for event in events if event.get("type") in {"tool_start", "tool_end"}]
+        assert not [
+            event for event in events if event.get("type") in {"tool_start", "tool_end"}
+        ]
 
     def test_max_iterations_zero_executes_no_tools(self):
         loop, exec_fn = _make_loop(

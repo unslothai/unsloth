@@ -53,7 +53,10 @@ from utils.subprocess_compat import (
 from core.inference.tool_call_parser import (
     parse_tool_calls_from_text as _shared_parse_tool_calls_from_text,
 )
-from core.inference.tool_loop_controller import ToolLoopController, tool_event_provenance
+from core.inference.tool_loop_controller import (
+    ToolLoopController,
+    tool_event_provenance,
+)
 
 logger = get_logger(__name__)
 
@@ -4616,7 +4619,9 @@ class LlamaCppBackend:
         def _tool_succeeded(tool_name: str) -> bool:
             key_prefix = f"{tool_name}:"
             return any(
-                record.executed and not record.is_error and record.key.startswith(key_prefix)
+                record.executed
+                and not record.is_error
+                and record.key.startswith(key_prefix)
                 for record in tool_controller.history
             )
 
@@ -4837,7 +4842,12 @@ class LlamaCppBackend:
                                                 current_name == "render_html"
                                                 and not _tool_succeeded("render_html")
                                                 and any(
-                                                    ((tool.get("function") or {}).get("name") == "render_html")
+                                                    (
+                                                        (
+                                                            tool.get("function") or {}
+                                                        ).get("name")
+                                                        == "render_html"
+                                                    )
                                                     for tool in active_tools
                                                 )
                                                 and not already_started
@@ -5044,12 +5054,11 @@ class LlamaCppBackend:
                         _stripped = content_accum.strip()
                         if not _stripped:
                             _stripped = reasoning_accum.strip()
-                        _render_html_already_done_intent = (
-                            _tool_succeeded("render_html")
-                            and re.search(
-                                r"(?i)\brender[_\s-]?html\b",
-                                _stripped,
-                            )
+                        _render_html_already_done_intent = _tool_succeeded(
+                            "render_html"
+                        ) and re.search(
+                            r"(?i)\brender[_\s-]?html\b",
+                            _stripped,
                         )
                         if (
                             auto_heal_tool_calls
@@ -5277,7 +5286,9 @@ class LlamaCppBackend:
                         break
 
                     if not assistant_appended:
-                        assistant_msg["tool_calls"] = [decision.as_assistant_tool_call()]
+                        assistant_msg["tool_calls"] = [
+                            decision.as_assistant_tool_call()
+                        ]
                         conversation.append(assistant_msg)
                         assistant_appended = True
                     else:
@@ -5307,7 +5318,10 @@ class LlamaCppBackend:
 
                 # Clear tool status badge before next generation/final pass.
                 yield {"type": "status", "text": ""}
-                if tool_controller.force_final_answer or not tool_controller.active_tools():
+                if (
+                    tool_controller.force_final_answer
+                    or not tool_controller.active_tools()
+                ):
                     _append_budget_exhausted_nudge = False
                     break
                 continue
