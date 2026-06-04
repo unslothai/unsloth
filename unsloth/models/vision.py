@@ -1828,6 +1828,11 @@ def _iter_message_lists(example, column):
 
 
 def _local_path_from_video_value(video_path):
+    # Inline base64/data payloads are not files on disk; skip so they are not
+    # reported as missing. Checked before the "://" heuristic because data URIs
+    # have no "://" (e.g. "data:video/mp4;base64,...").
+    if video_path.startswith("data:"):
+        return None
     if "://" not in video_path:
         return video_path
     if not video_path.startswith("file://"):
@@ -1893,6 +1898,10 @@ def check_dataset_for_missing_videos(
         pass
 
     missing = []
+    # Tracks missing paths within this call so the same bad path referenced by
+    # multiple rows is reported once. Kept separate from `checked` (which only
+    # caches confirmed-existing paths) so retries still re-check missing files.
+    seen_missing = set()
     if checked is None:
         checked = set()
 
@@ -1911,9 +1920,10 @@ def check_dataset_for_missing_videos(
                     if not isinstance(video_path, str) or not video_path:
                         continue
                     path = _local_path_from_video_value(video_path)
-                    if path is None or path in checked:
+                    if path is None or path in checked or path in seen_missing:
                         continue
                     if not os.path.isfile(path):
+                        seen_missing.add(path)
                         missing.append(path)
                     else:
                         checked.add(path)

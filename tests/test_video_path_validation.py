@@ -510,3 +510,131 @@ def test_collator_applies_formatting_func_before_validation(
         assert passed[0]["messages"][0]["content"][0]["video"] == tmp
     finally:
         os.unlink(tmp)
+
+
+def test_data_uri_skipped(check_dataset_for_missing_videos):
+    """Inline data: URIs are not files on disk and must not be flagged missing."""
+    ds = _make_video_dataset("data:video/mp4;base64,AAAABBBBCCCC")
+    assert check_dataset_for_missing_videos(ds) == []
+
+
+def test_duplicate_missing_deduped_in_warn_mode(check_dataset_for_missing_videos):
+    """raise_error=False must return each missing path once, not once per row."""
+    ds = _make_video_dataset("/nonexistent/dup.mp4", "/nonexistent/dup.mp4")
+    with warnings.catch_warnings(record = True):
+        warnings.simplefilter("always")
+        missing = check_dataset_for_missing_videos(ds, raise_error = False)
+    assert missing == ["/nonexistent/dup.mp4"]
+
+
+# ── Tests: real unsloth_zoo collator integration ─────────────────────────────
+#
+# The fixtures above test a *fake* base collator. These tests exercise the real
+# unsloth.trainer.UnslothVisionDataCollator subclass against the real
+# unsloth_zoo base, so the super()/formatting_func interaction is covered. They
+# skip cleanly where the full unsloth stack (triton/CUDA kernels) is unavailable.
+
+
+@pytest.fixture(scope = "session")
+def real_collator_classes():
+    try:
+        from unsloth.trainer import UnslothVisionDataCollator
+        from unsloth_zoo.vision_utils import (
+            UnslothVisionDataCollator as ZooBase,
+        )
+    except Exception as exc:  # noqa: BLE001 - any import failure -> skip
+        pytest.skip(f"full unsloth import unavailable: {exc!r}")
+    return UnslothVisionDataCollator, ZooBase
+
+
+def _make_real_collator(real_collator_classes, formatting_func = None):
+    """Build the real subclass without its heavy __init__ (needs a processor)."""
+    subclass, _ = real_collator_classes
+    collator = subclass.__new__(subclass)
+    collator.formatting_func = formatting_func
+    collator._checked_video_paths = set()
+    return collator
+
+
+def test_real_collator_blocks_super_on_missing_video(
+    real_collator_classes, monkeypatch
+):
+    """A missing path must raise before the base collator __call__ ever runs."""
+    _, zoo_base = real_collator_classes
+    calls = []
+    monkeypatch.setattr(
+        zoo_base, "__call__", lambda self, examples: calls.append(examples)
+    )
+    collator = _make_real_collator(real_collator_classes)
+    with pytest.raises(FileNotFoundError):
+        collator(_batch("/nonexistent/real.mp4"))
+    assert calls == []  # base collator was never reached
+
+
+def test_real_collator_calls_super_with_formatting_disabled(
+    real_collator_classes, monkeypatch
+):
+    """
+    On a valid batch the base must be called with formatting_func temporarily
+    None (so it does not re-apply the formatter) and with already-formatted
+    examples; the original formatting_func is restored afterwards.
+    """
+    seen = {}
+
+    def spy(self, examples):
+        seen["formatting_func"] = self.formatting_func
+        seen["examples"] = examples
+        return {"ok": True}
+
+    _, zoo_base = real_collator_classes
+    monkeypatch.setattr(zoo_base, "__call__", spy)
+
+    def fmt(example):
+        return {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [{"type": "video", "video": example["video_id"]}],
+                }
+            ]
+        }
+
+    with tempfile.NamedTemporaryFile(suffix = ".mp4", delete = False) as f:
+        f.write(b"x")
+        tmp = f.name
+    try:
+        collator = _make_real_collator(real_collator_classes, formatting_func = fmt)
+        result = collator([{"video_id": tmp}])
+        assert result == {"ok": True}
+        # base saw formatting disabled and already-formatted examples
+        assert seen["formatting_func"] is None
+        assert seen["examples"][0]["messages"][0]["content"][0]["video"] == tmp
+        # original formatter restored, path cached for cross-batch dedup
+        assert collator.formatting_func is fmt
+        assert tmp in collator._checked_video_paths
+    finally:
+        os.unlink(tmp)
+
+
+def test_real_collator_restores_formatting_func_when_super_raises(
+    real_collator_classes, monkeypatch
+):
+    """formatting_func must be restored even if the base collator raises."""
+
+    def boom(self, examples):
+        raise RuntimeError("base collator failed")
+
+    _, zoo_base = real_collator_classes
+    monkeypatch.setattr(zoo_base, "__call__", boom)
+
+    def fmt(example):
+        return {
+            "messages": [
+                {"role": "user", "content": [{"type": "text", "text": "hi"}]}
+            ]
+        }
+
+    collator = _make_real_collator(real_collator_classes, formatting_func = fmt)
+    with pytest.raises(RuntimeError):
+        collator([{"anything": 1}])
+    assert collator.formatting_func is fmt
