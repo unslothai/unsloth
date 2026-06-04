@@ -6,7 +6,9 @@
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import type { ToolCallMessagePartComponent } from "@assistant-ui/react";
-import { DownloadIcon, ImageIcon, PencilIcon } from "lucide-react";
+import { ImageIcon, PencilIcon } from "lucide-react";
+import { Download01Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import type { CSSProperties, MouseEvent } from "react";
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { useGeneratedImageOverlay } from "./generated-image-overlay-context";
@@ -374,7 +376,7 @@ const ImageGenerationToolUIImpl: ToolCallMessagePartComponent = ({
                   onClick={handleDownload}
                   aria-label="Download generated image"
                 >
-                  <DownloadIcon className="size-4" />
+                  <HugeiconsIcon icon={Download01Icon} className="size-4" />
                 </Button>
               </div>
             </div>
