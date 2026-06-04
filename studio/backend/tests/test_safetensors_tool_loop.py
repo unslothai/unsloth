@@ -73,6 +73,11 @@ class TestParser:
         assert len(result) == 1
         assert result[0]["function"]["name"] == "python"
 
+    def test_json_tool_call_unclosed_requires_healing(self):
+        text = '<tool_call>{"name":"python","arguments":{"code":"print(1)"}}'
+        assert parse_tool_calls_from_text(text)[0]["function"]["name"] == "python"
+        assert parse_tool_calls_from_text(text, allow_incomplete = False) == []
+
     def test_xml_function_call(self):
         text = "<function=python><parameter=code>print('hi')</parameter></function>"
         result = parse_tool_calls_from_text(text)
@@ -87,6 +92,11 @@ class TestParser:
         assert len(result) == 1
         assert result[0]["function"]["name"] == "terminal"
         assert "ls -la" in result[0]["function"]["arguments"]
+
+    def test_xml_unclosed_requires_healing(self):
+        text = "<function=terminal><parameter=command>ls -la"
+        assert parse_tool_calls_from_text(text)[0]["function"]["name"] == "terminal"
+        assert parse_tool_calls_from_text(text, allow_incomplete = False) == []
 
     def test_code_with_embedded_xml(self):
         # A code parameter contains the literal </parameter>. Must not
@@ -159,6 +169,18 @@ class TestParser:
         raw = 'before <tool_call>{"name":"web_search"'
         assert strip_tool_markup_streaming(raw, auto_heal_tool_calls = False) == raw
         assert strip_tool_markup_streaming(raw) == "before "
+
+    def test_streaming_strip_respects_disabled_healing_without_tool_protocol(self):
+        raw = 'before <tool_call>{"name":"web_search"'
+        assert strip_tool_markup_streaming(raw, auto_heal_tool_calls = False) == raw
+        assert (
+            strip_tool_markup_streaming(
+                raw,
+                auto_heal_tool_calls = False,
+                tool_protocol_active = True,
+            )
+            == "before "
+        )
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -996,6 +1018,55 @@ class TestGuardrails:
         )
         _collect_events(loop)
         assert exec_fn.calls == [("web_search", {"query": "x"})]
+
+    def test_auto_heal_disabled_preserves_xml_when_no_tools_active(self):
+        exec_fn = FakeExecuteTool([])
+        loop = run_safetensors_tool_loop(
+            single_turn = _const_stream(
+                '<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'
+            ),
+            messages = [{"role": "user", "content": "show literal"}],
+            tools = [],
+            execute_tool = exec_fn,
+            max_tool_iterations = 2,
+            auto_heal_tool_calls = False,
+        )
+        events = _collect_events(loop)
+        assert exec_fn.calls == []
+        assert any(
+            event.get("type") == "content" and "<tool_call>" in event.get("text", "")
+            for event in events
+        )
+
+    def test_auto_heal_disabled_does_not_repair_unclosed_tool_call(self):
+        loop, exec_fn = _make_loop(
+            turns = [
+                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}'],
+            ],
+            exec_results = ["OK"],
+            auto_heal_tool_calls = False,
+            max_tool_iterations = 1,
+        )
+        events = _collect_events(loop)
+        assert exec_fn.calls == []
+        assert any(
+            event.get("type") == "content" and "<tool_call>" in event.get("text", "")
+            for event in events
+        )
+
+    def test_auto_heal_enabled_strips_unparseable_xml_tool_call(self):
+        loop, exec_fn = _make_loop(
+            turns = [["<tool_call>{not valid json}</tool_call>"]],
+            exec_results = ["OK"],
+            auto_heal_tool_calls = True,
+            max_tool_iterations = 1,
+        )
+        events = _collect_events(loop)
+        assert exec_fn.calls == []
+        assert not any(
+            event.get("type") == "content" and "<tool_call>" in event.get("text", "")
+            for event in events
+        )
 
     def test_non_consecutive_duplicate_is_short_circuited(self):
         loop, exec_fn = _make_loop(

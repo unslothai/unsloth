@@ -27,9 +27,26 @@ assert _m, "could not extract _TOOL_XML_RE source"
 _ns = {"_re": _re}
 exec(f"_TOOL_XML_RE = _re.compile({_m.group(1)})", _ns)
 _TOOL_XML_RE = _ns["_TOOL_XML_RE"]
+_helper = _re.search(
+    r"def _strip_tool_xml_for_display\(text: str, \*, auto_heal_tool_calls: bool\) -> str:\n"
+    r"(?:    .+\n)+",
+    _src,
+)
+assert _helper, "could not extract _strip_tool_xml_for_display source"
+exec(_helper.group(0), _ns)
+_strip_tool_xml_for_display = _ns["_strip_tool_xml_for_display"]
 
 
 # ── Well-formed pairs ─────────────────────────────────────────────
+
+
+def test_route_display_strip_respects_disabled_auto_heal_contract():
+    text = 'literal <tool_call>{"name":"web_search"}</tool_call> survives'
+    assert _strip_tool_xml_for_display(text, auto_heal_tool_calls = False) == text
+    assert "<tool_call>" not in _strip_tool_xml_for_display(
+        text,
+        auto_heal_tool_calls = True,
+    )
 
 
 def test_strips_well_formed_tool_call():

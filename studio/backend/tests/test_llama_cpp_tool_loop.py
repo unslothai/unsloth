@@ -886,6 +886,7 @@ def test_internal_reprompt_attempts_do_not_duplicate_visible_text(monkeypatch):
     assert len(payloads) == 2
 
 
+
 def test_internal_reprompt_disabled_when_auto_heal_disabled(monkeypatch):
     streams = [[_sse({"content": "I will use render_html now."}), _done()]]
     payloads: list[dict] = []
@@ -925,6 +926,44 @@ def test_internal_reprompt_disabled_when_auto_heal_disabled(monkeypatch):
     ]
     assert content_texts == ["I will use render_html now."]
     assert len(payloads) == 1
+
+
+def test_auto_heal_disabled_parses_well_formed_xml_when_tools_enabled(monkeypatch):
+    streams = [
+        [
+            _sse(
+                {
+                    "content": '<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'
+                }
+            ),
+            _done(),
+        ],
+        [_sse({"content": "done"}), _done()],
+    ]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, streams, payloads)
+    calls: list[tuple[str, dict]] = []
+
+    def fake_execute_tool(name, arguments, **_kwargs):
+        calls.append((name, arguments))
+        return "result"
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "search"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            auto_heal_tool_calls = False,
+            max_tool_iterations = 1,
+        )
+    )
+
+    assert calls == [("web_search", {"query": "x"})]
+    assert not any(
+        event.get("type") == "content" and "<tool_call>" in event.get("text", "")
+        for event in events
+    )
 
 
 def test_reprompted_tool_call_still_streams_final_answer(monkeypatch):

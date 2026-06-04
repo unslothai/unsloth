@@ -624,6 +624,15 @@ _TOOL_XML_RE = _re.compile(
     r"|</parameter>\s*\Z",
     _re.DOTALL,
 )
+
+
+def _strip_tool_xml_for_display(text: str, *, auto_heal_tool_calls: bool) -> str:
+    """Apply route-level XML leak cleanup only when Auto-Heal is enabled."""
+    if not auto_heal_tool_calls:
+        return text
+    return _TOOL_XML_RE.sub("", text)
+
+
 logger = get_logger(__name__)
 
 
@@ -2894,12 +2903,21 @@ async def openai_chat_completions(
                     gguf_messages.append({"role": "system", "content": system_prompt})
                 gguf_messages.extend(chat_messages)
 
+            _gguf_auto_heal_tool_calls = (
+                payload.auto_heal_tool_calls
+                if payload.auto_heal_tool_calls is not None
+                else True
+            )
+
             # ── Strip stale tool-call XML from conversation history ─
             for _msg in gguf_messages:
                 if _msg.get("role") == "assistant" and isinstance(
                     _msg.get("content"), str
                 ):
-                    _msg["content"] = _TOOL_XML_RE.sub("", _msg["content"]).strip()
+                    _msg["content"] = _strip_tool_xml_for_display(
+                        _msg["content"],
+                        auto_heal_tool_calls = _gguf_auto_heal_tool_calls,
+                    ).strip()
 
             def gguf_generate_with_tools():
                 return llama_backend.generate_chat_completion_with_tools(
@@ -2916,9 +2934,7 @@ async def openai_chat_completions(
                     enable_thinking = payload.enable_thinking,
                     reasoning_effort = payload.reasoning_effort,
                     preserve_thinking = payload.preserve_thinking,
-                    auto_heal_tool_calls = payload.auto_heal_tool_calls
-                    if payload.auto_heal_tool_calls is not None
-                    else True,
+                    auto_heal_tool_calls = _gguf_auto_heal_tool_calls,
                     max_tool_iterations = payload.max_tool_calls_per_message
                     if payload.max_tool_calls_per_message is not None
                     else 25,
@@ -3000,7 +3016,10 @@ async def openai_chat_completions(
                         # the last sanitized snapshot so cross-chunk XML
                         # tags are handled correctly.
                         raw_cumulative = event.get("text", "")
-                        clean_cumulative = _TOOL_XML_RE.sub("", raw_cumulative)
+                        clean_cumulative = _strip_tool_xml_for_display(
+                            raw_cumulative,
+                            auto_heal_tool_calls = _gguf_auto_heal_tool_calls,
+                        )
                         new_text = clean_cumulative[len(prev_text) :]
                         prev_text = clean_cumulative
                         if not new_text:
@@ -3366,6 +3385,12 @@ async def openai_chat_completions(
             else:
                 _sf_system_prompt = _sf_nudge
 
+        _sf_auto_heal_tool_calls = (
+            payload.auto_heal_tool_calls
+            if payload.auto_heal_tool_calls is not None
+            else True
+        )
+
         # Strip stale tool-call XML from prior assistant turns.
         _sf_chat_messages = []
         for _msg in chat_messages:
@@ -3373,7 +3398,10 @@ async def openai_chat_completions(
                 _sf_chat_messages.append(
                     {
                         **_msg,
-                        "content": _TOOL_XML_RE.sub("", _msg["content"]).strip(),
+                        "content": _strip_tool_xml_for_display(
+                            _msg["content"],
+                            auto_heal_tool_calls = _sf_auto_heal_tool_calls,
+                        ).strip(),
                     }
                 )
             else:
@@ -3394,9 +3422,7 @@ async def openai_chat_completions(
                 enable_thinking = payload.enable_thinking,
                 reasoning_effort = payload.reasoning_effort,
                 preserve_thinking = payload.preserve_thinking,
-                auto_heal_tool_calls = payload.auto_heal_tool_calls
-                if payload.auto_heal_tool_calls is not None
-                else True,
+                auto_heal_tool_calls = _sf_auto_heal_tool_calls,
                 max_tool_iterations = _sf_tool_budget,
                 tool_call_timeout = payload.tool_call_timeout
                 if payload.tool_call_timeout is not None
@@ -3460,7 +3486,10 @@ async def openai_chat_completions(
 
                     # Diff cumulative cleaned text against last snapshot.
                     raw_cumulative = event.get("text", "")
-                    clean_cumulative = _TOOL_XML_RE.sub("", raw_cumulative)
+                    clean_cumulative = _strip_tool_xml_for_display(
+                        raw_cumulative,
+                        auto_heal_tool_calls = _sf_auto_heal_tool_calls,
+                    )
                     new_text = clean_cumulative[len(prev_text) :]
                     prev_text = clean_cumulative
                     if not new_text:
@@ -3532,7 +3561,10 @@ async def openai_chat_completions(
                     if cancel_event.is_set():
                         break
                     if event.get("type") == "content":
-                        full_text = _TOOL_XML_RE.sub("", event.get("text", ""))
+                        full_text = _strip_tool_xml_for_display(
+                            event.get("text", ""),
+                            auto_heal_tool_calls = _sf_auto_heal_tool_calls,
+                        )
                 return full_text
 
             content_text = await asyncio.to_thread(_drain_to_text)

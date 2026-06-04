@@ -51,6 +51,7 @@ from utils.subprocess_compat import (
     windows_hidden_subprocess_kwargs as _windows_hidden_subprocess_kwargs,
 )
 from core.inference.tool_call_parser import (
+    TOOL_XML_SIGNALS,
     parse_tool_calls_from_text as _shared_parse_tool_calls_from_text,
 )
 from core.inference.tool_loop_controller import (
@@ -4217,10 +4218,17 @@ class LlamaCppBackend:
     # ── Message building (OpenAI format) ──────────────────────────
 
     @staticmethod
-    def _parse_tool_calls_from_text(content: str) -> list[dict]:
+    def _parse_tool_calls_from_text(
+        content: str,
+        *,
+        allow_incomplete: bool = True,
+    ) -> list[dict]:
         """Thin wrapper around the shared parser in tool_call_parser
         so safetensors and llama_cpp pick up the same fixes."""
-        return _shared_parse_tool_calls_from_text(content)
+        return _shared_parse_tool_calls_from_text(
+            content,
+            allow_incomplete = allow_incomplete,
+        )
 
     @staticmethod
     def _build_openai_messages(
@@ -4599,13 +4607,18 @@ class LlamaCppBackend:
         _accumulated_predicted_ms = 0.0
         _accumulated_predicted_n = 0
 
-        def _strip_tool_markup(text: str, *, final: bool = False) -> str:
-            if not auto_heal_tool_calls:
+        def _strip_tool_markup(
+            text: str,
+            *,
+            final: bool = False,
+            force: bool = False,
+        ) -> str:
+            if not (auto_heal_tool_calls or force):
                 return text
             return strip_tool_call_markup(text, final = final)
 
-        def _strip_tool_markup_streaming(text: str) -> str:
-            if not auto_heal_tool_calls:
+        def _strip_tool_markup_streaming(text: str, *, force: bool = False) -> str:
+            if not (auto_heal_tool_calls or force):
                 return text
             for pat in _TOOL_ALL_PATS:
                 text = pat.sub("", text)
@@ -4625,12 +4638,6 @@ class LlamaCppBackend:
                 for record in tool_controller.history
             )
 
-        # XML prefixes that signal a tool call in content.
-        # Empty when auto_heal is disabled so the buffer never
-        # speculatively holds content for XML detection.
-        _TOOL_XML_SIGNALS = (
-            ("<tool_call>", "<function=") if auto_heal_tool_calls else ()
-        )
         _MAX_BUFFER_CHARS = 32
         _append_budget_exhausted_nudge = True
 
@@ -4655,6 +4662,7 @@ class LlamaCppBackend:
             if not active_tools:
                 _append_budget_exhausted_nudge = False
                 break
+            _tool_xml_signals = TOOL_XML_SIGNALS if active_tools else ()
 
             # Build payload -- stream: True so we detect tool signals
             # in the first 1-2 chunks without a non-streaming penalty.
@@ -4922,7 +4930,7 @@ class LlamaCppBackend:
                                             # Check tool signal prefixes
                                             is_prefix = False
                                             is_match = False
-                                            for sig in _TOOL_XML_SIGNALS:
+                                            for sig in _tool_xml_signals:
                                                 if stripped_buf.startswith(sig):
                                                     is_match = True
                                                     break
@@ -4942,7 +4950,8 @@ class LlamaCppBackend:
                                                     cumulative_display += "</think>"
                                                 cumulative_display += content_buffer
                                                 cleaned = _strip_tool_markup_streaming(
-                                                    cumulative_display
+                                                    cumulative_display,
+                                                    force = True,
                                                 )
                                                 if len(cleaned) > len(_last_emitted):
                                                     _last_emitted = cleaned
@@ -4991,10 +5000,8 @@ class LlamaCppBackend:
                 # ── Resolve BUFFERING at stream end ──
                 if detect_state == _S_BUFFERING:
                     stripped_buf = content_buffer.lstrip()
-                    if (
-                        stripped_buf
-                        and auto_heal_tool_calls
-                        and any(s in stripped_buf for s in _TOOL_XML_SIGNALS)
+                    if stripped_buf and any(
+                        s in stripped_buf for s in _tool_xml_signals
                     ):
                         detect_state = _S_DRAINING
                     elif content_accum or reasoning_accum:
@@ -5035,11 +5042,10 @@ class LlamaCppBackend:
                     # post-tool synthesis streams correctly even if
                     # content was already emitted before the tool XML.
                     _safety_tc = None
-                    if auto_heal_tool_calls and any(
-                        s in content_accum for s in _TOOL_XML_SIGNALS
-                    ):
+                    if any(s in content_accum for s in _tool_xml_signals):
                         _safety_tc = self._parse_tool_calls_from_text(
                             content_accum,
+                            allow_incomplete = auto_heal_tool_calls,
                         )
                     if not _safety_tc:
                         # ── Re-prompt on plan-without-action ──
@@ -5161,6 +5167,7 @@ class LlamaCppBackend:
                     content_text = _strip_tool_markup(
                         content_accum,
                         final = True,
+                        force = True,
                     )
                     logger.info(
                         f"Safety net: parsed {len(tool_calls)} tool call(s) "
@@ -5183,18 +5190,18 @@ class LlamaCppBackend:
                                 .strip()
                             )
                         ] or None
-                    if (
-                        not tool_calls
-                        and auto_heal_tool_calls
-                        and any(s in content_accum for s in _TOOL_XML_SIGNALS)
+                    if not tool_calls and any(
+                        s in content_accum for s in _tool_xml_signals
                     ):
                         tool_calls = self._parse_tool_calls_from_text(
                             content_accum,
+                            allow_incomplete = auto_heal_tool_calls,
                         )
                     if tool_calls and not has_structured_tc:
                         content_text = _strip_tool_markup(
                             content_text,
                             final = True,
+                            force = True,
                         )
                     if tool_calls:
                         logger.info(

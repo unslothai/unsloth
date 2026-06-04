@@ -105,7 +105,12 @@ def strip_tool_markup(text: str, *, final: bool = False) -> str:
     return text.strip() if final else text
 
 
-def parse_tool_calls_from_text(content: str, *, id_offset: int = 0) -> list[dict]:
+def parse_tool_calls_from_text(
+    content: str,
+    *,
+    id_offset: int = 0,
+    allow_incomplete: bool = True,
+) -> list[dict]:
     """Parse OpenAI-format ``tool_calls`` from model text.
 
     Returns a list of ``{"id", "type", "function": {"name", "arguments"}}``
@@ -119,8 +124,10 @@ def parse_tool_calls_from_text(content: str, *, id_offset: int = 0) -> list[dict
     - XML-style function blocks:
       ``<function=name><parameter=k>v</parameter></function>``
 
-    Closing tags (``</tool_call>``, ``</function>``, ``</parameter>``)
-    are all optional since models frequently omit them.
+    ``allow_incomplete=True`` keeps the historical healing behavior for
+    missing closing tags. ``allow_incomplete=False`` accepts only
+    well-formed wrappers so disabled Auto-Heal can still parse valid
+    local tool protocol without repairing truncated output.
     """
     tool_calls: list[dict] = []
 
@@ -147,25 +154,30 @@ def parse_tool_calls_from_text(content: str, *, id_offset: int = 0) -> list[dict
                 if depth == 0:
                     break
             i += 1
-        if depth == 0:
-            json_str = content[brace_start : i + 1]
-            try:
-                obj = json.loads(json_str)
-                tc = {
-                    "id": f"call_{id_offset + len(tool_calls)}",
-                    "type": "function",
-                    "function": {
-                        "name": obj.get("name", ""),
-                        "arguments": obj.get("arguments", {}),
-                    },
-                }
-                if isinstance(tc["function"]["arguments"], dict):
-                    tc["function"]["arguments"] = json.dumps(
-                        tc["function"]["arguments"]
-                    )
-                tool_calls.append(tc)
-            except (json.JSONDecodeError, ValueError):
-                pass
+        if depth != 0:
+            continue
+        if not allow_incomplete:
+            tail_after_json = content[i + 1 :].lstrip()
+            if _TC_END_TAG_RE.match(tail_after_json) is None:
+                continue
+        json_str = content[brace_start : i + 1]
+        try:
+            obj = json.loads(json_str)
+            tc = {
+                "id": f"call_{id_offset + len(tool_calls)}",
+                "type": "function",
+                "function": {
+                    "name": obj.get("name", ""),
+                    "arguments": obj.get("arguments", {}),
+                },
+            }
+            if isinstance(tc["function"]["arguments"], dict):
+                tc["function"]["arguments"] = json.dumps(
+                    tc["function"]["arguments"]
+                )
+            tool_calls.append(tc)
+        except (json.JSONDecodeError, ValueError):
+            pass
 
     # Pattern 2: <function=name><parameter=k>v... -- closing tags
     # optional; don't use </function> as body boundary because code
@@ -191,7 +203,13 @@ def parse_tool_calls_from_text(content: str, *, id_offset: int = 0) -> list[dict
                 body_end = len(content)
             body_end = min(body_end, next_func)
             body = content[body_start:body_end]
-            body = _TC_FUNC_CLOSE_RE.sub("", body)
+            if not allow_incomplete:
+                stripped_body = body.rstrip()
+                if not stripped_body.endswith(_FUNC_CLOSE_TAG):
+                    continue
+                body = stripped_body[: -len(_FUNC_CLOSE_TAG)]
+            else:
+                body = _TC_FUNC_CLOSE_RE.sub("", body)
 
             arguments: dict = {}
             param_starts = list(_TC_PARAM_START_RE.finditer(body))
@@ -200,9 +218,16 @@ def parse_tool_calls_from_text(content: str, *, id_offset: int = 0) -> list[dict
                 # embedded </parameter> in code strings is preserved.
                 pm = param_starts[0]
                 val = body[pm.end() :]
-                val = _TC_PARAM_CLOSE_RE.sub("", val)
+                if not allow_incomplete:
+                    stripped_val = val.rstrip()
+                    if not stripped_val.endswith(_PARAM_CLOSE_TAG):
+                        continue
+                    val = stripped_val[: -len(_PARAM_CLOSE_TAG)]
+                else:
+                    val = _TC_PARAM_CLOSE_RE.sub("", val)
                 arguments[pm.group(1)] = val.strip()
             else:
+                valid_params = True
                 for pidx, pm in enumerate(param_starts):
                     param_name = pm.group(1)
                     val_start = pm.end()
@@ -212,8 +237,17 @@ def parse_tool_calls_from_text(content: str, *, id_offset: int = 0) -> list[dict
                         else len(body)
                     )
                     val = body[val_start:next_param]
-                    val = _TC_PARAM_CLOSE_RE.sub("", val)
+                    if not allow_incomplete:
+                        stripped_val = val.rstrip()
+                        if not stripped_val.endswith(_PARAM_CLOSE_TAG):
+                            valid_params = False
+                            break
+                        val = stripped_val[: -len(_PARAM_CLOSE_TAG)]
+                    else:
+                        val = _TC_PARAM_CLOSE_RE.sub("", val)
                     arguments[param_name] = val.strip()
+                if not valid_params:
+                    continue
 
             tc = {
                 "id": f"call_{id_offset + len(tool_calls)}",

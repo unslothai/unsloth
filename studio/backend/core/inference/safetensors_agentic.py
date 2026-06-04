@@ -27,7 +27,6 @@ from core.inference.tool_call_parser import (
     _TOOL_ALL_PATS,
     BUDGET_EXHAUSTED_NUDGE,
     TOOL_XML_SIGNALS,
-    has_tool_signal,
     parse_tool_calls_from_text,
     strip_tool_markup,
 )
@@ -46,13 +45,29 @@ logger = get_logger(__name__)
 _MAX_BUFFER_CHARS = 32
 
 
-def strip_tool_markup_streaming(text: str, *, auto_heal_tool_calls: bool = True) -> str:
+def strip_tool_markup_streaming(
+    text: str,
+    *,
+    auto_heal_tool_calls: bool = True,
+    tool_protocol_active: bool = False,
+) -> str:
     """Strip open-ended tool XML from display text without trimming whitespace."""
-    if not auto_heal_tool_calls:
+    if not (auto_heal_tool_calls or tool_protocol_active):
         return text
     for pat in _TOOL_ALL_PATS:
         text = pat.sub("", text)
     return text
+
+
+def _strip_tool_markup_final(
+    text: str,
+    *,
+    auto_heal_tool_calls: bool,
+    tool_protocol_active: bool = False,
+) -> str:
+    if not (auto_heal_tool_calls or tool_protocol_active):
+        return text
+    return strip_tool_markup(text, final = True)
 
 
 def _status_for_tool(tool_name: str, arguments: dict) -> str:
@@ -189,6 +204,9 @@ def run_safetensors_tool_loop(
                 final_attempt_done = True
                 active_tools = []
 
+        tool_xml_signals = TOOL_XML_SIGNALS if active_tools else ()
+        tool_protocol_active = bool(tool_xml_signals)
+
         detect_state = _state_buffering
         content_buffer = ""
         content_accum = ""
@@ -236,7 +254,7 @@ def run_safetensors_tool_loop(
             if detect_state == _state_streaming:
                 candidate = cumulative_display + delta
                 signal_pos = -1
-                for sig in TOOL_XML_SIGNALS:
+                for sig in tool_xml_signals:
                     p = candidate.find(sig)
                     if p >= 0 and (signal_pos < 0 or p < signal_pos):
                         signal_pos = p
@@ -245,6 +263,7 @@ def run_safetensors_tool_loop(
                     cleaned_before = strip_tool_markup_streaming(
                         before_tool,
                         auto_heal_tool_calls = auto_heal_tool_calls,
+                        tool_protocol_active = tool_protocol_active,
                     )
                     if len(cleaned_before) > len(last_emitted):
                         last_emitted = cleaned_before
@@ -273,6 +292,7 @@ def run_safetensors_tool_loop(
                 cleaned = strip_tool_markup_streaming(
                     cumulative_display,
                     auto_heal_tool_calls = auto_heal_tool_calls,
+                    tool_protocol_active = tool_protocol_active,
                 )
                 if len(cleaned) > len(last_emitted):
                     last_emitted = cleaned
@@ -287,7 +307,7 @@ def run_safetensors_tool_loop(
 
             is_match = False
             is_prefix = False
-            for sig in TOOL_XML_SIGNALS:
+            for sig in tool_xml_signals:
                 if stripped.startswith(sig):
                     is_match = True
                     break
@@ -302,6 +322,7 @@ def run_safetensors_tool_loop(
                 cleaned = strip_tool_markup_streaming(
                     cumulative_display,
                     auto_heal_tool_calls = auto_heal_tool_calls,
+                    tool_protocol_active = tool_protocol_active,
                 )
                 if len(cleaned) > len(last_emitted):
                     last_emitted = cleaned
@@ -329,7 +350,11 @@ def run_safetensors_tool_loop(
             else:
                 detect_state = _state_streaming
                 cumulative_display += content_buffer
-                cleaned = strip_tool_markup(cumulative_display)
+                cleaned = strip_tool_markup_streaming(
+                    cumulative_display,
+                    auto_heal_tool_calls = auto_heal_tool_calls,
+                    tool_protocol_active = tool_protocol_active,
+                )
                 if len(cleaned) > len(last_emitted):
                     last_emitted = cleaned
                     yield {"type": "content", "text": cleaned}
@@ -341,14 +366,20 @@ def run_safetensors_tool_loop(
         if detect_state == _state_buffering:
             # Buffer never resolved -- tool XML or plain content.
             stripped = content_buffer.lstrip()
-            if stripped and has_tool_signal(stripped):
+            if stripped and tool_protocol_active and any(
+                sig in stripped for sig in tool_xml_signals
+            ):
                 detect_state = _state_draining
             else:
                 if content_buffer:
                     cumulative_display += content_buffer
                     yield {
                         "type": "content",
-                        "text": strip_tool_markup(cumulative_display, final = True),
+                        "text": _strip_tool_markup_final(
+                            cumulative_display,
+                            auto_heal_tool_calls = auto_heal_tool_calls,
+                            tool_protocol_active = False,
+                        ),
                     }
                 yield {"type": "status", "text": ""}
                 return
@@ -356,19 +387,30 @@ def run_safetensors_tool_loop(
         if detect_state == _state_streaming:
             # No tool detected mid-stream -- check for late tool XML.
             safety_tc = None
-            if has_tool_signal(content_accum):
+            saw_tool_signal = tool_protocol_active and any(
+                sig in content_accum for sig in tool_xml_signals
+            )
+            if saw_tool_signal:
                 safety_tc = parse_tool_calls_from_text(
                     content_accum,
                     id_offset = next_call_id,
+                    allow_incomplete = auto_heal_tool_calls,
                 )
             if not safety_tc:
-                # Final answer: streaming already emitted content.
-                # Skip a final=True re-strip so literal "<tool_call>"
-                # in prose survives when no real tool call parsed.
+                # Final answer: if a literal tool marker in prose was stripped
+                # during streaming but did not parse as a real call, restore the
+                # raw cumulative text for core callers. Route-level cleanup can
+                # still apply the Auto-Heal display policy.
+                if saw_tool_signal and content_accum:
+                    yield {"type": "content", "text": content_accum}
                 yield {"type": "status", "text": ""}
                 return
             tool_calls = safety_tc
-            content_text = strip_tool_markup(content_accum, final = True)
+            content_text = _strip_tool_markup_final(
+                content_accum,
+                auto_heal_tool_calls = auto_heal_tool_calls,
+                tool_protocol_active = True,
+            )
             logger.info(
                 "Safetensors safety net: parsed %d tool call(s) from streamed content",
                 len(tool_calls),
@@ -378,12 +420,21 @@ def run_safetensors_tool_loop(
             tool_calls = parse_tool_calls_from_text(
                 content_accum,
                 id_offset = next_call_id,
+                allow_incomplete = auto_heal_tool_calls,
             )
-            if not tool_calls and auto_heal_tool_calls:
-                # Parser found nothing -- surface raw content so any
-                # literal "<tool_call>" prose is preserved.
+            if not tool_calls:
+                # Parser found nothing. Auto-Heal-enabled display cleanup
+                # strips unparseable tool XML; disabled Auto-Heal preserves
+                # the raw text so literal/malformed markup stays visible.
                 if content_accum:
-                    yield {"type": "content", "text": content_accum}
+                    yield {
+                        "type": "content",
+                        "text": _strip_tool_markup_final(
+                            content_accum,
+                            auto_heal_tool_calls = auto_heal_tool_calls,
+                            tool_protocol_active = False,
+                        ),
+                    }
                 if provisional_render_html_started:
                     yield {
                         "type": "tool_end",
@@ -394,7 +445,11 @@ def run_safetensors_tool_loop(
                     }
                 yield {"type": "status", "text": ""}
                 return
-            content_text = strip_tool_markup(content_accum, final = True)
+            content_text = _strip_tool_markup_final(
+                content_accum,
+                auto_heal_tool_calls = auto_heal_tool_calls,
+                tool_protocol_active = True,
+            )
 
         if tool_calls:
             next_call_id += len(tool_calls)
