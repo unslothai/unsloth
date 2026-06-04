@@ -39,11 +39,11 @@ import { extractParamLabel } from "@/lib/model-size";
 import { cn, formatCompact } from "@/lib/utils";
 import type { VramFitStatus } from "@/lib/vram";
 import { checkVramFit, estimateLoadingVram } from "@/lib/vram";
-import { Add01Icon, Cancel01Icon, Folder02Icon, Search01Icon } from "@hugeicons/core-free-icons";
+import { Add01Icon, Cancel01Icon, Download01Icon, Folder02Icon, Search01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { FolderBrowser } from "./folder-browser";
 import { ModelDeleteAction } from "./model-delete-action";
-import { ChevronDownIcon, ChevronRightIcon, DownloadIcon, StarIcon } from "lucide-react";
+import { ChevronDownIcon, ChevronRightIcon, StarIcon } from "lucide-react";
 import {
   type ReactNode,
   useCallback,
@@ -146,8 +146,8 @@ function ModelRow({
       type="button"
       onClick={onClick}
       className={cn(
-        "flex w-full items-center gap-2 rounded-[6px] px-2.5 py-1.5 text-left text-sm transition-colors hover:bg-[#ececec] dark:hover:bg-[#2e3035]",
-        selected && "bg-[#ececec] dark:bg-[#2e3035]",
+        "flex w-full items-center gap-2 rounded-[8px] px-2.5 py-1.5 text-left text-sm transition-colors hover:bg-[#ececec] dark:hover:bg-[#3a3d44]",
+        selected && "bg-[#ececec] dark:bg-[#3a3d44]",
       )}
     >
       <span
@@ -386,7 +386,7 @@ function GgufVariantExpander({
                 handleVariantClick(v.quant, v.downloaded, v.size_bytes)
               }
               className={cn(
-                "flex min-w-0 flex-1 items-center justify-between gap-2 rounded-[6px] px-2.5 py-1 text-left text-sm transition-colors hover:bg-[#ececec] dark:hover:bg-[#2e3035]",
+                "flex min-w-0 flex-1 items-center justify-between gap-2 rounded-[8px] px-2.5 py-1 text-left text-sm transition-colors hover:bg-[#ececec] dark:hover:bg-[#3a3d44]",
               )}
             >
               <span className="min-w-0 flex-1 truncate font-mono text-xs">
@@ -918,7 +918,7 @@ export function HubModelPicker({
               (!chatOnly && cachedModels.length > 0)) ? (
             <>
               <ListLabel
-                icon={<DownloadIcon className="size-3" />}
+                icon={<HugeiconsIcon icon={Download01Icon} className="size-3" />}
                 collapsed={downloadedCollapsed}
                 onToggle={() => setDownloadedCollapsed((v) => !v)}
               >Downloaded</ListLabel>

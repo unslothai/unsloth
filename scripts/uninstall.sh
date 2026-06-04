@@ -1,4 +1,7 @@
 #!/usr/bin/env sh
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+#
 # Unsloth Studio uninstaller (macOS / Linux / WSL).
 # Stops running servers and removes install dir, launcher data,
 # CLI shim, desktop shortcut, .app bundle, and Launch Services entry.
