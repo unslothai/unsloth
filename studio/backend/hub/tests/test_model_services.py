@@ -330,8 +330,8 @@ def test_gguf_variant_blob_hashes_accept_dict_lfs_fallback(monkeypatch):
         ),
     )
 
-    result = gguf_variants._gguf_variant_blob_hashes("Org/DictLfs", "Q4_K_M", None)
-    main_only = gguf_variants._gguf_variant_blob_hashes(
+    result = gguf_variants.gguf_variant_blob_hashes("Org/DictLfs", "Q4_K_M", None)
+    main_only = gguf_variants.gguf_variant_blob_hashes(
         "Org/DictLfs",
         "Q4_K_M",
         None,
@@ -358,7 +358,7 @@ def test_gguf_variant_blob_hashes_skip_missing_rfilename(monkeypatch):
         ),
     )
 
-    result = gguf_variants._gguf_variant_blob_hashes("Org/Malformed", "Q4_K_M", None)
+    result = gguf_variants.gguf_variant_blob_hashes("Org/Malformed", "Q4_K_M", None)
 
     assert result == frozenset({"main"})
 
@@ -684,12 +684,12 @@ def test_gguf_download_progress_fallback_logs_warning(monkeypatch):
     monkeypatch.setattr(downloads.asyncio, "to_thread", _run_inline)
     monkeypatch.setattr(
         downloads.gguf_variants,
-        "_gguf_variant_requirements",
+        "gguf_variant_requirements",
         lambda *_args, **_kwargs: None,
     )
     monkeypatch.setattr(
         downloads.gguf_variants,
-        "_gguf_variant_blob_hashes",
+        "gguf_variant_blob_hashes",
         lambda *_args, **_kwargs: frozenset(),
     )
     monkeypatch.setattr(
@@ -800,7 +800,7 @@ def test_gguf_progress_counts_completed_mmproj_with_expected_bytes(
     monkeypatch.setattr(downloads.asyncio, "to_thread", _run_inline)
     monkeypatch.setattr(
         downloads.gguf_variants,
-        "_gguf_variant_requirements",
+        "gguf_variant_requirements",
         lambda *_args, **_kwargs: requirement,
     )
     monkeypatch.setattr(
@@ -889,7 +889,7 @@ def test_gguf_progress_subtracts_new_job_completed_baseline(
     monkeypatch.setattr(downloads.asyncio, "to_thread", _run_inline)
     monkeypatch.setattr(
         downloads.gguf_variants,
-        "_gguf_variant_requirements",
+        "gguf_variant_requirements",
         lambda *_args, **_kwargs: requirement,
     )
     monkeypatch.setattr(
@@ -965,7 +965,7 @@ def test_gguf_progress_shows_main_when_companion_left_the_count(
     monkeypatch.setattr(downloads.asyncio, "to_thread", _run_inline)
     monkeypatch.setattr(
         downloads.gguf_variants,
-        "_gguf_variant_requirements",
+        "gguf_variant_requirements",
         lambda *_args, **_kwargs: requirement,
     )
     monkeypatch.setattr(
@@ -1066,7 +1066,7 @@ def test_gguf_progress_complete_on_disk_ignores_full_baseline(
     monkeypatch.setattr(downloads.asyncio, "to_thread", _run_inline)
     monkeypatch.setattr(
         downloads.gguf_variants,
-        "_gguf_variant_requirements",
+        "gguf_variant_requirements",
         lambda *_args, **_kwargs: requirement,
     )
     monkeypatch.setattr(
@@ -1139,7 +1139,7 @@ def test_gguf_progress_scoped_hashes_exclude_sibling_quant(
     monkeypatch.setattr(downloads.asyncio, "to_thread", _run_inline)
     monkeypatch.setattr(
         downloads.gguf_variants,
-        "_gguf_variant_requirements",
+        "gguf_variant_requirements",
         lambda *_args, **_kwargs: requirement,
     )
     monkeypatch.setattr(
@@ -1195,12 +1195,12 @@ def test_gguf_progress_unknown_hashes_does_not_count_foreign_blobs(
     monkeypatch.setattr(downloads.asyncio, "to_thread", _run_inline)
     monkeypatch.setattr(
         downloads.gguf_variants,
-        "_gguf_variant_requirements",
+        "gguf_variant_requirements",
         lambda *_args, **_kwargs: None,
     )
     monkeypatch.setattr(
         downloads.gguf_variants,
-        "_gguf_variant_blob_hashes",
+        "gguf_variant_blob_hashes",
         lambda *_args, **_kwargs: frozenset(),
     )
     monkeypatch.setattr(
@@ -1254,12 +1254,12 @@ def test_gguf_progress_unknown_hashes_drops_unscoped_incomplete_blob(
     monkeypatch.setattr(downloads.asyncio, "to_thread", _run_inline)
     monkeypatch.setattr(
         downloads.gguf_variants,
-        "_gguf_variant_requirements",
+        "gguf_variant_requirements",
         lambda *_args, **_kwargs: None,
     )
     monkeypatch.setattr(
         downloads.gguf_variants,
-        "_gguf_variant_blob_hashes",
+        "gguf_variant_blob_hashes",
         lambda *_args, **_kwargs: frozenset(),
     )
     monkeypatch.setattr(
@@ -1319,12 +1319,12 @@ def test_gguf_progress_unknown_hashes_no_backward_dip_when_variant_finalizes(
     monkeypatch.setattr(downloads.asyncio, "to_thread", _run_inline)
     monkeypatch.setattr(
         downloads.gguf_variants,
-        "_gguf_variant_requirements",
+        "gguf_variant_requirements",
         lambda *_args, **_kwargs: None,
     )
     monkeypatch.setattr(
         downloads.gguf_variants,
-        "_gguf_variant_blob_hashes",
+        "gguf_variant_blob_hashes",
         lambda *_args, **_kwargs: frozenset(),
     )
     monkeypatch.setattr(
@@ -2117,7 +2117,7 @@ def test_model_download_records_completed_baseline_for_new_gguf_variant(
     )
     monkeypatch.setattr(
         downloads.gguf_variants,
-        "_gguf_variant_blob_hashes",
+        "gguf_variant_blob_hashes",
         lambda _repo, _variant, _token = None, include_companions = True, **_kwargs: (
             frozenset({"mainhash", "mmprojhash"})
             if include_companions
@@ -2210,7 +2210,7 @@ def test_gguf_model_download_skips_completed_baseline_for_variant_resume_state(
     )
     monkeypatch.setattr(
         downloads.gguf_variants,
-        "_gguf_variant_blob_hashes",
+        "gguf_variant_blob_hashes",
         lambda _repo, _variant, _token = None, include_companions = True, **_kwargs: (
             frozenset({"mainhash", "mmprojhash"})
             if include_companions
@@ -2539,7 +2539,7 @@ def test_two_concurrent_same_repo_variants_both_complete(monkeypatch, tmp_path):
     # Per-variant blob hashes (distinct main shard, shared mmproj companion).
     monkeypatch.setattr(
         downloads.gguf_variants,
-        "_gguf_variant_blob_hashes",
+        "gguf_variant_blob_hashes",
         lambda _repo, variant, _token = None, include_companions = True, **_k: (
             frozenset({f"{variant.lower()}-main", "shared-mmproj"})
             if include_companions

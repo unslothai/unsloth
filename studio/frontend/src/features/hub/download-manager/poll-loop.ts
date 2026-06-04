@@ -621,7 +621,8 @@ export async function startJob(
   const existing = getState().jobs[key];
   const adoptingCancel =
     opts.adopt === true &&
-    (opts.state === "cancelling" || existing?.state === "cancelling");
+    (opts.state === "cancelling" ||
+      (opts.state === undefined && existing?.state === "cancelling"));
   const rt: JobRuntime = {
     kind: req.kind,
     repoId: req.repoId,
@@ -754,12 +755,11 @@ async function resolveCancelWatchdog(
 
 function applyCancelResult(
   key: string,
-  rt: JobRuntime | undefined,
   cancelEpoch: number,
   result: { state: DownloadJobState },
 ): void {
   const live = runtimeRegistry.runtimes.get(key);
-  if (rt && live && live.epoch !== cancelEpoch) return;
+  if (live && live.epoch !== cancelEpoch) return;
   if (result.state === "cancelling" || result.state === "cancelled") {
     if (!live || !live.pollingStarted) finalize(key, "cancelled");
     return;
@@ -861,7 +861,7 @@ export async function cancelJob(key: string): Promise<void> {
     const result = await withDownloadTimeout<{ state: DownloadJobState }>(
       (signal) => apiCancel(job, signal),
     );
-    applyCancelResult(key, rt, cancelEpoch, result);
+    applyCancelResult(key, cancelEpoch, result);
   } catch (err) {
     const liveAtError = runtimeRegistry.runtimes.get(key);
     if (rt && liveAtError && liveAtError.epoch !== cancelEpoch) return;

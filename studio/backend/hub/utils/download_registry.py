@@ -1207,10 +1207,12 @@ class DownloadRegistry:
 
     def has_active_peer_variant(self, repo_id: str, variant: Optional[str]) -> bool:
         """Whether a DIFFERENT quantization of *repo_id* is downloading while
-        *variant* is being deleted. When one is, the delete must leave the shared
-        companion (mmproj) untouched for the live sibling and reclaim only this
-        variant's own files. Deterministic, so protection never depends on the
-        sibling having resolved its blob hashes."""
+        *variant* is being deleted. When one is, the delete reclaims only this
+        variant's own files and leaves the shared companion (mmproj) for the live
+        sibling. A point-in-time check (a sibling may claim just after it returns):
+        the finalized companion blob is held by deletion's reference-count walk,
+        and a sibling that starts mid-delete re-fetches the companion. Deterministic,
+        so protection never depends on the sibling having resolved its blob hashes."""
         repo_id = normalize_repo_key(repo_id)
         target = (variant or "").strip().lower() or None
         with self._lock:

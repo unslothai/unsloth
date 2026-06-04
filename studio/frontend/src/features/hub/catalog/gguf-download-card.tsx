@@ -451,6 +451,10 @@ export function GgufDownloadCard({
           <PopoverTrigger asChild>
             <button
               type="button"
+              onClick={(e) => {
+                e.preventDefault();
+                setOpen((o) => !o);
+              }}
               className="hub-menu-trigger flex h-9 min-w-0 flex-1 cursor-pointer items-center gap-2.5 rounded-[12px] px-3 text-left transition-colors hover:bg-foreground/[0.04] data-[state=open]:bg-foreground/[0.06] dark:hover:bg-white/[0.04] dark:data-[state=open]:bg-white/[0.06]"
             >
               {selected ? (
@@ -527,28 +531,36 @@ export function GgufDownloadCard({
                   normalizeGgufVariantIdentity(v.quant),
                 );
                 const liveActive = activeDownloadState(liveState?.state);
+                const selectVariant = () => {
+                  setSelectedQuantState({
+                    repoId,
+                    quant: v.quant,
+                    userPicked: true,
+                  });
+                  setOpen(false);
+                };
                 return (
                   <div
                     key={v.filename}
+                    role="button"
+                    tabIndex={0}
+                    aria-pressed={isSelected}
+                    onClick={selectVariant}
+                    onKeyDown={(e) => {
+                      if (e.target !== e.currentTarget) return;
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        selectVariant();
+                      }
+                    }}
                     className={cn(
-                      "group relative mx-2 flex items-center gap-2 rounded-[12px] px-2.5 py-2 transition-colors",
+                      "group relative mx-2 flex cursor-pointer items-center gap-2 rounded-[12px] px-2.5 py-2 text-left transition-colors",
                       isSelected
                         ? "bg-foreground/[0.07] dark:bg-foreground/[0.12]"
                         : "hover:bg-foreground/[0.05] dark:hover:bg-foreground/[0.06]",
                     )}
                   >
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setSelectedQuantState({
-                          repoId,
-                          quant: v.quant,
-                          userPicked: true,
-                        });
-                        setOpen(false);
-                      }}
-                      className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 text-left"
-                    >
+                    <span className="flex min-w-0 flex-1 items-center gap-2">
                       <QuantBadge
                         quant={label}
                         fit={fit}
@@ -556,7 +568,7 @@ export function GgufDownloadCard({
                         active={isLoaded}
                         variant="menu"
                       />
-                    </button>
+                    </span>
                     <span className="ml-auto flex shrink-0 items-center gap-1.5">
                       {v.downloaded && (
                         <DotTag

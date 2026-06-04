@@ -187,7 +187,7 @@ def _build_gguf_variant_requirements(
     return build_gguf_variant_plans(siblings)
 
 
-def _gguf_variant_requirements(
+def gguf_variant_requirements(
     repo_id: str,
     variant: str,
     hf_token: Optional[str] = None,
@@ -265,7 +265,7 @@ def _manifest_variant_blob_hashes(
     return frozenset(hashes)
 
 
-def _gguf_variant_blob_hashes(
+def gguf_variant_blob_hashes(
     repo_id: str,
     variant: str,
     hf_token: Optional[str] = None,
@@ -293,7 +293,7 @@ def _gguf_variant_blob_hashes(
     requirement_key = _variant_hash_cache_key(repo_id, variant, hf_token)
     requirement = _variant_requirement_cache_get(requirement_key)
     if requirement is None and allow_remote:
-        requirement = _gguf_variant_requirements(repo_id, variant, hf_token)
+        requirement = gguf_variant_requirements(repo_id, variant, hf_token)
     if requirement is not None:
         hashes = (
             requirement.required_hashes
@@ -322,7 +322,7 @@ def delete_variant_incomplete_blobs_result(
     # a shared mmproj companion this variant also references is never unlinked
     # out from under the live sibling; the repo's last variant delete reclaims it.
     target_hashes = (
-        _gguf_variant_blob_hashes(
+        gguf_variant_blob_hashes(
             repo_id, variant, hf_token, include_companions = companions
         )
         | extra_hashes
@@ -611,7 +611,7 @@ async def get_gguf_variants_response(
                     requirement.main_hashes if requirement is not None else None
                 )
                 if variant_hashes is None and incomplete_hashes:
-                    variant_hashes = _gguf_variant_blob_hashes(
+                    variant_hashes = gguf_variant_blob_hashes(
                         repo_id,
                         variant.quant,
                         hf_token,

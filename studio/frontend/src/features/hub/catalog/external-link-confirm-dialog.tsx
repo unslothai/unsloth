@@ -19,7 +19,7 @@ import { useExternalLinkConfirm } from "../stores/external-link-confirm";
 
 function hostOf(url: string): string {
   try {
-    return new URL(url).host;
+    return new URL(url, "https://_").host;
   } catch {
     return url;
   }

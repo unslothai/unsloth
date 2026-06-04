@@ -107,14 +107,14 @@ async def download_model_response(
     if variant is not None:
         try:
             variant_blob_hashes = await asyncio.to_thread(
-                gguf_variants._gguf_variant_blob_hashes,
+                gguf_variants.gguf_variant_blob_hashes,
                 repo_id,
                 variant,
                 hf_token,
                 include_companions = False,
             )
             variant_progress_blob_hashes = await asyncio.to_thread(
-                gguf_variants._gguf_variant_blob_hashes,
+                gguf_variants.gguf_variant_blob_hashes,
                 repo_id,
                 variant,
                 hf_token,
@@ -270,7 +270,7 @@ def _variant_transport_status(
         repo_id,
         active_only = True,
     )
-    variant_hashes = gguf_variants._gguf_variant_blob_hashes(
+    variant_hashes = gguf_variants.gguf_variant_blob_hashes(
         repo_id,
         variant,
         hf_token,
@@ -365,7 +365,7 @@ async def get_gguf_download_progress_response(
     ) -> tuple[int, frozenset[str]]:
         if progress_variant is None:
             return expected_total, frozenset()
-        requirement = gguf_variants._gguf_variant_requirements(
+        requirement = gguf_variants.gguf_variant_requirements(
             resolved_repo_id,
             progress_variant,
             token,
@@ -386,7 +386,7 @@ async def get_gguf_download_progress_response(
             )
         return (
             expected_total,
-            gguf_variants._gguf_variant_blob_hashes(
+            gguf_variants.gguf_variant_blob_hashes(
                 resolved_repo_id,
                 progress_variant,
                 token,

@@ -384,8 +384,10 @@ def _delete_cached_model_blocking(
     try:
         # A sibling quantization may be downloading concurrently (a per-variant
         # delete does not block it). When one is, restrict this delete to the
-        # variant's own files so the shared mmproj companion stays intact for the
-        # live sibling.
+        # variant's own files and leave the shared mmproj companion for it. This
+        # is a point-in-time check: the finalized companion blob is held by the
+        # reference-count walk below, and a sibling that starts mid-delete simply
+        # re-fetches the companion (no data loss).
         sibling_active = bool(
             variant and downloads.registry.has_active_peer_variant(repo_id, variant)
         )

@@ -18,7 +18,14 @@ export const useExternalLinkConfirm = create<ExternalLinkConfirmStore>((set) => 
 export function confirmExternalLink(url: string): boolean {
   const trimmed = url?.trim() ?? "";
   if (!trimmed || trimmed.startsWith("#")) return false;
-  if (!trimmed.includes("://") && !trimmed.startsWith("mailto:")) return false;
+  const lower = trimmed.toLowerCase();
+  if (
+    !lower.includes("://") &&
+    !lower.startsWith("//") &&
+    !lower.startsWith("mailto:")
+  ) {
+    return false;
+  }
   useExternalLinkConfirm.getState().request(trimmed);
   return true;
 }

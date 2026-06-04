@@ -232,13 +232,14 @@ def finalize_worker_exit(
     worker's own exit code be the single source of truth."""
     stderr_data = drain_stderr_excerpt(proc.stderr)
     rc = proc.wait()
+    cancel_requested = registry.cancel_requested(key)
     if not registry.drop_process(key, proc):
         return
     stderr_text = download_registry.scrub_secrets(
         (stderr_data or b"").decode("utf-8", "replace").strip(),
         hf_token = hf_token,
     )
-    state = classify_exit(rc, cancel_requested = registry.cancel_requested(key))
+    state = classify_exit(rc, cancel_requested = cancel_requested)
     if state == "complete":
         registry.set_job(key, "complete")
         if stderr_text:

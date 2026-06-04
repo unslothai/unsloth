@@ -433,7 +433,11 @@ def _recover_manifest_after_download(
     metadata is still unavailable here, leftover ``.incomplete`` blobs prove
     snapshot_download returned a cached partial without downloading, so we fail
     (exit 1) instead of deriving a self-certifying manifest from the finalized
-    subset. The partial is left intact for a later resume."""
+    subset, leaving the partial intact for a later resume. That signal catches a
+    partially written file but not one that never started (it leaves no
+    ``.incomplete``), so a kill between files is still accepted optimistically
+    from the on-disk subset; a later metadata-bearing attempt writes the true
+    manifest and verification catches any shortfall."""
     from hub.utils import download_manifest
     from hub.utils.hf_cache_state import has_active_incomplete_blobs
 

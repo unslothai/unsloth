@@ -183,15 +183,17 @@ def resolve_snapshot_dir_for_scan(
     repo_id: str,
     repo_cache_dir: Optional[Path] = None,
 ) -> Optional[Path]:
-    """Latest snapshot dir for a cache row, or across all HF cache roots.
+    """Latest snapshot dir for a cache row, or the first populated HF cache root.
 
     Scanner-side counterpart to snapshot_download()'s return value
     (which the worker captured at download time but the scanner has
-    no access to). Picks by mtime — same rule resolve_hf_cache_realpath
-    uses and the same one huggingface_hub's from_pretrained resolves
-    to. Preferred over reading refs/main because the user may have
-    downloaded a specific commit that isn't the main ref; mtime is the
-    more direct signal for "what just landed on disk".
+    no access to). With a *repo_cache_dir*, returns its newest snapshot.
+    Otherwise scans cache roots in priority order (active, then legacy,
+    then default) and returns the newest snapshot within the first root
+    that holds one — the active root is where snapshot_download writes,
+    so it is authoritative. Within a root, picks by mtime (what
+    from_pretrained resolves to), preferred over refs/main because the
+    user may have downloaded a specific commit that isn't the main ref.
     """
     if repo_cache_dir is not None:
         latest = latest_snapshot_dir(repo_cache_dir)
