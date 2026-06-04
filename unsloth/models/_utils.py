@@ -1322,15 +1322,13 @@ elif DEVICE_TYPE == "hip":
 elif DEVICE_TYPE == "xpu":
     SUPPORTS_BFLOAT16 = True
 
-# Flash-attention varlen entrypoint (used by the encoder / sentence-transformers
-# path). HAS_FLASH_ATTENTION is already SM80-gated above, so we only need to
-# additionally confirm the varlen kernel is importable.
+# Varlen flash-attention probe for the encoder / sentence-transformers path
+# (HAS_FLASH_ATTENTION is already SM80-gated above).
 HAS_FLASH_ATTENTION_VARLEN = False
 if HAS_FLASH_ATTENTION:
     try:
-        from flash_attn import flash_attn_varlen_func as _flash_attn_varlen_func  # noqa: F401
-
-        HAS_FLASH_ATTENTION_VARLEN = True
+        import flash_attn
+        HAS_FLASH_ATTENTION_VARLEN = hasattr(flash_attn, "flash_attn_varlen_func")
     except ImportError:
         HAS_FLASH_ATTENTION_VARLEN = False
 
