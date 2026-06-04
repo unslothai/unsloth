@@ -417,17 +417,28 @@ class InferenceBackend:
             logger.info(f"Loading {model_type} model{adapter_info}: {model_name}")
             log_gpu_memory(f"Before loading {model_name}")
 
-            # AMD ROCm hardware without native bfloat16 (e.g. RDNA2 / gfx103x) crashes
-            # with an LLVM error at the first bf16 kernel dispatch when dtype=None lets
-            # unsloth auto-pick bf16. Force float16 there. NVIDIA keeps dtype=None so
-            # unsloth's own bf16/fp16/float32 auto-detection is honored.
-            _is_rocm = (
-                bool(getattr(torch.version, "hip", None))
-                or "rocm" in torch.__version__.lower()
-            )
-            _auto_dtype = (
-                torch.float16 if (_is_rocm and not is_bfloat16_supported()) else None
-            )
+            # AMD RDNA2 (gfx1030-gfx1036, e.g. RX 6600) crashes with an LLVM error
+            # ("Cannot select: intrinsic %llvm.amdgcn.fdot2.bf16.bf16") at the first
+            # bf16 kernel dispatch when dtype=None lets unsloth auto-pick bf16.
+            # NOTE: unsloth's is_bfloat16_supported() returns True unconditionally for
+            # ALL HIP devices (see models/_utils.py DEVICE_TYPE=="hip" branch), so we
+            # cannot rely on it here. Detect RDNA2 by gfx architecture code instead.
+            _is_rocm = bool(getattr(torch.version, "hip", None)) or "rocm" in torch.__version__.lower()
+            _is_rdna2 = False
+            if _is_rocm:
+                _RDNA2_GFX = frozenset(
+                    {"gfx1030", "gfx1031", "gfx1032", "gfx1033", "gfx1034", "gfx1035", "gfx1036"}
+                )
+                try:
+                    import subprocess as _sp, re as _re
+                    _ri = _sp.run(["rocminfo"], capture_output=True, text=True, timeout=5)
+                    _is_rdna2 = any(
+                        c in _RDNA2_GFX
+                        for c in _re.findall(r"gfx[0-9a-z]+", _ri.stdout.lower())
+                    )
+                except Exception:
+                    pass
+            _auto_dtype = torch.float16 if _is_rdna2 else None
             _effective_dtype = dtype if dtype is not None else _auto_dtype
 
             # Load model - same approach for base models and LoRA adapters

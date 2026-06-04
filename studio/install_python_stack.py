@@ -792,7 +792,10 @@ def _ensure_rocm_torch() -> None:
             print(f"   No PyTorch wheel for ROCm {ver[0]}.{ver[1]} -- " f"skipping torch reinstall")
         else:
             index_url = f"{_PYTORCH_WHL_BASE}/{tag}"
-            print(f"   ROCm {ver[0]}.{ver[1]} -- installing torch from {index_url}")
+            if _rdna2_cap_tag is not None:
+                print(f"   RDNA2 cap (system ROCm {ver[0]}.{ver[1]}) -- installing torch from {index_url}")
+            else:
+                print(f"   ROCm {ver[0]}.{ver[1]} -- installing torch from {index_url}")
             _torch_pkg, _vision_pkg, _audio_pkg = _ROCM_TORCH_PKG_SPECS.get(
                 tag, _ROCM_TORCH_PKG_SPECS["_default"]
             )

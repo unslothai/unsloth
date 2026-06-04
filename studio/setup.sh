@@ -676,8 +676,18 @@ if command -v rocminfo >/dev/null 2>&1 && \
    rocminfo 2>/dev/null | awk '/Name:[[:space:]]*gfx[1-9][0-9]/{found=1} END{exit !found}'; then
     _setup_amd_detected=true
     _setup_gfx_all=$(rocminfo 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
-    _setup_mkt=$(rocminfo 2>/dev/null | awk -F': ' \
-        '/Marketing Name:/{gsub(/^[[:space:]]+|[[:space:]]+$/,"", $2); if($2){print $2; exit}}' || true)
+    _setup_mkt=$(rocminfo 2>/dev/null | awk '
+            # rocminfo lists CPU agents before GPU agents; each agent block has
+            # a "Name:" line (gfx code for GPUs, CPU name for CPUs) followed by
+            # "Marketing Name:". Only emit the Marketing Name from GPU agents
+            # (identified by having a gfx ISA in their Name field).
+            /^Agent [0-9]/ { in_gpu_agent=0 }
+            /Name:/ && /gfx[0-9]/ { in_gpu_agent=1 }
+            /Marketing Name:/ && in_gpu_agent {
+                sub(/.*Marketing Name:[[:space:]]*/,"")
+                gsub(/^[[:space:]]+|[[:space:]]+$/,"")
+                if ($0 != "") { print; exit }
+            }' || true)
 elif command -v amd-smi >/dev/null 2>&1 && \
      amd-smi list 2>/dev/null | awk '/^GPU[[:space:]]*[:\[][[:space:]]*[0-9]/{ found=1 } END{ exit !found }'; then
     _setup_amd_detected=true
