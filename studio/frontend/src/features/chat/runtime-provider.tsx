@@ -14,7 +14,6 @@ import {
   type PendingAttachment,
   type ThreadHistoryAdapter,
   type ThreadMessage,
-  WebSpeechDictationAdapter,
   type unstable_RemoteThreadListAdapter,
   useAui,
   useAuiEvent,
@@ -34,6 +33,7 @@ import {
 } from "react";
 import { extractText, getDocumentProxy } from "unpdf";
 import { toast } from "sonner";
+import { StudioWebSpeechDictationAdapter } from "./adapters/studio-web-speech-dictation-adapter";
 import { createOpenAIStreamAdapter } from "./api/chat-adapter";
 import {
   loadConnectionsEnabled,
@@ -66,6 +66,7 @@ import { syncExportedRepositoryToBackend } from "./utils/delete-thread-message";
 import { getImageInputUnavailableReason } from "./utils/image-input-support";
 
 const pendingHistoryAppendByMessageId = new Map<string, Promise<void>>();
+const pendingRunStartReadyByMessageId = new Map<string, Promise<void>>();
 
 type TitleResponse = {
   choices?: Array<{
@@ -189,7 +190,21 @@ class PDFAttachmentAdapter implements AttachmentAdapter {
 }
 
 class TextAttachmentAdapter implements AttachmentAdapter {
-  accept = "text/plain,text/markdown,text/csv,text/xml,text/json,text/css";
+  // MIME is unreliable for source files, so also match by extension
+  // (assistant-ui's fileMatchesAccept supports ".ext" entries). Covers
+  // svg, code, config and other plain-text formats; html keeps its own
+  // adapter below.
+  accept = [
+    "text/plain,text/markdown,text/csv,text/xml,text/json,text/css",
+    "application/json,application/xml,image/svg+xml",
+    ".txt,.text,.log,.md,.markdown,.mdx,.rst,.csv,.tsv",
+    ".json,.jsonl,.ndjson,.xml,.yaml,.yml,.toml,.ini,.cfg,.conf,.env,.properties",
+    ".css,.scss,.sass,.less,.svg",
+    ".js,.jsx,.mjs,.cjs,.ts,.tsx,.py,.pyi,.ipynb,.rb,.php,.go,.rs,.java,.kt,.kts,.scala,.swift",
+    ".c,.h,.cc,.cpp,.hpp,.cxx,.cs,.m,.mm",
+    ".sh,.bash,.zsh,.fish,.ps1,.bat,.lua,.pl,.pm,.r,.jl,.dart,.vue,.svelte,.astro",
+    ".sql,.graphql,.gql,.proto,.tf,.tfvars,.gradle,.dockerfile,.makefile,.cmake,.diff,.patch",
+  ].join(",");
 
   async add({ file }: { file: File }): Promise<PendingAttachment> {
     return {
@@ -534,10 +549,12 @@ export async function ensureThreadRecord({
   threadId,
   modelType,
   pairId,
+  projectId,
 }: {
   threadId: string;
   modelType: ModelType;
   pairId?: string;
+  projectId?: string | null;
 }): Promise<void> {
   if (isChatThreadDeleted(threadId)) {
     return;
@@ -556,6 +573,7 @@ export async function ensureThreadRecord({
     modelType,
     modelId: currentModelId,
     pairId,
+    projectId: projectId ?? null,
     archived: false,
     createdAt: Date.now(),
   };
@@ -579,6 +597,8 @@ export async function ensureThreadRecord({
 function createStudioDbAdapter(
   modelType: ModelType,
   pairId?: string,
+  projectId?: string | null,
+  listThreads = true,
 ): unstable_RemoteThreadListAdapter {
   return {
     async fetch(remoteId: string) {
@@ -594,9 +614,16 @@ function createStudioDbAdapter(
     },
 
     async list() {
+      if (!listThreads) {
+        return { threads: [] };
+      }
       let threads: ThreadRecord[];
       try {
-        threads = await listStoredChatThreads({ modelType, pairId });
+        threads = await listStoredChatThreads({
+          modelType,
+          pairId,
+          ...(projectId !== undefined ? { projectId } : {}),
+        });
       } catch (error) {
         if (!isExpectedBackgroundChatStorageError(error)) {
           throw error;
@@ -615,7 +642,7 @@ function createStudioDbAdapter(
     },
 
     async initialize(threadId: string) {
-      await ensureThreadRecord({ threadId, modelType, pairId });
+      await ensureThreadRecord({ threadId, modelType, pairId, projectId });
       return { remoteId: threadId, externalId: undefined };
     },
 
@@ -696,7 +723,7 @@ function createStudioDbAdapter(
           const running = useChatRuntimeStore.getState().runningByThreadId;
           if (running[paired.id]) {
             setTimeout(() => {
-              void createStudioDbAdapter(modelType, pairId).generateTitle(
+              void createStudioDbAdapter(modelType, pairId, projectId).generateTitle(
                 remoteId,
                 messages,
               );
@@ -740,6 +767,22 @@ function trackHistoryAppend(
   return write;
 }
 
+function trackRunStartReady(
+  messageId: string,
+  ready: Promise<void>,
+): Promise<void> {
+  pendingRunStartReadyByMessageId.set(messageId, ready);
+  const cleanup = () => {
+    setTimeout(() => {
+      if (pendingRunStartReadyByMessageId.get(messageId) === ready) {
+        pendingRunStartReadyByMessageId.delete(messageId);
+      }
+    }, 30_000);
+  };
+  ready.then(cleanup, cleanup);
+  return ready;
+}
+
 async function waitForRunStartHistoryAppend(
   messages: Parameters<ChatModelAdapter["run"]>[0]["messages"],
 ): Promise<void> {
@@ -747,20 +790,22 @@ async function waitForRunStartHistoryAppend(
   if (!lastMessage || lastMessage.role !== "user") {
     return;
   }
-  const write = pendingHistoryAppendByMessageId.get(lastMessage.id);
-  if (!write) {
+  const ready =
+    pendingRunStartReadyByMessageId.get(lastMessage.id) ??
+    pendingHistoryAppendByMessageId.get(lastMessage.id);
+  if (!ready) {
     return;
   }
-  let didPersist = false;
+  let didBecomeReady = false;
   try {
-    await write;
-    didPersist = true;
+    await ready;
+    didBecomeReady = true;
   } finally {
     if (
-      didPersist &&
-      pendingHistoryAppendByMessageId.get(lastMessage.id) === write
+      didBecomeReady &&
+      pendingRunStartReadyByMessageId.get(lastMessage.id) === ready
     ) {
-      pendingHistoryAppendByMessageId.delete(lastMessage.id);
+      pendingRunStartReadyByMessageId.delete(lastMessage.id);
     }
   }
 }
@@ -783,7 +828,10 @@ function createPersistedRunAdapter(adapter: ChatModelAdapter): ChatModelAdapter 
   };
 }
 
-function useStudioRuntimeAdapters(): StudioRuntimeAdapters {
+function useStudioRuntimeAdapters(
+  modelType: ModelType,
+  pairId?: string,
+): StudioRuntimeAdapters {
   const aui = useAui();
 
   const history = useMemo<ThreadHistoryAdapter>(
@@ -826,17 +874,24 @@ function useStudioRuntimeAdapters(): StudioRuntimeAdapters {
               completionTokens: number;
               totalTokens: number;
               cachedTokens: number;
+              cacheWriteTokens?: number;
               modelId?: string;
             }
           | undefined;
         const store = useChatRuntimeStore.getState();
-        if (
-          savedUsage &&
-          store.ggufContextLength &&
-          savedUsage.totalTokens <= store.ggufContextLength &&
-          (!savedUsage.modelId ||
-            savedUsage.modelId === store.params.checkpoint)
-        ) {
+        // Window check applies only when a local GGUF window is known;
+        // external providers have ggufContextLength === null.
+        const withinLocalLimit =
+          !store.ggufContextLength ||
+          (savedUsage?.totalTokens ?? 0) <= store.ggufContextLength;
+        // Legacy unscoped usage (no modelId) is only trusted when a
+        // known local window bounds the totals, so we can't misattribute
+        // an old local turn to a newly-selected external provider.
+        const modelMatches = savedUsage?.modelId
+          ? savedUsage.modelId === store.params.checkpoint
+          : typeof store.ggufContextLength === "number" &&
+            store.ggufContextLength > 0;
+        if (savedUsage && withinLocalLimit && modelMatches) {
           store.setContextUsage(savedUsage);
         }
 
@@ -864,14 +919,22 @@ function useStudioRuntimeAdapters(): StudioRuntimeAdapters {
       },
 
       append({ parentId, message }: ExportedMessageRepositoryItem) {
+        const initializeThread = aui.threadListItem().initialize();
+        trackRunStartReady(message.id, initializeThread.then(() => undefined));
         const write = (async () => {
-          const { remoteId } = await aui.threadListItem().initialize();
+          const { remoteId } = await initializeThread;
           if (isChatThreadDeleted(remoteId)) {
             await deleteStoredChatThreads([remoteId]);
             return;
           }
           // Keep single-chat runtime state in sync once a new chat is first
           // persisted. Compare panes intentionally do not write global activeThreadId.
+          if (modelType === "base" && !pairId) {
+            const store = useChatRuntimeStore.getState();
+            if (store.activeThreadId !== remoteId) {
+              store.setActiveThreadId(remoteId);
+            }
+          }
           const thread = await getStoredChatThread(remoteId);
           if (thread) {
             await ensureStoredChatThread(remoteId, thread);
@@ -908,13 +971,13 @@ function useStudioRuntimeAdapters(): StudioRuntimeAdapters {
         return trackHistoryAppend(message.id, write);
       },
     }),
-    [aui],
+    [aui, modelType, pairId],
   );
 
   const dictation = useMemo(
     () =>
-      WebSpeechDictationAdapter.isSupported()
-        ? new WebSpeechDictationAdapter()
+      StudioWebSpeechDictationAdapter.isSupported()
+        ? new StudioWebSpeechDictationAdapter()
         : undefined,
     [],
   );
@@ -940,13 +1003,22 @@ function useStudioRuntimeAdapters(): StudioRuntimeAdapters {
 
 const chatAdapter = createOpenAIStreamAdapter();
 
-function useRuntimeHook(): ReturnType<typeof useLocalRuntime> {
-  const adapters = useStudioRuntimeAdapters();
+function useRuntimeHook(
+  modelType: ModelType,
+  pairId?: string,
+): ReturnType<typeof useLocalRuntime> {
+  const adapters = useStudioRuntimeAdapters(modelType, pairId);
   const persistedChatAdapter = useMemo(
     () => createPersistedRunAdapter(chatAdapter),
     [],
   );
   return useLocalRuntime(persistedChatAdapter, { adapters });
+}
+
+function createRuntimeHook(modelType: ModelType, pairId?: string) {
+  return function useConfiguredRuntimeHook(): ReturnType<typeof useLocalRuntime> {
+    return useRuntimeHook(modelType, pairId);
+  };
 }
 
 function ThreadAutoSwitch({
@@ -1126,20 +1198,28 @@ export function ChatRuntimeProvider({
   children,
   modelType = "base",
   pairId,
+  projectId,
   initialThreadId,
   newThreadNonce,
   syncActiveThreadId = true,
+  listThreads = true,
 }: {
   children: ReactNode;
   modelType?: ModelType;
   pairId?: string;
+  projectId?: string | null;
   initialThreadId?: string;
   newThreadNonce?: string;
   syncActiveThreadId?: boolean;
+  listThreads?: boolean;
 }): ReactElement {
+  const runtimeHook = useMemo(
+    () => createRuntimeHook(modelType, pairId),
+    [modelType, pairId],
+  );
   const runtime = useRemoteThreadListRuntime({
-    runtimeHook: useRuntimeHook,
-    adapter: createStudioDbAdapter(modelType, pairId),
+    runtimeHook,
+    adapter: createStudioDbAdapter(modelType, pairId, projectId, listThreads),
   });
 
   const aui = useAui({});

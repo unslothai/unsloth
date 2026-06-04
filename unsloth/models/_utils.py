@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2026.5.7"
+__version__ = "2026.6.1"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -782,6 +782,22 @@ transformers_trainer_logger.addFilter(HideLoggingMessage("No label_names"))
 transformers_trainer_logger.addFilter(HideLoggingMessage("The tokenizer has new"))
 del transformers_trainer_logger
 
+# Strip the "[transformers] " prefix transformers>=5 adds; keep the messages.
+try:
+    try:
+        import transformers.utils.logging as _tf_log
+
+        _tf_log._configure_library_root_logger()
+    except Exception:
+        pass
+    _tf_root = logging.getLogger("transformers")
+    _tf_fmt = logging.Formatter("%(message)s")
+    for _h in list(_tf_root.handlers):
+        _h.setFormatter(_tf_fmt)
+    del _tf_root, _tf_fmt
+except Exception:
+    pass
+
 # Using the default loss: `ForCausalLMLoss`.
 try:
     from transformers.modeling_utils import logger as transformers_modeling_utils_logger
@@ -1216,8 +1232,6 @@ if is_openai_available():
 
 # =============================================
 # Get Flash Attention v2 if Ampere (RTX 30xx, A100)
-import bitsandbytes as bnb
-
 from transformers import AutoTokenizer
 from transformers.utils.import_utils import _is_package_available
 

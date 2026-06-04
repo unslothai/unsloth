@@ -14,8 +14,15 @@ import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { usePlatformStore } from "@/config/env";
 import { resetOnboardingDone } from "@/features/auth";
-import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
-import { useSettingsDialogStore } from "@/features/settings";
+import { useChatRuntimeStore } from "@/features/chat";
+import {
+  DEFAULT_UPLOAD_LIMIT_MB,
+  loadUploadLimitSettings,
+  updateUploadLimitSettings,
+  type UploadLimitSettings,
+} from "../api/upload-limit";
+import { useSettingsDialogStore } from "../stores/settings-dialog-store";
+import { LOCALE_STORAGE_KEY, useT } from "@/i18n";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { Eye, EyeOff } from "lucide-react";
@@ -35,6 +42,7 @@ import { SettingsSection } from "../components/settings-section";
 const PREFS_KEYS: string[] = [
   // Appearance
   "theme",
+  LOCALE_STORAGE_KEY,
   // UI state
   "sidebar_pinned",
   "unsloth_sidebar_navigate_open",
@@ -81,6 +89,7 @@ function resetAllPrefs() {
 }
 
 export function GeneralTab() {
+  const t = useT();
   const navigate = useNavigate();
   const closeDialog = useSettingsDialogStore((s) => s.closeDialog);
   const { pathname, search } = useRouterState({
@@ -104,6 +113,14 @@ export function GeneralTab() {
   const [draftToken, setDraftToken] = useState(hfToken ?? "");
   const [showToken, setShowToken] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [uploadLimit, setUploadLimit] = useState<UploadLimitSettings | null>(
+    null,
+  );
+  const [draftUploadLimit, setDraftUploadLimit] = useState(
+    String(DEFAULT_UPLOAD_LIMIT_MB),
+  );
+  const [uploadLimitError, setUploadLimitError] = useState<string | null>(null);
+  const [isSavingUploadLimit, setIsSavingUploadLimit] = useState(false);
 
   const draftRef = useRef(draftToken);
   useEffect(() => {
@@ -129,19 +146,67 @@ export function GeneralTab() {
     if (trimmed !== hfToken) setHfToken(trimmed);
   };
 
+  useEffect(() => {
+    let cancelled = false;
+    void loadUploadLimitSettings()
+      .then((settings) => {
+        if (cancelled) return;
+        setUploadLimit(settings);
+        setDraftUploadLimit(String(settings.maxUploadSizeMb));
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        setUploadLimitError(
+          error instanceof Error ? error.message : "Failed to load upload limit.",
+        );
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const saveUploadLimit = async () => {
+    const parsed = Number(draftUploadLimit);
+    if (!Number.isInteger(parsed)) {
+      setUploadLimitError("Enter a whole number of MB.");
+      return;
+    }
+    const min = uploadLimit?.minUploadSizeMb ?? 1;
+    const max = uploadLimit?.maxAllowedUploadSizeMb ?? 8192;
+    if (parsed < min || parsed > max) {
+      setUploadLimitError(`Enter a value from ${min} to ${max} MB.`);
+      return;
+    }
+    setIsSavingUploadLimit(true);
+    setUploadLimitError(null);
+    try {
+      const settings = await updateUploadLimitSettings(parsed);
+      setUploadLimit(settings);
+      setDraftUploadLimit(String(settings.maxUploadSizeMb));
+    } catch (error) {
+      setUploadLimitError(
+        error instanceof Error ? error.message : "Failed to save upload limit.",
+      );
+    } finally {
+      setIsSavingUploadLimit(false);
+    }
+  };
+
   return (
     <div className="flex flex-col gap-6">
       <header className="flex flex-col gap-1">
-        <h1 className="text-lg font-semibold font-heading">General</h1>
+        <h1 className="text-lg font-semibold font-heading">
+          {t("settings.general.title")}
+        </h1>
         <p className="text-xs text-muted-foreground">
-          Global preferences for Unsloth Studio.
+          {t("settings.general.description")}
         </p>
       </header>
 
-      <SettingsSection title="Account">
+      <SettingsSection title={t("settings.general.account")}>
         <SettingsRow
-          label="Hugging Face token"
-          description="Used to load gated models and push artifacts."
+          label={t("settings.general.huggingFaceToken")}
+          description={t("settings.general.huggingFaceTokenDescription")}
         >
           <div className="relative w-[260px]">
             <Input
@@ -156,7 +221,11 @@ export function GeneralTab() {
               type="button"
               onClick={() => setShowToken((s) => !s)}
               className="absolute right-1.5 top-1/2 flex size-5 -translate-y-1/2 items-center justify-center rounded text-muted-foreground transition-colors hover:text-foreground"
-              aria-label={showToken ? "Hide token" : "Show token"}
+              aria-label={
+                showToken
+                  ? t("settings.general.hideToken")
+                  : t("settings.general.showToken")
+              }
               tabIndex={-1}
             >
               {showToken ? <EyeOff className="size-3.5" /> : <Eye className="size-3.5" />}
@@ -165,20 +234,66 @@ export function GeneralTab() {
         </SettingsRow>
       </SettingsSection>
 
-      <SettingsSection title="Chat defaults">
+      <SettingsSection title={t("settings.general.chatDefaults")}>
         <SettingsRow
-          label="Auto-title new chats"
-          description="Generate a short title from the first message."
+          label={t("settings.general.autoTitleNewChats")}
+          description={t("settings.general.autoTitleNewChatsDescription")}
         >
           <Switch checked={autoTitle} onCheckedChange={setAutoTitle} />
         </SettingsRow>
       </SettingsSection>
 
+      <SettingsSection title={t("settings.general.uploads.sectionTitle")}>
+        <SettingsRow
+          label={t("settings.general.uploads.maxUploadSize")}
+          description={t("settings.general.uploads.maxUploadSizeDescription", {
+            defaultSize: String(
+              uploadLimit?.defaultUploadSizeMb ?? DEFAULT_UPLOAD_LIMIT_MB,
+            ),
+          })}
+        >
+          <div className="flex flex-col items-end gap-1">
+            <div className="flex items-center gap-2">
+              <div className="relative w-28">
+                <Input
+                  type="number"
+                  min={uploadLimit?.minUploadSizeMb ?? 1}
+                  max={uploadLimit?.maxAllowedUploadSizeMb ?? 8192}
+                  step={1}
+                  value={draftUploadLimit}
+                  aria-label="Training dataset upload cap in MB"
+                  onChange={(event) => setDraftUploadLimit(event.target.value)}
+                  className="h-8 w-full pr-10"
+                />
+                <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-xs font-medium text-muted-foreground">
+                  MB
+                </span>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={isSavingUploadLimit}
+                onClick={() => void saveUploadLimit()}
+              >
+                {isSavingUploadLimit
+                  ? t("common.saving")
+                  : t("common.save")}
+              </Button>
+            </div>
+            {uploadLimitError ? (
+              <span className="max-w-[260px] text-right text-xs text-destructive">
+                {uploadLimitError}
+              </span>
+            ) : null}
+          </div>
+        </SettingsRow>
+      </SettingsSection>
+
       {!chatOnly && (
-        <SettingsSection title="Getting started">
+        <SettingsSection title={t("settings.general.gettingStarted")}>
           <SettingsRow
-            label="Start onboarding"
-            description="Open the setup wizard again without changing your account."
+            label={t("settings.general.startOnboarding")}
+            description={t("settings.general.startOnboardingDescription")}
           >
             <Button
               variant="outline"
@@ -189,17 +304,17 @@ export function GeneralTab() {
                 navigate({ to: "/onboarding", search: { redirectTo } });
               }}
             >
-              Start onboarding
+              {t("settings.general.startOnboardingAction")}
             </Button>
           </SettingsRow>
         </SettingsSection>
       )}
 
-      <SettingsSection title="Danger zone">
+      <SettingsSection title={t("settings.general.resetPreferences.sectionTitle")}>
         <SettingsRow
           destructive
-          label="Reset all local preferences"
-          description="Clears local-only preferences. Chats, API access, and DB-backed chat settings are not affected."
+          label={t("settings.general.resetPreferences.label")}
+          description={t("settings.general.resetPreferences.description")}
         >
           <Button
             variant="outline"
@@ -207,7 +322,7 @@ export function GeneralTab() {
             onClick={() => setConfirmOpen(true)}
             className="text-destructive hover:text-destructive hover:border-destructive/60"
           >
-            Reset preferences
+            {t("settings.general.resetPreferences.action")}
           </Button>
         </SettingsRow>
       </SettingsSection>
@@ -215,21 +330,22 @@ export function GeneralTab() {
       <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
         <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle>Reset all local preferences?</DialogTitle>
+            <DialogTitle>
+              {t("settings.general.resetPreferences.confirmTitle")}
+            </DialogTitle>
             <DialogDescription>
-              This clears local-only preferences, then reloads Studio. Chats,
-              API access, and DB-backed chat settings are not affected.
+              {t("settings.general.resetPreferences.confirmDescription")}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
             <Button variant="outline" onClick={() => setConfirmOpen(false)}>
-              Cancel
+              {t("common.cancel")}
             </Button>
             <Button
               onClick={resetAllPrefs}
               className="bg-destructive hover:bg-destructive/90 text-destructive-foreground"
             >
-              Reset and reload
+              {t("settings.general.resetPreferences.confirmAction")}
             </Button>
           </DialogFooter>
         </DialogContent>

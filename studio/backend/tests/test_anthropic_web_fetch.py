@@ -2,26 +2,12 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """
-Unit tests for Anthropic's server-side `web_fetch_20250910` tool
-translation in `_stream_anthropic`.
-
-Covers:
-- Request body: when ``enabled_tools=["web_fetch"]``, the outbound
-  ``tools`` array carries ``{"type":"web_fetch_20250910",
-  "name":"web_fetch", "max_uses":5}``. No beta header is required.
-- Combined request: ``enabled_tools=["web_search","web_fetch",
-  "code_execution"]`` sends all three tool entries.
-- Disabled by default: with ``enabled_tools=["web_search"]`` (or None),
-  the body does NOT carry a web_fetch entry.
-- SSE translation (success): a `web_fetch` server_tool_use streaming
-  ``{"url": "..."}`` followed by a `web_fetch_tool_result` block with
-  a document source emits one ``tool_start`` and one ``tool_end``
-  `_toolEvent`. The ``tool_start.arguments.url`` matches the fetched
-  URL and the ``tool_end.result`` carries the Title / URL / snippet
-  prefix the source-pill renderer expects.
-- SSE translation (error): a `web_fetch_tool_error` with
-  ``error_code="url_not_accessible"`` renders as ``"Error:
-  url_not_accessible"`` in the tool_end result.
+Unit tests for Anthropic's `web_fetch_20250910` / `web_fetch_20260209`
+translation in ``_stream_anthropic``. Covers request body emission
+(version picked by ``_anthropic_web_fetch_version``: ``_20260209`` for
+Opus 4.6/4.7 + Sonnet 4.6, ``_20250910`` otherwise), combined tool
+requests, off-by-default behavior, and SSE translation of success and
+``url_not_accessible`` error paths into ``tool_start`` / ``tool_end``.
 """
 
 import asyncio
@@ -117,8 +103,9 @@ def test_web_fetch_tool_appended_to_request_body(monkeypatch):
 
     body = captured["body"]
     tools = body.get("tools") or []
+    # claude-opus-4-7 routes web_fetch to _20260209 (dynamic filtering).
     assert {
-        "type": "web_fetch_20250910",
+        "type": "web_fetch_20260209",
         "name": "web_fetch",
         "max_uses": 5,
     } in tools
@@ -157,13 +144,10 @@ def test_web_fetch_combined_with_web_search_and_code_execution(monkeypatch):
 
     tools = captured["body"].get("tools") or []
     tool_types = [t.get("type") for t in tools]
-    # After PR 5679's per-model tool version dispatch landed,
-    # claude-opus-4-7 routes web_search to the _20260209 variant and
-    # code_execution to _20260120. web_fetch still hardcodes
-    # _20250910 today; see follow-up to thread it through
-    # _anthropic_web_fetch_version.
+    # claude-opus-4-7 routes web_search and web_fetch to _20260209
+    # and code_execution to _20260120 (per PR 5679 dispatch).
     assert "web_search_20260209" in tool_types, tool_types
-    assert "web_fetch_20250910" in tool_types, tool_types
+    assert "web_fetch_20260209" in tool_types, tool_types
     assert "code_execution_20260120" in tool_types, tool_types
     # Code-execution still adds its beta flag; web_fetch must not
     # have accidentally stripped it.
@@ -199,7 +183,9 @@ def test_no_web_fetch_tool_when_pill_off(monkeypatch):
     _drive(run())
 
     tools = captured["body"].get("tools") or []
-    assert all(t.get("type") != "web_fetch_20250910" for t in tools)
+    assert all(
+        t.get("type") not in ("web_fetch_20250910", "web_fetch_20260209") for t in tools
+    )
 
 
 # ── SSE translation ─────────────────────────────────────────────────
@@ -285,7 +271,12 @@ def test_web_fetch_success_emits_tool_start_and_end(monkeypatch):
     assert start["type"] == "tool_start"
     assert start["tool_name"] == "web_fetch"
     assert start["tool_call_id"] == "srvtoolu_wf1"
-    assert start["arguments"] == {"url": "https://example.com/article"}
+    # `_server_tool: True` marks this as a provider-side synthetic
+    # tool card for the frontend's history serializer.
+    assert start["arguments"] == {
+        "url": "https://example.com/article",
+        "_server_tool": True,
+    }
     assert end["type"] == "tool_end"
     assert end["tool_call_id"] == "srvtoolu_wf1"
     # The source pill uses Title / URL / snippet as parseSourcesFromResult expects.
@@ -365,7 +356,9 @@ def test_web_fetch_error_renders_error_code(monkeypatch):
 
 
 def _finish_reasons(lines: list[str]) -> list:
-    """Return the finish_reason fields from every chat.completion.chunk."""
+    """Return non-null finish_reason fields from each chat.completion.chunk.
+    Mid-stream content deltas carry ``finish_reason: None`` and are skipped
+    (the refusal path emits a notice delta before the content_filter chunk)."""
     out: list = []
     for line in lines:
         if not line.startswith("data:"):
@@ -380,8 +373,9 @@ def _finish_reasons(lines: list[str]) -> list:
         if parsed.get("object") != "chat.completion.chunk":
             continue
         for choice in parsed.get("choices") or []:
-            if "finish_reason" in choice:
-                out.append(choice["finish_reason"])
+            reason = choice.get("finish_reason")
+            if reason is not None:
+                out.append(reason)
     return out
 
 

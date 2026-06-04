@@ -29,39 +29,45 @@ import { Delete02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactElement, useCallback, useEffect, useRef, useState } from "react";
 import { Spinner } from "@/components/ui/spinner";
+import { translate, useT } from "@/i18n";
+
+type StudioT = ReturnType<typeof useT>;
 
 const PAGE_SIZE = 12;
 const RUNNING_POLL_INTERVAL_MS = 5000;
 
 const statusBadge: Record<
   string,
-  { label: string; className: string }
+  { className: string }
 > = {
   completed: {
-    label: "Completed",
     className:
       "bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-400",
   },
   stopped: {
-    label: "Stopped",
     className:
       "bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-400",
   },
   error: {
-    label: "Error",
     className: "bg-red-100 text-red-700 dark:bg-red-950 dark:text-red-400",
   },
   running: {
-    label: "Running",
     className:
       "bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-400",
   },
   resumed_later: {
-    label: "Continued",
     className:
       "bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-400",
   },
 };
+
+function formatStatusLabel(status: string, t: StudioT): string {
+  if (status === "completed") return t("studio.history.status.completed");
+  if (status === "stopped") return t("studio.history.status.stopped");
+  if (status === "running") return t("studio.history.status.running");
+  if (status === "resumed_later") return t("studio.history.status.continued");
+  return t("studio.history.status.error");
+}
 
 function wasContinuedInVisibleRuns(
   run: TrainingRunSummary,
@@ -97,7 +103,15 @@ function catmullRomPath(points: { x: number; y: number }[]): string {
   return d.join(" ");
 }
 
-function Sparkline({ values, id }: { values: number[]; id: string }): ReactElement | null {
+function Sparkline({
+  values,
+  id,
+  ariaLabel,
+}: {
+  values: number[];
+  id: string;
+  ariaLabel: string;
+}): ReactElement | null {
   if (!values || values.length < 2) return null;
   let min = values[0]!;
   let max = values[0]!;
@@ -123,7 +137,7 @@ function Sparkline({ values, id }: { values: number[]; id: string }): ReactEleme
   const fillPath = `${linePath} L${last.x.toFixed(1)},${h} L${first.x.toFixed(1)},${h} Z`;
 
   return (
-    <svg viewBox={`0 0 ${w} ${h}`} className="h-8 w-full" preserveAspectRatio="none" role="img" aria-label="Loss trend sparkline">
+    <svg viewBox={`0 0 ${w} ${h}`} className="h-8 w-full" preserveAspectRatio="none" role="img" aria-label={ariaLabel}>
       <defs>
         <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
           <stop offset="0%" stopColor="currentColor" stopOpacity="0.12" />
@@ -148,15 +162,15 @@ function Sparkline({ values, id }: { values: number[]; id: string }): ReactEleme
   );
 }
 
-function formatRelativeTime(isoDate: string): string {
+function formatRelativeTime(isoDate: string, t: StudioT): string {
   const diff = Date.now() - new Date(isoDate).getTime();
   const mins = Math.floor(diff / 60000);
-  if (mins < 1) return "just now";
-  if (mins < 60) return `${mins}m ago`;
+  if (mins < 1) return t("studio.history.relativeJustNow");
+  if (mins < 60) return t("studio.history.relativeMinutesAgo", { count: mins });
   const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs}h ago`;
+  if (hrs < 24) return t("studio.history.relativeHoursAgo", { count: hrs });
   const days = Math.floor(hrs / 24);
-  return `${days}d ago`;
+  return t("studio.history.relativeDaysAgo", { count: days });
 }
 
 
@@ -169,6 +183,7 @@ export function HistoryCardGrid({
   onSelectRun,
   onResumeStarted,
 }: HistoryCardGridProps): ReactElement {
+  const t = useT();
   const [runs, setRuns] = useState<TrainingRunSummary[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -209,7 +224,7 @@ export function HistoryCardGrid({
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") return;
       if (fetchIdRef.current !== id) return;
-      if (!append) setError("Failed to load training runs");
+      if (!append) setError(translate("studio.history.loadError"));
     } finally {
       if (fetchIdRef.current === id) {
         setLoading(false);
@@ -286,7 +301,7 @@ export function HistoryCardGrid({
         // Refresh failed — card is already removed, no stale display
       });
     } catch {
-      setDeleteError("Failed to delete training run. Please try again.");
+      setDeleteError(translate("studio.history.deleteError"));
     }
     setDeleteTarget(null);
   };
@@ -305,10 +320,13 @@ export function HistoryCardGrid({
 
   if (!loading && error && runs.length === 0) {
     return (
-      <div className="flex flex-col items-center gap-2 py-16 text-center">
+      <div
+        className="flex flex-col items-center gap-2 py-16 text-center"
+        aria-label={t("studio.history.title")}
+      >
         <p className="text-sm text-destructive">{error}</p>
         <Button variant="outline" size="sm" onClick={() => void fetchRuns(0)}>
-          Retry
+          {t("studio.history.retry")}
         </Button>
       </div>
     );
@@ -316,17 +334,19 @@ export function HistoryCardGrid({
 
   if (!loading && runs.length === 0) {
     return (
-      <div className="flex flex-col items-center gap-2 py-16 text-center">
+      <div
+        className="flex flex-col items-center gap-2 py-16 text-center"
+        aria-label={t("studio.history.title")}
+      >
         <p className="text-sm text-muted-foreground">
-          No training runs yet. Start your first training run in the Configure
-          tab.
+          {t("studio.history.emptyDescription")}
         </p>
       </div>
     );
   }
 
   return (
-    <>
+    <div className="contents" aria-label={t("studio.history.title")}>
       {deleteError && (
         <div className="mb-4 rounded-lg border border-destructive/50 bg-destructive/10 px-4 py-2 text-sm text-destructive">
           {deleteError}
@@ -370,10 +390,10 @@ export function HistoryCardGrid({
                   )}
                 >
                   {isRunning && <Spinner className="size-2.5" />}
-                  {badge.label}
+                  {formatStatusLabel(wasContinued ? "resumed_later" : run.status, t)}
                 </span>
                 <span className="text-[10px] text-muted-foreground">
-                  {formatRelativeTime(run.started_at)}
+                  {formatRelativeTime(run.started_at, t)}
                 </span>
               </div>
               {canResume && (
@@ -388,7 +408,7 @@ export function HistoryCardGrid({
                     void handleResume(run.id);
                   }}
                 >
-                  {isResuming ? "Resuming..." : "Resume training"}
+                  {isResuming ? t("studio.history.resuming") : t("studio.history.resumeTraining")}
                 </Button>
               )}
               <div className="min-w-0">
@@ -415,16 +435,20 @@ export function HistoryCardGrid({
               </div>
               {run.loss_sparkline && run.loss_sparkline.length >= 2 && (
                 <div className={cn(canResume && "h-7 overflow-hidden")}>
-                  <Sparkline values={run.loss_sparkline} id={run.id} />
+                  <Sparkline
+                    values={run.loss_sparkline}
+                    id={run.id}
+                    ariaLabel={t("studio.history.lossTrendSparkline")}
+                  />
                 </div>
               )}
               <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-muted-foreground">
                 <span>
-                  Loss:{" "}
+                  {t("studio.history.loss")}:{" "}
                   {run.final_loss != null ? run.final_loss.toFixed(4) : "--"}
                 </span>
                 <span>
-                  Steps: {run.final_step ?? 0}/{run.total_steps ?? "--"}
+                  {t("studio.history.steps")}: {run.final_step ?? 0}/{run.total_steps ?? "--"}
                 </span>
                 <span>{formatDuration(run.duration_seconds)}</span>
               </div>
@@ -432,7 +456,7 @@ export function HistoryCardGrid({
                 <button
                   type="button"
                   className="absolute right-3 top-3 rounded-md p-1 text-muted-foreground/50 opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100 focus-visible:opacity-100"
-                  aria-label="Delete run"
+                  aria-label={t("studio.history.deleteRun")}
                   onClick={(e) => {
                     e.stopPropagation();
                     setDeleteTarget(run.id);
@@ -453,7 +477,7 @@ export function HistoryCardGrid({
             onClick={() => void fetchRuns(runs.length, true)}
             disabled={loading}
           >
-            {loading ? "Loading..." : "Load more"}
+            {loading ? t("studio.history.loading") : t("studio.history.loadMore")}
           </Button>
         </div>
       )}
@@ -475,23 +499,22 @@ export function HistoryCardGrid({
       >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete training run?</AlertDialogTitle>
+            <AlertDialogTitle>{t("studio.history.deleteTitle")}</AlertDialogTitle>
             <AlertDialogDescription>
-              This will permanently delete this training run and all its metrics.
-              This action cannot be undone.
+              {t("studio.history.deleteDescription")}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
             <AlertDialogAction
               variant="destructive"
               onClick={() => void handleDelete()}
             >
-              Delete
+              {t("common.delete")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </>
+    </div>
   );
 }

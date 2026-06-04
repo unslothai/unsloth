@@ -30,3 +30,4 @@ httpx>=0.27.0
 # /images/load because these were only listed in the extras files).
 diffusers>=0.38.0
 gguf>=0.10.0
+fastmcp>=3.0.2

@@ -71,17 +71,94 @@ export function clampReasoningEffortToLevels(
 }
 
 /**
- * Output-token cap for any external provider request. Picked to stay below the
- * tightest declared limit across the providers we ship (Anthropic Claude Opus
- * tops out at 128k, GPT-5.x ~128k, Gemini 2.5 ~65k, DeepSeek 8k) while staying
- * well above what a typical chat reply needs. The local-model path is not
- * subject to this — local backends honour whatever the loaded context allows.
- *
- * If a user's stored maxTokens (e.g. carried over from a prior local-model
- * session with a 128k+ context) exceeds this, chat-adapter clamps the
- * outbound request so the provider does not 400 on it.
+ * Fallback cap for unknown providers / models. Prefer
+ * `getExternalMaxOutputTokens(providerType, modelId)` for the real cap.
  */
 export const EXTERNAL_MAX_OUTPUT_TOKENS = 32768;
+
+/**
+ * Per-model max-output caps from each provider's docs:
+ *   OpenAI:    developers.openai.com/api/docs/models/gpt-5.5
+ *   Anthropic: platform.claude.com/docs/en/about-claude/models
+ *   Gemini:    ai.google.dev/gemini-api/docs/models/gemini-3.1-pro-preview
+ *   DeepSeek:  api-docs.deepseek.com/quick_start/pricing (V4 family)
+ * Local-model path is unaffected.
+ */
+const EXTERNAL_MAX_OUTPUT_TOKENS_BY_MODEL: Array<{
+  providerType: string;
+  prefixes: readonly string[];
+  cap: number;
+}> = [
+  // OpenAI
+  { providerType: "openai", prefixes: ["gpt-5.5-pro", "gpt-5.5"], cap: 128000 },
+  { providerType: "openai", prefixes: ["gpt-5.4-pro", "gpt-5.4"], cap: 65536 },
+  { providerType: "openai", prefixes: ["gpt-5.3"], cap: 16384 },
+  // Anthropic
+  {
+    providerType: "anthropic",
+    prefixes: ["claude-opus-4-7"],
+    cap: 128000,
+  },
+  {
+    providerType: "anthropic",
+    prefixes: [
+      "claude-opus-4-6",
+      "claude-sonnet-4-6",
+      "claude-opus-4-5",
+      "claude-sonnet-4-5",
+      "claude-haiku-4-5",
+    ],
+    cap: 64000,
+  },
+  // Gemini
+  {
+    providerType: "gemini",
+    prefixes: ["gemini-3", "gemini-pro", "gemini-flash"],
+    cap: 65536,
+  },
+  // DeepSeek (V4: deepseek-chat / deepseek-reasoner alias V4-flash).
+  { providerType: "deepseek", prefixes: ["deepseek"], cap: 384000 },
+];
+
+/**
+ * Documented per-model output cap; unknown ids fall back to
+ * `EXTERNAL_MAX_OUTPUT_TOKENS` (32k). OpenRouter ids are
+ * `provider/model`; the prefix is stripped before matching.
+ */
+export function getExternalMaxOutputTokens(
+  providerType: string | null | undefined,
+  modelId: string | null | undefined,
+): number {
+  if (!providerType || !modelId) return EXTERNAL_MAX_OUTPUT_TOKENS;
+  const normalized = modelId.trim().toLowerCase();
+  if (!normalized) return EXTERNAL_MAX_OUTPUT_TOKENS;
+  const stripped =
+    providerType === "openrouter" && normalized.includes("/")
+      ? normalized.split("/").slice(-1)[0]
+      : normalized;
+  const effectiveProvider =
+    providerType === "openrouter"
+      ? _inferProviderFromOpenrouterId(normalized) ?? providerType
+      : providerType;
+  for (const entry of EXTERNAL_MAX_OUTPUT_TOKENS_BY_MODEL) {
+    if (entry.providerType !== effectiveProvider) continue;
+    if (entry.prefixes.some((prefix) => stripped.startsWith(prefix))) {
+      return entry.cap;
+    }
+  }
+  return EXTERNAL_MAX_OUTPUT_TOKENS;
+}
+
+function _inferProviderFromOpenrouterId(
+  normalizedId: string,
+): string | null {
+  // Map OpenRouter `provider/model` prefix to our internal providerType.
+  if (normalizedId.startsWith("openai/")) return "openai";
+  if (normalizedId.startsWith("anthropic/")) return "anthropic";
+  if (normalizedId.startsWith("google/")) return "gemini";
+  if (normalizedId.startsWith("deepseek/")) return "deepseek";
+  return null;
+}
 
 /**
  * Whether the external provider offers a built-in web-search tool that the
@@ -112,7 +189,27 @@ export const EXTERNAL_MAX_OUTPUT_TOKENS = 32768;
  */
 export function providerSupportsBuiltinWebSearch(
   providerType: string | null | undefined,
+  modelId?: string | null | undefined,
+  baseUrl?: string | null | undefined,
 ): boolean {
+  // Gemini ships grounded search via `tools: [{googleSearch: {}}]` on
+  // every chat-capable model. Most image-tier ids (`-image`,
+  // `nano-banana`) reject text-tool wiring because the
+  // responseModalities path is mutually exclusive with text tools, but
+  // Google explicitly documents Search grounding on the Gemini 3 image
+  // family (gemini-3-pro-image-preview, gemini-3.1-flash-image-preview,
+  // nano-banana-pro). Allow Search on those; hide on older image ids.
+  // Custom Gemini OpenAI-compat proxies (non-Google bases) skip the
+  // native translator on the backend, so native tool envelopes never
+  // reach them -- hide the pill there.
+  if (providerType === "gemini") {
+    if (isGeminiCustomOpenAICompatBase(baseUrl)) return false;
+    const normalized = modelId?.trim().toLowerCase() ?? "";
+    if (normalized && isGeminiImageModel(normalized)) {
+      return geminiImageModelAllowsGoogleSearch(normalized);
+    }
+    return true;
+  }
   return (
     providerType === "openai" ||
     providerType === "anthropic" ||
@@ -123,16 +220,38 @@ export function providerSupportsBuiltinWebSearch(
 
 /**
  * Whether the external provider exposes a server-side web_fetch tool
- * that retrieves a single URL (text or PDF) and emits a document block.
- * Only Anthropic ships one today (`web_fetch_20250910`); the chat
- * composer pairs it with the Search pill because the typical workflow
- * is "search returns URLs, fetch reads them" and the UI doesn't (yet)
- * expose web_fetch as an independent toggle.
+ * (single URL, text or PDF) emitting a document block. Anthropic-only
+ * today (`web_fetch_20250910` / `web_fetch_20260209`). Gates the
+ * composer's standalone Fetch pill, independent of Search.
  */
 export function providerSupportsBuiltinWebFetch(
   providerType: string | null | undefined,
 ): boolean {
   return providerType === "anthropic";
+}
+
+/**
+ * Whether the active provider + model supports Anthropic fast-mode
+ * (`speed: "fast"` + `fast-mode-2026-02-01` header). Opus 4.6 / 4.7
+ * only per https://platform.claude.com/docs/en/build-with-claude/fast-mode.
+ * Backend silently drops on unsupported models as a second defence.
+ */
+const ANTHROPIC_FAST_MODE_MODEL_PREFIXES = [
+  "claude-opus-4-7",
+  "claude-opus-4-6",
+] as const;
+
+export function providerSupportsFastMode(
+  providerType: string | null | undefined,
+  modelId: string | null | undefined,
+): boolean {
+  if (providerType !== "anthropic") return false;
+  if (!modelId) return false;
+  // Family boundary ("" or "-") required so IDs like "claude-opus-4-70"
+  // / "claude-opus-4-7b" do not match.
+  return ANTHROPIC_FAST_MODE_MODEL_PREFIXES.some(
+    (prefix) => modelId === prefix || modelId.startsWith(`${prefix}-`),
+  );
 }
 
 /**
@@ -185,15 +304,21 @@ const OPENAI_CODE_EXECUTION_MODEL_PREFIXES = [
 
 /**
  * Strict check that a provider configuration points at OpenAI's
- * managed cloud (api.openai.com), as opposed to a custom OpenAI-compat
- * backend (ollama / llama.cpp / vLLM / generic "custom" preset). The
- * shell tool ONLY exists on OpenAI cloud; sending it to anything else
- * 400s the request. Mirror of the backend's
- * `is_openai_cloud = "api.openai.com" in self.base_url` guard.
+ * managed cloud (api.openai.com) or Azure OpenAI Foundry
+ * (*.openai.azure.com), as opposed to a custom OpenAI-compat backend
+ * (ollama / llama.cpp / vLLM / generic "custom" preset). The shell and
+ * image-generation tools only exist on cloud backends; sending them to
+ * anything else 400s the request. Mirror of the backend's
+ * `_is_openai_family_cloud` host check.
  */
 function isOpenAICloudBaseUrl(baseUrl: string | null | undefined): boolean {
   if (!baseUrl) return true; // No override → uses the default openai.com base.
-  return baseUrl.trim().toLowerCase().includes("api.openai.com");
+  try {
+    const host = new URL(baseUrl).hostname.toLowerCase();
+    return host === "api.openai.com" || host.endsWith(".openai.azure.com");
+  } catch {
+    return false;
+  }
 }
 
 export function providerSupportsBuiltinCodeExecution(
@@ -213,6 +338,20 @@ export function providerSupportsBuiltinCodeExecution(
     return OPENAI_CODE_EXECUTION_MODEL_PREFIXES.some((prefix) =>
       normalized.startsWith(prefix),
     );
+  }
+  if (providerType === "gemini") {
+    // Gemini's `tools: [{codeExecution: {}}]` is supported on every
+    // chat-capable model. Image-tier ids (`-image`, `nano-banana`)
+    // reject text-tool wiring because the inline-image path is
+    // mutually exclusive with codeExecution. Custom Gemini
+    // OpenAI-compat proxies skip the native translator on the
+    // backend, so native codeExecution envelopes do not reach them.
+    // Wire-up lives in `_stream_gemini` on the backend; output comes
+    // back inline as executableCode/codeExecutionResult parts. See
+    // https://ai.google.dev/gemini-api/docs/code-execution.
+    if (isGeminiCustomOpenAICompatBase(baseUrl)) return false;
+    if (isGeminiImageModel(normalized)) return false;
+    return normalized.startsWith("gemini-");
   }
   return false;
 }
@@ -246,12 +385,75 @@ export function providerSupportsBuiltinImageGeneration(
   modelId: string | null | undefined,
   baseUrl?: string | null,
 ): boolean {
-  if (providerType !== "openai") return false;
-  if (!isOpenAICloudBaseUrl(baseUrl)) return false;
   const normalized = modelId?.trim().toLowerCase() ?? "";
   if (!normalized) return false;
-  return OPENAI_IMAGE_GENERATION_MODEL_PREFIXES.some((prefix) =>
-    normalized.startsWith(prefix),
+  if (providerType === "openai") {
+    if (!isOpenAICloudBaseUrl(baseUrl)) return false;
+    return OPENAI_IMAGE_GENERATION_MODEL_PREFIXES.some((prefix) =>
+      normalized.startsWith(prefix),
+    );
+  }
+  if (providerType === "gemini") {
+    // Gemini's Nano Banana image-output ids carry either `-image` (e.g.
+    // `gemini-2.5-flash-image`, `gemini-3.1-flash-image-preview`) or the
+    // `nano-banana` alias (`nano-banana-pro-preview`). The backend flips
+    // generationConfig.responseModalities to ["TEXT", "IMAGE"] when one
+    // is picked, and translates inlineData parts into the same image_b64
+    // tool_end envelope the OpenAI path emits so the chat UI renders the
+    // picture inline. Custom Gemini OpenAI-compat proxies skip the
+    // native translator on the backend, so hide the image pill there.
+    // See https://ai.google.dev/gemini-api/docs/image-generation.
+    if (isGeminiCustomOpenAICompatBase(baseUrl)) return false;
+    return normalized.includes("-image") || normalized.includes("nano-banana");
+  }
+  return false;
+}
+
+/**
+ * Whether `modelId` is a Gemini image-output id (Nano Banana family).
+ * Mirrors the backend's `is_image_picker_model` guard so the frontend
+ * hides text-only tool pills (web_search, code_execution) for these.
+ */
+function isGeminiImageModel(modelId: string): boolean {
+  const m = modelId.toLowerCase();
+  return m.includes("-image") || m.includes("nano-banana");
+}
+
+/**
+ * Whether the saved Gemini connection points at a custom
+ * OpenAI-compatible gateway (any non-Google host). The backend
+ * `_is_openai_compatible` mirrors this to route those connections
+ * through `/chat/completions` instead of the native translator, so
+ * native Gemini tool envelopes (googleSearch, codeExecution,
+ * responseModalities) never reach them. Hide the corresponding
+ * Studio pills here so the request, builder, and UI agree.
+ */
+export function isGeminiCustomOpenAICompatBase(
+  baseUrl: string | null | undefined,
+): boolean {
+  if (!baseUrl) return false;
+  try {
+    const host = new URL(baseUrl).hostname.toLowerCase();
+    return host.length > 0 && host !== "generativelanguage.googleapis.com";
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Whether the given Gemini image model supports `tools: [{googleSearch: {}}]`.
+ * Google documents Search grounding on the Gemini 3 image family
+ * (gemini-3-pro-image-preview, gemini-3.1-flash-image-preview,
+ * "Nano Banana Pro"); older image ids (gemini-2.5-flash-image) reject
+ * it with "Search as tool is not enabled for this model".
+ */
+function geminiImageModelAllowsGoogleSearch(modelId: string): boolean {
+  const m = modelId.toLowerCase();
+  return (
+    m.startsWith("gemini-3-pro-image") ||
+    m.startsWith("gemini-3.1-flash-image") ||
+    m.startsWith("nano-banana-pro") ||
+    m.startsWith("nano-banana-2")
   );
 }
 
@@ -326,7 +528,20 @@ const PROVIDER_CAPABILITIES: Record<string, ProviderCapabilities> = {
     presencePenalty: false,
   },
   mistral: OPENAI_COMPAT_BASE,
-  gemini: OPENAI_COMPAT_BASE,
+  // Gemini's native generationConfig accepts temperature, topP, topK and
+  // presencePenalty (plus a separate frequencyPenalty we do not surface
+  // today). minP and repetitionPenalty are not part of the contract --
+  // see https://ai.google.dev/api/rest/v1beta/GenerationConfig. Backend
+  // request shaping lives in _stream_gemini in
+  // studio/backend/core/inference/external_provider.py.
+  gemini: {
+    temperature: true,
+    topP: true,
+    topK: true,
+    minP: false,
+    repetitionPenalty: false,
+    presencePenalty: true,
+  },
   // Kimi k2.5/k2.6 are reasoning-class — the API locks temperature and
   // top_p to fixed defaults and 400s on any other value:
   //   "invalid temperature: only 1 is allowed for this model".
@@ -538,6 +753,119 @@ function resolveKimiReasoningCapabilities(modelId: string): ExternalReasoningCap
   return withEnableThinkingStyle();
 }
 
+// Gemini's thinking ladder.
+//   - Gemini 3.x (3 / 3.1 / 3.5, Pro + Flash + Flash-Lite) and the
+//     gemini-pro-latest / gemini-flash-latest aliases use the new
+//     `thinkingConfig.thinkingLevel` string field (LOW/MEDIUM/HIGH/
+//     MINIMAL). Pro tier rejects MINIMAL.
+//   - Gemini 2.5 Flash + 2.5 Pro stay on the integer
+//     `thinkingConfig.thinkingBudget` (0=off on Flash, -1=dynamic,
+//     N>0=cap; Pro rejects 0).
+//   - 2.5 Flash-Lite: no native thinking surfaced; leave it off.
+//   - Image-tier ids (`*-image*`, `nano-banana-pro-preview`): image
+//     generation path -- no reasoning controls.
+const GEMINI3_PRO_PREFIXES = [
+  "gemini-3.5-pro",
+  "gemini-3.1-pro",
+  "gemini-3-pro-preview",
+  "gemini-pro-latest",
+];
+const GEMINI3_FLASH_PREFIXES = [
+  "gemini-3.5-flash",
+  "gemini-3.1-flash",
+  "gemini-3-flash",
+  "gemini-flash-latest",
+  "gemini-flash-lite-latest",
+];
+const GEMINI25_PRO_PREFIXES = [
+  "gemini-2.5-pro",
+];
+const GEMINI25_FLASH_PREFIXES = [
+  "gemini-2.5-flash",
+];
+const GEMINI_IMAGE_HINTS = [
+  "-image",
+  "nano-banana",
+];
+function resolveGeminiReasoningCapabilities(
+  modelId: string,
+): ExternalReasoningCapabilities {
+  const m = modelId.toLowerCase();
+  if (GEMINI_IMAGE_HINTS.some((h) => m.includes(h))) {
+    // Image generation; no thinking knob.
+    return withEnableThinkingStyle();
+  }
+  // Gemini 2.5 Flash-Lite supports `thinkingBudget` with `0` = off and
+  // a positive range starting at 512 (the backend maps "minimal" to
+  // that floor at external_provider._stream_gemini). Check this branch
+  // BEFORE the broader `gemini-2.5-flash` prefix.
+  // https://ai.google.dev/gemini-api/docs/thinking
+  if (m.startsWith("gemini-2.5-flash-lite")) {
+    return withReasoningEffortStyle({
+      supportsReasoning: true,
+      supportsReasoningOff: true,
+      reasoningEffortLevels: [
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "max",
+      ] as const,
+    });
+  }
+  if (GEMINI3_PRO_PREFIXES.some((p) => m.startsWith(p))) {
+    // Gemini 3.x Pro: thinkingLevel supports low/medium/high per
+    // https://ai.google.dev/gemini-api/docs/thinking and
+    // https://docs.cloud.google.com/vertex-ai/generative-ai/docs/models/gemini/3-1-pro.
+    // Cannot fully disable thinking; "minimal" is rejected on Pro.
+    return withReasoningEffortStyle({
+      supportsReasoning: true,
+      supportsReasoningOff: false,
+      reasoningEffortLevels: ["low", "medium", "high"] as const,
+    });
+  }
+  if (GEMINI3_FLASH_PREFIXES.some((p) => m.startsWith(p))) {
+    // Gemini 3 Flash: thinkingLevel minimal/low/medium/high. Minimal
+    // is the closest to "off" Google offers on Gemini 3.
+    return withReasoningEffortStyle({
+      supportsReasoning: true,
+      supportsReasoningOff: false,
+      reasoningEffortLevels: [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+      ] as const,
+    });
+  }
+  if (GEMINI25_PRO_PREFIXES.some((p) => m.startsWith(p))) {
+    // Gemini 2.5 Pro: thinkingBudget cannot be 0 (API rejects with
+    // "only works in thinking mode"); backend coerces to a small
+    // positive budget. The picker still hides the off switch.
+    return withReasoningEffortStyle({
+      supportsReasoning: true,
+      supportsReasoningOff: false,
+      reasoningEffortLevels: ["low", "medium", "high", "max"] as const,
+    });
+  }
+  if (GEMINI25_FLASH_PREFIXES.some((p) => m.startsWith(p))) {
+    // Gemini 2.5 Flash: thinkingBudget supports 0 = off cleanly.
+    return withReasoningEffortStyle({
+      supportsReasoning: true,
+      supportsReasoningOff: true,
+      reasoningEffortLevels: [
+        "none",
+        "low",
+        "medium",
+        "high",
+        "max",
+      ] as const,
+    });
+  }
+  return withEnableThinkingStyle();
+}
+
 function resolveMistralReasoningCapabilities(modelId: string): ExternalReasoningCapabilities {
   if (modelId === "magistral-medium-latest") {
     return withReasoningEffortStyle({
@@ -560,6 +888,8 @@ function resolveMistralReasoningCapabilities(modelId: string): ExternalReasoning
 export interface ExternalReasoningResolveOptions {
   /** vLLM connection flagged as a reasoning model in provider config. */
   isReasoningProvider?: boolean;
+  /** Provider base URL; used to detect custom Gemini OAI-compat gateways. */
+  baseUrl?: string | null;
 }
 
 // vLLM has no per-model reasoning signal on OpenAI-compat — pin via user toggle.
@@ -635,6 +965,16 @@ export function getExternalReasoningCapabilities(
   }
   if (isKimiProvider) return resolveKimiReasoningCapabilities(modelForMatching);
   if (isMistralProvider) return resolveMistralReasoningCapabilities(modelForMatching);
+  if (normalizedProvider === "gemini") {
+    // Custom Gemini OAI-compat gateways (LiteLLM, proxies) route
+    // through /chat/completions which drops the Gemini-native
+    // thinkingConfig payload. Hide the native thinking ladder so the
+    // UI does not advertise a control the backend cannot honor.
+    if (isGeminiCustomOpenAICompatBase(options?.baseUrl)) {
+      return withEnableThinkingStyle();
+    }
+    return resolveGeminiReasoningCapabilities(modelForMatching);
+  }
   if (!isOpenAIProvider && !isAnthropicProvider) {
     return withEnableThinkingStyle();
   }
