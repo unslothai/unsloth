@@ -2489,7 +2489,14 @@ async def _proxy_to_external_provider(
             model = model,
             temperature = payload.temperature,
             top_p = payload.top_p,
-            max_tokens = payload.max_tokens,
+            # Honor max_completion_tokens when max_tokens is absent, so a
+            # provider-routed request capped only by the newer field still gets
+            # a limit instead of falling back to the provider default.
+            max_tokens = (
+                payload.max_tokens
+                if payload.max_tokens is not None
+                else payload.max_completion_tokens
+            ),
             presence_penalty = payload.presence_penalty,
             top_k = _top_k_explicit,
             enable_thinking = payload.enable_thinking,
