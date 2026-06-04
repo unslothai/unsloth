@@ -602,6 +602,41 @@ function getToolPartReplayMetadata(
   };
 }
 
+type ToolReplayProvenance = {
+  source?: string;
+  [key: string]: unknown;
+};
+
+function getToolReplayProvenance(
+  part: ToolCallMessagePart,
+): ToolReplayProvenance | null {
+  const provenance = (part as { provenance?: unknown }).provenance;
+  if (
+    !provenance ||
+    typeof provenance !== "object" ||
+    Array.isArray(provenance)
+  ) {
+    return null;
+  }
+  return provenance as ToolReplayProvenance;
+}
+
+function hasToolReplayResult(part: ToolCallMessagePart): boolean {
+  const result = (part as { result?: unknown }).result;
+  return result !== undefined && result !== null;
+}
+
+function shouldFlushCompletedLocalToolPair(part: ToolCallMessagePart): boolean {
+  const provenance = getToolReplayProvenance(part);
+  if (provenance?.source !== "local") {
+    return false;
+  }
+  if (getToolPartReplayMetadata(part).isServerSideBuiltin) {
+    return false;
+  }
+  return hasToolReplayResult(part);
+}
+
 function serializeAssistantToolCallPart(
   part: ToolCallMessagePart,
 ): SerializedToolCall | null {
@@ -816,9 +851,18 @@ function serializeAssistantReplayMessages(
         continue;
       }
 
+      const flushLocalPair = shouldFlushCompletedLocalToolPair(toolPart);
+      if (flushLocalPair && pendingToolCalls.length > 0) {
+        flushAssistantAndToolResults();
+      }
+
       pendingToolCalls.push(toolCall);
       if (toolResult) {
         pendingToolResults.push(toolResult);
+      }
+
+      if (flushLocalPair) {
+        flushAssistantAndToolResults();
       }
     }
   }
