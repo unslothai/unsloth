@@ -262,6 +262,12 @@ def _inject_local_structured_response_format(
             "type": "json_schema",
             "schema": output_format,
         }
+        # The OpenAI chat endpoint now returns raw JSON by default for
+        # response_format requests (spec compliance for public clients). This
+        # internal opt-in flag rides through the OpenAI SDK's extra_body
+        # passthrough alongside response_format and re-enables the ```json
+        # markdown fence that data_designer's structured-output parser expects.
+        extra_body["_unsloth_guided_fence"] = True
         params["extra_body"] = extra_body
         new_configs.append(clone)
         column["model_alias"] = clone_alias

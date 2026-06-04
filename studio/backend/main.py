@@ -161,6 +161,7 @@ import hashlib
 import mimetypes
 import re as _re
 import shutil
+import uuid
 import warnings
 from contextlib import asynccontextmanager
 from importlib.metadata import PackageNotFoundError, version as package_version
@@ -261,6 +262,7 @@ from utils.update_status import (
     get_studio_update_status,
 )
 from utils.studio_version import get_studio_version
+from utils.api_errors import install_api_error_handlers
 
 
 def get_unsloth_version() -> str:
@@ -746,6 +748,41 @@ app.add_middleware(
     allow_headers = ["*"],
 )
 
+
+# Attach a request id to every response so OpenAI/Anthropic SDK clients can
+# surface it (OpenAI reads `x-request-id`; Anthropic reads `request-id` /
+# `anthropic-request-id`). Implemented as a pure ASGI middleware that injects
+# the headers into the `http.response.start` message — this never buffers or
+# wraps the response body, so SSE streaming flushes incrementally (unlike a
+# BaseHTTPMiddleware, which can stall long-lived streams).
+class RequestIdMiddleware:
+    _HEADERS = (b"x-request-id", b"request-id", b"anthropic-request-id")
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        rid = f"req_{uuid.uuid4().hex}".encode()
+
+        async def _send(message):
+            if message["type"] == "http.response.start":
+                headers = message.setdefault("headers", [])
+                present = {k.lower() for k, _ in headers}
+                for name in self._HEADERS:
+                    if name not in present:
+                        headers.append((name, rid))
+            await send(message)
+
+        await self.app(scope, receive, _send)
+
+
+app.add_middleware(RequestIdMiddleware)
+
+
 # ============ Register API Routes ============
 
 # Register routers
@@ -771,6 +808,10 @@ app.include_router(export_router, prefix = "/api/export", tags = ["export"])
 app.include_router(
     training_history_router, prefix = "/api/train", tags = ["training-history"]
 )
+
+# Re-wrap client-error responses on the /v1/* surface into OpenAI/Anthropic
+# error envelopes; non-/v1 paths keep FastAPI's default {"detail": ...} shape.
+install_api_error_handlers(app)
 
 
 # ============ Health and System Endpoints ============
@@ -1098,8 +1139,12 @@ def setup_frontend(app: FastAPI, build_path: Path):
 
     @app.get("/{full_path:path}")
     async def serve_frontend(request: Request, full_path: str):
+        # Unknown API paths: raise a real 404 so the api_errors handlers can
+        # render the correct envelope for /v1/* (and {"detail":...} for /api/*).
+        # This handler only sees paths NOT matched by a real route. The full
+        # request path is "/" + full_path.
         if full_path in {"api", "v1"} or full_path.startswith(("api/", "v1/")):
-            return {"error": "API endpoint not found"}
+            raise HTTPException(status_code = 404, detail = "API endpoint not found")
 
         file_path = (build_path / full_path).resolve()
 

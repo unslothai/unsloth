@@ -4444,6 +4444,7 @@ class LlamaCppBackend:
         _stream_done = False
         _metadata_usage = None
         _metadata_timings = None
+        _metadata_finish_reason = None
 
         try:
             # _stream_with_retry uses a 120 s read timeout so prefill
@@ -4512,6 +4513,9 @@ class LlamaCppBackend:
                                 choices = data.get("choices", [])
                                 if choices:
                                     delta = choices[0].get("delta", {})
+                                    _fr = choices[0].get("finish_reason")
+                                    if _fr:
+                                        _metadata_finish_reason = _fr
 
                                     # Handle reasoning/thinking tokens
                                     # llama-server sends these as "reasoning_content"
@@ -4539,7 +4543,7 @@ class LlamaCppBackend:
                                 )
                         if _stream_done:
                             break  # exit outer for
-                    if _metadata_usage or _metadata_timings:
+                    if _metadata_usage or _metadata_timings or _metadata_finish_reason:
                         _metadata_usage = _backfill_usage_from_timings(
                             _metadata_usage, _metadata_timings
                         )
@@ -4547,6 +4551,7 @@ class LlamaCppBackend:
                             "type": "metadata",
                             "usage": _metadata_usage,
                             "timings": _metadata_timings,
+                            "finish_reason": _metadata_finish_reason,
                         }
 
         except httpx.ConnectError:
@@ -4690,6 +4695,7 @@ class LlamaCppBackend:
                 has_structured_tc = False
                 _iter_usage = None
                 _iter_timings = None
+                _iter_finish_reason = None
                 _stream_done = False
                 _last_emitted = ""
                 provisional_render_html_tool_call_ids = set()
@@ -4767,6 +4773,9 @@ class LlamaCppBackend:
                                         continue
 
                                     delta = choices[0].get("delta", {})
+                                    _fr = choices[0].get("finish_reason")
+                                    if _fr:
+                                        _iter_finish_reason = _fr
 
                                     # ── Structured tool_calls ──
                                     tc_deltas = delta.get("tool_calls")
@@ -5081,6 +5090,7 @@ class LlamaCppBackend:
                                     "total_tokens": _fp + _tc,
                                 },
                                 "timings": _mt,
+                                "finish_reason": _iter_finish_reason,
                             }
                         return
 
@@ -5174,6 +5184,7 @@ class LlamaCppBackend:
                                     "total_tokens": _fp + _tc,
                                 },
                                 "timings": _mt,
+                                "finish_reason": _iter_finish_reason,
                             }
                         return
 
@@ -5412,6 +5423,7 @@ class LlamaCppBackend:
         reasoning_text = ""
         _metadata_usage = None
         _metadata_timings = None
+        _metadata_finish_reason = None
         _stream_done = False
 
         try:
@@ -5476,6 +5488,9 @@ class LlamaCppBackend:
                                 choices = chunk_data.get("choices", [])
                                 if choices:
                                     delta = choices[0].get("delta", {})
+                                    _fr = choices[0].get("finish_reason")
+                                    if _fr:
+                                        _metadata_finish_reason = _fr
 
                                     reasoning = delta.get("reasoning_content", "")
                                     if reasoning:
@@ -5537,6 +5552,7 @@ class LlamaCppBackend:
                                 "total_tokens": _final_prompt + _total_completion,
                             },
                             "timings": _merged_timings,
+                            "finish_reason": _metadata_finish_reason,
                         }
 
         except httpx.ConnectError:
@@ -5545,6 +5561,96 @@ class LlamaCppBackend:
             if cancel_event is not None and cancel_event.is_set():
                 return
             raise
+
+    # ── Prompt token counting ──────────────────────────────────
+
+    def count_chat_tokens(self, messages, system=None, tools=None) -> int:
+        """Best-effort count of prompt tokens for a chat request, using the loaded
+        model's tokenizer via llama-server. Returns 0 if it cannot be determined."""
+        if not self.is_loaded:
+            return 0
+
+        def _block_text(content) -> str:
+            if isinstance(content, str):
+                return content
+            if isinstance(content, list):
+                parts = []
+                for block in content:
+                    if isinstance(block, dict):
+                        if block.get("type") == "text" and isinstance(
+                            block.get("text"), str
+                        ):
+                            parts.append(block["text"])
+                        elif isinstance(block.get("text"), str):
+                            parts.append(block["text"])
+                    elif isinstance(block, str):
+                        parts.append(block)
+                return "".join(parts)
+            return ""
+
+        # Normalize system into a leading message / plain text.
+        system_text = ""
+        if isinstance(system, str):
+            system_text = system
+        elif isinstance(system, list):
+            system_text = _block_text(system)
+
+        try:
+            _auth_headers = (
+                {"Authorization": f"Bearer {self._api_key}"} if self._api_key else None
+            )
+            with httpx.Client(timeout = 10, headers = _auth_headers) as client:
+
+                def _tokenize(text: str) -> int:
+                    r = client.post(
+                        f"{self.base_url}/tokenize",
+                        json = {"content": text, "add_special": True},
+                    )
+                    if r.status_code != 200:
+                        return 0
+                    return len(r.json().get("tokens", []))
+
+                # 1. Try /apply-template to render the real chat prompt.
+                template_messages = list(messages) if messages else []
+                if system_text:
+                    template_messages = [
+                        {"role": "system", "content": system_text}
+                    ] + template_messages
+                try:
+                    # llama-server's /apply-template renders tool declarations
+                    # into the prompt when ``tools`` is supplied, so pass them
+                    # through — otherwise tool-schema tokens go uncounted.
+                    template_body = {"messages": template_messages}
+                    if tools:
+                        template_body["tools"] = tools
+                    resp = client.post(
+                        f"{self.base_url}/apply-template",
+                        json = template_body,
+                    )
+                    if resp.status_code == 200:
+                        prompt = resp.json().get("prompt", "")
+                        if isinstance(prompt, str):
+                            return _tokenize(prompt)
+                except Exception:
+                    pass
+
+                # 2. Fallback: concatenate plain text and tokenize. Append a
+                # serialized form of the tools so they still contribute to the
+                # count when /apply-template is unavailable.
+                parts = []
+                if system_text:
+                    parts.append(system_text)
+                for msg in (messages or []):
+                    if isinstance(msg, dict):
+                        parts.append(_block_text(msg.get("content", "")))
+                if tools:
+                    try:
+                        parts.append(json.dumps(tools, ensure_ascii = False))
+                    except Exception:
+                        pass
+                return _tokenize("\n".join(p for p in parts if p))
+        except Exception:
+            return 0
 
     # ── TTS support ────────────────────────────────────────────
 
