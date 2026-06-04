@@ -1698,6 +1698,17 @@ shell.Run cmd, 0, False
                     # (item args unused for this event).
                     [UnslothShell.Notify]::SHChangeNotify(0x08000000, 0, $null, [System.IntPtr]::Zero)
                 } catch {}
+                # Prime the shell system image list NOW so Desktop + Start Menu extract the real
+                # icon immediately. A lazy first-paint extraction that misses (icon not yet flushed,
+                # cache just cleared) is what gets cached as a blank; SHGFI_SYSICONINDEX forces the
+                # extraction here, while the .ico is known-present. (WoA path only; both views draw
+                # from this one per-session list.)
+                try {
+                    if (-not ("UnslothShell.IconPrime" -as [type])) {
+                        Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; namespace UnslothShell { public class IconPrime { [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)] struct FI { public IntPtr h; public int i; public uint a; [MarshalAs(UnmanagedType.ByValTStr, SizeConst=260)] public string n; [MarshalAs(UnmanagedType.ByValTStr, SizeConst=80)] public string t; } [DllImport("shell32.dll", CharSet=CharSet.Unicode)] static extern IntPtr SHGetFileInfo(string p, uint a, ref FI i, uint cb, uint f); public static void Prime(string path){ FI fi=new FI(); SHGetFileInfo(path,0,ref fi,(uint)Marshal.SizeOf(fi),0x4000); } } }'
+                    }
+                    foreach ($lnk in $lnks) { try { [UnslothShell.IconPrime]::Prime($lnk) } catch {} }
+                } catch {}
             } catch {
                 substep "(could not create shortcuts: $($_.Exception.Message))" "Yellow"
             }
