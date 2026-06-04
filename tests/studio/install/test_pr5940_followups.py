@@ -34,6 +34,7 @@ _SPEC.loader.exec_module(prebuilt)
 
 _INSTALL_PS1 = PACKAGE_ROOT / "install.ps1"
 _SETUP_PS1 = PACKAGE_ROOT / "studio" / "setup.ps1"
+_INSTALL_SH = PACKAGE_ROOT / "install.sh"
 
 
 # ── _hf_resolve_url_parts ────────────────────────────────────────────────────
@@ -155,6 +156,51 @@ def test_radeon_8060s_resolves_to_gfx1151():
     name = "AMD Radeon(TM) 8060S Graphics"
     matched = next((arch for pattern, arch in rows if re.search(pattern, name)), None)
     assert matched == "gfx1151"
+
+
+def _sh_name_arch_rows(text):
+    """Parse install.sh's `case "$_gpu_disp_mkt" in ... ) _gpu_disp_gfx="gfxNNNN"`
+    name->arch table into [(substr_tokens, arch), ...] preserving order."""
+    rows = []
+    for line in text.splitlines():
+        m = re.search(r'_gpu_disp_gfx="(gfx[0-9a-z]+)"', line)
+        if not m or "*\"" not in line:
+            continue
+        tokens = re.findall(r'\*"([^"]+)"\*', line)
+        if tokens:
+            rows.append((tokens, m.group(1)))
+    return rows
+
+
+def _sh_resolve(rows, name):
+    for tokens, arch in rows:
+        if any(tok in name for tok in tokens):  # bash *"X"* == substring
+            return arch
+    return None
+
+
+def test_install_sh_name_arch_agrees_with_ps_for_strix_and_non_amd():
+    """The bash install.sh name->arch table must agree with the PowerShell
+    source-of-truth for the Strix Halo (gfx1151) vs Strix Point (gfx1150)
+    split, and must never misclassify NVIDIA/Intel as an AMD gfx."""
+    sh_rows = _sh_name_arch_rows(_INSTALL_SH.read_text(encoding = "utf-8"))
+    ps_rows = _ps_name_arch_rows(_INSTALL_PS1.read_text(encoding = "utf-8"))
+    assert sh_rows, "no name->arch case table found in install.sh"
+    cases = {
+        "AMD Radeon(TM) 8060S Graphics": "gfx1151",  # Strix Halo
+        "AMD Ryzen AI Max+ PRO 395 w/ Radeon 8060S": "gfx1151",
+        "AMD Radeon 890M Graphics": "gfx1150",  # Strix Point (NOT gfx1151)
+        "AMD Ryzen AI 9 HX 370 w/ Radeon 890M": "gfx1150",
+        "AMD Radeon RX 7700S": "gfx1102",
+        "NVIDIA GeForce RTX 4090": None,
+        "Intel(R) Arc A770 Graphics": None,
+    }
+    for name, expect in cases.items():
+        sh = _sh_resolve(sh_rows, name)
+        assert sh == expect, f"install.sh: {name!r} -> {sh!r}, expected {expect!r}"
+        if expect is not None:  # cross-check bash agrees with the PowerShell table
+            ps = next((a for p, a in ps_rows if re.search(p, name)), None)
+            assert sh == ps, f"install.sh/install.ps1 drift for {name!r}: {sh!r} vs {ps!r}"
 
 
 # ── amd-smi gating (DiskPart UAC-prompt avoidance) ───────────────────────────

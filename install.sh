@@ -2236,8 +2236,8 @@ elif case "$TORCH_INDEX_URL" in */rocm*|*/gfx*) true ;; *) false ;; esac; then
         case "$_gpu_disp_mkt" in
             *"9070 XT"*|*9080*)                                                                            _gpu_disp_gfx="gfx1201" ;;  # RDNA 4
             *9070*|*9060*)                                                                                 _gpu_disp_gfx="gfx1200" ;;  # RDNA 4
-            *"8060S"*|*"8050S"*|*"8040S"*|*"890M"*|*"Strix Halo"*|*"Ryzen AI Max"*|*"AI Max"*|*"HX 37"*|*"HX 38"*|*"AI 9 HX"*) _gpu_disp_gfx="gfx1151" ;;  # RDNA 3.5 (Strix Halo / Radeon 8000S iGPU)
-            *"880M"*|*"860M"*|*"840M"*|*"Strix Point"*|*"Krackan"*|*"AI 9 36"*|*"AI 7 35"*|*"AI 5 34"*|*"AI 7 PRO 35"*|*"AI 5 33"*) _gpu_disp_gfx="gfx1150" ;;  # RDNA 3.5 (Strix/Krackan Point)
+            *"8060S"*|*"8050S"*|*"8040S"*|*"Strix Halo"*|*"Ryzen AI Max"*|*"AI Max"*) _gpu_disp_gfx="gfx1151" ;;  # RDNA 3.5 (Strix Halo: Radeon 8060S/8050S/8040S iGPU, Ryzen AI Max+)
+            *"890M"*|*"880M"*|*"860M"*|*"840M"*|*"Strix Point"*|*"Krackan"*|*"HX 37"*|*"AI 9 HX"*|*"AI 9 36"*|*"AI 7 35"*|*"AI 5 34"*|*"AI 7 PRO 35"*|*"AI 5 33"*) _gpu_disp_gfx="gfx1150" ;;  # RDNA 3.5 (Strix/Krackan Point: Radeon 890M/880M iGPU, Ryzen AI 9 HX 370/375)
             *"RX 7600"*|*"RX 7700S"*|*"RX 7650"*|*"PRO W7600"*|*"PRO W7500"*|*"PRO V710"*)                  _gpu_disp_gfx="gfx1102" ;;  # RDNA 3 (Navi 33)
             *"RX 7900"*|*"RX 7800"*|*"RX 7700"*|*"PRO W7900"*|*"PRO W7800"*|*"PRO W7700"*)                  _gpu_disp_gfx="gfx1100" ;;  # RDNA 3 desktop / workstation (Navi 31)
             *"780M"*|*"760M"*|*"740M"*|*"Phoenix"*|*"Hawk Point"*|*"Z1 Extreme"*|*"Z2 Extreme"*)            _gpu_disp_gfx="gfx1103" ;;  # RDNA 3 iGPU (Phoenix / Hawk Point)
