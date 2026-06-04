@@ -344,7 +344,9 @@ async def lifespan(app: FastAPI):
         if _caps.get("found") and not _caps.get("supports_mtp"):
             _msg = (
                 "llama.cpp prebuilt lacks MTP support "
-                "(--spec-type mtp/draft-mtp). Run `unsloth studio update`. "
+                "(--spec-type mtp/draft-mtp). Update by running "
+                "curl -fsSL https://unsloth.ai/install.sh | sh (macOS/Linux) or "
+                "irm https://unsloth.ai/install.ps1 | iex (Windows). "
                 "MTP GGUFs will load without speculative decoding."
             )
             _log.warning(_msg)

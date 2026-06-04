@@ -320,11 +320,6 @@ export const en = {
           "Studio could not detect how it was installed. Check how you installed Studio first, then choose the matching update path.",
         curlOrPypi: "For curl or PyPI installs, run:",
         updateCommand: "update command",
-        localCheckout:
-          "For local checkout installs, update from that checkout instead and use the local update command:",
-        fallbackInstruction:
-          "If that fails or unsloth studio update is unavailable, run:",
-        fallbackCommand: "fallback command",
       },
     },
   },

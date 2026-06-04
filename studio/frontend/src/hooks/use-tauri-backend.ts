@@ -71,8 +71,8 @@ function externalConflictMessage(preflight: DesktopPreflightResult) {
   }
 
   return preflight.port
-    ? `A Studio server for this install is already running from a terminal on port ${preflight.port}. Stop that server, or run \`unsloth studio update\` from that terminal before using the desktop app.`
-    : "A Studio server for this install is already running from a terminal. Stop that server, or run `unsloth studio update` from that terminal before using the desktop app.";
+    ? `A Studio server for this install is already running from a terminal on port ${preflight.port}. Stop that server, or update by running curl -fsSL https://unsloth.ai/install.sh | sh (macOS/Linux) or irm https://unsloth.ai/install.ps1 | iex (Windows) from that terminal before using the desktop app.`
+    : "A Studio server for this install is already running from a terminal. Stop that server, or update by running curl -fsSL https://unsloth.ai/install.sh | sh (macOS/Linux) or irm https://unsloth.ai/install.ps1 | iex (Windows) from that terminal before using the desktop app.";
 }
 
 async function waitForManagedServerReady(
@@ -248,8 +248,8 @@ export function useTauriBackend() {
           } else {
             setBackendError(
               preflight.disposition === "owned_stale"
-                ? "Desktop-owned Studio backend is too old for this desktop app. Run `unsloth studio update`, then restart Studio."
-                : "Managed Studio install is too old. Run `unsloth studio update`.",
+                ? "Desktop-owned Studio backend is too old for this desktop app. Update by running curl -fsSL https://unsloth.ai/install.sh | sh (macOS/Linux) or irm https://unsloth.ai/install.ps1 | iex (Windows), then restart Studio."
+                : "Managed Studio install is too old. Update by running curl -fsSL https://unsloth.ai/install.sh | sh (macOS/Linux) or irm https://unsloth.ai/install.ps1 | iex (Windows).",
             );
           }
           return;

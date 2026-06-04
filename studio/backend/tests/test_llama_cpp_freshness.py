@@ -317,7 +317,8 @@ def test_format_stale_warning_contains_actionable_command():
     assert "b9190" in msg
     assert "b9300" in msg
     assert "5 days" in msg
-    assert "unsloth studio update" in msg
+    assert "install.sh" in msg
+    assert "install.ps1" in msg
 
 
 def test_format_stale_warning_singular_day():

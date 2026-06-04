@@ -233,8 +233,9 @@ def format_stale_warning(info: dict) -> str:
     age_str = f"{age} day{'s' if age != 1 else ''}" if age is not None else "some time"
     return (
         f"llama.cpp prebuilt is {age_str} behind: installed "
-        f"{installed}, latest {latest}. Run `unsloth studio update` "
-        f"to refresh."
+        f"{installed}, latest {latest}. Update to refresh by running "
+        f"curl -fsSL https://unsloth.ai/install.sh | sh (macOS/Linux) or "
+        f"irm https://unsloth.ai/install.ps1 | iex (Windows)."
     )
 
 

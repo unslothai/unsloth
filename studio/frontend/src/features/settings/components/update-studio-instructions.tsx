@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { useT } from "@/i18n";
+import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { cn } from "@/lib/utils";
 import { Copy01Icon, Tick02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -10,13 +10,9 @@ import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import type { ReactElement } from "react";
 import { useEffect, useRef, useState } from "react";
 
-const STUDIO_UPDATE_CMD = "unsloth studio update";
-const STUDIO_UPDATE_FALLBACK_UNIX_CMD =
-  "curl -fsSL https://unsloth.ai/install.sh | sh";
-const STUDIO_UPDATE_FALLBACK_WINDOWS_CMD =
-  "irm https://unsloth.ai/install.ps1 | iex";
+const STUDIO_UPDATE_UNIX_CMD = "curl -fsSL https://unsloth.ai/install.sh | sh";
+const STUDIO_UPDATE_WINDOWS_CMD = "irm https://unsloth.ai/install.ps1 | iex";
 const STUDIO_LOCAL_PULL_CMD = "git pull --ff-only";
-const STUDIO_LOCAL_UPDATE_CMD = "unsloth studio update --local";
 const STUDIO_LOCAL_FALLBACK_UNIX_CMD = "./install.sh --local";
 const STUDIO_LOCAL_FALLBACK_WINDOWS_CMD = ".\\install.ps1 --local";
 
@@ -145,6 +141,9 @@ export function UpdateStudioInstructions({
   const shell = shellOverride ?? defaultShell;
   const prefersReducedMotion = useReducedMotion();
   const windows = shell === "windows";
+  const updateCmd = windows
+    ? STUDIO_UPDATE_WINDOWS_CMD
+    : STUDIO_UPDATE_UNIX_CMD;
   const localInstallSource = isLocalInstallSource(installSource);
   const checkoutInstallSource =
     installSource === "editable" || installSource === "local_repo";
@@ -224,10 +223,20 @@ export function UpdateStudioInstructions({
                 command={STUDIO_LOCAL_PULL_CMD}
                 copyLabel={t("settings.about.update.gitPullCommand")}
               />
-              <CopyableCommand
-                command={STUDIO_LOCAL_UPDATE_CMD}
-                copyLabel={t("settings.about.update.localUpdateCommand")}
-              />
+              <AnimatePresence mode="wait" initial={false}>
+                <motion.div
+                  key={`local-update-${shell}`}
+                  initial={fadeInitial}
+                  animate={fadeAnimate}
+                  exit={fadeExit}
+                  transition={fadeTransition}
+                >
+                  <CopyableCommand
+                    command={updateCmd}
+                    copyLabel={t("settings.about.update.localUpdateCommand")}
+                  />
+                </motion.div>
+              </AnimatePresence>
               <p className="text-xs text-muted-foreground leading-relaxed">
                 {t("settings.about.update.localInstallerFallback")}
               </p>
@@ -291,17 +300,20 @@ export function UpdateStudioInstructions({
           <p className="text-xs text-muted-foreground leading-relaxed">
             {t("settings.about.update.curlOrPypi")}
           </p>
-          <CopyableCommand
-            command={STUDIO_UPDATE_CMD}
-            copyLabel={t("settings.about.update.updateCommand")}
-          />
-          <p className="text-xs text-muted-foreground leading-relaxed">
-            {t("settings.about.update.localCheckout")}
-          </p>
-          <CopyableCommand
-            command={STUDIO_LOCAL_UPDATE_CMD}
-            copyLabel={t("settings.about.update.localUpdateCommand")}
-          />
+          <AnimatePresence mode="wait" initial={false}>
+            <motion.div
+              key={`unknown-update-${shell}`}
+              initial={fadeInitial}
+              animate={fadeAnimate}
+              exit={fadeExit}
+              transition={fadeTransition}
+            >
+              <CopyableCommand
+                command={updateCmd}
+                copyLabel={t("settings.about.update.updateCommand")}
+              />
+            </motion.div>
+          </AnimatePresence>
           <p className="text-xs text-muted-foreground leading-relaxed">
             {t("settings.about.update.restartAfterUpdate")}
           </p>
@@ -320,28 +332,17 @@ export function UpdateStudioInstructions({
               {getStudioUpdateInstructionLine(shell, t)}
             </motion.p>
           </AnimatePresence>
-          <CopyableCommand
-            command={STUDIO_UPDATE_CMD}
-            copyLabel={t("settings.about.update.updateCommand")}
-          />
-          <p className="text-xs text-muted-foreground leading-relaxed">
-            {t("settings.about.update.fallbackInstruction")}
-          </p>
           <AnimatePresence mode="wait" initial={false}>
             <motion.div
-              key={`fallback-${shell}`}
+              key={`update-${shell}`}
               initial={fadeInitial}
               animate={fadeAnimate}
               exit={fadeExit}
               transition={fadeTransition}
             >
               <CopyableCommand
-                command={
-                  windows
-                    ? STUDIO_UPDATE_FALLBACK_WINDOWS_CMD
-                    : STUDIO_UPDATE_FALLBACK_UNIX_CMD
-                }
-                copyLabel={t("settings.about.update.fallbackCommand")}
+                command={updateCmd}
+                copyLabel={t("settings.about.update.updateCommand")}
               />
             </motion.div>
           </AnimatePresence>

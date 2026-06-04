@@ -102,7 +102,7 @@ export function UpdateBanner({
                     : isManualLinuxPackage
                       ? "Open the GitHub release page to install the Linux package"
                       : isExternalServer
-                        ? "Run `unsloth studio update` from your terminal"
+                        ? "To update, run curl -fsSL https://unsloth.ai/install.sh | sh (macOS/Linux) or irm https://unsloth.ai/install.ps1 | iex (Windows) from your terminal"
                         : "A new app update is available"}
                 </p>
               </div>

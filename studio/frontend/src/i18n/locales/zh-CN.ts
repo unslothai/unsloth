@@ -300,11 +300,6 @@ export const zhCN = {
           "Studio 无法检测安装方式。请先确认你如何安装 Studio，然后选择匹配的更新方式。",
         curlOrPypi: "对于 curl 或 PyPI 安装，请运行：",
         updateCommand: "更新命令",
-        localCheckout:
-          "对于本地 checkout 安装，请改为从该 checkout 更新并使用本地更新命令：",
-        fallbackInstruction:
-          "如果失败，或 unsloth studio update 不可用，请运行：",
-        fallbackCommand: "备用命令",
       },
     },
   },
