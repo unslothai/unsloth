@@ -613,6 +613,108 @@ def test_diffusion_memory_planner_safetensors_low_vram_selects_bnb_nf4():
     assert plan.selected_safetensors_quantization_components == ("transformer", "unet")
 
 
+def test_diffusion_memory_planner_avoids_cpu_offload_on_unified_memory():
+    from core.inference.diffusion_memory import (
+        DiffusionWorkloadEstimate,
+        HardwareMemorySnapshot,
+        MemoryDeviceSnapshot,
+        ModelComponentEstimate,
+        ModelMemoryEstimate,
+        select_diffusion_memory_plan,
+    )
+
+    plan = select_diffusion_memory_plan(
+        requested_mode = "low_vram",
+        explicit_offload_policy = None,
+        explicit_safetensors_quantization = None,
+        explicit_safetensors_quantization_components = None,
+        model = ModelMemoryEstimate(
+            components = (
+                ModelComponentEstimate(
+                    name = "transformer",
+                    format = "gguf",
+                    quantization = "Q4_K_M",
+                    storage_mib = 12_000,
+                    packed_device_mib = 12_000,
+                    dense_device_mib = 48_000,
+                ),
+            ),
+            confidence = "high",
+        ),
+        workload = DiffusionWorkloadEstimate(
+            media_kind = "image",
+            family = "flux.2-klein",
+            width = 1024,
+            height = 1024,
+        ),
+        hardware = HardwareMemorySnapshot(
+            backend = "mps",
+            devices = (
+                MemoryDeviceSnapshot(
+                    backend = "mps",
+                    memory_kind = "unified_memory",
+                    total_mib = 64_000,
+                    free_mib = 48_000,
+                ),
+            ),
+        ),
+    )
+
+    assert plan.selected_mode == "fast"
+    assert plan.selected_offload_policy == "none"
+    assert any("unified/system memory" in warning for warning in plan.warnings)
+
+
+def test_diffusion_memory_planner_safetensors_resident_policy_is_explicit():
+    from core.inference.diffusion_memory import (
+        DiffusionWorkloadEstimate,
+        HardwareMemorySnapshot,
+        MemoryDeviceSnapshot,
+        ModelComponentEstimate,
+        ModelMemoryEstimate,
+        select_diffusion_memory_plan,
+    )
+
+    plan = select_diffusion_memory_plan(
+        requested_mode = "auto",
+        explicit_offload_policy = None,
+        explicit_safetensors_quantization = None,
+        explicit_safetensors_quantization_components = None,
+        model = ModelMemoryEstimate(
+            components = (
+                ModelComponentEstimate(
+                    name = "transformer",
+                    format = "safetensors",
+                    storage_mib = 24_000,
+                    packed_device_mib = 24_000,
+                    dense_device_mib = 24_000,
+                ),
+            ),
+            confidence = "high",
+        ),
+        workload = DiffusionWorkloadEstimate(
+            media_kind = "image",
+            family = "flux.2",
+            width = 1024,
+            height = 1024,
+        ),
+        hardware = HardwareMemorySnapshot(
+            backend = "cuda",
+            devices = (
+                MemoryDeviceSnapshot(
+                    backend = "cuda",
+                    memory_kind = "discrete_vram",
+                    total_mib = 180_000,
+                    free_mib = 160_000,
+                ),
+            ),
+        ),
+    )
+
+    assert plan.selected_mode == "fast"
+    assert plan.selected_offload_policy == "none"
+
+
 def test_attention_fallback_policy_matches_studio_order():
     from core.inference.attention_policy import (
         attention_fallback_order,
@@ -2499,6 +2601,10 @@ def test_resolve_diffusion_load_plan_expands_preset_component_swap():
         transformer_quant = "Q4_K_M",
         text_encoder_gguf_filename = "qwen3-4b-BF16.gguf",
         require_loadable = True,
+        memory_mode = "auto",
+        width = 1024,
+        height = 1024,
+        batch_size = 1,
     )
 
     assert plan["ready_to_load"] is True
@@ -2514,7 +2620,10 @@ def test_resolve_diffusion_load_plan_expands_preset_component_swap():
         "unsloth/Qwen3-4B-GGUF"
     )
     assert plan["load_kwargs"]["family_override"] == "flux.2-klein"
-    assert plan["load_kwargs"]["offload_policy"] == "balanced"
+    assert plan["memory_plan"]["requested_mode"] == "auto"
+    assert plan["load_kwargs"]["offload_policy"] == plan["memory_plan"][
+        "selected_offload_policy"
+    ]
     assert plan["sampling_defaults"]["num_inference_steps"] == 50
     assert plan["sampling_defaults"]["guidance_scale"] == 4.0
     assert plan["component_sources"]["transformer"] == {
@@ -2534,36 +2643,92 @@ def test_resolve_diffusion_load_plan_requires_quant_for_preset_load():
         )
 
 
-def test_resolve_diffusion_load_plan_uses_flux2_dev_speed_policy():
+def test_resolve_diffusion_load_plan_manual_offload_policy_preserved():
     from core.inference.diffusion import resolve_diffusion_load_plan
 
     plan = resolve_diffusion_load_plan(
         preset_id = "flux.2-dev",
         transformer_quant = "Q4_K_M",
+        offload_policy = "less_aggressive",
     )
 
     assert plan["load_kwargs"]["offload_policy"] == "less_aggressive"
+    assert plan["memory_plan"]["requested_mode"] == "manual"
+    assert plan["memory_plan"]["selected_mode"] == "manual"
 
 
-def test_resolve_diffusion_load_plan_uses_fast_image_gguf_policies():
+def test_resolve_diffusion_load_plan_rejects_policy_with_planner_mode():
     from core.inference.diffusion import resolve_diffusion_load_plan
 
+    with pytest.raises(ValueError, match = "offload_policy can only be set"):
+        resolve_diffusion_load_plan(
+            preset_id = "flux.2-dev",
+            transformer_quant = "Q4_K_M",
+            memory_mode = "fast",
+            offload_policy = "balanced",
+        )
+
+
+def test_resolve_diffusion_load_plan_auto_uses_memory_planner(monkeypatch):
+    import core.inference.diffusion_memory as memory
+    from core.inference.diffusion import resolve_diffusion_load_plan
+
+    monkeypatch.setattr(
+        memory,
+        "snapshot_hardware_memory",
+        lambda: memory.HardwareMemorySnapshot(
+            backend = "cuda",
+            devices = (
+                memory.MemoryDeviceSnapshot(
+                    backend = "cuda",
+                    memory_kind = "discrete_vram",
+                    total_mib = 180_000,
+                    free_mib = 160_000,
+                ),
+            ),
+        ),
+    )
+
     for preset_id, quant in (
+        ("flux.2-dev", "Q4_K_M"),
         ("z-image", "Q4_K_M"),
         ("z-image-turbo", "Q4_K_M"),
         ("ernie-image", "UD-Q4_K_M"),
         ("ernie-image-turbo", "UD-Q4_K_M"),
+        ("qwen-image", "Q4_K_M"),
     ):
         plan = resolve_diffusion_load_plan(
             preset_id = preset_id,
             transformer_quant = quant,
+            width = 1024,
+            height = 1024,
+            batch_size = 1,
         )
 
-        assert plan["load_kwargs"]["offload_policy"] == "less_aggressive"
+        assert plan["memory_plan"]["requested_mode"] == "auto"
+        assert plan["memory_plan"]["selected_mode"] == "fast"
+        assert plan["load_kwargs"]["offload_policy"] == "none"
 
 
-def test_resolve_diffusion_load_plan_keeps_qwen_balanced_by_default():
+def test_resolve_diffusion_load_plan_keeps_qwen_balanced_for_low_memory(monkeypatch):
+    import core.inference.diffusion_memory as memory
     import core.inference.diffusion as d
+
+    monkeypatch.setattr(
+        memory,
+        "snapshot_hardware_memory",
+        lambda: memory.HardwareMemorySnapshot(
+            backend = "cuda",
+            devices = (
+                memory.MemoryDeviceSnapshot(
+                    backend = "cuda",
+                    memory_kind = "discrete_vram",
+                    total_mib = 32_000,
+                    free_mib = 28_000,
+                ),
+            ),
+        ),
+    )
 
     for preset_id in (
         "qwen-image",
@@ -2576,27 +2741,12 @@ def test_resolve_diffusion_load_plan_keeps_qwen_balanced_by_default():
         plan = d.resolve_diffusion_load_plan(
             preset_id = preset_id,
             transformer_quant = "Q4_K_M",
+            width = 1024,
+            height = 1024,
+            batch_size = 1,
         )
 
-        assert plan["load_kwargs"]["offload_policy"] == "balanced"
-
-
-def test_resolve_diffusion_load_plan_keeps_qwen_balanced_for_low_memory():
-    import core.inference.diffusion as d
-
-    for preset_id in (
-        "qwen-image",
-        "qwen-image-2512",
-        "qwen-image-edit",
-        "qwen-image-edit-2509",
-        "qwen-image-edit-2511",
-        "qwen-image-layered",
-    ):
-        plan = d.resolve_diffusion_load_plan(
-            preset_id = preset_id,
-            transformer_quant = "Q4_K_M",
-        )
-
+        assert plan["memory_plan"]["requested_mode"] == "auto"
         assert plan["load_kwargs"]["offload_policy"] == "balanced"
 
 

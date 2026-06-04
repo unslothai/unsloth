@@ -265,10 +265,25 @@ def memory_planner_options() -> dict[str, Any]:
             "unknown",
         ],
         "applies_when": (
-            "runtime.memory_mode is set. Existing curated/default behavior is "
-            "preserved when memory_mode is omitted."
+            "runtime.memory_mode controls planner behavior. When omitted, "
+            "Studio defaults to auto unless an explicit offload_policy makes "
+            "the request manual."
         ),
     }
+
+
+def _cuda_memory_kind(torch: Any, index: int) -> str:
+    try:
+        props = torch.cuda.get_device_properties(index)
+    except Exception:
+        return "discrete_vram"
+    for attr in ("integrated", "is_integrated"):
+        try:
+            if bool(getattr(props, attr, False)):
+                return "unified_memory"
+        except Exception:
+            pass
+    return "discrete_vram"
 
 
 def snapshot_hardware_memory() -> HardwareMemorySnapshot:
@@ -298,7 +313,7 @@ def snapshot_hardware_memory() -> HardwareMemorySnapshot:
                         device_id = f"{backend}:{index}",
                         vendor = vendor,
                         name = name,
-                        memory_kind = "discrete_vram",
+                        memory_kind = _cuda_memory_kind(torch, index),
                         total_mib = total_mib,
                         free_mib = free_mib,
                         supports_bf16 = _cuda_supports_bf16(torch, index),
@@ -440,6 +455,10 @@ def select_diffusion_memory_plan(
     reasons: list[str] = []
     warnings: list[str] = []
     device = hardware.primary_device
+    unified_or_system_memory = bool(
+        device is not None
+        and device.memory_kind in {"unified_memory", "system_memory"}
+    )
     safe_device_mib = _safe_device_budget_mib(device, hardware)
     runtime_mib = estimate_runtime_memory_mib(workload)
     base_overhead_mib = 2048 if workload.media_kind == "image" else 4096
@@ -462,6 +481,11 @@ def select_diffusion_memory_plan(
 
     if explicit_offload_policy is not None or mode == DIFFUSION_MEMORY_MODE_MANUAL:
         reasons.append("explicit offload or manual memory mode requested")
+        if explicit_offload_policy is not None and unified_or_system_memory:
+            warnings.append(
+                "explicit offload_policy was requested on unified/system memory; "
+                "device placement may ignore CPU-offload-specific savings"
+            )
         return DiffusionMemoryPlan(
             requested_mode = mode,
             selected_mode = DIFFUSION_MEMORY_MODE_MANUAL,
@@ -488,6 +512,12 @@ def select_diffusion_memory_plan(
         )
         if mode == DIFFUSION_MEMORY_MODE_LOW_VRAM:
             selected = OFFLOAD_POLICY_AGGRESSIVE
+        if unified_or_system_memory:
+            selected = OFFLOAD_POLICY_NONE
+            warnings.append(
+                "unified/system memory detected; CPU offload policies are not "
+                "selected automatically"
+            )
         return DiffusionMemoryPlan(
             requested_mode = mode,
             selected_mode = (
@@ -521,7 +551,22 @@ def select_diffusion_memory_plan(
         estimates["balanced_required_mib"] = balanced_required
         estimates["low_vram_required_mib"] = aggressive_required
 
-        if mode == DIFFUSION_MEMORY_MODE_LOW_VRAM:
+        if unified_or_system_memory:
+            reasons.append(
+                "unified/system memory detected; selecting resident GGUF execution "
+                "instead of CPU-offload policies"
+            )
+            selected_mode = DIFFUSION_MEMORY_MODE_FAST
+            selected_policy = OFFLOAD_POLICY_NONE
+            if mode in {
+                DIFFUSION_MEMORY_MODE_BALANCED,
+                DIFFUSION_MEMORY_MODE_LOW_VRAM,
+            }:
+                warnings.append(
+                    f"{mode} was requested, but CPU offload is not a useful "
+                    "memory boundary on unified/system memory"
+                )
+        elif mode == DIFFUSION_MEMORY_MODE_LOW_VRAM:
             reasons.append("low_vram requested for GGUF")
             selected_mode = DIFFUSION_MEMORY_MODE_LOW_VRAM
             selected_policy = OFFLOAD_POLICY_AGGRESSIVE
@@ -587,7 +632,27 @@ def select_diffusion_memory_plan(
     selected_components = _tuple_or_none(explicit_safetensors_quantization_components)
     selected_policy = explicit_offload_policy
 
-    if mode == DIFFUSION_MEMORY_MODE_LOW_VRAM:
+    if unified_or_system_memory:
+        reasons.append(
+            "unified/system memory detected; avoiding automatic CPU offload policy"
+        )
+        selected_mode = (
+            DIFFUSION_MEMORY_MODE_BALANCED
+            if mode == DIFFUSION_MEMORY_MODE_BALANCED
+            else DIFFUSION_MEMORY_MODE_FAST
+        )
+        selected_policy = OFFLOAD_POLICY_NONE
+        if mode == DIFFUSION_MEMORY_MODE_LOW_VRAM:
+            selected_mode = DIFFUSION_MEMORY_MODE_LOW_VRAM
+            warnings.append(
+                "low_vram requested on unified/system memory; selecting quantization "
+                "when supported instead of CPU offload"
+            )
+            if _can_select_bnb_nf4(hardware) and not selected_quant:
+                selected_quant = SAFETENSORS_QUANT_BNB_4BIT_NF4
+                selected_components = ("transformer", "unet")
+                warnings.append("selected BnB NF4 quantization to reduce memory")
+    elif mode == DIFFUSION_MEMORY_MODE_LOW_VRAM:
         reasons.append("low_vram requested for safetensors")
         selected_mode = DIFFUSION_MEMORY_MODE_LOW_VRAM
         selected_policy = OFFLOAD_POLICY_AGGRESSIVE
@@ -598,15 +663,19 @@ def select_diffusion_memory_plan(
     elif mode == DIFFUSION_MEMORY_MODE_BALANCED:
         reasons.append("balanced requested for safetensors")
         selected_mode = DIFFUSION_MEMORY_MODE_BALANCED
-        selected_policy = None if dense_required <= safe_device_mib else OFFLOAD_POLICY_AGGRESSIVE
+        selected_policy = (
+            OFFLOAD_POLICY_NONE
+            if dense_required <= safe_device_mib
+            else OFFLOAD_POLICY_AGGRESSIVE
+        )
     elif dense_required <= safe_device_mib:
         reasons.append("full safetensors resident estimate fits current device")
         selected_mode = DIFFUSION_MEMORY_MODE_FAST
-        selected_policy = None
+        selected_policy = OFFLOAD_POLICY_NONE
     elif _can_select_bnb_nf4(hardware) and bnb_required <= safe_device_mib:
         reasons.append("full safetensors estimate is tight; BnB NF4 estimate fits")
         selected_mode = DIFFUSION_MEMORY_MODE_LOW_VRAM
-        selected_policy = None
+        selected_policy = OFFLOAD_POLICY_NONE
         if not selected_quant:
             selected_quant = SAFETENSORS_QUANT_BNB_4BIT_NF4
             selected_components = ("transformer", "unet")

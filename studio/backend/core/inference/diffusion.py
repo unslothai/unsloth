@@ -64,6 +64,8 @@ from .diffusion_device import (
     resolve_diffusion_device_target,
 )
 from .diffusion_memory import (
+    DIFFUSION_MEMORY_MODE_AUTO,
+    DIFFUSION_MEMORY_MODE_MANUAL,
     DiffusionWorkloadEstimate,
     ModelMemoryEstimate,
     component_estimate_from_file_hint,
@@ -1953,6 +1955,31 @@ def _maybe_apply_diffusion_memory_plan(
     return load_kwargs, plan_payload
 
 
+def _resolve_diffusion_memory_contract(
+    *,
+    memory_mode: Optional[str],
+    offload_policy: Optional[str],
+) -> str:
+    normalized_memory_mode = normalize_memory_mode(memory_mode)
+    normalized_offload_policy = _normalize_diffusion_offload_policy(offload_policy)
+    if normalized_memory_mode is None:
+        return (
+            DIFFUSION_MEMORY_MODE_MANUAL
+            if normalized_offload_policy is not None
+            else DIFFUSION_MEMORY_MODE_AUTO
+        )
+    if (
+        normalized_memory_mode != DIFFUSION_MEMORY_MODE_MANUAL
+        and normalized_offload_policy is not None
+    ):
+        raise ValueError(
+            "offload_policy can only be set when runtime.memory_mode='manual'. "
+            "Use runtime.memory_mode='fast', 'balanced', or 'low_vram' for "
+            "planner-driven loading."
+        )
+    return normalized_memory_mode
+
+
 def resolve_diffusion_load_plan(
     *,
     preset_id: Optional[str] = None,
@@ -1997,6 +2024,10 @@ def resolve_diffusion_load_plan(
     if preset_id is None:
         if not repo_id:
             raise ValueError("repo_id is required when preset_id is not set.")
+        resolved_memory_mode = _resolve_diffusion_memory_contract(
+            memory_mode = memory_mode,
+            offload_policy = offload_policy,
+        )
         normalized_safetensors_quantization = _normalize_safetensors_quantization(
             safetensors_quantization
         )
@@ -2053,7 +2084,7 @@ def resolve_diffusion_load_plan(
         fam = _family_by_name(family_override) if family_override else None
         load_kwargs, memory_plan = _maybe_apply_diffusion_memory_plan(
             load_kwargs = load_kwargs,
-            memory_mode = memory_mode,
+            memory_mode = resolved_memory_mode,
             family = fam,
             width = width,
             height = height,
@@ -2071,6 +2102,10 @@ def resolve_diffusion_load_plan(
         }
 
     preset = _resolve_diffusion_preset(preset_id)
+    resolved_memory_mode = _resolve_diffusion_memory_contract(
+        memory_mode = memory_mode,
+        offload_policy = offload_policy,
+    )
     normalized_safetensors_quantization = _normalize_safetensors_quantization(
         safetensors_quantization
     )
@@ -2145,16 +2180,6 @@ def resolve_diffusion_load_plan(
             "loads."
         )
     defaults = _sampling_defaults_for_family(fam, base_repo_variant = preset.variant)
-    effective_offload_policy = offload_policy
-    if effective_offload_policy is None and memory_mode is None:
-        effective_offload_policy = (
-            _curated_gguf_recommended_offload_policy(
-                repo_id = planned_repo_id,
-                transformer_gguf_repo = planned_transformer_repo,
-                transformer_gguf_filename = planned_transformer_filename,
-            )
-            or preset.recommended_offload_policy
-        )
 
     load_kwargs = {
         "repo_id": planned_repo_id,
@@ -2173,7 +2198,7 @@ def resolve_diffusion_load_plan(
         "lora_scale": lora_scale,
         "lora_fuse": lora_fuse,
         "family_override": family_override or preset.family,
-        "offload_policy": effective_offload_policy,
+        "offload_policy": offload_policy,
         "safetensors_quantization": normalized_safetensors_quantization,
         "safetensors_quantization_components": (
             normalized_safetensors_quantization_components
@@ -2182,7 +2207,7 @@ def resolve_diffusion_load_plan(
     }
     load_kwargs, memory_plan = _maybe_apply_diffusion_memory_plan(
         load_kwargs = load_kwargs,
-        memory_mode = memory_mode,
+        memory_mode = resolved_memory_mode,
         family = fam,
         width = width,
         height = height,
@@ -2190,15 +2215,6 @@ def resolve_diffusion_load_plan(
         batch_size = batch_size,
         guidance_scale = guidance_scale or defaults.default_guidance_scale,
     )
-    if load_kwargs.get("offload_policy") is None:
-        load_kwargs["offload_policy"] = (
-            _curated_gguf_recommended_offload_policy(
-                repo_id = planned_repo_id,
-                transformer_gguf_repo = planned_transformer_repo,
-                transformer_gguf_filename = planned_transformer_filename,
-            )
-            or preset.recommended_offload_policy
-        )
     ready_to_load = bool(planned_transformer_filename)
     return {
         "preset": _public_diffusion_preset(preset),

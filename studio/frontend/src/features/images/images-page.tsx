@@ -307,7 +307,18 @@ export function ImagesPage() {
         text_encoder_gguf_component: textEncoderComponent,
         family,
         hf_token: hfToken.trim() || undefined,
-        offload_policy: offloadPolicy === "auto" ? null : offloadPolicy,
+        runtime: {
+          memory_mode: offloadPolicy === "auto" ? "auto" : "manual",
+          offload_policy: offloadPolicy === "auto" ? undefined : offloadPolicy,
+          attention_backend: "auto",
+          torch_compile: "auto",
+        },
+        parameters: {
+          width: resolution.w,
+          height: resolution.h,
+          batch_size: 1,
+          guidance_scale: guidance,
+        },
       });
       setStatus(next);
       toast.success("Loaded image model", { description: next.repo_id ?? undefined });
@@ -332,6 +343,8 @@ export function ImagesPage() {
     customTextEncoderGguf,
     customFamily,
     preset,
+    resolution,
+    guidance,
     hfToken,
     offloadPolicy,
     refreshStatus,

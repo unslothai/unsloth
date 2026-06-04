@@ -67,6 +67,19 @@ export interface DiffusionLoadRequest {
   hf_token?: string;
   enable_model_cpu_offload?: boolean;
   offload_policy?: DiffusionOffloadPolicy | null;
+  runtime?: {
+    memory_mode?: "auto" | "fast" | "balanced" | "low_vram" | "manual";
+    offload_policy?: DiffusionOffloadPolicy | "auto" | null;
+    attention_backend?: "auto" | "flash" | "sdpa" | "flex" | "xformers";
+    torch_compile?: "auto" | "none" | "regional" | "transformer" | "pipeline";
+  };
+  parameters?: {
+    width?: number;
+    height?: number;
+    batch_size?: number;
+    num_images?: number;
+    guidance_scale?: number;
+  };
   gguf_quantized_cpu_resident?: boolean | null;
   gguf_pin_cpu_resident?: boolean | null;
 }

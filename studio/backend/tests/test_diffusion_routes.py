@@ -191,7 +191,9 @@ class _FakeBackend:
                 "compile": {"torch_compile_available": True},
                 "memory_planner": {
                     "modes": [{"name": "auto"}, {"name": "balanced"}],
-                    "applies_when": "runtime.memory_mode is set",
+                    "applies_when": (
+                        "runtime.memory_mode controls planner behavior"
+                    ),
                 },
             },
             "attention_backend": None,
@@ -572,7 +574,36 @@ def test_load_forwards_text_encoder_gguf_fields(app_with_stub):
     )
     assert r.status_code == 200, r.text
 
-    assert stub.calls[-1] == {
+    call = stub.calls[-1]
+    assert {
+        key: call[key]
+        for key in (
+            "op",
+            "repo_id",
+            "gguf_filename",
+            "transformer_gguf_repo",
+            "transformer_gguf_filename",
+            "base_repo",
+            "text_encoder_gguf_repo",
+            "text_encoder_gguf_filename",
+            "text_encoder_gguf_component",
+            "prompt_enhancer_gguf_repo",
+            "prompt_enhancer_gguf_filename",
+            "lora_repo",
+            "lora_weight_name",
+            "lora_adapter_name",
+            "lora_scale",
+            "lora_fuse",
+            "family_override",
+            "hf_token",
+            "enable_model_cpu_offload",
+            "gguf_quantized_cpu_resident",
+            "gguf_pin_cpu_resident",
+            "safetensors_quantization",
+            "safetensors_quantization_components",
+            "ignore_public_load_pending_workload",
+        )
+    } == {
         "op": "load",
         "repo_id": "unsloth/FLUX.2-dev-GGUF",
         "gguf_filename": "flux2-dev-Q4_K_M.gguf",
@@ -592,13 +623,14 @@ def test_load_forwards_text_encoder_gguf_fields(app_with_stub):
         "family_override": None,
         "hf_token": None,
         "enable_model_cpu_offload": True,
-        "offload_policy": None,
         "gguf_quantized_cpu_resident": True,
         "gguf_pin_cpu_resident": True,
         "safetensors_quantization": None,
         "safetensors_quantization_components": None,
         "ignore_public_load_pending_workload": "diffusion",
     }
+    assert call["memory_plan"]["requested_mode"] == "auto"
+    assert call["offload_policy"] == call["memory_plan"]["selected_offload_policy"]
 
 
 def test_load_forwards_transformer_gguf_component_fields(app_with_stub):
@@ -686,6 +718,8 @@ def test_load_v2_contract_normalizes_model_components_runtime_and_adapter(app_wi
     assert call["family_override"] == "flux.2"
     assert call["enable_model_cpu_offload"] is False
     assert call["offload_policy"] == "balanced"
+    assert call["memory_plan"]["requested_mode"] == "manual"
+    assert call["memory_plan"]["selected_mode"] == "manual"
     assert call["gguf_quantized_cpu_resident"] is True
     assert call["gguf_pin_cpu_resident"] is True
     assert call["torch_compile"] == "none"
@@ -782,7 +816,10 @@ def test_load_preset_expands_to_component_swap(app_with_stub):
     assert stub.calls[-1]["text_encoder_gguf_repo"] == "unsloth/Qwen3-4B-GGUF"
     assert stub.calls[-1]["text_encoder_gguf_filename"] == "qwen3-4b-BF16.gguf"
     assert stub.calls[-1]["family_override"] == "flux.2-klein"
-    assert stub.calls[-1]["offload_policy"] == "balanced"
+    assert stub.calls[-1]["memory_plan"]["requested_mode"] == "auto"
+    assert stub.calls[-1]["offload_policy"] == stub.calls[-1]["memory_plan"][
+        "selected_offload_policy"
+    ]
 
 
 def test_load_preset_rejects_unknown_quantless_load(app_with_stub):
@@ -829,7 +866,10 @@ def test_diffusion_load_plan_allows_preset_before_quant_selection(app_with_stub)
     assert body["load_kwargs"]["repo_id"] == "black-forest-labs/FLUX.2-dev"
     assert body["load_kwargs"]["transformer_gguf_repo"] == "unsloth/FLUX.2-dev-GGUF"
     assert body["load_kwargs"]["transformer_gguf_filename"] is None
-    assert body["load_kwargs"]["offload_policy"] == "less_aggressive"
+    assert body["memory_plan"]["requested_mode"] == "auto"
+    assert body["load_kwargs"]["offload_policy"] == body["memory_plan"][
+        "selected_offload_policy"
+    ]
     assert body["preset"]["id"] == "flux.2-dev"
 
 
@@ -907,6 +947,43 @@ def test_diffusion_memory_mode_load_plan_and_load(app_with_stub):
     assert call["memory_plan"]["workload"]["width"] == 1024
 
 
+def test_diffusion_load_auto_memory_plan_and_load(app_with_stub):
+    app, stub = app_with_stub
+    c = TestClient(app)
+    payload = {
+        "preset_id": "flux.2-dev",
+        "transformer_quant": "Q4_K_M",
+        "runtime": {"memory_mode": "auto"},
+        "parameters": {"width": 1024, "height": 1024, "batch_size": 1},
+    }
+
+    load_response = c.post("/api/inference/images/load", json = payload)
+    assert load_response.status_code == 200, load_response.text
+    call = stub.calls[-1]
+    assert call["memory_plan"]["requested_mode"] == "auto"
+    assert call["offload_policy"] == call["memory_plan"]["selected_offload_policy"]
+
+
+def test_diffusion_load_rejects_offload_policy_with_planner_mode(app_with_stub):
+    app, _ = app_with_stub
+    c = TestClient(app)
+
+    r = c.post(
+        "/api/inference/images/load",
+        json = {
+            "preset_id": "flux.2-dev",
+            "transformer_quant": "Q4_K_M",
+            "runtime": {
+                "memory_mode": "fast",
+                "offload_policy": "balanced",
+            },
+        },
+    )
+
+    assert r.status_code == 400, r.text
+    assert "offload_policy can only be set" in r.json()["detail"]
+
+
 def test_load_forwards_lora_fields(app_with_stub):
     app, stub = app_with_stub
     c = TestClient(app)
@@ -964,6 +1041,8 @@ def test_load_forwards_offload_policy(app_with_stub):
     assert r.status_code == 200, r.text
 
     assert stub.calls[-1]["offload_policy"] == "balanced"
+    assert stub.calls[-1]["memory_plan"]["requested_mode"] == "manual"
+    assert stub.calls[-1]["memory_plan"]["selected_mode"] == "manual"
     assert stub.calls[-1]["enable_model_cpu_offload"] is True
     assert stub.calls[-1]["gguf_quantized_cpu_resident"] is None
     assert stub.calls[-1]["gguf_pin_cpu_resident"] is None

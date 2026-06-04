@@ -3025,67 +3025,66 @@ async def diffusion_load(
         planned_torch_compile = normalized.torch_compile
         planned_attention_backend = normalized.attention_backend
         planned_memory_plan = None
-        if payload.preset_id or normalized.memory_mode is not None:
-            try:
-                from core.inference.diffusion import resolve_diffusion_load_plan
+        try:
+            from core.inference.diffusion import resolve_diffusion_load_plan
 
-                workload_kwargs = _diffusion_load_workload_kwargs(payload)
-                load_plan = resolve_diffusion_load_plan(
-                    preset_id = payload.preset_id,
-                    repo_id = normalized.repo_id,
-                    gguf_filename = normalized.gguf_filename,
-                    transformer_gguf_repo = normalized.transformer_gguf_repo,
-                    transformer_gguf_filename = normalized.transformer_gguf_filename,
-                    transformer_quant = normalized.transformer_quant,
-                    base_repo = normalized.base_repo,
-                    text_encoder_gguf_repo = normalized.text_encoder_gguf_repo,
-                    text_encoder_gguf_filename = normalized.text_encoder_gguf_filename,
-                    text_encoder_gguf_component = normalized.text_encoder_gguf_component,
-                    prompt_enhancer_gguf_repo = normalized.prompt_enhancer_gguf_repo,
-                    prompt_enhancer_gguf_filename = normalized.prompt_enhancer_gguf_filename,
-                    lora_repo = normalized.lora_repo,
-                    lora_weight_name = normalized.lora_weight_name,
-                    lora_adapter_name = normalized.lora_adapter_name,
-                    lora_scale = normalized.lora_scale,
-                    lora_fuse = normalized.lora_fuse,
-                    family_override = normalized.family,
-                    offload_policy = normalized.offload_policy,
-                    safetensors_quantization = normalized.safetensors_quantization,
-                    safetensors_quantization_components = (
-                        normalized.safetensors_quantization_components
-                    ),
-                    attention_backend = normalized.attention_backend,
-                    memory_mode = normalized.memory_mode,
-                    **workload_kwargs,
-                    require_loadable = True,
-                )
-            except ValueError as exc:
-                raise HTTPException(status_code = 400, detail = str(exc)) from exc
-            load_kwargs = load_plan["load_kwargs"]
-            planned_repo_id = load_kwargs["repo_id"]
-            planned_gguf_filename = load_kwargs["gguf_filename"]
-            planned_transformer_gguf_repo = load_kwargs["transformer_gguf_repo"]
-            planned_transformer_gguf_filename = load_kwargs["transformer_gguf_filename"]
-            planned_base_repo = load_kwargs["base_repo"]
-            planned_text_encoder_gguf_repo = load_kwargs["text_encoder_gguf_repo"]
-            planned_text_encoder_gguf_filename = load_kwargs["text_encoder_gguf_filename"]
-            planned_text_encoder_gguf_component = load_kwargs["text_encoder_gguf_component"]
-            planned_prompt_enhancer_gguf_repo = load_kwargs["prompt_enhancer_gguf_repo"]
-            planned_prompt_enhancer_gguf_filename = load_kwargs["prompt_enhancer_gguf_filename"]
-            planned_lora_repo = load_kwargs["lora_repo"]
-            planned_lora_weight_name = load_kwargs["lora_weight_name"]
-            planned_lora_adapter_name = load_kwargs["lora_adapter_name"]
-            planned_lora_scale = load_kwargs["lora_scale"]
-            planned_lora_fuse = load_kwargs["lora_fuse"]
-            planned_family = load_kwargs["family_override"]
-            planned_offload_policy = load_kwargs["offload_policy"]
-            planned_safetensors_quantization = load_kwargs["safetensors_quantization"]
-            planned_safetensors_quantization_components = load_kwargs[
-                "safetensors_quantization_components"
-            ]
-            planned_torch_compile = normalized.torch_compile
-            planned_attention_backend = normalized.attention_backend
-            planned_memory_plan = load_kwargs.get("memory_plan")
+            workload_kwargs = _diffusion_load_workload_kwargs(payload)
+            load_plan = resolve_diffusion_load_plan(
+                preset_id = payload.preset_id,
+                repo_id = normalized.repo_id,
+                gguf_filename = normalized.gguf_filename,
+                transformer_gguf_repo = normalized.transformer_gguf_repo,
+                transformer_gguf_filename = normalized.transformer_gguf_filename,
+                transformer_quant = normalized.transformer_quant,
+                base_repo = normalized.base_repo,
+                text_encoder_gguf_repo = normalized.text_encoder_gguf_repo,
+                text_encoder_gguf_filename = normalized.text_encoder_gguf_filename,
+                text_encoder_gguf_component = normalized.text_encoder_gguf_component,
+                prompt_enhancer_gguf_repo = normalized.prompt_enhancer_gguf_repo,
+                prompt_enhancer_gguf_filename = normalized.prompt_enhancer_gguf_filename,
+                lora_repo = normalized.lora_repo,
+                lora_weight_name = normalized.lora_weight_name,
+                lora_adapter_name = normalized.lora_adapter_name,
+                lora_scale = normalized.lora_scale,
+                lora_fuse = normalized.lora_fuse,
+                family_override = normalized.family,
+                offload_policy = normalized.offload_policy,
+                safetensors_quantization = normalized.safetensors_quantization,
+                safetensors_quantization_components = (
+                    normalized.safetensors_quantization_components
+                ),
+                attention_backend = normalized.attention_backend,
+                memory_mode = normalized.memory_mode,
+                **workload_kwargs,
+                require_loadable = True,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code = 400, detail = str(exc)) from exc
+        load_kwargs = load_plan["load_kwargs"]
+        planned_repo_id = load_kwargs["repo_id"]
+        planned_gguf_filename = load_kwargs["gguf_filename"]
+        planned_transformer_gguf_repo = load_kwargs["transformer_gguf_repo"]
+        planned_transformer_gguf_filename = load_kwargs["transformer_gguf_filename"]
+        planned_base_repo = load_kwargs["base_repo"]
+        planned_text_encoder_gguf_repo = load_kwargs["text_encoder_gguf_repo"]
+        planned_text_encoder_gguf_filename = load_kwargs["text_encoder_gguf_filename"]
+        planned_text_encoder_gguf_component = load_kwargs["text_encoder_gguf_component"]
+        planned_prompt_enhancer_gguf_repo = load_kwargs["prompt_enhancer_gguf_repo"]
+        planned_prompt_enhancer_gguf_filename = load_kwargs["prompt_enhancer_gguf_filename"]
+        planned_lora_repo = load_kwargs["lora_repo"]
+        planned_lora_weight_name = load_kwargs["lora_weight_name"]
+        planned_lora_adapter_name = load_kwargs["lora_adapter_name"]
+        planned_lora_scale = load_kwargs["lora_scale"]
+        planned_lora_fuse = load_kwargs["lora_fuse"]
+        planned_family = load_kwargs["family_override"]
+        planned_offload_policy = load_kwargs["offload_policy"]
+        planned_safetensors_quantization = load_kwargs["safetensors_quantization"]
+        planned_safetensors_quantization_components = load_kwargs[
+            "safetensors_quantization_components"
+        ]
+        planned_torch_compile = normalized.torch_compile
+        planned_attention_backend = normalized.attention_backend
+        planned_memory_plan = load_kwargs.get("memory_plan")
         resolved_repo_id = (
             _resolve_diffusion_repo_for_request(
                 planned_repo_id,
