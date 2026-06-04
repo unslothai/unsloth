@@ -5240,6 +5240,12 @@ async def anthropic_count_tokens(
         [m.model_dump() for m in payload.messages],
         payload.system,
     )
+    # Apply the same sanitization /messages does before generation, so the count
+    # matches the prompt the real request would build (otherwise empty-assistant
+    # sentinels / synthetic tool history inflate the count or hit the fallback).
+    openai_messages = _strip_provider_synthetic_tool_history(
+        _drop_empty_assistant_sentinels(openai_messages)
+    )
     openai_tools = anthropic_tools_to_openai(payload.tools or []) or None
 
     count = await asyncio.to_thread(
