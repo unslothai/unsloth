@@ -14,7 +14,7 @@ import uuid
 from typing import Any, Optional, Union
 
 
-def openai_finish_to_anthropic_stop(finish_reason, had_tool_calls=False) -> str:
+def openai_finish_to_anthropic_stop(finish_reason, had_tool_calls = False) -> str:
     """Map an OpenAI finish_reason to an Anthropic stop_reason.
     tool_calls / had_tool_calls -> 'tool_use'; 'length' -> 'max_tokens';
     'stop'/'stop_sequence' -> 'end_turn' (or 'stop_sequence' when a stop string fired);
@@ -29,11 +29,15 @@ def openai_finish_to_anthropic_stop(finish_reason, had_tool_calls=False) -> str:
     return "end_turn"
 
 
-def anthropic_tool_use_id(upstream_id=None) -> str:
+def anthropic_tool_use_id(upstream_id = None) -> str:
     """Return an Anthropic-style tool_use id (prefix 'toolu_'). Reuses an
     upstream id only if it already starts with 'toolu_'; otherwise mints a fresh
     'toolu_<24 hex>'."""
-    if upstream_id and isinstance(upstream_id, str) and upstream_id.startswith("toolu_"):
+    if (
+        upstream_id
+        and isinstance(upstream_id, str)
+        and upstream_id.startswith("toolu_")
+    ):
         return upstream_id
     return f"toolu_{uuid.uuid4().hex[:24]}"
 
@@ -303,7 +307,7 @@ class AnthropicStreamEmitter:
         # status events — no Anthropic equivalent
         return []
 
-    def finish(self, stop_reason: str = "end_turn", stop_sequence=None) -> list[str]:
+    def finish(self, stop_reason: str = "end_turn", stop_sequence = None) -> list[str]:
         """Close any open block and emit message_delta + message_stop."""
         events = []
         if self._text_block_open or self._open_tool_call_id is not None:
@@ -315,7 +319,10 @@ class AnthropicStreamEmitter:
                 "message_delta",
                 {
                     "type": "message_delta",
-                    "delta": {"stop_reason": stop_reason, "stop_sequence": stop_sequence},
+                    "delta": {
+                        "stop_reason": stop_reason,
+                        "stop_sequence": stop_sequence,
+                    },
                     "usage": _message_delta_usage(self._usage),
                 },
             )

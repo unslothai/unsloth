@@ -179,7 +179,7 @@ def _cap_parallel_tool_calls_sse_line(raw_line: str) -> str:
     """Drop tool_call deltas whose index >= 1 from one streamed OpenAI SSE
     ``data:`` line so only the first tool call survives (parallel_tool_calls=false,
     best-effort). Non-tool / unparseable payloads are returned byte-for-byte."""
-    payload = raw_line[len("data: "):]
+    payload = raw_line[len("data: ") :]
     if payload.strip() in ("", "[DONE]"):
         return raw_line
     try:
@@ -250,7 +250,7 @@ def _cmpl_stream_event_out(event: bytes, include_usage: bool) -> Optional[bytes]
     for i, ln in enumerate(lines):
         if not ln.startswith(b"data:"):
             continue
-        payload = ln[len(b"data:"):].strip()
+        payload = ln[len(b"data:") :].strip()
         if not payload or payload == b"[DONE]":
             continue
         try:
@@ -3270,8 +3270,12 @@ async def openai_chat_completions(
                     )
                     yield f"data: {final_chunk.model_dump_json(exclude_none = True)}\n\n"
                     usage_line = _openai_stream_usage_chunk(
-                        payload, completion_id, created, model_name,
-                        _stream_usage, _stream_timings,
+                        payload,
+                        completion_id,
+                        created,
+                        model_name,
+                        _stream_usage,
+                        _stream_timings,
                     )
                     if usage_line is not None:
                         yield usage_line
@@ -3406,8 +3410,12 @@ async def openai_chat_completions(
                     )
                     yield f"data: {final_chunk.model_dump_json(exclude_none = True)}\n\n"
                     usage_line = _openai_stream_usage_chunk(
-                        payload, completion_id, created, model_name,
-                        _stream_usage, _stream_timings,
+                        payload,
+                        completion_id,
+                        created,
+                        model_name,
+                        _stream_usage,
+                        _stream_timings,
                     )
                     if usage_line is not None:
                         yield usage_line
@@ -6034,7 +6042,8 @@ async def _anthropic_passthrough_stream(
                 _err_text = _err_bytes.decode("utf-8", "replace")[:500]
                 logger.error(
                     "anthropic passthrough upstream error: status=%s body=%s",
-                    resp.status_code, _err_text,
+                    resp.status_code,
+                    _err_text,
                 )
                 yield build_anthropic_sse_event(
                     "error",

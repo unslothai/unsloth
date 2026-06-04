@@ -72,7 +72,9 @@ ANTHROPIC_TYPE_BY_STATUS = {
 }
 
 
-def openai_error_body(message, *, status = 400, err_type = None, code = None, param = None) -> dict:
+def openai_error_body(
+    message, *, status = 400, err_type = None, code = None, param = None
+) -> dict:
     """Build an OpenAI-style error envelope.
 
     Returns ``{"error": {"message", "type", "param", "code"}}``. The ``param``
@@ -111,7 +113,9 @@ def is_anthropic_path(path: str) -> bool:
     return path.startswith("/v1/messages")
 
 
-def error_body_for_path(path, message, *, status, err_type = None, code = None, param = None) -> dict:
+def error_body_for_path(
+    path, message, *, status, err_type = None, code = None, param = None
+) -> dict:
     """Dispatch to the correct envelope builder based on ``path``.
 
     Anthropic surface paths use :func:`anthropic_error_body` (``code``/``param``
@@ -155,7 +159,11 @@ def _summarize_validation_errors(errors) -> tuple:
                 param = part
                 break
 
-    label = ".".join(str(p) for p in loc_parts) if loc_parts else ".".join(str(p) for p in loc)
+    label = (
+        ".".join(str(p) for p in loc_parts)
+        if loc_parts
+        else ".".join(str(p) for p in loc)
+    )
     summary = f"{label}: {msg}" if label else str(msg)
     return summary, param
 

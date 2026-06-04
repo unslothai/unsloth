@@ -5564,7 +5564,7 @@ class LlamaCppBackend:
 
     # ── Prompt token counting ──────────────────────────────────
 
-    def count_chat_tokens(self, messages, system=None, tools=None) -> int:
+    def count_chat_tokens(self, messages, system = None, tools = None) -> int:
         """Best-effort count of prompt tokens for a chat request, using the loaded
         model's tokenizer via llama-server. Returns 0 if it cannot be determined."""
         if not self.is_loaded:
@@ -5640,7 +5640,7 @@ class LlamaCppBackend:
                 parts = []
                 if system_text:
                     parts.append(system_text)
-                for msg in (messages or []):
+                for msg in messages or []:
                     if isinstance(msg, dict):
                         parts.append(_block_text(msg.get("content", "")))
                 if tools:
