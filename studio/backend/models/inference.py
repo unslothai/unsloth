@@ -87,6 +87,9 @@ class DiffusionAdapterSpec(BaseModel):
 class DiffusionRuntimeSpec(BaseModel):
     device: Optional[Literal["auto", "cpu", "cuda", "mps"]] = None
     dtype: Optional[Literal["auto", "float16", "bfloat16", "float32"]] = None
+    memory_mode: Optional[
+        Literal["auto", "fast", "balanced", "low_vram", "manual"]
+    ] = None
     offload_policy: Optional[
         Literal["auto", "aggressive", "balanced", "less_aggressive", "hybrid", "none"]
     ] = None
@@ -1762,6 +1765,13 @@ class DiffusionLoadRequest(BaseModel):
     options: Optional[Dict[str, Any]] = Field(
         None,
         description = "Forward-compatible model-specific load options.",
+    )
+    parameters: Optional[Dict[str, Any]] = Field(
+        None,
+        description = (
+            "Optional expected generation workload for load planning "
+            "(width, height, num_frames, batch_size, guidance_scale)."
+        ),
     )
 
     # repo_id and base_repo are HF Hub identifiers in this release.

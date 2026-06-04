@@ -2487,6 +2487,52 @@ def _runtime_attention_backend(payload: DiffusionLoadRequest) -> Optional[str]:
     return None
 
 
+def _runtime_memory_mode(payload: DiffusionLoadRequest) -> Optional[str]:
+    if payload.runtime and payload.runtime.memory_mode:
+        return payload.runtime.memory_mode
+    return None
+
+
+def _diffusion_load_workload_kwargs(payload: DiffusionLoadRequest) -> dict[str, Any]:
+    params = payload.parameters
+    if not isinstance(params, dict) and isinstance(payload.options, dict):
+        nested = payload.options.get("parameters")
+        params = nested if isinstance(nested, dict) else payload.options
+    if not isinstance(params, dict):
+        return {}
+
+    def _int_or_none(name: str) -> Optional[int]:
+        value = params.get(name)
+        if isinstance(value, bool) or value is None:
+            return None
+        if isinstance(value, (int, float, str)):
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return None
+        return None
+
+    def _float_or_none(name: str) -> Optional[float]:
+        value = params.get(name)
+        if isinstance(value, bool) or value is None:
+            return None
+        if isinstance(value, (int, float, str)):
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return None
+        return None
+
+    return {
+        "width": _int_or_none("width"),
+        "height": _int_or_none("height"),
+        "num_frames": _int_or_none("num_frames"),
+        "batch_size": _int_or_none("batch_size") or _int_or_none("num_images"),
+        "guidance_scale": _float_or_none("guidance_scale")
+        or _float_or_none("true_cfg_scale"),
+    }
+
+
 @dataclass(frozen = True)
 class _NormalizedDiffusionLoad:
     repo_id: Optional[str]
@@ -2514,6 +2560,7 @@ class _NormalizedDiffusionLoad:
     safetensors_quantization_components: Optional[list[str]]
     torch_compile: Optional[str]
     attention_backend: Optional[str]
+    memory_mode: Optional[str]
 
 
 def _normalize_diffusion_load_request(
@@ -2606,6 +2653,7 @@ def _normalize_diffusion_load_request(
         ),
         torch_compile = _runtime_torch_compile(payload),
         attention_backend = _runtime_attention_backend(payload),
+        memory_mode = _runtime_memory_mode(payload),
     )
 
 
@@ -2976,10 +3024,12 @@ async def diffusion_load(
         )
         planned_torch_compile = normalized.torch_compile
         planned_attention_backend = normalized.attention_backend
-        if payload.preset_id:
+        planned_memory_plan = None
+        if payload.preset_id or normalized.memory_mode is not None:
             try:
                 from core.inference.diffusion import resolve_diffusion_load_plan
 
+                workload_kwargs = _diffusion_load_workload_kwargs(payload)
                 load_plan = resolve_diffusion_load_plan(
                     preset_id = payload.preset_id,
                     repo_id = normalized.repo_id,
@@ -3005,6 +3055,8 @@ async def diffusion_load(
                         normalized.safetensors_quantization_components
                     ),
                     attention_backend = normalized.attention_backend,
+                    memory_mode = normalized.memory_mode,
+                    **workload_kwargs,
                     require_loadable = True,
                 )
             except ValueError as exc:
@@ -3033,6 +3085,7 @@ async def diffusion_load(
             ]
             planned_torch_compile = normalized.torch_compile
             planned_attention_backend = normalized.attention_backend
+            planned_memory_plan = load_kwargs.get("memory_plan")
         resolved_repo_id = (
             _resolve_diffusion_repo_for_request(
                 planned_repo_id,
@@ -3114,6 +3167,8 @@ async def diffusion_load(
                 backend_load_kwargs["torch_compile"] = planned_torch_compile
             if planned_attention_backend is not None:
                 backend_load_kwargs["attention_backend"] = planned_attention_backend
+            if planned_memory_plan is not None:
+                backend_load_kwargs["memory_plan"] = planned_memory_plan
             status = await asyncio.get_running_loop().run_in_executor(
                 None,
                 lambda: backend.load_model(**backend_load_kwargs),
@@ -3223,6 +3278,7 @@ async def diffusion_load_plan(
 
     try:
         normalized = _normalize_diffusion_load_request(payload)
+        workload_kwargs = _diffusion_load_workload_kwargs(payload)
         return resolve_diffusion_load_plan(
             preset_id = payload.preset_id,
             repo_id = normalized.repo_id,
@@ -3248,6 +3304,8 @@ async def diffusion_load_plan(
                 normalized.safetensors_quantization_components
             ),
             attention_backend = normalized.attention_backend,
+            memory_mode = normalized.memory_mode,
+            **workload_kwargs,
             require_loadable = False,
         )
     except ValueError as exc:

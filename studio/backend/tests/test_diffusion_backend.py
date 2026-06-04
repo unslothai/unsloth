@@ -356,6 +356,7 @@ def test_supported_optimization_options_payload_shape():
         "safetensors_quantization_components",
         "attention",
         "compile",
+        "memory_planner",
     }
 
     recommended = payload["recommended_defaults"]
@@ -373,6 +374,7 @@ def test_supported_optimization_options_payload_shape():
         "safetensors_quantization_components"
     ] == ["transformer", "unet"]
     assert recommended["safetensors_low_vram"]["torch_compile"] == "regional"
+    assert payload["memory_planner"]["applies_when"].startswith("runtime.memory_mode")
     assert "safetensors_quality_quantized" not in recommended
     assert recommended["denoiser_torch_compile"]["default_enabled"] is True
     assert recommended["denoiser_torch_compile"]["default_scope"] == "regional"
@@ -473,6 +475,137 @@ def test_supported_optimization_options_payload_shape():
     ]
     assert compile_options["group_offload"]["image_default"] is False
     assert compile_options["group_offload"]["media_kind"] == "video"
+
+
+def test_diffusion_memory_planner_gguf_modes():
+    from core.inference.diffusion_memory import (
+        DiffusionWorkloadEstimate,
+        HardwareMemorySnapshot,
+        MemoryDeviceSnapshot,
+        ModelComponentEstimate,
+        ModelMemoryEstimate,
+        select_diffusion_memory_plan,
+    )
+
+    workload = DiffusionWorkloadEstimate(
+        media_kind = "image",
+        family = "flux.2-klein",
+        width = 1024,
+        height = 1024,
+        guidance_scale = 1.0,
+    )
+    model = ModelMemoryEstimate(
+        components = (
+            ModelComponentEstimate(
+                name = "transformer",
+                format = "gguf",
+                quantization = "Q4_K_M",
+                storage_mib = 12_000,
+                packed_device_mib = 12_000,
+                dense_device_mib = 48_000,
+            ),
+        ),
+        confidence = "high",
+    )
+
+    large_gpu = HardwareMemorySnapshot(
+        backend = "cuda",
+        devices = (
+            MemoryDeviceSnapshot(
+                backend = "cuda",
+                memory_kind = "discrete_vram",
+                total_mib = 80_000,
+                free_mib = 70_000,
+            ),
+        ),
+    )
+    small_gpu = HardwareMemorySnapshot(
+        backend = "cuda",
+        devices = (
+            MemoryDeviceSnapshot(
+                backend = "cuda",
+                memory_kind = "discrete_vram",
+                total_mib = 24_000,
+                free_mib = 16_000,
+            ),
+        ),
+    )
+
+    fast = select_diffusion_memory_plan(
+        requested_mode = "auto",
+        explicit_offload_policy = None,
+        explicit_safetensors_quantization = None,
+        explicit_safetensors_quantization_components = None,
+        model = model,
+        workload = workload,
+        hardware = large_gpu,
+    )
+    balanced = select_diffusion_memory_plan(
+        requested_mode = "auto",
+        explicit_offload_policy = None,
+        explicit_safetensors_quantization = None,
+        explicit_safetensors_quantization_components = None,
+        model = model,
+        workload = workload,
+        hardware = small_gpu,
+    )
+
+    assert fast.selected_offload_policy == "none"
+    assert fast.selected_mode == "fast"
+    assert balanced.selected_offload_policy == "balanced"
+    assert balanced.selected_mode == "balanced"
+
+
+def test_diffusion_memory_planner_safetensors_low_vram_selects_bnb_nf4():
+    from core.inference.diffusion_memory import (
+        DiffusionWorkloadEstimate,
+        HardwareMemorySnapshot,
+        MemoryDeviceSnapshot,
+        ModelComponentEstimate,
+        ModelMemoryEstimate,
+        select_diffusion_memory_plan,
+    )
+
+    plan = select_diffusion_memory_plan(
+        requested_mode = "low_vram",
+        explicit_offload_policy = None,
+        explicit_safetensors_quantization = None,
+        explicit_safetensors_quantization_components = None,
+        model = ModelMemoryEstimate(
+            components = (
+                ModelComponentEstimate(
+                    name = "pipeline",
+                    format = "safetensors",
+                    storage_mib = 50_000,
+                    packed_device_mib = 50_000,
+                    dense_device_mib = 50_000,
+                ),
+            ),
+            confidence = "high",
+        ),
+        workload = DiffusionWorkloadEstimate(
+            media_kind = "image",
+            family = "qwen-image",
+            width = 1024,
+            height = 1024,
+        ),
+        hardware = HardwareMemorySnapshot(
+            backend = "cuda",
+            devices = (
+                MemoryDeviceSnapshot(
+                    backend = "cuda",
+                    memory_kind = "discrete_vram",
+                    total_mib = 32_000,
+                    free_mib = 28_000,
+                ),
+            ),
+        ),
+    )
+
+    assert plan.selected_mode == "low_vram"
+    assert plan.selected_offload_policy == "aggressive"
+    assert plan.selected_safetensors_quantization == "bitsandbytes_4bit_nf4"
+    assert plan.selected_safetensors_quantization_components == ("transformer", "unet")
 
 
 def test_attention_fallback_policy_matches_studio_order():
@@ -618,6 +751,7 @@ def test_status_shape_unloaded():
         "gguf_execution_backend",
         "gguf_prepared_module_counts",
         "attention_backend",
+        "memory_plan",
         "safetensors_quantization",
         "safetensors_quantization_components",
         "load_timings",

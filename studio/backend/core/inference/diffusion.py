@@ -58,6 +58,14 @@ from .diffusion_attention import (
     DIFFUSERS_ATTENTION_BACKEND_CANDIDATES,
     apply_diffusers_attention_backend,
 )
+from .diffusion_memory import (
+    DiffusionWorkloadEstimate,
+    ModelMemoryEstimate,
+    component_estimate_from_file_hint,
+    memory_planner_options,
+    normalize_memory_mode,
+    select_diffusion_memory_plan,
+)
 from .diffusion_video import (
     disable_ltx2_distilled_lora_adapter,
     enable_ltx2_distilled_lora_adapter,
@@ -1797,6 +1805,149 @@ def _quant_label_to_gguf_filename(
     return f"{preset.transformer_filename_prefixes[0]}{label}.gguf"
 
 
+def _build_diffusion_model_memory_estimate(
+    *,
+    repo_id: Optional[str],
+    gguf_filename: Optional[str],
+    transformer_gguf_repo: Optional[str],
+    transformer_gguf_filename: Optional[str],
+    text_encoder_gguf_repo: Optional[str],
+    text_encoder_gguf_filename: Optional[str],
+    prompt_enhancer_gguf_repo: Optional[str],
+    prompt_enhancer_gguf_filename: Optional[str],
+    safetensors_quantization: Optional[str],
+) -> ModelMemoryEstimate:
+    components = []
+    if gguf_filename:
+        components.append(
+            component_estimate_from_file_hint(
+                name = "transformer",
+                fmt = "gguf",
+                repo_id = transformer_gguf_repo or repo_id,
+                filename = gguf_filename,
+            )
+        )
+    if transformer_gguf_filename:
+        components.append(
+            component_estimate_from_file_hint(
+                name = "transformer",
+                fmt = "gguf",
+                repo_id = transformer_gguf_repo,
+                filename = transformer_gguf_filename,
+            )
+        )
+    if text_encoder_gguf_filename:
+        components.append(
+            component_estimate_from_file_hint(
+                name = "text_encoder",
+                fmt = "gguf",
+                repo_id = text_encoder_gguf_repo,
+                filename = text_encoder_gguf_filename,
+            )
+        )
+    if prompt_enhancer_gguf_filename:
+        components.append(
+            component_estimate_from_file_hint(
+                name = "prompt_enhancer",
+                fmt = "gguf",
+                repo_id = prompt_enhancer_gguf_repo,
+                filename = prompt_enhancer_gguf_filename,
+            )
+        )
+    if not components:
+        components.append(
+            component_estimate_from_file_hint(
+                name = "pipeline",
+                fmt = "safetensors",
+                repo_id = repo_id,
+                filename = None,
+                quantization = safetensors_quantization,
+            )
+        )
+    confidence = "high"
+    if any(component.storage_mib is None for component in components):
+        confidence = "low"
+    return ModelMemoryEstimate(
+        components = tuple(components),
+        source = "local_cache_or_request_metadata",
+        confidence = confidence,
+    )
+
+
+def _maybe_apply_diffusion_memory_plan(
+    *,
+    load_kwargs: dict[str, Any],
+    memory_mode: Optional[str],
+    family: Optional[DiffusionFamily],
+    width: Optional[int],
+    height: Optional[int],
+    num_frames: Optional[int],
+    batch_size: Optional[int],
+    guidance_scale: Optional[float],
+) -> tuple[dict[str, Any], Optional[dict[str, Any]]]:
+    normalized_memory_mode = normalize_memory_mode(memory_mode)
+    if normalized_memory_mode is None:
+        return load_kwargs, None
+
+    model_estimate = _build_diffusion_model_memory_estimate(
+        repo_id = load_kwargs.get("repo_id"),
+        gguf_filename = load_kwargs.get("gguf_filename"),
+        transformer_gguf_repo = load_kwargs.get("transformer_gguf_repo"),
+        transformer_gguf_filename = load_kwargs.get("transformer_gguf_filename"),
+        text_encoder_gguf_repo = load_kwargs.get("text_encoder_gguf_repo"),
+        text_encoder_gguf_filename = load_kwargs.get("text_encoder_gguf_filename"),
+        prompt_enhancer_gguf_repo = load_kwargs.get("prompt_enhancer_gguf_repo"),
+        prompt_enhancer_gguf_filename = load_kwargs.get(
+            "prompt_enhancer_gguf_filename"
+        ),
+        safetensors_quantization = load_kwargs.get("safetensors_quantization"),
+    )
+    workload = DiffusionWorkloadEstimate(
+        media_kind = family.media_kind if family is not None else "image",
+        family = family.name if family is not None else load_kwargs.get("family_override"),
+        width = width or (family.default_width if family is not None else None),
+        height = height or (family.default_height if family is not None else None),
+        num_frames = (
+            num_frames
+            if num_frames is not None
+            else (family.default_num_frames if family is not None else None)
+        ),
+        batch_size = max(1, int(batch_size or 1)),
+        guidance_scale = guidance_scale,
+        requires_image_input = bool(family.requires_image_input) if family is not None else False,
+    )
+    plan = select_diffusion_memory_plan(
+        requested_mode = normalized_memory_mode,
+        explicit_offload_policy = load_kwargs.get("offload_policy"),
+        explicit_safetensors_quantization = load_kwargs.get("safetensors_quantization"),
+        explicit_safetensors_quantization_components = load_kwargs.get(
+            "safetensors_quantization_components"
+        ),
+        model = model_estimate,
+        workload = workload,
+        balanced_gguf_cache_mib = DEFAULT_BALANCED_GGUF_CUDA_CACHE_MIB,
+    )
+    plan_payload = plan.as_public_dict()
+    if load_kwargs.get("offload_policy") is None and plan.selected_offload_policy:
+        load_kwargs["offload_policy"] = plan.selected_offload_policy
+    if (
+        not load_kwargs.get("safetensors_quantization")
+        and plan.selected_safetensors_quantization
+    ):
+        load_kwargs["safetensors_quantization"] = (
+            plan.selected_safetensors_quantization
+        )
+    if (
+        not load_kwargs.get("safetensors_quantization_components")
+        and plan.selected_safetensors_quantization_components is not None
+    ):
+        load_kwargs["safetensors_quantization_components"] = list(
+            plan.selected_safetensors_quantization_components
+        )
+    load_kwargs["memory_plan"] = plan_payload
+    return load_kwargs, plan_payload
+
+
 def resolve_diffusion_load_plan(
     *,
     preset_id: Optional[str] = None,
@@ -1821,6 +1972,12 @@ def resolve_diffusion_load_plan(
     safetensors_quantization: Optional[str] = None,
     safetensors_quantization_components: Optional[list[str]] = None,
     attention_backend: Optional[str] = None,
+    memory_mode: Optional[str] = None,
+    width: Optional[int] = None,
+    height: Optional[int] = None,
+    num_frames: Optional[int] = None,
+    batch_size: Optional[int] = None,
+    guidance_scale: Optional[float] = None,
     require_loadable: bool = False,
 ) -> dict[str, Any]:
     """Expand a Studio preset into concrete DiffusionBackend kwargs.
@@ -1888,11 +2045,23 @@ def resolve_diffusion_load_plan(
             ),
             "attention_backend": normalized_attention_backend,
         }
+        fam = _family_by_name(family_override) if family_override else None
+        load_kwargs, memory_plan = _maybe_apply_diffusion_memory_plan(
+            load_kwargs = load_kwargs,
+            memory_mode = memory_mode,
+            family = fam,
+            width = width,
+            height = height,
+            num_frames = num_frames,
+            batch_size = batch_size,
+            guidance_scale = guidance_scale,
+        )
         return {
             "preset": None,
             "ready_to_load": True,
             "load_kwargs": load_kwargs,
             "component_sources": {},
+            "memory_plan": memory_plan,
             "warnings": [],
         }
 
@@ -1972,7 +2141,7 @@ def resolve_diffusion_load_plan(
         )
     defaults = _sampling_defaults_for_family(fam, base_repo_variant = preset.variant)
     effective_offload_policy = offload_policy
-    if effective_offload_policy is None:
+    if effective_offload_policy is None and memory_mode is None:
         effective_offload_policy = (
             _curated_gguf_recommended_offload_policy(
                 repo_id = planned_repo_id,
@@ -2006,6 +2175,25 @@ def resolve_diffusion_load_plan(
         ),
         "attention_backend": normalized_attention_backend,
     }
+    load_kwargs, memory_plan = _maybe_apply_diffusion_memory_plan(
+        load_kwargs = load_kwargs,
+        memory_mode = memory_mode,
+        family = fam,
+        width = width,
+        height = height,
+        num_frames = num_frames,
+        batch_size = batch_size,
+        guidance_scale = guidance_scale or defaults.default_guidance_scale,
+    )
+    if load_kwargs.get("offload_policy") is None:
+        load_kwargs["offload_policy"] = (
+            _curated_gguf_recommended_offload_policy(
+                repo_id = planned_repo_id,
+                transformer_gguf_repo = planned_transformer_repo,
+                transformer_gguf_filename = planned_transformer_filename,
+            )
+            or preset.recommended_offload_policy
+        )
     ready_to_load = bool(planned_transformer_filename)
     return {
         "preset": _public_diffusion_preset(preset),
@@ -2029,6 +2217,7 @@ def resolve_diffusion_load_plan(
             "width": fam.default_width,
             "height": fam.default_height,
         },
+        "memory_plan": memory_plan,
         "warnings": [],
     }
 
@@ -3065,6 +3254,7 @@ def supported_optimization_options() -> dict[str, Any]:
                 ),
             },
         },
+        "memory_planner": memory_planner_options(),
     }
 
 
@@ -4102,6 +4292,7 @@ class DiffusionBackend:
         self._torch_compile_config: Optional[dict[str, Any]] = None
         self._torch_compile_stats: Optional[dict[str, Any]] = None
         self._attention_backend_config: Optional[dict[str, Any]] = None
+        self._memory_plan: Optional[dict[str, Any]] = None
         self._safetensors_quantization: Optional[str] = None
         self._safetensors_quantization_components: Optional[list[str]] = None
         self._ltx2_latent_upsampler: Any = None
@@ -4301,6 +4492,11 @@ class DiffusionBackend:
                     if self._attention_backend_config is not None
                     else None
                 ),
+                "memory_plan": (
+                    dict(self._memory_plan)
+                    if self._memory_plan is not None
+                    else None
+                ),
                 "safetensors_quantization": self._safetensors_quantization,
                 "safetensors_quantization_components": (
                     list(self._safetensors_quantization_components)
@@ -4448,6 +4644,7 @@ class DiffusionBackend:
         torch_compile_dynamic: Optional[bool] = None,
         torch_compile_options: Optional[dict[str, Any]] = None,
         attention_backend: Optional[str] = None,
+        memory_plan: Optional[dict[str, Any]] = None,
         ignore_public_load_pending_workload: Optional[str] = None,
     ) -> dict[str, Any]:
         """Load a diffusion model.
@@ -5777,6 +5974,11 @@ class DiffusionBackend:
                         if attention_backend_config is not None
                         else None
                     )
+                    self._memory_plan = (
+                        dict(memory_plan)
+                        if memory_plan is not None
+                        else None
+                    )
                     self._safetensors_quantization = (
                         resolved_safetensors_quantization
                         if resolved_safetensors_quantization
@@ -6029,6 +6231,7 @@ class DiffusionBackend:
                 self._torch_compile_config = None
                 self._torch_compile_stats = None
                 self._attention_backend_config = None
+                self._memory_plan = None
                 self._safetensors_quantization = None
                 self._safetensors_quantization_components = None
                 self._load_timings = {}

@@ -122,6 +122,7 @@ class _FakeBackend:
             "gguf_quantized_cpu_resident": False,
             "gguf_pin_cpu_resident": False,
             "offload_policy": None,
+            "memory_plan": None,
             "safetensors_quantization": None,
             "safetensors_quantization_components": None,
             "active_repo_id": self._repo,
@@ -182,6 +183,10 @@ class _FakeBackend:
                     "fallback_order": ["flash", "sdpa", "flex", "xformers", "default"],
                 },
                 "compile": {"torch_compile_available": True},
+                "memory_planner": {
+                    "modes": [{"name": "auto"}, {"name": "balanced"}],
+                    "applies_when": "runtime.memory_mode is set",
+                },
             },
             "attention_backend": None,
         }
@@ -867,6 +872,33 @@ def test_diffusion_load_plan_expands_quant_label(app_with_stub):
         "repo": "unsloth/FLUX.2-dev-GGUF",
         "filename": "flux2-dev-Q4_K_M.gguf",
     }
+
+
+def test_diffusion_memory_mode_load_plan_and_load(app_with_stub):
+    app, stub = app_with_stub
+    c = TestClient(app)
+    payload = {
+        "preset_id": "flux.2-dev",
+        "transformer_quant": "Q4_K_M",
+        "runtime": {"memory_mode": "balanced"},
+        "parameters": {"width": 1024, "height": 1024, "batch_size": 1},
+    }
+
+    plan_response = c.post("/api/inference/images/load-plan", json = payload)
+    assert plan_response.status_code == 200, plan_response.text
+    body = plan_response.json()
+    memory_plan = body["memory_plan"]
+    assert memory_plan["requested_mode"] == "balanced"
+    assert memory_plan["selected_offload_policy"] == "balanced"
+    assert body["load_kwargs"]["memory_plan"] == memory_plan
+    assert body["load_kwargs"]["offload_policy"] == "balanced"
+
+    load_response = c.post("/api/inference/images/load", json = payload)
+    assert load_response.status_code == 200, load_response.text
+    call = stub.calls[-1]
+    assert call["offload_policy"] == "balanced"
+    assert call["memory_plan"]["requested_mode"] == "balanced"
+    assert call["memory_plan"]["workload"]["width"] == 1024
 
 
 def test_load_forwards_lora_fields(app_with_stub):
