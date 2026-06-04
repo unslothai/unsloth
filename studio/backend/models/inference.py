@@ -39,9 +39,9 @@ class DiffusionModelSpec(BaseModel):
 
 
 class DiffusionComponentSpec(BaseModel):
-    format: Optional[
-        Literal["auto", "safetensors", "gguf", "diffusers"]
-    ] = Field(None, description = "Component weight format")
+    format: Optional[Literal["auto", "safetensors", "gguf", "diffusers"]] = Field(
+        None, description = "Component weight format"
+    )
     repo_id: Optional[str] = Field(None, max_length = 1024)
     filename: Optional[str] = Field(None, max_length = 512)
     quantization: Optional[str] = Field(None, max_length = 64)
@@ -87,9 +87,9 @@ class DiffusionAdapterSpec(BaseModel):
 class DiffusionRuntimeSpec(BaseModel):
     device: Optional[Literal["auto", "cpu", "cuda", "rocm", "xpu", "mps"]] = None
     dtype: Optional[Literal["auto", "float16", "bfloat16", "float32"]] = None
-    memory_mode: Optional[
-        Literal["auto", "fast", "balanced", "low_vram", "manual"]
-    ] = None
+    memory_mode: Optional[Literal["auto", "fast", "balanced", "low_vram", "manual"]] = (
+        None
+    )
     offload_policy: Optional[
         Literal["auto", "aggressive", "balanced", "less_aggressive", "hybrid", "none"]
     ] = None
@@ -118,7 +118,9 @@ class DiffusionRuntimeSpec(BaseModel):
             ]
         ]
     ] = None
-    torch_compile: Optional[Literal["auto", "none", "regional", "transformer", "pipeline"]] = None
+    torch_compile: Optional[
+        Literal["auto", "none", "regional", "transformer", "pipeline"]
+    ] = None
     attention_backend: Optional[
         Literal["auto", "flash", "sdpa", "flex", "xformers"]
     ] = None
@@ -2162,8 +2164,10 @@ class DiffusionLoadRequest(BaseModel):
 
     @model_validator(mode = "after")
     def _requires_repo_or_preset(self):
-        if not self.repo_id and not self.preset_id and not (
-            self.model and self.model.repo_id
+        if (
+            not self.repo_id
+            and not self.preset_id
+            and not (self.model and self.model.repo_id)
         ):
             raise ValueError("Either repo_id, preset_id, or model.repo_id is required")
         return self
@@ -2171,9 +2175,7 @@ class DiffusionLoadRequest(BaseModel):
     @model_validator(mode = "after")
     def _safetensors_quantization_requires_full_repo(self):
         runtime_quant = (
-            self.runtime.safetensors_quantization
-            if self.runtime is not None
-            else None
+            self.runtime.safetensors_quantization if self.runtime is not None else None
         )
         effective_quant = self.safetensors_quantization or runtime_quant
         if effective_quant in (None, "none"):

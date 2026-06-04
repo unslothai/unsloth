@@ -97,7 +97,9 @@ def test_diffusion_owned_targets_includes_lazy_text_encoder_gguf():
         "Ernie-Image-Prompt-Enhancer-Ministral-3.8B-Q4_K_M.gguf",
     ) in models_route._diffusion_owned_targets(status)
     assert ("owner/flux-lora", None) in models_route._diffusion_owned_targets(status)
-    assert ("owner/pending-flux-lora", None) in models_route._diffusion_owned_targets(status)
+    assert ("owner/pending-flux-lora", None) in models_route._diffusion_owned_targets(
+        status
+    )
 
 
 def test_list_cached_gguf_includes_non_suffix_repo_when_cache_contains_gguf(

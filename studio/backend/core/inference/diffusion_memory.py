@@ -129,10 +129,14 @@ class ModelMemoryEstimate:
         return _sum_optional(component.storage_mib for component in self.components)
 
     def total_packed_device_mib(self) -> Optional[int]:
-        return _sum_optional(component.packed_device_mib for component in self.components)
+        return _sum_optional(
+            component.packed_device_mib for component in self.components
+        )
 
     def total_dense_device_mib(self) -> Optional[int]:
-        return _sum_optional(component.dense_device_mib for component in self.components)
+        return _sum_optional(
+            component.dense_device_mib for component in self.components
+        )
 
     def as_public_dict(self) -> dict[str, Any]:
         return {
@@ -218,7 +222,9 @@ def normalize_memory_mode(value: Optional[str]) -> Optional[str]:
         return None
     if normalized not in DIFFUSION_MEMORY_MODES:
         valid = ", ".join(sorted(DIFFUSION_MEMORY_MODES))
-        raise ValueError(f"Unsupported diffusion memory_mode '{value}'. Use one of: {valid}.")
+        raise ValueError(
+            f"Unsupported diffusion memory_mode '{value}'. Use one of: {valid}."
+        )
     return normalized
 
 
@@ -328,9 +334,17 @@ def snapshot_hardware_memory() -> HardwareMemorySnapshot:
             )
 
         xpu = getattr(torch, "xpu", None)
-        if xpu is not None and callable(getattr(xpu, "is_available", None)) and xpu.is_available():
+        if (
+            xpu is not None
+            and callable(getattr(xpu, "is_available", None))
+            and xpu.is_available()
+        ):
             devices = []
-            count = int(xpu.device_count()) if callable(getattr(xpu, "device_count", None)) else 1
+            count = (
+                int(xpu.device_count())
+                if callable(getattr(xpu, "device_count", None))
+                else 1
+            )
             for index in range(count):
                 free_mib = None
                 total_mib = None
@@ -360,7 +374,11 @@ def snapshot_hardware_memory() -> HardwareMemorySnapshot:
             )
 
         mps = getattr(getattr(torch, "backends", None), "mps", None)
-        if mps is not None and callable(getattr(mps, "is_available", None)) and mps.is_available():
+        if (
+            mps is not None
+            and callable(getattr(mps, "is_available", None))
+            and mps.is_available()
+        ):
             return HardwareMemorySnapshot(
                 backend = "mps",
                 devices = (
@@ -456,8 +474,7 @@ def select_diffusion_memory_plan(
     warnings: list[str] = []
     device = hardware.primary_device
     unified_or_system_memory = bool(
-        device is not None
-        and device.memory_kind in {"unified_memory", "system_memory"}
+        device is not None and device.memory_kind in {"unified_memory", "system_memory"}
     )
     safe_device_mib = _safe_device_budget_mib(device, hardware)
     runtime_mib = estimate_runtime_memory_mib(workload)
@@ -713,7 +730,9 @@ def estimate_runtime_memory_mib(workload: DiffusionWorkloadEstimate) -> int:
             else (DEFAULT_VIDEO_FRAMES if workload.media_kind == "video" else 1)
         ),
     )
-    pixel_scale = (width * height * batch * frames) / float(DEFAULT_IMAGE_WIDTH * DEFAULT_IMAGE_HEIGHT)
+    pixel_scale = (width * height * batch * frames) / float(
+        DEFAULT_IMAGE_WIDTH * DEFAULT_IMAGE_HEIGHT
+    )
     base = 8192 if workload.media_kind == "image" else 28672
     family = (workload.family or "").lower()
     multiplier = 1.0
@@ -781,13 +800,17 @@ def _sum_known(*values: Optional[int]) -> int:
     return sum(int(value or 0) for value in values)
 
 
-def _tuple_or_none(values: Optional[list[str] | tuple[str, ...]]) -> Optional[tuple[str, ...]]:
+def _tuple_or_none(
+    values: Optional[list[str] | tuple[str, ...]],
+) -> Optional[tuple[str, ...]]:
     if values is None:
         return None
     return tuple(str(value) for value in values)
 
 
-def _resolve_storage_mib(*, repo_id: Optional[str], filename: Optional[str]) -> Optional[int]:
+def _resolve_storage_mib(
+    *, repo_id: Optional[str], filename: Optional[str]
+) -> Optional[int]:
     if filename:
         try:
             path = Path(filename).expanduser()
@@ -820,7 +843,19 @@ def _infer_quantization_label(filename: Optional[str]) -> Optional[str]:
         return None
     upper = [part.upper() for part in parts]
     for index, part in enumerate(upper):
-        if part in {"BF16", "F16", "FP16", "FP8", "Q8", "Q6", "Q5", "Q4", "Q3", "Q2", "Q1"}:
+        if part in {
+            "BF16",
+            "F16",
+            "FP16",
+            "FP8",
+            "Q8",
+            "Q6",
+            "Q5",
+            "Q4",
+            "Q3",
+            "Q2",
+            "Q1",
+        }:
             suffix = upper[index + 1 :]
             if suffix and suffix[0] in {"K", "M", "S", "L", "XS", "XXS"}:
                 return "_".join([part] + suffix[:2])
@@ -877,7 +912,9 @@ def _safe_device_budget_mib(
     return max(0, int(available) - reserve)
 
 
-def _combined_confidence(model: ModelMemoryEstimate, safe_device_mib: Optional[int]) -> str:
+def _combined_confidence(
+    model: ModelMemoryEstimate, safe_device_mib: Optional[int]
+) -> str:
     if safe_device_mib is None:
         return "low"
     if model.confidence == "high":

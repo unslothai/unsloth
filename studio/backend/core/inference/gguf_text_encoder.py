@@ -36,12 +36,26 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.modules.utils import _pair, _reverse_repeat_tuple
 from transformers import AutoConfig, PreTrainedModel, T5Config, T5EncoderModel
-from transformers.models.mistral3.modeling_mistral3 import Mistral3ForConditionalGeneration
-from transformers.models.mistral.modeling_mistral import MistralModel, MistralRotaryEmbedding
-from transformers.models.gemma3.modeling_gemma3 import Gemma3ForCausalLM, Gemma3RotaryEmbedding
-from transformers.models.llama.modeling_llama import LlamaForCausalLM, LlamaRotaryEmbedding
+from transformers.models.mistral3.modeling_mistral3 import (
+    Mistral3ForConditionalGeneration,
+)
+from transformers.models.mistral.modeling_mistral import (
+    MistralModel,
+    MistralRotaryEmbedding,
+)
+from transformers.models.gemma3.modeling_gemma3 import (
+    Gemma3ForCausalLM,
+    Gemma3RotaryEmbedding,
+)
+from transformers.models.llama.modeling_llama import (
+    LlamaForCausalLM,
+    LlamaRotaryEmbedding,
+)
 from transformers.models.qwen3.modeling_qwen3 import Qwen3ForCausalLM
-from transformers.models.qwen3_vl.modeling_qwen3_vl import Qwen3VLTextModel, Qwen3VLTextRotaryEmbedding
+from transformers.models.qwen3_vl.modeling_qwen3_vl import (
+    Qwen3VLTextModel,
+    Qwen3VLTextRotaryEmbedding,
+)
 
 
 @dataclass(frozen = True)
@@ -115,7 +129,9 @@ _TORCH_GGUF_DEQUANT_TYPES_CACHE: dict[int, frozenset[Any]] = {}
 _DIFFUSERS_GGUF_DEQUANT_TABLES: tuple[Any, Any] | bool | None = None
 
 
-def _normalize_resident_device(device: torch.device | str | None) -> torch.device | None:
+def _normalize_resident_device(
+    device: torch.device | str | None,
+) -> torch.device | None:
     if device is None:
         return None
     return torch.device(device)
@@ -306,7 +322,9 @@ def _skip_gguf_field_value(reader: Any, offset: int, raw_type: int, gguf: Any) -
     item_type = gguf.GGUFValueType(int(raw_itype[0]))
     item_nptype = reader.gguf_scalar_to_np.get(item_type)
     if item_nptype is not None:
-        return offs - offset + int(np.empty([], dtype = item_nptype).itemsize) * int(alen[0])
+        return (
+            offs - offset + int(np.empty([], dtype = item_nptype).itemsize) * int(alen[0])
+        )
     if item_type == gguf.GGUFValueType.STRING:
         for _ in range(int(alen[0])):
             offs += 8 + _read_gguf_u64_scalar(reader, offs, gguf)
@@ -330,10 +348,14 @@ def _open_tensor_only_gguf_reader(path: Path, gguf: Any) -> Any:
     temp_version = reader._get(offs, np.uint32)
     if temp_version[0] & 65535 == 0:
         reader.byte_order = "S"
-        temp_version = temp_version.view(temp_version.dtype.newbyteorder(reader.byte_order))
+        temp_version = temp_version.view(
+            temp_version.dtype.newbyteorder(reader.byte_order)
+        )
     version = temp_version[0]
     if version not in gguf.READER_SUPPORTED_VERSIONS:
-        raise ValueError(f"Sorry, file appears to be version {version} which we cannot handle")
+        raise ValueError(
+            f"Sorry, file appears to be version {version} which we cannot handle"
+        )
     if sys.byteorder == "little":
         host_endian = gguf.GGUFEndian.LITTLE
         swapped_endian = gguf.GGUFEndian.BIG
@@ -344,15 +366,25 @@ def _open_tensor_only_gguf_reader(path: Path, gguf: Any) -> Any:
     reader.fields = OrderedDict()
     reader.tensors = []
     offs += reader._push_field(
-        gguf.ReaderField(offs, "GGUF.version", [temp_version], [0], [gguf.GGUFValueType.UINT32])
+        gguf.ReaderField(
+            offs, "GGUF.version", [temp_version], [0], [gguf.GGUFValueType.UINT32]
+        )
     )
 
     temp_counts = reader._get(offs, np.uint64, 2)
     offs += reader._push_field(
-        gguf.ReaderField(offs, "GGUF.tensor_count", [temp_counts[:1]], [0], [gguf.GGUFValueType.UINT64])
+        gguf.ReaderField(
+            offs,
+            "GGUF.tensor_count",
+            [temp_counts[:1]],
+            [0],
+            [gguf.GGUFValueType.UINT64],
+        )
     )
     offs += reader._push_field(
-        gguf.ReaderField(offs, "GGUF.kv_count", [temp_counts[1:]], [0], [gguf.GGUFValueType.UINT64])
+        gguf.ReaderField(
+            offs, "GGUF.kv_count", [temp_counts[1:]], [0], [gguf.GGUFValueType.UINT64]
+        )
     )
     tensor_count, kv_count = temp_counts
 
@@ -502,7 +534,9 @@ def inspect_text_encoder_gguf(path: str | Path) -> TextEncoderGGUFInfo:
         model_type = model_type,
         supported_by_lazy_loader = architecture in _SUPPORTED_LAZY_TEXT_ARCHITECTURES,
         requires_mmproj = requires_mmproj,
-        mmproj_path = resolve_text_encoder_mmproj_gguf(gguf_path) if requires_mmproj else None,
+        mmproj_path = resolve_text_encoder_mmproj_gguf(gguf_path)
+        if requires_mmproj
+        else None,
     )
 
 
@@ -649,18 +683,14 @@ def map_gemma3_text_gguf_name(name: str) -> _GGUFNameTarget | None:
     hf_name = mapping.get(leaf)
     if hf_name is None:
         return None
-    needs_norm_correction = (
-        suffix == "weight"
-        and leaf
-        in {
-            "attn_norm",
-            "post_attention_norm",
-            "ffn_norm",
-            "post_ffw_norm",
-            "attn_q_norm",
-            "attn_k_norm",
-        }
-    )
+    needs_norm_correction = suffix == "weight" and leaf in {
+        "attn_norm",
+        "post_attention_norm",
+        "ffn_norm",
+        "post_ffw_norm",
+        "attn_q_norm",
+        "attn_k_norm",
+    }
     return _GGUFNameTarget(
         hf_name,
         value_offset = -1.0 if needs_norm_correction else 0.0,
@@ -676,7 +706,12 @@ def map_t5_text_gguf_name(name: str) -> _GGUFNameTarget | None:
         return _GGUFNameTarget("encoder.final_layer_norm.weight")
 
     parts = name.split(".")
-    if len(parts) != 5 or parts[0] != "enc" or parts[1] != "blk" or parts[4] not in {"weight", "bias"}:
+    if (
+        len(parts) != 5
+        or parts[0] != "enc"
+        or parts[1] != "blk"
+        or parts[4] not in {"weight", "bias"}
+    ):
         return None
 
     layer = parts[2]
@@ -732,14 +767,25 @@ def map_qwen2vl_mmproj_gguf_name(name: str) -> Qwen2VLMmprojTarget | None:
     if name == "v.post_ln.weight":
         return Qwen2VLMmprojTarget("model.visual.merger.ln_q.weight")
     if name.startswith("mm."):
-        return Qwen2VLMmprojTarget(f"model.visual.merger.mlp.{name.removeprefix('mm.')}")
+        return Qwen2VLMmprojTarget(
+            f"model.visual.merger.mlp.{name.removeprefix('mm.')}"
+        )
     if name == "v.patch_embd.weight":
-        return Qwen2VLMmprojTarget("model.visual.patch_embed.proj.weight", stack_index = 0)
+        return Qwen2VLMmprojTarget(
+            "model.visual.patch_embed.proj.weight", stack_index = 0
+        )
     if name == "v.patch_embd.weight.1":
-        return Qwen2VLMmprojTarget("model.visual.patch_embed.proj.weight", stack_index = 1)
+        return Qwen2VLMmprojTarget(
+            "model.visual.patch_embed.proj.weight", stack_index = 1
+        )
 
     parts = name.split(".")
-    if len(parts) != 5 or parts[0] != "v" or parts[1] != "blk" or parts[4] not in {"weight", "bias"}:
+    if (
+        len(parts) != 5
+        or parts[0] != "v"
+        or parts[1] != "blk"
+        or parts[4] not in {"weight", "bias"}
+    ):
         return None
 
     layer = parts[2]
@@ -800,7 +846,9 @@ def patch_gguf_text_encoder_for_resident_device(
 
     for module in root.modules():
         buffers = getattr(module, "_buffers", {})
-        if hasattr(module, "_resident_device") and any(name in buffers for name in ("qweight", "qbias")):
+        if hasattr(module, "_resident_device") and any(
+            name in buffers for name in ("qweight", "qbias")
+        ):
             module._resident_device = resident
             module._pin_cpu_resident = pin_cpu_resident
             if hasattr(module, "_place_resident_qweight"):
@@ -811,7 +859,10 @@ def patch_gguf_text_encoder_for_resident_device(
         weight = getattr(module, "weight", None)
         if weight is None or not hasattr(weight, "quant_type"):
             continue
-        if not hasattr(module, "forward_native") and type(module).__name__ != "GGUFLinear":
+        if (
+            not hasattr(module, "forward_native")
+            and type(module).__name__ != "GGUFLinear"
+        ):
             continue
 
         if getattr(module, "_unsloth_gguf_resident_patched", False):
@@ -853,17 +904,23 @@ def patch_gguf_text_encoder_for_resident_device(
                     if _resident_tensor_needs_refresh(
                         resident_param,
                         self._unsloth_gguf_resident_device,
-                        pin_memory = getattr(self, "_unsloth_gguf_pin_cpu_resident", False),
+                        pin_memory = getattr(
+                            self, "_unsloth_gguf_pin_cpu_resident", False
+                        ),
                     ):
                         resident_param = _copy_gguf_parameter_to_device(
                             resident_param,
                             self._unsloth_gguf_resident_device,
-                            pin_memory = getattr(self, "_unsloth_gguf_pin_cpu_resident", False),
+                            pin_memory = getattr(
+                                self, "_unsloth_gguf_pin_cpu_resident", False
+                            ),
                         )
                     self._parameters[name] = resident_param
             return result
 
-        def _resident_forward(self, *args, _original_forward = original_forward, **kwargs):
+        def _resident_forward(
+            self, *args, _original_forward = original_forward, **kwargs
+        ):
             target_device = _first_tensor_device(args)
             if target_device is None:
                 target_device = _first_tensor_device(kwargs)
@@ -959,7 +1016,9 @@ class _LazyGGUFOffloadMixin:
                 )
             self._buffers[name] = qbuffer
 
-    def _compute_quant_buffer(self, name: str, target_device: torch.device) -> torch.Tensor:
+    def _compute_quant_buffer(
+        self, name: str, target_device: torch.device
+    ) -> torch.Tensor:
         qbuffer = self._buffers[name]
         if qbuffer.device == target_device:
             return qbuffer
@@ -1022,15 +1081,16 @@ def configure_lazy_gguf_cuda_cache(root: Any, max_bytes: int) -> dict[str, int]:
         if not cpu_quant_buffers:
             continue
         module_bytes = sum(
-            buffer.numel() * buffer.element_size()
-            for buffer in cpu_quant_buffers
+            buffer.numel() * buffer.element_size() for buffer in cpu_quant_buffers
         )
         candidates.append((int(module_bytes), module))
         candidate_bytes += module_bytes
 
     selected_modules = 0
     selected_bytes = 0
-    for module_bytes, module in sorted(candidates, key = lambda item: item[0], reverse = True):
+    for module_bytes, module in sorted(
+        candidates, key = lambda item: item[0], reverse = True
+    ):
         if module_bytes <= 0:
             continue
         if selected_bytes + module_bytes > cache_state.max_bytes:
@@ -1143,6 +1203,7 @@ def install_compiled_lazy_gguf_linear_dequant(root: Any) -> dict[str, int]:
         )
         compiled = compiled_cache.get(cache_key)
         if compiled is None:
+
             def _dequantize_blocks(inner_blocks: torch.Tensor) -> torch.Tensor:
                 return dequant_fn(inner_blocks, block_size, type_size, None)
 
@@ -1232,8 +1293,7 @@ def _torch_gguf_dequant_types(gguf: Any) -> frozenset[Any]:
     quant_types = frozenset(
         qtype
         for qtype in (
-            getattr(enum_cls, name, None)
-            for name in _TORCH_GGUF_DEQUANT_TYPE_NAMES
+            getattr(enum_cls, name, None) for name in _TORCH_GGUF_DEQUANT_TYPE_NAMES
         )
         if qtype is not None
     )
@@ -1344,7 +1404,9 @@ def _materialize_gemma3_buffers(text_encoder: nn.Module, config: Any) -> None:
     text_encoder.model.rotary_emb_local = Gemma3RotaryEmbedding(config = local_config)
 
 
-def _materialize_ministral3_rotary_buffers(text_encoder: nn.Module, config: Any) -> None:
+def _materialize_ministral3_rotary_buffers(
+    text_encoder: nn.Module, config: Any
+) -> None:
     try:
         from transformers.models.ministral3.modeling_ministral3 import (
             Ministral3RotaryEmbedding,
@@ -1379,10 +1441,13 @@ def _infer_t5_config_from_gguf(reader: Any) -> T5Config:
     d_model = int(_gguf_field_scalar(reader, "t5encoder.embedding_length", 0) or 0)
     d_ff = int(_gguf_field_scalar(reader, "t5encoder.feed_forward_length", 0) or 0)
     num_layers = int(_gguf_field_scalar(reader, "t5encoder.block_count", 0) or 0)
-    num_heads = int(_gguf_field_scalar(reader, "t5encoder.attention.head_count", 0) or 0)
+    num_heads = int(
+        _gguf_field_scalar(reader, "t5encoder.attention.head_count", 0) or 0
+    )
     d_kv = int(_gguf_field_scalar(reader, "t5encoder.attention.key_length", 0) or 0)
     relative_attention_num_buckets = int(
-        _gguf_field_scalar(reader, "t5encoder.attention.relative_buckets_count", 32) or 32
+        _gguf_field_scalar(reader, "t5encoder.attention.relative_buckets_count", 32)
+        or 32
     )
     layer_norm_epsilon = float(
         _gguf_field_scalar(
@@ -1467,13 +1532,19 @@ def _dequantize_gguf_bytes(
         data = qweight.view(torch.uint8)
         if data.numel() % 2 != 0:
             raise RuntimeError("BF16 GGUF tensor has an odd byte count.")
-        dequant = (data.reshape(-1).view(torch.int16).to(torch.int32) << 16).view(torch.float32)
+        dequant = (data.reshape(-1).view(torch.int16).to(torch.int32) << 16).view(
+            torch.float32
+        )
         if logical_shape is None:
-            quant_shape_from_byte_shape = getattr(gguf, "quant_shape_from_byte_shape", None)
+            quant_shape_from_byte_shape = getattr(
+                gguf, "quant_shape_from_byte_shape", None
+            )
             if callable(quant_shape_from_byte_shape):
                 logical_shape = tuple(
                     int(dim)
-                    for dim in quant_shape_from_byte_shape(tuple(qweight.shape), quant_type)
+                    for dim in quant_shape_from_byte_shape(
+                        tuple(qweight.shape), quant_type
+                    )
                 )
         if logical_shape is not None:
             dequant = dequant.reshape(logical_shape)
@@ -1487,7 +1558,10 @@ def _dequantize_gguf_bytes(
             dequantize_function = dequantize_functions.get(quant_type)
     if dequantize_function is not None:
         block_size, type_size = GGML_QUANT_SIZES[quant_type]
-        shape = logical_shape or (*qweight.shape[:-1], qweight.shape[-1] // type_size * block_size)
+        shape = logical_shape or (
+            *qweight.shape[:-1],
+            qweight.shape[-1] // type_size * block_size,
+        )
         blocks = qweight.view(torch.uint8).reshape((-1, type_size))
         dequant = dequantize_function(blocks, block_size, type_size, dtype)
         return dequant.reshape(shape)
@@ -1504,7 +1578,9 @@ def _dequantize_gguf_bytes(
     except NotImplementedError:
         raise
     except Exception as exc:
-        raise NotImplementedError(f"Unsupported GGUF quantization type: {quant_type!r}") from exc
+        raise NotImplementedError(
+            f"Unsupported GGUF quantization type: {quant_type!r}"
+        ) from exc
     dequant = torch.from_numpy(dequant_np)
     if logical_shape is None:
         quant_shape_from_byte_shape = getattr(gguf, "quant_shape_from_byte_shape", None)
@@ -1529,7 +1605,11 @@ def _reverse_permute_qk(weight: torch.Tensor, num_heads: int) -> torch.Tensor:
     """
 
     dim = weight.shape[0] // num_heads // 2
-    return weight.reshape(num_heads, dim, 2, *weight.shape[1:]).transpose(1, 2).reshape(weight.shape)
+    return (
+        weight.reshape(num_heads, dim, 2, *weight.shape[1:])
+        .transpose(1, 2)
+        .reshape(weight.shape)
+    )
 
 
 class LazyGGUFLinear(_LazyGGUFOffloadMixin, nn.Linear):
@@ -1693,7 +1773,9 @@ class LazyGGUFEmbedding(_LazyGGUFOffloadMixin, nn.Module):
             gathered = weight.index_select(0, inverse.to(weight.device))
         output = gathered.reshape(*input_ids.shape, self.embedding_dim)
         if self.output_scale is not None:
-            output = output * self.output_scale.to(device = output.device, dtype = output.dtype)
+            output = output * self.output_scale.to(
+                device = output.device, dtype = output.dtype
+            )
         return output
 
 
@@ -1779,7 +1861,9 @@ class LazyGGUFConv2d(_LazyGGUFOffloadMixin, nn.Module):
         if bias is not None:
             bias = bias.to(device = inputs.device, dtype = inputs.dtype)
         if self.padding_mode != "zeros":
-            inputs = F.pad(inputs, self._reversed_padding_repeated_twice, mode = self.padding_mode)
+            inputs = F.pad(
+                inputs, self._reversed_padding_repeated_twice, mode = self.padding_mode
+            )
             padding = _pair(0)
         else:
             padding = self.padding
@@ -1806,7 +1890,11 @@ class _LazyGGUFNormMixin(_LazyGGUFOffloadMixin):
         logical_shape: tuple[int, ...] | None,
     ) -> None:
         setattr(self, f"{name}_quant_type", quant_type)
-        setattr(self, f"{name}_logical_shape", tuple(logical_shape) if logical_shape is not None else None)
+        setattr(
+            self,
+            f"{name}_logical_shape",
+            tuple(logical_shape) if logical_shape is not None else None,
+        )
         qbuffer_name = f"q{name}"
         if qvalue is not None:
             self.register_buffer(
@@ -1950,7 +2038,9 @@ class LazyGGUFGroupNorm(_LazyGGUFNormMixin, nn.Module):
 class LazyFlux2MistralTextEncoder(Mistral3ForConditionalGeneration):
     """Text-only lazy GGUF replacement for FLUX.2's Mistral3 text encoder."""
 
-    def __init__(self, config: Any, language_model: MistralModel, *, compute_dtype: torch.dtype) -> None:
+    def __init__(
+        self, config: Any, language_model: MistralModel, *, compute_dtype: torch.dtype
+    ) -> None:
         PreTrainedModel.__init__(self, config)
         self.language_model = language_model
         self.compute_dtype = compute_dtype
@@ -2364,7 +2454,9 @@ class LazyT5TextEncoder(T5EncoderModel):
         return text_encoder
 
 
-def _target_for_gguf_name(name: str, *, num_attention_heads: int, num_key_value_heads: int) -> _GGUFNameTarget | None:
+def _target_for_gguf_name(
+    name: str, *, num_attention_heads: int, num_key_value_heads: int
+) -> _GGUFNameTarget | None:
     if name == "token_embd.weight":
         return _GGUFNameTarget("embed_tokens.weight")
     if name == "output_norm.weight":
@@ -2382,8 +2474,12 @@ def _target_for_gguf_name(name: str, *, num_attention_heads: int, num_key_value_
     suffix = parts[3]
     prefix = f"layers.{layer}"
     mapping = {
-        "attn_q": _GGUFNameTarget(f"{prefix}.self_attn.q_proj.{suffix}", num_attention_heads),
-        "attn_k": _GGUFNameTarget(f"{prefix}.self_attn.k_proj.{suffix}", num_key_value_heads),
+        "attn_q": _GGUFNameTarget(
+            f"{prefix}.self_attn.q_proj.{suffix}", num_attention_heads
+        ),
+        "attn_k": _GGUFNameTarget(
+            f"{prefix}.self_attn.k_proj.{suffix}", num_key_value_heads
+        ),
         "attn_v": _GGUFNameTarget(f"{prefix}.self_attn.v_proj.{suffix}"),
         "attn_output": _GGUFNameTarget(f"{prefix}.self_attn.o_proj.{suffix}"),
         "ffn_gate": _GGUFNameTarget(f"{prefix}.mlp.gate_proj.{suffix}"),
@@ -2406,7 +2502,9 @@ def _gguf_bfloat16_type(gguf: Any) -> Any:
     return getattr(gguf.GGMLQuantizationType, "BF16", None)
 
 
-def _read_gguf_orig_shape_metadata(reader: Any, tensor_name: str) -> tuple[int, ...] | None:
+def _read_gguf_orig_shape_metadata(
+    reader: Any, tensor_name: str
+) -> tuple[int, ...] | None:
     """Read optional original-shape metadata for a GGUF tensor."""
 
     if reader is None or not tensor_name:
@@ -2454,7 +2552,9 @@ def _torch_from_gguf_data(tensor: Any, *, copy: bool) -> torch.Tensor:
     if copy:
         data = data.copy()
     with warnings.catch_warnings():
-        warnings.filterwarnings("ignore", message = "The given NumPy array is not writable.*")
+        warnings.filterwarnings(
+            "ignore", message = "The given NumPy array is not writable.*"
+        )
         return torch.from_numpy(data)
 
 
@@ -2574,7 +2674,9 @@ def replace_mapped_text_modules_with_lazy_gguf(
                 materialized += 1
             continue
 
-        if qtype in _gguf_full_precision_types(gguf) or qtype == _gguf_bfloat16_type(gguf):
+        if qtype in _gguf_full_precision_types(gguf) or qtype == _gguf_bfloat16_type(
+            gguf
+        ):
             value = _materialize_gguf_tensor(
                 tensor,
                 compute_dtype = compute_dtype,
@@ -2625,7 +2727,9 @@ def replace_mapped_text_modules_with_lazy_gguf(
                 else:
                     qbias = _torch_from_gguf_data(bias_tensor, copy = False)
                     bias_quant_type = bias_qtype
-                    bias_logical_shape = _gguf_tensor_logical_shape(bias_tensor, reader = reader)
+                    bias_logical_shape = _gguf_tensor_logical_shape(
+                        bias_tensor, reader = reader
+                    )
                 loaded.add(bias_name)
             raw = _torch_from_gguf_data(tensor, copy = False)
             lazy = LazyGGUFLinear(
@@ -2737,7 +2841,9 @@ def replace_qwen2vl_mmproj_modules_with_gguf(
     for hf_name, parts in qkv.items():
         if not {"q", "k", "v"}.issubset(parts):
             missing = sorted({"q", "k", "v"} - set(parts))
-            raise RuntimeError(f"Qwen2VL mmproj qkv target {hf_name} is missing {missing}")
+            raise RuntimeError(
+                f"Qwen2VL mmproj qkv target {hf_name} is missing {missing}"
+            )
         parent, leaf = _module_and_leaf(root, hf_name)
         value = torch.cat(
             [
@@ -2770,7 +2876,9 @@ def replace_qwen2vl_mmproj_modules_with_gguf(
     for hf_name, parts in stacked.items():
         if not {0, 1}.issubset(parts):
             missing = sorted({0, 1} - set(parts))
-            raise RuntimeError(f"Qwen2VL mmproj stacked target {hf_name} is missing {missing}")
+            raise RuntimeError(
+                f"Qwen2VL mmproj stacked target {hf_name} is missing {missing}"
+            )
         parent, leaf = _module_and_leaf(root, hf_name)
         value = torch.stack(
             [
@@ -2838,7 +2946,12 @@ def _replace_mistral_modules_with_lazy_gguf(
         parent, leaf = _module_and_leaf(language_model, hf_name)
         quant_type = tensor.tensor_type
 
-        if leaf == "weight" and isinstance(parent, nn.Linear) and quant_type not in _gguf_full_precision_types(gguf) and quant_type != _gguf_bfloat16_type(gguf):
+        if (
+            leaf == "weight"
+            and isinstance(parent, nn.Linear)
+            and quant_type not in _gguf_full_precision_types(gguf)
+            and quant_type != _gguf_bfloat16_type(gguf)
+        ):
             bias_name = hf_name.removesuffix(".weight") + ".bias"
             bias = None
             qbias = None
@@ -2847,7 +2960,9 @@ def _replace_mistral_modules_with_lazy_gguf(
             if bias_name in mapped:
                 bias_tensor, _bias_target = mapped[bias_name]
                 bias_qtype = bias_tensor.tensor_type
-                if bias_qtype in _gguf_full_precision_types(gguf) or bias_qtype == _gguf_bfloat16_type(gguf):
+                if bias_qtype in _gguf_full_precision_types(
+                    gguf
+                ) or bias_qtype == _gguf_bfloat16_type(gguf):
                     bias = _materialize_gguf_tensor(
                         bias_tensor,
                         compute_dtype = compute_dtype,
@@ -2855,11 +2970,15 @@ def _replace_mistral_modules_with_lazy_gguf(
                         reader = reader,
                     )
                     if _bias_target.reverse_permute_heads is not None:
-                        bias = _reverse_permute_qk(bias, _bias_target.reverse_permute_heads)
+                        bias = _reverse_permute_qk(
+                            bias, _bias_target.reverse_permute_heads
+                        )
                 else:
                     qbias = _torch_from_gguf_data(bias_tensor, copy = False)
                     bias_quant_type = bias_qtype
-                    bias_logical_shape = _gguf_tensor_logical_shape(bias_tensor, reader = reader)
+                    bias_logical_shape = _gguf_tensor_logical_shape(
+                        bias_tensor, reader = reader
+                    )
                 loaded.add(bias_name)
             raw = _torch_from_gguf_data(tensor, copy = False)
             lazy = LazyGGUFLinear(
@@ -2876,9 +2995,16 @@ def _replace_mistral_modules_with_lazy_gguf(
                 bias_logical_shape = bias_logical_shape,
             )
             grandparent_name = hf_name.removesuffix(".weight")
-            grandparent, module_name = _module_and_leaf(language_model, grandparent_name)
+            grandparent, module_name = _module_and_leaf(
+                language_model, grandparent_name
+            )
             setattr(grandparent, module_name, lazy)
-        elif leaf == "weight" and isinstance(parent, nn.Embedding) and quant_type not in _gguf_full_precision_types(gguf) and quant_type != _gguf_bfloat16_type(gguf):
+        elif (
+            leaf == "weight"
+            and isinstance(parent, nn.Embedding)
+            and quant_type not in _gguf_full_precision_types(gguf)
+            and quant_type != _gguf_bfloat16_type(gguf)
+        ):
             raw = _torch_from_gguf_data(tensor, copy = False)
             lazy = LazyGGUFEmbedding(
                 raw,
@@ -2889,9 +3015,13 @@ def _replace_mistral_modules_with_lazy_gguf(
                 resident_device = resident_device,
             )
             grandparent_name = hf_name.removesuffix(".weight")
-            grandparent, module_name = _module_and_leaf(language_model, grandparent_name)
+            grandparent, module_name = _module_and_leaf(
+                language_model, grandparent_name
+            )
             setattr(grandparent, module_name, lazy)
-        elif quant_type in _gguf_full_precision_types(gguf) or quant_type == _gguf_bfloat16_type(gguf):
+        elif quant_type in _gguf_full_precision_types(
+            gguf
+        ) or quant_type == _gguf_bfloat16_type(gguf):
             value = _materialize_gguf_tensor(
                 tensor,
                 compute_dtype = compute_dtype,

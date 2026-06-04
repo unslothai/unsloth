@@ -394,9 +394,7 @@ def test_supported_optimization_options_payload_shape():
     assert recommended["group_offload"]["image_default"] is False
     assert recommended["group_offload"]["media_kind"] == "video"
 
-    offload_by_name = {
-        entry["name"]: entry for entry in payload["offload_policies"]
-    }
+    offload_by_name = {entry["name"]: entry for entry in payload["offload_policies"]}
     assert offload_by_name["balanced"]["media_kind"] == "image"
     assert offload_by_name["balanced"]["keeps_gguf_weights_cpu_resident"] is True
     assert offload_by_name["aggressive"]["uses_diffusers_model_cpu_offload"] is True
@@ -423,7 +421,13 @@ def test_supported_optimization_options_payload_shape():
     ]
 
     attention_options = payload["attention"]
-    assert attention_options["available"] == ["auto", "flash", "sdpa", "flex", "xformers"]
+    assert attention_options["available"] == [
+        "auto",
+        "flash",
+        "sdpa",
+        "flex",
+        "xformers",
+    ]
     assert attention_options["default"] == "auto"
     assert attention_options["fallback_order"] == [
         "flash",
@@ -1070,9 +1074,7 @@ def test_generate_image_reuses_prompt_embedding_cache(monkeypatch):
             assert negative_prompt is None
             assert do_classifier_free_guidance is True
             assert max_sequence_length == 512
-            return [torch.ones(1, 2, device = device)], [
-                torch.zeros(1, 2, device = device)
-            ]
+            return [torch.ones(1, 2, device = device)], [torch.zeros(1, 2, device = device)]
 
         def __call__(
             self,
@@ -1129,8 +1131,7 @@ def test_generate_image_reuses_prompt_embedding_cache(monkeypatch):
     assert all(call["prompt"] is None for call in pipe.calls)
     assert all(call["prompt_embeds"][0].device.type == "cpu" for call in pipe.calls)
     assert all(
-        call["negative_prompt_embeds"][0].device.type == "cpu"
-        for call in pipe.calls
+        call["negative_prompt_embeds"][0].device.type == "cpu" for call in pipe.calls
     )
     assert backend._prompt_embedding_cache_value is not None
     assert backend._prompt_embedding_cache_value[0][0].device.type == "cpu"
@@ -1402,7 +1403,9 @@ def test_prompt_embedding_cache_synthesizes_qwen_all_valid_masks(monkeypatch):
     )
 
 
-def test_flux2_klein_embedded_guidance_patch_disables_cfg_and_forwards_guidance(monkeypatch):
+def test_flux2_klein_embedded_guidance_patch_disables_cfg_and_forwards_guidance(
+    monkeypatch,
+):
     import torch
     from core.inference import diffusion as d
 
@@ -1643,15 +1646,13 @@ def test_guard_diffusers_optional_bitsandbytes_stubs_failed_import(monkeypatch):
     stub = sys.modules["diffusers.quantizers.bitsandbytes"]
     assert hasattr(stub, "BnB4BitDiffusersQuantizer")
     assert "diffusers.quantizers.bitsandbytes.utils" in sys.modules
-    assert sys.modules[
-        "diffusers.quantizers.bitsandbytes.utils"
-    ]._check_bnb_status(None) == (False, False, False)
+    assert sys.modules["diffusers.quantizers.bitsandbytes.utils"]._check_bnb_status(
+        None
+    ) == (False, False, False)
     with pytest.raises(RuntimeError, match = "bitsandbytes failed to import"):
         stub.BnB4BitDiffusersQuantizer()
     with pytest.raises(RuntimeError, match = "bitsandbytes failed to import"):
-        sys.modules[
-            "diffusers.quantizers.bitsandbytes.utils"
-        ].replace_with_bnb_linear()
+        sys.modules["diffusers.quantizers.bitsandbytes.utils"].replace_with_bnb_linear()
 
 
 def test_guard_peft_optional_bitsandbytes_marks_bnb_unavailable(monkeypatch):
@@ -1943,7 +1944,10 @@ def test_load_model_full_repo_uses_safetensors_quantization(monkeypatch):
         "dynamic": True,
         "options": {"triton.cudagraphs": False},
     }
-    assert status["torch_compile_stats"]["compiled_components"][0]["component"] == "transformer"
+    assert (
+        status["torch_compile_stats"]["compiled_components"][0]["component"]
+        == "transformer"
+    )
 
 
 def test_load_model_full_repo_defaults_to_regional_torch_compile(monkeypatch):
@@ -2258,7 +2262,9 @@ def test_load_model_ernie_gguf_uses_state_dict_fallback(monkeypatch):
         )
         return SimpleNamespace(source = "state-dict-fallback")
 
-    monkeypatch.setattr(d, "_load_transformer_gguf_from_state_dict", _fake_state_dict_loader)
+    monkeypatch.setattr(
+        d, "_load_transformer_gguf_from_state_dict", _fake_state_dict_loader
+    )
 
     backend = get_diffusion_backend()
     status = backend.load_model(
@@ -2522,10 +2528,7 @@ def test_curated_unsloth_diffusion_gguf_manifest_covers_all_quant_filenames():
         "unsloth/Qwen-Image-Layered-GGUF",
     }
 
-    assert {
-        spec.repo_id
-        for spec in _CURATED_UNSLOTH_DIFFUSION_GGUFS
-    } == expected_repos
+    assert {spec.repo_id for spec in _CURATED_UNSLOTH_DIFFUSION_GGUFS} == expected_repos
 
     checked = 0
     for spec in _CURATED_UNSLOTH_DIFFUSION_GGUFS:
@@ -2549,10 +2552,9 @@ def test_curated_diffusion_presets_cover_manifest():
     by_id = {entry["id"]: entry for entry in presets}
     assert len(by_id) == len(presets)
     by_repo = {entry["transformer_gguf_repo"]: entry for entry in presets}
-    assert {
-        spec.repo_id
-        for spec in _CURATED_UNSLOTH_DIFFUSION_GGUFS
-    }.issubset(set(by_repo))
+    assert {spec.repo_id for spec in _CURATED_UNSLOTH_DIFFUSION_GGUFS}.issubset(
+        set(by_repo)
+    )
     flux2 = by_id["flux.2-dev"]
     assert flux2["id"] == "flux.2-dev"
     assert flux2["pipeline_repo"] == "black-forest-labs/FLUX.2-dev"
@@ -2616,14 +2618,13 @@ def test_resolve_diffusion_load_plan_expands_preset_component_swap():
     assert plan["load_kwargs"]["transformer_gguf_filename"] == (
         "flux-2-klein-base-4b-Q4_K_M.gguf"
     )
-    assert plan["load_kwargs"]["text_encoder_gguf_repo"] == (
-        "unsloth/Qwen3-4B-GGUF"
-    )
+    assert plan["load_kwargs"]["text_encoder_gguf_repo"] == ("unsloth/Qwen3-4B-GGUF")
     assert plan["load_kwargs"]["family_override"] == "flux.2-klein"
     assert plan["memory_plan"]["requested_mode"] == "auto"
-    assert plan["load_kwargs"]["offload_policy"] == plan["memory_plan"][
-        "selected_offload_policy"
-    ]
+    assert (
+        plan["load_kwargs"]["offload_policy"]
+        == plan["memory_plan"]["selected_offload_policy"]
+    )
     assert plan["sampling_defaults"]["num_inference_steps"] == 50
     assert plan["sampling_defaults"]["guidance_scale"] == 4.0
     assert plan["component_sources"]["transformer"] == {
@@ -2753,78 +2754,116 @@ def test_resolve_diffusion_load_plan_keeps_qwen_balanced_for_low_memory(monkeypa
 def test_curated_gguf_recommended_offload_policy_for_direct_loads():
     import core.inference.diffusion as d
 
-    assert d._curated_gguf_recommended_offload_policy(
-        repo_id = "unsloth/Qwen-Image-GGUF",
-        gguf_filename = "qwen-image-Q4_K_M.gguf",
-        device = "cpu",
-    ) == "balanced"
-    assert d._curated_gguf_recommended_offload_policy(
-        repo_id = "unsloth/Qwen-Image-GGUF",
-        gguf_filename = "qwen-image-Q4_K_M.gguf",
-        free_bytes = 64 * 1024**3,
-        total_bytes = 80 * 1024**3,
-    ) == "balanced"
-    assert d._curated_gguf_recommended_offload_policy(
-        repo_id = "unsloth/Qwen-Image-GGUF",
-        gguf_filename = "qwen-image-Q4_K_M.gguf",
-        free_bytes = 30 * 1024**3,
-        total_bytes = 48 * 1024**3,
-    ) == "balanced"
+    assert (
+        d._curated_gguf_recommended_offload_policy(
+            repo_id = "unsloth/Qwen-Image-GGUF",
+            gguf_filename = "qwen-image-Q4_K_M.gguf",
+            device = "cpu",
+        )
+        == "balanced"
+    )
+    assert (
+        d._curated_gguf_recommended_offload_policy(
+            repo_id = "unsloth/Qwen-Image-GGUF",
+            gguf_filename = "qwen-image-Q4_K_M.gguf",
+            free_bytes = 64 * 1024**3,
+            total_bytes = 80 * 1024**3,
+        )
+        == "balanced"
+    )
+    assert (
+        d._curated_gguf_recommended_offload_policy(
+            repo_id = "unsloth/Qwen-Image-GGUF",
+            gguf_filename = "qwen-image-Q4_K_M.gguf",
+            free_bytes = 30 * 1024**3,
+            total_bytes = 48 * 1024**3,
+        )
+        == "balanced"
+    )
     for repo_id, filename in (
         ("unsloth/Qwen-Image-Edit-GGUF", "qwen-image-edit-Q4_K_M.gguf"),
         ("unsloth/Qwen-Image-Edit-2509-GGUF", "qwen-image-edit-2509-Q4_K_M.gguf"),
         ("unsloth/Qwen-Image-Edit-2511-GGUF", "qwen-image-edit-2511-Q4_K_M.gguf"),
         ("unsloth/Qwen-Image-Layered-GGUF", "qwen-image-layered-Q4_K_M.gguf"),
     ):
-        assert d._curated_gguf_recommended_offload_policy(
-            repo_id = repo_id,
-            gguf_filename = filename,
+        assert (
+            d._curated_gguf_recommended_offload_policy(
+                repo_id = repo_id,
+                gguf_filename = filename,
+                free_bytes = 64 * 1024**3,
+                total_bytes = 80 * 1024**3,
+            )
+            == "balanced"
+        )
+        assert (
+            d._curated_gguf_recommended_offload_policy(
+                repo_id = repo_id,
+                gguf_filename = filename,
+                free_bytes = 30 * 1024**3,
+                total_bytes = 48 * 1024**3,
+            )
+            == "balanced"
+        )
+    assert (
+        d._curated_gguf_recommended_offload_policy(
+            repo_id = "unsloth/Z-Image-Turbo-GGUF",
+            gguf_filename = "z-image-turbo-Q4_K_M.gguf",
+        )
+        == "less_aggressive"
+    )
+    assert (
+        d._curated_gguf_recommended_offload_policy(
+            repo_id = "unsloth/LTX-2.3-GGUF",
+            gguf_filename = "ltx-2.3-22b-dev-Q4_K_M.gguf",
+        )
+        == "less_aggressive"
+    )
+    assert (
+        d._curated_gguf_recommended_offload_policy(
+            repo_id = "unsloth/LTX-2.3-GGUF",
+            gguf_filename = "distilled/ltx-2.3-22b-distilled-Q4_K_M.gguf",
+        )
+        == "less_aggressive"
+    )
+    assert (
+        d._curated_gguf_recommended_offload_policy(
+            repo_id = "Qwen/Qwen-Image",
+            transformer_gguf_repo = "unsloth/Qwen-Image-GGUF",
+            transformer_gguf_filename = "qwen-image-Q4_K_M.gguf",
             free_bytes = 64 * 1024**3,
             total_bytes = 80 * 1024**3,
-        ) == "balanced"
-        assert d._curated_gguf_recommended_offload_policy(
-            repo_id = repo_id,
-            gguf_filename = filename,
+        )
+        == "balanced"
+    )
+    assert (
+        d._curated_gguf_recommended_offload_policy(
+            repo_id = "Qwen/Qwen-Image",
+            transformer_gguf_repo = "unsloth/Qwen-Image-GGUF",
+            transformer_gguf_filename = "qwen-image-Q4_K_M.gguf",
             free_bytes = 30 * 1024**3,
             total_bytes = 48 * 1024**3,
-        ) == "balanced"
-    assert d._curated_gguf_recommended_offload_policy(
-        repo_id = "unsloth/Z-Image-Turbo-GGUF",
-        gguf_filename = "z-image-turbo-Q4_K_M.gguf",
-    ) == "less_aggressive"
-    assert d._curated_gguf_recommended_offload_policy(
-        repo_id = "unsloth/LTX-2.3-GGUF",
-        gguf_filename = "ltx-2.3-22b-dev-Q4_K_M.gguf",
-    ) == "less_aggressive"
-    assert d._curated_gguf_recommended_offload_policy(
-        repo_id = "unsloth/LTX-2.3-GGUF",
-        gguf_filename = "distilled/ltx-2.3-22b-distilled-Q4_K_M.gguf",
-    ) == "less_aggressive"
-    assert d._curated_gguf_recommended_offload_policy(
-        repo_id = "Qwen/Qwen-Image",
-        transformer_gguf_repo = "unsloth/Qwen-Image-GGUF",
-        transformer_gguf_filename = "qwen-image-Q4_K_M.gguf",
-        free_bytes = 64 * 1024**3,
-        total_bytes = 80 * 1024**3,
-    ) == "balanced"
-    assert d._curated_gguf_recommended_offload_policy(
-        repo_id = "Qwen/Qwen-Image",
-        transformer_gguf_repo = "unsloth/Qwen-Image-GGUF",
-        transformer_gguf_filename = "qwen-image-Q4_K_M.gguf",
-        free_bytes = 30 * 1024**3,
-        total_bytes = 48 * 1024**3,
-    ) == "balanced"
-    assert d._curated_gguf_recommended_offload_policy(
-        repo_id = "Qwen/Qwen-Image",
-    ) is None
-    assert d._curated_gguf_recommended_offload_policy(
-        repo_id = "diffusers/LTX-2.3-Diffusers",
-        transformer_gguf_repo = "unsloth/LTX-2.3-GGUF",
-        transformer_gguf_filename = "ltx-2.3-22b-dev-Q4_K_M.gguf",
-    ) == "less_aggressive"
+        )
+        == "balanced"
+    )
+    assert (
+        d._curated_gguf_recommended_offload_policy(
+            repo_id = "Qwen/Qwen-Image",
+        )
+        is None
+    )
+    assert (
+        d._curated_gguf_recommended_offload_policy(
+            repo_id = "diffusers/LTX-2.3-Diffusers",
+            transformer_gguf_repo = "unsloth/LTX-2.3-GGUF",
+            transformer_gguf_filename = "ltx-2.3-22b-dev-Q4_K_M.gguf",
+        )
+        == "less_aggressive"
+    )
 
 
-def test_load_model_ernie_can_replace_text_encoder_and_prompt_enhancer_ggufs(monkeypatch):
+def test_load_model_ernie_can_replace_text_encoder_and_prompt_enhancer_ggufs(
+    monkeypatch,
+):
     _install_fake_diffusers(monkeypatch)
 
     fake_text_mod = types.ModuleType("core.inference.gguf_text_encoder")
@@ -2887,7 +2926,9 @@ def test_load_model_ernie_can_replace_text_encoder_and_prompt_enhancer_ggufs(mon
     monkeypatch.setitem(sys.modules, "core.inference.gguf_text_encoder", fake_text_mod)
     import core.inference as inference_pkg
 
-    monkeypatch.setattr(inference_pkg, "gguf_text_encoder", fake_text_mod, raising = False)
+    monkeypatch.setattr(
+        inference_pkg, "gguf_text_encoder", fake_text_mod, raising = False
+    )
 
     from core.inference.diffusion import get_diffusion_backend
 
@@ -2904,7 +2945,9 @@ def test_load_model_ernie_can_replace_text_encoder_and_prompt_enhancer_ggufs(mon
 
     assert status["is_loaded"] is True
     assert status["family"] == "ernie-image-turbo"
-    assert status["text_encoder_gguf_repo"] == "unsloth/Ministral-3-3B-Instruct-2512-GGUF"
+    assert (
+        status["text_encoder_gguf_repo"] == "unsloth/Ministral-3-3B-Instruct-2512-GGUF"
+    )
     assert status["prompt_enhancer_gguf_repo"] == (
         "Green-Sky/Ernie-Image-Prompt-Enhancer-Ministral-3B-GGUF"
     )
@@ -3071,12 +3114,17 @@ def test_load_model_flux2_dev_text_encoder_gguf(monkeypatch):
 
     fake_text_mod.LazyFlux2MistralTextEncoder = _FakeLazyTextEncoder
     fake_text_mod.patch_gguf_text_encoder_for_resident_device = (
-        lambda root, resident_device, pin_memory = None: patch_calls.append((root, resident_device, pin_memory)) or 7
+        lambda root, resident_device, pin_memory = None: patch_calls.append(
+            (root, resident_device, pin_memory)
+        )
+        or 7
     )
     monkeypatch.setitem(sys.modules, "core.inference.gguf_text_encoder", fake_text_mod)
     import core.inference as inference_pkg
 
-    monkeypatch.setattr(inference_pkg, "gguf_text_encoder", fake_text_mod, raising = False)
+    monkeypatch.setattr(
+        inference_pkg, "gguf_text_encoder", fake_text_mod, raising = False
+    )
 
     from core.inference.diffusion import get_diffusion_backend
 
@@ -3090,7 +3138,10 @@ def test_load_model_flux2_dev_text_encoder_gguf(monkeypatch):
 
     assert status["is_loaded"] is True
     assert status["family"] == "flux.2"
-    assert status["text_encoder_gguf_repo"] == "unsloth/Mistral-Small-3.2-24B-Instruct-2506-GGUF"
+    assert (
+        status["text_encoder_gguf_repo"]
+        == "unsloth/Mistral-Small-3.2-24B-Instruct-2506-GGUF"
+    )
     assert (
         status["text_encoder_gguf_filename"]
         == "Mistral-Small-3.2-24B-Instruct-2506-UD-Q4_K_XL.gguf"
@@ -3104,17 +3155,25 @@ def test_load_model_flux2_dev_text_encoder_gguf(monkeypatch):
             "token": None,
         }
     ]
-    assert backend._pipe.kwargs["text_encoder"].path == _FakeLazyTextEncoder.calls[0]["path"]
+    assert (
+        backend._pipe.kwargs["text_encoder"].path
+        == _FakeLazyTextEncoder.calls[0]["path"]
+    )
 
     internal = backend.status(include_internal = True)
-    assert internal["active_text_encoder_gguf_repo"] == "unsloth/Mistral-Small-3.2-24B-Instruct-2506-GGUF"
+    assert (
+        internal["active_text_encoder_gguf_repo"]
+        == "unsloth/Mistral-Small-3.2-24B-Instruct-2506-GGUF"
+    )
     assert (
         internal["active_text_encoder_gguf_filename"]
         == "Mistral-Small-3.2-24B-Instruct-2506-UD-Q4_K_XL.gguf"
     )
 
 
-def test_load_model_flux2_dev_text_encoder_gguf_cpu_resident_when_offloading(monkeypatch):
+def test_load_model_flux2_dev_text_encoder_gguf_cpu_resident_when_offloading(
+    monkeypatch,
+):
     """When model CPU offload is enabled on CUDA, lazy text-encoder
     GGUF weights should stay CPU-resident and copy only the active
     quantized tensor/chunk during forward."""
@@ -3152,12 +3211,17 @@ def test_load_model_flux2_dev_text_encoder_gguf_cpu_resident_when_offloading(mon
 
     fake_text_mod.LazyFlux2MistralTextEncoder = _FakeLazyTextEncoder
     fake_text_mod.patch_gguf_text_encoder_for_resident_device = (
-        lambda root, resident_device, pin_memory = None: patch_calls.append((root, resident_device, pin_memory)) or 7
+        lambda root, resident_device, pin_memory = None: patch_calls.append(
+            (root, resident_device, pin_memory)
+        )
+        or 7
     )
     monkeypatch.setitem(sys.modules, "core.inference.gguf_text_encoder", fake_text_mod)
     import core.inference as inference_pkg
 
-    monkeypatch.setattr(inference_pkg, "gguf_text_encoder", fake_text_mod, raising = False)
+    monkeypatch.setattr(
+        inference_pkg, "gguf_text_encoder", fake_text_mod, raising = False
+    )
 
     import core.inference.diffusion as d
     from core.inference.diffusion import get_diffusion_backend
@@ -3186,7 +3250,9 @@ def test_load_model_flux2_dev_text_encoder_gguf_cpu_resident_when_offloading(mon
     ]
 
 
-def test_load_model_text_encoder_gguf_cpu_resident_without_full_cpu_offload(monkeypatch):
+def test_load_model_text_encoder_gguf_cpu_resident_without_full_cpu_offload(
+    monkeypatch,
+):
     _install_fake_diffusers(monkeypatch)
 
     fake_text_mod = types.ModuleType("core.inference.gguf_text_encoder")
@@ -3226,12 +3292,17 @@ def test_load_model_text_encoder_gguf_cpu_resident_without_full_cpu_offload(monk
 
     fake_text_mod.LazyFlux2MistralTextEncoder = _FakeLazyTextEncoder
     fake_text_mod.patch_gguf_text_encoder_for_resident_device = (
-        lambda root, resident_device, pin_memory = None: patch_calls.append((root, resident_device, pin_memory)) or 7
+        lambda root, resident_device, pin_memory = None: patch_calls.append(
+            (root, resident_device, pin_memory)
+        )
+        or 7
     )
     monkeypatch.setitem(sys.modules, "core.inference.gguf_text_encoder", fake_text_mod)
     import core.inference as inference_pkg
 
-    monkeypatch.setattr(inference_pkg, "gguf_text_encoder", fake_text_mod, raising = False)
+    monkeypatch.setattr(
+        inference_pkg, "gguf_text_encoder", fake_text_mod, raising = False
+    )
 
     import core.inference.diffusion as d
     from core.inference.diffusion import get_diffusion_backend
@@ -3384,35 +3455,56 @@ def test_balanced_gguf_cuda_cache_budget_is_automatic_and_headroom_aware(monkeyp
     monkeypatch.delenv("UNSLOTH_STUDIO_GGUF_CUDA_CACHE_MIB", raising = False)
     gib = 1024**3
 
-    assert d._balanced_gguf_cuda_cache_bytes(
-        device = "cpu",
-        free_bytes = 64 * gib,
-        total_bytes = 64 * gib,
-    ) == 0
-    assert d._balanced_gguf_cuda_cache_bytes(
-        free_bytes = 16 * gib,
-        total_bytes = 16 * gib,
-    ) == 0
-    assert d._balanced_gguf_cuda_cache_bytes(
-        free_bytes = 30 * gib,
-        total_bytes = 24 * gib,
-    ) == 2 * gib
-    assert d._balanced_gguf_cuda_cache_bytes(
-        free_bytes = 64 * gib,
-        total_bytes = 64 * gib,
-    ) == 8 * gib
-    assert d._balanced_gguf_cuda_cache_bytes(
-        free_bytes = 64 * gib,
-        total_bytes = 48 * gib,
-    ) == 4 * gib
-    assert d._balanced_gguf_cuda_cache_bytes(
-        free_bytes = 10 * gib,
-        total_bytes = 64 * gib,
-    ) == 2 * gib
-    assert d._balanced_gguf_cuda_cache_bytes(
-        free_bytes = 128 * gib,
-        total_bytes = 96 * gib,
-    ) == 16 * gib
+    assert (
+        d._balanced_gguf_cuda_cache_bytes(
+            device = "cpu",
+            free_bytes = 64 * gib,
+            total_bytes = 64 * gib,
+        )
+        == 0
+    )
+    assert (
+        d._balanced_gguf_cuda_cache_bytes(
+            free_bytes = 16 * gib,
+            total_bytes = 16 * gib,
+        )
+        == 0
+    )
+    assert (
+        d._balanced_gguf_cuda_cache_bytes(
+            free_bytes = 30 * gib,
+            total_bytes = 24 * gib,
+        )
+        == 2 * gib
+    )
+    assert (
+        d._balanced_gguf_cuda_cache_bytes(
+            free_bytes = 64 * gib,
+            total_bytes = 64 * gib,
+        )
+        == 8 * gib
+    )
+    assert (
+        d._balanced_gguf_cuda_cache_bytes(
+            free_bytes = 64 * gib,
+            total_bytes = 48 * gib,
+        )
+        == 4 * gib
+    )
+    assert (
+        d._balanced_gguf_cuda_cache_bytes(
+            free_bytes = 10 * gib,
+            total_bytes = 64 * gib,
+        )
+        == 2 * gib
+    )
+    assert (
+        d._balanced_gguf_cuda_cache_bytes(
+            free_bytes = 128 * gib,
+            total_bytes = 96 * gib,
+        )
+        == 16 * gib
+    )
 
 
 def test_balanced_gguf_cuda_cache_budget_env_override(monkeypatch):
@@ -3420,22 +3512,31 @@ def test_balanced_gguf_cuda_cache_budget_env_override(monkeypatch):
 
     gib = 1024**3
     monkeypatch.setenv("UNSLOTH_STUDIO_GGUF_CUDA_CACHE_MIB", "0")
-    assert d._balanced_gguf_cuda_cache_bytes(
-        free_bytes = 64 * gib,
-        total_bytes = 64 * gib,
-    ) == 0
+    assert (
+        d._balanced_gguf_cuda_cache_bytes(
+            free_bytes = 64 * gib,
+            total_bytes = 64 * gib,
+        )
+        == 0
+    )
 
     monkeypatch.setenv("UNSLOTH_STUDIO_GGUF_CUDA_CACHE_MIB", "123")
-    assert d._balanced_gguf_cuda_cache_bytes(
-        free_bytes = 16 * gib,
-        total_bytes = 16 * gib,
-    ) == 123 * 1024 * 1024
+    assert (
+        d._balanced_gguf_cuda_cache_bytes(
+            free_bytes = 16 * gib,
+            total_bytes = 16 * gib,
+        )
+        == 123 * 1024 * 1024
+    )
 
     monkeypatch.setenv("UNSLOTH_STUDIO_GGUF_CUDA_CACHE_MIB", "bad")
-    assert d._balanced_gguf_cuda_cache_bytes(
-        free_bytes = 64 * gib,
-        total_bytes = 64 * gib,
-    ) == 0
+    assert (
+        d._balanced_gguf_cuda_cache_bytes(
+            free_bytes = 64 * gib,
+            total_bytes = 64 * gib,
+        )
+        == 0
+    )
 
 
 def test_load_model_offload_policy_aggressive(monkeypatch):
@@ -3657,7 +3758,10 @@ def test_load_model_torch_compile_regional(monkeypatch):
     ]
     assert transformer.compile_calls == []
     assert status["torch_compile_config"]["scope"] == "regional"
-    assert status["torch_compile_stats"]["compiled_components"][0]["component"] == "transformer"
+    assert (
+        status["torch_compile_stats"]["compiled_components"][0]["component"]
+        == "transformer"
+    )
     assert status["load_timings"]["torch_compile"] >= 0
 
 
@@ -3708,9 +3812,9 @@ def test_balanced_gguf_keeps_cuda_cache_and_dequant_compile(monkeypatch):
     )
 
     assert len(install_calls) == 1
-    assert status["gguf_prepared_module_counts"][
-        "diffusion_compiled_dequant_modules"
-    ] == 7
+    assert (
+        status["gguf_prepared_module_counts"]["diffusion_compiled_dequant_modules"] == 7
+    )
     assert (
         "diffusion_compiled_dequant_skipped_for_denoiser_compile"
         not in status["gguf_prepared_module_counts"]
@@ -3850,7 +3954,10 @@ def test_load_model_torch_compile_transformer(monkeypatch):
     assert transformer.compile_calls == [{"mode": "reduce-overhead"}]
     assert transformer.compile_repeated_blocks_calls == []
     assert status["torch_compile_config"]["scope"] == "transformer"
-    assert status["torch_compile_stats"]["compiled_components"][0]["method"] == "module.compile"
+    assert (
+        status["torch_compile_stats"]["compiled_components"][0]["method"]
+        == "module.compile"
+    )
 
 
 def test_load_model_torch_compile_pipeline(monkeypatch):
@@ -3874,7 +3981,10 @@ def test_load_model_torch_compile_pipeline(monkeypatch):
         }
     ]
     assert status["torch_compile_config"]["scope"] == "pipeline"
-    assert status["torch_compile_stats"]["compiled_components"][0]["component"] == "transformer"
+    assert (
+        status["torch_compile_stats"]["compiled_components"][0]["component"]
+        == "transformer"
+    )
 
 
 def test_load_model_torch_compile_invalid_scope(monkeypatch):
@@ -3947,7 +4057,9 @@ def test_patch_gguf_modules_for_resident_device_uses_shared_helper(monkeypatch):
         calls.append((root, resident_device, pin_memory))
         return 42
 
-    monkeypatch.setattr(g, "patch_gguf_text_encoder_for_resident_device", _fake_shared_patch)
+    monkeypatch.setattr(
+        g, "patch_gguf_text_encoder_for_resident_device", _fake_shared_patch
+    )
     root = object()
 
     assert d._patch_gguf_modules_for_resident_device(root, "cpu", pin_memory = True) == 42
@@ -3956,6 +4068,7 @@ def test_patch_gguf_modules_for_resident_device_uses_shared_helper(monkeypatch):
 
 def test_replace_diffusers_gguf_linear_with_studio_lazy_module(monkeypatch):
     import torch
+
     pytest.importorskip("diffusers")
     from diffusers.quantizers.gguf.utils import GGUFLinear
 
@@ -3979,7 +4092,12 @@ def test_replace_diffusers_gguf_linear_with_studio_lazy_module(monkeypatch):
 
     monkeypatch.setattr(d, "_diffusers_gguf_fused_cuda_available", lambda: False)
 
-    assert d._replace_diffusers_gguf_linear_parameters(root, torch.float32, resident_device = "cpu") == 1
+    assert (
+        d._replace_diffusers_gguf_linear_parameters(
+            root, torch.float32, resident_device = "cpu"
+        )
+        == 1
+    )
     assert isinstance(root[0], g.LazyGGUFLinear)
     assert root[0]._resident_device == torch.device("cpu")
     assert root[0].qweight.device.type == "cpu"
@@ -3988,17 +4106,25 @@ def test_replace_diffusers_gguf_linear_with_studio_lazy_module(monkeypatch):
 
 def test_replace_diffusers_gguf_linear_keeps_fused_diffusers_module(monkeypatch):
     import torch
+
     pytest.importorskip("diffusers")
     from diffusers.quantizers.gguf.utils import GGUFLinear
 
     import core.inference.diffusion as d
 
-    root = torch.nn.Sequential(GGUFLinear(2, 3, bias = False, compute_dtype = torch.float32))
+    root = torch.nn.Sequential(
+        GGUFLinear(2, 3, bias = False, compute_dtype = torch.float32)
+    )
     root[0].weight.quant_type = "fake"
 
     monkeypatch.setattr(d, "_diffusers_gguf_fused_cuda_available", lambda: True)
 
-    assert d._replace_diffusers_gguf_linear_parameters(root, torch.float32, resident_device = "cpu") == 0
+    assert (
+        d._replace_diffusers_gguf_linear_parameters(
+            root, torch.float32, resident_device = "cpu"
+        )
+        == 0
+    )
     assert isinstance(root[0], GGUFLinear)
 
 
@@ -4025,11 +4151,14 @@ def test_replace_gguf_conv2d_parameters_wraps_lazy_module(monkeypatch):
     conv.weight = raw_weight
     root = torch.nn.Sequential(conv)
 
-    assert d._replace_gguf_conv2d_parameters(
-        root,
-        torch.float32,
-        resident_device = "cpu",
-    ) == 1
+    assert (
+        d._replace_gguf_conv2d_parameters(
+            root,
+            torch.float32,
+            resident_device = "cpu",
+        )
+        == 1
+    )
 
     assert isinstance(root[0], g.LazyGGUFConv2d)
     assert root[0].qweight.device == torch.device("cpu")
@@ -4054,14 +4183,19 @@ def test_replace_gguf_conv2d_parameters_keeps_quantized_bias_lazy(monkeypatch):
     )
     raw_weight.quant_type = "Q4"
     raw_weight.quant_shape = (1, 1, 1, 1)
-    raw_bias = torch.nn.Parameter(torch.tensor([2], dtype = torch.uint8), requires_grad = False)
+    raw_bias = torch.nn.Parameter(
+        torch.tensor([2], dtype = torch.uint8), requires_grad = False
+    )
     raw_bias.quant_type = "Q4"
     raw_bias.quant_shape = (1,)
     conv.weight = raw_weight
     conv.bias = raw_bias
     root = torch.nn.Sequential(conv)
 
-    assert d._replace_gguf_conv2d_parameters(root, torch.float32, resident_device = "cpu") == 1
+    assert (
+        d._replace_gguf_conv2d_parameters(root, torch.float32, resident_device = "cpu")
+        == 1
+    )
 
     assert isinstance(root[0], g.LazyGGUFConv2d)
     assert root[0].qweight.device == torch.device("cpu")
@@ -4103,11 +4237,14 @@ def test_replace_gguf_embedding_parameters_wraps_lazy_module(monkeypatch):
     embedding.weight = raw_weight
     root = torch.nn.Sequential(embedding)
 
-    assert d._replace_gguf_embedding_parameters(
-        root,
-        torch.float32,
-        resident_device = "cpu",
-    ) == 1
+    assert (
+        d._replace_gguf_embedding_parameters(
+            root,
+            torch.float32,
+            resident_device = "cpu",
+        )
+        == 1
+    )
 
     assert isinstance(root[0], g.LazyGGUFEmbedding)
     assert root[0].qweight.device == torch.device("cpu")
@@ -4153,7 +4290,10 @@ def test_replace_gguf_embedding_parameters_materializes_unknown_shape_with_share
     embedding.weight = raw_weight
     root = torch.nn.Sequential(embedding)
 
-    assert d._replace_gguf_embedding_parameters(root, torch.float32, resident_device = "cpu") == 1
+    assert (
+        d._replace_gguf_embedding_parameters(root, torch.float32, resident_device = "cpu")
+        == 1
+    )
 
     assert len(calls) == 1
     torch.testing.assert_close(
@@ -4192,7 +4332,9 @@ def test_replace_gguf_norm_parameters_wraps_lazy_layer_norm(monkeypatch):
     raw_weight.quant_shape = (3,)
     root[0].weight = raw_weight
 
-    assert d._replace_gguf_norm_parameters(root, torch.float32, resident_device = "cpu") == 1
+    assert (
+        d._replace_gguf_norm_parameters(root, torch.float32, resident_device = "cpu") == 1
+    )
     assert isinstance(root[0], g.LazyGGUFLayerNorm)
     assert root[0].qweight.device == torch.device("cpu")
     assert root(torch.ones(2, 3)).shape == (2, 3)
@@ -4296,8 +4438,14 @@ def test_load_gguf_checkpoint_no_copy_preserves_numpy_storage(monkeypatch):
 
     monkeypatch.setitem(sys.modules, "gguf", fake_gguf)
     monkeypatch.setitem(sys.modules, "diffusers", types.ModuleType("diffusers"))
-    monkeypatch.setitem(sys.modules, "diffusers.quantizers", types.ModuleType("diffusers.quantizers"))
-    monkeypatch.setitem(sys.modules, "diffusers.quantizers.gguf", types.ModuleType("diffusers.quantizers.gguf"))
+    monkeypatch.setitem(
+        sys.modules, "diffusers.quantizers", types.ModuleType("diffusers.quantizers")
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "diffusers.quantizers.gguf",
+        types.ModuleType("diffusers.quantizers.gguf"),
+    )
     monkeypatch.setitem(sys.modules, "diffusers.quantizers.gguf.utils", fake_utils)
 
     parsed = d._load_gguf_checkpoint_no_copy("/tmp/fake.gguf")
@@ -4323,7 +4471,9 @@ def test_load_gguf_checkpoint_no_copy_preserves_numpy_storage(monkeypatch):
     assert native_iq.data_ptr() == torch.from_numpy(native_iq_data).data_ptr()
 
 
-def test_load_gguf_checkpoint_no_copy_normalizes_ltx23_prompt_adaln_aliases(monkeypatch):
+def test_load_gguf_checkpoint_no_copy_normalizes_ltx23_prompt_adaln_aliases(
+    monkeypatch,
+):
     import numpy as np
     import torch
 
@@ -4381,8 +4531,14 @@ def test_load_gguf_checkpoint_no_copy_normalizes_ltx23_prompt_adaln_aliases(monk
 
     monkeypatch.setitem(sys.modules, "gguf", fake_gguf)
     monkeypatch.setitem(sys.modules, "diffusers", types.ModuleType("diffusers"))
-    monkeypatch.setitem(sys.modules, "diffusers.quantizers", types.ModuleType("diffusers.quantizers"))
-    monkeypatch.setitem(sys.modules, "diffusers.quantizers.gguf", types.ModuleType("diffusers.quantizers.gguf"))
+    monkeypatch.setitem(
+        sys.modules, "diffusers.quantizers", types.ModuleType("diffusers.quantizers")
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "diffusers.quantizers.gguf",
+        types.ModuleType("diffusers.quantizers.gguf"),
+    )
     monkeypatch.setitem(sys.modules, "diffusers.quantizers.gguf.utils", fake_utils)
 
     parsed = d._load_gguf_checkpoint_no_copy("/tmp/fake-ltx23.gguf")
@@ -4486,21 +4642,25 @@ def test_load_gguf_checkpoint_no_copy_accepts_observed_unsloth_quant_types(monke
     fake_utils = types.ModuleType("diffusers.quantizers.gguf.utils")
     fake_utils.GGUFParameter = _FakeGGUFParameter
     fake_utils.SUPPORTED_GGUF_QUANT_TYPES = {
-        quant_by_name[quant_name]
-        for quant_name in _OBSERVED_DIFFUSERS_GGUF_QUANT_NAMES
+        quant_by_name[quant_name] for quant_name in _OBSERVED_DIFFUSERS_GGUF_QUANT_NAMES
     }
 
     monkeypatch.setitem(sys.modules, "gguf", fake_gguf)
     monkeypatch.setitem(sys.modules, "diffusers", types.ModuleType("diffusers"))
-    monkeypatch.setitem(sys.modules, "diffusers.quantizers", types.ModuleType("diffusers.quantizers"))
-    monkeypatch.setitem(sys.modules, "diffusers.quantizers.gguf", types.ModuleType("diffusers.quantizers.gguf"))
+    monkeypatch.setitem(
+        sys.modules, "diffusers.quantizers", types.ModuleType("diffusers.quantizers")
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "diffusers.quantizers.gguf",
+        types.ModuleType("diffusers.quantizers.gguf"),
+    )
     monkeypatch.setitem(sys.modules, "diffusers.quantizers.gguf.utils", fake_utils)
 
     parsed = d._load_gguf_checkpoint_no_copy("/tmp/fake.gguf")
 
     assert set(parsed) == {
-        f"{quant_name}.weight"
-        for quant_name in _OBSERVED_UNSLOTH_GGUF_QUANT_NAMES
+        f"{quant_name}.weight" for quant_name in _OBSERVED_UNSLOTH_GGUF_QUANT_NAMES
     }
     for quant_name, quant_type in quant_by_name.items():
         weight = parsed[f"{quant_name}.weight"]
@@ -4563,15 +4723,23 @@ def test_load_gguf_checkpoint_no_copy_rejects_unknown_native_quant(monkeypatch):
 
     monkeypatch.setitem(sys.modules, "gguf", fake_gguf)
     monkeypatch.setitem(sys.modules, "diffusers", types.ModuleType("diffusers"))
-    monkeypatch.setitem(sys.modules, "diffusers.quantizers", types.ModuleType("diffusers.quantizers"))
-    monkeypatch.setitem(sys.modules, "diffusers.quantizers.gguf", types.ModuleType("diffusers.quantizers.gguf"))
+    monkeypatch.setitem(
+        sys.modules, "diffusers.quantizers", types.ModuleType("diffusers.quantizers")
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "diffusers.quantizers.gguf",
+        types.ModuleType("diffusers.quantizers.gguf"),
+    )
     monkeypatch.setitem(sys.modules, "diffusers.quantizers.gguf.utils", fake_utils)
 
     with pytest.raises(ValueError, match = "unsupported.weight"):
         d._load_gguf_checkpoint_no_copy("/tmp/fake.gguf")
 
 
-def test_load_model_text_encoder_gguf_rejects_unsupported_family_without_component(monkeypatch):
+def test_load_model_text_encoder_gguf_rejects_unsupported_family_without_component(
+    monkeypatch,
+):
     _install_fake_diffusers(monkeypatch)
     from core.inference.diffusion import get_diffusion_backend
 
@@ -4670,7 +4838,9 @@ def test_load_model_qwen_image_text_encoder_gguf_uses_qwen2vl_loader(
     monkeypatch.setitem(sys.modules, "core.inference.gguf_text_encoder", fake_text_mod)
     import core.inference as inference_pkg
 
-    monkeypatch.setattr(inference_pkg, "gguf_text_encoder", fake_text_mod, raising = False)
+    monkeypatch.setattr(
+        inference_pkg, "gguf_text_encoder", fake_text_mod, raising = False
+    )
 
     from core.inference.diffusion import get_diffusion_backend
 
@@ -4770,7 +4940,9 @@ def test_load_model_qwen_image_text_encoder_gguf_downloads_remote_mmproj(
     monkeypatch.setitem(sys.modules, "core.inference.gguf_text_encoder", fake_text_mod)
     import core.inference as inference_pkg
 
-    monkeypatch.setattr(inference_pkg, "gguf_text_encoder", fake_text_mod, raising = False)
+    monkeypatch.setattr(
+        inference_pkg, "gguf_text_encoder", fake_text_mod, raising = False
+    )
 
     from core.inference.diffusion import get_diffusion_backend
 
@@ -4850,7 +5022,9 @@ def test_load_model_z_image_text_encoder_gguf_uses_qwen3_loader(
     monkeypatch.setitem(sys.modules, "core.inference.gguf_text_encoder", fake_text_mod)
     import core.inference as inference_pkg
 
-    monkeypatch.setattr(inference_pkg, "gguf_text_encoder", fake_text_mod, raising = False)
+    monkeypatch.setattr(
+        inference_pkg, "gguf_text_encoder", fake_text_mod, raising = False
+    )
 
     from core.inference.diffusion import get_diffusion_backend
 
@@ -4939,7 +5113,9 @@ def test_load_model_flux1_text_encoder_gguf_uses_t5_loader_as_text_encoder_2(
     monkeypatch.setitem(sys.modules, "core.inference.gguf_text_encoder", fake_text_mod)
     import core.inference as inference_pkg
 
-    monkeypatch.setattr(inference_pkg, "gguf_text_encoder", fake_text_mod, raising = False)
+    monkeypatch.setattr(
+        inference_pkg, "gguf_text_encoder", fake_text_mod, raising = False
+    )
 
     from core.inference.diffusion import get_diffusion_backend
 
@@ -5029,7 +5205,9 @@ def test_load_model_sd3_text_encoder_gguf_uses_t5_loader_as_text_encoder_3(
     monkeypatch.setitem(sys.modules, "core.inference.gguf_text_encoder", fake_text_mod)
     import core.inference as inference_pkg
 
-    monkeypatch.setattr(inference_pkg, "gguf_text_encoder", fake_text_mod, raising = False)
+    monkeypatch.setattr(
+        inference_pkg, "gguf_text_encoder", fake_text_mod, raising = False
+    )
 
     from core.inference.diffusion import get_diffusion_backend
 
@@ -5122,7 +5300,9 @@ def test_load_model_explicit_text_encoder_component_routes_generic_architectures
     monkeypatch.setitem(sys.modules, "core.inference.gguf_text_encoder", fake_text_mod)
     import core.inference as inference_pkg
 
-    monkeypatch.setattr(inference_pkg, "gguf_text_encoder", fake_text_mod, raising = False)
+    monkeypatch.setattr(
+        inference_pkg, "gguf_text_encoder", fake_text_mod, raising = False
+    )
 
     from core.inference.diffusion import get_diffusion_backend
 
@@ -5202,7 +5382,9 @@ def test_load_model_flux2_mistral_text_encoder_overrides_generic_llama_architect
     monkeypatch.setitem(sys.modules, "core.inference.gguf_text_encoder", fake_text_mod)
     import core.inference as inference_pkg
 
-    monkeypatch.setattr(inference_pkg, "gguf_text_encoder", fake_text_mod, raising = False)
+    monkeypatch.setattr(
+        inference_pkg, "gguf_text_encoder", fake_text_mod, raising = False
+    )
 
     from core.inference.diffusion import get_diffusion_backend
 
@@ -5474,14 +5656,20 @@ def test_variant_resolver_exposes_flux2_klein_candidates():
         _variant_from_text_for_family,
     )
 
-    assert _variant_from_text_for_family(
-        "flux.2-klein",
-        "my-flux2-klein-base-9b-UD-Q4_K_XL.gguf",
-    ) == "base-9b"
-    assert _variant_from_text_for_family(
-        "z-image",
-        "z-image-turbo-Q4_K_M.gguf",
-    ) is None
+    assert (
+        _variant_from_text_for_family(
+            "flux.2-klein",
+            "my-flux2-klein-base-9b-UD-Q4_K_XL.gguf",
+        )
+        == "base-9b"
+    )
+    assert (
+        _variant_from_text_for_family(
+            "z-image",
+            "z-image-turbo-Q4_K_M.gguf",
+        )
+        is None
+    )
 
     candidates = _candidate_base_repo_message("flux.2-klein")
     assert "black-forest-labs/FLUX.2-klein-4B (distilled 4B)" in candidates
@@ -5566,7 +5754,9 @@ def test_load_model_ambiguous_flux2_klein_gguf_accepts_explicit_base_repo(monkey
     assert status["base_repo"] == "black-forest-labs/FLUX.2-klein-base-4B"
     assert status["base_repo_source"] == "explicit"
     assert status["base_repo_confidence"] == "explicit"
-    assert status["sampling_contract"]["guidance_semantics"] == "classifier_free_guidance"
+    assert (
+        status["sampling_contract"]["guidance_semantics"] == "classifier_free_guidance"
+    )
 
 
 def test_load_model_gguf_only_repo_without_filename_errors(monkeypatch):
@@ -5623,7 +5813,9 @@ def test_smart_base_repo_picks_base_4b(monkeypatch):
     assert status["base_repo"] == "black-forest-labs/FLUX.2-klein-base-4B"
     assert status["base_repo_variant"] == "base-4b"
     assert status["sampling_contract"]["pipeline_is_distilled"] is False
-    assert status["sampling_contract"]["guidance_semantics"] == "classifier_free_guidance"
+    assert (
+        status["sampling_contract"]["guidance_semantics"] == "classifier_free_guidance"
+    )
     assert status["sampling_contract"]["default_steps"] == 50
     assert status["sampling_contract"]["default_guidance_scale"] == 4.0
 
@@ -5903,9 +6095,7 @@ def test_apply_lora_allows_studio_lazy_gguf_modules():
 
     calls = []
     pipe = SimpleNamespace(
-        load_lora_weights = lambda repo, **kwargs: calls.append(
-            {"repo": repo, **kwargs}
-        ),
+        load_lora_weights = lambda repo, **kwargs: calls.append({"repo": repo, **kwargs}),
         set_adapters = lambda *_args, **_kwargs: None,
     )
 
@@ -6422,8 +6612,12 @@ def test_load_publishes_pending_target_during_loading():
         backend._pending_base_repo_confidence = "heuristic"
         backend._pending_base_repo_variant = "distilled-4b"
         backend._pending_gguf_filename = "flux-2-klein-4b-Q4_K_S.gguf"
-        backend._pending_text_encoder_gguf_repo = "unsloth/Mistral-Small-3.2-24B-Instruct-2506-GGUF"
-        backend._pending_text_encoder_gguf_filename = "Mistral-Small-3.2-24B-Instruct-2506-UD-Q4_K_XL.gguf"
+        backend._pending_text_encoder_gguf_repo = (
+            "unsloth/Mistral-Small-3.2-24B-Instruct-2506-GGUF"
+        )
+        backend._pending_text_encoder_gguf_filename = (
+            "Mistral-Small-3.2-24B-Instruct-2506-UD-Q4_K_XL.gguf"
+        )
         backend._pending_lora_repo = "owner/my-klein-lora"
         backend._pending_lora_weight_name = "adapter.safetensors"
 
@@ -6434,8 +6628,14 @@ def test_load_publishes_pending_target_during_loading():
     assert public["base_repo_source"] == "name_heuristic"
     assert public["base_repo_confidence"] == "heuristic"
     assert public["base_repo_variant"] == "distilled-4b"
-    assert public["text_encoder_gguf_repo"] == "unsloth/Mistral-Small-3.2-24B-Instruct-2506-GGUF"
-    assert public["text_encoder_gguf_filename"] == "Mistral-Small-3.2-24B-Instruct-2506-UD-Q4_K_XL.gguf"
+    assert (
+        public["text_encoder_gguf_repo"]
+        == "unsloth/Mistral-Small-3.2-24B-Instruct-2506-GGUF"
+    )
+    assert (
+        public["text_encoder_gguf_filename"]
+        == "Mistral-Small-3.2-24B-Instruct-2506-UD-Q4_K_XL.gguf"
+    )
     assert public["lora"] == {
         "repo": "owner/my-klein-lora",
         "weight_name": "adapter.safetensors",
@@ -6452,7 +6652,10 @@ def test_load_publishes_pending_target_during_loading():
     assert internal["pending_base_repo_confidence"] == "heuristic"
     assert internal["pending_base_repo_variant"] == "distilled-4b"
     assert internal["pending_gguf_filename"] == "flux-2-klein-4b-Q4_K_S.gguf"
-    assert internal["pending_text_encoder_gguf_repo"] == "unsloth/Mistral-Small-3.2-24B-Instruct-2506-GGUF"
+    assert (
+        internal["pending_text_encoder_gguf_repo"]
+        == "unsloth/Mistral-Small-3.2-24B-Instruct-2506-GGUF"
+    )
     assert (
         internal["pending_text_encoder_gguf_filename"]
         == "Mistral-Small-3.2-24B-Instruct-2506-UD-Q4_K_XL.gguf"
@@ -6889,7 +7092,9 @@ def test_generate_image_uses_family_guidance_kwarg_and_default_negative_prompt()
     )
 
     assert pipe.last_kwargs["true_cfg_scale"] == 3.5
-    assert pipe.last_kwargs["negative_prompt"] == backend._family.default_negative_prompt
+    assert (
+        pipe.last_kwargs["negative_prompt"] == backend._family.default_negative_prompt
+    )
     assert "guidance_scale" not in pipe.last_kwargs
 
 
@@ -7088,7 +7293,9 @@ def test_generate_image_required_family_forwards_input_image():
 
     assert image.size == (64, 64)
     assert pipe.last_kwargs["image"] is source
-    assert pipe.last_kwargs["negative_prompt"] == backend._family.default_negative_prompt
+    assert (
+        pipe.last_kwargs["negative_prompt"] == backend._family.default_negative_prompt
+    )
     assert pipe.last_kwargs["true_cfg_scale"] == 4.0
     assert pipe.last_kwargs["num_inference_steps"] == 40
 
@@ -7317,12 +7524,24 @@ def test_generate_video_with_metadata_uses_ltx23_family_defaults(
     assert observed_kwargs["output_type"] == "np"
     assert observed_kwargs["return_dict"] is False
     assert observed_kwargs.get("stg_scale") == (1.0 if expects_base_guidance else None)
-    assert observed_kwargs.get("modality_scale") == (3.0 if expects_base_guidance else None)
-    assert observed_kwargs.get("guidance_rescale") == (0.7 if expects_base_guidance else None)
-    assert observed_kwargs.get("audio_guidance_scale") == (7.0 if expects_base_guidance else None)
-    assert observed_kwargs.get("audio_stg_scale") == (1.0 if expects_base_guidance else None)
-    assert observed_kwargs.get("audio_modality_scale") == (3.0 if expects_base_guidance else None)
-    assert observed_kwargs.get("audio_guidance_rescale") == (0.7 if expects_base_guidance else None)
+    assert observed_kwargs.get("modality_scale") == (
+        3.0 if expects_base_guidance else None
+    )
+    assert observed_kwargs.get("guidance_rescale") == (
+        0.7 if expects_base_guidance else None
+    )
+    assert observed_kwargs.get("audio_guidance_scale") == (
+        7.0 if expects_base_guidance else None
+    )
+    assert observed_kwargs.get("audio_stg_scale") == (
+        1.0 if expects_base_guidance else None
+    )
+    assert observed_kwargs.get("audio_modality_scale") == (
+        3.0 if expects_base_guidance else None
+    )
+    assert observed_kwargs.get("audio_guidance_rescale") == (
+        0.7 if expects_base_guidance else None
+    )
     assert observed_kwargs.get("spatio_temporal_guidance_blocks") == (
         [28] if expects_base_guidance else None
     )

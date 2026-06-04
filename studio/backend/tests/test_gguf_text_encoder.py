@@ -15,7 +15,9 @@ import torch.nn as nn
 from transformers import PretrainedConfig
 from transformers.models.gemma3.configuration_gemma3 import Gemma3TextConfig
 from transformers.models.llama.configuration_llama import LlamaConfig
-from transformers.models.mistral3.modeling_mistral3 import Mistral3ForConditionalGeneration
+from transformers.models.mistral3.modeling_mistral3 import (
+    Mistral3ForConditionalGeneration,
+)
 from transformers.models.qwen3.configuration_qwen3 import Qwen3Config
 from transformers.models.qwen3_vl.configuration_qwen3_vl import Qwen3VLTextConfig
 from transformers.models.t5.configuration_t5 import T5Config
@@ -97,10 +99,7 @@ def test_strip_gguf_quant_suffix_matches_comfyui_gguf_names():
         g.strip_gguf_quant_suffix("Qwen2.5-VL-7B-Instruct-Q4_K_M")
         == "Qwen2.5-VL-7B-Instruct"
     )
-    assert (
-        g.strip_gguf_quant_suffix("Mistral-Small-UD-Q4_K_XL")
-        == "Mistral-Small"
-    )
+    assert g.strip_gguf_quant_suffix("Mistral-Small-UD-Q4_K_XL") == "Mistral-Small"
     assert g.strip_gguf_quant_suffix("mmproj-BF16") == "mmproj-BF16"
 
 
@@ -197,7 +196,9 @@ def test_materialize_qwen2vl_rotary_buffers_replaces_meta_modules(monkeypatch):
         def __init__(self, config) -> None:
             super().__init__()
             self.register_buffer("inv_freq", torch.ones(config.max_position_embeddings))
-            self.register_buffer("original_inv_freq", torch.ones(config.max_position_embeddings))
+            self.register_buffer(
+                "original_inv_freq", torch.ones(config.max_position_embeddings)
+            )
 
     class _VisionRotary(nn.Module):
         def __init__(self, dim) -> None:
@@ -227,10 +228,9 @@ def test_materialize_qwen2vl_rotary_buffers_replaces_meta_modules(monkeypatch):
     g._materialize_qwen2vl_rotary_buffers(root, config)
 
     assert root.model.language_model.rotary_emb.inv_freq.device == torch.device("cpu")
-    assert (
-        root.model.language_model.layers[0].self_attn.rotary_emb.inv_freq.device
-        == torch.device("cpu")
-    )
+    assert root.model.language_model.layers[
+        0
+    ].self_attn.rotary_emb.inv_freq.device == torch.device("cpu")
     assert root.model.visual.rotary_pos_emb.inv_freq.device == torch.device("cpu")
     assert not any(buffer.is_meta for _name, buffer in root.named_buffers())
 
@@ -247,7 +247,9 @@ def test_materialize_qwen3_rotary_buffers_replaces_meta_modules(monkeypatch):
         def __init__(self, config) -> None:
             super().__init__()
             self.register_buffer("inv_freq", torch.ones(config.max_position_embeddings))
-            self.register_buffer("original_inv_freq", torch.ones(config.max_position_embeddings))
+            self.register_buffer(
+                "original_inv_freq", torch.ones(config.max_position_embeddings)
+            )
 
     root = nn.Module()
     root.model = nn.Module()
@@ -306,7 +308,9 @@ def test_map_qwen3_text_gguf_name_matches_transformers_names():
         g.map_qwen3_text_gguf_name("token_embd.weight").hf_name
         == "model.embed_tokens.weight"
     )
-    assert g.map_qwen3_text_gguf_name("output_norm.weight").hf_name == "model.norm.weight"
+    assert (
+        g.map_qwen3_text_gguf_name("output_norm.weight").hf_name == "model.norm.weight"
+    )
     assert g.map_qwen3_text_gguf_name("output.weight") is None
     assert (
         g.map_qwen3_text_gguf_name("blk.4.attn_q.weight").hf_name
@@ -540,7 +544,11 @@ def test_lazy_flux2_text_encoder_uses_local_text_encoder_dir(monkeypatch, tmp_pa
     monkeypatch.setattr(
         g,
         "_replace_mistral_modules_with_lazy_gguf",
-        lambda language_model, *, gguf_path, compute_dtype, resident_device = None: "reader",
+        lambda language_model,
+        *,
+        gguf_path,
+        compute_dtype,
+        resident_device = None: "reader",
     )
 
     encoder = g.LazyFlux2MistralTextEncoder.from_gguf(
@@ -571,7 +579,9 @@ def test_lazy_flux2_text_encoder_device_ignores_resident_quant_buffers():
     assert encoder.device == torch.device("meta")
 
 
-def test_replace_mistral_modules_keeps_quantized_linear_bias_lazy(monkeypatch, tmp_path):
+def test_replace_mistral_modules_keeps_quantized_linear_bias_lazy(
+    monkeypatch, tmp_path
+):
     import core.inference.gguf_text_encoder as g
 
     class _FakeQuantTypes:
@@ -687,7 +697,9 @@ def test_dequantize_bf16_gguf_bytes_without_diffusers_import(monkeypatch):
 
     def guarded_import(name, *args, **kwargs):
         if name.startswith("diffusers.quantizers"):
-            raise AssertionError("BF16 GGUF decode should not import diffusers quantizers")
+            raise AssertionError(
+                "BF16 GGUF decode should not import diffusers quantizers"
+            )
         return original_import(name, *args, **kwargs)
 
     monkeypatch.setattr(g, "_require_gguf", lambda: _FakeGGUF)
@@ -792,15 +804,24 @@ def test_dequantize_torch_quant_caches_diffusers_tables(monkeypatch):
     fake_utils = types.ModuleType("diffusers.quantizers.gguf.utils")
     fake_utils.GGML_QUANT_SIZES = {_FakeQuantTypes.Q4_K: (2, 4)}
     fake_utils.dequantize_functions = {
-        _FakeQuantTypes.Q4_K: lambda blocks, block_size, type_size, dtype = None: torch.ones(
+        _FakeQuantTypes.Q4_K: lambda blocks,
+        block_size,
+        type_size,
+        dtype = None: torch.ones(
             (blocks.shape[0], block_size),
             dtype = dtype,
         )
     }
 
     monkeypatch.setitem(sys.modules, "diffusers", types.ModuleType("diffusers"))
-    monkeypatch.setitem(sys.modules, "diffusers.quantizers", types.ModuleType("diffusers.quantizers"))
-    monkeypatch.setitem(sys.modules, "diffusers.quantizers.gguf", types.ModuleType("diffusers.quantizers.gguf"))
+    monkeypatch.setitem(
+        sys.modules, "diffusers.quantizers", types.ModuleType("diffusers.quantizers")
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "diffusers.quantizers.gguf",
+        types.ModuleType("diffusers.quantizers.gguf"),
+    )
     monkeypatch.setitem(sys.modules, "diffusers.quantizers.gguf.utils", fake_utils)
     monkeypatch.setattr(g, "_require_gguf", lambda: _FakeGGUF)
     monkeypatch.setattr(g, "_DIFFUSERS_GGUF_DEQUANT_TABLES", None)
@@ -833,7 +854,9 @@ def test_observed_unsloth_quant_names_have_text_dequant_route():
 
     enum_cls = gguf.GGMLQuantizationType
     torch_route_types = g._torch_gguf_dequant_types(gguf)
-    native_route_types = set(getattr(getattr(gguf, "quants", None), "_type_traits", {}).keys())
+    native_route_types = set(
+        getattr(getattr(gguf, "quants", None), "_type_traits", {}).keys()
+    )
 
     missing: list[str] = []
     unrouted: list[str] = []
@@ -881,7 +904,9 @@ def test_dequantize_unsloth_ud_iq_fallback_types_use_native_gguf(
 
     def guarded_import(name, *args, **kwargs):
         if name.startswith("diffusers.quantizers"):
-            raise AssertionError(f"{quant_name} should use native gguf fallback directly")
+            raise AssertionError(
+                f"{quant_name} should use native gguf fallback directly"
+            )
         return original_import(name, *args, **kwargs)
 
     monkeypatch.setattr(builtins, "__import__", guarded_import)
@@ -1014,7 +1039,9 @@ def test_lazy_qwen2vl_text_encoder_uses_text_and_mmproj_replacements(
         calls.append((path_or_repo, kwargs))
         return _fake_flux2_config()
 
-    def fake_text_replace(root, gguf_path, *, map_name, compute_dtype, resident_device = None):
+    def fake_text_replace(
+        root, gguf_path, *, map_name, compute_dtype, resident_device = None
+    ):
         text_calls.append(
             {
                 "root": root,
@@ -1048,9 +1075,15 @@ def test_lazy_qwen2vl_text_encoder_uses_text_and_mmproj_replacements(
 
     monkeypatch.setattr(g.AutoConfig, "from_pretrained", fake_from_pretrained)
     monkeypatch.setattr(g, "_qwen2_5_vl_model_class", lambda: _TinyQwen)
-    monkeypatch.setattr(g, "_materialize_qwen2vl_rotary_buffers", lambda root, config: None)
-    monkeypatch.setattr(g, "replace_mapped_text_modules_with_lazy_gguf", fake_text_replace)
-    monkeypatch.setattr(g, "replace_qwen2vl_mmproj_modules_with_gguf", fake_mmproj_replace)
+    monkeypatch.setattr(
+        g, "_materialize_qwen2vl_rotary_buffers", lambda root, config: None
+    )
+    monkeypatch.setattr(
+        g, "replace_mapped_text_modules_with_lazy_gguf", fake_text_replace
+    )
+    monkeypatch.setattr(
+        g, "replace_qwen2vl_mmproj_modules_with_gguf", fake_mmproj_replace
+    )
 
     encoder = g.LazyQwen2VLTextEncoder.from_gguf(
         tmp_path / "text.gguf",
@@ -1110,7 +1143,9 @@ def test_lazy_qwen3_text_encoder_uses_text_replacements(monkeypatch, tmp_path):
         calls.append((path_or_repo, kwargs))
         return config
 
-    def fake_text_replace(root, gguf_path, *, map_name, compute_dtype, resident_device = None):
+    def fake_text_replace(
+        root, gguf_path, *, map_name, compute_dtype, resident_device = None
+    ):
         text_calls.append(
             {
                 "root": root,
@@ -1128,7 +1163,9 @@ def test_lazy_qwen3_text_encoder_uses_text_replacements(monkeypatch, tmp_path):
         )
 
     monkeypatch.setattr(g.AutoConfig, "from_pretrained", fake_from_pretrained)
-    monkeypatch.setattr(g, "replace_mapped_text_modules_with_lazy_gguf", fake_text_replace)
+    monkeypatch.setattr(
+        g, "replace_mapped_text_modules_with_lazy_gguf", fake_text_replace
+    )
 
     encoder = g.LazyQwen3TextEncoder.from_gguf(
         tmp_path / "qwen3.gguf",
@@ -1178,7 +1215,9 @@ def test_lazy_llama_text_encoder_uses_text_replacements(monkeypatch, tmp_path):
         calls.append((path_or_repo, kwargs))
         return config
 
-    def fake_text_replace(root, gguf_path, *, map_name, compute_dtype, resident_device = None):
+    def fake_text_replace(
+        root, gguf_path, *, map_name, compute_dtype, resident_device = None
+    ):
         mapped = map_name("blk.0.attn_q.weight")
         text_calls.append(
             {
@@ -1198,7 +1237,9 @@ def test_lazy_llama_text_encoder_uses_text_replacements(monkeypatch, tmp_path):
         )
 
     monkeypatch.setattr(g.AutoConfig, "from_pretrained", fake_from_pretrained)
-    monkeypatch.setattr(g, "replace_mapped_text_modules_with_lazy_gguf", fake_text_replace)
+    monkeypatch.setattr(
+        g, "replace_mapped_text_modules_with_lazy_gguf", fake_text_replace
+    )
 
     encoder = g.LazyLlamaTextEncoder.from_gguf(
         tmp_path / "llama.gguf",
@@ -1251,7 +1292,9 @@ def test_lazy_qwen3vl_text_encoder_uses_text_replacements(monkeypatch, tmp_path)
         calls.append((path_or_repo, kwargs))
         return config
 
-    def fake_text_replace(root, gguf_path, *, map_name, compute_dtype, resident_device = None):
+    def fake_text_replace(
+        root, gguf_path, *, map_name, compute_dtype, resident_device = None
+    ):
         text_calls.append(
             {
                 "root": root,
@@ -1269,7 +1312,9 @@ def test_lazy_qwen3vl_text_encoder_uses_text_replacements(monkeypatch, tmp_path)
         )
 
     monkeypatch.setattr(g.AutoConfig, "from_pretrained", fake_from_pretrained)
-    monkeypatch.setattr(g, "replace_mapped_text_modules_with_lazy_gguf", fake_text_replace)
+    monkeypatch.setattr(
+        g, "replace_mapped_text_modules_with_lazy_gguf", fake_text_replace
+    )
 
     encoder = g.LazyQwen3VLTextEncoder.from_gguf(
         tmp_path / "qwen3vl.gguf",
@@ -1307,10 +1352,18 @@ def test_lazy_qwen3vl_text_encoder_accepts_multimodal_config(monkeypatch, tmp_pa
     multimodal_config = SimpleNamespace(text_config = text_config)
     seen: dict[str, object] = {}
 
-    monkeypatch.setattr(g.AutoConfig, "from_pretrained", lambda *args, **kwargs: multimodal_config)
-    monkeypatch.setattr(g, "_materialize_qwen3vl_rotary_buffers", lambda model, config: seen.setdefault("config", config))
+    monkeypatch.setattr(
+        g.AutoConfig, "from_pretrained", lambda *args, **kwargs: multimodal_config
+    )
+    monkeypatch.setattr(
+        g,
+        "_materialize_qwen3vl_rotary_buffers",
+        lambda model, config: seen.setdefault("config", config),
+    )
 
-    def fake_text_replace(root, gguf_path, *, map_name, compute_dtype, resident_device = None):
+    def fake_text_replace(
+        root, gguf_path, *, map_name, compute_dtype, resident_device = None
+    ):
         return "qwen3vl-reader", g.LazyGGUFReplacementStats(
             loaded = 0,
             lazy_linear = 0,
@@ -1318,7 +1371,9 @@ def test_lazy_qwen3vl_text_encoder_accepts_multimodal_config(monkeypatch, tmp_pa
             materialized = 0,
         )
 
-    monkeypatch.setattr(g, "replace_mapped_text_modules_with_lazy_gguf", fake_text_replace)
+    monkeypatch.setattr(
+        g, "replace_mapped_text_modules_with_lazy_gguf", fake_text_replace
+    )
 
     encoder = g.LazyQwen3VLTextEncoder.from_gguf(
         tmp_path / "qwen3vl.gguf",
@@ -1347,7 +1402,9 @@ def test_lazy_gemma3_text_encoder_uses_text_replacements(monkeypatch, tmp_path):
         max_position_embeddings = 16,
     )
 
-    def fake_text_replace(root, gguf_path, *, map_name, compute_dtype, resident_device = None):
+    def fake_text_replace(
+        root, gguf_path, *, map_name, compute_dtype, resident_device = None
+    ):
         text_calls.append(
             {
                 "root": root,
@@ -1365,7 +1422,9 @@ def test_lazy_gemma3_text_encoder_uses_text_replacements(monkeypatch, tmp_path):
         )
 
     monkeypatch.setattr(g.AutoConfig, "from_pretrained", lambda *a, **k: config)
-    monkeypatch.setattr(g, "replace_mapped_text_modules_with_lazy_gguf", fake_text_replace)
+    monkeypatch.setattr(
+        g, "replace_mapped_text_modules_with_lazy_gguf", fake_text_replace
+    )
 
     encoder = g.LazyGemma3TextEncoder.from_gguf(
         tmp_path / "gemma3.gguf",
@@ -1413,7 +1472,9 @@ def test_lazy_t5_text_encoder_uses_text_replacements_and_component_subfolder(
         calls.append((path_or_repo, kwargs))
         return config
 
-    def fake_text_replace(root, gguf_path, *, map_name, compute_dtype, resident_device = None):
+    def fake_text_replace(
+        root, gguf_path, *, map_name, compute_dtype, resident_device = None
+    ):
         root.shared = nn.Embedding(config.vocab_size, config.d_model)
         text_calls.append(
             {
@@ -1432,7 +1493,9 @@ def test_lazy_t5_text_encoder_uses_text_replacements_and_component_subfolder(
         )
 
     monkeypatch.setattr(g.AutoConfig, "from_pretrained", fake_from_pretrained)
-    monkeypatch.setattr(g, "replace_mapped_text_modules_with_lazy_gguf", fake_text_replace)
+    monkeypatch.setattr(
+        g, "replace_mapped_text_modules_with_lazy_gguf", fake_text_replace
+    )
 
     encoder = g.LazyT5TextEncoder.from_gguf(
         tmp_path / "t5.gguf",
@@ -1583,7 +1646,9 @@ def test_install_compiled_lazy_gguf_linear_dequant(monkeypatch):
             {"Q4": (2, 2)},
             {
                 "Q4": (
-                    lambda blocks, block_size, type_size, dtype: blocks.to(torch.float32)
+                    lambda blocks, block_size, type_size, dtype: blocks.to(
+                        torch.float32
+                    )
                 )
             },
         ),
@@ -2426,7 +2491,9 @@ def test_lazy_gguf_embedding_can_keep_quantized_weight_cpu_resident():
 def test_lazy_gguf_conv2d_dequantizes_in_forward(monkeypatch):
     import core.inference.gguf_text_encoder as g
 
-    seen: list[tuple[torch.Tensor, str, torch.dtype | None, tuple[int, ...] | None]] = []
+    seen: list[
+        tuple[torch.Tensor, str, torch.dtype | None, tuple[int, ...] | None]
+    ] = []
 
     def fake_dequant(qweight, quant_type, *, dtype = None, logical_shape = None):
         seen.append((qweight.clone(), quant_type, dtype, logical_shape))
@@ -2516,7 +2583,9 @@ def test_lazy_gguf_conv2d_can_keep_quantized_weight_cpu_resident():
 def test_lazy_gguf_layer_norm_dequantizes_in_forward(monkeypatch):
     import core.inference.gguf_text_encoder as g
 
-    seen: list[tuple[torch.Tensor, str, torch.dtype | None, tuple[int, ...] | None]] = []
+    seen: list[
+        tuple[torch.Tensor, str, torch.dtype | None, tuple[int, ...] | None]
+    ] = []
 
     def fake_dequant(qbuffer, quant_type, *, dtype = None, logical_shape = None):
         seen.append((qbuffer.clone(), quant_type, dtype, logical_shape))

@@ -74,6 +74,7 @@ class _FakeBackend:
         self._loaded = False
         self._repo: str | None = None
         self._media_kind: str | None = None
+
         class _FakePipe:
             def __call__(
                 self,
@@ -191,9 +192,7 @@ class _FakeBackend:
                 "compile": {"torch_compile_available": True},
                 "memory_planner": {
                     "modes": [{"name": "auto"}, {"name": "balanced"}],
-                    "applies_when": (
-                        "runtime.memory_mode controls planner behavior"
-                    ),
+                    "applies_when": ("runtime.memory_mode controls planner behavior"),
                 },
             },
             "attention_backend": None,
@@ -517,7 +516,9 @@ def test_generate_decodes_base64_image_input(app_with_stub):
     source = Image.new("RGBA", (12, 16), color = (255, 0, 0, 128))
     buf = io.BytesIO()
     source.save(buf, format = "PNG")
-    encoded = "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
+    encoded = "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode(
+        "ascii"
+    )
 
     r = c.post(
         "/api/inference/images/generate",
@@ -654,7 +655,9 @@ def test_load_forwards_transformer_gguf_component_fields(app_with_stub):
     assert stub.calls[-1]["base_repo"] is None
 
 
-def test_load_v2_contract_normalizes_model_components_runtime_and_adapter(app_with_stub):
+def test_load_v2_contract_normalizes_model_components_runtime_and_adapter(
+    app_with_stub,
+):
     app, stub = app_with_stub
     c = TestClient(app)
 
@@ -817,9 +820,10 @@ def test_load_preset_expands_to_component_swap(app_with_stub):
     assert stub.calls[-1]["text_encoder_gguf_filename"] == "qwen3-4b-BF16.gguf"
     assert stub.calls[-1]["family_override"] == "flux.2-klein"
     assert stub.calls[-1]["memory_plan"]["requested_mode"] == "auto"
-    assert stub.calls[-1]["offload_policy"] == stub.calls[-1]["memory_plan"][
-        "selected_offload_policy"
-    ]
+    assert (
+        stub.calls[-1]["offload_policy"]
+        == stub.calls[-1]["memory_plan"]["selected_offload_policy"]
+    )
 
 
 def test_load_preset_rejects_unknown_quantless_load(app_with_stub):
@@ -867,9 +871,10 @@ def test_diffusion_load_plan_allows_preset_before_quant_selection(app_with_stub)
     assert body["load_kwargs"]["transformer_gguf_repo"] == "unsloth/FLUX.2-dev-GGUF"
     assert body["load_kwargs"]["transformer_gguf_filename"] is None
     assert body["memory_plan"]["requested_mode"] == "auto"
-    assert body["load_kwargs"]["offload_policy"] == body["memory_plan"][
-        "selected_offload_policy"
-    ]
+    assert (
+        body["load_kwargs"]["offload_policy"]
+        == body["memory_plan"]["selected_offload_policy"]
+    )
     assert body["preset"]["id"] == "flux.2-dev"
 
 
@@ -910,9 +915,7 @@ def test_diffusion_load_plan_expands_quant_label(app_with_stub):
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["ready_to_load"] is True
-    assert body["load_kwargs"]["transformer_gguf_filename"] == (
-        "flux2-dev-Q4_K_M.gguf"
-    )
+    assert body["load_kwargs"]["transformer_gguf_filename"] == ("flux2-dev-Q4_K_M.gguf")
     assert body["component_sources"]["transformer"] == {
         "source": "gguf",
         "repo": "unsloth/FLUX.2-dev-GGUF",

@@ -41,7 +41,9 @@ def _attention_targets(pipe: Any) -> list[tuple[str, Any]]:
             continue
         seen.add(ident)
         targets.append((_target_name(name, target), target))
-    if hasattr(pipe, "set_attention_backend") or hasattr(pipe, "reset_attention_backend"):
+    if hasattr(pipe, "set_attention_backend") or hasattr(
+        pipe, "reset_attention_backend"
+    ):
         ident = id(pipe)
         if ident not in seen:
             targets.append((_target_name("pipeline", pipe), pipe))
@@ -123,16 +125,22 @@ def apply_diffusers_attention_backend(
             try:
                 if _try_pipeline_xformers(pipe):
                     result["effective"] = "xformers"
-                    result["diffusers_backend"] = "enable_xformers_memory_efficient_attention"
+                    result["diffusers_backend"] = (
+                        "enable_xformers_memory_efficient_attention"
+                    )
                     result["applied"] = True
                     return result
             except Exception as exc:
-                add_error(logical_backend, "enable_xformers_memory_efficient_attention", exc)
+                add_error(
+                    logical_backend, "enable_xformers_memory_efficient_attention", exc
+                )
 
         if not targets:
             continue
 
-        for candidate in DIFFUSERS_ATTENTION_BACKEND_CANDIDATES.get(logical_backend, ()):
+        for candidate in DIFFUSERS_ATTENTION_BACKEND_CANDIDATES.get(
+            logical_backend, ()
+        ):
             changed: list[tuple[str, Any]] = []
             try:
                 for _, target in targets:
@@ -154,11 +162,15 @@ def apply_diffusers_attention_backend(
             try:
                 if _try_pipeline_xformers(pipe):
                     result["effective"] = "xformers"
-                    result["diffusers_backend"] = "enable_xformers_memory_efficient_attention"
+                    result["diffusers_backend"] = (
+                        "enable_xformers_memory_efficient_attention"
+                    )
                     result["applied"] = True
                     return result
             except Exception as exc:
-                add_error(logical_backend, "enable_xformers_memory_efficient_attention", exc)
+                add_error(
+                    logical_backend, "enable_xformers_memory_efficient_attention", exc
+                )
 
     _reset_attention_targets(targets)
     result["effective"] = "default"

@@ -677,9 +677,13 @@ _TEXT_ENCODER_GGUF_COMPONENTS = frozenset(
     }
 )
 
-_FLUX2_DEFAULT_TEXT_ENCODER_GGUF_REPO = "unsloth/Mistral-Small-3.2-24B-Instruct-2506-GGUF"
+_FLUX2_DEFAULT_TEXT_ENCODER_GGUF_REPO = (
+    "unsloth/Mistral-Small-3.2-24B-Instruct-2506-GGUF"
+)
 _ERNIE_DEFAULT_TEXT_ENCODER_GGUF_REPO = "unsloth/Ministral-3-3B-Instruct-2512-GGUF"
-_ERNIE_DEFAULT_PROMPT_ENHANCER_GGUF_REPO = "Green-Sky/Ernie-Image-Prompt-Enhancer-Ministral-3B-GGUF"
+_ERNIE_DEFAULT_PROMPT_ENHANCER_GGUF_REPO = (
+    "Green-Sky/Ernie-Image-Prompt-Enhancer-Ministral-3B-GGUF"
+)
 _QWEN2VL_DEFAULT_TEXT_ENCODER_GGUF_REPO = "unsloth/Qwen2.5-VL-7B-Instruct-GGUF"
 _QWEN3_DEFAULT_TEXT_ENCODER_GGUF_REPO = "unsloth/Qwen3-4B-GGUF"
 
@@ -1020,31 +1024,31 @@ def _inspect_diffusion_gguf_tensor_names(
                 warnings.append(
                     f"architecture_conflict:metadata={architecture},signature={signature_arch}"
                 )
-        if len(unique_signature_arches) == 1 and unique_signature_arches[0] != architecture:
+        if (
+            len(unique_signature_arches) == 1
+            and unique_signature_arches[0] != architecture
+        ):
             signature_arch = unique_signature_arches[0]
             should_prefer_signature = (
-                architecture == "wan"
-                and signature_arch == "ernie_image"
+                architecture == "wan" and signature_arch == "ernie_image"
             ) or architecture not in _DIFFUSION_GGUF_IMAGE_ARCHITECTURES
             if should_prefer_signature:
                 metadata_hints = _GGUF_ARCHITECTURE_FAMILY_HINTS.get(architecture, ())
                 if metadata_hints:
                     family_hints = [
-                        hint
-                        for hint in family_hints
-                        if hint not in metadata_hints
+                        hint for hint in family_hints if hint not in metadata_hints
                     ]
                 architecture = signature_arch
                 family_hints.extend(
                     _GGUF_ARCHITECTURE_FAMILY_HINTS.get(architecture, ())
                 )
             else:
-                signature_hints = _GGUF_ARCHITECTURE_FAMILY_HINTS.get(signature_arch, ())
+                signature_hints = _GGUF_ARCHITECTURE_FAMILY_HINTS.get(
+                    signature_arch, ()
+                )
                 if signature_hints:
                     family_hints = [
-                        hint
-                        for hint in family_hints
-                        if hint not in signature_hints
+                        hint for hint in family_hints if hint not in signature_hints
                     ]
 
     unique_layouts = tuple(dict.fromkeys(layouts))
@@ -1159,13 +1163,16 @@ _DIFFUSION_VARIANTS: tuple[DiffusionVariant, ...] = (
 )
 
 _DIFFUSION_VARIANTS_BY_FAMILY: dict[str, tuple[DiffusionVariant, ...]] = {
-    family: tuple(variant for variant in _DIFFUSION_VARIANTS if variant.family == family)
-    for family in tuple(dict.fromkeys(variant.family for variant in _DIFFUSION_VARIANTS))
+    family: tuple(
+        variant for variant in _DIFFUSION_VARIANTS if variant.family == family
+    )
+    for family in tuple(
+        dict.fromkeys(variant.family for variant in _DIFFUSION_VARIANTS)
+    )
 }
 
 _DIFFUSION_VARIANT_BY_FAMILY_AND_ID: dict[tuple[str, str], DiffusionVariant] = {
-    (variant.family, variant.variant): variant
-    for variant in _DIFFUSION_VARIANTS
+    (variant.family, variant.variant): variant for variant in _DIFFUSION_VARIANTS
 }
 
 _CURATED_UNSLOTH_DIFFUSION_GGUFS: tuple[CuratedDiffusionGGUF, ...] = (
@@ -1305,9 +1312,12 @@ _CURATED_UNSLOTH_DIFFUSION_GGUFS: tuple[CuratedDiffusionGGUF, ...] = (
     ),
 )
 
-_CURATED_UNSLOTH_DIFFUSION_GGUFS_BY_REPO: dict[str, tuple[CuratedDiffusionGGUF, ...]] = {
+_CURATED_UNSLOTH_DIFFUSION_GGUFS_BY_REPO: dict[
+    str, tuple[CuratedDiffusionGGUF, ...]
+] = {
     repo_id: tuple(
-        spec for spec in _CURATED_UNSLOTH_DIFFUSION_GGUFS
+        spec
+        for spec in _CURATED_UNSLOTH_DIFFUSION_GGUFS
         if spec.repo_id.lower() == repo_id
     )
     for repo_id in tuple(
@@ -1366,7 +1376,9 @@ def _title_from_preset_id(preset_id: str) -> str:
     for raw in re.split(r"[-_.]+", preset_id):
         if not raw:
             continue
-        words.append(special.get(raw, raw.upper() if raw in {"gguf"} else raw.capitalize()))
+        words.append(
+            special.get(raw, raw.upper() if raw in {"gguf"} else raw.capitalize())
+        )
     return " ".join(words)
 
 
@@ -1427,10 +1439,7 @@ def _flux2_klein_variant_from_text(text: str) -> Optional[str]:
         _contains_label(value, "base")
         or re.search(r"base[-_. ]?(4b|9b)", value) is not None
     )
-    is_distilled = (
-        "distill" in value
-        or _contains_label(value, "schnell")
-    )
+    is_distilled = "distill" in value or _contains_label(value, "schnell")
     if is_9b and is_base:
         return "base-9b"
     if is_9b:
@@ -1472,8 +1481,7 @@ def _candidate_base_repo_message(family: str) -> str:
     if not candidates:
         return ""
     joined = ", ".join(
-        f"{candidate.base_repo} ({candidate.description})"
-        for candidate in candidates
+        f"{candidate.base_repo} ({candidate.description})" for candidate in candidates
     )
     return f"base_repo candidates: {joined}."
 
@@ -1484,8 +1492,7 @@ def _filename_matches_curated_diffusion_gguf(
 ) -> bool:
     leaf = _repo_leaf(gguf_filename or "").lower()
     return bool(leaf) and any(
-        leaf.startswith(prefix.lower())
-        for prefix in spec.filename_prefixes
+        leaf.startswith(prefix.lower()) for prefix in spec.filename_prefixes
     )
 
 
@@ -1699,9 +1706,7 @@ def _sampling_defaults_for_family(
     default_call_kwargs = dict(fam.default_call_kwargs)
 
     if base_repo_variant is not None:
-        variant = _DIFFUSION_VARIANT_BY_FAMILY_AND_ID.get(
-            (fam.name, base_repo_variant)
-        )
+        variant = _DIFFUSION_VARIANT_BY_FAMILY_AND_ID.get((fam.name, base_repo_variant))
         if variant is not None:
             if variant.default_steps is not None:
                 default_steps = variant.default_steps
@@ -1759,7 +1764,9 @@ def _public_diffusion_preset(preset: DiffusionLoadPreset) -> dict[str, Any]:
         ),
         "default_width": fam.default_width if fam is not None else None,
         "default_height": fam.default_height if fam is not None else None,
-        "requires_image_input": bool(fam.requires_image_input) if fam is not None else False,
+        "requires_image_input": bool(fam.requires_image_input)
+        if fam is not None
+        else False,
         "default_text_encoder_gguf_repo": (
             _preset_default_text_encoder_gguf_repo(fam) if fam is not None else None
         ),
@@ -1778,10 +1785,7 @@ def curated_diffusion_presets() -> list[dict[str, Any]]:
     new quant files does not require backend code changes.
     """
 
-    return [
-        _public_diffusion_preset(preset)
-        for preset in _CURATED_DIFFUSION_PRESETS
-    ]
+    return [_public_diffusion_preset(preset) for preset in _CURATED_DIFFUSION_PRESETS]
 
 
 def _resolve_diffusion_preset(preset_id: str) -> DiffusionLoadPreset:
@@ -1904,14 +1908,14 @@ def _maybe_apply_diffusion_memory_plan(
         text_encoder_gguf_repo = load_kwargs.get("text_encoder_gguf_repo"),
         text_encoder_gguf_filename = load_kwargs.get("text_encoder_gguf_filename"),
         prompt_enhancer_gguf_repo = load_kwargs.get("prompt_enhancer_gguf_repo"),
-        prompt_enhancer_gguf_filename = load_kwargs.get(
-            "prompt_enhancer_gguf_filename"
-        ),
+        prompt_enhancer_gguf_filename = load_kwargs.get("prompt_enhancer_gguf_filename"),
         safetensors_quantization = load_kwargs.get("safetensors_quantization"),
     )
     workload = DiffusionWorkloadEstimate(
         media_kind = family.media_kind if family is not None else "image",
-        family = family.name if family is not None else load_kwargs.get("family_override"),
+        family = family.name
+        if family is not None
+        else load_kwargs.get("family_override"),
         width = width or (family.default_width if family is not None else None),
         height = height or (family.default_height if family is not None else None),
         num_frames = (
@@ -1921,7 +1925,9 @@ def _maybe_apply_diffusion_memory_plan(
         ),
         batch_size = max(1, int(batch_size or 1)),
         guidance_scale = guidance_scale,
-        requires_image_input = bool(family.requires_image_input) if family is not None else False,
+        requires_image_input = bool(family.requires_image_input)
+        if family is not None
+        else False,
     )
     plan = select_diffusion_memory_plan(
         requested_mode = normalized_memory_mode,
@@ -1941,9 +1947,7 @@ def _maybe_apply_diffusion_memory_plan(
         not load_kwargs.get("safetensors_quantization")
         and plan.selected_safetensors_quantization
     ):
-        load_kwargs["safetensors_quantization"] = (
-            plan.selected_safetensors_quantization
-        )
+        load_kwargs["safetensors_quantization"] = plan.selected_safetensors_quantization
     if (
         not load_kwargs.get("safetensors_quantization_components")
         and plan.selected_safetensors_quantization_components is not None
@@ -2043,8 +2047,7 @@ def resolve_diffusion_load_plan(
         )
         if (
             normalized_safetensors_quantization
-            and normalized_safetensors_quantization
-            != DIFFUSION_SAFETENSORS_QUANT_NONE
+            and normalized_safetensors_quantization != DIFFUSION_SAFETENSORS_QUANT_NONE
             and (
                 gguf_filename
                 or transformer_gguf_filename
@@ -2127,7 +2130,9 @@ def resolve_diffusion_load_plan(
         )
 
     planned_repo_id = repo_id or preset.pipeline_repo
-    if base_repo and _expand_existing_local_path(base_repo) != _expand_existing_local_path(planned_repo_id):
+    if base_repo and _expand_existing_local_path(
+        base_repo
+    ) != _expand_existing_local_path(planned_repo_id):
         raise ValueError(
             "Preset loads use repo_id as the normal Diffusers pipeline repo. "
             "Omit base_repo or set it to the same repo_id."
@@ -2283,9 +2288,7 @@ def _sampling_defaults_for_loaded_pipeline(
     return DiffusionSamplingDefaults(
         default_steps = int(steps) if isinstance(steps, int) else 24,
         default_guidance_scale = (
-            float(guidance)
-            if isinstance(guidance, (int, float))
-            else 3.5
+            float(guidance) if isinstance(guidance, (int, float)) else 3.5
         ),
         default_call_kwargs = {},
     )
@@ -2448,9 +2451,7 @@ def _apply_diffusion_lora(
     if lora_fuse:
         fuse_lora = getattr(pipe, "fuse_lora", None)
         if not callable(fuse_lora):
-            raise RuntimeError(
-                f"{type(pipe).__name__} does not support LoRA fusion."
-            )
+            raise RuntimeError(f"{type(pipe).__name__} does not support LoRA fusion.")
         fuse_lora(lora_scale = scale, adapter_names = [adapter_name])
     return DiffusionLoraState(
         repo = lora_repo,
@@ -2529,7 +2530,9 @@ def _resolve_lora_safetensors_path(
     )
 
 
-def _strip_lora_component_prefix(state_dict: dict[str, Any]) -> Optional[dict[str, Any]]:
+def _strip_lora_component_prefix(
+    state_dict: dict[str, Any],
+) -> Optional[dict[str, Any]]:
     if not state_dict:
         return None
     prefixes = (
@@ -2542,7 +2545,7 @@ def _strip_lora_component_prefix(state_dict: dict[str, Any]) -> Optional[dict[st
     keys = tuple(state_dict.keys())
     for prefix in prefixes:
         if all(key.startswith(prefix) for key in keys):
-            return {key[len(prefix):]: value for key, value in state_dict.items()}
+            return {key[len(prefix) :]: value for key, value in state_dict.items()}
     return None
 
 
@@ -2786,7 +2789,9 @@ def _strip_gguf_quant_suffix_for_mmproj(name: str) -> str:
     return name
 
 
-def _candidate_text_encoder_mmproj_filenames(text_encoder_gguf_filename: str) -> list[str]:
+def _candidate_text_encoder_mmproj_filenames(
+    text_encoder_gguf_filename: str,
+) -> list[str]:
     """Return likely sibling mmproj GGUF filenames for a text GGUF."""
 
     rel = PurePosixPath(text_encoder_gguf_filename)
@@ -2821,7 +2826,9 @@ def _download_text_encoder_mmproj_from_hub(
 ) -> Path | None:
     """Download a likely sibling Qwen2VL mmproj GGUF from the same Hub repo."""
 
-    for filename in _candidate_text_encoder_mmproj_filenames(text_encoder_gguf_filename):
+    for filename in _candidate_text_encoder_mmproj_filenames(
+        text_encoder_gguf_filename
+    ):
         with contextlib.suppress(Exception):
             return Path(
                 hf_hub_download(
@@ -3127,35 +3134,45 @@ def supported_optimization_options() -> dict[str, Any]:
                 "backend": "bitsandbytes",
                 "available": bnb_available,
                 "requires": ["bitsandbytes"],
-                "default_components": list(DIFFUSION_SAFETENSORS_QUANT_DEFAULT_COMPONENTS),
+                "default_components": list(
+                    DIFFUSION_SAFETENSORS_QUANT_DEFAULT_COMPONENTS
+                ),
             },
             {
                 "name": DIFFUSION_SAFETENSORS_QUANT_BNB_4BIT_NF4,
                 "backend": "bitsandbytes",
                 "available": bnb_available,
                 "requires": ["bitsandbytes"],
-                "default_components": list(DIFFUSION_SAFETENSORS_QUANT_DEFAULT_COMPONENTS),
+                "default_components": list(
+                    DIFFUSION_SAFETENSORS_QUANT_DEFAULT_COMPONENTS
+                ),
             },
             {
                 "name": DIFFUSION_SAFETENSORS_QUANT_BNB_8BIT,
                 "backend": "bitsandbytes",
                 "available": bnb_available,
                 "requires": ["bitsandbytes"],
-                "default_components": list(DIFFUSION_SAFETENSORS_QUANT_DEFAULT_COMPONENTS),
+                "default_components": list(
+                    DIFFUSION_SAFETENSORS_QUANT_DEFAULT_COMPONENTS
+                ),
             },
             {
                 "name": DIFFUSION_SAFETENSORS_QUANT_TORCHAO_INT8_WEIGHT_ONLY,
                 "backend": "torchao",
                 "available": torchao_available,
                 "requires": ["torchao"],
-                "default_components": list(DIFFUSION_SAFETENSORS_QUANT_DEFAULT_COMPONENTS),
+                "default_components": list(
+                    DIFFUSION_SAFETENSORS_QUANT_DEFAULT_COMPONENTS
+                ),
             },
             {
                 "name": DIFFUSION_SAFETENSORS_QUANT_TORCHAO_INT4_WEIGHT_ONLY,
                 "backend": "torchao",
                 "available": torchao_available and mslk_available,
                 "requires": ["torchao", "mslk"],
-                "default_components": list(DIFFUSION_SAFETENSORS_QUANT_DEFAULT_COMPONENTS),
+                "default_components": list(
+                    DIFFUSION_SAFETENSORS_QUANT_DEFAULT_COMPONENTS
+                ),
             },
         ],
         "safetensors_quantization_components": list(
@@ -3288,7 +3305,9 @@ def supported_optimization_options() -> dict[str, Any]:
     }
 
 
-def _enable_flux2_klein_embedded_guidance(pipe: Any, fam: Optional[DiffusionFamily]) -> bool:
+def _enable_flux2_klein_embedded_guidance(
+    pipe: Any, fam: Optional[DiffusionFamily]
+) -> bool:
     """Optionally make Flux2 Klein use Flux-style single-pass guidance.
 
     Diffusers' Flux2KleinPipeline currently treats non-distilled Klein
@@ -3302,12 +3321,9 @@ def _enable_flux2_klein_embedded_guidance(pipe: Any, fam: Optional[DiffusionFami
 
     if fam is None or fam.name != "flux.2-klein":
         return False
-    if (
-        os.environ.get("UNSLOTH_STUDIO_FLUX2_KLEIN_SINGLE_PASS_GUIDANCE", "")
-        .strip()
-        .lower()
-        not in {"1", "true", "yes", "on"}
-    ):
+    if os.environ.get(
+        "UNSLOTH_STUDIO_FLUX2_KLEIN_SINGLE_PASS_GUIDANCE", ""
+    ).strip().lower() not in {"1", "true", "yes", "on"}:
         return False
     transformer = getattr(pipe, "transformer", None)
     original_forward = getattr(transformer, "forward", None)
@@ -3324,7 +3340,9 @@ def _enable_flux2_klein_embedded_guidance(pipe: Any, fam: Optional[DiffusionFami
             with contextlib.suppress(Exception):
                 setattr(pipe.config, "is_distilled", value)
 
-    def _forward_with_embedded_guidance(*args: Any, guidance: Any = None, **kwargs: Any) -> Any:
+    def _forward_with_embedded_guidance(
+        *args: Any, guidance: Any = None, **kwargs: Any
+    ) -> Any:
         if (
             guidance is None
             and len(args) < 6
@@ -3438,7 +3456,13 @@ def _enable_flux2_klein_batched_cfg(pipe: Any, fam: Optional[DiffusionFamily]) -
             return original_forward(*args, **kwargs)
 
         batched_kwargs = dict(previous_kwargs)
-        for key in ("hidden_states", "timestep", "encoder_hidden_states", "txt_ids", "img_ids"):
+        for key in (
+            "hidden_states",
+            "timestep",
+            "encoder_hidden_states",
+            "txt_ids",
+            "img_ids",
+        ):
             batched_kwargs[key] = torch.cat([previous_kwargs[key], kwargs[key]], dim = 0)
         batched_kwargs["guidance"] = None
         batched_kwargs["return_dict"] = False
@@ -3561,12 +3585,9 @@ def _prompt_embeds_and_optional_mask(
 
 
 def _env_pin_cpu_resident_gguf() -> bool:
-    return (
-        os.environ.get("UNSLOTH_STUDIO_GGUF_PIN_CPU_RESIDENT", "")
-        .strip()
-        .lower()
-        in {"1", "true", "yes", "on"}
-    )
+    return os.environ.get(
+        "UNSLOTH_STUDIO_GGUF_PIN_CPU_RESIDENT", ""
+    ).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _balanced_gguf_cuda_cache_bytes(
@@ -3666,9 +3687,7 @@ def _guard_diffusers_optional_bitsandbytes() -> None:
     bnb_quantizer_stub.BnB8BitDiffusersQuantizer = _UnavailableBnBDiffusersQuantizer
     sys.modules["diffusers.quantizers.bitsandbytes"] = stub
     sys.modules["diffusers.quantizers.bitsandbytes.utils"] = utils_stub
-    sys.modules[
-        "diffusers.quantizers.bitsandbytes.bnb_quantizer"
-    ] = bnb_quantizer_stub
+    sys.modules["diffusers.quantizers.bitsandbytes.bnb_quantizer"] = bnb_quantizer_stub
 
 
 def _require_bitsandbytes_for_safetensors_quantization() -> None:
@@ -3812,7 +3831,9 @@ def _build_safetensors_pipeline_quantization_config(
         return None, normalized, None
 
     selected_components = _safetensors_quantization_components(components)
-    pipeline_quant_config_cls = getattr(diffusers_mod, "PipelineQuantizationConfig", None)
+    pipeline_quant_config_cls = getattr(
+        diffusers_mod, "PipelineQuantizationConfig", None
+    )
     if pipeline_quant_config_cls is None:
         try:
             from diffusers.quantizers import PipelineQuantizationConfig
@@ -4189,10 +4210,10 @@ def _resolve_diffusion_offload_policy(
     if gguf_quantized_cpu_resident is None:
         gguf_quantized_cpu_resident = bool(enable_model_cpu_offload)
     if gguf_pin_cpu_resident is None:
-        gguf_pin_cpu_resident = bool(
-            gguf_quantized_cpu_resident
-            and enable_model_cpu_offload
-        ) or _env_pin_cpu_resident_gguf()
+        gguf_pin_cpu_resident = (
+            bool(gguf_quantized_cpu_resident and enable_model_cpu_offload)
+            or _env_pin_cpu_resident_gguf()
+        )
     return (
         None,
         bool(enable_model_cpu_offload),
@@ -4352,9 +4373,7 @@ class DiffusionBackend:
         self._ltx2_distilled_lora_cache_key: Optional[tuple[Any, ...]] = None
         self._load_timings: dict[str, float] = {}
         self._prompt_embedding_cache_key: Optional[tuple[Any, ...]] = None
-        self._prompt_embedding_cache_value: Optional[
-            tuple[Any, Any, Any, Any]
-        ] = None
+        self._prompt_embedding_cache_value: Optional[tuple[Any, Any, Any, Any]] = None
         self._loaded_at: Optional[float] = None
         self._loading: bool = False
         self._last_error: Optional[str] = None
@@ -4434,17 +4453,35 @@ class DiffusionBackend:
                 self._pending_diffusion_gguf_repo if self._loading else None
             )
             pending_base = self._pending_base_repo if self._loading else None
-            pending_base_source = self._pending_base_repo_source if self._loading else None
-            pending_base_confidence = self._pending_base_repo_confidence if self._loading else None
-            pending_base_variant = self._pending_base_repo_variant if self._loading else None
-            pending_base_warning = self._pending_base_repo_warning if self._loading else None
+            pending_base_source = (
+                self._pending_base_repo_source if self._loading else None
+            )
+            pending_base_confidence = (
+                self._pending_base_repo_confidence if self._loading else None
+            )
+            pending_base_variant = (
+                self._pending_base_repo_variant if self._loading else None
+            )
+            pending_base_warning = (
+                self._pending_base_repo_warning if self._loading else None
+            )
             pending_gguf = self._pending_gguf_filename if self._loading else None
-            pending_te_repo = self._pending_text_encoder_gguf_repo if self._loading else None
-            pending_te_gguf = self._pending_text_encoder_gguf_filename if self._loading else None
-            pending_pe_repo = self._pending_prompt_enhancer_gguf_repo if self._loading else None
-            pending_pe_gguf = self._pending_prompt_enhancer_gguf_filename if self._loading else None
+            pending_te_repo = (
+                self._pending_text_encoder_gguf_repo if self._loading else None
+            )
+            pending_te_gguf = (
+                self._pending_text_encoder_gguf_filename if self._loading else None
+            )
+            pending_pe_repo = (
+                self._pending_prompt_enhancer_gguf_repo if self._loading else None
+            )
+            pending_pe_gguf = (
+                self._pending_prompt_enhancer_gguf_filename if self._loading else None
+            )
             pending_lora_repo = self._pending_lora_repo if self._loading else None
-            pending_lora_weight_name = self._pending_lora_weight_name if self._loading else None
+            pending_lora_weight_name = (
+                self._pending_lora_weight_name if self._loading else None
+            )
             # When a swap is in flight, the UI-facing repo_id /
             # base_repo / gguf_filename advertise the PENDING model
             # but ``self._family`` still points at the previously
@@ -4501,7 +4538,8 @@ class DiffusionBackend:
                 "media_kind": ui_media_kind,
                 "base_repo": _display_repo_id(pending_base or active_base),
                 "base_repo_source": pending_base_source or active_base_source,
-                "base_repo_confidence": pending_base_confidence or active_base_confidence,
+                "base_repo_confidence": pending_base_confidence
+                or active_base_confidence,
                 "base_repo_variant": pending_base_variant or active_base_variant,
                 "base_repo_warning": pending_base_warning or active_base_warning,
                 "sampling_contract": (
@@ -4514,9 +4552,13 @@ class DiffusionBackend:
                     pending_diffusion_gguf_repo or active_diffusion_gguf_repo
                 ),
                 "transformer_gguf_filename": ui_gguf_basename,
-                "text_encoder_gguf_repo": _display_repo_id(pending_te_repo or active_te_repo),
+                "text_encoder_gguf_repo": _display_repo_id(
+                    pending_te_repo or active_te_repo
+                ),
                 "text_encoder_gguf_filename": ui_te_gguf_basename,
-                "prompt_enhancer_gguf_repo": _display_repo_id(pending_pe_repo or active_pe_repo),
+                "prompt_enhancer_gguf_repo": _display_repo_id(
+                    pending_pe_repo or active_pe_repo
+                ),
                 "prompt_enhancer_gguf_filename": ui_pe_gguf_basename,
                 "lora": active_lora_public,
                 "component_sources": (
@@ -4545,9 +4587,7 @@ class DiffusionBackend:
                     else None
                 ),
                 "memory_plan": (
-                    dict(self._memory_plan)
-                    if self._memory_plan is not None
-                    else None
+                    dict(self._memory_plan) if self._memory_plan is not None else None
                 ),
                 "safetensors_quantization": self._safetensors_quantization,
                 "safetensors_quantization_components": (
@@ -4590,7 +4630,9 @@ class DiffusionBackend:
                         "active_text_encoder_gguf_filename": active_te_gguf,
                         "active_prompt_enhancer_gguf_repo": active_pe_repo,
                         "active_prompt_enhancer_gguf_filename": active_pe_gguf,
-                        "active_lora_repo": active_lora_state.repo if active_lora_state else None,
+                        "active_lora_repo": active_lora_state.repo
+                        if active_lora_state
+                        else None,
                         "active_lora_weight_name": (
                             active_lora_state.weight_name if active_lora_state else None
                         ),
@@ -4820,7 +4862,11 @@ class DiffusionBackend:
                 elapsed = time.perf_counter() - phase_started
                 load_timings[name] = load_timings.get(name, 0.0) + elapsed
 
-        if transformer_gguf_filename and gguf_filename and transformer_gguf_filename != gguf_filename:
+        if (
+            transformer_gguf_filename
+            and gguf_filename
+            and transformer_gguf_filename != gguf_filename
+        ):
             raise ValueError(
                 "Use either gguf_filename or transformer_gguf_filename for the "
                 "diffusion transformer quant, not both with different values."
@@ -4840,7 +4886,9 @@ class DiffusionBackend:
                 raise ValueError(
                     "transformer_gguf_repo requires transformer_gguf_filename."
                 )
-            if base_repo and _expand_existing_local_path(base_repo) != _expand_existing_local_path(repo_id):
+            if base_repo and _expand_existing_local_path(
+                base_repo
+            ) != _expand_existing_local_path(repo_id):
                 raise ValueError(
                     "When transformer_gguf_repo is set, repo_id is already the "
                     "Diffusers pipeline repo. Omit base_repo or set it to the "
@@ -4849,7 +4897,9 @@ class DiffusionBackend:
             pipeline_repo = repo_id
         else:
             diffusion_gguf_repo = repo_id if diffusion_gguf_filename else None
-            pipeline_repo = base_repo if diffusion_gguf_filename and base_repo else repo_id
+            pipeline_repo = (
+                base_repo if diffusion_gguf_filename and base_repo else repo_id
+            )
 
         resolved_safetensors_quantization = _normalize_safetensors_quantization(
             safetensors_quantization
@@ -4914,8 +4964,7 @@ class DiffusionBackend:
         ):
             allowed_components = ", ".join(sorted(_TEXT_ENCODER_GGUF_COMPONENTS))
             raise ValueError(
-                "text_encoder_gguf_component must be one of: "
-                f"{allowed_components}."
+                "text_encoder_gguf_component must be one of: " f"{allowed_components}."
             )
         if prompt_enhancer_gguf_filename and text_encoder_gguf_component == "pe":
             raise ValueError(
@@ -5022,7 +5071,9 @@ class DiffusionBackend:
                 self._pending_diffusion_gguf_repo = diffusion_gguf_repo
                 self._pending_base_repo = pipeline_repo
                 self._pending_base_repo_source = (
-                    "pipeline_repo" if explicit_transformer_swap else ("explicit" if base_repo else None)
+                    "pipeline_repo"
+                    if explicit_transformer_swap
+                    else ("explicit" if base_repo else None)
                 )
                 self._pending_base_repo_confidence = (
                     "explicit" if (explicit_transformer_swap or base_repo) else None
@@ -5039,7 +5090,9 @@ class DiffusionBackend:
                 self._pending_text_encoder_gguf_repo = text_encoder_gguf_repo
                 self._pending_text_encoder_gguf_filename = text_encoder_gguf_filename
                 self._pending_prompt_enhancer_gguf_repo = prompt_enhancer_gguf_repo
-                self._pending_prompt_enhancer_gguf_filename = prompt_enhancer_gguf_filename
+                self._pending_prompt_enhancer_gguf_filename = (
+                    prompt_enhancer_gguf_filename
+                )
                 self._pending_lora_repo = lora_repo
                 self._pending_lora_weight_name = lora_weight_name
             try:
@@ -5097,11 +5150,17 @@ class DiffusionBackend:
                 # selection waits until after the GGUF file is local so
                 # the resolver can use metadata and tensor-key signatures
                 # instead of failing on repo names alone.
-                if not diffusion_gguf_filename or base_repo or explicit_transformer_swap:
+                if (
+                    not diffusion_gguf_filename
+                    or base_repo
+                    or explicit_transformer_swap
+                ):
                     base_resolution = _resolve_diffusion_base_repo(
                         fam = fam,
                         repo_id = pipeline_repo,
-                        gguf_filename = None if explicit_transformer_swap else diffusion_gguf_filename,
+                        gguf_filename = None
+                        if explicit_transformer_swap
+                        else diffusion_gguf_filename,
                         base_repo = None if explicit_transformer_swap else base_repo,
                     )
                     effective_base = base_resolution.base_repo
@@ -5162,7 +5221,9 @@ class DiffusionBackend:
                             f"Family {fam.name} does not have a GGUF transformer "
                             "path wired in this build; load the full repo instead."
                         )
-                    has_single_file_loader = hasattr(transformer_cls, "from_single_file")
+                    has_single_file_loader = hasattr(
+                        transformer_cls, "from_single_file"
+                    )
                     has_state_dict_loader = _transformer_supports_gguf_state_dict_load(
                         transformer_cls
                     )
@@ -5191,7 +5252,9 @@ class DiffusionBackend:
                     # delete-ownership guards aligned with what was
                     # actually loaded.
                     with _load_phase("resolve_diffusion_gguf"):
-                        diffusion_gguf_repo_path = Path(diffusion_gguf_repo or "").expanduser()
+                        diffusion_gguf_repo_path = Path(
+                            diffusion_gguf_repo or ""
+                        ).expanduser()
                         if diffusion_gguf_repo_path.is_dir():
                             local_gguf_path = str(
                                 _resolve_local_gguf_child(
@@ -5274,12 +5337,18 @@ class DiffusionBackend:
                         text_encoder_gguf_repo or _default_text_encoder_gguf_repo(fam)
                     )
                     with self._lock:
-                        self._pending_text_encoder_gguf_repo = effective_text_encoder_gguf_repo
+                        self._pending_text_encoder_gguf_repo = (
+                            effective_text_encoder_gguf_repo
+                        )
                     with _load_phase("resolve_text_encoder_gguf"):
-                        te_repo_path = Path(effective_text_encoder_gguf_repo).expanduser()
+                        te_repo_path = Path(
+                            effective_text_encoder_gguf_repo
+                        ).expanduser()
                         if te_repo_path.is_dir():
                             local_text_encoder_gguf_path = str(
-                                _resolve_local_gguf_child(te_repo_path, text_encoder_gguf_filename)
+                                _resolve_local_gguf_child(
+                                    te_repo_path, text_encoder_gguf_filename
+                                )
                             )
                         else:
                             local_text_encoder_gguf_path = hf_hub_download(
@@ -5292,7 +5361,9 @@ class DiffusionBackend:
                         from .gguf_text_encoder import inspect_text_encoder_gguf
 
                         with _load_phase("inspect_text_encoder_gguf"):
-                            text_encoder_gguf_info = inspect_text_encoder_gguf(local_te_path)
+                            text_encoder_gguf_info = inspect_text_encoder_gguf(
+                                local_te_path
+                            )
                         text_encoder_mmproj_path = getattr(
                             text_encoder_gguf_info,
                             "mmproj_path",
@@ -5350,7 +5421,9 @@ class DiffusionBackend:
                         self._pending_prompt_enhancer_gguf_repo = (
                             effective_prompt_enhancer_gguf_repo
                         )
-                    pe_repo_path = Path(effective_prompt_enhancer_gguf_repo).expanduser()
+                    pe_repo_path = Path(
+                        effective_prompt_enhancer_gguf_repo
+                    ).expanduser()
                     if pe_repo_path.is_dir():
                         local_prompt_enhancer_gguf_path = str(
                             _resolve_local_gguf_child(
@@ -5488,9 +5561,13 @@ class DiffusionBackend:
                 # backend" tag refcount independently; both
                 # contribute to public_load_pending().
                 with _load_phase("release_other_backends"):
-                    backend_pending_published = _raise_if_helper_advisor_busy_for_diffusion(
-                        publish_pending = True,
-                        ignore_pending_workload = (ignore_public_load_pending_workload),
+                    backend_pending_published = (
+                        _raise_if_helper_advisor_busy_for_diffusion(
+                            publish_pending = True,
+                            ignore_pending_workload = (
+                                ignore_public_load_pending_workload
+                            ),
+                        )
                     )
                     _release_other_gpu_owners_for_diffusion()
                     _release_chat_backend_for_diffusion(check_helper_advisor = False)
@@ -5599,7 +5676,9 @@ class DiffusionBackend:
                             resident_device = diffusion_gguf_resident_device,
                         )
                     if lazy_linear_count:
-                        prepared_gguf_module_counts["diffusion_linear_lazy"] = lazy_linear_count
+                        prepared_gguf_module_counts["diffusion_linear_lazy"] = (
+                            lazy_linear_count
+                        )
                         logger.info(
                             "Replaced %d diffusion GGUFLinear modules with Studio "
                             "lazy GGUF linear modules.",
@@ -5621,10 +5700,12 @@ class DiffusionBackend:
                         )
                     if diffusion_gguf_resident_device is not None:
                         with _load_phase("patch_diffusion_cpu_resident"):
-                            patched_gguf_modules = _patch_gguf_modules_for_resident_device(
-                                transformer,
-                                diffusion_gguf_resident_device,
-                                pin_memory = gguf_pin_cpu_resident_active,
+                            patched_gguf_modules = (
+                                _patch_gguf_modules_for_resident_device(
+                                    transformer,
+                                    diffusion_gguf_resident_device,
+                                    pin_memory = gguf_pin_cpu_resident_active,
+                                )
                             )
                         if patched_gguf_modules:
                             prepared_gguf_module_counts[
@@ -5640,7 +5721,9 @@ class DiffusionBackend:
                         and diffusion_gguf_resident_device == "cpu"
                         and device_target.supports_gguf_cuda_cache
                     ):
-                        cuda_cache_bytes = _balanced_gguf_cuda_cache_bytes(device = device)
+                        cuda_cache_bytes = _balanced_gguf_cuda_cache_bytes(
+                            device = device
+                        )
                         if cuda_cache_bytes > 0:
                             try:
                                 from .gguf_text_encoder import (
@@ -5663,13 +5746,19 @@ class DiffusionBackend:
                                     ] = int(cache_stats["modules"])
                                     prepared_gguf_module_counts[
                                         "diffusion_cuda_cache_budget_mib"
-                                    ] = int(cache_stats["budget_bytes"] // (1024 * 1024))
+                                    ] = int(
+                                        cache_stats["budget_bytes"] // (1024 * 1024)
+                                    )
                                     prepared_gguf_module_counts[
                                         "diffusion_cuda_cache_candidate_mib"
-                                    ] = int(cache_stats["candidate_bytes"] // (1024 * 1024))
+                                    ] = int(
+                                        cache_stats["candidate_bytes"] // (1024 * 1024)
+                                    )
                                     prepared_gguf_module_counts[
                                         "diffusion_cuda_cache_selected_mib"
-                                    ] = int(cache_stats["selected_bytes"] // (1024 * 1024))
+                                    ] = int(
+                                        cache_stats["selected_bytes"] // (1024 * 1024)
+                                    )
                                     logger.info(
                                         "Configured balanced diffusion GGUF CUDA cache "
                                         "for %d CPU-resident modules with budget %d MiB "
@@ -5691,8 +5780,10 @@ class DiffusionBackend:
                             )
                         else:
                             with _load_phase("compile_gguf_dequant"):
-                                compile_stats = install_compiled_lazy_gguf_linear_dequant(
-                                    transformer
+                                compile_stats = (
+                                    install_compiled_lazy_gguf_linear_dequant(
+                                        transformer
+                                    )
                                 )
                             if compile_stats.get("modules", 0):
                                 prepared_gguf_module_counts[
@@ -5734,9 +5825,9 @@ class DiffusionBackend:
                         if patch_text_encoder is not None:
                             with _load_phase("patch_text_encoder_cpu_resident"):
                                 patched_text_modules = patch_text_encoder(
-                                text_encoder,
-                                text_encoder_resident_device,
-                                pin_memory = gguf_pin_cpu_resident_active,
+                                    text_encoder,
+                                    text_encoder_resident_device,
+                                    pin_memory = gguf_pin_cpu_resident_active,
                                 )
                             if patched_text_modules:
                                 prepared_gguf_module_counts[
@@ -5815,12 +5906,10 @@ class DiffusionBackend:
                     and getattr(diffusers, "__version__", "") != "fake"
                 ):
                     tokenizers_backend_cls = _transformers_tokenizers_backend_cls()
-                    pipe_kwargs["tokenizer"] = (
-                        tokenizers_backend_cls.from_pretrained(
-                            effective_base,
-                            subfolder = "tokenizer",
-                            token = hf_token,
-                        )
+                    pipe_kwargs["tokenizer"] = tokenizers_backend_cls.from_pretrained(
+                        effective_base,
+                        subfolder = "tokenizer",
+                        token = hf_token,
                     )
                 if prompt_enhancer is not None:
                     pipe_kwargs["pe"] = prompt_enhancer
@@ -5852,7 +5941,9 @@ class DiffusionBackend:
                 )
                 try:
                     with _load_phase("pipeline_from_pretrained"):
-                        pipe = pipeline_cls.from_pretrained(effective_base, **pipe_kwargs)
+                        pipe = pipeline_cls.from_pretrained(
+                            effective_base, **pipe_kwargs
+                        )
                     if lora_repo:
                         with _load_phase("apply_lora"):
                             lora_state = _apply_diffusion_lora(
@@ -5865,7 +5956,9 @@ class DiffusionBackend:
                                 hf_token = hf_token,
                                 gguf_filename = diffusion_gguf_filename,
                                 uses_studio_lazy_gguf_modules = bool(
-                                    prepared_gguf_module_counts.get("diffusion_linear_lazy")
+                                    prepared_gguf_module_counts.get(
+                                        "diffusion_linear_lazy"
+                                    )
                                     or text_encoder_gguf_filename
                                     or prompt_enhancer_gguf_filename
                                 ),
@@ -5905,7 +5998,9 @@ class DiffusionBackend:
                             and device_target.supports_gguf_cuda_cache
                         ):
                             try:
-                                from .gguf_text_encoder import prime_lazy_gguf_cuda_cache
+                                from .gguf_text_encoder import (
+                                    prime_lazy_gguf_cuda_cache,
+                                )
                             except Exception:
                                 prime_lazy_gguf_cuda_cache = None
                             if prime_lazy_gguf_cuda_cache is not None:
@@ -5966,9 +6061,13 @@ class DiffusionBackend:
                     self._text_encoder_gguf_repo = effective_text_encoder_gguf_repo
                     self._text_encoder_gguf_path = local_text_encoder_gguf_path
                     self._text_encoder_gguf_filename = (
-                        text_encoder_gguf_filename if text_encoder_gguf_filename else None
+                        text_encoder_gguf_filename
+                        if text_encoder_gguf_filename
+                        else None
                     )
-                    self._prompt_enhancer_gguf_repo = effective_prompt_enhancer_gguf_repo
+                    self._prompt_enhancer_gguf_repo = (
+                        effective_prompt_enhancer_gguf_repo
+                    )
                     self._prompt_enhancer_gguf_path = local_prompt_enhancer_gguf_path
                     self._prompt_enhancer_gguf_filename = (
                         prompt_enhancer_gguf_filename
@@ -6051,9 +6150,7 @@ class DiffusionBackend:
                         else None
                     )
                     self._memory_plan = (
-                        dict(memory_plan)
-                        if memory_plan is not None
-                        else None
+                        dict(memory_plan) if memory_plan is not None else None
                     )
                     self._safetensors_quantization = (
                         resolved_safetensors_quantization
@@ -6073,8 +6170,7 @@ class DiffusionBackend:
                     )
                     load_timings["total"] = time.perf_counter() - load_started
                     self._load_timings = {
-                        key: round(value, 6)
-                        for key, value in load_timings.items()
+                        key: round(value, 6) for key, value in load_timings.items()
                     }
                     self._prompt_embedding_cache_key = None
                     self._prompt_embedding_cache_value = None
@@ -6195,12 +6291,24 @@ class DiffusionBackend:
                 exc_msg = _collapse_local(exc_msg, _locals.get("effective_base"))
                 exc_msg = _collapse_local(exc_msg, _locals.get("gguf_filename"))
                 exc_msg = _collapse_local(exc_msg, _locals.get("local_gguf_path"))
-                exc_msg = _collapse_local(exc_msg, _locals.get("effective_text_encoder_gguf_repo"))
-                exc_msg = _collapse_local(exc_msg, _locals.get("text_encoder_gguf_filename"))
-                exc_msg = _collapse_local(exc_msg, _locals.get("local_text_encoder_gguf_path"))
-                exc_msg = _collapse_local(exc_msg, _locals.get("effective_prompt_enhancer_gguf_repo"))
-                exc_msg = _collapse_local(exc_msg, _locals.get("prompt_enhancer_gguf_filename"))
-                exc_msg = _collapse_local(exc_msg, _locals.get("local_prompt_enhancer_gguf_path"))
+                exc_msg = _collapse_local(
+                    exc_msg, _locals.get("effective_text_encoder_gguf_repo")
+                )
+                exc_msg = _collapse_local(
+                    exc_msg, _locals.get("text_encoder_gguf_filename")
+                )
+                exc_msg = _collapse_local(
+                    exc_msg, _locals.get("local_text_encoder_gguf_path")
+                )
+                exc_msg = _collapse_local(
+                    exc_msg, _locals.get("effective_prompt_enhancer_gguf_repo")
+                )
+                exc_msg = _collapse_local(
+                    exc_msg, _locals.get("prompt_enhancer_gguf_filename")
+                )
+                exc_msg = _collapse_local(
+                    exc_msg, _locals.get("local_prompt_enhancer_gguf_path")
+                )
                 exc_msg = _collapse_local(exc_msg, _locals.get("lora_repo"))
                 exc_msg = _collapse_local(exc_msg, _locals.get("lora_weight_name"))
                 with self._lock:
@@ -6434,7 +6542,9 @@ class DiffusionBackend:
                         and getattr(pipe, "pe", None) is not None
                         and getattr(pipe, "pe_tokenizer", None) is not None
                     ):
-                        prompt_values = [prompt] if isinstance(prompt, str) else list(prompt)
+                        prompt_values = (
+                            [prompt] if isinstance(prompt, str) else list(prompt)
+                        )
                         prompt_for_encode = [
                             pipe._enhance_prompt_with_pe(
                                 item,
@@ -6449,9 +6559,11 @@ class DiffusionBackend:
                         execution_device,
                         1,
                     )
-                    prompt_embeds, prompt_embeds_mask = _prompt_embeds_and_optional_mask(
-                        prompt_embeds,
-                        accepts_mask = accepts_prompt_mask,
+                    prompt_embeds, prompt_embeds_mask = (
+                        _prompt_embeds_and_optional_mask(
+                            prompt_embeds,
+                            accepts_mask = accepts_prompt_mask,
+                        )
                     )
                     if do_classifier_free_guidance:
                         negative_values: Any = negative_prompt or ""
@@ -6606,10 +6718,14 @@ class DiffusionBackend:
             else (defaults.default_guidance_scale if defaults is not None else 3.5)
         )
         resolved_width = int(
-            width if width is not None else (fam.default_width if fam is not None else 1024)
+            width
+            if width is not None
+            else (fam.default_width if fam is not None else 1024)
         )
         resolved_height = int(
-            height if height is not None else (fam.default_height if fam is not None else 1024)
+            height
+            if height is not None
+            else (fam.default_height if fam is not None else 1024)
         )
         if fam is not None and fam.media_kind != "image":
             raise RuntimeError(
@@ -6682,7 +6798,8 @@ class DiffusionBackend:
                 if fam is not None and fam.name == "qwen-image-layered":
                     prepared_input_images = [
                         image.convert("RGBA")
-                        if hasattr(image, "convert") and getattr(image, "mode", None) != "RGBA"
+                        if hasattr(image, "convert")
+                        and getattr(image, "mode", None) != "RGBA"
                         else image
                         for image in prepared_input_images
                     ]
@@ -6712,15 +6829,12 @@ class DiffusionBackend:
             and guidance_kwarg == "true_cfg_scale"
         ):
             effective_negative_prompt = fam.default_negative_prompt
-        should_forward_negative = (
-            effective_negative_prompt is not None
-            and (
-                bool(effective_negative_prompt.strip())
-                or (
-                    fam is not None
-                    and fam.default_negative_prompt is not None
-                    and effective_negative_prompt == fam.default_negative_prompt
-                )
+        should_forward_negative = effective_negative_prompt is not None and (
+            bool(effective_negative_prompt.strip())
+            or (
+                fam is not None
+                and fam.default_negative_prompt is not None
+                and effective_negative_prompt == fam.default_negative_prompt
             )
         )
         if should_forward_negative:
@@ -6975,9 +7089,7 @@ class DiffusionBackend:
             resolved_width = int(width if width is not None else fam.default_width)
             resolved_height = int(height if height is not None else fam.default_height)
             resolved_frames = int(
-                num_frames
-                if num_frames is not None
-                else (fam.default_num_frames or 1)
+                num_frames if num_frames is not None else (fam.default_num_frames or 1)
             )
             resolved_frame_rate = float(
                 frame_rate
@@ -7135,7 +7247,9 @@ def _patch_gguf_modules_for_resident_device(
     )
 
 
-def _read_gguf_orig_shape_metadata(reader: Any, tensor_name: str) -> tuple[int, ...] | None:
+def _read_gguf_orig_shape_metadata(
+    reader: Any, tensor_name: str
+) -> tuple[int, ...] | None:
     """Read optional original-shape metadata without importing text loaders."""
 
     get_field = getattr(reader, "get_field", None)
@@ -7167,7 +7281,9 @@ def _read_gguf_orig_shape_metadata(reader: Any, tensor_name: str) -> tuple[int, 
         return None
 
 
-def _load_gguf_checkpoint_no_copy(gguf_checkpoint_path: str, return_tensors: bool = False) -> dict[str, Any]:
+def _load_gguf_checkpoint_no_copy(
+    gguf_checkpoint_path: str, return_tensors: bool = False
+) -> dict[str, Any]:
     """Load a GGUF checkpoint like Diffusers, but without eager data copies.
 
     Upstream Diffusers currently builds every GGUF tensor with
@@ -7253,9 +7369,7 @@ def _load_gguf_checkpoint_no_copy(gguf_checkpoint_path: str, return_tensors: boo
         except Exception:
             pass
         parsed_parameters[name] = (
-            GGUFParameter(weights, quant_type = quant_type)
-            if is_gguf_quant
-            else weights
+            GGUFParameter(weights, quant_type = quant_type) if is_gguf_quant else weights
         )
         if is_gguf_quant:
             try:
@@ -7317,7 +7431,9 @@ def _transformer_supports_gguf_state_dict_load(transformer_cls: Any) -> bool:
     )
 
 
-def _set_module_tensor_no_copy(root: Any, tensor_name: str, value: Any, dtype: Any) -> None:
+def _set_module_tensor_no_copy(
+    root: Any, tensor_name: str, value: Any, dtype: Any
+) -> None:
     """Attach a checkpoint tensor to an already-created module.
 
     This mirrors the small assignment part of Diffusers' quantized loader, but
@@ -7352,7 +7468,9 @@ def _set_module_tensor_no_copy(root: Any, tensor_name: str, value: Any, dtype: A
             tensor = tensor.to(dtype = dtype)
         module._buffers[leaf] = tensor
         return
-    raise RuntimeError(f"{tensor_name} is not a parameter or buffer on {type(module).__name__}.")
+    raise RuntimeError(
+        f"{tensor_name} is not a parameter or buffer on {type(module).__name__}."
+    )
 
 
 def _load_transformer_gguf_from_state_dict(
@@ -7491,7 +7609,9 @@ def _replace_diffusers_gguf_linear_parameters(
         from diffusers.quantizers.gguf.utils import GGUFLinear
         from .gguf_text_encoder import LazyGGUFLinear
     except Exception as exc:  # pragma: no cover - dependency guard
-        raise RuntimeError("Diffusion GGUF Linear wrapping requires GGUFLinear and LazyGGUFLinear.") from exc
+        raise RuntimeError(
+            "Diffusion GGUF Linear wrapping requires GGUFLinear and LazyGGUFLinear."
+        ) from exc
 
     replacements: list[tuple[str, Any]] = []
     for name, module in root.named_modules():
@@ -7596,7 +7716,9 @@ def _replace_gguf_conv2d_parameters(
     try:
         from .gguf_text_encoder import LazyGGUFConv2d
     except Exception as exc:  # pragma: no cover - dependency guard
-        raise RuntimeError("Diffusion GGUF Conv2d wrapping requires LazyGGUFConv2d.") from exc
+        raise RuntimeError(
+            "Diffusion GGUF Conv2d wrapping requires LazyGGUFConv2d."
+        ) from exc
 
     replacements: list[tuple[str, torch.nn.Conv2d, Any]] = []
     for name, module in root.named_modules():
@@ -7662,7 +7784,9 @@ def _replace_gguf_embedding_parameters(
     try:
         from .gguf_text_encoder import LazyGGUFEmbedding
     except Exception as exc:  # pragma: no cover - dependency guard
-        raise RuntimeError("Diffusion GGUF Embedding wrapping requires LazyGGUFEmbedding.") from exc
+        raise RuntimeError(
+            "Diffusion GGUF Embedding wrapping requires LazyGGUFEmbedding."
+        ) from exc
 
     replacements: list[tuple[str, torch.nn.Embedding, Any]] = []
     for name, module in root.named_modules():
@@ -7702,13 +7826,17 @@ def _replace_gguf_embedding_parameters(
     return replaced
 
 
-def _dequantize_diffusers_gguf_parameter(weight: Any, dtype: Any = None) -> torch.Tensor:
+def _dequantize_diffusers_gguf_parameter(
+    weight: Any, dtype: Any = None
+) -> torch.Tensor:
     import torch
 
     try:
         from .gguf_text_encoder import _dequantize_gguf_bytes
     except Exception as exc:  # pragma: no cover - dependency guard
-        raise RuntimeError("Diffusion GGUF parameter materialization requires Studio GGUF helpers.") from exc
+        raise RuntimeError(
+            "Diffusion GGUF parameter materialization requires Studio GGUF helpers."
+        ) from exc
 
     target_dtype = dtype if isinstance(dtype, torch.dtype) else None
     return _dequantize_gguf_bytes(
@@ -7737,14 +7865,17 @@ def _replace_gguf_norm_parameters(
     try:
         from .gguf_text_encoder import LazyGGUFGroupNorm, LazyGGUFLayerNorm
     except Exception as exc:  # pragma: no cover - dependency guard
-        raise RuntimeError("Diffusion GGUF norm wrapping requires lazy GGUF norm modules.") from exc
+        raise RuntimeError(
+            "Diffusion GGUF norm wrapping requires lazy GGUF norm modules."
+        ) from exc
 
     replacements: list[tuple[str, torch.nn.Module]] = []
     for name, module in root.named_modules():
         if not name or not isinstance(module, (torch.nn.LayerNorm, torch.nn.GroupNorm)):
             continue
         if not any(
-            getattr(getattr(module, parameter_name, None), "quant_type", None) is not None
+            getattr(getattr(module, parameter_name, None), "quant_type", None)
+            is not None
             for parameter_name in ("weight", "bias")
         ):
             continue

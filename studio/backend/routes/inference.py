@@ -2555,7 +2555,9 @@ def _resolve_diffusion_repo_for_request(
     return str(grant.canonical_path)
 
 
-def _decode_diffusion_input_images(payload: DiffusionGenerateRequest) -> Optional[list[Any]]:
+def _decode_diffusion_input_images(
+    payload: DiffusionGenerateRequest,
+) -> Optional[list[Any]]:
     """Decode route-level base64 image inputs into RGB/RGBA PIL images.
 
     Accepts raw base64 or data URLs. The backend takes a structural list
@@ -2778,9 +2780,9 @@ def _normalize_diffusion_load_request(
         or (lora.weight_name if lora is not None else None),
         lora_adapter_name = payload.lora_adapter_name
         or (lora.adapter_name if lora is not None else None),
-        lora_scale = payload.lora_scale if payload.lora_scale is not None else (
-            lora.scale if lora is not None else None
-        ),
+        lora_scale = payload.lora_scale
+        if payload.lora_scale is not None
+        else (lora.scale if lora is not None else None),
         lora_fuse = payload.lora_fuse or bool(lora.fuse if lora is not None else False),
         family = payload.family or (model.family if model is not None else None),
         enable_model_cpu_offload = (
@@ -2799,9 +2801,7 @@ def _normalize_diffusion_load_request(
             if runtime is not None and runtime.gguf_pin_cpu_resident is not None
             else payload.gguf_pin_cpu_resident
         ),
-        safetensors_quantization = (
-            payload.safetensors_quantization or runtime_quant
-        ),
+        safetensors_quantization = (payload.safetensors_quantization or runtime_quant),
         safetensors_quantization_components = (
             payload.safetensors_quantization_components or runtime_components
         ),
@@ -2893,9 +2893,7 @@ def _normalize_diffusion_image_generate_request(
         else (payload.height if payload.height is not None else int(defaults["height"]))
     )
     seed = (
-        params.seed
-        if params is not None and params.seed is not None
-        else payload.seed
+        params.seed if params is not None and params.seed is not None else payload.seed
     )
     input_b64s = _image_b64s_from_inputs(payload.inputs)
     if input_b64s:
@@ -3067,9 +3065,13 @@ def _diffusion_capabilities(*, media_kind: str) -> dict[str, Any]:
         "api_version": "2026-06-03",
         "media_kind": media_kind,
         "is_loaded": status.get("is_loaded", False),
-        "family": status.get("family") if status.get("media_kind") == media_kind else None,
+        "family": status.get("family")
+        if status.get("media_kind") == media_kind
+        else None,
         "pipeline_class": (
-            status.get("pipeline_class") if status.get("media_kind") == media_kind else None
+            status.get("pipeline_class")
+            if status.get("media_kind") == media_kind
+            else None
         ),
         "tasks": (
             ["text_to_image", "image_edit", "multi_image_edit", "layered_image"]
@@ -3080,18 +3082,52 @@ def _diffusion_capabilities(*, media_kind: str) -> dict[str, Any]:
             "roles": input_roles,
             "max_items": 16,
             "accepted_types": (
-                ["text", "image"] if media_kind == "image" else ["text", "image", "audio", "video"]
+                ["text", "image"]
+                if media_kind == "image"
+                else ["text", "image", "audio", "video"]
             ),
         },
         "outputs": outputs,
         "parameters": {
-            "width": {"type": "int", "min": 64, "max": 2048, "multiple_of": 8, "default": defaults.get("width")},
-            "height": {"type": "int", "min": 64, "max": 2048, "multiple_of": 8, "default": defaults.get("height")},
-            "num_inference_steps": {"type": "int", "min": 1, "max": 200, "default": defaults.get("num_inference_steps")},
-            "guidance_scale": {"type": "float", "min": 0, "max": 20, "default": defaults.get("guidance_scale")},
+            "width": {
+                "type": "int",
+                "min": 64,
+                "max": 2048,
+                "multiple_of": 8,
+                "default": defaults.get("width"),
+            },
+            "height": {
+                "type": "int",
+                "min": 64,
+                "max": 2048,
+                "multiple_of": 8,
+                "default": defaults.get("height"),
+            },
+            "num_inference_steps": {
+                "type": "int",
+                "min": 1,
+                "max": 200,
+                "default": defaults.get("num_inference_steps"),
+            },
+            "guidance_scale": {
+                "type": "float",
+                "min": 0,
+                "max": 20,
+                "default": defaults.get("guidance_scale"),
+            },
             "seed": {"type": "uint64_or_int64", "default": None},
-            "num_frames": {"type": "int", "min": 1, "max": 513, "default": defaults.get("num_frames")},
-            "frame_rate": {"type": "float", "min": 0, "max": 240, "default": defaults.get("frame_rate")},
+            "num_frames": {
+                "type": "int",
+                "min": 1,
+                "max": 513,
+                "default": defaults.get("num_frames"),
+            },
+            "frame_rate": {
+                "type": "float",
+                "min": 0,
+                "max": 240,
+                "default": defaults.get("frame_rate"),
+            },
         },
         "sampler": status.get("sampling_contract"),
         "attention_backend": {
@@ -3224,7 +3260,9 @@ async def diffusion_load(
         planned_text_encoder_gguf_filename = load_kwargs["text_encoder_gguf_filename"]
         planned_text_encoder_gguf_component = load_kwargs["text_encoder_gguf_component"]
         planned_prompt_enhancer_gguf_repo = load_kwargs["prompt_enhancer_gguf_repo"]
-        planned_prompt_enhancer_gguf_filename = load_kwargs["prompt_enhancer_gguf_filename"]
+        planned_prompt_enhancer_gguf_filename = load_kwargs[
+            "prompt_enhancer_gguf_filename"
+        ]
         planned_lora_repo = load_kwargs["lora_repo"]
         planned_lora_weight_name = load_kwargs["lora_weight_name"]
         planned_lora_adapter_name = load_kwargs["lora_adapter_name"]
