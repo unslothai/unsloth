@@ -217,6 +217,16 @@ def _cap_parallel_tool_calls_sse_line(raw_line: str) -> str:
     return "data: " + json.dumps(obj, separators = (",", ":"))
 
 
+def _prompt_tokens_details(upstream):
+    """Surface llama-server's real ``cached_tokens`` (KV-cache prompt hits) while
+    keeping the full OpenAI ``prompt_tokens_details`` shape. Defaults to zero when
+    the upstream usage doesn't carry it, so the field is always present."""
+    out = {"cached_tokens": 0, "audio_tokens": 0}
+    if isinstance(upstream, dict):
+        out.update({k: v for k, v in upstream.items() if v is not None})
+    return out
+
+
 def _openai_stream_usage_chunk(
     payload, completion_id, created, model_name, stream_usage, stream_timings
 ):
@@ -236,6 +246,9 @@ def _openai_stream_usage_chunk(
             prompt_tokens = (stream_usage or {}).get("prompt_tokens", 0),
             completion_tokens = (stream_usage or {}).get("completion_tokens", 0),
             total_tokens = (stream_usage or {}).get("total_tokens", 0),
+            prompt_tokens_details = _prompt_tokens_details(
+                (stream_usage or {}).get("prompt_tokens_details")
+            ),
         ),
         timings = stream_timings,
     )
@@ -3482,6 +3495,7 @@ async def openai_chat_completions(
                 _choices = []
                 _prompt_tokens = 0
                 _sum_completion = 0
+                _prompt_details = None
                 for _idx in range(_n):
                     # Stop spawning the remaining choices once cancelled.
                     if cancel_event.is_set():
@@ -3514,6 +3528,10 @@ async def openai_chat_completions(
                         _sum_completion += (
                             completion_usage.get("completion_tokens") or 0
                         )
+                        if _prompt_details is None:
+                            _prompt_details = completion_usage.get(
+                                "prompt_tokens_details"
+                            )
 
                 response = ChatCompletion(
                     id = completion_id,
@@ -3524,6 +3542,7 @@ async def openai_chat_completions(
                         prompt_tokens = _prompt_tokens,
                         completion_tokens = _sum_completion,
                         total_tokens = _prompt_tokens + _sum_completion,
+                        prompt_tokens_details = _prompt_tokens_details(_prompt_details),
                     ),
                 )
                 return JSONResponse(content = response.model_dump())
