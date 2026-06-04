@@ -3077,6 +3077,7 @@ def supported_optimization_options() -> dict[str, Any]:
                 "default_disabled_when": [
                     "gguf_dequant_on_the_fly",
                     "safetensors_torchao",
+                    "z_image_cold_start",
                 ],
                 "reason": (
                     "Transformer/denoiser compile improves measured steady-state "
@@ -3290,6 +3291,7 @@ def supported_optimization_options() -> dict[str, Any]:
                 "not_recommended_for": [
                     "gguf_dequant_on_the_fly",
                     "safetensors_torchao",
+                    "z_image_cold_start",
                 ],
                 "available_scopes": [
                     DIFFUSION_TORCH_COMPILE_NONE,
@@ -4015,6 +4017,7 @@ def _default_diffusion_torch_compile_scope(
     has_gguf_components: bool,
     safetensors_quantization: Optional[str],
     media_kind: str,
+    family_name: Optional[str] = None,
 ) -> str:
     """Resolve the implicit denoiser compile policy.
 
@@ -4022,12 +4025,16 @@ def _default_diffusion_torch_compile_scope(
     repeated-block compilation for regular safetensors and BnB NF4 loads. Do
     not enable denoiser compile for GGUF dequant-on-the-fly or TorchAO loads:
     GGUF has its own dequant compile path, and measured TorchAO compile was not
-    competitive in this backend.
+    competitive in this backend. Z-Image is also excluded by default because
+    real cold-start regression tests showed pathological Inductor compile time
+    on its complex-valued transformer path; users can still opt in explicitly.
     """
 
     if requested is not None:
         return _normalize_diffusion_torch_compile_scope(requested)
     if media_kind != "image":
+        return DIFFUSION_TORCH_COMPILE_NONE
+    if (family_name or "").lower() in {"z-image", "z-image-turbo"}:
         return DIFFUSION_TORCH_COMPILE_NONE
     if has_gguf_components:
         return DIFFUSION_TORCH_COMPILE_NONE
@@ -5066,6 +5073,7 @@ class DiffusionBackend:
             has_gguf_components = has_gguf_components,
             safetensors_quantization = resolved_safetensors_quantization,
             media_kind = fam.media_kind,
+            family_name = fam.name,
         )
         if (
             torch_compile is None
@@ -6047,6 +6055,7 @@ class DiffusionBackend:
                         attention_backend_config = apply_diffusers_attention_backend(
                             pipe,
                             resolved_attention_backend,
+                            prefer_default_for_auto = fam.media_kind == "video",
                         )
                     if resolved_torch_compile != DIFFUSION_TORCH_COMPILE_NONE:
                         if (

@@ -390,6 +390,7 @@ def test_supported_optimization_options_payload_shape():
     assert recommended["denoiser_torch_compile"]["default_disabled_when"] == [
         "gguf_dequant_on_the_fly",
         "safetensors_torchao",
+        "z_image_cold_start",
     ]
     assert recommended["group_offload"]["image_default"] is False
     assert recommended["group_offload"]["media_kind"] == "video"
@@ -481,6 +482,7 @@ def test_supported_optimization_options_payload_shape():
     assert compile_options["denoiser_torch_compile"]["not_recommended_for"] == [
         "gguf_dequant_on_the_fly",
         "safetensors_torchao",
+        "z_image_cold_start",
     ]
     assert compile_options["group_offload"]["image_default"] is False
     assert compile_options["group_offload"]["media_kind"] == "video"
@@ -943,6 +945,41 @@ def test_diffusers_attention_adapter_default_resets_global_backend():
         assert _AttentionBackendRegistry._active_backend == AttentionBackendName.NATIVE
     finally:
         _AttentionBackendRegistry.set_active_backend(old_backend)
+
+
+def test_diffusers_attention_adapter_can_prefer_default_for_video_auto():
+    from core.inference.diffusion_attention import apply_diffusers_attention_backend
+
+    class FakeTransformer:
+        def __init__(self):
+            self.backend = None
+            self.reset_count = 0
+
+        def set_attention_backend(self, backend):
+            self.backend = backend
+
+        def reset_attention_backend(self):
+            self.reset_count += 1
+            self.backend = None
+
+    class FakePipe:
+        def __init__(self):
+            self.transformer = FakeTransformer()
+
+    pipe = FakePipe()
+    result = apply_diffusers_attention_backend(
+        pipe,
+        "auto",
+        prefer_default_for_auto = True,
+    )
+
+    assert result["requested"] == "auto"
+    assert result["effective"] == "default"
+    assert result["diffusers_backend"] == "default"
+    assert result["applied"] is False
+    assert result["warnings"]
+    assert pipe.transformer.backend is None
+    assert pipe.transformer.reset_count == 1
 
 
 # ── singleton ───────────────────────────────────────────────────
@@ -2292,6 +2329,16 @@ def test_default_torch_compile_policy_skips_gguf_torchao_and_video():
             media_kind = "image",
         )
         == "regional"
+    )
+    assert (
+        d._default_diffusion_torch_compile_scope(
+            requested = None,
+            has_gguf_components = False,
+            safetensors_quantization = None,
+            media_kind = "image",
+            family_name = "z-image-turbo",
+        )
+        == "none"
     )
     assert (
         d._default_diffusion_torch_compile_scope(

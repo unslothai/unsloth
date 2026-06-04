@@ -76,6 +76,8 @@ def _try_pipeline_xformers(pipe: Any) -> bool:
 def apply_diffusers_attention_backend(
     pipe: Any,
     requested: Optional[str],
+    *,
+    prefer_default_for_auto: bool = False,
 ) -> dict[str, Any]:
     """Apply the best Diffusers attention backend for a Studio request.
 
@@ -98,6 +100,16 @@ def apply_diffusers_attention_backend(
         "warnings": [],
         "errors": [],
     }
+
+    if normalized == "auto" and prefer_default_for_auto:
+        _reset_attention_targets(targets)
+        result["effective"] = "default"
+        result["diffusers_backend"] = "default"
+        result["applied"] = False
+        result["warnings"].append(
+            "Using the pipeline default attention backend for this model family."
+        )
+        return result
 
     def add_error(logical: str, candidate: str, exc: BaseException) -> None:
         result["errors"].append(
