@@ -99,6 +99,33 @@ _MAX_REPROMPTS = 1
 _DEFAULT_MAX_TOKENS_FLOOR = 32768
 _DEFAULT_T_MAX_PREDICT_MS = 600_000  # 10 min
 _REPROMPT_MAX_CHARS = 2000
+_FORCED_REPEAT_PLAN_SIGNAL = re.compile(
+    r"\b(?:i\s+will|i'll|let\s+me|going\s+to|need\s+to|call|use|run|search|fetch|render)\b",
+    re.I,
+)
+_FINAL_ANSWER_SIGNAL = re.compile(
+    r"\b(?:final\s+answer|answer\s*:|here\s+is|here's|in\s+summary|result\s*:)\b",
+    re.I,
+)
+
+
+def _is_short_intent_without_action(text: str) -> bool:
+    stripped = text.strip()
+    return (
+        0 < len(stripped) < _REPROMPT_MAX_CHARS
+        and _INTENT_SIGNAL.search(stripped) is not None
+    )
+
+
+def _should_suppress_forced_no_tool_output(text: str) -> bool:
+    """Suppress only repeated forced-turn planning text, not final answers."""
+    stripped = text.strip()
+    if not stripped or len(stripped) >= _REPROMPT_MAX_CHARS:
+        return False
+    if _FINAL_ANSWER_SIGNAL.search(stripped):
+        return False
+    return _FORCED_REPEAT_PLAN_SIGNAL.search(stripped) is not None
+
 
 # ── Pre-compiled patterns for GGUF shard detection ───────────
 _SHARD_FULL_RE = re.compile(r"^(.*)-(\d{5})-of-(\d{5})\.gguf$")
@@ -5071,8 +5098,7 @@ class LlamaCppBackend:
                             and active_tools
                             and not _render_html_already_done_intent
                             and _reprompt_count < _MAX_REPROMPTS
-                            and 0 < len(_stripped) < _REPROMPT_MAX_CHARS
-                            and _INTENT_SIGNAL.search(_stripped)
+                            and _is_short_intent_without_action(_stripped)
                         ):
                             _reprompt_count += 1
                             logger.info(
@@ -5123,6 +5149,27 @@ class LlamaCppBackend:
                             _accumulated_predicted_n += _it_r.get("predicted_n", 0)
                             yield {"type": "status", "text": ""}
                             continue
+
+                        if _forced_tool_call_pending:
+                            _forced_tool_call_pending = False
+                            if not _should_suppress_forced_no_tool_output(_stripped):
+                                if cumulative_display:
+                                    forced_visible_text = _strip_tool_markup(
+                                        cumulative_display,
+                                        final = True,
+                                    )
+                                elif content_accum:
+                                    forced_visible_text = _strip_tool_markup(
+                                        content_accum,
+                                        final = True,
+                                    )
+                                else:
+                                    forced_visible_text = reasoning_accum
+                                if forced_visible_text:
+                                    yield {
+                                        "type": "content",
+                                        "text": forced_visible_text,
+                                    }
 
                         # Content was already streamed.  Yield metadata.
                         yield {"type": "status", "text": ""}
@@ -5286,6 +5333,8 @@ class LlamaCppBackend:
                             assistant_appended = True
                         completion = tool_controller.record_noop(decision)
                         conversation.append(completion.model_message())
+                        if _forced_tool_call_pending:
+                            _forced_tool_call_pending = False
                         logger.info(
                             "Suppressed local GGUF tool call as internal no-op: "
                             f"action={decision.action} tool={decision.tool_name}"

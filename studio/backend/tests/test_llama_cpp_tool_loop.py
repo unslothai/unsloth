@@ -886,6 +886,56 @@ def test_internal_reprompt_attempts_do_not_duplicate_visible_text(monkeypatch):
     assert len(payloads) == 2
 
 
+def test_forced_reprompt_plain_final_answer_is_visible(monkeypatch):
+    """A hidden forced re-prompt may fall back to a plain final answer."""
+
+    streams = [
+        [_sse({"content": "I will use render_html now."}), _done()],
+        [
+            _sse(
+                {"content": "No tool is needed. Final answer: use a red square."}
+            ),
+            _done(),
+        ],
+    ]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, streams, payloads)
+
+    def fake_execute_tool(name, arguments, **_kwargs):
+        raise AssertionError(f"unexpected tool execution: {name} {arguments}")
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "Make a red square."}],
+            tools = [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "render_html",
+                        "description": "Render HTML.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"code": {"type": "string"}},
+                            "required": ["code"],
+                        },
+                    },
+                }
+            ],
+            max_tool_iterations = 1,
+        )
+    )
+
+    content_texts = [
+        event.get("text", "") for event in events if event.get("type") == "content"
+    ]
+    assert content_texts == [
+        "I will use render_html now.",
+        "No tool is needed. Final answer: use a red square.",
+    ]
+    assert len(payloads) == 2
+
 
 def test_internal_reprompt_disabled_when_auto_heal_disabled(monkeypatch):
     streams = [[_sse({"content": "I will use render_html now."}), _done()]]
