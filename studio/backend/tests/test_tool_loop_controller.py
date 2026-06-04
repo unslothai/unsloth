@@ -129,7 +129,9 @@ def test_successful_duplicate_is_internal_noop_and_keeps_remaining_tools():
 
 def test_repeated_successful_duplicate_becomes_terminal_after_one_recovery_nudge():
     controller = ToolLoopController(tools = [_tool("web_search"), _tool("python")])
-    first = controller.prepare_call(_call("web_search", {"query": "gpu prices"}, "call_a"))
+    first = controller.prepare_call(
+        _call("web_search", {"query": "gpu prices"}, "call_a")
+    )
     controller.record_result(first, "ok")
 
     duplicate_one = controller.prepare_call(

@@ -629,9 +629,15 @@ class TestLoopBehaviour:
         captured_tool_names: list[list[str]] = []
         turns = iter(
             [
-                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
-                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
-                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
+                [
+                    '<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'
+                ],
+                [
+                    '<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'
+                ],
+                [
+                    '<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'
+                ],
                 ["final from first result"],
             ]
         )

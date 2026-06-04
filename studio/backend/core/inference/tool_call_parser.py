@@ -172,9 +172,7 @@ def parse_tool_calls_from_text(
                 },
             }
             if isinstance(tc["function"]["arguments"], dict):
-                tc["function"]["arguments"] = json.dumps(
-                    tc["function"]["arguments"]
-                )
+                tc["function"]["arguments"] = json.dumps(tc["function"]["arguments"])
             tool_calls.append(tc)
         except (json.JSONDecodeError, ValueError):
             pass

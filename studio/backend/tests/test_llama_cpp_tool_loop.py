@@ -659,9 +659,7 @@ def test_repeated_duplicate_noop_transitions_to_final_pass(monkeypatch):
 
     assert calls == [("web_search", {"query": "gpu prices 2026"})]
     assert [
-        event.get("tool_call_id")
-        for event in events
-        if event.get("type") == "tool_end"
+        event.get("tool_call_id") for event in events if event.get("type") == "tool_end"
     ] == ["call_search_1"]
     assert len(payloads) == 4
     assert "tools" not in payloads[-1]
@@ -985,9 +983,7 @@ def test_forced_reprompt_plain_final_answer_is_visible(monkeypatch):
     streams = [
         [_sse({"content": "I will use render_html now."}), _done()],
         [
-            _sse(
-                {"content": "No tool is needed. Final answer: use a red square."}
-            ),
+            _sse({"content": "No tool is needed. Final answer: use a red square."}),
             _done(),
         ],
     ]

@@ -366,8 +366,10 @@ def run_safetensors_tool_loop(
         if detect_state == _state_buffering:
             # Buffer never resolved -- tool XML or plain content.
             stripped = content_buffer.lstrip()
-            if stripped and tool_protocol_active and any(
-                sig in stripped for sig in tool_xml_signals
+            if (
+                stripped
+                and tool_protocol_active
+                and any(sig in stripped for sig in tool_xml_signals)
             ):
                 detect_state = _state_draining
             else:
