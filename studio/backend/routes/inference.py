@@ -117,6 +117,80 @@ def _clamp_finish_reason(value) -> str:
     return value if value in ("stop", "length") else "stop"
 
 
+def _normalize_stop_sequences(raw):
+    """Coerce an OpenAI/Anthropic ``stop`` value into the list-of-non-empty-strings
+    shape llama-server expects, or ``None`` when absent. A bare string becomes a
+    single-element list; empty strings are dropped (an empty stop sequence would
+    terminate generation immediately at position 0)."""
+    if isinstance(raw, str):
+        return [raw] if raw else None
+    if isinstance(raw, list):
+        return [s for s in raw if isinstance(s, str) and s] or None
+    return None
+
+
+def _openai_stream_error_chunk(exc) -> dict:
+    """Build an in-band OpenAI error chunk for a mid-stream failure. Once the
+    stream's 200 headers are flushed the status can't change, so the error must
+    ride in the SSE body. An upstream context-window overflow is mapped to
+    code=context_length_exceeded so client compaction/trim loops can detect it
+    (a code-less error hides it)."""
+    _cls = _classify_llama_generation_error(exc)
+    if _cls:
+        return openai_error_body(
+            _friendly_error(exc), status = 400, code = "context_length_exceeded"
+        )
+    if _cls is False:
+        return openai_error_body(_friendly_error(exc), status = 400)
+    return openai_error_body(_friendly_error(exc), status = 500)
+
+
+def _anthropic_stream_error_event(exc):
+    """Anthropic in-band SSE ``error`` event for a mid-stream failure, or ``None``
+    to fall through to a normal message_delta finish. Returns an event only for a
+    classifiable upstream client error (context overflow / 4xx) so a streaming
+    over-context request surfaces a real error instead of a silent empty
+    end_turn message."""
+    if _classify_llama_generation_error(exc) is None:
+        return None
+    return build_anthropic_sse_event(
+        "error",
+        anthropic_error_body(_friendly_error(exc), status = 400),
+    )
+
+
+def _drop_parallel_tool_call_deltas(chunk) -> bool:
+    """In-place: drop tool_call deltas whose index >= 1 from a parsed OpenAI
+    streaming chunk so only the first tool call survives (parallel_tool_calls=false
+    / disable_parallel_tool_use, best-effort). Returns True if anything changed."""
+    changed = False
+    for ch in chunk.get("choices") or []:
+        delta = ch.get("delta") or {}
+        tcs = delta.get("tool_calls")
+        if isinstance(tcs, list):
+            kept = [tc for tc in tcs if (tc.get("index") or 0) == 0]
+            if len(kept) != len(tcs):
+                delta["tool_calls"] = kept
+                changed = True
+    return changed
+
+
+def _cap_parallel_tool_calls_sse_line(raw_line: str) -> str:
+    """Drop tool_call deltas whose index >= 1 from one streamed OpenAI SSE
+    ``data:`` line so only the first tool call survives (parallel_tool_calls=false,
+    best-effort). Non-tool / unparseable payloads are returned byte-for-byte."""
+    payload = raw_line[len("data: "):]
+    if payload.strip() in ("", "[DONE]"):
+        return raw_line
+    try:
+        obj = json.loads(payload)
+    except Exception:
+        return raw_line
+    if not _drop_parallel_tool_call_deltas(obj):
+        return raw_line
+    return "data: " + json.dumps(obj, separators = (",", ":"))
+
+
 def _openai_stream_usage_chunk(
     payload, completion_id, created, model_name, stream_usage, stream_timings
 ):
@@ -326,6 +400,7 @@ from core.inference.anthropic_compat import (
     anthropic_tool_choice_to_openai,
     openai_finish_to_anthropic_stop,
     anthropic_tool_use_id,
+    build_anthropic_sse_event,
     AnthropicStreamEmitter,
     AnthropicPassthroughEmitter,
 )
@@ -2642,7 +2717,15 @@ async def openai_chat_completions(
     # llama-server and surface as an opaque 500 "Failed to parse tools".
     if payload.tools:
         for _tool in payload.tools:
-            if not isinstance(_tool, dict) or _tool.get("type") != "function":
+            if not isinstance(_tool, dict):
+                continue
+            # llama-server 500s ("Failed to parse tools: Missing tool type") when
+            # a function tool omits "type". Default it to "function" so a
+            # well-formed tool isn't rejected over a missing discriminator (and a
+            # malformed one still surfaces as a clean 400 below, not a 500).
+            if _tool.get("type") is None and isinstance(_tool.get("function"), dict):
+                _tool["type"] = "function"
+            if _tool.get("type") != "function":
                 continue
             _fn = _tool.get("function")
             _name = _fn.get("name") if isinstance(_fn, dict) else None
@@ -2844,17 +2927,7 @@ async def openai_chat_completions(
         else payload.max_completion_tokens
     )
 
-    # Normalize ``stop`` to the list-of-strings shape llama-server expects, or
-    # ``None`` when absent. A bare string becomes a single-element list.
-    _raw_stop = payload.stop
-    if isinstance(_raw_stop, str) and _raw_stop:
-        normalized_stop = [_raw_stop]
-    elif isinstance(_raw_stop, list):
-        # Drop empty strings — an empty stop sequence would terminate the
-        # generation immediately at position 0.
-        normalized_stop = [s for s in _raw_stop if isinstance(s, str) and s] or None
-    else:
-        normalized_stop = None
+    normalized_stop = _normalize_stop_sequences(payload.stop)
 
     _has_tool_messages = any(m.role == "tool" or m.tool_calls for m in payload.messages)
     # Route guided-decoding requests through the verbatim passthrough so
@@ -3212,12 +3285,7 @@ async def openai_chat_completions(
 
                     tb = traceback.format_exc()
                     logger.error(f"Error during GGUF tool streaming: {e}\n{tb}")
-                    error_chunk = {
-                        "error": {
-                            "message": _friendly_error(e),
-                            "type": "server_error",
-                        },
-                    }
+                    error_chunk = _openai_stream_error_chunk(e)
                     yield f"data: {json.dumps(error_chunk)}\n\n"
                 finally:
                     _tracker.__exit__(None, None, None)
@@ -3350,12 +3418,7 @@ async def openai_chat_completions(
                     raise
                 except Exception as e:
                     logger.error(f"Error during GGUF streaming: {e}", exc_info = True)
-                    error_chunk = {
-                        "error": {
-                            "message": _friendly_error(e),
-                            "type": "server_error",
-                        },
-                    }
+                    error_chunk = _openai_stream_error_chunk(e)
                     yield f"data: {json.dumps(error_chunk)}\n\n"
                 finally:
                     _tracker.__exit__(None, None, None)
@@ -3376,9 +3439,8 @@ async def openai_chat_completions(
                 _n = min(payload.n or 1, 8)
 
                 _choices = []
-                _sum_prompt = 0
+                _prompt_tokens = 0
                 _sum_completion = 0
-                _sum_total = 0
                 for _idx in range(_n):
                     full_text = ""
                     completion_usage = None
@@ -3399,11 +3461,15 @@ async def openai_chat_completions(
                         )
                     )
                     if completion_usage:
-                        _sum_prompt += completion_usage.get("prompt_tokens") or 0
+                        # The prompt is shared across all n choices, so count its
+                        # tokens ONCE (OpenAI bills only generated tokens for each
+                        # extra choice). Only completion_tokens accumulates.
+                        _prompt_tokens = (
+                            completion_usage.get("prompt_tokens") or _prompt_tokens
+                        )
                         _sum_completion += (
                             completion_usage.get("completion_tokens") or 0
                         )
-                        _sum_total += completion_usage.get("total_tokens") or 0
 
                 response = ChatCompletion(
                     id = completion_id,
@@ -3411,9 +3477,9 @@ async def openai_chat_completions(
                     model = model_name,
                     choices = _choices,
                     usage = CompletionUsage(
-                        prompt_tokens = _sum_prompt,
+                        prompt_tokens = _prompt_tokens,
                         completion_tokens = _sum_completion,
-                        total_tokens = _sum_total,
+                        total_tokens = _prompt_tokens + _sum_completion,
                     ),
                 )
                 return JSONResponse(content = response.model_dump())
@@ -3606,7 +3672,7 @@ async def openai_chat_completions(
                 top_p = payload.top_p,
                 top_k = payload.top_k,
                 min_p = payload.min_p,
-                max_tokens = payload.max_tokens,
+                max_tokens = effective_max_tokens,
                 repetition_penalty = payload.repetition_penalty,
                 cancel_event = cancel_event,
                 enable_thinking = payload.enable_thinking,
@@ -3786,7 +3852,7 @@ async def openai_chat_completions(
         top_p = payload.top_p,
         top_k = payload.top_k,
         min_p = payload.min_p,
-        max_new_tokens = payload.max_tokens or 2048,
+        max_new_tokens = effective_max_tokens or 2048,
         repetition_penalty = payload.repetition_penalty,
     )
     # Forward reasoning kwargs; the worker/template wrapper peels off
@@ -5268,6 +5334,14 @@ async def anthropic_messages(
         and llama_backend.supports_tools
     )
 
+    # Anthropic tool_choice.disable_parallel_tool_use caps the response to a
+    # single tool_use block. Computed here so BOTH the client-tool passthrough
+    # and the server-tool path honor it.
+    _disable_parallel = bool(
+        isinstance(payload.tool_choice, dict)
+        and payload.tool_choice.get("disable_parallel_tool_use")
+    )
+
     # ── Client-side pass-through path ─────────────────────────
     if client_tools:
         openai_tools = openai_client_tools
@@ -5292,6 +5366,7 @@ async def anthropic_messages(
                 tool_choice = openai_tool_choice,
                 session_id = payload.session_id,
                 cancel_id = payload.cancel_id,
+                disable_parallel_tool_use = _disable_parallel,
             )
         return await _anthropic_passthrough_non_streaming(
             llama_backend,
@@ -5308,6 +5383,7 @@ async def anthropic_messages(
             repetition_penalty = repetition_penalty,
             presence_penalty = presence_penalty,
             tool_choice = openai_tool_choice,
+            disable_parallel_tool_use = _disable_parallel,
         )
 
     if server_tools:
@@ -5400,11 +5476,6 @@ async def anthropic_messages(
                 tool_call_timeout = 300,
                 session_id = payload.session_id,
             )
-
-        _disable_parallel = bool(
-            isinstance(payload.tool_choice, dict)
-            and payload.tool_choice.get("disable_parallel_tool_use")
-        )
 
         if payload.stream:
             return await _anthropic_tool_stream(
@@ -5529,6 +5600,10 @@ async def _anthropic_tool_stream(
                     yield line
         except Exception as e:
             logger.error("anthropic_messages stream error: %s", e)
+            _error_event = _anthropic_stream_error_event(e)
+            if _error_event is not None:
+                yield _error_event
+                return
 
         stop_reason = openai_finish_to_anthropic_stop(
             captured_finish_reason, had_tool_calls = ends_on_tool_use
@@ -5596,6 +5671,10 @@ async def _anthropic_plain_stream(
                     yield line
         except Exception as e:
             logger.error("anthropic_messages stream error: %s", e)
+            _error_event = _anthropic_stream_error_event(e)
+            if _error_event is not None:
+                yield _error_event
+                return
 
         stop_reason = openai_finish_to_anthropic_stop(
             captured_finish_reason, had_tool_calls = False
@@ -5824,8 +5903,11 @@ def _build_passthrough_payload(
         else (backend_ctx or _DEFAULT_MAX_TOKENS_FLOOR)
     )
     body["t_max_predict_ms"] = _DEFAULT_T_MAX_PREDICT_MS
-    if stop:
-        body["stop"] = stop
+    # Normalize stop the same way the non-passthrough path does (the passthrough
+    # was previously the one path that forwarded an empty stop string verbatim).
+    _stop = _normalize_stop_sequences(stop)
+    if _stop:
+        body["stop"] = _stop
     if min_p is not None:
         body["min_p"] = min_p
     if repetition_penalty is not None:
@@ -5866,6 +5948,7 @@ async def _anthropic_passthrough_stream(
     tool_choice = "auto",
     session_id = None,
     cancel_id = None,
+    disable_parallel_tool_use = False,
 ):
     """Streaming client-side pass-through: forward tools to llama-server and
     translate its streaming response to Anthropic SSE without executing anything."""
@@ -5888,8 +5971,10 @@ async def _anthropic_passthrough_stream(
 
     # Prompt-token count for message_start.usage.input_tokens. count_chat_tokens
     # makes blocking HTTP calls to llama-server, so run it off the event loop.
+    # Pass the tools through so tool-schema tokens are counted (otherwise the
+    # streaming input_tokens undercounts vs the non-stream / count_tokens paths).
     input_tokens = await asyncio.to_thread(
-        llama_backend.count_chat_tokens, openai_messages
+        llama_backend.count_chat_tokens, openai_messages, None, openai_tools
     )
 
     # cancel_id mirrors the OpenAI passthrough so a per-run cancel POST
@@ -5940,6 +6025,26 @@ async def _anthropic_passthrough_stream(
             req = client.build_request("POST", target_url, json = body)
             resp = await client.send(req, stream = True)
 
+            # Upstream client error (e.g. over-context 400) arrives before any
+            # SSE. The 200 stream headers are already flushed, so surface it as
+            # an in-band Anthropic ``error`` event instead of silently finishing
+            # with an empty end_turn message.
+            if resp.status_code != 200:
+                _err_bytes = await resp.aread()
+                _err_text = _err_bytes.decode("utf-8", "replace")[:500]
+                logger.error(
+                    "anthropic passthrough upstream error: status=%s body=%s",
+                    resp.status_code, _err_text,
+                )
+                yield build_anthropic_sse_event(
+                    "error",
+                    anthropic_error_body(
+                        f"llama-server error: {_err_text}",
+                        status = resp.status_code,
+                    ),
+                )
+                return
+
             # See _openai_passthrough_stream for rationale: aiter_lines()
             # blocks during llama-server prefill, so the in-loop cancel
             # check is unreachable until the first SSE chunk arrives.
@@ -5963,6 +6068,8 @@ async def _anthropic_passthrough_stream(
                     chunk = json.loads(data_str)
                 except json.JSONDecodeError:
                     continue
+                if disable_parallel_tool_use:
+                    _drop_parallel_tool_call_deltas(chunk)
                 for line in emitter.feed_chunk(chunk):
                     yield line
         except (httpx.RemoteProtocolError, httpx.ReadError, httpx.CloseError):
@@ -6022,6 +6129,7 @@ async def _anthropic_passthrough_non_streaming(
     repetition_penalty = None,
     presence_penalty = None,
     tool_choice = "auto",
+    disable_parallel_tool_use = False,
 ):
     """Non-streaming client-side pass-through."""
     target_url = f"{llama_backend.base_url}/v1/chat/completions"
@@ -6063,6 +6171,9 @@ async def _anthropic_passthrough_non_streaming(
             content_blocks.append(AnthropicResponseTextBlock(text = text))
 
     tool_calls = message.get("tool_calls") or []
+    # disable_parallel_tool_use: keep only the first tool_use block.
+    if disable_parallel_tool_use and len(tool_calls) > 1:
+        tool_calls = tool_calls[:1]
     for tc in tool_calls:
         fn = tc.get("function") or {}
         try:
@@ -6350,13 +6461,21 @@ def _build_openai_passthrough_body(payload, backend_ctx = None) -> dict:
     tpl_kwargs = None
     if payload.enable_thinking is not None:
         tpl_kwargs = {"enable_thinking": bool(payload.enable_thinking)}
+    # Honor max_completion_tokens (OpenAI's current cap param) when max_tokens
+    # is absent — mirrors effective_max_tokens on the non-passthrough path so a
+    # tools/response_format request isn't left uncapped.
+    _effective_max_tokens = (
+        payload.max_tokens
+        if payload.max_tokens is not None
+        else payload.max_completion_tokens
+    )
     return _build_passthrough_payload(
         messages,
         payload.tools,
         payload.temperature,
         payload.top_p,
         payload.top_k,
-        payload.max_tokens,
+        _effective_max_tokens,
         payload.stream,
         stop = payload.stop,
         min_p = payload.min_p,
@@ -6476,6 +6595,15 @@ async def _openai_passthrough_stream(
                         continue
                     if not raw_line.startswith("data: "):
                         continue
+                    # Honor parallel_tool_calls=false (best-effort): drop tool_call
+                    # deltas with index>=1 so only the first call streams. Only
+                    # lines carrying tool_calls are reparsed; everything else is
+                    # relayed byte-for-byte.
+                    if (
+                        payload.parallel_tool_calls is False
+                        and '"tool_calls"' in raw_line
+                    ):
+                        raw_line = _cap_parallel_tool_calls_sse_line(raw_line)
                     # Relay verbatim to preserve llama-server's native id,
                     # finish_reason, delta.tool_calls, and usage chunks.
                     yield raw_line + "\n\n"
@@ -6489,12 +6617,7 @@ async def _openai_passthrough_stream(
             except Exception as e:
                 # 200 headers are already flushed; errors must be in the SSE body.
                 logger.error("openai passthrough stream error: %s", e)
-                err = {
-                    "error": {
-                        "message": _friendly_error(e),
-                        "type": "server_error",
-                    },
-                }
+                err = _openai_stream_error_chunk(e)
                 yield f"data: {json.dumps(err)}\n\n"
             finally:
                 cancel_watcher.cancel()

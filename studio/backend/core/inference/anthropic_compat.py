@@ -236,6 +236,17 @@ def build_anthropic_sse_event(event_type: str, data: dict) -> str:
     return f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
 
 
+def _message_delta_usage(usage: dict) -> dict:
+    """Usage block for a message_delta event (cumulative token counts). Cache
+    fields are always 0 — no prompt caching backend."""
+    return {
+        "input_tokens": usage.get("prompt_tokens", 0),
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "output_tokens": usage.get("completion_tokens", 0),
+    }
+
+
 class AnthropicStreamEmitter:
     """Converts generator events from generate_chat_completion_with_tools()
     into Anthropic Messages SSE strings."""
@@ -305,9 +316,7 @@ class AnthropicStreamEmitter:
                 {
                     "type": "message_delta",
                     "delta": {"stop_reason": stop_reason, "stop_sequence": stop_sequence},
-                    "usage": {
-                        "output_tokens": self._usage.get("completion_tokens", 0),
-                    },
+                    "usage": _message_delta_usage(self._usage),
                 },
             )
         )
@@ -597,9 +606,7 @@ class AnthropicPassthroughEmitter:
                         "stop_reason": self._stop_reason,
                         "stop_sequence": self._stop_sequence,
                     },
-                    "usage": {
-                        "output_tokens": self._usage.get("completion_tokens", 0),
-                    },
+                    "usage": _message_delta_usage(self._usage),
                 },
             )
         )
