@@ -1082,7 +1082,8 @@
   }
 
   .unsloth-composer-plus svg {
-    transition: transform var(--duration-normal) ease-in-out;
+    /* 250ms reads better than --duration-normal for the plus/x morph. */
+    transition: transform 250ms ease-in-out;
     transform-origin: center;
   }
 
