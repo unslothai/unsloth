@@ -50,6 +50,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { toast } from "@/lib/toast";
 import { McpComposerButton } from "./mcp-composer-button";
+import { KnowledgeBaseComposerButton } from "@/features/rag/components/knowledge-base-composer-button";
 import { NewProjectDialog } from "./components/new-project-dialog";
 import { useChatProjects } from "./hooks/use-chat-projects";
 import { loadModel, validateModel } from "./api/chat-api";
@@ -629,11 +630,12 @@ export function SharedComposer({
   const ragDisabled = !modelLoaded || isExternalModel || !supportsTools;
   const showRagPill = !isExternalModel;
   // With more than 4 pills showing, collapse them to icons only to cut clutter.
-  // Compare, Search and Code always show; the rest are conditional.
+  // Compare, Search and Code always show; the rest are conditional. RAG mirrors
+  // MCP: a single dropdown pill that appears only once enabled on a local model.
   const pillsCompact =
     3 +
       (showImagePill ? 1 : 0) +
-      (showRagPill ? 1 : 0) +
+      (showRagPill && ragEnabled && !ragDisabled ? 1 : 0) +
       (showWebFetchPill ? 1 : 0) +
       (artifactsEnabled ? 1 : 0) +
       (mcpEnabledForChat ? 1 : 0) >
@@ -1248,7 +1250,21 @@ export function SharedComposer({
                 MCP
                 {mcpEnabledForChat ? <CheckIcon className="ml-auto" /> : null}
               </DropdownMenuItem>
-              {/* RAG hidden temporarily */}
+              <DropdownMenuItem
+                disabled={ragDisabled}
+                className={
+                  ragEnabled && !ragDisabled
+                    ? "text-primary font-medium"
+                    : undefined
+                }
+                onSelect={() => setRagEnabled(!ragEnabled)}
+              >
+                <LibraryBigIcon />
+                RAG
+                {ragEnabled && !ragDisabled ? (
+                  <CheckIcon className="ml-auto" />
+                ) : null}
+              </DropdownMenuItem>
               {/* Always active: this menu only renders in compare mode.
                   Ticked like Web search/Code; click toggles it off. */}
               <DropdownMenuItem
@@ -1375,21 +1391,7 @@ export function SharedComposer({
               <span>Images</span>
             </button>
           )}
-          {showRagPill && (
-            <button
-              type="button"
-              disabled={ragDisabled}
-              onClick={() => setRagEnabled(!ragEnabled)}
-              className="composer-pill-btn"
-              data-active={ragEnabled && !ragDisabled ? "true" : "false"}
-              aria-label={ragEnabled ? "Disable retrieval" : "Enable retrieval"}
-            >
-              <PillGlyph>
-                <LibraryBigIcon className="size-3.5" />
-              </PillGlyph>
-              <span>RAG</span>
-            </button>
-          )}
+          {showRagPill && <KnowledgeBaseComposerButton side="top" />}
           {showWebFetchPill && (
             <button
               type="button"

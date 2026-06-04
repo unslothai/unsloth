@@ -2,7 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { ReactNode } from "react";
-import { useEffect, useState } from "react";
 import {
   Select,
   SelectContent,
@@ -20,20 +19,13 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { Button } from "@/components/ui/button";
 import { InfoIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   type RagAutoInject,
   type RagMode,
-  type RagSource,
   useChatRuntimeStore,
 } from "@/features/chat/stores/chat-runtime-store";
-import { listKnowledgeBases } from "../api/rag-api";
-import type { KnowledgeBase } from "../types/rag";
-import { KnowledgeBaseDialog } from "./knowledge-base-dialog";
-
-const THREAD_VALUE = "__thread__";
 
 const MODE_LABEL: Record<RagMode, string> = {
   hybrid: "Hybrid",
@@ -108,12 +100,11 @@ function SliderRow({
 }
 
 /**
- * Retrieval settings for search_knowledge_base: source (thread docs or a KB),
- * search backend, and passage count.
+ * Retrieval settings for search_knowledge_base: search backend, passage count,
+ * and the auto-retrieve gate. The retrieval source (this thread's documents or a
+ * saved knowledge base) is picked from the Knowledge dropdown in the composer.
  */
 export function RetrievalSettingsSection() {
-  const ragSource = useChatRuntimeStore((s) => s.ragSource);
-  const setRagSource = useChatRuntimeStore((s) => s.setRagSource);
   const ragMode = useChatRuntimeStore((s) => s.ragMode);
   const setRagMode = useChatRuntimeStore((s) => s.setRagMode);
   const ragTopK = useChatRuntimeStore((s) => s.ragTopK);
@@ -127,78 +118,8 @@ export function RetrievalSettingsSection() {
     (s) => s.setRagAutoInjectMinScore,
   );
 
-  const [kbs, setKbs] = useState<KnowledgeBase[]>([]);
-  const [kbsLoaded, setKbsLoaded] = useState(false);
-  const [dialogOpen, setDialogOpen] = useState(false);
-  const [refreshTick, setRefreshTick] = useState(0);
-
-  useEffect(() => {
-    let cancelled = false;
-    listKnowledgeBases()
-      .then((rows) => {
-        if (!cancelled) {
-          setKbs(rows);
-          setKbsLoaded(true);
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setKbs([]);
-          setKbsLoaded(true);
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [refreshTick]);
-
-  // If the selected KB was deleted, fall back to thread source so we never send
-  // a stale kb_id. Gate on kbsLoaded (not kbs.length): deleting the *last* KB
-  // empties the list, and a length>0 guard would then skip the fallback and
-  // leave the composer stuck on a ghost KB (no Add Files, retrieval misses).
-  useEffect(() => {
-    if (
-      kbsLoaded &&
-      ragSource.type === "kb" &&
-      !kbs.some((kb) => kb.id === ragSource.kbId)
-    ) {
-      setRagSource({ type: "thread" });
-    }
-  }, [kbs, kbsLoaded, ragSource, setRagSource]);
-
-  const sourceValue =
-    ragSource.type === "kb" ? ragSource.kbId : THREAD_VALUE;
-
-  const onSourceChange = (value: string) => {
-    const next: RagSource =
-      value === THREAD_VALUE ? { type: "thread" } : { type: "kb", kbId: value };
-    setRagSource(next);
-  };
-
   return (
     <div className="flex flex-col gap-5 pt-1">
-      <div className="flex flex-col gap-2">
-        <span className="text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
-          Source
-        </span>
-        <Select value={sourceValue} onValueChange={onSourceChange}>
-          <SelectTrigger
-            className="panel-select-trigger h-8 w-full"
-            aria-label="Retrieval source"
-          >
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value={THREAD_VALUE}>This thread's documents</SelectItem>
-            {kbs.map((kb) => (
-              <SelectItem key={kb.id} value={kb.id}>
-                {kb.name}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </div>
-
       <div className="flex flex-col gap-2">
         <span className="text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
           Search mode
@@ -286,24 +207,6 @@ export function RetrievalSettingsSection() {
           format={(v) => v.toFixed(2)}
         />
       </div>
-
-      <div className="flex justify-end">
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={() => setDialogOpen(true)}
-        >
-          Manage knowledge bases…
-        </Button>
-      </div>
-
-      <KnowledgeBaseDialog
-        open={dialogOpen}
-        onOpenChange={(next) => {
-          setDialogOpen(next);
-          if (!next) setRefreshTick((tick) => tick + 1);
-        }}
-      />
     </div>
   );
 }

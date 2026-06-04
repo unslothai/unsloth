@@ -57,6 +57,7 @@ import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { useExternalProvidersStore } from "@/features/chat/stores/external-providers-store";
 import { deleteThreadMessage } from "@/features/chat/utils/delete-thread-message";
 import { ThreadDocumentsBar } from "@/features/rag/components/thread-documents-bar";
+import { KnowledgeBaseComposerButton } from "@/features/rag/components/knowledge-base-composer-button";
 import { DocumentPreviewMount } from "@/features/rag/components/document-preview-mount";
 import { useUserProfileStore } from "@/features/profile/stores/user-profile-store";
 import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
@@ -602,10 +603,14 @@ const Composer: FC<{
   );
   const artifactsEnabled = useChatRuntimeStore((s) => s.artifactsEnabled);
   const mcpEnabledForChat = useChatRuntimeStore((s) => s.mcpEnabledForChat);
+  const ragEnabled = useChatRuntimeStore((s) => s.ragEnabled);
+  const ragToolAvailable = useRagToolAvailable();
   // With more than 4 pills showing, collapse them to icons only to cut clutter.
-  // Search, Code and RAG always show; Images, Canvas and MCP are conditional.
+  // Search and Code always show; RAG, Images, Canvas and MCP are conditional.
+  // RAG mirrors MCP: a single dropdown pill that appears only once enabled.
   const pillsCompact =
-    3 +
+    2 +
+      (ragEnabled && ragToolAvailable ? 1 : 0) +
       (supportsBuiltinImageGeneration ? 1 : 0) +
       (artifactsEnabled ? 1 : 0) +
       (mcpEnabledForChat ? 1 : 0) >
@@ -671,6 +676,7 @@ const Composer: FC<{
     toolsEnabled ||
     codeToolsEnabled ||
     imageToolsEnabled ||
+    ragEnabled ||
     artifactsEnabled ||
     mcpEnabledForChat;
   // react-textarea-autosize re-measures only on value change or window resize,
@@ -802,7 +808,7 @@ const Composer: FC<{
               <WebSearchToggle />
               <CodeToolsToggle />
               <ImagesToggle />
-              <RagToggle />
+              <KnowledgeBaseComposerButton side={effectiveMenuSide} />
               {artifactsEnabled ? <ArtifactsToggle /> : null}
               {mcpEnabledForChat ? (
                 <McpComposerButton side={effectiveMenuSide} />
@@ -1527,29 +1533,6 @@ const ImagesToggle: FC = () => {
   );
 };
 
-const RagToggle: FC = () => {
-  const ragEnabled = useChatRuntimeStore((s) => s.ragEnabled);
-  const setRagEnabled = useChatRuntimeStore((s) => s.setRagEnabled);
-  // search_knowledge_base is local-only; the bar and pill share this gate.
-  const disabled = !useRagToolAvailable();
-
-  return (
-    <button
-      type="button"
-      disabled={disabled}
-      onClick={() => setRagEnabled(!ragEnabled)}
-      className="composer-pill-btn"
-      data-active={ragEnabled && !disabled ? "true" : "false"}
-      aria-label={ragEnabled ? "Disable retrieval" : "Enable retrieval"}
-    >
-      <PillGlyph>
-        <LibraryBigIcon className="size-3.5" />
-      </PillGlyph>
-      <span>RAG</span>
-    </button>
-  );
-};
-
 const ArtifactsToggle: FC = () => {
   const artifactsEnabled = useChatRuntimeStore((s) => s.artifactsEnabled);
   const setArtifactsEnabled = useChatRuntimeStore((s) => s.setArtifactsEnabled);
@@ -1649,6 +1632,11 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
   const setMcpEnabledForChat = useChatRuntimeStore(
     (s) => s.setMcpEnabledForChat,
   );
+  const ragEnabled = useChatRuntimeStore((s) => s.ragEnabled);
+  const setRagEnabled = useChatRuntimeStore((s) => s.setRagEnabled);
+  // search_knowledge_base is local-only; this is the single source of truth the
+  // RAG pill and Add Files bar share, so the menu row agrees with both.
+  const ragAvailable = useRagToolAvailable();
   // Capability gating, mirroring the visible pills so menu and pills agree on
   // what a loaded model supports (a tool the backend drops must not look on).
   const modelLoaded = useChatRuntimeStore(
@@ -1826,7 +1814,19 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
             <CheckIcon className="ml-auto" />
           ) : null}
         </DropdownMenuItem>
-        {/* RAG hidden temporarily */}
+        <DropdownMenuItem
+          disabled={!ragAvailable}
+          className={
+            ragEnabled && ragAvailable ? "text-primary font-medium" : undefined
+          }
+          onSelect={() => setRagEnabled(!ragEnabled)}
+        >
+          <LibraryBigIcon />
+          RAG
+          {ragEnabled && ragAvailable ? (
+            <CheckIcon className="ml-auto" />
+          ) : null}
+        </DropdownMenuItem>
         <DropdownMenuItem onSelect={() => startCompare()}>
           <Columns2Icon />
           Compare chat
