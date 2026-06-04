@@ -15,7 +15,13 @@ import { Switch } from "@/components/ui/switch";
 import { usePlatformStore } from "@/config/env";
 import { resetOnboardingDone } from "@/features/auth";
 import { useChatRuntimeStore } from "@/features/chat";
-import { useSettingsDialogStore } from "@/features/settings";
+import {
+  DEFAULT_UPLOAD_LIMIT_MB,
+  loadUploadLimitSettings,
+  updateUploadLimitSettings,
+  type UploadLimitSettings,
+} from "../api/upload-limit";
+import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 import { LOCALE_STORAGE_KEY, useT } from "@/i18n";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
@@ -107,6 +113,14 @@ export function GeneralTab() {
   const [draftToken, setDraftToken] = useState(hfToken ?? "");
   const [showToken, setShowToken] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [uploadLimit, setUploadLimit] = useState<UploadLimitSettings | null>(
+    null,
+  );
+  const [draftUploadLimit, setDraftUploadLimit] = useState(
+    String(DEFAULT_UPLOAD_LIMIT_MB),
+  );
+  const [uploadLimitError, setUploadLimitError] = useState<string | null>(null);
+  const [isSavingUploadLimit, setIsSavingUploadLimit] = useState(false);
 
   const draftRef = useRef(draftToken);
   useEffect(() => {
@@ -130,6 +144,52 @@ export function GeneralTab() {
     const trimmed = draftToken.trim();
     if (trimmed !== draftToken) setDraftToken(trimmed);
     if (trimmed !== hfToken) setHfToken(trimmed);
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+    void loadUploadLimitSettings()
+      .then((settings) => {
+        if (cancelled) return;
+        setUploadLimit(settings);
+        setDraftUploadLimit(String(settings.maxUploadSizeMb));
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        setUploadLimitError(
+          error instanceof Error ? error.message : "Failed to load upload limit.",
+        );
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const saveUploadLimit = async () => {
+    const parsed = Number(draftUploadLimit);
+    if (!Number.isInteger(parsed)) {
+      setUploadLimitError("Enter a whole number of MB.");
+      return;
+    }
+    const min = uploadLimit?.minUploadSizeMb ?? 1;
+    const max = uploadLimit?.maxAllowedUploadSizeMb ?? 8192;
+    if (parsed < min || parsed > max) {
+      setUploadLimitError(`Enter a value from ${min} to ${max} MB.`);
+      return;
+    }
+    setIsSavingUploadLimit(true);
+    setUploadLimitError(null);
+    try {
+      const settings = await updateUploadLimitSettings(parsed);
+      setUploadLimit(settings);
+      setDraftUploadLimit(String(settings.maxUploadSizeMb));
+    } catch (error) {
+      setUploadLimitError(
+        error instanceof Error ? error.message : "Failed to save upload limit.",
+      );
+    } finally {
+      setIsSavingUploadLimit(false);
+    }
   };
 
   return (
@@ -180,6 +240,52 @@ export function GeneralTab() {
           description={t("settings.general.autoTitleNewChatsDescription")}
         >
           <Switch checked={autoTitle} onCheckedChange={setAutoTitle} />
+        </SettingsRow>
+      </SettingsSection>
+
+      <SettingsSection title={t("settings.general.uploads.sectionTitle")}>
+        <SettingsRow
+          label={t("settings.general.uploads.maxUploadSize")}
+          description={t("settings.general.uploads.maxUploadSizeDescription", {
+            defaultSize: String(
+              uploadLimit?.defaultUploadSizeMb ?? DEFAULT_UPLOAD_LIMIT_MB,
+            ),
+          })}
+        >
+          <div className="flex flex-col items-end gap-1">
+            <div className="flex items-center gap-2">
+              <div className="relative w-28">
+                <Input
+                  type="number"
+                  min={uploadLimit?.minUploadSizeMb ?? 1}
+                  max={uploadLimit?.maxAllowedUploadSizeMb ?? 8192}
+                  step={1}
+                  value={draftUploadLimit}
+                  aria-label="Training dataset upload cap in MB"
+                  onChange={(event) => setDraftUploadLimit(event.target.value)}
+                  className="h-8 w-full pr-10"
+                />
+                <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-xs font-medium text-muted-foreground">
+                  MB
+                </span>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={isSavingUploadLimit}
+                onClick={() => void saveUploadLimit()}
+              >
+                {isSavingUploadLimit
+                  ? t("common.saving")
+                  : t("common.save")}
+              </Button>
+            </div>
+            {uploadLimitError ? (
+              <span className="max-w-[260px] text-right text-xs text-destructive">
+                {uploadLimitError}
+              </span>
+            ) : null}
+          </div>
         </SettingsRow>
       </SettingsSection>
 

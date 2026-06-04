@@ -10,7 +10,6 @@ type ModelLoadDescriptionProps = {
   message?: string | null;
   progressPercent?: number | null;
   progressLabel?: string | null;
-  onStop?: () => void;
 };
 
 function clampProgress(value: number): number {
@@ -45,7 +44,6 @@ export function ModelLoadDescription({
   message,
   progressPercent,
   progressLabel,
-  onStop,
 }: ModelLoadDescriptionProps) {
   const hasProgress = typeof progressPercent === "number";
   // Split once at the top of the render so the JSX below stays flat --
@@ -58,7 +56,7 @@ export function ModelLoadDescription({
       <div className="flex h-full shrink-0 items-center self-center">
         <Spinner className="size-3.5 text-muted-foreground" />
       </div>
-      <div className="min-w-0 flex-1 pr-5">
+      <div className="min-w-0 flex-1">
         {title ? <p className="text-foreground leading-5 font-semibold">{title}</p> : null}
         {hasProgress ? (
           <div className="w-full pt-1">
@@ -82,18 +80,6 @@ export function ModelLoadDescription({
           <p className="pt-1 text-xs leading-relaxed text-muted-foreground">{message}</p>
         ) : null}
       </div>
-      {onStop ? (
-        <Button
-          type="button"
-          size="xs"
-          variant="ghost"
-          aria-label="Stop model loading"
-          className="h-auto self-stretch shrink-0 !rounded-none !border-0 bg-transparent px-1 text-[10px] text-muted-foreground hover:bg-transparent hover:text-destructive focus-visible:text-destructive"
-          onClick={onStop}
-        >
-          Cancel
-        </Button>
-      ) : null}
     </div>
   );
 }

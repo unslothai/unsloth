@@ -8,6 +8,7 @@ import {
   type FC,
   type PropsWithChildren,
 } from "react";
+import { useAuiState } from "@assistant-ui/react";
 import { ChevronDownIcon } from "lucide-react";
 import { Wrench01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -28,7 +29,8 @@ const toolGroupVariants = cva("aui-tool-group-root group/tool-group w-full", {
     variant: {
       outline: "corner-squircle rounded-lg border py-3",
       ghost: "py-2",
-      muted: "corner-squircle rounded-lg border border-muted-foreground/30 bg-muted/30 py-3",
+      muted:
+        "corner-squircle rounded-lg border border-muted-foreground/30 bg-muted/30 py-3",
     },
   },
   defaultVariants: { variant: "ghost" },
@@ -207,9 +209,17 @@ const ToolGroupImpl: FC<
   PropsWithChildren<{ startIndex: number; endIndex: number }>
 > = ({ children, startIndex, endIndex }) => {
   const toolCount = endIndex - startIndex + 1;
+  const containsArtifactTool = useAuiState(({ message }) =>
+    message.parts
+      .slice(startIndex, endIndex + 1)
+      .some(
+        (part) => part.type === "tool-call" && part.toolName === "render_html",
+      ),
+  );
 
-  // Single tool call — render directly without wrapper
-  if (toolCount <= 1) {
+  // Single tool calls and artifacts render directly so cards never hide inside
+  // a collapsed tool group.
+  if (toolCount <= 1 || containsArtifactTool) {
     return <>{children}</>;
   }
 
