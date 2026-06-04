@@ -185,6 +185,8 @@ def _drop_parallel_tool_call_deltas(chunk) -> bool:
     """In-place: drop tool_call deltas whose index >= 1 from a parsed OpenAI
     streaming chunk so only the first tool call survives (parallel_tool_calls=false
     / disable_parallel_tool_use, best-effort). Returns True if anything changed."""
+    if not isinstance(chunk, dict):
+        return False
     changed = False
     for ch in chunk.get("choices") or []:
         delta = ch.get("delta") or {}
@@ -3472,6 +3474,9 @@ async def openai_chat_completions(
                 _prompt_tokens = 0
                 _sum_completion = 0
                 for _idx in range(_n):
+                    # Stop spawning the remaining choices once cancelled.
+                    if cancel_event.is_set():
+                        break
                     full_text = ""
                     completion_usage = None
                     completion_finish = None
@@ -4262,7 +4267,10 @@ async def openai_completions(
                 if buffer:
                     out = _cmpl_stream_event_out(buffer, _include_usage)
                     if out is not None:
-                        yield out
+                        # Re-add the SSE separator the split consumed, so a final
+                        # event arriving without a trailing blank line is still
+                        # terminated for the client's parser.
+                        yield out + b"\n\n"
             except Exception as e:
                 logger.error("openai_completions stream error: %s", e)
             finally:
@@ -5516,6 +5524,7 @@ async def anthropic_messages(
                 model_name,
                 llama_backend = llama_backend,
                 openai_messages = openai_messages,
+                openai_tools = openai_tools,
                 disable_parallel_tool_use = _disable_parallel,
             )
         return await _anthropic_tool_non_streaming(
@@ -5565,6 +5574,7 @@ async def _anthropic_tool_stream(
     model_name,
     llama_backend = None,
     openai_messages = None,
+    openai_tools = None,
     disable_parallel_tool_use = False,
 ):
     """Streaming response for the tool-calling path."""
@@ -5572,10 +5582,12 @@ async def _anthropic_tool_stream(
 
     # Prompt-token count for message_start.usage.input_tokens. count_chat_tokens
     # makes blocking HTTP calls to llama-server, so run it off the event loop.
+    # Pass the tools so tool-schema tokens are counted (the generator renders
+    # them too), matching the non-stream / count_tokens / passthrough paths.
     input_tokens = 0
     if llama_backend is not None and openai_messages is not None:
         input_tokens = await asyncio.to_thread(
-            llama_backend.count_chat_tokens, openai_messages
+            llama_backend.count_chat_tokens, openai_messages, None, openai_tools
         )
 
     async def _stream():
