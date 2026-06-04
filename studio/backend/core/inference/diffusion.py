@@ -3161,11 +3161,20 @@ def supported_optimization_options() -> dict[str, Any]:
         },
         "compile": {
             "torch_compile_available": torch_compile_available,
-            "gguf_balanced_dequant_compile": {
+            "gguf_dequant_compile": {
                 "default_enabled": True,
                 "automatic_when": (
-                    "CUDA load with offload_policy=balanced and CPU-resident "
-                    "diffusion GGUF weights"
+                    "CUDA diffusion GGUF load when denoiser torch_compile is disabled"
+                ),
+                "status_counter": (
+                    "gguf_prepared_module_counts.diffusion_compiled_dequant_modules"
+                ),
+            },
+            "gguf_balanced_dequant_compile": {
+                "default_enabled": True,
+                "deprecated_alias_of": "gguf_dequant_compile",
+                "automatic_when": (
+                    "CUDA diffusion GGUF load when denoiser torch_compile is disabled"
                 ),
                 "status_counter": (
                     "gguf_prepared_module_counts.diffusion_compiled_dequant_modules"
@@ -5620,7 +5629,6 @@ class DiffusionBackend:
                             try:
                                 from .gguf_text_encoder import (
                                     configure_lazy_gguf_cuda_cache,
-                                    install_compiled_lazy_gguf_linear_dequant,
                                 )
                             except Exception as exc:
                                 logger.debug(
@@ -5655,24 +5663,34 @@ class DiffusionBackend:
                                         cache_stats["selected_bytes"] // (1024 * 1024),
                                         cache_stats["candidate_bytes"] // (1024 * 1024),
                                     )
-                                if resolved_torch_compile == DIFFUSION_TORCH_COMPILE_NONE:
-                                    with _load_phase("compile_balanced_gguf_dequant"):
-                                        compile_stats = install_compiled_lazy_gguf_linear_dequant(
-                                            transformer
-                                        )
-                                    if compile_stats.get("modules", 0):
-                                        prepared_gguf_module_counts[
-                                            "diffusion_compiled_dequant_modules"
-                                        ] = int(compile_stats["modules"])
-                                        logger.info(
-                                            "Installed compiled balanced diffusion GGUF "
-                                            "dequant for %d lazy Linear modules.",
-                                            compile_stats["modules"],
-                                        )
-                                else:
-                                    prepared_gguf_module_counts[
-                                        "diffusion_compiled_dequant_skipped_for_denoiser_compile"
-                                    ] = 1
+                    if resolved_torch_compile == DIFFUSION_TORCH_COMPILE_NONE:
+                        try:
+                            from .gguf_text_encoder import (
+                                install_compiled_lazy_gguf_linear_dequant,
+                            )
+                        except Exception as exc:
+                            logger.debug(
+                                "Skipping optional GGUF dequant compile: %s",
+                                exc,
+                            )
+                        else:
+                            with _load_phase("compile_gguf_dequant"):
+                                compile_stats = install_compiled_lazy_gguf_linear_dequant(
+                                    transformer
+                                )
+                            if compile_stats.get("modules", 0):
+                                prepared_gguf_module_counts[
+                                    "diffusion_compiled_dequant_modules"
+                                ] = int(compile_stats["modules"])
+                                logger.info(
+                                    "Installed compiled diffusion GGUF dequant "
+                                    "for %d lazy Linear modules.",
+                                    compile_stats["modules"],
+                                )
+                    else:
+                        prepared_gguf_module_counts[
+                            "diffusion_compiled_dequant_skipped_for_denoiser_compile"
+                        ] = 1
                 if local_text_encoder_gguf_path:
                     from . import gguf_text_encoder as gguf_text_encoder_mod
 
