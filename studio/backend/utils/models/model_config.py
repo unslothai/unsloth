@@ -566,7 +566,7 @@ def _raw_config_has_vision_config(
                 isinstance(x, str) and x.endswith(_VLM_ARCH_SUFFIXES)
                 for x in architectures
             )
-            or bool(config.get("vision_config"))
+            or "vision_config" in config
             or "img_processor" in config
             or "image_token_index" in config
             or model_type in _VLM_MODEL_TYPES
