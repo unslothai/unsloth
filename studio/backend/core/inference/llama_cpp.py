@@ -4583,7 +4583,10 @@ class LlamaCppBackend:
                         )
                         yield {
                             "type": "metadata",
-                            "usage": _metadata_usage,
+                            # Never None: a finish-only metadata event (no usage,
+                            # no timings) would otherwise crash consumers that do
+                            # usage.get(...) on the non-streaming paths.
+                            "usage": _metadata_usage or {},
                             "timings": _metadata_timings,
                             "finish_reason": _metadata_finish_reason,
                         }

@@ -16,13 +16,16 @@ from typing import Any, Optional, Union
 
 def openai_finish_to_anthropic_stop(finish_reason, had_tool_calls = False) -> str:
     """Map an OpenAI finish_reason to an Anthropic stop_reason.
-    tool_calls / had_tool_calls -> 'tool_use'; 'length' -> 'max_tokens';
-    'stop'/'stop_sequence' -> 'end_turn' (or 'stop_sequence' when a stop string fired);
-    None/unknown -> 'end_turn'."""
-    if finish_reason == "tool_calls" or had_tool_calls:
-        return "tool_use"
+    'length' -> 'max_tokens' (truncation wins even mid tool call, so a cut-off
+    tool call isn't mislabeled tool_use); tool_calls / had_tool_calls -> 'tool_use';
+    'stop_sequence' -> 'stop_sequence'; 'stop'/None/unknown -> 'end_turn'."""
+    # Truncation takes precedence: a tool call cut off at max_tokens has possibly
+    # incomplete arguments, so report max_tokens rather than telling the client to
+    # run the tool.
     if finish_reason == "length":
         return "max_tokens"
+    if finish_reason == "tool_calls" or had_tool_calls:
+        return "tool_use"
     if finish_reason == "stop_sequence":
         return "stop_sequence"
     # "stop", None, and any unknown value collapse to end_turn.
