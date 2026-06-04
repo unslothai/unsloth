@@ -551,12 +551,12 @@ def test_trl_grpo_source_inference_mode_unwrap(tag: str):
 
 @pytest.mark.parametrize("tag", TRL_TAGS)
 def test_trl_kto_get_batch_logps_signature(tag: str):
-    """TRL 0.27+ moved KTOTrainer to trl.experimental.kto and the
-    canonical kto_trainer.py shrank to a thin re-export wrapper. The
-    real `get_batch_logps` lives at trl/experimental/kto/kto_trainer.py.
-    Unsloth's MRO walk in models/rl.py:592-708 already follows
-    trl.experimental.* parents, so either path is fine — we just
-    require the symbol to exist SOMEWHERE."""
+    """KTO log-prob computation must stay patchable. Through TRL 1.x the
+    target was KTOTrainer.get_batch_logps; TRL 1.x dropped it and moved the
+    math into _compute_logps / compute_ref_log_probs calling
+    selective_log_softmax. unsloth/models/rl_replacements.py patches BOTH
+    shapes (kto_trainer_get_batch_logps + kto_trainer_align_completion_logps),
+    so we require EITHER form to exist wherever KTOTrainer lives."""
     candidates = [
         "trl/trainer/kto_trainer.py",
         "trl/experimental/kto/kto_trainer.py",
@@ -566,11 +566,15 @@ def test_trl_kto_get_batch_logps_signature(tag: str):
         src = fetch_text("huggingface/trl", tag, path)
         if src is None:
             continue
+        # Legacy: explicit get_batch_logps method.
         if has_def(src, "get_batch_logps", "func"):
             return
+        # TRL 1.x: refactored into _compute_logps + selective_log_softmax.
+        if has_def(src, "_compute_logps", "func") and "selective_log_softmax" in src:
+            return
     pytest.fail(
-        f"{tag}: KTOTrainer.get_batch_logps not found in any of {candidates}; "
-        f"unsloth/models/rl_replacements.py:1675 rewrite silently skipped"
+        f"{tag}: KTO log-prob computation not found in any of {candidates}; "
+        f"unsloth/models/rl_replacements.py KTO rewrite silently skipped"
     )
 
 
