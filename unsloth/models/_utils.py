@@ -955,6 +955,20 @@ except:
 from transformers.modeling_utils import logger as transformers_logger
 
 
+# Faster safetensors weight loading on unified-memory (integrated) GPUs: clone
+# each tensor into a normal torch allocation before the host->device move so the
+# fast DMA path is used instead of safetensors' slow mmap-backed GPU copy.
+# Strict no-op on discrete GPUs / CPU / XPU / MLX (gated by the device's
+# `is_integrated` property); accuracy-neutral; opt out with
+# UNSLOTH_DISABLE_UMA_CLONE_LOAD=1.
+from ._uma_safetensors import (
+    is_integrated_unified_memory_gpu,
+    patch_unified_memory_safetensors_load,
+)
+
+patch_unified_memory_safetensors_load()
+
+
 class _RaiseUninitialized(logging.Handler):
     def __init__(self):
         super().__init__()
