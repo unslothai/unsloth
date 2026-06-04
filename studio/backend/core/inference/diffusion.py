@@ -425,6 +425,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         default_steps = 50,
         default_guidance_scale = 4.0,
         default_negative_prompt = "低分辨率，低画质，肢体畸形，手指畸形，画面过饱和，蜡像感，人脸无细节，过度光滑，画面具有AI感。构图混乱。文字模糊，扭曲。",
+        fp16_incompatible = True,
         aliases = ("qwenimage2512", "qwen_image_2512", "qwen-image-2512"),
     ),
     DiffusionFamily(
@@ -438,6 +439,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         default_negative_prompt = " ",
         default_call_kwargs = {"guidance_scale": 1.0},
         requires_image_input = True,
+        fp16_incompatible = True,
         aliases = ("qwenimageedit2511", "qwen_image_edit_2511", "qwen-image-edit-2511"),
     ),
     DiffusionFamily(
@@ -451,6 +453,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         default_negative_prompt = " ",
         default_call_kwargs = {"guidance_scale": 1.0},
         requires_image_input = True,
+        fp16_incompatible = True,
         aliases = ("qwenimageedit2509", "qwen_image_edit_2509", "qwen-image-edit-2509"),
     ),
     DiffusionFamily(
@@ -463,6 +466,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         default_guidance_scale = 4.0,
         default_negative_prompt = " ",
         requires_image_input = True,
+        fp16_incompatible = True,
         aliases = ("qwenimageedit", "qwen_image_edit", "qwen-image-edit"),
     ),
     DiffusionFamily(
@@ -482,6 +486,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             "use_en_prompt": True,
         },
         requires_image_input = True,
+        fp16_incompatible = True,
         aliases = ("qwenimagelayered", "qwen_image_layered", "qwen-image-layered"),
     ),
     DiffusionFamily(
@@ -493,6 +498,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         default_steps = 50,
         default_guidance_scale = 4.0,
         default_negative_prompt = " ",
+        fp16_incompatible = True,
         aliases = ("qwenimage", "qwen_image"),
     ),
     DiffusionFamily(

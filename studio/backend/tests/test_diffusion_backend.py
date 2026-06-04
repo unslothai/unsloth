@@ -737,14 +737,27 @@ def test_diffusion_device_target_uses_fp16_when_mps_lacks_bf16(monkeypatch):
     assert target.as_public_dict()["dtype"] == "float16"
 
 
-def test_resolve_compute_dtype_upgrades_fp16_for_zimage():
-    """fp16-incompatible families load in float32 when the device only offers
-    float16; bfloat16/float32 devices are untouched."""
+@pytest.mark.parametrize(
+    "family_name",
+    [
+        "z-image-turbo",
+        "z-image",
+        "qwen-image",
+        "qwen-image-2512",
+        "qwen-image-edit",
+        "qwen-image-edit-2509",
+        "qwen-image-edit-2511",
+        "qwen-image-layered",
+    ],
+)
+def test_resolve_compute_dtype_upgrades_fp16_for_incompatible(family_name):
+    """fp16-incompatible families (Z-Image, Qwen-Image) load in float32 when the
+    device only offers float16; bfloat16/float32 devices are untouched."""
     import torch
 
     from core.inference import diffusion as d
 
-    fam = d._family_by_name("z-image-turbo")
+    fam = d._family_by_name(family_name)
     assert fam is not None and fam.fp16_incompatible is True
     assert (
         d._resolve_diffusion_compute_dtype(fam, "mps", torch.float16) == torch.float32
