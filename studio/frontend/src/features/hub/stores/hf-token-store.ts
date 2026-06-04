@@ -17,7 +17,11 @@ function loadInitial(): string {
   if (!canUseStorage()) return "";
   try {
     const direct = window.localStorage.getItem(HF_TOKEN_KEY);
-    if (direct !== null) return direct;
+    if (direct !== null) {
+      const normalized = normalize(direct);
+      if (normalized !== direct) persist(normalized);
+      return normalized;
+    }
     const legacy = window.localStorage.getItem(LEGACY_TRAINING_KEY);
     if (legacy) {
       const parsed = JSON.parse(legacy) as {
@@ -26,10 +30,11 @@ function loadInitial(): string {
       };
       const fromTraining = parsed?.state?.hfToken;
       if (typeof fromTraining === "string" && fromTraining.length > 0) {
+        const normalized = normalize(fromTraining);
         // Copy only. training-config-store still persists and reads its own
         // hfToken, so deleting the legacy field drops the training token.
-        window.localStorage.setItem(HF_TOKEN_KEY, fromTraining);
-        return fromTraining;
+        persist(normalized);
+        return normalized;
       }
     }
   } catch {
@@ -71,7 +76,7 @@ interface HfTokenStore {
 export const useHfTokenStore = create<HfTokenStore>((set) => {
   const applyToken = (value: string, shouldPersist: boolean) => {
     const next = normalize(value);
-    if (shouldPersist) persist(next);
+    if (shouldPersist || next !== value) persist(next);
     let changed = false;
     set((state) => {
       if (state.token === next) return state;
