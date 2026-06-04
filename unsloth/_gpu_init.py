@@ -31,10 +31,16 @@ from .import_fixes import (
     disable_broken_causal_conv1d,
     disable_broken_vllm,
     configure_amdgpu_asic_id_table_path,
+    maybe_set_windows_rocm_bnb_version,
     torchvision_compatibility_check,
     fix_diffusers_warnings,
     fix_huggingface_hub,
 )
+
+# Pin BNB_ROCM_VERSION from the installed wheel on Windows + ROCm torch. Must
+# run before bitsandbytes is first imported (unsloth_zoo.device_type imports it
+# below), so it is the very first fix applied.
+maybe_set_windows_rocm_bnb_version()
 
 # Configure libdrm ids table path early so ROCm can resolve AMD GPU names.
 configure_amdgpu_asic_id_table_path()
@@ -46,6 +52,7 @@ torchvision_compatibility_check()
 fix_diffusers_warnings()
 fix_huggingface_hub()
 del configure_amdgpu_asic_id_table_path
+del maybe_set_windows_rocm_bnb_version
 del disable_broken_causal_conv1d
 del disable_broken_vllm
 del fix_message_factory_issue

@@ -1853,6 +1853,79 @@ def configure_amdgpu_asic_id_table_path():
     return None
 
 
+_BNB_ROCM_DLL_RE = re.compile(r"libbitsandbytes_rocm(\d+)\.dll", re.IGNORECASE)
+
+
+def _detect_installed_bnb_rocm_version():
+    """Return the highest ``libbitsandbytes_rocm<NN>.dll`` suffix that is
+    actually installed (as a string, e.g. ``"72"``), or ``None`` when no ROCm
+    bitsandbytes DLL is present.
+
+    Filesystem listing order is not guaranteed, so we always take the numeric
+    maximum (``"713"`` wins over ``"72"`` when both ship).
+    """
+    try:
+        spec = importlib.util.find_spec("bitsandbytes")
+    except Exception:
+        return None
+    if spec is None or not spec.submodule_search_locations:
+        return None
+
+    suffixes = []
+    for pkg_dir in spec.submodule_search_locations:
+        try:
+            entries = os.listdir(pkg_dir)
+        except Exception:
+            continue
+        for entry in entries:
+            match = _BNB_ROCM_DLL_RE.fullmatch(entry)
+            if match is not None:
+                suffixes.append(match.group(1))
+    if not suffixes:
+        return None
+    return max(suffixes, key = lambda value: int(value))
+
+
+def maybe_set_windows_rocm_bnb_version():
+    """Pin ``BNB_ROCM_VERSION`` from the installed wheel on Windows + ROCm torch.
+
+    bitsandbytes derives its ROCm backend DLL name from ``torch.version.hip``.
+    AMD's Windows bitsandbytes prerelease wheel ships a single
+    ``libbitsandbytes_rocm<NN>.dll`` whose suffix does not always match the
+    torch HIP version (e.g. ``torch==2.11.0+rocm7.13.0`` reports HIP 7.13 but
+    the wheel ships ``libbitsandbytes_rocm72.dll``). When the names disagree
+    bitsandbytes cannot load its native library and the 4-bit / 8-bit paths
+    break. We read the suffix from the actually-installed wheel and pin
+    ``BNB_ROCM_VERSION`` so the right backend loads. This must run before
+    bitsandbytes is first imported.
+
+    Strict no-op unless ALL of: running on Windows, a ROCm torch build, the var
+    is unset, and a ``libbitsandbytes_rocm*.dll`` is actually installed. Linux
+    ROCm is untouched (its multi-backend bitsandbytes resolves the backend
+    correctly from ``torch.version.hip``). Honors a user-provided
+    ``BNB_ROCM_VERSION`` and an explicit opt-out
+    (``UNSLOTH_SKIP_BNB_ROCM_VERSION=1``). Returns the value set, else ``None``.
+    """
+    if sys.platform != "win32":
+        return None
+    if os.environ.get("UNSLOTH_SKIP_BNB_ROCM_VERSION") == "1":
+        return None
+    if "BNB_ROCM_VERSION" in os.environ:
+        return None
+    if not _is_rocm_torch_build():
+        return None
+    version = _detect_installed_bnb_rocm_version()
+    if version is None:
+        return None
+    os.environ["BNB_ROCM_VERSION"] = version
+    if UNSLOTH_ENABLE_LOGGING:
+        logger.info(
+            f"Unsloth: set BNB_ROCM_VERSION={version} "
+            "(detected from the installed bitsandbytes ROCm wheel on Windows)."
+        )
+    return version
+
+
 def _is_causal_conv1d_name(module_name: str) -> bool:
     return module_name == _CAUSAL_CONV1D_PREFIX or module_name.startswith(
         _CAUSAL_CONV1D_PREFIX + "."
