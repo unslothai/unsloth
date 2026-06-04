@@ -250,8 +250,9 @@ def _noop_result(reason: NoopReason, tool_name: str) -> str:
         return (
             "The previous tool request was not executed because this exact "
             "tool call already completed successfully. Do not repeat the same "
-            "tool call. Use the information already gathered and provide the "
-            "final answer now."
+            "tool call. Continue with a different enabled tool if that would "
+            "materially help, or provide the final answer if you have enough "
+            "information."
         )
     if reason == "render_html_repeat":
         return (
@@ -295,7 +296,7 @@ class ToolLoopController:
 
     @property
     def force_final_answer(self) -> bool:
-        """True once a duplicate/no-op should transition to a no-tools pass."""
+        """True once a terminal no-op should transition to a no-tools pass."""
         return self._force_final_answer
 
     def active_tools(self) -> list[dict[str, Any]]:
@@ -388,7 +389,8 @@ class ToolLoopController:
                 action = decision.action,
             )
         )
-        self._force_final_answer = True
+        if decision.action in ("disabled", "render_html_repeat"):
+            self._force_final_answer = True
         return ToolCallCompletion(
             decision = decision,
             result = decision.noop_result,

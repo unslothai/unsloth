@@ -446,10 +446,125 @@ def test_non_consecutive_duplicate_web_search_is_internal_noop(monkeypatch):
         and event.get("type") in {"tool_start", "tool_end"}
     ]
     assert len(payloads) == 4
-    assert "tools" not in payloads[3]
+    assert _tool_names(payloads[3]) == ["web_search", "python"]
     duplicate_nudges = [
         message
         for message in payloads[3]["messages"]
+        if message.get("role") == "user"
+        and "already completed successfully" in message.get("content", "")
+    ]
+    assert len(duplicate_nudges) == 1
+
+
+def test_duplicate_web_search_noop_allows_distinct_followup_tool(monkeypatch):
+    first_search = [
+        _sse(
+            {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "call_search_1",
+                        "type": "function",
+                        "function": {
+                            "name": "web_search",
+                            "arguments": json.dumps({"query": "gpu prices 2026"}),
+                        },
+                    }
+                ]
+            }
+        ),
+        _done(),
+    ]
+    duplicate_search = [
+        _sse(
+            {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "call_search_2",
+                        "type": "function",
+                        "function": {
+                            "name": "web_search",
+                            "arguments": json.dumps({"query": "gpu prices 2026"}),
+                        },
+                    }
+                ]
+            }
+        ),
+        _done(),
+    ]
+    python_call = [
+        _sse(
+            {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "call_python",
+                        "type": "function",
+                        "function": {
+                            "name": "python",
+                            "arguments": json.dumps({"code": "print('ok')"}),
+                        },
+                    }
+                ]
+            }
+        ),
+        _done(),
+    ]
+    final_stream = [_sse({"content": "Final answer from gathered data."}), _done()]
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [first_search, duplicate_search, python_call, final_stream],
+        payloads,
+    )
+
+    calls: list[tuple[str, dict]] = []
+
+    def fake_execute_tool(name, arguments, **_kwargs):
+        calls.append((name, arguments))
+        return f"ok:{name}"
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+
+    tools = [
+        {"type": "function", "function": {"name": "web_search"}},
+        {"type": "function", "function": {"name": "python"}},
+    ]
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "search gpus in 2026 prices and use python"}],
+            tools = tools,
+            max_tool_iterations = 4,
+        )
+    )
+
+    assert calls == [
+        ("web_search", {"query": "gpu prices 2026"}),
+        ("python", {"code": "print('ok')"}),
+    ]
+    assert [
+        event.get("tool_name")
+        for event in events
+        if event.get("type") == "tool_start" and event.get("tool_name")
+    ] == ["web_search", "python"]
+    assert [
+        event.get("tool_name")
+        for event in events
+        if event.get("type") == "tool_end" and event.get("tool_name")
+    ] == ["web_search", "python"]
+    assert not [
+        event
+        for event in events
+        if event.get("tool_call_id") == "call_search_2"
+        and event.get("type") in {"tool_start", "tool_end"}
+    ]
+    assert len(payloads) == 4
+    assert _tool_names(payloads[2]) == ["web_search", "python"]
+    duplicate_nudges = [
+        message
+        for message in payloads[2]["messages"]
         if message.get("role") == "user"
         and "already completed successfully" in message.get("content", "")
     ]

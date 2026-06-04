@@ -92,7 +92,7 @@ def test_prepare_execute_builds_visible_events_and_model_tool_message():
     }
 
 
-def test_successful_duplicate_is_internal_noop_and_forces_final_answer():
+def test_successful_duplicate_is_internal_noop_and_keeps_remaining_tools():
     controller = ToolLoopController(tools = [_tool("web_search"), _tool("python")])
     first = controller.prepare_call(_call("web_search", {"query": "gpu prices"}, "call_a"))
     controller.record_result(first, "ok")
@@ -103,10 +103,15 @@ def test_successful_duplicate_is_internal_noop_and_forces_final_answer():
     assert duplicate.action == "duplicate"
     assert not duplicate.should_execute
     assert not duplicate.emit_visible_events
-    assert "already completed successfully" in completion.model_message()["content"]
+    duplicate_nudge = completion.model_message()["content"]
+    assert "already completed successfully" in duplicate_nudge
+    assert "different enabled tool" in duplicate_nudge
     assert completion.model_message()["role"] == "user"
-    assert controller.force_final_answer
-    assert controller.active_tools() == []
+    assert not controller.force_final_answer
+    assert [tool["function"]["name"] for tool in controller.active_tools()] == [
+        "web_search",
+        "python",
+    ]
 
 
 def test_failed_call_does_not_block_retry():
@@ -129,6 +134,8 @@ def test_empty_enabled_tool_list_blocks_all_tool_calls():
     assert not decision.emit_visible_events
     assert completion.model_message()["role"] == "user"
     assert "not enabled" in completion.model_message()["content"]
+    assert controller.force_final_answer
+    assert controller.active_tools() == []
 
 
 def test_disabled_tool_is_internal_noop_not_visible_tool_error():
@@ -140,6 +147,8 @@ def test_disabled_tool_is_internal_noop_not_visible_tool_error():
     assert not decision.emit_visible_events
     assert completion.model_message()["role"] == "user"
     assert "not enabled" in completion.model_message()["content"]
+    assert controller.force_final_answer
+    assert controller.active_tools() == []
 
 
 def test_render_html_success_filters_active_tools_and_repeat_is_internal():
@@ -161,6 +170,8 @@ def test_render_html_success_filters_active_tools_and_repeat_is_internal():
     assert not repeat.emit_visible_events
     assert completion.model_message()["role"] == "user"
     assert "Do not call render_html again" in completion.model_message()["content"]
+    assert controller.force_final_answer
+    assert controller.active_tools() == []
 
 
 def test_strip_result_for_model_removes_frontend_image_sentinel():

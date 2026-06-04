@@ -529,6 +529,70 @@ class TestLoopBehaviour:
         ]
         assert len(duplicate_nudges) == 1
 
+    def test_duplicate_tool_call_internal_noop_allows_distinct_followup_tool(self):
+        captured_messages: list[list[dict]] = []
+        captured_tool_names: list[list[str]] = []
+        turns = iter(
+            [
+                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
+                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
+                ['<tool_call>{"name":"python","arguments":{"code":"print(1)"}}</tool_call>'],
+                ["final"],
+            ]
+        )
+
+        def fake_single_turn(messages, active_tools = None):
+            captured_messages.append([dict(message) for message in messages])
+            captured_tool_names.append(
+                [
+                    tool["function"]["name"]
+                    for tool in (active_tools or [])
+                    if tool.get("function", {}).get("name")
+                ]
+            )
+            chunks = next(turns)
+            acc = ""
+            for chunk in chunks:
+                acc += chunk
+                yield acc
+
+        exec_fn = FakeExecuteTool(["search-result-1", "python-result"])
+        events = _collect_events(
+            run_safetensors_tool_loop(
+                single_turn = fake_single_turn,
+                messages = [{"role": "user", "content": "hi"}],
+                tools = [
+                    {"type": "function", "function": {"name": "web_search"}},
+                    {"type": "function", "function": {"name": "python"}},
+                ],
+                execute_tool = exec_fn,
+                max_tool_iterations = 4,
+            )
+        )
+
+        assert exec_fn.calls == [
+            ("web_search", {"query": "x"}),
+            ("python", {"code": "print(1)"}),
+        ]
+        assert [e["tool_call_id"] for e in events if e["type"] == "tool_end"] == [
+            "call_0",
+            "call_2",
+        ]
+        assert not [
+            e
+            for e in events
+            if e.get("tool_call_id") == "call_1"
+            and e.get("type") in {"tool_start", "tool_end"}
+        ]
+        duplicate_nudges = [
+            message
+            for message in captured_messages[2]
+            if message.get("role") == "user"
+            and "already completed successfully" in message.get("content", "")
+        ]
+        assert len(duplicate_nudges) == 1
+        assert captured_tool_names[2] == ["web_search", "python"]
+
     def test_image_sentinel_stripped_from_model_feed(self):
         # The tool result has a frontend image sentinel that should be
         # stripped before being fed back into the next turn, BUT the
