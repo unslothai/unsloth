@@ -78,7 +78,7 @@ _INTENT_SIGNAL = re.compile(
     r"\b(?:now i|next i)\b"
     r")"
 )
-_MAX_REPROMPTS = 3
+_MAX_REPROMPTS = 1
 
 # Without max_tokens, llama-server defaults to n_predict = n_ctx (up to
 # 262144 for Qwen3.5), producing many-minute zombie decodes when cancel
@@ -5052,7 +5052,8 @@ class LlamaCppBackend:
                             )
                         )
                         if (
-                            active_tools
+                            auto_heal_tool_calls
+                            and active_tools
                             and not _render_html_already_done_intent
                             and _reprompt_count < _MAX_REPROMPTS
                             and 0 < len(_stripped) < _REPROMPT_MAX_CHARS
