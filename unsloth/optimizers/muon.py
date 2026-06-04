@@ -88,7 +88,7 @@ def _classify_param_names(model: torch.nn.Module) -> tuple[Set[str], Set[str]]:
     # Use remove_duplicate=False to see all names for each tensor — by default
     # named_parameters deduplicates by data_ptr, hiding the alias relationship.
     ptr_to_names: dict[int, list[str]] = defaultdict(list)
-    for name, param in model.named_parameters(remove_duplicate=False):
+    for name, param in model.named_parameters(remove_duplicate = False):
         ptr_to_names[param.data_ptr()].append(name)
     for ptr, names in ptr_to_names.items():
         if len(names) > 1:
