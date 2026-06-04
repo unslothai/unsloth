@@ -2348,8 +2348,10 @@ extra_eos_tokens = None,
 
     You must use {INPUT}, {OUTPUT} twice, and {SYSTEM} is optional.
     """
-    # Strip only the left
-    chat_template = chat_template.lstrip()
+    # Strip surrounding whitespace. Only lstrip-ing left a trailing newline in the
+    # template, which breaks the repeated-example detection below and wrongly raises
+    # (see GH #992). Surrounding whitespace is not significant to the template here.
+    chat_template = chat_template.strip()
 
     assert(tokenizer is not None)
 
