@@ -136,9 +136,7 @@ def _patch_llama_backend(monkeypatch, *, binary):
     monkeypatch.setattr(
         LlamaCppBackend, "_find_llama_server_binary", staticmethod(lambda: binary)
     )
-    monkeypatch.setattr(
-        embed_llama_server, "LlamaServerBackend", _SentinelLlamaBackend
-    )
+    monkeypatch.setattr(embed_llama_server, "LlamaServerBackend", _SentinelLlamaBackend)
 
 
 def test_st_failure_falls_back_to_llama_server(monkeypatch):
