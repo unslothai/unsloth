@@ -89,7 +89,14 @@ def resolve_diffusion_device_target() -> DiffusionDeviceTarget:
         and DeviceType is not None
         and studio_device == DeviceType.CPU
     ):
-        return _cpu_target(torch)
+        # Studio reports CPU whenever its *product* GPU backend is absent.
+        # On Apple Silicon that includes the common case where the ``mlx``
+        # package is not installed (``hardware.py`` gates DeviceType.MLX on
+        # ``is_apple_silicon() and _has_mlx()``). Diffusers, however, runs on
+        # PyTorch's MPS backend, which is independent of MLX. So prefer MPS
+        # whenever torch exposes it; ``_mps_or_cpu_target`` falls back to CPU
+        # on genuinely CPU-only hosts (e.g. Linux without CUDA/XPU).
+        return _mps_or_cpu_target(torch)
 
     if torch.cuda.is_available():
         return _cuda_or_rocm_target(torch, is_rocm = is_rocm)
@@ -195,6 +202,22 @@ def _xpu_target(torch: Any) -> DiffusionDeviceTarget:
     )
 
 
+def _mps_supports_bfloat16(torch: Any) -> bool:
+    """Runtime probe for usable MPS bfloat16.
+
+    PyTorch only supports bfloat16 on the MPS backend on macOS 14+; on older
+    macOS a bfloat16 op raises. Probe with a tiny compute (forced to evaluate)
+    rather than guessing from the macOS / chip version.
+    """
+    try:
+        x = torch.ones(2, dtype = torch.bfloat16, device = "mps")
+        # Force evaluation + a device->host sync so an unsupported bfloat16
+        # path raises here instead of silently deferring.
+        return bool(torch.isfinite((x + x).float()).all().item())
+    except Exception:
+        return False
+
+
 def _mps_or_cpu_target(torch: Any) -> DiffusionDeviceTarget:
     mps_available = False
     try:
@@ -207,11 +230,20 @@ def _mps_or_cpu_target(torch: Any) -> DiffusionDeviceTarget:
     except Exception:
         mps_available = False
     if mps_available:
+        # Prefer bfloat16 over float16. Modern diffusion transformers
+        # (Z-Image, FLUX.2, ...) produce activations far outside the float16
+        # finite range (~6.5e4): the Z-Image MLP down-projections peak near
+        # 9e5, which overflows to inf -> NaN latents -> a black image.
+        # bfloat16 shares float32's exponent range and is what the model
+        # cards recommend. MPS bfloat16 needs macOS 14+; on older macOS the
+        # probe returns False and we fall back to float16 here (an
+        # fp16-incompatible family is then upgraded to float32 at load time).
+        dtype = torch.bfloat16 if _mps_supports_bfloat16(torch) else torch.float16
         return DiffusionDeviceTarget(
             torch_device = "mps",
             backend = "mps",
             vendor = "apple",
-            dtype = torch.float16,
+            dtype = dtype,
             supports_model_cpu_offload = False,
             supports_default_torch_compile = False,
             supports_gguf_cpu_resident = False,

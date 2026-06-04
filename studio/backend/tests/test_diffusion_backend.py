@@ -669,6 +669,116 @@ def test_diffusion_memory_planner_avoids_cpu_offload_on_unified_memory():
     assert any("unified/system memory" in warning for warning in plan.warnings)
 
 
+# ── MPS device policy (Apple Silicon) ────────────────────────────
+
+
+def _fake_torch_with_mps(mps_available: bool):
+    """Minimal torch stand-in for resolve_diffusion_device_target() so the
+    test stays import-free and runs on CI without a real torch install."""
+    return types.SimpleNamespace(
+        backends = types.SimpleNamespace(
+            mps = types.SimpleNamespace(is_available = lambda: mps_available),
+        ),
+        cuda = types.SimpleNamespace(is_available = lambda: False),
+        bfloat16 = "torch.bfloat16",
+        float16 = "torch.float16",
+        float32 = "torch.float32",
+        version = types.SimpleNamespace(hip = None),
+    )
+
+
+def _fake_hardware_reporting_cpu():
+    class DeviceType:
+        CUDA = "cuda"
+        XPU = "xpu"
+        MLX = "mlx"
+        CPU = "cpu"
+
+    return types.SimpleNamespace(
+        DeviceType = DeviceType,
+        get_device = lambda: DeviceType.CPU,
+        hardware = types.SimpleNamespace(IS_ROCM = False),
+    )
+
+
+def test_diffusion_device_target_prefers_mps_when_studio_reports_cpu(monkeypatch):
+    """Apple Silicon without the ``mlx`` package makes Studio's get_device()
+    report CPU, but Diffusers runs on PyTorch MPS independently of MLX. The
+    diffusion device policy must still select MPS (and bfloat16) so inference
+    does not silently fall back to CPU/float32."""
+    from core.inference import diffusion_device
+
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch_with_mps(True))
+    monkeypatch.setitem(sys.modules, "utils.hardware", _fake_hardware_reporting_cpu())
+    monkeypatch.setattr(diffusion_device, "_mps_supports_bfloat16", lambda _t: True)
+
+    target = diffusion_device.resolve_diffusion_device_target()
+
+    assert target.torch_device == "mps"
+    # bfloat16, not float16: modern diffusion transformers (Z-Image, FLUX.2)
+    # overflow the float16 range and produce NaN/black images otherwise.
+    assert target.as_public_dict()["dtype"] == "bfloat16"
+    assert target.supports_model_cpu_offload is False
+
+
+def test_diffusion_device_target_uses_fp16_when_mps_lacks_bf16(monkeypatch):
+    """On an MPS host without usable bfloat16 (older macOS), the device dtype
+    is float16. fp16-incompatible families are then upgraded to float32 at
+    load time (see test_resolve_compute_dtype_*)."""
+    from core.inference import diffusion_device
+
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch_with_mps(True))
+    monkeypatch.setitem(sys.modules, "utils.hardware", _fake_hardware_reporting_cpu())
+    monkeypatch.setattr(diffusion_device, "_mps_supports_bfloat16", lambda _t: False)
+
+    target = diffusion_device.resolve_diffusion_device_target()
+
+    assert target.torch_device == "mps"
+    assert target.as_public_dict()["dtype"] == "float16"
+
+
+def test_resolve_compute_dtype_upgrades_fp16_for_zimage():
+    """fp16-incompatible families load in float32 when the device only offers
+    float16; bfloat16/float32 devices are untouched."""
+    import torch
+
+    from core.inference import diffusion as d
+
+    fam = d._family_by_name("z-image-turbo")
+    assert fam is not None and fam.fp16_incompatible is True
+    assert d._resolve_diffusion_compute_dtype(fam, "mps", torch.float16) == torch.float32
+    assert d._resolve_diffusion_compute_dtype(fam, "cuda", torch.float16) == torch.float32
+    # bfloat16 / float32 devices are not downgraded.
+    assert d._resolve_diffusion_compute_dtype(fam, "mps", torch.bfloat16) == torch.bfloat16
+    assert d._resolve_diffusion_compute_dtype(fam, "cpu", torch.float32) == torch.float32
+
+
+def test_resolve_compute_dtype_leaves_fp16_tolerant_family():
+    """Families that tolerate float16 (e.g. FLUX.2-klein, SDXL) keep float16."""
+    import torch
+
+    from core.inference import diffusion as d
+
+    fam = d._family_by_name("flux.2-klein")
+    assert fam is not None and not getattr(fam, "fp16_incompatible", False)
+    assert d._resolve_diffusion_compute_dtype(fam, "mps", torch.float16) == torch.float16
+
+
+def test_diffusion_device_target_falls_back_to_cpu_without_mps(monkeypatch):
+    """A genuinely CPU-only host (e.g. Linux without CUDA/XPU/MPS) must still
+    resolve to the CPU/float32 target -- the MPS preference is gated on MPS
+    actually being available."""
+    from core.inference import diffusion_device
+
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch_with_mps(False))
+    monkeypatch.setitem(sys.modules, "utils.hardware", _fake_hardware_reporting_cpu())
+
+    target = diffusion_device.resolve_diffusion_device_target()
+
+    assert target.torch_device == "cpu"
+    assert target.as_public_dict()["dtype"] == "float32"
+
+
 def test_diffusion_memory_planner_safetensors_resident_policy_is_explicit():
     from core.inference.diffusion_memory import (
         DiffusionWorkloadEstimate,
@@ -2087,7 +2197,10 @@ def test_diffusion_device_policy_respects_studio_cpu(monkeypatch):
     import utils.hardware as hw
 
     monkeypatch.setattr(hw, "get_device", lambda: DeviceType.CPU)
+    # Studio reporting CPU must not grab CUDA even if torch claims it is
+    # available. With no MPS either, this is a genuine CPU-only host.
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.backends.mps, "is_available", lambda: False)
 
     target = resolve_diffusion_device_target()
 

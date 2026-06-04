@@ -195,6 +195,11 @@ class DiffusionFamily:
     requires_image_input: bool = False
     default_call_kwargs: dict[str, Any] = field(default_factory = dict)
     supports_gguf_single_file: bool = True
+    # True for transformers whose activations overflow the float16 range and
+    # produce NaN/black images (e.g. Z-Image). On a device that only offers
+    # float16 (pre-Ampere CUDA like T4, or MPS on older macOS) these load in
+    # float32 instead of float16. See _resolve_diffusion_compute_dtype.
+    fp16_incompatible: bool = False
     # Optional: list of HF "trigger" substrings besides ``name`` that map
     # to this family (e.g. "flux1-dev" plus "flux.1-dev"). Lowercased.
     aliases: tuple[str, ...] = field(default_factory = tuple)
@@ -497,6 +502,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         base_repo = "Tongyi-MAI/Z-Image-Turbo",
         default_steps = 9,
         default_guidance_scale = 0.0,
+        fp16_incompatible = True,
         aliases = ("zimage-turbo", "z_image_turbo", "z-image-turbo"),
     ),
     DiffusionFamily(
@@ -507,6 +513,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         default_steps = 50,
         default_guidance_scale = 4.0,
         default_call_kwargs = {"cfg_normalization": False},
+        fp16_incompatible = True,
         aliases = ("zimage", "z_image", "z-image"),
     ),
     DiffusionFamily(
@@ -4286,6 +4293,32 @@ def _build_diffusion_component_sources(
     return sources
 
 
+def _resolve_diffusion_compute_dtype(
+    fam: Optional["DiffusionFamily"],
+    device: str,
+    dtype: Any,
+) -> Any:
+    """Upgrade float16 to float32 for fp16-incompatible families.
+
+    Some diffusion transformers (e.g. Z-Image) overflow the float16 range and
+    emit NaN -> black images. When the resolved device dtype is float16 -- the
+    only float type a pre-Ampere CUDA GPU (T4) or an older-macOS MPS host
+    offers -- such a family must load in float32 instead of float16. Returns
+    the dtype unchanged for every bfloat16/float32 device and every family
+    that tolerates float16 (e.g. SDXL, FLUX.1, FLUX.2-klein).
+    """
+    if fam is None or not getattr(fam, "fp16_incompatible", False):
+        return dtype
+    try:
+        import torch
+
+        if dtype == torch.float16:
+            return torch.float32
+    except Exception:
+        pass
+    return dtype
+
+
 # ─── Backend ──────────────────────────────────────────────────────────
 
 
@@ -4975,6 +5008,23 @@ class DiffusionBackend:
         device_target = self._pick_device_target()
         device = device_target.torch_device
         dtype = device_target.dtype
+
+        # Z-Image and other fp16-incompatible transformers overflow float16
+        # (-> NaN/black). On a device that only offers float16 (T4-class CUDA,
+        # older-macOS MPS) load them in float32 instead, and say so.
+        effective_dtype = _resolve_diffusion_compute_dtype(fam, device, dtype)
+        if effective_dtype is not dtype:
+            logger.warning(
+                "%s does not support float16 (activations exceed the float16 "
+                "range and produce NaN/black images) and %s has no usable "
+                "bfloat16; loading in float32 instead. This uses more memory "
+                "and is slower -- a bfloat16-capable device (Ampere+ CUDA, or "
+                "macOS 14+ on Apple Silicon) avoids this fallback.",
+                fam.name,
+                device,
+            )
+            dtype = effective_dtype
+            device_target = diffusion_device_target_from_torch_device(device, dtype)
 
         if (
             offload_policy is None
