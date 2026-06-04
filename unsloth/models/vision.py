@@ -290,6 +290,9 @@ def unsloth_base_fast_generate(
         input_ids = kwargs["input"]
     elif "input_features" in kwargs:
         input_ids = kwargs["input_features"]
+    elif "inputs_embeds" in kwargs:
+        # canonical HF name for embedding inputs (e.g. multimodal generate)
+        input_ids = kwargs["inputs_embeds"]
     elif "input_embeds" in kwargs:
         input_ids = kwargs["input_embeds"]
     elif "inputs" in kwargs:
