@@ -207,7 +207,9 @@ def test_nvidia_available_false_on_nonzero_return(monkeypatch):
 
 
 def test_nvidia_available_false_when_no_gpu_token(monkeypatch):
-    monkeypatch.setattr(subprocess, "run", _fake_run_factory(0, "No devices were found"))
+    monkeypatch.setattr(
+        subprocess, "run", _fake_run_factory(0, "No devices were found")
+    )
     assert LlamaCppBackend._nvidia_available() is False
 
 
