@@ -185,11 +185,74 @@ _cuda_version_gt() {
     return 1
 }
 
+_cuda_toolkit_major_gt_driver() {
+    local _toolkit_version=${1:-}
+    local _driver_version=${2:-}
+    if ! [[ "$_toolkit_version" =~ ^([0-9]+)\.([0-9]+)$ ]]; then
+        return 1
+    fi
+    local _toolkit_major=$((10#${BASH_REMATCH[1]}))
+    if ! [[ "$_driver_version" =~ ^([0-9]+)\.([0-9]+)$ ]]; then
+        return 1
+    fi
+    local _driver_major=$((10#${BASH_REMATCH[1]}))
+    [ "$_toolkit_major" -gt "$_driver_major" ]
+}
+
+_cuda_nvcc_candidate_paths() {
+    if command -v nvcc >/dev/null 2>&1; then
+        command -v nvcc
+    fi
+    if [ -x /usr/local/cuda/bin/nvcc ]; then
+        printf '%s\n' "/usr/local/cuda/bin/nvcc"
+    fi
+    ls -d /usr/local/cuda-*/bin/nvcc 2>/dev/null | sort -V -r 2>/dev/null || true
+}
+
+_cuda_find_compatible_nvcc_for_driver() {
+    local _driver_version=$1
+    local _exclude_path=${2:-}
+    local _candidate _seen _check _status _version
+    local _best_path="" _best_version=""
+    _seen="
+"
+    while IFS= read -r _candidate; do
+        [ -n "$_candidate" ] || continue
+        [ "$_candidate" != "$_exclude_path" ] || continue
+        [ -x "$_candidate" ] || continue
+        case "$_seen" in
+            *"
+$_candidate
+"*) continue ;;
+        esac
+        _seen="${_seen}${_candidate}
+"
+        _check="$(_nvcc_meets_llama_minimum "$_candidate")"
+        _status="$(printf '%s\n' "$_check" | sed -n '1p')"
+        _version="$(printf '%s\n' "$_check" | sed -n '2p')"
+        [ "$_status" = "ok" ] || continue
+        [ -n "$_version" ] || continue
+        if _cuda_toolkit_major_gt_driver "$_version" "$_driver_version"; then
+            continue
+        fi
+        if [ -z "$_best_version" ] || _cuda_version_gt "$_version" "$_best_version"; then
+            _best_path="$_candidate"
+            _best_version="$_version"
+        fi
+    done <<EOF
+$(_cuda_nvcc_candidate_paths)
+EOF
+    [ -n "$_best_path" ] || return 1
+    printf '%s\n%s\n' "$_best_path" "$_best_version"
+}
+
 _print_cuda_driver_toolkit_mismatch() {
     local _toolkit_version=$1
     local _driver_version=$2
-    substep "Unsloth supports CUDA Toolkit $_toolkit_version, but your NVIDIA driver only supports up to CUDA $_driver_version." "$C_WARN"
-    substep "Update the NVIDIA GPU driver to run CUDA Toolkit $_toolkit_version." "$C_WARN"
+    local _toolkit_major=${_toolkit_version%%.*}
+    local _driver_major=${_driver_version%%.*}
+    substep "CUDA Toolkit $_toolkit_version is a major-version mismatch: toolkit major $_toolkit_major exceeds driver CUDA major $_driver_major ($_driver_version)." "$C_WARN"
+    substep "Update the NVIDIA GPU driver to run CUDA Toolkit $_toolkit_version, or install a CUDA $_driver_major.x toolkit." "$C_WARN"
     substep "Or let Studio use the prebuilt CUDA bundle; it does not need the local toolkit." "$C_WARN"
 }
 
@@ -1202,14 +1265,27 @@ else
                     _BUILD_DESC="building (CPU, CUDA toolkit < 12.4)"
                 else
                     _DRIVER_MAX_CUDA="$(_cuda_driver_max_version)"
+                    _CUDA_TOOLKIT_ALLOWED=true
                     if [ -n "$_NVCC_VER" ] && [ -n "$_DRIVER_MAX_CUDA" ] && \
-                       _cuda_version_gt "$_NVCC_VER" "$_DRIVER_MAX_CUDA"; then
-                        _print_cuda_driver_toolkit_mismatch "$_NVCC_VER" "$_DRIVER_MAX_CUDA"
-                        substep "falling back to CPU llama.cpp build for this run." "$C_WARN"
-                        NVCC_PATH=""
-                        GPU_BACKEND=""
-                        _BUILD_DESC="building (CPU, CUDA toolkit > driver)"
-                    else
+                       _cuda_toolkit_major_gt_driver "$_NVCC_VER" "$_DRIVER_MAX_CUDA"; then
+                        _BLOCKED_NVCC_VER="$_NVCC_VER"
+                        if _ALT_NVCC_CHECK="$(_cuda_find_compatible_nvcc_for_driver "$_DRIVER_MAX_CUDA" "$NVCC_PATH")"; then
+                            NVCC_PATH="$(printf '%s\n' "$_ALT_NVCC_CHECK" | sed -n '1p')"
+                            _NVCC_VER="$(printf '%s\n' "$_ALT_NVCC_CHECK" | sed -n '2p')"
+                            GPU_BACKEND="cuda"
+                            export PATH="$(dirname "$NVCC_PATH"):$PATH"
+                            substep "CUDA Toolkit $_BLOCKED_NVCC_VER is a major-version mismatch with driver CUDA $_DRIVER_MAX_CUDA; using compatible CUDA Toolkit $_NVCC_VER at $NVCC_PATH." "$C_WARN"
+                        else
+                            _print_cuda_driver_toolkit_mismatch "$_NVCC_VER" "$_DRIVER_MAX_CUDA"
+                            substep "falling back to CPU llama.cpp build for this run." "$C_WARN"
+                            NVCC_PATH=""
+                            GPU_BACKEND=""
+                            _BUILD_DESC="building (CPU, CUDA toolkit major > driver)"
+                            _CUDA_TOOLKIT_ALLOWED=false
+                        fi
+                    fi
+
+                    if [ "$_CUDA_TOOLKIT_ALLOWED" = true ]; then
                         CMAKE_ARGS="$CMAKE_ARGS -DGGML_CUDA=ON"
 
                         CUDA_ARCHS=""

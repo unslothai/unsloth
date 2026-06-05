@@ -3274,7 +3274,7 @@ class TestCudaDriverToolkitMismatchMessage:
         nvidia_smi.chmod(0o755)
         return mock_bin
 
-    def test_setup_sh_driver_too_old_message_names_both_versions(self, tmp_path):
+    def test_setup_sh_same_major_minor_mismatch_is_accepted(self, tmp_path):
         mock_bin = self._fake_nvidia_smi(
             tmp_path,
             "| NVIDIA-SMI 580.95   Driver Version: 580.95   CUDA Version: 13.1 |",
@@ -3286,7 +3286,33 @@ class TestCudaDriverToolkitMismatchMessage:
             substep() {{ printf '%s\\n' "$1"; }}
             {self._setup_sh_cuda_helper_fragment()}
             _driver="$(_cuda_driver_max_version)"
-            if _cuda_version_gt "13.3" "$_driver"; then
+            if _cuda_toolkit_major_gt_driver "13.3" "$_driver"; then
+                _print_cuda_driver_toolkit_mismatch "13.3" "$_driver"
+            else
+                printf 'compatible:%s\\n' "$_driver"
+            fi
+            """
+        )
+        output = self._run_bash(
+            script,
+            env = {"PATH": f"{mock_bin}:{os.environ.get('PATH', '')}"},
+        )
+        assert "compatible:13.1" in output
+        assert "major-version mismatch" not in output
+
+    def test_setup_sh_driver_major_too_old_message_names_major_mismatch(self, tmp_path):
+        mock_bin = self._fake_nvidia_smi(
+            tmp_path,
+            "| NVIDIA-SMI 570.95   Driver Version: 570.95   CUDA Version: 12.9 |",
+        )
+        script = textwrap.dedent(
+            f"""\
+            set -euo pipefail
+            C_WARN=
+            substep() {{ printf '%s\\n' "$1"; }}
+            {self._setup_sh_cuda_helper_fragment()}
+            _driver="$(_cuda_driver_max_version)"
+            if _cuda_toolkit_major_gt_driver "13.3" "$_driver"; then
                 _print_cuda_driver_toolkit_mismatch "13.3" "$_driver"
             fi
             """
@@ -3296,10 +3322,13 @@ class TestCudaDriverToolkitMismatchMessage:
             env = {"PATH": f"{mock_bin}:{os.environ.get('PATH', '')}"},
         )
         assert (
-            "Unsloth supports CUDA Toolkit 13.3, but your NVIDIA driver only "
-            "supports up to CUDA 13.1."
+            "CUDA Toolkit 13.3 is a major-version mismatch: toolkit major 13 "
+            "exceeds driver CUDA major 12 (12.9)."
         ) in output
-        assert "Update the NVIDIA GPU driver to run CUDA Toolkit 13.3." in output
+        assert (
+            "Update the NVIDIA GPU driver to run CUDA Toolkit 13.3, or install "
+            "a CUDA 12.x toolkit."
+        ) in output
         assert "prebuilt CUDA bundle" in output
 
     def test_setup_sh_happy_path_does_not_print_mismatch(self, tmp_path):
@@ -3314,7 +3343,7 @@ class TestCudaDriverToolkitMismatchMessage:
             substep() {{ printf '%s\\n' "$1"; }}
             {self._setup_sh_cuda_helper_fragment()}
             _driver="$(_cuda_driver_max_version)"
-            if _cuda_version_gt "13.3" "$_driver"; then
+            if _cuda_toolkit_major_gt_driver "13.3" "$_driver"; then
                 _print_cuda_driver_toolkit_mismatch "13.3" "$_driver"
             else
                 printf 'compatible:%s\\n' "$_driver"
@@ -3338,7 +3367,7 @@ class TestCudaDriverToolkitMismatchMessage:
             substep() {{ printf '%s\\n' "$1"; }}
             {self._setup_sh_cuda_helper_fragment()}
             _driver="$(_cuda_driver_max_version)"
-            if [ -n "$_driver" ] && _cuda_version_gt "13.3" "$_driver"; then
+            if [ -n "$_driver" ] && _cuda_toolkit_major_gt_driver "13.3" "$_driver"; then
                 _print_cuda_driver_toolkit_mismatch "13.3" "$_driver"
             else
                 printf 'skipped\\n'
@@ -3361,7 +3390,7 @@ class TestCudaDriverToolkitMismatchMessage:
             substep() {{ printf '%s\\n' "$1"; }}
             {self._setup_sh_cuda_helper_fragment()}
             _driver="$(_cuda_driver_max_version)"
-            if [ -n "$_driver" ] && _cuda_version_gt "13.3" "$_driver"; then
+            if [ -n "$_driver" ] && _cuda_toolkit_major_gt_driver "13.3" "$_driver"; then
                 _print_cuda_driver_toolkit_mismatch "13.3" "$_driver"
             else
                 printf 'fallback:%s\\n' "${{_driver:-generic}}"
@@ -3397,11 +3426,12 @@ class TestCudaDriverToolkitMismatchMessage:
         source = self._SETUP_PS1.read_text(encoding = "utf-8")
         assert "Write-CudaDriverToolkitMismatch" in source
         assert (
-            "Unsloth supports CUDA Toolkit $ToolkitVersion, but your NVIDIA "
-            "driver only supports up to CUDA $DriverMaxCuda."
+            "CUDA Toolkit $ToolkitVersion is a major-version mismatch: toolkit "
+            "major $toolkitMajor exceeds driver CUDA major $driverMajor"
         ) in source
         assert (
-            "Update the NVIDIA GPU driver to run CUDA Toolkit $ToolkitVersion."
+            "Update the NVIDIA GPU driver to run CUDA Toolkit $ToolkitVersion, "
+            "or install a CUDA $driverMajor.x toolkit."
             in source
         )
         assert (
@@ -3414,7 +3444,7 @@ class TestCudaDriverToolkitMismatchMessage:
         ) in source
 
     def _fake_nvcc(self, tmp_path, release):
-        mock_bin = tmp_path / "nvcc-bin"
+        mock_bin = tmp_path / f"nvcc-bin-{release.replace('.', '-')}"
         mock_bin.mkdir()
         nvcc = mock_bin / "nvcc"
         nvcc.write_text(
@@ -3428,6 +3458,57 @@ class TestCudaDriverToolkitMismatchMessage:
         )
         nvcc.chmod(0o755)
         return nvcc
+
+    def test_setup_sh_major_mismatch_uses_newest_compatible_detected_toolkit(self, tmp_path):
+        blocked_nvcc = self._fake_nvcc(tmp_path, "13.3")
+        older_nvcc = self._fake_nvcc(tmp_path, "12.6")
+        compatible_nvcc = self._fake_nvcc(tmp_path, "12.8")
+        script = textwrap.dedent(
+            f"""\
+            set -euo pipefail
+            C_WARN=
+            substep() {{ printf '%s\\n' "$1"; }}
+            {self._setup_sh_cuda_helper_fragment()}
+            _cuda_nvcc_candidate_paths() {{
+                printf '%s\\n' "{blocked_nvcc}" "{older_nvcc}" "{compatible_nvcc}"
+            }}
+            NVCC_PATH="{blocked_nvcc}"
+            GPU_BACKEND="cuda"
+            _BUILD_DESC="building"
+            _NVCC_CHECK="$(_nvcc_meets_llama_minimum "$NVCC_PATH")"
+            _NVCC_STATUS="$(printf '%s\\n' "$_NVCC_CHECK" | sed -n '1p')"
+            _NVCC_VER="$(printf '%s\\n' "$_NVCC_CHECK" | sed -n '2p')"
+            _DRIVER_MAX_CUDA="12.9"
+            _CUDA_TOOLKIT_ALLOWED=true
+            if [ "$_NVCC_STATUS" != "too_old" ] && \
+               [ -n "$_NVCC_VER" ] && \
+               _cuda_toolkit_major_gt_driver "$_NVCC_VER" "$_DRIVER_MAX_CUDA"; then
+                _BLOCKED_NVCC_VER="$_NVCC_VER"
+                if _ALT_NVCC_CHECK="$(_cuda_find_compatible_nvcc_for_driver "$_DRIVER_MAX_CUDA" "$NVCC_PATH")"; then
+                    NVCC_PATH="$(printf '%s\\n' "$_ALT_NVCC_CHECK" | sed -n '1p')"
+                    _NVCC_VER="$(printf '%s\\n' "$_ALT_NVCC_CHECK" | sed -n '2p')"
+                    GPU_BACKEND="cuda"
+                    substep "CUDA Toolkit $_BLOCKED_NVCC_VER is a major-version mismatch with driver CUDA $_DRIVER_MAX_CUDA; using compatible CUDA Toolkit $_NVCC_VER at $NVCC_PATH."
+                else
+                    NVCC_PATH=""
+                    GPU_BACKEND=""
+                    _BUILD_DESC="building (CPU, CUDA toolkit major > driver)"
+                    _CUDA_TOOLKIT_ALLOWED=false
+                fi
+            fi
+            printf 'NVCC_PATH=%s\\n' "$NVCC_PATH"
+            printf 'NVCC_VER=%s\\n' "$_NVCC_VER"
+            printf 'GPU_BACKEND=%s\\n' "$GPU_BACKEND"
+            printf 'BUILD_DESC=%s\\n' "$_BUILD_DESC"
+            printf 'ALLOWED=%s\\n' "$_CUDA_TOOLKIT_ALLOWED"
+            """
+        )
+        output = self._run_bash(script)
+        assert f"NVCC_PATH={compatible_nvcc}" in output
+        assert "NVCC_VER=12.8" in output
+        assert "GPU_BACKEND=cuda" in output
+        assert "ALLOWED=true" in output
+        assert "CPU" not in output
 
     def test_setup_sh_parses_cuda_umd_version_variant(self, tmp_path):
         # Newer drivers report "CUDA UMD Version"; the helper must read it too.
@@ -3462,7 +3543,7 @@ class TestCudaDriverToolkitMismatchMessage:
             {self._setup_sh_cuda_helper_fragment()}
             _nvcc=""
             _driver="$(_cuda_driver_max_version)"
-            if [ -n "$_nvcc" ] && [ -n "$_driver" ] && _cuda_version_gt "$_nvcc" "$_driver"; then
+            if [ -n "$_nvcc" ] && [ -n "$_driver" ] && _cuda_toolkit_major_gt_driver "$_nvcc" "$_driver"; then
                 _print_cuda_driver_toolkit_mismatch "$_nvcc" "$_driver"
             else
                 printf 'skipped\\n'

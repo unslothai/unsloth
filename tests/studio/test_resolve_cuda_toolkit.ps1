@@ -1,7 +1,7 @@
 #!/usr/bin/env pwsh
 # Unit test for Resolve-CudaToolkit in studio/setup.ps1. No GPU required: the
 # detection helpers (nvidia-smi, nvcc, Find-Nvcc, ...) are stubbed so the real
-# function logic runs against a spoofed Blackwell sm_120 / driver 13.2 host.
+# function logic runs against spoofed Blackwell sm_120 driver/toolkit scenarios.
 #
 # The function is extracted via AST and run in a child pwsh per scenario, because
 # the -RequireOrExit path calls `exit` (which would otherwise kill this harness).
@@ -29,13 +29,17 @@ $mismatchFn = $ast.FindAll({ param($n)
 if ($mismatchFn.Count -ne 1) { throw "expected exactly one Write-CudaDriverToolkitMismatch, found $($mismatchFn.Count)" }
 $mismatchText = $mismatchFn[0].Extent.Text
 
-# --- Spoof executables: nvidia-smi reports driver max CUDA 13.2; nvcc 13.3 ---
+# --- Spoof executables for driver/toolkit compatibility scenarios ---
 $work = Join-Path ([System.IO.Path]::GetTempPath()) ("rct_" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Force -Path $work | Out-Null
-$smiFake  = Join-Path $work "nvidia-smi.ps1"
-$nvccFake = Join-Path $work "nvcc.ps1"
-Set-Content -LiteralPath $smiFake  -Value "'CUDA Version: 13.2'"
-Set-Content -LiteralPath $nvccFake -Value "'Cuda compilation tools, release 13.3, V13.3.0'"
+$smiMajorMismatchFake = Join-Path $work "nvidia-smi-12.9.ps1"
+$smiSameMajorFake     = Join-Path $work "nvidia-smi-13.2.ps1"
+$nvccIncompatibleFake = Join-Path $work "nvcc-13.3.ps1"
+$nvccCompatibleFake   = Join-Path $work "nvcc-12.8.ps1"
+Set-Content -LiteralPath $smiMajorMismatchFake -Value "'CUDA Version: 12.9'"
+Set-Content -LiteralPath $smiSameMajorFake     -Value "'CUDA Version: 13.2'"
+Set-Content -LiteralPath $nvccIncompatibleFake -Value "'Cuda compilation tools, release 13.3, V13.3.0'"
+Set-Content -LiteralPath $nvccCompatibleFake   -Value "'Cuda compilation tools, release 12.8, V12.8.0'"
 
 $failures = 0
 function Check($name, $cond) {
@@ -45,13 +49,15 @@ function Check($name, $cond) {
 
 # Build + run one scenario in a child pwsh; returns @{ Exit; Out }.
 function Run-Case {
-    param([string]$FindMode, [bool]$Require)
+    param([string]$FindMode, [bool]$Require, [string]$DriverMode = "major-mismatch")
     $requireLit = if ($Require) { '$true' } else { '$false' }
+    $smiForCase = if ($DriverMode -eq "same-major") { $smiSameMajorFake } else { $smiMajorMismatchFake }
     $child = @"
 `$ErrorActionPreference = 'Continue'
 [Environment]::SetEnvironmentVariable('CUDA_PATH', `$null, 'Process')
 `$FindNvccMode = '$FindMode'
-`$NvccFake = '$nvccFake'
+`$NvccIncompatibleFake = '$nvccIncompatibleFake'
+`$NvccCompatibleFake = '$nvccCompatibleFake'
 function substep { param(`$m, `$c) Write-Host "  `$m" }
 function step    { param(`$l, `$v, `$c) Write-Host "[`$l] `$v" }
 function Add-ToUserPath { param(`$Directory, `$Position) `$true }
@@ -64,12 +70,13 @@ function winget { `$script:WingetCalled = `$true; 'no matching versions' }
 function Find-Nvcc {
     param([string]`$MaxVersion = '')
     switch (`$FindNvccMode) {
-        'compatible'   { return `$NvccFake }
-        'incompatible' { if (`$MaxVersion) { return `$null } else { return `$NvccFake } }
+        'compatible'   { return `$NvccCompatibleFake }
+        'same-major'   { return `$NvccIncompatibleFake }
+        'incompatible' { if (`$MaxVersion) { return `$null } else { return `$NvccIncompatibleFake } }
         default        { return `$null }
     }
 }
-`$NvidiaSmiExe  = '$smiFake'
+`$NvidiaSmiExe  = '$smiForCase'
 `$VsInstallPath = `$null
 `$HasNvidiaSmi  = `$true
 `$script:CudaToolkitReady = `$false
@@ -89,33 +96,40 @@ Write-Host ("RESULT ready={0} nvcc={1} winget={2}" -f `$script:CudaToolkitReady,
 }
 
 try {
-    Write-Host "Scenario 1: prebuilt path, too-new toolkit (no -RequireOrExit) -> defers, no exit"
+    Write-Host "Scenario 1: prebuilt path, newer-major toolkit (no -RequireOrExit) -> defers, no exit"
     $r = Run-Case -FindMode "incompatible" -Require $false
     Check "exits 0 (not blocked)"        ($r.Exit -eq 0)
     Check "CudaToolkitReady = false"     ($r.Out -match "ready=False")
     Check "winget NOT called"            ($r.Out -match "winget=False")
-    Check "explains driver too old"      ($r.Out -match "your NVIDIA driver only supports up to CUDA")
+    Check "explains major mismatch"      ($r.Out -match "major-version mismatch")
     Check "does not blame the toolkit"   (-not ($r.Out -match "INCOMPATIBLE"))
 
-    Write-Host "Scenario 2: forced source build, too-new toolkit (-RequireOrExit) -> hard exit"
+    Write-Host "Scenario 2: forced source build, newer-major toolkit (-RequireOrExit) -> hard exit"
     $r = Run-Case -FindMode "incompatible" -Require $true
     Check "exits non-zero"               ($r.Exit -ne 0)
-    Check "explains driver too old"      ($r.Out -match "your NVIDIA driver only supports up to CUDA")
+    Check "explains major mismatch"      ($r.Out -match "major-version mismatch")
     Check "one-line source-build error"  ($r.Out -match "CUDA source build cannot use the installed toolkit")
 
-    Write-Host "Scenario 3: compatible toolkit (-RequireOrExit) -> resolves, env set"
+    Write-Host "Scenario 3: same-major newer-minor toolkit (-RequireOrExit) -> resolves, env set"
+    $r = Run-Case -FindMode "same-major" -Require $true -DriverMode "same-major"
+    Check "exits 0"                      ($r.Exit -eq 0)
+    Check "CudaToolkitReady = true"      ($r.Out -match "ready=True")
+    Check "NvccPath published"           ($r.Out -match "nvcc=.*nvcc-13\.3")
+    Check "no mismatch warning"          (-not ($r.Out -match "major-version mismatch"))
+
+    Write-Host "Scenario 4: compatible older-major toolkit (-RequireOrExit) -> resolves, env set"
     $r = Run-Case -FindMode "compatible" -Require $true
     Check "exits 0"                      ($r.Exit -eq 0)
     Check "CudaToolkitReady = true"      ($r.Out -match "ready=True")
     Check "NvccPath published"           ($r.Out -match "nvcc=.*nvcc")
 
-    Write-Host "Scenario 4: no toolkit, prebuilt path (no -RequireOrExit) -> defers, no winget"
+    Write-Host "Scenario 5: no toolkit, prebuilt path (no -RequireOrExit) -> defers, no winget"
     $r = Run-Case -FindMode "none" -Require $false
     Check "exits 0"                      ($r.Exit -eq 0)
     Check "CudaToolkitReady = false"     ($r.Out -match "ready=False")
     Check "winget NOT called"            ($r.Out -match "winget=False")
 
-    Write-Host "Scenario 5: no toolkit, forced (-RequireOrExit) -> winget attempted then exit"
+    Write-Host "Scenario 6: no toolkit, forced (-RequireOrExit) -> winget attempted then exit"
     # The function exits before the RESULT line here, so assert on the winget-block
     # marker in output rather than the flag.
     $r = Run-Case -FindMode "none" -Require $true

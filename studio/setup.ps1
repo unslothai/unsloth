@@ -220,14 +220,13 @@ function Get-InstalledLlamaPrebuiltRelease {
 function Find-Nvcc {
     param([string]$MaxVersion = "")
 
-    # If MaxVersion is set, we need to find a toolkit <= that version.
+    # If MaxVersion is set, we need to find a toolkit with a compatible major.
     # CUDA toolkits install side-by-side under C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\vX.Y\
 
     $toolkitBase = 'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA'
 
     if ($MaxVersion -and (Test-Path $toolkitBase)) {
         $drMajor = [int]$MaxVersion.Split('.')[0]
-        $drMinor = [int]$MaxVersion.Split('.')[1]
 
         # Get all installed CUDA dirs, sorted descending (highest first)
         $cudaDirs = Get-ChildItem -Directory $toolkitBase | Where-Object {
@@ -236,8 +235,8 @@ function Find-Nvcc {
 
         foreach ($dir in $cudaDirs) {
             if ($dir.Name -match '^v(\d+)\.(\d+)') {
-                $tkMajor = [int]$Matches[1]; $tkMinor = [int]$Matches[2]
-                $compatible = ($tkMajor -lt $drMajor) -or ($tkMajor -eq $drMajor -and $tkMinor -le $drMinor)
+                $tkMajor = [int]$Matches[1]
+                $compatible = ($tkMajor -le $drMajor)
                 if ($compatible) {
                     $nvcc = Join-Path $dir.FullName 'bin\nvcc.exe'
                     if (Test-Path $nvcc) {
@@ -284,8 +283,10 @@ function Write-CudaDriverToolkitMismatch {
         [Parameter(Mandatory = $true)][string]$DriverMaxCuda,
         [string]$Color = "Yellow"
     )
-    substep "Unsloth supports CUDA Toolkit $ToolkitVersion, but your NVIDIA driver only supports up to CUDA $DriverMaxCuda." $Color
-    substep "Update the NVIDIA GPU driver to run CUDA Toolkit $ToolkitVersion." $Color
+    $toolkitMajor = $ToolkitVersion.Split('.')[0]
+    $driverMajor = $DriverMaxCuda.Split('.')[0]
+    substep "CUDA Toolkit $ToolkitVersion is a major-version mismatch: toolkit major $toolkitMajor exceeds driver CUDA major $driverMajor ($DriverMaxCuda)." $Color
+    substep "Update the NVIDIA GPU driver to run CUDA Toolkit $ToolkitVersion, or install a CUDA $driverMajor.x toolkit." $Color
     substep "Or let Studio use the prebuilt CUDA bundle; it does not need the local toolkit." $Color
 }
 
@@ -1073,10 +1074,10 @@ if ($vsResult) {
 # or installed. Without it, detection is best-effort and only sets the flag.
 function Resolve-CudaToolkit {
     param([switch]$RequireOrExit)
-# IMPORTANT: The CUDA Toolkit version must be <= the max CUDA version the
-# NVIDIA driver supports.  nvidia-smi reports this as "CUDA Version: X.Y".
-# If we install a toolkit newer than the driver supports, llama-server will
-# fail at runtime with "ggml_cuda_init: failed to initialize CUDA: (null)".
+# IMPORTANT: The CUDA Toolkit major version must be <= the CUDA major version
+# reported by the NVIDIA driver. nvidia-smi reports this as "CUDA Version: X.Y".
+# If we install a toolkit with a newer major than the driver supports,
+# llama-server will fail at runtime with "ggml_cuda_init: failed to initialize CUDA: (null)".
 
 # -- Detect max CUDA version the driver supports --
 $DriverMaxCuda = $null
@@ -1107,7 +1108,6 @@ $NvccPath = $null
 
 if ($DriverMaxCuda) {
     $drMajorCuda = [int]$DriverMaxCuda.Split('.')[0]
-    $drMinorCuda = [int]$DriverMaxCuda.Split('.')[1]
 
     # --- Step 1: Check existing CUDA_PATH first ---
     $existingCudaPath = [Environment]::GetEnvironmentVariable('CUDA_PATH', 'Machine')
@@ -1119,7 +1119,7 @@ if ($DriverMaxCuda) {
         $verOut = & $candidateNvcc --version 2>&1 | Out-String
         if ($verOut -match 'release\s+(\d+)\.(\d+)') {
             $tkMaj = [int]$Matches[1]; $tkMin = [int]$Matches[2]
-            $isCompat = ($tkMaj -lt $drMajorCuda) -or ($tkMaj -eq $drMajorCuda -and $tkMin -le $drMinorCuda)
+            $isCompat = ($tkMaj -le $drMajorCuda)
             if ($isCompat) {
                 # Also verify the toolkit supports our GPU architecture
                 $archOk = $true
@@ -1135,7 +1135,7 @@ if ($DriverMaxCuda) {
                     substep "using existing CUDA Toolkit at CUDA_PATH (nvcc: $NvccPath)"
                 }
             } else {
-                substep "CUDA_PATH ($existingCudaPath) has CUDA $tkMaj.$tkMin which exceeds driver max $DriverMaxCuda" "Yellow"
+                substep "CUDA_PATH ($existingCudaPath) has CUDA $tkMaj.$tkMin with major $tkMaj, which exceeds driver CUDA major $drMajorCuda ($DriverMaxCuda)" "Yellow"
             }
         }
     }
@@ -1191,7 +1191,6 @@ if (-not $NvccPath -and $RequireOrExit) {
         if ($DriverMaxCuda) {
             # Query winget for available CUDA Toolkit versions
             $drMajor = [int]$DriverMaxCuda.Split('.')[0]
-            $drMinor = [int]$DriverMaxCuda.Split('.')[1]
             $AvailableVersions = @()
             try {
                 $rawOutput = winget show Nvidia.CUDA --versions --accept-source-agreements 2>&1 | Out-String
@@ -1204,13 +1203,12 @@ if (-not $NvccPath -and $RequireOrExit) {
                 }
             } catch {}
 
-            # Filter to compatible versions (<= driver max) and pick the highest
+            # Filter to compatible major versions and pick the highest
             $BestVersion = $null
             foreach ($ver in $AvailableVersions) {
                 $parts = $ver.Split('.')
                 $vMajor = [int]$parts[0]
-                $vMinor = [int]$parts[1]
-                if ($vMajor -lt $drMajor -or ($vMajor -eq $drMajor -and $vMinor -le $drMinor)) {
+                if ($vMajor -le $drMajor) {
                     $BestVersion = $ver
                     break  # list is descending, first match is highest compatible
                 }
@@ -1228,7 +1226,7 @@ if (-not $NvccPath -and $RequireOrExit) {
                     substep "CUDA Toolkit $BestVersion installed (nvcc: $NvccPath)"
                 }
             } else {
-                substep "no compatible CUDA Toolkit version found in winget (need <= $DriverMaxCuda)" "Yellow"
+                substep "no compatible CUDA Toolkit version found in winget (need CUDA major <= $drMajor)" "Yellow"
             }
         } else {
             substep "Installing CUDA Toolkit (latest) via winget..."
@@ -1250,7 +1248,7 @@ if (-not $NvccPath) {
     }
     Write-Host "[ERROR] CUDA Toolkit (nvcc) is required but could not be found or installed." -ForegroundColor Red
     if ($DriverMaxCuda) {
-        Write-Host "        Install CUDA Toolkit $DriverMaxCuda from https://developer.nvidia.com/cuda-toolkit-archive" -ForegroundColor Yellow
+        Write-Host "        Install a CUDA Toolkit with major version $($DriverMaxCuda.Split('.')[0]) from https://developer.nvidia.com/cuda-toolkit-archive" -ForegroundColor Yellow
     } else {
         Write-Host "        Install CUDA Toolkit from https://developer.nvidia.com/cuda-downloads" -ForegroundColor Yellow
     }
