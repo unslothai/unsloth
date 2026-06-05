@@ -498,7 +498,9 @@ def _is_family_text_decoder(parent_model_type, text_model_type):
     # (gemma3 -> gemma3_text), whose CausalLM remaps the checkpoint correctly.
     # A generic reused decoder (llava -> llama, paligemma -> gemma) would
     # silently init random weights, so we keep the full model. See PR #5816.
-    return bool(parent_model_type) and str(text_model_type).startswith(parent_model_type)
+    return bool(parent_model_type) and str(text_model_type).startswith(
+        parent_model_type
+    )
 
 
 def _get_text_only_config(model_config, model_name):

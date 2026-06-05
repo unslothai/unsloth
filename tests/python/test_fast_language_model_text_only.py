@@ -206,8 +206,15 @@ def test_text_only_guard_predicate_across_vlm_families():
 
     # No text class (Qwen2-VL/Mllama) or a generic reused decoder that would
     # load random weights (Llava/PaliGemma/Idefics3/InternVL) -> keep full model.
-    for name in ["Qwen2VLConfig", "Qwen2_5_VLConfig", "MllamaConfig",
-                 "LlavaConfig", "PaliGemmaConfig", "Idefics3Config", "InternVLConfig"]:
+    for name in [
+        "Qwen2VLConfig",
+        "Qwen2_5_VLConfig",
+        "MllamaConfig",
+        "LlavaConfig",
+        "PaliGemmaConfig",
+        "Idefics3Config",
+        "InternVLConfig",
+    ]:
         cfg_cls = getattr(transformers, name, None)
         if cfg_cls is None:
             continue
