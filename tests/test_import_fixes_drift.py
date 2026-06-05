@@ -623,3 +623,25 @@ def test_accelerate_utils_imports_module_present():
         "accelerate.utils.imports.is_wandb_available is gone; "
         "disable_broken_wandb cannot patch the source module."
     )
+
+
+def test_accelerate_recursively_apply_empty_logits_patch():
+    """Verify patch_accelerate_recursively_apply overrides recursively_apply to bypass EmptyLogits."""
+    pytest.importorskip("accelerate")
+
+    import accelerate.utils.operations as acc_ops
+    from unsloth.import_fixes import patch_accelerate_recursively_apply
+
+    class EmptyLogits:
+        pass
+
+    e = EmptyLogits()
+    patch_accelerate_recursively_apply()
+
+    res = acc_ops.recursively_apply(lambda x: x, e, error_on_other_type = True)
+    assert res is e
+
+
+
+
+

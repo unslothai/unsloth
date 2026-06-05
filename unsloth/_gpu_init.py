@@ -155,6 +155,7 @@ from .import_fixes import (
     fix_trl_vllm_ascend,
     fix_peft_transformers_weight_conversion_import,
     patch_peft_weight_converter_compatibility,
+    patch_accelerate_recursively_apply,
 )
 
 fix_xformers_performance_issue()
@@ -184,6 +185,7 @@ disable_broken_wandb()
 # swallowed by its bare ImportError except.
 fix_peft_transformers_weight_conversion_import()
 patch_peft_weight_converter_compatibility()
+patch_accelerate_recursively_apply()
 
 del fix_xformers_performance_issue
 del fix_vllm_aimv2_issue
@@ -207,6 +209,8 @@ del disable_torchcodec_if_broken
 del disable_broken_wandb
 del fix_peft_transformers_weight_conversion_import
 del patch_peft_weight_converter_compatibility
+del patch_accelerate_recursively_apply
+
 
 # Torch 2.4 has including_emulation
 if DEVICE_TYPE == "cuda":

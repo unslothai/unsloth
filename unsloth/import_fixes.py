@@ -2192,3 +2192,39 @@ def disable_broken_causal_conv1d():
         "Unsloth: Detected broken causal_conv1d binary; "
         "disabling causal_conv1d fast path and continuing import."
     )
+
+
+def patch_accelerate_recursively_apply():
+    """
+    Patch accelerate.utils.operations.recursively_apply to avoid raising
+    TypeError when encountering Unsloth's EmptyLogits class.
+    """
+    try:
+        import accelerate.utils.operations as acc_ops
+        original_recursively_apply = acc_ops.recursively_apply
+
+        @functools.wraps(original_recursively_apply)
+        def _patched_recursively_apply(func, data, *args, **kwargs):
+            if type(data).__name__ == "EmptyLogits":
+                return data
+            return original_recursively_apply(func, data, *args, **kwargs)
+
+        acc_ops.recursively_apply = _patched_recursively_apply
+    except Exception:
+        pass
+
+    try:
+        import accelerate.utils as acc_utils
+        if hasattr(acc_utils, "recursively_apply"):
+            original_recursively_apply = acc_utils.recursively_apply
+
+            @functools.wraps(original_recursively_apply)
+            def _patched_recursively_apply(func, data, *args, **kwargs):
+                if type(data).__name__ == "EmptyLogits":
+                    return data
+                return original_recursively_apply(func, data, *args, **kwargs)
+
+            acc_utils.recursively_apply = _patched_recursively_apply
+    except Exception:
+        pass
+
