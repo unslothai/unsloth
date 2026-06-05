@@ -109,10 +109,18 @@ class TestAnthropicModels:
             system = "Base.",
             messages = [
                 {"role": "system", "content": None},
+                {
+                    "role": "system",
+                    "content": [
+                        None,
+                        {"type": "text", "text": "Use short answers."},
+                    ],
+                },
                 {"role": "user", "content": "Hi"},
             ],
         )
-        assert req.system == "Base."  # not "Base.\n\nNone"
+        assert req.system == "Base.\n\nUse short answers."
+        assert "None" not in str(req.system)
         assert [msg.role for msg in req.messages] == ["user"]
 
     def test_tools_field_parses(self):
