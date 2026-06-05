@@ -1257,26 +1257,25 @@ class DownloadRegistry:
             for key, _proc, _metadata in live:
                 if self._jobs.get(key, DownloadState("idle")).state == "running":
                     self._jobs[key] = DownloadState("cancelling")
-        reaped: list[tuple[str, subprocess.Popen]] = []
-        for _key, _proc, metadata in live:
-            if metadata is not None:
-                persist_cancel_marker(
-                    metadata.repo_type,
-                    metadata.repo_id,
-                    metadata.variant,
-                    metadata.transport,
-                )
-        for key, proc, _metadata in live:
+        reaped: list[tuple[str, subprocess.Popen, Optional[DownloadMetadata]]] = []
+        for key, proc, metadata in live:
             try:
                 proc.kill()
             except ProcessLookupError:
                 pass
             except Exception as e:
                 logger.warning(f"shutdown: failed to kill {kind} worker for {key}: {e}")
+                if metadata is not None:
+                    persist_cancel_marker(
+                        metadata.repo_type,
+                        metadata.repo_id,
+                        metadata.variant,
+                        metadata.transport,
+                    )
                 continue
-            reaped.append((key, proc))
+            reaped.append((key, proc, metadata))
         deadline = time.monotonic() + 10.0
-        for key, proc in reaped:
+        for key, proc, metadata in reaped:
             try:
                 proc.wait(timeout = max(0.0, deadline - time.monotonic()))
             except subprocess.TimeoutExpired:
@@ -1285,6 +1284,16 @@ class DownloadRegistry:
                 )
             except Exception:
                 pass
+            # Mark only genuinely interrupted workers (rc != 0, or None when
+            # wait timed out). Persisting before the exit is known would strand
+            # a stale marker on a worker that completed cleanly during shutdown.
+            if metadata is not None and proc.poll() != 0:
+                persist_cancel_marker(
+                    metadata.repo_type,
+                    metadata.repo_id,
+                    metadata.variant,
+                    metadata.transport,
+                )
 
 
 def _named_registry(name: str) -> DownloadRegistry:

@@ -53,6 +53,27 @@ def _sibling(name: str, size: int, sha: str):
     return SimpleNamespace(rfilename = name, size = size, lfs = {"sha256": sha})
 
 
+class TestExtractQuantToken:
+    def test_trailing_precision_is_kept(self):
+        assert gguf.extract_quant_token("model-it-F16.gguf") == "F16"
+        assert gguf.extract_quant_token("model-BF16.gguf") == "BF16"
+
+    def test_real_quant_wins_over_infix_precision(self):
+        assert gguf.extract_quant_token("Foo-BF16-Q4_K_M.gguf") == "Q4_K_M"
+        assert gguf.extract_quant_token("Foo-F16-Q8_0.gguf") == "Q8_0"
+        assert gguf.extract_quant_token("Foo-F32-IQ4_XS.gguf") == "IQ4_XS"
+
+    def test_ud_prefix_preserved(self):
+        assert gguf.extract_quant_token("Foo-BF16-UD-Q4_K_XL.gguf") == "UD-Q4_K_XL"
+
+    def test_precision_infix_variants_do_not_collapse(self):
+        labels = {
+            gguf.extract_quant_label("Foo-BF16-Q4_K_M.gguf"),
+            gguf.extract_quant_label("Foo-BF16-Q8_0.gguf"),
+        }
+        assert labels == {"Q4_K_M", "Q8_0"}
+
+
 @pytest.mark.parametrize("repo_id", ["bert-base-uncased", "owner/repo"])
 def test_repo_id_validation_accepts_hf_repo_id_contract(repo_id):
     assert paths.is_valid_repo_id(repo_id)
@@ -2330,16 +2351,59 @@ def test_shutdown_kills_all_workers_before_shared_deadline_reap(monkeypatch):
 
     registry.terminate_all("dataset download")
 
-    assert events[:4] == [
-        ("marker", "Org/A"),
-        ("marker", "Org/B"),
+    assert events == [
         ("kill", "a"),
         ("kill", "b"),
+        ("wait", "a", 10.0),
+        ("marker", "Org/A"),
+        ("wait", "b", 3.0),
+        ("marker", "Org/B"),
     ]
-    assert events[4][0:2] == ("wait", "a")
-    assert events[5][0:2] == ("wait", "b")
-    assert events[4][2] == 10.0
-    assert events[5][2] == 3.0
+
+
+def test_shutdown_skips_marker_for_worker_that_exits_cleanly(monkeypatch):
+    markers = []
+
+    class _Proc:
+        def __init__(self, final_rc):
+            self._final_rc = final_rc
+            self._exited = False
+
+        def poll(self):
+            return self._final_rc if self._exited else None
+
+        def kill(self):
+            pass
+
+        def wait(self, timeout):
+            self._exited = True
+
+    registry = download_registry.DownloadRegistry()
+    clean = _Proc(0)
+    interrupted = _Proc(-9)
+    registry.claim(
+        "Org/Clean",
+        download_registry.TRANSPORT_HTTP,
+        repo_type = "dataset",
+        repo_id = "Org/Clean",
+    )
+    registry.claim(
+        "Org/Cut",
+        download_registry.TRANSPORT_HTTP,
+        repo_type = "dataset",
+        repo_id = "Org/Cut",
+    )
+    assert registry.register_process("org/clean", clean)
+    assert registry.register_process("org/cut", interrupted)
+    monkeypatch.setattr(
+        download_registry,
+        "persist_cancel_marker",
+        lambda *args, **kwargs: markers.append(args[1]),
+    )
+
+    registry.terminate_all("dataset download")
+
+    assert markers == ["Org/Cut"]
 
 
 def test_model_claim_register_cancel_uses_registry_marker_owner(monkeypatch):

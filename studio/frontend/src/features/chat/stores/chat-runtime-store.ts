@@ -23,6 +23,7 @@ import {
 } from "../utils/chat-settings-storage";
 
 const HF_TOKEN_KEY = "unsloth_hf_token";
+const HF_TOKEN_CHANGED_EVENT = "unsloth:hf-token-changed";
 export const CHAT_REASONING_ENABLED_KEY = "unsloth_chat_reasoning_enabled";
 export const CHAT_TOOLS_ENABLED_KEY = "unsloth_chat_tools_enabled";
 export const CHAT_CODE_TOOLS_ENABLED_KEY = "unsloth_chat_code_tools_enabled";
@@ -236,14 +237,7 @@ function saveString(key: string, value: string): void {
 function notifyHfTokenChanged(value: string): void {
   if (!canUseStorage()) return;
   try {
-    window.dispatchEvent(
-      new StorageEvent("storage", {
-        key: HF_TOKEN_KEY,
-        newValue: value,
-        storageArea: window.localStorage,
-        url: window.location.href,
-      }),
-    );
+    window.dispatchEvent(new CustomEvent(HF_TOKEN_CHANGED_EVENT, { detail: value }));
   } catch {
     // ignore
   }

@@ -5,9 +5,11 @@ import { create } from "zustand";
 import { bumpInventoryVersion } from "./inventory-events";
 
 const HF_TOKEN_KEY = "unsloth_hf_token";
+const HF_TOKEN_CHANGED_EVENT = "unsloth:hf-token-changed";
 const LEGACY_TRAINING_KEY = "unsloth_training_config_v1";
 let storageSyncStarted = false;
 let storageSyncListener: ((event: StorageEvent) => void) | null = null;
+let tokenChangedListener: ((event: Event) => void) | null = null;
 
 function canUseStorage(): boolean {
   return typeof window !== "undefined";
@@ -57,9 +59,15 @@ function normalize(raw: string): string {
 }
 
 function stopStorageSync(): void {
-  if (!canUseStorage() || storageSyncListener === null) return;
-  window.removeEventListener("storage", storageSyncListener);
-  storageSyncListener = null;
+  if (!canUseStorage()) return;
+  if (storageSyncListener !== null) {
+    window.removeEventListener("storage", storageSyncListener);
+    storageSyncListener = null;
+  }
+  if (tokenChangedListener !== null) {
+    window.removeEventListener(HF_TOKEN_CHANGED_EVENT, tokenChangedListener);
+    tokenChangedListener = null;
+  }
   storageSyncStarted = false;
 }
 
@@ -93,6 +101,10 @@ export const useHfTokenStore = create<HfTokenStore>((set) => {
       applyToken(event.newValue ?? "", false);
     };
     window.addEventListener("storage", storageSyncListener);
+    tokenChangedListener = (event) => {
+      applyToken((event as CustomEvent<string>).detail ?? "", false);
+    };
+    window.addEventListener(HF_TOKEN_CHANGED_EVENT, tokenChangedListener);
   }
 
   return {

@@ -80,6 +80,13 @@ export function useModelsSelection({
   const [discoverSelectedSnapshot, setDiscoverSelectedSnapshot] =
     useState<DiscoverRow | null>(null);
 
+  const [prevDatasetMode, setPrevDatasetMode] = useState(isDatasetMode);
+  if (prevDatasetMode !== isDatasetMode) {
+    setPrevDatasetMode(isDatasetMode);
+    setDiscoverSelectedId(null);
+    setDiscoverSelectedSnapshot(null);
+  }
+
   const discoverRowById = useMemo(
     () => new Map(discoverRows.map((row) => [row.id, row])),
     [discoverRows],

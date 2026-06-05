@@ -140,13 +140,27 @@ def _gguf_stem(filename: str) -> str:
     return _GGUF_SPLIT_SUFFIX_RE.sub("", basename.rsplit(".", 1)[0]).strip()
 
 
+_FLOAT_PRECISION_QUANTS = frozenset({"BF16", "F16", "F32"})
+
+
+def _select_quant_match(text: str) -> Optional[re.Match]:
+    fallback: Optional[re.Match] = None
+    for match in _GGUF_QUANT_RE.finditer(text):
+        if match.group(2).upper() in _FLOAT_PRECISION_QUANTS:
+            if fallback is None:
+                fallback = match
+            continue
+        return match
+    return fallback
+
+
 def extract_quant_token(filename: str) -> Optional[str]:
     stem = _gguf_stem(filename)
-    match = _GGUF_QUANT_RE.search(stem)
+    match = _select_quant_match(stem)
     if not match and "/" in filename:
         parents = filename.rsplit("/", 1)[0]
         for segment in reversed(parents.split("/")):
-            parent_match = _GGUF_QUANT_RE.search(segment)
+            parent_match = _select_quant_match(segment)
             if parent_match:
                 match = parent_match
                 break
