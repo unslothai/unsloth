@@ -91,11 +91,11 @@ def test_fast_model_text_only_does_not_override_explicit_auto_model():
 
     assert '_force_text_only = kwargs.pop("_force_text_only", False)' in method_source
     assert "load_text_only = _force_text_only and auto_model is None" in method_source
-    assert (
-        "model_config = _get_text_only_config(model_config, old_model_name)"
-        in method_source
-    )
+    assert "_get_text_only_config(model_config, old_model_name)" in method_source
     assert "_force_text_only = load_text_only" in method_source
+    # Falls back to the full model for VLMs with no text-only CausalLM class.
+    assert "resolve_model_class(AutoModelForCausalLM, text_config) is None" in method_source
+    assert "load_text_only = False" in method_source
 
 
 def test_fast_base_model_text_only_bypasses_vision_auto_model():
@@ -173,3 +173,34 @@ def test_helper_defined_once_in_utils_and_imported():
     assert _defines(UTILS_PATH)
     assert not _defines(LOADER_PATH) and _imports(LOADER_PATH)
     assert not _defines(VISION_PATH) and _imports(VISION_PATH)
+
+
+def _load_util_func(name):
+    source = _source(UTILS_PATH)
+    for node in ast.parse(source).body:
+        if isinstance(node, ast.FunctionDef) and node.name == name:
+            ns = {}
+            exec(ast.get_source_segment(source, node), ns)
+            return ns[name]
+    raise AssertionError(f"{name} not found")
+
+
+def test_text_only_guard_predicate_across_vlm_families():
+    # The guard strips vision only when the text config has a CausalLM class.
+    transformers = pytest.importorskip("transformers")
+    from transformers import AutoModelForCausalLM
+
+    resolve = _load_util_func("resolve_model_class")
+    helper = _load_text_only_helper()
+
+    # Has a text-only CausalLM -> text-only load proceeds.
+    g = helper(transformers.Gemma3Config(), "google/gemma-3-27b-it")
+    assert resolve(AutoModelForCausalLM, g) is not None
+
+    # No text-only CausalLM -> guard keeps the full model instead of crashing.
+    for name in ["Qwen2VLConfig", "Qwen2_5_VLConfig", "MllamaConfig"]:
+        cfg_cls = getattr(transformers, name, None)
+        if cfg_cls is None:
+            continue
+        text = helper(cfg_cls(), name)
+        assert resolve(AutoModelForCausalLM, text) is None, name

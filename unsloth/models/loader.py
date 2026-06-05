@@ -98,6 +98,7 @@ from ._utils import (
     unsloth_compile_transformers,
     fast_inference_setup,
     _get_text_only_config,
+    resolve_model_class,
 )
 
 # Single source of truth is unsloth_zoo.model_lists. Re-exported so callers
@@ -1465,12 +1466,21 @@ class FastModel(FastBaseModel):
         load_text_only = _force_text_only and auto_model is None
         if load_text_only:
             if hasattr(model_config, "vision_config"):
-                logger.warning_once(
-                    f"Loading {old_model_name} as text-only; vision tower skipped. "
-                    "Use FastVisionModel for image inputs."
-                )
-                model_config = _get_text_only_config(model_config, old_model_name)
-            is_vlm = False
+                text_config = _get_text_only_config(model_config, old_model_name)
+                # Only skip the vision tower when a text-only model class exists
+                # (e.g. Gemma 3). VLMs without one (Qwen2-VL, Mllama) keep the full
+                # model so loading still works; use FastVisionModel for images.
+                if resolve_model_class(AutoModelForCausalLM, text_config) is None:
+                    load_text_only = False
+                else:
+                    logger.warning_once(
+                        f"Loading {old_model_name} as text-only; vision tower skipped. "
+                        "Use FastVisionModel for image inputs."
+                    )
+                    model_config = text_config
+                    is_vlm = False
+            else:
+                is_vlm = False
         # If num_labels is set, use AutoModelForSequenceClassification
         _num_labels = kwargs.get("num_labels", None)
         if auto_model is None:
