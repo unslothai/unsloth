@@ -1136,9 +1136,15 @@ const ImagesToggle: FC = () => {
   );
 };
 
+// Module-level flag: survives the ThreadWelcome → ThreadComposerDock remount
+// (and the GeneratedImageOverlayProvider key-change remount) that occur when
+// the first message is sent. Without this, VoiceToggle instance #2 would
+// always start with voiceModeEnabled = false, silencing the first response.
+let _voiceModeActive = false;
+
 const VoiceToggle: FC = () => {
   const aui = useAui();
-  const [voiceModeEnabled, setVoiceModeEnabled] = useState(false);
+  const [voiceModeEnabled, setVoiceModeEnabled] = useState(_voiceModeActive);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
   const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1146,7 +1152,7 @@ const VoiceToggle: FC = () => {
   // voiceModeRef is only written in toggle — never in the render body —
   // to prevent intermediate re-renders from resetting it before React commits
   // the new voiceModeEnabled state.
-  const voiceModeRef = useRef(false);
+  const voiceModeRef = useRef(_voiceModeActive);
   const isSpeakingRef = useRef(false);
   const auiRef = useRef(aui);
   isSpeakingRef.current = isSpeaking;
@@ -1163,6 +1169,18 @@ const VoiceToggle: FC = () => {
   );
   const isDictating =
     dictationStatusType === "starting" || dictationStatusType === "running";
+
+  // On remount: if voice mode was active when this instance mounted and the
+  // model is already idle, open the mic immediately. The common path
+  // (model still running at remount time) is handled by the run-lifecycle
+  // effect below — this only fires for the rare race where the model
+  // finishes before the new instance's effects run.
+  useEffect(() => {
+    if (!_voiceModeActive || isThreadRunning) return;
+    document
+      .querySelector<HTMLButtonElement>('button[aria-label="Dictate"]')
+      ?.click();
+  }, []); // mount only
 
   // Run lifecycle: stop dictation + clear timer when model starts generating;
   // speak the response and restart dictation when the run finishes.
@@ -1265,6 +1283,7 @@ const VoiceToggle: FC = () => {
 
   const toggle = useCallback(() => {
     const next = !voiceModeRef.current;
+    _voiceModeActive = next;
     setVoiceModeEnabled(next);
     voiceModeRef.current = next;
 
