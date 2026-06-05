@@ -1649,7 +1649,14 @@ shell.Run cmd, 0, False
                     'wsl.exe -d $distro --cd /root -u root -- bash -lic "unsloth studio -p 8888"'
                 )
                 Set-Content -LiteralPath $launcher -Value $L -Encoding UTF8
-                $icon = Join-Path $appDir "unsloth.ico"
+                # Icon must live OUTSIDE %LOCALAPPDATA%: on Windows-on-ARM the shell's sandboxed
+                # icon-extraction broker can't read a standalone .ico under AppData\Local (it gets a
+                # redirected/virtualized view), so the shortcut renders BLANK -- while the identical
+                # file under the user profile renders fine (verified on N1X). Keep the shim/launcher
+                # in $appDir; only the icon needs the profile location.
+                $iconDir = Join-Path $env:USERPROFILE ".unsloth"
+                New-Item -ItemType Directory -Force -Path $iconDir *> $null
+                $icon = Join-Path $iconDir "unsloth.ico"
                 # Prefer the bundled icon; fall back to a GitHub download. Validate the ICO header
                 # (00 00 01 00) before attaching, so a partial/HTML-404 download never makes a blank icon.
                 $bundledIcon = $null
@@ -1681,10 +1688,9 @@ shell.Run cmd, 0, False
                     $sc.Save()
                 }
                 step "shortcuts" "created Desktop + Start Menu shortcuts (launch WSL Studio + open browser)" "Green"
-                # Force the new .lnk icons to render now instead of blank: Explorer caches per-.lnk
-                # icons in iconcache_*.db, and a same-name .lnk recreated across reinstalls keeps the
-                # stale (blank) entry. -ClearIconCache purges that db, -show rebuilds; both are still
-                # unreliable alone, so the per-.lnk SHChangeNotify below is the real fix.
+                # Nudge Explorer to pick up the new/changed shortcuts now: clear+rebuild the icon
+                # cache, then per-.lnk SHCNE_UPDATEITEM + a global SHCNE_ASSOCCHANGED. (The real
+                # blank-icon cause on WoA was the AppData\Local icon path, fixed above.)
                 try { & "$env:SystemRoot\System32\ie4uinit.exe" -ClearIconCache 2>$null } catch {}
                 try { & "$env:SystemRoot\System32\ie4uinit.exe" -show 2>$null } catch {}
                 try {
@@ -1697,17 +1703,6 @@ shell.Run cmd, 0, False
                     # SHCNE_ASSOCCHANGED (0x08000000), SHCNF_IDLIST (0): flush global icon associations
                     # (item args unused for this event).
                     [UnslothShell.Notify]::SHChangeNotify(0x08000000, 0, $null, [System.IntPtr]::Zero)
-                } catch {}
-                # Prime the shell system image list NOW so Desktop + Start Menu extract the real
-                # icon immediately. A lazy first-paint extraction that misses (icon not yet flushed,
-                # cache just cleared) is what gets cached as a blank; SHGFI_SYSICONINDEX forces the
-                # extraction here, while the .ico is known-present. (WoA path only; both views draw
-                # from this one per-session list.)
-                try {
-                    if (-not ("UnslothShell.IconPrime" -as [type])) {
-                        Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; namespace UnslothShell { public class IconPrime { [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)] struct FI { public IntPtr h; public int i; public uint a; [MarshalAs(UnmanagedType.ByValTStr, SizeConst=260)] public string n; [MarshalAs(UnmanagedType.ByValTStr, SizeConst=80)] public string t; } [DllImport("shell32.dll", CharSet=CharSet.Unicode)] static extern IntPtr SHGetFileInfo(string p, uint a, ref FI i, uint cb, uint f); public static void Prime(string path){ FI fi=new FI(); SHGetFileInfo(path,0,ref fi,(uint)Marshal.SizeOf(fi),0x4000); } } }'
-                    }
-                    foreach ($lnk in $lnks) { try { [UnslothShell.IconPrime]::Prime($lnk) } catch {} }
                 } catch {}
             } catch {
                 substep "(could not create shortcuts: $($_.Exception.Message))" "Yellow"

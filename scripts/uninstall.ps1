@@ -365,6 +365,9 @@ function Uninstall-UnslothStudio {
         } catch { }
         _RemovePath $unslothDir
     }
+    # The WoA shortcut icon lives under the user profile (the shell icon broker can't read a .ico
+    # under AppData\Local), so remove it here too.
+    if ($env:USERPROFILE) { _RemovePath (Join-Path $env:USERPROFILE ".unsloth\unsloth.ico") }
     # Remove the Studio install inside each WSL distro (the real GPU install + any CUDA llama.cpp build).
     if (Get-Command wsl.exe -ErrorAction SilentlyContinue) {
         try {
