@@ -1123,7 +1123,7 @@ class TestWorkerRocmMambaSsm:
         source = _WHEEL_UTILS_PATH.read_text(encoding = "utf-8")
         assert "getattr(torch.version, 'hip', None)" in source
 
-    def test_direct_wheel_url_returns_none_without_cuda_major(self):
+    def test_direct_wheel_url_returns_none_without_cuda_major(self, monkeypatch):
         """_direct_wheel_url should return None when cuda_major is empty (ROCm)."""
         # Load module for function access
         _worker_spec = importlib.util.spec_from_file_location(
@@ -1132,12 +1132,15 @@ class TestWorkerRocmMambaSsm:
         assert _worker_spec is not None and _worker_spec.loader is not None
         worker_mod = importlib.util.module_from_spec(_worker_spec)
 
-        # Mock all the imports worker.py needs
-        sys.modules["structlog"] = MagicMock()
-        sys.modules["loggers"] = MagicMock()
-        sys.modules["loggers"].get_logger = MagicMock(return_value = MagicMock())
-        sys.modules["utils"] = MagicMock()
-        sys.modules["utils.hardware"] = MagicMock()
+        # Stub worker.py's imports via monkeypatch so the fakes (notably a
+        # non-package "utils") are undone and don't break later tests that
+        # import the real utils.* package.
+        loggers_mock = MagicMock()
+        loggers_mock.get_logger = MagicMock(return_value = MagicMock())
+        monkeypatch.setitem(sys.modules, "structlog", MagicMock())
+        monkeypatch.setitem(sys.modules, "loggers", loggers_mock)
+        monkeypatch.setitem(sys.modules, "utils", MagicMock())
+        monkeypatch.setitem(sys.modules, "utils.hardware", MagicMock())
 
         try:
             _worker_spec.loader.exec_module(worker_mod)
