@@ -133,31 +133,48 @@ import {
 const PageDragContext = createContext(false);
 
 // ── Single-chat prompt queue ───────────────────────────────────────────────
-// All state lives at module level so it survives the Composer remount that
-// happens when the first queued message creates a new thread (new-chat →
-// conversation transition). Component-local useState/useRef would reset.
+// All persistent state lives at module level so it survives the Composer
+// remount that happens when the first queued message creates a new thread
+// (welcome-screen → conversation navigation).
+//
+// Detection uses useChatRuntimeStore.subscribe on runningByThreadId — the
+// same mechanism as RegisterCompareHandle.waitForRunEnd — so it works even
+// when aui.thread() on the welcome screen isn't bound to the new thread.
 
-// Reactive UI state — a tiny Zustand store so ComposerRightControls can
-// subscribe and re-render without needing a React context chain.
 import { create as _createZustand } from "zustand";
+
+// Reactive UI state — module-level Zustand so ComposerRightControls can
+// subscribe and re-render across Composer mounts.
 interface _QueueUIState { isRunning: boolean; current: number; total: number; }
 const _useQueueUI = _createZustand<_QueueUIState>(() => ({
   isRunning: false, current: 0, total: 0,
 }));
 
-// Non-reactive queue data
+// Non-reactive module-level data
 let _qItems: string[] = [];
 let _qIndex = 0;
 let _qIsRunning = false;
-let _qPrevThreadRunning = false;
+let _qPrevStoreRunning = false;
+let _qStoreUnsub: (() => void) | null = null;
 
-function _qAdvance(auiFn: () => ReturnType<typeof useAui>) {
+// Always points to the current Composer's aui; updated on every render.
+// Safe to call after a remount because Composer sets it before children mount.
+let _qGetAui: () => ReturnType<typeof useAui> = () => {
+  throw new Error("aui not initialised");
+};
+
+function _qStopSubscription() {
+  if (_qStoreUnsub) { _qStoreUnsub(); _qStoreUnsub = null; }
+  _qPrevStoreRunning = false;
+}
+
+function _qAdvance() {
   const nextIndex = _qIndex + 1;
   if (nextIndex >= _qItems.length) {
     _qIsRunning = false;
     _qItems = [];
     _qIndex = 0;
-    _qPrevThreadRunning = false;
+    _qStopSubscription();
     _useQueueUI.setState({ isRunning: false, current: 0, total: 0 });
     toast.success("Prompt queue complete");
     return;
@@ -168,8 +185,9 @@ function _qAdvance(auiFn: () => ReturnType<typeof useAui>) {
   toast(`Prompt ${nextIndex + 1} / ${_qItems.length}`, {
     description: next.length > 80 ? next.slice(0, 80) + "…" : next,
   });
+  _qPrevStoreRunning = false; // reset so we catch the next run
   setTimeout(() => {
-    auiFn().thread().append({
+    _qGetAui().thread().append({
       role: "user",
       content: [{ type: "text", text: next }],
       createdAt: new Date(),
@@ -177,8 +195,22 @@ function _qAdvance(auiFn: () => ReturnType<typeof useAui>) {
   }, 100);
 }
 
-// Context only carries the callbacks (defined inside Composer so they close
-// over the current `aui`). The reactive display state comes from _useQueueUI.
+function _qStartSubscription() {
+  _qStopSubscription();
+  // Subscribe to the store's runningByThreadId — works across navigation
+  // because it's module-level and tracks the actual thread, not aui.thread().
+  _qStoreUnsub = useChatRuntimeStore.subscribe((state) => {
+    if (!_qIsRunning) { _qStopSubscription(); return; }
+    const isRunning = Object.keys(state.runningByThreadId).length > 0;
+    const wasRunning = _qPrevStoreRunning;
+    _qPrevStoreRunning = isRunning;
+    if (wasRunning && !isRunning) {
+      _qAdvance();
+    }
+  });
+}
+
+// Context only carries callbacks so ComposerToolsMenu can call startQueue.
 interface _QueueCallbacks { startQueue: (items: string[]) => void; stopQueue: () => void; }
 const PromptQueueContext = createContext<_QueueCallbacks>({
   startQueue: () => {}, stopQueue: () => {},
@@ -816,39 +848,17 @@ const Composer: FC<{
   );
 
   // ── Prompt queue ──────────────────────────────────────────────────────────
-  // All persistent queue data lives in module-level vars (_qItems, _qIndex…)
-  // and a module-level Zustand store (_useQueueUI) so state survives the
-  // Composer remount that occurs when the first queued message creates a new
-  // thread (new-chat → established-chat transition).
-
-  // Keep a stable function ref so the setInterval callback always has the
-  // current `aui` without recreating the interval.
-  const auiRef = useRef(aui);
-  auiRef.current = aui;
-
-  // Poll isRunning every 200ms — same as original shared-composer.tsx
-  useEffect(() => {
-    const id = setInterval(() => {
-      if (!_qIsRunning) return;
-      try {
-        const isRunning = auiRef.current.thread().getState().isRunning;
-        const wasRunning = _qPrevThreadRunning;
-        _qPrevThreadRunning = isRunning;
-        if (wasRunning && !isRunning) {
-          _qAdvance(() => auiRef.current);
-        }
-      } catch { /* thread not ready yet */ }
-    }, 200);
-    return () => clearInterval(id);
-  }, [aui]); // re-bind only when aui changes (thread runtime switches)
+  // Update the module-level aui getter on every render so _qAdvance and
+  // stopQueue always call the current Composer's aui (post-remount).
+  _qGetAui = () => aui;
 
   const stopQueue = useCallback(() => {
     _qIsRunning = false;
-    _qPrevThreadRunning = false;
+    _qStopSubscription();
+    _useQueueUI.setState({ isRunning: false, current: 0, total: 0 });
     _qItems = [];
     _qIndex = 0;
-    _useQueueUI.setState({ isRunning: false, current: 0, total: 0 });
-    auiRef.current.thread().cancelRun();
+    try { _qGetAui().thread().cancelRun(); } catch { /* ignore */ }
   }, []);
 
   const startQueue = useCallback((items: string[]) => {
@@ -857,13 +867,15 @@ const Composer: FC<{
     _qItems = filtered;
     _qIndex = 0;
     _qIsRunning = true;
-    _qPrevThreadRunning = false;
     _useQueueUI.setState({ isRunning: true, current: 1, total: filtered.length });
     toast(`Prompt 1 / ${filtered.length}`, {
       description: filtered[0].length > 80 ? filtered[0].slice(0, 80) + "…" : filtered[0],
     });
+    // Start the module-level store subscription BEFORE appending so we
+    // don't miss a very fast completion.
+    _qStartSubscription();
     setTimeout(() => {
-      auiRef.current.thread().append({
+      _qGetAui().thread().append({
         role: "user",
         content: [{ type: "text", text: filtered[0] }],
         createdAt: new Date(),
