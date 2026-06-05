@@ -2199,33 +2199,38 @@ def patch_accelerate_recursively_apply():
     Patch accelerate.utils.operations.recursively_apply to avoid raising
     TypeError when encountering Unsloth's EmptyLogits class.
     """
+    original_recursively_apply = None
     try:
         import accelerate.utils.operations as acc_ops
 
-        original_recursively_apply = acc_ops.recursively_apply
+        if hasattr(acc_ops, "recursively_apply"):
+            original_recursively_apply = acc_ops.recursively_apply
+    except Exception:
+        acc_ops = None
 
+    if original_recursively_apply is None:
+        try:
+            import accelerate.utils as acc_utils
+
+            if hasattr(acc_utils, "recursively_apply"):
+                original_recursively_apply = acc_utils.recursively_apply
+        except Exception:
+            acc_utils = None
+    else:
+        try:
+            import accelerate.utils as acc_utils
+        except Exception:
+            acc_utils = None
+
+    if original_recursively_apply is not None:
         @functools.wraps(original_recursively_apply)
         def _patched_recursively_apply(func, data, *args, **kwargs):
             if type(data).__name__ == "EmptyLogits":
                 return data
             return original_recursively_apply(func, data, *args, **kwargs)
 
-        acc_ops.recursively_apply = _patched_recursively_apply
-    except Exception:
-        pass
-
-    try:
-        import accelerate.utils as acc_utils
-
-        if hasattr(acc_utils, "recursively_apply"):
-            original_recursively_apply = acc_utils.recursively_apply
-
-            @functools.wraps(original_recursively_apply)
-            def _patched_recursively_apply(func, data, *args, **kwargs):
-                if type(data).__name__ == "EmptyLogits":
-                    return data
-                return original_recursively_apply(func, data, *args, **kwargs)
-
+        if acc_ops is not None:
+            acc_ops.recursively_apply = _patched_recursively_apply
+        if acc_utils is not None and hasattr(acc_utils, "recursively_apply"):
             acc_utils.recursively_apply = _patched_recursively_apply
-    except Exception:
-        pass
+

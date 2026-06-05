@@ -638,5 +638,5 @@ def test_accelerate_recursively_apply_empty_logits_patch():
     e = EmptyLogits()
     patch_accelerate_recursively_apply()
 
-    res = acc_ops.recursively_apply(lambda x: x, e, error_on_other_type = True)
+    res = acc_ops.recursively_apply(lambda x: x, e, **{"error_on_other_type": True})
     assert res is e
