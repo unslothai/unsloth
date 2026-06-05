@@ -1,6 +1,7 @@
 """Text-only FastLanguageModel routing for vision-capable configs."""
 
 import ast
+import copy
 from pathlib import Path
 
 import pytest
@@ -28,7 +29,7 @@ def _class_method(tree, class_name, method_name):
 def _load_text_only_helper():
     source = _source(UTILS_PATH)
     tree = ast.parse(source)
-    ns = {}
+    ns = {"copy": copy}
     for node in tree.body:
         if isinstance(node, ast.FunctionDef) and node.name == "_get_text_only_config":
             exec(ast.get_source_segment(source, node), ns)
@@ -93,11 +94,8 @@ def test_fast_model_text_only_does_not_override_explicit_auto_model():
     assert "load_text_only = _force_text_only and auto_model is None" in method_source
     assert "_get_text_only_config(model_config, old_model_name)" in method_source
     assert "_force_text_only = load_text_only" in method_source
-    # Falls back to the full model for VLMs with no text-only CausalLM class.
-    assert (
-        "resolve_model_class(AutoModelForCausalLM, text_config) is None"
-        in method_source
-    )
+    # Falls back to the full model unless the family has its own text decoder.
+    assert "_is_family_text_decoder(" in method_source
     assert "load_text_only = False" in method_source
 
 
@@ -182,31 +180,38 @@ def _load_util_func(name):
     source = _source(UTILS_PATH)
     for node in ast.parse(source).body:
         if isinstance(node, ast.FunctionDef) and node.name == name:
-            ns = {}
+            ns = {"copy": copy}
             exec(ast.get_source_segment(source, node), ns)
             return ns[name]
     raise AssertionError(f"{name} not found")
 
 
 def test_text_only_guard_predicate_across_vlm_families():
-    # The guard strips vision only when the text config has a CausalLM class.
+    # Text-only is taken only when the resolved class remaps VLM weights.
     transformers = pytest.importorskip("transformers")
     from transformers import AutoModelForCausalLM
 
     resolve = _load_util_func("resolve_model_class")
+    is_family = _load_util_func("_is_family_text_decoder")
     helper = _load_text_only_helper()
 
-    # Has a text-only CausalLM -> text-only load proceeds.
-    g = helper(transformers.Gemma3Config(), "google/gemma-3-27b-it")
-    assert resolve(AutoModelForCausalLM, g) is not None
+    def takes_text_only(cfg):
+        text = helper(cfg, "x")
+        return resolve(AutoModelForCausalLM, text) is not None and is_family(
+            getattr(cfg, "model_type", ""), getattr(text, "model_type", "")
+        )
 
-    # No text-only CausalLM -> guard keeps the full model instead of crashing.
-    for name in ["Qwen2VLConfig", "Qwen2_5_VLConfig", "MllamaConfig"]:
+    # Dedicated text decoder remaps language_model.* -> strip vision.
+    assert takes_text_only(transformers.Gemma3Config()) is True
+
+    # No text class (Qwen2-VL/Mllama) or a generic reused decoder that would
+    # load random weights (Llava/PaliGemma/Idefics3/InternVL) -> keep full model.
+    for name in ["Qwen2VLConfig", "Qwen2_5_VLConfig", "MllamaConfig",
+                 "LlavaConfig", "PaliGemmaConfig", "Idefics3Config", "InternVLConfig"]:
         cfg_cls = getattr(transformers, name, None)
         if cfg_cls is None:
             continue
-        text = helper(cfg_cls(), name)
-        assert resolve(AutoModelForCausalLM, text) is None, name
+        assert takes_text_only(cfg_cls()) is False, name
 
 
 def test_text_only_helper_preserves_quantization_config():
@@ -218,3 +223,5 @@ def test_text_only_helper_preserves_quantization_config():
     config.quantization_config = transformers.BitsAndBytesConfig(load_in_4bit = True)
     text_config = helper(config, "google/gemma-3-27b-it")
     assert getattr(text_config, "quantization_config", None) is not None
+    # The parent's shared text sub-config must not be mutated by the carry-over.
+    assert getattr(config.get_text_config(), "quantization_config", None) is None

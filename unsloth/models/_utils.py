@@ -92,6 +92,7 @@ from platform import system as platform_system
 platform_system = platform_system()
 import numpy as np
 import contextlib
+import copy
 import re
 from dataclasses import dataclass, field
 import functools
@@ -492,6 +493,14 @@ def resolve_model_class(auto_model, config):
     return result[0] if isinstance(result, (list, tuple)) else result
 
 
+def _is_family_text_decoder(parent_model_type, text_model_type):
+    # True only when the text config is the VLM family's own text variant
+    # (gemma3 -> gemma3_text), whose CausalLM remaps the checkpoint correctly.
+    # A generic reused decoder (llava -> llama, paligemma -> gemma) would
+    # silently init random weights, so we keep the full model. See PR #5816.
+    return bool(parent_model_type) and str(text_model_type).startswith(parent_model_type)
+
+
 def _get_text_only_config(model_config, model_name):
     # Text sub-config of a vision-language config so FastLanguageModel skips the vision tower (PR #5816).
     text_config = None
@@ -501,9 +510,11 @@ def _get_text_only_config(model_config, model_name):
         text_config = getattr(model_config, "text_config", None)
     if text_config is None:
         raise ValueError(f"Cannot load {model_name} as text-only; use FastVisionModel")
-    # Carry over quantization_config; it lives on the parent, not the text sub-config.
+    # Carry over quantization_config (lives on the parent, not the text sub-config).
+    # Copy first since get_text_config() returns the parent's shared object.
     qc = getattr(model_config, "quantization_config", None)
     if qc is not None and getattr(text_config, "quantization_config", None) is None:
+        text_config = copy.copy(text_config)
         text_config.quantization_config = qc
     return text_config
 

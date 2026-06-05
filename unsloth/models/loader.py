@@ -99,6 +99,7 @@ from ._utils import (
     fast_inference_setup,
     _get_text_only_config,
     resolve_model_class,
+    _is_family_text_decoder,
 )
 
 # Single source of truth is unsloth_zoo.model_lists. Re-exported so callers
@@ -1467,10 +1468,16 @@ class FastModel(FastBaseModel):
         if load_text_only:
             if hasattr(model_config, "vision_config"):
                 text_config = _get_text_only_config(model_config, old_model_name)
-                # Only skip the vision tower when a text-only model class exists
-                # (e.g. Gemma 3). VLMs without one (Qwen2-VL, Mllama) keep the full
-                # model so loading still works; use FastVisionModel for images.
-                if resolve_model_class(AutoModelForCausalLM, text_config) is None:
+                # Only skip the vision tower when the family has its own text
+                # decoder that loads the checkpoint correctly (e.g. Gemma 3).
+                # Otherwise (Qwen2-VL/Mllama have no text class; Llava/PaliGemma
+                # reuse a generic one that would load random weights) keep the
+                # full model; use FastVisionModel for those.
+                text_class = resolve_model_class(AutoModelForCausalLM, text_config)
+                if text_class is None or not _is_family_text_decoder(
+                    getattr(model_config, "model_type", ""),
+                    getattr(text_config, "model_type", ""),
+                ):
                     load_text_only = False
                 else:
                     logger.warning_once(
