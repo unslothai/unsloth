@@ -2,9 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """Lexical (FTS5) + dense (vec0 cosine) retrieval fused via Reciprocal Rank
-Fusion. ``dense_score`` is carried so callers can apply a similarity floor.
-Each function takes a live ``conn`` and delegates SQL to ``store``.
-"""
+Fusion. ``dense_score`` is carried so callers can apply a similarity floor."""
 
 from __future__ import annotations
 
@@ -87,7 +85,7 @@ def retrieve_hybrid(
     mode: str = "hybrid",
 ) -> list[Hit]:
     """``mode`` picks the backend: lexical-only, dense-only, or RRF of both
-    (default). Candidate-pool sizes and the RRF constant come from config."""
+    (default). Pool sizes and the RRF constant come from config."""
     k = k if k is not None else config.TOP_K_HYBRID
     if mode == "lexical":
         return retrieve_lexical(conn, scope, query, k)

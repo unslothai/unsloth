@@ -3,11 +3,10 @@
 
 """Map a chunk to highlight rectangles on its page (computed at ingest).
 
-The chunk's leading phrase is anchored in the page word list
-(``get_text("words")``, same extraction as the chunk text), so matching survives
-ligatures and dehyphenation that glyph-exact ``search_for`` misses. Matched words
-union per line into rects normalized to 0..1. Missing PyMuPDF, a too-short
-anchor, or no unique match yields no regions (never a guess).
+The chunk's leading phrase is anchored in the page word list (``get_text("words")``),
+so matching survives ligatures and dehyphenation that glyph-exact ``search_for``
+misses. Matched words union per line into rects normalized to 0..1. Missing
+PyMuPDF, a too-short anchor, or no unique match yields no regions (never a guess).
 """
 
 from __future__ import annotations
@@ -39,8 +38,8 @@ def _norm_token(token: str) -> str:
 
 
 def _anchor_tokens(page_text: str, match: LocatorMatch) -> list[str]:
-    """Normalized anchor tokens from the chunk's leading span. Drops first and
-    last token (boundaries often slice mid-word) when long enough."""
+    """Normalized anchor tokens from the chunk's leading span. Drops first and last
+    token (boundaries often slice mid-word) when long enough."""
     segment = page_text[match.start : match.end]
     raw = segment.split()
     if len(raw) >= MIN_ANCHOR_WORDS + 2:
@@ -65,7 +64,7 @@ def _find_subsequences(haystack: list[str], needle: list[str]) -> list[int]:
 def _locate(page_words: list, needle: list[str]) -> list[int] | None:
     """Matched word indices for the best anchor, or None. Tries the full anchor
     then shorter prefixes, taking the first that matches exactly once; else the
-    first hit if still ambiguous (anchor is the chunk's own start)."""
+    first hit if still ambiguous."""
     # Skip punctuation-only words so they never break a phrase.
     tokens: list[str] = []
     idx_map: list[int] = []

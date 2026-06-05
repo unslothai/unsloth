@@ -1,27 +1,15 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Dense embedder facade. ``encode``/``token_counter``/``dim``/``warm`` dispatch
-to a process-wide backend from ``config.EMBED_BACKEND`` (``auto`` picks by
-hardware; see ``_resolve_auto``):
-
-* ``sentence-transformers`` -- lazy SentenceTransformer keyed by model; torch.
-* ``llama-server`` -- GGUF over the bundled llama.cpp; no torch (see
-  ``embed_llama_server``).
+"""Dense embedder facade dispatching to a process-wide backend from
+``config.EMBED_BACKEND`` (``auto`` picks by hardware): ``sentence-transformers``
+(torch) or ``llama-server`` (GGUF, no torch).
 
 Backends produce different vectors, so switching requires rebuilding the index. We
-avoid mid-index switches where we can, but degrade to llama.cpp rather than crash
-when sentence-transformers breaks on a machine:
-
-* At backend init the ST model is loaded as a probe; if that fails (missing torch,
-  CUDA/driver mismatch, broken wheel) and the GGUF llama-server embedder is
-  available we use it instead. This runs before any vector is produced, so it
-  cannot mix spaces -- and a machine where ST will not load could not query an ST
-  index anyway.
-* If ST loads but a later ``encode`` fails at runtime (CUDA error, OOM), the
-  process switches to the llama-server embedder for the rest of its life and logs
-  a warning: any KB already embedded with ST should be reindexed, since the two
-  vector spaces differ.
+degrade to llama.cpp rather than crash when ST breaks on a machine: an init-time
+probe falls back before any vector is produced (so spaces can't mix), and a
+runtime ``encode`` failure swaps the process to llama-server for the rest of its
+life (KBs already embedded with ST should then be reindexed).
 """
 
 from __future__ import annotations
@@ -38,33 +26,30 @@ from . import config
 
 logger = logging.getLogger(__name__)
 
-# "false" silences the fast tokenizer's fork warning; encode() flips it to
-# "true" only during a batch tokenize (rayon speedup) and restores it.
+# "false" silences the fast tokenizer's fork warning; encode() flips it to "true"
+# only during a batch tokenize (rayon speedup) and restores it.
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 _lock = threading.Lock()
-# Serializes encode/tokenize: the HF fast tokenizer isn't thread-safe (concurrent
-# ingest threads panic "Already borrowed"). Separate from _lock so a long encode
-# never blocks a reload.
+# Serializes encode/tokenize: the HF fast tokenizer isn't thread-safe. Separate
+# from _lock so a long encode never blocks a reload.
 _compute_lock = threading.Lock()
 _model = None
 _name: str | None = None
 
 
-# Studio device -> torch device string. MLX (Apple) has no torch device, so the
-# torch embedder uses CPU there.
+# Studio device -> torch device string. Apple has no torch device -> CPU.
 _TORCH_DEVICE = {DeviceType.CUDA: "cuda", DeviceType.XPU: "xpu"}
 _GPU_DEVICES = frozenset({"cuda", "xpu"})
 
 
 def _device() -> str:
-    """Embedder device from Studio's hardware detection (CUDA/XPU/CPU)."""
     return _TORCH_DEVICE.get(get_device(), "cpu")
 
 
 def _get(model_name: str | None = None):
-    """Cached SentenceTransformer, (re)loading on a name change. fp16 (``half()``)
-    on GPU for a ~1.5x speedup at negligible accuracy loss; CPU stays fp32."""
+    """Cached SentenceTransformer, (re)loading on a name change. fp16 on GPU for a
+    ~1.5x speedup at negligible accuracy loss; CPU stays fp32."""
     global _model, _name
     name = model_name or config.EMBEDDING_MODEL
     with _lock:
@@ -82,8 +67,8 @@ def _get(model_name: str | None = None):
 
 @lru_cache(maxsize = 1)
 def _inference_ctx_factory():
-    """Cached: ``torch.inference_mode`` if torch imports, else ``nullcontext``.
-    Returns the factory so each call gets a fresh single-use guard."""
+    """``torch.inference_mode`` if torch imports, else ``nullcontext``. Returns the
+    factory so each call gets a fresh single-use guard."""
     try:
         import torch
 
@@ -95,7 +80,6 @@ def _inference_ctx_factory():
 
 
 def _inference_ctx():
-    """Fresh inference (or no-op) context from the cached factory."""
     return _inference_ctx_factory()()
 
 
@@ -124,14 +108,13 @@ def _st_encode(
 
 
 def _st_dim(model_name: str | None = None) -> int:
-    """SentenceTransformers embedding dimension for the (loaded) model."""
     return _get(model_name).get_sentence_embedding_dimension()
 
 
 def _st_token_counter(model_name: str | None = None) -> Callable[[str], int]:
-    """Callable counting tokens with the model's tokenizer, under the compute
-    lock (the same fast tokenizer backs encode and isn't thread-safe), with rayon
-    enabled for the call and restored after, mirroring ``_st_encode``."""
+    """Token counter using the model's tokenizer, under the compute lock (the same
+    fast tokenizer backs encode and isn't thread-safe), with rayon enabled for the
+    call. Mirrors ``_st_encode``."""
     tok = _get(model_name).tokenizer
 
     def _count(t: str) -> int:
@@ -146,16 +129,15 @@ def _st_token_counter(model_name: str | None = None) -> Callable[[str], int]:
 
 
 class _SentenceTransformersBackend:
-    """Default backend: delegates to the module-level ST helpers above so the
-    existing ``_get`` monkeypatch in tests keeps working."""
+    """Default backend; delegates to the module-level ST helpers so the ``_get``
+    monkeypatch in tests keeps working."""
 
     def encode(self, texts, *, model_name = None, normalize = True):
         try:
             return _st_encode(texts, model_name = model_name, normalize = normalize)
         except Exception as st_err:  # noqa: BLE001 - runtime ST/CUDA encode failure
-            # ST loaded but this encode blew up on this machine. Swap the whole
-            # process to the llama-server embedder (so later encodes stay in one
-            # space) and retry the batch there rather than failing the request.
+            # ST loaded but this encode blew up; swap the whole process to the
+            # llama-server embedder (so later encodes stay in one space) and retry.
             fallback = _switch_to_llama_fallback(st_err)
             if fallback is None:
                 raise
@@ -171,8 +153,6 @@ class _SentenceTransformersBackend:
         _get(model_name)
 
 
-# ── Backend selection ─────────────────────────────────────────────
-
 _backend_lock = threading.Lock()
 _backend = None
 _backend_key: str | None = None
@@ -186,9 +166,8 @@ _AUTO_ALIASES = frozenset({"auto", ""})
 
 def _resolve_auto() -> str:
     """Pick a backend for ``auto``: sentence-transformers when a CUDA/ROCm GPU is
-    present (torch fp16 wins bulk indexing there), else the torch-free GGUF
-    llama-server -- or ST if its binary is missing. Reuses the chat backend's
-    static probes (nvidia-smi first, so the GPU check stays torch-free)."""
+    present (torch fp16 wins bulk indexing), else the torch-free GGUF llama-server
+    -- or ST if its binary is missing. GPU check is torch-free (nvidia-smi)."""
     from core.inference.llama_cpp import LlamaCppBackend
 
     if LlamaCppBackend._get_gpu_free_memory():
@@ -199,8 +178,8 @@ def _resolve_auto() -> str:
 
 
 def _try_make_llama_backend():
-    """Return a llama-server GGUF embedding backend if its binary is present on
-    this machine, else None. Construction is lazy -- no server starts until warm."""
+    """A llama-server GGUF embedding backend if its binary is present, else None.
+    Construction is lazy -- no server starts until warm."""
     from core.inference.llama_cpp import LlamaCppBackend
 
     if not LlamaCppBackend._find_llama_server_binary():
@@ -211,12 +190,10 @@ def _try_make_llama_backend():
 
 
 def _build_st_backend_or_fallback():
-    """Build the sentence-transformers backend, probing it by loading the model
-    now. ST can be missing or broken on a given machine (no torch, CUDA/driver
-    mismatch, bad wheel); if the probe raises and the GGUF llama-server embedder
-    is available, fall back to it so retrieval still works. The probe runs before
-    any vector is produced, so this never mixes vector spaces. Re-raises if no
-    embedder can start (the llama-server binary is also absent)."""
+    """Build the ST backend, probing it by loading the model now. If the probe
+    raises (no torch, CUDA mismatch, bad wheel) and the GGUF llama-server embedder
+    is available, fall back to it. The probe runs before any vector is produced, so
+    this never mixes spaces. Re-raises if no embedder can start."""
     backend = _SentenceTransformersBackend()
     try:
         backend.warm(model_name = None)
@@ -234,12 +211,10 @@ def _build_st_backend_or_fallback():
 
 
 def _switch_to_llama_fallback(err):
-    """A sentence-transformers encode failed at runtime (CUDA error, OOM, a bad
-    input) even though the model had loaded. Swap the process embedder to the
-    llama-server backend so every later encode stays in one vector space, and
-    return it (None if no llama-server binary is available). Logs loudly: vectors
-    written before the swap were ST, so any knowledge base already embedded with
-    ST should be reindexed, since the two vector spaces differ."""
+    """An ST encode failed at runtime even though the model had loaded. Swap the
+    process embedder to llama-server so every later encode stays in one space, and
+    return it (None if no binary). Vectors written before the swap were ST, so any
+    KB already embedded with ST should be reindexed."""
     global _backend, _backend_key
     with _backend_lock:
         if not isinstance(_backend, _SentenceTransformersBackend):
@@ -259,9 +234,9 @@ def _switch_to_llama_fallback(err):
 
 
 def _get_backend():
-    """Return the process-wide embedding backend for ``config.EMBED_BACKEND``,
-    building it once. Cached by the raw config value so ``auto`` detection runs
-    only on a cache miss; rebuilds when the config changes (e.g. in tests)."""
+    """The process-wide embedding backend for ``config.EMBED_BACKEND``, built once.
+    Cached by the raw config value, so ``auto`` detection runs only on a miss and a
+    config change rebuilds it."""
     global _backend, _backend_key
     raw = (config.EMBED_BACKEND or "auto").strip().lower()
     with _backend_lock:
@@ -285,14 +260,14 @@ def _get_backend():
 
 
 def _reset_backend() -> None:
-    """Drop the cached backend (test teardown / explicit re-init)."""
+    """Drop the cached backend (test teardown / re-init)."""
     global _backend, _backend_key
     with _backend_lock:
         _backend = None
         _backend_key = None
 
 
-# ── Public API (dispatches to the selected backend) ───────────────
+# Public API (dispatches to the selected backend).
 
 
 def warm(model_name: str | None = None) -> None:

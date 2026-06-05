@@ -5,10 +5,9 @@ import { parseExternalModelId } from "../external-providers";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 
 /**
- * search_knowledge_base is a local tool, so retrieval only works once a local,
- * tool-capable model is loaded. Single source of truth for the RAG pill's
- * disabled gate and the Add Files bar's visibility so the two never disagree
- * (the bar must not show while the pill is inert).
+ * search_knowledge_base is a local tool: retrieval needs a local, tool-capable model.
+ * Single source of truth for the RAG pill's disabled gate and the Add Files bar's
+ * visibility so the bar never shows while the pill is inert.
  */
 export function useRagToolAvailable(): boolean {
   const modelLoaded = useChatRuntimeStore(

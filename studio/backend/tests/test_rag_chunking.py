@@ -24,9 +24,8 @@ def test_chunk_token_bounds_and_overlap():
 
 
 def test_chunk_never_exceeds_max_with_overlap_carry():
-    """A small piece then a near-max piece must not produce a chunk over
-    max_tokens: the overlap carry is trimmed to fit (else the embedder overflows)."""
-    s1 = " ".join("a" for _ in range(10))  # 10 tokens
+    """Overlap carry is trimmed so no chunk exceeds max_tokens (else the embedder overflows)."""
+    s1 = " ".join("a" for _ in range(10))
     s2 = " ".join("b" for _ in range(95))  # near max
     chunks = chunk_pages(
         [_page(f"{s1}. {s2}")], max_tokens = 100, overlap = 24, count = WORDS
@@ -52,7 +51,7 @@ def test_chunk_tracks_source_page_index():
 
 
 def test_chunk_char_offsets_locate_text_in_page():
-    # Each chunk's char span must slice back to text containing it (modulo whitespace).
+    # Each chunk's char span must slice back to text containing it.
     page_text = "alpha bravo charlie delta echo foxtrot golf hotel " * 30
     pages = [_page(page_text, 1)]
     chunks = chunk_pages(pages, max_tokens = 16, overlap = 0, count = WORDS)

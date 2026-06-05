@@ -3,11 +3,10 @@
 
 """Unified SQLite store: relational chunks + FTS5 lexical + sqlite-vec dense.
 
-Studio-idiom module-level functions: each takes a ``conn`` the caller opens
-(``rag_db.get_connection()``) and closes. Inserts are incremental --
-``add_chunks`` appends one document's rows without rebuilding the scope, so the
-Nth upload costs O(its own chunks). Scope ("kb_<id>" / "thread_<id>") is a column
-on every table and the vec0 partition key.
+Module-level functions each take a ``conn`` the caller opens and closes. Inserts
+are incremental: ``add_chunks`` appends one document's rows without rebuilding the
+scope. Scope ("kb_<id>" / "thread_<id>") is a column on every table and the vec0
+partition key.
 """
 
 from __future__ import annotations
@@ -22,9 +21,6 @@ from datetime import datetime, timezone
 from storage import rag_db
 
 
-# --------------------------------------------------------------------------
-# Scope + serialization helpers
-# --------------------------------------------------------------------------
 def kb_scope(kb_id: str) -> str:
     return f"kb_{kb_id}"
 
@@ -34,7 +30,7 @@ def thread_scope(thread_id: str) -> str:
 
 
 def _f32(vector) -> bytes:
-    """Pack a vector into little-endian float32 bytes for vec0."""
+    """Pack a vector into float32 bytes for vec0."""
     return struct.pack(f"{len(vector)}f", *(float(x) for x in vector))
 
 
@@ -52,9 +48,6 @@ def _match_query(query: str) -> str:
     return " OR ".join(f'"{t}"' for t in toks)
 
 
-# --------------------------------------------------------------------------
-# Knowledge bases
-# --------------------------------------------------------------------------
 def create_kb(
     conn: sqlite3.Connection,
     *,
@@ -98,9 +91,6 @@ def delete_kb(conn: sqlite3.Connection, kb_id: str) -> None:
     conn.commit()
 
 
-# --------------------------------------------------------------------------
-# Documents
-# --------------------------------------------------------------------------
 def create_document(
     conn: sqlite3.Connection,
     *,
@@ -169,9 +159,6 @@ def document_by_hash(conn: sqlite3.Connection, scope: str, sha256: str) -> str |
     return row["id"] if row else None
 
 
-# --------------------------------------------------------------------------
-# Chunks (incremental writes)
-# --------------------------------------------------------------------------
 def add_chunks(
     conn: sqlite3.Connection,
     scope: str,
@@ -182,7 +169,7 @@ def add_chunks(
 ) -> None:
     """Incrementally index one document's chunks into chunks + FTS5 + vec0.
     ``vectors`` parallels ``chunks``; optional ``regions`` (also parallel) holds
-    per-chunk PDF highlight rects, stored as JSON for citation preview."""
+    per-chunk PDF highlight rects, stored as JSON."""
     if len(vectors):
         rag_db.ensure_vec(conn, len(vectors[0]))
     for i, (chunk, vector) in enumerate(zip(chunks, vectors)):
@@ -236,9 +223,6 @@ def delete_document(conn: sqlite3.Connection, document_id: str) -> None:
     conn.commit()
 
 
-# --------------------------------------------------------------------------
-# Retrieval primitives
-# --------------------------------------------------------------------------
 def search_lexical(conn: sqlite3.Connection, scope: str, query: str, k: int):
     """BM25 lexical search. Returns [(chunk_id, score)], higher = better."""
     mq = _match_query(query)

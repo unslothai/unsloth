@@ -142,7 +142,7 @@ export function getJob(jobId: string): Promise<IndexJob> {
   return ragRequest(`/jobs/${encodeURIComponent(jobId)}`);
 }
 
-/** Stream indexing progress over SSE; returns on `[DONE]`. Transport errors propagate so callers can fall back to polling getJob. */
+/** Stream indexing progress over SSE; returns on `[DONE]`. Transport errors propagate so callers can poll getJob instead. */
 export async function* streamJobEvents(
   jobId: string,
   signal?: AbortSignal,
@@ -190,7 +190,7 @@ export async function* streamJobEvents(
   }
 }
 
-// ── Preview (citation -> source location) ────────────────────
+// ── Preview ──────────────────────────────────────────────────
 
 /** Resolve a citation to its source: page + highlight rects (PDF) or chunk text. */
 export function getPreviewTarget(

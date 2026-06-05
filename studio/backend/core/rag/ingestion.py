@@ -2,13 +2,9 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """In-process threaded ingestion: parse -> chunk -> embed -> store.
-
 ``start_ingestion`` returns ``(document_id, job_id)`` immediately and runs on a
-daemon thread, pushing progress onto a per-job queue (``job_events`` streams it
-as SSE; ``get_job_status`` reads the persisted row). Documents are deduped by
-content hash per scope; ``store.add_chunks`` is incremental, the embedder a
-shared warm singleton.
-"""
+daemon thread, pushing progress onto a per-job queue (streamed as SSE by
+``job_events``). Documents are deduped by content hash per scope."""
 
 from __future__ import annotations
 
@@ -28,8 +24,7 @@ logger = logging.getLogger(__name__)
 _jobs: dict[str, "queue.Queue"] = {}
 _jobs_lock = threading.Lock()
 
-# Embedding batch size; bounds peak memory.
-_EMBED_BATCH = 64
+_EMBED_BATCH = 64  # bounds peak memory
 
 
 def _sha256_file(path: str) -> str:
@@ -74,7 +69,7 @@ def _progress(conn, job_id: str, stage: str, progress: float) -> None:
 
 
 def _embed_all(texts: list[str], model_name: str | None):
-    """Embed texts in batches into a flat list of vectors."""
+    """Embed texts in batches into a flat vector list."""
     vectors: list = []
     for i in range(0, len(texts), _EMBED_BATCH):
         batch = texts[i : i + _EMBED_BATCH]
@@ -95,7 +90,7 @@ def _run(
         _progress(conn, job_id, "parsing", 0.1)
         pages = parsers.parse(stored_path)
         if config.CAPTION_IMAGES and stored_path.lower().endswith(".pdf"):
-            # Caption figures, splice into page text (no-op without vision model).
+            # Caption figures, splice into page text (no-op without a vision model).
             try:
                 figures = parsers.render_pdf_figures(
                     stored_path, max_figures = config.CAPTION_MAX_IMAGES

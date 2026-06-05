@@ -13,9 +13,8 @@ import { DocumentStatusChip } from "./document-status-chip";
 import { useRagDocuments } from "./use-rag-documents";
 
 /**
- * Read-only chip shown above the composer when retrieval comes from a knowledge
- * base instead of this thread's uploads. Without it a KB source is invisible,
- * leaving no signal which documents the chat queries (manage via RAG settings).
+ * Read-only chip shown above the composer when retrieval comes from a knowledge base
+ * instead of this thread's uploads, so a KB source isn't invisible.
  */
 function KnowledgeBaseSourceChip({ kbId }: { kbId: string }) {
   const [name, setName] = useState<string | null>(null);
@@ -45,10 +44,7 @@ function KnowledgeBaseSourceChip({ kbId }: { kbId: string }) {
   );
 }
 
-/**
- * Per-thread document strip above the composer. Uploads attach to the thread;
- * chips track indexing status live via SSE.
- */
+/** Per-thread document strip above the composer; chips track indexing status live via SSE. */
 export function ThreadDocumentsBar({ threadId }: { threadId: string | null }) {
   const ragEnabled = useChatRuntimeStore((s) => s.ragEnabled);
   const ragAvailable = useRagToolAvailable();
@@ -56,14 +52,11 @@ export function ThreadDocumentsBar({ threadId }: { threadId: string | null }) {
   const aui = useAui();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // A fresh chat has no thread id until the first message. Materialize one on
-  // demand so docs can attach before sending; the first message reuses it (see
-  // append() in runtime-provider), keeping docs with the conversation. We track
-  // the id locally only and deliberately do NOT push it to the global
-  // activeThreadId here: in a project, that flips ProjectLanding into its
-  // pendingNewThreadId branch and swaps the composer out for a fresh <Thread>,
-  // remounting this bar mid-upload and dropping the just-attached chips.
-  // append() sets activeThreadId when the first message is actually sent.
+  // A fresh chat has no thread id until the first message. Materialize one on demand
+  // so docs can attach before sending; append() in runtime-provider reuses it. Track
+  // the id locally only: pushing it to global activeThreadId would, in a project, flip
+  // ProjectLanding into its pendingNewThreadId branch and swap the composer for a fresh
+  // <Thread>, remounting this bar mid-upload and dropping the just-attached chips.
   const [materializedId, setMaterializedId] = useState<string | null>(null);
   const effectiveThreadId = threadId ?? materializedId;
   useEffect(() => {
@@ -84,8 +77,8 @@ export function ThreadDocumentsBar({ threadId }: { threadId: string | null }) {
     lister,
   );
 
-  // Resolve the thread id, materializing on first use. Ref-deduped so a
-  // double-click can't start two threads.
+  // Resolve the thread id, materializing on first use. Ref-deduped so a double-click
+  // can't start two threads.
   const initPromiseRef = useRef<Promise<string | null> | null>(null);
   const ensureThreadId = useCallback((): Promise<string | null> => {
     if (effectiveThreadId) return Promise.resolve(effectiveThreadId);
@@ -108,23 +101,18 @@ export function ThreadDocumentsBar({ threadId }: { threadId: string | null }) {
     return pending;
   }, [aui, effectiveThreadId]);
 
-  // Just open the picker (synchronously, so the click's user activation
-  // survives). Deliberately do NOT materialize the thread here: that fires
-  // setActiveThreadId while the native dialog sits open for seconds, which can
-  // switch/remount the composer and orphan this <input> so the eventual file
-  // selection lands on a detached node and silently uploads nothing. We
-  // materialize in onChange instead, once files are actually in hand.
+  // Just open the picker synchronously so the click's user activation survives. Do
+  // NOT materialize the thread here: that fires setActiveThreadId while the native
+  // dialog sits open, which can remount the composer and orphan this <input> so the
+  // file selection lands on a detached node. Materialize in onChange instead.
   const handleAddDocs = useCallback(() => {
     fileInputRef.current?.click();
   }, []);
 
-  // Show only when the RAG pill is effectively on: enabled AND a local
-  // tool-capable model is loaded (matches the pill's disabled gate). Without
-  // ragAvailable the bar appeared on a fresh chat with no model, while the pill
-  // sat inert.
+  // Show only when the RAG pill is effectively on: enabled AND a local tool-capable
+  // model is loaded (matches the pill's disabled gate).
   if (!ragEnabled || !ragAvailable) return null;
-  // A KB source uploads via the KB dialog, not here; show which KB is active so
-  // the composer never silently swaps to a KB with no indication.
+  // A KB source uploads via the KB dialog, not here; show which KB is active.
   if (ragSource.type === "kb") {
     return <KnowledgeBaseSourceChip kbId={ragSource.kbId} />;
   }
@@ -152,10 +140,9 @@ export function ThreadDocumentsBar({ threadId }: { threadId: string | null }) {
           const files = Array.from(e.target.files ?? []);
           e.target.value = "";
           if (files.length === 0) return;
-          // Pass the thread id as a promise so upload() flips its in-flight
-          // guard synchronously, before materialization's setActiveThreadId
-          // re-renders us. On the first click the hook's `scope` is still null,
-          // so the resolved id (not the stale scope) is what we upload to.
+          // Pass the thread id as a promise so upload() flips its in-flight guard
+          // synchronously, before materialization re-renders us. On the first click
+          // the hook's `scope` is still null, so we upload to the resolved id.
           void upload(
             files,
             ensureThreadId().then((id) =>
@@ -164,7 +151,7 @@ export function ThreadDocumentsBar({ threadId }: { threadId: string | null }) {
           );
         }}
       />
-      {/* Cap the chip area so a large set scrolls instead of overflowing. */}
+      {/* Cap the chip area so a large set scrolls. */}
       <div className="flex max-h-24 flex-1 flex-row flex-wrap items-center gap-1.5 overflow-y-auto">
         {documents.map((doc) => (
           <DocumentStatusChip

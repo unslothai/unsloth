@@ -4,18 +4,14 @@
 """GGUF embedder over the bundled llama.cpp, served via HTTP (no torch).
 
 Opt-in (``RAG_EMBED_BACKEND=llama-server``). Runs a dedicated
-``llama-server --embedding`` subprocess on its own port and calls its
-OpenAI-style ``/v1/embeddings`` + ``/tokenize``. Fully isolated from the chat
-backend: separate process, no new Studio route, command built here directly.
+``llama-server --embedding`` subprocess on its own port and calls its OpenAI-style
+``/v1/embeddings`` + ``/tokenize``, fully isolated from the chat backend.
 
-Device is ``auto`` (GPU when present -- NVIDIA/ROCm or Apple Metal -- else CPU,
-falling back to CPU if a GPU start fails); ``RAG_EMBED_DEVICE=cpu``/``gpu``
-forces it. GPU detection reuses llama_cpp's static probes, so it needs no torch.
-
-We call only llama_cpp's *static* helpers; the instance-coupled bits (download,
-health, kill) are small local copies, since constructing a ``LlamaCppBackend``
-runs its ``__init__`` reaper and binds chat state. That reaper kills any Studio
-llama-server, so each request re-spawns ours if it died (self-heal).
+Device is ``auto`` (GPU when present, else CPU, falling back to CPU if a GPU start
+fails); ``RAG_EMBED_DEVICE`` forces it. We call only llama_cpp's *static* helpers
+(no torch), copying the instance-coupled bits locally, since constructing a
+``LlamaCppBackend`` runs an ``__init__`` reaper that kills any Studio llama-server
+-- so each request re-spawns ours if it died (self-heal).
 """
 
 from __future__ import annotations
@@ -52,8 +48,7 @@ class LlamaServerBackend:
     """Manages a llama.cpp embedding subprocess and talks to it over HTTP."""
 
     def __init__(self) -> None:
-        # Lifecycle (spawn/restart/kill) is serialized; HTTP requests are not
-        # (httpx.Client is thread-safe and llama-server batches concurrently).
+        # Lifecycle (spawn/restart/kill) is serialized; HTTP requests are not.
         self._lifecycle_lock = threading.Lock()
         self._process: subprocess.Popen | None = None
         self._port: int | None = None
@@ -65,22 +60,18 @@ class LlamaServerBackend:
         self._binary: str | None = None
         # Sticky after an auto GPU start fails: later spawns stay on CPU.
         self._force_cpu = False
-        # Pooled client; requests pass full URLs, so a respawn's new port needs
-        # no rebuild.
+        # Pooled client; requests pass full URLs, so a respawn's new port needs no
+        # rebuild.
         self._client = httpx.Client(timeout = config.EMBED_REQUEST_TIMEOUT_S)
         atexit.register(self._shutdown)
-
-    # ── HTTP base ────────────────────────────────────────────────
 
     @property
     def _base_url(self) -> str:
         return f"http://{config.EMBED_HOST}:{self._port}"
 
-    # ── Binary / model resolution ────────────────────────────────
-
     def _resolve_binary(self) -> str:
-        """Find llama-server (via the chat backend's discovery), verify it
-        supports embeddings, cache it. Raises if missing/unsupported."""
+        """Find llama-server, verify embeddings support, cache it. Raises if
+        missing/unsupported."""
         if self._binary is not None:
             return self._binary
         from core.inference.llama_cpp import LlamaCppBackend
@@ -99,8 +90,8 @@ class LlamaServerBackend:
     @staticmethod
     @lru_cache(maxsize = 8)
     def _help_text(binary: str) -> str:
-        """`llama-server --help`, cached. Capture both streams, ignore exit code
-        (some builds exit non-zero on --help)."""
+        """`llama-server --help`, cached. Ignore exit code (some builds exit
+        non-zero on --help)."""
         try:
             proc = subprocess.run(
                 [binary, "--help"],
@@ -124,8 +115,8 @@ class LlamaServerBackend:
             )
 
     def _resolve_model_path(self) -> str:
-        """Download (or cache-hit) the GGUF embedder, returning its local path.
-        Picks the variant-matching, non-mmproj .gguf in the repo."""
+        """Download (or cache-hit) the variant-matching, non-mmproj GGUF embedder,
+        returning its local path."""
         if self._model_path is not None:
             return self._model_path
         from huggingface_hub import hf_hub_download, list_repo_files
@@ -145,8 +136,6 @@ class LlamaServerBackend:
         self._model_path = hf_hub_download(repo_id = repo, filename = filename, token = token)
         return self._model_path
 
-    # ── Device selection ─────────────────────────────────────────
-
     # Min free VRAM (MiB) for the embedder; below this, auto stays on CPU.
     _MIN_GPU_FREE_MIB = 1024
 
@@ -163,8 +152,8 @@ class LlamaServerBackend:
     @staticmethod
     def _gpu_available() -> bool:
         """Apple Metal, or an NVIDIA/ROCm GPU with enough free VRAM. Reuses
-        llama_cpp's static ``_get_gpu_free_memory`` (nvidia-smi first, so the
-        common path needs no torch)."""
+        llama_cpp's static probe (nvidia-smi first, so the common path needs no
+        torch)."""
         from utils.hardware import is_apple_silicon
 
         if is_apple_silicon():
@@ -174,14 +163,11 @@ class LlamaServerBackend:
         gpus = LlamaCppBackend._get_gpu_free_memory()  # [(idx, free_mib)], honors CVD
         return any(free >= LlamaServerBackend._MIN_GPU_FREE_MIB for _, free in gpus)
 
-    # ── Subprocess command / env ─────────────────────────────────
-
     def _build_cmd(
         self, binary: str, model_path: str, port: int, *, use_gpu: bool
     ) -> list[str]:
-        # No --embd-normalize (not in every build; we normalize in Python to
-        # match the ST path). --fit off: don't auto-resize ctx/offload to fill
-        # device memory.
+        # No --embd-normalize (not in every build; we normalize in Python to match
+        # the ST path). --fit off: don't auto-resize ctx/offload to device memory.
         cmd = [
             binary,
             "-m",
@@ -204,7 +190,6 @@ class LlamaServerBackend:
         env = child_env_without_native_path_secret()
         env["LLAMA_SET_ROWS"] = "1"  # ggml set_rows fast path
         if use_gpu:
-            # Inherit Studio's CUDA_VISIBLE_DEVICES; put CUDA libs on the path.
             self._add_linux_cuda_libs(env, str(Path(binary).parent))
         else:
             # Blank devices so a CUDA build stays on CPU and reserves no VRAM.
@@ -219,7 +204,7 @@ class LlamaServerBackend:
         import sys
 
         if sys.platform == "win32":
-            return  # Windows resolves CUDA via PATH already in the inherited env.
+            return  # Windows resolves CUDA via PATH in the inherited env.
         arch = platform.machine()
         lib_dirs = [binary_dir]
         for pattern in (
@@ -242,8 +227,6 @@ class LlamaServerBackend:
         joined = ":".join(lib_dirs)
         env["LD_LIBRARY_PATH"] = f"{joined}:{existing}" if existing else joined
 
-    # ── Subprocess lifecycle ─────────────────────────────────────
-
     def _drain_stdout(self, proc: subprocess.Popen) -> None:
         """Drain the child's stdout so its pipe buffer never deadlocks; keep the
         tail for crash diagnostics."""
@@ -259,8 +242,8 @@ class LlamaServerBackend:
             pass
 
     def _spawn(self) -> None:
-        """Start the embed server (caller holds the lifecycle lock). On ``auto``, a
-        failed GPU start falls back to CPU once; explicit ``gpu``/``cpu`` do not."""
+        """Start the embed server (caller holds the lock). On ``auto``, a failed
+        GPU start falls back to CPU once; explicit ``gpu``/``cpu`` do not."""
         use_gpu = self._use_gpu()
         try:
             self._spawn_once(use_gpu)
@@ -317,7 +300,7 @@ class LlamaServerBackend:
         return LlamaCppBackend._find_free_port()
 
     def _wait_for_health(self, timeout: float, interval: float = 0.5) -> bool:
-        """Poll /health until 200, bailing early if the process exits."""
+        """Poll /health until 200; bail early if the process exits."""
         deadline = time.monotonic() + timeout
         url = f"{self._base_url}/health"
         while time.monotonic() < deadline:
@@ -384,12 +367,9 @@ class LlamaServerBackend:
             except Exception:  # noqa: BLE001
                 pass
 
-    # ── HTTP requests (self-healing on a dropped connection) ─────
-
     def _post(self, path: str, payload: dict) -> dict:
-        """POST to the server, restarting once and retrying on a dropped
-        connection (the reaper may have killed us between the liveness check and
-        the request) or a timeout (the bundled embedding build occasionally
+        """POST to the server, restarting once and retrying on a dropped connection
+        (the reaper may have killed us) or a timeout (the bundled build sometimes
         wedges a request); a fresh server unsticks both."""
         last_exc: Exception | None = None
         for attempt in range(2):
@@ -412,11 +392,9 @@ class LlamaServerBackend:
             f"llama-server embedder POST {path} failed after retry"
         ) from last_exc
 
-    # ── EmbeddingBackend API ─────────────────────────────────────
-
     def encode(self, texts, *, model_name = None, normalize = True):
-        """Embed texts -> (N, dim) float32. ``model_name`` is ignored (the GGUF
-        is fixed by config). Normalizes in Python to match the ST backend."""
+        """Embed texts -> (N, dim) float32. ``model_name`` is ignored (the GGUF is
+        fixed by config). Normalizes in Python to match the ST backend."""
         n = len(texts)
         if n == 0:
             return np.zeros((0, self.dim()), dtype = np.float32)
@@ -461,8 +439,8 @@ class LlamaServerBackend:
         self.dim()
 
     def token_counter(self, *, model_name = None):
-        """Counts tokens with the GGUF's own tokenizer via /tokenize, so chunk
-        sizing matches the embedder. Cached per text."""
+        """Count tokens via the GGUF's /tokenize so chunk sizing matches the
+        embedder. Cached per text."""
 
         @lru_cache(maxsize = 4096)
         def _count(text: str) -> int:

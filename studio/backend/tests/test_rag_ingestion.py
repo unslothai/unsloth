@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Ingestion lifecycle: pending -> completed, SSE events, dedupe, delete.
-
-``stub_embeddings`` avoids a download; one optional test uses the real embedder,
-guarded by RAG_REAL_EMBEDDER=1.
-"""
+"""Ingestion lifecycle tests: pending -> completed, SSE events, dedupe, delete."""
 
 import os
 import time
@@ -23,7 +19,6 @@ def _write(tmp_path, name, text):
 
 
 def _drain(job_id):
-    """Collect a job's SSE events until the stream ends."""
     return list(ingestion.job_events(job_id))
 
 
@@ -42,7 +37,6 @@ def test_ingestion_lifecycle_pending_to_completed(rag_home, stub_embeddings, tmp
     scope = store.kb_scope("K1")
     doc_id, job_id = ingestion.start_ingestion(scope, "K1", None, "doc.txt", path)
 
-    # Document starts pending.
     conn = rag_db.get_connection()
     try:
         assert store.get_document(conn, doc_id)["status"] == "pending"
@@ -63,8 +57,7 @@ def test_ingestion_lifecycle_pending_to_completed(rag_home, stub_embeddings, tmp
         doc = store.get_document(conn, doc_id)
         assert doc["status"] == "completed"
         assert doc["num_chunks"] > 0
-        # Chunks searchable after ingestion.
-        assert store.search_lexical(conn, scope, "alpha", 10)
+        assert store.search_lexical(conn, scope, "alpha", 10)  # searchable
     finally:
         conn.close()
 
@@ -76,7 +69,7 @@ def test_ingestion_dedupe_by_hash(rag_home, stub_embeddings, tmp_path):
     _drain(job_id)
     _wait_completed(job_id)
 
-    # Re-uploading identical content returns the same doc id; no re-ingest.
+    # Identical content -> same doc id, no re-ingest.
     path2 = _write(tmp_path, "copy.txt", "alpha bravo charlie")
     doc_id2, job_id2 = ingestion.start_ingestion(scope, "K1", None, "copy.txt", path2)
     events = _drain(job_id2)

@@ -4,9 +4,8 @@
 """Document parsing -> list[Page], one dispatch with lazy optional deps.
 
 PDFs keep per-page boundaries (``page_number``); txt/md/docx/html return a single
-page. ``parse(path, want_images=True)`` also returns embedded images. Heavy
-imports (PyMuPDF, python-docx) are lazy, so importing this module never fails on
-a missing dep.
+page. ``parse(path, want_images=True)`` also returns embedded images. Heavy imports
+are lazy, so importing this module never fails on a missing dep.
 """
 
 from __future__ import annotations
@@ -30,7 +29,7 @@ class Page:
 
 @dataclass(frozen = True)
 class ParsedImage:
-    """A raster image embedded in a document (PDF only, for now)."""
+    """A raster image embedded in a document (PDF only)."""
 
     image_bytes: bytes
     page_number: int | None
@@ -41,9 +40,6 @@ def _page(text: str, page_number: int | None) -> Page:
     return Page(text = text, page_number = page_number, char_count = len(text))
 
 
-# --------------------------------------------------------------------------
-# HTML
-# --------------------------------------------------------------------------
 class _Stripper(HTMLParser):
     """Collect visible text, skipping <script>/<style>."""
 
@@ -71,9 +67,6 @@ def _html(raw: str) -> list[Page]:
     return [_page("\n".join(parser.out), 1)]
 
 
-# --------------------------------------------------------------------------
-# PDF (PyMuPDF / fitz)
-# --------------------------------------------------------------------------
 def _pdf(path: str, want_images: bool) -> tuple[list[Page], list[ParsedImage]]:
     import fitz  # PyMuPDF
 
@@ -106,9 +99,6 @@ def _pdf(path: str, want_images: bool) -> tuple[list[Page], list[ParsedImage]]:
     return pages, images
 
 
-# --------------------------------------------------------------------------
-# PDF figure rendering (for captioning)
-# --------------------------------------------------------------------------
 def _merge_rects(boxes: list) -> list:
     """Union overlapping rectangles (largest-first) into figure regions."""
     import pymupdf
@@ -139,9 +129,8 @@ def render_pdf_figures(
     """Detect figure regions and render each to a PNG for captioning.
 
     Academic figures are vector, so raster extraction yields fragments; instead
-    cluster vector drawings + raster placements into boxes, keep those covering a
-    meaningful slice of the page, and render them. Any failure yields [], never an
-    exception.
+    cluster vector drawings + raster placements into boxes, keep the page-spanning
+    ones, and render them. Any failure yields [], never an exception.
     """
     try:
         import pymupdf
@@ -191,9 +180,6 @@ def render_pdf_figures(
         doc.close()
 
 
-# --------------------------------------------------------------------------
-# DOCX (python-docx)
-# --------------------------------------------------------------------------
 def _docx(path: str) -> list[Page]:
     import docx
 
@@ -202,16 +188,10 @@ def _docx(path: str) -> list[Page]:
     return [_page(text, None)]
 
 
-# --------------------------------------------------------------------------
-# Dispatch
-# --------------------------------------------------------------------------
 def parse(path: str, *, want_images: bool = False):
-    """Parse a file into pages by extension.
-
-    Returns ``list[Page]``, or ``(list[Page], list[ParsedImage])`` when
-    ``want_images=True``; only PDFs yield images (others give []). Raises
-    ValueError on unsupported ext.
-    """
+    """Parse a file into pages by extension. Returns ``list[Page]``, or
+    ``(list[Page], list[ParsedImage])`` when ``want_images=True`` (only PDFs yield
+    images). Raises ValueError on unsupported ext."""
     ext = os.path.splitext(path)[1].lower()
 
     if ext == ".pdf":

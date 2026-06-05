@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Retrieval + tool tests: RRF fusion, min-score floor, scope precedence,
-chunk formatting, citation source-map. Deterministic bag-of-words embedder, no
-download."""
+"""Retrieval + tool tests: RRF fusion, min-score floor, scope, source-map."""
 
 import math
 
@@ -148,9 +146,7 @@ def test_tool_formats_chunks_and_sources(rag_conn, bow_embeddings, monkeypatch):
 
 
 def test_tool_kb_scope_retrieves_from_db(rag_conn, bow_embeddings):
-    """End-to-end (no retrieve stub): a doc ingested under a KB scope is found
-    when invoked with that ``scope_kb_id``. Guards against the reusable-KB path
-    returning empty while per-thread docs work (#8)."""
+    # End-to-end (no retrieve stub): a KB-scoped doc is found via its scope_kb_id (#8).
     _add_doc(rag_conn, "kb_K", "d1", "kb.pdf", "h1", "alpha bravo charlie", page = 1)
     text, sources = tool.search_knowledge_base_with_sources(
         query = "alpha bravo", scope_kb_id = "K"
@@ -166,7 +162,7 @@ def test_tool_kb_scope_retrieves_from_db(rag_conn, bow_embeddings):
 
 
 def test_dispatcher_appends_sources_sentinel(rag_conn, bow_embeddings, monkeypatch):
-    """JSON source-map appended after the sentinel; the text before it stays clean."""
+    # JSON source-map appended after the sentinel; text before it stays clean.
     import json
 
     from core.inference import tools
@@ -189,10 +185,8 @@ def test_dispatcher_appends_sources_sentinel(rag_conn, bow_embeddings, monkeypat
 
 
 def test_dispatcher_no_sentinel_when_no_hits(rag_home, monkeypatch):
-    """No sentinel when the search returns no sources."""
     from core.inference import tools
 
-    # Stub retrieval so we never reach the real embedder.
     monkeypatch.setattr(retrieval, "retrieve_hybrid", lambda conn, scope, q, **k: [])
     out = tools._search_knowledge_base({"query": "hello"}, {"kb_id": "missing"})
     assert tools.RAG_SOURCES_SENTINEL not in out
@@ -236,8 +230,7 @@ def test_search_for_autoinject_gates_on_dense_score(
 def test_search_for_autoinject_bm25_gates_on_dense_probe(
     rag_conn, bow_embeddings, monkeypatch
 ):
-    """In lexical/BM25 mode hits carry no cosine, so the gate uses a dense 1-NN
-    probe: a confident probe injects the lexical hits, a weak one skips (#5)."""
+    # BM25 hits carry no cosine, so the gate uses a dense 1-NN probe (#5).
     _add_doc(rag_conn, "kb_a", "d1", "paper.pdf", "h1", "body text here", page = 3)
     monkeypatch.setattr(
         retrieval,
@@ -278,7 +271,7 @@ def test_search_for_autoinject_empty_query_or_scope(rag_home):
 
 
 def test_build_rag_autoinject_emits_pipeline(monkeypatch):
-    """Auto-inject yields the same tool card + source-map a real call would; the tool message has the sentinel stripped."""
+    # Auto-inject yields the same tool card + source-map; tool message has the sentinel stripped.
     from core.inference import tools
     from storage import rag_db
 
@@ -299,7 +292,7 @@ def test_build_rag_autoinject_emits_pipeline(monkeypatch):
     te = next(e for e in out["events"] if e["type"] == "tool_end")
     assert te["tool_name"] == "search_knowledge_base"
     assert tools.RAG_SOURCES_SENTINEL in te["result"]
-    # assistant tool_call, then a clean tool message (sentinel stripped)
+    # tool message is clean (sentinel stripped)
     assert (
         out["messages"][0]["tool_calls"][0]["function"]["name"]
         == "search_knowledge_base"
@@ -322,7 +315,7 @@ def test_build_rag_autoinject_skips_without_hit(monkeypatch):
 
 
 def test_build_rag_autoinject_enabled_by_default(monkeypatch):
-    """No env, no scope toggle -> forced inject on, at the default 0.70 floor."""
+    # No env, no scope toggle -> forced inject on at the default 0.70 floor.
     from core.inference import tools
     from storage import rag_db
 
@@ -344,7 +337,7 @@ def test_build_rag_autoinject_enabled_by_default(monkeypatch):
 
 
 def test_build_rag_autoinject_caps_top_k(monkeypatch):
-    """Forced inject uses the lean RAG_AUTOINJECT_TOP_K, capped by a lower user top_k."""
+    # Forced inject uses RAG_AUTOINJECT_TOP_K, capped by a lower user top_k.
     from core.inference import tools
     from storage import rag_db
 
@@ -384,8 +377,7 @@ def test_build_rag_autoinject_disabled_by_env(monkeypatch):
 # Per-request query-time overrides (rag_scope -> retrieval)
 # --------------------------------------------------------------------------
 def test_retrieve_hybrid_mode_selects_backend(monkeypatch):
-    """``mode`` runs only the chosen backend; hybrid uses config candidate counts
-    + rrf_k. Sub-functions stubbed, no db/embedder needed."""
+    # ``mode`` runs only the chosen backend; hybrid uses config counts + rrf_k.
     calls: list = []
     monkeypatch.setattr(
         retrieval,
@@ -421,7 +413,7 @@ def test_retrieve_hybrid_mode_selects_backend(monkeypatch):
 
 
 def test_scope_overrides_reach_retrieval(monkeypatch):
-    """rag_scope mode + default_top_k flow through _search_knowledge_base."""
+    # rag_scope mode + default_top_k flow through _search_knowledge_base.
     from core.inference import tools
     from storage import rag_db
 
@@ -439,15 +431,14 @@ def test_scope_overrides_reach_retrieval(monkeypatch):
     )
     assert seen["mode"] == "dense"
     assert seen["top_k"] == 11
-    # Unknown mode falls back to hybrid, not propagated garbage.
+    # Unknown mode falls back to hybrid.
     seen.clear()
     tools._search_knowledge_base({"query": "q"}, {"kb_id": "a", "mode": "bogus"})
     assert seen["mode"] == "hybrid"
 
 
 def test_build_rag_autoinject_scope_overrides_env(monkeypatch):
-    """rag_scope wins over env: explicit enabled/floor + mode flow,
-    ``autoinject=False`` disables even with env on."""
+    # rag_scope wins over env; autoinject=False disables even with env on.
     from core.inference import tools
     from storage import rag_db
 

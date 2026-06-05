@@ -4,8 +4,8 @@
 """``search_knowledge_base`` LLM tool: scope resolution + hit formatting.
 
 KB scope wins over thread scope. Hits render as ``<chunk>`` blocks for the model,
-plus a parallel citation source-map for clickable sources in the chat layer.
-Each call opens and closes its own ``rag_db`` connection.
+plus a parallel citation source-map for clickable sources. Each call opens and
+closes its own ``rag_db`` connection.
 """
 
 from __future__ import annotations
@@ -90,7 +90,7 @@ def search_knowledge_base_with_sources(
     mode: str = "hybrid",
 ) -> tuple[str, list[dict]]:
     """Search -> ``(rendered_text, citation_sources)``; each source aligns with a
-    rendered ``<chunk>`` block's ``id``. Candidate pools come from config."""
+    rendered ``<chunk>`` block's ``id``."""
     if not query or not query.strip():
         return "Error: query is empty.", []
     scope = _resolve_scope(scope_kb_id, scope_thread_id)
@@ -133,11 +133,10 @@ def search_for_autoinject(
 ) -> tuple[str, list[dict]] | None:
     """Forced-retrieval variant for auto-injection.
 
-    Returns ``(rendered_text, sources)`` only if the query confidently matches the
-    docs (some hit's cosine clears ``min_dense_score``), else ``None`` (inject
-    nothing). The dense gate keeps weak/off-topic matches out of answers (e.g.
-    agriculture docs vs "capital of France"). In ``lexical`` (BM25) mode hits carry
-    no cosine, so the gate falls back to a dense 1-NN probe.
+    Returns ``(rendered_text, sources)`` only if some hit's cosine clears
+    ``min_dense_score``, else ``None`` (inject nothing). The dense gate keeps
+    weak/off-topic matches out of answers. In ``lexical`` mode hits carry no
+    cosine, so the gate falls back to a dense 1-NN probe.
     """
     if not query or not query.strip():
         return None

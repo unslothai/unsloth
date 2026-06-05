@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""llama-server GGUF embedder backend, every boundary (binary, download,
-subprocess, HTTP) mocked. Covers backend selection, import isolation (no torch),
-spawn command, readiness fail-loud, encode/tokenize parsing, self-heal."""
+"""llama-server GGUF embedder tests, every boundary mocked."""
 
 import subprocess
 import sys
@@ -26,7 +24,7 @@ def _reset_backend_singleton():
 
 
 class _FakeProc:
-    """Minimal subprocess.Popen stand-in: drainable empty stdout, controllable liveness."""
+    """subprocess.Popen stand-in with controllable liveness."""
 
     def __init__(self, alive = True, returncode = 0):
         self._alive = alive
@@ -95,8 +93,7 @@ def test_explicit_backend_overrides_auto(monkeypatch):
 
 
 def test_llama_backend_imports_no_torch():
-    """Selecting the llama backend must not import torch / sentence_transformers.
-    Runs in a clean subprocess so the parent's imports don't mask a regression."""
+    # Clean subprocess so the parent's imports don't mask a regression.
     backend_dir = Path(__file__).resolve().parents[1]
     code = textwrap.dedent(
         """
@@ -254,7 +251,7 @@ def test_spawn_uses_free_port_when_auto(monkeypatch):
 def test_spawn_fails_loud_on_early_exit(monkeypatch):
     monkeypatch.setattr(config, "EMBED_PORT", 8124)
     b = LlamaServerBackend()
-    # Dead process -> _wait_for_health returns False on the first poll.
+    # Dead process -> health check fails on the first poll.
     _patch_spawn_deps(monkeypatch, _FakeProc(alive = False, returncode = 1))
     with pytest.raises(RuntimeError, match = "failed to become healthy"):
         b._spawn()
@@ -271,7 +268,7 @@ def test_spawn_auto_falls_back_to_cpu_on_gpu_failure(monkeypatch):
     def fake_spawn_once(use_gpu):
         calls.append(use_gpu)
         if use_gpu:
-            raise RuntimeError("CUDA out of memory")  # GPU start fails
+            raise RuntimeError("CUDA out of memory")
 
     monkeypatch.setattr(b, "_spawn_once", fake_spawn_once)
     b._spawn()
@@ -296,7 +293,7 @@ def test_spawn_explicit_gpu_does_not_fall_back(monkeypatch):
 
 
 def _embed_response(vectors):
-    # Out-of-order indices to exercise the sort.
+    # Reversed so the index sort is exercised.
     items = [{"index": i, "embedding": v} for i, v in enumerate(vectors)]
     return {"data": list(reversed(items))}
 
@@ -316,8 +313,7 @@ def test_encode_orders_and_returns_float32(monkeypatch):
     assert captured["path"] == "/v1/embeddings"
     assert out.dtype == np.float32
     assert out.shape == (2, 2)
-    # index sort restored original order despite the reversed response
-    assert out[0].tolist() == [3.0, 4.0]
+    assert out[0].tolist() == [3.0, 4.0]  # index sort restored order
 
 
 def test_encode_normalizes(monkeypatch):
@@ -401,7 +397,7 @@ def test_token_counter_hits_tokenize(monkeypatch):
 
 def test_ensure_ready_respawns_dead_process(monkeypatch):
     b = LlamaServerBackend()
-    b._process = _FakeProc(alive = False, returncode = 0)  # reaper killed it
+    b._process = _FakeProc(alive = False, returncode = 0)  # killed
     spawned = {"n": 0}
 
     def fake_spawn():
@@ -452,8 +448,7 @@ def test_post_restarts_once_on_connect_error(monkeypatch):
 
 
 def test_post_restarts_once_on_read_timeout(monkeypatch):
-    """A wedged request (ReadTimeout, not a dropped connection) also triggers one
-    restart-and-retry - the bundled embedding build can hang a request."""
+    # A wedged request (ReadTimeout) also triggers one restart-and-retry.
     import httpx
 
     b = LlamaServerBackend()

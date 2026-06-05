@@ -41,7 +41,7 @@ export interface IndexJob {
   error?: string | null;
 }
 
-/** One SSE frame from /jobs/{jobId}/events (before [DONE]). */
+/** One SSE frame from /jobs/{jobId}/events. */
 export interface JobEvent {
   type: "progress" | "complete" | "error";
   stage?: string | null;

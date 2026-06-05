@@ -33,7 +33,6 @@ const MODE_LABEL: Record<RagMode, string> = {
   lexical: "BM25 only",
 };
 
-/** Info icon revealing a short tooltip; click-toggles so touch works too. */
 function InfoHint({ children }: { children: ReactNode }) {
   return (
     <Tooltip>
@@ -51,7 +50,6 @@ function InfoHint({ children }: { children: ReactNode }) {
   );
 }
 
-/** Labeled slider with a value readout, matching the section's other rows. */
 function SliderRow({
   label,
   value,
@@ -100,9 +98,8 @@ function SliderRow({
 }
 
 /**
- * Retrieval settings for search_knowledge_base: search backend, passage count,
- * and the auto-retrieve gate. The retrieval source (this thread's documents or a
- * saved knowledge base) is picked from the Knowledge dropdown in the composer.
+ * Retrieval settings for search_knowledge_base: search backend, passage count, and
+ * the auto-retrieve gate. The retrieval source is picked from the composer dropdown.
  */
 export function RetrievalSettingsSection() {
   const ragMode = useChatRuntimeStore((s) => s.ragMode);

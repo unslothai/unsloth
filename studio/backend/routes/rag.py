@@ -1,13 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""HTTP API for the RAG engine.
+"""HTTP API for the RAG engine: KB CRUD, uploads, SSE ingestion, search.
 
-KB CRUD, per-KB/per-thread upload, SSE ingestion progress, document
-list/delete, and a direct hybrid/lexical/dense search endpoint. Endpoints auth
-via ``get_current_subject`` (Studio is single-tenant: the subject gates access,
-not data partitioning). Without sqlite-vec the router still mounts but every
-endpoint returns 503, leaving chat unaffected.
+Single-tenant: the subject gates access, not data. Without sqlite-vec the router
+mounts but every endpoint returns 503.
 """
 
 from __future__ import annotations
@@ -57,7 +54,7 @@ def _sanitize_filename(name: str) -> str:
 
 
 def _save_upload(file: UploadFile) -> tuple[str, str]:
-    """Persist an upload under the uploads root; returns (stored_path, filename)."""
+    """Persist an upload; returns (stored_path, filename)."""
     filename = _sanitize_filename(file.filename or "document")
     ext = os.path.splitext(filename)[1].lower()
     if ext not in config.UPLOAD_EXTS:
@@ -366,8 +363,8 @@ def search(payload: SearchRequest, subject: str = Depends(get_current_subject)) 
 # ---------------------------------------------------------------------------
 # Document preview (citation -> source file + highlight regions)
 # ---------------------------------------------------------------------------
-# Short-lived signed token so pdf.js range requests fetch the file without a
-# bearer header. Per-process secret: tokens only work on this server instance.
+# Per-process secret so pdf.js range requests fetch the file without a bearer
+# header; tokens only work on this server instance.
 _PREVIEW_SECRET = secrets.token_bytes(32)
 _PREVIEW_TTL = 600  # seconds
 
@@ -413,7 +410,7 @@ def preview_target(
     chunk_id: str | None = Query(default = None),
     subject: str = Depends(get_current_subject),
 ) -> dict:
-    """Resolve a citation to its source: filename, page, and highlight regions."""
+    """Resolve a citation to filename, page, and highlight regions."""
     _require_rag()
     conn = rag_db.get_connection()
     try:
@@ -451,7 +448,7 @@ def preview_target(
 def document_file_url(
     document_id: str, subject: str = Depends(get_current_subject)
 ) -> dict:
-    """Mint a short-lived signed URL for the source file (for pdf.js / preview)."""
+    """Mint a short-lived signed URL for the source file."""
     _require_rag()
     conn = rag_db.get_connection()
     try:
@@ -466,8 +463,8 @@ def document_file_url(
 
 @router.get("/documents/{document_id}/file-signed", response_model = None)
 def document_file_signed(document_id: str, token: str = Query(...)) -> FileResponse:
-    """Serve the source file, gated by the HMAC token (no bearer) so pdf.js
-    range requests work. FileResponse handles HTTP Range (206)."""
+    """Serve the source file gated by the HMAC token (no bearer) so pdf.js range
+    requests work."""
     _require_rag()
     signed_id = _verify_document_token(token)
     if signed_id != document_id:

@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""PDF region locators + citation preview routes.
-
-A small in-memory PyMuPDF PDF runs the locator's ``page.search_for`` against a
-real page, then is ingested through the real threaded pipeline (stubbed
-embeddings). Verifies chunks carry highlight regions and the preview-target /
-signed-file routes work.
-"""
+"""PDF region locator + citation preview route tests."""
 
 from __future__ import annotations
 
@@ -29,7 +23,7 @@ def _make_pdf(path) -> None:
         "sentence prediction.\n"
         "The Transformer base model uses eight attention heads in each layer.\n"
     )
-    for _ in range(3):  # a few pages of the same text
+    for _ in range(3):
         page = doc.new_page()
         page.insert_text((72, 72), body, fontsize = 11)
     doc.save(str(path))
@@ -139,8 +133,7 @@ def test_preview_routes_and_signed_file(rag_home, stub_embeddings):
 
 
 def test_norm_token_decomposes_ligatures():
-    """NFKC folds ligature glyphs to ASCII so parser-text anchors match the
-    word-list extraction (the case search_for misses)."""
+    # NFKC folds ligature glyphs to ASCII so anchors match (search_for misses these).
     from core.rag.locators import _norm_token
 
     assert _norm_token("signiﬁcant") == "significant"  # ﬁ
@@ -150,8 +143,7 @@ def test_norm_token_decomposes_ligatures():
 
 
 def test_locator_handles_midword_anchor_and_locates_line():
-    """A chunk span beginning mid-word still locates: first/last tokens dropped,
-    matched words union into a rect on the right line."""
+    # A span beginning mid-word still locates: first/last tokens dropped.
     import pymupdf
 
     from core.rag.locators import LocatorMatch, _regions_for_match
@@ -161,8 +153,7 @@ def test_locator_handles_midword_anchor_and_locates_line():
     page.insert_text(
         (72, 200), "alpha beta gamma delta epsilon zeta eta theta", fontsize = 12
     )
-    # Page text mirrors what the parser stores (get_text("text")).
-    page_text = doc[0].get_text("text")
+    page_text = doc[0].get_text("text")  # mirrors what the parser stores
     # Span starts/ends mid-word, so trimming must recover the interior phrase.
     start = page_text.index("lpha")
     end = page_text.index("theta") + 3

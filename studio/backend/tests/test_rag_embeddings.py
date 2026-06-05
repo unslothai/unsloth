@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Embedder concurrency: the fast tokenizer isn't thread-safe, so encode and
-token counting must be serialized (else threads panic "Already borrowed"). A
-fake model detects overlap, so no download is needed."""
+"""Embedder concurrency tests: the fast tokenizer isn't thread-safe, so encode
+and token counting must be serialized (else threads panic "Already borrowed")."""
 
 import os
 import threading
@@ -17,7 +16,7 @@ from core.rag import config, embeddings
 
 @pytest.fixture(autouse = True)
 def _pin_st_backend(monkeypatch):
-    # Tests patch ST internals (_get), so force the ST backend over the default.
+    # Tests patch ST internals (_get), so force the ST backend.
     monkeypatch.setattr(config, "EMBED_BACKEND", "sentence-transformers")
     embeddings._reset_backend()
     yield
@@ -135,12 +134,11 @@ def test_token_counter_enables_parallelism_only_during_call(monkeypatch):
 
 
 class _SentinelLlamaBackend:
-    """Stand-in for LlamaServerBackend so the fallback test never spawns a
-    real embedding server."""
+    """Stand-in for LlamaServerBackend; never spawns a real server."""
 
 
 def _force_st_load_failure(monkeypatch):
-    """Make the ST warm-probe inside _build_st_backend_or_fallback() raise."""
+    """Make the ST warm-probe raise."""
 
     def _boom(model_name = None):
         raise RuntimeError("torch is broken on this machine")
@@ -159,7 +157,7 @@ def _patch_llama_backend(monkeypatch, *, binary):
 
 
 def test_st_failure_falls_back_to_llama_server(monkeypatch):
-    # ST can't load, but the GGUF llama-server embedder is available -> use it.
+    # ST can't load but llama-server is available -> use it.
     _force_st_load_failure(monkeypatch)
     _patch_llama_backend(monkeypatch, binary = "/fake/llama-server")
     embeddings._reset_backend()
@@ -168,8 +166,7 @@ def test_st_failure_falls_back_to_llama_server(monkeypatch):
 
 
 def test_st_failure_without_llama_binary_reraises(monkeypatch):
-    # ST can't load and there's no llama-server binary -> surface the failure
-    # rather than silently degrade to nothing.
+    # No llama-server binary -> surface the failure, don't degrade to nothing.
     _force_st_load_failure(monkeypatch)
     _patch_llama_backend(monkeypatch, binary = None)
     embeddings._reset_backend()
@@ -178,7 +175,7 @@ def test_st_failure_without_llama_binary_reraises(monkeypatch):
 
 
 def test_st_success_keeps_sentence_transformers(monkeypatch):
-    # When the ST probe loads cleanly, the ST backend stays selected (no fallback).
+    # Clean ST probe -> ST backend stays selected, no fallback.
     monkeypatch.setattr(embeddings, "_get", lambda model_name = None: object())
     _patch_llama_backend(monkeypatch, binary = "/fake/llama-server")
     embeddings._reset_backend()
@@ -187,7 +184,7 @@ def test_st_success_keeps_sentence_transformers(monkeypatch):
 
 
 class _BoomOnEncodeModel:
-    """Loads fine (so the init probe passes) but raises when actually encoding."""
+    """Loads fine (init probe passes) but raises when encoding."""
 
     tokenizer = None
 
@@ -196,8 +193,7 @@ class _BoomOnEncodeModel:
 
 
 def test_st_encode_runtime_failure_switches_to_llama(monkeypatch):
-    # ST loads (probe ok) but encode() blows up mid-run. The process must switch to
-    # the llama-server embedder, satisfy the call there, and stay switched.
+    # encode() blows up mid-run -> switch to llama-server and stay switched.
     monkeypatch.setattr(
         embeddings, "_get", lambda model_name = None: _BoomOnEncodeModel()
     )
@@ -216,12 +212,12 @@ def test_st_encode_runtime_failure_switches_to_llama(monkeypatch):
     out = embeddings.encode(["alpha", "beta"])
     assert calls.get("used") is True  # retried on the llama fallback
     assert out.shape == (2, 4)
-    # Process-wide switch: later calls keep using the llama fallback, not ST.
+    # Switch is process-wide: later calls keep using llama, not ST.
     assert isinstance(embeddings._get_backend(), _SentinelLlamaBackend)
 
 
 def test_st_encode_failure_without_llama_binary_reraises(monkeypatch):
-    # Encode fails and there's no llama-server binary -> surface the error.
+    # No llama-server binary -> surface the encode error.
     monkeypatch.setattr(
         embeddings, "_get", lambda model_name = None: _BoomOnEncodeModel()
     )

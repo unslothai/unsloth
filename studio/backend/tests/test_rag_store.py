@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Store tests: incremental writes, dedupe, delete, scope isolation, dense + lexical.
-
-Deterministic bag-of-words vectors (no download); each test gets an isolated
-rag.db via the ``rag_conn`` fixture.
-"""
+"""Store tests: incremental writes, dedupe, delete, scope, dense + lexical."""
 
 import math
 
@@ -49,7 +45,7 @@ def test_lexical_returns_only_matching_docs(rag_conn):
     _add_doc(rag_conn, "kb_a", "d1", "d1.txt", "h1", ["alpha bravo charlie"])
     _add_doc(rag_conn, "kb_a", "d2", "d2.txt", "h2", ["golf hotel india"])
     hits = store.search_lexical(rag_conn, "kb_a", "alpha", 10)
-    assert [cid for cid, _ in hits] == ["d1:0"]  # d2 not returned at score 0
+    assert [cid for cid, _ in hits] == ["d1:0"]  # d2 not returned (score 0)
 
 
 def test_scope_isolation(rag_conn):
@@ -81,7 +77,7 @@ def test_dense_ranks_by_cosine(rag_conn):
 
 
 def test_dense_empty_before_any_ingest(rag_conn):
-    # No chunks_vec table yet -> search_dense returns [], no crash.
+    # No chunks_vec table yet -> [], no crash.
     assert store.search_dense(rag_conn, "kb_a", embed("alpha"), 10) == []
 
 
@@ -107,7 +103,7 @@ def test_delete_document_purges_all_tables(rag_conn):
 # Incremental append keeps earlier doc rows stable
 # --------------------------------------------------------------------------
 def test_incremental_add_is_flat(rag_conn):
-    """Adding doc2 must not touch doc1's fts rowids (append, not rebuild)."""
+    # Adding doc2 must not touch doc1's fts rowids (append, not rebuild).
     _add_doc(rag_conn, "kb_a", "d1", "f", "h1", ["alpha bravo charlie"])
     before = rag_conn.execute(
         "SELECT rowid, chunk_id FROM chunks_fts WHERE scope='kb_a'"
@@ -120,7 +116,7 @@ def test_incremental_add_is_flat(rag_conn):
         (r["rowid"], r["chunk_id"]) for r in before if r["chunk_id"].startswith("d1:")
     ]
     after_d1 = [(r["rowid"], r["chunk_id"]) for r in after]
-    assert before_d1 == after_d1  # d1 rowids unchanged after d2 added
+    assert before_d1 == after_d1  # d1 rowids unchanged
 
 
 def test_chunks_by_id_joins_filename(rag_conn):

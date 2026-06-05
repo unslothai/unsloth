@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Multimodal captioning: gating, grouping, page splice, retrieval of spliced captions. Caption call and vision endpoint stubbed."""
+"""Multimodal captioning tests: gating, grouping, splice, retrieval."""
 
 from __future__ import annotations
 
@@ -55,7 +55,7 @@ def test_caption_images_no_endpoint(monkeypatch):
 def test_splice_captions_appends_to_right_page():
     pages = [Page("body one", 1, 8), Page("body two", 2, 8)]
     out = captioner.splice_captions(pages, {2: ["a diagram of X"]})
-    assert out[0].text == "body one"  # unchanged
+    assert out[0].text == "body one"
     assert "a diagram of X" in out[1].text
     assert out[1].text.startswith("body two")
     assert out[1].char_count == len(out[1].text)
@@ -67,7 +67,6 @@ def test_splice_captions_noop_when_empty():
 
 
 def test_render_pdf_figures_detects_drawing(tmp_path):
-    """A large vector drawing is detected as a figure and rendered to PNG."""
     import pymupdf
 
     from core.rag.parsers import render_pdf_figures
@@ -75,7 +74,6 @@ def test_render_pdf_figures_detects_drawing(tmp_path):
     pdf = tmp_path / "fig.pdf"
     doc = pymupdf.open()
     page = doc.new_page()
-    # Filled rect + lines = a clusterable drawing.
     shape = page.new_shape()
     shape.draw_rect(pymupdf.Rect(60, 60, 540, 460))
     for i in range(8):
@@ -92,7 +90,6 @@ def test_render_pdf_figures_detects_drawing(tmp_path):
 
 
 def test_captioned_text_is_searchable(rag_home, stub_embeddings, monkeypatch):
-    """End to end: a spliced caption is chunked, stored, and retrievable."""
     from core.rag import retrieval, store
     from storage import rag_db
 
