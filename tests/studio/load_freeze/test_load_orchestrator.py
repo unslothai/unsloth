@@ -3,7 +3,7 @@
 Covers:
   1.  Behavioural canary (the bug class)             — 2 tests
   2.  Behavioural fix-validation                     — 1 test
-  3.  Functional equivalence (sync == to_thread)     — 5 tests, one per codec branch
+  3.  Functional equivalence (sync == to_thread)     — 6 tests, one per codec branch
   4.  Failure modes (HTTP 500, malformed JSON,
       connection reset, unreachable, not-loaded)     — 5 tests
   5.  Stress (50 concurrent probes / 100 healths)    — 2 tests
@@ -254,6 +254,7 @@ def shim_no_match():
             "<|audio_eos|>": [0, 1],
             "<|startoftranscript|>": [0, 1],
             "<audio_soft_token>": [0, 1],
+            "<|audio|>": [0, 1],
             "<|bicodec_semantic_0|>": [0, 1],
             "<|bicodec_global_0|>": [0, 1],
             "<|c1_0|>": [0, 1],
@@ -314,6 +315,28 @@ def test_functional_equivalence_whisper_match():
     assert sync_result == threaded
 
 
+def test_functional_equivalence_audio_vlm_match():
+    # audio_vlm: snac/csm/whisper fail first, then the Gemma 4 <|audio|>
+    # probe tokenises to a single token. #6000 added this arm alongside
+    # Gemma 3n's <audio_soft_token>; keep <audio_soft_token> at 2 tokens so
+    # it is specifically the new <|audio|> arm that triggers the match.
+    with FakeLlamaServer(
+        detok_map = {128258: "non-snac", 128259: "non-snac"},
+        tok_response_map = {
+            "<|AUDIO|>": [0, 1],              # csm fails (>1 token)
+            "<|audio_eos|>": [0, 1],
+            "<|startoftranscript|>": [0, 1],  # whisper fails
+            "<audio_soft_token>": [0, 1],     # Gemma 3n arm fails ...
+            "<|audio|>": [0],                 # ... Gemma 4 arm matches (#6000)
+        },
+    ) as srv:
+        backend = _make_backend(srv.port)
+        sync_result = backend.detect_audio_type()
+        threaded = asyncio.run(asyncio.to_thread(backend.detect_audio_type))
+    assert sync_result == "audio_vlm"
+    assert sync_result == threaded
+
+
 def test_functional_equivalence_bicodec_match():
     # bicodec: snac/csm/whisper/audio_vlm all fail first, then both
     # bicodec_semantic_0 and bicodec_global_0 are single tokens.
@@ -324,6 +347,7 @@ def test_functional_equivalence_bicodec_match():
             "<|audio_eos|>": [0, 1],
             "<|startoftranscript|>": [0, 1],
             "<audio_soft_token>": [0, 1],
+            "<|audio|>": [0, 1],
             "<|bicodec_semantic_0|>": [0],
             "<|bicodec_global_0|>": [0],
         },
@@ -644,6 +668,7 @@ def test_response_shape_matches_pre_fix_for_no_match():
             "<|audio_eos|>": [0, 1],
             "<|startoftranscript|>": [0, 1],
             "<audio_soft_token>": [0, 1],
+            "<|audio|>": [0, 1],
             "<|bicodec_semantic_0|>": [0, 1],
             "<|bicodec_global_0|>": [0, 1],
             "<|c1_0|>": [0, 1],
