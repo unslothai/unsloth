@@ -12,7 +12,11 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
   DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
@@ -36,7 +40,11 @@ import {
   Bookmark02Icon,
   CodeIcon,
   Download01Icon,
+  Folder01Icon,
+  FolderAddIcon,
   Image03Icon,
+  McpServerIcon,
+  PencilRulerIcon,
 } from "@hugeicons/core-free-icons";
 import { useNavigate } from "@tanstack/react-router";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -45,6 +53,9 @@ import {
   PromptStorageDialog,
   exportConversationShareGPT,
 } from "./prompt-storage/prompt-storage-dialog";
+import { McpComposerButton } from "./mcp-composer-button";
+import { NewProjectDialog } from "./components/new-project-dialog";
+import { useChatProjects } from "./hooks/use-chat-projects";
 import { loadModel, validateModel } from "./api/chat-api";
 import {
   parseExternalModelId,
@@ -59,6 +70,7 @@ import {
   getExternalReasoningCapabilities,
   providerSupportsBuiltinCodeExecution,
   providerSupportsBuiltinImageGeneration,
+  providerSupportsBuiltinWebFetch,
 } from "./provider-capabilities";
 import {
   type CompositionEvent,
@@ -389,9 +401,7 @@ export function SharedComposer({
   model1?: CompareModelSelection;
   model2?: CompareModelSelection;
   onExitCompare?: () => void;
-  /** Thread ID of the left/model1 pane, used for conversation export. */
   model1ThreadId?: string;
-  /** Thread ID of the right/model2 pane, used for conversation export. */
   model2ThreadId?: string;
 }): ReactElement {
   const navigate = useNavigate();
@@ -414,6 +424,7 @@ export function SharedComposer({
   } | null>(null);
   const [dragging, setDragging] = useState(false);
   const [isComposing, setIsComposing] = useState(false);
+  const [newProjectOpen, setNewProjectOpen] = useState(false);
   // ── Prompt storage & queue ────────────────────────────────────────────────
   const [promptStorageOpen, setPromptStorageOpen] = useState(false);
   const [isQueueRunning, setIsQueueRunning] = useState(false);
@@ -463,7 +474,6 @@ export function SharedComposer({
   );
   const preserveThinking = useChatRuntimeStore((s) => s.preserveThinking);
   const setPreserveThinking = useChatRuntimeStore((s) => s.setPreserveThinking);
-  const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const supportsTools = useChatRuntimeStore((s) => s.supportsTools);
   const supportsBuiltinWebSearch = useChatRuntimeStore(
     (s) => s.supportsBuiltinWebSearch,
@@ -476,6 +486,28 @@ export function SharedComposer({
   const setImageToolsEnabled = useChatRuntimeStore(
     (s) => s.setImageToolsEnabled,
   );
+  const artifactsEnabled = useChatRuntimeStore((s) => s.artifactsEnabled);
+  const setArtifactsEnabled = useChatRuntimeStore((s) => s.setArtifactsEnabled);
+  const mcpEnabledForChat = useChatRuntimeStore((s) => s.mcpEnabledForChat);
+  const setMcpEnabledForChat = useChatRuntimeStore(
+    (s) => s.setMcpEnabledForChat,
+  );
+  // Three most recently updated projects for the quick-access submenu.
+  const { projects } = useChatProjects();
+  const recentProjects = [...projects]
+    .sort((a, b) => b.updatedAt - a.updatedAt)
+    .slice(0, 3);
+  const openProject = (projectId: string) => {
+    useChatRuntimeStore.getState().setActiveProjectId(projectId);
+    navigate({ to: "/chat", search: { project: projectId } });
+  };
+  const webFetchToolsEnabled = useChatRuntimeStore(
+    (s) => s.webFetchToolsEnabled,
+  );
+  const setWebFetchToolsEnabled = useChatRuntimeStore(
+    (s) => s.setWebFetchToolsEnabled,
+  );
+  const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const lastOpenRouterChosenModel = useChatRuntimeStore(
     (s) => s.lastOpenRouterChosenModel,
   );
@@ -516,6 +548,7 @@ export function SharedComposer({
           {
             isReasoningProvider:
               selectedExternalProvider?.isReasoningModel === true,
+            baseUrl: selectedExternalProvider?.baseUrl ?? null,
           },
         )
       : null;
@@ -570,6 +603,9 @@ export function SharedComposer({
     effectiveExternalModelId,
     selectedExternalProvider?.baseUrl,
   );
+  const supportsBuiltinWebFetch = providerSupportsBuiltinWebFetch(
+    selectedExternalProvider?.providerType,
+  );
   // Gemini rejects codeExecution alongside image modalities. Search is
   // blocked on older Gemini image ids but allowed on Gemini 3 image
   // models -- supportsBuiltinWebSearch already encodes the per-model
@@ -603,9 +639,18 @@ export function SharedComposer({
   // Images pill is only ever lit on OpenAI cloud's Responses-API models
   // and Gemini Nano Banana family. No local tool runtime fallback.
   const showImagePill = supportsBuiltinImageGeneration;
+  // Fetch pill: Anthropic-only (web_fetch_20250910 / web_fetch_20260209).
+  const webFetchDisabled = !modelLoaded || !supportsBuiltinWebFetch;
+  const showWebFetchPill = supportsBuiltinWebFetch;
   // With more than 4 pills showing, collapse them to icons only to cut clutter.
   // Compare, Search and Code always show; the rest are conditional.
-  const pillsCompact = 3 + (showImagePill ? 1 : 0) > 4;
+  const pillsCompact =
+    3 +
+      (showImagePill ? 1 : 0) +
+      (showWebFetchPill ? 1 : 0) +
+      (artifactsEnabled ? 1 : 0) +
+      (mcpEnabledForChat ? 1 : 0) >
+    4;
   // Backwards-compatible alias for any other call site that may still
   // reference `toolsDisabled` (rare; both pills used it before).
   const toolsDisabled = codeDisabled;
@@ -648,9 +693,7 @@ export function SharedComposer({
       description: next.length > 80 ? next.slice(0, 80) + "…" : next,
     });
     setText(next);
-    setTimeout(() => {
-      sendRef.current?.();
-    }, 100);
+    setTimeout(() => { sendRef.current?.(); }, 100);
   }
 
   // Compare mode: advance queue when the full compare cycle finishes.
@@ -1061,15 +1104,10 @@ export function SharedComposer({
           setIsQueueRunning(true);
           setQueueProgress({ current: 1, total: filtered.length });
           toast(`Prompt 1 / ${filtered.length}`, {
-            description:
-              filtered[0].length > 80
-                ? filtered[0].slice(0, 80) + "…"
-                : filtered[0],
+            description: filtered[0].length > 80 ? filtered[0].slice(0, 80) + "…" : filtered[0],
           });
           setText(filtered[0]);
-          setTimeout(() => {
-            sendRef.current?.();
-          }, 100);
+          setTimeout(() => { sendRef.current?.(); }, 100);
         }}
       />
       {/* Gemini-style drop affordance, mirrored from the single composer. */}
@@ -1168,7 +1206,12 @@ export function SharedComposer({
               e.target.value = "";
             }}
           />
-          {/* + side menu: tools, attachments, prompt storage */}
+          <NewProjectDialog
+            open={newProjectOpen}
+            onOpenChange={setNewProjectOpen}
+          />
+          {/* Same + side menu as the single-chat composer (ComposerToolsMenu),
+              wired to the compare composer's own file/audio inputs and tools. */}
           <DropdownMenu>
             <DropdownMenuTrigger asChild={true}>
               <button
@@ -1259,6 +1302,28 @@ export function SharedComposer({
                 </DropdownMenuItem>
               )}
               <DropdownMenuSeparator />
+              <DropdownMenuItem
+                className={
+                  artifactsEnabled ? "text-primary font-medium" : undefined
+                }
+                onSelect={() => setArtifactsEnabled(!artifactsEnabled)}
+              >
+                <HugeiconsIcon icon={PencilRulerIcon} strokeWidth={2} />
+                Canvas
+                {artifactsEnabled ? <CheckIcon className="ml-auto" /> : null}
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                disabled={!supportsTools}
+                className={
+                  mcpEnabledForChat ? "text-primary font-medium" : undefined
+                }
+                onSelect={() => setMcpEnabledForChat(!mcpEnabledForChat)}
+              >
+                <HugeiconsIcon icon={McpServerIcon} strokeWidth={2} />
+                MCP
+                {mcpEnabledForChat ? <CheckIcon className="ml-auto" /> : null}
+              </DropdownMenuItem>
+              {/* RAG hidden temporarily */}
               <DropdownMenuItem onSelect={() => setPromptStorageOpen(true)}>
                 <HugeiconsIcon icon={Bookmark02Icon} strokeWidth={2} />
                 Saved prompts
@@ -1266,13 +1331,10 @@ export function SharedComposer({
               <DropdownMenuItem
                 disabled={!model1ThreadId && !model2ThreadId && !activeThreadId}
                 onSelect={() => {
-                  // In compare mode export both panes; in single mode export active thread.
                   const ids = model1ThreadId || model2ThreadId
                     ? [model1ThreadId, model2ThreadId].filter(Boolean) as string[]
-                    : activeThreadId
-                      ? [activeThreadId]
-                      : [];
-                  if (ids.length === 0) return;
+                    : activeThreadId ? [activeThreadId] : [];
+                  if (!ids.length) return;
                   Promise.all(ids.map((id) => exportConversationShareGPT(id))).catch(() => {
                     toast.error("Failed to export conversation.");
                   });
@@ -1291,6 +1353,35 @@ export function SharedComposer({
                 Compare chat
                 <CheckIcon className="ml-auto" />
               </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuSub>
+                <DropdownMenuSubTrigger>
+                  <HugeiconsIcon icon={Folder01Icon} strokeWidth={2} />
+                  Projects
+                </DropdownMenuSubTrigger>
+                <DropdownMenuSubContent className="unsloth-plus-menu w-[200px]">
+                  <DropdownMenuItem onSelect={() => setNewProjectOpen(true)}>
+                    <HugeiconsIcon icon={FolderAddIcon} strokeWidth={2} />
+                    New project
+                  </DropdownMenuItem>
+                  <DropdownMenuLabel>Recents</DropdownMenuLabel>
+                  {recentProjects.length > 0 ? (
+                    recentProjects.map((project) => (
+                      <DropdownMenuItem
+                        key={project.id}
+                        onSelect={() => openProject(project.id)}
+                      >
+                        <HugeiconsIcon icon={Folder01Icon} strokeWidth={2} />
+                        <span className="truncate">{project.name}</span>
+                      </DropdownMenuItem>
+                    ))
+                  ) : (
+                    <DropdownMenuItem disabled={true}>
+                      No recent projects
+                    </DropdownMenuItem>
+                  )}
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
             </DropdownMenuContent>
           </DropdownMenu>
           {/* Active in compare mode; sits first. Click to exit back to single chat. */}
@@ -1378,6 +1469,44 @@ export function SharedComposer({
               <span>Images</span>
             </button>
           )}
+          {showWebFetchPill && (
+            <button
+              type="button"
+              disabled={webFetchDisabled}
+              onClick={() => setWebFetchToolsEnabled(!webFetchToolsEnabled)}
+              className="composer-pill-btn"
+              data-active={
+                webFetchToolsEnabled && !webFetchDisabled ? "true" : "false"
+              }
+              aria-label={
+                webFetchToolsEnabled ? "Disable URL fetch" : "Enable URL fetch"
+              }
+            >
+              <PillGlyph>
+                <HugeiconsIcon icon={Download01Icon} className="size-3.5" />
+              </PillGlyph>
+              <span>Fetch</span>
+            </button>
+          )}
+          {artifactsEnabled ? (
+            <button
+              type="button"
+              onClick={() => setArtifactsEnabled(false)}
+              className="composer-pill-btn"
+              data-active="true"
+              aria-label="Disable canvas"
+            >
+              <PillGlyph>
+                <HugeiconsIcon
+                  icon={PencilRulerIcon}
+                  className="size-[15.5px]"
+                  strokeWidth={2}
+                />
+              </PillGlyph>
+              <span>Canvas</span>
+            </button>
+          ) : null}
+          {mcpEnabledForChat ? <McpComposerButton side="top" /> : null}
         </div>
         {/* mr-0.5 matches the send button inset from the edge in normal chat;
             gap-1.5 matches its control spacing. */}
@@ -1590,7 +1719,6 @@ export function SharedComposer({
             </>
           )}
           {isQueueRunning ? (
-            // Red labelled pill — distinct from the icon-only dictation stop
             <button
               type="button"
               onClick={() => {
@@ -1602,7 +1730,7 @@ export function SharedComposer({
                 stop();
               }}
               aria-label="Stop prompt queue"
-              className="flex items-center gap-1.5 rounded-full border border-red-500 bg-red-600/10 px-2.5 py-1 text-xs font-semibold text-red-600 transition-colors hover:bg-red-600 hover:text-white dark:text-red-400 dark:hover:text-white"
+              className="ml-1.5 flex items-center gap-1.5 rounded-full border border-red-500 bg-red-600/10 px-2.5 py-1 text-xs font-semibold text-red-600 transition-colors hover:bg-red-600 hover:text-white dark:text-red-400 dark:hover:text-white"
             >
               <SquareIcon className="size-2.5 shrink-0 fill-current" />
               <span className="tabular-nums">
