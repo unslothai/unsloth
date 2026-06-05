@@ -1419,11 +1419,16 @@ if ($IsPipInstall) {
 
 # 1g. Python (>= 3.11 and < 3.14). Prefer py.exe so a 3.14 ahead of 3.13 on PATH does not trip the gate.
 $HasPython = $null -ne (Get-Command python -ErrorAction SilentlyContinue)
-$PyLauncher = Get-Command py -CommandType Application -ErrorAction SilentlyContinue
+# Enumerate ALL py.exe on PATH (all-users C:\Windows\py.exe and the per-user
+# launcher can both register), then search each for a supported minor. Using a
+# single launcher would miss a working interpreter behind a broken first one,
+# and Get-Command returns an array when >1 py.exe exists -- which breaks the
+# call operator if used directly.
+$PyLaunchers = @(Get-Command py -CommandType Application -ErrorAction SilentlyContinue)
 $PythonOk = $false
 $DetectedPyVer = $null
 
-if ($PyLauncher) {
+foreach ($PyLauncher in $PyLaunchers) {
     foreach ($minor in @("3.13", "3.12", "3.11")) {
         try {
             $out = & $PyLauncher.Source "-$minor" --version 2>&1 | Out-String
@@ -1448,6 +1453,7 @@ if ($PyLauncher) {
             }
         } catch { }
     }
+    if ($PythonOk) { break }
 }
 
 if (-not $PythonOk -and $HasPython) {
@@ -1708,8 +1714,11 @@ function Test-IsConda {
 
 # 1. Try the Python Launcher (py.exe) first -- most reliable on Windows.
 #    py.exe is installed by python.org and resolves to standalone CPython.
-$pyLauncher = Get-Command py -CommandType Application -ErrorAction SilentlyContinue
-if ($pyLauncher -and $pyLauncher.Source -notmatch $CondaSkipPattern) {
+# Enumerate every py.exe on PATH and search each for a supported, non-conda
+# interpreter (a single launcher could be conda or lack 3.11-3.13; Get-Command
+# also returns an array when >1 py.exe exists).
+foreach ($pyLauncher in @(Get-Command py -CommandType Application -ErrorAction SilentlyContinue)) {
+    if ($pyLauncher.Source -match $CondaSkipPattern) { continue }
     foreach ($minor in @("3.13", "3.12", "3.11")) {
         try {
             $out = & $pyLauncher.Source "-$minor" --version 2>&1 | Out-String
@@ -1727,6 +1736,7 @@ if ($pyLauncher -and $pyLauncher.Source -notmatch $CondaSkipPattern) {
             }
         } catch { }
     }
+    if ($PythonCmd) { break }
 }
 
 # 2. Fall back to scanning python3.x / python3 / python on PATH.

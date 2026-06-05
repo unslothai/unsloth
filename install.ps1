@@ -944,10 +944,13 @@ shell.Run cmd, 0, False
     function Find-CompatiblePython {
         # Try the Python Launcher first (most reliable on Windows)
         # py.exe resolves to the standard CPython install, not conda.
-        $pyLauncher = Get-Command py -CommandType Application -ErrorAction SilentlyContinue
-        if ($pyLauncher -and $pyLauncher.Source -notmatch $script:CondaSkipPattern) {
-            # Prefer the requested $PythonVersion, then newest-first fallback.
-            $minors = @($PythonVersion) + (@("3.13", "3.12", "3.11") | Where-Object { $_ -ne $PythonVersion })
+        # Prefer the requested $PythonVersion, then newest-first fallback.
+        $minors = @($PythonVersion) + (@("3.13", "3.12", "3.11") | Where-Object { $_ -ne $PythonVersion })
+        # Enumerate every py.exe on PATH and search each for a supported,
+        # non-conda interpreter (a single launcher could be conda or lack
+        # 3.11-3.13; Get-Command returns an array when >1 py.exe exists).
+        foreach ($pyLauncher in @(Get-Command py -CommandType Application -ErrorAction SilentlyContinue)) {
+            if ($pyLauncher.Source -match $script:CondaSkipPattern) { continue }
             foreach ($minor in $minors) {
                 try {
                     $out = & $pyLauncher.Source "-$minor" --version 2>&1 | Out-String
