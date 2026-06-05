@@ -795,7 +795,7 @@ function PromptCard({
 
   if (editing) {
     return (
-      <div className="rounded-xl border border-primary/30 bg-primary/5 p-4 flex flex-col gap-3">
+      <div className="rounded-xl border border-border/50 bg-muted/30 p-4 flex flex-col gap-3">
         <input
           value={name}
           onChange={(e) => setName(e.target.value)}
@@ -888,8 +888,8 @@ function NewPromptForm({ onClose, onRefresh }: { onClose: () => void; onRefresh:
   }, [name, text, onClose, onRefresh]);
 
   return (
-    <div className="rounded-xl border border-primary/30 bg-primary/5 p-4 flex flex-col gap-3">
-      <p className="text-xs font-semibold text-primary">New Prompt</p>
+    <div className="rounded-xl border border-border/50 bg-muted/30 p-4 flex flex-col gap-3">
+      <p className="text-xs font-semibold text-muted-foreground">New Prompt</p>
       <input
         value={name}
         onChange={(e) => setName(e.target.value)}
@@ -959,7 +959,7 @@ function PromptListCard({
 
   if (editing) {
     return (
-      <div className="rounded-xl border border-primary/30 bg-primary/5 p-4 flex flex-col gap-3">
+      <div className="rounded-xl border border-border/50 bg-muted/30 p-4 flex flex-col gap-3">
         <input
           value={name}
           onChange={(e) => setName(e.target.value)}
@@ -1112,8 +1112,8 @@ function NewPromptListForm({ onClose, onRefresh }: { onClose: () => void; onRefr
   );
 
   return (
-    <div className="rounded-xl border border-primary/30 bg-primary/5 p-4 flex flex-col gap-3">
-      <p className="text-xs font-semibold text-primary">New Prompt List</p>
+    <div className="rounded-xl border border-border/50 bg-muted/30 p-4 flex flex-col gap-3">
+      <p className="text-xs font-semibold text-muted-foreground">New Prompt List</p>
       <input
         value={name}
         onChange={(e) => setName(e.target.value)}
@@ -1334,7 +1334,7 @@ export function PromptStorageDialog({
   return (
     <>
       <Dialog open={open} onOpenChange={onOpenChange}>
-        <DialogContent showCloseButton={false} className="sm:max-w-[860px] max-h-[90vh] flex flex-col gap-0 p-0 overflow-hidden">
+        <DialogContent showCloseButton={false} className="sm:max-w-[min(1720px,92vw)] max-h-[94vh] flex flex-col gap-0 p-0 overflow-hidden">
           {/* Header */}
           <DialogHeader className="px-6 pt-5 pb-4 shrink-0 border-b border-border/50">
             <div className="flex items-center gap-3">
@@ -1447,7 +1447,7 @@ export function PromptStorageDialog({
                   <button
                     type="button"
                     onClick={() => setShowNewPrompt(true)}
-                    className="flex items-center gap-2.5 rounded-xl border-2 border-dashed border-border/40 px-4 py-3 text-sm font-medium text-muted-foreground hover:border-primary/30 hover:text-primary hover:bg-primary/5 transition-all"
+                    className="flex items-center gap-2.5 rounded-xl border-2 border-dashed border-border/40 px-4 py-3 text-sm font-medium text-muted-foreground hover:border-border hover:text-foreground hover:bg-muted/50 transition-all"
                   >
                     <PlusIcon className="size-4" />New Prompt
                   </button>
@@ -1511,7 +1511,7 @@ export function PromptStorageDialog({
                   <button
                     type="button"
                     onClick={() => setShowNewList(true)}
-                    className="flex items-center gap-2.5 rounded-xl border-2 border-dashed border-border/40 px-4 py-3 text-sm font-medium text-muted-foreground hover:border-primary/30 hover:text-primary hover:bg-primary/5 transition-all"
+                    className="flex items-center gap-2.5 rounded-xl border-2 border-dashed border-border/40 px-4 py-3 text-sm font-medium text-muted-foreground hover:border-border hover:text-foreground hover:bg-muted/50 transition-all"
                   >
                     <PlusIcon className="size-4" />New Prompt List
                   </button>

@@ -1926,10 +1926,18 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
           ) : null}
         </DropdownMenuItem>
         {/* RAG hidden temporarily */}
-        <DropdownMenuItem onSelect={() => setPromptStorageOpen(true)}>
-          <HugeiconsIcon icon={Bookmark02Icon} strokeWidth={2} />
-          Saved prompts
-        </DropdownMenuItem>
+        <DropdownMenuSub>
+          <DropdownMenuSubTrigger>
+            <MoreHorizontalIcon className="size-4" />
+            More
+          </DropdownMenuSubTrigger>
+          <DropdownMenuSubContent className="w-[200px]">
+            <DropdownMenuItem onSelect={() => setPromptStorageOpen(true)}>
+              <HugeiconsIcon icon={Bookmark02Icon} strokeWidth={2} />
+              Saved prompts
+            </DropdownMenuItem>
+          </DropdownMenuSubContent>
+        </DropdownMenuSub>
         <DropdownMenuSub>
           <DropdownMenuSubTrigger disabled={!activeThreadId}>
             <HugeiconsIcon icon={Download01Icon} strokeWidth={2} />
@@ -2043,7 +2051,7 @@ const ComposerRightControls: FC<{
           type="button"
           onClick={stopQueue}
           aria-label="Stop prompt queue"
-          className="ml-1.5 flex items-center gap-1.5 rounded-full border border-red-500 bg-red-600/10 px-2.5 py-1 text-xs font-semibold text-red-600 transition-colors hover:bg-red-600 hover:text-white dark:text-red-400 dark:hover:text-white"
+          className="ml-1.5 flex items-center gap-1.5 rounded-full border border-border/60 bg-muted/60 px-2.5 py-1 text-xs font-semibold text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
         >
           <SquareIcon className="size-2.5 shrink-0 fill-current" />
           <span className="tabular-nums">
