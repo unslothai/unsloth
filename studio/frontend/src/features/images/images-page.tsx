@@ -805,7 +805,7 @@ export function ImagesPage() {
             </p>
           )}
 
-          <div className="flex flex-col gap-2 rounded-md border border-border p-3">
+          <div className="flex flex-col gap-3 border-t border-border pt-3">
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
               <Label>Mode</Label>
               <div className="grid grid-cols-5 rounded-md border border-border bg-muted/30 p-1">
