@@ -152,9 +152,9 @@ export function useRagDocuments(
     [patchDoc],
   );
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (opts?: { quiet?: boolean }) => {
     if (!scope) return;
-    setLoading(true);
+    if (!opts?.quiet) setLoading(true);
     try {
       // Merge server truth with local progress so a refresh mid-index keeps a live
       // "running %" chip. Failed docs are hidden (toast warned at upload).
@@ -179,7 +179,7 @@ export function useRagDocuments(
         description: err instanceof Error ? err.message : String(err),
       });
     } finally {
-      setLoading(false);
+      if (!opts?.quiet) setLoading(false);
     }
   }, [scope, lister]);
 
@@ -208,6 +208,22 @@ export function useRagDocuments(
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scopeKey]);
+
+  // Safety net for the per-job SSE streams: a big upload opens one stream per doc,
+  // and over HTTP/1.1 the browser caps concurrent connections, so streams past the
+  // cap queue behind the app's polling and may never deliver a terminal frame --
+  // leaving a chip spinning even though the doc already finished. While anything is
+  // still indexing, reconcile against the server's document list (one request
+  // covers every doc) so chips always resolve.
+  const hasIndexing = documents.some(
+    (d) => d.status === "pending" || d.status === "running",
+  );
+  useEffect(() => {
+    if (!scopeKey || !hasIndexing) return;
+    const id = setInterval(() => void refresh({ quiet: true }), 4000);
+    return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scopeKey, hasIndexing]);
 
   // POST one file, then swap its optimistic chip (`tempId`) to the real id. If the
   // backend deduped to an existing document, drop the chip. `seenIds` holds ids
