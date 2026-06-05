@@ -431,9 +431,35 @@ export function ChatMcpServersDialog({
             Register remote (HTTP) or local (stdio command) MCP servers.
           </DialogDescription>
         </DialogHeader>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="application/json,.json"
+          className="hidden"
+          onChange={onImportFile}
+        />
 
         {showForm ? (
           <div className="flex flex-col gap-4">
+            {view.kind === "create" && (
+              <div className="flex items-center justify-between gap-3 rounded-md border border-dashed px-3 py-2">
+                <span className="text-xs text-muted-foreground">
+                  Import servers from a config file.
+                </span>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="shrink-0"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={importing}
+                  title="Import servers from a mcpServers JSON config (Claude Desktop, Cursor, VS Code…)"
+                >
+                  {importing ? <Spinner /> : <UploadIcon size={14} />}
+                  Import config
+                </Button>
+              </div>
+            )}
             <div className="grid gap-2">
               <Label htmlFor="mcp-display-name">Display name</Label>
               <Input
@@ -514,13 +540,6 @@ export function ChatMcpServersDialog({
         ) : (
           <div className="flex min-w-0 flex-col gap-3">
             <div className="flex justify-end gap-2">
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept="application/json,.json"
-                className="hidden"
-                onChange={onImportFile}
-              />
               <Button
                 size="sm"
                 variant="outline"
