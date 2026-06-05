@@ -762,6 +762,12 @@ class TestGgufVisionMessages:
         assert updated[1]["content"][1]["type"] == "image_url"
         assert messages[1]["content"][1]["type"] == "image_url"
 
+    def test_tool_nudge_system_update_handles_none_messages(self):
+        assert _set_or_prepend_system_message(None, "") == []
+        assert _set_or_prepend_system_message(None, "Use tools.") == [
+            {"role": "system", "content": "Use tools."}
+        ]
+
 
 class TestGgufVisionToolRouting:
     class _Request:
@@ -770,11 +776,7 @@ class TestGgufVisionToolRouting:
 
     @staticmethod
     def _drive(coro):
-        loop = asyncio.new_event_loop()
-        try:
-            return loop.run_until_complete(coro)
-        finally:
-            loop.close()
+        return asyncio.run(coro)
 
     @staticmethod
     def _consume_response(response):

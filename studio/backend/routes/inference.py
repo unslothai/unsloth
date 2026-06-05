@@ -4855,13 +4855,14 @@ def _normalize_anthropic_openai_images(
 
 
 def _set_or_prepend_system_message(
-    messages: list[dict], system_prompt: str
+    messages: Optional[list[dict]], system_prompt: str
 ) -> list[dict]:
     """Return messages with a system prompt without dropping multimodal parts."""
+    safe_messages = messages or []
     if not system_prompt:
-        return messages
+        return safe_messages
 
-    updated = [dict(msg) for msg in messages]
+    updated = [dict(msg) for msg in safe_messages]
     if updated and updated[0].get("role") == "system":
         updated[0]["content"] = system_prompt
         return updated
