@@ -406,9 +406,10 @@ const ThreadComposerDock: FC<{
         overlay ? "z-40" : "z-20",
       )}
     >
+      {/* Fade the top edge so scrolling text is not cut off by a hard line. */}
       <div
         aria-hidden={true}
-        className="absolute inset-x-0 bottom-0 top-[10px] bg-background"
+        className="absolute inset-x-0 bottom-0 top-[10px] bg-gradient-to-t from-background from-[calc(100%_-_28px)] to-transparent"
       />
       <div ref={contentRef} className="relative px-5 pb-2">
         <div className="pointer-events-auto mx-auto w-full max-w-(--thread-max-width)">
