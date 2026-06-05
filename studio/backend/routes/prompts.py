@@ -34,7 +34,7 @@ class PromptEntry(BaseModel):
 class PromptList(BaseModel):
     id: str = Field(max_length = 128)
     name: str = Field(max_length = 500)
-    items: list[str] = Field(max_length = 1_000)
+    items: list[str] = Field(max_length = 10_000)
     createdAt: int
     updatedAt: int
 
