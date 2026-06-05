@@ -3412,3 +3412,80 @@ class TestCudaDriverToolkitMismatchMessage:
             "Write-CudaDriverToolkitMismatch -ToolkitVersion $IncompatibleToolkit "
             "-DriverMaxCuda $DriverMaxCuda"
         ) in source
+
+    def _fake_nvcc(self, tmp_path, release):
+        mock_bin = tmp_path / "nvcc-bin"
+        mock_bin.mkdir()
+        nvcc = mock_bin / "nvcc"
+        nvcc.write_text(
+            textwrap.dedent(
+                f"""\
+                #!/usr/bin/env bash
+                printf '%s\\n' 'Cuda compilation tools, release {release}, V{release}.0'
+                """
+            ),
+            encoding = "utf-8",
+        )
+        nvcc.chmod(0o755)
+        return nvcc
+
+    def test_setup_sh_parses_cuda_umd_version_variant(self, tmp_path):
+        # Newer drivers report "CUDA UMD Version"; the helper must read it too.
+        mock_bin = self._fake_nvidia_smi(
+            tmp_path,
+            "| NVIDIA-SMI 610.00   Driver Version: 610.00   CUDA UMD Version: 13.0 |",
+        )
+        script = textwrap.dedent(
+            f"""\
+            set -euo pipefail
+            {self._setup_sh_cuda_helper_fragment()}
+            printf '%s' "$(_cuda_driver_max_version)"
+            """
+        )
+        output = self._run_bash(
+            script,
+            env = {"PATH": f"{mock_bin}:{os.environ.get('PATH', '')}"},
+        )
+        assert output.strip() == "13.0"
+
+    def test_setup_sh_empty_toolkit_version_skips_mismatch(self, tmp_path):
+        # The real guard requires a non-empty nvcc version before warning.
+        mock_bin = self._fake_nvidia_smi(
+            tmp_path,
+            "| NVIDIA-SMI 580.95   Driver Version: 580.95   CUDA Version: 13.0 |",
+        )
+        script = textwrap.dedent(
+            f"""\
+            set -euo pipefail
+            C_WARN=
+            substep() {{ printf '%s\\n' "$1"; }}
+            {self._setup_sh_cuda_helper_fragment()}
+            _nvcc=""
+            _driver="$(_cuda_driver_max_version)"
+            if [ -n "$_nvcc" ] && [ -n "$_driver" ] && _cuda_version_gt "$_nvcc" "$_driver"; then
+                _print_cuda_driver_toolkit_mismatch "$_nvcc" "$_driver"
+            else
+                printf 'skipped\\n'
+            fi
+            """
+        )
+        output = self._run_bash(
+            script,
+            env = {"PATH": f"{mock_bin}:{os.environ.get('PATH', '')}"},
+        )
+        assert "skipped" in output
+        assert "Unsloth supports CUDA Toolkit" not in output
+
+    def test_setup_sh_nvcc_below_minimum_is_too_old(self, tmp_path):
+        # CUDA toolkit < 12.4 short-circuits to the too_old branch (no mismatch).
+        nvcc = self._fake_nvcc(tmp_path, "12.0")
+        script = textwrap.dedent(
+            f"""\
+            set -euo pipefail
+            {self._setup_sh_cuda_helper_fragment()}
+            _nvcc_meets_llama_minimum "{nvcc}"
+            """
+        )
+        output = self._run_bash(script)
+        assert output.splitlines()[0] == "too_old"
+        assert "12.0" in output
