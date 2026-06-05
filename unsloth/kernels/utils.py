@@ -292,7 +292,7 @@ _LORA_MLP_KERNEL_MODEL_TYPES: frozenset = frozenset(
 
 def quant_act(x: torch.Tensor):
     """Per-row INT8 quantisation for storing activations in the backward pass."""
-    scale = x.abs().amax(dim = -1, keepdim = True).clamp(min = 1e-8).to(x.dtype)
+    scale = x.abs().amax(dim = -1, keepdim = True).clamp(min = 1e-8).div(127).to(x.dtype)
     x_q = (x.float() / scale.float()).round().clamp(-128, 127).to(torch.int8)
     return x_q, scale
 
@@ -310,6 +310,7 @@ class _Int8LoRALinear(torch.autograd.Function):
     """
 
     @staticmethod
+    @torch_amp_custom_fwd
     def forward(ctx, x, weight):
         orig_shape = x.shape
         x_flat = x.reshape(-1, x.shape[-1])
@@ -319,6 +320,7 @@ class _Int8LoRALinear(torch.autograd.Function):
         return torch.mm(x_flat, weight.T).view(*orig_shape[:-1], weight.shape[0])
 
     @staticmethod
+    @torch_amp_custom_bwd
     def backward(ctx, grad_out):
         x_q, x_s, weight = ctx.saved_tensors
         x_flat = dequant_act(x_q, x_s)
@@ -344,7 +346,7 @@ def patch_lora_for_int8_activations(model) -> object:
         # LoRA_MLP kernel already applies INT8 compression for these models.
         return model
 
-    if getattr(model, "is_gradient_checkpointing", False):
+    if getattr(model, "gradient_checkpointing", False):
         warnings.warn(
             "Unsloth: UNSLOTH_QUANTIZE_ACTIVATIONS has no effect when gradient "
             "checkpointing is enabled — activations are recomputed rather than "
