@@ -85,6 +85,7 @@ import {
   RefreshCwIcon,
   SquareIcon,
   TerminalIcon,
+  Volume2Icon,
   XIcon,
 } from "lucide-react";
 import {
@@ -1448,12 +1449,60 @@ const CopyButton: FC = () => {
   );
 };
 
+const SpeakButton: FC = () => {
+  const aui = useAui();
+  const [isSpeaking, setIsSpeaking] = useState(false);
+  const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (utteranceRef.current) {
+        window.speechSynthesis.cancel();
+      }
+    };
+  }, []);
+
+  const handleSpeak = () => {
+    if (isSpeaking) {
+      window.speechSynthesis.cancel();
+      utteranceRef.current = null;
+      setIsSpeaking(false);
+      return;
+    }
+    const text = aui.message().getCopyText();
+    if (!text) return;
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.onend = () => setIsSpeaking(false);
+    utterance.onerror = () => setIsSpeaking(false);
+    utteranceRef.current = utterance;
+    window.speechSynthesis.speak(utterance);
+    setIsSpeaking(true);
+  };
+
+  return (
+    <TooltipIconButton
+      tooltip={isSpeaking ? "Stop speaking" : "Speak"}
+      onClick={handleSpeak}
+    >
+      {isSpeaking ? (
+        <SquareIcon
+          strokeWidth={1.75}
+          className="size-icon animate-pulse fill-current"
+        />
+      ) : (
+        <Volume2Icon strokeWidth={1.75} className="size-icon" />
+      )}
+    </TooltipIconButton>
+  );
+};
+
 const AssistantActionBar: FC = () => {
   return (
     <ActionBarPrimitive.Root
       hideWhenRunning={true}
       className="aui-assistant-action-bar-root col-start-3 row-start-2 flex items-center gap-1 text-chat-icon-fg [&_button:not([data-slot=message-timing-trigger])]:size-8 [&_button]:!rounded-[10px] [&_button:hover]:bg-chat-icon-bg-hover [&_button:hover]:text-chat-icon-fg-hover"
     >
+      <SpeakButton />
       <CopyButton />
       <ActionBarPrimitive.Reload asChild={true}>
         <TooltipIconButton tooltip="Refresh">
