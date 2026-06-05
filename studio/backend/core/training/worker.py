@@ -1101,7 +1101,71 @@ def _mlx_vlm_max_resized_size(width: int, height: int, target: int) -> tuple[int
     return new_w, new_h
 
 
-def _resize_mlx_vlm_image(image, resize):
+_MLX_VLM_RESIZED_IMAGE_LAYOUT_CACHE = {}
+
+
+def _mlx_vlm_resized_image_layout(processor = None) -> str | None:
+    """Return the numpy image layout expected after Studio-side VLM resizing."""
+    image_processor = getattr(processor, "image_processor", None)
+    if image_processor is None:
+        return None
+    cls = image_processor.__class__
+    key = (getattr(cls, "__module__", ""), getattr(cls, "__qualname__", cls.__name__))
+    if key in _MLX_VLM_RESIZED_IMAGE_LAYOUT_CACHE:
+        return _MLX_VLM_RESIZED_IMAGE_LAYOUT_CACHE[key]
+    copied_image_processor = _copy_mlx_vlm_image_processor(image_processor)
+    layout = (
+        _probe_mlx_vlm_numpy_image_layout(copied_image_processor)
+        if copied_image_processor is not None
+        else None
+    )
+    _MLX_VLM_RESIZED_IMAGE_LAYOUT_CACHE[key] = layout
+    return layout
+
+
+def _copy_mlx_vlm_image_processor(image_processor):
+    import copy
+
+    try:
+        return copy.deepcopy(image_processor)
+    except Exception:
+        try:
+            return copy.copy(image_processor)
+        except Exception:
+            return None
+
+
+def _probe_mlx_vlm_numpy_image_layout(image_processor) -> str | None:
+    try:
+        import numpy as np
+    except ImportError:
+        return None
+
+    def _accepts(candidate) -> bool:
+        try:
+            image_processor(images = [candidate])
+            return True
+        except TypeError:
+            try:
+                image_processor([candidate])
+                return True
+            except Exception:
+                return False
+        except Exception:
+            return False
+
+    # Use an asymmetric image so CHW-vs-HWC mistakes are visible to processors
+    # that skip conversion for 3D numpy arrays.
+    hwc = np.zeros((64, 96, 3), dtype = np.uint8)
+    chw = np.ascontiguousarray(hwc.transpose(2, 0, 1))
+    if _accepts(hwc):
+        return None
+    if _accepts(chw):
+        return "chw"
+    return None
+
+
+def _resize_mlx_vlm_image(image, resize, image_layout = None):
     if resize is None:
         return image
     try:
@@ -1119,16 +1183,22 @@ def _resize_mlx_vlm_image(image, resize):
     # When a resize is requested, hand mlx-vlm a writable RGB ndarray so its
     # PIL-path square-resize is skipped and HF processors don't warn on
     # non-writable views. resize=None (Default) above keeps the original PIL.
-    return np.array(image, copy = True)
+    array = np.array(image, copy = True)
+    if image_layout == "chw":
+        return np.ascontiguousarray(array.transpose(2, 0, 1))
+    return array
 
 
-def _resize_mlx_vlm_images(value, resize):
+def _resize_mlx_vlm_images(value, resize, image_layout = None):
     if isinstance(value, list):
-        return [_resize_mlx_vlm_image(image, resize) for image in value]
-    return _resize_mlx_vlm_image(value, resize)
+        return [
+            _resize_mlx_vlm_image(image, resize, image_layout = image_layout)
+            for image in value
+        ]
+    return _resize_mlx_vlm_image(value, resize, image_layout = image_layout)
 
 
-def _adapt_for_mlx_vlm(items, resize = None):
+def _adapt_for_mlx_vlm(items, resize = None, image_layout = None):
     """Adapt GPU-path VLM dataset output for mlx-vlm consumption.
 
     The GPU path embeds PIL images inside messages content as
@@ -1148,7 +1218,13 @@ def _adapt_for_mlx_vlm(items, resize = None):
                     if isinstance(part, dict) and part.get("type") == "image":
                         img = part.get("image")
                         if img is not None:
-                            images.append(_resize_mlx_vlm_image(img, resize))
+                            images.append(
+                                _resize_mlx_vlm_image(
+                                    img,
+                                    resize,
+                                    image_layout = image_layout,
+                                )
+                            )
                         new_content.append({"type": "image"})
                     else:
                         new_content.append(part)
@@ -1159,9 +1235,17 @@ def _adapt_for_mlx_vlm(items, resize = None):
         if images:
             out["image"] = images[0] if len(images) == 1 else images
         elif "image" in item:
-            out["image"] = _resize_mlx_vlm_images(item["image"], resize)
+            out["image"] = _resize_mlx_vlm_images(
+                item["image"],
+                resize,
+                image_layout = image_layout,
+            )
         elif "images" in item:
-            out["images"] = _resize_mlx_vlm_images(item["images"], resize)
+            out["images"] = _resize_mlx_vlm_images(
+                item["images"],
+                resize,
+                image_layout = image_layout,
+            )
         adapted.append(out)
     return adapted
 
@@ -1355,7 +1439,6 @@ def _run_mlx_training(event_queue, stop_queue, config):
             "status",
             status_message = f"MLX vision image resize: {vision_image_size} (max dimension)",
         )
-
     # ── 2. Apply LoRA / full FT ──
     # Pass gradient_checkpointing as string ("mlx"/"unsloth"/"none"/etc.)
     # get_peft_model and MLXTrainer both accept strings and handle them.
@@ -1489,9 +1572,15 @@ def _run_mlx_training(event_queue, stop_queue, config):
                 progress_callback = _fmt_progress,
             )
             if vlm_info.get("success"):
+                vision_image_layout = (
+                    _mlx_vlm_resized_image_layout(tokenizer)
+                    if vision_image_size is not None
+                    else None
+                )
                 dataset = _adapt_for_mlx_vlm(
                     vlm_info["dataset"],
                     resize = vision_image_size,
+                    image_layout = vision_image_layout,
                 )
             else:
                 errors = vlm_info.get("errors", [])
@@ -1507,9 +1596,15 @@ def _run_mlx_training(event_queue, stop_queue, config):
                     dataset_name = hf_dataset or "local",
                 )
                 if ev_info.get("success"):
+                    vision_image_layout = (
+                        _mlx_vlm_resized_image_layout(tokenizer)
+                        if vision_image_size is not None
+                        else None
+                    )
                     eval_dataset = _adapt_for_mlx_vlm(
                         ev_info["dataset"],
                         resize = vision_image_size,
+                        image_layout = vision_image_layout,
                     )
 
         elif format_type:
