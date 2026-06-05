@@ -333,7 +333,6 @@ elif DEVICE_TYPE == "xpu":
 
 from .models import *
 from .models import __version__
-from .models import check_dataset_for_missing_videos
 from .save import *
 from .chat_templates import *
 from .tokenizer_utils import *

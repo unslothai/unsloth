@@ -38,6 +38,7 @@ from unsloth_zoo.training_utils import (
 from unsloth_zoo.vision_utils import (
     UnslothVisionDataCollator as _UnslothVisionDataCollatorBase,
 )
+from unsloth.models.vision import check_dataset_for_missing_videos
 from unsloth_zoo.hf_utils import get_transformers_model_type
 from unsloth_zoo.utils import Version
 import dataclasses
@@ -49,6 +50,7 @@ __all__ = [
     "_patch_trl_trainer",
     "UnslothVisionDataCollator",
     "QGaloreConfig",
+    "check_dataset_for_missing_videos",
 ]
 
 logger = logging.getLogger(__name__)
@@ -75,8 +77,6 @@ class UnslothVisionDataCollator(_UnslothVisionDataCollatorBase):
         self._checked_video_paths = set()
 
     def __call__(self, examples):
-        from unsloth.models.vision import check_dataset_for_missing_videos
-
         formatting_func = self.formatting_func
         if formatting_func is not None:
             examples = [formatting_func(example) for example in examples]

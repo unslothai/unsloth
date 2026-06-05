@@ -448,9 +448,10 @@ def test_windows_style_absolute_path_not_mistaken_for_scheme(
 def test_iterable_dataset_warns_and_skips(check_dataset_for_missing_videos):
     """Passing a streaming IterableDataset must warn and return [] without
     exhausting the iterator."""
-    IterableDataset = pytest.importorskip(
-        "datasets", reason = "real datasets package required"
-    ).IterableDataset
+    datasets_mod = pytest.importorskip("datasets", reason = "real datasets package required")
+    if not hasattr(datasets_mod, "IterableDataset"):
+        pytest.skip("datasets.IterableDataset not available in this environment")
+    IterableDataset = datasets_mod.IterableDataset
 
     def gen():
         for p in ("/nonexistent/a.mp4", "/nonexistent/b.mp4"):
