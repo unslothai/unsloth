@@ -1907,7 +1907,7 @@ async def generate_audio(
             top_p = payload.top_p,
             top_k = payload.top_k,
             min_p = payload.min_p,
-            max_new_tokens = payload.max_tokens or 2048,
+            max_new_tokens = _effective_max_tokens(payload) or 2048,
             repetition_penalty = payload.repetition_penalty,
         )
     else:
@@ -1926,7 +1926,7 @@ async def generate_audio(
             top_p = payload.top_p,
             top_k = payload.top_k,
             min_p = payload.min_p,
-            max_new_tokens = payload.max_tokens or 2048,
+            max_new_tokens = _effective_max_tokens(payload) or 2048,
             repetition_penalty = payload.repetition_penalty,
             use_adapter = payload.use_adapter,
         )
@@ -2861,7 +2861,7 @@ async def openai_chat_completions(
                     top_p = payload.top_p,
                     top_k = payload.top_k,
                     min_p = payload.min_p,
-                    max_new_tokens = payload.max_tokens or 2048,
+                    max_new_tokens = _effective_max_tokens(payload) or 2048,
                     repetition_penalty = payload.repetition_penalty,
                     cancel_event = cancel_event,
                 )
