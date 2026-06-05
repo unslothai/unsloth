@@ -14,7 +14,6 @@ import {
   type PendingAttachment,
   type ThreadHistoryAdapter,
   type ThreadMessage,
-  WebSpeechDictationAdapter,
   type unstable_RemoteThreadListAdapter,
   useAui,
   useAuiEvent,
@@ -34,7 +33,11 @@ import {
 } from "react";
 import { extractText, getDocumentProxy } from "unpdf";
 import { toast } from "sonner";
-import { createOpenAIStreamAdapter } from "./api/chat-adapter";
+import { StudioWebSpeechDictationAdapter } from "./adapters/studio-web-speech-dictation-adapter";
+import {
+  ThreadAutosaveHandle,
+  createOpenAIStreamAdapter,
+} from "./api/chat-adapter";
 import {
   loadConnectionsEnabled,
   loadExternalProviders,
@@ -190,7 +193,21 @@ class PDFAttachmentAdapter implements AttachmentAdapter {
 }
 
 class TextAttachmentAdapter implements AttachmentAdapter {
-  accept = "text/plain,text/markdown,text/csv,text/xml,text/json,text/css";
+  // MIME is unreliable for source files, so also match by extension
+  // (assistant-ui's fileMatchesAccept supports ".ext" entries). Covers
+  // svg, code, config and other plain-text formats; html keeps its own
+  // adapter below.
+  accept = [
+    "text/plain,text/markdown,text/csv,text/xml,text/json,text/css",
+    "application/json,application/xml,image/svg+xml",
+    ".txt,.text,.log,.md,.markdown,.mdx,.rst,.csv,.tsv",
+    ".json,.jsonl,.ndjson,.xml,.yaml,.yml,.toml,.ini,.cfg,.conf,.env,.properties",
+    ".css,.scss,.sass,.less,.svg",
+    ".js,.jsx,.mjs,.cjs,.ts,.tsx,.py,.pyi,.ipynb,.rb,.php,.go,.rs,.java,.kt,.kts,.scala,.swift",
+    ".c,.h,.cc,.cpp,.hpp,.cxx,.cs,.m,.mm",
+    ".sh,.bash,.zsh,.fish,.ps1,.bat,.lua,.pl,.pm,.r,.jl,.dart,.vue,.svelte,.astro",
+    ".sql,.graphql,.gql,.proto,.tf,.tfvars,.gradle,.dockerfile,.makefile,.cmake,.diff,.patch",
+  ].join(",");
 
   async add({ file }: { file: File }): Promise<PendingAttachment> {
     return {
@@ -962,8 +979,8 @@ function useStudioRuntimeAdapters(
 
   const dictation = useMemo(
     () =>
-      WebSpeechDictationAdapter.isSupported()
-        ? new WebSpeechDictationAdapter()
+      StudioWebSpeechDictationAdapter.isSupported()
+        ? new StudioWebSpeechDictationAdapter()
         : undefined,
     [],
   );
@@ -1118,6 +1135,13 @@ function ThreadBackendAutosave({
 }): ReactElement | null {
   const aui = useAui();
   const saveChainRef = useRef(Promise.resolve());
+  const pendingFirstSavesRef = useRef(new Map<string, Promise<void>>());
+
+  const reportAutosaveError = useCallback((error: unknown): void => {
+    if (!isExpectedBackgroundChatStorageError(error)) {
+      console.error("Failed to autosave chat thread", error);
+    }
+  }, []);
 
   const saveThread = useCallback(
     async (threadId: string): Promise<void> => {
@@ -1159,14 +1183,30 @@ function ThreadBackendAutosave({
     (threadId: string): void => {
       saveChainRef.current = saveChainRef.current
         .catch(() => {})
-        .then(() => saveThread(threadId))
-        .catch((error) => {
-          if (!isExpectedBackgroundChatStorageError(error)) {
-            console.error("Failed to autosave chat thread", error);
-          }
-        });
+        .then(async () => {
+          await pendingFirstSavesRef.current.get(threadId);
+          await saveThread(threadId);
+        })
+        .catch(reportAutosaveError);
     },
-    [saveThread],
+    [reportAutosaveError, saveThread],
+  );
+
+  const saveFirstThreadSnapshot = useCallback(
+    (threadId: string): void => {
+      if (pendingFirstSavesRef.current.has(threadId)) {
+        return;
+      }
+
+      const promise = saveThread(threadId)
+        .catch(reportAutosaveError)
+        .finally(() => {
+          pendingFirstSavesRef.current.delete(threadId);
+        });
+      pendingFirstSavesRef.current.set(threadId, promise);
+      ThreadAutosaveHandle.registerFirstSave(threadId, promise);
+    },
+    [reportAutosaveError, saveThread],
   );
 
   useAuiEvent("thread.runEnd", ({ threadId }) => {
@@ -1174,6 +1214,13 @@ function ThreadBackendAutosave({
   });
 
   useAuiEvent("thread.runStart", ({ threadId }) => {
+    const runtime = aui.threads().__internal_getAssistantRuntime?.();
+    const { remoteId } =
+      runtime?.threads.getItemById(threadId).getState() ?? {};
+    if (!remoteId) {
+      saveFirstThreadSnapshot(threadId);
+      return;
+    }
     queueSave(threadId);
   });
 

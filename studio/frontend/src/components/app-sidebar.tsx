@@ -46,12 +46,12 @@ import { useAnimatedThemeToggle } from "@/components/ui/animated-theme-toggler";
 import { cn } from "@/lib/utils";
 import {
   ChefHatIcon,
-  ColumnInsertIcon,
   CursorInfo02Icon,
   Delete02Icon,
   DownloadSquare01Icon,
   Edit03Icon,
   FolderAddIcon,
+  FolderExportIcon,
   Folder01Icon,
   Globe02Icon,
   HelpCircleIcon,
@@ -192,6 +192,7 @@ function NavItem({
   onClick,
   children,
   dataTour,
+  className,
 }: {
   icon: typeof ZapIcon;
   label: string;
@@ -200,9 +201,10 @@ function NavItem({
   onClick: () => void;
   children?: ReactNode;
   dataTour?: string;
+  className?: string;
 }) {
   return (
-    <SidebarMenuItem>
+    <SidebarMenuItem className={className}>
       <div className="relative">
         <SidebarMenuButton
           tooltip={label}
@@ -210,7 +212,7 @@ function NavItem({
           onClick={onClick}
           isActive={active}
           data-tour={dataTour}
-          className="sidebar-nav-btn h-[33px] rounded-[10px] gap-[8.5px] px-2.5 font-medium group-data-[collapsible=icon]:!w-[32px] group-data-[collapsible=icon]:!rounded-[10px] group-data-[collapsible=icon]:mx-auto"
+          className="sidebar-nav-btn h-[33px] rounded-[11px] gap-[8.5px] px-2.5 font-medium group-data-[collapsible=icon]:!w-[32px] group-data-[collapsible=icon]:!rounded-[10px] group-data-[collapsible=icon]:mx-auto"
         >
           <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-icon! shrink-0 group-hover/menu-button:animate-icon-pop" />
           <span className="text-[14.5px] leading-[19px] tracking-nav">{label}</span>
@@ -550,7 +552,7 @@ export function AppSidebar() {
         ? "sidebar-row-action group-hover/project-chat-item:opacity-100 group-hover/project-chat-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto"
         : "sidebar-row-action group-hover/recent-item:opacity-100 group-hover/recent-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto";
     const buttonClass = cn(
-      "sidebar-nav-btn h-[33px] cursor-pointer rounded-[10px] pr-4 text-[14.5px] leading-[19px] tracking-nav font-medium",
+      "sidebar-nav-btn h-[33px] cursor-pointer rounded-[11px] pr-4 text-[14.5px] leading-[19px] tracking-nav font-medium",
       variant === "project" ? "pl-[37px]" : "pl-2.5",
       variant === "project"
         ? "group-hover/project-chat-item:pr-8 group-has-[.sidebar-row-action[data-state=open]]/project-chat-item:pr-8"
@@ -599,9 +601,9 @@ export function AppSidebar() {
           </DropdownMenuTrigger>
           <DropdownMenuContent
             side="bottom"
-            align="end"
-            sideOffset={4}
-            className="app-user-menu menu-soft-surface menu-flat-destructive ring-0 w-44 py-2 font-heading rounded-[14px] border-0"
+            align="start"
+            sideOffset={6}
+            className="unsloth-plus-menu menu-flat-destructive w-52"
           >
             <DropdownMenuItem onSelect={() => openRenameChat(item)}>
               <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
@@ -609,13 +611,13 @@ export function AppSidebar() {
             </DropdownMenuItem>
             <DropdownMenuSub>
               <DropdownMenuSubTrigger>
-                <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} className="size-icon" />
+                <HugeiconsIcon icon={FolderExportIcon} strokeWidth={1.75} className="size-icon" />
                 <span>Move to project</span>
               </DropdownMenuSubTrigger>
               <DropdownMenuSubContent
                 sideOffset={8}
                 alignOffset={-4}
-                className="app-user-menu menu-soft-surface menu-flat-destructive ring-0 w-56 py-2 font-heading rounded-[14px] border-0"
+                className="unsloth-plus-menu w-52"
               >
                 <DropdownMenuItem
                   onSelect={() => {
@@ -755,25 +757,6 @@ export function AppSidebar() {
               onClick={() => openNewChat(null)}
             />
             <NavItem
-              icon={ColumnInsertIcon}
-              label={t("shell.navigation.compare")}
-              active={
-                !!search.compare &&
-                !chatItems.some((i) => i.id === search.compare)
-              }
-              disabled={chatDisabled}
-              dataTour="chat-compare"
-              onClick={() => {
-                if (chatDisabled) return;
-                setActiveThreadId(null);
-                navigate({
-                  to: "/chat",
-                  search: { compare: createNavigationNonce() },
-                });
-                closeMobileIfOpen();
-              }}
-            />
-            <NavItem
               icon={Search01Icon}
               label={t("shell.navigation.search")}
               active={false}
@@ -813,6 +796,22 @@ export function AppSidebar() {
                   closeMobileIfOpen();
                 }}
               />
+              {/* Train has its own labelled section when expanded; surface it as
+                  a plain icon here only while the sidebar is collapsed. */}
+              <NavItem
+                icon={TestTubeOutlineIcon}
+                label={t("shell.navigation.train")}
+                active={
+                  pathname === "/studio" || pathname.startsWith("/studio/")
+                }
+                disabled={chatOnly}
+                onClick={() => {
+                  if (chatOnly) return;
+                  navigate({ to: "/studio" });
+                  closeMobileIfOpen();
+                }}
+                className="hidden group-data-[collapsible=icon]:block"
+              />
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
@@ -822,7 +821,7 @@ export function AppSidebar() {
             <SidebarGroupLabel className={cn("sidebar-sticky-label sidebar-sticky-label-following", scrolled && "is-scrolled")} asChild>
               <CollapsibleTrigger className="cursor-pointer flex w-full items-center gap-1 group/sb-collap">
                 {t("shell.navigation.train")}
-                <ChevronDown className="size-3.5 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg]" />
+                <ChevronDown className="size-3.5 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg] [[data-state=closed]_&]:opacity-100" />
               </CollapsibleTrigger>
             </SidebarGroupLabel>
             <CollapsibleContent>
@@ -871,7 +870,7 @@ export function AppSidebar() {
               <SidebarGroupLabel className={cn("sidebar-sticky-label sidebar-sticky-label-following", scrolled && "is-scrolled")} asChild>
                 <CollapsibleTrigger className="cursor-pointer flex w-full items-center gap-1 group/sb-collap">
                   {t("shell.navigation.recents")}
-                  <ChevronDown className="size-3.5 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg]" />
+                  <ChevronDown className="size-3.5 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg] [[data-state=closed]_&]:opacity-100" />
                 </CollapsibleTrigger>
               </SidebarGroupLabel>
               <CollapsibleContent>
@@ -893,7 +892,7 @@ export function AppSidebar() {
             <SidebarGroupLabel className={cn("sidebar-sticky-label sidebar-sticky-label-following", scrolled && "is-scrolled")} asChild>
               <CollapsibleTrigger className="cursor-pointer flex w-full items-center gap-1 group/sb-collap">
                 {t("shell.navigation.recents")}
-                <ChevronDown className="size-3.5 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg]" />
+                <ChevronDown className="size-3.5 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg] [[data-state=closed]_&]:opacity-100" />
               </CollapsibleTrigger>
             </SidebarGroupLabel>
             <CollapsibleContent>
@@ -917,7 +916,7 @@ export function AppSidebar() {
                       >
                         <SidebarMenuButton
                           isActive={isActiveRun}
-                          className="sidebar-nav-btn h-auto flex-col items-start gap-0.5 py-[5px] rounded-[10px] pl-2.5 pr-7 text-[14.5px] tracking-nav font-medium"
+                          className="sidebar-nav-btn h-auto flex-col items-start gap-0.5 py-[5px] rounded-[11px] pl-2.5 pr-7 text-[14.5px] tracking-nav font-medium"
                           onClick={() => {
                             setSelectedHistoryRunId(run.id);
                             closeMobileIfOpen();
@@ -1007,14 +1006,14 @@ export function AppSidebar() {
                 <SidebarMenuButton
                   size="lg"
                   aria-label={t("shell.accountMenu", { name: displayTitle })}
-                  className="sidebar-nav-btn !h-[40px] gap-[8px] px-2 py-[5px] rounded-[10px]"
+                  className="sidebar-nav-btn !h-[44px] gap-[9px] px-2 py-[3px] rounded-[14px]"
                 >
                   <div className="shrink-0">
                     <UserAvatar
                       name={displayTitle}
                       imageUrl={avatarDataUrl}
                       size="sm"
-                      className="!size-[30px]"
+                      className="!size-[32px]"
                     />
                   </div>
                   <div className="flex flex-col gap-0.5 leading-tight group-data-[collapsible=icon]:hidden">
@@ -1026,8 +1025,9 @@ export function AppSidebar() {
               </DropdownMenuTrigger>
               <DropdownMenuContent
                 side="top"
-                align="start"
-                className="app-user-menu menu-soft-surface-up ring-0 w-[15rem] py-2.5 font-heading rounded-[14px] border-0"
+                align="center"
+                sideOffset={6}
+                className="app-user-menu menu-soft-surface-up ring-0 w-[16rem] px-1.5 py-2.5 font-heading rounded-[20px] border-0"
               >
                 <DropdownMenuGroup>
                   <DropdownMenuItem

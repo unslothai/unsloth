@@ -99,6 +99,36 @@ function canUseStorage(): boolean {
   return typeof window !== "undefined";
 }
 
+function getBillionScaleModelSize(modelId: string): number | null {
+  const match = modelId.match(
+    /(?:^|[^a-z0-9])(\d+(?:\.\d+)?)\s*b(?:[^a-z0-9]|$)/i,
+  );
+  if (!match) return null;
+  const parsed = Number.parseFloat(match[1]);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function isLikelyMtpModel(modelId: string | null | undefined): boolean {
+  if (!modelId) return false;
+  if (!/(?:^|[^a-z0-9])mtp(?:[^a-z0-9]|$)/i.test(modelId)) return false;
+  const size = getBillionScaleModelSize(modelId);
+  return size == null || size >= 3;
+}
+
+function speculativeModeMayUseMtp(
+  mode: string | null | undefined,
+  modelId: string | null | undefined,
+): boolean {
+  const normalized = mode?.trim().toLowerCase() || "auto";
+  if (normalized === "mtp" || normalized === "mtp+ngram") return true;
+  if (normalized === "draft-mtp") return true;
+  if (normalized.includes("draft-mtp")) return true;
+  return (
+    (normalized === "auto" || normalized === "default") &&
+    isLikelyMtpModel(modelId)
+  );
+}
+
 export function InfoHint({ children }: { children: ReactNode }) {
   return (
     <Tooltip>
@@ -515,6 +545,22 @@ export function ChatSettingsPanel({
     visionProjectorEnabled !== loadedVisionProjectorEnabled;
   const modelSettingsDirty =
     kvDirty || ctxDirty || specDirty || specDraftDirty || visionProjectorDirty;
+  const warnIfMmprojMtpSelected = (
+    nextSpeculativeType: string | null | undefined = speculativeType,
+    nextVisionProjectorEnabled: boolean = visionProjectorEnabled,
+  ) => {
+    if (
+      !isGguf ||
+      !nextVisionProjectorEnabled ||
+      !speculativeModeMayUseMtp(nextSpeculativeType, currentCheckpoint)
+    ) {
+      return;
+    }
+    toast.warning("Vision Projector may not work well with MTP", {
+      description:
+        "If image input behaves poorly, set Speculative Decoding to Off or disable Vision Projector before applying.",
+    });
+  };
   const chatTemplateOverride = useChatRuntimeStore(
     (s) => s.chatTemplateOverride,
   );
@@ -736,18 +782,17 @@ export function ChatSettingsPanel({
 
   const settingsContent = (
     <>
-      <div
-        ref={settingsScrollRef}
-        className="relative h-full overflow-y-auto"
-      >
-      <div className="sticky top-0 z-10 flex h-[48px] items-start gap-2 bg-panel-surface pl-[18px] pr-[16px] pt-[11px]">
+      <div className="flex h-full min-h-0 flex-col">
+      {/* Header sits outside the scroll area so the scrollbar never shifts the
+          close button. */}
+      <div className="flex h-[48px] shrink-0 items-start gap-2 bg-panel-surface pl-[18px] pr-[16px] pt-[11px]">
         {isMobile ? (
-          <span className="flex h-[34px] flex-1 items-center text-[15px] font-semibold tracking-[0em] dark:tracking-[0.015em] text-nav-fg">
+          <span className="flex h-[34px] flex-1 items-center text-[16px] font-semibold tracking-[0em] dark:tracking-[0.015em] text-nav-fg">
             Run settings
           </span>
         ) : (
           <>
-            <span className="flex h-[34px] flex-1 items-center text-[15px] font-semibold tracking-[0em] dark:tracking-[0.015em] text-nav-fg">
+            <span className="flex h-[34px] flex-1 items-center text-[16px] font-semibold tracking-[0em] dark:tracking-[0.015em] text-nav-fg">
               Run settings
             </span>
             <Tooltip>
@@ -777,6 +822,10 @@ export function ChatSettingsPanel({
         )}
       </div>
 
+      <div
+        ref={settingsScrollRef}
+        className="run-settings-scroll relative min-h-0 flex-1 overflow-y-auto"
+      >
       <div className="px-[18px] pt-3">
         {hasModelContent && (
         <CollapsibleSection label="Model" defaultOpen={true} first>
@@ -889,6 +938,7 @@ export function ChatSettingsPanel({
                       value={speculativeType ?? "auto"}
                       onValueChange={(v) => {
                         setSpeculativeType(v);
+                        warnIfMmprojMtpSelected(v);
                         if (v !== "mtp" && v !== "mtp+ngram") {
                           setSpecDraftNMax(null);
                         }
@@ -967,7 +1017,10 @@ export function ChatSettingsPanel({
                   <Switch
                     className="panel-switch shrink-0"
                     checked={visionProjectorEnabled}
-                    onCheckedChange={setVisionProjectorEnabled}
+                    onCheckedChange={(checked) => {
+                      setVisionProjectorEnabled(checked);
+                      warnIfMmprojMtpSelected(speculativeType, checked);
+                    }}
                     aria-label="Load vision projector"
                   />
                 </div>
@@ -1010,7 +1063,10 @@ export function ChatSettingsPanel({
               <div className="flex flex-wrap gap-1.5 pt-1">
                 <Button
                   type="button"
-                  onClick={() => onReloadModel?.()}
+                  onClick={() => {
+                    warnIfMmprojMtpSelected();
+                    onReloadModel?.();
+                  }}
                   size="sm"
                   className="h-7 px-3 text-[12px] font-medium tracking-nav bg-primary/92 text-primary-foreground hover:bg-primary"
                 >
@@ -1405,6 +1461,7 @@ export function ChatSettingsPanel({
             </div>
           </CollapsibleSection>
         ) : null}
+      </div>
       </div>
       </div>
       <Dialog

@@ -7,17 +7,15 @@ import { Loader2Icon } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 /**
- * App-wide spinner: a clean circular arc with a rounded cap (lucide
- * Loader2 / LoaderCircle), animated, inheriting the current text color.
+ * Spinner shown while a tool call is running: a clean circular arc with a
+ * rounded cap (lucide Loader2 / LoaderCircle), animated. Inherits the current
+ * text color so it matches the surrounding font.
  */
-function Spinner({ className }: { className?: string }) {
+export function ToolCallSpinner({ className }: { className?: string }) {
   return (
     <Loader2Icon
-      role="status"
       aria-label="Loading"
       className={cn("size-4 shrink-0 animate-spin", className)}
     />
   );
 }
-
-export { Spinner };
