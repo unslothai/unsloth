@@ -323,11 +323,11 @@ def test_functional_equivalence_audio_vlm_match():
     with FakeLlamaServer(
         detok_map = {128258: "non-snac", 128259: "non-snac"},
         tok_response_map = {
-            "<|AUDIO|>": [0, 1],              # csm fails (>1 token)
+            "<|AUDIO|>": [0, 1],  # csm fails (>1 token)
             "<|audio_eos|>": [0, 1],
             "<|startoftranscript|>": [0, 1],  # whisper fails
-            "<audio_soft_token>": [0, 1],     # Gemma 3n arm fails ...
-            "<|audio|>": [0],                 # ... Gemma 4 arm matches (#6000)
+            "<audio_soft_token>": [0, 1],  # Gemma 3n arm fails ...
+            "<|audio|>": [0],  # ... Gemma 4 arm matches (#6000)
         },
     ) as srv:
         backend = _make_backend(srv.port)
