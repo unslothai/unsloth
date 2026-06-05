@@ -768,6 +768,20 @@ class TestGgufVisionMessages:
             {"role": "system", "content": "Use tools."}
         ]
 
+    def test_tool_nudge_system_update_dedupes_non_leading_system(self):
+        messages = [
+            {"role": "user", "content": "earlier"},
+            {"role": "system", "content": "Mid instructions."},
+            {"role": "user", "content": "now"},
+        ]
+
+        updated = _set_or_prepend_system_message(
+            messages, "Mid instructions.\n\nUse tools."
+        )
+
+        assert [m["role"] for m in updated] == ["system", "user", "user"]
+        assert updated[0]["content"] == "Mid instructions.\n\nUse tools."
+
 
 class TestGgufVisionToolRouting:
     class _Request:

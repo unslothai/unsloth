@@ -2780,7 +2780,7 @@ async def openai_chat_completions(
                 detail = "Audio input is not supported for GGUF chat models yet.",
             )
 
-        gguf_messages, has_gguf_image = _openai_messages_for_gguf_chat(
+        gguf_messages, _ = _openai_messages_for_gguf_chat(
             payload,
             llama_backend.is_vision,
         )
@@ -4857,17 +4857,15 @@ def _normalize_anthropic_openai_images(
 def _set_or_prepend_system_message(
     messages: Optional[list[dict]], system_prompt: str
 ) -> list[dict]:
-    """Return messages with a system prompt without dropping multimodal parts."""
+    """Return messages with a single leading system prompt, preserving multimodal parts."""
     safe_messages = messages or []
     if not system_prompt:
         return safe_messages
 
-    updated = [dict(msg) for msg in safe_messages]
-    if updated and updated[0].get("role") == "system":
-        updated[0]["content"] = system_prompt
-        return updated
-
-    return [{"role": "system", "content": system_prompt}, *updated]
+    # Drop existing system turns so the backend never sees duplicate or
+    # conflicting system instructions, then prepend the resolved prompt.
+    others = [dict(msg) for msg in safe_messages if msg.get("role") != "system"]
+    return [{"role": "system", "content": system_prompt}, *others]
 
 
 @router.post("/messages")
