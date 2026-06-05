@@ -21,6 +21,191 @@ from pydantic import (
 )
 
 
+class DiffusionModelSpec(BaseModel):
+    repo_id: Optional[str] = Field(None, min_length = 1, max_length = 1024)
+    family: Optional[str] = Field(None, max_length = 64)
+    base_repo: Optional[str] = Field(None, max_length = 1024)
+    revision: Optional[str] = Field(None, max_length = 128)
+
+    @field_validator("repo_id", "family", "base_repo", "revision")
+    @classmethod
+    def _no_control_chars(cls, v, info):
+        return _no_control_chars(v, info.field_name)
+
+    @field_validator("repo_id", "base_repo")
+    @classmethod
+    def _no_embedded_hf_tokens(cls, v, info):
+        return _reject_embedded_hf_token(v, info.field_name)
+
+
+class DiffusionComponentSpec(BaseModel):
+    format: Optional[Literal["auto", "safetensors", "gguf", "diffusers"]] = Field(
+        None, description = "Component weight format"
+    )
+    repo_id: Optional[str] = Field(None, max_length = 1024)
+    filename: Optional[str] = Field(None, max_length = 512)
+    quantization: Optional[str] = Field(None, max_length = 64)
+    component: Optional[str] = Field(None, max_length = 64)
+
+    @field_validator("format", "repo_id", "filename", "quantization", "component")
+    @classmethod
+    def _no_control_chars(cls, v, info):
+        return _no_control_chars(v, info.field_name)
+
+    @field_validator("repo_id", "filename")
+    @classmethod
+    def _no_embedded_hf_tokens(cls, v, info):
+        return _reject_embedded_hf_token(v, info.field_name)
+
+
+class DiffusionAdapterSpec(BaseModel):
+    type: Literal["lora"] = "lora"
+    repo_id: Optional[str] = Field(None, max_length = 1024)
+    weight_name: Optional[str] = Field(None, max_length = 512)
+    adapter_name: Optional[str] = Field(None, max_length = 128)
+    scale: Optional[float] = Field(None, ge = 0.0, le = 10.0)
+    fuse: bool = False
+
+    @field_validator("repo_id", "weight_name", "adapter_name")
+    @classmethod
+    def _no_control_chars(cls, v, info):
+        return _no_control_chars(v, info.field_name)
+
+    @field_validator("repo_id", "weight_name", "adapter_name")
+    @classmethod
+    def _no_embedded_hf_tokens(cls, v, info):
+        return _reject_embedded_hf_token(v, info.field_name)
+
+    @field_validator("weight_name")
+    @classmethod
+    def _weight_must_be_safetensors(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and not v.lower().endswith(".safetensors"):
+            raise ValueError("LoRA weight_name must point to a .safetensors file")
+        return v
+
+
+class DiffusionRuntimeSpec(BaseModel):
+    device: Optional[Literal["auto", "cpu", "cuda", "rocm", "xpu", "mps"]] = None
+    dtype: Optional[Literal["auto", "float16", "bfloat16", "float32"]] = None
+    memory_mode: Optional[Literal["auto", "fast", "balanced", "low_vram", "manual"]] = (
+        None
+    )
+    offload_policy: Optional[
+        Literal["auto", "aggressive", "balanced", "less_aggressive", "hybrid", "none"]
+    ] = None
+    enable_model_cpu_offload: Optional[bool] = None
+    gguf_quantized_cpu_resident: Optional[bool] = None
+    gguf_pin_cpu_resident: Optional[bool] = None
+    safetensors_quantization: Optional[
+        Literal[
+            "none",
+            "bitsandbytes_4bit",
+            "bitsandbytes_4bit_nf4",
+            "bitsandbytes_8bit",
+            "torchao_int8_weight_only",
+            "torchao_int4_weight_only",
+        ]
+    ] = None
+    safetensors_quantization_components: Optional[
+        List[
+            Literal[
+                "transformer",
+                "unet",
+                "text_encoder",
+                "text_encoder_2",
+                "text_encoder_3",
+                "pe",
+            ]
+        ]
+    ] = None
+    torch_compile: Optional[
+        Literal["auto", "none", "regional", "transformer", "pipeline"]
+    ] = None
+    attention_backend: Optional[
+        Literal["auto", "flash", "sdpa", "flex", "xformers"]
+    ] = None
+
+
+class DiffusionInputSpec(BaseModel):
+    id: Optional[str] = Field(None, max_length = 128)
+    type: Literal["text", "image", "audio", "video"] = "image"
+    role: Optional[str] = Field(None, max_length = 64)
+    text: Optional[str] = Field(None, max_length = 4000)
+    mime: Optional[str] = Field(None, max_length = 128)
+    b64: Optional[str] = Field(None, max_length = 50_000_000)
+
+    @field_validator("id", "role", "mime")
+    @classmethod
+    def _no_control_chars(cls, v, info):
+        return _no_control_chars(v, info.field_name)
+
+
+class DiffusionImageParametersSpec(BaseModel):
+    width: Optional[int] = Field(None, ge = 64, le = 2048)
+    height: Optional[int] = Field(None, ge = 64, le = 2048)
+    num_inference_steps: Optional[int] = Field(None, ge = 1, le = 200)
+    guidance_scale: Optional[float] = Field(None, ge = 0.0, le = 20.0)
+    seed: Optional[int] = Field(None, ge = -(2**63), le = (2**64) - 1)
+    batch_size: Optional[int] = Field(None, ge = 1, le = 16)
+    num_outputs: Optional[int] = Field(None, ge = 1, le = 16)
+
+    @field_validator("width", "height")
+    @classmethod
+    def _multiple_of_eight(cls, v: Optional[int]) -> Optional[int]:
+        if v is not None and v % 8:
+            raise ValueError("width and height must be multiples of 8")
+        return v
+
+
+class DiffusionVideoParametersSpec(BaseModel):
+    width: Optional[int] = Field(None, ge = 64, le = 2048)
+    height: Optional[int] = Field(None, ge = 64, le = 2048)
+    num_frames: Optional[int] = Field(None, ge = 1, le = 513)
+    frame_rate: Optional[float] = Field(None, gt = 0.0, le = 240.0)
+    num_inference_steps: Optional[int] = Field(None, ge = 1, le = 200)
+    guidance_scale: Optional[float] = Field(None, ge = 0.0, le = 20.0)
+    seed: Optional[int] = Field(None, ge = -(2**63), le = (2**64) - 1)
+
+    @field_validator("width", "height")
+    @classmethod
+    def _multiple_of_eight(cls, v: Optional[int]) -> Optional[int]:
+        if v is not None and v % 8:
+            raise ValueError("width and height must be multiples of 8")
+        return v
+
+
+class DiffusionSamplerSpec(BaseModel):
+    name: Optional[str] = Field(None, max_length = 128)
+    scheduler: Optional[str] = Field(None, max_length = 128)
+    guidance_scale: Optional[float] = Field(None, ge = 0.0, le = 20.0)
+    true_cfg_scale: Optional[float] = Field(None, ge = 0.0, le = 20.0)
+    guidance_scale_2: Optional[float] = Field(None, ge = 0.0, le = 20.0)
+    negative_prompt: Optional[str] = Field(None, max_length = 4000)
+
+    @field_validator("name", "scheduler")
+    @classmethod
+    def _no_control_chars(cls, v, info):
+        return _no_control_chars(v, info.field_name)
+
+
+class DiffusionOutputSpec(BaseModel):
+    types: Optional[List[Literal["image", "video"]]] = None
+    format: Optional[Literal["png", "jpeg", "mp4"]] = None
+    return_b64: bool = True
+    return_layers: Optional[Literal["auto", "always", "never"]] = None
+
+
+class DiffusionOutputItem(BaseModel):
+    type: Literal["image", "video"]
+    mime: str
+    b64: str
+    width: Optional[int] = None
+    height: Optional[int] = None
+    num_frames: Optional[int] = None
+    frame_rate: Optional[float] = None
+    role: str = "primary"
+
+
 class LoadRequest(BaseModel):
     """Request to load a model for inference"""
 
@@ -59,6 +244,29 @@ class LoadRequest(BaseModel):
         if value is not None and value.strip() == "":
             return None
         return value
+
+    # Round 20 P1 #5: extend the diffusion-side identifier hardening
+    # (round 5 P2 / round 15 P1 #5) to the chat LoadRequest. Newline
+    # / tab / control characters in ``model_path`` or ``gguf_variant``
+    # would otherwise be echoed verbatim into structured-log lines
+    # ("Loading model %s") and let a caller smuggle in fake log
+    # entries, and an embedded ``hf_...`` token in a URL-form path
+    # would leak the credential into the same log sinks the
+    # diffusion route already redacts.
+    @field_validator("model_path", "gguf_variant")
+    @classmethod
+    def _no_identifier_control_chars(cls, v, info):
+        return _no_control_chars(v, info.field_name)
+
+    # Round 21 P1 #1: also reject embedded HF tokens in
+    # ``gguf_variant``. A caller can pass a variant string like
+    # ``Q4_K_M-hf_xxxxxxxx`` that flows into log sinks via the
+    # GGUF resolver path; without this only ``model_path`` was
+    # protected.
+    @field_validator("model_path", "gguf_variant")
+    @classmethod
+    def _no_embedded_hf_tokens(cls, v, info):
+        return _reject_embedded_hf_token(v, info.field_name)
 
     cache_type_kv: Optional[str] = Field(
         None,
@@ -104,11 +312,46 @@ class LoadRequest(BaseModel):
         ),
     )
 
+    # Round 28 P1 #13: each entry is forwarded verbatim to a logged
+    # subprocess command line and reflected in errors. Reject control
+    # chars and embedded HF tokens for every list entry; allow None.
+    @field_validator("llama_extra_args")
+    @classmethod
+    def _no_extra_args_control_chars(cls, v):
+        if v is None:
+            return v
+        for i, entry in enumerate(v):
+            _no_control_chars(entry, f"llama_extra_args[{i}]")
+        return v
+
+    @field_validator("llama_extra_args")
+    @classmethod
+    def _no_extra_args_embedded_hf_tokens(cls, v):
+        if v is None:
+            return v
+        for i, entry in enumerate(v):
+            _reject_embedded_hf_token(entry, f"llama_extra_args[{i}]")
+        return v
+
 
 class UnloadRequest(BaseModel):
     """Request to unload a model"""
 
     model_path: str = Field(..., description = "Model identifier to unload")
+
+    # Round 20 P1 #5: mirror the LoadRequest identifier hardening so
+    # /api/inference/unload also rejects control characters and
+    # URL-embedded HF tokens before the path reaches structured log
+    # sinks.
+    @field_validator("model_path")
+    @classmethod
+    def _no_identifier_control_chars(cls, v, info):
+        return _no_control_chars(v, info.field_name)
+
+    @field_validator("model_path")
+    @classmethod
+    def _no_embedded_hf_tokens(cls, v, info):
+        return _reject_embedded_hf_token(v, info.field_name)
 
 
 class ValidateModelRequest(BaseModel):
@@ -129,6 +372,22 @@ class ValidateModelRequest(BaseModel):
     gguf_variant: Optional[str] = Field(
         None, description = "GGUF quantization variant (e.g. 'Q4_K_M')"
     )
+
+    # Round 20 P1 #5: same identifier hardening as LoadRequest /
+    # UnloadRequest. /api/inference/validate flows directly into
+    # ``ModelConfig.from_identifier`` and the resulting log lines, so
+    # control characters and embedded HF tokens must not survive.
+    @field_validator("model_path", "gguf_variant")
+    @classmethod
+    def _no_identifier_control_chars(cls, v, info):
+        return _no_control_chars(v, info.field_name)
+
+    # Round 21 P1 #2: extend embedded-token rejection to
+    # ``gguf_variant`` here too (mirrors LoadRequest).
+    @field_validator("model_path", "gguf_variant")
+    @classmethod
+    def _no_embedded_hf_tokens(cls, v, info):
+        return _reject_embedded_hf_token(v, info.field_name)
 
 
 class ValidateModelResponse(BaseModel):
@@ -1583,3 +1842,657 @@ class AnthropicMessagesResponse(BaseModel):
     stop_reason: Optional[str] = None
     stop_sequence: Optional[str] = None
     usage: AnthropicUsage = Field(default_factory = AnthropicUsage)
+
+
+# ── Diffusion image generation ────────────────────────────────────
+
+
+def _no_control_chars(value: Optional[str], field_name: str) -> Optional[str]:
+    """Reject newlines, tabs, and other ASCII control chars in
+    identifiers that get logged before HF validates them.
+
+    Authenticated callers could otherwise inject ``\\n`` / ``\\r`` /
+    ``\\t`` / NUL into ``logger.info("Loading diffusion model %s",
+    repo_id)`` and forge fake log lines. HF repo ids and filenames
+    legitimately contain only ``[A-Za-z0-9._/-]``, so this is also a
+    useful correctness check (catches accidental ``"my repo\\n"``
+    paste). Tab is included in the reject set because some logging
+    sinks split fields on tab; allowing it would still let an
+    attacker forge fake columns.
+    """
+    if value is None:
+        return value
+    for ch in value:
+        if ch == "\x7f" or ord(ch) < 0x20:
+            raise ValueError(
+                f"{field_name} contains control characters; use a plain "
+                "Hugging Face repo / file name."
+            )
+    return value
+
+
+import re as _re
+
+_EMBEDDED_HF_TOKEN_RE = _re.compile(r"hf_[A-Za-z0-9]{20,}")
+
+
+def _reject_embedded_hf_token(value: Optional[str], field_name: str) -> Optional[str]:
+    """Refuse identifiers that contain an embedded ``hf_xxx`` token.
+
+    Round 15 P1 #5: ``repo_id`` and ``base_repo`` accept URL-style
+    strings (``https://hf_token@huggingface.co/owner/repo``). The
+    token would otherwise be stored in ``self._repo_id`` and echoed
+    back through ``status()`` to every authenticated browser session.
+    Log redaction (``_redact_hf_tokens``) covers the logger sink, but
+    the public status payload also needed to refuse the input. Use
+    the dedicated ``hf_token`` field for authentication.
+    """
+    if value is not None and _EMBEDDED_HF_TOKEN_RE.search(value):
+        raise ValueError(
+            f"{field_name} must not embed a Hugging Face token; "
+            "pass it via the dedicated hf_token field instead."
+        )
+    return value
+
+
+class DiffusionLoadRequest(BaseModel):
+    """Load a diffusion image-generation model.
+
+    repo_id is the HF repo (either GGUF-only or full diffusers layout).
+    gguf_filename selects the quant when repo_id is a GGUF repo.
+    base_repo overrides the auto-picked diffusers base used for the
+    VAE / text encoders when loading a GGUF-only repo.
+    """
+
+    api_version: Optional[str] = Field(
+        None,
+        max_length = 32,
+        description = "Optional version tag for the structured diffusion load contract",
+    )
+    model: Optional[DiffusionModelSpec] = Field(
+        None,
+        description = "Structured model identity for the v2 load contract",
+    )
+    components: Optional[Dict[str, DiffusionComponentSpec]] = Field(
+        None,
+        description = "Structured component overrides keyed by transformer/text_encoder/vae/etc.",
+    )
+    runtime: Optional[DiffusionRuntimeSpec] = Field(
+        None,
+        description = "Structured runtime/optimization choices for the v2 load contract",
+    )
+    adapters: Optional[List[DiffusionAdapterSpec]] = Field(
+        None,
+        max_length = 16,
+        description = "Structured adapter list. The first LoRA maps to legacy lora_* fields.",
+    )
+    options: Optional[Dict[str, Any]] = Field(
+        None,
+        description = "Forward-compatible model-specific load options.",
+    )
+    parameters: Optional[Dict[str, Any]] = Field(
+        None,
+        description = (
+            "Optional expected generation workload for load planning "
+            "(width, height, num_frames, batch_size, guidance_scale)."
+        ),
+    )
+
+    # repo_id and base_repo are HF Hub identifiers in this release.
+    # Local-path support is gated behind a frontend / Tauri
+    # ``load-diffusion-model`` directory lease producer that has not
+    # shipped yet (round 32 P1 #3 in the PR reviewer trail). The
+    # 1024-char cap matches POSIX PATH_MAX so future local-path
+    # support can flip on without re-validating the field width.
+    preset_id: Optional[str] = Field(
+        None,
+        max_length = 128,
+        description = (
+            "Optional Studio diffusion preset id. When set, Studio expands it "
+            "to a normal Diffusers pipeline repo plus GGUF component swaps."
+        ),
+    )
+    repo_id: Optional[str] = Field(
+        None,
+        min_length = 1,
+        max_length = 1024,
+        description = (
+            "HF repo id (owner/name). Required unless preset_id is set. Local "
+            "filesystem paths are reserved for a future native-lease flow and "
+            "currently rejected by the route's _looks_like_local_diffusion_path "
+            "guard."
+        ),
+    )
+    # Round 30 P1 #4: chat /api/inference/load gates native local paths
+    # through a signed native_path_lease grant before the backend
+    # touches the filesystem. Mirror that here so /api/inference/images/
+    # load cannot be used as an authenticated probe for arbitrary
+    # local directories. Optional; Hub ids (no leading slash / tilde)
+    # skip the lease check entirely. The Images UI does not yet
+    # surface a local-path picker, so callers that omit this field
+    # always get the Hub-id code path.
+    native_path_lease: Optional[str] = Field(
+        None,
+        description = "Frontend-visible signed native path grant for a local repo_id",
+    )
+    gguf_filename: Optional[str] = Field(
+        None,
+        max_length = 512,
+        description = (
+            "Legacy diffusion-transformer GGUF filename inside repo_id "
+            "(Q4_K_S, Q8_0, ...). Prefer transformer_gguf_repo + "
+            "transformer_gguf_filename when repo_id is the normal "
+            "Diffusers pipeline repo."
+        ),
+    )
+    transformer_gguf_repo: Optional[str] = Field(
+        None,
+        max_length = 1024,
+        description = (
+            "Optional HF repo id or leased local directory for a diffusion "
+            "transformer GGUF. When set, repo_id remains the normal Diffusers "
+            "pipeline repo and only the transformer component is replaced."
+        ),
+    )
+    transformer_gguf_filename: Optional[str] = Field(
+        None,
+        max_length = 512,
+        description = "GGUF filename for the optional diffusion transformer component",
+    )
+    transformer_quant: Optional[str] = Field(
+        None,
+        max_length = 64,
+        description = (
+            "Optional quant label for preset loads, e.g. Q4_K_M or UD-Q4_K_M. "
+            "Studio combines it with the preset's filename prefix."
+        ),
+    )
+    transformer_gguf_repo_native_path_lease: Optional[str] = Field(
+        None,
+        description = "Frontend-visible signed native path grant for a local transformer_gguf_repo",
+    )
+    base_repo: Optional[str] = Field(
+        None,
+        max_length = 1024,
+        description = (
+            "Diffusers base repo (HF id) for VAE + text encoders. Local "
+            "paths are gated on the same future native-lease flow as "
+            "repo_id."
+        ),
+    )
+    base_repo_native_path_lease: Optional[str] = Field(
+        None,
+        description = "Frontend-visible signed native path grant for a local base_repo",
+    )
+    text_encoder_gguf_repo: Optional[str] = Field(
+        None,
+        max_length = 1024,
+        description = (
+            "Optional HF repo id or leased local directory for a FLUX.2 "
+            "Mistral text-encoder GGUF. Defaults to the Unsloth Mistral "
+            "Small 3.2 GGUF repo when text_encoder_gguf_filename is set."
+        ),
+    )
+    text_encoder_gguf_filename: Optional[str] = Field(
+        None,
+        max_length = 512,
+        description = "GGUF filename for a supported lazy text encoder",
+    )
+    text_encoder_gguf_component: Optional[str] = Field(
+        None,
+        max_length = 64,
+        description = (
+            "Optional Diffusers pipeline component slot for a text-encoder GGUF "
+            "(text_encoder, text_encoder_2, text_encoder_3, or pe). Required "
+            "for generic supported text architectures outside the built-in "
+            "Qwen/Z/FLUX/SD3/ERNIE mappings."
+        ),
+    )
+    prompt_enhancer_gguf_repo: Optional[str] = Field(
+        None,
+        max_length = 1024,
+        description = (
+            "Optional HF repo id or leased local directory for an ERNIE "
+            "prompt-enhancer GGUF. Defaults to the known ERNIE PE GGUF repo "
+            "when prompt_enhancer_gguf_filename is set."
+        ),
+    )
+    prompt_enhancer_gguf_filename: Optional[str] = Field(
+        None,
+        max_length = 512,
+        description = "GGUF filename for an ERNIE prompt-enhancer component",
+    )
+    prompt_enhancer_gguf_repo_native_path_lease: Optional[str] = Field(
+        None,
+        description = "Frontend-visible signed native path grant for a local prompt_enhancer_gguf_repo",
+    )
+    text_encoder_gguf_repo_native_path_lease: Optional[str] = Field(
+        None,
+        description = "Frontend-visible signed native path grant for a local text_encoder_gguf_repo",
+    )
+    lora_repo: Optional[str] = Field(
+        None,
+        max_length = 1024,
+        description = (
+            "Optional HF repo id or leased local directory for a Diffusers LoRA "
+            "adapter to attach to the loaded image pipeline."
+        ),
+    )
+    lora_repo_native_path_lease: Optional[str] = Field(
+        None,
+        description = "Frontend-visible signed native path grant for a local lora_repo",
+    )
+    lora_weight_name: Optional[str] = Field(
+        None,
+        max_length = 512,
+        description = "Optional .safetensors LoRA weight filename inside lora_repo",
+    )
+    lora_adapter_name: Optional[str] = Field(
+        None,
+        max_length = 128,
+        description = "Optional Diffusers adapter name for the loaded LoRA",
+    )
+    lora_scale: Optional[float] = Field(
+        None,
+        ge = 0.0,
+        le = 10.0,
+        description = "Optional LoRA adapter scale. Defaults to 1.0.",
+    )
+    lora_fuse: bool = Field(
+        False,
+        description = (
+            "Fuse the LoRA into a non-GGUF Diffusers pipeline after loading. "
+            "Rejected for GGUF-backed pipelines."
+        ),
+    )
+    family: Optional[str] = Field(
+        None,
+        max_length = 64,
+        description = (
+            "Force pipeline family: flux.2-klein | flux.2 | flux.1 | "
+            "qwen-image | qwen-image-2512 | qwen-image-edit | "
+            "qwen-image-edit-2509 | qwen-image-edit-2511 | "
+            "qwen-image-layered | z-image | z-image-turbo | "
+            "stable-diffusion-3 | stable-diffusion-xl"
+        ),
+    )
+    hf_token: Optional[str] = Field(
+        None, description = "HuggingFace token for gated models"
+    )
+    enable_model_cpu_offload: bool = Field(
+        True,
+        description = "Offload submodules to CPU between forwards. Trades a small speed hit for ~6 GB less VRAM on FLUX-class models.",
+    )
+    offload_policy: Optional[
+        Literal["aggressive", "balanced", "less_aggressive", "hybrid", "none"]
+    ] = Field(
+        None,
+        description = (
+            "Preferred image VRAM policy. aggressive = full Diffusers CPU offload "
+            "plus CPU-resident GGUF tensors; balanced = CPU-resident GGUF tensors "
+            "without full Diffusers offload; less_aggressive/hybrid = keep diffusion "
+            "GGUF on GPU while keeping text GGUF CPU-resident; none = keep the "
+            "pipeline resident on the selected device. When set, this overrides the "
+            "lower-level offload booleans."
+        ),
+    )
+    gguf_quantized_cpu_resident: Optional[bool] = Field(
+        None,
+        description = (
+            "Keep packed GGUF tensors CPU-resident and copy/dequantize them on demand. "
+            "Defaults to enable_model_cpu_offload for backwards compatibility; set true "
+            "with enable_model_cpu_offload=false to benchmark the hybrid low-VRAM path."
+        ),
+    )
+    gguf_pin_cpu_resident: Optional[bool] = Field(
+        None,
+        description = (
+            "Pin CPU-resident packed GGUF tensors so on-demand host-to-device copies can "
+            "use non-blocking transfer. Defaults to UNSLOTH_STUDIO_GGUF_PIN_CPU_RESIDENT."
+        ),
+    )
+    safetensors_quantization: Optional[
+        Literal[
+            "none",
+            "bitsandbytes_4bit",
+            "bitsandbytes_4bit_nf4",
+            "bitsandbytes_8bit",
+            "torchao_int8_weight_only",
+            "torchao_int4_weight_only",
+        ]
+    ] = Field(
+        None,
+        description = (
+            "Optional regular-safetensors pipeline quantization. Applies only when "
+            "loading a normal Diffusers repo without GGUF component swaps."
+        ),
+    )
+    safetensors_quantization_components: Optional[
+        List[
+            Literal[
+                "transformer",
+                "unet",
+                "text_encoder",
+                "text_encoder_2",
+                "text_encoder_3",
+                "pe",
+            ]
+        ]
+    ] = Field(
+        None,
+        description = (
+            "Optional component slots to quantize for a regular safetensors "
+            "Diffusers repo. Defaults to transformer/unet plus text encoders."
+        ),
+    )
+
+    @field_validator(
+        "repo_id",
+        "api_version",
+        "preset_id",
+        "gguf_filename",
+        "transformer_gguf_repo",
+        "transformer_gguf_filename",
+        "transformer_quant",
+        "base_repo",
+        "text_encoder_gguf_repo",
+        "text_encoder_gguf_filename",
+        "text_encoder_gguf_component",
+        "prompt_enhancer_gguf_repo",
+        "prompt_enhancer_gguf_filename",
+        "lora_repo",
+        "lora_weight_name",
+        "lora_adapter_name",
+        "family",
+        "safetensors_quantization",
+    )
+    @classmethod
+    def _no_control_chars(cls, v, info):
+        return _no_control_chars(v, info.field_name)
+
+    @field_validator(
+        "repo_id",
+        "preset_id",
+        "gguf_filename",
+        "transformer_gguf_repo",
+        "transformer_gguf_filename",
+        "transformer_quant",
+        "base_repo",
+        "text_encoder_gguf_repo",
+        "text_encoder_gguf_filename",
+        "prompt_enhancer_gguf_repo",
+        "prompt_enhancer_gguf_filename",
+        "lora_repo",
+        "lora_weight_name",
+        "lora_adapter_name",
+    )
+    @classmethod
+    def _no_embedded_hf_tokens(cls, v, info):
+        # Round 17 P2 #12: ``gguf_filename`` is forwarded to the
+        # backend and stored on ``DiffusionBackend._gguf_filename``,
+        # which is later surfaced via ``status()`` / log lines. If a
+        # user pastes a URL-form quant path like
+        # ``https://hf_xxxxx@huggingface.co/.../flux.gguf`` we drop
+        # the embedded credential before it can leak.
+        return _reject_embedded_hf_token(v, info.field_name)
+
+    @model_validator(mode = "after")
+    def _requires_repo_or_preset(self):
+        if (
+            not self.repo_id
+            and not self.preset_id
+            and not (self.model and self.model.repo_id)
+        ):
+            raise ValueError("Either repo_id, preset_id, or model.repo_id is required")
+        return self
+
+    @model_validator(mode = "after")
+    def _safetensors_quantization_requires_full_repo(self):
+        runtime_quant = (
+            self.runtime.safetensors_quantization if self.runtime is not None else None
+        )
+        effective_quant = self.safetensors_quantization or runtime_quant
+        if effective_quant in (None, "none"):
+            return self
+        component_swaps = bool(
+            self.components
+            and any(
+                component.format == "gguf" or component.filename
+                for component in self.components.values()
+            )
+        )
+        if (
+            self.gguf_filename
+            or self.transformer_gguf_filename
+            or self.text_encoder_gguf_filename
+            or self.prompt_enhancer_gguf_filename
+            or self.preset_id
+            or component_swaps
+        ):
+            raise ValueError(
+                "safetensors_quantization is only supported for regular "
+                "Diffusers safetensors repos without GGUF component swaps."
+            )
+        return self
+
+    @field_validator("lora_weight_name")
+    @classmethod
+    def _lora_weight_must_be_safetensors(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and not v.lower().endswith(".safetensors"):
+            raise ValueError("lora_weight_name must point to a .safetensors file")
+        return v
+
+
+# torch.Generator.manual_seed packs into signed int64; values outside
+# [-2**63, 2**63 - 1] raise ``Overflow when unpacking long long`` deep
+# in the C++ layer. uint64 is also routinely cited online so accept
+# any value the underlying RNG could store and bounce the rest at the
+# Pydantic layer with a clean error.
+_SEED_MIN = -(2**63)
+_SEED_MAX = (2**64) - 1
+
+
+class DiffusionGenerateRequest(BaseModel):
+    """Generate a single image from the currently-loaded diffusion model."""
+
+    api_version: Optional[str] = Field(None, max_length = 32)
+    prompt: Optional[str] = Field(None, min_length = 1, max_length = 4000)
+    negative_prompt: Optional[str] = Field(None, max_length = 4000)
+    inputs: Optional[List[DiffusionInputSpec]] = Field(
+        None,
+        min_length = 1,
+        max_length = 16,
+        description = "Structured text/image inputs for the v2 image contract",
+    )
+    parameters: Optional[DiffusionImageParametersSpec] = Field(
+        None,
+        description = "Structured generation parameters for the v2 image contract",
+    )
+    sampler: Optional[DiffusionSamplerSpec] = Field(
+        None,
+        description = "Structured sampler/guidance parameters for the v2 image contract",
+    )
+    output: Optional[DiffusionOutputSpec] = Field(
+        None,
+        description = "Structured output preferences for the v2 image contract",
+    )
+    options: Optional[Dict[str, Any]] = Field(
+        None,
+        description = "Forward-compatible model-specific image generation options",
+    )
+    image_b64: Optional[str] = Field(
+        None,
+        max_length = 50_000_000,
+        description = (
+            "Optional base64-encoded input image for image-to-image/edit "
+            "diffusion models. Data URLs are accepted."
+        ),
+    )
+    images_b64: Optional[List[str]] = Field(
+        None,
+        min_length = 1,
+        max_length = 8,
+        description = (
+            "Optional base64-encoded input images for multi-reference edit "
+            "pipelines such as QwenImageEditPlusPipeline. Data URLs are accepted."
+        ),
+    )
+    num_inference_steps: Optional[int] = Field(None, ge = 1, le = 200)
+    guidance_scale: Optional[float] = Field(None, ge = 0.0, le = 20.0)
+    width: Optional[int] = Field(None, ge = 64, le = 2048)
+    height: Optional[int] = Field(None, ge = 64, le = 2048)
+    seed: Optional[int] = Field(
+        None,
+        ge = _SEED_MIN,
+        le = _SEED_MAX,
+        description = "Deterministic seed for reproducible outputs",
+    )
+
+    @field_validator("width", "height")
+    @classmethod
+    def _multiple_of_eight(cls, v: Optional[int]) -> Optional[int]:
+        if v is None:
+            return v
+        if v % 8:
+            raise ValueError("width and height must be multiples of 8")
+        return v
+
+    @model_validator(mode = "after")
+    def _no_duplicate_image_inputs(self):
+        if self.image_b64 is not None and self.images_b64 is not None:
+            raise ValueError("Pass either image_b64 or images_b64, not both")
+        has_prompt_input = bool(
+            self.inputs
+            and any(
+                item.type == "text"
+                and (item.role in (None, "prompt"))
+                and item.text
+                and item.text.strip()
+                for item in self.inputs
+            )
+        )
+        if not (self.prompt and self.prompt.strip()) and not has_prompt_input:
+            raise ValueError("prompt is required")
+        return self
+
+
+class DiffusionGenerateResponse(BaseModel):
+    image_b64: str = Field(..., description = "Base64-encoded PNG")
+    images_b64: Optional[List[str]] = Field(
+        None,
+        description = (
+            "All generated PNGs when a pipeline returns multiple images/layers. "
+            "The first entry is also copied to image_b64 for backwards compatibility."
+        ),
+    )
+    image_mime: str = "image/png"
+    width: int
+    height: int
+    num_inference_steps: int
+    guidance_scale: float
+    # ``seed`` ships as a JSON number for backwards compatibility with
+    # the gallery and existing API consumers, but JavaScript rounds
+    # integers above Number.MAX_SAFE_INTEGER on JSON.parse so seeds
+    # bigger than 2**53 would render different from the value the
+    # backend actually used. ``seed_str`` is the exact decimal
+    # representation; the frontend reads it for reproducibility and
+    # falls back to ``seed`` when not supplied.
+    seed: Optional[int] = None
+    seed_str: Optional[str] = None
+    duration_ms: int
+    model: Optional[str] = None
+    family: Optional[str] = None
+    output_count: int = 1
+    outputs: Optional[List[DiffusionOutputItem]] = None
+    effective_parameters: Optional[Dict[str, Any]] = None
+    metrics: Optional[Dict[str, Any]] = None
+    warnings: List[str] = Field(default_factory = list)
+
+
+class DiffusionVideoGenerateRequest(BaseModel):
+    """Generate a video from the currently-loaded diffusion video model."""
+
+    api_version: Optional[str] = Field(None, max_length = 32)
+    prompt: Optional[str] = Field(None, min_length = 1, max_length = 4000)
+    negative_prompt: Optional[str] = Field(None, max_length = 4000)
+    inputs: Optional[List[DiffusionInputSpec]] = Field(
+        None,
+        min_length = 1,
+        max_length = 16,
+        description = "Structured text/image/audio/video inputs for the v2 video contract",
+    )
+    parameters: Optional[DiffusionVideoParametersSpec] = Field(
+        None,
+        description = "Structured generation parameters for the v2 video contract",
+    )
+    sampler: Optional[DiffusionSamplerSpec] = Field(
+        None,
+        description = "Structured sampler/guidance parameters for the v2 video contract",
+    )
+    output: Optional[DiffusionOutputSpec] = Field(
+        None,
+        description = "Structured output preferences for the v2 video contract",
+    )
+    options: Optional[Dict[str, Any]] = Field(
+        None,
+        description = "Forward-compatible model-specific video generation options",
+    )
+    num_inference_steps: Optional[int] = Field(None, ge = 1, le = 200)
+    guidance_scale: Optional[float] = Field(None, ge = 0.0, le = 20.0)
+    guidance_scale_2: Optional[float] = Field(None, ge = 0.0, le = 20.0)
+    width: Optional[int] = Field(None, ge = 64, le = 2048)
+    height: Optional[int] = Field(None, ge = 64, le = 2048)
+    num_frames: Optional[int] = Field(None, ge = 1, le = 513)
+    frame_rate: Optional[float] = Field(None, gt = 0.0, le = 240.0)
+    seed: Optional[int] = Field(
+        None,
+        ge = _SEED_MIN,
+        le = _SEED_MAX,
+        description = "Deterministic seed for reproducible outputs",
+    )
+
+    @field_validator("width", "height")
+    @classmethod
+    def _multiple_of_eight(cls, v: Optional[int]) -> Optional[int]:
+        if v is None:
+            return v
+        if v % 8:
+            raise ValueError("width and height must be multiples of 8")
+        return v
+
+    @model_validator(mode = "after")
+    def _requires_prompt(self):
+        has_prompt_input = bool(
+            self.inputs
+            and any(
+                item.type == "text"
+                and (item.role in (None, "prompt"))
+                and item.text
+                and item.text.strip()
+                for item in self.inputs
+            )
+        )
+        if not (self.prompt and self.prompt.strip()) and not has_prompt_input:
+            raise ValueError("prompt is required")
+        return self
+
+
+class DiffusionVideoGenerateResponse(BaseModel):
+    video_b64: str = Field(..., description = "Base64-encoded MP4")
+    video_mime: str = "video/mp4"
+    width: int
+    height: int
+    num_frames: int
+    frame_rate: float
+    num_inference_steps: int
+    guidance_scale: float
+    guidance_scale_2: Optional[float] = None
+    seed: Optional[int] = None
+    seed_str: Optional[str] = None
+    duration_ms: int
+    model: Optional[str] = None
+    family: Optional[str] = None
+    outputs: Optional[List[DiffusionOutputItem]] = None
+    effective_parameters: Optional[Dict[str, Any]] = None
+    metrics: Optional[Dict[str, Any]] = None
+    warnings: List[str] = Field(default_factory = list)

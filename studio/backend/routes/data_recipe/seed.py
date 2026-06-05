@@ -432,6 +432,20 @@ async def upload_unstructured_file(
     _validate_safe_id(block_id, "block_id")
 
     original_filename = file.filename or "upload"
+    # Round 33 P1 #7: file.filename is reflected back to the client,
+    # persisted in the meta JSON, and echoed by error paths. Mirror
+    # the SeedInspectUploadRequest.filename hardening so a multipart
+    # upload cannot smuggle control characters or URL-form HF tokens
+    # through the path the JSON variant already rejects. Import
+    # locally to avoid a routes -> models cycle.
+    from models.inference import _no_control_chars, _reject_embedded_hf_token
+
+    try:
+        _no_control_chars(original_filename, "filename")
+        _reject_embedded_hf_token(original_filename, "filename")
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+
     ext = Path(original_filename).suffix.lower()
     if ext not in UNSTRUCTURED_ALLOWED_EXTS:
         raise HTTPException(

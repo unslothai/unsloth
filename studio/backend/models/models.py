@@ -5,8 +5,10 @@
 Pydantic schemas for Model Management API
 """
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from typing import Optional, List, Dict, Any, Literal
+
+from models.inference import _no_control_chars, _reject_embedded_hf_token
 
 ModelType = Literal["text", "vision", "audio", "embeddings"]
 
@@ -205,6 +207,19 @@ class AddScanFolderRequest(BaseModel):
     path: str = Field(
         ..., description = "Absolute or relative directory path to scan for models"
     )
+
+    # path is reflected back in /scan-folders error details and logged
+    # via add_scan_folder_endpoint when the directory is missing, so
+    # apply the same identifier hardening used on other logged paths.
+    @field_validator("path")
+    @classmethod
+    def _no_path_control_chars(cls, v, info):
+        return _no_control_chars(v, info.field_name)
+
+    @field_validator("path")
+    @classmethod
+    def _no_path_embedded_hf_tokens(cls, v, info):
+        return _reject_embedded_hf_token(v, info.field_name)
 
 
 class ScanFolderInfo(BaseModel):

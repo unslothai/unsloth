@@ -1,0 +1,1223 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""Route-level tests for ``/api/inference/images/*``.
+
+Mounts the actual ``inference_router`` on a fresh FastAPI app with the
+auth dependency replaced by a stub so we exercise the same FastAPI
+handlers Studio ships in production. The diffusion backend is replaced
+with an in-memory stub so we don't need diffusers / GPUs to run these.
+
+To stay runnable in a minimal CPU-only env, ``routes/inference.py``
+is loaded directly via ``importlib`` so we do NOT trigger
+``routes/__init__.py`` -- that file eagerly imports training /
+datasets / data_recipe / export and would drag in heavy deps
+(matplotlib, etc.) that the diffusion tests do not need.
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import sys
+from pathlib import Path
+
+import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+from PIL import Image
+
+
+_BACKEND_ROOT = Path(__file__).resolve().parents[1]
+if str(_BACKEND_ROOT) not in sys.path:
+    sys.path.insert(0, str(_BACKEND_ROOT))
+
+
+def _import_inference_module():
+    """Load ``routes/inference.py`` without executing ``routes/__init__``.
+
+    The package init imports training / datasets / data_recipe / export
+    routers, which pull in matplotlib / pandas / training stack. The
+    diffusion tests only need the inference module so we side-step the
+    package import via importlib.spec_from_file_location.
+    """
+    # If a previous test already imported routes the normal way, reuse
+    # the cached module instead of re-loading.
+    cached = sys.modules.get("routes.inference")
+    if cached is not None:
+        return cached
+    target = _BACKEND_ROOT / "routes" / "inference.py"
+    spec = importlib.util.spec_from_file_location(
+        "routes.inference",
+        target,
+        # We do NOT set submodule_search_locations for routes itself
+        # because that would re-trigger routes/__init__.py. The module
+        # uses relative imports sparingly; absolute imports resolve via
+        # sys.path[0] = backend root.
+    )
+    assert spec and spec.loader, "could not build spec for routes/inference.py"
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["routes.inference"] = module
+    # Round 15 P3 #9: drop the half-initialised module from
+    # sys.modules if exec_module() raises, otherwise later tests pick
+    # up the poisoned entry and report a misleading AttributeError
+    # instead of the original ImportError.
+    try:
+        spec.loader.exec_module(module)
+    except Exception:
+        sys.modules.pop("routes.inference", None)
+        raise
+    return module
+
+
+class _FakeBackend:
+    def __init__(self) -> None:
+        self._loaded = False
+        self._repo: str | None = None
+        self._media_kind: str | None = None
+
+        class _FakePipe:
+            def __call__(
+                self,
+                *,
+                prompt,
+                width = None,
+                height = None,
+                num_inference_steps = None,
+                guidance_scale = None,
+                **kwargs,
+            ):
+                return None
+
+        self._pipe = _FakePipe()
+        self.calls: list[dict] = []
+
+    @property
+    def is_loaded(self) -> bool:
+        return self._loaded
+
+    def status(self) -> dict:
+        family = (
+            "ltx2-3-distilled"
+            if self._media_kind == "video"
+            else ("flux.2-klein" if self._loaded else None)
+        )
+        pipeline_class = (
+            "LTX2Pipeline"
+            if self._media_kind == "video"
+            else ("Flux2KleinPipeline" if self._loaded else None)
+        )
+        return {
+            "is_loaded": self._loaded,
+            "is_loading": False,
+            "repo_id": self._repo,
+            "family": family,
+            "pipeline_class": pipeline_class,
+            "media_kind": self._media_kind if self._loaded else None,
+            "base_repo": "black-forest-labs/FLUX.2-klein" if self._loaded else None,
+            "gguf_filename": None,
+            "text_encoder_gguf_repo": None,
+            "text_encoder_gguf_filename": None,
+            "prompt_enhancer_gguf_repo": None,
+            "prompt_enhancer_gguf_filename": None,
+            "lora": None,
+            "gguf_quantized_cpu_resident": False,
+            "gguf_pin_cpu_resident": False,
+            "offload_policy": None,
+            "memory_plan": None,
+            "safetensors_quantization": None,
+            "safetensors_quantization_components": None,
+            "active_repo_id": self._repo,
+            "active_base_repo": (
+                "black-forest-labs/FLUX.2-klein" if self._loaded else None
+            ),
+            # Round 14: guard-facing GGUF filename is now the full
+            # caller-supplied value, but this fake never sets one so
+            # both active and pending stay None.
+            "active_gguf_filename": None,
+            "active_text_encoder_gguf_repo": None,
+            "active_text_encoder_gguf_filename": None,
+            "active_prompt_enhancer_gguf_repo": None,
+            "active_prompt_enhancer_gguf_filename": None,
+            "active_lora_repo": None,
+            "active_lora_weight_name": None,
+            "pending_repo_id": None,
+            "pending_base_repo": None,
+            "pending_gguf_filename": None,
+            "pending_text_encoder_gguf_repo": None,
+            "pending_text_encoder_gguf_filename": None,
+            "pending_prompt_enhancer_gguf_repo": None,
+            "pending_prompt_enhancer_gguf_filename": None,
+            "pending_lora_repo": None,
+            "pending_lora_weight_name": None,
+            "device": "cpu",
+            "device_backend": "cpu",
+            "device_capabilities": {
+                "torch_device": "cpu",
+                "backend": "cpu",
+                "supports_model_cpu_offload": False,
+            },
+            "dtype": "torch.bfloat16",
+            "loaded_at": 0,
+            "last_error": None,
+            "supported_families": [
+                {
+                    "name": "flux.2-klein",
+                    "pipeline_class": "Flux2KleinPipeline",
+                    "media_kind": "image",
+                    "default_steps": 24,
+                    "default_guidance_scale": 3.5,
+                    "default_width": 1024,
+                    "default_height": 1024,
+                    "default_num_frames": None,
+                    "default_frame_rate": None,
+                },
+                {
+                    "name": "ltx2-3-distilled",
+                    "pipeline_class": "LTX2Pipeline",
+                    "media_kind": "video",
+                    "default_steps": 8,
+                    "default_guidance_scale": 1.0,
+                    "default_width": 1536,
+                    "default_height": 1024,
+                    "default_num_frames": 121,
+                    "default_frame_rate": 24.0,
+                },
+            ],
+            "optimization_options": {
+                "attention": {
+                    "available": ["auto", "flash", "sdpa", "flex", "xformers"],
+                    "default": "auto",
+                    "fallback_order": ["flash", "sdpa", "flex", "xformers", "default"],
+                },
+                "compile": {"torch_compile_available": True},
+                "memory_planner": {
+                    "modes": [{"name": "auto"}, {"name": "balanced"}],
+                    "applies_when": ("runtime.memory_mode controls planner behavior"),
+                },
+            },
+            "attention_backend": None,
+        }
+
+    def load_model(self, repo_id, **kw):
+        self.calls.append({"op": "load", "repo_id": repo_id, **kw})
+        self._loaded = True
+        self._repo = repo_id
+        family = kw.get("family_override")
+        self._media_kind = "video" if family and family.startswith("ltx") else "image"
+        return self.status()
+
+    def unload_model(self) -> dict:
+        self._loaded = False
+        self._repo = None
+        self._media_kind = None
+        return {"is_loaded": False}
+
+    def generation_defaults(self) -> dict:
+        return {
+            "num_inference_steps": 24,
+            "guidance_scale": 3.5,
+            "width": 1024,
+            "height": 1024,
+        }
+
+    def generate_image(self, **kw):
+        self.calls.append({"op": "generate", **kw})
+        return Image.new("RGB", (kw["width"], kw["height"]), color = (123, 45, 67))
+
+    def generate_image_with_metadata(self, **kw):
+        image = self.generate_image(**kw)
+        meta = {
+            "model": self._repo,
+            "family": "flux.2-klein" if self._loaded else None,
+        }
+        return image, meta
+
+    def generate_images_with_metadata(self, **kw):
+        image, meta = self.generate_image_with_metadata(**kw)
+        meta = {**meta, "output_count": 1}
+        return [image], meta
+
+    def generate_video_with_metadata(self, **kw):
+        self.calls.append({"op": "generate_video", **kw})
+        return ["frame0"], {
+            "model": self._repo,
+            "family": "ltx2-3-distilled" if self._loaded else None,
+            "width": kw["width"],
+            "height": kw["height"],
+            "num_frames": kw["num_frames"] or 121,
+            "frame_rate": kw["frame_rate"] or 24.0,
+            "num_inference_steps": kw["num_inference_steps"],
+            "guidance_scale": kw["guidance_scale"],
+            "guidance_scale_2": kw.get("guidance_scale_2"),
+        }
+
+
+@pytest.fixture
+def app_with_stub(monkeypatch):
+    """Build a FastAPI app that mounts the real inference router with
+    auth disabled and the diffusion backend swapped for a stub."""
+    inf = _import_inference_module()
+    import core.inference.diffusion as d
+
+    stub = _FakeBackend()
+    # Override the singleton accessor the route uses.
+    monkeypatch.setattr(d, "get_diffusion_backend", lambda: stub)
+    monkeypatch.setattr(inf, "_get_diffusion_backend", lambda: stub)
+
+    app = FastAPI()
+    # Diffusion image routes live on studio_router so they are NOT
+    # exposed under /v1 (which would let OpenAI-compat clients
+    # trigger Studio-only side effects).
+    app.include_router(inf.router, prefix = "/api/inference")
+    app.include_router(inf.studio_router, prefix = "/api/inference")
+    # Bypass auth by overriding the dependency.
+    from auth.authentication import get_current_subject
+
+    app.dependency_overrides[get_current_subject] = lambda: "test-user"
+
+    return app, stub
+
+
+def test_status_when_unloaded(app_with_stub):
+    app, _ = app_with_stub
+    c = TestClient(app)
+    r = c.get("/api/inference/images/status")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["is_loaded"] is False
+    assert body["repo_id"] is None
+
+
+def test_generate_without_load_returns_400(app_with_stub):
+    app, _ = app_with_stub
+    c = TestClient(app)
+    r = c.post(
+        "/api/inference/images/generate",
+        json = {"prompt": "a red sphere"},
+    )
+    assert r.status_code == 400
+    assert "No diffusion model" in r.json()["detail"]
+
+
+def test_load_then_generate_round_trip(app_with_stub):
+    app, stub = app_with_stub
+    c = TestClient(app)
+
+    r = c.post(
+        "/api/inference/images/load",
+        json = {
+            "repo_id": "unsloth/FLUX.2-klein-4B-GGUF",
+            "gguf_filename": "flux-2-klein-4b-Q4_K_S.gguf",
+        },
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["is_loaded"] is True
+
+    r = c.post(
+        "/api/inference/images/generate",
+        json = {
+            "prompt": "a tiny synth-pop album cover",
+            "width": 256,
+            "height": 256,
+            "num_inference_steps": 4,
+            "seed": 7,
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["image_b64"]
+    assert body["image_mime"] == "image/png"
+    assert body["width"] == 256
+    assert body["height"] == 256
+    assert body["seed"] == 7
+    assert body["duration_ms"] >= 0
+
+    # Round-trip the base64 -> PIL to confirm it is a real PNG of the
+    # right size and not, say, an empty string.
+    import base64
+    import io
+
+    raw = base64.b64decode(body["image_b64"])
+    decoded = Image.open(io.BytesIO(raw))
+    assert decoded.format == "PNG"
+    assert decoded.size == (256, 256)
+
+    # Backend stub should have recorded both calls.
+    ops = [c["op"] for c in stub.calls]
+    assert ops == ["load", "generate"]
+
+
+def test_video_generate_round_trip(app_with_stub, monkeypatch):
+    app, stub = app_with_stub
+    c = TestClient(app)
+    stub._loaded = True
+    stub._repo = "diffusers/LTX-2.3-Distilled-Diffusers"
+
+    import base64
+    import core.inference.diffusion as d
+
+    monkeypatch.setattr(
+        d,
+        "encode_mp4_base64",
+        lambda frames, *, fps: base64.b64encode(b"fake-mp4").decode("ascii"),
+    )
+
+    r = c.post(
+        "/api/inference/videos/generate",
+        json = {
+            "prompt": "a slow camera push",
+            "width": 768,
+            "height": 512,
+            "num_frames": 121,
+            "frame_rate": 24,
+            "num_inference_steps": 8,
+            "guidance_scale": 1,
+            "seed": 3407,
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["video_b64"] == base64.b64encode(b"fake-mp4").decode("ascii")
+    assert body["video_mime"] == "video/mp4"
+    assert body["width"] == 768
+    assert body["height"] == 512
+    assert body["num_frames"] == 121
+    assert body["frame_rate"] == 24.0
+    assert body["num_inference_steps"] == 8
+    assert body["guidance_scale"] == 1.0
+    assert body["seed"] == 3407
+    assert body["seed_str"] == "3407"
+    assert body["outputs"][0]["type"] == "video"
+    assert body["outputs"][0]["mime"] == "video/mp4"
+    assert body["effective_parameters"]["num_frames"] == 121
+    assert body["metrics"]["duration_ms"] >= 0
+    assert body["warnings"] == []
+    assert stub.calls[-1]["op"] == "generate_video"
+
+
+def test_image_generate_v2_contract_normalizes_inputs_and_parameters(app_with_stub):
+    app, stub = app_with_stub
+    c = TestClient(app)
+    stub._loaded = True
+    stub._repo = "Tongyi-MAI/Z-Image-Turbo"
+    stub._media_kind = "image"
+
+    r = c.post(
+        "/api/inference/images/generate",
+        json = {
+            "api_version": "2026-06-03",
+            "inputs": [
+                {
+                    "type": "text",
+                    "role": "prompt",
+                    "text": "a bright studio product shot",
+                }
+            ],
+            "parameters": {
+                "width": 768,
+                "height": 512,
+                "num_inference_steps": 9,
+                "guidance_scale": 0,
+                "seed": 123,
+            },
+            "sampler": {"name": "auto", "scheduler": "auto"},
+            "output": {"format": "png", "return_b64": True},
+            "options": {"future_knob": "accepted"},
+        },
+    )
+
+    assert r.status_code == 200, r.text
+    call = stub.calls[-1]
+    assert call["op"] == "generate"
+    assert call["prompt"] == "a bright studio product shot"
+    assert call["width"] == 768
+    assert call["height"] == 512
+    assert call["num_inference_steps"] == 9
+    assert call["guidance_scale"] == 0.0
+    assert call["seed"] == 123
+    body = r.json()
+    assert body["image_b64"]
+    assert body["outputs"][0]["type"] == "image"
+    assert body["outputs"][0]["mime"] == "image/png"
+    assert body["effective_parameters"]["seed"] == "123"
+    assert body["metrics"]["duration_ms"] >= 0
+    assert body["warnings"] == []
+
+
+def test_video_generate_v2_contract_normalizes_parameters(app_with_stub, monkeypatch):
+    app, stub = app_with_stub
+    c = TestClient(app)
+    stub._loaded = True
+    stub._repo = "diffusers/LTX-2.3-Distilled-Diffusers"
+    stub._media_kind = "video"
+
+    import base64
+    import core.inference.diffusion as d
+
+    monkeypatch.setattr(
+        d,
+        "encode_mp4_base64",
+        lambda frames, *, fps: base64.b64encode(b"fake-mp4").decode("ascii"),
+    )
+
+    r = c.post(
+        "/api/inference/videos/generate",
+        json = {
+            "api_version": "2026-06-03",
+            "inputs": [
+                {
+                    "type": "text",
+                    "role": "prompt",
+                    "text": "a slow dolly shot through a lab",
+                }
+            ],
+            "parameters": {
+                "width": 640,
+                "height": 384,
+                "num_frames": 25,
+                "frame_rate": 12,
+                "num_inference_steps": 8,
+                "guidance_scale": 1,
+                "seed": 456,
+            },
+            "sampler": {"guidance_scale_2": 3},
+            "output": {"format": "mp4", "return_b64": True},
+            "options": {"future_video_knob": True},
+        },
+    )
+
+    assert r.status_code == 200, r.text
+    call = stub.calls[-1]
+    assert call["op"] == "generate_video"
+    assert call["prompt"] == "a slow dolly shot through a lab"
+    assert call["width"] == 640
+    assert call["height"] == 384
+    assert call["num_frames"] == 25
+    assert call["frame_rate"] == 12
+    assert call["num_inference_steps"] == 8
+    assert call["guidance_scale"] == 1.0
+    assert call["guidance_scale_2"] == 3.0
+    assert call["seed"] == 456
+    body = r.json()
+    assert body["outputs"][0]["type"] == "video"
+    assert body["outputs"][0]["num_frames"] == 25
+    assert body["effective_parameters"]["seed"] == "456"
+
+
+def test_generate_decodes_base64_image_input(app_with_stub):
+    app, stub = app_with_stub
+    c = TestClient(app)
+    stub._loaded = True
+    stub._repo = "unsloth/Qwen-Image-Edit-2511-GGUF"
+
+    import base64
+    import io
+
+    source = Image.new("RGBA", (12, 16), color = (255, 0, 0, 128))
+    buf = io.BytesIO()
+    source.save(buf, format = "PNG")
+    encoded = "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode(
+        "ascii"
+    )
+
+    r = c.post(
+        "/api/inference/images/generate",
+        json = {
+            "prompt": "turn the object blue",
+            "image_b64": encoded,
+            "width": 256,
+            "height": 256,
+            "num_inference_steps": 4,
+        },
+    )
+
+    assert r.status_code == 200, r.text
+    generate_call = stub.calls[-1]
+    assert generate_call["op"] == "generate"
+    assert len(generate_call["input_images"]) == 1
+    assert generate_call["input_images"][0].mode == "RGBA"
+    assert generate_call["input_images"][0].size == (12, 16)
+    assert r.json()["output_count"] == 1
+
+
+def test_generate_rejects_duplicate_image_input_fields(app_with_stub):
+    app, stub = app_with_stub
+    c = TestClient(app)
+    stub._loaded = True
+
+    r = c.post(
+        "/api/inference/images/generate",
+        json = {
+            "prompt": "x",
+            "image_b64": "AAAA",
+            "images_b64": ["AAAA"],
+        },
+    )
+
+    assert r.status_code == 422
+
+
+def test_load_forwards_text_encoder_gguf_fields(app_with_stub):
+    app, stub = app_with_stub
+    c = TestClient(app)
+
+    r = c.post(
+        "/api/inference/images/load",
+        json = {
+            "repo_id": "unsloth/FLUX.2-dev-GGUF",
+            "gguf_filename": "flux2-dev-Q4_K_M.gguf",
+            "base_repo": "black-forest-labs/FLUX.2-dev",
+            "text_encoder_gguf_repo": "unsloth/Mistral-Small-3.2-24B-Instruct-2506-GGUF",
+            "text_encoder_gguf_filename": "Mistral-Small-3.2-24B-Instruct-2506-UD-Q4_K_XL.gguf",
+            "gguf_quantized_cpu_resident": True,
+            "gguf_pin_cpu_resident": True,
+        },
+    )
+    assert r.status_code == 200, r.text
+
+    call = stub.calls[-1]
+    assert {
+        key: call[key]
+        for key in (
+            "op",
+            "repo_id",
+            "gguf_filename",
+            "transformer_gguf_repo",
+            "transformer_gguf_filename",
+            "base_repo",
+            "text_encoder_gguf_repo",
+            "text_encoder_gguf_filename",
+            "text_encoder_gguf_component",
+            "prompt_enhancer_gguf_repo",
+            "prompt_enhancer_gguf_filename",
+            "lora_repo",
+            "lora_weight_name",
+            "lora_adapter_name",
+            "lora_scale",
+            "lora_fuse",
+            "family_override",
+            "hf_token",
+            "enable_model_cpu_offload",
+            "gguf_quantized_cpu_resident",
+            "gguf_pin_cpu_resident",
+            "safetensors_quantization",
+            "safetensors_quantization_components",
+            "ignore_public_load_pending_workload",
+        )
+    } == {
+        "op": "load",
+        "repo_id": "unsloth/FLUX.2-dev-GGUF",
+        "gguf_filename": "flux2-dev-Q4_K_M.gguf",
+        "transformer_gguf_repo": None,
+        "transformer_gguf_filename": None,
+        "base_repo": "black-forest-labs/FLUX.2-dev",
+        "text_encoder_gguf_repo": "unsloth/Mistral-Small-3.2-24B-Instruct-2506-GGUF",
+        "text_encoder_gguf_filename": "Mistral-Small-3.2-24B-Instruct-2506-UD-Q4_K_XL.gguf",
+        "text_encoder_gguf_component": None,
+        "prompt_enhancer_gguf_repo": None,
+        "prompt_enhancer_gguf_filename": None,
+        "lora_repo": None,
+        "lora_weight_name": None,
+        "lora_adapter_name": None,
+        "lora_scale": None,
+        "lora_fuse": False,
+        "family_override": None,
+        "hf_token": None,
+        "enable_model_cpu_offload": True,
+        "gguf_quantized_cpu_resident": True,
+        "gguf_pin_cpu_resident": True,
+        "safetensors_quantization": None,
+        "safetensors_quantization_components": None,
+        "ignore_public_load_pending_workload": "diffusion",
+    }
+    assert call["memory_plan"]["requested_mode"] == "auto"
+    assert call["offload_policy"] == call["memory_plan"]["selected_offload_policy"]
+
+
+def test_load_forwards_transformer_gguf_component_fields(app_with_stub):
+    app, stub = app_with_stub
+    c = TestClient(app)
+
+    r = c.post(
+        "/api/inference/images/load",
+        json = {
+            "repo_id": "black-forest-labs/FLUX.2-dev",
+            "transformer_gguf_repo": "unsloth/FLUX.2-dev-GGUF",
+            "transformer_gguf_filename": "flux2-dev-Q4_K_M.gguf",
+        },
+    )
+    assert r.status_code == 200, r.text
+
+    assert stub.calls[-1]["repo_id"] == "black-forest-labs/FLUX.2-dev"
+    assert stub.calls[-1]["gguf_filename"] is None
+    assert stub.calls[-1]["transformer_gguf_repo"] == "unsloth/FLUX.2-dev-GGUF"
+    assert stub.calls[-1]["transformer_gguf_filename"] == "flux2-dev-Q4_K_M.gguf"
+    assert stub.calls[-1]["base_repo"] is None
+
+
+def test_load_v2_contract_normalizes_model_components_runtime_and_adapter(
+    app_with_stub,
+):
+    app, stub = app_with_stub
+    c = TestClient(app)
+
+    r = c.post(
+        "/api/inference/images/load",
+        json = {
+            "api_version": "2026-06-03",
+            "model": {
+                "repo_id": "black-forest-labs/FLUX.2-dev",
+                "family": "flux.2",
+                "base_repo": "black-forest-labs/FLUX.2-dev",
+            },
+            "components": {
+                "transformer": {
+                    "format": "gguf",
+                    "repo_id": "unsloth/FLUX.2-dev-GGUF",
+                    "filename": "flux2-dev-Q4_K_M.gguf",
+                    "quantization": "Q4_K_M",
+                },
+                "text_encoder": {
+                    "format": "gguf",
+                    "repo_id": "unsloth/Qwen3-4B-GGUF",
+                    "filename": "Qwen3-4B-BF16.gguf",
+                    "component": "text_encoder",
+                },
+            },
+            "runtime": {
+                "offload_policy": "balanced",
+                "enable_model_cpu_offload": False,
+                "gguf_quantized_cpu_resident": True,
+                "gguf_pin_cpu_resident": True,
+                "torch_compile": "none",
+                "attention_backend": "flash",
+            },
+            "adapters": [
+                {
+                    "type": "lora",
+                    "repo_id": "owner/lora",
+                    "weight_name": "adapter.safetensors",
+                    "adapter_name": "style",
+                    "scale": 0.8,
+                    "fuse": False,
+                }
+            ],
+            "options": {"future_load_knob": "accepted"},
+        },
+    )
+
+    assert r.status_code == 200, r.text
+    call = stub.calls[-1]
+    assert call["repo_id"] == "black-forest-labs/FLUX.2-dev"
+    assert call["transformer_gguf_repo"] == "unsloth/FLUX.2-dev-GGUF"
+    assert call["transformer_gguf_filename"] == "flux2-dev-Q4_K_M.gguf"
+    assert call["text_encoder_gguf_repo"] == "unsloth/Qwen3-4B-GGUF"
+    assert call["text_encoder_gguf_filename"] == "Qwen3-4B-BF16.gguf"
+    assert call["text_encoder_gguf_component"] == "text_encoder"
+    assert call["lora_repo"] == "owner/lora"
+    assert call["lora_weight_name"] == "adapter.safetensors"
+    assert call["lora_adapter_name"] == "style"
+    assert call["lora_scale"] == 0.8
+    assert call["family_override"] == "flux.2"
+    assert call["enable_model_cpu_offload"] is False
+    assert call["offload_policy"] == "balanced"
+    assert call["memory_plan"]["requested_mode"] == "manual"
+    assert call["memory_plan"]["selected_mode"] == "manual"
+    assert call["gguf_quantized_cpu_resident"] is True
+    assert call["gguf_pin_cpu_resident"] is True
+    assert call["torch_compile"] == "none"
+    assert call["attention_backend"] == "flash"
+
+
+def test_video_lifecycle_routes_delegate_to_diffusion_backend(app_with_stub):
+    app, stub = app_with_stub
+    c = TestClient(app)
+
+    r = c.post(
+        "/api/inference/videos/load",
+        json = {
+            "repo_id": "diffusers/LTX-2.3-Distilled-Diffusers",
+            "family": "ltx2-3-distilled",
+        },
+    )
+    assert r.status_code == 200, r.text
+    assert stub.calls[-1]["op"] == "load"
+    assert stub.calls[-1]["family_override"] == "ltx2-3-distilled"
+
+    r = c.get("/api/inference/videos/status")
+    assert r.status_code == 200, r.text
+    assert r.json()["media_kind"] == "video"
+
+    r = c.post(
+        "/api/inference/videos/load-plan",
+        json = {
+            "repo_id": "diffusers/LTX-2.3-Distilled-Diffusers",
+            "family": "ltx2-3-distilled",
+        },
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["load_kwargs"]["repo_id"] == (
+        "diffusers/LTX-2.3-Distilled-Diffusers"
+    )
+
+    r = c.get("/api/inference/videos/presets")
+    assert r.status_code == 200, r.text
+    assert "presets" in r.json()
+
+    r = c.post("/api/inference/videos/unload")
+    assert r.status_code == 200, r.text
+    assert r.json()["is_loaded"] is False
+
+
+def test_image_and_video_capabilities_endpoints(app_with_stub):
+    app, _ = app_with_stub
+    c = TestClient(app)
+
+    r = c.get("/api/inference/images/capabilities")
+    assert r.status_code == 200, r.text
+    image_caps = r.json()
+    assert image_caps["media_kind"] == "image"
+    assert "text_to_image" in image_caps["tasks"]
+    assert image_caps["parameters"]["width"]["multiple_of"] == 8
+    assert "prompt" in image_caps["pipeline_signature"]["call_kwargs"]
+    assert image_caps["pipeline_signature"]["accepts_var_kwargs"] is True
+    assert image_caps["attention_backend"]["options"]["default"] == "auto"
+    assert "flash" in image_caps["attention_backend"]["options"]["available"]
+    assert any(fam["name"] == "flux.2-klein" for fam in image_caps["families"])
+
+    r = c.get("/api/inference/videos/capabilities")
+    assert r.status_code == 200, r.text
+    video_caps = r.json()
+    assert video_caps["media_kind"] == "video"
+    assert "text_to_video" in video_caps["tasks"]
+    assert video_caps["parameters"]["num_frames"]["max"] == 513
+    assert any(fam["name"] == "ltx2-3-distilled" for fam in video_caps["families"])
+
+
+def test_load_preset_expands_to_component_swap(app_with_stub):
+    app, stub = app_with_stub
+    c = TestClient(app)
+
+    r = c.post(
+        "/api/inference/images/load",
+        json = {
+            "preset_id": "flux.2-klein-base-4b",
+            "transformer_quant": "Q4_K_M",
+            "text_encoder_gguf_filename": "qwen3-4b-BF16.gguf",
+        },
+    )
+    assert r.status_code == 200, r.text
+
+    assert stub.calls[-1]["repo_id"] == "black-forest-labs/FLUX.2-klein-base-4B"
+    assert stub.calls[-1]["gguf_filename"] is None
+    assert stub.calls[-1]["transformer_gguf_repo"] == (
+        "unsloth/FLUX.2-klein-base-4B-GGUF"
+    )
+    assert stub.calls[-1]["transformer_gguf_filename"] == (
+        "flux-2-klein-base-4b-Q4_K_M.gguf"
+    )
+    assert stub.calls[-1]["text_encoder_gguf_repo"] == "unsloth/Qwen3-4B-GGUF"
+    assert stub.calls[-1]["text_encoder_gguf_filename"] == "qwen3-4b-BF16.gguf"
+    assert stub.calls[-1]["family_override"] == "flux.2-klein"
+    assert stub.calls[-1]["memory_plan"]["requested_mode"] == "auto"
+    assert (
+        stub.calls[-1]["offload_policy"]
+        == stub.calls[-1]["memory_plan"]["selected_offload_policy"]
+    )
+
+
+def test_load_preset_rejects_unknown_quantless_load(app_with_stub):
+    app, _ = app_with_stub
+    c = TestClient(app)
+
+    r = c.post(
+        "/api/inference/images/load",
+        json = {"preset_id": "flux.2-dev"},
+    )
+
+    assert r.status_code == 400, r.text
+    assert "transformer_gguf_filename" in r.json()["detail"]
+
+
+def test_diffusion_presets_endpoint(app_with_stub):
+    app, _ = app_with_stub
+    c = TestClient(app)
+
+    r = c.get("/api/inference/images/presets")
+
+    assert r.status_code == 200, r.text
+    presets = r.json()["presets"]
+    assert any(
+        entry["id"] == "flux.2-dev"
+        and entry["pipeline_repo"] == "black-forest-labs/FLUX.2-dev"
+        and entry["transformer_gguf_repo"] == "unsloth/FLUX.2-dev-GGUF"
+        for entry in presets
+    )
+
+
+def test_diffusion_load_plan_allows_preset_before_quant_selection(app_with_stub):
+    app, _ = app_with_stub
+    c = TestClient(app)
+
+    r = c.post(
+        "/api/inference/images/load-plan",
+        json = {"preset_id": "flux.2-dev"},
+    )
+
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["ready_to_load"] is False
+    assert body["load_kwargs"]["repo_id"] == "black-forest-labs/FLUX.2-dev"
+    assert body["load_kwargs"]["transformer_gguf_repo"] == "unsloth/FLUX.2-dev-GGUF"
+    assert body["load_kwargs"]["transformer_gguf_filename"] is None
+    assert body["memory_plan"]["requested_mode"] == "auto"
+    assert (
+        body["load_kwargs"]["offload_policy"]
+        == body["memory_plan"]["selected_offload_policy"]
+    )
+    assert body["preset"]["id"] == "flux.2-dev"
+
+
+def test_diffusion_load_plan_includes_safetensors_quantization(app_with_stub):
+    app, _ = app_with_stub
+    c = TestClient(app)
+
+    r = c.post(
+        "/api/inference/images/load-plan",
+        json = {
+            "repo_id": "owner/my-flux-diffusers",
+            "family": "flux.1",
+            "safetensors_quantization": "bitsandbytes_8bit",
+            "safetensors_quantization_components": ["transformer"],
+        },
+    )
+
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["load_kwargs"]["safetensors_quantization"] == "bitsandbytes_8bit"
+    assert body["load_kwargs"]["safetensors_quantization_components"] == [
+        "transformer",
+    ]
+
+
+def test_diffusion_load_plan_expands_quant_label(app_with_stub):
+    app, _ = app_with_stub
+    c = TestClient(app)
+
+    r = c.post(
+        "/api/inference/images/load-plan",
+        json = {
+            "preset_id": "flux.2-dev",
+            "transformer_quant": "Q4_K_M",
+        },
+    )
+
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["ready_to_load"] is True
+    assert body["load_kwargs"]["transformer_gguf_filename"] == ("flux2-dev-Q4_K_M.gguf")
+    assert body["component_sources"]["transformer"] == {
+        "source": "gguf",
+        "repo": "unsloth/FLUX.2-dev-GGUF",
+        "filename": "flux2-dev-Q4_K_M.gguf",
+    }
+
+
+def test_diffusion_memory_mode_load_plan_and_load(app_with_stub):
+    app, stub = app_with_stub
+    c = TestClient(app)
+    payload = {
+        "preset_id": "flux.2-dev",
+        "transformer_quant": "Q4_K_M",
+        "runtime": {"memory_mode": "balanced"},
+        "parameters": {"width": 1024, "height": 1024, "batch_size": 1},
+    }
+
+    plan_response = c.post("/api/inference/images/load-plan", json = payload)
+    assert plan_response.status_code == 200, plan_response.text
+    body = plan_response.json()
+    memory_plan = body["memory_plan"]
+    assert memory_plan["requested_mode"] == "balanced"
+    assert memory_plan["selected_offload_policy"] == "balanced"
+    assert body["load_kwargs"]["memory_plan"] == memory_plan
+    assert body["load_kwargs"]["offload_policy"] == "balanced"
+
+    load_response = c.post("/api/inference/images/load", json = payload)
+    assert load_response.status_code == 200, load_response.text
+    call = stub.calls[-1]
+    assert call["offload_policy"] == "balanced"
+    assert call["memory_plan"]["requested_mode"] == "balanced"
+    assert call["memory_plan"]["workload"]["width"] == 1024
+
+
+def test_diffusion_load_auto_memory_plan_and_load(app_with_stub):
+    app, stub = app_with_stub
+    c = TestClient(app)
+    payload = {
+        "preset_id": "flux.2-dev",
+        "transformer_quant": "Q4_K_M",
+        "runtime": {"memory_mode": "auto"},
+        "parameters": {"width": 1024, "height": 1024, "batch_size": 1},
+    }
+
+    load_response = c.post("/api/inference/images/load", json = payload)
+    assert load_response.status_code == 200, load_response.text
+    call = stub.calls[-1]
+    assert call["memory_plan"]["requested_mode"] == "auto"
+    assert call["offload_policy"] == call["memory_plan"]["selected_offload_policy"]
+
+
+def test_diffusion_load_rejects_offload_policy_with_planner_mode(app_with_stub):
+    app, _ = app_with_stub
+    c = TestClient(app)
+
+    r = c.post(
+        "/api/inference/images/load",
+        json = {
+            "preset_id": "flux.2-dev",
+            "transformer_quant": "Q4_K_M",
+            "runtime": {
+                "memory_mode": "fast",
+                "offload_policy": "balanced",
+            },
+        },
+    )
+
+    assert r.status_code == 400, r.text
+    assert "offload_policy can only be set" in r.json()["detail"]
+
+
+def test_load_forwards_lora_fields(app_with_stub):
+    app, stub = app_with_stub
+    c = TestClient(app)
+
+    r = c.post(
+        "/api/inference/images/load",
+        json = {
+            "repo_id": "owner/FLUX.1-finetune-diffusers",
+            "family": "flux.1",
+            "lora_repo": "owner/my-flux-lora",
+            "lora_weight_name": "pytorch_lora_weights.safetensors",
+            "lora_adapter_name": "studio-style",
+            "lora_scale": 0.75,
+            "lora_fuse": True,
+        },
+    )
+    assert r.status_code == 200, r.text
+
+    assert stub.calls[-1]["lora_repo"] == "owner/my-flux-lora"
+    assert stub.calls[-1]["lora_weight_name"] == "pytorch_lora_weights.safetensors"
+    assert stub.calls[-1]["lora_adapter_name"] == "studio-style"
+    assert stub.calls[-1]["lora_scale"] == 0.75
+    assert stub.calls[-1]["lora_fuse"] is True
+
+
+def test_load_rejects_non_safetensors_lora_weight(app_with_stub):
+    app, _ = app_with_stub
+    c = TestClient(app)
+
+    r = c.post(
+        "/api/inference/images/load",
+        json = {
+            "repo_id": "owner/FLUX.1-finetune-diffusers",
+            "family": "flux.1",
+            "lora_repo": "owner/my-flux-lora",
+            "lora_weight_name": "pytorch_lora_weights.bin",
+        },
+    )
+    assert r.status_code == 422, r.text
+    assert "safetensors" in repr(r.json()).lower()
+
+
+def test_load_forwards_offload_policy(app_with_stub):
+    app, stub = app_with_stub
+    c = TestClient(app)
+
+    r = c.post(
+        "/api/inference/images/load",
+        json = {
+            "repo_id": "unsloth/Qwen-Image-Edit-GGUF",
+            "gguf_filename": "qwen-image-edit-Q4_K_M.gguf",
+            "offload_policy": "balanced",
+        },
+    )
+    assert r.status_code == 200, r.text
+
+    assert stub.calls[-1]["offload_policy"] == "balanced"
+    assert stub.calls[-1]["memory_plan"]["requested_mode"] == "manual"
+    assert stub.calls[-1]["memory_plan"]["selected_mode"] == "manual"
+    assert stub.calls[-1]["enable_model_cpu_offload"] is True
+    assert stub.calls[-1]["gguf_quantized_cpu_resident"] is None
+    assert stub.calls[-1]["gguf_pin_cpu_resident"] is None
+
+
+def test_load_forwards_safetensors_quantization(app_with_stub):
+    app, stub = app_with_stub
+    c = TestClient(app)
+
+    r = c.post(
+        "/api/inference/images/load",
+        json = {
+            "repo_id": "owner/my-flux-diffusers",
+            "family": "flux.1",
+            "safetensors_quantization": "bitsandbytes_4bit_nf4",
+            "safetensors_quantization_components": [
+                "transformer",
+                "text_encoder_2",
+            ],
+        },
+    )
+    assert r.status_code == 200, r.text
+
+    assert stub.calls[-1]["safetensors_quantization"] == "bitsandbytes_4bit_nf4"
+    assert stub.calls[-1]["safetensors_quantization_components"] == [
+        "transformer",
+        "text_encoder_2",
+    ]
+
+
+def test_load_rejects_safetensors_quantization_with_gguf(app_with_stub):
+    app, _ = app_with_stub
+    c = TestClient(app)
+
+    r = c.post(
+        "/api/inference/images/load",
+        json = {
+            "repo_id": "unsloth/Qwen-Image-Edit-GGUF",
+            "gguf_filename": "qwen-image-edit-Q4_K_M.gguf",
+            "safetensors_quantization": "bitsandbytes_4bit_nf4",
+        },
+    )
+    assert r.status_code == 422, r.text
+    assert "safetensors_quantization" in repr(r.json())
+
+
+def test_generate_rejects_off_grid_size(app_with_stub):
+    app, stub = app_with_stub
+    c = TestClient(app)
+    c.post(
+        "/api/inference/images/load",
+        json = {
+            "repo_id": "unsloth/FLUX.2-klein-4B-GGUF",
+            "gguf_filename": "x.gguf",
+        },
+    )
+    r = c.post(
+        "/api/inference/images/generate",
+        json = {"prompt": "x", "width": 513, "height": 512},
+    )
+    # Pydantic v2 wraps validator errors in 422 by default.
+    assert r.status_code in (400, 422), r.text
+
+
+def test_unload_clears_state(app_with_stub):
+    app, _ = app_with_stub
+    c = TestClient(app)
+    c.post(
+        "/api/inference/images/load",
+        json = {"repo_id": "unsloth/FLUX.2-klein-4B-GGUF", "gguf_filename": "x.gguf"},
+    )
+    r = c.post("/api/inference/images/unload")
+    assert r.status_code == 200
+    assert r.json()["is_loaded"] is False
+    r = c.get("/api/inference/images/status")
+    assert r.json()["is_loaded"] is False
+
+
+def test_load_rejects_embedded_hf_token(app_with_stub):
+    """Round 15 P1 #5: URL-embedded ``hf_xxxxx`` tokens in repo_id /
+    base_repo must be rejected with 422 so they never reach
+    ``self._repo_id`` and get echoed back by ``status()``."""
+    app, _ = app_with_stub
+    c = TestClient(app)
+    r = c.post(
+        "/api/inference/images/load",
+        json = {
+            "repo_id": "https://hf_abcdefghij0123456789@huggingface.co/owner/repo",
+        },
+    )
+    assert r.status_code == 422, r.text
+    body = r.json()
+    text = repr(body).lower()
+    assert "hf_token" in text or "embed" in text
+    # base_repo is also rejected.
+    r = c.post(
+        "/api/inference/images/load",
+        json = {
+            "repo_id": "owner/repo",
+            "gguf_filename": "x.gguf",
+            "base_repo": "https://hf_abcdefghij0123456789@huggingface.co/base/repo",
+        },
+    )
+    assert r.status_code == 422, r.text
+    # The text-encoder GGUF fields are also echoed through status/log
+    # paths, so reject embedded credentials there too.
+    r = c.post(
+        "/api/inference/images/load",
+        json = {
+            "repo_id": "owner/repo",
+            "gguf_filename": "x.gguf",
+            "text_encoder_gguf_repo": "https://hf_abcdefghij0123456789@huggingface.co/base/repo",
+        },
+    )
+    assert r.status_code == 422, r.text
+    # LoRA identifiers are also reflected through status/log paths.
+    r = c.post(
+        "/api/inference/images/load",
+        json = {
+            "repo_id": "owner/repo",
+            "lora_repo": "https://hf_abcdefghij0123456789@huggingface.co/owner/lora",
+        },
+    )
+    assert r.status_code == 422, r.text
+
+
+def test_load_rejects_control_chars_in_repo_id(app_with_stub):
+    """Newline-laden repo ids must be rejected by Pydantic BEFORE the
+    log line that echoes them. Catches log-injection from authenticated
+    callers (issues a 422 instead of forging a fake log line)."""
+    app, _ = app_with_stub
+    c = TestClient(app)
+    r = c.post(
+        "/api/inference/images/load",
+        json = {"repo_id": "owner/model\nFAKE_LOG_LINE"},
+    )
+    assert r.status_code == 422, r.text
+    body = r.json()
+    text = repr(body).lower()
+    assert "control" in text or "repo_id" in text
+
+
+def test_generate_rejects_oversize_seed(app_with_stub):
+    """Huge seeds raise inside torch.Generator.manual_seed; Pydantic
+    must clamp first with a 422 instead of a 500 traceback."""
+    app, _ = app_with_stub
+    c = TestClient(app)
+    c.post(
+        "/api/inference/images/load",
+        json = {"repo_id": "unsloth/FLUX.2-klein-4B-GGUF", "gguf_filename": "x.gguf"},
+    )
+    r = c.post(
+        "/api/inference/images/generate",
+        json = {"prompt": "x", "seed": 2**100},
+    )
+    assert r.status_code == 422, r.text
+
+
+def test_generate_accepts_uint64_max_seed(app_with_stub):
+    """Boundary value: 2**64 - 1 (uint64 max) is the largest seed
+    torch.Generator on CPU accepts; reject would frustrate users
+    who paste large seeds from other tooling."""
+    app, _ = app_with_stub
+    c = TestClient(app)
+    c.post(
+        "/api/inference/images/load",
+        json = {"repo_id": "unsloth/FLUX.2-klein-4B-GGUF", "gguf_filename": "x.gguf"},
+    )
+    r = c.post(
+        "/api/inference/images/generate",
+        json = {"prompt": "x", "seed": (2**64) - 1},
+    )
+    # The fake backend returns 200 on success; we only care that the
+    # request did NOT 422 on seed bounds.
+    assert r.status_code != 422, r.text

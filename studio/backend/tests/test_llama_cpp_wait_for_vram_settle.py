@@ -271,10 +271,19 @@ def test_load_model_calls_helper_outside_lock_and_uses_last_kill_timestamp():
     """Pin the call site: outside Phase 3 lock, gated on the timestamp,
     no ``had_live_process`` in-band flag regression. Mirrors the
     ``inspect.getsource`` pattern from ``test_llama_cpp_no_context_shift``.
+
+    Studio's diffusion PR split ``load_model`` into a thin wrapper +
+    ``_load_model_impl_locked`` that actually launches llama-server, so
+    look at both sources to keep the assertions scoped to the load entry
+    points and not the entire module.
     """
     import inspect
 
-    src = inspect.getsource(LlamaCppBackend.load_model)
+    parts = [inspect.getsource(LlamaCppBackend.load_model)]
+    impl = getattr(LlamaCppBackend, "_load_model_impl_locked", None)
+    if impl is not None:
+        parts.append(inspect.getsource(impl))
+    src = "\n".join(parts)
     assert "_wait_for_vram_settle" in src
     assert "since_kill" in src
     assert "self._last_kill_monotonic" in src

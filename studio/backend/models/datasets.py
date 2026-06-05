@@ -7,7 +7,12 @@ Dataset-related Pydantic models for API requests and responses.
 
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+# Round 24 P1 #11: reuse the chat / diffusion / export identifier
+# hardening so dataset routes also reject control characters and
+# URL-embedded HF tokens in user-controlled identifiers.
+from models.inference import _no_control_chars, _reject_embedded_hf_token
 
 
 class CheckFormatRequest(BaseModel):
@@ -26,6 +31,18 @@ class CheckFormatRequest(BaseModel):
         if isinstance(values, dict) and "split" in values:
             values.setdefault("train_split", values.pop("split"))
         return values
+
+    # Round 27 P1 #6: subset / train_split also flow into HF dataset
+    # APIs and errors/responses, so they need the same hardening.
+    @field_validator("dataset_name", "subset", "train_split")
+    @classmethod
+    def _no_dataset_name_control_chars(cls, v, info):
+        return _no_control_chars(v, info.field_name)
+
+    @field_validator("dataset_name", "subset", "train_split")
+    @classmethod
+    def _no_dataset_name_embedded_hf_tokens(cls, v, info):
+        return _reject_embedded_hf_token(v, info.field_name)
 
 
 class CheckFormatResponse(BaseModel):
@@ -56,6 +73,16 @@ class AiAssistMappingRequest(BaseModel):
     hf_token: Optional[str] = None  # For fetching dataset card
     model_name: Optional[str] = None
     model_type: Optional[str] = None
+
+    @field_validator("dataset_name", "model_name")
+    @classmethod
+    def _no_identifier_control_chars(cls, v, info):
+        return _no_control_chars(v, info.field_name)
+
+    @field_validator("dataset_name", "model_name")
+    @classmethod
+    def _no_identifier_embedded_hf_tokens(cls, v, info):
+        return _reject_embedded_hf_token(v, info.field_name)
 
 
 class AiAssistMappingResponse(BaseModel):

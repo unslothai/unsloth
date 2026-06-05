@@ -66,15 +66,24 @@ from core.inference import llama_cpp as llama_cpp_module
 
 
 def _load_model_source() -> str:
-    """Return the source of ``LlamaCppBackend.load_model``.
+    """Return the source of ``LlamaCppBackend.load_model`` PLUS the
+    internal ``_load_model_impl_locked`` body it delegates to.
 
-    Using ``inspect.getsource`` instead of reading the file directly
-    scopes the assertions to the function that actually launches
-    llama-server, so neither the presence check nor the location check
-    can be fooled by a stray occurrence of ``"--no-context-shift"``
-    elsewhere in the module.
+    Studio's diffusion PR split ``load_model`` into a thin wrapper
+    that publishes ``_loading_model_identifier`` under
+    ``_serial_load_lock`` and an inner ``_load_model_impl_locked``
+    body that actually spawns llama-server. The launch flags and the
+    ``_wait_for_vram_settle`` call now live in the inner method, so
+    inspecting only ``load_model`` would miss them. Concatenating the
+    two sources keeps these source-inspection regression tests
+    working without weakening the scope (we still only look at the
+    two load entry points, not the entire module).
     """
-    return inspect.getsource(llama_cpp_module.LlamaCppBackend.load_model)
+    parts = [inspect.getsource(llama_cpp_module.LlamaCppBackend.load_model)]
+    impl = getattr(llama_cpp_module.LlamaCppBackend, "_load_model_impl_locked", None)
+    if impl is not None:
+        parts.append(inspect.getsource(impl))
+    return "\n".join(parts)
 
 
 def test_no_context_shift_is_in_load_model():

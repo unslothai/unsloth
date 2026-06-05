@@ -19,6 +19,8 @@ import structlog
 from loggers import get_logger
 import asyncio
 import threading
+from dataclasses import dataclass
+import inspect
 
 
 import re as _re
@@ -213,6 +215,11 @@ from models.inference import (
     ListOpenAIContainersResponse,
     OpenAIContainerRequest,
     OpenAIContainerSummary,
+    DiffusionLoadRequest,
+    DiffusionGenerateRequest,
+    DiffusionGenerateResponse,
+    DiffusionVideoGenerateRequest,
+    DiffusionVideoGenerateResponse,
 )
 from core.inference.anthropic_compat import (
     anthropic_messages_to_openai,
@@ -237,6 +244,578 @@ from datetime import date as _date
 router = APIRouter()
 # Studio-only router (not mounted on /v1 OpenAI-compat).
 studio_router = APIRouter()
+
+
+def _raise_if_training_active(workload: str) -> None:
+    """Refuse a chat/diffusion/export load while training is active.
+
+    Without this guard the load path would either (a) silently stop a
+    running training run via _release_other_gpu_owners_for_diffusion
+    or (b) double-spend VRAM and OOM both jobs. Both are worse for the
+    user than a 409 explaining why the request was refused.
+
+    Failure modes are split:
+      * ``core.training`` cannot be imported (CI, isolated tests,
+        custom builds) -> silently return; nothing to protect.
+      * ``core.training`` is importable but ``get_training_backend()``
+        or ``is_training_active()`` raises -> 503 fail-closed. We
+        cannot verify the GPU is free, so taking the safer route
+        avoids OOMing an unverifiable training run.
+    """
+    try:
+        from core.training import get_training_backend  # type: ignore
+    except Exception:
+        return
+    try:
+        trn = get_training_backend()
+        active = trn.is_training_active()
+    except Exception as exc:
+        logger.warning(
+            "Could not verify training status before %s load: %s",
+            workload,
+            exc,
+        )
+        raise HTTPException(
+            status_code = 503,
+            detail = (
+                f"Could not verify training status before loading the "
+                f"{workload} model. Try again."
+            ),
+        ) from exc
+    if active:
+        raise HTTPException(
+            status_code = 409,
+            detail = (
+                f"Training is currently active. Stop the training run "
+                f"before loading a {workload} model."
+            ),
+        )
+
+
+def _raise_if_export_active(workload: str) -> None:
+    """Refuse a chat/diffusion/training load while an export job is
+    actively running.
+
+    Symmetric with ``_raise_if_training_active``: export is also a
+    long-running GPU-owning job a user does not want silently killed.
+    ONLY raises when ``is_export_active() is True`` (an export
+    subprocess is currently producing output). A settled
+    ``current_checkpoint`` is NOT an active job -- it is just held
+    GPU memory and gets dropped by ``_release_export_for``.
+
+    Failure-mode split:
+      * ``core.export`` cannot be imported -> silently skip.
+      * ``get_export_backend()`` raises -> 503 fail closed.
+      * Backend does not expose ``is_export_active`` -> silently
+        skip. Older ExportBackend builds and several test mocks
+        only expose ``current_checkpoint``; there is no async-job
+        tracker for them, and forcing a 503 here would break those
+        flows without adding any safety they did not previously have.
+      * ``is_export_active()`` itself raises -> 503 fail closed
+        (round 10 review #7).
+    """
+    try:
+        from core.export import get_export_backend  # type: ignore
+    except Exception:
+        return
+    try:
+        exp = get_export_backend()
+    except Exception as exc:
+        logger.warning(
+            "Could not verify export backend before %s load: %s",
+            workload,
+            exc,
+        )
+        raise HTTPException(
+            status_code = 503,
+            detail = (
+                f"Could not verify export status before loading the "
+                f"{workload} model. Try again."
+            ),
+        ) from exc
+    is_export_active_fn = getattr(exp, "is_export_active", None)
+    if is_export_active_fn is None:
+        return
+    try:
+        active = bool(is_export_active_fn())
+    except Exception as exc:
+        logger.warning(
+            "Could not verify export status before %s load: %s",
+            workload,
+            exc,
+        )
+        raise HTTPException(
+            status_code = 503,
+            detail = (
+                f"Could not verify export status before loading the "
+                f"{workload} model. Try again."
+            ),
+        ) from exc
+    if active:
+        raise HTTPException(
+            status_code = 409,
+            detail = (
+                f"An export job is currently active. Stop the export "
+                f"job before loading a {workload} model."
+            ),
+        )
+
+
+def _raise_if_helper_advisor_busy(workload: str) -> None:
+    """Round 28 P1 #1 / #4 / #5 / #6: refuse a new GPU workload while
+    AI Assist helper / advisor still owns its PRIVATE LlamaCppBackend.
+
+    Called early so callers do NOT first tear down idle export /
+    diffusion / chat owners just to fail on the helper check.
+
+    Round 30 P1 #7-#10: also publishes a public-load pending entry
+    under the helper-advisor start lock so a concurrent helper start
+    sees the pending public owner and refuses VRAM. Callers MUST
+    invoke ``_clear_public_load_window(workload)`` in a paired
+    finally to clear the entry once the load attempt completes.
+    """
+    try:
+        from utils.datasets.llm_assist import (
+            _HELPER_ADVISOR_START_LOCK,
+            _publish_public_load_pending,
+            helper_advisor_busy,
+            public_load_pending,
+        )
+    except Exception:
+        return
+    with _HELPER_ADVISOR_START_LOCK:
+        try:
+            busy = helper_advisor_busy()
+        except Exception as exc:
+            logger.warning(
+                "Could not verify helper/advisor status before %s load: %s",
+                workload,
+                exc,
+            )
+            raise HTTPException(
+                status_code = 503,
+                detail = (
+                    f"Could not verify AI Assist status before starting {workload}. "
+                    f"Try again."
+                ),
+            ) from exc
+        if busy:
+            raise HTTPException(
+                status_code = 503,
+                detail = (
+                    f"AI Assist (helper / advisor GGUF) is still using the GPU. "
+                    f"Wait for it to finish before starting {workload}."
+                ),
+            )
+        # Round 35 P1: also refuse when another public workload is
+        # already mid-handoff (passed its own helper-busy snapshot
+        # but has not yet flipped is_training_active /
+        # current_checkpoint / loading_model_identifier /
+        # diffusion is_loading). Without this two public loads can
+        # both pass their idle snapshots concurrently and race
+        # destructive owner teardown.
+        if public_load_pending():
+            raise HTTPException(
+                status_code = 503,
+                detail = (
+                    f"Another GPU workload is mid-handoff. Wait for it to "
+                    f"finish before starting {workload}."
+                ),
+            )
+        _publish_public_load_pending(workload)
+
+
+def _clear_public_load_window(workload: str) -> None:
+    """Pair for ``_raise_if_helper_advisor_busy``: release the pending
+    public-load publish so a subsequent helper start can proceed.
+    Safe to call when the module import failed (no-op)."""
+    try:
+        from utils.datasets.llm_assist import _release_public_load_pending
+    except Exception:
+        return
+    try:
+        _release_public_load_pending(workload)
+    except Exception:
+        pass
+
+
+async def _release_llama_for(workload: str) -> None:
+    """Unload the llama-server (GGUF) chat backend if it owns the
+    GPU. Treats ``is_loaded`` OR ``is_active`` OR
+    ``loading_model_identifier`` as held: the third covers an HF GGUF
+    download that has not yet flipped ``is_active`` to True (round
+    13 P1 #7). Without it, /images/load, /training/start, and
+    /export/load could start while a long ``_download_gguf`` was in
+    flight; llama-server would then come up afterwards and double-own
+    the GPU.
+
+    Round 16 P1 #4: a missing or unavailable llama backend is a
+    silent no-op (fresh install / no GGUF use), but an unload that
+    actually FAILS raises 503 so the caller does not start a new GPU
+    workload while llama-server is still resident.
+    """
+    try:
+        llama = get_llama_cpp_backend()
+    except Exception as exc:
+        logger.debug("llama-server unavailable for %s: %s", workload, exc)
+        return
+
+    is_loaded = bool(getattr(llama, "is_loaded", False))
+    is_active = bool(getattr(llama, "is_active", False))
+    is_loading = bool(getattr(llama, "loading_model_identifier", None))
+    if not (is_loaded or is_active or is_loading):
+        return
+
+    logger.info(
+        "Unloading GGUF chat (loaded=%s active=%s loading=%s) before %s load",
+        is_loaded,
+        is_active,
+        is_loading,
+        workload,
+    )
+    try:
+        ok = await asyncio.to_thread(llama.unload_model)
+    except Exception as exc:
+        logger.warning("Failed to unload GGUF chat before %s load: %s", workload, exc)
+        raise HTTPException(
+            status_code = 503,
+            detail = (
+                f"Could not unload the existing GGUF chat model before "
+                f"starting {workload}."
+            ),
+        ) from exc
+
+    # Round 28 P1 #11: a pending HF GGUF download cancelled by
+    # unload_model() takes up to a few seconds to settle (the load
+    # thread observes _cancel_event in its finally and clears
+    # loading_model_identifier). Wait briefly so a legitimate cancel
+    # does not 503. Mirrors the /api/inference/unload settling wait.
+    deadline = time.monotonic() + 5.0
+    while (
+        bool(getattr(llama, "loading_model_identifier", None))
+        and time.monotonic() < deadline
+    ):
+        await asyncio.sleep(0.1)
+
+    # Round 18 P1 #1: previously only the raised-exception path was
+    # treated as failure. ``llama.unload_model()`` returning ``False``
+    # (subprocess refused to terminate, IPC timeout) or leaving
+    # ``is_loaded`` / ``is_active`` / ``loading_model_identifier``
+    # populated after the call meant the next workload could allocate
+    # while llama-server was still resident. Re-read the same three
+    # fields and fail closed if anything is still set so the caller
+    # retries instead of double-owning VRAM.
+    if (
+        ok is False
+        or bool(getattr(llama, "is_loaded", False))
+        or bool(getattr(llama, "is_active", False))
+        or bool(getattr(llama, "loading_model_identifier", None))
+    ):
+        raise HTTPException(
+            status_code = 503,
+            detail = (
+                "The existing GGUF chat model is still active or loading "
+                f"after unload; retry before starting {workload}."
+            ),
+        )
+
+
+async def _release_safetensors_chat_for(workload: str) -> None:
+    """Unload the safetensors / Unsloth chat backend (drains both
+    ``active_model_name`` and ``loading_models``) if it owns the GPU.
+
+    Round 16 P1 #4: ``unload_model`` returning ``False`` (subprocess
+    wedged, IPC timeout) used to be silently ignored, leaving the
+    old chat model resident while a new GPU workload started on top.
+    Treat ``False`` as failure and raise 503 so the caller retries
+    instead of double-owning VRAM.
+    """
+    try:
+        from core.inference import get_inference_backend as _gib  # type: ignore
+
+        inf = _gib()
+    except Exception as exc:
+        logger.debug("safetensors unavailable for %s: %s", workload, exc)
+        return
+
+    async def _unload_required(model_name: str) -> None:
+        try:
+            ok = await asyncio.to_thread(inf.unload_model, model_name)
+        except Exception as exc:
+            raise HTTPException(
+                status_code = 503,
+                detail = (
+                    f"Could not unload safetensors chat model "
+                    f"'{model_name}' before starting {workload}."
+                ),
+            ) from exc
+        if ok is False:
+            raise HTTPException(
+                status_code = 503,
+                detail = (
+                    f"Safetensors backend refused to unload "
+                    f"'{model_name}' before starting {workload}. "
+                    "Try again."
+                ),
+            )
+        # Round 19 P1 #1: ``unload_model`` returning ``True`` does not
+        # by itself guarantee the orchestrator dropped the model. The
+        # worker may have responded ``unloaded`` while still holding
+        # weights, or a concurrent ``load`` from another tab may have
+        # repopulated ``loading_models`` between calls. Re-read the
+        # tracker fields and fail closed if this specific name is
+        # still active or loading so the caller retries.
+        remaining_loading = set(getattr(inf, "loading_models", set()) or set())
+        active_after = getattr(inf, "active_model_name", None)
+        if active_after == model_name or model_name in remaining_loading:
+            raise HTTPException(
+                status_code = 503,
+                detail = (
+                    f"Safetensors chat model '{model_name}' is still active "
+                    f"or loading after unload; retry before starting {workload}."
+                ),
+            )
+
+    active_model_name = getattr(inf, "active_model_name", None)
+    loading_models = set(getattr(inf, "loading_models", set()) or set())
+    if active_model_name:
+        logger.info(
+            "Unloading safetensors chat '%s' before %s load",
+            active_model_name,
+            workload,
+        )
+        await _unload_required(active_model_name)
+    for loading in loading_models:
+        if loading == active_model_name:
+            continue
+        logger.info(
+            "Unloading in-flight safetensors chat '%s' before %s load",
+            loading,
+            workload,
+        )
+        await _unload_required(loading)
+
+    # Round 21 P1 #4: final sweep without the owned_names filter.
+    # A concurrent ``/load`` that appeared AFTER the initial
+    # snapshot was previously ignored here, so a chat model that
+    # started loading during the unload window let the surrounding
+    # training / export / GGUF / diffusion start anyway. Treat ANY
+    # surviving active / loading entry as a failure so the caller
+    # retries rather than racing the new chat load for VRAM.
+    remaining_loading = set(getattr(inf, "loading_models", set()) or set())
+    remaining_active = getattr(inf, "active_model_name", None)
+    if remaining_loading or remaining_active:
+        raise HTTPException(
+            status_code = 503,
+            detail = (
+                "A safetensors chat model is still active or loading "
+                f"after unload; retry before starting {workload}."
+            ),
+        )
+
+
+async def _release_chat_for(workload: str) -> None:
+    """Shared 'release any GPU-owning chat backend' helper.
+
+    Used by training / export / diffusion handoffs (which need BOTH
+    chat backends gone). The GGUF chat-load path uses only
+    ``_release_safetensors_chat_for`` because it is itself starting
+    llama-server -- we cannot release the backend we are about to
+    start. Conversely, the standard chat-load path releases only
+    the llama side.
+    """
+    # Round 27 P1 #2: helper / advisor GGUF loads run on a PRIVATE
+    # LlamaCppBackend (round 26 P1 #1) so the global llama checks
+    # below do not see them. Refuse the handoff while a helper /
+    # advisor still owns its private backend so a new GPU workload
+    # does not allocate on top of helper VRAM and OOM.
+    try:
+        from utils.datasets.llm_assist import helper_advisor_busy
+    except Exception:
+        pass
+    else:
+        if helper_advisor_busy():
+            raise HTTPException(
+                status_code = 503,
+                detail = (
+                    f"AI Assist (helper / advisor GGUF) is still using the "
+                    f"GPU. Wait for it to finish before starting {workload}."
+                ),
+            )
+    await _release_llama_for(workload)
+    await _release_safetensors_chat_for(workload)
+
+
+async def _release_export_for(workload: str) -> None:
+    """Shared 'drop a settled export checkpoint' helper.
+
+    ONLY shuts down the export subprocess when ``current_checkpoint``
+    is set AND ``is_export_active()`` is False -- i.e. a previously
+    completed load is just holding GPU memory. An in-flight export
+    job (``is_export_active()`` True) is NEVER touched here; the
+    route layer is expected to refuse the workload with HTTP 409
+    via ``_raise_if_export_active`` before calling this.
+
+    Round 17 P1 #8: idle-export shutdown failures now raise HTTP 503
+    instead of being swallowed, so a wedged export subprocess does
+    not silently leave GPU memory pinned while training / chat /
+    diffusion start on top.
+    """
+    try:
+        from core.export import get_export_backend  # type: ignore
+    except Exception as exc:
+        logger.debug("export backend unavailable for %s: %s", workload, exc)
+        return
+
+    try:
+        exp = get_export_backend()
+    except Exception as exc:
+        logger.warning("Could not access export backend before %s: %s", workload, exc)
+        raise HTTPException(
+            status_code = 503,
+            detail = (
+                f"Could not access export backend before starting {workload}. "
+                "Try again."
+            ),
+        ) from exc
+
+    has_checkpoint = bool(getattr(exp, "current_checkpoint", None))
+    is_export_active_fn = getattr(exp, "is_export_active", None)
+    if is_export_active_fn is None:
+        active = False
+    else:
+        try:
+            active = bool(is_export_active_fn())
+        except Exception as exc:
+            raise HTTPException(
+                status_code = 503,
+                detail = (
+                    f"Could not verify export status before starting "
+                    f"{workload}. Try again."
+                ),
+            ) from exc
+
+    # If an /export/* operation has published its pending window, the
+    # backend may not have flipped is_export_active() = True yet but the
+    # subprocess is mid-handoff. Refuse to tear it down so the in-flight
+    # export sees a stable subprocess.
+    try:
+        from utils.datasets.llm_assist import public_load_pending_for
+
+        export_pending = public_load_pending_for("export")
+    except Exception:
+        export_pending = False
+    if has_checkpoint and not active and export_pending:
+        raise HTTPException(
+            status_code = 503,
+            detail = (
+                f"Another export operation is mid-handoff. Wait for it "
+                f"to finish before starting {workload}."
+            ),
+        )
+
+    if has_checkpoint and not active:
+        try:
+            logger.info(
+                "Shutting down idle export (checkpoint=%s) for %s",
+                has_checkpoint,
+                workload,
+            )
+            await asyncio.to_thread(exp._shutdown_subprocess)
+        except Exception as exc:
+            logger.warning("Could not shut down export for %s: %s", workload, exc)
+            raise HTTPException(
+                status_code = 503,
+                detail = (
+                    f"Could not unload the idle export checkpoint before "
+                    f"starting {workload}. Try again."
+                ),
+            ) from exc
+        exp.current_checkpoint = None
+        exp.is_vision = False
+        exp.is_peft = False
+
+
+async def _release_diffusion_for(workload: str) -> None:
+    """Strict diffusion-unload helper for cross-workload handoffs.
+
+    Round 17 P1 #4-7: the GGUF chat load, safetensors chat load,
+    training start, and export load paths each had their own
+    best-effort try/except around ``diff_backend.unload_model()``.
+    A wedged diffusion pipeline therefore stayed resident while a
+    new GPU workload started on top. This helper raises HTTP 503
+    when the unload fails or leaves diffusion resident, so the
+    caller fails closed.
+    """
+    try:
+        from core.inference.diffusion import get_diffusion_backend  # type: ignore
+    except Exception as exc:
+        logger.debug("diffusion backend unavailable for %s: %s", workload, exc)
+        return
+
+    diff_backend = get_diffusion_backend()
+    try:
+        diff_status = diff_backend.status()
+    except Exception as exc:
+        logger.warning("Could not verify diffusion status before %s: %s", workload, exc)
+        raise HTTPException(
+            status_code = 503,
+            detail = (
+                f"Could not verify diffusion status before starting "
+                f"{workload}. Try again."
+            ),
+        ) from exc
+
+    if not (diff_status.get("is_loaded") or diff_status.get("is_loading")):
+        return
+
+    logger.info(
+        "Unloading diffusion (loaded=%s loading=%s) before %s",
+        diff_status.get("is_loaded"),
+        diff_status.get("is_loading"),
+        workload,
+    )
+    try:
+        result = await asyncio.to_thread(diff_backend.unload_model)
+    except Exception as exc:
+        logger.warning("Failed to unload diffusion before %s: %s", workload, exc)
+        raise HTTPException(
+            status_code = 503,
+            detail = (
+                f"Could not unload the existing diffusion image model "
+                f"before starting {workload}. Try again."
+            ),
+        ) from exc
+
+    # Round 18 P1 #5: a successful pre-check status() and a
+    # success-shaped unload result used to mask a post-unload
+    # status() failure (after = {}) and let the caller proceed
+    # without proof that diffusion released VRAM. Fail closed
+    # instead so training / chat / export retry rather than
+    # double-owning the GPU.
+    try:
+        after = diff_backend.status()
+    except Exception as exc:
+        logger.warning(
+            "Could not verify diffusion status after unload before %s: %s",
+            workload,
+            exc,
+        )
+        raise HTTPException(
+            status_code = 503,
+            detail = (
+                f"Could not verify diffusion unload before starting "
+                f"{workload}. Try again."
+            ),
+        ) from exc
+    if result is False or after.get("is_loaded") or after.get("is_loading"):
+        raise HTTPException(
+            status_code = 503,
+            detail = (
+                f"The diffusion image model is still active after unload; "
+                f"retry before starting {workload}."
+            ),
+        )
 
 
 _ARTIFACT_PREVIEW_FRAME_ANCESTORS = "'self' tauri://localhost http://tauri.localhost"
@@ -729,6 +1308,10 @@ async def load_model(
     """
     native_grant_backed = False
     model_log_label = request.model_path
+    # Round 30 P1 #7 / #9: track which branch (GGUF / safetensors)
+    # published a public-load pending entry so the outer finally
+    # decrements the same counter, even on early exception.
+    chat_load_window_workload: Optional[str] = None
     try:
         # Validate user-supplied llama-server pass-through args up front
         # so a managed-flag collision returns 400 before any model work.
@@ -886,15 +1469,45 @@ async def load_model(
                     detail = "gpu_ids is not supported for GGUF models yet.",
                 )
 
-            llama_backend = get_llama_cpp_backend()
-            unsloth_backend = get_inference_backend()
+            # Symmetric lifecycle guard: refuse a chat load while
+            # training is active. Diffusion and export paths refuse;
+            # without this the GGUF chat load would start llama-server
+            # while training still owned VRAM and double-spend it.
+            # Also refuse when an export job is in flight: same
+            # reasoning as diffusion (terminating a live export would
+            # corrupt the user's exported artifact).
+            _raise_if_training_active("chat")
+            _raise_if_export_active("chat")
+            # Round 28 P1 #1: refuse before the release helpers fire
+            # so we do not tear down an idle export / diffusion just to
+            # then 503 on the helper check.
+            _raise_if_helper_advisor_busy("GGUF chat")
+            chat_load_window_workload = "GGUF chat"
+            # Round 24 P1 #4: release order is now
+            # export -> diffusion -> safetensors chat (was
+            # export -> safetensors chat -> diffusion). A wedged
+            # diffusion unload used to fire AFTER the safetensors
+            # chat was already gone, so the user lost both. Drop
+            # the chat last so an earlier failure preserves it.
+            await _release_export_for("GGUF chat")
+            await _release_diffusion_for("GGUF chat load")
 
-            # Unload any active Unsloth model first to free VRAM
-            if unsloth_backend.active_model_name:
-                logger.info(
-                    f"Unloading Unsloth model '{unsloth_backend.active_model_name}' before loading GGUF"
-                )
-                unsloth_backend.unload_model(unsloth_backend.active_model_name)
+            llama_backend = get_llama_cpp_backend()
+            # Round 19 P2 #8: previously also called
+            # ``unsloth_backend = get_inference_backend()`` here, but
+            # the binding was never used in the GGUF branch. Eager
+            # construction makes the GGUF-only path needlessly fail
+            # or pay startup cost when the safetensors backend is
+            # unavailable / lazy-initialised; the shared
+            # ``_release_safetensors_chat_for`` below already
+            # handles missing-backend cases as a no-op.
+
+            # Unload any safetensors / Unsloth model. Uses the shared
+            # helper so we also drain ``loading_models`` (round 10
+            # review #4); the inline version only checked
+            # ``active_model_name`` and let an in-flight safetensors
+            # load race the new GGUF allocation.
+            await _release_safetensors_chat_for("GGUF chat")
 
             # Inherit llama_extra_args from the previous load when the
             # request omits the field (the chat-settings Apply path
@@ -1064,29 +1677,38 @@ async def load_model(
             )
 
         # ── Standard path: load via Unsloth/transformers ──────────
+        # Symmetric lifecycle guard: refuse a chat load while training
+        # or an export is active so we do not OOM both jobs together
+        # and so we do not silently corrupt an in-flight export.
+        _raise_if_training_active("chat")
+        _raise_if_export_active("chat")
+        # Round 28 P1 #1: refuse before the release helpers tear down
+        # idle GPU owners.
+        _raise_if_helper_advisor_busy("safetensors chat")
+        chat_load_window_workload = "safetensors chat"
+        # Round 24 P1 #5: release order is now
+        # export -> diffusion -> llama-chat (was
+        # export -> llama-chat -> diffusion). A wedged diffusion
+        # unload used to fire AFTER the GGUF chat was already gone,
+        # so the user lost both. Drop llama-chat last so an earlier
+        # failure preserves it.
+        await _release_export_for("safetensors chat")
+        await _release_diffusion_for("safetensors chat load")
+
         backend = get_inference_backend()
 
-        # Unload any active GGUF model first
-        llama_backend = get_llama_cpp_backend()
-        if llama_backend.is_loaded:
-            logger.info("Unloading GGUF model before loading Unsloth model")
-            llama_backend.unload_model()
+        # Unload any active or mid-download llama-server. Shared
+        # helper so this stays in sync with the GGUF path's
+        # symmetric ``_release_safetensors_chat_for``.
+        await _release_llama_for("safetensors chat")
 
-        # Shut down any export subprocess to free VRAM
-        try:
-            from core.export import get_export_backend
-
-            exp_backend = get_export_backend()
-            if exp_backend.current_checkpoint:
-                logger.info(
-                    "Shutting down export subprocess to free GPU memory for inference"
-                )
-                exp_backend._shutdown_subprocess()
-                exp_backend.current_checkpoint = None
-                exp_backend.is_vision = False
-                exp_backend.is_peft = False
-        except Exception as e:
-            logger.warning("Could not shut down export subprocess: %s", e)
+        # Export was already dropped above via the shared
+        # ``await _release_export_for("safetensors chat")`` call
+        # (which checks is_export_active() before the destructive
+        # _shutdown_subprocess). The previous inline block here
+        # repeated the unconditional shutdown and would terminate
+        # an in-flight export job; round 11 review #2 flagged the
+        # asymmetry. The inline block is intentionally removed.
 
         # Auto-detect quantization for LoRA adapters from adapter_config.json
         # The training pipeline patches this file with "unsloth_training_method"
@@ -1249,6 +1871,14 @@ async def load_model(
         if any(h.lower() in msg.lower() for h in not_supported_hints):
             msg = f"This model is not supported yet. Try a different model. (Original error: {msg})"
         raise HTTPException(status_code = 500, detail = f"Failed to load model: {msg}")
+    finally:
+        # Round 30 P1 #7 / #9: clear whichever chat branch published a
+        # public-load pending entry so a subsequent helper / advisor
+        # start can proceed. Set on the GGUF / safetensors branches
+        # after _raise_if_helper_advisor_busy succeeds; stays None for
+        # the already-loaded fast paths above.
+        if chat_load_window_workload is not None:
+            _clear_public_load_window(chat_load_window_workload)
 
 
 @router.post("/validate", response_model = ValidateModelResponse)
@@ -1340,23 +1970,101 @@ async def unload_model(
     try:
         # Check if the GGUF backend has this model loaded or is loading it
         llama_backend = get_llama_cpp_backend()
-        if llama_backend.is_active and (
-            llama_backend.model_identifier == request.model_path
-            or is_registered_native_path_label(
-                llama_backend.model_identifier, request.model_path
-            )
-            or not llama_backend.is_loaded
-        ):
-            llama_backend.unload_model()
+        loaded_identifier = getattr(llama_backend, "model_identifier", None)
+        loading_identifier = getattr(llama_backend, "loading_model_identifier", None)
+        # Round 21 P1 #3: a GGUF download that has not yet flipped
+        # ``is_active`` to True (model_identifier still None,
+        # ``loading_model_identifier`` populated) used to fall
+        # through to the safetensors branch, which silently
+        # responded ``status="unloaded"`` while llama-server kept
+        # downloading. Match on either the loaded OR loading
+        # identifier so the explicit unload route can actually
+        # cancel a pending GGUF load.
+        llama_matches_request = (
+            loaded_identifier == request.model_path
+            or loading_identifier == request.model_path
+            or is_registered_native_path_label(loaded_identifier, request.model_path)
+            or is_registered_native_path_label(loading_identifier, request.model_path)
+        )
+        # Round 26 P1 #5: the previous ``or not is_loaded`` fallback
+        # let an unload of ``owner/B`` cancel a pending llama download
+        # of ``owner/A`` and silently leave safetensors ``owner/B``
+        # alive. Only enter the llama branch when the request actually
+        # matches the loaded/loading identifier, OR when llama-server
+        # is starting up without any identifier yet (the original
+        # narrow case we wanted to catch).
+        llama_is_starting_without_identifier = (
+            getattr(llama_backend, "is_active", False)
+            and not getattr(llama_backend, "is_loaded", False)
+            and not loaded_identifier
+            and not loading_identifier
+        )
+        should_unload_llama = (
+            llama_matches_request
+            and (getattr(llama_backend, "is_active", False) or loading_identifier)
+        ) or llama_is_starting_without_identifier
+        if should_unload_llama:
+            # Round 19 P1 #6: previously this called
+            # ``llama_backend.unload_model()`` and unconditionally
+            # returned ``status="unloaded"`` even when the subprocess
+            # refused to terminate or IPC timed out. The frontend then
+            # showed the model as unloaded while llama-server was
+            # still resident. Treat ``False`` / leftover state as a
+            # 503 so the user retries.
+            ok = await asyncio.to_thread(llama_backend.unload_model)
+            # Round 26 P2 #15: explicit cancel of a pending GGUF load
+            # leaves loading_model_identifier set briefly until the
+            # load thread observes _cancel_event in its finally. Wait
+            # up to 5s so a legitimate cancel does not 503.
+            deadline = time.monotonic() + 5.0
+            while (
+                getattr(llama_backend, "loading_model_identifier", None)
+                and time.monotonic() < deadline
+            ):
+                await asyncio.sleep(0.1)
+            if (
+                ok is False
+                or getattr(llama_backend, "is_loaded", False)
+                or getattr(llama_backend, "is_active", False)
+                or getattr(llama_backend, "loading_model_identifier", None)
+            ):
+                raise HTTPException(
+                    status_code = 503,
+                    detail = (
+                        "The GGUF model is still active or loading after unload. "
+                        "Try again."
+                    ),
+                )
             logger.info(f"Unloaded GGUF model: {request.model_path}")
             return UnloadResponse(status = "unloaded", model = request.model_path)
 
         # Otherwise, unload from Unsloth backend
         backend = get_inference_backend()
-        backend.unload_model(request.model_path)
+        # Round 19 P1 #6: same fail-closed treatment for safetensors.
+        # ``unload_model`` returning ``False`` or leaving
+        # ``active_model_name`` / ``loading_models`` populated for the
+        # requested name must surface to the client so the UI reflects
+        # the real state.
+        ok = await asyncio.to_thread(backend.unload_model, request.model_path)
+        active_after = getattr(backend, "active_model_name", None)
+        loading_after = set(getattr(backend, "loading_models", set()) or set())
+        if (
+            ok is False
+            or active_after == request.model_path
+            or request.model_path in loading_after
+        ):
+            raise HTTPException(
+                status_code = 503,
+                detail = (
+                    "The safetensors model is still active or loading after "
+                    "unload. Try again."
+                ),
+            )
         logger.info(f"Unloaded model: {request.model_path}")
         return UnloadResponse(status = "unloaded", model = request.model_path)
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error unloading model: {e}", exc_info = True)
         raise HTTPException(status_code = 500, detail = f"Failed to unload model: {str(e)}")
@@ -1710,7 +2418,7 @@ async def generate_audio(
         )
 
     try:
-        wav_bytes, sample_rate = await asyncio.get_event_loop().run_in_executor(
+        wav_bytes, sample_rate = await asyncio.get_running_loop().run_in_executor(
             None, gen
         )
     except Exception as e:
@@ -1735,6 +2443,1333 @@ async def generate_audio(
                 }
             ],
         }
+    )
+
+
+# =====================================================================
+# Diffusion image generation  (/images/*)
+# =====================================================================
+#
+# Lifecycle mirrors the GGUF chat backend: explicit load -> generate ->
+# unload. Diffusion pipelines compete for the same GPU as llama-server,
+# so callers on < 24 GB GPUs should unload the chat model first.
+
+
+def _get_diffusion_backend():
+    """Lazy import so non-diffusion installs do not pay the diffusers
+    cost at process start. The backend itself is a process-wide
+    singleton; reusing it across requests keeps pipeline state alive."""
+    from core.inference.diffusion import get_diffusion_backend
+
+    return get_diffusion_backend()
+
+
+def _looks_like_local_diffusion_path(value: Optional[str]) -> bool:
+    """Round 30 P1 #4 / round 31 P1 #2: decide whether ``repo_id`` /
+    ``base_repo`` names a local filesystem path that requires a
+    signed ``native_path_lease`` grant.
+
+    Hub ids on huggingface.co are strictly ``owner/repo`` -- exactly
+    two non-empty segments with no path-traversal parts, no weight
+    file suffix, and no leading separator. Anything else (absolute
+    paths, ``~`` / ``./`` / ``../`` prefixes, backslashes, single
+    segments, three-or-more-segment paths like ``exports/my-flux``,
+    or weight-file-shaped strings) is treated as a local-path
+    attempt so it cannot bypass the lease boundary by looking like
+    an ``owner/repo`` relative directory.
+
+    Round 31 closes the bypass where ``DiffusionBackend.load_model``
+    accepted cwd-relative directories such as ``exports/my-flux``
+    that this function previously returned False for. We DO NOT
+    consult ``Path.exists`` so the route does not side-channel
+    filesystem layout via differential errors."""
+    if not value:
+        return False
+    if value.startswith(("/", "~", "./", "../")):
+        return True
+    if "\\" in value:
+        return True
+    try:
+        candidate = Path(value).expanduser()
+    except (OSError, ValueError):
+        # Treat unparseable identifiers as local-path attempts so a
+        # broken input does not silently fall through to the Hub
+        # loader (defence-in-depth, not a tested code path).
+        return True
+    if candidate.is_absolute():
+        return True
+    # Weight-file shaped strings ("owner/model.gguf") are not Hub
+    # ids; route them through the lease path so a caller cannot
+    # smuggle a relative file path past the repo_id field.
+    if value.endswith((".gguf", ".safetensors", ".bin", ".pt", ".pth")):
+        return True
+    # A canonical Hub id decomposes into exactly two non-empty,
+    # non-traversal segments. Anything else is invalid as a Hub id
+    # or path-shaped enough that DiffusionBackend.load_model would
+    # treat it as a local directory.
+    parts = value.split("/")
+    if len(parts) != 2 or not parts[0] or not parts[1]:
+        return True
+    if parts[0] in (".", "..") or parts[1] in (".", ".."):
+        return True
+    # Last resort: a 2-segment value like ``exports/my-flux`` passes
+    # all the syntactic checks above but
+    # ``DiffusionBackend.load_model`` would still open it as a local
+    # directory via ``Path(repo_id).expanduser().is_dir()``. Trigger
+    # the lease path for any 2-segment value that actually resolves
+    # to an existing local directory / file under backend CWD. This
+    # is a minor probe side-channel (existence of cwd-relative paths
+    # to an already-authenticated caller), accepted in exchange for
+    # closing the silent-bypass of the new lease boundary.
+    try:
+        if candidate.exists():
+            return True
+    except (OSError, ValueError):
+        return True
+    return False
+
+
+def _resolve_diffusion_repo_for_request(
+    value: Optional[str],
+    lease: Optional[str],
+    *,
+    operation: str,
+) -> Optional[str]:
+    """Round 30 P1 #4: enforce the same signed-lease boundary the chat
+    /api/inference/load path uses. Hub ids return as-is. Local
+    paths require a verified ``native_path_lease`` directory grant;
+    a missing or invalid lease returns 400 BEFORE any GPU handoff."""
+    if value is None:
+        return None
+    if not _looks_like_local_diffusion_path(value):
+        return value
+    try:
+        grant = verify_native_path_lease(
+            lease,
+            operation = operation,
+            expected_kind = "model",
+            expected_path_type = "directory",
+        )
+    except NativePathLeaseError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+    return str(grant.canonical_path)
+
+
+def _decode_diffusion_input_images(
+    payload: DiffusionGenerateRequest,
+) -> Optional[list[Any]]:
+    """Decode route-level base64 image inputs into RGB/RGBA PIL images.
+
+    Accepts raw base64 or data URLs. The backend takes a structural list
+    so Qwen Edit gets one image while Qwen Edit Plus can receive multiple
+    references through the same path.
+    """
+    encoded_images: list[str] = []
+    if payload.image_b64 is not None:
+        encoded_images = [payload.image_b64]
+    elif payload.images_b64 is not None:
+        encoded_images = list(payload.images_b64)
+    if not encoded_images:
+        return None
+
+    from PIL import Image
+
+    decoded = []
+    for index, encoded in enumerate(encoded_images):
+        value = encoded.strip()
+        if "," in value and value[:64].lower().startswith("data:"):
+            value = value.split(",", 1)[1]
+        try:
+            raw = base64.b64decode(value, validate = True)
+            image = Image.open(io.BytesIO(raw))
+            image.load()
+        except Exception as exc:
+            raise HTTPException(
+                status_code = 400,
+                detail = f"image input {index + 1} is not a valid base64 image",
+            ) from exc
+        # Preserve alpha for layered/edit workflows; normalize all other
+        # modes to RGB so diffusers does not receive palette/luminance
+        # images with surprising channel counts.
+        if image.mode not in ("RGB", "RGBA"):
+            image = image.convert("RGBA" if "A" in image.getbands() else "RGB")
+        decoded.append(image)
+    return decoded
+
+
+def _first_component(
+    payload: DiffusionLoadRequest,
+    *names: str,
+) -> Any:
+    if not payload.components:
+        return None
+    for name in names:
+        component = payload.components.get(name)
+        if component is not None:
+            return component
+    return None
+
+
+def _first_lora_adapter(payload: DiffusionLoadRequest) -> Any:
+    if not payload.adapters:
+        return None
+    for adapter in payload.adapters:
+        if adapter.type == "lora":
+            return adapter
+    return None
+
+
+def _runtime_offload_policy(payload: DiffusionLoadRequest) -> Optional[str]:
+    if payload.runtime and payload.runtime.offload_policy:
+        if payload.runtime.offload_policy == "auto":
+            return None
+        return payload.runtime.offload_policy
+    return payload.offload_policy
+
+
+def _runtime_torch_compile(payload: DiffusionLoadRequest) -> Optional[str]:
+    if payload.runtime and payload.runtime.torch_compile:
+        if payload.runtime.torch_compile == "auto":
+            return None
+        return payload.runtime.torch_compile
+    return None
+
+
+def _runtime_attention_backend(payload: DiffusionLoadRequest) -> Optional[str]:
+    if payload.runtime and payload.runtime.attention_backend:
+        if payload.runtime.attention_backend == "auto":
+            return None
+        return payload.runtime.attention_backend
+    return None
+
+
+def _runtime_memory_mode(payload: DiffusionLoadRequest) -> Optional[str]:
+    if payload.runtime and payload.runtime.memory_mode:
+        return payload.runtime.memory_mode
+    return None
+
+
+def _diffusion_load_workload_kwargs(payload: DiffusionLoadRequest) -> dict[str, Any]:
+    params = payload.parameters
+    if not isinstance(params, dict) and isinstance(payload.options, dict):
+        nested = payload.options.get("parameters")
+        params = nested if isinstance(nested, dict) else payload.options
+    if not isinstance(params, dict):
+        return {}
+
+    def _int_or_none(name: str) -> Optional[int]:
+        value = params.get(name)
+        if isinstance(value, bool) or value is None:
+            return None
+        if isinstance(value, (int, float, str)):
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return None
+        return None
+
+    def _float_or_none(name: str) -> Optional[float]:
+        value = params.get(name)
+        if isinstance(value, bool) or value is None:
+            return None
+        if isinstance(value, (int, float, str)):
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return None
+        return None
+
+    return {
+        "width": _int_or_none("width"),
+        "height": _int_or_none("height"),
+        "num_frames": _int_or_none("num_frames"),
+        "batch_size": _int_or_none("batch_size") or _int_or_none("num_images"),
+        "guidance_scale": _float_or_none("guidance_scale")
+        or _float_or_none("true_cfg_scale"),
+    }
+
+
+@dataclass(frozen = True)
+class _NormalizedDiffusionLoad:
+    repo_id: Optional[str]
+    gguf_filename: Optional[str]
+    transformer_gguf_repo: Optional[str]
+    transformer_gguf_filename: Optional[str]
+    transformer_quant: Optional[str]
+    base_repo: Optional[str]
+    text_encoder_gguf_repo: Optional[str]
+    text_encoder_gguf_filename: Optional[str]
+    text_encoder_gguf_component: Optional[str]
+    prompt_enhancer_gguf_repo: Optional[str]
+    prompt_enhancer_gguf_filename: Optional[str]
+    lora_repo: Optional[str]
+    lora_weight_name: Optional[str]
+    lora_adapter_name: Optional[str]
+    lora_scale: Optional[float]
+    lora_fuse: bool
+    family: Optional[str]
+    enable_model_cpu_offload: bool
+    offload_policy: Optional[str]
+    gguf_quantized_cpu_resident: Optional[bool]
+    gguf_pin_cpu_resident: Optional[bool]
+    safetensors_quantization: Optional[str]
+    safetensors_quantization_components: Optional[list[str]]
+    torch_compile: Optional[str]
+    attention_backend: Optional[str]
+    memory_mode: Optional[str]
+
+
+def _normalize_diffusion_load_request(
+    payload: DiffusionLoadRequest,
+) -> _NormalizedDiffusionLoad:
+    model = payload.model
+    transformer = _first_component(payload, "transformer", "denoiser", "diffusion")
+    text_encoder = _first_component(
+        payload,
+        "text_encoder",
+        "text_encoder_2",
+        "text_encoder_3",
+        "pe",
+    )
+    prompt_enhancer = _first_component(payload, "prompt_enhancer")
+    lora = _first_lora_adapter(payload)
+    runtime = payload.runtime
+
+    transformer_filename = payload.transformer_gguf_filename
+    transformer_repo = payload.transformer_gguf_repo
+    legacy_gguf_filename = payload.gguf_filename
+    if transformer is not None:
+        transformer_repo = transformer_repo or transformer.repo_id
+        transformer_filename = transformer_filename or transformer.filename
+        if legacy_gguf_filename is None and transformer.repo_id is None:
+            legacy_gguf_filename = transformer.filename
+
+    text_encoder_repo = payload.text_encoder_gguf_repo
+    text_encoder_filename = payload.text_encoder_gguf_filename
+    text_encoder_component = payload.text_encoder_gguf_component
+    if text_encoder is not None:
+        text_encoder_repo = text_encoder_repo or text_encoder.repo_id
+        text_encoder_filename = text_encoder_filename or text_encoder.filename
+        text_encoder_component = text_encoder_component or text_encoder.component
+
+    prompt_enhancer_repo = payload.prompt_enhancer_gguf_repo
+    prompt_enhancer_filename = payload.prompt_enhancer_gguf_filename
+    if prompt_enhancer is not None:
+        prompt_enhancer_repo = prompt_enhancer_repo or prompt_enhancer.repo_id
+        prompt_enhancer_filename = prompt_enhancer_filename or prompt_enhancer.filename
+
+    runtime_quant = runtime.safetensors_quantization if runtime is not None else None
+    runtime_components = (
+        runtime.safetensors_quantization_components if runtime is not None else None
+    )
+    return _NormalizedDiffusionLoad(
+        repo_id = payload.repo_id or (model.repo_id if model is not None else None),
+        gguf_filename = legacy_gguf_filename,
+        transformer_gguf_repo = transformer_repo,
+        transformer_gguf_filename = transformer_filename,
+        transformer_quant = payload.transformer_quant
+        or (transformer.quantization if transformer is not None else None),
+        base_repo = payload.base_repo or (model.base_repo if model is not None else None),
+        text_encoder_gguf_repo = text_encoder_repo,
+        text_encoder_gguf_filename = text_encoder_filename,
+        text_encoder_gguf_component = text_encoder_component,
+        prompt_enhancer_gguf_repo = prompt_enhancer_repo,
+        prompt_enhancer_gguf_filename = prompt_enhancer_filename,
+        lora_repo = payload.lora_repo or (lora.repo_id if lora is not None else None),
+        lora_weight_name = payload.lora_weight_name
+        or (lora.weight_name if lora is not None else None),
+        lora_adapter_name = payload.lora_adapter_name
+        or (lora.adapter_name if lora is not None else None),
+        lora_scale = payload.lora_scale
+        if payload.lora_scale is not None
+        else (lora.scale if lora is not None else None),
+        lora_fuse = payload.lora_fuse or bool(lora.fuse if lora is not None else False),
+        family = payload.family or (model.family if model is not None else None),
+        enable_model_cpu_offload = (
+            runtime.enable_model_cpu_offload
+            if runtime is not None and runtime.enable_model_cpu_offload is not None
+            else payload.enable_model_cpu_offload
+        ),
+        offload_policy = _runtime_offload_policy(payload),
+        gguf_quantized_cpu_resident = (
+            runtime.gguf_quantized_cpu_resident
+            if runtime is not None and runtime.gguf_quantized_cpu_resident is not None
+            else payload.gguf_quantized_cpu_resident
+        ),
+        gguf_pin_cpu_resident = (
+            runtime.gguf_pin_cpu_resident
+            if runtime is not None and runtime.gguf_pin_cpu_resident is not None
+            else payload.gguf_pin_cpu_resident
+        ),
+        safetensors_quantization = (payload.safetensors_quantization or runtime_quant),
+        safetensors_quantization_components = (
+            payload.safetensors_quantization_components or runtime_components
+        ),
+        torch_compile = _runtime_torch_compile(payload),
+        attention_backend = _runtime_attention_backend(payload),
+        memory_mode = _runtime_memory_mode(payload),
+    )
+
+
+def _prompt_from_inputs(inputs: Optional[list[Any]]) -> Optional[str]:
+    if not inputs:
+        return None
+    for item in inputs:
+        if item.type == "text" and item.role in (None, "prompt") and item.text:
+            text = item.text.strip()
+            if text:
+                return text
+    return None
+
+
+def _image_b64s_from_inputs(inputs: Optional[list[Any]]) -> list[str]:
+    if not inputs:
+        return []
+    return [
+        item.b64
+        for item in inputs
+        if item.type == "image"
+        and item.b64
+        and item.role not in ("output", "generated")
+    ]
+
+
+@dataclass(frozen = True)
+class _NormalizedImageGenerate:
+    prompt: str
+    negative_prompt: Optional[str]
+    input_images: Optional[list[Any]]
+    num_inference_steps: int
+    guidance_scale: float
+    width: int
+    height: int
+    seed: Optional[int]
+    warnings: list[str]
+
+
+def _normalize_diffusion_image_generate_request(
+    payload: DiffusionGenerateRequest,
+    defaults: dict[str, Any],
+) -> _NormalizedImageGenerate:
+    prompt = payload.prompt or _prompt_from_inputs(payload.inputs)
+    if not prompt:
+        raise HTTPException(status_code = 400, detail = "prompt is required")
+    params = payload.parameters
+    sampler = payload.sampler
+    requested_steps = (
+        params.num_inference_steps
+        if params is not None and params.num_inference_steps is not None
+        else (
+            payload.num_inference_steps
+            if payload.num_inference_steps is not None
+            else int(defaults["num_inference_steps"])
+        )
+    )
+    requested_guidance = (
+        sampler.guidance_scale
+        if sampler is not None and sampler.guidance_scale is not None
+        else (
+            sampler.true_cfg_scale
+            if sampler is not None and sampler.true_cfg_scale is not None
+            else (
+                params.guidance_scale
+                if params is not None and params.guidance_scale is not None
+                else (
+                    payload.guidance_scale
+                    if payload.guidance_scale is not None
+                    else float(defaults["guidance_scale"])
+                )
+            )
+        )
+    )
+    requested_width = (
+        params.width
+        if params is not None and params.width is not None
+        else (payload.width if payload.width is not None else int(defaults["width"]))
+    )
+    requested_height = (
+        params.height
+        if params is not None and params.height is not None
+        else (payload.height if payload.height is not None else int(defaults["height"]))
+    )
+    seed = (
+        params.seed if params is not None and params.seed is not None else payload.seed
+    )
+    input_b64s = _image_b64s_from_inputs(payload.inputs)
+    if input_b64s:
+        decode_payload = payload.model_copy(
+            update = {"image_b64": None, "images_b64": input_b64s}
+        )
+        input_images = _decode_diffusion_input_images(decode_payload)
+    else:
+        input_images = _decode_diffusion_input_images(payload)
+    return _NormalizedImageGenerate(
+        prompt = prompt,
+        negative_prompt = (
+            sampler.negative_prompt
+            if sampler is not None and sampler.negative_prompt is not None
+            else payload.negative_prompt
+        ),
+        input_images = input_images,
+        num_inference_steps = int(requested_steps),
+        guidance_scale = float(requested_guidance),
+        width = int(requested_width),
+        height = int(requested_height),
+        seed = seed,
+        warnings = [],
+    )
+
+
+@dataclass(frozen = True)
+class _NormalizedVideoGenerate:
+    prompt: str
+    negative_prompt: Optional[str]
+    num_inference_steps: int
+    guidance_scale: float
+    guidance_scale_2: Optional[float]
+    width: int
+    height: int
+    num_frames: Optional[int]
+    frame_rate: Optional[float]
+    seed: Optional[int]
+    warnings: list[str]
+
+
+def _normalize_diffusion_video_generate_request(
+    payload: DiffusionVideoGenerateRequest,
+    defaults: dict[str, Any],
+) -> _NormalizedVideoGenerate:
+    prompt = payload.prompt or _prompt_from_inputs(payload.inputs)
+    if not prompt:
+        raise HTTPException(status_code = 400, detail = "prompt is required")
+    params = payload.parameters
+    sampler = payload.sampler
+    requested_steps = (
+        params.num_inference_steps
+        if params is not None and params.num_inference_steps is not None
+        else (
+            payload.num_inference_steps
+            if payload.num_inference_steps is not None
+            else int(defaults["num_inference_steps"])
+        )
+    )
+    requested_guidance = (
+        sampler.guidance_scale
+        if sampler is not None and sampler.guidance_scale is not None
+        else (
+            params.guidance_scale
+            if params is not None and params.guidance_scale is not None
+            else (
+                payload.guidance_scale
+                if payload.guidance_scale is not None
+                else float(defaults["guidance_scale"])
+            )
+        )
+    )
+    requested_width = (
+        params.width
+        if params is not None and params.width is not None
+        else (payload.width if payload.width is not None else int(defaults["width"]))
+    )
+    requested_height = (
+        params.height
+        if params is not None and params.height is not None
+        else (payload.height if payload.height is not None else int(defaults["height"]))
+    )
+    return _NormalizedVideoGenerate(
+        prompt = prompt,
+        negative_prompt = (
+            sampler.negative_prompt
+            if sampler is not None and sampler.negative_prompt is not None
+            else payload.negative_prompt
+        ),
+        num_inference_steps = int(requested_steps),
+        guidance_scale = float(requested_guidance),
+        guidance_scale_2 = (
+            sampler.guidance_scale_2
+            if sampler is not None and sampler.guidance_scale_2 is not None
+            else payload.guidance_scale_2
+        ),
+        width = int(requested_width),
+        height = int(requested_height),
+        num_frames = (
+            params.num_frames
+            if params is not None and params.num_frames is not None
+            else payload.num_frames
+        ),
+        frame_rate = (
+            params.frame_rate
+            if params is not None and params.frame_rate is not None
+            else payload.frame_rate
+        ),
+        seed = (
+            params.seed
+            if params is not None and params.seed is not None
+            else payload.seed
+        ),
+        warnings = [],
+    )
+
+
+def _diffusion_capabilities(*, media_kind: str) -> dict[str, Any]:
+    backend = _get_diffusion_backend()
+    status = backend.status()
+    pipe = getattr(backend, "_pipe", None)
+    call_kwargs: list[str] = []
+    accepts_var_kwargs = False
+    if pipe is not None:
+        try:
+            signature = inspect.signature(pipe.__call__)
+            for name, parameter in signature.parameters.items():
+                if name == "self":
+                    continue
+                if parameter.kind == inspect.Parameter.VAR_KEYWORD:
+                    accepts_var_kwargs = True
+                    continue
+                if parameter.kind in (
+                    inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                    inspect.Parameter.KEYWORD_ONLY,
+                ):
+                    call_kwargs.append(name)
+        except (TypeError, ValueError):
+            call_kwargs = []
+            accepts_var_kwargs = False
+    families = [
+        family
+        for family in status.get("supported_families", [])
+        if family.get("media_kind", "image") == media_kind
+    ]
+    defaults: dict[str, Any] = {}
+    if status.get("is_loaded") and status.get("media_kind") == media_kind:
+        defaults = backend.generation_defaults()
+    elif families:
+        family = families[0]
+        defaults = {
+            "num_inference_steps": family.get("default_steps"),
+            "guidance_scale": family.get("default_guidance_scale"),
+            "width": family.get("default_width"),
+            "height": family.get("default_height"),
+            "num_frames": family.get("default_num_frames"),
+            "frame_rate": family.get("default_frame_rate"),
+        }
+    input_roles = ["prompt", "negative_prompt"]
+    if media_kind == "image":
+        input_roles.extend(["source", "reference", "mask"])
+        outputs = [{"type": "image", "formats": ["png"], "supports_multiple": True}]
+    else:
+        input_roles.extend(["init_frame", "conditioning_audio", "source_video"])
+        outputs = [{"type": "video", "formats": ["mp4"], "supports_multiple": False}]
+    runtime_options = status.get("optimization_options") or {}
+    attention_options = runtime_options.get("attention", {})
+    return {
+        "api_version": "2026-06-03",
+        "media_kind": media_kind,
+        "is_loaded": status.get("is_loaded", False),
+        "family": status.get("family")
+        if status.get("media_kind") == media_kind
+        else None,
+        "pipeline_class": (
+            status.get("pipeline_class")
+            if status.get("media_kind") == media_kind
+            else None
+        ),
+        "tasks": (
+            ["text_to_image", "image_edit", "multi_image_edit", "layered_image"]
+            if media_kind == "image"
+            else ["text_to_video", "image_to_video", "video_to_video"]
+        ),
+        "inputs": {
+            "roles": input_roles,
+            "max_items": 16,
+            "accepted_types": (
+                ["text", "image"]
+                if media_kind == "image"
+                else ["text", "image", "audio", "video"]
+            ),
+        },
+        "outputs": outputs,
+        "parameters": {
+            "width": {
+                "type": "int",
+                "min": 64,
+                "max": 2048,
+                "multiple_of": 8,
+                "default": defaults.get("width"),
+            },
+            "height": {
+                "type": "int",
+                "min": 64,
+                "max": 2048,
+                "multiple_of": 8,
+                "default": defaults.get("height"),
+            },
+            "num_inference_steps": {
+                "type": "int",
+                "min": 1,
+                "max": 200,
+                "default": defaults.get("num_inference_steps"),
+            },
+            "guidance_scale": {
+                "type": "float",
+                "min": 0,
+                "max": 20,
+                "default": defaults.get("guidance_scale"),
+            },
+            "seed": {"type": "uint64_or_int64", "default": None},
+            "num_frames": {
+                "type": "int",
+                "min": 1,
+                "max": 513,
+                "default": defaults.get("num_frames"),
+            },
+            "frame_rate": {
+                "type": "float",
+                "min": 0,
+                "max": 240,
+                "default": defaults.get("frame_rate"),
+            },
+        },
+        "sampler": status.get("sampling_contract"),
+        "attention_backend": {
+            "current": status.get("attention_backend"),
+            "options": attention_options,
+        },
+        "pipeline_signature": {
+            "call_kwargs": sorted(call_kwargs),
+            "accepts_var_kwargs": accepts_var_kwargs,
+        },
+        "runtime": runtime_options,
+        "families": families,
+        "options_schema": {},
+        "warnings": [],
+    }
+
+
+@studio_router.post("/images/load")
+async def diffusion_load(
+    payload: DiffusionLoadRequest,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Load a diffusion image-generation model.
+
+    Pass either a full diffusers repo or a GGUF-only repo plus the
+    desired ``gguf_filename``. Returns the new status payload (same
+    shape as ``/images/status``).
+    """
+    # Round 31 P1 #1 / #6: track whether THIS request actually
+    # published a public-load pending entry so the outer finally
+    # only clears its own publish, never another request's. The
+    # publish has to happen before lease resolution / backend setup,
+    # both of which can raise HTTPException, so the cleanup scope
+    # must wrap the publish too (mirrors training / export pattern).
+    diffusion_load_window_published = False
+    try:
+        # Refuse before the long download starts: silently stopping a
+        # running training run to free VRAM was the previous behavior
+        # and left the user with no model loaded plus a dead training
+        # job. Same logic for export: an export subprocess that is
+        # mid-flight cannot be safely terminated without corrupting
+        # the output, so the request is refused with 409 instead of
+        # silently killing it.
+        _raise_if_training_active("diffusion")
+        _raise_if_export_active("diffusion")
+        # Round 28 P1 #4: AI Assist helper/advisor owns a private
+        # llama backend invisible to
+        # _release_chat_backend_for_diffusion's global checks. Refuse
+        # early so we do not first tear down an idle export
+        # checkpoint just to fail on the helper check inside
+        # load_model.
+        # Round 30 P1 #10: also publishes the public-load pending
+        # entry so a concurrent helper start cannot win the start
+        # lock between our snapshot and DiffusionBackend.load_model
+        # flipping is_loaded. Mark the publish flag immediately so
+        # any failure between here and the final return clears it.
+        _raise_if_helper_advisor_busy("diffusion")
+        diffusion_load_window_published = True
+        # Round 30 P1 #4: enforce the signed native_path_lease
+        # boundary the chat load path uses so local-path repo_id /
+        # base_repo cannot be probed without a frontend-issued grant.
+        # Hub ids pass through.
+        normalized = _normalize_diffusion_load_request(payload)
+        planned_repo_id = normalized.repo_id
+        planned_gguf_filename = normalized.gguf_filename
+        planned_transformer_gguf_repo = normalized.transformer_gguf_repo
+        planned_transformer_gguf_filename = normalized.transformer_gguf_filename
+        planned_base_repo = normalized.base_repo
+        planned_text_encoder_gguf_repo = normalized.text_encoder_gguf_repo
+        planned_text_encoder_gguf_filename = normalized.text_encoder_gguf_filename
+        planned_text_encoder_gguf_component = normalized.text_encoder_gguf_component
+        planned_prompt_enhancer_gguf_repo = normalized.prompt_enhancer_gguf_repo
+        planned_prompt_enhancer_gguf_filename = normalized.prompt_enhancer_gguf_filename
+        planned_lora_repo = normalized.lora_repo
+        planned_lora_weight_name = normalized.lora_weight_name
+        planned_lora_adapter_name = normalized.lora_adapter_name
+        planned_lora_scale = normalized.lora_scale
+        planned_lora_fuse = normalized.lora_fuse
+        planned_family = normalized.family
+        planned_offload_policy = normalized.offload_policy
+        planned_safetensors_quantization = normalized.safetensors_quantization
+        planned_safetensors_quantization_components = (
+            normalized.safetensors_quantization_components
+        )
+        planned_torch_compile = normalized.torch_compile
+        planned_attention_backend = normalized.attention_backend
+        planned_memory_plan = None
+        try:
+            from core.inference.diffusion import resolve_diffusion_load_plan
+
+            workload_kwargs = _diffusion_load_workload_kwargs(payload)
+            load_plan = resolve_diffusion_load_plan(
+                preset_id = payload.preset_id,
+                repo_id = normalized.repo_id,
+                gguf_filename = normalized.gguf_filename,
+                transformer_gguf_repo = normalized.transformer_gguf_repo,
+                transformer_gguf_filename = normalized.transformer_gguf_filename,
+                transformer_quant = normalized.transformer_quant,
+                base_repo = normalized.base_repo,
+                text_encoder_gguf_repo = normalized.text_encoder_gguf_repo,
+                text_encoder_gguf_filename = normalized.text_encoder_gguf_filename,
+                text_encoder_gguf_component = normalized.text_encoder_gguf_component,
+                prompt_enhancer_gguf_repo = normalized.prompt_enhancer_gguf_repo,
+                prompt_enhancer_gguf_filename = normalized.prompt_enhancer_gguf_filename,
+                lora_repo = normalized.lora_repo,
+                lora_weight_name = normalized.lora_weight_name,
+                lora_adapter_name = normalized.lora_adapter_name,
+                lora_scale = normalized.lora_scale,
+                lora_fuse = normalized.lora_fuse,
+                family_override = normalized.family,
+                offload_policy = normalized.offload_policy,
+                safetensors_quantization = normalized.safetensors_quantization,
+                safetensors_quantization_components = (
+                    normalized.safetensors_quantization_components
+                ),
+                attention_backend = normalized.attention_backend,
+                memory_mode = normalized.memory_mode,
+                **workload_kwargs,
+                require_loadable = True,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code = 400, detail = str(exc)) from exc
+        load_kwargs = load_plan["load_kwargs"]
+        planned_repo_id = load_kwargs["repo_id"]
+        planned_gguf_filename = load_kwargs["gguf_filename"]
+        planned_transformer_gguf_repo = load_kwargs["transformer_gguf_repo"]
+        planned_transformer_gguf_filename = load_kwargs["transformer_gguf_filename"]
+        planned_base_repo = load_kwargs["base_repo"]
+        planned_text_encoder_gguf_repo = load_kwargs["text_encoder_gguf_repo"]
+        planned_text_encoder_gguf_filename = load_kwargs["text_encoder_gguf_filename"]
+        planned_text_encoder_gguf_component = load_kwargs["text_encoder_gguf_component"]
+        planned_prompt_enhancer_gguf_repo = load_kwargs["prompt_enhancer_gguf_repo"]
+        planned_prompt_enhancer_gguf_filename = load_kwargs[
+            "prompt_enhancer_gguf_filename"
+        ]
+        planned_lora_repo = load_kwargs["lora_repo"]
+        planned_lora_weight_name = load_kwargs["lora_weight_name"]
+        planned_lora_adapter_name = load_kwargs["lora_adapter_name"]
+        planned_lora_scale = load_kwargs["lora_scale"]
+        planned_lora_fuse = load_kwargs["lora_fuse"]
+        planned_family = load_kwargs["family_override"]
+        planned_offload_policy = load_kwargs["offload_policy"]
+        planned_safetensors_quantization = load_kwargs["safetensors_quantization"]
+        planned_safetensors_quantization_components = load_kwargs[
+            "safetensors_quantization_components"
+        ]
+        planned_torch_compile = normalized.torch_compile
+        planned_attention_backend = normalized.attention_backend
+        planned_memory_plan = load_kwargs.get("memory_plan")
+        resolved_repo_id = (
+            _resolve_diffusion_repo_for_request(
+                planned_repo_id,
+                payload.native_path_lease,
+                operation = "load-diffusion-model",
+            )
+            or planned_repo_id
+        )
+        resolved_base_repo = _resolve_diffusion_repo_for_request(
+            planned_base_repo,
+            payload.base_repo_native_path_lease,
+            operation = "load-diffusion-model",
+        )
+        resolved_transformer_gguf_repo = _resolve_diffusion_repo_for_request(
+            planned_transformer_gguf_repo,
+            payload.transformer_gguf_repo_native_path_lease,
+            operation = "load-diffusion-model",
+        )
+        resolved_text_encoder_gguf_repo = _resolve_diffusion_repo_for_request(
+            planned_text_encoder_gguf_repo,
+            payload.text_encoder_gguf_repo_native_path_lease,
+            operation = "load-diffusion-model",
+        )
+        resolved_prompt_enhancer_gguf_repo = _resolve_diffusion_repo_for_request(
+            planned_prompt_enhancer_gguf_repo,
+            payload.prompt_enhancer_gguf_repo_native_path_lease,
+            operation = "load-diffusion-model",
+        )
+        resolved_lora_repo = _resolve_diffusion_repo_for_request(
+            planned_lora_repo,
+            payload.lora_repo_native_path_lease,
+            operation = "load-diffusion-model",
+        )
+        # Round 18 P1 #3 + P1 #7: the route used to drop chat and
+        # idle export BEFORE ``backend.load_model`` ran its cheap
+        # validation (family inference, GGUF filename checks,
+        # gated-token failures, missing diffusers). A malformed image
+        # request would therefore unload the user's chat model and
+        # then return a 400 with nothing loaded; if export cleanup
+        # raised, chat had already been dropped.
+        # ``DiffusionBackend.load_model`` itself calls
+        # ``_release_other_gpu_owners_for_diffusion`` (strict
+        # idle-export shutdown after round 18 P1 #2) and
+        # ``_release_chat_backend_for_diffusion`` (strict GGUF +
+        # safetensors unload after round 17 P1 #2 + round 18 P1 #4),
+        # so the GPU is still freed before any allocation, just
+        # AFTER validation.
+        backend = _get_diffusion_backend()
+        try:
+            backend_load_kwargs = {
+                "repo_id": resolved_repo_id,
+                "gguf_filename": planned_gguf_filename,
+                "transformer_gguf_repo": resolved_transformer_gguf_repo,
+                "transformer_gguf_filename": planned_transformer_gguf_filename,
+                "base_repo": resolved_base_repo,
+                "text_encoder_gguf_repo": resolved_text_encoder_gguf_repo,
+                "text_encoder_gguf_filename": planned_text_encoder_gguf_filename,
+                "text_encoder_gguf_component": planned_text_encoder_gguf_component,
+                "prompt_enhancer_gguf_repo": resolved_prompt_enhancer_gguf_repo,
+                "prompt_enhancer_gguf_filename": planned_prompt_enhancer_gguf_filename,
+                "lora_repo": resolved_lora_repo,
+                "lora_weight_name": planned_lora_weight_name,
+                "lora_adapter_name": planned_lora_adapter_name,
+                "lora_scale": planned_lora_scale,
+                "lora_fuse": planned_lora_fuse,
+                "family_override": planned_family,
+                "hf_token": payload.hf_token,
+                "enable_model_cpu_offload": normalized.enable_model_cpu_offload,
+                "offload_policy": planned_offload_policy,
+                "gguf_quantized_cpu_resident": normalized.gguf_quantized_cpu_resident,
+                "gguf_pin_cpu_resident": normalized.gguf_pin_cpu_resident,
+                "safetensors_quantization": planned_safetensors_quantization,
+                "safetensors_quantization_components": (
+                    planned_safetensors_quantization_components
+                ),
+                "ignore_public_load_pending_workload": "diffusion",
+            }
+            if planned_torch_compile is not None:
+                backend_load_kwargs["torch_compile"] = planned_torch_compile
+            if planned_attention_backend is not None:
+                backend_load_kwargs["attention_backend"] = planned_attention_backend
+            if planned_memory_plan is not None:
+                backend_load_kwargs["memory_plan"] = planned_memory_plan
+            status = await asyncio.get_running_loop().run_in_executor(
+                None,
+                lambda: backend.load_model(**backend_load_kwargs),
+            )
+            return JSONResponse(content = status)
+        except RuntimeError as exc:
+            # Round 15 P2 #7 / round 16 P2 #7: backend-level conflict
+            # checks raise RuntimeError that surfaces here.
+            # Distinguish:
+            # - "Could not verify ..." -> 503 (retryable, status
+            #   check itself failed), matching the route-level
+            #   pre-check.
+            # - explicit "currently active" -> 409 conflict.
+            # - anything else -> 400 (bad request).
+            detail = str(exc)
+            if (
+                "Could not verify training status" in detail
+                or "Could not verify export status" in detail
+                or "Could not unload" in detail
+                or "refused to unload" in detail
+                or "still active after unload" in detail
+                # Round 19 P2 #7: round 18 introduced new
+                # RuntimeError phrasings (``still active or loading
+                # after unload``) that the original marker list did
+                # not cover, so a retryable chat-unload failure was
+                # returning HTTP 400 to the user instead of 503.
+                # Match both wordings.
+                or "still active or loading after unload" in detail
+                or "still loading after unload" in detail
+                # Round 28 P2 #15: AI Assist running (raised by
+                # _release_chat_backend_for_diffusion) is retryable.
+                or "AI Assist" in detail
+                # Backend mid-handoff race (raised by
+                # _raise_if_helper_advisor_busy_for_diffusion when
+                # another workload's public_load_pending is set) mirrors
+                # the route-level 503 at routes/inference.py:415, so the
+                # backend-surfaced phrasing must classify the same way.
+                or "Another GPU workload is mid-handoff" in detail
+            ):
+                # Round 17 P1 #2: chat unload failures raised by the
+                # backend helper map to 503 (retryable infra issue),
+                # matching the route-level _release_*_for helpers.
+                raise HTTPException(status_code = 503, detail = detail) from exc
+            if (
+                "export job is currently active" in detail
+                or "Training is currently active" in detail
+            ):
+                raise HTTPException(status_code = 409, detail = detail) from exc
+            raise HTTPException(status_code = 400, detail = detail) from exc
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.exception("Diffusion load failed")
+            raise HTTPException(status_code = 500, detail = str(exc))
+    finally:
+        # Round 31 P1 #1 / #6: only clear when this request actually
+        # published. Skipped when _raise_if_training_active /
+        # _raise_if_export_active / _raise_if_helper_advisor_busy
+        # raised, so the counter stays in sync with publishes and a
+        # second request's failure cannot decrement a first request's
+        # still-active marker.
+        if diffusion_load_window_published:
+            _clear_public_load_window("diffusion")
+
+
+@studio_router.post("/images/unload")
+async def diffusion_unload(
+    current_subject: str = Depends(get_current_subject),
+):
+    """Unload the current diffusion model and free GPU memory."""
+    backend = _get_diffusion_backend()
+    # DiffusionBackend.unload_model takes _load_lock + _generate_lock
+    # and waits for any in-flight load / generation to complete.
+    # Calling it directly from an async route would freeze the
+    # FastAPI worker (and the SSE log stream, hardware poller, etc.)
+    # for the full duration of the generation. Push it onto a worker
+    # thread so the event loop stays responsive.
+    return await asyncio.to_thread(backend.unload_model)
+
+
+@studio_router.get("/images/status")
+async def diffusion_status(
+    current_subject: str = Depends(get_current_subject),
+):
+    """Return diffusion backend status (loaded, family, device, etc.)."""
+    backend = _get_diffusion_backend()
+    return backend.status()
+
+
+@studio_router.get("/images/presets")
+async def diffusion_presets(
+    current_subject: str = Depends(get_current_subject),
+):
+    """Return curated Studio diffusion presets without loading a model."""
+    from core.inference.diffusion import curated_diffusion_presets
+
+    return {"presets": curated_diffusion_presets()}
+
+
+@studio_router.post("/images/load-plan")
+async def diffusion_load_plan(
+    payload: DiffusionLoadRequest,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Return the concrete diffusion load plan without loading a model."""
+    from core.inference.diffusion import resolve_diffusion_load_plan
+
+    try:
+        normalized = _normalize_diffusion_load_request(payload)
+        workload_kwargs = _diffusion_load_workload_kwargs(payload)
+        return resolve_diffusion_load_plan(
+            preset_id = payload.preset_id,
+            repo_id = normalized.repo_id,
+            gguf_filename = normalized.gguf_filename,
+            transformer_gguf_repo = normalized.transformer_gguf_repo,
+            transformer_gguf_filename = normalized.transformer_gguf_filename,
+            transformer_quant = normalized.transformer_quant,
+            base_repo = normalized.base_repo,
+            text_encoder_gguf_repo = normalized.text_encoder_gguf_repo,
+            text_encoder_gguf_filename = normalized.text_encoder_gguf_filename,
+            text_encoder_gguf_component = normalized.text_encoder_gguf_component,
+            prompt_enhancer_gguf_repo = normalized.prompt_enhancer_gguf_repo,
+            prompt_enhancer_gguf_filename = normalized.prompt_enhancer_gguf_filename,
+            lora_repo = normalized.lora_repo,
+            lora_weight_name = normalized.lora_weight_name,
+            lora_adapter_name = normalized.lora_adapter_name,
+            lora_scale = normalized.lora_scale,
+            lora_fuse = normalized.lora_fuse,
+            family_override = normalized.family,
+            offload_policy = normalized.offload_policy,
+            safetensors_quantization = normalized.safetensors_quantization,
+            safetensors_quantization_components = (
+                normalized.safetensors_quantization_components
+            ),
+            attention_backend = normalized.attention_backend,
+            memory_mode = normalized.memory_mode,
+            **workload_kwargs,
+            require_loadable = False,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+
+
+@studio_router.get("/images/capabilities")
+async def diffusion_image_capabilities(
+    current_subject: str = Depends(get_current_subject),
+):
+    """Return image diffusion capabilities for the current backend/runtime."""
+    return _diffusion_capabilities(media_kind = "image")
+
+
+@studio_router.post("/videos/load")
+async def diffusion_video_load(
+    payload: DiffusionLoadRequest,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Load a diffusion video model.
+
+    This intentionally reuses the same backend slot as images today;
+    the route namespace is media-specific for frontend/API clarity.
+    """
+    return await diffusion_load(payload, current_subject)
+
+
+@studio_router.post("/videos/unload")
+async def diffusion_video_unload(
+    current_subject: str = Depends(get_current_subject),
+):
+    """Unload the current diffusion video/image model and free GPU memory."""
+    return await diffusion_unload(current_subject)
+
+
+@studio_router.get("/videos/status")
+async def diffusion_video_status(
+    current_subject: str = Depends(get_current_subject),
+):
+    """Return diffusion backend status through the video namespace."""
+    return await diffusion_status(current_subject)
+
+
+@studio_router.get("/videos/presets")
+async def diffusion_video_presets(
+    current_subject: str = Depends(get_current_subject),
+):
+    """Return curated Studio diffusion presets through the video namespace."""
+    return await diffusion_presets(current_subject)
+
+
+@studio_router.post("/videos/load-plan")
+async def diffusion_video_load_plan(
+    payload: DiffusionLoadRequest,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Return the concrete video diffusion load plan without loading."""
+    return await diffusion_load_plan(payload, current_subject)
+
+
+@studio_router.get("/videos/capabilities")
+async def diffusion_video_capabilities(
+    current_subject: str = Depends(get_current_subject),
+):
+    """Return video diffusion capabilities for the current backend/runtime."""
+    return _diffusion_capabilities(media_kind = "video")
+
+
+@studio_router.post("/images/generate", response_model = DiffusionGenerateResponse)
+async def diffusion_generate(
+    payload: DiffusionGenerateRequest,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Generate a single image from the loaded diffusion model.
+
+    Returns a base64 PNG plus the generation parameters that produced
+    it so the frontend can render the result and the user can reproduce
+    it via the same seed.
+    """
+    backend = _get_diffusion_backend()
+    if not backend.is_loaded:
+        raise HTTPException(
+            status_code = 400,
+            detail = "No diffusion model is loaded. POST /api/inference/images/load first.",
+        )
+
+    start = time.time()
+    defaults = backend.generation_defaults()
+    normalized = _normalize_diffusion_image_generate_request(payload, defaults)
+    try:
+        from core.inference.diffusion import (
+            async_generate_images_with_metadata,
+            encode_png_base64,
+        )
+
+        # ``async_generate_with_metadata`` snapshots ``model`` /
+        # ``family`` under the same ``_generate_lock`` that owns the
+        # forward, so a queued unload/load cannot replace them between
+        # generation end and response assembly (round 13 P2 #9).
+        images, meta = await async_generate_images_with_metadata(
+            backend,
+            prompt = normalized.prompt,
+            negative_prompt = normalized.negative_prompt,
+            input_images = normalized.input_images,
+            num_inference_steps = normalized.num_inference_steps,
+            guidance_scale = normalized.guidance_scale,
+            width = normalized.width,
+            height = normalized.height,
+            seed = normalized.seed,
+        )
+        image = images[0]
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc))
+    except Exception as exc:
+        logger.exception("Diffusion generation failed")
+        raise HTTPException(status_code = 500, detail = str(exc))
+
+    duration_ms = int((time.time() - start) * 1000)
+    # Round 29 P2 #14: FLUX-family pipelines round (width, height) to
+    # vae_scale_factor * 2 multiples internally, so the actual PNG can
+    # differ from the requested dims. Report the real image size so
+    # the metadata caption matches the bytes on the wire.
+    actual_w, actual_h = (
+        image.size if hasattr(image, "size") else (normalized.width, normalized.height)
+    )
+    encoded_images = [encode_png_base64(item) for item in images]
+    outputs = [
+        {
+            "type": "image",
+            "mime": "image/png",
+            "b64": encoded,
+            "width": int(getattr(item, "size", (actual_w, actual_h))[0]),
+            "height": int(getattr(item, "size", (actual_w, actual_h))[1]),
+            "role": "primary" if index == 0 else "additional",
+        }
+        for index, (encoded, item) in enumerate(zip(encoded_images, images))
+    ]
+    effective_parameters = {
+        "width": int(actual_w),
+        "height": int(actual_h),
+        "requested_width": normalized.width,
+        "requested_height": normalized.height,
+        "num_inference_steps": normalized.num_inference_steps,
+        "guidance_scale": normalized.guidance_scale,
+        "seed": str(normalized.seed) if normalized.seed is not None else None,
+    }
+    metrics = {"duration_ms": duration_ms}
+    return DiffusionGenerateResponse(
+        image_b64 = encoded_images[0],
+        images_b64 = encoded_images if len(encoded_images) > 1 else None,
+        image_mime = "image/png",
+        width = int(actual_w),
+        height = int(actual_h),
+        num_inference_steps = normalized.num_inference_steps,
+        guidance_scale = normalized.guidance_scale,
+        seed = normalized.seed,
+        # str() of a Python int has full precision; JavaScript can
+        # display it via BigInt without rounding. The numeric ``seed``
+        # field above is kept for backwards compatibility with older
+        # clients but is unsafe to use for seeds above 2**53 on the
+        # browser side.
+        seed_str = str(normalized.seed) if normalized.seed is not None else None,
+        duration_ms = duration_ms,
+        model = meta.get("model"),
+        family = meta.get("family"),
+        output_count = int(meta.get("output_count") or len(encoded_images)),
+        outputs = outputs,
+        effective_parameters = effective_parameters,
+        metrics = metrics,
+        warnings = normalized.warnings,
+    )
+
+
+@studio_router.post("/videos/generate", response_model = DiffusionVideoGenerateResponse)
+async def diffusion_video_generate(
+    payload: DiffusionVideoGenerateRequest,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Generate an MP4 from a loaded diffusion video model.
+
+    The existing `/images/load` lifecycle is reused for now because the
+    Diffusers backend owns one pipeline slot regardless of media type.
+    """
+    backend = _get_diffusion_backend()
+    if not backend.is_loaded:
+        raise HTTPException(
+            status_code = 400,
+            detail = "No diffusion model is loaded. POST /api/inference/images/load first.",
+        )
+
+    start = time.time()
+    defaults = backend.generation_defaults()
+    normalized = _normalize_diffusion_video_generate_request(payload, defaults)
+    try:
+        from core.inference.diffusion import (
+            async_generate_video_with_metadata,
+            encode_mp4_base64,
+        )
+
+        video, meta = await async_generate_video_with_metadata(
+            backend,
+            prompt = normalized.prompt,
+            negative_prompt = normalized.negative_prompt,
+            num_inference_steps = normalized.num_inference_steps,
+            guidance_scale = normalized.guidance_scale,
+            guidance_scale_2 = normalized.guidance_scale_2,
+            width = normalized.width,
+            height = normalized.height,
+            num_frames = normalized.num_frames,
+            frame_rate = normalized.frame_rate,
+            seed = normalized.seed,
+        )
+        frame_rate = float(meta.get("frame_rate") or normalized.frame_rate or 16.0)
+        video_b64 = encode_mp4_base64(video, fps = frame_rate)
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc))
+    except Exception as exc:
+        logger.exception("Diffusion video generation failed")
+        raise HTTPException(status_code = 500, detail = str(exc))
+
+    duration_ms = int((time.time() - start) * 1000)
+    width = int(meta.get("width") or normalized.width)
+    height = int(meta.get("height") or normalized.height)
+    num_frames = int(meta.get("num_frames") or normalized.num_frames or 0)
+    num_inference_steps = int(
+        meta.get("num_inference_steps") or normalized.num_inference_steps
+    )
+    guidance_scale = float(meta.get("guidance_scale") or normalized.guidance_scale)
+    effective_parameters = {
+        "width": width,
+        "height": height,
+        "num_frames": num_frames,
+        "frame_rate": frame_rate,
+        "num_inference_steps": num_inference_steps,
+        "guidance_scale": guidance_scale,
+        "guidance_scale_2": meta.get("guidance_scale_2"),
+        "seed": str(normalized.seed) if normalized.seed is not None else None,
+    }
+    metrics = {"duration_ms": duration_ms}
+    return DiffusionVideoGenerateResponse(
+        video_b64 = video_b64,
+        video_mime = "video/mp4",
+        width = width,
+        height = height,
+        num_frames = num_frames,
+        frame_rate = frame_rate,
+        num_inference_steps = num_inference_steps,
+        guidance_scale = guidance_scale,
+        guidance_scale_2 = meta.get("guidance_scale_2"),
+        seed = normalized.seed,
+        seed_str = str(normalized.seed) if normalized.seed is not None else None,
+        duration_ms = duration_ms,
+        model = meta.get("model"),
+        family = meta.get("family"),
+        outputs = [
+            {
+                "type": "video",
+                "mime": "video/mp4",
+                "b64": video_b64,
+                "width": width,
+                "height": height,
+                "num_frames": num_frames,
+                "frame_rate": frame_rate,
+                "role": "primary",
+            }
+        ],
+        effective_parameters = effective_parameters,
+        metrics = metrics,
+        warnings = normalized.warnings,
     )
 
 
@@ -3671,7 +5706,7 @@ async def openai_chat_completions(
                 # the second request's blocking lock acquisition would
                 # freeze the entire event loop, stalling both streams.
                 _DONE = object()  # sentinel for generator exhaustion
-                loop = asyncio.get_event_loop()
+                loop = asyncio.get_running_loop()
                 gen = generate()
                 while True:
                     if cancel_event.is_set():
