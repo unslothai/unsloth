@@ -3375,6 +3375,24 @@ class TestCudaDriverToolkitMismatchMessage:
         assert "fallback:generic" in output
         assert "Unsloth supports CUDA Toolkit" not in output
 
+    def test_setup_sh_cuda_version_gt_compares_numerically(self):
+        # 13.9 vs 13.10 is where a lexical compare goes wrong (9 > 1).
+        script = textwrap.dedent(
+            f"""\
+            set -euo pipefail
+            {self._setup_sh_cuda_helper_fragment()}
+            for pair in "13.9 13.10" "13.10 13.9" "14.0 13.9" "13.3 13.3"; do
+                if _cuda_version_gt $pair; then r=gt; else r=le; fi
+                printf '%s -> %s\\n' "$pair" "$r"
+            done
+            """
+        )
+        output = self._run_bash(script)
+        assert "13.9 13.10 -> le" in output
+        assert "13.10 13.9 -> gt" in output
+        assert "14.0 13.9 -> gt" in output
+        assert "13.3 13.3 -> le" in output
+
     def test_setup_ps1_mirrors_driver_mismatch_guidance(self):
         source = self._SETUP_PS1.read_text(encoding = "utf-8")
         assert "Write-CudaDriverToolkitMismatch" in source
