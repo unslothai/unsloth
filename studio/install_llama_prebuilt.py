@@ -4032,7 +4032,7 @@ def resolve_lemonade_rocm_choice(
     # this attempt is selected for all Linux ROCm hosts, not just Ubuntu.
     # Guard against duplicate output: this function is called twice per install
     # (direct planner + resolve_upstream_asset_choice), so only log the first time.
-    log_key = (host.rocm_gfx_target or "", asset_name)
+    log_key = (host.rocm_gfx_target, asset_name)
     if log_key not in _lemonade_selection_logged:
         _lemonade_selection_logged.add(log_key)
         log(
