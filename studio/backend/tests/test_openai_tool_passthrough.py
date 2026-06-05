@@ -20,12 +20,15 @@ No running server or GPU required.
 
 import os
 import sys
+import asyncio
+from types import SimpleNamespace
 
 _backend = os.path.join(os.path.dirname(__file__), "..")
 sys.path.insert(0, _backend)
 
 import httpx
 import pytest
+from fastapi import HTTPException
 from pydantic import ValidationError
 
 from models.inference import (
@@ -35,7 +38,13 @@ from models.inference import (
 from core.inference.anthropic_compat import (
     anthropic_tool_choice_to_openai,
 )
-from routes.inference import _build_passthrough_payload, _friendly_error
+from routes.inference import (
+    _build_passthrough_payload,
+    _friendly_error,
+    _set_or_prepend_system_message,
+    openai_chat_completions,
+)
+from state.tool_policy import reset_tool_policy
 
 
 # =====================================================================
@@ -532,6 +541,7 @@ class TestFriendlyErrorHttpx:
 
 from routes.inference import (  # noqa: E402
     _drop_empty_assistant_sentinels,
+    _openai_messages_for_gguf_chat,
     _openai_messages_for_passthrough,
 )
 
@@ -616,3 +626,238 @@ class TestDropEmptyAssistantSentinels:
         assert roles == ["user", "user"]
         for m in out:
             assert m.get("content"), m
+
+
+class TestGgufVisionMessages:
+    _PNG_B64 = (
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADUlEQVR42mNk"
+        "+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+    )
+
+    def test_preserves_multiturn_image_parts_on_original_turns(self):
+        req = ChatCompletionRequest(
+            model = "default",
+            image_base64 = self._PNG_B64,
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "describe image one"},
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/png;base64,{self._PNG_B64}",
+                            },
+                        },
+                    ],
+                },
+                {"role": "assistant", "content": "first answer"},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "describe image two"},
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/png;base64,{self._PNG_B64}",
+                            },
+                        },
+                    ],
+                },
+            ],
+        )
+
+        messages, has_image = _openai_messages_for_gguf_chat(req, is_vision = True)
+
+        assert has_image is True
+        assert messages[0]["content"][0] == {
+            "type": "text",
+            "text": "describe image one",
+        }
+        assert messages[0]["content"][1]["type"] == "image_url"
+        assert len(messages[0]["content"]) == 2
+        assert messages[2]["content"][0] == {
+            "type": "text",
+            "text": "describe image two",
+        }
+        assert messages[2]["content"][1]["type"] == "image_url"
+        assert len(messages[2]["content"]) == 2
+        assert isinstance(messages[1]["content"], str)
+
+        # Legacy top-level image_base64 must be ignored when any message-level
+        # image already exists; otherwise turn 2 ends up with two image parts.
+        for msg in messages:
+            content = msg.get("content")
+            if isinstance(content, list):
+                image_parts = [p for p in content if p.get("type") == "image_url"]
+                assert len(image_parts) == 1, msg
+
+    def test_legacy_image_base64_is_injected_when_messages_are_text_only(self):
+        req = ChatCompletionRequest(
+            model = "default",
+            image_base64 = self._PNG_B64,
+            messages = [{"role": "user", "content": "describe this image"}],
+        )
+
+        messages, has_image = _openai_messages_for_gguf_chat(req, is_vision = True)
+
+        assert has_image is True
+        assert messages[0]["content"][0] == {
+            "type": "text",
+            "text": "describe this image",
+        }
+        assert messages[0]["content"][1]["type"] == "image_url"
+        assert messages[0]["content"][1]["image_url"]["url"].startswith(
+            "data:image/png;base64,"
+        )
+
+    def test_rejects_image_parts_for_text_only_gguf(self):
+        req = ChatCompletionRequest(
+            model = "default",
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "look"},
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/png;base64,{self._PNG_B64}",
+                            },
+                        },
+                    ],
+                },
+            ],
+        )
+
+        with pytest.raises(HTTPException) as exc_info:
+            _openai_messages_for_gguf_chat(req, is_vision = False)
+        assert "does not support vision" in str(exc_info.value)
+
+    def test_tool_nudge_system_update_preserves_image_parts(self):
+        messages = [
+            {"role": "system", "content": "Base instructions."},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "describe this"},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/png;base64,{self._PNG_B64}",
+                        },
+                    },
+                ],
+            },
+        ]
+
+        updated = _set_or_prepend_system_message(
+            messages, "Base instructions.\n\nUse tools when appropriate."
+        )
+
+        assert updated[0] == {
+            "role": "system",
+            "content": "Base instructions.\n\nUse tools when appropriate.",
+        }
+        assert updated[1]["content"][1]["type"] == "image_url"
+        assert messages[1]["content"][1]["type"] == "image_url"
+
+    def test_tool_nudge_system_update_handles_none_messages(self):
+        assert _set_or_prepend_system_message(None, "") == []
+        assert _set_or_prepend_system_message(None, "Use tools.") == [
+            {"role": "system", "content": "Use tools."}
+        ]
+
+    def test_tool_nudge_system_update_dedupes_non_leading_system(self):
+        messages = [
+            {"role": "user", "content": "earlier"},
+            {"role": "system", "content": "Mid instructions."},
+            {"role": "user", "content": "now"},
+        ]
+
+        updated = _set_or_prepend_system_message(
+            messages, "Mid instructions.\n\nUse tools."
+        )
+
+        assert [m["role"] for m in updated] == ["system", "user", "user"]
+        assert updated[0]["content"] == "Mid instructions.\n\nUse tools."
+
+
+class TestGgufVisionToolRouting:
+    class _Request:
+        async def is_disconnected(self):
+            return False
+
+    @staticmethod
+    def _drive(coro):
+        return asyncio.run(coro)
+
+    @staticmethod
+    def _consume_response(response):
+        async def _consume():
+            chunks = []
+            async for chunk in response.body_iterator:
+                chunks.append(chunk)
+            return chunks
+
+        return TestGgufVisionToolRouting._drive(_consume())
+
+    def test_image_request_with_enabled_tools_enters_gguf_tool_loop(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        reset_tool_policy()
+        captured = {}
+
+        def _plain(**kwargs):
+            raise AssertionError("plain GGUF path should not be used")
+
+        def _tools(**kwargs):
+            captured["kwargs"] = kwargs
+            yield {"type": "content", "text": "done"}
+
+        backend = SimpleNamespace(
+            is_loaded = True,
+            is_vision = True,
+            supports_tools = True,
+            model_identifier = "gemma-4-12b-it-GGUF",
+            generate_chat_completion = _plain,
+            generate_chat_completion_with_tools = _tools,
+        )
+        monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
+
+        payload = ChatCompletionRequest(
+            model = "default",
+            enable_tools = True,
+            enabled_tools = ["web_search"],
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "What is in this image?"},
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": (
+                                    "data:image/png;base64,"
+                                    f"{TestGgufVisionMessages._PNG_B64}"
+                                ),
+                            },
+                        },
+                    ],
+                },
+            ],
+        )
+
+        response = self._drive(
+            openai_chat_completions(
+                payload, request = self._Request(), current_subject = "test"
+            )
+        )
+        self._consume_response(response)
+
+        assert "kwargs" in captured
+        assert captured["kwargs"]["tools"]
+        tool_messages = captured["kwargs"]["messages"]
+        assert tool_messages[0]["role"] == "system"
+        assert tool_messages[1]["role"] == "user"
+        assert tool_messages[1]["content"][1]["type"] == "image_url"

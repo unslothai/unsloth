@@ -151,7 +151,7 @@ export function DatasetStep() {
             className="flex-1"
           >
             <img
-              src="/huggingface.svg"
+              src={`${import.meta.env.BASE_URL}huggingface.svg`}
               alt=""
               className="size-4 invert"
               data-icon="inline-start"

@@ -1,11 +1,14 @@
 #!/usr/bin/env sh
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+#
 # Unsloth Studio uninstaller (macOS / Linux / WSL).
 # Stops running servers and removes install dir, launcher data,
 # CLI shim, desktop shortcut, .app bundle, and Launch Services entry.
 # Honors custom roots set via UNSLOTH_STUDIO_HOME / STUDIO_HOME at
 # install time (read back from studio.conf).
 #
-# Usage: curl -fsSL https://unsloth.ai/uninstall.sh | sh
+# Usage: curl -fsSL https://raw.githubusercontent.com/unslothai/unsloth/main/scripts/uninstall.sh | sh
 
 set -e
 
@@ -279,5 +282,5 @@ if [ -z "${UNSLOTH_STUDIO_HOME:-}" ] && [ -z "${STUDIO_HOME:-}" ]; then
     echo "If you installed Unsloth Studio with UNSLOTH_STUDIO_HOME or STUDIO_HOME"
     echo "pointing at a custom directory, re-run this script with the same variable"
     echo "set to also remove that install tree, e.g.:"
-    echo "  UNSLOTH_STUDIO_HOME=/your/path sh uninstall.sh"
+    echo "  UNSLOTH_STUDIO_HOME=/your/path sh -c \"\$(curl -fsSL https://raw.githubusercontent.com/unslothai/unsloth/main/scripts/uninstall.sh)\""
 fi

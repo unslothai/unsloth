@@ -551,7 +551,7 @@ jobs:
       - name: Install trusted-signing-cli
         if: matrix.platform == 'windows-latest'
         run: |
-          cargo install trusted-signing-cli --version 0.9.0 --locked
+          cargo install trusted-signing-cli --version 0.10.0 --locked
           echo "$env:USERPROFILE\.cargo\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       # ── Windows: verify signing CLI is accessible ──

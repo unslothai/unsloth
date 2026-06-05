@@ -14,15 +14,18 @@ import json
 import logging
 import os
 import platform
+import re
+import shutil
 import sqlite3
 import threading
 from datetime import datetime, timezone
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
-from typing import Optional
+from typing import Any, Iterable, Optional
 
 
-from utils.paths import studio_db_path, ensure_dir
+from utils.paths import project_workspaces_root, studio_db_path, ensure_dir
 
 
 def _denied_path_prefixes() -> list[str]:
@@ -54,6 +57,78 @@ def _denied_path_prefixes() -> list[str]:
 
 _schema_lock = threading.Lock()
 _schema_ready = False
+_SQLITE_IN_CHUNK_SIZE = 900
+_PROJECT_WORKSPACE_SUBDIRS = ("sandbox",)
+
+
+def _project_slug(name: str) -> str:
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", name.strip()).strip(".-_")
+    return slug[:48] or "project"
+
+
+def _default_project_root(project: dict) -> str:
+    project_id = str(project["id"])
+    suffix = re.sub(r"[^A-Za-z0-9_-]+", "-", project_id)[:8].strip("-_") or "project"
+    folder_name = f"{_project_slug(str(project.get('name') or 'Project'))}-{suffix}"
+    return str(project_workspaces_root() / folder_name)
+
+
+def _ensure_project_workspace(root_path: str) -> str:
+    root = Path(root_path).expanduser()
+    root_resolved = ensure_dir(root).resolve()
+    for subdir in _PROJECT_WORKSPACE_SUBDIRS:
+        ensure_dir(root_resolved / subdir)
+    return str(root_resolved)
+
+
+def _delete_project_workspace(project: dict) -> None:
+    root_path = project.get("rootPath")
+    if not root_path:
+        return
+    root = Path(root_path).expanduser()
+    try:
+        root_resolved = root.resolve(strict = False)
+    except (OSError, RuntimeError, ValueError):
+        logger.warning(
+            "Skipping project workspace delete for invalid path %r", root_path
+        )
+        return
+
+    project_id = str(project["id"])
+    suffix = re.sub(r"[^A-Za-z0-9_-]+", "-", project_id)[:8].strip("-_") or "project"
+    if not root_resolved.name.endswith(f"-{suffix}"):
+        logger.warning(
+            "Skipping project workspace delete for unexpected project path %s",
+            root_resolved,
+        )
+        return
+    if root_resolved.parent == root_resolved or root_resolved == Path.home().resolve():
+        logger.warning(
+            "Skipping project workspace delete for unsafe project path %s",
+            root_resolved,
+        )
+        return
+    check = (
+        os.path.normcase(str(root_resolved))
+        if platform.system() == "Windows"
+        else str(root_resolved)
+    )
+    for prefix in _denied_path_prefixes():
+        if check == prefix or check.startswith(prefix + os.sep):
+            logger.warning(
+                "Skipping project workspace delete under denied path %s",
+                root_resolved,
+            )
+            return
+    if not root_resolved.exists():
+        return
+    if root_resolved.is_symlink() or not root_resolved.is_dir():
+        logger.warning(
+            "Skipping project workspace delete for non-directory path %s",
+            root_resolved,
+        )
+        return
+    shutil.rmtree(root_resolved)
 
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
@@ -116,6 +191,129 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             path TEXT NOT NULL UNIQUE {collation},
             created_at TEXT NOT NULL
         )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS chat_projects (
+            id TEXT NOT NULL PRIMARY KEY,
+            name TEXT NOT NULL,
+            instructions TEXT,
+            root_path TEXT,
+            archived INTEGER NOT NULL DEFAULT 0,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        )
+        """
+    )
+    chat_project_cols = {
+        row[1] for row in conn.execute("PRAGMA table_info(chat_projects)").fetchall()
+    }
+    if "root_path" not in chat_project_cols:
+        conn.execute("ALTER TABLE chat_projects ADD COLUMN root_path TEXT")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_chat_projects_archived_updated_at ON chat_projects(archived, updated_at)"
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS chat_threads (
+            id TEXT NOT NULL PRIMARY KEY,
+            title TEXT NOT NULL,
+            model_type TEXT NOT NULL,
+            model_id TEXT,
+            pair_id TEXT,
+            project_id TEXT,
+            archived INTEGER NOT NULL DEFAULT 0,
+            created_at INTEGER NOT NULL,
+            openai_code_exec_container_id TEXT,
+            anthropic_code_exec_container_id TEXT,
+            FOREIGN KEY(project_id) REFERENCES chat_projects(id) ON DELETE CASCADE
+        )
+        """
+    )
+    chat_thread_cols = {
+        row[1] for row in conn.execute("PRAGMA table_info(chat_threads)").fetchall()
+    }
+    if "project_id" not in chat_thread_cols:
+        conn.execute("ALTER TABLE chat_threads ADD COLUMN project_id TEXT")
+    if "openai_code_exec_container_id" not in chat_thread_cols:
+        conn.execute(
+            "ALTER TABLE chat_threads ADD COLUMN openai_code_exec_container_id TEXT"
+        )
+    if "anthropic_code_exec_container_id" not in chat_thread_cols:
+        conn.execute(
+            "ALTER TABLE chat_threads ADD COLUMN anthropic_code_exec_container_id TEXT"
+        )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS chat_messages (
+            id TEXT NOT NULL PRIMARY KEY,
+            thread_id TEXT NOT NULL REFERENCES chat_threads(id) ON DELETE CASCADE,
+            parent_id TEXT,
+            role TEXT NOT NULL,
+            content_json TEXT NOT NULL,
+            attachments_json TEXT,
+            metadata_json TEXT,
+            created_at INTEGER NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_chat_threads_model_type_created_at ON chat_threads(model_type, created_at)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_chat_threads_pair_id ON chat_threads(pair_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_chat_threads_project_id ON chat_threads(project_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_chat_messages_thread_id_created_at ON chat_messages(thread_id, created_at)"
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS chat_settings (
+            key TEXT NOT NULL PRIMARY KEY,
+            value_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS app_settings (
+            key TEXT NOT NULL PRIMARY KEY,
+            value_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS chat_settings_quarantine (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            key TEXT NOT NULL,
+            value_json TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            quarantined_at TEXT NOT NULL
+        )
+        """
+    )
+    # Server-side import ledger so a studio.db wipe correctly re-triggers
+    # the legacy Dexie import. The previous boolean localStorage sentinel
+    # (`unsloth_chat_legacy_imported_to_studio_db`) is non-recoverable:
+    # if studio.db is recreated while the browser keeps the flag, legacy
+    # Dexie threads are silently hidden from the sidebar. The ledger
+    # lives inside studio.db so it disappears together with the data it
+    # is supposed to track, which is the recovery the boolean lacked.
+    # Keyed by legacy thread id; per-thread is sufficient because Dexie
+    # is read-only after this PR (a thread's message set does not grow).
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS chat_legacy_imports (
+            legacy_thread_id TEXT NOT NULL PRIMARY KEY,
+            imported_at INTEGER NOT NULL
+        ) WITHOUT ROWID
         """
     )
 
@@ -573,5 +771,771 @@ def remove_scan_folder(id: int) -> None:
     try:
         conn.execute("DELETE FROM scan_folders WHERE id = ?", (id,))
         conn.commit()
+    finally:
+        conn.close()
+
+
+def _json_loads(value: str | None, fallback):
+    if value is None:
+        return fallback
+    try:
+        return json.loads(value)
+    except (json.JSONDecodeError, TypeError):
+        return fallback
+
+
+def _chat_thread_from_row(row: sqlite3.Row) -> dict:
+    data = dict(row)
+    return {
+        "id": data["id"],
+        "title": data["title"],
+        "modelType": data["model_type"],
+        "modelId": data.get("model_id") or "",
+        "pairId": data.get("pair_id") or None,
+        "projectId": data.get("project_id") or None,
+        "archived": bool(data["archived"]),
+        "createdAt": data["created_at"],
+        "openaiCodeExecContainerId": data.get("openai_code_exec_container_id"),
+        "anthropicCodeExecContainerId": data.get("anthropic_code_exec_container_id"),
+    }
+
+
+def _chat_project_from_row(row: sqlite3.Row) -> dict:
+    data = dict(row)
+    root_path = data.get("root_path")
+    return {
+        "id": data["id"],
+        "name": data["name"],
+        "instructions": data.get("instructions") or "",
+        "rootPath": root_path or None,
+        "sandboxPath": os.path.join(root_path, "sandbox") if root_path else None,
+        "archived": bool(data["archived"]),
+        "createdAt": data["created_at"],
+        "updatedAt": data["updated_at"],
+    }
+
+
+def _chat_message_from_row(row: sqlite3.Row) -> dict:
+    data = dict(row)
+    message = {
+        "id": data["id"],
+        "threadId": data["thread_id"],
+        "parentId": data.get("parent_id"),
+        "role": data["role"],
+        "content": _json_loads(data.get("content_json"), []),
+        "createdAt": data["created_at"],
+    }
+    attachments = _json_loads(data.get("attachments_json"), None)
+    metadata = _json_loads(data.get("metadata_json"), None)
+    if attachments is not None:
+        message["attachments"] = attachments
+    if metadata is not None:
+        message["metadata"] = metadata
+    return message
+
+
+def upsert_chat_thread(thread: dict) -> dict:
+    conn = get_connection()
+    try:
+        conn.execute(
+            """
+            INSERT INTO chat_threads
+                (id, title, model_type, model_id, pair_id, project_id, archived, created_at, openai_code_exec_container_id, anthropic_code_exec_container_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                title = excluded.title,
+                model_type = excluded.model_type,
+                model_id = excluded.model_id,
+                pair_id = excluded.pair_id,
+                project_id = excluded.project_id,
+                archived = excluded.archived,
+                created_at = excluded.created_at,
+                openai_code_exec_container_id = excluded.openai_code_exec_container_id,
+                anthropic_code_exec_container_id = excluded.anthropic_code_exec_container_id
+            """,
+            (
+                thread["id"],
+                thread.get("title") or "New Chat",
+                thread["modelType"],
+                thread.get("modelId") or "",
+                thread.get("pairId"),
+                thread.get("projectId"),
+                1 if thread.get("archived") else 0,
+                int(thread["createdAt"]),
+                thread.get("openaiCodeExecContainerId"),
+                thread.get("anthropicCodeExecContainerId"),
+            ),
+        )
+        conn.commit()
+        return get_chat_thread(thread["id"]) or thread
+    finally:
+        conn.close()
+
+
+def update_chat_thread(id: str, patch: dict) -> Optional[dict]:
+    allowed = {
+        "title": ("title", patch.get("title")),
+        "modelType": ("model_type", patch.get("modelType")),
+        "modelId": ("model_id", patch.get("modelId")),
+        "pairId": ("pair_id", patch.get("pairId")),
+        "projectId": ("project_id", patch.get("projectId")),
+        "archived": ("archived", 1 if patch.get("archived") else 0),
+        "createdAt": ("created_at", patch.get("createdAt")),
+        "openaiCodeExecContainerId": (
+            "openai_code_exec_container_id",
+            patch.get("openaiCodeExecContainerId"),
+        ),
+        "anthropicCodeExecContainerId": (
+            "anthropic_code_exec_container_id",
+            patch.get("anthropicCodeExecContainerId"),
+        ),
+    }
+    assignments = []
+    values = []
+    for key, (column, value) in allowed.items():
+        if key in patch:
+            assignments.append(f"{column} = ?")
+            values.append(value)
+    if not assignments:
+        return get_chat_thread(id)
+
+    conn = get_connection()
+    try:
+        conn.execute(
+            f"UPDATE chat_threads SET {', '.join(assignments)} WHERE id = ?",
+            (*values, id),
+        )
+        conn.commit()
+        row = conn.execute("SELECT * FROM chat_threads WHERE id = ?", (id,)).fetchone()
+        return _chat_thread_from_row(row) if row is not None else None
+    finally:
+        conn.close()
+
+
+def get_chat_thread(id: str) -> Optional[dict]:
+    conn = get_connection()
+    try:
+        row = conn.execute("SELECT * FROM chat_threads WHERE id = ?", (id,)).fetchone()
+        return _chat_thread_from_row(row) if row is not None else None
+    finally:
+        conn.close()
+
+
+def list_chat_threads(
+    model_type: str | None = None,
+    pair_id: str | None = None,
+    project_id: str | None = None,
+    include_archived: bool = True,
+) -> list[dict]:
+    clauses = []
+    values: list[object] = []
+    if model_type is not None:
+        clauses.append("model_type = ?")
+        values.append(model_type)
+    if pair_id is not None:
+        clauses.append("pair_id = ?")
+        values.append(pair_id)
+    if project_id is not None:
+        clauses.append("project_id = ?")
+        values.append(project_id)
+    if not include_archived:
+        clauses.append("archived = 0")
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            f"SELECT * FROM chat_threads {where} ORDER BY created_at DESC",
+            values,
+        ).fetchall()
+        return [_chat_thread_from_row(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def delete_chat_threads(ids: list[str]) -> None:
+    if not ids:
+        return
+    conn = get_connection()
+    try:
+        conn.executemany("DELETE FROM chat_threads WHERE id = ?", [(id,) for id in ids])
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def clear_chat_history() -> None:
+    conn = get_connection()
+    try:
+        conn.execute("DELETE FROM chat_threads")
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def count_chat_threads() -> int:
+    conn = get_connection()
+    try:
+        return int(conn.execute("SELECT COUNT(*) FROM chat_threads").fetchone()[0])
+    finally:
+        conn.close()
+
+
+def upsert_chat_project(project: dict) -> dict:
+    existing = get_chat_project(project["id"])
+    root_path = existing.get("rootPath") if existing else None
+    if not root_path:
+        root_path = _default_project_root(project)
+    root_path = _ensure_project_workspace(root_path)
+    conn = get_connection()
+    try:
+        conn.execute(
+            """
+            INSERT INTO chat_projects
+                (id, name, instructions, root_path, archived, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                name = excluded.name,
+                instructions = excluded.instructions,
+                root_path = COALESCE(chat_projects.root_path, excluded.root_path),
+                archived = excluded.archived,
+                created_at = excluded.created_at,
+                updated_at = excluded.updated_at
+            """,
+            (
+                project["id"],
+                project["name"],
+                project.get("instructions") or "",
+                root_path,
+                1 if project.get("archived") else 0,
+                int(project["createdAt"]),
+                int(project["updatedAt"]),
+            ),
+        )
+        conn.commit()
+        return get_chat_project(project["id"]) or project
+    finally:
+        conn.close()
+
+
+def update_chat_project(id: str, patch: dict) -> Optional[dict]:
+    allowed = {
+        "name": ("name", patch.get("name")),
+        "instructions": ("instructions", patch.get("instructions")),
+        "archived": ("archived", 1 if patch.get("archived") else 0),
+        "createdAt": ("created_at", patch.get("createdAt")),
+        "updatedAt": ("updated_at", patch.get("updatedAt")),
+    }
+    assignments = []
+    values = []
+    for key, (column, value) in allowed.items():
+        if key in patch:
+            assignments.append(f"{column} = ?")
+            values.append(value)
+    if not assignments:
+        return get_chat_project(id)
+
+    conn = get_connection()
+    try:
+        conn.execute(
+            f"UPDATE chat_projects SET {', '.join(assignments)} WHERE id = ?",
+            (*values, id),
+        )
+        conn.commit()
+        row = conn.execute("SELECT * FROM chat_projects WHERE id = ?", (id,)).fetchone()
+        return _chat_project_from_row(row) if row is not None else None
+    finally:
+        conn.close()
+
+
+def ensure_chat_project_workspace(id: str) -> Optional[dict]:
+    project = get_chat_project(id)
+    if project is None:
+        return None
+    root_path = project.get("rootPath") or _default_project_root(project)
+    root_path = _ensure_project_workspace(root_path)
+    if project.get("rootPath") == root_path:
+        return project
+    conn = get_connection()
+    try:
+        conn.execute(
+            "UPDATE chat_projects SET root_path = ? WHERE id = ?",
+            (root_path, id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return get_chat_project(id)
+
+
+def get_chat_project(id: str) -> Optional[dict]:
+    conn = get_connection()
+    try:
+        row = conn.execute("SELECT * FROM chat_projects WHERE id = ?", (id,)).fetchone()
+        return _chat_project_from_row(row) if row is not None else None
+    finally:
+        conn.close()
+
+
+def list_chat_projects(include_archived: bool = False) -> list[dict]:
+    conn = get_connection()
+    try:
+        where = "" if include_archived else "WHERE archived = 0"
+        rows = conn.execute(
+            f"SELECT * FROM chat_projects {where} ORDER BY updated_at DESC"
+        ).fetchall()
+        return [_chat_project_from_row(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def delete_chat_project(id: str, delete_files: bool = False) -> Optional[dict]:
+    conn = get_connection()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute("SELECT * FROM chat_projects WHERE id = ?", (id,)).fetchone()
+        if row is None:
+            conn.rollback()
+            return None
+        project = _chat_project_from_row(row)
+        conn.execute("DELETE FROM chat_threads WHERE project_id = ?", (id,))
+        conn.execute("DELETE FROM chat_projects WHERE id = ?", (id,))
+        conn.commit()
+        if delete_files:
+            _delete_project_workspace(project)
+        return project
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+class ChatMessageConflictError(RuntimeError):
+    """Raised when a chat message id already belongs to another thread."""
+
+
+class CorruptSettingsError(RuntimeError):
+    """Raised when a partial settings patch would overwrite corrupt settings."""
+
+
+def _parse_chat_setting_json(key: str, value_json: str) -> tuple[bool, Any]:
+    try:
+        return True, json.loads(value_json)
+    except (json.JSONDecodeError, TypeError) as exc:
+        logger.warning(
+            "Corrupt chat_settings JSON; quarantining key=%s error=%s",
+            key,
+            exc,
+        )
+        return False, None
+
+
+def _load_chat_settings_for_merge(
+    conn: sqlite3.Connection,
+) -> tuple[dict[str, Any], set[str]]:
+    rows = conn.execute("SELECT key, value_json FROM chat_settings").fetchall()
+    current: dict[str, Any] = {}
+    corrupt: set[str] = set()
+    now = datetime.now(timezone.utc).isoformat()
+    for row in rows:
+        ok, value = _parse_chat_setting_json(row["key"], row["value_json"])
+        if ok:
+            current[row["key"]] = value
+            continue
+        corrupt.add(row["key"])
+        conn.execute(
+            """
+            INSERT INTO chat_settings_quarantine
+                (key, value_json, reason, quarantined_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (row["key"], row["value_json"], "json_decode_error", now),
+        )
+        conn.execute(
+            "DELETE FROM chat_settings WHERE key = ? AND value_json = ?",
+            (row["key"], row["value_json"]),
+        )
+    return current, corrupt
+
+
+def _raise_if_chat_message_thread_conflicts(
+    conn: sqlite3.Connection,
+    thread_id: str,
+    message_ids: list[str],
+) -> None:
+    unique_ids = list(dict.fromkeys(message_ids))
+    if not unique_ids:
+        return
+    conflicts: list[str] = []
+    for start in range(0, len(unique_ids), _SQLITE_IN_CHUNK_SIZE):
+        chunk = unique_ids[start : start + _SQLITE_IN_CHUNK_SIZE]
+        placeholders = ",".join("?" for _ in chunk)
+        rows = conn.execute(
+            f"""
+            SELECT id FROM chat_messages
+            WHERE id IN ({placeholders}) AND thread_id != ?
+            ORDER BY id
+            """,
+            (*chunk, thread_id),
+        ).fetchall()
+        conflicts.extend(row["id"] for row in rows)
+    if conflicts:
+        preview = ", ".join(conflicts[:5])
+        suffix = "" if len(conflicts) <= 5 else f" (+{len(conflicts) - 5} more)"
+        raise ChatMessageConflictError(
+            f"Message id already belongs to another thread: {preview}{suffix}"
+        )
+
+
+def upsert_chat_message(message: dict) -> dict:
+    conn = get_connection()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        _raise_if_chat_message_thread_conflicts(
+            conn,
+            message["threadId"],
+            [message["id"]],
+        )
+        conn.execute(
+            """
+            INSERT INTO chat_messages
+                (id, thread_id, parent_id, role, content_json, attachments_json, metadata_json, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                parent_id = excluded.parent_id,
+                role = excluded.role,
+                content_json = excluded.content_json,
+                attachments_json = excluded.attachments_json,
+                metadata_json = excluded.metadata_json,
+                created_at = excluded.created_at
+            WHERE excluded.thread_id = chat_messages.thread_id
+            """,
+            (
+                message["id"],
+                message["threadId"],
+                message.get("parentId"),
+                message["role"],
+                json.dumps(message.get("content", [])),
+                json.dumps(message.get("attachments"))
+                if message.get("attachments") is not None
+                else None,
+                json.dumps(message.get("metadata"))
+                if message.get("metadata") is not None
+                else None,
+                int(message["createdAt"]),
+            ),
+        )
+        conn.commit()
+        return message
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def sync_chat_messages(
+    thread_id: str,
+    messages: list[dict],
+    prune_missing: bool = False,
+) -> list[dict]:
+    conn = get_connection()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        _raise_if_chat_message_thread_conflicts(
+            conn,
+            thread_id,
+            [m["id"] for m in messages],
+        )
+        if prune_missing:
+            conn.execute("DELETE FROM chat_messages WHERE thread_id = ?", (thread_id,))
+        conn.executemany(
+            """
+            INSERT INTO chat_messages
+                (id, thread_id, parent_id, role, content_json, attachments_json, metadata_json, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                parent_id = excluded.parent_id,
+                role = excluded.role,
+                content_json = excluded.content_json,
+                attachments_json = excluded.attachments_json,
+                metadata_json = excluded.metadata_json,
+                created_at = excluded.created_at
+            WHERE excluded.thread_id = chat_messages.thread_id
+            """,
+            [
+                (
+                    m["id"],
+                    thread_id,
+                    m.get("parentId"),
+                    m["role"],
+                    json.dumps(m.get("content", [])),
+                    json.dumps(m.get("attachments"))
+                    if m.get("attachments") is not None
+                    else None,
+                    json.dumps(m.get("metadata"))
+                    if m.get("metadata") is not None
+                    else None,
+                    int(m["createdAt"]),
+                )
+                for m in messages
+            ],
+        )
+        conn.commit()
+        return list_chat_messages(thread_id)
+    except ChatMessageConflictError:
+        conn.rollback()
+        raise
+    except sqlite3.Error:
+        logger.exception("Failed to sync chat messages for thread %s", thread_id)
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def list_chat_messages(thread_id: str) -> list[dict]:
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            """
+            SELECT * FROM chat_messages
+            WHERE thread_id = ?
+            ORDER BY created_at ASC, id ASC
+            """,
+            (thread_id,),
+        ).fetchall()
+        return [_chat_message_from_row(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def get_chat_message(thread_id: str, message_id: str) -> Optional[dict]:
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            """
+            SELECT * FROM chat_messages
+            WHERE thread_id = ? AND id = ?
+            """,
+            (thread_id, message_id),
+        ).fetchone()
+        return _chat_message_from_row(row) if row is not None else None
+    finally:
+        conn.close()
+
+
+def list_chat_messages_for_threads(thread_ids: list[str]) -> list[dict]:
+    if not thread_ids:
+        return []
+    unique_thread_ids = list(dict.fromkeys(thread_ids))
+    messages: list[dict] = []
+    conn = get_connection()
+    try:
+        for start in range(0, len(unique_thread_ids), _SQLITE_IN_CHUNK_SIZE):
+            chunk = unique_thread_ids[start : start + _SQLITE_IN_CHUNK_SIZE]
+            placeholders = ",".join("?" for _ in chunk)
+            rows = conn.execute(
+                f"""
+                SELECT * FROM chat_messages
+                WHERE thread_id IN ({placeholders})
+                ORDER BY created_at ASC, id ASC
+                """,
+                chunk,
+            ).fetchall()
+            messages.extend(_chat_message_from_row(row) for row in rows)
+        return sorted(
+            messages,
+            key = lambda message: (message["createdAt"], message["id"]),
+        )
+    finally:
+        conn.close()
+
+
+def get_app_setting(key: str, fallback = None):
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT value_json FROM app_settings WHERE key = ?", (key,)
+        ).fetchone()
+        if row is None:
+            return fallback
+        return _json_loads(row["value_json"], fallback)
+    finally:
+        conn.close()
+
+
+def upsert_app_settings(settings: dict[str, Any]) -> dict[str, Any]:
+    if not settings:
+        return {}
+    conn = get_connection()
+    try:
+        now = datetime.now(timezone.utc).isoformat()
+        conn.executemany(
+            """
+            INSERT INTO app_settings (key, value_json, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET
+                value_json = excluded.value_json,
+                updated_at = excluded.updated_at
+            """,
+            [(key, json.dumps(value), now) for key, value in settings.items()],
+        )
+        conn.commit()
+        rows = conn.execute(
+            "SELECT key, value_json FROM app_settings ORDER BY key"
+        ).fetchall()
+        return {row["key"]: _json_loads(row["value_json"], None) for row in rows}
+    finally:
+        conn.close()
+
+
+def list_chat_settings() -> dict[str, Any]:
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT key, value_json FROM chat_settings ORDER BY key"
+        ).fetchall()
+        settings: dict[str, Any] = {}
+        for row in rows:
+            settings[row["key"]] = _json_loads(row["value_json"], None)
+        return settings
+    finally:
+        conn.close()
+
+
+def upsert_chat_settings(settings: dict[str, Any]) -> dict[str, Any]:
+    if not settings:
+        return list_chat_settings()
+    conn = get_connection()
+    try:
+        now = datetime.now(timezone.utc).isoformat()
+        conn.executemany(
+            """
+            INSERT INTO chat_settings (key, value_json, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET
+                value_json = excluded.value_json,
+                updated_at = excluded.updated_at
+            """,
+            [(key, json.dumps(value), now) for key, value in settings.items()],
+        )
+        conn.commit()
+        return list_chat_settings()
+    finally:
+        conn.close()
+
+
+def _deep_merge_settings(
+    current: dict[str, Any], updates: dict[str, Any]
+) -> dict[str, Any]:
+    merged = dict(current)
+    for key, value in updates.items():
+        current_value = merged.get(key)
+        if isinstance(current_value, dict) and isinstance(value, dict):
+            merged[key] = _deep_merge_settings(current_value, value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def upsert_chat_settings_merge(updates: dict[str, Any]) -> dict[str, Any]:
+    """Atomic read-merge-write under BEGIN IMMEDIATE so two concurrent writers
+    cannot drop one another's updates."""
+    if not updates:
+        return list_chat_settings()
+    conn = get_connection()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        current, corrupt = _load_chat_settings_for_merge(conn)
+        unsafe_partial_keys = [
+            key
+            for key, value in updates.items()
+            if key in corrupt and isinstance(value, dict)
+        ]
+        if unsafe_partial_keys:
+            conn.commit()
+            keys = ", ".join(sorted(unsafe_partial_keys))
+            raise CorruptSettingsError(
+                f"Cannot apply partial settings patch to corrupt key(s): {keys}"
+            )
+        merged = _deep_merge_settings(current, updates)
+        now = datetime.now(timezone.utc).isoformat()
+        conn.executemany(
+            """
+            INSERT INTO chat_settings (key, value_json, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET
+                value_json = excluded.value_json,
+                updated_at = excluded.updated_at
+            """,
+            [(key, json.dumps(value), now) for key, value in merged.items()],
+        )
+        conn.commit()
+        return merged
+    except CorruptSettingsError:
+        raise
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Legacy Dexie import ledger
+# ---------------------------------------------------------------------------
+# See the schema comment in _ensure_schema() for the recovery rationale.
+
+
+def list_chat_legacy_imports() -> list[str]:
+    """Return the legacy_thread_id of every thread already imported.
+
+    Cheap: scans a single small PK-only table. The frontend stuffs the
+    result into a Set before walking Dexie, so the diff is O(|Dexie|).
+    """
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT legacy_thread_id FROM chat_legacy_imports"
+        ).fetchall()
+        return [row[0] for row in rows]
+    finally:
+        conn.close()
+
+
+def upsert_chat_legacy_imports(legacy_thread_ids: list[str]) -> tuple[int, int]:
+    """Mark each given legacy thread id as imported. Idempotent.
+
+    Returns (accepted, inserted):
+      - accepted: number of non-empty deduped input ids
+      - inserted: number of rows that were actually new (not already in ledger)
+
+    ON CONFLICT DO NOTHING keeps the existing imported_at when an id is
+    recorded twice. INSERT...RETURNING reports only the rows that were
+    actually inserted, so callers can distinguish first-time imports
+    from idempotent re-runs without an extra SELECT.
+    """
+    ids = list(dict.fromkeys(tid for tid in legacy_thread_ids if tid))
+    if not ids:
+        return 0, 0
+    ts = int(datetime.now(timezone.utc).timestamp() * 1000)
+    conn = get_connection()
+    try:
+        inserted = 0
+        for tid in ids:
+            row = conn.execute(
+                """
+                INSERT INTO chat_legacy_imports (legacy_thread_id, imported_at)
+                VALUES (?, ?)
+                ON CONFLICT(legacy_thread_id) DO NOTHING
+                RETURNING legacy_thread_id
+                """,
+                (tid, ts),
+            ).fetchone()
+            if row is not None:
+                inserted += 1
+        conn.commit()
+        return len(ids), inserted
     finally:
         conn.close()

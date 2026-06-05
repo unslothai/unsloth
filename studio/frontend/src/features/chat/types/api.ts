@@ -42,7 +42,21 @@ export interface LoadModelRequest {
   trust_remote_code?: boolean;
   chat_template_override?: string | null;
   cache_type_kv?: string | null;
+  /**
+   * Speculative decoding mode for GGUF models. Canonical values:
+   * "auto" (platform-aware: MTP on MTP GGUFs, ngram-mod fallback for
+   * sub-3B), "mtp" (force draft-mtp only on both GPU and CPU), "ngram"
+   * (force ngram-mod only), "mtp+ngram" (force ngram-mod + draft-mtp
+   * chain on both platforms), or "off". Legacy values "default" /
+   * "draft-mtp" / "ngram-mod" / "ngram-simple" are still accepted by
+   * the backend.
+   */
   speculative_type?: string | null;
+  /**
+   * Override --spec-draft-n-max for MTP speculative decoding. Only
+   * applied when speculative_type resolves to "mtp" or "mtp+ngram".
+   */
+  spec_draft_n_max?: number | null;
 }
 
 export interface ValidateModelResponse {
@@ -118,7 +132,9 @@ export interface LoadModelResponse {
   supports_tools?: boolean;
   cache_type_kv?: string | null;
   chat_template?: string | null;
+  /** Canonical UI-facing mode the load request resolved to. See LoadModelRequest. */
   speculative_type?: string | null;
+  spec_draft_n_max?: number | null;
 }
 
 export interface UnloadModelRequest {
@@ -127,6 +143,7 @@ export interface UnloadModelRequest {
 
 export interface InferenceStatusResponse {
   active_model: string | null;
+  model_identifier?: string | null;
   is_vision: boolean;
   is_gguf?: boolean;
   gguf_variant?: string | null;
@@ -142,7 +159,7 @@ export interface InferenceStatusResponse {
     min_p?: number;
     presence_penalty?: number;
     trust_remote_code?: boolean;
-  };
+  } | null;
   requires_trust_remote_code?: boolean;
   supports_reasoning?: boolean;
   reasoning_style?: "enable_thinking" | "reasoning_effort";
@@ -155,7 +172,9 @@ export interface InferenceStatusResponse {
   native_context_length?: number | null;
   cache_type_kv?: string | null;
   chat_template_override?: string | null;
+  /** Canonical UI-facing mode currently active. See LoadModelRequest. */
   speculative_type?: string | null;
+  spec_draft_n_max?: number | null;
 }
 
 export interface AudioGenerationResponse {
@@ -174,16 +193,60 @@ export interface AudioGenerationResponse {
   }>;
 }
 
-export type OpenAIMessageContent =
-  | string
-  | Array<
-      | { type: "text"; text: string }
-      | { type: "image_url"; image_url: { url: string } }
-    >;
+export type OpenAIReasoningSummaryPart = {
+  type: "summary_text";
+  text: string;
+};
+
+export type OpenAIReasoningContentPart = {
+  type: "reasoning";
+  id: string;
+  summary: OpenAIReasoningSummaryPart[];
+  status?: "in_progress" | "completed" | "incomplete";
+};
+
+export type OpenAIImageGenerationCallContentPart = {
+  type: "image_generation_call";
+  id: string;
+  response_id?: string;
+};
+
+export type OpenAIMessageContentPart =
+  | { type: "text"; text: string }
+  | { type: "image_url"; image_url: { url: string } }
+  | OpenAIReasoningContentPart
+  | OpenAIImageGenerationCallContentPart;
+
+export type OpenAIMessageContent = string | OpenAIMessageContentPart[];
+
+/**
+ * OpenAI Chat Completions tool_call shape. Assistant turns echo back
+ * function/tool calls as `tool_calls`; the matching tool result rides
+ * on a separate `role="tool"` message keyed by `tool_call_id`.
+ * `extra_content.google.thought_signature` is the Gemini-specific
+ * round-trip field the backend translator both emits (on `delta.
+ * tool_calls`) and consumes (when rebuilding the native functionCall
+ * part on the next turn).
+ */
+export interface OpenAIToolCallPart {
+  id?: string;
+  type?: "function";
+  function?: {
+    name?: string;
+    arguments?: string;
+  };
+  extra_content?: unknown;
+}
 
 export interface OpenAIChatMessage {
-  role: "system" | "user" | "assistant";
-  content: OpenAIMessageContent;
+  role: "system" | "user" | "assistant" | "tool";
+  content: OpenAIMessageContent | null;
+  /** Assistant tool-call deltas, when the turn invoked a function tool. */
+  tool_calls?: OpenAIToolCallPart[];
+  /** `role="tool"` only: id matching `assistant.tool_calls[].id`. */
+  tool_call_id?: string;
+  /** `role="tool"` only: name of the function that produced the result. */
+  name?: string;
 }
 
 export interface OpenAIChatCompletionsRequest {
@@ -224,7 +287,14 @@ export interface OpenAIChatCompletionsRequest {
   external_model?: string;
   encrypted_api_key?: string;
   provider_base_url?: string | null;
-  enable_prompt_caching?: boolean | null;
+  /**
+   * Boolean toggle for OpenAI/Anthropic ephemeral cache_control. For
+   * Gemini the backend also accepts the cached-content resource name
+   * (`cachedContents/...`) as a string, which is forwarded as
+   * `generationConfig.cachedContent` on the native streamGenerateContent
+   * request.
+   */
+  enable_prompt_caching?: boolean | string | null;
   /**
    * OpenAI shell-tool container id captured from the prior response in
    * this chat thread. When set and the Code pill is on, the backend
@@ -244,11 +314,30 @@ export interface OpenAIChatCompletionsRequest {
    * the Anthropic provider with `code_execution` in `enabled_tools`.
    */
   anthropic_code_exec_container_id?: string | null;
+  /**
+   * Anthropic fast-mode toggle. Opus 4.6 / 4.7 only; backend drops
+   * silently on every other model + provider. See
+   * https://platform.claude.com/docs/en/build-with-claude/fast-mode
+   */
+  fast_mode?: boolean | null;
 }
 
 export interface OpenAIChatDelta {
   role?: string;
-  content?: string;
+  content?: string | null;
+  /**
+   * Streamed assistant tool calls. The Gemini and OpenAI Responses
+   * translators emit incremental `tool_calls` deltas (function name +
+   * arguments fragments) so the chat-adapter can render tool cards as
+   * they arrive.
+   */
+  tool_calls?: OpenAIToolCallPart[];
+  /**
+   * Provider-specific passthrough. Gemini ships `thoughtSignature`,
+   * citations, `native_part`, etc., here so the round-trip can replay
+   * them on follow-up turns without bleeding into other providers.
+   */
+  extra_content?: Record<string, unknown>;
 }
 
 export interface OpenAIChatChunkChoice {

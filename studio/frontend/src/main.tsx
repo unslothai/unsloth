@@ -7,6 +7,7 @@ import { createRoot } from "react-dom/client";
 import "./index.css";
 import { fetchDeviceType } from "./config/env";
 import { App } from "./app/app";
+import { initializeLocale } from "./i18n";
 
 const globalCrypto = globalThis.crypto as Crypto | undefined;
 
@@ -32,6 +33,8 @@ const rootElement = document.getElementById("root");
 if (!rootElement) {
   throw new Error("Root element not found");
 }
+
+initializeLocale();
 
 fetchDeviceType().then(() => {
   createRoot(rootElement).render(

@@ -2071,6 +2071,19 @@ def unsloth_fast_generate(
 ):
     # If the model starts out in training mode, restore training mode after generation
     restore_training_mode = self.training
+    # why: snapshot the actual GC mode value (e.g. "unsloth") before for_inference
+    # clears it, so the post-generate restore preserves the caller's configured GC
+    # mode rather than collapsing it to a plain bool.
+    use_gradient_checkpointing = next(
+        (
+            v
+            for v in (
+                getattr(m, "gradient_checkpointing", False) for m in self.modules()
+            )
+            if v
+        ),
+        False,
+    )
 
     FastLlamaModel.for_inference(self)
 
@@ -2156,7 +2169,10 @@ def unsloth_fast_generate(
     # pass
 
     if restore_training_mode:
-        FastLlamaModel.for_training(self)
+        FastLlamaModel.for_training(
+            self,
+            use_gradient_checkpointing = use_gradient_checkpointing,
+        )
 
     return output
 
@@ -2578,6 +2594,7 @@ class FastLlamaModel:
                 quant_state_dict, model_config, dtype, bnb_config
             )
             model.vllm_engine = llm
+            llm.shared_weights = True
             model.fast_generate = model.vllm_engine.generate
             model.fast_generate_batches = functools.partial(
                 generate_batches, model.vllm_engine
@@ -2831,6 +2848,7 @@ class FastLlamaModel:
         bias = "none",
         layers_to_transform = None,
         layers_pattern = None,
+        finetune_last_n_layers = None,
         use_gradient_checkpointing = "unsloth",
         random_state = 3407,
         max_seq_length = 2048,  # not used anymore
@@ -2863,6 +2881,7 @@ class FastLlamaModel:
                 bias = bias,
                 layers_to_transform = layers_to_transform,
                 layers_pattern = layers_pattern,
+                finetune_last_n_layers = finetune_last_n_layers,
                 use_gradient_checkpointing = use_gradient_checkpointing,
                 random_state = random_state,
                 max_seq_length = max_seq_length,
@@ -3159,6 +3178,14 @@ class FastLlamaModel:
         # Auto-detect MoE models and populate target_parameters for expert layers
         if target_parameters is None:
             target_parameters = get_moe_target_parameters(model, target_modules)
+
+        if finetune_last_n_layers is not None and layers_to_transform is None:
+            from .vision import _get_total_transformer_layers
+
+            _total_layers = _get_total_transformer_layers(model)
+            if _total_layers is not None and _total_layers > 0:
+                _n = max(1, min(int(finetune_last_n_layers), _total_layers))
+                layers_to_transform = list(range(_total_layers - _n, _total_layers))
 
         arguments = dict(
             r = r,

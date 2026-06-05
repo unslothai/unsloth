@@ -95,6 +95,89 @@ def _used_llm_model_aliases(recipe: dict[str, Any]) -> set[str]:
     return aliases
 
 
+def _used_local_model_selections(
+    recipe: dict[str, Any], local_provider_names: set[str]
+) -> dict[tuple[str, str], list[str]]:
+    used_aliases = _used_llm_model_aliases(recipe)
+    selections: dict[tuple[str, str], list[str]] = {}
+    for mc in recipe.get("model_configs", []):
+        if not isinstance(mc, dict):
+            continue
+        alias = mc.get("alias")
+        if not isinstance(alias, str) or alias not in used_aliases:
+            continue
+        provider = mc.get("provider")
+        if not isinstance(provider, str) or provider not in local_provider_names:
+            continue
+        model = mc.get("model")
+        target = model.strip() if isinstance(model, str) else ""
+        if not target or target.lower() == "local":
+            continue
+        variant = mc.get("gguf_variant")
+        gguf_variant = variant.strip() if isinstance(variant, str) else ""
+        selections.setdefault((target, gguf_variant), []).append(alias)
+    return selections
+
+
+def _single_used_local_model_selection(
+    recipe: dict[str, Any], local_provider_names: set[str]
+) -> tuple[str, str] | None:
+    selections = _used_local_model_selections(recipe, local_provider_names)
+    if not selections:
+        return None
+    if len(selections) > 1:
+        aliases = ", ".join(alias for values in selections.values() for alias in values)
+        raise ValueError(
+            "Recipes supports one active local model per run. "
+            f"Select the same local model and GGUF variant for: {aliases}."
+        )
+    return next(iter(selections))
+
+
+def _loaded_local_model_identity() -> tuple[bool, str, str]:
+    from routes.inference import get_llama_cpp_backend
+    from core.inference import get_inference_backend
+
+    llama = get_llama_cpp_backend()
+    if llama.is_loaded:
+        model = str(getattr(llama, "model_identifier", "") or "").strip()
+        variant = str(getattr(llama, "hf_variant", "") or "").strip()
+        return True, model, variant
+
+    backend = get_inference_backend()
+    active_model = str(getattr(backend, "active_model_name", "") or "").strip()
+    if active_model:
+        return True, active_model, ""
+    return False, "", ""
+
+
+def _ensure_selected_local_model_loaded(
+    recipe: dict[str, Any], local_provider_names: set[str]
+) -> None:
+    model_loaded, active_model, active_variant = _loaded_local_model_identity()
+    if not model_loaded:
+        raise ValueError(
+            "No model loaded in Chat. Load a model first, then run the recipe."
+        )
+
+    selection = _single_used_local_model_selection(recipe, local_provider_names)
+    if selection is None:
+        return
+
+    target, gguf_variant = selection
+    variant_matches = not gguf_variant or active_variant == gguf_variant
+    if active_model.lower() != target.lower() or not variant_matches:
+        selected = f"{target} ({gguf_variant})" if gguf_variant else target
+        active = (
+            f"{active_model} ({active_variant})" if active_variant else active_model
+        )
+        raise ValueError(
+            "Selected local model is not loaded. "
+            f"Selected {selected}; active {active or 'none'}. "
+            "Load the selected model again, then run the recipe."
+        )
+
+
 def _inject_local_structured_response_format(
     recipe: dict[str, Any], local_provider_names: set[str]
 ) -> None:
@@ -238,24 +321,12 @@ def _inject_local_providers(recipe: dict[str, Any], request: Request) -> Optiona
     token = ""
     internal_key_id: Optional[int] = None
     if local_names & referenced_providers:
-        # Verify a model is loaded.
-        # NOTE: This is a point-in-time check (TOCTOU). The model could be unloaded
-        # or swapped after this check but before the recipe subprocess calls /v1.
-        # The inference endpoint returns a clear 400 in that case.
-        #
-        # Imports are deferred to avoid circular dependencies with inference modules.
-        from routes.inference import get_llama_cpp_backend
-        from core.inference import get_inference_backend
-
-        llama = get_llama_cpp_backend()
-        model_loaded = llama.is_loaded
-        if not model_loaded:
-            backend = get_inference_backend()
-            model_loaded = bool(backend.active_model_name)
-        if not model_loaded:
-            raise ValueError(
-                "No model loaded in Chat. Load a model first, then run the recipe."
-            )
+        # Verify the selected local model is loaded before minting a workflow
+        # key. This still remains a point-in-time singleton-backend check
+        # (TOCTOU): a future generation token should bind frontend load and
+        # job creation, and the inference endpoint returns a clear 400 if the
+        # model is later unloaded or swapped before the subprocess calls /v1.
+        _ensure_selected_local_model_loaded(recipe, local_names)
 
         from auth import storage  # deferred: avoids circular import
 
@@ -287,12 +358,12 @@ def _inject_local_providers(recipe: dict[str, Any], request: Request) -> Optiona
         providers[i].pop("extra_body", None)
 
     # Force skip_health_check on any model_config that references a local
-    # provider. The local /v1/models endpoint only lists the real loaded
-    # model (e.g. "unsloth/llama-3.2-1b") and not the placeholder "local"
-    # that the recipe sends as the model id, so data_designer's pre-flight
-    # health check would otherwise fail before the first completion call.
-    # The backend route ignores the model id field in chat completions, so
-    # skipping the check is safe.
+    # provider. The frontend now sends the explicit selected local model id,
+    # but llama-server's /v1/models response can still differ from that id
+    # for local paths, cache aliases, and GGUF variant loads. The recipe run
+    # has already gated on a loaded local inference backend above, so the
+    # data_designer model-list health check would be redundant and can reject
+    # valid local selections.
     for mc in recipe.get("model_configs", []):
         if not isinstance(mc, dict):
             continue
@@ -319,7 +390,7 @@ def _inject_local_providers(recipe: dict[str, Any], request: Request) -> Optiona
             tpl_kwargs = extra_body.get("chat_template_kwargs")
             if not isinstance(tpl_kwargs, dict):
                 tpl_kwargs = {}
-            tpl_kwargs.setdefault("enable_thinking", False)
+            tpl_kwargs["enable_thinking"] = False
             extra_body["chat_template_kwargs"] = tpl_kwargs
             params["extra_body"] = extra_body
 

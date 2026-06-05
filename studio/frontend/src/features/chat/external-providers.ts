@@ -16,6 +16,14 @@ export interface ExternalProviderConfig {
   availableModels?: string[];
   /** Whether to ask supported hosted providers to use prompt caching. */
   enablePromptCaching?: boolean;
+  /**
+   * Anthropic prompt-cache TTL bucket. Only meaningful when
+   * `enablePromptCaching` is true and the provider supports the choice
+   * (Anthropic today). Maps to `prompt_cache_ttl` on the backend, which
+   * attaches `cache_control.ttl` to the cache marker. Omitted = inherit
+   * Anthropic's default 5-minute pool, same as before this knob existed.
+   */
+  promptCacheTtl?: "5m" | "1h";
   /** User-pinned: the loaded vLLM model supports `enable_thinking`. */
   isReasoningModel?: boolean;
   /**
@@ -29,12 +37,41 @@ export interface ExternalProviderConfig {
   updatedAt: number;
 }
 
+// Gemini supports prompt caching, but the wire flow requires a
+// separate POST to /v1beta/cachedContents to create the cache before
+// the generateContent call can reference it; the boolean Studio
+// currently emits on enable_prompt_caching is not enough on its own.
+// Until that two-step orchestration ships we keep the picker off so
+// the toggle does not silently no-op for Gemini users. See
+// https://ai.google.dev/gemini-api/docs/caching.
 const PROMPT_CACHING_PROVIDER_TYPES = new Set(["openai", "anthropic"]);
 
 export function supportsProviderPromptCaching(
   providerType: string | null | undefined,
 ): boolean {
   return providerType != null && PROMPT_CACHING_PROVIDER_TYPES.has(providerType);
+}
+
+/**
+ * Whether the provider lets the user choose between a short and a long
+ * prompt-cache pool. Anthropic exposes both a 5m and a 1h ephemeral
+ * pool via `cache_control.ttl`; OpenAI's automatic prompt cache has no
+ * equivalent user-selectable knob, so it stays off the picker.
+ */
+const PROMPT_CACHE_TTL_PROVIDER_TYPES = new Set(["anthropic"]);
+
+export function supportsProviderPromptCacheTtl(
+  providerType: string | null | undefined,
+): boolean {
+  return (
+    providerType != null && PROMPT_CACHE_TTL_PROVIDER_TYPES.has(providerType)
+  );
+}
+
+const PROMPT_CACHE_TTL_VALUES = new Set<"5m" | "1h">(["5m", "1h"]);
+
+export function isPromptCacheTtl(value: unknown): value is "5m" | "1h" {
+  return typeof value === "string" && PROMPT_CACHE_TTL_VALUES.has(value as "5m" | "1h");
 }
 
 // Provider types that expose the connection-level "reasoning model"
@@ -134,6 +171,38 @@ export function isCustomProviderType(
   return providerType in CUSTOM_PROVIDER_LABELS;
 }
 
+/** Local OpenAI-compat presets that expose GET /v1/models (no API key). */
+const REMOTE_MODEL_CATALOG_CUSTOM_PROVIDER_TYPES = new Set([
+  "ollama",
+  "vllm",
+  "llama_cpp",
+]);
+
+export function supportsRemoteModelCatalog(
+  providerType: string | null | undefined,
+): boolean {
+  return (
+    providerType != null &&
+    REMOTE_MODEL_CATALOG_CUSTOM_PROVIDER_TYPES.has(providerType)
+  );
+}
+
+/** Presets that skip the API-key field (local servers with no auth by default). */
+export function customPresetSkipsApiKeyField(
+  providerType: string | null | undefined,
+): boolean {
+  return providerType === "ollama" || providerType === "llama_cpp";
+}
+
+/** Catalog load plus optional manual model IDs (OpenRouter + local presets). */
+export function allowsManualModelIdsWithCatalog(
+  providerType: string | null | undefined,
+): boolean {
+  if (!providerType) return false;
+  if (providerType === "openrouter") return true;
+  return supportsRemoteModelCatalog(providerType);
+}
+
 export function customProviderDisplayName(
   providerType: string | null | undefined,
 ): string {
@@ -181,6 +250,8 @@ export function toExternalBackendProviderType(
   // type through so the backend routes vLLM to /v1/chat/completions instead
   // of the OpenAI Responses path used for gpt-5.x.
   if (providerType === "vllm") return "vllm";
+  if (providerType === "ollama") return "ollama";
+  if (providerType === "llama_cpp") return "llama_cpp";
   return isCustomProviderType(providerType)
     ? CUSTOM_BACKEND_PROVIDER_TYPE
     : providerType;
@@ -188,6 +259,7 @@ export function toExternalBackendProviderType(
 
 const EXTERNAL_PROVIDERS_KEY = "unsloth_chat_external_providers";
 const EXTERNAL_PROVIDER_KEYS_KEY = "unsloth_chat_external_provider_keys";
+const CONNECTIONS_ENABLED_KEY = "unsloth_chat_connections_enabled";
 const EXTERNAL_MODEL_PREFIX = "external::";
 
 function canUseStorage(): boolean {
@@ -254,6 +326,11 @@ function normalizeProvider(raw: ExternalProviderConfig): ExternalProviderConfig 
     enablePromptCaching: supportsProviderPromptCaching(providerType)
       ? raw.enablePromptCaching !== false
       : undefined,
+    promptCacheTtl:
+      supportsProviderPromptCacheTtl(providerType) &&
+      isPromptCacheTtl(raw.promptCacheTtl)
+        ? raw.promptCacheTtl
+        : undefined,
     isReasoningModel: supportsProviderReasoningToggle(providerType)
       ? raw.isReasoningModel === true
       : undefined,
@@ -303,6 +380,26 @@ function fromUnknownProvider(value: unknown): ExternalProviderConfig | null {
     createdAt: typeof legacy.createdAt === "number" ? legacy.createdAt : Date.now(),
     updatedAt: typeof legacy.updatedAt === "number" ? legacy.updatedAt : Date.now(),
   };
+}
+
+export function loadConnectionsEnabled(): boolean {
+  if (!canUseStorage()) return true;
+  try {
+    const raw = localStorage.getItem(CONNECTIONS_ENABLED_KEY);
+    if (raw == null) return true;
+    return raw === "true";
+  } catch {
+    return true;
+  }
+}
+
+export function saveConnectionsEnabled(enabled: boolean): void {
+  if (!canUseStorage()) return;
+  try {
+    localStorage.setItem(CONNECTIONS_ENABLED_KEY, enabled ? "true" : "false");
+  } catch {
+    // ignore
+  }
 }
 
 export function loadExternalProviders(): ExternalProviderConfig[] {

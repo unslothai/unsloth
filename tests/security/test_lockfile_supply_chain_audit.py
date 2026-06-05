@@ -27,9 +27,12 @@ def _run_auditor(
     root: Path,
     npm_lockfiles: list[Path] | None = None,
     cargo_lockfiles: list[Path] | None = None,
+    strict: bool = False,
     timeout: int = 30,
 ) -> subprocess.CompletedProcess:
     cmd = [sys.executable, str(SCRIPT), "--root", str(root)]
+    if strict:
+        cmd.append("--strict")
     for p in npm_lockfiles or []:
         cmd.extend(["--npm-lockfile", str(p)])
     for p in cargo_lockfiles or []:
@@ -170,6 +173,32 @@ checksum = "0000000000000000000000000000000000000000000000000000000000000000"
 def test_malicious_cargo_lockfile_refused(tmp_path):
     """Inline Cargo.lock with `source = "git+https://example.com/..."`
     must trip the `non-registry-cargo-source` check.
+
+    `non-registry-cargo-source` is an advisory finding kind in the
+    auditor's default mode (per the audit script's BLOCKING_KINDS
+    set). To exercise the historical "refuse to install" behavior we
+    pass --strict here; that promotes every finding to blocking and
+    keeps the test honest about its intent (detection + refusal).
+    """
+    lockfile = tmp_path / "Cargo.lock"
+    lockfile.write_text(_MALICIOUS_CARGO_LOCK)
+    proc = _run_auditor(
+        root = tmp_path,
+        npm_lockfiles = [FIXTURES / "clean_lockfile.json"],
+        cargo_lockfiles = [lockfile],
+        strict = True,
+    )
+    assert proc.returncode == 1
+    combined = proc.stdout + proc.stderr
+    assert "non-registry-cargo-source" in combined
+    assert "git+https://example.com" in combined
+
+
+def test_malicious_cargo_lockfile_default_mode_advisory(tmp_path):
+    """Default (non-strict) mode classifies `non-registry-cargo-source`
+    as advisory: the finding is still emitted as a `::warning::`
+    annotation but the process exits 0 so the build is not gated.
+    Regression test for the advisory/strict split.
     """
     lockfile = tmp_path / "Cargo.lock"
     lockfile.write_text(_MALICIOUS_CARGO_LOCK)
@@ -178,10 +207,13 @@ def test_malicious_cargo_lockfile_refused(tmp_path):
         npm_lockfiles = [FIXTURES / "clean_lockfile.json"],
         cargo_lockfiles = [lockfile],
     )
-    assert proc.returncode == 1
+    assert proc.returncode == 0, (
+        f"expected exit 0 (advisory), got {proc.returncode}\n"
+        f"--- stdout ---\n{proc.stdout}\n--- stderr ---\n{proc.stderr}"
+    )
     combined = proc.stdout + proc.stderr
     assert "non-registry-cargo-source" in combined
-    assert "git+https://example.com" in combined
+    assert "advisory finding" in combined
 
 
 def test_audit_cargo_lockfile_direct_call(tmp_path):
@@ -190,6 +222,75 @@ def test_audit_cargo_lockfile_direct_call(tmp_path):
     findings = lsa.audit_cargo_lockfile(lockfile)
     kinds = {f.kind for f in findings}
     assert "non-registry-cargo-source" in kinds
+
+
+# ---------------------------------------------------------------------------
+# GitHub Actions annotation escape: ::warning:: / ::error:: messages
+# are truncated at the first newline unless escaped, so the multi-line
+# Finding must be collapsed via the spec'd %0A / %0D / %25 encoding.
+# ---------------------------------------------------------------------------
+
+
+def test_gha_escape_collapses_finding_to_one_line():
+    """`_gha_escape()` must collapse newlines (`%0A`), carriage
+    returns (`%0D`), and percent signs (`%25`) so that
+    `::warning::<msg>` / `::error::<msg>` render the full finding
+    in the GitHub Actions UI annotation instead of being truncated
+    at the first newline. The `%` replacement must happen first or
+    the subsequent `%0A` / `%0D` escapes get double-encoded.
+    """
+    assert lsa._gha_escape("a\nb\nc") == "a%0Ab%0Ac"
+    assert lsa._gha_escape("a\rb") == "a%0Db"
+    assert lsa._gha_escape("100%") == "100%25"
+    # Order regression: `%` must escape before `\n` so the literal
+    # text `a%b\nc` becomes `a%25b%0Ac`, not `a%250Ab%0Ac`.
+    assert lsa._gha_escape("a%b\nc") == "a%25b%0Ac"
+
+    f = lsa.Finding(
+        path = "/x/lock.json",
+        package = "node_modules/foo",
+        kind = "missing-integrity-hash",
+        detail = "bad stuff",
+    )
+    escaped = lsa._gha_escape(str(f))
+    assert "\n" not in escaped
+    assert "%0A" in escaped
+    assert "missing-integrity-hash" in escaped
+    assert "node_modules/foo" in escaped
+    assert "bad stuff" in escaped
+
+
+def test_advisory_finding_emitted_as_single_line_annotation(tmp_path):
+    """End-to-end check: the `::warning::` line emitted for an
+    advisory finding must be a SINGLE physical line (the rest of
+    the Finding is `%0A`-escaped inside the message). Regression
+    test for the gemini-code-assist review on PR #5604: without
+    `_gha_escape`, GitHub Actions truncates the annotation after
+    `[kind] path` and the package + detail fields never render.
+    """
+    lockfile = tmp_path / "Cargo.lock"
+    lockfile.write_text(_MALICIOUS_CARGO_LOCK)
+    proc = _run_auditor(
+        root = tmp_path,
+        npm_lockfiles = [FIXTURES / "clean_lockfile.json"],
+        cargo_lockfiles = [lockfile],
+    )
+    warning_lines = [
+        line for line in proc.stderr.splitlines() if line.startswith("::warning::")
+    ]
+    assert warning_lines, (
+        "expected at least one ::warning:: annotation; " f"stderr was:\n{proc.stderr}"
+    )
+    for line in warning_lines:
+        # Single physical line: kind, package, detail all present
+        # via %0A escape, not split across stderr lines.
+        assert "%0A" in line, (
+            f"::warning:: line has no %0A escape; multi-line text "
+            f"would be truncated by GH Actions:\n{line}"
+        )
+        assert "non-registry-cargo-source" in line
+        assert "package:" in line
+        assert "detail:" in line
 
 
 # ---------------------------------------------------------------------------

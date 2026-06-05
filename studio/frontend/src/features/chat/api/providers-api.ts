@@ -140,6 +140,13 @@ export async function deleteProviderConfig(providerId: string): Promise<void> {
   const response = await authFetch(`/api/providers/${providerId}`, {
     method: "DELETE",
   });
+  // Treat 404 as success: another browser (or tab) already deleted this
+  // provider on the backend, so locally pruning the stale cache is the
+  // correct follow-up. Without this, the caller would throw and the user
+  // would be stuck with an entry they cannot remove from the UI.
+  if (response.status === 404) {
+    return;
+  }
   if (!response.ok) {
     const body = await response.json().catch(() => null);
     throw new Error(parseErrorText(response.status, body));

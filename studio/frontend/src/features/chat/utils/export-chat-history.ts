@@ -1,29 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { db } from "../db";
+import { buildStoredChatExport } from "./chat-history-storage";
 
-interface ExportedChat {
-  exportedAt: string;
-  version: 1;
-  threadCount: number;
-  threads: unknown[];
-  messages: unknown[];
-}
-
-export async function buildChatExport(): Promise<ExportedChat> {
-  const [threads, messages] = await Promise.all([
-    db.threads.toArray(),
-    db.messages.toArray(),
-  ]);
-  return {
-    exportedAt: new Date().toISOString(),
-    version: 1,
-    threadCount: threads.length,
-    threads,
-    messages,
-  };
-}
+export const buildChatExport = buildStoredChatExport;
 
 export async function downloadChatExport(): Promise<void> {
   const data = await buildChatExport();

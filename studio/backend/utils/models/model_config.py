@@ -814,7 +814,8 @@ _audio_detection_cache: Dict[str, Optional[str]] = {}
 _AUDIO_TOKEN_PATTERNS = {
     "csm": lambda tokens: "<|AUDIO|>" in tokens and "<|audio_eos|>" in tokens,
     "whisper": lambda tokens: "<|startoftranscript|>" in tokens,
-    "audio_vlm": lambda tokens: "<audio_soft_token>" in tokens,
+    # Gemma 3n: <audio_soft_token>; Gemma 4: <|audio|> (not csm's <|AUDIO|>).
+    "audio_vlm": lambda tokens: "<audio_soft_token>" in tokens or "<|audio|>" in tokens,
     "bicodec": lambda tokens: any(t.startswith("<|bicodec_") for t in tokens),
     "dac": lambda tokens: (
         "<|audio_start|>" in tokens
@@ -1156,13 +1157,18 @@ def detect_gguf_model(path: str) -> Optional[str]:
     p = Path(path)
 
     # Case 1: direct .gguf file
-    if p.suffix.lower() == ".gguf" and p.is_file():
+    if p.suffix.lower() == ".gguf":
         if _is_mmproj(p.name):
             return None
-        # Use absolute (not resolve) to preserve symlink names -- e.g.
-        # Ollama .studio_links/model.gguf -> blobs/sha256-... should
-        # keep the readable symlink name, not the opaque blob hash.
-        return str(p.absolute())
+        # Extension is authoritative: don't gate on is_file()/exists(), which
+        # can fail in the Windows lock window after llama-server is killed.
+        try:
+            is_dir = p.is_dir()
+        except OSError:
+            is_dir = False  # stat() unavailable in the lock window
+        if not is_dir:
+            return str(p.absolute())  # absolute() keeps symlink names readable
+        # Directory named "*.gguf": fall through to the dir scan below.
 
     # Case 2: directory containing .gguf files (skip mmproj)
     if p.is_dir():

@@ -746,14 +746,16 @@ fn process_liveness(pid: u32) -> PreviousAppPidStatus {
 
 #[cfg(windows)]
 fn process_liveness(pid: u32) -> PreviousAppPidStatus {
-    use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, ERROR_INVALID_PARAMETER};
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, GetLastError, ERROR_INVALID_PARAMETER, WAIT_OBJECT_0, WAIT_TIMEOUT,
+    };
     use windows_sys::Win32::System::Threading::{
-        OpenProcess, WaitForSingleObject, SYNCHRONIZE, WAIT_OBJECT_0, WAIT_TIMEOUT,
+        OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE,
     };
 
     unsafe {
-        let handle = OpenProcess(SYNCHRONIZE, 0, pid);
-        if handle == 0 {
+        let handle = OpenProcess(PROCESS_SYNCHRONIZE, 0, pid);
+        if handle.is_null() {
             return if GetLastError() == ERROR_INVALID_PARAMETER {
                 PreviousAppPidStatus::Dead
             } else {
