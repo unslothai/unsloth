@@ -34,7 +34,10 @@ import {
 import { extractText, getDocumentProxy } from "unpdf";
 import { toast } from "sonner";
 import { StudioWebSpeechDictationAdapter } from "./adapters/studio-web-speech-dictation-adapter";
-import { createOpenAIStreamAdapter } from "./api/chat-adapter";
+import {
+  ThreadAutosaveHandle,
+  createOpenAIStreamAdapter,
+} from "./api/chat-adapter";
 import {
   loadConnectionsEnabled,
   loadExternalProviders,
@@ -1132,6 +1135,13 @@ function ThreadBackendAutosave({
 }): ReactElement | null {
   const aui = useAui();
   const saveChainRef = useRef(Promise.resolve());
+  const pendingFirstSavesRef = useRef(new Map<string, Promise<void>>());
+
+  const reportAutosaveError = useCallback((error: unknown): void => {
+    if (!isExpectedBackgroundChatStorageError(error)) {
+      console.error("Failed to autosave chat thread", error);
+    }
+  }, []);
 
   const saveThread = useCallback(
     async (threadId: string): Promise<void> => {
@@ -1173,14 +1183,30 @@ function ThreadBackendAutosave({
     (threadId: string): void => {
       saveChainRef.current = saveChainRef.current
         .catch(() => {})
-        .then(() => saveThread(threadId))
-        .catch((error) => {
-          if (!isExpectedBackgroundChatStorageError(error)) {
-            console.error("Failed to autosave chat thread", error);
-          }
-        });
+        .then(async () => {
+          await pendingFirstSavesRef.current.get(threadId);
+          await saveThread(threadId);
+        })
+        .catch(reportAutosaveError);
     },
-    [saveThread],
+    [reportAutosaveError, saveThread],
+  );
+
+  const saveFirstThreadSnapshot = useCallback(
+    (threadId: string): void => {
+      if (pendingFirstSavesRef.current.has(threadId)) {
+        return;
+      }
+
+      const promise = saveThread(threadId)
+        .catch(reportAutosaveError)
+        .finally(() => {
+          pendingFirstSavesRef.current.delete(threadId);
+        });
+      pendingFirstSavesRef.current.set(threadId, promise);
+      ThreadAutosaveHandle.registerFirstSave(threadId, promise);
+    },
+    [reportAutosaveError, saveThread],
   );
 
   useAuiEvent("thread.runEnd", ({ threadId }) => {
@@ -1188,6 +1214,13 @@ function ThreadBackendAutosave({
   });
 
   useAuiEvent("thread.runStart", ({ threadId }) => {
+    const runtime = aui.threads().__internal_getAssistantRuntime?.();
+    const { remoteId } =
+      runtime?.threads.getItemById(threadId).getState() ?? {};
+    if (!remoteId) {
+      saveFirstThreadSnapshot(threadId);
+      return;
+    }
     queueSave(threadId);
   });
 
