@@ -1433,6 +1433,8 @@ AnthropicContentBlock = Union[
 
 def _anthropic_content_to_system_text(content: Any) -> str:
     """Convert misplaced system message content into Anthropic system text."""
+    if content is None:  # null content must not become the literal "None"
+        return ""
     if isinstance(content, str):
         return content
     if isinstance(content, list):
@@ -1443,7 +1445,8 @@ def _anthropic_content_to_system_text(content: Any) -> str:
                 if isinstance(text, str):
                     parts.append(text)
                     continue
-            parts.append(str(block))
+            if block is not None:
+                parts.append(str(block))
         return "\n\n".join(part for part in parts if part)
     return str(content)
 

@@ -103,6 +103,18 @@ class TestAnthropicModels:
         assert req.system == "Base instructions.\n\nAdditional instructions."
         assert [msg.role for msg in req.messages] == ["user", "assistant"]
 
+    def test_system_role_message_with_null_content_ignored(self):
+        req = AnthropicMessagesRequest(
+            max_tokens = 50,
+            system = "Base.",
+            messages = [
+                {"role": "system", "content": None},
+                {"role": "user", "content": "Hi"},
+            ],
+        )
+        assert req.system == "Base."  # not "Base.\n\nNone"
+        assert [msg.role for msg in req.messages] == ["user"]
+
     def test_tools_field_parses(self):
         req = AnthropicMessagesRequest(
             max_tokens = 100,
