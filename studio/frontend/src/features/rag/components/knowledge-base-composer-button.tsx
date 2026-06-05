@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { CheckIcon, LibraryBigIcon } from "lucide-react";
+import { CheckIcon, LibraryBigIcon, XIcon } from "lucide-react";
 import { type FC, useCallback, useEffect, useState } from "react";
 
 import {
@@ -19,7 +19,7 @@ import { listKnowledgeBases } from "../api/rag-api";
 import type { KnowledgeBase } from "../types/rag";
 import { KnowledgeBaseDialog } from "./knowledge-base-dialog";
 
-// Matches the Thinking/MCP pill chevron so the affordance reads the same.
+// Matches the Thinking/MCP pill chevron.
 const ArrowDownStandardIcon: FC<{ className?: string }> = ({ className }) => (
   <svg
     className={className}
@@ -37,10 +37,9 @@ const ArrowDownStandardIcon: FC<{ className?: string }> = ({ className }) => (
 );
 
 /**
- * Composer dropdown that picks the retrieval source (this thread's documents or
- * a saved knowledge base) and links out to "Manage knowledge bases". Mirrors the
- * MCP composer button so the two read as siblings. Only rendered when retrieval
- * is on and the loaded model can run search_knowledge_base.
+ * Composer dropdown that picks the retrieval source (this thread's documents or a
+ * saved knowledge base) and links to "Manage knowledge bases". Only rendered when
+ * retrieval is on and the loaded model can run search_knowledge_base.
  */
 export function KnowledgeBaseComposerButton({
   side = "bottom",
@@ -48,6 +47,7 @@ export function KnowledgeBaseComposerButton({
   side?: "top" | "bottom";
 } = {}) {
   const ragEnabled = useChatRuntimeStore((s) => s.ragEnabled);
+  const setRagEnabled = useChatRuntimeStore((s) => s.setRagEnabled);
   const ragAvailable = useRagToolAvailable();
   const ragSource = useChatRuntimeStore((s) => s.ragSource);
   const setRagSource = useChatRuntimeStore((s) => s.setRagSource);
@@ -62,21 +62,21 @@ export function KnowledgeBaseComposerButton({
       const rows = await listKnowledgeBases();
       setKbs(rows);
     } catch {
-      // Keep prior state if the list call fails.
+      // Keep prior state on failure.
     } finally {
       setKbsLoaded(true);
     }
   }, []);
 
-  // Load on mount and whenever the menu opens, so newly created KBs show up.
+  // Load on mount so newly created KBs show up.
   useEffect(() => {
     void refresh();
   }, [refresh]);
 
-  // If the selected KB was deleted, fall back to thread source so we never send
-  // a stale kb_id. Gate on kbsLoaded (not kbs.length): deleting the *last* KB
-  // empties the list, and a length>0 guard would then skip the reset and leave
-  // the source stuck on a ghost KB (no Add Files, retrieval misses).
+  // If the selected KB was deleted, fall back to thread source so we never send a
+  // stale kb_id. Gate on kbsLoaded (not kbs.length): deleting the *last* KB empties
+  // the list, so a length>0 guard would skip the reset and leave the source stuck
+  // on a ghost KB.
   useEffect(() => {
     if (
       kbsLoaded &&
@@ -87,9 +87,8 @@ export function KnowledgeBaseComposerButton({
     }
   }, [kbs, kbsLoaded, ragSource, setRagSource]);
 
-  // Mirrors MCP: this pill only exists while the feature is on (RAG enabled and
-  // the loaded model can run search_knowledge_base), so when shown it always
-  // reads as active. RAG is toggled on/off from the composer "+" menu.
+  // Only shown while the feature is on (RAG enabled and the model can run
+  // search_knowledge_base), so when visible it always reads as active.
   if (!ragEnabled || !ragAvailable) return null;
 
   return (
@@ -108,7 +107,22 @@ export function KnowledgeBaseComposerButton({
             data-active="true"
             aria-label="Retrieval source"
           >
-            <LibraryBigIcon className="size-[15px]" />
+            {/* Icon doubles as an off switch: on hover it swaps to an X (shared
+                pill CSS); clicking it turns RAG off without opening the menu. */}
+            <span
+              role="button"
+              aria-label="Turn off retrieval"
+              tabIndex={-1}
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation();
+                setRagEnabled(false);
+              }}
+              className="composer-pill-glyph cursor-pointer"
+            >
+              <LibraryBigIcon className="size-[15px]" />
+              <XIcon className="composer-pill-x" />
+            </span>
             <span>RAG</span>
             <ArrowDownStandardIcon className="composer-pill-caret size-[15px]" />
           </button>
@@ -166,7 +180,7 @@ export function KnowledgeBaseComposerButton({
         open={dialogOpen}
         onOpenChange={(next) => {
           setDialogOpen(next);
-          // Resync after creating / editing / deleting KBs.
+          // Resync after KB edits.
           if (!next) void refresh();
         }}
       />
