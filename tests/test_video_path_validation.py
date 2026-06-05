@@ -521,6 +521,22 @@ def test_data_uri_skipped(check_dataset_for_missing_videos):
     assert check_dataset_for_missing_videos(ds) == []
 
 
+def test_tuple_content_entries_checked(check_dataset_for_missing_videos):
+    """Message content stored as a tuple must be validated the same as a list."""
+    ds = [
+        {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": ({"type": "video", "video": "/nonexistent/tuple.mp4"},),
+                }
+            ]
+        }
+    ]
+    with pytest.raises(FileNotFoundError):
+        check_dataset_for_missing_videos(ds)
+
+
 def test_duplicate_missing_deduped_in_warn_mode(check_dataset_for_missing_videos):
     """raise_error=False must return each missing path once, not once per row."""
     ds = _make_video_dataset("/nonexistent/dup.mp4", "/nonexistent/dup.mp4")

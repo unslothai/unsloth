@@ -1911,7 +1911,7 @@ def check_dataset_for_missing_videos(
                 if not isinstance(msg, dict):
                     continue
                 content = msg.get("content", [])
-                if not isinstance(content, list):
+                if not isinstance(content, (list, tuple)):
                     continue
                 for item in content:
                     if not isinstance(item, dict) or item.get("type") != "video":
