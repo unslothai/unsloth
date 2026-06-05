@@ -1642,6 +1642,7 @@ class FastBaseModel:
             UNSLOTH_QUANTIZE_ACTIVATIONS,
             patch_lora_for_int8_activations,
         )
+
         if UNSLOTH_QUANTIZE_ACTIVATIONS:
             model = patch_lora_for_int8_activations(model)
 

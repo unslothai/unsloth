@@ -290,15 +290,26 @@ UNSLOTH_QUANTIZE_ACTIVATIONS: bool = False
 # model_type values that go through Unsloth's custom LoRA_MLP kernel.
 # INT8 compression is handled there; the PEFT-path patch must be skipped for
 # these to avoid double-patching.
-_LORA_MLP_KERNEL_MODEL_TYPES: frozenset = frozenset({
-    "llama", "mistral", "qwen2", "gemma", "gemma2",
-    "cohere", "granite", "qwen3", "falcon_h1", "qwen3moe", "qwen3_5",
-})
+_LORA_MLP_KERNEL_MODEL_TYPES: frozenset = frozenset(
+    {
+        "llama",
+        "mistral",
+        "qwen2",
+        "gemma",
+        "gemma2",
+        "cohere",
+        "granite",
+        "qwen3",
+        "falcon_h1",
+        "qwen3moe",
+        "qwen3_5",
+    }
+)
 
 
 def quant_act(x: torch.Tensor):
     """Per-row INT8 quantisation for storing activations in the backward pass."""
-    scale = x.abs().amax(dim=-1, keepdim=True).clamp(min=1e-8).to(x.dtype)
+    scale = x.abs().amax(dim = -1, keepdim = True).clamp(min = 1e-8).to(x.dtype)
     x_q = (x.float() / scale.float()).round().clamp(-128, 127).to(torch.int8)
     return x_q, scale
 
@@ -356,7 +367,7 @@ def patch_lora_for_int8_activations(model) -> object:
             "checkpointing is enabled — activations are recomputed rather than "
             "stored, so there is nothing to compress.",
             UserWarning,
-            stacklevel=2,
+            stacklevel = 2,
         )
         return model
 
@@ -395,6 +406,8 @@ def patch_lora_for_int8_activations(model) -> object:
             f"(model_type={model_type!r})."
         )
     return model
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 
 
