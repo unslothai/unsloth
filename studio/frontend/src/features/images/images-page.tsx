@@ -16,7 +16,14 @@ import { Slider } from "@/components/ui/slider";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "@/lib/toast";
-import { PaintBrush02Icon, SparklesIcon, GpuIcon } from "@hugeicons/core-free-icons";
+import {
+  Add01Icon,
+  Delete02Icon,
+  FileImageIcon,
+  PaintBrush02Icon,
+  SparklesIcon,
+  GpuIcon,
+} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   fetchDiffusionStatus,
@@ -144,6 +151,23 @@ const CURATED_MODELS: Array<{
 const DEFAULT_PRESET = CURATED_MODELS[0];
 
 type DiffusionOffloadPolicySelection = "auto" | DiffusionOffloadPolicy;
+type GenerationTask = "auto" | "text_to_image" | "image_to_image" | "edit" | "inpaint";
+type ReferenceImage = {
+  id: string;
+  name: string;
+  b64: string;
+  previewUrl: string;
+  width: number;
+  height: number;
+};
+
+const GENERATION_TASKS: Array<{ value: GenerationTask; label: string }> = [
+  { value: "auto", label: "Auto" },
+  { value: "text_to_image", label: "Text" },
+  { value: "image_to_image", label: "Image" },
+  { value: "edit", label: "Edit" },
+  { value: "inpaint", label: "Inpaint" },
+];
 
 const OFFLOAD_POLICY_OPTIONS: Array<{
   value: DiffusionOffloadPolicySelection;
@@ -185,6 +209,30 @@ const RESOLUTION_PRESETS: Array<{ label: string; w: number; h: number }> = [
   { label: "Landscape 1216x832", w: 1216, h: 832 },
 ];
 
+function readReferenceImage(file: File): Promise<ReferenceImage> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error(`Could not read ${file.name}`));
+    reader.onload = () => {
+      const dataUrl = String(reader.result || "");
+      const image = new Image();
+      image.onerror = () => reject(new Error(`${file.name} is not a valid image`));
+      image.onload = () => {
+        resolve({
+          id: `${file.name}-${file.lastModified}-${file.size}-${crypto.randomUUID()}`,
+          name: file.name,
+          b64: dataUrl,
+          previewUrl: URL.createObjectURL(file),
+          width: image.naturalWidth,
+          height: image.naturalHeight,
+        });
+      };
+      image.src = dataUrl;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
 export function ImagesPage() {
   const [status, setStatus] = useState<DiffusionStatus | null>(null);
   const [refreshingStatus, setRefreshingStatus] = useState(false);
@@ -203,6 +251,9 @@ export function ImagesPage() {
 
   const [prompt, setPrompt] = useState("a tiny ginger sloth coding in a sunlit treehouse, photorealistic");
   const [negativePrompt, setNegativePrompt] = useState("");
+  const [generationTask, setGenerationTask] = useState<GenerationTask>("auto");
+  const [referenceImages, setReferenceImages] = useState<ReferenceImage[]>([]);
+  const [strength, setStrength] = useState(0.6);
   const [steps, setSteps] = useState(DEFAULT_PRESET.default_steps);
   const [guidance, setGuidance] = useState(DEFAULT_PRESET.default_guidance);
   const [resolutionIdx, setResolutionIdx] = useState(0);
@@ -210,6 +261,8 @@ export function ImagesPage() {
 
   const [results, setResults] = useState<DiffusionGenerateResponse[]>([]);
   const lastErrorRef = useRef<string | null>(null);
+  const imageInputRef = useRef<HTMLInputElement | null>(null);
+  const referenceImagesRef = useRef<ReferenceImage[]>([]);
 
   const preset = CURATED_MODELS[presetIndex] ?? DEFAULT_PRESET;
   const resolution = RESOLUTION_PRESETS[resolutionIdx];
@@ -261,6 +314,18 @@ export function ImagesPage() {
     }, 2000);
     return () => window.clearInterval(id);
   }, [status?.is_loading, fetchAndUpdateStatus]);
+
+  useEffect(() => {
+    referenceImagesRef.current = referenceImages;
+  }, [referenceImages]);
+
+  useEffect(() => {
+    return () => {
+      for (const image of referenceImagesRef.current) {
+        URL.revokeObjectURL(image.previewUrl);
+      }
+    };
+  }, []);
 
   const handleLoad = useCallback(async () => {
     setBusy("loading");
@@ -370,6 +435,37 @@ export function ImagesPage() {
     }
   }, [refreshStatus]);
 
+  const handleReferenceFiles = useCallback(async (files: FileList | File[]) => {
+    const selected = Array.from(files).filter((file) => file.type.startsWith("image/"));
+    if (selected.length === 0) return;
+    try {
+      const next = await Promise.all(selected.slice(0, 8).map(readReferenceImage));
+      setReferenceImages((prev) => {
+        const merged = [...prev, ...next].slice(0, 8);
+        for (const image of [...prev, ...next].slice(8)) {
+          URL.revokeObjectURL(image.previewUrl);
+        }
+        return merged;
+      });
+    } catch (err) {
+      toast.error("Could not add reference image", {
+        description: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      if (imageInputRef.current) {
+        imageInputRef.current.value = "";
+      }
+    }
+  }, []);
+
+  const removeReferenceImage = useCallback((id: string) => {
+    setReferenceImages((prev) => {
+      const removed = prev.find((image) => image.id === id);
+      if (removed) URL.revokeObjectURL(removed.previewUrl);
+      return prev.filter((image) => image.id !== id);
+    });
+  }, []);
+
   const handleGenerate = useCallback(async () => {
     if (!prompt.trim()) {
       toast.error("Prompt is empty");
@@ -416,9 +512,21 @@ export function ImagesPage() {
         const SAFE_MIN = -SAFE_MAX;
         parsedSeed = big >= SAFE_MIN && big <= SAFE_MAX ? Number(big) : big;
       }
+      const activeReferenceImages =
+        generationTask === "text_to_image" ? [] : referenceImages;
+      const imageB64s = activeReferenceImages.map((image) => image.b64);
       const out = await generateDiffusionImage({
         prompt,
         negative_prompt: negativePrompt.trim() || undefined,
+        task: generationTask,
+        image_b64: imageB64s.length === 1 ? imageB64s[0] : undefined,
+        images_b64: imageB64s.length > 1 ? imageB64s : undefined,
+        strength:
+          imageB64s.length > 0 &&
+          generationTask !== "text_to_image" &&
+          generationTask !== "edit"
+            ? strength
+            : undefined,
         num_inference_steps: steps,
         guidance_scale: guidance,
         width: resolution.w,
@@ -433,7 +541,17 @@ export function ImagesPage() {
     } finally {
       setBusy("idle");
     }
-  }, [prompt, negativePrompt, steps, guidance, resolution, seed]);
+  }, [
+    prompt,
+    negativePrompt,
+    generationTask,
+    referenceImages,
+    strength,
+    steps,
+    guidance,
+    resolution,
+    seed,
+  ]);
 
   const statusLabel = useMemo(() => {
     if (!status) return refreshingStatus ? "Checking..." : "Not loaded";
@@ -687,6 +805,109 @@ export function ImagesPage() {
             </p>
           )}
 
+          <div className="flex flex-col gap-2 rounded-md border border-border p-3">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <Label>Mode</Label>
+              <div className="grid grid-cols-5 rounded-md border border-border bg-muted/30 p-1">
+                {GENERATION_TASKS.map((task) => (
+                  <button
+                    key={task.value}
+                    type="button"
+                    onClick={() => setGenerationTask(task.value)}
+                    className={[
+                      "min-h-8 px-2 text-xs font-medium transition",
+                      generationTask === task.value
+                        ? "rounded bg-background text-foreground shadow-sm"
+                        : "text-muted-foreground hover:text-foreground",
+                    ].join(" ")}
+                  >
+                    {task.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <input
+              ref={imageInputRef}
+              type="file"
+              accept="image/*"
+              multiple
+              className="hidden"
+              onChange={(event) => {
+                if (event.target.files) void handleReferenceFiles(event.target.files);
+              }}
+            />
+            <div className="flex flex-col gap-2">
+              <div className="flex items-center justify-between gap-2">
+                <Label>Reference images</Label>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => imageInputRef.current?.click()}
+                >
+                  <HugeiconsIcon icon={Add01Icon} className="mr-2 size-4" strokeWidth={1.5} />
+                  Add
+                </Button>
+              </div>
+              {referenceImages.length > 0 ? (
+                <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                  {referenceImages.map((image) => (
+                    <div
+                      key={image.id}
+                      className="relative overflow-hidden rounded-md border border-border bg-muted/20"
+                    >
+                      <img
+                        src={image.previewUrl}
+                        alt={image.name}
+                        className="aspect-square w-full object-cover"
+                      />
+                      <button
+                        type="button"
+                        aria-label={`Remove ${image.name}`}
+                        onClick={() => removeReferenceImage(image.id)}
+                        className="absolute right-1 top-1 grid size-7 place-items-center rounded bg-background/90 text-foreground shadow-sm hover:bg-background"
+                      >
+                        <HugeiconsIcon icon={Delete02Icon} className="size-4" strokeWidth={1.5} />
+                      </button>
+                      <div className="flex items-center gap-1 px-2 py-1 text-[11px] text-muted-foreground">
+                        <HugeiconsIcon icon={FileImageIcon} className="size-3.5" strokeWidth={1.5} />
+                        <span className="truncate">
+                          {image.width}x{image.height}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => imageInputRef.current?.click()}
+                  className="flex min-h-24 items-center justify-center rounded-md border border-dashed border-border bg-muted/20 text-sm text-muted-foreground hover:bg-muted/30 hover:text-foreground"
+                >
+                  <HugeiconsIcon icon={FileImageIcon} className="mr-2 size-4" strokeWidth={1.5} />
+                  Add a source image
+                </button>
+              )}
+            </div>
+
+            {generationTask !== "text_to_image" &&
+            generationTask !== "edit" &&
+            referenceImages.length > 0 ? (
+              <div className="flex flex-col gap-1">
+                <Label>Strength: {strength.toFixed(2)}</Label>
+                <Slider
+                  aria-label="Image strength"
+                  min={0}
+                  max={1}
+                  step={0.01}
+                  value={[strength]}
+                  onValueChange={(v) => setStrength(v[0] ?? strength)}
+                />
+              </div>
+            ) : null}
+          </div>
+
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
             <div className="flex flex-col gap-1">
               <Label>Resolution</Label>
@@ -762,32 +983,37 @@ export function ImagesPage() {
           description="Most recent first."
         >
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            {results.map((r, idx) => (
-              <figure key={idx} className="flex flex-col gap-2">
-                <img
-                  src={`data:${r.image_mime};base64,${r.image_b64}`}
-                  alt={`Generated image ${idx + 1}`}
-                  // h-auto + object-contain so portrait / landscape
-                  // outputs render at their true aspect ratio instead
-                  // of being cropped into a square thumbnail.
-                  className="h-auto w-full rounded-md border border-border object-contain"
-                  data-testid="diffusion-result-image"
-                />
-                <figcaption className="text-xs text-muted-foreground">
-                  {r.width}x{r.height} - {r.num_inference_steps} steps - g={(r.guidance_scale ?? 0).toFixed(1)}
-                  {/* Prefer seed_str (full uint64 precision) since the
-                       numeric seed gets rounded by JSON.parse above
-                       Number.MAX_SAFE_INTEGER and would otherwise
-                       display a value that does not reproduce. */}
-                  {r.seed_str
-                    ? ` - seed ${r.seed_str}`
-                    : r.seed !== null && r.seed !== undefined
-                    ? ` - seed ${r.seed}`
-                    : ""} -
-                  {` ${(r.duration_ms / 1000).toFixed(1)}s`}
-                </figcaption>
-              </figure>
-            ))}
+            {results.flatMap((r, idx) => {
+              const renderedImages =
+                r.images_b64 && r.images_b64.length > 0 ? r.images_b64 : [r.image_b64];
+              return renderedImages.map((imageB64, imageIdx) => (
+                <figure key={`${idx}-${imageIdx}`} className="flex flex-col gap-2">
+                  <img
+                    src={`data:${r.image_mime};base64,${imageB64}`}
+                    alt={`Generated image ${idx + 1}${imageIdx > 0 ? ` layer ${imageIdx + 1}` : ""}`}
+                    // h-auto + object-contain so portrait / landscape
+                    // outputs render at their true aspect ratio instead
+                    // of being cropped into a square thumbnail.
+                    className="h-auto w-full rounded-md border border-border object-contain"
+                    data-testid="diffusion-result-image"
+                  />
+                  <figcaption className="text-xs text-muted-foreground">
+                    {r.width}x{r.height} - {r.num_inference_steps} steps - g={(r.guidance_scale ?? 0).toFixed(1)}
+                    {imageIdx > 0 ? ` - output ${imageIdx + 1}` : ""}
+                    {/* Prefer seed_str (full uint64 precision) since the
+                         numeric seed gets rounded by JSON.parse above
+                         Number.MAX_SAFE_INTEGER and would otherwise
+                         display a value that does not reproduce. */}
+                    {r.seed_str
+                      ? ` - seed ${r.seed_str}`
+                      : r.seed !== null && r.seed !== undefined
+                      ? ` - seed ${r.seed}`
+                      : ""} -
+                    {` ${(r.duration_ms / 1000).toFixed(1)}s`}
+                  </figcaption>
+                </figure>
+              ));
+            })}
           </div>
         </SectionCard>
       )}

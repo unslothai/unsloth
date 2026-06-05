@@ -18,6 +18,8 @@ datasets / data_recipe / export and would drag in heavy deps
 from __future__ import annotations
 
 import importlib.util
+import base64
+import io
 import sys
 from pathlib import Path
 
@@ -442,6 +444,41 @@ def test_image_generate_v2_contract_normalizes_inputs_and_parameters(app_with_st
     assert body["effective_parameters"]["seed"] == "123"
     assert body["metrics"]["duration_ms"] >= 0
     assert body["warnings"] == []
+
+
+def test_image_generate_forwards_image_task_and_strength(app_with_stub):
+    app, stub = app_with_stub
+    c = TestClient(app)
+    stub._loaded = True
+    stub._repo = "Qwen/Qwen-Image"
+    stub._media_kind = "image"
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (16, 16), color = (10, 20, 30)).save(buffer, format = "PNG")
+    image_b64 = base64.b64encode(buffer.getvalue()).decode("ascii")
+
+    r = c.post(
+        "/api/inference/images/generate",
+        json = {
+            "prompt": "turn this into a product render",
+            "task": "image_to_image",
+            "image_b64": image_b64,
+            "strength": 0.42,
+            "width": 128,
+            "height": 128,
+        },
+    )
+
+    assert r.status_code == 200, r.text
+    call = stub.calls[-1]
+    assert call["op"] == "generate"
+    assert call["image_task"] == "image_to_image"
+    assert call["strength"] == 0.42
+    assert len(call["input_images"]) == 1
+    assert call["input_images"][0].size == (16, 16)
+    body = r.json()
+    assert body["effective_parameters"]["task"] == "image_to_image"
+    assert body["effective_parameters"]["strength"] == 0.42
 
 
 def test_video_generate_v2_contract_normalizes_parameters(app_with_stub, monkeypatch):

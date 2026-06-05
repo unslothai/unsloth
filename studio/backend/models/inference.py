@@ -145,6 +145,7 @@ class DiffusionImageParametersSpec(BaseModel):
     height: Optional[int] = Field(None, ge = 64, le = 2048)
     num_inference_steps: Optional[int] = Field(None, ge = 1, le = 200)
     guidance_scale: Optional[float] = Field(None, ge = 0.0, le = 20.0)
+    strength: Optional[float] = Field(None, ge = 0.0, le = 1.0)
     seed: Optional[int] = Field(None, ge = -(2**63), le = (2**64) - 1)
     batch_size: Optional[int] = Field(None, ge = 1, le = 16)
     num_outputs: Optional[int] = Field(None, ge = 1, le = 16)
@@ -2246,6 +2247,12 @@ class DiffusionGenerateRequest(BaseModel):
         None,
         description = "Forward-compatible model-specific image generation options",
     )
+    task: Optional[
+        Literal["auto", "text_to_image", "image_to_image", "edit", "inpaint"]
+    ] = Field(
+        None,
+        description = "Generation task. auto chooses from the supplied inputs.",
+    )
     image_b64: Optional[str] = Field(
         None,
         max_length = 50_000_000,
@@ -2263,8 +2270,20 @@ class DiffusionGenerateRequest(BaseModel):
             "pipelines such as QwenImageEditPlusPipeline. Data URLs are accepted."
         ),
     )
+    mask_b64: Optional[str] = Field(
+        None,
+        max_length = 50_000_000,
+        description = "Optional base64 mask image for inpaint-capable pipelines.",
+    )
+    masks_b64: Optional[List[str]] = Field(
+        None,
+        min_length = 1,
+        max_length = 8,
+        description = "Optional base64 mask images. Data URLs are accepted.",
+    )
     num_inference_steps: Optional[int] = Field(None, ge = 1, le = 200)
     guidance_scale: Optional[float] = Field(None, ge = 0.0, le = 20.0)
+    strength: Optional[float] = Field(None, ge = 0.0, le = 1.0)
     width: Optional[int] = Field(None, ge = 64, le = 2048)
     height: Optional[int] = Field(None, ge = 64, le = 2048)
     seed: Optional[int] = Field(
@@ -2287,6 +2306,8 @@ class DiffusionGenerateRequest(BaseModel):
     def _no_duplicate_image_inputs(self):
         if self.image_b64 is not None and self.images_b64 is not None:
             raise ValueError("Pass either image_b64 or images_b64, not both")
+        if self.mask_b64 is not None and self.masks_b64 is not None:
+            raise ValueError("Pass either mask_b64 or masks_b64, not both")
         has_prompt_input = bool(
             self.inputs
             and any(

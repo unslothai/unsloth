@@ -193,6 +193,9 @@ class DiffusionFamily:
     default_frame_rate: Optional[float] = None
     default_negative_prompt: Optional[str] = None
     requires_image_input: bool = False
+    image_input_mode: str = "none"
+    image_task_pipelines: dict[str, str] = field(default_factory = dict)
+    default_image_strength: Optional[float] = None
     default_call_kwargs: dict[str, Any] = field(default_factory = dict)
     supports_gguf_single_file: bool = True
     # True for transformers whose activations overflow the float16 range and
@@ -275,6 +278,8 @@ class DiffusionSamplingContract:
     default_width: int
     default_height: int
     requires_image_input: bool
+    image_input_mode: str
+    image_tasks: tuple[str, ...]
     has_default_negative_prompt: bool
     default_call_kwargs: dict[str, Any]
 
@@ -299,6 +304,8 @@ class DiffusionSamplingContract:
             "default_width": self.default_width,
             "default_height": self.default_height,
             "requires_image_input": self.requires_image_input,
+            "image_input_mode": self.image_input_mode,
+            "image_tasks": list(self.image_tasks),
             "has_default_negative_prompt": self.has_default_negative_prompt,
             "default_call_kwargs": dict(self.default_call_kwargs),
         }
@@ -365,6 +372,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         base_repo = "black-forest-labs/FLUX.2-klein-4B",
         default_steps = 4,
         default_guidance_scale = 1.0,
+        image_input_mode = "optional",
         aliases = ("flux2-klein", "flux-2-klein", "flux.2.klein"),
     ),
     DiffusionFamily(
@@ -374,6 +382,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         base_repo = "black-forest-labs/FLUX.2-dev",
         default_steps = 50,
         default_guidance_scale = 4.0,
+        image_input_mode = "optional",
         aliases = ("flux2-dev", "flux-2-dev", "flux.2.dev"),
     ),
     DiffusionFamily(
@@ -384,6 +393,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         default_steps = 28,
         default_guidance_scale = 2.5,
         requires_image_input = True,
+        image_input_mode = "required",
         aliases = (
             "flux1-kontext",
             "flux1-kontext-dev",
@@ -425,6 +435,10 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         default_steps = 50,
         default_guidance_scale = 4.0,
         default_negative_prompt = "低分辨率，低画质，肢体畸形，手指畸形，画面过饱和，蜡像感，人脸无细节，过度光滑，画面具有AI感。构图混乱。文字模糊，扭曲。",
+        image_task_pipelines = {
+            "image_to_image": "QwenImageImg2ImgPipeline",
+        },
+        default_image_strength = 0.6,
         fp16_incompatible = True,
         aliases = ("qwenimage2512", "qwen_image_2512", "qwen-image-2512"),
     ),
@@ -439,6 +453,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         default_negative_prompt = " ",
         default_call_kwargs = {"guidance_scale": 1.0},
         requires_image_input = True,
+        image_input_mode = "required",
         fp16_incompatible = True,
         aliases = ("qwenimageedit2511", "qwen_image_edit_2511", "qwen-image-edit-2511"),
     ),
@@ -453,6 +468,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         default_negative_prompt = " ",
         default_call_kwargs = {"guidance_scale": 1.0},
         requires_image_input = True,
+        image_input_mode = "required",
         fp16_incompatible = True,
         aliases = ("qwenimageedit2509", "qwen_image_edit_2509", "qwen-image-edit-2509"),
     ),
@@ -466,6 +482,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         default_guidance_scale = 4.0,
         default_negative_prompt = " ",
         requires_image_input = True,
+        image_input_mode = "required",
         fp16_incompatible = True,
         aliases = ("qwenimageedit", "qwen_image_edit", "qwen-image-edit"),
     ),
@@ -486,6 +503,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             "use_en_prompt": True,
         },
         requires_image_input = True,
+        image_input_mode = "required",
         fp16_incompatible = True,
         aliases = ("qwenimagelayered", "qwen_image_layered", "qwen-image-layered"),
     ),
@@ -498,6 +516,10 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         default_steps = 50,
         default_guidance_scale = 4.0,
         default_negative_prompt = " ",
+        image_task_pipelines = {
+            "image_to_image": "QwenImageImg2ImgPipeline",
+        },
+        default_image_strength = 0.6,
         fp16_incompatible = True,
         aliases = ("qwenimage", "qwen_image"),
     ),
@@ -508,6 +530,11 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         base_repo = "Tongyi-MAI/Z-Image-Turbo",
         default_steps = 9,
         default_guidance_scale = 0.0,
+        image_task_pipelines = {
+            "image_to_image": "ZImageImg2ImgPipeline",
+            "inpaint": "ZImageInpaintPipeline",
+        },
+        default_image_strength = 0.6,
         fp16_incompatible = True,
         aliases = ("zimage-turbo", "z_image_turbo", "z-image-turbo"),
     ),
@@ -519,6 +546,11 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         default_steps = 50,
         default_guidance_scale = 4.0,
         default_call_kwargs = {"cfg_normalization": False},
+        image_task_pipelines = {
+            "image_to_image": "ZImageImg2ImgPipeline",
+            "inpaint": "ZImageInpaintPipeline",
+        },
+        default_image_strength = 0.6,
         fp16_incompatible = True,
         aliases = ("zimage", "z_image", "z-image"),
     ),
@@ -569,6 +601,44 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
     # family_override = "stable-diffusion-xl" via the route, which uses
     # the lookup in _FULL_REPO_FAMILIES.
 )
+
+
+_DIFFUSION_IMAGE_TASK_AUTO = "auto"
+_DIFFUSION_IMAGE_TASK_TEXT = "text_to_image"
+_DIFFUSION_IMAGE_TASK_IMAGE = "image_to_image"
+_DIFFUSION_IMAGE_TASK_EDIT = "edit"
+_DIFFUSION_IMAGE_TASK_INPAINT = "inpaint"
+_DIFFUSION_IMAGE_TASKS = {
+    _DIFFUSION_IMAGE_TASK_AUTO,
+    _DIFFUSION_IMAGE_TASK_TEXT,
+    _DIFFUSION_IMAGE_TASK_IMAGE,
+    _DIFFUSION_IMAGE_TASK_EDIT,
+    _DIFFUSION_IMAGE_TASK_INPAINT,
+}
+
+
+def _family_supports_image_input(fam: Optional[DiffusionFamily]) -> bool:
+    return bool(
+        fam is not None
+        and (
+            fam.requires_image_input
+            or fam.image_input_mode in ("optional", "required")
+            or fam.image_task_pipelines
+        )
+    )
+
+
+def _family_image_tasks(fam: Optional[DiffusionFamily]) -> tuple[str, ...]:
+    if fam is None or fam.media_kind != "image":
+        return (_DIFFUSION_IMAGE_TASK_TEXT,)
+    tasks: list[str] = [_DIFFUSION_IMAGE_TASK_TEXT]
+    if fam.image_input_mode in ("optional", "required") or fam.requires_image_input:
+        if "edit" in fam.name or "kontext" in fam.name:
+            tasks.append(_DIFFUSION_IMAGE_TASK_EDIT)
+        else:
+            tasks.append(_DIFFUSION_IMAGE_TASK_IMAGE)
+    tasks.extend(fam.image_task_pipelines.keys())
+    return tuple(dict.fromkeys(tasks))
 
 
 # Families available via family_override on the routes layer when the
@@ -1780,6 +1850,11 @@ def _public_diffusion_preset(preset: DiffusionLoadPreset) -> dict[str, Any]:
         "requires_image_input": bool(fam.requires_image_input)
         if fam is not None
         else False,
+        "image_input_mode": fam.image_input_mode if fam is not None else "none",
+        "image_tasks": list(_family_image_tasks(fam)),
+        "default_image_strength": (
+            fam.default_image_strength if fam is not None else None
+        ),
         "default_text_encoder_gguf_repo": (
             _preset_default_text_encoder_gguf_repo(fam) if fam is not None else None
         ),
@@ -1941,6 +2016,8 @@ def _maybe_apply_diffusion_memory_plan(
         requires_image_input = bool(family.requires_image_input)
         if family is not None
         else False,
+        image_input_mode = family.image_input_mode if family is not None else "none",
+        image_tasks = _family_image_tasks(family),
     )
     plan = select_diffusion_memory_plan(
         requested_mode = normalized_memory_mode,
@@ -2385,6 +2462,8 @@ def _build_sampling_contract(
         default_width = int(fam.default_width),
         default_height = int(fam.default_height),
         requires_image_input = bool(fam.requires_image_input),
+        image_input_mode = fam.image_input_mode,
+        image_tasks = _family_image_tasks(fam),
         has_default_negative_prompt = _family_has_default_negative_prompt(fam),
         default_call_kwargs = defaults.default_call_kwargs,
     )
@@ -2992,6 +3071,10 @@ def supported_families() -> list[dict[str, Any]]:
             "default_num_frames": fam.default_num_frames,
             "default_frame_rate": fam.default_frame_rate,
             "requires_image_input": fam.requires_image_input,
+            "image_input_mode": fam.image_input_mode,
+            "supports_image_input": _family_supports_image_input(fam),
+            "image_tasks": list(_family_image_tasks(fam)),
+            "default_image_strength": fam.default_image_strength,
             "supports_gguf_single_file": fam.supports_gguf_single_file,
         }
         for fam in _FAMILIES + _FULL_REPO_FAMILIES
@@ -4414,6 +4497,7 @@ class DiffusionBackend:
         self._memory_plan: Optional[dict[str, Any]] = None
         self._safetensors_quantization: Optional[str] = None
         self._safetensors_quantization_components: Optional[list[str]] = None
+        self._pipeline_variant_cache: dict[str, Any] = {}
         self._ltx2_latent_upsampler: Any = None
         self._ltx2_latent_upsampler_cache_key: Optional[tuple[Any, ...]] = None
         self._ltx2_distilled_lora_cache_key: Optional[tuple[Any, ...]] = None
@@ -5683,6 +5767,7 @@ class DiffusionBackend:
                         self._attention_backend_config = None
                         self._safetensors_quantization = None
                         self._safetensors_quantization_components = None
+                        self._pipeline_variant_cache = {}
                         self._load_timings = {}
                         self._prompt_embedding_cache_key = None
                         self._prompt_embedding_cache_value = None
@@ -6111,6 +6196,7 @@ class DiffusionBackend:
 
                 with self._lock:
                     self._pipe = pipe
+                    self._pipeline_variant_cache = {}
                     self._family = fam
                     self._repo_id = repo_id
                     self._diffusion_gguf_repo = (
@@ -6485,6 +6571,7 @@ class DiffusionBackend:
                 self._memory_plan = None
                 self._safetensors_quantization = None
                 self._safetensors_quantization_components = None
+                self._pipeline_variant_cache = {}
                 self._load_timings = {}
                 self._prompt_embedding_cache_key = None
                 self._prompt_embedding_cache_value = None
@@ -6688,12 +6775,152 @@ class DiffusionBackend:
             )
         call_kwargs.pop("negative_prompt", None)
 
+    def _get_pipeline_variant_unlocked(
+        self,
+        pipe: Any,
+        pipeline_class_name: str,
+    ) -> Any:
+        if type(pipe).__name__ == pipeline_class_name:
+            return pipe
+        with self._lock:
+            cached = self._pipeline_variant_cache.get(pipeline_class_name)
+            if cached is not None:
+                return cached
+
+        try:
+            import diffusers
+        except ModuleNotFoundError as exc:
+            raise RuntimeError(
+                "Diffusion image-to-image requires the diffusers runtime."
+            ) from exc
+        import inspect
+
+        pipeline_cls = getattr(diffusers, pipeline_class_name, None)
+        if pipeline_cls is None:
+            raise RuntimeError(
+                f"The installed diffusers package does not provide "
+                f"{pipeline_class_name}."
+            )
+        components = getattr(pipe, "components", None)
+        if not isinstance(components, dict):
+            raise RuntimeError(
+                f"{type(pipe).__name__} cannot be promoted to "
+                f"{pipeline_class_name}: pipeline components are unavailable."
+            )
+        sig = inspect.signature(pipeline_cls.__init__)
+        kwargs = {
+            name: components[name]
+            for name, parameter in sig.parameters.items()
+            if name != "self"
+            and name in components
+            and parameter.kind
+            in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+        }
+        missing = [
+            name
+            for name, parameter in sig.parameters.items()
+            if name != "self"
+            and parameter.default is inspect.Parameter.empty
+            and parameter.kind
+            in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+            and name not in kwargs
+        ]
+        if missing:
+            raise RuntimeError(
+                f"{pipeline_class_name} cannot be constructed from the loaded "
+                f"pipeline; missing component(s): {', '.join(missing)}."
+            )
+        variant = pipeline_cls(**kwargs)
+        execution_device = getattr(pipe, "_execution_device", None)
+        if execution_device is not None:
+            try:
+                setattr(variant, "_execution_device", execution_device)
+            except Exception:
+                pass
+        with self._lock:
+            self._pipeline_variant_cache[pipeline_class_name] = variant
+        return variant
+
+    def _resolve_image_pipeline_for_task_unlocked(
+        self,
+        *,
+        pipe: Any,
+        fam: Optional[DiffusionFamily],
+        requested_task: Optional[str],
+        input_images: list[Any],
+        mask_images: list[Any],
+    ) -> tuple[Any, str]:
+        raw_task = (requested_task or _DIFFUSION_IMAGE_TASK_AUTO).strip().lower()
+        task = {
+            "txt2img": _DIFFUSION_IMAGE_TASK_TEXT,
+            "text": _DIFFUSION_IMAGE_TASK_TEXT,
+            "img2img": _DIFFUSION_IMAGE_TASK_IMAGE,
+            "image": _DIFFUSION_IMAGE_TASK_IMAGE,
+            "image_edit": _DIFFUSION_IMAGE_TASK_EDIT,
+            "multi_image_edit": _DIFFUSION_IMAGE_TASK_EDIT,
+            "layered_image": _DIFFUSION_IMAGE_TASK_EDIT,
+        }.get(raw_task, raw_task)
+        if task not in _DIFFUSION_IMAGE_TASKS:
+            raise ValueError(
+                "task must be one of auto, text_to_image, image_to_image, "
+                "edit, or inpaint"
+            )
+        has_images = bool(input_images)
+        has_masks = bool(mask_images)
+        family_name = fam.name if fam is not None else type(pipe).__name__
+        if task == _DIFFUSION_IMAGE_TASK_AUTO:
+            if has_masks:
+                task = _DIFFUSION_IMAGE_TASK_INPAINT
+            elif has_images:
+                if fam is not None and fam.requires_image_input:
+                    task = (
+                        _DIFFUSION_IMAGE_TASK_EDIT
+                        if "edit" in fam.name or "kontext" in fam.name
+                        else _DIFFUSION_IMAGE_TASK_IMAGE
+                    )
+                else:
+                    task = _DIFFUSION_IMAGE_TASK_IMAGE
+            else:
+                task = _DIFFUSION_IMAGE_TASK_TEXT
+
+        if task == _DIFFUSION_IMAGE_TASK_TEXT:
+            if fam is not None and fam.requires_image_input:
+                raise RuntimeError(f"{fam.name} requires image input.")
+            if has_images or has_masks:
+                raise RuntimeError(
+                    "text_to_image does not accept reference images or masks; "
+                    "use auto, image_to_image, edit, or inpaint."
+                )
+            return pipe, task
+        if not has_images:
+            raise RuntimeError(f"{task} requires image input.")
+        if task == _DIFFUSION_IMAGE_TASK_INPAINT and not has_masks:
+            raise RuntimeError("inpaint requires a mask image.")
+
+        target_class_name: Optional[str] = None
+        if fam is not None:
+            target_class_name = fam.image_task_pipelines.get(task)
+        if target_class_name:
+            return (
+                self._get_pipeline_variant_unlocked(pipe, target_class_name),
+                task,
+            )
+        if _pipe_accepts_kwarg(pipe, "image"):
+            if task != _DIFFUSION_IMAGE_TASK_INPAINT or _pipe_accepts_kwarg(
+                pipe, "mask_image"
+            ):
+                return pipe, task
+        raise RuntimeError(f"{family_name} does not support {task}.")
+
     def generate_image(
         self,
         *,
         prompt: str,
         negative_prompt: Optional[str] = None,
         input_images: Optional[list[Any]] = None,
+        mask_images: Optional[list[Any]] = None,
+        image_task: Optional[str] = None,
+        strength: Optional[float] = None,
         num_inference_steps: Optional[int] = None,
         guidance_scale: Optional[float] = None,
         width: Optional[int] = None,
@@ -6722,6 +6949,9 @@ class DiffusionBackend:
                 prompt = prompt,
                 negative_prompt = negative_prompt,
                 input_images = input_images,
+                mask_images = mask_images,
+                image_task = image_task,
+                strength = strength,
                 num_inference_steps = num_inference_steps,
                 guidance_scale = guidance_scale,
                 width = width,
@@ -6735,6 +6965,9 @@ class DiffusionBackend:
         prompt: str,
         negative_prompt: Optional[str] = None,
         input_images: Optional[list[Any]] = None,
+        mask_images: Optional[list[Any]] = None,
+        image_task: Optional[str] = None,
+        strength: Optional[float] = None,
         num_inference_steps: Optional[int] = None,
         guidance_scale: Optional[float] = None,
         width: Optional[int] = None,
@@ -6811,14 +7044,22 @@ class DiffusionBackend:
         # message up front.
         if resolved_width % 8 or resolved_height % 8:
             raise ValueError("width and height must be multiples of 8")
-        if fam is not None and fam.requires_image_input:
-            if not input_images:
-                raise RuntimeError(f"{fam.name} requires image input.")
-        elif input_images:
-            raise RuntimeError(
-                f"{fam.name if fam is not None else 'This diffusion model'} "
-                "does not accept image input."
-            )
+        prepared_input_images = list(input_images or [])
+        prepared_mask_images = list(mask_images or [])
+        pipe, resolved_image_task = self._resolve_image_pipeline_for_task_unlocked(
+            pipe = pipe,
+            fam = fam,
+            requested_task = image_task,
+            input_images = prepared_input_images,
+            mask_images = prepared_mask_images,
+        )
+        if strength is not None and (strength < 0.0 or strength > 1.0):
+            raise ValueError("strength must be in [0, 1]")
+        resolved_strength = (
+            float(strength)
+            if strength is not None
+            else (fam.default_image_strength if fam is not None else None)
+        )
         generator = None
         if seed is not None:
             # Match the device of the pipeline so determinism holds
@@ -6857,9 +7098,8 @@ class DiffusionBackend:
                     if _pipe_accepts_kwarg(pipe, key)
                 }
             )
-        if input_images:
+        if prepared_input_images:
             if _pipe_accepts_kwarg(pipe, "image"):
-                prepared_input_images = list(input_images)
                 if fam is not None and fam.name == "qwen-image-layered":
                     prepared_input_images = [
                         image.convert("RGBA")
@@ -6877,6 +7117,24 @@ class DiffusionBackend:
                 raise RuntimeError(
                     f"{type(pipe).__name__} does not accept image input."
                 )
+        if prepared_mask_images:
+            if _pipe_accepts_kwarg(pipe, "mask_image"):
+                call_kwargs["mask_image"] = (
+                    prepared_mask_images[0]
+                    if len(prepared_mask_images) == 1
+                    else prepared_mask_images
+                )
+            else:
+                raise RuntimeError(
+                    f"{type(pipe).__name__} does not accept mask_image."
+                )
+        if (
+            resolved_image_task
+            in (_DIFFUSION_IMAGE_TASK_IMAGE, _DIFFUSION_IMAGE_TASK_INPAINT)
+            and resolved_strength is not None
+            and _pipe_accepts_kwarg(pipe, "strength")
+        ):
+            call_kwargs["strength"] = float(resolved_strength)
         guidance_kwarg = _guidance_kwarg_for_pipe(pipe, fam)
         if _pipe_accepts_kwarg(pipe, guidance_kwarg):
             call_kwargs[guidance_kwarg] = resolved_guidance

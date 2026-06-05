@@ -2597,6 +2597,37 @@ def _decode_diffusion_input_images(
     return decoded
 
 
+def _decode_diffusion_mask_images(
+    payload: DiffusionGenerateRequest,
+) -> Optional[list[Any]]:
+    encoded_images: list[str] = []
+    if payload.mask_b64 is not None:
+        encoded_images = [payload.mask_b64]
+    elif payload.masks_b64 is not None:
+        encoded_images = list(payload.masks_b64)
+    if not encoded_images:
+        return None
+
+    from PIL import Image
+
+    decoded = []
+    for index, encoded in enumerate(encoded_images):
+        value = encoded.strip()
+        if "," in value and value[:64].lower().startswith("data:"):
+            value = value.split(",", 1)[1]
+        try:
+            raw = base64.b64decode(value, validate = True)
+            image = Image.open(io.BytesIO(raw))
+            image.load()
+        except Exception as exc:
+            raise HTTPException(
+                status_code = 400,
+                detail = f"mask input {index + 1} is not a valid base64 image",
+            ) from exc
+        decoded.append(image.convert("L"))
+    return decoded
+
+
 def _first_component(
     payload: DiffusionLoadRequest,
     *names: str,
@@ -2830,7 +2861,17 @@ def _image_b64s_from_inputs(inputs: Optional[list[Any]]) -> list[str]:
         for item in inputs
         if item.type == "image"
         and item.b64
-        and item.role not in ("output", "generated")
+        and item.role not in ("output", "generated", "mask")
+    ]
+
+
+def _mask_b64s_from_inputs(inputs: Optional[list[Any]]) -> list[str]:
+    if not inputs:
+        return []
+    return [
+        item.b64
+        for item in inputs
+        if item.type == "image" and item.b64 and item.role == "mask"
     ]
 
 
@@ -2839,6 +2880,9 @@ class _NormalizedImageGenerate:
     prompt: str
     negative_prompt: Optional[str]
     input_images: Optional[list[Any]]
+    mask_images: Optional[list[Any]]
+    task: Optional[str]
+    strength: Optional[float]
     num_inference_steps: int
     guidance_scale: float
     width: int
@@ -2903,6 +2947,19 @@ def _normalize_diffusion_image_generate_request(
         input_images = _decode_diffusion_input_images(decode_payload)
     else:
         input_images = _decode_diffusion_input_images(payload)
+    mask_b64s = _mask_b64s_from_inputs(payload.inputs)
+    if mask_b64s:
+        decode_payload = payload.model_copy(
+            update = {"mask_b64": None, "masks_b64": mask_b64s}
+        )
+        mask_images = _decode_diffusion_mask_images(decode_payload)
+    else:
+        mask_images = _decode_diffusion_mask_images(payload)
+    requested_strength = (
+        params.strength
+        if params is not None and params.strength is not None
+        else payload.strength
+    )
     return _NormalizedImageGenerate(
         prompt = prompt,
         negative_prompt = (
@@ -2911,6 +2968,9 @@ def _normalize_diffusion_image_generate_request(
             else payload.negative_prompt
         ),
         input_images = input_images,
+        mask_images = mask_images,
+        task = payload.task,
+        strength = requested_strength,
         num_inference_steps = int(requested_steps),
         guidance_scale = float(requested_guidance),
         width = int(requested_width),
@@ -3074,7 +3134,10 @@ def _diffusion_capabilities(*, media_kind: str) -> dict[str, Any]:
             else None
         ),
         "tasks": (
-            ["text_to_image", "image_edit", "multi_image_edit", "layered_image"]
+            (
+                (status.get("sampling_contract") or {}).get("image_tasks")
+                or ["text_to_image", "image_to_image", "edit", "inpaint"]
+            )
             if media_kind == "image"
             else ["text_to_video", "image_to_video", "video_to_video"]
         ),
@@ -3114,6 +3177,12 @@ def _diffusion_capabilities(*, media_kind: str) -> dict[str, Any]:
                 "min": 0,
                 "max": 20,
                 "default": defaults.get("guidance_scale"),
+            },
+            "strength": {
+                "type": "float",
+                "min": 0,
+                "max": 1,
+                "default": 0.6,
             },
             "seed": {"type": "uint64_or_int64", "default": None},
             "num_frames": {
@@ -3601,6 +3670,9 @@ async def diffusion_generate(
             prompt = normalized.prompt,
             negative_prompt = normalized.negative_prompt,
             input_images = normalized.input_images,
+            mask_images = normalized.mask_images,
+            image_task = normalized.task,
+            strength = normalized.strength,
             num_inference_steps = normalized.num_inference_steps,
             guidance_scale = normalized.guidance_scale,
             width = normalized.width,
@@ -3643,6 +3715,8 @@ async def diffusion_generate(
         "requested_height": normalized.height,
         "num_inference_steps": normalized.num_inference_steps,
         "guidance_scale": normalized.guidance_scale,
+        "task": normalized.task or "auto",
+        "strength": normalized.strength,
         "seed": str(normalized.seed) if normalized.seed is not None else None,
     }
     metrics = {"duration_ms": duration_ms}

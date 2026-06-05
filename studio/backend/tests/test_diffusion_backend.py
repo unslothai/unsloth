@@ -328,6 +328,10 @@ def test_supported_families_payload_shape():
             "default_num_frames",
             "default_frame_rate",
             "requires_image_input",
+            "image_input_mode",
+            "supports_image_input",
+            "image_tasks",
+            "default_image_strength",
             "supports_gguf_single_file",
         }
         assert entry["media_kind"] in {"image", "video"}
@@ -342,6 +346,9 @@ def test_supported_families_payload_shape():
             entry["default_frame_rate"], float
         )
         assert isinstance(entry["requires_image_input"], bool)
+        assert isinstance(entry["image_input_mode"], str)
+        assert isinstance(entry["supports_image_input"], bool)
+        assert isinstance(entry["image_tasks"], list)
         assert isinstance(entry["supports_gguf_single_file"], bool)
 
 
@@ -7481,6 +7488,164 @@ def test_generate_image_required_family_forwards_input_image():
     )
     assert pipe.last_kwargs["true_cfg_scale"] == 4.0
     assert pipe.last_kwargs["num_inference_steps"] == 40
+
+
+def test_generate_image_optional_flux2_forwards_input_image():
+    import core.inference.diffusion as d
+    from PIL import Image
+
+    backend = d.DiffusionBackend()
+
+    class _FakeFlux2Pipe:
+        def __init__(self):
+            self.last_kwargs = None
+
+        def __call__(
+            self,
+            *,
+            image,
+            prompt,
+            num_inference_steps,
+            guidance_scale,
+            width,
+            height,
+        ):
+            self.last_kwargs = {
+                "image": image,
+                "prompt": prompt,
+                "num_inference_steps": num_inference_steps,
+                "guidance_scale": guidance_scale,
+                "width": width,
+                "height": height,
+            }
+            return SimpleNamespace(images = [Image.new("RGB", (width, height))])
+
+    source = Image.new("RGB", (32, 32))
+    pipe = _FakeFlux2Pipe()
+    backend._pipe = pipe
+    backend._device = "cpu"
+    backend._family = d.detect_family("unsloth/FLUX.2-klein-4B-GGUF")
+
+    image = backend._generate_image_unlocked(
+        prompt = "use this composition",
+        input_images = [source],
+        width = 64,
+        height = 64,
+    )
+
+    assert image.size == (64, 64)
+    assert pipe.last_kwargs["image"] is source
+    assert pipe.last_kwargs["num_inference_steps"] == 4
+
+
+def test_generate_image_promotes_qwen_to_img2img_pipeline(monkeypatch):
+    import core.inference.diffusion as d
+    from PIL import Image
+
+    backend = d.DiffusionBackend()
+
+    class _FakeQwenTextPipe:
+        components = {
+            "scheduler": object(),
+            "vae": object(),
+            "text_encoder": object(),
+            "tokenizer": object(),
+            "transformer": object(),
+        }
+
+        def __call__(
+            self,
+            *,
+            prompt,
+            negative_prompt,
+            true_cfg_scale,
+            num_inference_steps,
+            width,
+            height,
+        ):
+            raise AssertionError("text-to-image pipeline should not be called")
+
+    class _FakeQwenImg2ImgPipe:
+        calls = []
+
+        def __init__(self, scheduler, vae, text_encoder, tokenizer, transformer):
+            self.components = {
+                "scheduler": scheduler,
+                "vae": vae,
+                "text_encoder": text_encoder,
+                "tokenizer": tokenizer,
+                "transformer": transformer,
+            }
+
+        def __call__(
+            self,
+            *,
+            image,
+            prompt,
+            negative_prompt,
+            true_cfg_scale,
+            strength,
+            num_inference_steps,
+            width,
+            height,
+        ):
+            self.__class__.calls.append(
+                {
+                    "image": image,
+                    "prompt": prompt,
+                    "negative_prompt": negative_prompt,
+                    "true_cfg_scale": true_cfg_scale,
+                    "strength": strength,
+                    "num_inference_steps": num_inference_steps,
+                    "width": width,
+                    "height": height,
+                }
+            )
+            return SimpleNamespace(images = [Image.new("RGB", (width, height))])
+
+    monkeypatch.setitem(
+        sys.modules,
+        "diffusers",
+        types.SimpleNamespace(QwenImageImg2ImgPipeline = _FakeQwenImg2ImgPipe),
+    )
+    source = Image.new("RGB", (32, 32))
+    backend._pipe = _FakeQwenTextPipe()
+    backend._device = "cpu"
+    backend._family = d.detect_family("unsloth/Qwen-Image-GGUF")
+
+    image = backend._generate_image_unlocked(
+        prompt = "restyle",
+        input_images = [source],
+        strength = 0.42,
+        width = 64,
+        height = 64,
+    )
+
+    assert image.size == (64, 64)
+    call = _FakeQwenImg2ImgPipe.calls[-1]
+    assert call["image"] is source
+    assert call["strength"] == 0.42
+    assert call["negative_prompt"] == backend._family.default_negative_prompt
+    assert call["true_cfg_scale"] == 4.0
+
+
+def test_generate_image_rejects_explicit_text_task_with_input_image():
+    import core.inference.diffusion as d
+    from PIL import Image
+
+    backend = d.DiffusionBackend()
+    backend._pipe = object()
+    backend._device = "cpu"
+    backend._family = d.detect_family("unsloth/FLUX.2-klein-4B-GGUF")
+
+    with pytest.raises(RuntimeError, match = "text_to_image does not accept"):
+        backend._generate_image_unlocked(
+            prompt = "x",
+            input_images = [Image.new("RGB", (16, 16))],
+            image_task = "text_to_image",
+            width = 16,
+            height = 16,
+        )
 
 
 def test_generate_image_rejects_video_family_on_image_route():

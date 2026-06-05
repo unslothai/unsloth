@@ -23,6 +23,10 @@ export interface DiffusionFamily {
   default_num_frames: number | null;
   default_frame_rate: number | null;
   requires_image_input: boolean;
+  image_input_mode?: "none" | "optional" | "required" | string;
+  supports_image_input?: boolean;
+  image_tasks?: string[];
+  default_image_strength?: number | null;
   supports_gguf_single_file: boolean;
 }
 
@@ -87,10 +91,14 @@ export interface DiffusionLoadRequest {
 export interface DiffusionGenerateRequest {
   prompt: string;
   negative_prompt?: string;
+  task?: "auto" | "text_to_image" | "image_to_image" | "edit" | "inpaint";
   image_b64?: string;
   images_b64?: string[];
+  mask_b64?: string;
+  masks_b64?: string[];
   num_inference_steps?: number;
   guidance_scale?: number;
+  strength?: number;
   width?: number;
   height?: number;
   // bigint when the seed exceeds Number.MAX_SAFE_INTEGER, otherwise
@@ -119,6 +127,17 @@ export interface DiffusionGenerateResponse {
   model: string | null;
   family: string | null;
   output_count: number;
+  outputs?: Array<{
+    type: string;
+    mime: string;
+    b64: string;
+    width: number;
+    height: number;
+    role?: string;
+  }>;
+  effective_parameters?: Record<string, unknown>;
+  metrics?: Record<string, unknown>;
+  warnings?: string[];
 }
 
 export interface DiffusionVideoGenerateRequest {
