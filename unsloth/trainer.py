@@ -68,6 +68,8 @@ class UnslothVisionDataCollator(_UnslothVisionDataCollatorBase):
     empty video tensors (issue #5085).
     """
 
+    __slots__ = ("_checked_video_paths",)
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._checked_video_paths = set()
