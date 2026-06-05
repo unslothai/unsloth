@@ -1406,7 +1406,7 @@ def install_python_stack() -> int:
     # When called from "unsloth studio update", it is NOT set so base packages
     # (unsloth + unsloth-zoo) are always reinstalled to pick up new versions.
     skip_base = os.environ.get("SKIP_STUDIO_BASE", "0") == "1"
-    # When --package is used, install a different package name (e.g. roland-sloth for testing)
+    # When --package is used, install a different package name (for testing)
     package_name = os.environ.get("STUDIO_PACKAGE_NAME", "unsloth")
     # When --local is used, overlay a local repo checkout after updating deps
     local_repo = os.environ.get("STUDIO_LOCAL_REPO", "")
@@ -1565,7 +1565,7 @@ def install_python_stack() -> int:
             constrain = False,
         )
     elif package_name != "unsloth":
-        # Custom package name (e.g. roland-sloth for testing) — install directly
+        # Custom package name (for testing), install directly
         _progress("base packages")
         pip_install(
             f"Installing {package_name}",

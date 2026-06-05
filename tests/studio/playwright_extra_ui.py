@@ -327,17 +327,23 @@ with sync_playwright() as p:
     # 1. Compare tab.
     # ─────────────────────────────────────────────────────
     step("Compare tab: send to two panes")
-    # The Compare nav lives in the sidebar; click it.
-    compare_nav = page.locator('[data-tour="chat-compare"]').first
-    if compare_nav.count() == 0:
-        compare_nav = page.get_by_role(
-            "button",
-            name = re.compile(r"^\s*Compare\s*$", re.I),
+    # Compare moved into the composer + menu (Tools and attachments).
+    compare_opened = False
+    plus_btn = page.get_by_role(
+        "button", name = re.compile(r"Tools and attachments", re.I)
+    ).first
+    if plus_btn.count() > 0:
+        plus_btn.click(force = True)
+        page.wait_for_timeout(400)
+        compare_item = page.get_by_role(
+            "menuitem", name = re.compile(r"Compare chat", re.I)
         ).first
-    if compare_nav.count() == 0:
+        if compare_item.count() > 0:
+            compare_item.click(force = True)
+            compare_opened = True
+    if not compare_opened:
         soft_fail("Compare nav not found")
     else:
-        compare_nav.click()
         page.wait_for_timeout(1500)
         shoot("02-compare-opened")
         # Compare view's container.
