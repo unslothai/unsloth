@@ -129,6 +129,17 @@ def _normalize_stop_sequences(raw):
     return None
 
 
+def _effective_max_tokens(payload):
+    """Resolve the generation cap: OpenAI deprecated ``max_tokens`` in favor of
+    ``max_completion_tokens``, so honor either, preferring the explicit legacy
+    field when both are sent. Used by the audio (TTS / audio-input) paths."""
+    return (
+        payload.max_tokens
+        if payload.max_tokens is not None
+        else payload.max_completion_tokens
+    )
+
+
 def _openai_stream_error_chunk(exc) -> dict:
     """Build an in-band OpenAI error chunk for a mid-stream failure. Once the
     stream's 200 headers are flushed the status can't change, so the error must
@@ -2505,11 +2516,7 @@ async def _proxy_to_external_provider(
             # Honor max_completion_tokens when max_tokens is absent, so a
             # provider-routed request capped only by the newer field still gets
             # a limit instead of falling back to the provider default.
-            max_tokens = (
-                payload.max_tokens
-                if payload.max_tokens is not None
-                else payload.max_completion_tokens
-            ),
+            max_tokens = _effective_max_tokens(payload),
             presence_penalty = payload.presence_penalty,
             top_k = _top_k_explicit,
             enable_thinking = payload.enable_thinking,
@@ -2965,13 +2972,7 @@ async def openai_chat_completions(
     # unaware of `role="tool"` messages and assistant messages that only
     # carry `tool_calls` (content=None) — both of which are valid in
     # multi-turn client-side tool loops.
-    # OpenAI deprecated ``max_tokens`` in favor of ``max_completion_tokens``;
-    # honor either, preferring the explicit legacy field when both are sent.
-    effective_max_tokens = (
-        payload.max_tokens
-        if payload.max_tokens is not None
-        else payload.max_completion_tokens
-    )
+    effective_max_tokens = _effective_max_tokens(payload)
 
     normalized_stop = _normalize_stop_sequences(payload.stop)
 
@@ -6541,21 +6542,14 @@ def _build_openai_passthrough_body(payload, backend_ctx = None) -> dict:
     tpl_kwargs = None
     if payload.enable_thinking is not None:
         tpl_kwargs = {"enable_thinking": bool(payload.enable_thinking)}
-    # Honor max_completion_tokens (OpenAI's current cap param) when max_tokens
-    # is absent — mirrors effective_max_tokens on the non-passthrough path so a
-    # tools/response_format request isn't left uncapped.
-    _effective_max_tokens = (
-        payload.max_tokens
-        if payload.max_tokens is not None
-        else payload.max_completion_tokens
-    )
     return _build_passthrough_payload(
         messages,
         payload.tools,
         payload.temperature,
         payload.top_p,
         payload.top_k,
-        _effective_max_tokens,
+        # Honor max_completion_tokens on the tools/response_format passthrough too.
+        _effective_max_tokens(payload),
         payload.stream,
         stop = payload.stop,
         min_p = payload.min_p,
