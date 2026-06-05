@@ -130,12 +130,17 @@ def _st_dim(model_name: str | None = None) -> int:
 
 def _st_token_counter(model_name: str | None = None) -> Callable[[str], int]:
     """Callable counting tokens with the model's tokenizer, under the compute
-    lock (the same fast tokenizer backs encode and isn't thread-safe)."""
+    lock (the same fast tokenizer backs encode and isn't thread-safe), with rayon
+    enabled for the call and restored after, mirroring ``_st_encode``."""
     tok = _get(model_name).tokenizer
 
     def _count(t: str) -> int:
         with _compute_lock:
-            return len(tok.encode(t, add_special_tokens = False))
+            os.environ["TOKENIZERS_PARALLELISM"] = "true"
+            try:
+                return len(tok.encode(t, add_special_tokens = False))
+            finally:
+                os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
     return _count
 

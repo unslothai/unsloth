@@ -112,6 +112,25 @@ def test_encode_enables_parallelism_only_during_call(monkeypatch):
     assert os.environ.get("TOKENIZERS_PARALLELISM") == "false"  # restored after
 
 
+def test_token_counter_enables_parallelism_only_during_call(monkeypatch):
+    seen = {}
+
+    class _Tok:
+        def encode(self, text, **_kw):
+            seen["during"] = os.environ.get("TOKENIZERS_PARALLELISM")
+            return list(range(len(text.split())))
+
+    class _M:
+        tokenizer = _Tok()
+
+    monkeypatch.setattr(embeddings, "_get", lambda model_name = None: _M())
+    os.environ["TOKENIZERS_PARALLELISM"] = "false"
+    count = embeddings.token_counter()
+    count("alpha beta gamma")
+    assert seen["during"] == "true"  # rayon enabled in-call, like _st_encode
+    assert os.environ.get("TOKENIZERS_PARALLELISM") == "false"  # restored after
+
+
 # ── ST -> llama-server init fallback ──────────────────────────────
 
 
