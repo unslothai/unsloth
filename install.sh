@@ -2042,8 +2042,8 @@ _maybe_bootstrap_rocm_wsl() {
 
     echo ""
     substep "Detected AMD Strix Halo (Radeon 8000S) in WSL with no ROCm runtime yet." "$C_WARN"
-    substep "Unsloth can set up ROCm-on-WSL (ROCm 7.2 + librocdxg) to make this GPU usable."
-    substep "One-time, needs sudo and a large download. (skip: UNSLOTH_SKIP_ROCM_WSL_SETUP=1)"
+    substep "Setting up ROCm-on-WSL (ROCm 7.2 + librocdxg) automatically to enable this GPU."
+    substep "One-time, uses sudo and a large download. (skip: re-run with UNSLOTH_SKIP_ROCM_WSL_SETUP=1)"
 
     # Locate the helper: prefer the copy shipped beside install.sh, else fetch it.
     _rw_helper="${_REPO_ROOT:-.}/scripts/install_rocm_wsl_strixhalo.sh"
@@ -2059,21 +2059,21 @@ _maybe_bootstrap_rocm_wsl() {
         fi
     fi
 
-    # Consent. UNSLOTH_ROCM_WSL_AUTO=1 runs without prompting; Tauri lets the app
-    # decide (just flag it); a TTY gets a [Y/n] prompt; otherwise we don't
-    # surprise-install and just point at the helper.
-    _rw_go=0
-    if [ "${UNSLOTH_ROCM_WSL_AUTO:-0}" = "1" ]; then
-        _rw_go=1
-    elif [ "${TAURI_MODE:-false}" = "true" ]; then
+    # Consent. The one-liner installer is meant to "just work": for the single
+    # narrow case the guards above allow (WSL + Strix Halo + /dev/dxg + no usable
+    # ROCm yet), this is exactly the GPU setup the user ran the installer for, so
+    # it now proceeds AUTOMATICALLY by default -- no env var, no prompt, and it
+    # works even with no controlling TTY (e.g. `curl -fsSL ... | sh`). Opt out by
+    # re-running with UNSLOTH_SKIP_ROCM_WSL_SETUP=1 (handled at the top of this
+    # function). The Tauri desktop app drives its OWN consent UI, so there it only
+    # runs when the app explicitly passes UNSLOTH_ROCM_WSL_AUTO=1; otherwise we
+    # just surface availability and let the app re-invoke. UNSLOTH_ROCM_WSL_AUTO
+    # remains accepted (it is now the default for the CLI path).
+    _rw_go=1
+    if [ "${TAURI_MODE:-false}" = "true" ] && [ "${UNSLOTH_ROCM_WSL_AUTO:-0}" != "1" ]; then
         tauri_log "ROCM_WSL_AVAILABLE" "strixhalo"
-        substep "Run scripts/install_rocm_wsl_strixhalo.sh (or set UNSLOTH_ROCM_WSL_AUTO=1) to enable the GPU." "$C_WARN"
-    elif [ -r /dev/tty ]; then
-        printf "    Set up ROCm-on-WSL for this GPU now? [Y/n] "
-        read -r _rw_reply </dev/tty || _rw_reply="y"
-        case "$_rw_reply" in [nN]*) _rw_go=0 ;; *) _rw_go=1 ;; esac
-    else
-        substep "Non-interactive: skipping. Run scripts/install_rocm_wsl_strixhalo.sh or set UNSLOTH_ROCM_WSL_AUTO=1." "$C_WARN"
+        substep "Enable the GPU from the desktop app (or set UNSLOTH_ROCM_WSL_AUTO=1)." "$C_WARN"
+        _rw_go=0
     fi
 
     if [ "$_rw_go" = "1" ]; then
