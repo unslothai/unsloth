@@ -186,14 +186,52 @@ function contentBlocksToText(content: unknown): string {
     return parts.join("\n\n");
   }
 
-/** Load messages for a thread, returning null and showing a toast if empty. */
+/**
+ * Walk the parentId chain to reconstruct the correct conversation order.
+ * listStoredChatMessages sorts by createdAt, but GPT response slots are
+ * created with an earlier timestamp than the user's next message, causing
+ * messages to appear out of order. Walking the parent chain guarantees the
+ * correct turn sequence regardless of timestamps.
+ */
+type _Msg = { id: string; parentId?: string | null; createdAt?: number };
+
+function orderByParentChain<T extends _Msg>(messages: T[]): T[] {
+  const byId = new Map<string, T>(messages.map((m) => [m.id, m]));
+  const childrenOf = new Map<string | null, T[]>();
+  for (const m of messages) {
+    const pid = m.parentId ?? null;
+    if (!childrenOf.has(pid)) childrenOf.set(pid, []);
+    childrenOf.get(pid)!.push(m);
+  }
+
+  // Walk the main branch from the root, always taking the most-recent child.
+  const result: T[] = [];
+  let cur: string | null = null;
+  while (childrenOf.has(cur)) {
+    const children: T[] = childrenOf.get(cur)!;
+    // Pick the child with the highest createdAt (most recent branch/edit).
+    const next: T = children.reduce((a: T, b: T) =>
+      (a.createdAt ?? 0) >= (b.createdAt ?? 0) ? a : b,
+    );
+    result.push(next);
+    cur = next.id;
+    byId.delete(next.id);
+  }
+
+  // Append any orphaned messages (shouldn't normally occur) at the end.
+  for (const [, m] of byId) result.push(m);
+  return result;
+}
+
+/** Load messages for a thread in correct conversation order, or null if empty. */
 async function loadConversationMessages(threadId: string) {
-  const messages = await listStoredChatMessages(threadId);
-  if (messages.length === 0) {
+  const raw = await listStoredChatMessages(threadId);
+  if (raw.length === 0) {
     toast.info("No messages in this conversation to export.");
     return null;
   }
-  return messages;
+  // Re-order by parent chain so turns appear in the correct sequence.
+  return orderByParentChain(raw) as typeof raw;
 }
 
 /** Timestamp suffix for filenames. */
