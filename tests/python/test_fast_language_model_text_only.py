@@ -207,3 +207,14 @@ def test_text_only_guard_predicate_across_vlm_families():
             continue
         text = helper(cfg_cls(), name)
         assert resolve(AutoModelForCausalLM, text) is None, name
+
+
+def test_text_only_helper_preserves_quantization_config():
+    # quantization_config lives on the parent config; it must survive the strip
+    # so pre-quantized repos still load correctly.
+    transformers = pytest.importorskip("transformers")
+    helper = _load_text_only_helper()
+    config = transformers.Gemma3Config()
+    config.quantization_config = transformers.BitsAndBytesConfig(load_in_4bit=True)
+    text_config = helper(config, "google/gemma-3-27b-it")
+    assert getattr(text_config, "quantization_config", None) is not None

@@ -1474,8 +1474,8 @@ class FastModel(FastBaseModel):
                     load_text_only = False
                 else:
                     logger.warning_once(
-                        f"Loading {old_model_name} as text-only; vision tower skipped. "
-                        "Use FastVisionModel for image inputs."
+                        f"Loading {old_model_name} as text-only; vision/audio towers skipped. "
+                        "Use FastVisionModel for multimodal inputs."
                     )
                     model_config = text_config
                     is_vlm = False

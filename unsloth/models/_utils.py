@@ -501,6 +501,10 @@ def _get_text_only_config(model_config, model_name):
         text_config = getattr(model_config, "text_config", None)
     if text_config is None:
         raise ValueError(f"Cannot load {model_name} as text-only; use FastVisionModel")
+    # Carry over quantization_config; it lives on the parent, not the text sub-config.
+    qc = getattr(model_config, "quantization_config", None)
+    if qc is not None and getattr(text_config, "quantization_config", None) is None:
+        text_config.quantization_config = qc
     return text_config
 
 
