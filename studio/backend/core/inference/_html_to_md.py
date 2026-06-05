@@ -5,7 +5,7 @@
 Minimal HTML-to-Markdown converter using only the standard library.
 
 Replaces the external ``html2text`` (GPL-3.0) dependency with a ~250-line
-``html.parser.HTMLParser`` subclass.  Covers headings, links, bold/italic,
+``html.parser.HTMLParser`` subclass. Covers headings, links, bold/italic,
 lists, tables, blockquotes, code blocks, and entity decoding.
 """
 
@@ -81,9 +81,9 @@ class _MarkdownRenderer(HTMLParser):
         self._pre_parts: list[str] = []
         self._in_inline_code: bool = False
 
-        # Blockquote state -- stack of output buffers so nested
-        # blockquotes each collect their own content and get prefixed
-        # with the correct number of ">" markers on close.
+        # Blockquote state -- stack of output buffers so nested blockquotes
+        # each collect their own content and get prefixed with the correct
+        # number of ">" markers on close.
         self._bq_stack: list[list[str]] = []
 
     # ------------------------------------------------------------------
@@ -102,7 +102,7 @@ class _MarkdownRenderer(HTMLParser):
     # ------------------------------------------------------------------
     def _prefix_blockquote(self, content: str) -> str:
         """Prefix every line of *content* with ``> ``."""
-        # Strip trailing whitespace first, then collapse blank lines
+        # Strip trailing whitespace, then collapse blank lines.
         content = re.sub(r"[ \t]+$", "", content, flags = re.MULTILINE)
         content = re.sub(r"\n{3,}", "\n\n", content).strip()
         if not content:
@@ -117,8 +117,8 @@ class _MarkdownRenderer(HTMLParser):
         return "\n".join(prefixed)
 
     # ------------------------------------------------------------------
-    # Table helpers -- flush open cells and rows so that HTML with
-    # omitted optional end tags (</td>, </tr>) does not lose data.
+    # Table helpers -- flush open cells/rows so HTML with omitted optional
+    # end tags (</td>, </tr>) does not lose data.
     # ------------------------------------------------------------------
     def _finish_cell(self) -> None:
         if not self._in_cell:
@@ -143,8 +143,8 @@ class _MarkdownRenderer(HTMLParser):
         self._row_has_th = False
 
     # ------------------------------------------------------------------
-    # Link text helper -- normalize whitespace so block-level content
-    # inside an <a> does not produce multiline Markdown link labels.
+    # Link text helper -- normalize whitespace so block-level content inside
+    # an <a> does not produce multiline Markdown link labels.
     # ------------------------------------------------------------------
     def _finish_link(self) -> None:
         text = re.sub(r"\s+", " ", "".join(self._link_text_parts)).strip()
@@ -234,13 +234,13 @@ class _MarkdownRenderer(HTMLParser):
             self._emit("\n\n")
 
         elif tag == "tr":
-            # Flush any open cell/row from a previous row that may
-            # have omitted its optional </td> or </tr> end tags.
+            # Flush any open cell/row from a previous row that omitted its
+            # optional </td> or </tr> end tags.
             self._finish_cell()
             self._finish_row()
 
         elif tag in ("th", "td"):
-            # Flush any open cell (handles omitted </td>/<th>)
+            # Flush any open cell (handles omitted </td>/<th>).
             self._finish_cell()
             self._cell_parts = []
             self._in_cell = True
@@ -248,8 +248,8 @@ class _MarkdownRenderer(HTMLParser):
                 self._row_has_th = True
 
         elif tag == "img":
-            # Skip images -- keeps fetched page text focused on readable
-            # content and avoids data-URI amplification.
+            # Skip images -- keeps page text focused on readable content and
+            # avoids data-URI amplification.
             return
 
     def handle_endtag(self, tag: str) -> None:
@@ -310,7 +310,7 @@ class _MarkdownRenderer(HTMLParser):
             self._finish_row()
 
         elif tag == "table":
-            # Flush any remaining row (handles omitted </tr>)
+            # Flush any remaining row (handles omitted </tr>).
             self._finish_cell()
             self._finish_row()
             self._in_table = False
@@ -325,15 +325,15 @@ class _MarkdownRenderer(HTMLParser):
         if self._in_pre:
             self._pre_parts.append(data)
             return
-        # Preserve literal whitespace inside inline <code> spans
+        # Preserve literal whitespace inside inline <code> spans.
         if self._in_inline_code:
             self._emit(data)
             return
-        # Collapse all whitespace (including newlines) per HTML rules
+        # Collapse all whitespace (including newlines) per HTML rules.
         text = re.sub(r"\s+", " ", data)
-        # Suppress whitespace-only text nodes between table structural
-        # elements (indentation from source HTML) to prevent leading
-        # spaces from breaking Markdown table row alignment.
+        # Suppress whitespace-only text nodes between table structural elements
+        # (source indentation) so leading spaces don't break Markdown table
+        # row alignment.
         if self._in_table and not self._in_cell and not text.strip():
             return
         self._emit(text)
@@ -354,9 +354,9 @@ class _MarkdownRenderer(HTMLParser):
     def flush_pending(self) -> None:
         """Flush any open side-buffers into ``_out``.
 
-        Called after ``close()`` to recover content from truncated HTML
-        where closing tags were never seen (common when ``_fetch_page_text``
-        caps the download by byte count).
+        Called after ``close()`` to recover content from truncated HTML where
+        closing tags were never seen (common when ``_fetch_page_text`` caps the
+        download by byte count).
         """
         # Flush innermost buffers first so their content propagates outward.
 
@@ -376,7 +376,7 @@ class _MarkdownRenderer(HTMLParser):
             block = "```\n" + raw + "\n```"
             self._emit("\n\n" + block + "\n\n")
 
-        # Flatten any open blockquote buffers (innermost first)
+        # Flatten any open blockquote buffers (innermost first).
         while self._bq_stack:
             content = "".join(self._bq_stack.pop())
             prefixed = self._prefix_blockquote(content)
@@ -394,8 +394,8 @@ class _MarkdownRenderer(HTMLParser):
 def _cleanup(text: str) -> str:
     """Normalize whitespace and blank lines in the final output.
 
-    Preserves content inside fenced code blocks verbatim so that
-    intentional blank lines in ``<pre>`` content are not collapsed.
+    Preserves content inside fenced code blocks verbatim so intentional blank
+    lines in ``<pre>`` content are not collapsed.
     """
     lines = text.split("\n")
     out: list[str] = []
@@ -411,7 +411,7 @@ def _cleanup(text: str) -> str:
             continue
 
         if in_fence:
-            # Preserve code block content exactly as-is
+            # Preserve code block content exactly as-is.
             out.append(line)
             continue
 
@@ -433,11 +433,11 @@ def _cleanup(text: str) -> str:
 def html_to_markdown(source_html: str) -> str:
     """Convert an HTML string to Markdown.
 
-    Handles headings, links, bold/italic, lists (ordered and unordered),
-    tables, blockquotes, code blocks, and HTML entities.  ``<script>``,
-    ``<style>``, and ``<head>`` sections are stripped entirely.
+    Handles headings, links, bold/italic, ordered/unordered lists, tables,
+    blockquotes, code blocks, and HTML entities. ``<script>``, ``<style>``,
+    and ``<head>`` sections are stripped entirely.
     """
-    # Normalize line endings before parsing
+    # Normalize line endings before parsing.
     source_html = source_html.replace("\r\n", "\n").replace("\r", "\n")
     renderer = _MarkdownRenderer()
     renderer.feed(source_html)

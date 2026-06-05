@@ -3,11 +3,10 @@
 
 """Tests for Anthropic ``citations_delta`` handling in the streaming proxy.
 
-Verifies the proxy injects inline ``[N]`` markers after cited text,
-dedupes by type-specific anchor (char_location, page_location,
-content_block_location, search_result_location), forwards a synthetic
-``document_citations`` tool_event at message_stop, and stays inert when
-no citations_delta events fire. See
+Verifies the proxy injects inline ``[N]`` markers after cited text, dedupes by
+type-specific anchor (char_location, page_location, content_block_location,
+search_result_location), forwards a synthetic ``document_citations`` tool_event
+at message_stop, and stays inert when no citations_delta events fire. See
 https://platform.claude.com/docs/en/build-with-claude/citations
 """
 

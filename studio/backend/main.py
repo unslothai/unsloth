@@ -9,20 +9,20 @@ import os
 import sys
 from pathlib import Path as _Path
 
-# Suppress annoying C-level dependency warnings globally
+# Suppress C-level dependency warnings globally
 os.environ["PYTHONWARNINGS"] = "ignore"
 
 # ── Windows AMD ROCm DLL injection ──────────────────────────────────────────
 # Python 3.8+ ignores PATH for extension modules; register ROCm bin dirs with
 # os.add_dll_directory() so amdhip64.dll etc. are found before any torch import.
 if sys.platform == "win32":
-    # Retained at module scope -- os.add_dll_directory returns a handle that
+    # Retained at module scope; os.add_dll_directory returns a handle that
     # removes the search-path entry when garbage collected.
     _ROCM_DLL_HANDLES: list = []
 
     def _add_rocm_dll_dirs() -> None:
         candidates = []
-        # 1. HIP_PATH / ROCM_PATH -- set by the AMD HIP SDK installer
+        # 1. HIP_PATH / ROCM_PATH set by the AMD HIP SDK installer
         for _var in ("HIP_PATH", "ROCM_PATH"):
             _val = os.environ.get(_var)
             if _val:
@@ -34,7 +34,7 @@ if sys.platform == "win32":
         )
 
         def _ver_key(name: str) -> tuple:
-            # Numeric tuple key so "10.0" sorts after "7.0"; non-numeric chunks fall back to string.
+            # Numeric tuple key so "10.0" sorts after "7.0"; non-numeric chunks fall back to string
             parts = []
             for chunk in name.split("."):
                 try:
@@ -64,16 +64,15 @@ if sys.platform == "win32":
     del _add_rocm_dll_dirs
 
     # ── Windows AMD ROCm: set BNB_ROCM_VERSION before any bitsandbytes import ─
-    # bitsandbytes on Windows ROCm tries to load libbitsandbytes_rocm<ver>.dll
-    # where <ver> comes from torch.version.hip (e.g. "7.13..." → "713").
-    # The installed BNB wheel ships rocm72.dll (not rocm713.dll), so without
-    # this the server process crashes with "Configured ROCm binary not found".
-    # Detect the available DLL, fall back to "72", and set BNB_ROCM_VERSION
-    # before any import that pulls in bitsandbytes (mirrors worker.py logic).
-    # Gate on the rocm bnb DLL (the exact file this configures) or HIP_PATH/
-    # ROCM_PATH, not on torch.version.hip: that needed importing torch on every
-    # Windows host (NVIDIA/CPU included), adding seconds to startup. Radeon
-    # wheels without HIP_PATH still ship the rocm bnb DLL, so they are covered.
+    # bitsandbytes on Windows ROCm loads libbitsandbytes_rocm<ver>.dll where
+    # <ver> comes from torch.version.hip (e.g. "7.13..." → "713"). The installed
+    # BNB wheel ships rocm72.dll (not rocm713.dll), so without this the server
+    # crashes with "Configured ROCm binary not found". Detect the available DLL,
+    # fall back to "72", and set BNB_ROCM_VERSION before any bitsandbytes import
+    # (mirrors worker.py). Gate on the rocm bnb DLL (the file this configures) or
+    # HIP_PATH/ROCM_PATH, not torch.version.hip: that needed importing torch on
+    # every Windows host (NVIDIA/CPU too), adding startup seconds. Radeon wheels
+    # without HIP_PATH still ship the rocm bnb DLL, so they're covered.
     if "BNB_ROCM_VERSION" not in os.environ:
         import glob as _glob
         import logging as _logging
@@ -85,7 +84,7 @@ if sys.platform == "win32":
             import importlib.util as _ilu
 
             _bnb_spec = _ilu.find_spec("bitsandbytes")
-            # submodule_search_locations (not spec.origin) handles editable installs.
+            # submodule_search_locations (not spec.origin) handles editable installs
             if _bnb_spec and _bnb_spec.submodule_search_locations:
                 import re as _re_bnb
 
@@ -107,7 +106,7 @@ if sys.platform == "win32":
                 "Windows ROCm: BNB DLL detection failed (%s); falling back to version '72'",
                 _e,
             )
-        # rocm bnb DLL present, or HIP_PATH/ROCM_PATH set (DLL unparsable -> "72").
+        # rocm bnb DLL present, or HIP_PATH/ROCM_PATH set (DLL unparsable -> "72")
         if _found_rocm_bnb or _hip_env:
             _bnb_rocm_ver_final = _bnb_rocm_ver or "72"
             os.environ["BNB_ROCM_VERSION"] = _bnb_rocm_ver_final
@@ -116,8 +115,8 @@ if sys.platform == "win32":
                 _bnb_rocm_ver_final,
             )
 
-# Ensure backend dir is on sys.path so _platform_compat is importable when
-# main.py is launched directly (e.g. `uvicorn main:app`).
+# Put backend dir on sys.path so _platform_compat is importable when main.py
+# is launched directly (e.g. `uvicorn main:app`).
 _backend_dir = str(_Path(__file__).parent)
 if _backend_dir not in sys.path:
     sys.path.insert(0, _backend_dir)
@@ -133,14 +132,14 @@ except ValueError as exc:
         f"Error: Invalid UNSLOTH_CPU_THREADS value {_raw!r}: {exc}"
     ) from None
 
-# Fix for Anaconda/conda-forge Python: seed platform._sys_version_cache before
-# any library imports that trigger attrs -> rich -> structlog -> platform crash.
+# Anaconda/conda-forge Python: seed platform._sys_version_cache before any
+# library import triggers attrs -> rich -> structlog -> platform crash.
 # See: https://github.com/python/cpython/issues/102396
 import _platform_compat  # noqa: F401
 
 # Direct `uvicorn main:app` launches bypass run.py, so re-export here too
-# (mirrors run.py). Required BEFORE the unsloth-zoo import below, since
-# its LLAMA_CPP_DEFAULT_DIR binding is import-time.
+# (mirrors run.py). Required BEFORE the unsloth-zoo import below, whose
+# LLAMA_CPP_DEFAULT_DIR binding is import-time.
 from utils.paths.storage_roots import studio_root as _studio_root
 
 try:
@@ -173,15 +172,13 @@ _STUDIO_INSTALL_ID_RE = _re.compile(r"^[0-9a-f]{64}$")
 
 def _read_studio_install_id() -> str:
     """Per-install opaque id written by install.sh / install.ps1 at
-    $STUDIO_HOME/share/studio_install_id. Returns "" when the file is
-    absent (pre-PR install, fresh tree never run through the installer)
-    or contains anything other than a 64-char lowercase-hex token --
-    in which case /api/health emits "" and the launcher's _check_health
-    falls back to the existing "no baked id, accept any healthy
-    Unsloth backend" path. This intentionally replaces a previous
-    sha256(resolved_install_path) so the field carries no install-path
-    information for callers reaching /api/health (relevant when Studio
-    is run with -H 0.0.0.0)."""
+    $STUDIO_HOME/share/studio_install_id. Returns "" when the file is absent
+    (pre-PR install, or fresh tree never run through the installer) or holds
+    anything other than a 64-char lowercase-hex token; then /api/health emits
+    "" and the launcher's _check_health falls back to "no baked id, accept any
+    healthy Unsloth backend". Replaces a previous sha256(resolved_install_path)
+    so the field carries no install-path info for callers reaching /api/health
+    (relevant when Studio runs with -H 0.0.0.0)."""
     try:
         token = (
             (_STUDIO_ROOT_RESOLVED / "share" / "studio_install_id").read_text().strip()
@@ -195,29 +192,28 @@ _STUDIO_ROOT_ID_CACHE: str = _read_studio_install_id()
 
 
 def _studio_root_id() -> str:
-    """Same-install discriminator for /api/health: a per-install opaque
-    token written once by the installer and read once at module import.
-    Empty when no installer-written token is present; the launcher
-    contract treats "" as "no baked id, accept any healthy backend"."""
+    """Same-install discriminator for /api/health: a per-install opaque token
+    written once by the installer and read once at module import. Empty when no
+    installer token is present; the launcher contract treats "" as "no baked id,
+    accept any healthy backend"."""
     return _STUDIO_ROOT_ID_CACHE
 
 
-# Fix broken Windows registry MIME types.  Some Windows installs map .js to
-# "text/plain" in the registry (HKCR\.js\Content Type).  Python's mimetypes
-# module reads from the registry, and FastAPI/Starlette's StaticFiles uses
-# mimetypes.guess_type() to set Content-Type headers.  Browsers enforce strict
-# MIME checking for ES module scripts (<script type="module">) and will refuse
-# to execute .js files served as text/plain — resulting in a blank page.
-# Calling add_type() *before* StaticFiles is instantiated ensures the correct
-# types are used regardless of the OS registry.
+# Fix broken Windows registry MIME types. Some Windows installs map .js to
+# "text/plain" in the registry (HKCR\.js\Content Type). Python's mimetypes reads
+# from the registry, and Starlette's StaticFiles uses mimetypes.guess_type() for
+# Content-Type. Browsers strictly MIME-check ES module scripts
+# (<script type="module">) and refuse .js served as text/plain, giving a blank
+# page. Calling add_type() *before* StaticFiles is instantiated forces the
+# correct types regardless of the OS registry.
 if sys.platform == "win32":
     mimetypes.add_type("application/javascript", ".js")
     mimetypes.add_type("text/css", ".css")
 
-# Suppress annoying dependency warnings in production
+# Suppress dependency warnings in production
 if os.getenv("ENVIRONMENT_TYPE", "production") == "production":
     warnings.filterwarnings("ignore")
-    # Alternatively, you can be more specific:
+    # Or be more specific:
     # warnings.filterwarnings("ignore", category=DeprecationWarning)
     # warnings.filterwarnings("ignore", module="triton.*")
 
@@ -311,7 +307,7 @@ def _desktop_owner() -> dict[str, str] | None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup: detect hardware, seed default admin if needed. Shutdown: clean up compiled cache."""
-    # Clean up any stale compiled cache from previous runs
+    # Clean up stale compiled cache from previous runs
     clear_unsloth_compiled_cache()
 
     # Remove stale .venv_overlay from previous versions — no longer used.
@@ -371,8 +367,8 @@ async def lifespan(app: FastAPI):
             "cleanup_orphaned_runs failed at startup: %s", exc
         )
 
-    # Pre-cache the helper GGUF model for LLM-assisted dataset detection.
-    # Runs in a background thread so it doesn't block server startup.
+    # Pre-cache the helper GGUF model for LLM-assisted dataset detection,
+    # in a background thread so it doesn't block server startup.
     import threading
 
     def _precache():
@@ -430,7 +426,7 @@ app.add_middleware(LoggingMiddleware)
 
 
 # Citation favicons load from www.google.com/s2/favicons; *.gstatic.com is
-# kept for legacy web-search faviconV2 paths. Everything else is same-origin.
+# kept for legacy web-search faviconV2 paths. All else is same-origin.
 from starlette.middleware.base import BaseHTTPMiddleware  # noqa: E402
 from starlette.requests import Request as _StarletteRequest  # noqa: E402
 
@@ -439,7 +435,7 @@ _CSP_SCRIPT_NONCE_HEADER = "x-internal-script-nonce"
 _ARTIFACT_PREVIEW_FRAME_PATH = "/api/inference/artifact-preview-frame"
 
 
-# /content is Colab's working directory — more reliable than env vars which
+# /content is Colab's working directory — more reliable than env vars, which
 # aren't always set depending on Colab runtime version.
 import importlib.util as _importlib_util
 
@@ -455,19 +451,18 @@ def _build_csp(script_nonce: "str | None" = None) -> str:
     if script_nonce:
         script_src += f" 'nonce-{script_nonce}'"
     # In Colab the parent frame can be colab.research.google.com, a multi-level
-    # *.prod.colab.dev subdomain (e.g. foo.region.prod.colab.dev — note: CSP
-    # wildcards only match one level, so *.prod.colab.dev misses these), or a
-    # sandboxed null-origin output iframe. Use '*' so any ancestor is allowed;
-    # Colab is already a sandboxed single-user environment.
+    # *.prod.colab.dev subdomain (e.g. foo.region.prod.colab.dev — CSP wildcards
+    # only match one level, so *.prod.colab.dev misses these), or a sandboxed
+    # null-origin output iframe. Use '*' to allow any ancestor; Colab is already
+    # a sandboxed single-user environment.
     frame_ancestors = "*" if _IS_COLAB else "'none'"
 
     # In Colab the frontend is served over the Colab reverse-proxy at an HTTPS
-    # *.prod.colab.dev URL. Colab's kernel communication layer and the output
-    # iframe scaffolding inject scripts from *.prod.colab.dev and
-    # *.googleusercontent.com, and make fetch/WebSocket connections to those
-    # same origins. Widen script-src and connect-src in Colab mode so those
-    # requests are not blocked. 'unsafe-inline' for scripts is still omitted;
-    # our own inline script uses a nonce.
+    # *.prod.colab.dev URL. Colab's kernel layer and output-iframe scaffolding
+    # inject scripts from *.prod.colab.dev and *.googleusercontent.com, and
+    # fetch/WebSocket to those origins. Widen script-src and connect-src in
+    # Colab mode so those aren't blocked. 'unsafe-inline' for scripts is still
+    # omitted; our inline script uses a nonce.
     if _IS_COLAB:
         script_src += " https://*.prod.colab.dev https://*.googleusercontent.com"
         connect_src = (
@@ -502,7 +497,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: _StarletteRequest, call_next):
         response = await call_next(request)
-        # Strip the internal nonce hand-off header so it never reaches the client.
+        # Strip the internal nonce hand-off header so it never reaches the client
         nonce = response.headers.get(_CSP_SCRIPT_NONCE_HEADER)
         if nonce is not None:
             del response.headers[_CSP_SCRIPT_NONCE_HEADER]
@@ -525,7 +520,7 @@ app.add_middleware(SecurityHeadersMiddleware)
 
 
 # Cap request bodies on protected POSTs. Upload routes get explicit multipart
-# headroom, while non-upload routes keep the default body cap.
+# headroom; non-upload routes keep the default body cap.
 import json as _json_for_413  # noqa: E402
 from utils.upload_limits import (  # noqa: E402
     UNSTRUCTURED_RECIPE_UPLOAD_MAX_BYTES,
@@ -675,7 +670,7 @@ class MaxBodyMiddleware:
             if mtype == "http.disconnect":
                 return
             if mtype != "http.request":
-                # Mid-stream unexpected frame: forwarding would corrupt downstream.
+                # Mid-stream unexpected frame: forwarding would corrupt downstream
                 return
             body = msg.get("body", b"") or b""
             if body:
@@ -754,13 +749,13 @@ app.include_router(training_router, prefix = "/api/train", tags = ["training"])
 app.include_router(models_router, prefix = "/api/models", tags = ["models"])
 app.include_router(chat_history_router, prefix = "/api/chat", tags = ["chat"])
 app.include_router(inference_router, prefix = "/api/inference", tags = ["inference"])
-# Studio-only inference endpoints (cancel, etc.) are intentionally NOT
-# exposed on the /v1 OpenAI-compat prefix below.
+# Studio-only inference endpoints (cancel, etc.) are NOT exposed on the /v1
+# OpenAI-compat prefix below.
 app.include_router(inference_studio_router, prefix = "/api/inference", tags = ["inference"])
 
-# OpenAI-compatible endpoints: mount the same inference router at /v1
-# so external tools (Open WebUI, SillyTavern, etc.) can use the
-# standard /v1/chat/completions path.
+# OpenAI-compatible endpoints: mount the same inference router at /v1 so
+# external tools (Open WebUI, SillyTavern, etc.) can use the standard
+# /v1/chat/completions path.
 app.include_router(inference_router, prefix = "/v1", tags = ["openai-compat"])
 app.include_router(providers_router, prefix = "/api/providers", tags = ["providers"])
 app.include_router(settings_router, prefix = "/api/settings", tags = ["settings"])
@@ -783,9 +778,9 @@ async def health_check(request: Request):
     Unauthenticated callers (Tauri watchdog, frontend bootstrap polls) need
     ``service`` / ``studio_root_id`` / ``chat_only`` / ``desktop_*`` / ``native_path_leases_supported``
     to (a) re-adopt a sibling backend across restarts and (b) gate UI surfaces
-    before any token is available. None of those leak install path or version.
-    ``version`` / ``studio_version`` / ``device_type`` still require a bearer
-    because they fingerprint the host.
+    before a token is available. None of those leak install path or version.
+    ``version`` / ``studio_version`` / ``device_type`` require a bearer since
+    they fingerprint the host.
     """
     base = {
         "status": "healthy",
@@ -811,7 +806,7 @@ async def health_check(request: Request):
         creds = HTTPAuthorizationCredentials(
             scheme = "Bearer", credentials = auth.split(" ", 1)[1]
         )
-        # Must await: a bare coroutine is truthy and would skip the auth check.
+        # Must await: a bare coroutine is truthy and would skip the auth check
         subject = await _gcs(creds)
     except HTTPException:
         return base
@@ -850,7 +845,7 @@ async def shutdown_server(
     """Gracefully shut down the Unsloth Studio server.
 
     Called by the frontend quit dialog so users can stop the server from the UI
-    without needing to use the CLI or kill the process manually.
+    without the CLI or killing the process manually.
     """
     import asyncio
 
@@ -876,11 +871,11 @@ async def get_system_info(
 ):
     """Get system information.
 
-    Gated behind auth: the response includes platform, Python version,
-    GPU name, memory total, and ML package set -- enough to fingerprint
-    a host. Studio's chat-only-mode design assumes only the local user
-    reaches /api/system; in -H 0.0.0.0 / Colab / Tauri-relayed setups
-    that assumption breaks unless we require a bearer.
+    Gated behind auth: the response includes platform, Python version, GPU name,
+    memory total, and ML package set -- enough to fingerprint a host. Studio's
+    chat-only design assumes only the local user reaches /api/system; in
+    -H 0.0.0.0 / Colab / Tauri-relayed setups that breaks unless we require a
+    bearer.
     """
     import platform
     import psutil
@@ -899,9 +894,8 @@ async def get_system_info(
     return {
         "platform": platform.platform(),
         "python_version": platform.python_version(),
-        # Use the centralized _backend_label helper so the /api/system
-        # endpoint reports "rocm" on AMD hosts instead of "cuda", matching
-        # the /api/hardware and /api/gpu-visibility endpoints.
+        # Centralized _backend_label so /api/system reports "rocm" on AMD hosts
+        # instead of "cuda", matching /api/hardware and /api/gpu-visibility.
         "device_backend": _backend_label(get_device()),
         "cpu_count": psutil.cpu_count(),
         "memory": {
@@ -926,8 +920,8 @@ async def get_hardware_info(
 ):
     """Return GPU name, total VRAM, and key ML package versions.
 
-    Gated behind auth alongside /api/system -- same fingerprinting
-    concern. /api/system/gpu-visibility is also auth-gated already.
+    Gated behind auth alongside /api/system -- same fingerprinting concern.
+    /api/system/gpu-visibility is also auth-gated.
     """
     from utils.hardware import get_gpu_summary, get_package_versions
 
@@ -943,11 +937,10 @@ async def get_hardware_info(
 def _strip_crossorigin(html_bytes: bytes) -> bytes:
     """Remove ``crossorigin`` attributes from script/link tags.
 
-    Vite adds ``crossorigin`` by default which forces CORS mode on font
-    subresource loads.  When Studio is served over plain HTTP, Firefox
-    HTTPS-Only Mode does not exempt CORS font requests -- causing all
-    @font-face downloads to fail silently.  Stripping the attribute
-    makes them regular same-origin fetches that work on any protocol.
+    Vite adds ``crossorigin`` by default, forcing CORS mode on font subresource
+    loads. Over plain HTTP, Firefox HTTPS-Only Mode doesn't exempt CORS font
+    requests, so all @font-face downloads fail silently. Stripping the attribute
+    makes them same-origin fetches that work on any protocol.
     """
     html = html_bytes.decode("utf-8")
     html = _re.sub(r'\s+crossorigin(?:="[^"]*")?', "", html)
@@ -956,8 +949,8 @@ def _strip_crossorigin(html_bytes: bytes) -> bytes:
 
 def _inject_bootstrap(html_bytes: bytes, app: FastAPI):
     """Inject bootstrap credentials when password change is pending.
-    Returns ``(html_bytes, script_nonce_or_None)``; callers forward the
-    nonce via ``_CSP_SCRIPT_NONCE_HEADER`` so CSP allows the inline script.
+    Returns ``(html_bytes, script_nonce_or_None)``; callers forward the nonce
+    via ``_CSP_SCRIPT_NONCE_HEADER`` so CSP allows the inline script.
     """
     import json as _json
     import secrets as _secrets
@@ -988,9 +981,9 @@ _DEFAULT_PORTS = {"http": 80, "https": 443, "ws": 80, "wss": 443}
 def _canonical_origin(scheme: str, netloc: str) -> Optional[tuple[str, str, int]]:
     """Canonicalise an Origin to ``(scheme, host, port)`` for equality.
     Browsers strip default ports (RFC 6454 sec 6.1) and scheme/host are
-    case-insensitive (RFC 3986), so bare string compare misclassifies
-    same-origin requests as cross-origin. Returns ``None`` on unparseable
-    input so callers fall to the safer cross-origin default.
+    case-insensitive (RFC 3986), so a bare string compare misclassifies
+    same-origin requests as cross-origin. Returns ``None`` on unparseable input
+    so callers fall to the safer cross-origin default.
     """
     scheme = (scheme or "").strip().lower()
     if not scheme or not netloc:
@@ -999,7 +992,7 @@ def _canonical_origin(scheme: str, netloc: str) -> Optional[tuple[str, str, int]
     if "@" in netloc:
         netloc = netloc.rsplit("@", 1)[1]
     # IPv6 hosts use brackets (RFC 3986 sec 3.2.2): ``[::1]:8902``. Bare
-    # ``partition(":")`` mis-parses these and breaks ``unsloth studio -H ::1``.
+    # ``partition(":")`` mis-parses these, breaking ``unsloth studio -H ::1``.
     if netloc.startswith("["):
         close = netloc.find("]")
         if close == -1:
@@ -1032,7 +1025,7 @@ def _is_same_origin_request(request: Request) -> bool:
     Top-level same-document GETs omit Origin, so missing counts as same-origin.
     Callers must also emit ``Vary: Origin``. Both sides are canonicalised via
     :func:`_canonical_origin` so default-port stripping and scheme/host case
-    do not misclassify same-origin requests as cross-origin.
+    don't misclassify same-origin requests as cross-origin.
     """
     origin = request.headers.get("origin")
     if origin is None:
@@ -1103,7 +1096,7 @@ def setup_frontend(app: FastAPI, build_path: Path):
 
         file_path = (build_path / full_path).resolve()
 
-        # Block path traversal — ensure resolved path stays inside build_path
+        # Block path traversal — resolved path must stay inside build_path
         if not file_path.is_relative_to(build_path.resolve()):
             return Response(status_code = 403)
 

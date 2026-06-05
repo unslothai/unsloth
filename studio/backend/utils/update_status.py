@@ -3,9 +3,8 @@
 
 """Web update status helpers for browser-served Unsloth Studio.
 
-This module is intentionally side-effect light: no network work happens at
-import time or from /api/health. The PyPI check is lazy, cached, and only used
-for normal PyPI-managed installs.
+Side-effect light: no network work at import time or from /api/health.
+The PyPI check is lazy, cached, and only for PyPI-managed installs.
 """
 
 from __future__ import annotations
@@ -66,9 +65,9 @@ def reset_update_status_cache() -> None:
 def detect_install_source() -> str:
     """Return a coarse install source without exposing local paths.
 
-    Sources are intentionally conservative. PEP 610 local/vcs metadata wins.
-    Legacy source installs are treated as local only when package files resolve
-    outside site-packages/dist-packages and under a Git checkout.
+    Conservative: PEP 610 local/vcs metadata wins. Legacy source
+    installs count as local only when package files resolve outside
+    site-packages/dist-packages and under a Git checkout.
     """
     try:
         dist = distribution(PACKAGE_NAME)

@@ -1,8 +1,8 @@
 """Tests for the proposed PR #5863 improvements.
 
 Covers: _client() self-gating + keep_alive, OAuth normalised off for stdio
-(create + update), env/header dropped on a transport-type switch, and the
-backend rejecting a command whose first token is a URL scheme.
+(create + update), env/header dropped on a transport-type switch, and rejecting
+a command whose first token is a URL scheme.
 
 Run from studio/backend:  python -m pytest tests/test_mcp_stdio_improvements.py -q
 """
@@ -41,7 +41,7 @@ def test_client_refuses_stdio_when_disabled(monkeypatch):
 def test_client_builds_stdio_when_enabled_without_spawning(monkeypatch):
     _enable(monkeypatch)
     # Constructing the Client must not spawn the subprocess (spawn happens on
-    # __aenter__); we only assert it builds.
+    # __aenter__); only assert it builds.
     client = mcp_client._client("npx -y server /tmp", {"K": "v"})
     assert client is not None
 
@@ -128,7 +128,7 @@ def test_switch_stdio_to_http_drops_env(tmp_path, monkeypatch):
             "s1", McpServerUpdate(url = "https://remote/mcp"), current_subject = "u"
         )
     )
-    # the stdio env must NOT survive as HTTP headers on the remote endpoint
+    # stdio env must NOT survive as HTTP headers on the remote endpoint
     assert resp.headers == {}
     assert mcp_servers_db.get_server("s1")["headers_json"] is None
 
@@ -169,7 +169,7 @@ def test_same_transport_edit_keeps_headers(tmp_path, monkeypatch):
         url = "npx server",
         headers_json = '{"API_KEY": "secret"}',
     )
-    # editing only the display name (still stdio) must not wipe env vars
+    # editing only the display name (still stdio) must keep env vars
     resp = asyncio.run(
         routes_mcp.update_mcp_server(
             "s1", McpServerUpdate(display_name = "B"), current_subject = "u"
@@ -195,15 +195,15 @@ def test_validate_url_allows_url_in_argument(monkeypatch):
     from routes.mcp_servers import _validate_url
 
     _enable(monkeypatch)
-    # :// inside an ARGUMENT (not the first token) is still a valid command
+    # :// inside an ARGUMENT (not the first token) is a valid command
     assert _validate_url("npx server --url https://x/mcp") == (
         "npx server --url https://x/mcp"
     )
 
 
 # ── P6: Data Recipe stdio path obeys the same host gate ─────────────
-# build_mcp_providers needs the data_designer plugin, which is only installed in
-# the Studio test job; skip there rather than fail the core matrix.
+# build_mcp_providers needs the data_designer plugin, installed only in the
+# Studio test job; skip there rather than fail the core matrix.
 
 _STDIO_RECIPE = {
     "mcp_providers": [
@@ -223,7 +223,7 @@ def test_data_recipe_skips_stdio_when_disabled(monkeypatch):
     _disable(monkeypatch)
     from core.data_recipe.service import build_mcp_providers
 
-    # gate off -> the stdio provider is dropped (no subprocess can be spawned)
+    # gate off -> the stdio provider is dropped (no subprocess spawned)
     assert build_mcp_providers(_STDIO_RECIPE) == []
 
 

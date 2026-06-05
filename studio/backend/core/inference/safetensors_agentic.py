@@ -4,17 +4,16 @@
 """
 Safetensors/transformers agentic tool loop.
 
-Wraps a single-turn cumulative-text generator (the existing
-``InferenceOrchestrator.generate_chat_response`` pipeline that streams
-from a worker subprocess) with the tool-calling, thinking-block,
-status, and metadata event protocol used by the GGUF path. Keeps the
-front-end SSE shape identical across backends so the chat UI does not
-care which engine actually ran the model.
+Wraps a single-turn cumulative-text generator (the
+``InferenceOrchestrator.generate_chat_response`` pipeline streaming from a
+worker subprocess) with the tool-calling, thinking-block, status, and
+metadata event protocol used by the GGUF path. The front-end SSE shape
+stays identical across backends, so the chat UI is engine-agnostic.
 
-The GGUF path lives in ``llama_cpp.py`` and talks to llama-server's
-structured ``delta.tool_calls`` directly. Native transformers has no
-such structured channel, so this loop parses tool calls from the
-cumulative text and dispatches them via ``core.inference.tools``.
+The GGUF path (``llama_cpp.py``) uses llama-server's structured
+``delta.tool_calls`` directly. Native transformers has no such channel, so
+this loop parses tool calls from the cumulative text and dispatches them
+via ``core.inference.tools``.
 """
 
 import json
@@ -41,7 +40,7 @@ from core.inference.tool_call_parser import (
 logger = get_logger(__name__)
 
 
-# Buffer cap while waiting to disambiguate a possible tool-call prefix.
+# Buffer cap while disambiguating a possible tool-call prefix.
 _MAX_BUFFER_CHARS = 32
 
 
@@ -102,10 +101,10 @@ def _coerce_arguments(raw_args, *, heal: bool, tool_name: str = "") -> dict:
     """Normalise tool ``arguments`` to a dict.
 
     Some templates emit a JSON string, others a bare query string. With
-    ``heal=True`` we accept a bare string as ``{<canonical_key>: ...}``
-    so a Hermes-style call without proper JSON still runs the tool. The
-    canonical key is picked per tool: ``code`` for python, ``command``
-    for terminal, ``query`` for everything else (e.g. web_search).
+    ``heal=True`` a bare string becomes ``{<canonical_key>: ...}`` so a
+    Hermes-style call without proper JSON still runs. Canonical key per
+    tool: ``code`` for python, ``command`` for terminal, ``query`` otherwise
+    (e.g. web_search).
     """
     if isinstance(raw_args, dict):
         return raw_args
@@ -137,28 +136,23 @@ def run_safetensors_tool_loop(
 ) -> Generator[dict, None, None]:
     """Drive an agentic tool loop on top of a cumulative-text generator.
 
-    ``single_turn(messages)`` must yield cumulative assistant text
-    (each yield is a snapshot including all previously emitted tokens).
-    The loop:
+    ``single_turn(messages)`` must yield cumulative assistant text (each
+    yield is a snapshot of all tokens so far). The loop:
 
-    * Buffers the leading characters of every turn so it can decide
-      whether the model is about to emit a tool call. Plain content
-      starts streaming as soon as the buffer rules it out.
-    * On detecting ``<tool_call>`` or ``<function=`` in the cumulative
-      text, drains the rest of the turn silently and parses tool calls
-      out of the full content.
+    * Buffers each turn's leading chars to decide whether a tool call is
+      coming. Plain content streams once the buffer rules it out.
+    * On ``<tool_call>`` or ``<function=`` in the cumulative text, drains
+      the rest of the turn silently and parses tool calls from the content.
     * Executes each tool via ``execute_tool``, appends the assistant
-      tool-call message and the tool result to the conversation, and
-      re-enters ``single_turn`` for the next iteration.
-    * After ``max_tool_iterations`` turns without a final answer, asks
-      the model once more to produce a final answer with no tools.
+      tool-call message and tool result, and re-enters ``single_turn``.
+    * After ``max_tool_iterations`` turns without a final answer, asks once
+      more for a final answer with no tools.
 
     Yields event dicts matching the GGUF path:
 
     * ``{"type": "status", "text": ...}`` -- empty string clears the badge.
     * ``{"type": "content", "text": ...}`` -- cumulative cleaned text for
-      the current assistant turn (the consumer should diff against its
-      own ``prev_text`` cursor).
+      the current turn (consumer diffs against its own ``prev_text`` cursor).
     * ``{"type": "tool_start", "tool_name", "tool_call_id", "arguments"}``
     * ``{"type": "tool_end", "tool_name", "tool_call_id", "result"}``
     """
@@ -202,7 +196,7 @@ def run_safetensors_tool_loop(
                 return
 
             if not isinstance(cumulative, str):
-                continue  # defensive: pipeline only yields strings
+                continue  # defensive: pipeline yields only strings
 
             delta = cumulative[len(prev_cumulative) :]
             prev_cumulative = cumulative
@@ -305,7 +299,7 @@ def run_safetensors_tool_loop(
             return
 
         if detect_state == _state_buffering:
-            # Buffer never resolved -- tool XML or plain content.
+            # Buffer never resolved -- tool XML or plain content?
             stripped = content_buffer.lstrip()
             if stripped and has_tool_signal(stripped):
                 detect_state = _state_draining
@@ -328,9 +322,9 @@ def run_safetensors_tool_loop(
                     id_offset = next_call_id,
                 )
             if not safety_tc:
-                # Final answer: streaming already emitted content.
-                # Skip a final=True re-strip so literal "<tool_call>"
-                # in prose survives when no real tool call parsed.
+                # Final answer: streaming already emitted content. Skip the
+                # final=True re-strip so literal "<tool_call>" in prose
+                # survives when no real tool call parsed.
                 yield {"type": "status", "text": ""}
                 return
             tool_calls = safety_tc
@@ -346,8 +340,8 @@ def run_safetensors_tool_loop(
                 id_offset = next_call_id,
             )
             if not tool_calls and auto_heal_tool_calls:
-                # Parser found nothing -- surface raw content so any
-                # literal "<tool_call>" prose is preserved.
+                # Parser found nothing -- surface raw content so literal
+                # "<tool_call>" prose is preserved.
                 if content_accum:
                     yield {"type": "content", "text": content_accum}
                 if provisional_render_html_started:
@@ -439,9 +433,8 @@ def run_safetensors_tool_loop(
                 render_html_succeeded = True
             tool_call_history.append((tc_key, is_error))
 
-            # Strip frontend image sentinel from the model's view.
-            # Cut at the first occurrence so leading and consecutive
-            # sentinels are both removed.
+            # Strip frontend image sentinel from the model's view. Cut at the
+            # first occurrence so leading and consecutive sentinels both go.
             result_for_model = result
             if isinstance(result_for_model, str) and "__IMAGES__:" in result_for_model:
                 result_for_model = result_for_model.split("__IMAGES__:", 1)[0].rstrip()

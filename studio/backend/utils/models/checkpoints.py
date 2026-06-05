@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Checkpoint scanning utilities for discovering training runs and their checkpoints.
-"""
+"""Checkpoint scanning utilities for discovering training runs and checkpoints."""
 
 import json
 import structlog
@@ -17,7 +15,7 @@ logger = get_logger(__name__)
 
 def _read_checkpoint_loss(checkpoint_path: Path) -> Optional[float]:
     """
-    Read the training loss from a checkpoint's trainer_state.json.
+    Read training loss from a checkpoint's trainer_state.json.
 
     Returns the loss from the last log_history entry, or None if unavailable.
     """
@@ -91,8 +89,8 @@ def scan_checkpoints(
             except Exception:
                 pass
 
-            # Fallback: extract base model name from folder name
-            # e.g. "unsloth_Llama-3.2-3B-Instruct_1771227800" → "unsloth/Llama-3.2-3B-Instruct"
+            # Fallback: extract base model name from the folder name, e.g.
+            # "unsloth_Llama-3.2-3B-Instruct_1771227800" → "unsloth/Llama-3.2-3B-Instruct"
             if not metadata.get("base_model"):
                 parts = item.name.rsplit("_", 1)
                 if len(parts) == 2 and parts[1].isdigit():
@@ -105,13 +103,13 @@ def scan_checkpoints(
                     else:
                         metadata["base_model"] = name_part
 
-            # This is a valid training run
+            # Valid training run.
             checkpoints = []
 
-            # Placeholder for the main adapter — loss filled from last checkpoint below
+            # Main adapter placeholder — loss filled from the last checkpoint below.
             checkpoints.append((item.name, str(item), None))
 
-            # Scan for intermediate checkpoints (checkpoint-N subdirs)
+            # Scan for intermediate checkpoints (checkpoint-N subdirs).
             for sub in sorted(item.iterdir()):
                 if not sub.is_dir() or not sub.name.startswith("checkpoint-"):
                     continue
@@ -121,7 +119,7 @@ def scan_checkpoints(
                     loss = _read_checkpoint_loss(sub)
                     checkpoints.append((sub.name, str(sub), loss))
 
-            # Assign the last checkpoint's loss to the main adapter entry
+            # Assign the last checkpoint's loss to the main adapter entry.
             if len(checkpoints) > 1:
                 last_checkpoint_loss = checkpoints[-1][2]
                 checkpoints[0] = (

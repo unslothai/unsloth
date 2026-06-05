@@ -88,8 +88,8 @@ class AudioCodecManager:
         import os
         import sys
 
-        # Clone SparkAudio/Spark-TTS GitHub repo for the sparktts Python package
-        # (same approach as training — the HF model repos don't contain the package)
+        # Clone SparkAudio/Spark-TTS for the sparktts package (same as
+        # training; the HF model repos don't contain it)
         spark_code_dir = os.path.join(
             os.path.dirname(model_repo_path or "."), "Spark-TTS"
         )
@@ -115,7 +115,7 @@ class AudioCodecManager:
 
         from sparktts.models.audio_tokenizer import BiCodecTokenizer
 
-        # BiCodecTokenizer needs the MODEL repo path (contains BiCodec/ weights)
+        # BiCodecTokenizer needs the MODEL repo path (has BiCodec/ weights)
         tokenizer_path = model_repo_path or spark_code_dir
         self._bicodec_repo_path = tokenizer_path
         self._bicodec_tokenizer = BiCodecTokenizer(tokenizer_path, device)
@@ -127,9 +127,9 @@ class AudioCodecManager:
         import os
         import sys
 
-        # Clone OuteTTS repo (same pattern as Spark-TTS / BiCodec)
-        # The pip package has problematic dependencies; the notebook clones and
-        # removes gguf_model.py, interface.py, __init__.py before importing.
+        # Clone OuteTTS (same pattern as Spark-TTS / BiCodec). The pip
+        # package has problematic deps; the notebook clones and removes
+        # gguf_model.py, interface.py, __init__.py before importing.
         base_dir = os.path.dirname(os.path.abspath(__file__))
         outetts_code_dir = os.path.join(base_dir, "OuteTTS")
         outetts_pkg = os.path.join(outetts_code_dir, "outetts")
@@ -148,8 +148,8 @@ class AudioCodecManager:
                 env = child_env_without_native_path_secret(),
                 **_windows_hidden_subprocess_kwargs(),
             )
-            # Remove files that pull in heavy / incompatible dependencies
-            # (matches notebook: gguf_model.py is under models/, others under outetts/)
+            # Remove files pulling in heavy / incompatible deps (matches
+            # notebook: gguf_model.py under models/, others under outetts/)
             remove_paths = [
                 os.path.join(outetts_pkg, "models", "gguf_model.py"),
                 os.path.join(outetts_pkg, "interface.py"),
@@ -183,9 +183,9 @@ class AudioCodecManager:
         """
         Decode SNAC tokens (Orpheus) into WAV bytes.
 
-        generated_ids: full model output including prompt tokens.
-        Looks for START_OF_SPEECH (128257) marker, extracts codes after it,
-        strips EOS (128258), redistributes 7-per-frame codes into 3 SNAC layers.
+        generated_ids: full model output including prompt tokens. Finds the
+        START_OF_SPEECH (128257) marker, extracts codes after it, strips EOS
+        (128258), redistributes 7-per-frame codes into 3 SNAC layers.
 
         Returns (wav_bytes, 24000).
         """
@@ -194,7 +194,7 @@ class AudioCodecManager:
         if len(token_indices[1]) > 0:
             cropped = generated_ids[:, token_indices[1][-1] + 1 :]
         else:
-            # Gracefully fall back to using entire output if marker not found
+            # Fall back to the entire output if the marker is missing
             logger.warning(
                 "No START_OF_SPEECH token (128257) found — using full generated output"
             )
@@ -265,8 +265,8 @@ class AudioCodecManager:
             torch.tensor([int(t) for t in semantic_matches]).long().unsqueeze(0)
         )
 
-        # Speaker encoder expects exactly 32 global tokens (token_num=32 in BiCodec config).
-        # Pad with zeros or truncate to 32.
+        # Speaker encoder expects exactly 32 global tokens (token_num=32 in
+        # BiCodec config). Pad with zeros or truncate to 32.
         GLOBAL_TOKEN_NUM = 32
         if global_matches:
             raw = [int(t) for t in global_matches]

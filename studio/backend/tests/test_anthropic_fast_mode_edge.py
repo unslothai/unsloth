@@ -1,12 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Edge-case coverage for the Anthropic fast-mode + refusal wiring.
+"""Edge-case coverage for Anthropic fast-mode + refusal wiring.
 
-Complements ``test_anthropic_fast_mode_and_refusal.py`` (happy path)
-with dated snapshots, strict opt-in (future Opus families do not
-auto-enable), multi-beta header merging, refusal stream ordering, and
-the non-destruction guarantee for unset/None fast_mode.
+Complements ``test_anthropic_fast_mode_and_refusal.py`` (happy path) with
+dated snapshots, strict opt-in (future Opus families do not auto-enable),
+multi-beta header merging, refusal stream ordering, and the
+non-destruction guarantee for unset/None fast_mode.
 """
 
 import asyncio
@@ -124,7 +124,7 @@ def test_fast_mode_attaches_on_dated_opus_4_6_snapshot(monkeypatch):
 
 # ──────────────────────────── strict opt-in semantics ────────────────────────────
 def test_fast_mode_does_not_auto_enable_on_future_opus_4_8(monkeypatch):
-    """Future ``claude-opus-4-8`` must not auto-enable; opt-in per family."""
+    """Future ``claude-opus-4-8`` must not auto-enable; per-family opt-in."""
     cap, _ = _capture(monkeypatch, fast_mode = True, model = "claude-opus-4-8")
     assert "speed" not in cap["body"], cap["body"]
     assert "fast-mode-2026-02-01" not in cap["headers"].get("anthropic-beta", "")
@@ -244,7 +244,7 @@ def test_fast_mode_unset_is_byte_identical_to_omitted(monkeypatch):
     _drive(run())
 
     assert cap_none["body"] == captured["body"], (cap_none["body"], captured["body"])
-    # Headers can vary by httpx-injected fields (host, connection); compare
+    # Headers vary by httpx-injected fields (host, connection); compare
     # the load-bearing ones.
     for key in ("anthropic-version", "x-api-key", "content-type"):
         assert cap_none["headers"].get(key) == captured["headers"].get(key), key
@@ -321,8 +321,7 @@ def test_refusal_chunk_is_proper_openai_delta_shape(monkeypatch):
     assert notice_chunk is not None, lines
     choice = notice_chunk["choices"][0]
     assert "delta" in choice and "content" in choice["delta"], notice_chunk
-    # Must NOT carry a finish_reason itself -- that comes on the next
-    # chunk.
+    # Must NOT carry a finish_reason itself -- that comes on the next chunk.
     assert choice.get("finish_reason") in (None,), notice_chunk
     # Refusal text is plain-spoken; no embedded sentinel.
     assert "studio:anthropic-refusal" not in choice["delta"]["content"]

@@ -33,14 +33,14 @@ def _resolve_local_v1_endpoint(request: Request) -> str:
     """Return the loopback /v1 URL for the actual backend listen port.
 
     Resolution order:
-      1. ``app.state.server_port`` - explicitly published by run.py after
-         the uvicorn server has bound. This is the most reliable source
-         because it survives reverse proxies, TLS terminators and tunnels.
+      1. ``app.state.server_port`` - published by run.py after uvicorn
+         binds. Most reliable; survives reverse proxies, TLS terminators,
+         and tunnels.
       2. ``request.scope["server"]`` - the real (host, port) tuple uvicorn
-         sets when the request is dispatched. Used when Studio is started
-         outside ``run_server`` (e.g. ``uvicorn studio.backend.main:app``).
-      3. ``request.base_url`` parsed - last resort for test fixtures that
-         do not route through a live uvicorn server.
+         sets per request. Used when Studio starts outside ``run_server``
+         (e.g. ``uvicorn studio.backend.main:app``).
+      3. ``request.base_url`` parsed - last resort for test fixtures with
+         no live uvicorn server.
     """
     port: Any = getattr(request.app.state, "server_port", None)
     if not isinstance(port, int) or port <= 0:
@@ -73,14 +73,14 @@ def _request_has_desktop_access_token(request: Request) -> bool:
 
 
 def _used_llm_model_aliases(recipe: dict[str, Any]) -> set[str]:
-    """Return the set of model_aliases that are actually referenced by an
-    LLM column. Used to narrow the "Chat model loaded" gate so that orphan
-    model_config nodes on the canvas do not block unrelated recipe runs.
+    """Return model_aliases actually referenced by an LLM column. Narrows
+    the "Chat model loaded" gate so orphan model_config nodes on the canvas
+    do not block unrelated recipe runs.
 
-    The ``llm-`` prefix matches the existing convention in
+    The ``llm-`` prefix matches the convention in
     ``core/data_recipe/service.py::_recipe_has_llm_columns`` and covers all
-    LLM column types emitted by the frontend (llm-text, llm-code,
-    llm-structured, llm-judge).
+    frontend LLM column types (llm-text, llm-code, llm-structured,
+    llm-judge).
     """
     aliases: set[str] = set()
     for column in recipe.get("columns", []):
@@ -181,18 +181,17 @@ def _ensure_selected_local_model_loaded(
 def _inject_local_structured_response_format(
     recipe: dict[str, Any], local_provider_names: set[str]
 ) -> None:
-    """For each llm-structured column that targets a local-provider model_config,
-    clone the model_config and inject an OpenAI ``response_format`` with the
-    column's ``output_format`` JSON schema. The column is rewritten to point at
-    the clone so llm-text / llm-judge columns that share the same alias keep
-    free-form sampling.
+    """For each llm-structured column targeting a local-provider model_config,
+    clone the config and inject an OpenAI ``response_format`` with the
+    column's ``output_format`` JSON schema. The column is repointed at the
+    clone so llm-text / llm-judge columns sharing the alias keep free-form
+    sampling.
 
     Without this, data_designer only injects a prompt-level "return JSON in a
-    ```json fence" instruction. Small GGUF models frequently break format,
-    wasting the full ``max_tokens`` budget per row and then failing to parse.
-    Forwarding ``response_format`` lets llama-server apply grammar-constrained
-    sampling from the JSON schema, which guarantees a parseable response and
-    terminates early.
+    ```json fence" instruction. Small GGUFs often break format, wasting the
+    full ``max_tokens`` budget per row and then failing to parse. Forwarding
+    ``response_format`` lets llama-server apply grammar-constrained sampling
+    from the schema, guaranteeing a parseable response and terminating early.
     """
     columns = recipe.get("columns")
     model_configs = recipe.get("model_configs")
@@ -213,8 +212,8 @@ def _inject_local_structured_response_format(
         return
 
     # Clone per (alias, column) so each llm-structured column gets its own
-    # schema without leaking response_format onto other columns that share the
-    # same base alias.
+    # schema without leaking response_format onto other columns sharing the
+    # base alias.
     seen_clone_aliases: set[str] = {
         mc.get("alias") for mc in model_configs if isinstance(mc.get("alias"), str)
     }
@@ -246,15 +245,14 @@ def _inject_local_structured_response_format(
         if not isinstance(params, dict):
             params = {}
             clone["inference_parameters"] = params
-        # data_designer's BaseInferenceParams is a pydantic model with
-        # extra="forbid", so response_format cannot sit at the top level of
-        # inference_parameters. It does expose an `extra_body: dict` pass-
-        # through that the OpenAI client spreads into the request body at the
-        # top level, which is where llama-server reads response_format from.
-        # llama.cpp server shape (tools/server/README.md): the schema sits
-        # directly under response_format, not nested in a json_schema object
-        # the way OpenAI's Chat Completions API expects. llama-server converts
-        # the schema to a GBNF grammar and applies it during sampling.
+        # data_designer's BaseInferenceParams is pydantic extra="forbid", so
+        # response_format cannot sit at the top level of inference_parameters.
+        # Its `extra_body: dict` passthrough is spread into the request body
+        # top level by the OpenAI client, where llama-server reads
+        # response_format. llama.cpp server shape (tools/server/README.md):
+        # the schema sits directly under response_format, not nested in a
+        # json_schema object like OpenAI's Chat Completions API expects.
+        # llama-server converts the schema to a GBNF grammar for sampling.
         extra_body = params.get("extra_body")
         if not isinstance(extra_body, dict):
             extra_body = {}
@@ -272,21 +270,21 @@ def _inject_local_structured_response_format(
 
 def _inject_local_providers(recipe: dict[str, Any], request: Request) -> Optional[int]:
     """
-    Mutate recipe dict in-place: for any provider with is_local=True,
-    fill in the endpoint pointing at this server and inject a short-lived
-    internal sk-unsloth-* API key for workflow auth.
+    Mutate recipe dict in-place: for any provider with is_local=True, set
+    the endpoint to this server and inject a short-lived internal
+    sk-unsloth-* API key for workflow auth.
 
-    Returns the row id of the minted internal key (so the caller can
-    revoke it on job completion) or ``None`` when no local provider is
-    actually reachable from an LLM column.
+    Returns the row id of the minted internal key (for the caller to revoke
+    on job completion) or ``None`` when no local provider is reachable from
+    an LLM column.
     """
     providers = recipe.get("model_providers")
     if not providers:
         return None
 
-    # Collect local providers and pop is_local from ALL dicts unconditionally.
-    # Strict `is True` guard so malformed payloads (is_local: 1,
-    # is_local: "true") do not accidentally trigger the loopback rewrite.
+    # Collect local providers and pop is_local from ALL dicts. Strict
+    # `is True` guard so malformed payloads (is_local: 1, is_local: "true")
+    # do not trigger the loopback rewrite.
     local_indices: list[int] = []
     for i, provider in enumerate(providers):
         if not isinstance(provider, dict):
@@ -300,10 +298,10 @@ def _inject_local_providers(recipe: dict[str, Any], request: Request) -> Optiona
 
     endpoint = _resolve_local_v1_endpoint(request)
 
-    # Only gate on model-loaded if a local provider is actually reachable
-    # from an LLM column through a model_config. Orphan model_config nodes
-    # that reference a local provider but that no LLM column uses should
-    # not block runs; the recipe would never call /v1 for them.
+    # Only gate on model-loaded if a local provider is reachable from an LLM
+    # column via a model_config. Orphan model_config nodes referencing a
+    # local provider that no LLM column uses should not block runs; the
+    # recipe would never call /v1 for them.
     local_names = {
         providers[i].get("name") for i in local_indices if providers[i].get("name")
     }
@@ -322,19 +320,19 @@ def _inject_local_providers(recipe: dict[str, Any], request: Request) -> Optiona
     internal_key_id: Optional[int] = None
     if local_names & referenced_providers:
         # Verify the selected local model is loaded before minting a workflow
-        # key. This still remains a point-in-time singleton-backend check
-        # (TOCTOU): a future generation token should bind frontend load and
-        # job creation, and the inference endpoint returns a clear 400 if the
-        # model is later unloaded or swapped before the subprocess calls /v1.
+        # key. Still a point-in-time singleton-backend check (TOCTOU): a
+        # future generation token should bind frontend load to job creation;
+        # the inference endpoint returns a clear 400 if the model is unloaded
+        # or swapped before the subprocess calls /v1.
         _ensure_selected_local_model_loaded(recipe, local_names)
 
         from auth import storage  # deferred: avoids circular import
 
-        # Mint an internal sk-unsloth-* key scoped to this workflow run.
-        # Uses the unified API-key issuance path (one mint/revoke/verify
-        # surface instead of a second JWT code path). The key is marked
-        # internal so it is hidden from the user's API-key list, and the
-        # caller revokes it when the job terminates.
+        # Mint an internal sk-unsloth-* key scoped to this workflow run via
+        # the unified API-key issuance path (one mint/revoke/verify surface
+        # instead of a second JWT code path). Marked internal so it is hidden
+        # from the user's API-key list; the caller revokes it when the job
+        # terminates.
         expires_at = (datetime.now(timezone.utc) + timedelta(hours = 24)).isoformat()
         token, row = storage.create_api_key(
             username = "unsloth",
@@ -344,11 +342,11 @@ def _inject_local_providers(recipe: dict[str, Any], request: Request) -> Optiona
         )
         internal_key_id = int(row["id"])
 
-    # Defensively strip any stale "external"-only fields the frontend may
-    # have left on the dict (extra_headers/extra_body/api_key_env). The UI
-    # hides these inputs in local mode but the payload builder still serializes
-    # them, so a previously external provider that flipped to local can carry
-    # invalid JSON or rogue auth headers into the local /v1 call.
+    # Strip stale "external"-only fields the frontend may have left
+    # (extra_headers/extra_body/api_key_env). The UI hides these in local
+    # mode but the payload builder still serializes them, so a provider
+    # flipped from external to local could carry invalid JSON or rogue auth
+    # headers into the local /v1 call.
     for i in local_indices:
         providers[i]["endpoint"] = endpoint
         providers[i]["api_key"] = token
@@ -357,29 +355,27 @@ def _inject_local_providers(recipe: dict[str, Any], request: Request) -> Optiona
         providers[i].pop("extra_headers", None)
         providers[i].pop("extra_body", None)
 
-    # Force skip_health_check on any model_config that references a local
-    # provider. The frontend now sends the explicit selected local model id,
-    # but llama-server's /v1/models response can still differ from that id
-    # for local paths, cache aliases, and GGUF variant loads. The recipe run
-    # has already gated on a loaded local inference backend above, so the
-    # data_designer model-list health check would be redundant and can reject
-    # valid local selections.
+    # Force skip_health_check on any model_config referencing a local
+    # provider. The frontend sends the explicit selected local model id, but
+    # llama-server's /v1/models response can differ from it for local paths,
+    # cache aliases, and GGUF variant loads. The run already gated on a
+    # loaded local backend above, so data_designer's model-list health check
+    # would be redundant and can reject valid local selections.
     for mc in recipe.get("model_configs", []):
         if not isinstance(mc, dict):
             continue
         if mc.get("provider") in local_names:
             mc["skip_health_check"] = True
             # Disable thinking for data-recipe inference on local providers.
-            # Reasoning models emit a <think>...</think> preamble before the
-            # answer, which roughly doubles generated token count per row and
-            # pushes the visible answer past data_designer's json-fence
-            # regex. Forward chat_template_kwargs={enable_thinking: False}
-            # through the OpenAI SDK's extra_body passthrough so llama-server
-            # renders the template without the reasoning preamble. Free-form
-            # llm-text columns benefit from the latency cut, and structured
-            # columns also stop leaking think tags into the grammar-
-            # constrained JSON (llama-server's GBNF path still enforces the
-            # schema either way).
+            # Reasoning models emit a <think>...</think> preamble that roughly
+            # doubles generated tokens per row and pushes the answer past
+            # data_designer's json-fence regex. Forward
+            # chat_template_kwargs={enable_thinking: False} via the OpenAI
+            # SDK's extra_body passthrough so llama-server renders the
+            # template without the preamble. llm-text columns get the latency
+            # cut; structured columns stop leaking think tags into the
+            # grammar-constrained JSON (GBNF still enforces the schema either
+            # way).
             params = mc.get("inference_parameters")
             if not isinstance(params, dict):
                 params = {}
@@ -396,7 +392,7 @@ def _inject_local_providers(recipe: dict[str, Any], request: Request) -> Optiona
 
     # Forward each llm-structured column's output_format as an OpenAI
     # response_format so llama-server uses grammar-constrained sampling and
-    # small GGUFs stop wasting the full max_tokens budget on broken JSON.
+    # small GGUFs stop wasting the max_tokens budget on broken JSON.
     _inject_local_structured_response_format(recipe, local_names)
 
     return internal_key_id
@@ -448,11 +444,11 @@ def create_job(payload: RecipePayload, request: Request):
     except ValueError as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from exc
 
-    # Single try block covers get_job_manager() AND mgr.start() so a workflow
-    # key minted above never outlives the request even when an unexpected
+    # Single try covers get_job_manager() AND mgr.start() so a minted
+    # workflow key never outlives the request even on an unexpected
     # exception type (TypeError from a stale kwarg, OSError from a queue
-    # write, etc.) bubbles up. Without the bare except, such exceptions let
-    # the sk-unsloth-* key live until its 24h TTL.
+    # write, etc.). Without the bare except, those would let the
+    # sk-unsloth-* key live until its 24h TTL.
     try:
         mgr = get_job_manager()
         job_id = mgr.start(
@@ -478,7 +474,7 @@ def create_job(payload: RecipePayload, request: Request):
 
 def _revoke_internal_api_key_safe(key_id: int) -> None:
     """Best-effort revoke of a workflow-minted key; swallow any error so
-    that revocation failures never mask the caller's own error path."""
+    revocation failures never mask the caller's own error path."""
     try:
         from auth import storage  # deferred: avoids circular import
 

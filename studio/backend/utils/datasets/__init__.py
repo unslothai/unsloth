@@ -2,10 +2,8 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """
-Dataset utilities package.
-
-This package provides utilities for dataset format detection, conversion,
-and processing for LLM and VLM fine-tuning workflows.
+Dataset utilities for LLM/VLM fine-tuning: format detection, conversion,
+and processing.
 
 Modules:
 - format_detection: Detect dataset formats (Alpaca, ShareGPT, ChatML)
@@ -62,8 +60,7 @@ from .model_mappings import (
     is_gpt_oss_model_name,
 )
 
-# Legacy imports from the original dataset_utils.py for backward compatibility
-# These functions have not yet been refactored into separate modules
+# Legacy imports from dataset_utils.py (not yet refactored) for backward compat
 from .dataset_utils import (
     check_dataset_format,
     format_and_template_dataset,

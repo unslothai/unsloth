@@ -5,8 +5,8 @@
 Export submodule - Model export operations
 
 The default get_export_backend() returns an ExportOrchestrator that
-delegates to a subprocess. The original ExportBackend runs inside
-the subprocess and can be imported directly from .export when needed.
+delegates to a subprocess. The original ExportBackend runs inside the
+subprocess and can be imported directly from .export when needed.
 """
 
 from .orchestrator import ExportOrchestrator, get_export_backend

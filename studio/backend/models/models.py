@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Pydantic schemas for Model Management API
-"""
+"""Pydantic schemas for Model Management API"""
 
 from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any, Literal
@@ -58,7 +56,7 @@ class CheckpointListResponse(BaseModel):
 
 
 class ModelDetails(BaseModel):
-    """Detailed model configuration and metadata - can be used for both list and detail views"""
+    """Model configuration and metadata; used for both list and detail views"""
 
     id: str = Field(..., description = "Model identifier")
     model_name: Optional[str] = Field(

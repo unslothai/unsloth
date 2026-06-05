@@ -6,19 +6,19 @@ Tests for the OpenAI /v1/responses client-side function-calling pass-through.
 
 Covers:
 - ResponsesRequest accepts Responses-shape `tools`, `tool_choice`,
-  `parallel_tool_calls`, and the `function_call` / `function_call_output`
-  input items used for multi-turn tool loops.
-- _translate_responses_tools_to_chat() converts the flat Responses tool
-  shape to the nested Chat Completions shape, drops non-function built-in
-  tools, and returns None for empty lists.
-- _translate_responses_tool_choice_to_chat() passes string choices through
-  and converts {type:function,name:X} to Chat Completions' nested shape.
-- _normalise_responses_input() maps function_call_output items to
+  `parallel_tool_calls`, and `function_call` / `function_call_output`
+  input items for multi-turn tool loops.
+- _translate_responses_tools_to_chat(): flat Responses tool shape ->
+  nested Chat Completions shape, drops non-function built-in tools,
+  returns None for empty lists.
+- _translate_responses_tool_choice_to_chat(): passes string choices
+  through, converts {type:function,name:X} to the nested shape.
+- _normalise_responses_input(): maps function_call_output items to
   role="tool" ChatMessages with tool_call_id, and function_call items to
   assistant messages with tool_calls.
-- _chat_tool_calls_to_responses_output() preserves call_id and drops
+- _chat_tool_calls_to_responses_output(): keeps call_id, drops
   non-function tool calls.
-- ResponsesOutputFunctionCall and ResponsesResponse round-trip tool-call
+- ResponsesOutputFunctionCall / ResponsesResponse round-trip tool-call
   outputs without losing fields.
 
 No running server or GPU required.
@@ -104,9 +104,9 @@ class TestResponsesRequestTools:
         assert req.parallel_tool_calls is True
 
     def test_builtin_tool_type_passes_validation(self):
-        """Non-function built-in tools (web_search, file_search, mcp, ...) must
-        not raise at request validation so SDKs that default to them don't
-        fail on Studio; they are filtered out during translation."""
+        """Non-function built-in tools (web_search, file_search, mcp, ...)
+        must not raise at validation so SDKs that default to them don't
+        fail on Studio; they're filtered out during translation."""
         req = ResponsesRequest(
             input = "hi",
             tools = [{"type": "web_search_preview"}],
@@ -253,8 +253,8 @@ class TestToolChoiceTranslation:
         ) == {"type": "function", "function": {"name": "get_weather"}}
 
     def test_already_chat_nested_shape_passes_through(self):
-        """If a client happens to send the Chat Completions nested shape,
-        we don't double-wrap it."""
+        """A client sending the Chat Completions nested shape isn't
+        double-wrapped."""
         already_nested = {"type": "function", "function": {"name": "get_weather"}}
         assert (
             _translate_responses_tool_choice_to_chat(already_nested) == already_nested
@@ -303,10 +303,10 @@ class TestNormaliseResponsesInputWithTools:
 
     def test_instructions_plus_developer_message_are_merged(self):
         """Codex CLI sends `instructions` (system prompt) AND a developer
-        message in `input`. Strict chat templates (harmony / gpt-oss, Qwen3,
-        ...) raise "System message must be at the beginning" when two
-        separate system-role messages appear, so we must emit exactly one
-        merged system message at the top.
+        message in `input`. Strict chat templates (harmony / gpt-oss,
+        Qwen3, ...) raise "System message must be at the beginning" on two
+        separate system-role messages, so we emit exactly one merged
+        system message at the top.
         """
         payload = ResponsesRequest(
             instructions = "Base instructions.",
@@ -320,14 +320,14 @@ class TestNormaliseResponsesInputWithTools:
         assert len(system_roles) == 1
         assert "Base instructions." in system_roles[0].content
         assert "Developer override." in system_roles[0].content
-        # System must be the very first message for strict templates.
+        # System must be the first message for strict templates.
         assert msgs[0].role == "system"
         assert msgs[1].role == "user"
 
     def test_developer_message_after_user_is_still_hoisted(self):
-        """Multi-turn conversations where a developer message appears after
-        user turns must still produce a single leading system message, not
-        a mid-conversation system that strict templates reject."""
+        """A developer message appearing after user turns must still
+        produce a single leading system message, not a mid-conversation
+        system that strict templates reject."""
         payload = ResponsesRequest(
             input = [
                 {"role": "user", "content": "Hello"},
@@ -492,8 +492,8 @@ class TestCodexStyleRequestShapes:
     """Regression tests for the request shapes OpenAI Codex CLI sends."""
 
     def test_assistant_replay_output_text_accepted(self):
-        """Codex replays prior assistant turns with `output_text` content.
-        Before, this triggered a 422 on every turn after the first."""
+        """Codex replays prior assistant turns with `output_text` content;
+        this used to 422 on every turn after the first."""
         req = ResponsesRequest(
             input = [
                 {"role": "user", "content": "Hi"},
@@ -520,7 +520,7 @@ class TestCodexStyleRequestShapes:
 
     def test_reasoning_item_accepted_as_unknown(self):
         """`reasoning` items replayed from prior o-series turns must not
-        fail validation — Codex preserves them in multi-turn."""
+        fail validation — Codex keeps them in multi-turn."""
         req = ResponsesRequest(
             input = [
                 {"role": "user", "content": "Hi"},
@@ -538,7 +538,7 @@ class TestCodexStyleRequestShapes:
 
     def test_unknown_content_part_type_accepted(self):
         """Unknown content-part types (e.g. future input_audio) validate as
-        ResponsesUnknownContentPart so the whole request doesn't 422."""
+        ResponsesUnknownContentPart so the request doesn't 422."""
         req = ResponsesRequest(
             input = [
                 {
@@ -602,15 +602,15 @@ class TestCodexStyleRequestShapes:
             ],
         )
         msgs = _normalise_responses_input(payload)
-        # Single leading merged system; no mid-conversation system.
+        # One leading merged system; no mid-conversation system.
         assert msgs[0].role == "system"
         assert sum(1 for m in msgs if m.role == "system") == 1
         assert "Base instructions." in msgs[0].content
         assert "Dev override." in msgs[0].content
 
         roles = [m.role for m in msgs[1:]]
-        # Reasoning item is dropped. Order: user, assistant(tool_calls),
-        # tool, assistant(text), user.
+        # Reasoning dropped. Order: user, assistant(tool_calls), tool,
+        # assistant(text), user.
         assert roles == ["user", "assistant", "tool", "assistant", "user"]
         assert msgs[2].tool_calls is not None
         assert msgs[3].role == "tool"
@@ -618,9 +618,9 @@ class TestCodexStyleRequestShapes:
         assert msgs[4].content == "It's 20°C."
 
     def test_single_output_text_part_flattens_to_string(self):
-        """ChatMessage assistant role prefers plain string content — tests
-        confirm we don't forward a single-part array that would otherwise
-        force legacy chat templates into multimodal handling."""
+        """ChatMessage assistant role prefers plain string content — we
+        don't forward a single-part array that would force legacy chat
+        templates into multimodal handling."""
         payload = ResponsesRequest(
             input = [
                 {
@@ -638,9 +638,9 @@ class TestCodexStyleRequestShapes:
 
 
 class TestTranslatedMessagesValidate:
-    """Verify that the messages produced by _normalise_responses_input
-    satisfy ChatMessage's role-shape validator so the downstream /v1/chat/
-    completions pass-through does not reject them."""
+    """Messages from _normalise_responses_input satisfy ChatMessage's
+    role-shape validator so the downstream /v1/chat/completions
+    pass-through doesn't reject them."""
 
     def test_round_trip_multi_turn(self):
         payload = ResponsesRequest(
@@ -662,6 +662,6 @@ class TestTranslatedMessagesValidate:
         )
         msgs = _normalise_responses_input(payload)
         for m in msgs:
-            # Constructing a fresh ChatMessage from the dump round-trips the
-            # role-shape validator — the key invariant for the passthrough.
+            # Building a fresh ChatMessage from the dump round-trips the
+            # role-shape validator — the passthrough's key invariant.
             ChatMessage(**m.model_dump(exclude_none = True))

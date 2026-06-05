@@ -4,8 +4,8 @@
 """Tests for the OpenAI Responses-API citation marker rewriter.
 
 The stream interleaves text deltas with ``\\ue200cite\\ue202SOURCE_ID\\ue201``
-markers. The rewriter resolves each to `[N](URL)` when the annotation has
-arrived and drops it otherwise; the URL list still flows to Sources via
+markers. The rewriter resolves each to `[N](URL)` once the annotation arrives
+and drops it otherwise; the URL list still flows to Sources via
 `_record_url_citation`.
 
 Reference: https://developers.openai.com/api/docs/guides/citation-formatting
@@ -58,8 +58,7 @@ def test_marker_rewritten_to_link_when_annotation_known():
 def test_unknown_source_marker_dropped_silently():
     text = f"Foo {_marker('turn9view9')} bar."
     out = _replace_openai_citation_markers(text, [])
-    # Marker stripped, no garbled "E202" glyph leaks through, and the
-    # surrounding text stays intact.
+    # Marker stripped, no garbled "E202" glyph leaks, surrounding text intact.
     assert not _has_marker_codepoints(out)
     assert "E202" not in out
     assert "turn9view9" not in out
@@ -67,8 +66,8 @@ def test_unknown_source_marker_dropped_silently():
 
 
 def test_multiple_concatenated_markers_resolved_in_order():
-    """Real-world wire shape: a string of markers butted up against each other
-    after a sentence, as in the user-reported bug."""
+    """Real-world wire shape: markers butted together after a sentence,
+    as in the user-reported bug."""
     markers = "".join(_marker(f"turn{i}view{j}") for i, j in [(1, 0), (1, 1), (3, 0)])
     text = f"All animals ranked. {markers}"
     citations = [
@@ -150,8 +149,8 @@ def test_multiple_source_id_aliases_resolve_to_same_url():
         },
     ]
     out = _replace_openai_citation_markers(text, citations)
-    # All three aliases collapse onto citation [1] -- the URL is the
-    # same so it would be misleading to show three different numbers.
+    # All three aliases collapse onto citation [1] -- same URL, so showing
+    # three different numbers would mislead.
     assert out.count("[[1]](https://example.com/paris)") == 3
     assert not _has_marker_codepoints(out)
 
@@ -176,7 +175,7 @@ def test_source_ids_list_and_legacy_source_id_both_resolve():
 
 # ---------------------------------------------------------------------------
 # _rewrite_citation_markers_partial: deferred-annotation tests. OpenAI emits
-# url_citation annotations on a subsequent SSE event; this helper reports
+# url_citation annotations on a later SSE event; this helper reports
 # `has_unresolved` so the stream loop defers emission. See PR #5713 audit.
 # ---------------------------------------------------------------------------
 
@@ -216,15 +215,15 @@ def test_partial_resolves_after_late_annotation():
 def test_partial_multi_source_partial_resolution_keeps_marker_pending():
     """Any unresolved token in a multi-source marker leaves the whole marker
     verbatim with ``unresolved`` True; defer until every id resolves or
-    end-of-stream forces a flush (dropping unresolved tokens then)."""
+    end-of-stream forces a flush (dropping unresolved tokens)."""
     cite = f"{CITE_START}cite{CITE_DELIM}known{CITE_DELIM}locator{CITE_STOP}"
     text = f"Pre {cite} post."
     citations = [{"source_id": "known", "url": "https://example.com/y"}]
     out, unresolved = _rewrite_citation_markers_partial(text, citations)
     assert unresolved is True
     assert cite in out
-    # End-of-stream force flush: drop the unresolved token, keep the
-    # resolved link. The streamer routes pending segments through
+    # End-of-stream force flush: drop the unresolved token, keep the resolved
+    # link. The streamer routes pending segments through
     # `_replace_openai_citation_markers` at force=True for this.
     forced = _replace_openai_citation_markers(out, citations)
     assert "[[1]](https://example.com/y)" in forced

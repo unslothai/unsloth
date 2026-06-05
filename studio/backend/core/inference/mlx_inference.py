@@ -34,10 +34,10 @@ class MLXInferenceBackend:
     def _configure_memory_limits(self):
         """Apply Metal memory caps before loading a model.
 
-        Mirrors MLXTrainer._configure_memory_limits's defaults:
+        Mirrors MLXTrainer._configure_memory_limits defaults:
         memory_limit = 85% of recommended working-set,
-        wired_limit = min(recommended, memory_limit). Recorded so unload
-        can lower wired_limit back to release pinned RAM.
+        wired_limit = min(recommended, memory_limit). Recorded so unload can
+        lower wired_limit back to release pinned RAM.
         """
         import mlx.core as mx
 
@@ -78,18 +78,16 @@ class MLXInferenceBackend:
         model_name = config.identifier if hasattr(config, "identifier") else str(config)
         is_vision = getattr(config, "is_vision", False)
 
-        # GGUF guard. GGUF models are served via llama-server in the
-        # parent process, NOT via mlx-lm in this MLX subprocess. The
-        # route at studio/backend/routes/inference.py:592 (`if config.
-        # is_gguf:`) is responsible for sending GGUF traffic to the
-        # llama-server backend before reaching the MLX orchestrator.
-        # If we end up here with is_gguf=True, the route's
-        # `detect_gguf_model_remote` returned None on its first call
-        # (transient HF Hub flake) but the subprocess re-detection
-        # succeeded. The subprocess cannot reach into the parent's
-        # llama-server, so all we can do is raise loudly so the caller
-        # gets a clear error instead of a cryptic
-        # "config.json does not exist" from mlx_lm.utils.load_model.
+        # GGUF guard. GGUF models are served via llama-server in the parent
+        # process, NOT via mlx-lm in this MLX subprocess. The route at
+        # studio/backend/routes/inference.py:592 (`if config.is_gguf:`) sends
+        # GGUF traffic to llama-server before reaching the MLX orchestrator.
+        # Reaching here with is_gguf=True means the route's
+        # `detect_gguf_model_remote` returned None on its first call (transient
+        # HF Hub flake) but the subprocess re-detection succeeded. The
+        # subprocess can't reach the parent's llama-server, so raise loudly to
+        # give the caller a clear error instead of a cryptic "config.json does
+        # not exist" from mlx_lm.utils.load_model.
         if getattr(config, "is_gguf", False):
             raise RuntimeError(
                 f"MLXInferenceBackend cannot load GGUF model '{model_name}': "
@@ -157,9 +155,9 @@ class MLXInferenceBackend:
             "audio_type": None,
             "has_audio_input": False,
         }
-        # Capture chat_template_info so the worker IPC reply can ship
-        # it back to the parent and the route layer classifies
-        # capabilities the same way as the transformers / GGUF paths.
+        # Capture chat_template_info so the worker IPC reply can ship it back
+        # to the parent and the route layer classifies capabilities the same
+        # way as the transformers / GGUF paths.
         self._populate_chat_template_info(model_name)
 
         logger.info("Model %s loaded successfully", model_name)
@@ -168,10 +166,9 @@ class MLXInferenceBackend:
     def _populate_chat_template_info(self, model_name: str) -> None:
         """Mirror InferenceBackend._load_chat_template_info for MLX.
 
-        Stores ``chat_template_info`` on ``self.models[model_name]``
-        with the resolved ``tokenizer.chat_template`` so
-        ``_detect_safetensors_features`` (route layer) sees the same
-        template the model actually uses."""
+        Stores ``chat_template_info`` on ``self.models[model_name]`` with the
+        resolved ``tokenizer.chat_template`` so ``_detect_safetensors_features``
+        (route layer) sees the template the model actually uses."""
         entry = self.models.get(model_name)
         if not entry:
             return
@@ -246,10 +243,9 @@ class MLXInferenceBackend:
         max_new_tokens = 256,
         repetition_penalty = 1.0,
         cancel_event = None,
-        # Reasoning / tool kwargs forwarded by the route + worker -- the
-        # MLX path renders the template via apply_chat_template_for_
-        # generation so these are honoured the same way as the
-        # transformers path.
+        # Reasoning / tool kwargs forwarded by the route + worker -- the MLX
+        # path renders the template via apply_chat_template_for_generation so
+        # these are honoured the same way as the transformers path.
         tools = None,
         enable_thinking = None,
         reasoning_effort = None,
@@ -275,7 +271,7 @@ class MLXInferenceBackend:
                             {"type": "text", "text": content},
                         ]
                     elif isinstance(content, list):
-                        # Prepend image if not already there
+                        # Prepend image if not already present
                         has_image = any(
                             p.get("type") == "image"
                             for p in content
@@ -360,8 +356,8 @@ class MLXInferenceBackend:
             min_p = float(min_p or 0.0),
             min_tokens_to_keep = 1,
         )
-        # Only build a logits processor when we actually have a non-trivial
-        # repetition penalty (1.0 is the no-op value).
+        # Only build a logits processor for a non-trivial repetition penalty
+        # (1.0 is the no-op value).
         logits_processors = None
         if repetition_penalty is not None and float(repetition_penalty) not in (
             0.0,
@@ -394,7 +390,7 @@ class MLXInferenceBackend:
                     **gen_kwargs,
                 ):
                     token_ids.append(response.token)
-                    # Decode full sequence with skip_special_tokens — same as GPU
+                    # Decode full sequence with skip_special_tokens — like GPU
                     cumulative = self._tokenizer.decode(
                         token_ids,
                         skip_special_tokens = True,
@@ -432,10 +428,9 @@ class MLXInferenceBackend:
             apply_chat_template_for_generation,
         )
 
-        # Pick the chat-template-aware caller: processors that expose
-        # their own apply_chat_template + chat_template attr (e.g.
-        # Qwen2.5-VL) use it directly; otherwise fall back to the
-        # nested tokenizer.
+        # Pick the chat-template-aware caller: processors that expose their own
+        # apply_chat_template + chat_template attr (e.g. Qwen2.5-VL) use it
+        # directly; otherwise fall back to the nested tokenizer.
         chat_target = self._processor
         if (
             getattr(self._processor, "apply_chat_template", None) is None
@@ -453,8 +448,8 @@ class MLXInferenceBackend:
             preserve_thinking = preserve_thinking,
         )
 
-        # For VLM: always use mlx_vlm's stream_generate which handles
-        # pixel_values properly (passes None for text-only, image for VLM)
+        # For VLM: always use mlx_vlm's stream_generate, which handles
+        # pixel_values properly (None for text-only, image for VLM)
         images = [image] if image is not None else None
 
         cumulative = ""
@@ -464,8 +459,8 @@ class MLXInferenceBackend:
             image is not None,
         )
         # mlx_vlm.stream_generate forwards **kwargs into generate_step, which
-        # accepts temp/top_p/top_k/repetition_penalty (and builds the sampler
-        # + logits_processors internally). Pass them through.
+        # accepts temp/top_p/top_k/repetition_penalty (building the sampler +
+        # logits_processors internally). Pass them through.
         # NOTE: mlx_vlm.generate_step expects ``temperature=`` (long form) —
         # passing ``temp=`` silently falls into **kwargs and is ignored,
         # leaving generation stuck at the default 0.0 (greedy).

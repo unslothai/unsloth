@@ -4,8 +4,7 @@
 """
 Data collators for dataset processing.
 
-This module contains custom data collators for training,
-particularly for VLM/OCR processing.
+Custom training collators, particularly for VLM/OCR processing.
 """
 
 from dataclasses import dataclass
@@ -20,9 +19,9 @@ class DataCollatorSpeechSeq2SeqWithPadding:
     """
     Data collator for Whisper speech-to-text training.
 
-    Pads input features (audio) and label sequences (text) separately,
-    masks padding in labels with -100, and strips leading BOS token.
-    Mirrors the collator from the Whisper.ipynb notebook.
+    Pads audio input features and text labels separately, masks label padding
+    with -100, and strips the leading BOS token. Mirrors the Whisper.ipynb
+    notebook collator.
     """
 
     processor: Any
@@ -77,7 +76,7 @@ class DeepSeekOCRDataCollator:
         """
         from PIL import Image
 
-        # Extract messages and images
+        # Extract messages and images.
         all_messages = []
         all_images = []
 
@@ -85,7 +84,7 @@ class DeepSeekOCRDataCollator:
             messages = sample["messages"]
             all_messages.append(messages)
 
-            # Extract PIL images from content
+            # Extract PIL images from content.
             for msg in messages:
                 content = msg.get("content", [])
                 if isinstance(content, list):
@@ -95,9 +94,9 @@ class DeepSeekOCRDataCollator:
                             if img is not None and hasattr(img, "size"):  # PIL Image
                                 all_images.append(img)
 
-        # Process with the VL processor
+        # Process with the VL processor.
         try:
-            # Qwen2VL style processing
+            # Qwen2VL-style processing.
             texts = [
                 self.processor.apply_chat_template(
                     msgs, tokenize = False, add_generation_prompt = False
@@ -105,7 +104,7 @@ class DeepSeekOCRDataCollator:
                 for msgs in all_messages
             ]
 
-            # Process with images
+            # Process with images.
             inputs = self.processor(
                 text = texts,
                 images = all_images if all_images else None,
@@ -115,10 +114,10 @@ class DeepSeekOCRDataCollator:
                 max_length = self.max_length,
             )
 
-            # Create labels (mask input, keep output)
+            # Create labels (mask input, keep output).
             labels = inputs["input_ids"].clone()
 
-            # Simple masking: mask padding tokens
+            # Mask padding tokens.
             labels[labels == self.processor.tokenizer.pad_token_id] = self.ignore_index
 
             inputs["labels"] = labels
@@ -144,7 +143,7 @@ class VLMDataCollator:
     processor: Any
     max_length: int = 2048
     ignore_index: int = -100
-    mask_input_tokens: bool = True  # Whether to mask user tokens in labels
+    mask_input_tokens: bool = True  # Mask user tokens in labels
 
     def __call__(self, batch: List[dict]) -> dict:
         """
@@ -157,7 +156,7 @@ class VLMDataCollator:
             messages = sample.get("messages", [])
             all_messages.append(messages)
 
-            # Extract images
+            # Extract images.
             for msg in messages:
                 content = msg.get("content", [])
                 if isinstance(content, list):
@@ -167,7 +166,7 @@ class VLMDataCollator:
                             if img is not None:
                                 all_images.append(img)
 
-        # Apply chat template
+        # Apply chat template.
         texts = [
             self.processor.apply_chat_template(
                 msgs, tokenize = False, add_generation_prompt = False
@@ -175,7 +174,7 @@ class VLMDataCollator:
             for msgs in all_messages
         ]
 
-        # Process inputs
+        # Process inputs.
         inputs = self.processor(
             text = texts,
             images = all_images if all_images else None,
@@ -185,10 +184,10 @@ class VLMDataCollator:
             max_length = self.max_length,
         )
 
-        # Create labels
+        # Create labels.
         labels = inputs["input_ids"].clone()
 
-        # Mask padding
+        # Mask padding.
         if hasattr(self.processor, "tokenizer"):
             pad_token_id = self.processor.tokenizer.pad_token_id
         else:

@@ -2,9 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 # backend/export.py
-"""
-Export backend - handles model exporting in various formats
-"""
+"""Export backend - exports models in various formats."""
 
 import glob
 import json
@@ -46,10 +44,10 @@ def _is_wsl():
 def _apply_wsl_sudo_patch():
     """On WSL, monkey-patch do_we_need_sudo() to return False.
 
-    WSL doesn't have passwordless sudo, and do_we_need_sudo() runs
-    `sudo apt-get update` which hangs waiting for a stdin password
-    inside a non-interactive subprocess. setup.sh pre-installs the
-    build dependencies on WSL, so sudo is not needed at runtime.
+    WSL lacks passwordless sudo, and do_we_need_sudo() runs
+    `sudo apt-get update`, which hangs on a stdin password in a
+    non-interactive subprocess. setup.sh pre-installs the build deps on
+    WSL, so sudo isn't needed at runtime.
     """
     if not _is_wsl():
         return
@@ -115,7 +113,7 @@ class ExportBackend:
         try:
             logger.info("Starting memory cleanup...")
 
-            # Unload all models from inference backend
+            # Unload all inference-backend models
             model_names = list(self.inference_backend.models.keys())
             for model_name in model_names:
                 self.inference_backend.unload_model(model_name)
@@ -126,7 +124,7 @@ class ExportBackend:
             self.current_checkpoint = None
             self._audio_type = None
 
-            # Clear GPU memory cache (handles gc + backend-specific cleanup)
+            # Clear GPU cache (handles gc + backend-specific cleanup)
             clear_gpu_cache()
 
             logger.info("Memory cleanup completed successfully")
@@ -142,8 +140,7 @@ class ExportBackend:
         """
         Scan outputs folder for training runs and their checkpoints.
 
-        Returns:
-            List of tuples: [(model_name, [(display_name, checkpoint_path), ...]), ...]
+        Returns: [(model_name, [(display_name, checkpoint_path), ...]), ...]
         """
         from utils.models.checkpoints import scan_checkpoints
 
@@ -165,12 +162,12 @@ class ExportBackend:
         try:
             logger.info(f"Loading checkpoint: {checkpoint_path}")
 
-            # First, cleanup existing models
+            # Cleanup existing models first
             self.cleanup_memory()
 
             checkpoint_path_obj = Path(checkpoint_path)
 
-            # Determine the model identity for type detection
+            # Model identity for type detection
             adapter_config = checkpoint_path_obj / "adapter_config.json"
             base_model = None
             if adapter_config.exists():
@@ -254,7 +251,7 @@ class ExportBackend:
                     load_in_4bit = load_in_4bit,
                     trust_remote_code = trust_remote_code,
                 )
-                tokenizer = processor  # For vision models, processor acts as tokenizer
+                tokenizer = processor  # vision: processor acts as tokenizer
 
             else:
                 logger.info("Loading as text model...")
@@ -266,14 +263,13 @@ class ExportBackend:
                     trust_remote_code = trust_remote_code,
                 )
 
-            # Check if PEFT / LoRA model
+            # Detect PEFT / LoRA model
             if _IS_MLX:
                 # MLX doesn't use PeftModel — detect LoRA via adapter_config.json
                 self.is_peft = adapter_config.exists()
             else:
                 self.is_peft = isinstance(model, (PeftModel, PeftModelForCausalLM))
 
-            # Store loaded model
             self.current_model = model
             self.current_tokenizer = tokenizer
             self.current_checkpoint = checkpoint_path
@@ -471,7 +467,7 @@ class ExportBackend:
 
                 if _IS_MLX:
                     # MLX: save_pretrained_merged handles non-LoRA models too
-                    # (fuse() is a no-op when there are no LoRA layers)
+                    # (fuse() is a no-op without LoRA layers)
                     self.current_model.save_pretrained_merged(
                         save_directory,
                         self.current_tokenizer,
@@ -521,14 +517,13 @@ class ExportBackend:
                                 private = private,
                             )
                 else:
-                    # Get base model name from request or model config
+                    # Base model name from request or model config
                     base_model = (
                         base_model_id
                         or self.current_model.config._name_or_path
                         or "unknown"
                     )
 
-                    # Create repo
                     hf_api = HfApi(token = hf_token)
                     repo_id = PushToHubMixin._create_repo(
                         PushToHubMixin,
@@ -538,7 +533,7 @@ class ExportBackend:
                     )
                     username = repo_id.split("/")[0]
 
-                    # Create and push model card
+                    # Build and push model card
                     content = MODEL_CARD.format(
                         username = username,
                         base_model = base_model,
@@ -551,7 +546,7 @@ class ExportBackend:
                         repo_id, token = hf_token, commit_message = "Unsloth Model Card"
                     )
 
-                    # Upload model files
+                    # Upload files
                     if save_directory:
                         hf_api.upload_folder(
                             folder_path = save_directory,
@@ -601,7 +596,7 @@ class ExportBackend:
 
         output_path: Optional[str] = None
         try:
-            # Convert quantization method to lowercase for unsloth
+            # unsloth expects lowercase quant method
             quant_method = quantization_method.lower()
 
             # Pin convert_hf_to_gguf.py to the same llama.cpp ref as the
@@ -632,27 +627,26 @@ class ExportBackend:
             # Save locally if requested
             if save_directory:
                 save_directory = str(resolve_export_dir(save_directory))
-                # Resolve to absolute path so unsloth's relative-path internals
+                # Use absolute path so unsloth's relative-path internals
                 # (check_llama_cpp, use_local_gguf, _download_convert_hf_to_gguf)
-                # all resolve against the repo root cwd, NOT the export directory.
+                # resolve against the repo root cwd, NOT the export directory.
                 abs_save_dir = os.path.abspath(save_directory)
                 logger.info(f"Saving GGUF model locally to: {abs_save_dir}")
 
-                # Create the directory if it doesn't exist
                 ensure_dir(Path(abs_save_dir))
 
                 # On WSL, patch out sudo check before llama.cpp build
                 _apply_wsl_sudo_patch()
 
-                # Snapshot existing .gguf files in cwd before conversion.
-                # unsloth's convert_to_gguf writes output files relative to
-                # cwd (repo root), so we diff afterwards and relocate them.
+                # Snapshot existing .gguf files in cwd before conversion;
+                # unsloth's convert_to_gguf writes output relative to cwd
+                # (repo root), so we diff afterwards and relocate.
                 cwd = os.getcwd()
                 pre_existing_ggufs = set(glob.glob(os.path.join(cwd, "*.gguf")))
 
-                # Pass absolute path — no os.chdir needed.
-                # unsloth saves intermediate HF model files into model_save_path.
-                # unsloth-zoo's check_llama_cpp() uses ~/.unsloth/llama.cpp by default.
+                # Absolute path — no os.chdir needed. unsloth saves intermediate
+                # HF model files into model_save_path; unsloth-zoo's
+                # check_llama_cpp() uses ~/.unsloth/llama.cpp by default.
                 model_save_path = os.path.join(abs_save_dir, "model")
                 self.current_model.save_pretrained_gguf(
                     model_save_path,
@@ -661,8 +655,8 @@ class ExportBackend:
                 )
 
                 # Relocate GGUF artifacts into the export directory.
-                # convert_to_gguf writes .gguf files to cwd (repo root)
-                # because --outfile is a relative path like "model.Q4_K_M.gguf".
+                # convert_to_gguf writes .gguf to cwd (repo root) because
+                # --outfile is a relative path like "model.Q4_K_M.gguf".
                 new_ggufs = (
                     set(glob.glob(os.path.join(cwd, "*.gguf"))) - pre_existing_ggufs
                 )
@@ -673,9 +667,9 @@ class ExportBackend:
                         f"Relocated GGUF: {os.path.basename(src)} → {abs_save_dir}/"
                     )
 
-                # Flatten any .gguf files from subdirectories into abs_save_dir.
+                # Flatten any .gguf from subdirs into abs_save_dir.
                 # save_pretrained_gguf may create subdirs (e.g. model_gguf/)
-                # with a name different from model_save_path.
+                # named differently from model_save_path.
                 for sub in list(Path(abs_save_dir).iterdir()):
                     if not sub.is_dir():
                         continue
@@ -683,13 +677,13 @@ class ExportBackend:
                         dest = os.path.join(abs_save_dir, src.name)
                         shutil.move(str(src), dest)
                         logger.info(f"Relocated GGUF: {src.name} → {abs_save_dir}/")
-                    # Clean up the subdirectory (intermediate HF files, etc.)
+                    # Clean up the subdir (intermediate HF files, etc.)
                     shutil.rmtree(str(sub), ignore_errors = True)
                     logger.info(f"Cleaned up subdirectory: {sub.name}")
 
                 # For non-PEFT models, save_pretrained_gguf redirects to the
-                # checkpoint path, leaving a *_gguf directory in outputs/.
-                # Relocate any GGUFs from there and clean it up.
+                # checkpoint path, leaving a *_gguf dir in outputs/. Relocate
+                # any GGUFs from there and clean it up.
                 if self.current_checkpoint:
                     ckpt = Path(self.current_checkpoint)
                     gguf_dir = ckpt.parent / f"{ckpt.name}_gguf"
@@ -711,8 +705,7 @@ class ExportBackend:
                 # Write export metadata so the Chat page can identify the base model
                 self._write_export_metadata(abs_save_dir)
 
-                # Log final file locations (after relocation) so it's clear
-                # where the GGUF files actually ended up.
+                # Log final file locations (post-relocation).
                 final_ggufs = sorted(glob.glob(os.path.join(abs_save_dir, "*.gguf")))
                 logger.info(
                     "GGUF export complete. Final files in %s:\n  %s",

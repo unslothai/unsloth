@@ -26,7 +26,7 @@ _MAX_LR_VALUE = 1.0
 _MAX_LORA_R = 16_384
 _MAX_LORA_ALPHA = 32_768
 _MIN_VISION_IMAGE_SIZE = 256
-# 2048 was the most I could get most llms to work at without getting unstable
+# 2048 is the highest most llms stay stable at
 _MAX_VISION_IMAGE_SIZE = 2048
 
 
@@ -380,7 +380,7 @@ class TrainingStartRequest(BaseModel):
     @model_validator(mode = "after")
     def _check_steps_or_epochs(self) -> "TrainingStartRequest":
         # num_epochs and max_steps each accept 0 as a "use the other one"
-        # sentinel. If both resolve to 0 there's nothing to train against.
+        # sentinel. Both 0 means nothing to train against.
         if (self.max_steps is None or self.max_steps == 0) and self.num_epochs == 0:
             raise ValueError(
                 "Either num_epochs or max_steps must be > 0; both cannot be 0."

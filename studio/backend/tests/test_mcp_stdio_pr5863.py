@@ -2,10 +2,10 @@
 
 Covers the pure helpers (is_stdio / parse_stdio_command / stdio_mcp_enabled /
 probe_timeout), the route-level _validate_url gate, and - most importantly -
-that the UNSLOTH_STUDIO_ALLOW_STDIO_MCP gate blocks the stdio transport at all
-five enforcement points (create, update, test, refresh, discovery, execute)
-when disabled, and reaches it when enabled. The transport (_client) is stubbed
-so no real subprocess is spawned; a recorder asserts whether it was reached.
+that the UNSLOTH_STUDIO_ALLOW_STDIO_MCP gate blocks the stdio transport at
+every enforcement point (create, update, test, refresh, discovery, execute)
+when disabled and reaches it when enabled. The transport (_client) is stubbed
+so no real subprocess spawns; a recorder asserts whether it was reached.
 
 Run from studio/backend:  python -m pytest tests/test_mcp_stdio_pr5863.py -q
 """
@@ -57,7 +57,7 @@ class _FakeResult:
 
 
 class _RecordingClient:
-    """Stands in for fastmcp.Client; records that the transport was opened."""
+    """Stand-in for fastmcp.Client; records that the transport was opened."""
 
     def __init__(self, url, headers, use_oauth, recorder):
         recorder.append({"url": url, "headers": headers, "use_oauth": use_oauth})
@@ -78,7 +78,7 @@ class _RecordingClient:
 @pytest.fixture
 def transport(monkeypatch):
     """Patch mcp_client._client with a recorder. Returns the recorder list;
-    empty == the stdio transport was never reached."""
+    empty == stdio transport never reached."""
     recorder = []
     monkeypatch.setattr(
         mcp_client,
@@ -155,8 +155,8 @@ def test_parse_unclosed_quote_raises_valueerror():
 
 
 def test_parse_windows_strips_wrapping_quotes(monkeypatch):
-    # gemini "medium": posix=False keeps backslash paths but also the wrapping
-    # quotes; the PR strips a matched pair so argv[0] reaches the OS clean.
+    # gemini "medium": posix=False keeps backslash paths but also the
+    # wrapping quotes; the PR strips a matched pair so argv[0] is clean.
     monkeypatch.setattr(sys, "platform", "win32")
     parts = mcp_client.parse_stdio_command(
         r'"C:\Program Files\node\node.exe" server.js'
@@ -215,8 +215,8 @@ def test_validate_url_gate_off_rejects_stdio(monkeypatch):
 
 
 def test_validate_url_gate_off_message_depends_on_whitespace(monkeypatch):
-    # The message names a command only when the value has whitespace, and never
-    # says "desktop app only" (self-hosted hosts can opt in via the env var).
+    # The message names a command only when the value has whitespace, and
+    # never says "desktop app only" (self-hosted can opt in via the env var).
     _disable(monkeypatch)
     from routes.mcp_servers import _validate_url
 
@@ -245,8 +245,8 @@ def test_validate_url_gate_on_accepts_stdio(monkeypatch):
     assert _validate_url("npx server --url https://x/mcp") == (
         "npx server --url https://x/mcp"
     )
-    # A lone token is ambiguous; keep the prior behaviour and accept it as a
-    # command rather than guessing it's a URL (no regression for single binaries).
+    # A lone token is ambiguous; accept it as a command rather than
+    # guessing it's a URL (no regression for single binaries).
     assert (
         _validate_url("/usr/local/bin/my-mcp-server") == "/usr/local/bin/my-mcp-server"
     )
@@ -289,7 +289,7 @@ def test_update_http_to_stdio_blocked_when_off(tmp_path, monkeypatch):
     _reset_db(tmp_path, monkeypatch)
     _disable(monkeypatch)
     mcp_servers_db.create_server(id = "s1", display_name = "A", url = "https://a/mcp")
-    # editing url -> stdio command must 400 (http->stdio edit bypass closed)
+    # editing url -> stdio command must 400 (http->stdio bypass closed)
     with pytest.raises(HTTPException) as exc:
         asyncio.run(
             routes_mcp.update_mcp_server(
@@ -326,7 +326,7 @@ def test_refresh_route_gate(tmp_path, monkeypatch, transport):
     import routes.mcp_servers as routes_mcp
 
     _reset_db(tmp_path, monkeypatch)
-    # a stdio row as if carried over from a desktop DB
+    # a stdio row, as if carried over from a desktop DB
     mcp_servers_db.create_server(id = "stdio1", display_name = "FS", url = "npx server")
 
     _disable(monkeypatch)

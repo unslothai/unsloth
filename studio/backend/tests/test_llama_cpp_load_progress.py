@@ -4,18 +4,17 @@
 """Tests for ``LlamaCppBackend.load_progress()``.
 
 The chat settings flow and the training overlay both show a generic
-"Starting model..." spinner during the window after a GGUF download
-finishes and before llama-server reports healthy. For small models
-that window is a second or two and nobody notices. For large MoE GGUFs
-(MiniMax-M2.7, Qwen3.5-397B-A17B, etc.) the llama-server process spends
-minutes in kernel state D, paging tens or hundreds of GB of shards
-into the page cache. The UI has no way to show a real progress bar,
-rate, or ETA during that window.
+"Starting model..." spinner in the window after a GGUF download finishes
+and before llama-server reports healthy. For small models that window is a
+second or two and nobody notices. For large MoE GGUFs (MiniMax-M2.7,
+Qwen3.5-397B-A17B, etc.) llama-server spends minutes in kernel state D,
+paging tens or hundreds of GB of shards into the page cache. The UI has no
+way to show a real progress bar, rate, or ETA during that window.
 
-``load_progress()`` samples ``/proc/<pid>/status VmRSS`` (what the
-kernel has actually paged in) against the total shard file size on
-disk, so the frontend can render a real bar plus rate/ETA. This
-module pins that contract:
+``load_progress()`` samples ``/proc/<pid>/status VmRSS`` (what the kernel
+actually paged in) against the total shard file size on disk, so the
+frontend can render a real bar plus rate/ETA. This module pins that
+contract:
 
   * returns ``None`` when no load is in flight
   * returns ``{"phase": "mmap", ...}`` while the subprocess is alive
@@ -27,10 +26,9 @@ module pins that contract:
   * ``bytes_loaded`` is VmRSS in bytes, capped by total, rounded
   * ``fraction`` is clamped to 0..1 and rounded to 4 decimal places
 
-Linux-only via ``/proc``. On platforms without ``/proc`` the method
-returns ``None`` instead of raising.
-Cross-platform test: skips cleanly on macOS / Windows if ``/proc`` is
-not available.
+Linux-only via ``/proc``; without ``/proc`` the method returns ``None``
+instead of raising. Cross-platform test: skips cleanly on macOS / Windows
+when ``/proc`` is unavailable.
 """
 
 from __future__ import annotations
@@ -45,8 +43,8 @@ from unittest.mock import patch
 import pytest
 
 # ---------------------------------------------------------------------------
-# Stub heavy / unavailable external dependencies before importing the
-# module under test. Same pattern as test_kv_cache_estimation.py.
+# Stub heavy / unavailable deps before importing the module under test.
+# Same pattern as test_kv_cache_estimation.py.
 # ---------------------------------------------------------------------------
 
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
@@ -106,7 +104,7 @@ def _make_instance():
 
 
 class _FakeProc:
-    """Minimal stand-in for subprocess.Popen that just carries a pid."""
+    """Minimal stand-in for subprocess.Popen carrying just a pid."""
 
     def __init__(self, pid: int):
         self.pid = pid
@@ -190,7 +188,7 @@ class TestLoadProgressSingleShard:
 
 
 class TestLoadProgressMultiShard:
-    """Shard-aware total: for ``*-00001-of-00004.gguf`` primaries the
+    """Shard-aware total: for ``*-00001-of-00004.gguf`` primaries, the
     method sums sibling files with the same prefix."""
 
     def test_sharded_total_aggregates_siblings(self, tmp_path):
@@ -199,7 +197,7 @@ class TestLoadProgressMultiShard:
                 tmp_path / f"model-{i:05d}-of-00004.gguf",
                 size_bytes = 20 * 1024**3,
             )
-        # Drop an unrelated .gguf in the same folder -- must not be counted.
+        # An unrelated .gguf in the same folder -- must not be counted.
         _write_sparse_file(tmp_path / "mmproj-BF16.gguf", 2 * 1024**3)
 
         inst = _make_instance()

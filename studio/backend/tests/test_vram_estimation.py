@@ -543,7 +543,7 @@ class TestQuantizationSkips(unittest.TestCase):
         )
 
     def test_vlm_prefix_skip_module_does_not_match_text_alias(self):
-        # vision_tower-prefixed skips must not shadow text aliases sharing the
+        # vision_tower-prefixed skips must not shadow text aliases with the
         # same suffix.
         baseline = replace(QUANT_SKIP_STRUCTURED, quantization_skip_modules = [])
         vlm_skip = replace(
@@ -1011,9 +1011,9 @@ class TestParallelDenseMoE(unittest.TestCase):
             + with_parallel.num_experts * with_parallel.hidden_size
         )
         dense_only = with_parallel.hidden_size * with_parallel.intermediate_size * 3
-        # why: under gemma4 enable_moe_block, the layer's `self.experts` is a
-        # sibling of `self.mlp`; the `text.layers.<i>.mlp` aggregate must
-        # cover the dense path only, with experts in their own aggregate.
+        # why: under gemma4 enable_moe_block, `self.experts` is a sibling of
+        # `self.mlp`; the `text.layers.<i>.mlp` aggregate covers the dense path
+        # only, with experts in their own aggregate.
         self.assertEqual(elements["text.layers.0.mlp"], dense_only)
         self.assertEqual(elements["text.layers.0.experts"], moe_only)
 
@@ -1165,9 +1165,9 @@ class TestPerLayerInputAccounting(unittest.TestCase):
     def test_per_layer_input_modules_count_quantizable_block(self):
         with_ple = self._arch()
         without_ple = replace(with_ple, hidden_size_per_layer_input = 0)
-        # The PLE block adds: model_projection (hd*nl*pli), per_layer_input_gate
-        # (hd*pli per layer) + per_layer_projection (pli*hd per layer) as
-        # quantizable text linears.
+        # PLE block adds these quantizable text linears: model_projection
+        # (hd*nl*pli), per_layer_input_gate (hd*pli per layer),
+        # per_layer_projection (pli*hd per layer).
         n_layers = with_ple.num_hidden_layers
         hd = with_ple.hidden_size
         pli = with_ple.hidden_size_per_layer_input
@@ -1178,10 +1178,10 @@ class TestPerLayerInputAccounting(unittest.TestCase):
         self.assertGreaterEqual(delta, expected_quantizable_extra)
 
     def test_all_linear_lora_excludes_per_layer_input_modules(self):
-        # why: Unsloth's get_peft_regex requires module names to contain a
-        # component tag (mlp/attn/...); PLE module names (per_layer_input_gate,
-        # per_layer_projection, per_layer_model_projection) lack any tag, so
-        # all-linear training does NOT attach LoRA to them.
+        # why: Unsloth's get_peft_regex requires a component tag (mlp/attn/...)
+        # in module names; PLE names (per_layer_input_gate, per_layer_projection,
+        # per_layer_model_projection) lack one, so all-linear does NOT attach
+        # LoRA to them.
         arch = self._arch()
         without_ple = replace(arch, hidden_size_per_layer_input = 0)
         self.assertEqual(
@@ -1251,11 +1251,10 @@ class TestExpertsSkipGranularity(unittest.TestCase):
         bytes_skip_experts = compute_model_weights_bytes(skip_experts, "qlora", True)
         bytes_skip_mlp = compute_model_weights_bytes(skip_full_mlp, "qlora", True)
         # why: under gemma4 enable_moe_block, `self.experts` is a sibling of
-        # `self.mlp`; skipping `model.layers.0.mlp` should cover only the
-        # dense MLP, while `model.layers.0.mlp.experts` covers the routed
-        # experts. Routed experts have far more params than the dense MLP,
-        # so skipping experts must add more bytes than skipping the dense
-        # path.
+        # `self.mlp`; skipping `model.layers.0.mlp` covers only the dense MLP,
+        # while `model.layers.0.mlp.experts` covers the routed experts. Routed
+        # experts have far more params than the dense MLP, so skipping experts
+        # must add more bytes than skipping the dense path.
         self.assertGreater(bytes_skip_experts, bytes_no_skip)
         self.assertGreater(bytes_skip_mlp, bytes_no_skip)
         self.assertGreater(bytes_skip_experts, bytes_skip_mlp)
@@ -1508,8 +1507,8 @@ class TestPerLayerInputSkipAlias(unittest.TestCase):
         )
 
         arch_with = extract_arch_config(self._hf(["model.layers.0"]))
-        # The text.layers.0 aggregate must include the PLE per-layer modules,
-        # so the same skip on a config without PLE produces a smaller value.
+        # text.layers.0 aggregate includes the PLE per-layer modules, so the
+        # same skip on a no-PLE config produces a smaller value.
         arch_without = extract_arch_config(
             SimpleNamespace(
                 text_config = SimpleNamespace(
@@ -1583,7 +1582,7 @@ class TestSharedExpertVariants(unittest.TestCase):
         )
         arch_implicit = extract_arch_config(self._hf(n_shared_experts = 1))
         # Different shared sizes (64 vs default moe_intermediate_size=128) must
-        # produce different MoE element counts.
+        # give different MoE element counts.
         self.assertNotEqual(
             _compute_moe_mlp_elements(arch_separate),
             _compute_moe_mlp_elements(arch_implicit),
@@ -1592,7 +1591,7 @@ class TestSharedExpertVariants(unittest.TestCase):
     def test_shared_expert_gate_counted_only_for_qwen_style(self):
         from utils.hardware.vram_estimation import _compute_moe_mlp_elements
 
-        # Qwen-style: shared_expert_intermediate_size set -> shared_expert_gate counted.
+        # Qwen-style: shared_expert_intermediate_size set -> gate counted.
         qwen_arch = extract_arch_config(self._hf(shared_expert_intermediate_size = 64))
         hd = qwen_arch.hidden_size
         ms = qwen_arch.moe_intermediate_size
@@ -1651,8 +1650,8 @@ class TestSharedExpertActivation(unittest.TestCase):
         )
 
     def test_shared_expert_plus_dense_block_compose(self):
-        # gemma4 enable_moe_block with hypothetical shared expert: dense + routed
-        # + shared all live per layer; mlp_size should sum all three terms.
+        # gemma4 enable_moe_block with a hypothetical shared expert: dense +
+        # routed + shared all live per layer; mlp_size sums all three.
         from utils.hardware.vram_estimation import _layer_qkv_mlp_sizes
 
         arch = self._make(
@@ -1807,7 +1806,7 @@ class TestSparseMoeSkipAliases(unittest.TestCase):
                 shared_expert_intermediate_size = 32,
             )
         )
-        # shared_expert delta only -- routed mlp.experts is NOT skipped.
+        # shared_expert delta only -- routed mlp.experts NOT skipped.
         delta = _compute_skipped_quantizable_elements(arch)
         self.assertGreater(delta, 0)
         full_layer = extract_arch_config(
@@ -1987,10 +1986,10 @@ class TestErnieMoEListConfig(unittest.TestCase):
                 moe_intermediate_size = [1536, 512],
             )
         )
-        # why: ERNIE 4.5 VL MoE encodes [text_routed, vision_routed]; the
-        # second element is the vision-routed expert width, not the shared
-        # expert width. Shared experts are sized from the text-routed width
-        # (= moe_intermediate_size[0]) when moe_num_shared_experts is set.
+        # why: ERNIE 4.5 VL MoE encodes [text_routed, vision_routed]; element 1
+        # is the vision-routed width, not the shared-expert width. Shared
+        # experts size from the text-routed width (moe_intermediate_size[0])
+        # when moe_num_shared_experts is set.
         self.assertEqual(arch.moe_intermediate_size, 1536)
         self.assertIsNone(arch.shared_expert_intermediate_size)
         self.assertEqual(arch.n_shared_experts, 0)
@@ -2113,7 +2112,7 @@ class TestMultimodalFullModelBytes(unittest.TestCase):
                 load_in_4bit = True,
             )
         self.assertEqual(metadata.get("estimation_mode"), "detailed")
-        # model_weights_gb must reflect the extra non-text bytes (>5 GB
+        # model_weights_gb must reflect the extra non-text bytes (>5 GB,
         # since text-only arch_fp16 is small for these dims).
         self.assertGreater(metadata["vram_breakdown"]["model_weights_gb"], 5.0)
 

@@ -3,16 +3,16 @@
 
 """Logging handlers and middleware for structured logging.
 
-This module provides FastAPI middleware and structlog processors for:
+FastAPI middleware + structlog processors for:
 - Request/response logging with timing
-- Sensitive data filtering in logs
-- Structured logging configuration
-- Error handling with detailed context
+- Sensitive data filtering
+- Structured logging config
+- Error handling with context
 
-Key Components:
-- LoggingMiddleware: FastAPI middleware for request/response logging
-- filter_sensitive_data: Structlog processor for data sanitization
-- get_logger: Factory function for structured loggers
+Key components:
+- LoggingMiddleware: request/response logging
+- filter_sensitive_data: structlog processor for sanitization
+- get_logger: factory for structured loggers
 """
 
 import re
@@ -38,7 +38,6 @@ class LoggingMiddleware(BaseHTTPMiddleware):
         try:
             response = await call_next(request)
 
-            # Log response
             process_time = (time.time() - start_time) * 1000
 
             EXCLUDED_PATHS = {
@@ -108,10 +107,8 @@ def filter_sensitive_data(logger, method_name, event_dict):
 
 
 def get_logger(name: str) -> structlog.BoundLogger:
-    """Get a logger instance for a specific module.
+    """Get a bound structured logger for a module.
     Args:
         name: Usually __name__ of the module
-    Returns:
-        A bound structured logger
     """
     return structlog.get_logger(name)

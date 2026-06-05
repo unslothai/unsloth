@@ -46,7 +46,7 @@ def _cache_dir() -> Path:
 
 def read_install_marker(binary_path: Optional[str]) -> Optional[dict]:
     """Walk up from binary_path to find UNSLOTH_PREBUILT_INFO.json.
-    None means no marker (source build / custom path) or invalid JSON."""
+    None = no marker (source build / custom path) or invalid JSON."""
     if not binary_path:
         return None
     cached = _marker_cache.get(binary_path)

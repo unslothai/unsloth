@@ -82,11 +82,11 @@ def _round_robin_preview(
     rows: list[dict[str, str]],
     preview_size: int,
 ) -> list[dict[str, str]]:
-    """Pick preview rows round-robin across source files so every file is represented."""
+    """Pick preview rows round-robin across source files so each is represented."""
     if not rows or preview_size <= 0:
         return []
 
-    # Group rows by source_file, preserving order of first appearance
+    # Group rows by source_file, preserving first-appearance order.
     from collections import OrderedDict
 
     grouped: OrderedDict[str, list[dict[str, str]]] = OrderedDict()
@@ -164,7 +164,7 @@ def materialize_multi_file_unstructured_seed(
     chunk_size: int,
     chunk_overlap: int,
 ) -> tuple[Path, list[dict[str, str]]]:
-    """Chunk multiple files and combine into one parquet dataset with source_file column."""
+    """Chunk multiple files into one parquet dataset with a source_file column."""
     chunk_size, chunk_overlap = resolve_chunking(chunk_size, chunk_overlap)
     cache_key = _compute_multi_file_cache_key(file_entries, chunk_size, chunk_overlap)
     cached = _CACHE_DIR / f"{cache_key}.parquet"

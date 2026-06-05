@@ -16,13 +16,12 @@ import asyncio
 from datetime import datetime
 import uuid as _uuid
 
-# Add backend directory to path
-# The backend code should be in the same directory structure
+# Add backend directory to path (same directory structure).
 backend_path = Path(__file__).parent.parent.parent
 if str(backend_path) not in sys.path:
     sys.path.insert(0, str(backend_path))
 
-# Import backend functions
+# Import backend functions.
 try:
     from core.training import get_training_backend
     from core.training.resume import (
@@ -34,7 +33,7 @@ try:
     from utils.models.model_config import load_model_defaults
     from utils.paths import resolve_dataset_path
 except ImportError:
-    # Fallback: try to import from parent directory
+    # Fallback: import from the parent directory.
     parent_backend = backend_path.parent / "backend"
     if str(parent_backend) not in sys.path:
         sys.path.insert(0, str(parent_backend))
@@ -97,10 +96,9 @@ async def get_hardware_utilization(
     current_subject: str = Depends(get_current_subject),
 ):
     """
-    Get a live snapshot of GPU hardware utilization.
+    Live snapshot of GPU hardware utilization for the active backend.
 
-    Designed to be polled by the frontend during training.
-    Returns live GPU memory usage information for the active backend.
+    Polled by the frontend during training.
     """
     from utils.hardware import get_gpu_utilization
 
@@ -124,8 +122,8 @@ async def start_training(
     """
     Start a training job.
 
-    This endpoint initiates training in the background and returns immediately.
-    Use the /status endpoint to check training progress.
+    Initiates training in the background and returns immediately. Use /status
+    to check progress.
     """
     try:
         logger.info(f"Starting training job with model: {request.model_name}")
@@ -136,7 +134,7 @@ async def start_training(
 
         backend = get_training_backend()
 
-        # Check if training is already active (before mutating any state)
+        # Check if training is already active (before mutating state).
         if backend.is_training_active():
             existing_job_id: Optional[str] = getattr(backend, "current_job_id", "")
             return TrainingJobResponse(
@@ -149,13 +147,13 @@ async def start_training(
                 error = "Training already active",
             )
 
-        # Generate job ID — passed into start_training() which sets it on the
-        # backend only after confirming the old pump thread is dead.
+        # Job ID — passed to start_training(), which sets it on the backend only
+        # after confirming the old pump thread is dead.
         job_id = (
             f"job_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{_uuid.uuid4().hex[:8]}"
         )
 
-        # Validate dataset paths if provided
+        # Validate dataset paths if provided.
         if request.local_datasets:
             request.local_datasets = _validate_local_dataset_paths(
                 request.local_datasets, "Local dataset"
@@ -187,7 +185,7 @@ async def start_training(
                 )
             request.resume_from_checkpoint = resume_checkpoint
 
-        # Convert request to kwargs for backend
+        # Convert request to backend kwargs.
         training_kwargs = {
             "model_name": request.model_name,
             "training_type": request.training_type,
@@ -253,8 +251,8 @@ async def start_training(
         }
 
         # Training page has no trust_remote_code toggle — the value comes from
-        # YAML model defaults applied when the user selects a model.  As a safety
-        # net, consult the YAML directly so models that need it always get it.
+        # YAML model defaults on model select. As a safety net, consult the YAML
+        # directly so models that need it always get it.
         if not training_kwargs["trust_remote_code"]:
             model_defaults = load_model_defaults(request.model_name)
             yaml_trust = model_defaults.get("training", {}).get(
@@ -267,7 +265,7 @@ async def start_training(
                 training_kwargs["trust_remote_code"] = True
 
         # Free GPU memory: shut down any running inference/export subprocesses
-        # before training starts (they'd compete for VRAM otherwise)
+        # before training (they'd compete for VRAM otherwise).
         try:
             from core.inference import get_inference_backend
 
@@ -298,7 +296,7 @@ async def start_training(
         except Exception as e:
             logger.warning("Could not shut down export subprocess: %s", e)
 
-        # start_training now spawns a subprocess (non-blocking)
+        # start_training spawns a subprocess (non-blocking).
         success = backend.start_training(job_id = job_id, **training_kwargs)
 
         if not success:
@@ -349,7 +347,6 @@ async def stop_training(
                 status = "idle", message = "No training job is currently running"
             )
 
-        # Call backend stop method
         backend.stop_training(save = body.save)
 
         return TrainingStopResponse(
@@ -368,16 +365,14 @@ async def stop_training(
 async def reset_training(
     current_subject: str = Depends(get_current_subject),
 ):
-    """
-    Reset training state so the user can return to configuration.
-    """
+    """Reset training state so the user can return to configuration."""
     try:
         backend = get_training_backend()
         is_active = backend.is_training_active()
 
         if is_active:
             if backend._cancel_requested:
-                # Cancel (save=False) was requested — force-terminate so we can reset immediately
+                # Cancel (save=False) requested — force-terminate to reset immediately.
                 logger.info(
                     "Force-terminating subprocess for immediate reset (cancel path)"
                 )
@@ -480,7 +475,7 @@ async def get_training_status(
             if output_dir:
                 details["output_dir"] = output_dir
 
-        # Build metric history for chart recovery after SSE reconnection
+        # Metric history for chart recovery after SSE reconnection.
         metric_history = None
         if backend.step_history:
             metric_history = {
@@ -557,16 +552,15 @@ async def stream_training_progress(
     current_subject: str = Depends(get_current_subject),
 ):
     """
-    Stream training progress updates using Server-Sent Events (SSE).
+    Stream training progress via Server-Sent Events (SSE).
 
-    This endpoint provides real-time updates on training progress.
-    Supports reconnection via the SSE spec:
-      - Sends `id:` with each event so the browser tracks position.
-      - Sends `retry:` to control reconnection interval.
-      - Sends named `event:` types (progress, heartbeat, complete, error).
-      - Reads `Last-Event-ID` header on reconnect to replay missed steps.
+    Real-time progress with reconnection support per the SSE spec:
+      - `id:` per event so the browser tracks position.
+      - `retry:` to control reconnection interval.
+      - Named `event:` types (progress, heartbeat, complete, error).
+      - Reads `Last-Event-ID` on reconnect to replay missed steps.
     """
-    # Read Last-Event-ID header for reconnection resume
+    # Read Last-Event-ID header for reconnection resume.
     last_event_id = request.headers.get("last-event-id")
     resume_from_step: Optional[int] = None
     if last_event_id is not None:
@@ -599,7 +593,7 @@ async def stream_training_progress(
                     float(step) / float(total) * 100.0 if total > 0 else 0.0
                 )
 
-            # Get actual values from progress object if available
+            # Pull values from the progress object if available.
             elapsed_seconds = (
                 getattr(progress, "elapsed_seconds", None) if progress else None
             )
@@ -643,7 +637,7 @@ async def stream_training_progress(
             return "\n".join(lines)
 
         # ── Retry directive ──────────────────────────────────────
-        # Tell the browser to reconnect after 3 seconds if the connection drops
+        # Reconnect after 3 seconds if the connection drops.
         yield "retry: 3000\n\n"
 
         # ── Replay missed steps on reconnect ─────────────────────
@@ -749,7 +743,7 @@ async def stream_training_progress(
         last_step = resume_from_step if resume_from_step is not None else -1
         no_update_count = 0
         max_no_updates = (
-            1800  # Timeout after 30 minutes (large models need time for compilation)
+            1800  # Timeout after 30 min (large models need compile time)
         )
 
         while backend.is_training_active():
@@ -772,7 +766,7 @@ async def stream_training_progress(
                         getattr(tp_inner, "epoch", None) if tp_inner else None
                     )
 
-                    # Only send if step changed
+                    # Only send if the step changed.
                     if current_step != last_step:
                         progress_payload = build_progress(
                             current_step,
@@ -791,7 +785,7 @@ async def stream_training_progress(
                         no_update_count = 0
                     else:
                         no_update_count += 1
-                        # Send heartbeat every 10 seconds
+                        # Heartbeat every 10 seconds.
                         if no_update_count % 10 == 0:
                             heartbeat_payload = build_progress(
                                 current_step,
@@ -807,11 +801,11 @@ async def stream_training_progress(
                                 event_id = current_step,
                             )
                 else:
-                    # No steps yet, but training is active (model loading, etc.)
+                    # No steps yet, but training is active (model loading, etc.).
                     no_update_count += 1
                     if no_update_count % 5 == 0:
-                        # Pull total_steps and status from trainer so
-                        # the frontend can show "Tokenizing…" etc.
+                        # Pull total_steps + status from trainer so the frontend
+                        # can show "Tokenizing…" etc.
                         tp_prep = getattr(
                             getattr(backend, "trainer", None),
                             "training_progress",

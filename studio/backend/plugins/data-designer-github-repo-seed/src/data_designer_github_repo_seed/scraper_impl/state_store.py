@@ -61,7 +61,7 @@ class JsonlWriter:
         self._lock = threading.Lock()
         self._fh = self.path.open("a", buffering = 1)
         self._count_seen_keys: set[str] = set()
-        # Preload seen keys if file exists (for dedup across resumes)
+        # Preload seen keys for dedup across resumes
         if self.path.exists() and self.path.stat().st_size > 0:
             try:
                 with self.path.open() as f:

@@ -76,8 +76,8 @@ def _exact_git_studio_tag(repo_root: Path) -> str | None:
 def get_studio_version(repo_root: Path | None = None) -> str:
     """Return the installed Studio release tag for display, or ``dev``.
 
-    This value is intentionally separate from the PyPI ``unsloth`` package
-    version used by update checks. It never performs network requests.
+    Intentionally separate from the PyPI ``unsloth`` package version used by
+    update checks. Never performs network requests.
     """
     resolved_repo_root = repo_root or _repo_root()
 

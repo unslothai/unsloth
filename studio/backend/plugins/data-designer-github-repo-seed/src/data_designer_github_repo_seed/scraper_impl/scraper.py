@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Main scraper orchestration. Collects issues, PRs, discussions, commits, releases, etc.
+"""Scraper orchestration: issues, PRs, discussions, commits, releases, etc.
 
 Resumable via state file. Writes JSONL shards under data/{repo}/{resource}.jsonl.
 """
@@ -49,9 +49,9 @@ class RepoScraper:
         self.base_dir = base_dir
         self.client = client
         self.trial_limits = trial_limits or {}
-        # When light=True, use trimmed GraphQL queries (no reviewThreads,
-        # reviews, commits, timelineItems, files) so PR pages can be much
-        # larger without blowing GitHub's node-count ceiling.
+        # light=True uses trimmed GraphQL queries (no reviewThreads,
+        # reviews, commits, timelineItems, files) so PR pages can be larger
+        # without hitting GitHub's node-count ceiling.
         self.light = light
         self.repo_dir = base_dir / f"{owner}__{name}"
         self.repo_dir.mkdir(parents = True, exist_ok = True)
@@ -235,8 +235,8 @@ class RepoScraper:
         page = 0
         # Heavy nested PR query is capped at 3 per page (GitHub node-count
         # ceiling); light query skips reviewThreads/reviews/commits/etc and
-        # can safely go to 25 per page. Clamp by trial_limit for small
-        # previews so limit=1 does not fetch a whole 25-item page.
+        # goes to 25 per page. Clamp by trial_limit so limit=1 does not
+        # fetch a whole 25-item page.
         page_cap = 25 if self.light else 3
         trial_cap = self.trial_limits.get(key)
         per_page = min(page_cap, trial_cap) if trial_cap and trial_cap > 0 else page_cap
@@ -400,7 +400,7 @@ class RepoScraper:
                 f["_owner"] = self.owner
                 f["_repo"] = self.name
                 f["_prNumber"] = number
-                # files don't have id, synthesize one
+                # files have no id; synthesize one
                 f["_syntheticId"] = f"{self.owner}/{self.name}#{number}:{f.get('path')}"
                 self.writers[out_key].write(f)
             info = ff.get("pageInfo") or {}

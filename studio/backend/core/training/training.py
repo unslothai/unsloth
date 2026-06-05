@@ -4,12 +4,12 @@
 """
 Training backend — subprocess orchestrator.
 
-Each training job runs in a fresh subprocess (mp.get_context("spawn")),
-solving the transformers version-switching problem. The old in-process
-UnslothTrainer singleton is only used inside the subprocess (worker.py).
+Each training job runs in a fresh subprocess (mp.get_context("spawn")), solving
+the transformers version-switching problem. The old in-process UnslothTrainer
+singleton is only used inside the subprocess (worker.py).
 
-This file orchestrates the subprocess lifecycle, pumps events from the
-worker's mp.Queue, and exposes the same API surface to routes/training.py.
+This file orchestrates the subprocess lifecycle, pumps events from the worker's
+mp.Queue, and exposes the same API surface to routes/training.py.
 
 Pattern follows core/data_recipe/jobs/manager.py.
 """
@@ -47,9 +47,9 @@ _HF_TMP_CHECKPOINT_RE = re.compile(r"^tmp-checkpoint-\d+$")
 def _cleanup_cancelled_checkpoints(output_dir: str | os.PathLike) -> None:
     """Remove only HF Trainer ``tmp-checkpoint-<step>/`` partials after a cancel.
 
-    Completed ``checkpoint-<int>/`` dirs and any non-numeric-suffix tmp dir
-    are user-owned and survive. Symlinked output_dir / children are skipped
-    so containment cannot be bypassed.
+    Completed ``checkpoint-<int>/`` dirs and any non-numeric-suffix tmp dir are
+    user-owned and survive. Symlinked output_dir / children are skipped so
+    containment can't be bypassed.
     """
     out = Path(output_dir)
     if not out.exists() or not out.is_dir() or out.is_symlink():
@@ -95,8 +95,8 @@ PLOT_HEIGHT = 3.5
 
 @dataclass
 class TrainingProgress:
-    """Mirror of trainer.TrainingProgress — kept here so the parent process
-    never needs to import the heavy ML modules."""
+    """Mirror of trainer.TrainingProgress — here so the parent process never
+    imports the heavy ML modules."""
 
     epoch: float = 0
     step: int = 0
@@ -118,7 +118,7 @@ class TrainingProgress:
 class TrainingBackend:
     """
     Training orchestration backend — subprocess-based.
-    Launches a fresh subprocess per training job, communicates via mp.Queue.
+    Launches a fresh subprocess per job, communicates via mp.Queue.
     """
 
     FLUSH_THRESHOLD: int = 10
@@ -136,7 +136,7 @@ class TrainingBackend:
         self._should_stop = False
         self._cancel_requested = False  # True only for stop(save=False)
 
-        # Training Metrics (consumed by routes for SSE and /metrics)
+        # Training metrics (consumed by routes for SSE and /metrics)
         self.loss_history: list = []
         self.lr_history: list = []
         self.step_history: list = []
@@ -169,7 +169,7 @@ class TrainingBackend:
         """Spawn a subprocess to run the full training pipeline.
 
         All kwargs are serialized into a config dict and sent to the worker.
-        Returns True if the subprocess was started successfully.
+        Returns True if the subprocess started successfully.
         """
         with self._lock:
             if self._proc is not None and self._proc.is_alive():
@@ -248,8 +248,8 @@ class TrainingBackend:
             "gpu_ids": kwargs.get("gpu_ids"),
         }
 
-        # Full finetuning always runs in 16-bit. LoRA/QLoRA and CPT preserve the
-        # explicit request so 4-bit adapter/raw-text runs remain possible.
+        # Full finetuning always runs in 16-bit. LoRA/QLoRA and CPT keep the
+        # explicit request so 4-bit adapter/raw-text runs stay possible.
         if config["training_type"] == "Full Finetuning":
             config["load_in_4bit"] = False
 
@@ -300,8 +300,7 @@ class TrainingBackend:
 
         logger.info("Training subprocess started (pid=%s)", proc.pid)
 
-        # Reset state — safe because old pump thread is confirmed dead
-        # and proc.start() succeeded
+        # Reset state — safe: old pump thread confirmed dead, proc.start() succeeded
         self.current_job_id = job_id
         self._should_stop = False
         self._cancel_requested = False
@@ -331,7 +330,7 @@ class TrainingBackend:
         self._stop_queue = stop_queue
         self._proc = proc
 
-        # Eagerly create DB run row so the run appears in history during model loading
+        # Eagerly create DB run row so it appears in history during model loading
         self._ensure_db_run_created()
 
         # Start event pump thread
@@ -378,7 +377,7 @@ class TrainingBackend:
                 proc.join(timeout = 2.0)
 
         # Wait for pump thread to finish DB finalization before returning
-        # (8s covers SQLite's default 5s lock timeout plus execution overhead)
+        # (8s covers SQLite's 5s lock timeout plus execution overhead)
         if self._pump_thread is not None and self._pump_thread.is_alive():
             self._pump_thread.join(timeout = 8.0)
 
@@ -409,7 +408,7 @@ class TrainingBackend:
             if p.is_completed or p.error:
                 return False
 
-            # Check status message for activity indicators
+            # Check status message for activity
             status_lower = (p.status_message or "").lower()
             if any(
                 k in status_lower
@@ -541,9 +540,8 @@ class TrainingBackend:
     def _handle_event(self, event: dict) -> None:
         """Apply a subprocess event to local state.
 
-        State updates happen inside self._lock; DB I/O happens after
-        releasing it so status-polling API endpoints are never blocked
-        by slow SQLite writes.
+        State updates happen inside self._lock; DB I/O happens after releasing
+        it so status-polling endpoints aren't blocked by slow SQLite writes.
         """
         etype = event.get("type")
         db_action: Optional[str] = None
@@ -553,7 +551,7 @@ class TrainingBackend:
             if etype == "progress":
                 self._progress.step = event.get("step", self._progress.step)
                 self._progress.epoch = event.get("epoch", self._progress.epoch)
-                # loss/lr are sanitized below; update progress after coercion
+                # loss/lr sanitized below; update progress after coercion
                 _raw_loss = event.get("loss")
                 _raw_lr = event.get("learning_rate")
                 try:
@@ -595,7 +593,7 @@ class TrainingBackend:
                 if status:
                     self._progress.status_message = status
 
-                # Update metric histories — reuse sanitized values from above
+                # Update metric histories — reuse sanitized values above
                 step = event.get("step", 0)
                 loss = _safe_loss
                 lr = _safe_lr
@@ -633,7 +631,7 @@ class TrainingBackend:
                     else:
                         eval_loss = None
 
-                # Buffer metric for DB flush (loss/lr already sanitized above)
+                # Buffer metric for DB flush (loss/lr already sanitized)
                 self._metric_buffer.append(
                     {
                         "step": step,
@@ -647,7 +645,7 @@ class TrainingBackend:
                     }
                 )
 
-                # Decide which DB action to take after releasing the lock
+                # Pick the DB action to run after releasing the lock
                 if not self._db_run_created and self.current_job_id and self._db_config:
                     db_action = "create_run"
                     db_action_kwargs = {
@@ -819,14 +817,14 @@ class TrainingBackend:
             or not self._db_run_created
         ):
             return
-        # Cap buffer to prevent unbounded memory growth
+        # Cap buffer to bound memory growth
         if len(self._metric_buffer) > 500:
             logger.warning(
                 "Metric buffer exceeded 500 entries (%d) — trimming oldest",
                 len(self._metric_buffer),
             )
             self._metric_buffer = self._metric_buffer[-500:]
-        # Snapshot before insert so metrics arriving during the write are preserved
+        # Snapshot before insert so metrics arriving during the write survive
         batch = list(self._metric_buffer)
         try:
             from storage.studio_db import insert_metrics_batch, update_run_progress
@@ -869,7 +867,7 @@ class TrainingBackend:
                 return events
 
     # ------------------------------------------------------------------
-    # Plot generation (unchanged from original)
+    # Plot generation
     # ------------------------------------------------------------------
 
     def _create_loss_plot(
@@ -992,9 +990,9 @@ class TrainingBackend:
     def _transfer_to_inference_backend(self) -> bool:
         """Transfer model to inference backend.
 
-        With subprocess-based training, the model lives in the subprocess
-        and is freed when it exits. Inference must load from the saved
-        checkpoint on disk. This is a no-op placeholder.
+        With subprocess-based training, the model lives in the subprocess and is
+        freed when it exits. Inference must load from the saved checkpoint on
+        disk. No-op placeholder.
         """
         logger.info(
             "_transfer_to_inference_backend: subprocess training — "
