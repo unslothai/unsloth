@@ -165,7 +165,7 @@ function CitationBadge({ citation, index }: { citation: Citation; index: number 
   );
 
   return (
-    <HoverCard openDelay={0} closeDelay={0}>
+    <HoverCard openDelay={0} closeDelay={150}>
       <HoverCardTrigger asChild>
         {clickable ? (
           <button type="button" onClick={open} className="inline-block">
@@ -200,9 +200,13 @@ function CitationBadge({ citation, index }: { citation: Citation; index: number 
               </span>
             )}
             {clickable && (
-              <span className="ml-auto text-[10px] font-medium text-primary">
-                Click to view source
-              </span>
+              <button
+                type="button"
+                onClick={open}
+                className="ml-auto rounded-md px-1.5 py-0.5 text-[10px] font-medium text-primary transition-colors hover:bg-primary/10"
+              >
+                View source
+              </button>
             )}
           </div>
         </div>
