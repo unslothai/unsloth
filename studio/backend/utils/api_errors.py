@@ -95,12 +95,14 @@ def openai_error_body(
 def anthropic_error_body(message, *, status = 400, err_type = None) -> dict:
     """Build an Anthropic-style error envelope.
 
-    Returns ``{"type": "error", "error": {"type", "message"}}``. ``err_type``
-    defaults to :data:`ANTHROPIC_TYPE_BY_STATUS` for ``status`` (``"api_error"``
-    fallback).
+    Returns ``{"type": "error", "request_id": None, "error": {"type", "message"}}``.
+    ``request_id`` is a required (nullable) field on the spec's ErrorResponse;
+    Studio has no request-id system, so it is null. ``err_type`` defaults to
+    :data:`ANTHROPIC_TYPE_BY_STATUS` for ``status`` (``"api_error"`` fallback).
     """
     return {
         "type": "error",
+        "request_id": None,
         "error": {
             "type": err_type or ANTHROPIC_TYPE_BY_STATUS.get(status, "api_error"),
             "message": str(message),
