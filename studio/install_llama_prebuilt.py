@@ -3916,6 +3916,14 @@ def _is_trusted_github_release_url(url: str, expected_repo: str) -> bool:
     return False
 
 
+# Tracks (gfx_target, asset_name) pairs whose selection log lines have already
+# been emitted. resolve_lemonade_rocm_choice() is called twice per install (once
+# from the direct planner, once from resolve_upstream_asset_choice), so without
+# this guard the "trying lemonade-sdk ROCm prebuilt" banner and the hash-manifest
+# NOTE are printed twice even though the user only needs to see them once.
+_lemonade_selection_logged: "set[tuple[str, str]]" = set()
+
+
 @functools.lru_cache(maxsize = 8)
 def _fetch_lemonade_release_cached(api_url: str, llama_tag: str) -> "dict | None":
     """Cached wrapper around fetch_json for lemonade release lookups.
@@ -4022,18 +4030,23 @@ def resolve_lemonade_rocm_choice(
     # Note: lemonade tags Linux assets with "ubuntu" but the binary is a
     # generic glibc build that runs on any distro (Arch, Fedora, ...), so
     # this attempt is selected for all Linux ROCm hosts, not just Ubuntu.
-    log(
-        f"AMD GPU {host.rocm_gfx_target!r} ({gfx_family}) -- "
-        f"trying lemonade-sdk ROCm prebuilt {asset_name} "
-        f"(works on any glibc Linux, not just Ubuntu)"
-    )
-    log(
-        f"NOTE: lemonade-sdk/llamacpp-rocm releases are not covered by the "
-        f"Unsloth approved-hash manifest; download integrity relies on "
-        f"functional validation (llama-bench / llama-server smoke tests) "
-        f"after extraction. Set UNSLOTH_DISABLE_LEMONADE_ROCM=1 to skip "
-        f"lemonade and fall back to the upstream HIP build path."
-    )
+    # Guard against duplicate output: this function is called twice per install
+    # (direct planner + resolve_upstream_asset_choice), so only log the first time.
+    log_key = (host.rocm_gfx_target or "", asset_name)
+    if log_key not in _lemonade_selection_logged:
+        _lemonade_selection_logged.add(log_key)
+        log(
+            f"AMD GPU {host.rocm_gfx_target!r} ({gfx_family}) -- "
+            f"trying lemonade-sdk ROCm prebuilt {asset_name} "
+            f"(works on any glibc Linux, not just Ubuntu)"
+        )
+        log(
+            f"NOTE: lemonade-sdk/llamacpp-rocm releases are not covered by the "
+            f"Unsloth approved-hash manifest; download integrity relies on "
+            f"functional validation (llama-bench / llama-server smoke tests) "
+            f"after extraction. Set UNSLOTH_DISABLE_LEMONADE_ROCM=1 to skip "
+            f"lemonade and fall back to the upstream HIP build path."
+        )
     return AssetChoice(
         repo = LEMONADE_ROCM_REPO,
         tag = release_tag,
