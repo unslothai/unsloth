@@ -381,7 +381,7 @@ function Get-PytorchCudaTag {
 # Strategy: (1) vswhere, (2) scan filesystem (handles broken vswhere registration).
 # Returns @{ Generator = "Visual Studio 17 2022"; InstallPath = "C:\..."; Source = "..." } or $null.
 function Find-VsBuildTools {
-    $map = @{ '2022' = '17'; '2019' = '16'; '2017' = '15' }
+    $map = @{ '2026' = '18'; '2022' = '17'; '2019' = '16'; '2017' = '15' }
 
     # --- Try vswhere first (works when VS is properly registered) ---
     $vsw = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
@@ -400,7 +400,7 @@ function Find-VsBuildTools {
     # --- Scan filesystem (handles broken vswhere registration after winget cycles) ---
     $roots = @($env:ProgramFiles, ${env:ProgramFiles(x86)})
     $editions = @('BuildTools', 'Community', 'Professional', 'Enterprise')
-    $years = @('2022', '2019', '2017')
+    $years = @('2026', '2022', '2019', '2017')
 
     foreach ($y in $years) {
         foreach ($r in $roots) {
