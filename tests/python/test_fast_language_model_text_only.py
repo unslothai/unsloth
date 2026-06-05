@@ -94,7 +94,10 @@ def test_fast_model_text_only_does_not_override_explicit_auto_model():
     assert "_get_text_only_config(model_config, old_model_name)" in method_source
     assert "_force_text_only = load_text_only" in method_source
     # Falls back to the full model for VLMs with no text-only CausalLM class.
-    assert "resolve_model_class(AutoModelForCausalLM, text_config) is None" in method_source
+    assert (
+        "resolve_model_class(AutoModelForCausalLM, text_config) is None"
+        in method_source
+    )
     assert "load_text_only = False" in method_source
 
 
