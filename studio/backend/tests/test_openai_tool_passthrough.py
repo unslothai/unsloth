@@ -384,11 +384,14 @@ class TestChatCompletionRequestToolFields:
         app.dependency_overrides[get_current_subject] = lambda: "test-user"
         return TestClient(app)
 
-    def _assert_unsupported_n(self, response):
+    def _assert_unsupported_param(self, response, param):
         assert response.status_code == 400
         body = response.json()
-        assert body["error"]["param"] == "n"
+        assert body["error"]["param"] == param
         assert body["error"]["code"] == "unsupported_parameter"
+
+    def _assert_unsupported_n(self, response):
+        self._assert_unsupported_param(response, "n")
 
     def test_n_allows_openai_chat_completion_range(self):
         req = self._make(n = 128)
@@ -410,6 +413,36 @@ class TestChatCompletionRequestToolFields:
             },
         )
         self._assert_unsupported_n(resp)
+
+    def test_logprobs_rejected_until_supported(self, monkeypatch):
+        class _UnusedBackend:
+            is_loaded = False
+
+        client = self._v1_client(monkeypatch, _UnusedBackend())
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [{"role": "user", "content": "hi"}],
+                "provider_type": "openai",
+                "logprobs": True,
+            },
+        )
+        self._assert_unsupported_param(resp, "logprobs")
+
+    def test_top_logprobs_rejected_until_supported(self, monkeypatch):
+        class _UnusedBackend:
+            is_loaded = False
+
+        client = self._v1_client(monkeypatch, _UnusedBackend())
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [{"role": "user", "content": "hi"}],
+                "provider_type": "openai",
+                "top_logprobs": 3,
+            },
+        )
+        self._assert_unsupported_param(resp, "top_logprobs")
 
     def test_n_rejected_for_gguf_streaming_path(self, monkeypatch):
         class _GGUFBackend:

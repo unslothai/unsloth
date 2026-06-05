@@ -144,15 +144,21 @@ def _wants_multiple_choices(payload) -> bool:
     return (payload.n or 1) > 1
 
 
-def _raise_unsupported_n(path_label: str) -> None:
+def _raise_unsupported_openai_parameter(param: str, message: str) -> None:
     raise HTTPException(
         status_code = 400,
         detail = openai_error_body(
-            f"n > 1 is not supported for {path_label}.",
+            message,
             status = 400,
             code = "unsupported_parameter",
-            param = "n",
+            param = param,
         ),
+    )
+
+
+def _raise_unsupported_n(path_label: str) -> None:
+    _raise_unsupported_openai_parameter(
+        "n", f"n > 1 is not supported for {path_label}."
     )
 
 
@@ -2783,6 +2789,15 @@ async def openai_chat_completions(
     for _m in payload.messages:
         if _m.role == "developer":
             _m.role = "system"
+
+    if payload.logprobs:
+        _raise_unsupported_openai_parameter(
+            "logprobs", "logprobs is not supported for chat completions."
+        )
+    if payload.top_logprobs is not None:
+        _raise_unsupported_openai_parameter(
+            "top_logprobs", "top_logprobs is not supported for chat completions."
+        )
 
     # ── External provider routing ────────────────────────────────
     # encrypted_api_key is optional — local providers (llama.cpp / vLLM / Ollama) may run without auth.
