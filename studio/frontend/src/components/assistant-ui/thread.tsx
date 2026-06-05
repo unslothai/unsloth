@@ -46,6 +46,10 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { sentAudioNames } from "@/features/chat/api/chat-adapter";
+import {
+  PromptStorageDialog,
+  exportConversationShareGPT,
+} from "@/features/chat/prompt-storage/prompt-storage-dialog";
 import { useChatProjects } from "@/features/chat/hooks/use-chat-projects";
 import { NewProjectDialog } from "@/features/chat/components/new-project-dialog";
 import { parseExternalModelId } from "@/features/chat/external-providers";
@@ -77,6 +81,7 @@ import {
 import { flushResourcesSync } from "@assistant-ui/tap";
 import {
   AttachmentIcon,
+  Bookmark02Icon,
   CodeIcon,
   Copy01Icon,
   Delete02Icon,
@@ -126,6 +131,59 @@ import {
 // True while a file is dragged anywhere over the chat page (not just the
 // composer), so the composer can show its "Drop files here" affordance.
 const PageDragContext = createContext(false);
+
+// ── Single-chat prompt queue ───────────────────────────────────────────────
+// All state lives at module level so it survives the Composer remount that
+// happens when the first queued message creates a new thread (new-chat →
+// conversation transition). Component-local useState/useRef would reset.
+
+// Reactive UI state — a tiny Zustand store so ComposerRightControls can
+// subscribe and re-render without needing a React context chain.
+import { create as _createZustand } from "zustand";
+interface _QueueUIState { isRunning: boolean; current: number; total: number; }
+const _useQueueUI = _createZustand<_QueueUIState>(() => ({
+  isRunning: false, current: 0, total: 0,
+}));
+
+// Non-reactive queue data
+let _qItems: string[] = [];
+let _qIndex = 0;
+let _qIsRunning = false;
+let _qPrevThreadRunning = false;
+
+function _qAdvance(auiFn: () => ReturnType<typeof useAui>) {
+  const nextIndex = _qIndex + 1;
+  if (nextIndex >= _qItems.length) {
+    _qIsRunning = false;
+    _qItems = [];
+    _qIndex = 0;
+    _qPrevThreadRunning = false;
+    _useQueueUI.setState({ isRunning: false, current: 0, total: 0 });
+    toast.success("Prompt queue complete");
+    return;
+  }
+  _qIndex = nextIndex;
+  _useQueueUI.setState({ current: nextIndex + 1, total: _qItems.length });
+  const next = _qItems[nextIndex];
+  toast(`Prompt ${nextIndex + 1} / ${_qItems.length}`, {
+    description: next.length > 80 ? next.slice(0, 80) + "…" : next,
+  });
+  setTimeout(() => {
+    auiFn().thread().append({
+      role: "user",
+      content: [{ type: "text", text: next }],
+      createdAt: new Date(),
+    } as never);
+  }, 100);
+}
+
+// Context only carries the callbacks (defined inside Composer so they close
+// over the current `aui`). The reactive display state comes from _useQueueUI.
+interface _QueueCallbacks { startQueue: (items: string[]) => void; stopQueue: () => void; }
+const PromptQueueContext = createContext<_QueueCallbacks>({
+  startQueue: () => {}, stopQueue: () => {},
+});
+// ──────────────────────────────────────────────────────────────────────────
 
 export const Thread: FC<{
   hideComposer?: boolean;
@@ -757,6 +815,65 @@ const Composer: FC<{
     ],
   );
 
+  // ── Prompt queue ──────────────────────────────────────────────────────────
+  // All persistent queue data lives in module-level vars (_qItems, _qIndex…)
+  // and a module-level Zustand store (_useQueueUI) so state survives the
+  // Composer remount that occurs when the first queued message creates a new
+  // thread (new-chat → established-chat transition).
+
+  // Keep a stable function ref so the setInterval callback always has the
+  // current `aui` without recreating the interval.
+  const auiRef = useRef(aui);
+  auiRef.current = aui;
+
+  // Poll isRunning every 200ms — same as original shared-composer.tsx
+  useEffect(() => {
+    const id = setInterval(() => {
+      if (!_qIsRunning) return;
+      try {
+        const isRunning = auiRef.current.thread().getState().isRunning;
+        const wasRunning = _qPrevThreadRunning;
+        _qPrevThreadRunning = isRunning;
+        if (wasRunning && !isRunning) {
+          _qAdvance(() => auiRef.current);
+        }
+      } catch { /* thread not ready yet */ }
+    }, 200);
+    return () => clearInterval(id);
+  }, [aui]); // re-bind only when aui changes (thread runtime switches)
+
+  const stopQueue = useCallback(() => {
+    _qIsRunning = false;
+    _qPrevThreadRunning = false;
+    _qItems = [];
+    _qIndex = 0;
+    _useQueueUI.setState({ isRunning: false, current: 0, total: 0 });
+    auiRef.current.thread().cancelRun();
+  }, []);
+
+  const startQueue = useCallback((items: string[]) => {
+    const filtered = items.filter((p) => p.trim());
+    if (!filtered.length) return;
+    _qItems = filtered;
+    _qIndex = 0;
+    _qIsRunning = true;
+    _qPrevThreadRunning = false;
+    _useQueueUI.setState({ isRunning: true, current: 1, total: filtered.length });
+    toast(`Prompt 1 / ${filtered.length}`, {
+      description: filtered[0].length > 80 ? filtered[0].slice(0, 80) + "…" : filtered[0],
+    });
+    setTimeout(() => {
+      auiRef.current.thread().append({
+        role: "user",
+        content: [{ type: "text", text: filtered[0] }],
+        createdAt: new Date(),
+      } as never);
+    }, 50);
+  }, []);
+
+  const queueContextValue: _QueueCallbacks = { startQueue, stopQueue };
+  // ─────────────────────────────────────────────────────────────────────────
+
   const composerContent = (
     <>
       <ComposerAttachments />
@@ -814,6 +931,7 @@ const Composer: FC<{
   );
 
   return (
+    <PromptQueueContext.Provider value={queueContextValue}>
     <ComposerPrimitive.Root
       className="aui-composer-root relative flex w-full flex-col"
       aria-disabled={disabled}
@@ -849,6 +967,7 @@ const Composer: FC<{
         </ComposerPrimitive.AttachmentDropzone>
       )}
     </ComposerPrimitive.Root>
+    </PromptQueueContext.Provider>
   );
 };
 
@@ -1663,9 +1782,24 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
   }, [navigate]);
 
   const [newProjectOpen, setNewProjectOpen] = useState(false);
+  const [promptStorageOpen, setPromptStorageOpen] = useState(false);
+  const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
+  const aui = useAui();
+  const { startQueue } = useContext(PromptQueueContext);
 
   return (
     <>
+    <PromptStorageDialog
+      open={promptStorageOpen}
+      onOpenChange={setPromptStorageOpen}
+      onUse={(text) => {
+        aui.composer().setText(text);
+      }}
+      onRunList={(items) => {
+        setPromptStorageOpen(false);
+        startQueue(items);
+      }}
+    />
     <DropdownMenu>
       <DropdownMenuTrigger asChild={true}>
         <button
@@ -1777,6 +1911,22 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
           ) : null}
         </DropdownMenuItem>
         {/* RAG hidden temporarily */}
+        <DropdownMenuItem onSelect={() => setPromptStorageOpen(true)}>
+          <HugeiconsIcon icon={Bookmark02Icon} strokeWidth={2} />
+          Saved prompts
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          disabled={!activeThreadId}
+          onSelect={() => {
+            if (!activeThreadId) return;
+            exportConversationShareGPT(activeThreadId).catch(() => {
+              toast.error("Failed to export conversation.");
+            });
+          }}
+        >
+          <HugeiconsIcon icon={Download01Icon} strokeWidth={2} />
+          Export chat
+        </DropdownMenuItem>
         <DropdownMenuItem onSelect={() => startCompare()}>
           <Columns2Icon />
           Compare chat
@@ -1825,6 +1975,12 @@ const ComposerRightControls: FC<{
   shouldBlockSend?: () => boolean;
   menuSide?: "top" | "bottom";
 }> = ({ disabled, shouldBlockSend, menuSide }) => {
+  // Read reactive queue state from the module-level store — survives Composer remounts
+  const isQueueRunning = _useQueueUI((s) => s.isRunning);
+  const queueCurrent = _useQueueUI((s) => s.current);
+  const queueTotal = _useQueueUI((s) => s.total);
+  // Get stopQueue callback from context (provided by the current Composer instance)
+  const { stopQueue } = useContext(PromptQueueContext);
   return (
     <div className="aui-composer-action-wrapper flex shrink-0 items-center gap-1.5">
       <ReasoningToggle side={menuSide} />
@@ -1852,40 +2008,57 @@ const ComposerRightControls: FC<{
           </TooltipIconButton>
         </ComposerPrimitive.StopDictation>
       </ComposerPrimitive.If>
-      <AuiIf condition={({ thread }) => !thread.isRunning}>
-        <ComposerPrimitive.Send asChild={true}>
-          <TooltipIconButton
-            tooltip="Send message"
-            side="bottom"
-            type="submit"
-            variant="default"
-            size="icon"
-            disabled={disabled}
-            onClick={(event) => {
-              if (shouldBlockSend?.()) {
-                event.preventDefault();
-              }
-            }}
-            className="aui-composer-send ml-1.5 size-8 rounded-full"
-            aria-label="Send message"
-          >
-            <ArrowUpIcon className="aui-composer-send-icon size-[21px] stroke-2" />
-          </TooltipIconButton>
-        </ComposerPrimitive.Send>
-      </AuiIf>
-      <AuiIf condition={({ thread }) => thread.isRunning}>
-        <ComposerPrimitive.Cancel asChild={true}>
-          <Button
-            type="button"
-            variant="default"
-            size="icon"
-            className="aui-composer-cancel ml-1.5 size-8 rounded-full"
-            aria-label="Stop generating"
-          >
-            <SquareIcon className="aui-composer-cancel-icon size-3 fill-current" />
-          </Button>
-        </ComposerPrimitive.Cancel>
-      </AuiIf>
+      {isQueueRunning ? (
+        // Replaces both send and cancel while a prompt list is running
+        <button
+          type="button"
+          onClick={stopQueue}
+          aria-label="Stop prompt queue"
+          className="ml-1.5 flex items-center gap-1.5 rounded-full border border-red-500 bg-red-600/10 px-2.5 py-1 text-xs font-semibold text-red-600 transition-colors hover:bg-red-600 hover:text-white dark:text-red-400 dark:hover:text-white"
+        >
+          <SquareIcon className="size-2.5 shrink-0 fill-current" />
+          <span className="tabular-nums">
+            Stop queue {queueCurrent}/{queueTotal}
+          </span>
+        </button>
+      ) : (
+        <>
+          <AuiIf condition={({ thread }) => !thread.isRunning}>
+            <ComposerPrimitive.Send asChild={true}>
+              <TooltipIconButton
+                tooltip="Send message"
+                side="bottom"
+                type="submit"
+                variant="default"
+                size="icon"
+                disabled={disabled}
+                onClick={(event) => {
+                  if (shouldBlockSend?.()) {
+                    event.preventDefault();
+                  }
+                }}
+                className="aui-composer-send ml-1.5 size-8 rounded-full"
+                aria-label="Send message"
+              >
+                <ArrowUpIcon className="aui-composer-send-icon size-[21px] stroke-2" />
+              </TooltipIconButton>
+            </ComposerPrimitive.Send>
+          </AuiIf>
+          <AuiIf condition={({ thread }) => thread.isRunning}>
+            <ComposerPrimitive.Cancel asChild={true}>
+              <Button
+                type="button"
+                variant="default"
+                size="icon"
+                className="aui-composer-cancel ml-1.5 size-8 rounded-full"
+                aria-label="Stop generating"
+              >
+                <SquareIcon className="aui-composer-cancel-icon size-3 fill-current" />
+              </Button>
+            </ComposerPrimitive.Cancel>
+          </AuiIf>
+        </>
+      )}
     </div>
   );
 };

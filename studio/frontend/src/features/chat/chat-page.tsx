@@ -555,6 +555,8 @@ const LoraCompareContent = memo(function LoraCompareContent({
         <SharedComposer
           handlesRef={handlesRef}
           onExitCompare={onExitCompare}
+          model1ThreadId={baseThreadId}
+          model2ThreadId={loraThreadId}
         />
       }
     >
@@ -732,6 +734,8 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
           model1={model1}
           model2={model2}
           onExitCompare={onExitCompare}
+          model1ThreadId={model1ThreadId}
+          model2ThreadId={model2ThreadId}
         />
       }
     >

@@ -444,6 +444,7 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
         "inference_studio_router": APIRouter(),
         "mcp_servers_router": APIRouter(),
         "models_router": APIRouter(),
+        "prompts_router": APIRouter(),
         "providers_router": APIRouter(),
         "settings_router": settings_module.router,
         "training_history_router": APIRouter(),
