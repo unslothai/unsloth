@@ -59,8 +59,9 @@ fi
 # ── Output helpers ──
 # Consistent column layout: 2-space indent, 15-char label (fits llama-quantize), then value.
 # Usage: step <label> <message> [color]   (color defaults to C_OK)
+# Usage: substep <message> [color]         (color defaults to C_DIM)
 step()    { printf "  ${C_DIM}%-15.15s${C_RST}${3:-$C_OK}%s${C_RST}\n" "$1" "$2"; }
-substep() { printf "  ${C_DIM}%-15s%s${C_RST}\n" "" "$1"; }
+substep() { printf "  %-15s${2:-$C_DIM}%s${C_RST}\n" "" "$1"; }
 
 _is_verbose() {
     [ "${UNSLOTH_VERBOSE:-0}" = "1" ]
