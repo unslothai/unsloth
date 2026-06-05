@@ -78,6 +78,51 @@ class TestAnthropicModels:
         )
         assert req.system == "You are helpful."
 
+    def test_system_role_message_normalized_to_system_field(self):
+        req = AnthropicMessagesRequest(
+            max_tokens = 50,
+            messages = [
+                {"role": "system", "content": "You are helpful."},
+                {"role": "user", "content": "Hi"},
+            ],
+        )
+        assert req.system == "You are helpful."
+        assert len(req.messages) == 1
+        assert req.messages[0].role == "user"
+
+    def test_system_role_message_merges_with_existing_system_field(self):
+        req = AnthropicMessagesRequest(
+            max_tokens = 50,
+            system = "Base instructions.",
+            messages = [
+                {"role": "user", "content": "Hi"},
+                {"role": "system", "content": "Additional instructions."},
+                {"role": "assistant", "content": "Hello."},
+            ],
+        )
+        assert req.system == "Base instructions.\n\nAdditional instructions."
+        assert [msg.role for msg in req.messages] == ["user", "assistant"]
+
+    def test_system_role_message_with_null_content_ignored(self):
+        req = AnthropicMessagesRequest(
+            max_tokens = 50,
+            system = "Base.",
+            messages = [
+                {"role": "system", "content": None},
+                {
+                    "role": "system",
+                    "content": [
+                        None,
+                        {"type": "text", "text": "Use short answers."},
+                    ],
+                },
+                {"role": "user", "content": "Hi"},
+            ],
+        )
+        assert req.system == "Base.\n\nUse short answers."
+        assert "None" not in str(req.system)
+        assert [msg.role for msg in req.messages] == ["user"]
+
     def test_tools_field_parses(self):
         req = AnthropicMessagesRequest(
             max_tokens = 100,
@@ -157,6 +202,20 @@ class TestAnthropicMessagesToOpenAI:
         result = anthropic_messages_to_openai(msgs, system = "Be brief.")
         assert result[0] == {"role": "system", "content": "Be brief."}
         assert result[1] == {"role": "user", "content": "Hello"}
+
+    def test_top_level_system_request_translates_unchanged(self):
+        req = AnthropicMessagesRequest(
+            messages = [{"role": "user", "content": "Hello"}],
+            system = "Be brief.",
+        )
+        result = anthropic_messages_to_openai(
+            [m.model_dump() for m in req.messages],
+            req.system,
+        )
+        assert result == [
+            {"role": "system", "content": "Be brief."},
+            {"role": "user", "content": "Hello"},
+        ]
 
     def test_system_as_block_list(self):
         system = [
