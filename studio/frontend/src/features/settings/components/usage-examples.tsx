@@ -87,7 +87,7 @@ env_key = "UNSLOTH_API_KEY"
 wire_api = "responses"
 
 # Shell
-export UNSLOTH_API_KEY="sk-unsloth-YOUR_KEY"`,
+# export UNSLOTH_API_KEY="sk-unsloth-YOUR_KEY"`,
   };
 }
 
