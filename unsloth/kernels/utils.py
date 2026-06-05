@@ -273,10 +273,21 @@ torch_bfloat16 = torch.bfloat16
 UNSLOTH_QUANTIZE_ACTIVATIONS: bool = False
 
 # Model types that use the LoRA_MLP kernel (compression handled there; skip PEFT-path patch).
-_LORA_MLP_KERNEL_MODEL_TYPES: frozenset = frozenset({
-    "llama", "mistral", "qwen2", "gemma", "gemma2",
-    "cohere", "granite", "qwen3", "falcon_h1", "qwen3moe", "qwen3_5",
-})
+_LORA_MLP_KERNEL_MODEL_TYPES: frozenset = frozenset(
+    {
+        "llama",
+        "mistral",
+        "qwen2",
+        "gemma",
+        "gemma2",
+        "cohere",
+        "granite",
+        "qwen3",
+        "falcon_h1",
+        "qwen3moe",
+        "qwen3_5",
+    }
+)
 
 
 def quant_act(x: torch.Tensor):
