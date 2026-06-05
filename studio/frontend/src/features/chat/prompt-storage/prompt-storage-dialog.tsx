@@ -254,7 +254,7 @@ export async function exportConversationShareGPT(threadId: string): Promise<void
 
   if (conversations.length === 0) { toast.info("No exportable content."); return; }
   downloadBlob(
-    JSON.stringify({ conversations }),
+    JSON.stringify({ conversations }, null, 2),
     "conversation-" + exportTs() + ".jsonl",
     "application/x-ndjson",
   );
@@ -269,10 +269,10 @@ export async function exportConversationRawJsonl(threadId: string): Promise<void
     .map((msg) => {
       const content = contentBlocksToText(msg.content);
       if (!content.trim()) return null;
-      return JSON.stringify({ role: msg.role, content });
+      return JSON.stringify({ role: msg.role, content }, null, 2);
     })
     .filter(Boolean)
-    .join("\n");
+    .join("\n\n");
 
   if (!lines) { toast.info("No exportable content."); return; }
   downloadBlob(lines, "conversation-" + exportTs() + ".jsonl", "application/x-ndjson");
@@ -410,8 +410,9 @@ function parseCsv(text: string): string[][] {
   return rows;
 }
 
-async function importPromptsFromText(text: string, isCsv: boolean): Promise<number> {
+async function importPromptsFromText(text: string, isCsv: boolean): Promise<{ count: number; skipped: number }> {
   const entries: PromptEntry[] = [];
+  let skipped = 0;
   if (isCsv) {
     const rows = parseCsv(text).slice(1); // skip header row
     for (const cells of rows) {
@@ -441,18 +442,21 @@ async function importPromptsFromText(text: string, isCsv: boolean): Promise<numb
             createdAt: now(),
             updatedAt: now(),
           });
+        } else {
+          skipped++;
         }
       } catch {
-        /* skip malformed lines */
+        skipped++;
       }
     }
   }
   if (entries.length > 0) await bulkSavePromptEntries(entries);
-  return entries.length;
+  return { count: entries.length, skipped };
 }
 
-async function importListsFromText(text: string, isCsv: boolean): Promise<number> {
+async function importListsFromText(text: string, isCsv: boolean): Promise<{ count: number; skipped: number }> {
   const lists: PromptListEntry[] = [];
+  let skipped = 0;
   if (isCsv) {
     const rows = parseCsv(text).slice(1); // skip header row
     const listMap = new Map<string, Array<{ order: number; text: string }>>();
@@ -495,15 +499,19 @@ async function importListsFromText(text: string, isCsv: boolean): Promise<number
               createdAt: now(),
               updatedAt: now(),
             });
+          } else {
+            skipped++;
           }
+        } else {
+          skipped++;
         }
       } catch {
-        /* skip malformed lines */
+        skipped++;
       }
     }
   }
   if (lists.length > 0) await bulkSavePromptLists(lists);
-  return lists.length;
+  return { count: lists.length, skipped };
 }
 
 async function importCollectionFromText(text: string): Promise<{ prompts: number; lists: number }> {
@@ -1280,18 +1288,23 @@ export function PromptStorageDialog({
         }
 
         let count = 0;
+        let skipped = 0;
         if (activeTab === "prompts") {
-          count = await importPromptsFromText(text, isCsv);
+          ({ count, skipped } = await importPromptsFromText(text, isCsv));
           void refreshEntries();
         } else {
-          count = await importListsFromText(text, isCsv);
+          ({ count, skipped } = await importListsFromText(text, isCsv));
           void refreshLists();
         }
         if (count > 0) {
-          toast.success(`Imported ${count} item${count !== 1 ? "s" : ""}`);
+          toast.success(`Imported ${count} item${count !== 1 ? "s" : ""}`, {
+            description: skipped > 0 ? `${skipped} line${skipped !== 1 ? "s" : ""} skipped (unrecognised format)` : undefined,
+          });
         } else {
           toast.warning("No items imported", {
-            description: "The file may be empty or in an unsupported format.",
+            description: skipped > 0
+              ? `${skipped} line${skipped !== 1 ? "s" : ""} could not be parsed.`
+              : "The file may be empty or in an unsupported format.",
           });
         }
       } catch {

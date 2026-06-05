@@ -1099,6 +1099,18 @@ export function SharedComposer({
         onRunList={(items) => {
           const filtered = items.filter((p) => p.trim());
           if (!filtered.length) return;
+          const hasCompareHandles = Boolean(
+            handlesRef.current["model1"] || handlesRef.current["model2"],
+          );
+          const isGeneralizedCompare =
+            hasCompareHandles && Boolean(model1?.id && model2?.id);
+          if (hasCompareHandles && !isGeneralizedCompare) {
+            toast.error("Pick a model in each pane to compare", {
+              description:
+                "Use the model dropdown above each pane, then send your prompt.",
+            });
+            return;
+          }
           setPromptStorageOpen(false);
           queueRef.current = filtered;
           queueIndexRef.current = 0;

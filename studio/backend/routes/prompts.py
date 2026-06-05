@@ -6,7 +6,7 @@ Prompt storage API routes backed by studio.db.
 """
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from auth.authentication import get_current_subject
 from storage.studio_db import (
@@ -24,17 +24,17 @@ router = APIRouter()
 
 
 class PromptEntry(BaseModel):
-    id: str
-    name: str
-    text: str
+    id: str = Field(max_length=128)
+    name: str = Field(max_length=500)
+    text: str = Field(max_length=100_000)
     createdAt: int
     updatedAt: int
 
 
 class PromptList(BaseModel):
-    id: str
-    name: str
-    items: list[str]
+    id: str = Field(max_length=128)
+    name: str = Field(max_length=500)
+    items: list[str] = Field(max_length=1_000)
     createdAt: int
     updatedAt: int
 
