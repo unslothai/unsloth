@@ -24,17 +24,17 @@ router = APIRouter()
 
 
 class PromptEntry(BaseModel):
-    id: str = Field(max_length=128)
-    name: str = Field(max_length=500)
-    text: str = Field(max_length=100_000)
+    id: str = Field(max_length = 128)
+    name: str = Field(max_length = 500)
+    text: str = Field(max_length = 100_000)
     createdAt: int
     updatedAt: int
 
 
 class PromptList(BaseModel):
-    id: str = Field(max_length=128)
-    name: str = Field(max_length=500)
-    items: list[str] = Field(max_length=1_000)
+    id: str = Field(max_length = 128)
+    name: str = Field(max_length = 500)
+    items: list[str] = Field(max_length = 1_000)
     createdAt: int
     updatedAt: int
 
