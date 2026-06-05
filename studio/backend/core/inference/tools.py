@@ -28,8 +28,11 @@ import urllib.request
 from core.inference.mcp_client import (
     MCP_TOOL_PREFIX,
     call_tool_sync,
+    is_stdio,
     list_tools_async,
     parse_server_headers,
+    probe_timeout,
+    stdio_mcp_enabled,
 )
 from storage import mcp_servers_db
 
@@ -418,6 +421,35 @@ _workdirs: dict[str, str] = {}
 
 # Non-matching session_ids collapse to ``_invalid`` to block cross-session escapes.
 _SESSION_ID_RE = re.compile(r"\A[A-Za-z0-9_\-]{1,64}\Z")
+_PROJECT_SESSION_PREFIX = "project-"
+
+
+def _get_project_workdir(session_id: str) -> str | None:
+    if not session_id.startswith(_PROJECT_SESSION_PREFIX):
+        return None
+    project_id = session_id[len(_PROJECT_SESSION_PREFIX) :]
+    if not project_id or not _SESSION_ID_RE.match(project_id):
+        return None
+    try:
+        from storage.studio_db import ensure_chat_project_workspace
+
+        project = ensure_chat_project_workspace(project_id)
+    except Exception:
+        logger.warning(
+            "Failed to resolve project sandbox for %s", session_id, exc_info = True
+        )
+        return None
+    if not project:
+        return None
+    root_path = project.get("rootPath")
+    sandbox_path = project.get("sandboxPath")
+    if not root_path or not sandbox_path:
+        return None
+    root_real = os.path.realpath(root_path)
+    sandbox_real = os.path.realpath(sandbox_path)
+    if sandbox_real != root_real and not sandbox_real.startswith(root_real + os.sep):
+        return None
+    return sandbox_real
 
 
 def _get_workdir(session_id: str | None = None) -> str:
@@ -427,7 +459,14 @@ def _get_workdir(session_id: str | None = None) -> str:
     if key not in _workdirs or not os.path.isdir(_workdirs[key]):
         home = os.path.expanduser("~")
         sandbox_root = os.path.join(home, "studio_sandbox")
-        if session_id and _SESSION_ID_RE.match(session_id):
+        project_workdir = (
+            _get_project_workdir(session_id)
+            if session_id and _SESSION_ID_RE.match(session_id)
+            else None
+        )
+        if project_workdir:
+            workdir = project_workdir
+        elif session_id and _SESSION_ID_RE.match(session_id):
             workdir = os.path.join(sandbox_root, session_id)
             if not os.path.realpath(workdir).startswith(
                 os.path.realpath(sandbox_root) + os.sep
@@ -448,6 +487,10 @@ def _get_workdir(session_id: str | None = None) -> str:
             pass
         _workdirs[key] = workdir
     return _workdirs[key]
+
+
+def get_sandbox_workdir(session_id: str | None = None) -> str:
+    return _get_workdir(session_id)
 
 
 WEB_SEARCH_TOOL = {
@@ -511,7 +554,35 @@ TERMINAL_TOOL = {
     },
 }
 
-ALL_TOOLS = [WEB_SEARCH_TOOL, PYTHON_TOOL, TERMINAL_TOOL]
+RENDER_HTML_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "render_html",
+        "description": (
+            "Render a self-contained HTML/CSS/JavaScript artifact for the user. "
+            "Call this at most once per assistant response unless the user "
+            "explicitly asks for changes in that response. Future user requests "
+            "for new artifacts may call render_html once. Put the entire document "
+            "in code, including any CSS in <style> tags and JavaScript in <script> tags."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "code": {
+                    "type": "string",
+                    "description": "A complete self-contained HTML document.",
+                },
+                "title": {
+                    "type": "string",
+                    "description": "Short display title for the artifact.",
+                },
+            },
+            "required": ["code"],
+        },
+    },
+}
+
+ALL_TOOLS = [WEB_SEARCH_TOOL, PYTHON_TOOL, TERMINAL_TOOL, RENDER_HTML_TOOL]
 
 
 # OpenAI's function.name regex: ^[a-zA-Z0-9_-]{1,64}$ -- enforced before
@@ -568,17 +639,19 @@ def _mcp_specs_for_server(server: dict, mcp_tools: list[dict]) -> list[dict]:
 
 async def get_enabled_mcp_tools() -> list[dict]:
     servers = [s for s in mcp_servers_db.list_servers() if s.get("is_enabled")]
+    # Never spawn stdio servers when stdio is disabled on this host (e.g. a DB
+    # carried over from a desktop install onto a Colab / network deployment).
+    if not stdio_mcp_enabled():
+        servers = [s for s in servers if not is_stdio(s["url"])]
     if not servers:
         return []
 
-    # OAuth probes need minutes for first-connect/expired-token browser
-    # sign-in; non-OAuth probes fail fast. Matches routes/mcp_servers.py.
     results = await asyncio.gather(
         *(
             list_tools_async(
                 url = s["url"],
                 headers = parse_server_headers(s),
-                timeout = 305.0 if s.get("use_oauth") else 8.0,
+                timeout = probe_timeout(s["url"], bool(s.get("use_oauth"))),
                 use_oauth = bool(s.get("use_oauth")),
             )
             for s in servers
@@ -603,6 +676,25 @@ async def get_enabled_mcp_tools() -> list[dict]:
 _TIMEOUT_UNSET = object()
 
 
+def _render_html_result(arguments: dict) -> str:
+    code = arguments.get("code")
+    if not isinstance(code, str) or not code.strip():
+        return "Error: render_html requires a non-empty code string."
+    title = arguments.get("title")
+    if isinstance(title, str) and title.strip():
+        safe_title = title.strip()[:120]
+        return (
+            f"Rendered HTML artifact: {safe_title}. Do not call render_html "
+            "again in this response unless the user asks for changes. For a later "
+            "user request for a new artifact, call render_html once."
+        )
+    return (
+        "Rendered HTML artifact. Do not call render_html again in this response "
+        "unless the user asks for changes. For a later user request for a new "
+        "artifact, call render_html once."
+    )
+
+
 def execute_tool(
     name: str,
     arguments: dict,
@@ -620,6 +712,8 @@ def execute_tool(
         f"execute_tool: name={name}, session_id={session_id}, timeout={timeout}"
     )
     effective_timeout = _EXEC_TIMEOUT if timeout is _TIMEOUT_UNSET else timeout
+    if name == "render_html":
+        return _render_html_result(arguments)
     if name.startswith(MCP_TOOL_PREFIX):
         try:
             _, server_id, tool_name = name.split("__", 2)
@@ -630,6 +724,8 @@ def execute_tool(
             return f"Error: MCP server '{server_id}' not found"
         if not server.get("is_enabled"):
             return f"Error: MCP server '{server_id}' is disabled"
+        if is_stdio(server["url"]) and not stdio_mcp_enabled():
+            return f"Error: stdio MCP server '{server_id}' is disabled on this host"
         return call_tool_sync(
             url = server["url"],
             headers = parse_server_headers(server),

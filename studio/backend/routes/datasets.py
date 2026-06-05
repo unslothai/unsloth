@@ -9,6 +9,7 @@ import base64
 import io
 import json
 import sys
+from contextlib import suppress
 from pathlib import Path
 from uuid import uuid4
 from typing import Optional
@@ -67,6 +68,7 @@ if str(backend_path) not in sys.path:
 
 # Import dataset utilities
 from utils.datasets import check_dataset_format
+from utils.upload_limits import get_upload_limit_bytes, get_upload_limit_label
 from auth.authentication import get_current_subject
 
 router = APIRouter()
@@ -138,6 +140,7 @@ _ARCHIVE_EXTS = (".tar", ".tar.gz", ".tgz", ".gz", ".zst", ".zip", ".txt")
 DATA_EXTS = _TABULAR_EXTS + _ARCHIVE_EXTS
 LOCAL_FILE_EXTS = (".json", ".jsonl", ".csv", ".parquet")
 LOCAL_UPLOAD_EXTS = {".csv", ".json", ".jsonl", ".parquet"}
+# sync: training dataset upload limits are exposed by /api/settings/upload-limit
 LOCAL_DATASETS_ROOT = recipe_datasets_root()
 DATASET_UPLOAD_DIR = dataset_uploads_root()
 
@@ -334,10 +337,30 @@ async def upload_dataset(
     stored_name = f"{uuid4().hex}_{stem}{ext}"
     stored_path = DATASET_UPLOAD_DIR / stored_name
 
-    # Stream file to disk in chunks to avoid holding entire file in memory
-    with open(stored_path, "wb") as f:
-        while chunk := await file.read(1024 * 1024):
-            f.write(chunk)
+    # Stream file to disk in chunks to avoid holding entire file in memory.
+    # Keep a route-level cap so users get a clear training-dataset-specific
+    # error and oversized partial files are not left in the Studio uploads directory.
+    upload_limit_bytes = get_upload_limit_bytes()
+    total_bytes = 0
+    upload_complete = False
+    try:
+        with open(stored_path, "wb") as f:
+            while chunk := await file.read(1024 * 1024):
+                total_bytes += len(chunk)
+                if total_bytes > upload_limit_bytes:
+                    raise HTTPException(
+                        status_code = 413,
+                        detail = (
+                            "Training dataset upload too large. "
+                            f"Maximum is {get_upload_limit_label()}."
+                        ),
+                    )
+                f.write(chunk)
+        upload_complete = True
+    finally:
+        if not upload_complete:
+            with suppress(OSError):
+                stored_path.unlink(missing_ok = True)
 
     if stored_path.stat().st_size == 0:
         stored_path.unlink(missing_ok = True)

@@ -30,6 +30,9 @@ _spec = importlib.util.spec_from_file_location("_lsa_test_only", _LSA_PATH)
 _lsa = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_lsa)
 is_managed_flag = _lsa.is_managed_flag
+parse_cache_override = _lsa.parse_cache_override
+parse_ctx_override = _lsa.parse_ctx_override
+resolve_cache_type_kv = _lsa.resolve_cache_type_kv
 strip_shadowing_flags = _lsa.strip_shadowing_flags
 validate_extra_args = _lsa.validate_extra_args
 
@@ -408,6 +411,86 @@ def test_is_managed_flag_false_for_mtp_pass_through():
     assert is_managed_flag("--spec-ngram-mod-n-match") is False
     assert is_managed_flag("--spec-ngram-mod-n-min") is False
     assert is_managed_flag("--spec-ngram-mod-n-max") is False
+
+
+# ── parse_ctx_override ───────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "args,expected",
+    [
+        (None, None),
+        ([], None),
+        (["--top-k", "20"], None),
+        (["--ctx-size", "128000"], 128000),
+        (["--ctx-size=128000"], 128000),
+        (["-c", "128000"], 128000),
+        (["-c=128000"], 128000),
+        (["-c", "4096", "--ctx-size", "128000"], 128000),
+    ],
+)
+def test_parse_ctx_override(args, expected):
+    assert parse_ctx_override(args) == expected
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["--ctx-size"],
+        ["--ctx-size", "--top-k"],
+        ["--ctx-size", "abc"],
+        ["--ctx-size=abc"],
+        ["-c", "-1"],
+    ],
+)
+def test_parse_ctx_override_rejects_malformed_values(args):
+    with pytest.raises(ValueError, match = "ctx-size|'-c'"):
+        parse_ctx_override(args)
+
+
+def test_validate_extra_args_rejects_malformed_ctx_override():
+    with pytest.raises(ValueError, match = "ctx-size"):
+        validate_extra_args(["--ctx-size", "abc"])
+
+
+# ── parse_cache_override ─────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "args,expected",
+    [
+        (None, None),
+        ([], None),
+        (["--top-k", "20"], None),
+        (["--cache-type-k", "q8_0"], "q8_0"),
+        (["-ctk", "q4_0"], "q4_0"),
+        (["-ctv", "q4_0"], "q4_0"),
+        (["--cache-type-k=q4_0"], "q4_0"),
+        (["-ctk", "f16", "-ctk", "q8_0"], "q8_0"),
+    ],
+)
+def test_parse_cache_override(args, expected):
+    assert parse_cache_override(args) == expected
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["-ctk"],
+        ["-ctk", "-c", "4096"],
+    ],
+)
+def test_parse_cache_override_rejects_malformed_values(args):
+    with pytest.raises(ValueError, match = "cache-type|'-ctk'"):
+        parse_cache_override(args)
+
+
+def test_resolve_cache_type_kv_uses_override_when_present():
+    assert resolve_cache_type_kv(["--cache-type-k", "q8_0"], "f16") == "q8_0"
+
+
+def test_resolve_cache_type_kv_uses_fallback_without_override():
+    assert resolve_cache_type_kv(["--top-k", "20"], "f16") == "f16"
 
 
 def test_strip_shadowing_flags_boolean_does_not_consume_next_token():

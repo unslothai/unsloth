@@ -176,12 +176,21 @@ def build_mcp_providers(
 ) -> list:
     from data_designer.config.mcp import LocalStdioMCPProvider, MCPProvider  # pyright: ignore[reportMissingImports]
 
+    # Same gate as the chat MCP path: stdio providers spawn a local subprocess,
+    # so only build them when this host allows it (desktop / explicit opt-in).
+    # Skip them otherwise so a recipe carried onto a hosted host cannot spawn.
+    from core.inference.mcp_client import stdio_mcp_enabled
+
+    stdio_allowed = stdio_mcp_enabled()
+
     providers: list[MCPProvider | LocalStdioMCPProvider] = []
     for provider in recipe.get("mcp_providers", []):
         if not isinstance(provider, dict):
             continue
         provider_type = provider.get("provider_type")
         if provider_type == "stdio":
+            if not stdio_allowed:
+                continue
             env = provider.get("env")
             if not isinstance(env, dict):
                 env = {}

@@ -25,6 +25,8 @@ from .storage_roots import (
     auth_root,
     auth_db_path,
     studio_db_path,
+    documents_root,
+    project_workspaces_root,
     tmp_root,
     seed_uploads_root,
     unstructured_seed_cache_root,
@@ -44,6 +46,10 @@ from .storage_roots import (
     resolve_dataset_path,
 )
 
+# Re-export shim: name-load the project-path helpers so the import-hoist
+# safety net sees them used here, not just listed in __all__ as strings.
+_REEXPORTED = (documents_root, project_workspaces_root)
+
 __all__ = [
     "normalize_path",
     "is_local_path",
@@ -62,6 +68,8 @@ __all__ = [
     "auth_root",
     "auth_db_path",
     "studio_db_path",
+    "documents_root",
+    "project_workspaces_root",
     "tmp_root",
     "seed_uploads_root",
     "unstructured_seed_cache_root",
