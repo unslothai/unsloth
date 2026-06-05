@@ -271,7 +271,11 @@ def _select_best_hf_preview_candidate(
 
 
 def _select_hf_preview_file(
-    repo_files: list[str], *, metadata: dict | None, subset: str | None, split: str | None
+    repo_files: list[str],
+    *,
+    metadata: dict | None,
+    subset: str | None,
+    split: str | None,
 ) -> str | None:
     normalized_repo_files = [_normalize_hf_repo_path(path) for path in repo_files]
     repo_file_set = set(normalized_repo_files)
@@ -286,7 +290,9 @@ def _select_hf_preview_file(
             metadata_candidates, subset = subset, split = split
         )
 
-    data_candidates = [path for path in normalized_repo_files if _is_hf_preview_data_file(path)]
+    data_candidates = [
+        path for path in normalized_repo_files if _is_hf_preview_data_file(path)
+    ]
     return _select_best_hf_preview_candidate(
         data_candidates, subset = subset, split = split
     )
