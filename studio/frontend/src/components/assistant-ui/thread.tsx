@@ -1945,7 +1945,7 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
                 <HugeiconsIcon icon={Download01Icon} strokeWidth={2} />
                 Export chat
               </DropdownMenuSubTrigger>
-              <DropdownMenuSubContent className="unsloth-plus-menu w-[200px]">
+              <DropdownMenuSubContent align="start" className="unsloth-plus-menu w-[200px]">
                 <DropdownMenuItem onSelect={() => {
                   if (!activeThreadId) return;
                   exportConversationRawJsonl(activeThreadId).catch(() => toast.error("Export failed."));
