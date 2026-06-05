@@ -2223,6 +2223,7 @@ def patch_accelerate_recursively_apply():
             acc_utils = None
 
     if original_recursively_apply is not None:
+
         @functools.wraps(original_recursively_apply)
         def _patched_recursively_apply(func, data, *args, **kwargs):
             if type(data).__name__ == "EmptyLogits":
@@ -2233,4 +2234,3 @@ def patch_accelerate_recursively_apply():
             acc_ops.recursively_apply = _patched_recursively_apply
         if acc_utils is not None and hasattr(acc_utils, "recursively_apply"):
             acc_utils.recursively_apply = _patched_recursively_apply
-
