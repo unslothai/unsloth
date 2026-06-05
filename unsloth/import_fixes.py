@@ -2201,6 +2201,7 @@ def patch_accelerate_recursively_apply():
     """
     try:
         import accelerate.utils.operations as acc_ops
+
         original_recursively_apply = acc_ops.recursively_apply
 
         @functools.wraps(original_recursively_apply)
@@ -2215,6 +2216,7 @@ def patch_accelerate_recursively_apply():
 
     try:
         import accelerate.utils as acc_utils
+
         if hasattr(acc_utils, "recursively_apply"):
             original_recursively_apply = acc_utils.recursively_apply
 
@@ -2227,4 +2229,3 @@ def patch_accelerate_recursively_apply():
             acc_utils.recursively_apply = _patched_recursively_apply
     except Exception:
         pass
-

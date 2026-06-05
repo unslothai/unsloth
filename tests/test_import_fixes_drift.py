@@ -640,8 +640,3 @@ def test_accelerate_recursively_apply_empty_logits_patch():
 
     res = acc_ops.recursively_apply(lambda x: x, e, error_on_other_type = True)
     assert res is e
-
-
-
-
-
