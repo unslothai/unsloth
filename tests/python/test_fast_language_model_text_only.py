@@ -9,6 +9,7 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LOADER_PATH = REPO_ROOT / "unsloth" / "models" / "loader.py"
 VISION_PATH = REPO_ROOT / "unsloth" / "models" / "vision.py"
+UTILS_PATH = REPO_ROOT / "unsloth" / "models" / "_utils.py"
 
 
 def _source(path):
@@ -25,7 +26,7 @@ def _class_method(tree, class_name, method_name):
 
 
 def _load_text_only_helper():
-    source = _source(LOADER_PATH)
+    source = _source(UTILS_PATH)
     tree = ast.parse(source)
     ns = {}
     for node in tree.body:
@@ -151,3 +152,24 @@ def test_gemma3_text_only_model_class_resolves_and_has_no_vision_tower():
     assert not hasattr(
         model, "multi_modal_projector"
     ), "text-only Gemma3 model should not have a multi_modal_projector"
+
+
+def test_helper_defined_once_in_utils_and_imported():
+    # _get_text_only_config is defined only in _utils and imported by loader + vision.
+    def _defines(path):
+        return any(
+            isinstance(n, ast.FunctionDef) and n.name == "_get_text_only_config"
+            for n in ast.parse(_source(path)).body
+        )
+
+    def _imports(path):
+        return any(
+            isinstance(n, ast.ImportFrom)
+            and n.module == "_utils"
+            and any(a.name == "_get_text_only_config" for a in n.names)
+            for n in ast.walk(ast.parse(_source(path)))
+        )
+
+    assert _defines(UTILS_PATH)
+    assert not _defines(LOADER_PATH) and _imports(LOADER_PATH)
+    assert not _defines(VISION_PATH) and _imports(VISION_PATH)

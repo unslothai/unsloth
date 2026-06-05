@@ -35,6 +35,7 @@ from ._utils import (
     _prepare_model_for_qat,
     resolve_model_class,
     resolve_attention_implementation,
+    _get_text_only_config,
 )
 from ._utils import *
 from .loader_utils import _get_fp8_mode_and_check_settings
@@ -574,17 +575,6 @@ def _get_total_transformer_layers(model):
             if isinstance(v, int) and v > 0:
                 return v
     return None
-
-
-def _get_text_only_config(model_config, model_name):
-    text_config = None
-    if hasattr(model_config, "get_text_config"):
-        text_config = model_config.get_text_config()
-    if text_config is None:
-        text_config = getattr(model_config, "text_config", None)
-    if text_config is None:
-        raise ValueError(f"Cannot load {model_name} as text-only; use FastVisionModel")
-    return text_config
 
 
 class FastBaseModel:

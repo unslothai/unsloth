@@ -81,19 +81,6 @@ SUPPORTS_GEMMA4 = transformers_version >= Version("5.5.0")
 # Transformers v5 meta-device loading corrupts non-persistent buffers (inv_freq).
 # See _fix_rope_inv_freq() below for details.
 _NEEDS_ROPE_FIX = transformers_version >= Version("5.0.0")
-
-
-def _get_text_only_config(model_config, model_name):
-    text_config = None
-    if hasattr(model_config, "get_text_config"):
-        text_config = model_config.get_text_config()
-    if text_config is None:
-        text_config = getattr(model_config, "text_config", None)
-    if text_config is None:
-        raise ValueError(f"Cannot load {model_name} as text-only; use FastVisionModel")
-    return text_config
-
-
 if SUPPORTS_GEMMA:
     from .gemma import FastGemmaModel
 if SUPPORTS_GEMMA2:
@@ -110,6 +97,7 @@ from ._utils import (
     process_vision_info,
     unsloth_compile_transformers,
     fast_inference_setup,
+    _get_text_only_config,
 )
 
 # Single source of truth is unsloth_zoo.model_lists. Re-exported so callers
