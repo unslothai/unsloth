@@ -34,6 +34,7 @@ def standardize_chat_format(
     ],
     batch_size = 1000,
     num_proc = None,
+    chat_column: str | None = None,
 ):
     """
     Our own standardization function that handles BOTH messages and conversations.
@@ -51,9 +52,10 @@ def standardize_chat_format(
 
     column_names = set(next(iter(dataset)).keys())
 
-    #   Check for both 'conversations' and 'messages'
-    chat_column = None
-    if "conversations" in column_names:
+    if chat_column:
+        if chat_column not in column_names:
+            return dataset
+    elif "conversations" in column_names:
         chat_column = "conversations"
     elif "messages" in column_names:
         chat_column = "messages"
@@ -62,30 +64,50 @@ def standardize_chat_format(
     else:
         return dataset  # No chat column found
 
-    # Inspect structure
-    examples = itertools.islice(dataset, 10)
+    def _iter_probe_rows():
+        try:
+            total = min(len(dataset), 100)
+            for index in range(total):
+                yield dataset[index]
+            return
+        except Exception:
+            pass
+        for example in itertools.islice(dataset, 100):
+            yield example
+
     uniques = collections.defaultdict(list)
-    for example in examples:
-        for message in example[chat_column]:
+    for example in _iter_probe_rows():
+        chat_data = example.get(chat_column)
+        if not isinstance(chat_data, list) or len(chat_data) == 0:
+            continue
+        for message in chat_data:
+            if not isinstance(message, dict):
+                continue
             for key, value in message.items():
                 if type(value) is not str:
                     continue  # Skip non-string values
                 uniques[key].append(value)
 
-    if len(uniques.keys()) != 2:
-        return dataset  # Unexpected structure
-
-    keys = list(uniques.keys())
-    length_first = len(set(uniques[keys[0]]))
-    length_second = len(set(uniques[keys[1]]))
-
-    # Determine which is role and which is content
-    if length_first < length_second:
-        role_key = keys[0]
-        content_key = keys[1]
+    if "from" in uniques and "value" in uniques:
+        role_key = "from"
+        content_key = "value"
+    elif "role" in uniques and "content" in uniques:
+        role_key = "role"
+        content_key = "content"
+    elif len(uniques.keys()) == 2:
+        keys = list(uniques.keys())
+        length_first = len(set(uniques[keys[0]]))
+        length_second = len(set(uniques[keys[1]]))
+        if length_first < length_second:
+            role_key = keys[0]
+            content_key = keys[1]
+        else:
+            role_key = keys[1]
+            content_key = keys[0]
     else:
-        role_key = keys[1]
-        content_key = keys[0]
+        raise ValueError(
+            f"Could not infer role/content keys for chat column '{chat_column}'"
+        )
 
     # Mapping for aliases
     aliases_mapping = {}
@@ -100,11 +122,26 @@ def standardize_chat_format(
         convos = examples[chat_column]
         all_convos = []
         for convo in convos:
+            if not isinstance(convo, list):
+                all_convos.append([])
+                continue
+
             new_convo = []
             for message in convo:
-                # Get original role and content
-                original_role = message.get(role_key, "")
-                original_content = message.get(content_key, "")
+                if not isinstance(message, dict):
+                    continue
+
+                # Get original role and content. Use the inferred key family first,
+                # but fall back per-message so mixed ShareGPT/ChatML rows do not
+                # lose otherwise valid turns.
+                original_role = message.get(role_key)
+                original_content = message.get(content_key)
+                if original_role is None:
+                    original_role = message.get("role") or message.get("from") or ""
+                if original_content is None:
+                    original_content = (
+                        message.get("content") or message.get("value") or ""
+                    )
 
                 # Map to standard role name
                 standard_role = aliases_mapping.get(original_role, original_role)
@@ -140,7 +177,9 @@ def standardize_chat_format(
     return dataset.map(_standardize_dataset, **dataset_map_kwargs)
 
 
-def convert_chatml_to_alpaca(dataset, batch_size = 1000, num_proc = None):
+def convert_chatml_to_alpaca(
+    dataset, batch_size = 1000, num_proc = None, chat_column: str | None = None
+):
     """
     Converts ChatML format (messages OR conversations) to Alpaca format.
     Handles both standardized and ShareGPT formats.
@@ -157,12 +196,13 @@ def convert_chatml_to_alpaca(dataset, batch_size = 1000, num_proc = None):
         _is_torch_iterable = False
 
     def _convert(examples):
-        # Auto-detect which column name is used
-        chatml_data = (
-            examples.get("messages")
-            or examples.get("conversations")
-            or examples.get("texts")
-        )
+        chatml_data = examples.get(chat_column) if chat_column else None
+        if chatml_data is None:
+            chatml_data = (
+                examples.get("messages")
+                or examples.get("conversations")
+                or examples.get("texts")
+            )
 
         if chatml_data is None:
             raise ValueError(

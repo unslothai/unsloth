@@ -42,6 +42,7 @@ class CheckFormatResponse(BaseModel):
     detected_audio_column: Optional[str] = None
     detected_text_column: Optional[str] = None
     detected_speaker_column: Optional[str] = None
+    chat_column: Optional[str] = None
     preview_samples: Optional[List[Dict]] = None
     total_rows: Optional[int] = None
     warning: Optional[str] = None

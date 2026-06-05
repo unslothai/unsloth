@@ -181,6 +181,7 @@ def check_dataset_format(dataset, is_vlm: bool = False) -> dict:
         "suggested_mapping": None,
         "detected_image_column": None,
         "detected_text_column": None,
+        "chat_column": detected.get("chat_column"),
         "is_image": multimodal_info["is_image"],
         "multimodal_columns": multimodal_info.get("multimodal_columns"),
         **audio_fields,
@@ -200,6 +201,17 @@ _TO_CHATML = {
 }
 _CHATML_ROLE_ORDER = ("system", "user", "assistant")
 _CHATML_TO_ALPACA = {"user": "instruction", "system": "input", "assistant": "output"}
+_KNOWN_CHAT_COLUMNS = {"messages", "conversations", "texts"}
+
+
+def _chatml_final_format(chat_column: str | None) -> str:
+    return "chatml_messages" if chat_column == "messages" else "chatml_conversations"
+
+
+def _chatml_detected_format_label(chat_column: str | None) -> str:
+    if chat_column in _KNOWN_CHAT_COLUMNS:
+        return f"chatml_{chat_column}"
+    return "chatml_conversations"
 
 
 def _apply_user_mapping(dataset, mapping: dict, batch_size: int = 1000):
@@ -523,7 +535,7 @@ def format_dataset(
             }
 
         # ShareGPT - needs standardization
-        elif detected["format"] == "sharegpt":
+        elif detected["format"] == "sharegpt" and detected.get("chat_column"):
             try:
                 standardized = standardize_chat_format(
                     dataset,
@@ -533,11 +545,12 @@ def format_dataset(
                     aliases_for_assistant,
                     batch_size,
                     num_proc,
+                    chat_column = detected["chat_column"],
                 )
                 return {
                     "dataset": standardized,
                     "detected_format": "sharegpt",
-                    "final_format": f"chatml_{detected['chat_column']}",
+                    "final_format": _chatml_final_format(detected["chat_column"]),
                     "chat_column": detected["chat_column"],
                     "is_standardized": True,
                     "requires_manual_mapping": False,
@@ -559,15 +572,13 @@ def format_dataset(
                     "warnings": warnings,
                 }
 
-        elif detected["format"] == "chatml" and detected["chat_column"] in [
-            "conversations",
-            "messages",
-            "texts",
-        ]:
+        elif detected["format"] == "chatml" and detected.get("chat_column"):
             return {
                 "dataset": dataset,
-                "detected_format": f"chatml_{detected['chat_column']}",
-                "final_format": f"chatml_{detected['chat_column']}",
+                "detected_format": _chatml_detected_format_label(
+                    detected["chat_column"]
+                ),
+                "final_format": _chatml_final_format(detected["chat_column"]),
                 "chat_column": detected["chat_column"],
                 "is_standardized": True,
                 "requires_manual_mapping": False,
@@ -642,12 +653,13 @@ def format_dataset(
                         aliases_for_assistant,
                         batch_size,
                         num_proc,
+                        chat_column = detected["chat_column"],
                     )
                     warnings.append("Successfully standardized unknown format")
                     return {
                         "dataset": standardized,
                         "detected_format": "unknown",
-                        "final_format": f"chatml_{detected['chat_column']}",
+                        "final_format": _chatml_final_format(detected["chat_column"]),
                         "chat_column": detected["chat_column"],
                         "is_standardized": True,
                         "requires_manual_mapping": False,
@@ -688,32 +700,54 @@ def format_dataset(
                 "warnings": [],
             }
 
-        elif detected["format"] in ["sharegpt", "chatml"]:
-            # First standardize if ShareGPT
-            if detected["format"] == "sharegpt":
-                dataset = standardize_chat_format(
+        elif detected["format"] in ["sharegpt", "chatml"] and detected.get(
+            "chat_column"
+        ):
+            try:
+                # First standardize if ShareGPT
+                if detected["format"] == "sharegpt":
+                    dataset = standardize_chat_format(
+                        dataset,
+                        tokenizer,
+                        aliases_for_system,
+                        aliases_for_user,
+                        aliases_for_assistant,
+                        batch_size,
+                        num_proc,
+                        chat_column = detected["chat_column"],
+                    )
+
+                # Then convert to Alpaca
+                converted = convert_chatml_to_alpaca(
                     dataset,
-                    tokenizer,
-                    aliases_for_system,
-                    aliases_for_user,
-                    aliases_for_assistant,
                     batch_size,
                     num_proc,
+                    chat_column = detected["chat_column"],
                 )
-
-            # Then convert to Alpaca
-            converted = convert_chatml_to_alpaca(dataset, batch_size, num_proc)
-            return {
-                "dataset": converted,
-                "detected_format": detected["format"],
-                "final_format": "alpaca",
-                "chat_column": None,
-                "is_standardized": True,
-                "requires_manual_mapping": False,
-                "is_image": multimodal_info["is_image"],
-                "multimodal_info": multimodal_info,
-                "warnings": [],
-            }
+                return {
+                    "dataset": converted,
+                    "detected_format": detected["format"],
+                    "final_format": "alpaca",
+                    "chat_column": None,
+                    "is_standardized": True,
+                    "requires_manual_mapping": False,
+                    "is_image": multimodal_info["is_image"],
+                    "multimodal_info": multimodal_info,
+                    "warnings": [],
+                }
+            except Exception as e:
+                warnings.append(f"Failed to convert chat dataset to Alpaca: {e}")
+                return {
+                    "dataset": dataset,
+                    "detected_format": detected["format"],
+                    "final_format": "unknown",
+                    "chat_column": detected["chat_column"],
+                    "is_standardized": False,
+                    "requires_manual_mapping": True,
+                    "is_image": multimodal_info["is_image"],
+                    "multimodal_info": multimodal_info,
+                    "warnings": warnings,
+                }
 
         else:
             warnings.append(f"Cannot convert unknown format to Alpaca")
@@ -745,33 +779,50 @@ def format_dataset(
                 "warnings": [],
             }
 
-        elif detected["format"] == "sharegpt":
-            standardized = standardize_chat_format(
-                dataset,
-                tokenizer,
-                aliases_for_system,
-                aliases_for_user,
-                aliases_for_assistant,
-                batch_size,
-                num_proc,
-            )
-            return {
-                "dataset": standardized,
-                "detected_format": "sharegpt",
-                "final_format": f"chatml_{detected['chat_column']}",
-                "chat_column": detected["chat_column"],
-                "is_standardized": True,
-                "requires_manual_mapping": False,
-                "is_image": multimodal_info["is_image"],
-                "multimodal_info": multimodal_info,
-                "warnings": [],
-            }
+        elif detected["format"] == "sharegpt" and detected.get("chat_column"):
+            try:
+                standardized = standardize_chat_format(
+                    dataset,
+                    tokenizer,
+                    aliases_for_system,
+                    aliases_for_user,
+                    aliases_for_assistant,
+                    batch_size,
+                    num_proc,
+                    chat_column = detected["chat_column"],
+                )
+                return {
+                    "dataset": standardized,
+                    "detected_format": "sharegpt",
+                    "final_format": _chatml_final_format(detected["chat_column"]),
+                    "chat_column": detected["chat_column"],
+                    "is_standardized": True,
+                    "requires_manual_mapping": False,
+                    "is_image": multimodal_info["is_image"],
+                    "multimodal_info": multimodal_info,
+                    "warnings": [],
+                }
+            except Exception as e:
+                warnings.append(f"Failed to standardize ShareGPT format: {e}")
+                return {
+                    "dataset": dataset,
+                    "detected_format": "sharegpt",
+                    "final_format": "sharegpt",
+                    "chat_column": detected["chat_column"],
+                    "is_standardized": False,
+                    "requires_manual_mapping": True,
+                    "is_image": multimodal_info["is_image"],
+                    "multimodal_info": multimodal_info,
+                    "warnings": warnings,
+                }
 
-        elif detected["format"] == "chatml":
+        elif detected["format"] == "chatml" and detected.get("chat_column"):
             return {
                 "dataset": dataset,
-                "detected_format": f"chatml_{detected['chat_column']}",
-                "final_format": f"chatml_{detected['chat_column']}",
+                "detected_format": _chatml_detected_format_label(
+                    detected["chat_column"]
+                ),
+                "final_format": _chatml_final_format(detected["chat_column"]),
                 "chat_column": detected["chat_column"],
                 "is_standardized": True,
                 "requires_manual_mapping": False,
@@ -792,11 +843,12 @@ def format_dataset(
                         aliases_for_assistant,
                         batch_size,
                         num_proc,
+                        chat_column = detected["chat_column"],
                     )
                     return {
                         "dataset": standardized,
                         "detected_format": "unknown",
-                        "final_format": f"chatml_{detected['chat_column']}",
+                        "final_format": _chatml_final_format(detected["chat_column"]),
                         "chat_column": detected["chat_column"],
                         "is_standardized": True,
                         "requires_manual_mapping": False,
