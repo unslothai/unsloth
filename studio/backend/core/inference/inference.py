@@ -420,10 +420,12 @@ class InferenceBackend:
             # AMD RDNA2 (gfx1030-gfx1036, e.g. RX 6600) crashes with an LLVM error
             # ("Cannot select: intrinsic %llvm.amdgcn.fdot2.bf16.bf16") at the first
             # bf16 kernel dispatch when dtype=None lets unsloth auto-pick bf16.
-            # models/_utils.py now sets SUPPORTS_BFLOAT16=False for RDNA2, which
-            # makes unsloth's loader and Triton kernels use fp16 paths. This block
-            # is belt-and-suspenders: it forces dtype=float16 at load time even if
-            # rocminfo was unavailable during _utils.py import and the flag stayed True.
+            # models/_utils.py now sets SUPPORTS_BFLOAT16=False for RDNA2 so
+            # unsloth's loader and Triton kernels use fp16 paths. This block is
+            # belt-and-suspenders: forces dtype=float16 at load time in case arch
+            # detection failed at import time and the flag stayed True.
+            # Uses gcnArchName from already-initialized torch device properties
+            # (no subprocess, no extra HIP context initialization).
             _is_rocm = (
                 bool(getattr(torch.version, "hip", None))
                 or "rocm" in torch.__version__.lower()
@@ -434,16 +436,12 @@ class InferenceBackend:
                     {"gfx1030", "gfx1031", "gfx1032", "gfx1033", "gfx1034", "gfx1035", "gfx1036"}
                 )
                 try:
-                    import re
-                    import subprocess
-
-                    _ri = subprocess.run(
-                        ["rocminfo"], capture_output = True, text = True, timeout = 5
-                    )
-                    _is_rdna2 = any(
-                        c in _RDNA2_GFX
-                        for c in re.findall(r"gfx[0-9a-z]+", _ri.stdout.lower())
-                    )
+                    _hip_arch = ""
+                    if torch.cuda.is_available() and torch.cuda.device_count() > 0:
+                        _hip_arch = getattr(
+                            torch.cuda.get_device_properties(0), "gcnArchName", ""
+                        ).lower()
+                    _is_rdna2 = _hip_arch in _RDNA2_GFX
                 except Exception:
                     pass
             _auto_dtype = torch.float16 if _is_rdna2 else None

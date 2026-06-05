@@ -1227,22 +1227,23 @@ if DEVICE_TYPE == "cuda":
 elif DEVICE_TYPE == "hip":
     # RDNA2 (gfx1030-gfx1036, e.g. RX 6600/6700/6800/6900) lacks the bf16
     # dot-product intrinsic (%llvm.amdgcn.fdot2.bf16.bf16) used by some Triton
-    # kernels. Detect via rocminfo and mark bf16 as unsupported on those GPUs so
-    # unsloth's kernel selector falls back to fp16 paths for both loading and
-    # generation. All other ROCm GPUs (RDNA3+, CDNA) keep bf16 enabled.
+    # kernels. Mark bf16 as unsupported on those GPUs so unsloth's kernel
+    # selector falls back to fp16 paths for both loading and generation.
+    # All other ROCm GPUs (RDNA3+, CDNA) keep bf16 enabled.
+    # Detection uses gcnArchName from torch device properties -- no subprocess,
+    # no extra HIP context initialization, safe to call at import time.
     _RDNA2_GFX = frozenset(
         {"gfx1030", "gfx1031", "gfx1032", "gfx1033", "gfx1034", "gfx1035", "gfx1036"}
     )
     try:
-        import subprocess
-
-        _rocm_info = subprocess.run(
-            ["rocminfo"], capture_output=True, text=True, timeout=5
-        )
-        _detected_gfx = set(re.findall(r"gfx[0-9a-z]+", _rocm_info.stdout.lower()))
-        SUPPORTS_BFLOAT16 = not bool(_detected_gfx & _RDNA2_GFX)
+        _hip_arch = ""
+        if torch.cuda.is_available() and torch.cuda.device_count() > 0:
+            _hip_arch = getattr(
+                torch.cuda.get_device_properties(0), "gcnArchName", ""
+            ).lower()
+        SUPPORTS_BFLOAT16 = _hip_arch not in _RDNA2_GFX
     except Exception:
-        SUPPORTS_BFLOAT16 = True  # assume supported if rocminfo unavailable
+        SUPPORTS_BFLOAT16 = True  # assume supported if arch detection fails
     if _is_package_available("flash_attn"):
         # Check for CUDA linking errors "undefined symbol: _ZNK3c106SymIntltEl"
         try:
