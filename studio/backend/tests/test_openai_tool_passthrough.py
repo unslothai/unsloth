@@ -446,7 +446,10 @@ class TestChatCompletionRequestToolFields:
                 "tools": [
                     {
                         "type": "function",
-                        "function": {"name": "lookup", "parameters": {"type": "object"}},
+                        "function": {
+                            "name": "lookup",
+                            "parameters": {"type": "object"},
+                        },
                     }
                 ],
                 "n": 2,
