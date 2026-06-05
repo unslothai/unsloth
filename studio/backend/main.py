@@ -230,6 +230,7 @@ from datetime import datetime
 
 # Import routers
 from routes import (
+    audio_router,
     auth_router,
     chat_history_router,
     data_recipe_router,
@@ -536,6 +537,7 @@ from utils.upload_limits import (  # noqa: E402
 _BODY_PROTECTED_PREFIXES = (
     "/v1/chat/completions",
     "/v1/completions",
+    "/api/audio",
     "/api/inference",
     "/api/data-recipe",
     "/api/datasets",
@@ -749,6 +751,7 @@ app.add_middleware(
 # ============ Register API Routes ============
 
 # Register routers
+app.include_router(audio_router, prefix = "/api/audio", tags = ["audio"])
 app.include_router(auth_router, prefix = "/api/auth", tags = ["auth"])
 app.include_router(training_router, prefix = "/api/train", tags = ["training"])
 app.include_router(models_router, prefix = "/api/models", tags = ["models"])

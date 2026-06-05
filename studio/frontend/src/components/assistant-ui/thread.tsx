@@ -1136,6 +1136,208 @@ const ImagesToggle: FC = () => {
   );
 };
 
+const VoiceToggle: FC = () => {
+  const aui = useAui();
+  const [voiceModeEnabled, setVoiceModeEnabled] = useState(false);
+  const [isSpeaking, setIsSpeaking] = useState(false);
+  const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
+  const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const prevRunningRef = useRef(false);
+  // voiceModeRef is only written in toggle — never in the render body —
+  // to prevent intermediate re-renders from resetting it before React commits
+  // the new voiceModeEnabled state.
+  const voiceModeRef = useRef(false);
+  const isSpeakingRef = useRef(false);
+  const auiRef = useRef(aui);
+  isSpeakingRef.current = isSpeaking;
+  auiRef.current = aui;
+
+  const isThreadRunning = useAuiState(({ thread }) => thread.isRunning);
+  // dictation?.status.type and transcript come from assistant-ui's built-in
+  // DictationAdapter — the same one the existing Dictate button drives.
+  const dictationStatusType = useAuiState(
+    ({ composer }) => composer.dictation?.status.type,
+  );
+  const dictationTranscript = useAuiState(
+    ({ composer }) => composer.dictation?.transcript ?? "",
+  );
+  const isDictating =
+    dictationStatusType === "starting" || dictationStatusType === "running";
+
+  // Run lifecycle: stop dictation + clear timer when model starts generating;
+  // speak the response and restart dictation when the run finishes.
+  useEffect(() => {
+    if (isThreadRunning) {
+      prevRunningRef.current = true;
+      if (voiceModeRef.current) {
+        if (silenceTimerRef.current) {
+          clearTimeout(silenceTimerRef.current);
+          silenceTimerRef.current = null;
+        }
+        const composer = auiRef.current.composer();
+        if (composer.getState().dictation) composer.stopDictation();
+      }
+      return;
+    }
+    if (!prevRunningRef.current) return;
+    prevRunningRef.current = false;
+
+    console.log("[VoiceToggle] run-end transition detected", {
+      voiceMode: voiceModeRef.current,
+      isSpeaking: isSpeakingRef.current,
+    });
+    if (!voiceModeRef.current || isSpeakingRef.current) return;
+
+    // Called after speaking ends (or immediately if there's nothing to speak).
+    // startDictation() works here because mic permission was already granted
+    // when the user first clicked the Voice pill.
+    const resumeListen = () => {
+      if (voiceModeRef.current) {
+        console.log("[VoiceToggle] resuming dictation after response");
+        document.querySelector<HTMLButtonElement>('button[aria-label="Dictate"]')?.click();
+      }
+    };
+
+    const messages = auiRef.current.thread().getState().messages;
+    let text = "";
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const msg = messages[i];
+      if (msg.role !== "assistant") continue;
+      for (const part of msg.content as Array<{
+        type: string;
+        text?: string;
+      }>) {
+        if (part.type === "text" && part.text) text += part.text;
+      }
+      break;
+    }
+    if (!text) {
+      resumeListen();
+      return;
+    }
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.onend = () => {
+      console.log("[VoiceToggle] utterance.onend fired", {
+        voiceMode: voiceModeRef.current,
+      });
+      setIsSpeaking(false);
+      utteranceRef.current = null;
+      resumeListen();
+    };
+    utterance.onerror = () => {
+      setIsSpeaking(false);
+      utteranceRef.current = null;
+      resumeListen();
+    };
+    utteranceRef.current = utterance;
+    console.log(
+      "[VoiceToggle] speechSynthesis.speak called, text length:",
+      text.length,
+    );
+    window.speechSynthesis.speak(utterance);
+    setIsSpeaking(true);
+  }, [isThreadRunning]);
+
+  // Silence timer: reset on each new transcript chunk from the DictationAdapter.
+  // 1.5 s after the last update, stop dictation and auto-send.
+  useEffect(() => {
+    if (dictationStatusType !== "running") return;
+    if (!voiceModeRef.current) return;
+
+    if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+    silenceTimerRef.current = setTimeout(() => {
+      silenceTimerRef.current = null;
+      if (!voiceModeRef.current) return;
+      const composer = auiRef.current.composer();
+      composer.stopDictation();
+      if (composer.getState().isEditing && composer.getState().text.trim()) {
+        composer.send();
+      }
+    }, 1500);
+
+    return () => {
+      if (silenceTimerRef.current) {
+        clearTimeout(silenceTimerRef.current);
+        silenceTimerRef.current = null;
+      }
+    };
+  }, [dictationTranscript, dictationStatusType]);
+
+  const toggle = useCallback(() => {
+    const next = !voiceModeRef.current;
+    setVoiceModeEnabled(next);
+    voiceModeRef.current = next;
+
+    if (next) {
+      if (
+        !auiRef.current.thread().getState().isRunning &&
+        !isSpeakingRef.current
+      ) {
+        document.querySelector<HTMLButtonElement>('button[aria-label="Dictate"]')?.click();
+      }
+    } else {
+      if (silenceTimerRef.current) {
+        clearTimeout(silenceTimerRef.current);
+        silenceTimerRef.current = null;
+      }
+      if (utteranceRef.current) {
+        window.speechSynthesis.cancel();
+        utteranceRef.current = null;
+        setIsSpeaking(false);
+      }
+      const composer = auiRef.current.composer();
+      if (composer.getState().dictation) composer.stopDictation();
+    }
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+      if (utteranceRef.current) window.speechSynthesis.cancel();
+    };
+  }, []);
+
+  if (typeof window === "undefined" || !("speechSynthesis" in window)) {
+    return null;
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={toggle}
+      className="composer-pill-btn"
+      data-active={voiceModeEnabled ? "true" : "false"}
+      style={
+        voiceModeEnabled
+          ? isDictating
+            ? { color: "rgb(34 197 94)" }
+            : isSpeaking
+              ? { color: "rgb(59 130 246)" }
+              : isThreadRunning
+                ? { color: "rgb(234 179 8)" }
+                : undefined
+          : undefined
+      }
+      aria-label={voiceModeEnabled ? "Disable voice mode" : "Enable voice mode"}
+    >
+      {isSpeaking && voiceModeEnabled ? (
+        <Volume2Icon className="size-3.5" />
+      ) : (
+        <MicIcon className="size-3.5" />
+      )}
+      <span>
+        {voiceModeEnabled && isDictating
+          ? "Listening"
+          : voiceModeEnabled && isSpeaking
+            ? "Speaking"
+            : voiceModeEnabled && isThreadRunning
+              ? "Thinking"
+              : "Voice"}
+      </span>
+    </button>
+  );
+};
+
 const ArtifactsToggle: FC = () => {
   const modelLoaded = useChatRuntimeStore(
     (s) => !!s.params.checkpoint && !s.modelLoading,
@@ -1233,6 +1435,7 @@ const ComposerAction: FC<{
         <ImagesToggle />
         <ArtifactsToggle />
         <McpComposerButton />
+        <VoiceToggle />
       </div>
       <div className="flex items-center gap-1">
         <ComposerPrimitive.If dictation={false}>

@@ -32,6 +32,7 @@ import {
   MicIcon,
   PlusIcon,
   SquareIcon,
+  Volume2Icon,
   XIcon,
 } from "lucide-react";
 import { Image03Icon } from "@hugeicons/core-free-icons";
@@ -82,6 +83,8 @@ export interface CompareHandle {
   startRun: (parentId?: string | null) => void;
   cancel: () => void;
   isRunning: () => boolean;
+  /** Returns the plain text of the most recent assistant message. */
+  getLastAssistantText: () => string;
   /** Returns a promise that resolves when the current or next run finishes. */
   waitForRunEnd: () => Promise<void>;
 }
@@ -318,6 +321,22 @@ export function RegisterCompareHandle({
       },
       cancel: () => aui.thread().cancelRun(),
       isRunning: () => aui.thread().getState().isRunning,
+      getLastAssistantText: () => {
+        const msgs = aui.thread().getState().messages;
+        for (let i = msgs.length - 1; i >= 0; i--) {
+          const msg = msgs[i];
+          if (msg.role !== "assistant") continue;
+          let text = "";
+          for (const part of msg.content as Array<{
+            type: string;
+            text?: string;
+          }>) {
+            if (part.type === "text" && part.text) text += part.text;
+          }
+          return text;
+        }
+        return "";
+      },
       waitForRunEnd: () =>
         new Promise<void>((resolve) => {
           let wasRunning = false;
@@ -405,6 +424,14 @@ export function SharedComposer({
   const stuckImeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const audioInputRef = useRef<HTMLInputElement>(null);
+  const [voiceModeEnabled, setVoiceModeEnabled] = useState(false);
+  const [isSpeaking, setIsSpeaking] = useState(false);
+  const speechUtteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
+  const prevRunningRef = useRef(false);
+  const voiceModeEnabledRef = useRef(false);
+  const isSpeakingRef = useRef(false);
+  voiceModeEnabledRef.current = voiceModeEnabled;
+  isSpeakingRef.current = isSpeaking;
 
   const activeModel = useChatRuntimeStore((s) => {
     const checkpoint = s.params.checkpoint;
@@ -628,6 +655,60 @@ export function SharedComposer({
     ta.style.overflowY = ta.scrollHeight > maxHeight ? "auto" : "hidden";
   }, [text]);
 
+  // Auto-speak the last assistant response when a run finishes in voice mode,
+  // then auto-start dictation so the loop continues.
+  useEffect(() => {
+    if (running) {
+      prevRunningRef.current = true;
+      return;
+    }
+    if (!prevRunningRef.current) return;
+    prevRunningRef.current = false;
+    if (!voiceModeEnabledRef.current || isSpeakingRef.current) return;
+
+    const handles = Object.values(handlesRef.current);
+    const text = handles[0]?.getLastAssistantText() ?? "";
+    if (!text) {
+      startDictation();
+      return;
+    }
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.onend = () => {
+      setIsSpeaking(false);
+      speechUtteranceRef.current = null;
+      if (voiceModeEnabledRef.current) startDictation();
+    };
+    utterance.onerror = () => {
+      setIsSpeaking(false);
+      speechUtteranceRef.current = null;
+    };
+    speechUtteranceRef.current = utterance;
+    window.speechSynthesis.speak(utterance);
+    setIsSpeaking(true);
+  }, [running, startDictation, handlesRef]);
+
+  useEffect(() => {
+    return () => {
+      if (speechUtteranceRef.current) {
+        window.speechSynthesis.cancel();
+      }
+    };
+  }, []);
+
+  const toggleVoiceMode = useCallback(() => {
+    const next = !voiceModeEnabled;
+    setVoiceModeEnabled(next);
+    voiceModeEnabledRef.current = next;
+    if (!next) {
+      if (speechUtteranceRef.current) {
+        window.speechSynthesis.cancel();
+        speechUtteranceRef.current = null;
+        setIsSpeaking(false);
+      }
+      if (isDictating) stopDictation();
+    }
+  }, [voiceModeEnabled, isDictating, stopDictation]);
+
   const addFiles = useCallback(
     (files: FileList | null) => {
       if (!files?.length) return;
@@ -735,6 +816,8 @@ export function SharedComposer({
       toast.error(imageUnavailableReason);
       return;
     }
+
+    if (voiceModeEnabledRef.current && isDictating) stopDictation();
 
     const content: CompareMessagePart[] = [];
     for (const { file } of pendingImages) {
@@ -1437,6 +1520,44 @@ export function SharedComposer({
               <span>Fetch</span>
             </button>
           )}
+          {typeof window !== "undefined" &&
+            "speechSynthesis" in window && (
+              <button
+                type="button"
+                onClick={toggleVoiceMode}
+                className="composer-pill-btn"
+                data-active={voiceModeEnabled ? "true" : "false"}
+                style={
+                  voiceModeEnabled
+                    ? isDictating
+                      ? { color: "rgb(34 197 94)" }
+                      : isSpeaking
+                        ? { color: "rgb(59 130 246)" }
+                        : running
+                          ? { color: "rgb(234 179 8)" }
+                          : undefined
+                    : undefined
+                }
+                aria-label={
+                  voiceModeEnabled ? "Disable voice mode" : "Enable voice mode"
+                }
+              >
+                {isSpeaking && voiceModeEnabled ? (
+                  <Volume2Icon className="size-3.5" />
+                ) : (
+                  <MicIcon className="size-3.5" />
+                )}
+                <span>
+                  {voiceModeEnabled && isDictating
+                    ? "Listening"
+                    : voiceModeEnabled && isSpeaking
+                      ? "Speaking"
+                      : voiceModeEnabled && running
+                        ? "Thinking"
+                        : "Voice"}
+                </span>
+              </button>
+            )}
         </div>
         <div className="flex items-center gap-1">
           {dictationSupported && (
