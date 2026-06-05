@@ -1238,10 +1238,13 @@ elif DEVICE_TYPE == "hip":
     try:
         _hip_arch = ""
         if torch.cuda.is_available() and torch.cuda.device_count() > 0:
-            _hip_arch = getattr(
-                torch.cuda.get_device_properties(0), "gcnArchName", ""
-            ).lower()
-        SUPPORTS_BFLOAT16 = _hip_arch not in _RDNA2_GFX
+            _props = torch.cuda.get_device_properties(0)
+            # Try known attribute spellings across ROCm torch versions
+            for _attr in ("gcnArchName", "gcn_arch_name", "arch_name", "gfx_arch_name"):
+                _hip_arch = getattr(_props, _attr, "").lower()
+                if _hip_arch:
+                    break
+        SUPPORTS_BFLOAT16 = _hip_arch not in _RDNA2_GFX if _hip_arch else True
     except Exception:
         SUPPORTS_BFLOAT16 = True  # assume supported if arch detection fails
     if _is_package_available("flash_attn"):
