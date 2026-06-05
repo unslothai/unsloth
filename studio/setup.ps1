@@ -1417,13 +1417,60 @@ if ($IsPipInstall) {
     }
 }
 
-# 1g. Python (>= 3.11 and < 3.14). Prefer py.exe so a 3.14 ahead of 3.13 on PATH does not trip the gate.
+# 1g. Python (>= 3.11 and < 3.14). Prefer the Studio venv that install.ps1
+# just created, then py.exe so a 3.14 ahead of 3.13 on PATH does not trip the gate.
 $HasPython = $null -ne (Get-Command python -ErrorAction SilentlyContinue)
 $PyLauncher = Get-Command py -CommandType Application -ErrorAction SilentlyContinue
 $PythonOk = $false
 $DetectedPyVer = $null
 
-if ($PyLauncher) {
+function Get-CompatiblePythonVersion {
+    param([string]$PythonExe)
+    try {
+        $out = & $PythonExe --version 2>&1 | Out-String
+        if ($out -match 'Python (3\.(11|12|13)(\.\d+)?)') {
+            return $Matches[1]
+        }
+    } catch { }
+    return $null
+}
+
+function Add-PythonDirToProcessPath {
+    param([string]$PythonExe)
+    try {
+        if ($PythonExe -and (Test-Path -LiteralPath $PythonExe)) {
+            $resolvedDir = Split-Path -Parent $PythonExe
+            $alreadyOnPath = ($env:PATH -split ';' | Where-Object { $_.TrimEnd('\') -ieq $resolvedDir.TrimEnd('\') }).Count -gt 0
+            if (-not $alreadyOnPath) {
+                $env:PATH = "$resolvedDir;$env:PATH"
+            }
+            $script:HasPython = $true
+        }
+    } catch { }
+}
+
+$_prereqStudioHome = $null
+if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_STUDIO_HOME)) {
+    $_prereqStudioHome = $env:UNSLOTH_STUDIO_HOME.Trim()
+} elseif (-not [string]::IsNullOrWhiteSpace($env:STUDIO_HOME)) {
+    $_prereqStudioHome = $env:STUDIO_HOME.Trim()
+} else {
+    $_prereqStudioHome = Join-Path $env:USERPROFILE ".unsloth\studio"
+}
+if ($_prereqStudioHome -eq "~" -or $_prereqStudioHome -like "~/*" -or $_prereqStudioHome -like "~\*") {
+    $_prereqStudioHome = (Join-Path $env:USERPROFILE $_prereqStudioHome.Substring(1).TrimStart('/','\'))
+}
+$_prereqVenvPython = Join-Path $_prereqStudioHome "unsloth_studio\Scripts\python.exe"
+if (Test-Path -LiteralPath $_prereqVenvPython) {
+    $_venvPyVer = Get-CompatiblePythonVersion $_prereqVenvPython
+    if ($_venvPyVer) {
+        $DetectedPyVer = $_venvPyVer
+        Add-PythonDirToProcessPath $_prereqVenvPython
+        $PythonOk = $true
+    }
+}
+
+if (-not $PythonOk -and $PyLauncher) {
     foreach ($minor in @("3.13", "3.12", "3.11")) {
         try {
             $out = & $PyLauncher.Source "-$minor" --version 2>&1 | Out-String
@@ -1435,12 +1482,7 @@ if ($PyLauncher) {
                 try {
                     $resolvedExe = (& $PyLauncher.Source "-$minor" -c "import sys; print(sys.executable)" 2>$null | Select-Object -First 1)
                     if ($resolvedExe -and (Test-Path $resolvedExe)) {
-                        $resolvedDir = Split-Path -Parent $resolvedExe
-                        $alreadyOnPath = ($env:PATH -split ';' | Where-Object { $_.TrimEnd('\') -ieq $resolvedDir.TrimEnd('\') }).Count -gt 0
-                        if (-not $alreadyOnPath) {
-                            $env:PATH = "$resolvedDir;$env:PATH"
-                        }
-                        $HasPython = $true
+                        Add-PythonDirToProcessPath $resolvedExe
                     }
                 } catch { }
                 $PythonOk = $true
