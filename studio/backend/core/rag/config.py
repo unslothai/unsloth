@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import os
 
-EMBEDDING_MODEL = os.environ.get("RAG_EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5")
+EMBEDDING_MODEL = os.environ.get("RAG_EMBEDDING_MODEL", "unsloth/bge-small-en-v1.5")
 # Under bge's 512 limit with headroom for the 2 special tokens ([CLS]/[SEP]) the
 # embedder adds (else 512 -> 514 overflows: llama-server 500s, ST truncates).
 # Keep <= embedder_max - ~12.
