@@ -140,6 +140,22 @@ def _effective_max_tokens(payload):
     )
 
 
+def _wants_multiple_choices(payload) -> bool:
+    return (payload.n or 1) > 1
+
+
+def _raise_unsupported_n(path_label: str) -> None:
+    raise HTTPException(
+        status_code = 400,
+        detail = openai_error_body(
+            f"n > 1 is not supported for {path_label}.",
+            status = 400,
+            code = "unsupported_parameter",
+            param = "n",
+        ),
+    )
+
+
 def _openai_stream_error_chunk(exc) -> dict:
     """Build an in-band OpenAI error chunk for a mid-stream failure. Once the
     stream's 200 headers are flushed the status can't change, so the error must
@@ -2771,6 +2787,8 @@ async def openai_chat_completions(
     # ── External provider routing ────────────────────────────────
     # encrypted_api_key is optional — local providers (llama.cpp / vLLM / Ollama) may run without auth.
     if payload.provider_id or payload.provider_type:
+        if _wants_multiple_choices(payload):
+            _raise_unsupported_n("external provider chat completions")
         return await _proxy_to_external_provider(payload, request)
 
     # Reject a malformed function tool here: it would otherwise reach
@@ -2823,6 +2841,8 @@ async def openai_chat_completions(
     if using_gguf:
         model_name = llama_backend.model_identifier or payload.model
         if getattr(llama_backend, "_is_audio", False):
+            if _wants_multiple_choices(payload):
+                _raise_unsupported_n("GGUF audio chat completions")
             return await generate_audio(payload, request)
     else:
         backend = get_inference_backend()
@@ -2832,6 +2852,8 @@ async def openai_chat_completions(
                 detail = "No model loaded. Call POST /inference/load first.",
             )
         model_name = backend.active_model_name or payload.model
+        if _wants_multiple_choices(payload):
+            _raise_unsupported_n("non-GGUF chat completions")
 
         # ── Audio TTS path: auto-route to audio generation ────
         # (Whisper is ASR not TTS — handled below in audio input path)
@@ -2994,6 +3016,8 @@ async def openai_chat_completions(
         and not _effective_enable_tools(payload)
         and (_tools_passthrough or _has_response_format)
     ):
+        if _wants_multiple_choices(payload):
+            _raise_unsupported_n("GGUF tool or response_format passthrough")
         if payload.audio_base64:
             raise HTTPException(
                 status_code = 400,
@@ -3114,6 +3138,8 @@ async def openai_chat_completions(
                 use_tools = False
 
         if use_tools:
+            if _wants_multiple_choices(payload):
+                _raise_unsupported_n("GGUF tool chat completions")
             # ── Tool-use system prompt nudge ──────────────────────
             _tool_names = {t["function"]["name"] for t in tools_to_use}
             _has_web = "web_search" in _tool_names
@@ -3376,6 +3402,8 @@ async def openai_chat_completions(
         _gguf_sentinel = object()
 
         if payload.stream:
+            if _wants_multiple_choices(payload):
+                _raise_unsupported_n("streaming GGUF chat completions")
             _cancel_keys = (payload.cancel_id, payload.session_id, completion_id)
             _tracker = _TrackedCancel(cancel_event, *_cancel_keys)
             _tracker.__enter__()

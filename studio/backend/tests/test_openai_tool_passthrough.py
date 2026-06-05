@@ -354,6 +354,116 @@ class TestChatCompletionRequestToolFields:
         assert "text/event-stream" not in resp.headers["content-type"]
         assert captured["stream"] is False
 
+    def _v1_client(self, monkeypatch, llama_backend, inference_backend = None):
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+
+        import routes.inference as inference_route
+        from auth.authentication import get_current_subject
+        from utils.api_errors import install_api_error_handlers
+
+        monkeypatch.setattr(
+            inference_route, "get_llama_cpp_backend", lambda: llama_backend
+        )
+        if inference_backend is not None:
+            monkeypatch.setattr(
+                inference_route, "get_inference_backend", lambda: inference_backend
+            )
+
+        app = FastAPI()
+        app.include_router(inference_route.router, prefix = "/v1")
+        install_api_error_handlers(app)
+        app.dependency_overrides[get_current_subject] = lambda: "test-user"
+        return TestClient(app)
+
+    def _assert_unsupported_n(self, response):
+        assert response.status_code == 400
+        body = response.json()
+        assert body["error"]["param"] == "n"
+        assert body["error"]["code"] == "unsupported_parameter"
+
+    def test_n_allows_openai_chat_completion_range(self):
+        req = self._make(n = 128)
+        assert req.n == 128
+        with pytest.raises(ValidationError):
+            self._make(n = 129)
+
+    def test_n_rejected_for_external_provider_path(self, monkeypatch):
+        class _UnusedBackend:
+            is_loaded = False
+
+        client = self._v1_client(monkeypatch, _UnusedBackend())
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [{"role": "user", "content": "hi"}],
+                "provider_type": "openai",
+                "n": 2,
+            },
+        )
+        self._assert_unsupported_n(resp)
+
+    def test_n_rejected_for_gguf_streaming_path(self, monkeypatch):
+        class _GGUFBackend:
+            is_loaded = True
+            model_identifier = "test-gguf"
+            supports_tools = False
+            is_vision = False
+            _is_audio = False
+
+        client = self._v1_client(monkeypatch, _GGUFBackend())
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [{"role": "user", "content": "hi"}],
+                "stream": True,
+                "n": 2,
+            },
+        )
+        self._assert_unsupported_n(resp)
+
+    def test_n_rejected_for_gguf_tools_passthrough_path(self, monkeypatch):
+        class _GGUFBackend:
+            is_loaded = True
+            model_identifier = "test-gguf"
+            supports_tools = True
+            is_vision = False
+            _is_audio = False
+
+        client = self._v1_client(monkeypatch, _GGUFBackend())
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [{"role": "user", "content": "hi"}],
+                "tools": [
+                    {
+                        "type": "function",
+                        "function": {"name": "lookup", "parameters": {"type": "object"}},
+                    }
+                ],
+                "n": 2,
+            },
+        )
+        self._assert_unsupported_n(resp)
+
+    def test_n_rejected_for_non_gguf_path(self, monkeypatch):
+        class _NoGGUFBackend:
+            is_loaded = False
+
+        class _InferenceBackend:
+            active_model_name = "test-model"
+            models = {"test-model": {}}
+
+        client = self._v1_client(monkeypatch, _NoGGUFBackend(), _InferenceBackend())
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [{"role": "user", "content": "hi"}],
+                "n": 2,
+            },
+        )
+        self._assert_unsupported_n(resp)
+
     def test_multiturn_tool_loop_messages(self):
         req = ChatCompletionRequest(
             messages = [
