@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { cn } from "@/lib/utils";
-import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { useT } from "@/i18n";
+import { copyToClipboard } from "@/lib/copy-to-clipboard";
+import { cn } from "@/lib/utils";
 import {
   ArrowUpRight01Icon,
   Copy01Icon,
@@ -12,12 +12,13 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useMemo, useState } from "react";
 
-type Lang = "curl" | "python" | "tools";
+type Lang = "curl" | "python" | "tools" | "codex";
 
 const TABS: { id: Lang; label: string }[] = [
   { id: "curl", label: "curl" },
   { id: "python", label: "Python" },
   { id: "tools", label: "Tools" },
+  { id: "codex", label: "Codex" },
 ];
 
 const DOC_LINKS = [
@@ -75,6 +76,18 @@ for chunk in response:
     "enabled_tools": ["web_search", "python"],
     "stream": true
   }'`,
+    codex: `# ~/.codex/config.toml
+model = "current"
+model_provider = "unsloth-studio"
+
+[model_providers.unsloth-studio]
+name = "Unsloth Studio"
+base_url = "${base}/v1"
+env_key = "UNSLOTH_API_KEY"
+wire_api = "responses"
+
+# Shell
+export UNSLOTH_API_KEY="sk-unsloth-YOUR_KEY"`,
   };
 }
 
