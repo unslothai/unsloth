@@ -49,6 +49,8 @@ import { sentAudioNames } from "@/features/chat/api/chat-adapter";
 import {
   PromptStorageDialog,
   exportConversationShareGPT,
+  exportConversationRawJsonl,
+  exportConversationCsv,
 } from "@/features/chat/prompt-storage/prompt-storage-dialog";
 import { useChatProjects } from "@/features/chat/hooks/use-chat-projects";
 import { NewProjectDialog } from "@/features/chat/components/new-project-dialog";
@@ -1927,18 +1929,32 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
           <HugeiconsIcon icon={Bookmark02Icon} strokeWidth={2} />
           Saved prompts
         </DropdownMenuItem>
-        <DropdownMenuItem
-          disabled={!activeThreadId}
-          onSelect={() => {
-            if (!activeThreadId) return;
-            exportConversationShareGPT(activeThreadId).catch(() => {
-              toast.error("Failed to export conversation.");
-            });
-          }}
-        >
-          <HugeiconsIcon icon={Download01Icon} strokeWidth={2} />
-          Export chat
-        </DropdownMenuItem>
+        <DropdownMenuSub>
+          <DropdownMenuSubTrigger disabled={!activeThreadId}>
+            <HugeiconsIcon icon={Download01Icon} strokeWidth={2} />
+            Export chat
+          </DropdownMenuSubTrigger>
+          <DropdownMenuSubContent className="unsloth-plus-menu w-[200px]">
+            <DropdownMenuItem onSelect={() => {
+              if (!activeThreadId) return;
+              exportConversationRawJsonl(activeThreadId).catch(() => toast.error("Export failed."));
+            }}>
+              Raw JSONL
+            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => {
+              if (!activeThreadId) return;
+              exportConversationCsv(activeThreadId).catch(() => toast.error("Export failed."));
+            }}>
+              CSV
+            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => {
+              if (!activeThreadId) return;
+              exportConversationShareGPT(activeThreadId).catch(() => toast.error("Export failed."));
+            }}>
+              ShareGPT JSONL (training)
+            </DropdownMenuItem>
+          </DropdownMenuSubContent>
+        </DropdownMenuSub>
         <DropdownMenuItem onSelect={() => startCompare()}>
           <Columns2Icon />
           Compare chat
