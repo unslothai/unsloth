@@ -117,16 +117,13 @@ if sys.platform == "win32":
             )
 
 # ── WSL AMD Strix Halo (gfx1151): enable ROCDXG before any torch import ──────
-# Inside WSL the AMD GPU is reached through AMD's ROCDXG bridge (librocdxg.so)
-# over /dev/dxg, and the HSA runtime only loads that bridge when
-# HSA_ENABLE_DXG_DETECTION=1 is set BEFORE torch first touches the GPU. The
-# installer persists this to /etc/profile.d + ~/.bashrc, but a worker launched
-# outside a login shell (e.g. `wsl.exe -d Ubuntu-24.04 python ...`) would miss
-# it and silently fall back to CPU. Set it here, STRICTLY gated so it is a
-# no-op everywhere else: only when BOTH the WSL GPU device (/dev/dxg) AND the
-# ROCDXG bridge (librocdxg.so, installed by
-# scripts/install_rocm_wsl_strixhalo.sh) are present. Native Linux ROCm
-# (/dev/kfd, no /dev/dxg), NVIDIA, macOS and Windows are unaffected.
+# In WSL the AMD GPU is reached via the ROCDXG bridge (librocdxg.so over
+# /dev/dxg), which HSA loads only when HSA_ENABLE_DXG_DETECTION=1 is set BEFORE
+# torch touches the GPU. A worker launched outside a login shell (e.g.
+# `wsl.exe -d Ubuntu-24.04 python ...`) misses the installer's persisted env
+# and silently falls back to CPU. Set it here, gated to no-op unless BOTH
+# /dev/dxg AND librocdxg.so exist -- native Linux ROCm, NVIDIA, macOS and
+# Windows are unaffected.
 elif sys.platform.startswith("linux") and "HSA_ENABLE_DXG_DETECTION" not in os.environ:
     try:
         if os.path.exists("/dev/dxg") and any(

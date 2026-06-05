@@ -692,31 +692,25 @@ if (-not $HasNvidiaSmi) {
     }
 }
 # ── Helper: run amd-smi without triggering a UAC elevation prompt ──
-# amd-smi on Windows auto-elevates to read GPU/APU memory details, which surfaces
-# a confusing DiskPart UAC prompt mid-install (the Studio backend's amd.py
-# documents the same side-effect and circuit-breaks on it). RunAsInvoker forces
-# amd-smi -- and any helper it spawns -- to run un-elevated: the prompt never
-# appears, and on failure the WMI name -> gfx fallback still resolves the arch.
+# amd-smi on Windows auto-elevates to read GPU/APU memory, surfacing a confusing
+# DiskPart UAC prompt mid-install (Studio backend amd.py hits the same). RunAsInvoker
+# forces it (and helpers it spawns) to run un-elevated; on failure the WMI name ->
+# gfx fallback still resolves the arch.
 function Invoke-AmdSmiNoElevate {
     param(
         [Parameter(Mandatory = $true, Position = 0)][string]$Exe,
         [Parameter(Position = 1)][string[]]$SmiArgs = @(),
         [int]$TimeoutSec = 30
     )
-    # RunAsInvoker blocks amd-smi's auto-elevation, so the UAC/DiskPart prompt
-    # never appears; the timeout bounds a flaky amd-smi that can otherwise spin
-    # for minutes before failing (30s mirrors the Studio backend amd.py).
-    # On failure/timeout the caller's WMI name -> gfx fallback still resolves.
+    # RunAsInvoker blocks the auto-elevation/UAC prompt; the timeout bounds a flaky
+    # amd-smi that can otherwise spin for minutes (30s mirrors the backend amd.py).
     $prevCompat = [Environment]::GetEnvironmentVariable('__COMPAT_LAYER', 'Process')
     $env:__COMPAT_LAYER = 'RunAsInvoker'
     try {
-        # [Process]::Start, NOT Start-Process -PassThru -- the latter leaves
-        # .ExitCode $null after WaitForExit on PS 5.1, so $LASTEXITCODE (which
-        # every caller checks) would always read non-zero and silently kill the
-        # amd-smi detection. Async stream reads drain the pipes (no deadlock)
-        # while WaitForExit bounds a flaky amd-smi. amd-smi args have no spaces,
-        # so a plain join is safe and avoids Start-Process's empty-ArgumentList
-        # error.
+        # [Process]::Start, NOT Start-Process -PassThru: the latter leaves .ExitCode
+        # $null after WaitForExit on PS 5.1, so $LASTEXITCODE (checked by callers)
+        # reads non-zero and kills detection. Async reads drain the pipes (no
+        # deadlock); amd-smi args have no spaces so a plain join is safe.
         $psi = New-Object System.Diagnostics.ProcessStartInfo
         $psi.FileName = $Exe
         $psi.Arguments = ($SmiArgs -join ' ')
@@ -796,21 +790,17 @@ if (-not $HasNvidiaSmi) {
         } catch {}
     }
     # amd-smi fallback: HIP runtime present but hipinfo unavailable (no full HIP SDK).
-    # Confirms GPU visibility via 'list', then attempts 'static --asic' to extract
-    # the gfx arch that hipinfo would have provided.  Critical for Strix Halo
-    # (gfx1151) and other iGPUs where only the HIP runtime is installed.
+    # 'list' confirms GPU visibility, 'static --asic' extracts the gfx arch hipinfo
+    # would give. Critical for Strix Halo (gfx1151) and other HIP-runtime-only iGPUs.
     #
-    # BUT: on Windows amd-smi elevates a child at runtime on systems without a
-    # working HIP runtime, popping a UAC/DiskPart prompt that RunAsInvoker
-    # cannot suppress (amd-smi's manifest is asInvoker -- even 'amd-smi version'
-    # hangs on such systems).  Only probe amd-smi when a HIP SDK is present
-    # (hipinfo found -> amd-smi runs un-elevated) or the user opts in; otherwise
-    # fall through to WMI name inference, which already selects the right ROCm
-    # wheels + lemonade llama.cpp for Strix Halo et al.
-    # An explicit opt-out (UNSLOTH_ENABLE_AMD_SMI=0/false/no/off) takes precedence
-    # over the HIP-SDK heuristic: a host can have a HIP SDK binary but a broken
-    # runtime where even probing amd-smi pops the DiskPart/UAC prompt this opt-out
-    # exists to avoid, so $HipSdkInstalled must NOT silently re-enable it.
+    # BUT on hosts without a working HIP runtime amd-smi elevates a child at runtime,
+    # popping a UAC/DiskPart prompt RunAsInvoker can't suppress (its manifest is
+    # asInvoker; even 'amd-smi version' hangs). So only probe when a HIP SDK is present
+    # (hipinfo found -> un-elevated) or the user opts in; else fall through to WMI name
+    # inference (enough to pick ROCm wheels + lemonade llama.cpp).
+    # An explicit opt-out (UNSLOTH_ENABLE_AMD_SMI=0/false/no/off) wins over the HIP-SDK
+    # heuristic: a HIP SDK binary with a broken runtime can still pop the prompt, so
+    # $HipSdkInstalled must NOT silently re-enable it.
     $amdSmiOptOut = $env:UNSLOTH_ENABLE_AMD_SMI -match '^(?i)(0|false|no|off)$'
     $amdSmiAllowed = (-not $amdSmiOptOut) -and ($HipSdkInstalled -or ($env:UNSLOTH_ENABLE_AMD_SMI -match '^(?i)(1|true|yes|on)$'))
     if (-not $HasROCm -and $amdSmiAllowed) {
@@ -879,15 +869,12 @@ if (-not $HasNvidiaSmi) {
         } catch {}
     }
     # ── Arch resolution: env-var override → name inference ──────────────────
-    # Runs after all probe methods, and -- unlike before -- even when the
-    # hipinfo/amd-smi probe could NOT confirm a ROCm runtime ($HasROCm false).
-    # On Windows the Adrenalin driver alone (no HIP SDK) is enough to run the
-    # lemonade-sdk ROCm llama.cpp prebuilt, which bundles its own ROCm runtime;
-    # all we need is the gfx arch, which we can infer from the WMI GPU name.
-    # Resolving it here means setup.ps1 forwards --rocm-gfx (see prebuilt args
-    # below) so a GPU-accelerated llama.cpp is downloaded instead of a CPU build.
-    # (PyTorch's ROCm wheels still require a confirmed HIP SDK -- they stay gated
-    # on $HasROCm below -- so this only affects llama.cpp / inference.)
+    # Runs after all probes, even when none confirmed a ROCm runtime ($HasROCm false):
+    # the Adrenalin driver alone runs the lemonade-sdk llama.cpp prebuilt (bundles its
+    # own runtime), and all it needs is the gfx arch, inferable from the WMI GPU name.
+    # Resolving it here lets setup.ps1 forward --rocm-gfx so a GPU llama.cpp is pulled
+    # instead of CPU. (PyTorch ROCm wheels still require a HIP SDK -- gated on $HasROCm
+    # below -- so this only affects llama.cpp / inference.)
     if (-not $script:ROCmGfxArch) {
         # 1. Manual override: set UNSLOTH_ROCM_GFX_ARCH=gfx1151 before running.
         if ($env:UNSLOTH_ROCM_GFX_ARCH) {
@@ -895,10 +882,9 @@ if (-not $HasNvidiaSmi) {
             $ROCmGpuLabel = "AMD ROCm ($script:ROCmGfxArch)"
             substep "gfx arch from UNSLOTH_ROCM_GFX_ARCH env override: $script:ROCmGfxArch" "Cyan"
         }
-        # 2. Best-effort name → arch lookup from marketing name (amd-smi / WMI).
-        #    Ordered most-specific first; first match wins. Targets only arches
-        #    the lemonade-sdk ROCm prebuilts cover (gfx120X/110X/1151/1150/103X);
-        #    unknown names match nothing and fall back cleanly to CPU.
+        # 2. Best-effort name → arch lookup (amd-smi / WMI). Most-specific first,
+        #    first match wins. Covers only arches the lemonade-sdk prebuilts support
+        #    (gfx120X/110X/1151/1150/103X); unknown names fall back cleanly to CPU.
         elseif ($ROCmGpuLabel) {
             $nameArchTable = @(
                 @{ P = "9070 XT|9080";                                        A = "gfx1201" }  # RDNA 4 (Radeon RX 9070 XT / 9080)
@@ -982,9 +968,8 @@ if ($HasNvidiaSmi) {
     substep "       Ensure the ROCm compute driver is installed alongside the display driver:" "Yellow"
     substep "       https://rocm.docs.amd.com/en/latest/deploy/windows/index.html" "Yellow"
 } elseif ($script:ROCmGfxArch) {
-    # AMD GPU with a known arch: PyTorch comes from AMD's bundled-runtime ROCm
-    # wheels (repo.amd.com), which do NOT require the HIP SDK -- they ship their
-    # own ROCm runtime. The HIP SDK is optional (only adds the system toolchain).
+    # Known arch: PyTorch comes from AMD's bundled-runtime ROCm wheels (repo.amd.com),
+    # which ship their own runtime -- HIP SDK optional (only adds the system toolchain).
     Write-Host ""
     step "gpu" "AMD ROCm ($script:ROCmGfxArch)" "Cyan"
     substep "Detected: $ROCmGpuLabel" "Cyan"
@@ -2088,11 +2073,10 @@ if ($env:SKIP_STUDIO_BASE -ne "1" -and $env:STUDIO_LOCAL_INSTALL -ne "1") {
     if ($InstalledVer -and $LatestVer -and ($InstalledVer -eq $LatestVer)) {
         step "python" "$_PkgName $InstalledVer is up to date"
         $SkipPythonDeps = $true
-        # ...but don't skip if an AMD GPU is detected and the installed PyTorch is
-        # CPU-only. That happens when the host was installed before ROCm-wheel
-        # support (or the GPU was added/enabled later): the fast "up to date" path
-        # would leave the user stuck on CPU torch with Train/Export disabled
-        # forever. Force the dependency pass so the ROCm wheels get installed.
+        # ...but not if an AMD GPU is present and installed PyTorch is CPU-only
+        # (host predates ROCm-wheel support, or GPU added later): the fast "up to
+        # date" path would leave the user on CPU torch with Train/Export disabled.
+        # Force the dependency pass so the ROCm wheels get installed.
         if ($script:ROCmGfxArch) {
             $_torchIsCpu = $true
             try {
@@ -2167,13 +2151,12 @@ if ($HasNvidiaSmi) {
 # Wheels bundle their own ROCm runtime; HIP SDK version is irrelevant.
 $ROCmGfxArch = $script:ROCmGfxArch
 $ROCmIndexUrl = $null
-# Install the AMD ROCm PyTorch wheels when ROCm is confirmed OR a gfx arch is
-# known (name-inferred on Adrenalin-only hosts). AMD's per-arch wheels bundle
-# the ROCm runtime (rocm-sdk-libraries-<gfx>), so torch.cuda.is_available()
-# returns True without a HIP SDK -- which is what flips Studio out of chat-only
-# (CHAT_ONLY) and enables the Train/Export tabs. Gating on $HasROCm alone left
-# Strix Halo / Radeon 8060S on CPU torch. A failed ROCm install still falls
-# back to CPU below, so this is safe.
+# Install AMD ROCm PyTorch wheels when ROCm is confirmed OR a gfx arch is known
+# (name-inferred on Adrenalin-only hosts). The per-arch wheels bundle the runtime
+# (rocm-sdk-libraries-<gfx>), so torch.cuda.is_available() is True without a HIP
+# SDK -- which flips Studio out of chat-only (CHAT_ONLY) and enables Train/Export.
+# Gating on $HasROCm alone left Strix Halo / Radeon 8060S on CPU torch; a failed
+# ROCm install still falls back to CPU below, so this is safe.
 if (($HasROCm -or $ROCmGfxArch) -and $CuTag -eq "cpu") {
     $amdIndexBase = if ($env:UNSLOTH_ROCM_WINDOWS_MIRROR) { $env:UNSLOTH_ROCM_WINDOWS_MIRROR.TrimEnd('/') } else { "https://repo.amd.com/rocm/whl" }
     $archFamilyMap = @{
@@ -2574,10 +2557,10 @@ if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
             try {
                 $existingMeta = Get-Content $existingMetaPath -Raw | ConvertFrom-Json
                 $existingKind = $existingMeta.install_kind
-                # A name-inferred gfx arch (Adrenalin-only host, no confirmed
-                # runtime) still wants the GPU (windows-hip) build -- the lemonade
-                # prebuilt bundles its own ROCm runtime. Treat a known gfx arch
-                # as ROCm-capable here, mirroring the --rocm-gfx forward below.
+                # A name-inferred gfx arch (Adrenalin-only, no confirmed runtime)
+                # still wants the GPU (windows-hip) build -- the lemonade prebuilt
+                # bundles its own runtime. Treat a known arch as ROCm-capable here,
+                # mirroring the --rocm-gfx forward below.
                 $expectedKind = if ($HasROCm -or $script:ROCmGfxArch) { "windows-hip" } elseif ($HasNvidiaSmi) { "windows-cuda" } else { "windows-cpu" }
                 if ($existingKind -and $existingKind -ne $expectedKind) {
                     substep "Removing mismatched llama.cpp install (found '$existingKind', need '$expectedKind')..."
@@ -2605,13 +2588,11 @@ if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
         if ($HasROCm) {
             $prebuiltArgs += "--has-rocm"
         }
-        # Forward the resolved gfx arch so the lemonade HIP prebuilt is picked
-        # even when the installer's own probe cannot confirm the ROCm runtime
-        # (amd-smi-only / Adrenalin-only hosts where the arch is name-inferred).
-        # A forwarded --rocm-gfx is authoritative and implies ROCm in
-        # install_llama_prebuilt.py, so the GPU prebuilt is selected even when
-        # $HasROCm is false. Gating this on $HasROCm was why Strix Halo /
-        # Radeon 8060S hosts silently got the CPU llama.cpp.
+        # Forward the resolved gfx arch so the lemonade HIP prebuilt is picked even
+        # when the installer's probe can't confirm the runtime (amd-smi-only /
+        # Adrenalin-only, name-inferred arch). --rocm-gfx is authoritative and
+        # implies ROCm in install_llama_prebuilt.py, so the GPU prebuilt is selected
+        # even with $HasROCm false. Gating on $HasROCm gave Strix Halo / 8060S CPU.
         if ($script:ROCmGfxArch) {
             $prebuiltArgs += @("--rocm-gfx", $script:ROCmGfxArch)
         }
@@ -2791,12 +2772,10 @@ if (-not $NeedLlamaSourceBuild) {
     if ($HasNvidiaSmi) {
         substep "building llama.cpp with CUDA support..."
     } elseif ($HasROCm -or $script:ROCmGfxArch) {
-        # An AMD ROCm GPU is present but we are in the source-build fallback,
-        # which is CPU-only: a HIP/ROCm *source* build needs the full HIP SDK +
-        # ROCm clang toolchain. GPU acceleration for AMD comes from the lemonade
-        # prebuilt (it bundles the ROCm runtime, no SDK needed) -- reaching here
-        # means that GPU prebuilt could not be installed. Warn loudly instead of
-        # silently shipping a slow CPU build.
+        # AMD GPU present but in the CPU-only source-build fallback: a HIP source
+        # build needs the full HIP SDK + ROCm clang toolchain. AMD GPU acceleration
+        # comes from the lemonade prebuilt (bundles the runtime, no SDK) -- reaching
+        # here means it couldn't be installed. Warn loudly, don't ship a slow CPU build.
         $_amdArch = if ($script:ROCmGfxArch) { $script:ROCmGfxArch } else { "ROCm" }
         substep "[WARN] AMD GPU ($_amdArch) detected, but the GPU-accelerated lemonade" "Yellow"
         substep "       llama.cpp prebuilt could not be installed -- falling back to a CPU build." "Yellow"

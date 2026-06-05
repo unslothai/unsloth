@@ -37,9 +37,8 @@ _amd_smi_disabled = False
 
 
 def _hip_sdk_present() -> bool:
-    """True when a HIP SDK install is detectable (hipinfo on PATH or under
-    HIP_PATH/ROCM_PATH).  A present HIP SDK means amd-smi has a working ROCm
-    runtime and runs un-elevated on Windows."""
+    """True if a HIP SDK is detectable (hipinfo on PATH or under HIP_PATH/
+    ROCM_PATH), meaning amd-smi has a working runtime and runs un-elevated."""
     if shutil.which("hipinfo"):
         return True
     for var in ("HIP_PATH", "HIP_PATH_57", "ROCM_PATH"):
@@ -50,17 +49,12 @@ def _hip_sdk_present() -> bool:
 
 
 def _amd_smi_allowed() -> bool:
-    """Whether it is safe to spawn amd-smi on this platform.
+    """Whether it is safe to spawn amd-smi here.
 
-    On Windows, amd-smi re-initialises the ROCm runtime on *every* invocation
-    (even ``amd-smi version``) and, on systems without a working HIP runtime
-    (e.g. consumer APUs / dGPUs with only the Adrenalin driver), elevates a
-    child process at runtime -- popping a UAC/DiskPart prompt.  ``amd-smi``'s
-    own manifest is ``asInvoker``, so ``__COMPAT_LAYER=RunAsInvoker`` cannot
-    suppress that runtime elevation.  We therefore only call amd-smi on Windows
-    when a HIP SDK is present (so it runs un-elevated), or when the user
-    explicitly opts in with ``UNSLOTH_ENABLE_AMD_SMI=1``.  Linux amd-smi does
-    not elevate, so it is always allowed there.
+    On Windows without a working HIP runtime, amd-smi elevates a child at
+    runtime -- popping a UAC/DiskPart prompt that RunAsInvoker can't suppress
+    (its manifest is asInvoker). So only call it on Windows with a HIP SDK
+    present or UNSLOTH_ENABLE_AMD_SMI=1. Linux amd-smi never elevates.
     """
     if platform.system() != "Windows":
         return True
@@ -78,10 +72,9 @@ def _run_amd_smi(*args: str, timeout: int = _AMD_SMI_DEFAULT_TIMEOUT) -> Optiona
     if _amd_smi_disabled:
         return None
     if not _amd_smi_allowed():
-        # Permanently skip amd-smi on Windows without a HIP SDK: every call
-        # would elevate and pop a UAC/DiskPart prompt (see _amd_smi_allowed).
-        # GPU VRAM/utilisation polling is unavailable here, but the prompt is
-        # far worse UX than a missing stat.  Opt back in with
+        # Permanently skip amd-smi on Windows w/o a HIP SDK: every call would
+        # pop a UAC/DiskPart prompt (see _amd_smi_allowed). VRAM polling is then
+        # unavailable, but that beats the prompt. Opt back in with
         # UNSLOTH_ENABLE_AMD_SMI=1.
         if not _amd_smi_disabled:
             logger.info(
@@ -93,10 +86,8 @@ def _run_amd_smi(*args: str, timeout: int = _AMD_SMI_DEFAULT_TIMEOUT) -> Optiona
         return None
     _amd_env = child_env_without_native_path_secret()
     if platform.system() == "Windows":
-        # amd-smi auto-elevates on Windows to read GPU/APU memory, popping a
-        # UAC/DiskPart prompt. RunAsInvoker forces it to run un-elevated (no
-        # prompt); the circuit breaker above still disables polling on failure.
-        # Mirrors the install scripts' amd-smi guard.
+        # RunAsInvoker belt-and-suspenders for any manifest-elevating helper;
+        # the real guard is _amd_smi_allowed() above. Mirrors install scripts.
         _amd_env = {**_amd_env, "__COMPAT_LAYER": "RunAsInvoker"}
     try:
         result = subprocess.run(

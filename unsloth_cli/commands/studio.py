@@ -1153,13 +1153,10 @@ _PID_FILE = STUDIO_HOME / "studio.pid"
 
 
 def _pid_alive(pid: int) -> bool:
-    """Return True if a process with ``pid`` currently exists.
+    """Return True if a process with ``pid`` exists.
 
-    POSIX's ``os.kill(pid, 0)`` liveness probe is invalid on Windows:
-    CPython raises ``OSError`` (WinError 87, "The parameter is incorrect")
-    for *every* pid there, so it can neither confirm nor deny a process and
-    would crash ``stop`` (which only catches ProcessLookupError/Permission
-    Error). Use ``tasklist`` on Windows and the signal-0 probe elsewhere.
+    ``os.kill(pid, 0)`` raises OSError (WinError 87) for every pid on Windows,
+    so use ``tasklist`` there and the signal-0 probe elsewhere.
     """
     if sys.platform == "win32":
         try:
@@ -1170,8 +1167,7 @@ def _pid_alive(pid: int) -> bool:
                 timeout = 10,
             ).stdout
         except Exception:
-            # Can't determine -- assume alive and let taskkill be the source
-            # of truth (it no-ops cleanly when the pid is already gone).
+            # Can't determine -- assume alive; taskkill no-ops if already gone.
             return True
         return f'"{int(pid)}"' in out
     try:
@@ -1204,8 +1200,7 @@ def stop():
 
     pid = int(pid_text)
 
-    # Check if the process is still alive (cross-platform; os.kill(pid, 0)
-    # is not a valid liveness probe on Windows -- see _pid_alive).
+    # Check if still alive (os.kill(pid, 0) is invalid on Windows -- see _pid_alive).
     if not _pid_alive(pid):
         typer.echo(
             f"Studio server (PID {pid}) is not running. Cleaning up stale PID file."

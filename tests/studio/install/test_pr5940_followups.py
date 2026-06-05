@@ -206,11 +206,9 @@ def test_install_sh_name_arch_agrees_with_ps_for_strix_and_non_amd():
 
 
 # ── amd-smi gating (DiskPart UAC-prompt avoidance) ───────────────────────────
-# On Windows amd-smi elevates a child at runtime on hosts without a working HIP
-# runtime, popping a UAC/DiskPart prompt that __COMPAT_LAYER=RunAsInvoker cannot
-# suppress (amd-smi's manifest is asInvoker). _amd_smi_allowed() therefore skips
-# amd-smi by default on Windows-without-HIP-SDK; HIP-SDK hosts and an explicit
-# opt-in keep it.
+# On Windows w/o a HIP SDK, amd-smi elevates and pops a UAC/DiskPart prompt
+# RunAsInvoker can't suppress, so _amd_smi_allowed() skips it by default;
+# HIP-SDK hosts and an explicit opt-in keep it.
 
 
 def _amd_smi_allowed_under(system, hipinfo_present, env):
@@ -262,8 +260,8 @@ def test_amd_smi_opt_out_overrides_hip_sdk():
 
 
 def test_ps_installers_gate_amd_smi_on_windows():
-    # Both PowerShell installers must gate the amd-smi probe behind HIP SDK
-    # presence + the UNSLOTH_ENABLE_AMD_SMI opt-in, mirroring _amd_smi_allowed().
+    # Both PowerShell installers must gate amd-smi behind HIP-SDK presence + the
+    # UNSLOTH_ENABLE_AMD_SMI opt-in, mirroring _amd_smi_allowed().
     for ps in (_INSTALL_PS1, _SETUP_PS1):
         text = ps.read_text(encoding = "utf-8")
         assert (
@@ -273,13 +271,10 @@ def test_ps_installers_gate_amd_smi_on_windows():
 
 
 def test_install_python_stack_gates_every_amd_smi_spawn():
-    # Regression for the recurring DiskPart UAC prompt: EVERY function in
-    # install_python_stack.py that both (a) names the `amd-smi` command and
-    # (b) spawns a subprocess must also gate it behind _amd_smi_allowed().
-    # The Windows "AMD GPU detected but ROCm torch missing" warning probe
-    # spawned `amd-smi list` on Adrenalin-only hosts WITHOUT this gate, popping
-    # the UAC/DiskPart prompt the rest of the PR avoids (RunAsInvoker cannot
-    # suppress it, so not-spawning is the only fix).
+    # Regression for the DiskPart UAC prompt: every function that both names the
+    # `amd-smi` command AND spawns a subprocess must gate it behind
+    # _amd_smi_allowed(). The "ROCm torch missing" probe once spawned `amd-smi
+    # list` ungated on Adrenalin-only hosts; not-spawning is the only fix.
     import ast
 
     src = (PACKAGE_ROOT / "studio" / "install_python_stack.py").read_text(
@@ -288,8 +283,7 @@ def test_install_python_stack_gates_every_amd_smi_spawn():
     tree = ast.parse(src)
 
     def _names_amd_smi_command(node):
-        # An EXACT "amd-smi"/"amd-smi.exe" string constant (command list or
-        # shutil.which arg) -- not a substring inside a longer log message.
+        # Exact "amd-smi"/"amd-smi.exe" constant, not a substring in a log message.
         return any(
             isinstance(n, ast.Constant)
             and isinstance(n.value, str)

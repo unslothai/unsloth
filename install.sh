@@ -1207,12 +1207,8 @@ STUB_EOF
         # Escape single quotes for PowerShell single-quoted string embedding
         _css_sc_args_ps=$(printf '%s' "$_css_sc_args" | sed "s/'/''/g")
 
-        # Use a DISTINCT shortcut name so the WSL launcher never clobbers a
-        # native-Windows install, which writes "Unsloth Studio.lnk" to the SAME
-        # Desktop / Start Menu folder (install.ps1 New-StudioShortcuts). Without
-        # this, running install.sh in WSL silently retargets the native shortcut
-        # at the WSL launcher. Include the distro so multiple WSL distros each
-        # get their own shortcut.
+        # DISTINCT shortcut name so the WSL launcher never clobbers a native
+        # install's "Unsloth Studio.lnk" in the same folder. Per-distro suffix.
         if [ -n "$_css_distro" ]; then
             _css_lnk_name="Unsloth Studio (WSL - ${_css_distro}).lnk"
         else
@@ -1287,10 +1283,8 @@ WSLPS1_EOF
             fi
             rm -f "$_css_ps1_tmp"
         fi
-        # If WSL interop is disabled (common on systemd distros: powershell.exe
-        # fails with "Exec format error"), the shortcut couldn't be created. Don't
-        # fail silently -- the generic "Created" line below only prints on success,
-        # so tell the user how to launch and how to re-enable shortcuts.
+        # If WSL interop is disabled (powershell.exe "Exec format error"), the
+        # shortcut wasn't created; tell the user how to launch / re-enable it.
         if [ "$_css_created" -ne 1 ]; then
             substep "Couldn't create the Windows shortcut (WSL interop may be disabled)." "$C_WARN"
             substep "  Launch Studio from Windows:  wsl -d \"$_css_distro\" -- bash -lc 'unsloth studio'" "$C_WARN"
@@ -1975,30 +1969,21 @@ _pick_radeon_wheel() {
 }
 
 # ── ROCm-on-WSL bootstrap for AMD Strix Halo (gfx1151) ───────────────────────
-# STRICTLY a no-op for every other configuration. It returns immediately unless
-# ALL hold: we are on WSL, the user wants a GPU (not --no-torch), there is NO
-# usable GPU yet (neither NVIDIA nor a working ROCm device), the WSL GPU
-# paravirt device /dev/dxg exists, AND the CPU is an AMD Strix Halo APU. So
-# NVIDIA/CUDA hosts, discrete + native-Linux AMD ROCm, macOS/MLX, Windows
-# (install.ps1), plain CPU boxes, and non-Strix WSL distros all skip it and the
-# normal detection below runs unchanged. It can NEVER abort the installer: on
-# decline, missing tools, or failure it just returns 0 and the CPU/GPU fallback
-# proceeds. Runs the (idempotent) helper that installs ROCm 7.2 + builds
-# librocdxg, then sources the env it persisted so the detection below sees the
-# GPU and routes to the normal gfx1151 wheels.
+# No-op everywhere except: WSL + GPU wanted + no usable GPU yet + /dev/dxg +
+# Strix Halo APU. Every other config (NVIDIA, native-Linux ROCm, macOS, Windows,
+# CPU, non-Strix WSL) skips it and normal detection runs unchanged. NEVER aborts
+# the installer -- always returns 0. Runs the idempotent helper (ROCm 7.2 +
+# librocdxg), then sources the env it persisted so detection finds the GPU.
 _maybe_bootstrap_rocm_wsl() {
     [ "${OS:-}" = "wsl" ] || return 0
     [ "${SKIP_TORCH:-false}" = "false" ] || return 0
     [ "${UNSLOTH_SKIP_ROCM_WSL_SETUP:-0}" = "1" ] && return 0
     # Leave any already-usable GPU completely alone (NVIDIA, or working ROCm).
     if _has_usable_nvidia_gpu; then return 0; fi
-    # "Already-usable ROCm" on this WSL box specifically means rocminfo enumerates
-    # the Strix Halo gfx1151 agent (which needs librocdxg + HSA_ENABLE_DXG_DETECTION).
-    # Do NOT use the generic _has_amd_rocm_gpu here: its broad gfx[1-9][0-9] awk
-    # match also accepts a fallback "gfx11-generic" ISA line, so it could skip this
-    # bootstrap while the real GPU is still unusable. (amd-smi and /dev/kfd don't
-    # apply under WSL -- the GPU is reached via /dev/dxg.) awk consumes all input,
-    # so rocminfo is not SIGPIPE'd the way `grep -q` would do under pipefail.
+    # "Usable ROCm" here = rocminfo enumerates the gfx1151 agent. Don't use the
+    # generic _has_amd_rocm_gpu: its broad gfx match accepts "gfx11-generic" and
+    # would skip this bootstrap while the real GPU is still unusable. awk consumes
+    # all input, so rocminfo isn't SIGPIPE'd like `grep -q` would under pipefail.
     if command -v rocminfo >/dev/null 2>&1 && \
        rocminfo 2>/dev/null | awk '/Name:[[:space:]]*gfx1151/{found=1} END{exit !found}'; then
         return 0
@@ -2010,19 +1995,16 @@ _maybe_bootstrap_rocm_wsl() {
     grep -qiE 'Ryzen AI Max|Radeon 80[0-9]0S|Strix Halo' /proc/cpuinfo 2>/dev/null || return 0
     command -v bash >/dev/null 2>&1 || return 0
 
-    # Fast path: already configured (librocdxg present) but we were launched from
-    # a non-login shell so the persisted env wasn't loaded -- just load it and
-    # let the normal detection below enumerate the GPU. No helper re-run.
+    # Fast path: already configured (librocdxg present) but launched from a
+    # non-login shell so the persisted env wasn't loaded -- just load it.
     if [ -e /opt/rocm/lib/librocdxg.so ] || [ -e /opt/rocm/lib64/librocdxg.so ]; then
         if [ -r /etc/profile.d/unsloth-rocm-wsl.sh ]; then
             # shellcheck disable=SC1091
             . /etc/profile.d/unsloth-rocm-wsl.sh || true
         else
-            # librocdxg is present but the persisted env drop-in is gone (e.g. a
-            # Studio uninstall removed it while keeping the shared ROCm). Restore
-            # the FULL env inline -- not just HSA -- so rocminfo is on PATH and the
-            # detection below routes to the GPU; then recreate the drop-in so
-            # future shells + the Studio worker get it too.
+            # librocdxg present but the env drop-in is gone (e.g. a Studio
+            # uninstall removed it while keeping shared ROCm). Restore the FULL
+            # env inline (so rocminfo is on PATH) and recreate the drop-in.
             _rw_rocm=/opt/rocm
             export HSA_ENABLE_DXG_DETECTION=1
             export TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1
@@ -2059,16 +2041,11 @@ _maybe_bootstrap_rocm_wsl() {
         fi
     fi
 
-    # Consent. The one-liner installer is meant to "just work": for the single
-    # narrow case the guards above allow (WSL + Strix Halo + /dev/dxg + no usable
-    # ROCm yet), this is exactly the GPU setup the user ran the installer for, so
-    # it now proceeds AUTOMATICALLY by default -- no env var, no prompt, and it
-    # works even with no controlling TTY (e.g. `curl -fsSL ... | sh`). Opt out by
-    # re-running with UNSLOTH_SKIP_ROCM_WSL_SETUP=1 (handled at the top of this
-    # function). The Tauri desktop app drives its OWN consent UI, so there it only
-    # runs when the app explicitly passes UNSLOTH_ROCM_WSL_AUTO=1; otherwise we
-    # just surface availability and let the app re-invoke. UNSLOTH_ROCM_WSL_AUTO
-    # remains accepted (it is now the default for the CLI path).
+    # Consent: the narrow guarded case is exactly the GPU setup the user ran the
+    # installer for, so it proceeds AUTOMATICALLY by default (works with no TTY,
+    # e.g. `curl ... | sh`). Opt out via UNSLOTH_SKIP_ROCM_WSL_SETUP=1 (top of
+    # function). The Tauri app drives its own consent UI, so under TAURI_MODE it
+    # only runs when the app passes UNSLOTH_ROCM_WSL_AUTO=1; else surface and wait.
     _rw_go=1
     if [ "${TAURI_MODE:-false}" = "true" ] && [ "${UNSLOTH_ROCM_WSL_AUTO:-0}" != "1" ]; then
         tauri_log "ROCM_WSL_AVAILABLE" "strixhalo"
@@ -2080,8 +2057,8 @@ _maybe_bootstrap_rocm_wsl() {
         # Helper does its own sudo + is idempotent. SMOKE_TEST=0: install.sh
         # installs torch itself right after, into the real venv.
         if UNSLOTH_WSL_SMOKE_TEST=0 bash "$_rw_helper"; then
-            # Pull the env the helper persisted into THIS shell so the detection
-            # below (rocminfo) now enumerates the GPU and routes to gfx1151.
+            # Pull the helper's persisted env into THIS shell so detection
+            # (rocminfo) now enumerates the GPU and routes to gfx1151.
             if [ -r /etc/profile.d/unsloth-rocm-wsl.sh ]; then
                 # shellcheck disable=SC1091
                 . /etc/profile.d/unsloth-rocm-wsl.sh || true
@@ -2231,8 +2208,8 @@ elif case "$TORCH_INDEX_URL" in */rocm*|*/gfx*) true ;; *) false ;; esac; then
     # Name-based arch inference when tools don't report gfx (mirrors install.ps1 nameArchTable)
     elif [ -z "$_gpu_disp_gfx" ] && [ -n "$_gpu_disp_mkt" ]; then
         # Kept in sync with the nameArchTable in install.ps1 / setup.ps1.
-        # gfx1102 is matched BEFORE gfx1100 so the spaceless "RX 7700S" lands on
-        # gfx1102 (bash case has no negative lookahead like the PowerShell tables).
+        # gfx1102 matched BEFORE gfx1100 so the spaceless "RX 7700S" lands on
+        # gfx1102 (bash case has no negative lookahead like the PS tables).
         case "$_gpu_disp_mkt" in
             *"9070 XT"*|*9080*)                                                                            _gpu_disp_gfx="gfx1201" ;;  # RDNA 4
             *9070*|*9060*)                                                                                 _gpu_disp_gfx="gfx1200" ;;  # RDNA 4
@@ -2278,12 +2255,9 @@ case "$TORCH_INDEX_URL" in
         if [ "$SKIP_TORCH" = false ] && [ "$OS" != "macos" ]; then
             substep "No GPU detected -- installing CPU-only PyTorch." "$C_WARN"
             if [ "$OS" = "wsl" ]; then
-                # WSL + no GPU detected. GPU detection (rocminfo/_has_amd_rocm_gpu)
-                # already ran above; we only reach here when it found nothing, so
-                # this hint is skipped automatically the moment a driver/distro DOES
-                # expose the GPU (e.g. if AMD later adds Ubuntu 26.04 support).
-                # The most common cause is an AMD GPU whose ROCm-on-WSL runtime is
-                # not exposed yet: /dev/dxg is present (graphics) but no ROCm runtime.
+                # WSL + no GPU detected (detection above found nothing). Common
+                # cause: an AMD GPU whose ROCm-on-WSL runtime isn't exposed yet --
+                # /dev/dxg present (graphics) but no ROCm runtime.
                 _wsl_ubu_ver=""
                 [ -r /etc/os-release ] && _wsl_ubu_ver=$(. /etc/os-release 2>/dev/null; printf '%s' "${VERSION_ID:-}")
                 if [ -e /dev/dxg ]; then

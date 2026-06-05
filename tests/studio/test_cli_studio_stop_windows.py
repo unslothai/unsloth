@@ -3,14 +3,12 @@
 
 """Regression tests for `unsloth studio stop` on Windows (PR #5940).
 
-`stop` previously used the POSIX `os.kill(pid, 0)` liveness probe, which on
-Windows raises OSError (WinError 87, "The parameter is incorrect") for *every*
-pid -- so `stop` crashed with a traceback before reaching its taskkill path.
-The fix adds a cross-platform `_pid_alive(pid)` helper (tasklist on Windows,
-signal-0 elsewhere).
+`stop` once used the POSIX `os.kill(pid, 0)` probe, which raises OSError
+(WinError 87) for every pid on Windows -- crashing before reaching taskkill.
+The fix adds a cross-platform `_pid_alive(pid)` (tasklist on Windows, signal-0
+elsewhere).
 
-AST-only + a mock-only behavioral test; no real process management, no
-Studio dependencies (typer/pydantic) imported at collection time.
+AST + mock-only; no real process management, no Studio deps imported.
 """
 
 import ast
@@ -41,11 +39,8 @@ def _func_source(name: str) -> str:
 
 
 def _load_pid_alive(platform: str, fake_run = None):
-    """Exec just the `_pid_alive` function with injectable sys/subprocess.
-
-    Avoids importing the full unsloth_cli (typer/pydantic/backend) and lets us
-    drive the win32 branch on any host.
-    """
+    """Exec just `_pid_alive` with injectable sys/subprocess, so we can drive
+    the win32 branch on any host without importing the full unsloth_cli."""
     src = _func_source("_pid_alive")
     fake_sys = types.SimpleNamespace(platform = platform)
     fake_sub = (

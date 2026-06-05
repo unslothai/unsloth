@@ -47,30 +47,22 @@ EXIT_FALLBACK = 2
 EXIT_ERROR = 1
 EXIT_BUSY = 3
 
-# DiskPart-prompt suppression. On Windows amd-smi re-initialises the ROCm
-# runtime on every call and, on systems without a working HIP runtime, elevates
-# a child process at runtime -- popping a UAC/DiskPart prompt. __COMPAT_LAYER=
-# RunAsInvoker does NOT suppress this (amd-smi's own manifest is asInvoker, so
-# there is no manifest elevation to override). We keep it set process-wide as a
-# harmless belt-and-suspenders for any tool that DOES use manifest elevation,
-# but the real guard is _amd_smi_allowed(): we simply do not spawn amd-smi on
-# Windows unless a HIP SDK is present or the user opts in.
+# DiskPart-prompt suppression. RunAsInvoker does NOT stop amd-smi's runtime
+# elevation (its manifest is asInvoker), so this is just harmless belt-and-
+# suspenders for manifest-elevating tools. The real guard is _amd_smi_allowed():
+# we don't spawn amd-smi on Windows w/o a HIP SDK (or opt-in).
 if platform.system() == "Windows":
     os.environ.setdefault("__COMPAT_LAYER", "RunAsInvoker")
 
 
 def _amd_smi_allowed() -> bool:
-    """Whether it is safe to spawn amd-smi on this platform.
+    """Whether it is safe to spawn amd-smi here.
 
-    On Windows, amd-smi elevates a child at runtime on hosts without a working
-    HIP runtime (consumer APUs/dGPUs with only the Adrenalin driver), popping a
-    UAC/DiskPart prompt that RunAsInvoker cannot suppress. We therefore only
-    call amd-smi on Windows when a HIP SDK is detectable (hipinfo present, so
-    amd-smi runs un-elevated) or when the user opts in via
-    UNSLOTH_ENABLE_AMD_SMI=1. Linux/macOS amd-smi does not elevate -> always
-    allowed. When skipped, the gfx arch is still resolved from the forwarded
-    --rocm-gfx (setup.ps1's WMI name inference), so prebuilt selection is
-    unaffected.
+    On Windows w/o a working HIP runtime, amd-smi elevates a child and pops a
+    UAC/DiskPart prompt RunAsInvoker can't suppress. Only call it on Windows
+    when a HIP SDK is detectable (hipinfo present) or UNSLOTH_ENABLE_AMD_SMI=1;
+    Linux/macOS always allowed. When skipped, the gfx arch still arrives via the
+    forwarded --rocm-gfx, so prebuilt selection is unaffected.
     """
     if platform.system() != "Windows":
         return True
@@ -2858,12 +2850,9 @@ def run_capture(
     check: bool = False,
     env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    # amd-smi on Windows auto-elevates to read GPU/APU memory details, which pops
-    # a confusing UAC/DiskPart prompt mid-install. __COMPAT_LAYER=RunAsInvoker
-    # forces it (and any helper it spawns) to run un-elevated -- no prompt; the
-    # callers already tolerate an empty/non-zero result and fall back to the
-    # WMI/name detection. Mirrors install.ps1's Invoke-AmdSmiNoElevate. Gated to
-    # Windows so Linux/macOS amd-smi behaviour is unchanged.
+    # amd-smi on Windows auto-elevates and pops a UAC/DiskPart prompt mid-install;
+    # RunAsInvoker forces it un-elevated. Callers already fall back to WMI/name
+    # detection. Mirrors install.ps1's Invoke-AmdSmiNoElevate; Windows-only.
     if (
         command
         and platform.system() == "Windows"
@@ -3103,9 +3092,8 @@ def detect_host() -> HostInfo:
 
         _win_probes = [(["hipinfo"], lambda out: "gcnarchname" in out.lower())]
         if _amd_smi_allowed():
-            # Skipped on Windows w/o a HIP SDK: amd-smi would elevate + pop a
-            # UAC/DiskPart prompt. The gfx arch still arrives via --rocm-gfx
-            # (setup.ps1 WMI name inference), so has_rocm is set by override.
+            # Skipped on Windows w/o a HIP SDK (avoids the UAC/DiskPart prompt);
+            # gfx arch still arrives via --rocm-gfx, so has_rocm is set by override.
             _win_probes.append((["amd-smi", "list"], _amd_smi_has_gpu))
         for _cmd, _check in _win_probes:
             _exe = _resolve_exe(_cmd[0])
@@ -3754,9 +3742,8 @@ def _detect_host_rocm_version() -> tuple[int, int] | None:
     amd_smi = shutil.which("amd-smi") if _amd_smi_allowed() else None
     if amd_smi:
         try:
-            # _amd_smi_allowed() keeps this off on Windows w/o a HIP SDK, where
-            # amd-smi would elevate and pop a UAC/DiskPart prompt. hipconfig
-            # below (and the version-file reads above) cover the SDK case.
+            # Off on Windows w/o a HIP SDK (avoids the UAC/DiskPart prompt);
+            # hipconfig below and the version-file reads above cover that case.
             result = run_capture([amd_smi, "version"], timeout = 5)
             if result.returncode == 0:
                 m = re.search(r"ROCm version:\s*(\d+)\.(\d+)", result.stdout)
@@ -5103,10 +5090,9 @@ def _hf_resolve_url_parts(url: str) -> tuple[str, str, str] | None:
 
 
 def _fetch_validation_model_bytes() -> bytes:
-    """Fetch the tiny GGUF validation model. Prefer huggingface_hub, which
-    completes TLS chains (AIA intermediate fetching) that bare urllib cannot on
-    some Windows / proxy setups -- the same path Studio uses for model
-    downloads. Fall back to the direct URL when hf_hub is unavailable or fails."""
+    """Fetch the tiny GGUF validation model. Prefer huggingface_hub (completes
+    TLS chains via AIA fetching that bare urllib can't on some Windows/proxy
+    setups); fall back to the direct URL when hf_hub is unavailable or fails."""
     parts = _hf_resolve_url_parts(TEST_MODEL_URL)
     if parts is not None:
         repo_id, revision, filename = parts

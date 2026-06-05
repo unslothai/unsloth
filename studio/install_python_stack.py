@@ -42,13 +42,11 @@ IS_MAC_INTEL = IS_MACOS and platform.machine() == "x86_64"
 IS_MAC_ARM = IS_MACOS and platform.machine() == "arm64"
 IS_LINUX = sys.platform.startswith("linux")
 
-# DiskPart-prompt suppression: amd-smi auto-elevates on Windows to read GPU/APU
-# memory, popping a confusing UAC/DiskPart prompt mid-install. This installer
-# only spawns amd-smi/rocminfo/hipinfo probes and pip/uv (none of which need
-# elevation), so force __COMPAT_LAYER=RunAsInvoker process-wide -- every amd-smi
-# subprocess here (current and future) then runs un-elevated, with no per-call
-# guard required. setup.ps1 keeps per-call guards because it ALSO spawns winget
-# installers that legitimately need elevation.
+# DiskPart-prompt suppression: amd-smi auto-elevates on Windows, popping a
+# UAC/DiskPart prompt mid-install. This installer only spawns probes and pip/uv
+# (none need elevation), so set __COMPAT_LAYER=RunAsInvoker process-wide -- every
+# amd-smi subprocess then runs un-elevated, no per-call guard needed. setup.ps1
+# keeps per-call guards since it ALSO spawns winget installers that need elevation.
 if IS_WINDOWS:
     os.environ.setdefault("__COMPAT_LAYER", "RunAsInvoker")
 # torchcodec ships wheels only for manylinux_2_28_x86_64,
@@ -155,24 +153,21 @@ def _bnb_rocm_prerelease_url() -> str | None:
 
 
 def _amd_smi_env() -> dict[str, str] | None:
-    """On Windows, return an env with __COMPAT_LAYER=RunAsInvoker; None elsewhere.
-    NB: RunAsInvoker does NOT actually stop amd-smi's runtime elevation on hosts
-    without a HIP runtime (amd-smi's manifest is asInvoker -- it elevates a child
-    via ShellExecute, which this cannot override). The real guard is
-    _amd_smi_allowed() below, which avoids spawning amd-smi at all in that case.
-    Kept as harmless belt-and-suspenders. Windows-only; Linux/macOS unchanged."""
+    """On Windows, env with __COMPAT_LAYER=RunAsInvoker; None elsewhere.
+    NB: RunAsInvoker doesn't stop amd-smi's runtime elevation (its manifest is
+    asInvoker -- it elevates a child via ShellExecute). The real guard is
+    _amd_smi_allowed() below; this is harmless belt-and-suspenders."""
     if platform.system() != "Windows":
         return None
     return {**os.environ, "__COMPAT_LAYER": "RunAsInvoker"}
 
 
 def _amd_smi_allowed() -> bool:
-    """Whether it is safe to spawn amd-smi on this platform.
+    """Whether it is safe to spawn amd-smi here.
 
-    On Windows, amd-smi elevates a child at runtime on hosts without a working
-    HIP runtime, popping a UAC/DiskPart prompt that RunAsInvoker cannot suppress.
-    Only call amd-smi on Windows when a HIP SDK is detectable (hipinfo present)
-    or the user opts in via UNSLOTH_ENABLE_AMD_SMI=1. Linux/macOS always allowed.
+    On Windows w/o a working HIP runtime, amd-smi elevates a child and pops a
+    UAC/DiskPart prompt RunAsInvoker can't suppress. Only call it on Windows with
+    a HIP SDK (hipinfo present) or UNSLOTH_ENABLE_AMD_SMI=1; Linux/macOS always.
     """
     if platform.system() != "Windows":
         return True
@@ -210,8 +205,8 @@ def _detect_rocm_version() -> tuple[int, int] | None:
             pass
 
     # Try amd-smi version (outputs "... | ROCm version: X.Y.Z").
-    # Gated: on Windows w/o a HIP SDK amd-smi would elevate + pop a UAC/DiskPart
-    # prompt; hipconfig below covers the SDK case.
+    # Gated off on Windows w/o a HIP SDK (avoids the UAC/DiskPart prompt);
+    # hipconfig below covers that case.
     amd_smi = shutil.which("amd-smi") if _amd_smi_allowed() else None
     if amd_smi:
         try:
@@ -368,10 +363,8 @@ def _detect_windows_gfx_arch() -> str | None:
             pass
 
     # 3. amd-smi fallback -- runtime-only Radeon installs ship amd-smi but no hipinfo.
-    # Gated: on Windows w/o a HIP SDK amd-smi would elevate + pop a UAC/DiskPart
-    # prompt (RunAsInvoker can't stop it). The arch is supplied via --rocm-gfx /
-    # name inference in that case, so this fallback is only needed where amd-smi
-    # is safe to run.
+    # Gated off on Windows w/o a HIP SDK (avoids the UAC/DiskPart prompt); the arch
+    # arrives via --rocm-gfx / name inference there, so this is only needed when safe.
     amd_smi = shutil.which("amd-smi") if _amd_smi_allowed() else None
     if amd_smi:
         for _args in (("static", "--asic"), ("list",)):
@@ -455,9 +448,8 @@ def _has_rocm_gpu() -> bool:
         exe = shutil.which(cmd[0])
         if not exe:
             continue
-        # On Windows w/o a HIP SDK (and no explicit opt-in), amd-smi elevates a
-        # child at runtime and pops a UAC/DiskPart prompt RunAsInvoker can't
-        # suppress -- skip it there and rely on rocminfo / the sysfs fallback.
+        # Skip amd-smi on Windows w/o a HIP SDK (avoids the UAC/DiskPart prompt);
+        # rely on rocminfo / the sysfs fallback there.
         if cmd[0] == "amd-smi" and not _amd_smi_allowed():
             continue
         try:
@@ -531,8 +523,7 @@ def _detect_amd_gfx_codes() -> list[str]:
     probes: list[list[str]] = []
     if shutil.which("rocminfo"):
         probes.append(["rocminfo"])
-    # Gate amd-smi: on Windows w/o a HIP SDK (and no opt-in) it elevates a child
-    # at runtime and pops a UAC/DiskPart prompt RunAsInvoker can't suppress.
+    # Gate amd-smi off on Windows w/o a HIP SDK (avoids the UAC/DiskPart prompt).
     if shutil.which("amd-smi") and _amd_smi_allowed():
         probes.append(["amd-smi", "list"])
         probes.append(["amd-smi", "static", "--asic"])
@@ -1674,13 +1665,10 @@ def install_python_stack() -> int:
             _wexe = shutil.which(_wcmd[0])
             if not _wexe:
                 continue
-            # On Windows w/o a HIP SDK (and no explicit opt-in), amd-smi elevates
-            # a child at runtime and pops a UAC/DiskPart prompt RunAsInvoker can't
-            # suppress -- skip it here, exactly as _has_rocm_gpu()/_detect_amd_gfx_codes
-            # do. hipinfo, when present, already implies a HIP SDK and runs
-            # un-elevated. The ROCm-torch state below is determined from the
-            # install itself, so the only loss when amd-smi is skipped is the
-            # best-effort "AMD GPU detected" note on HIP-SDK-less hosts.
+            # Skip amd-smi on Windows w/o a HIP SDK (avoids the UAC/DiskPart
+            # prompt), as _has_rocm_gpu()/_detect_amd_gfx_codes do. The only loss
+            # is the best-effort "AMD GPU detected" note; ROCm-torch state below
+            # comes from the install itself.
             if _wcmd[0] == "amd-smi" and not _amd_smi_allowed():
                 continue
             try:

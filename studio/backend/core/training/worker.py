@@ -29,14 +29,12 @@ from pathlib import Path
 from typing import Any, Callable
 
 # ── WSL AMD Strix Halo (gfx1151): enable ROCDXG before any torch import ──────
-# Mirrors main.py. Inside WSL the AMD GPU is reached via AMD's ROCDXG bridge
-# (librocdxg.so) over /dev/dxg, and the HSA runtime loads it only when
-# HSA_ENABLE_DXG_DETECTION=1 is set before torch first touches the GPU. A
-# training worker spawned outside a login shell would otherwise miss the env
-# the installer persisted to /etc/profile.d + ~/.bashrc and fall back to CPU.
-# STRICTLY gated: no-op unless BOTH the WSL GPU device (/dev/dxg) and the
-# ROCDXG bridge (librocdxg.so) are present -- native Linux ROCm (/dev/kfd, no
-# /dev/dxg), NVIDIA, macOS and Windows are unaffected.
+# Mirrors main.py. In WSL the AMD GPU is reached via the ROCDXG bridge
+# (librocdxg.so over /dev/dxg), which HSA loads only when HSA_ENABLE_DXG_
+# DETECTION=1 is set before torch touches the GPU. A worker spawned outside a
+# login shell misses the installer's persisted env and falls back to CPU.
+# Gated to no-op unless BOTH /dev/dxg and librocdxg.so exist, so native Linux
+# ROCm, NVIDIA, macOS and Windows are unaffected.
 if sys.platform.startswith("linux") and "HSA_ENABLE_DXG_DETECTION" not in os.environ:
     try:
         if os.path.exists("/dev/dxg") and any(

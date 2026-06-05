@@ -914,16 +914,11 @@ class TestInstallShStructure:
     """Verify install.sh structural properties without running it."""
 
     def test_no_here_strings(self):
-        """install.sh must not use <<< (not POSIX).
+        """install.sh must not use the bash-only `<<<` here-string operator.
 
-        A here-string is the redirection operator `cmd <<< word`, which is
-        bash-only and breaks dash. `<<<` appearing *inside* a quoted string
-        literal (e.g. printf '# <<< marker <<<') is NOT a here-string -- it is
-        just data (here, a conda-style block marker written into the
-        /etc/profile.d drop-in and matched as a sed delimiter by uninstall.sh).
-        Strip single- and double-quoted spans before checking so the lint
-        stays accurate: it still catches a real `cmd <<< word` (the operator is
-        outside any quotes) but does not false-positive on quoted literals.
+        `<<<` inside a quoted literal (e.g. a marker in a printf) is just data,
+        not a here-string, so strip quoted spans first: this still catches a
+        real `cmd <<< word` (outside quotes) without false-positiving on data.
         """
         import re
 
@@ -1285,9 +1280,8 @@ class TestAmdGpuMonitoring:
         ):
             monkeypatch.delenv(var, raising = False)
 
-        # amd-smi is gated off on Windows without a HIP SDK to avoid the
-        # UAC/DiskPart elevation prompt. This test mocks amd-smi as available,
-        # so opt in explicitly so the gate allows it on every platform.
+        # amd-smi is gated off on Windows w/o a HIP SDK; this test mocks it as
+        # available, so opt in so the gate allows it on every platform.
         monkeypatch.setenv("UNSLOTH_ENABLE_AMD_SMI", "1")
 
         mock_json = json.dumps(
@@ -1325,8 +1319,8 @@ class TestAmdGpuMonitoring:
         except Exception:
             pytest.skip("Could not load amd module")
 
-        # Opt in so the call reaches subprocess.run (amd-smi is gated off on
-        # Windows without a HIP SDK); we are testing the OSError handling here.
+        # Opt in so the call reaches subprocess.run (gated off on Windows w/o a
+        # HIP SDK); testing the OSError handling here.
         with (
             patch.dict(os.environ, {"UNSLOTH_ENABLE_AMD_SMI": "1"}),
             patch.object(subprocess, "run", side_effect = OSError("amd-smi not found")),
@@ -1349,8 +1343,8 @@ class TestAmdGpuMonitoring:
         except Exception:
             pytest.skip("Could not load amd module")
 
-        # Opt in so the call reaches subprocess.run (amd-smi is gated off on
-        # Windows without a HIP SDK); we are testing the timeout handling here.
+        # Opt in so the call reaches subprocess.run (gated off on Windows w/o a
+        # HIP SDK); testing the timeout handling here.
         with (
             patch.dict(os.environ, {"UNSLOTH_ENABLE_AMD_SMI": "1"}),
             patch.object(

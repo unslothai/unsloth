@@ -212,27 +212,20 @@ _custom_studio_roots | while IFS= read -r _custom_root; do
     _remove_path "$_custom_root"
 done
 _remove_path "$HOME/.unsloth/studio"
-# Default-mode shared llama.cpp build + cache live at ~/.unsloth/* (siblings of
-# studio, NOT under it -- install.sh puts them at $HOME/.unsloth/llama.cpp). They
-# are not removed by deleting studio. No-ops in env/custom mode (llama.cpp nests
-# under the custom root removed above) and when absent. A user-set
-# UNSLOTH_LLAMA_CPP_PATH points at the user's own dir and is intentionally kept.
+# Default-mode shared llama.cpp build + cache are siblings of studio (not removed
+# by deleting it). No-op in env/custom mode (they nest under the custom root) and
+# when absent. A user-set UNSLOTH_LLAMA_CPP_PATH is intentionally kept.
 _remove_path "$HOME/.unsloth/llama.cpp"
 _remove_path "$HOME/.unsloth/.cache"
-# llama.cpp atomic-install staging root (install_llama_prebuilt.py:
-# INSTALL_STAGING_ROOT_NAME=".staging", created as a sibling of the llama.cpp
-# install dir). Normally pruned after a successful activate, but an interrupted
-# or retained build can leave a "<name>.staging-XXXX" tree behind; removing it
-# lets the rmdir below succeed. No-op in env/custom mode (the staging root nests
-# under the custom root removed above) and when absent.
+# llama.cpp atomic-install staging root (install_llama_prebuilt.py .staging).
+# Normally pruned after activate, but an interrupted build can leave it behind;
+# removing it lets the rmdir below succeed. No-op in env/custom mode and absent.
 _remove_path "$HOME/.unsloth/.staging"
-# ROCm-on-WSL helper artifacts (install_rocm_wsl_strixhalo.sh): the librocdxg
-# build clone and the throwaway smoke-test venv. No-ops on macOS / non-Strix
-# Linux where they never exist; removing them lets the rmdir below succeed.
+# ROCm-on-WSL helper artifacts (librocdxg build clone + smoke-test venv). No-op
+# where they don't exist; removing them lets the rmdir below succeed.
 _remove_path "$HOME/.unsloth/librocdxg"
 _remove_path "$HOME/.unsloth/rocm-smoketest"
-# Drop ~/.unsloth itself only if it is now empty (rmdir refuses a non-empty dir,
-# so unrelated content a user may keep there is never removed).
+# Drop ~/.unsloth only if now empty (rmdir refuses non-empty, so user content is kept).
 rmdir "$HOME/.unsloth" 2>/dev/null || true
 _remove_path "$HOME/.local/share/unsloth"
 # CLI shim: only the symlink Studio created, never a pip-installed file.
@@ -269,10 +262,9 @@ case "$_os" in
             # install.sh creates 'Unsloth Studio.lnk' on the Windows Desktop and
             # Start Menu Programs folder via powershell.exe; mirror that path.
             # Prefer powershell.exe (matches each shortcut by TARGET=wsl.exe, so a
-            # native install's "Unsloth Studio.lnk" is never touched). We must test
-            # it can actually EXECUTE: `command -v` succeeds even when WSL interop
-            # is OFF (the .exe is on PATH via drvfs but fails with "Exec format
-            # error"), which is common on systemd-enabled WSL distros.
+            # native install's "Unsloth Studio.lnk" is never touched). Test it can
+            # EXECUTE: `command -v` succeeds even with WSL interop OFF (.exe fails
+            # with "Exec format error"), common on systemd-enabled WSL distros.
             _ps_ran=0
             if command -v powershell.exe >/dev/null 2>&1 && \
                powershell.exe -NoProfile -Command "exit 0" >/dev/null 2>&1; then
@@ -296,10 +288,9 @@ case "$_os" in
                         }
                     }' >/dev/null 2>&1 || true
             fi
-            # Fallback when powershell.exe can't run (WSL interop disabled): remove
-            # the WSL .lnk files directly via drvfs. The name "Unsloth Studio (WSL...)
-            # .lnk" is WSL-install-specific, so this never matches a native-Windows
-            # install's "Unsloth Studio.lnk".
+            # Fallback when powershell.exe can't run (interop disabled): remove the
+            # WSL .lnk files via drvfs. The "Unsloth Studio (WSL..." name is
+            # WSL-specific, so a native install's "Unsloth Studio.lnk" never matches.
             if [ "$_ps_ran" = "0" ]; then
                 for _drive in /mnt/c /mnt/d /mnt/e; do
                     [ -d "$_drive/Users" ] || continue
@@ -319,10 +310,9 @@ case "$_os" in
                 done
             fi
             # ── ROCm-on-WSL config (install_rocm_wsl_strixhalo.sh) ──
-            # Remove Unsloth's own ROCDXG config (the env it persisted). The
-            # system ROCm userspace (/opt/rocm*, apt repo) is a shared
-            # prerequisite like CUDA and is LEFT IN PLACE by default; set
-            # UNSLOTH_UNINSTALL_ROCM=1 to remove it too.
+            # Remove Unsloth's own ROCDXG config (the env it persisted). The system
+            # ROCm userspace is a shared prereq (like CUDA) and is LEFT IN PLACE by
+            # default; set UNSLOTH_UNINSTALL_ROCM=1 to remove it too.
             echo "Removing ROCm-on-WSL config..."
             _sudo=""
             if [ "$_uid" != "0" ] && command -v sudo >/dev/null 2>&1; then _sudo="sudo"; fi
