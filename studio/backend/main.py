@@ -239,12 +239,12 @@ from routes import (
     inference_studio_router,
     mcp_servers_router,
     models_router,
-    prompts_router,
     providers_router,
     training_history_router,
     training_router,
 )
 from routes.settings import router as settings_router
+from routes.prompts import router as prompts_router
 from auth import storage
 from auth.authentication import get_current_subject
 from utils.hardware import (

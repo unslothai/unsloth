@@ -17,7 +17,6 @@ from routes.training_history import router as training_history_router
 from routes.chat_history import router as chat_history_router
 from routes.providers import router as providers_router
 from routes.mcp_servers import router as mcp_servers_router
-from routes.prompts import router as prompts_router
 
 __all__ = [
     "training_router",
@@ -32,5 +31,4 @@ __all__ = [
     "chat_history_router",
     "providers_router",
     "mcp_servers_router",
-    "prompts_router",
 ]

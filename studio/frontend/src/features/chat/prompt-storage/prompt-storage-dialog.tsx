@@ -230,7 +230,11 @@ async function loadConversationMessages(threadId: string) {
     toast.info("No messages in this conversation to export.");
     return null;
   }
-  // Re-order by parent chain so turns appear in the correct sequence.
+  // If no message has a parentId the thread is fully legacy (flat list already
+  // sorted by createdAt from the DB). Walking the chain in that case picks the
+  // newest message first, which inverts the order. Fall back to raw order.
+  const hasParentIds = raw.some((m) => (m as { parentId?: unknown }).parentId != null);
+  if (!hasParentIds) return raw;
   return orderByParentChain(raw) as typeof raw;
 }
 
@@ -254,7 +258,7 @@ export async function exportConversationShareGPT(threadId: string): Promise<void
 
   if (conversations.length === 0) { toast.info("No exportable content."); return; }
   downloadBlob(
-    JSON.stringify({ conversations }, null, 2),
+    JSON.stringify({ conversations }),
     "conversation-" + exportTs() + ".jsonl",
     "application/x-ndjson",
   );
