@@ -161,7 +161,6 @@ import hashlib
 import mimetypes
 import re as _re
 import shutil
-import uuid
 import warnings
 from contextlib import asynccontextmanager
 from importlib.metadata import PackageNotFoundError, version as package_version
@@ -747,40 +746,6 @@ app.add_middleware(
     allow_methods = ["*"],
     allow_headers = ["*"],
 )
-
-
-# Attach a request id to every response so OpenAI/Anthropic SDK clients can
-# surface it (OpenAI reads `x-request-id`; Anthropic reads `request-id` /
-# `anthropic-request-id`). Implemented as a pure ASGI middleware that injects
-# the headers into the `http.response.start` message — this never buffers or
-# wraps the response body, so SSE streaming flushes incrementally (unlike a
-# BaseHTTPMiddleware, which can stall long-lived streams).
-class RequestIdMiddleware:
-    _HEADERS = (b"x-request-id", b"request-id", b"anthropic-request-id")
-
-    def __init__(self, app):
-        self.app = app
-
-    async def __call__(self, scope, receive, send):
-        if scope["type"] != "http":
-            await self.app(scope, receive, send)
-            return
-
-        rid = f"req_{uuid.uuid4().hex}".encode()
-
-        async def _send(message):
-            if message["type"] == "http.response.start":
-                headers = message.setdefault("headers", [])
-                present = {k.lower() for k, _ in headers}
-                for name in self._HEADERS:
-                    if name not in present:
-                        headers.append((name, rid))
-            await send(message)
-
-        await self.app(scope, receive, _send)
-
-
-app.add_middleware(RequestIdMiddleware)
 
 
 # ============ Register API Routes ============
