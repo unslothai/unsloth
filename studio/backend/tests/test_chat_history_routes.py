@@ -96,7 +96,13 @@ def test_chat_inference_settings_covers_frontend_persisted_fields():
     # checkpoint) must exist on ChatInferenceSettings, else extra="forbid"
     # 400s PUT /api/chat/settings on the next added field (issue #5862).
     runtime_ts = os.path.join(
-        _backend, "..", "frontend", "src", "features", "chat", "types",
+        _backend,
+        "..",
+        "frontend",
+        "src",
+        "features",
+        "chat",
+        "types",
         "runtime.ts",
     )
     if not os.path.exists(runtime_ts):
@@ -107,9 +113,7 @@ def test_chat_inference_settings_covers_frontend_persisted_fields():
             r"interface InferenceParams \{(.*?)\n\}", fh.read(), re.DOTALL
         )
     assert block, "InferenceParams interface not found in runtime.ts"
-    persisted = set(re.findall(r"^\s*(\w+)\??:", block.group(1), re.M)) - {
-        "checkpoint"
-    }
+    persisted = set(re.findall(r"^\s*(\w+)\??:", block.group(1), re.M)) - {"checkpoint"}
 
     backend = set(chat_history.ChatInferenceSettings.model_fields)
     assert persisted == backend, (
