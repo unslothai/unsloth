@@ -215,6 +215,6 @@ def test_text_only_helper_preserves_quantization_config():
     transformers = pytest.importorskip("transformers")
     helper = _load_text_only_helper()
     config = transformers.Gemma3Config()
-    config.quantization_config = transformers.BitsAndBytesConfig(load_in_4bit=True)
+    config.quantization_config = transformers.BitsAndBytesConfig(load_in_4bit = True)
     text_config = helper(config, "google/gemma-3-27b-it")
     assert getattr(text_config, "quantization_config", None) is not None
