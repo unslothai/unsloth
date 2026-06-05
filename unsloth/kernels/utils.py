@@ -267,44 +267,16 @@ torch_float32 = torch.float32
 torch_float16 = torch.float16
 torch_bfloat16 = torch.bfloat16
 
-# ── INT8 Activation Compression ──────────────────────────────────────────────
-# Set UNSLOTH_QUANTIZE_ACTIVATIONS = True before loading a model to halve the
-# activation memory consumed by the LoRA backward pass.  For an 8B model at
-# seq_len=2048 this saves ~4 GB with negligible gradient error (~0.007%).
-#
-# Mechanism:
-#   Custom LoRA_MLP path  — e and g (gate/up projection outputs) are stored
-#   as per-row INT8 instead of BF16 in ctx.save_for_backward.
-#   Standard PEFT path    — lora_A.forward is wrapped so its input activation
-#   is stored as INT8.  Skipped for models that already use the LoRA_MLP
-#   kernel (no double-patching) and when gradient checkpointing is active
-#   (activations are recomputed rather than stored, so there is nothing to
-#   compress).
-#
-# Usage:
-#   import unsloth.kernels.utils as u
-#   u.UNSLOTH_QUANTIZE_ACTIVATIONS = True
-#   model, tokenizer = FastLanguageModel.from_pretrained(...)
+# Set True before from_pretrained to store LoRA backward activations in INT8
+# instead of BF16, saving ~4 GB on 8B models at seq_len=2048 (~0.007% grad error).
+# Models using the LoRA_MLP kernel compress e/g; PEFT-path models compress lora_A input.
 UNSLOTH_QUANTIZE_ACTIVATIONS: bool = False
 
-# model_type values that go through Unsloth's custom LoRA_MLP kernel.
-# INT8 compression is handled there; the PEFT-path patch must be skipped for
-# these to avoid double-patching.
-_LORA_MLP_KERNEL_MODEL_TYPES: frozenset = frozenset(
-    {
-        "llama",
-        "mistral",
-        "qwen2",
-        "gemma",
-        "gemma2",
-        "cohere",
-        "granite",
-        "qwen3",
-        "falcon_h1",
-        "qwen3moe",
-        "qwen3_5",
-    }
-)
+# Model types that use the LoRA_MLP kernel (compression handled there; skip PEFT-path patch).
+_LORA_MLP_KERNEL_MODEL_TYPES: frozenset = frozenset({
+    "llama", "mistral", "qwen2", "gemma", "gemma2",
+    "cohere", "granite", "qwen3", "falcon_h1", "qwen3moe", "qwen3_5",
+})
 
 
 def quant_act(x: torch.Tensor):
