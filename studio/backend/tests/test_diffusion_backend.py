@@ -7629,6 +7629,147 @@ def test_generate_image_promotes_qwen_to_img2img_pipeline(monkeypatch):
     assert call["true_cfg_scale"] == 4.0
 
 
+def test_generate_image_promotes_z_image_to_img2img_pipeline(monkeypatch):
+    import core.inference.diffusion as d
+    from PIL import Image
+
+    backend = d.DiffusionBackend()
+
+    class _FakeZTextPipe:
+        components = {
+            "scheduler": object(),
+            "vae": object(),
+            "text_encoder": object(),
+            "tokenizer": object(),
+            "transformer": object(),
+        }
+
+        def __call__(
+            self,
+            *,
+            prompt,
+            num_inference_steps,
+            guidance_scale,
+            width,
+            height,
+        ):
+            raise AssertionError("text-to-image pipeline should not be called")
+
+    class _FakeZImg2ImgPipe:
+        calls = []
+
+        def __init__(self, scheduler, vae, text_encoder, tokenizer, transformer):
+            self.components = {
+                "scheduler": scheduler,
+                "vae": vae,
+                "text_encoder": text_encoder,
+                "tokenizer": tokenizer,
+                "transformer": transformer,
+            }
+
+        def __call__(
+            self,
+            *,
+            image,
+            prompt,
+            guidance_scale,
+            strength,
+            num_inference_steps,
+            width,
+            height,
+        ):
+            self.__class__.calls.append(
+                {
+                    "image": image,
+                    "prompt": prompt,
+                    "guidance_scale": guidance_scale,
+                    "strength": strength,
+                    "num_inference_steps": num_inference_steps,
+                    "width": width,
+                    "height": height,
+                }
+            )
+            return SimpleNamespace(images = [Image.new("RGB", (width, height))])
+
+    monkeypatch.setitem(
+        sys.modules,
+        "diffusers",
+        types.SimpleNamespace(ZImageImg2ImgPipeline = _FakeZImg2ImgPipe),
+    )
+    source = Image.new("RGB", (32, 32))
+    backend._pipe = _FakeZTextPipe()
+    backend._device = "cpu"
+    backend._family = d.detect_family("unsloth/Z-Image-Turbo-GGUF")
+
+    image = backend._generate_image_unlocked(
+        prompt = "restyle",
+        input_images = [source],
+        width = 64,
+        height = 64,
+    )
+
+    assert image.size == (64, 64)
+    call = _FakeZImg2ImgPipe.calls[-1]
+    assert call["image"] is source
+    assert call["strength"] == 0.6
+    assert call["guidance_scale"] == 0.0
+    assert call["num_inference_steps"] == 9
+
+
+def test_generate_image_required_family_forwards_multi_image_list():
+    import core.inference.diffusion as d
+    from PIL import Image
+
+    backend = d.DiffusionBackend()
+
+    class _FakeQwenEditPlusPipe:
+        def __init__(self):
+            self.last_kwargs = None
+
+        def __call__(
+            self,
+            *,
+            image,
+            prompt,
+            negative_prompt,
+            true_cfg_scale,
+            guidance_scale,
+            num_inference_steps,
+            width,
+            height,
+        ):
+            self.last_kwargs = {
+                "image": image,
+                "prompt": prompt,
+                "negative_prompt": negative_prompt,
+                "true_cfg_scale": true_cfg_scale,
+                "guidance_scale": guidance_scale,
+                "num_inference_steps": num_inference_steps,
+                "width": width,
+                "height": height,
+            }
+            return SimpleNamespace(images = [Image.new("RGB", (width, height))])
+
+    source_a = Image.new("RGB", (32, 32))
+    source_b = Image.new("RGB", (48, 48))
+    pipe = _FakeQwenEditPlusPipe()
+    backend._pipe = pipe
+    backend._device = "cpu"
+    backend._family = d.detect_family("unsloth/Qwen-Image-Edit-2511-GGUF")
+
+    image = backend._generate_image_unlocked(
+        prompt = "combine the references",
+        input_images = [source_a, source_b],
+        width = 64,
+        height = 64,
+    )
+
+    assert image.size == (64, 64)
+    assert pipe.last_kwargs["image"] == [source_a, source_b]
+    assert pipe.last_kwargs["guidance_scale"] == 1.0
+    assert pipe.last_kwargs["true_cfg_scale"] == 4.0
+
+
 def test_generate_image_rejects_explicit_text_task_with_input_image():
     import core.inference.diffusion as d
     from PIL import Image
