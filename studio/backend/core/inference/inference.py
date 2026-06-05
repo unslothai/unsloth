@@ -420,10 +420,14 @@ class InferenceBackend:
             # AMD RDNA2 (gfx1030-gfx1036, e.g. RX 6600) crashes with an LLVM error
             # ("Cannot select: intrinsic %llvm.amdgcn.fdot2.bf16.bf16") at the first
             # bf16 kernel dispatch when dtype=None lets unsloth auto-pick bf16.
-            # NOTE: unsloth's is_bfloat16_supported() returns True unconditionally for
-            # ALL HIP devices (see models/_utils.py DEVICE_TYPE=="hip" branch), so we
-            # cannot rely on it here. Detect RDNA2 by gfx architecture code instead.
-            _is_rocm = bool(getattr(torch.version, "hip", None)) or "rocm" in torch.__version__.lower()
+            # models/_utils.py now sets SUPPORTS_BFLOAT16=False for RDNA2, which
+            # makes unsloth's loader and Triton kernels use fp16 paths. This block
+            # is belt-and-suspenders: it forces dtype=float16 at load time even if
+            # rocminfo was unavailable during _utils.py import and the flag stayed True.
+            _is_rocm = (
+                bool(getattr(torch.version, "hip", None))
+                or "rocm" in torch.__version__.lower()
+            )
             _is_rdna2 = False
             if _is_rocm:
                 _RDNA2_GFX = frozenset(
