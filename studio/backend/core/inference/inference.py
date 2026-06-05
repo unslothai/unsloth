@@ -438,9 +438,11 @@ class InferenceBackend:
                 try:
                     _hip_arch = ""
                     if torch.cuda.is_available() and torch.cuda.device_count() > 0:
-                        _hip_arch = getattr(
-                            torch.cuda.get_device_properties(0), "gcnArchName", ""
-                        ).lower()
+                        _props = torch.cuda.get_device_properties(0)
+                        for _attr in ("gcnArchName", "gcn_arch_name", "arch_name", "gfx_arch_name"):
+                            _hip_arch = getattr(_props, _attr, "").lower()
+                            if _hip_arch:
+                                break
                     _is_rdna2 = _hip_arch in _RDNA2_GFX
                 except Exception:
                     pass
