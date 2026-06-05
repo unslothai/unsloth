@@ -3,7 +3,7 @@
 
 """Core inference backend."""
 
-from unsloth import FastLanguageModel, FastVisionModel, is_bfloat16_supported
+from unsloth import FastLanguageModel, FastVisionModel
 from unsloth.chat_templates import get_chat_template
 from transformers import TextStreamer
 from peft import PeftModel, PeftModelForCausalLM
@@ -430,11 +430,15 @@ class InferenceBackend:
                     {"gfx1030", "gfx1031", "gfx1032", "gfx1033", "gfx1034", "gfx1035", "gfx1036"}
                 )
                 try:
-                    import subprocess as _sp, re as _re
-                    _ri = _sp.run(["rocminfo"], capture_output=True, text=True, timeout=5)
+                    import re
+                    import subprocess
+
+                    _ri = subprocess.run(
+                        ["rocminfo"], capture_output = True, text = True, timeout = 5
+                    )
                     _is_rdna2 = any(
                         c in _RDNA2_GFX
-                        for c in _re.findall(r"gfx[0-9a-z]+", _ri.stdout.lower())
+                        for c in re.findall(r"gfx[0-9a-z]+", _ri.stdout.lower())
                     )
                 except Exception:
                     pass
