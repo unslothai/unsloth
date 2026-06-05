@@ -112,9 +112,9 @@ def _friendly_error(exc: Exception) -> str:
 
 
 def _clamp_finish_reason(value) -> str:
-    """Coerce an upstream finish_reason into the OpenAI Literal["stop","length"]
+    """Coerce an upstream finish_reason into the OpenAI Literal values
     our response models accept (anything else, incl. None, becomes "stop")."""
-    return value if value in ("stop", "length") else "stop"
+    return value if value in ("stop", "length", "tool_calls") else "stop"
 
 
 def _normalize_stop_sequences(raw):
@@ -3241,6 +3241,7 @@ async def openai_chat_completions(
                     prev_text = ""
                     _stream_usage = None
                     _stream_timings = None
+                    _stream_finish = None
                     while True:
                         if cancel_event.is_set():
                             break
@@ -3279,6 +3280,7 @@ async def openai_chat_completions(
                         if event["type"] == "metadata":
                             _stream_usage = event.get("usage")
                             _stream_timings = event.get("timings")
+                            _stream_finish = event.get("finish_reason")
                             continue
 
                         # "content" type -- cumulative text
@@ -3311,7 +3313,7 @@ async def openai_chat_completions(
                         choices = [
                             ChunkChoice(
                                 delta = ChoiceDelta(),
-                                finish_reason = "stop",
+                                finish_reason = _clamp_finish_reason(_stream_finish),
                             )
                         ],
                     )
@@ -3491,7 +3493,7 @@ async def openai_chat_completions(
             try:
                 # ``n`` requests several independent completions; the single
                 # decode slot yields one at a time, so loop sequentially.
-                _n = min(payload.n or 1, 8)
+                _n = payload.n or 1
 
                 _choices = []
                 _prompt_tokens = 0
@@ -4323,12 +4325,11 @@ async def openai_completions(
         async with httpx.AsyncClient() as client:
             resp = await client.post(target_url, json = body, timeout = 600)
 
-        content = resp.content
-        if resp.status_code == 200:
-            content = _rewrite_cmpl_id(content)
+        if resp.status_code != 200:
+            raise _openai_passthrough_error(resp.status_code, resp.text)
 
         return Response(
-            content = content,
+            content = _rewrite_cmpl_id(resp.content),
             status_code = resp.status_code,
             media_type = "application/json",
         )
@@ -5249,9 +5250,19 @@ async def anthropic_count_tokens(
     )
     openai_tools = anthropic_tools_to_openai(payload.tools or []) or None
 
-    count = await asyncio.to_thread(
-        llama_backend.count_chat_tokens, openai_messages, None, openai_tools
-    )
+    try:
+        count = await asyncio.to_thread(
+            llama_backend.count_chat_tokens,
+            openai_messages,
+            None,
+            openai_tools,
+            strict = True,
+        )
+    except Exception:
+        raise HTTPException(
+            status_code = 503,
+            detail = "Unable to count tokens with the loaded model tokenizer.",
+        )
     return JSONResponse(content = {"input_tokens": int(count)})
 
 

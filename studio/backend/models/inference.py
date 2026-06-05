@@ -669,7 +669,10 @@ class ChatCompletionRequest(BaseModel):
         description = "OpenAI upper bound on generated tokens (supersedes the deprecated max_tokens).",
     )
     n: Optional[int] = Field(
-        None, ge = 1, description = "Number of chat completion choices to generate."
+        None,
+        ge = 1,
+        le = 128,
+        description = "Number of chat completion choices to generate.",
     )
     logprobs: Optional[bool] = Field(
         None, description = "Whether to return log probabilities of the output tokens."
@@ -1051,7 +1054,7 @@ class ChunkChoice(BaseModel):
 
     index: int = 0
     delta: ChoiceDelta
-    finish_reason: Optional[Literal["stop", "length"]] = None
+    finish_reason: Optional[Literal["stop", "length", "tool_calls"]] = None
     logprobs: Optional[dict] = None
 
 

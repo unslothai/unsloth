@@ -275,18 +275,19 @@ class TestChatCompletionRequestToolFields:
         assert req.stop is None
 
     def test_extra_fields_accepted(self):
-        # `frequency_penalty`, `seed`, `response_format` are not yet
-        # explicitly declared but must survive Pydantic parsing now that
-        # extra="allow" is set.
+        # `frequency_penalty` and `response_format` are not yet explicitly
+        # declared but must survive Pydantic parsing now that extra="allow" is
+        # set. `seed` is declared and should land on the typed field instead.
         req = self._make(
             frequency_penalty = 0.5,
             seed = 42,
             response_format = {"type": "json_object"},
         )
+        assert req.seed == 42
         # Extras land in model_extra
         assert req.model_extra is not None
         assert req.model_extra.get("frequency_penalty") == 0.5
-        assert req.model_extra.get("seed") == 42
+        assert "seed" not in req.model_extra
         assert req.model_extra.get("response_format") == {"type": "json_object"}
 
     def test_unsloth_extensions_still_work(self):

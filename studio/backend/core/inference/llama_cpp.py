@@ -5601,11 +5601,47 @@ class LlamaCppBackend:
 
     # ── Prompt token counting ──────────────────────────────────
 
-    def count_chat_tokens(self, messages, system = None, tools = None) -> int:
-        """Best-effort count of prompt tokens for a chat request, using the loaded
-        model's tokenizer via llama-server. Returns 0 if it cannot be determined."""
+    def count_chat_tokens(
+        self, messages, system = None, tools = None, strict: bool = False
+    ) -> int:
+        """Count prompt tokens for a chat request via llama-server.
+
+        Non-strict callers keep the historical best-effort behavior and receive
+        0 when a count cannot be determined. Strict callers (public count_tokens
+        endpoints) get an exception instead of a successful-looking zero when
+        tokenizer/template calls fail or a multimodal prompt would fall back to a
+        text-only approximation.
+        """
         if not self.is_loaded:
+            if strict:
+                raise RuntimeError("llama-server is not loaded")
             return 0
+
+        def _has_non_text_content(content) -> bool:
+            if isinstance(content, list):
+                for block in content:
+                    if isinstance(block, str):
+                        continue
+                    if not isinstance(block, dict):
+                        return True
+                    if block.get("type") == "text" and isinstance(
+                        block.get("text"), str
+                    ):
+                        continue
+                    if isinstance(block.get("text"), str):
+                        continue
+                    return True
+            return False
+
+        def _has_non_text_prompt_parts() -> bool:
+            if _has_non_text_content(system):
+                return True
+            for msg in messages or []:
+                if isinstance(msg, dict) and _has_non_text_content(
+                    msg.get("content", "")
+                ):
+                    return True
+            return False
 
         def _block_text(content) -> str:
             if isinstance(content, str):
@@ -5644,8 +5680,17 @@ class LlamaCppBackend:
                         json = {"content": text, "add_special": True},
                     )
                     if r.status_code != 200:
+                        if strict:
+                            raise RuntimeError("llama-server tokenizer failed")
                         return 0
-                    return len(r.json().get("tokens", []))
+                    tokens = r.json().get("tokens", [])
+                    if not isinstance(tokens, list):
+                        if strict:
+                            raise RuntimeError(
+                                "llama-server tokenizer returned invalid tokens"
+                            )
+                        return 0
+                    return len(tokens)
 
                 # 1. Try /apply-template to render the real chat prompt.
                 template_messages = list(messages) if messages else []
@@ -5653,6 +5698,7 @@ class LlamaCppBackend:
                     template_messages = [
                         {"role": "system", "content": system_text}
                     ] + template_messages
+                apply_template_failed = False
                 try:
                     # llama-server's /apply-template renders tool declarations
                     # into the prompt when ``tools`` is supplied, so pass them
@@ -5668,8 +5714,14 @@ class LlamaCppBackend:
                         prompt = resp.json().get("prompt", "")
                         if isinstance(prompt, str):
                             return _tokenize(prompt)
+                    apply_template_failed = True
                 except Exception:
-                    pass
+                    apply_template_failed = True
+
+                if strict and apply_template_failed and _has_non_text_prompt_parts():
+                    raise RuntimeError(
+                        "cannot fall back to text-only token counting for multimodal messages"
+                    )
 
                 # 2. Fallback: concatenate plain text and tokenize. Append a
                 # serialized form of the tools so they still contribute to the
@@ -5687,6 +5739,8 @@ class LlamaCppBackend:
                         pass
                 return _tokenize("\n".join(p for p in parts if p))
         except Exception:
+            if strict:
+                raise
             return 0
 
     # ── TTS support ────────────────────────────────────────────
