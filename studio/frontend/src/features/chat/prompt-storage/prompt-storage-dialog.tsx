@@ -1334,7 +1334,7 @@ export function PromptStorageDialog({
   return (
     <>
       <Dialog open={open} onOpenChange={onOpenChange}>
-        <DialogContent showCloseButton={false} className="sm:max-w-[min(1720px,92vw)] max-h-[94vh] flex flex-col gap-0 p-0 overflow-hidden">
+        <DialogContent showCloseButton={false} className="sm:max-w-[min(1100px,88vw)] max-h-[94vh] flex flex-col gap-0 p-0 overflow-hidden">
           {/* Header */}
           <DialogHeader className="px-6 pt-5 pb-4 shrink-0 border-b border-border/50">
             <div className="flex items-center gap-3">

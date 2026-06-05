@@ -1925,6 +1925,10 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
             <CheckIcon className="ml-auto" />
           ) : null}
         </DropdownMenuItem>
+        <DropdownMenuItem onSelect={() => startCompare()}>
+          <Columns2Icon />
+          Compare chat
+        </DropdownMenuItem>
         {/* RAG hidden temporarily */}
         <DropdownMenuSub>
           <DropdownMenuSubTrigger>
@@ -1936,38 +1940,34 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
               <HugeiconsIcon icon={Bookmark02Icon} strokeWidth={2} />
               Saved prompts
             </DropdownMenuItem>
+            <DropdownMenuSub>
+              <DropdownMenuSubTrigger disabled={!activeThreadId}>
+                <HugeiconsIcon icon={Download01Icon} strokeWidth={2} />
+                Export chat
+              </DropdownMenuSubTrigger>
+              <DropdownMenuSubContent className="unsloth-plus-menu w-[200px]">
+                <DropdownMenuItem onSelect={() => {
+                  if (!activeThreadId) return;
+                  exportConversationRawJsonl(activeThreadId).catch(() => toast.error("Export failed."));
+                }}>
+                  Raw JSONL
+                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => {
+                  if (!activeThreadId) return;
+                  exportConversationCsv(activeThreadId).catch(() => toast.error("Export failed."));
+                }}>
+                  CSV
+                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => {
+                  if (!activeThreadId) return;
+                  exportConversationShareGPT(activeThreadId).catch(() => toast.error("Export failed."));
+                }}>
+                  ShareGPT JSONL (training)
+                </DropdownMenuItem>
+              </DropdownMenuSubContent>
+            </DropdownMenuSub>
           </DropdownMenuSubContent>
         </DropdownMenuSub>
-        <DropdownMenuSub>
-          <DropdownMenuSubTrigger disabled={!activeThreadId}>
-            <HugeiconsIcon icon={Download01Icon} strokeWidth={2} />
-            Export chat
-          </DropdownMenuSubTrigger>
-          <DropdownMenuSubContent className="unsloth-plus-menu w-[200px]">
-            <DropdownMenuItem onSelect={() => {
-              if (!activeThreadId) return;
-              exportConversationRawJsonl(activeThreadId).catch(() => toast.error("Export failed."));
-            }}>
-              Raw JSONL
-            </DropdownMenuItem>
-            <DropdownMenuItem onSelect={() => {
-              if (!activeThreadId) return;
-              exportConversationCsv(activeThreadId).catch(() => toast.error("Export failed."));
-            }}>
-              CSV
-            </DropdownMenuItem>
-            <DropdownMenuItem onSelect={() => {
-              if (!activeThreadId) return;
-              exportConversationShareGPT(activeThreadId).catch(() => toast.error("Export failed."));
-            }}>
-              ShareGPT JSONL (training)
-            </DropdownMenuItem>
-          </DropdownMenuSubContent>
-        </DropdownMenuSub>
-        <DropdownMenuItem onSelect={() => startCompare()}>
-          <Columns2Icon />
-          Compare chat
-        </DropdownMenuItem>
         <DropdownMenuSeparator />
         <DropdownMenuSub>
           <DropdownMenuSubTrigger>
