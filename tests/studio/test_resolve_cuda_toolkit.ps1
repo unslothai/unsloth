@@ -22,6 +22,13 @@ $fn = $ast.FindAll({ param($n)
 if ($fn.Count -ne 1) { throw "expected exactly one Resolve-CudaToolkit, found $($fn.Count)" }
 $fnText = $fn[0].Extent.Text
 
+# Resolve-CudaToolkit calls Write-CudaDriverToolkitMismatch, so extract it too.
+$mismatchFn = $ast.FindAll({ param($n)
+    $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq "Write-CudaDriverToolkitMismatch"
+}, $true)
+if ($mismatchFn.Count -ne 1) { throw "expected exactly one Write-CudaDriverToolkitMismatch, found $($mismatchFn.Count)" }
+$mismatchText = $mismatchFn[0].Extent.Text
+
 # --- Spoof executables: nvidia-smi reports driver max CUDA 13.2; nvcc 13.3 ---
 $work = Join-Path ([System.IO.Path]::GetTempPath()) ("rct_" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Force -Path $work | Out-Null
@@ -68,6 +75,8 @@ function Find-Nvcc {
 `$script:CudaToolkitReady = `$false
 `$script:NvccPath = `$null; `$script:CudaToolkitRoot = `$null; `$script:CudaArch = `$null
 
+$mismatchText
+
 $fnText
 
 if ($requireLit) { Resolve-CudaToolkit -RequireOrExit } else { Resolve-CudaToolkit }
@@ -85,12 +94,14 @@ try {
     Check "exits 0 (not blocked)"        ($r.Exit -eq 0)
     Check "CudaToolkitReady = false"     ($r.Out -match "ready=False")
     Check "winget NOT called"            ($r.Out -match "winget=False")
-    Check "no INCOMPATIBLE error text"   (-not ($r.Out -match "INCOMPATIBLE"))
+    Check "explains driver too old"      ($r.Out -match "your NVIDIA driver only supports up to CUDA")
+    Check "does not blame the toolkit"   (-not ($r.Out -match "INCOMPATIBLE"))
 
     Write-Host "Scenario 2: forced source build, too-new toolkit (-RequireOrExit) -> hard exit"
     $r = Run-Case -FindMode "incompatible" -Require $true
     Check "exits non-zero"               ($r.Exit -ne 0)
-    Check "preserved INCOMPATIBLE error" ($r.Out -match "is installed but INCOMPATIBLE")
+    Check "explains driver too old"      ($r.Out -match "your NVIDIA driver only supports up to CUDA")
+    Check "one-line source-build error"  ($r.Out -match "CUDA source build cannot use the installed toolkit")
 
     Write-Host "Scenario 3: compatible toolkit (-RequireOrExit) -> resolves, env set"
     $r = Run-Case -FindMode "compatible" -Require $true
