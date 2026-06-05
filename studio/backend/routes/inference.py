@@ -3080,7 +3080,7 @@ async def openai_chat_completions(
                 detail = "Audio input is not supported for GGUF chat models yet.",
             )
 
-        gguf_messages, has_gguf_image = _openai_messages_for_gguf_chat(
+        gguf_messages, _ = _openai_messages_for_gguf_chat(
             payload,
             llama_backend.is_vision,
         )
@@ -3104,11 +3104,7 @@ async def openai_chat_completions(
         _cli_policy = _get_tool_policy_g()
         _tools_on = _effective_enable_tools(payload)
         _mcp_allowed = bool(payload.mcp_enabled) and _cli_policy is not False
-        use_tools = (
-            (_tools_on or _mcp_allowed)
-            and llama_backend.supports_tools
-            and not has_gguf_image
-        )
+        use_tools = (_tools_on or _mcp_allowed) and llama_backend.supports_tools
 
         if use_tools:
             from core.inference.tools import ALL_TOOLS, get_enabled_mcp_tools
@@ -3199,11 +3195,9 @@ async def openai_chat_completions(
                     system_prompt = system_prompt.rstrip() + "\n\n" + _nudge
                 else:
                     system_prompt = _nudge
-                # Rebuild gguf_messages with updated system prompt
-                gguf_messages = []
-                if system_prompt:
-                    gguf_messages.append({"role": "system", "content": system_prompt})
-                gguf_messages.extend(chat_messages)
+                gguf_messages = _set_or_prepend_system_message(
+                    gguf_messages, system_prompt
+                )
 
             # ── Strip stale tool-call XML from conversation history ─
             for _msg in gguf_messages:
@@ -5292,6 +5286,20 @@ async def anthropic_count_tokens(
             detail = "Unable to count tokens with the loaded model tokenizer.",
         )
     return JSONResponse(content = {"input_tokens": int(count)})
+
+
+def _set_or_prepend_system_message(
+    messages: Optional[list[dict]], system_prompt: str
+) -> list[dict]:
+    """Return messages with a single leading system prompt, preserving multimodal parts."""
+    safe_messages = messages or []
+    if not system_prompt:
+        return safe_messages
+
+    # Drop existing system turns so the backend never sees duplicate or
+    # conflicting system instructions, then prepend the resolved prompt.
+    others = [dict(msg) for msg in safe_messages if msg.get("role") != "system"]
+    return [{"role": "system", "content": system_prompt}, *others]
 
 
 @router.post("/messages")
