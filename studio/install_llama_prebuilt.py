@@ -461,7 +461,7 @@ def is_busy_lock_error(exc: BaseException) -> bool:
 
 
 def log(message: str) -> None:
-    print(f"[llama-prebuilt] {message}", file = sys.stderr)
+    print(f"[llama-prebuilt] {message}", file = sys.stdout)
 
 
 def log_lines(lines: Iterable[str]) -> None:
