@@ -1,17 +1,22 @@
 #!/bin/sh
-# Unsloth Studio Installer
-# Usage (curl):  curl -fsSL https://unsloth.ai/install.sh | sh
-# Usage (wget):  wget -qO- https://unsloth.ai/install.sh | sh
-# Usage (local): ./install.sh --local   (install from local repo instead of PyPI)
-# Usage (no-torch): ./install.sh --no-torch  (skip PyTorch, GGUF-only mode)
-# Usage (test):  ./install.sh --package roland-sloth  (install a different package name)
-# Usage (py):    ./install.sh --python 3.12  (override auto-detected Python version)
 #
-# Env vars (priority: UNSLOTH_STUDIO_HOME > STUDIO_HOME > HOME-redirect > default):
-#   UNSLOTH_STUDIO_HOME=/abs/path  -> install under that path
-#   STUDIO_HOME=/abs/path          -> alias, same effect (UNSLOTH_STUDIO_HOME wins)
-#   (DATA_DIR + unsloth CLI shim nest inside; no shell rc-file append.)
-# Default ($HOME/.unsloth/studio) is preserved when no env var is set.
+# Unsloth Studio Installer
+#
+# Usage:  curl -fsSL https://unsloth.ai/install.sh | sh
+#         wget  -qO- https://unsloth.ai/install.sh | sh
+#         ./install.sh --local   (install from a cloned repo instead of PyPI)
+#
+# Piped installs take options as env vars after the pipe (a bare `| sh --no-torch`
+# makes sh reject --no-torch as its own option). Flags still work via ./install.sh:
+#   curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_NO_TORCH=1 sh    # skip PyTorch (GGUF-only)
+#   curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_PYTHON=3.12 sh   # pin Python version
+#   curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_STUDIO_HOME=/abs/path sh
+# Equivalent flags: ./install.sh --no-torch --python 3.12  (or pipe them: sh -s -- --no-torch)
+#
+# Install dir priority: UNSLOTH_STUDIO_HOME > STUDIO_HOME (alias) > $HOME/.unsloth/studio
+#
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 set -e
 
 # ── Output style (aligned with studio/setup.sh) ──
@@ -69,6 +74,10 @@ for arg in "$@"; do
         --shortcuts-only) _SHORTCUTS_ONLY=true ;;
     esac
 done
+
+# Env-var equivalents for piped installs; an explicit flag still wins.
+case "${UNSLOTH_NO_TORCH:-}" in 1|true|TRUE|yes|YES|on|ON) _NO_TORCH_FLAG=true ;; esac
+[ -z "$_USER_PYTHON" ] && [ -n "${UNSLOTH_PYTHON:-}" ] && _USER_PYTHON="$UNSLOTH_PYTHON"
 
 if [ "$_VERBOSE" = true ]; then
     export UNSLOTH_VERBOSE=1
@@ -1520,7 +1529,17 @@ fi
 if [ ! -x "$VENV_DIR/bin/python" ]; then
     step "venv" "creating Python ${PYTHON_VERSION} virtual environment"
     substep "$VENV_DIR"
-    run_install_cmd "create venv" uv venv "$VENV_DIR" --python "$PYTHON_VERSION"
+    if [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ] && [ -z "$_USER_PYTHON" ]; then
+        # Apple Silicon: request an arch-explicit arm64 CPython so uv cannot
+        # reuse a cached x86_64 (Rosetta) build. torch ships no macOS x86_64
+        # wheels since 2.2.2, so an x86_64 venv makes the torch install
+        # unresolvable. The arm64 guard below is kept as a backstop for
+        # migrated / pre-existing venvs.
+        run_install_cmd "create venv" uv venv "$VENV_DIR" \
+            --python "cpython-${PYTHON_VERSION}-macos-aarch64-none"
+    else
+        run_install_cmd "create venv" uv venv "$VENV_DIR" --python "$PYTHON_VERSION"
+    fi
 fi
 
 # Mark the freshly-created venv as Studio-owned so a partial install can be
@@ -1552,6 +1571,21 @@ if [ -z "$_USER_PYTHON" ] && [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ]; then
     _info=$(_inspect_venv)
     _VENV_ARCH=${_info%% *}
     _PY_VER=${_info##* }
+    # If the interpreter could not be executed (an x86_64 venv python on a Mac
+    # without Rosetta installed), the probe above yields an empty arch. Fall
+    # back to reading the binary's Mach-O arch statically so the x86_64
+    # recreate below still triggers instead of letting uv fail later.
+    if [ -z "$_VENV_ARCH" ] && [ -x "$VENV_DIR/bin/python" ]; then
+        # uv symlinks bin/python to the base interpreter, so dereference with
+        # file -L (lipo already follows the link). Trailing || true keeps the
+        # installer alive under set -e when neither tool is present.
+        _archs=$(lipo -archs "$VENV_DIR/bin/python" 2>/dev/null \
+            || file -L "$VENV_DIR/bin/python" 2>/dev/null || true)
+        case "$_archs" in
+            *arm64*)  _VENV_ARCH=arm64 ;;
+            *x86_64*) _VENV_ARCH=x86_64 ;;
+        esac
+    fi
 
     if [ "$_VENV_ARCH" = "x86_64" ]; then
         echo "  WARNING: venv was created with an x86_64 (Rosetta) Python on Apple Silicon."
@@ -2083,7 +2117,7 @@ if [ "$_MIGRATED" = true ]; then
         # to prevent transitive torch resolution.
         run_install_cmd "install unsloth (migrated no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "unsloth>=2026.5.8" unsloth-zoo
+            "unsloth>=2026.6.1" unsloth-zoo
         # Resolve pydantic WITH deps so pip pins pydantic-core to the
         # matching version (no-torch-runtime.txt below is --no-deps).
         # All transitive deps are torch-free.
@@ -2096,7 +2130,7 @@ if [ "$_MIGRATED" = true ]; then
     else
         run_install_cmd "install unsloth (migrated)" uv pip install --python "$_VENV_PY" \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "unsloth>=2026.5.8" unsloth-zoo
+            "unsloth>=2026.6.1" unsloth-zoo
     fi
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
         substep "overlaying local repo (editable)..."
@@ -2300,7 +2334,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
         # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
         run_install_cmd "install unsloth (no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --upgrade-package unsloth --upgrade-package unsloth-zoo \
-            "unsloth>=2026.5.8" unsloth-zoo
+            "unsloth>=2026.6.1" unsloth-zoo
         # Same pydantic-with-deps trick as the migrated branch.
         run_install_cmd "install pydantic (with deps for compatible core)" \
             uv pip install --python "$_VENV_PY" pydantic
@@ -2318,7 +2352,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
         fi
     elif [ "$STUDIO_LOCAL_INSTALL" = true ]; then
         run_install_cmd "install unsloth (local)" uv pip install --python "$_VENV_PY" \
-            --upgrade-package unsloth "unsloth>=2026.5.8" unsloth-zoo
+            --upgrade-package unsloth "unsloth>=2026.6.1" unsloth-zoo
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
         substep "overlaying unsloth-zoo from git main..."
@@ -2350,7 +2384,7 @@ else
     tauri_log "STEP" "Installing Unsloth"
     substep "installing unsloth (this may take a few minutes)..."
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
-        run_install_cmd "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" unsloth-zoo "unsloth>=2026.5.8" --torch-backend=auto
+        run_install_cmd "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" unsloth-zoo "unsloth>=2026.6.1" --torch-backend=auto
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
         substep "overlaying unsloth-zoo from git main..."

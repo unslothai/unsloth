@@ -1,2 +1,7 @@
 # Normalize Python files to LF line endings
 *.py text eol=lf
+
+# Always check out shell scripts with LF endings. Without this rule a Windows
+# clone (core.autocrlf=true) rewrites them to CRLF, and the trailing \r breaks
+# them when run in WSL/Linux (e.g. `set -e` -> "set: Illegal option -").
+*.sh text eol=lf

@@ -67,3 +67,19 @@ def test_wrapper_swallows_impl_exception(monkeypatch):
 
     monkeypatch.setattr(_rl, "_patch_trl_rl_trainers_impl", _boom)
     assert _rl._patch_trl_rl_trainers("sft_trainer") is None
+
+
+def test_grpo_config_sibling_module_import_is_patched(tmp_path):
+    import unsloth  # noqa: F401
+    from trl import GRPOConfig as top_config
+    from trl.trainer import GRPOConfig as trainer_config
+    from trl.trainer.grpo_config import GRPOConfig as config_module_config
+    from trl.trainer.grpo_trainer import GRPOConfig as trainer_module_config
+
+    assert top_config is trainer_config
+    assert top_config is trainer_module_config
+    assert top_config is config_module_config
+
+    args = config_module_config(output_dir = str(tmp_path))
+    assert hasattr(args, "unsloth_grpo_mini_batch")
+    assert args.unsloth_grpo_mini_batch is None
