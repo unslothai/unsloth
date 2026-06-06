@@ -158,7 +158,11 @@ export function ThreadDocumentsBar({
         type="button"
         onClick={handleAddDocs}
         disabled={uploading}
-        className="composer-pill-btn shrink-0"
+        className={cn(
+          "composer-pill-btn shrink-0 -translate-y-px",
+          // Icon-only: square button so the rounded-full hover reads as a circle.
+          documents.length > 0 && "size-7 justify-center px-0",
+        )}
         aria-label="Attach documents to this thread"
         title="Attach documents for retrieval"
       >
