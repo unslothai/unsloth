@@ -15,16 +15,11 @@ import {
   ToolFallbackRoot,
   ToolFallbackTrigger,
 } from "./tool-fallback";
-import {
-  HoverCard,
-  HoverCardContent,
-  HoverCardTrigger,
-} from "@/components/ui/hover-card";
 import { useDocumentPreviewStore } from "@/features/rag/components/preview-store";
 
 import { type Citation, parseCitations } from "./citation-utils";
 
-/** Citation badge: filename + page, chunk text on hover; clicking opens the source viewer when a documentId is present. */
+/** Citation badge: numbered filename pill; clicking opens the source in the preview panel when a documentId is present. */
 export function CitationBadge({
   citation,
   index,
@@ -65,54 +60,12 @@ export function CitationBadge({
     </Badge>
   );
 
-  return (
-    <HoverCard openDelay={0} closeDelay={150}>
-      <HoverCardTrigger asChild>
-        {clickable ? (
-          <button type="button" onClick={open} className="inline-block">
-            {badge}
-          </button>
-        ) : (
-          <span className="inline-block">{badge}</span>
-        )}
-      </HoverCardTrigger>
-      <HoverCardContent
-        side="top"
-        align="start"
-        className="!w-80 !p-3 !rounded-2xl"
-      >
-        <div className="space-y-1.5">
-          <div className="flex items-center gap-1.5 text-xs font-semibold">
-            <FileTextIcon className="size-3.5 shrink-0" />
-            <span className="truncate">{citation.filename}</span>
-            {citation.page != null && (
-              <span className="text-muted-foreground">· page {citation.page}</span>
-            )}
-          </div>
-          {citation.text && (
-            <p className="max-h-48 overflow-auto whitespace-pre-wrap break-words text-xs leading-relaxed text-muted-foreground">
-              {citation.text}
-            </p>
-          )}
-          <div className="flex items-center justify-between gap-2">
-            {citation.score != null && (
-              <span className="text-[10px] tabular-nums text-muted-foreground/70">
-                score {citation.score.toFixed(3)}
-              </span>
-            )}
-            {clickable && (
-              <button
-                type="button"
-                onClick={open}
-                className="ml-auto rounded-md px-1.5 py-0.5 text-[10px] font-medium text-primary transition-colors hover:bg-primary/10"
-              >
-                View source
-              </button>
-            )}
-          </div>
-        </div>
-      </HoverCardContent>
-    </HoverCard>
+  return clickable ? (
+    <button type="button" onClick={open} className="inline-block">
+      {badge}
+    </button>
+  ) : (
+    <span className="inline-block">{badge}</span>
   );
 }
 
