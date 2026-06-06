@@ -26,6 +26,34 @@ def _class_method(tree, class_name, method_name):
     raise AssertionError(f"{class_name}.{method_name} not found")
 
 
+def _assigns_name(method, target_name, predicate):
+    """True when the method contains `target_name = <value>` and predicate(value)."""
+    for node in ast.walk(method):
+        if not isinstance(node, ast.Assign):
+            continue
+        for target in node.targets:
+            if isinstance(target, ast.Name) and target.id == target_name:
+                if predicate(node.value):
+                    return True
+    return False
+
+
+def _calls_function(method, func_name):
+    """True when the method calls `func_name(...)` (bare name, not attribute)."""
+    for node in ast.walk(method):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == func_name
+        ):
+            return True
+    return False
+
+
+def _names_in(node):
+    return {n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
+
+
 def _load_text_only_helper():
     source = _source(UTILS_PATH)
     tree = ast.parse(source)
@@ -85,30 +113,91 @@ def test_fast_language_model_forces_text_only_when_delegating_to_fast_model():
 
 
 def test_fast_model_text_only_does_not_override_explicit_auto_model():
+    # AST-based (not string matching) so formatting and refactors that keep the
+    # structure intact do not break the test.
     source = _source(LOADER_PATH)
-    method_source = ast.get_source_segment(
-        source, _class_method(ast.parse(source), "FastModel", "from_pretrained")
-    )
+    method = _class_method(ast.parse(source), "FastModel", "from_pretrained")
 
-    assert '_force_text_only = kwargs.pop("_force_text_only", False)' in method_source
-    assert "load_text_only = _force_text_only and auto_model is None" in method_source
-    assert "_get_text_only_config(model_config, old_model_name)" in method_source
-    assert "_force_text_only = load_text_only" in method_source
+    # _force_text_only = kwargs.pop("_force_text_only", False)
+    def _is_kwargs_pop(value):
+        return (
+            isinstance(value, ast.Call)
+            and isinstance(value.func, ast.Attribute)
+            and value.func.attr == "pop"
+            and isinstance(value.func.value, ast.Name)
+            and value.func.value.id == "kwargs"
+            and value.args
+            and isinstance(value.args[0], ast.Constant)
+            and value.args[0].value == "_force_text_only"
+        )
+
+    assert _assigns_name(method, "_force_text_only", _is_kwargs_pop)
+
+    # load_text_only is derived from _force_text_only AND a check that the
+    # caller did not pass an explicit auto_model.
+    def _is_guarded_bool(value):
+        names = _names_in(value)
+        has_none_check = any(
+            isinstance(n, ast.Compare)
+            and any(isinstance(op, (ast.Is, ast.IsNot)) for op in n.ops)
+            for n in ast.walk(value)
+        )
+        return "_force_text_only" in names and "auto_model" in names and has_none_check
+
+    assert _assigns_name(method, "load_text_only", _is_guarded_bool)
+
+    assert _calls_function(method, "_get_text_only_config")
+
+    # The computed load_text_only is forwarded as the _force_text_only kwarg
+    # of the inner from_pretrained delegation.
+    def _forwards_kwarg(node):
+        return any(
+            isinstance(n, ast.Call)
+            and any(
+                kw.arg == "_force_text_only"
+                and isinstance(kw.value, ast.Name)
+                and kw.value.id == "load_text_only"
+                for kw in n.keywords
+            )
+            for n in ast.walk(node)
+        )
+
+    assert _forwards_kwarg(method)
     # Falls back to the full model unless the family has its own text decoder.
-    assert "_is_family_text_decoder(" in method_source
-    assert "load_text_only = False" in method_source
+    assert _calls_function(method, "_is_family_text_decoder")
+    assert _assigns_name(
+        method,
+        "load_text_only",
+        lambda v: isinstance(v, ast.Constant) and v.value is False,
+    )
 
 
 def test_fast_base_model_text_only_bypasses_vision_auto_model():
+    # AST-based for the same robustness reasons as the FastModel test above.
     source = _source(VISION_PATH)
-    method_source = ast.get_source_segment(
-        source, _class_method(ast.parse(source), "FastBaseModel", "from_pretrained")
-    )
+    method = _class_method(ast.parse(source), "FastBaseModel", "from_pretrained")
 
-    assert "_force_text_only = False" in method_source
-    assert "auto_model = AutoModelForCausalLM" in method_source
-    assert (
-        "auto_config = _get_text_only_config(auto_config, model_name)" in method_source
+    # _force_text_only is a keyword-only parameter defaulting to False.
+    args = method.args
+    params = list(args.args) + list(args.kwonlyargs)
+    defaults = list(args.defaults) + list(args.kw_defaults)
+    param_defaults = dict(zip([p.arg for p in params][-len(defaults) :], defaults))
+    force_default = param_defaults.get("_force_text_only")
+    assert isinstance(force_default, ast.Constant) and force_default.value is False
+
+    assert _assigns_name(
+        method,
+        "auto_model",
+        lambda v: isinstance(v, ast.Name) and v.id == "AutoModelForCausalLM",
+    )
+    assert _assigns_name(
+        method,
+        "auto_config",
+        lambda v: (
+            isinstance(v, ast.Call)
+            and isinstance(v.func, ast.Name)
+            and v.func.id == "_get_text_only_config"
+        ),
     )
 
 
