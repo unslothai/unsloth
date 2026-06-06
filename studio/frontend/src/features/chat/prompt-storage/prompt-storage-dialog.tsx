@@ -273,10 +273,10 @@ export async function exportConversationRawJsonl(threadId: string): Promise<void
     .map((msg) => {
       const content = contentBlocksToText(msg.content);
       if (!content.trim()) return null;
-      return JSON.stringify({ role: msg.role, content }, null, 2);
+      return JSON.stringify({ role: msg.role, content });
     })
     .filter(Boolean)
-    .join("\n\n");
+    .join("\n");
 
   if (!lines) { toast.info("No exportable content."); return; }
   downloadBlob(lines, "conversation-" + exportTs() + ".jsonl", "application/x-ndjson");

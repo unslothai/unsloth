@@ -530,7 +530,12 @@ const LoraCompareContent = memo(function LoraCompareContent({
   const [baseThreadId, setBaseThreadId] = useState<string>();
   const [loraThreadId, setLoraThreadId] = useState<string>();
 
+  const compareRunning = useChatRuntimeStore(
+    (s) => Object.keys(s.runningByThreadId).length > 0,
+  );
+
   useEffect(() => {
+    if (compareRunning) return;
     let isActive = true;
     listStoredChatThreads({ pairId })
       .then((threads) => {
@@ -546,7 +551,7 @@ const LoraCompareContent = memo(function LoraCompareContent({
     return () => {
       isActive = false;
     };
-  }, [pairId]);
+  }, [pairId, compareRunning]);
 
   return (
     <CompareShell
