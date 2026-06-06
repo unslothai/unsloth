@@ -62,8 +62,8 @@ function sanitizeFilename(name: string): string {
   return name.replace(/[\\/:*?"<>|]/g, "_").slice(0, 80) || "export";
 }
 
-function downloadBlob(content: string, filename: string, mimeType: string): void {
-  const blob = new Blob([content], { type: mimeType });
+function downloadBlob(content: string | Blob, filename: string, mimeType: string): void {
+  const blob = content instanceof Blob ? content : new Blob([content], { type: mimeType });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
@@ -317,6 +317,165 @@ export async function exportConversationCsv(threadId: string): Promise<void> {
   if (rows.length <= 1) { toast.info("No exportable content."); return; }
   downloadBlob(rows.join("\n"), "conversation-" + exportTs() + ".csv", "text/csv");
 }
+
+// ─── Bulk / multi-thread export ───────────────────────────────────────────────
+
+export type ExportFormat = "jsonl-raw" | "csv" | "sharegpt";
+
+const EXPORT_FORMAT_LABELS: Record<ExportFormat, string> = {
+  "jsonl-raw": "Raw JSONL",
+  csv: "CSV",
+  sharegpt: "ShareGPT JSONL (training)",
+};
+
+export const EXPORT_FORMATS_LIST = (
+  Object.keys(EXPORT_FORMAT_LABELS) as ExportFormat[]
+).map((fmt) => ({ fmt, label: EXPORT_FORMAT_LABELS[fmt] }));
+
+/** Build the exportable text for a single thread, or null if empty. */
+async function buildThreadContent(
+  threadId: string,
+  format: ExportFormat,
+  opts?: { includeThreadId?: boolean },
+): Promise<string | null> {
+  const messages = await loadConversationMessages(threadId);
+  if (!messages) return null;
+
+  if (format === "jsonl-raw") {
+    const lines = messages
+      .map((msg) => {
+        const content = messageToText(msg);
+        if (!content.trim()) return null;
+        const record: Record<string, string> = { role: msg.role as string, content };
+        if (opts?.includeThreadId) record.thread_id = threadId;
+        return JSON.stringify(record);
+      })
+      .filter(Boolean);
+    return lines.length > 0 ? lines.join("\n") : null;
+  }
+
+  if (format === "sharegpt") {
+    const conversations: Array<{ from: string; value: string }> = [];
+    for (const msg of messages) {
+      const role = msg.role as string;
+      const value = messageToText(msg);
+      if (value.trim()) conversations.push({ from: role === "user" ? "human" : "gpt", value });
+    }
+    if (conversations.length === 0) return null;
+    const record: Record<string, unknown> = { conversations };
+    if (opts?.includeThreadId) record.thread_id = threadId;
+    return JSON.stringify(record);
+  }
+
+  // csv
+  const rows: string[] = [];
+  for (const msg of messages) {
+    const content = messageToText(msg);
+    if (!content.trim()) continue;
+    const row = opts?.includeThreadId
+      ? `${csvEscape(threadId)},${csvEscape(msg.role as string)},${csvEscape(content)}`
+      : `${csvEscape(msg.role as string)},${csvEscape(content)}`;
+    rows.push(row);
+  }
+  return rows.length > 0 ? rows.join("\n") : null;
+}
+
+function csvHeader(format: ExportFormat, includeThreadId?: boolean): string {
+  if (format === "csv") {
+    return includeThreadId ? "thread_id,role,content" : "role,content";
+  }
+  return "";
+}
+
+function exportExt(format: ExportFormat): string {
+  return format === "csv" ? "csv" : "jsonl";
+}
+
+function exportMime(format: ExportFormat): string {
+  return format === "csv" ? "text/csv" : "application/x-ndjson";
+}
+
+/**
+ * Export multiple threads as a single merged file (all messages concatenated).
+ * For JSONL formats each thread's records are on their own lines with a
+ * thread_id field; for CSV a thread_id column is prepended.
+ */
+export async function exportBulkConversationsMerged(
+  threadIds: string[],
+  format: ExportFormat,
+  basename: string,
+): Promise<void> {
+  if (threadIds.length === 0) { toast.info("No conversations to export."); return; }
+
+  const parts: string[] = [];
+  const header = csvHeader(format, true);
+
+  for (const id of threadIds) {
+    const content = await buildThreadContent(id, format, { includeThreadId: true });
+    if (content) parts.push(content);
+  }
+
+  if (parts.length === 0) { toast.info("No exportable content."); return; }
+
+  const body = header
+    ? header + "\n" + parts.join("\n")
+    : parts.join("\n");
+
+  downloadBlob(body, `${basename}.${exportExt(format)}`, exportMime(format));
+}
+
+/**
+ * Export multiple threads as a ZIP archive — one file per thread.
+ */
+export async function exportBulkConversationsSeparate(
+  threadIds: string[],
+  format: ExportFormat,
+  basename: string,
+): Promise<void> {
+  if (threadIds.length === 0) { toast.info("No conversations to export."); return; }
+
+  const { zipSync, strToU8 } = await import("fflate");
+  const ext = exportExt(format);
+  const header = csvHeader(format);
+  const files: Record<string, Uint8Array> = {};
+
+  for (const id of threadIds) {
+    const content = await buildThreadContent(id, format);
+    if (!content) continue;
+    const body = header ? header + "\n" + content : content;
+    files[`${id}.${ext}`] = strToU8(body);
+  }
+
+  if (Object.keys(files).length === 0) { toast.info("No exportable content."); return; }
+
+  const zipped = zipSync(files);
+  downloadBlob(
+    new Blob([zipped], { type: "application/zip" }),
+    `${basename}.zip`,
+    "application/zip",
+  );
+}
+
+// ─── Single-project export ─────────────────────────────────────────────────
+
+/**
+ * Export all threads in a single project as a merged file.
+ * Caller provides the list of thread IDs already resolved for the project.
+ */
+export async function exportProjectConversations(
+  threadIds: string[],
+  format: ExportFormat,
+  projectName: string,
+): Promise<void> {
+  const safe = projectName.replace(/[^a-z0-9_-]/gi, "_").slice(0, 40);
+  await exportBulkConversationsMerged(
+    threadIds,
+    format,
+    `project-${safe}-${exportTs()}`,
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 // Training exports — ShareGPT format used by Unsloth fine-tuning pipelines.
 // Each prompt → one {"conversations": [...]} record; human turn + empty gpt slot.

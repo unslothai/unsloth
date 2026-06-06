@@ -7,7 +7,6 @@ import {
   SidebarFooter,
   SidebarGroup,
   SidebarGroupContent,
-  SidebarGroupLabel,
   SidebarHeader,
   SidebarMenu,
   SidebarMenuAction,
@@ -56,6 +55,9 @@ import {
   exportConversationRawJsonl,
   exportConversationCsv,
   exportConversationShareGPT,
+  exportBulkConversationsMerged,
+  exportBulkConversationsSeparate,
+  EXPORT_FORMATS_LIST,
 } from "./prompt-storage/prompt-storage-dialog";
 import {
   listStoredChatThreads,
@@ -136,6 +138,35 @@ export function ThreadSidebar({
     }
   }
 
+  async function getBulkThreadIds(scope: "recents" | "all"): Promise<string[]> {
+    const threads = await listStoredChatThreads({
+      includeArchived: false,
+      ...(scope === "recents" ? { projectId: null } : {}),
+    });
+    // For compare pairs deduplicate to unique thread IDs
+    return [...new Set(threads.map((t) => t.id))];
+  }
+
+  async function handleBulkExport(
+    scope: "recents" | "all",
+    fmt: (typeof EXPORT_FORMATS_LIST)[number]["fmt"],
+    merged: boolean,
+  ) {
+    try {
+      const ids = await getBulkThreadIds(scope);
+      if (ids.length === 0) { toast.info("No conversations to export."); return; }
+      const ts = new Date().toISOString().slice(0, 10);
+      const basename = `${scope === "all" ? "all-chats" : "recents"}-${ts}`;
+      if (merged) {
+        await exportBulkConversationsMerged(ids, fmt, basename);
+      } else {
+        await exportBulkConversationsSeparate(ids, fmt, basename);
+      }
+    } catch {
+      toast.error("Export failed.");
+    }
+  }
+
   return (
     <>
       <SidebarHeader className="px-4 py-3">
@@ -163,7 +194,60 @@ export function ThreadSidebar({
           </SidebarGroupContent>
         </SidebarGroup>
         <SidebarGroup className="flex-1 px-4">
-          <SidebarGroupLabel className="text-xs font-medium text-muted-foreground/80">Your Chats</SidebarGroupLabel>
+          {/* Recents label with export-all "…" */}
+          <div className="flex items-center justify-between px-2 py-1.5">
+            <span className="text-xs font-medium text-muted-foreground/80">Recents</span>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button
+                  className="flex items-center justify-center rounded-sm p-0.5 text-muted-foreground opacity-60 hover:opacity-100 hover:bg-accent"
+                  title="Export options"
+                >
+                  <HugeiconsIcon icon={MoreHorizontalIcon} className="size-3.5" />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent side="right" align="start" className="w-56">
+                <DropdownMenuSub>
+                  <DropdownMenuSubTrigger>
+                    <HugeiconsIcon icon={Download01Icon} className="mr-2 size-4" />
+                    Export Recents
+                  </DropdownMenuSubTrigger>
+                  <DropdownMenuSubContent className="w-52">
+                    {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
+                      <DropdownMenuItem key={`r-m-${fmt}`} onSelect={() => void handleBulkExport("recents", fmt, true)}>
+                        {label} — combined
+                      </DropdownMenuItem>
+                    ))}
+                    <DropdownMenuSeparator />
+                    {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
+                      <DropdownMenuItem key={`r-s-${fmt}`} onSelect={() => void handleBulkExport("recents", fmt, false)}>
+                        {label} — per chat
+                      </DropdownMenuItem>
+                    ))}
+                  </DropdownMenuSubContent>
+                </DropdownMenuSub>
+                <DropdownMenuSub>
+                  <DropdownMenuSubTrigger>
+                    <HugeiconsIcon icon={Download01Icon} className="mr-2 size-4" />
+                    Export Recents + Projects
+                  </DropdownMenuSubTrigger>
+                  <DropdownMenuSubContent className="w-52">
+                    {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
+                      <DropdownMenuItem key={`a-m-${fmt}`} onSelect={() => void handleBulkExport("all", fmt, true)}>
+                        {label} — combined
+                      </DropdownMenuItem>
+                    ))}
+                    <DropdownMenuSeparator />
+                    {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
+                      <DropdownMenuItem key={`a-s-${fmt}`} onSelect={() => void handleBulkExport("all", fmt, false)}>
+                        {label} — per chat
+                      </DropdownMenuItem>
+                    ))}
+                  </DropdownMenuSubContent>
+                </DropdownMenuSub>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
           <SidebarGroupContent>
             <SidebarMenu>
               {items.map((item) => (
