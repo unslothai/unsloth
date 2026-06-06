@@ -27,7 +27,6 @@ import { getImageInputUnavailableReason } from "./utils/image-input-support";
 import { useAui } from "@assistant-ui/react";
 import {
   ArrowUpIcon,
-  CheckIcon,
   Columns2Icon,
   GlobeIcon,
   HeadphonesIcon,
@@ -1399,7 +1398,7 @@ export function SharedComposer({
                   <HugeiconsIcon icon={Bookmark02Icon} strokeWidth={2} />
                   Saved prompts
                 </DropdownMenuSubTrigger>
-                <DropdownMenuSubContent className="unsloth-plus-menu w-[220px]">
+                <DropdownMenuSubContent className="unsloth-plus-menu w-[176px]">
                   {recentPrompts.map((p) => (
                     <DropdownMenuItem
                       key={p.id}
@@ -1462,7 +1461,7 @@ export function SharedComposer({
                     </DropdownMenuSubTrigger>
                     <DropdownMenuSubContent
                       collisionPadding={16}
-                      className="unsloth-plus-menu w-[200px]"
+                      className="unsloth-plus-menu w-[176px]"
                     >
                       {[
                         { label: "Raw JSONL", fn: exportConversationRawJsonl },
@@ -1703,7 +1702,9 @@ export function SharedComposer({
                             setPreserveThinking(false);
                           }}
                         >
-                          <CheckIcon
+                          <HugeiconsIcon
+                    icon={Tick02Icon}
+                    strokeWidth={2}
                             className={cn(
                               "unsloth-tick size-4",
                               effectiveReasoningVisualEnabled && "opacity-0",
@@ -1732,7 +1733,9 @@ export function SharedComposer({
                               }
                             }}
                           >
-                            <CheckIcon
+                            <HugeiconsIcon
+                    icon={Tick02Icon}
+                    strokeWidth={2}
                               className={cn(
                                 "unsloth-tick size-4",
                                 !(
@@ -1763,7 +1766,9 @@ export function SharedComposer({
                           }
                         }}
                       >
-                        <CheckIcon
+                        <HugeiconsIcon
+                    icon={Tick02Icon}
+                    strokeWidth={2}
                           className={cn(
                             "unsloth-tick size-4",
                             !effectiveReasoningEnabled && "opacity-0",
@@ -1787,7 +1792,9 @@ export function SharedComposer({
                         }
                       }}
                     >
-                      <CheckIcon
+                      <HugeiconsIcon
+                    icon={Tick02Icon}
+                    strokeWidth={2}
                         className={cn(
                           "unsloth-tick size-4",
                           !preserveThinking && "opacity-0",

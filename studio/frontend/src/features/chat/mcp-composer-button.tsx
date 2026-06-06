@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { McpServerIcon } from "@hugeicons/core-free-icons";
+import { McpServerIcon, Tick02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { CheckIcon } from "lucide-react";
 import { type FC, useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 
@@ -216,7 +215,9 @@ export function McpComposerButton({
       }
     >
       <span className="truncate">{opts.label}</span>
-      {opts.enabled ? <CheckIcon className="ml-auto" /> : null}
+      {opts.enabled ? (
+        <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="ml-auto" />
+      ) : null}
       {opts.hint ? (
         <Tooltip open={hintKey === opts.key}>
           <TooltipTrigger asChild={true}>

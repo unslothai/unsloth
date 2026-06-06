@@ -113,7 +113,6 @@ import { useNavigate } from "@tanstack/react-router";
 import {
   ArrowDownIcon,
   ArrowUpIcon,
-  CheckIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
   Columns2Icon,
@@ -1460,7 +1459,7 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
           side={side}
           align="end"
           avoidCollisions={true}
-          className="unsloth-plus-menu unsloth-thinking-menu min-w-0 w-[160px]"
+          className="unsloth-plus-menu unsloth-thinking-menu min-w-0 w-[176px]"
         >
           {isEffort ? (
             <>
@@ -1473,7 +1472,9 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
                     setPreserveThinking(false);
                   }}
                 >
-                  <CheckIcon
+                  <HugeiconsIcon
+                    icon={Tick02Icon}
+                    strokeWidth={2}
                     className={cn(
                       "unsloth-tick size-4",
                       effectiveReasoningVisualEnabled && "opacity-0",
@@ -1498,7 +1499,9 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
                       }
                     }}
                   >
-                    <CheckIcon
+                    <HugeiconsIcon
+                    icon={Tick02Icon}
+                    strokeWidth={2}
                       className={cn(
                         "unsloth-tick size-4",
                         !(
@@ -1526,7 +1529,9 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
                   }
                 }}
               >
-                <CheckIcon
+                <HugeiconsIcon
+                    icon={Tick02Icon}
+                    strokeWidth={2}
                   className={cn(
                     "unsloth-tick size-4",
                     !effectiveReasoningEnabled && "opacity-0",
@@ -1550,7 +1555,9 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
                 }
               }}
             >
-              <CheckIcon
+              <HugeiconsIcon
+                    icon={Tick02Icon}
+                    strokeWidth={2}
                 className={cn(
                   "unsloth-tick size-4",
                   !preserveThinking && "opacity-0",
@@ -2094,7 +2101,7 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
             <HugeiconsIcon icon={Bookmark02Icon} strokeWidth={2} />
             Saved prompts
           </DropdownMenuSubTrigger>
-          <DropdownMenuSubContent className="unsloth-plus-menu w-[220px]">
+          <DropdownMenuSubContent className="unsloth-plus-menu w-[176px]">
             {recentPrompts.map((p) => (
               <DropdownMenuItem
                 key={p.id}
@@ -2140,7 +2147,10 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
                 <HugeiconsIcon icon={Download01Icon} strokeWidth={2} />
                 Export chat
               </DropdownMenuSubTrigger>
-              <DropdownMenuSubContent collisionPadding={16} className="unsloth-plus-menu w-[200px]">
+              <DropdownMenuSubContent
+                collisionPadding={16}
+                className="unsloth-plus-menu w-[176px]"
+              >
                 <DropdownMenuItem onSelect={() => {
                   if (!activeThreadId) return;
                   exportConversationRawJsonl(activeThreadId).catch(() => toast.error("Export failed."));
