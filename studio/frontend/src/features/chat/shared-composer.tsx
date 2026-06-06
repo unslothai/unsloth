@@ -31,7 +31,7 @@ import {
   Columns2Icon,
   GlobeIcon,
   HeadphonesIcon,
-  LibraryBigIcon,
+  MoreHorizontalIcon,
   PlusIcon,
   SquareIcon,
   XIcon,
@@ -41,11 +41,13 @@ import {
   Bookmark02Icon,
   CodeIcon,
   Download01Icon,
+  FileDatabaseIcon,
   Folder01Icon,
   FolderAddIcon,
   Image03Icon,
   McpServerIcon,
   PencilRulerIcon,
+  Tick02Icon,
 } from "@hugeicons/core-free-icons";
 import { useNavigate } from "@tanstack/react-router";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -1286,7 +1288,11 @@ export function SharedComposer({
                 <GlobeIcon />
                 Web search
                 {toolsEnabled && !searchDisabled ? (
-                  <CheckIcon className="ml-auto" />
+                  <HugeiconsIcon
+                    icon={Tick02Icon}
+                    strokeWidth={2}
+                    className="ml-auto"
+                  />
                 ) : null}
               </DropdownMenuItem>
               <DropdownMenuItem
@@ -1305,7 +1311,11 @@ export function SharedComposer({
                 />
                 Code
                 {codeToolsEnabled && !codeDisabled ? (
-                  <CheckIcon className="ml-auto" />
+                  <HugeiconsIcon
+                    icon={Tick02Icon}
+                    strokeWidth={2}
+                    className="ml-auto"
+                  />
                 ) : null}
               </DropdownMenuItem>
               {showImagePill && (
@@ -1321,20 +1331,33 @@ export function SharedComposer({
                   <HugeiconsIcon icon={Image03Icon} strokeWidth={2} />
                   Images
                   {imageToolsEnabled && !imageDisabled ? (
-                    <CheckIcon className="ml-auto" />
+                    <HugeiconsIcon
+                      icon={Tick02Icon}
+                      strokeWidth={2}
+                      className="ml-auto"
+                    />
                   ) : null}
                 </DropdownMenuItem>
               )}
               <DropdownMenuSeparator />
               <DropdownMenuItem
+                disabled={ragDisabled}
                 className={
-                  artifactsEnabled ? "text-primary font-medium" : undefined
+                  ragEnabled && !ragDisabled
+                    ? "text-primary font-medium"
+                    : undefined
                 }
-                onSelect={() => setArtifactsEnabled(!artifactsEnabled)}
+                onSelect={() => setRagEnabled(!ragEnabled)}
               >
-                <HugeiconsIcon icon={PencilRulerIcon} strokeWidth={2} />
-                Canvas
-                {artifactsEnabled ? <CheckIcon className="ml-auto" /> : null}
+                <HugeiconsIcon icon={FileDatabaseIcon} strokeWidth={2} />
+                Chat with files
+                {ragEnabled && !ragDisabled ? (
+                  <HugeiconsIcon
+                    icon={Tick02Icon}
+                    strokeWidth={2}
+                    className="ml-auto"
+                  />
+                ) : null}
               </DropdownMenuItem>
               <DropdownMenuItem
                 disabled={!supportsTools}
@@ -1345,21 +1368,12 @@ export function SharedComposer({
               >
                 <HugeiconsIcon icon={McpServerIcon} strokeWidth={2} />
                 MCP
-                {mcpEnabledForChat ? <CheckIcon className="ml-auto" /> : null}
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                disabled={ragDisabled}
-                className={
-                  ragEnabled && !ragDisabled
-                    ? "text-primary font-medium"
-                    : undefined
-                }
-                onSelect={() => setRagEnabled(!ragEnabled)}
-              >
-                <LibraryBigIcon />
-                RAG
-                {ragEnabled && !ragDisabled ? (
-                  <CheckIcon className="ml-auto" />
+                {mcpEnabledForChat ? (
+                  <HugeiconsIcon
+                    icon={Tick02Icon}
+                    strokeWidth={2}
+                    className="ml-auto"
+                  />
                 ) : null}
               </DropdownMenuItem>
               <DropdownMenuItem onSelect={() => setPromptStorageOpen(true)}>
@@ -1368,47 +1382,84 @@ export function SharedComposer({
               </DropdownMenuItem>
               <DropdownMenuSub>
                 <DropdownMenuSubTrigger>
-                  <HugeiconsIcon icon={Download01Icon} strokeWidth={2} />
-                  Export chat
+                  <MoreHorizontalIcon className="size-4" />
+                  More
                 </DropdownMenuSubTrigger>
                 <DropdownMenuSubContent className="unsloth-plus-menu w-[200px]">
-                  {[
-                    { label: "Raw JSONL", fn: exportConversationRawJsonl },
-                    { label: "CSV", fn: exportConversationCsv },
-                    { label: "ShareGPT JSONL (training)", fn: exportConversationShareGPT },
-                  ].map(({ label, fn }) => {
-                    const ids = [model1ThreadId, model2ThreadId, activeThreadId]
-                      .filter((id): id is string => Boolean(id));
-                    return (
-                      <DropdownMenuItem
-                        key={label}
-                        disabled={ids.length === 0}
-                        onSelect={() => {
-                          if (!ids.length) {
-                            toast.error("No conversation to export yet.");
-                            return;
-                          }
-                          Promise.all(ids.map((id) => fn(id))).catch(() =>
-                            toast.error("Export failed."),
-                          );
-                        }}
-                      >
-                        {label}
-                      </DropdownMenuItem>
-                    );
-                  })}
+                  <DropdownMenuItem
+                    className={
+                      artifactsEnabled ? "text-primary font-medium" : undefined
+                    }
+                    onSelect={() => setArtifactsEnabled(!artifactsEnabled)}
+                  >
+                    <HugeiconsIcon icon={PencilRulerIcon} strokeWidth={2} />
+                    Canvas
+                    {artifactsEnabled ? (
+                      <HugeiconsIcon
+                        icon={Tick02Icon}
+                        strokeWidth={2}
+                        className="ml-auto"
+                      />
+                    ) : null}
+                  </DropdownMenuItem>
+                  {/* Always active: this menu only renders in compare mode.
+                      Ticked like Web search/Code; click toggles it off. */}
+                  <DropdownMenuItem
+                    className="text-primary font-medium"
+                    onSelect={handleExitCompare}
+                  >
+                    <Columns2Icon />
+                    Compare chat
+                    <HugeiconsIcon
+                      icon={Tick02Icon}
+                      strokeWidth={2}
+                      className="ml-auto"
+                    />
+                  </DropdownMenuItem>
+                  <DropdownMenuSub>
+                    <DropdownMenuSubTrigger>
+                      <HugeiconsIcon icon={Download01Icon} strokeWidth={2} />
+                      Export chat
+                    </DropdownMenuSubTrigger>
+                    <DropdownMenuSubContent
+                      collisionPadding={16}
+                      className="unsloth-plus-menu w-[200px]"
+                    >
+                      {[
+                        { label: "Raw JSONL", fn: exportConversationRawJsonl },
+                        { label: "CSV", fn: exportConversationCsv },
+                        {
+                          label: "ShareGPT JSONL (training)",
+                          fn: exportConversationShareGPT,
+                        },
+                      ].map(({ label, fn }) => {
+                        const ids = [
+                          model1ThreadId,
+                          model2ThreadId,
+                          activeThreadId,
+                        ].filter((id): id is string => Boolean(id));
+                        return (
+                          <DropdownMenuItem
+                            key={label}
+                            disabled={ids.length === 0}
+                            onSelect={() => {
+                              if (!ids.length) {
+                                toast.error("No conversation to export yet.");
+                                return;
+                              }
+                              Promise.all(ids.map((id) => fn(id))).catch(() =>
+                                toast.error("Export failed."),
+                              );
+                            }}
+                          >
+                            {label}
+                          </DropdownMenuItem>
+                        );
+                      })}
+                    </DropdownMenuSubContent>
+                  </DropdownMenuSub>
                 </DropdownMenuSubContent>
               </DropdownMenuSub>
-              {/* Always active: this menu only renders in compare mode.
-                  Ticked like Web search/Code; click toggles it off. */}
-              <DropdownMenuItem
-                className="text-primary font-medium"
-                onSelect={handleExitCompare}
-              >
-                <Columns2Icon />
-                Compare chat
-                <CheckIcon className="ml-auto" />
-              </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuSub>
                 <DropdownMenuSubTrigger>

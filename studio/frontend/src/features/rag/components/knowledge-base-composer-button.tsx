@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { CheckIcon, LibraryBigIcon, XIcon } from "lucide-react";
+import { XIcon } from "lucide-react";
+import { HugeiconsIcon } from "@hugeicons/react";
+import { FileDatabaseIcon, Tick02Icon } from "@hugeicons/core-free-icons";
 import { type FC, useCallback, useEffect, useState } from "react";
 
 import {
@@ -120,10 +122,14 @@ export function KnowledgeBaseComposerButton({
               }}
               className="composer-pill-glyph cursor-pointer"
             >
-              <LibraryBigIcon className="size-[15px]" />
+              <HugeiconsIcon
+                icon={FileDatabaseIcon}
+                strokeWidth={2}
+                className="size-[15px]"
+              />
               <XIcon className="composer-pill-x" />
             </span>
-            <span>RAG</span>
+            <span>Chat with files</span>
             <ArrowDownStandardIcon className="composer-pill-caret size-[15px]" />
           </button>
         </DropdownMenuTrigger>
@@ -145,7 +151,11 @@ export function KnowledgeBaseComposerButton({
           >
             <span className="truncate">This thread's documents</span>
             {ragSource.type === "thread" ? (
-              <CheckIcon className="ml-auto" />
+              <HugeiconsIcon
+                icon={Tick02Icon}
+                strokeWidth={2}
+                className="ml-auto"
+              />
             ) : null}
           </DropdownMenuItem>
           {kbs.length > 0 ? <DropdownMenuSeparator /> : null}
@@ -161,7 +171,13 @@ export function KnowledgeBaseComposerButton({
                 }
               >
                 <span className="truncate">{kb.name}</span>
-                {selected ? <CheckIcon className="ml-auto" /> : null}
+                {selected ? (
+                  <HugeiconsIcon
+                    icon={Tick02Icon}
+                    strokeWidth={2}
+                    className="ml-auto"
+                  />
+                ) : null}
               </DropdownMenuItem>
             );
           })}

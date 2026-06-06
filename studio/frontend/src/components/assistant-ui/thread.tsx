@@ -96,6 +96,7 @@ import {
   Delete02Icon,
   Download01Icon,
   Edit03Icon,
+  FileDatabaseIcon,
   Folder01Icon,
   FolderAddIcon,
   Image03Icon,
@@ -114,7 +115,6 @@ import {
   Columns2Icon,
   GlobeIcon,
   HeadphonesIcon,
-  LibraryBigIcon,
   MoreHorizontalIcon,
   PlusIcon,
   RefreshCwIcon,
@@ -1979,7 +1979,11 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
           <GlobeIcon />
           Web search
           {toolsEnabled && !searchDisabled ? (
-            <CheckIcon className="ml-auto" />
+            <HugeiconsIcon
+              icon={Tick02Icon}
+              strokeWidth={2}
+              className="ml-auto"
+            />
           ) : null}
         </DropdownMenuItem>
         <DropdownMenuItem
@@ -1998,7 +2002,11 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
           />
           Code
           {codeToolsEnabled && !codeDisabled ? (
-            <CheckIcon className="ml-auto" />
+            <HugeiconsIcon
+              icon={Tick02Icon}
+              strokeWidth={2}
+              className="ml-auto"
+            />
           ) : null}
         </DropdownMenuItem>
         {supportsBuiltinImageGeneration && (
@@ -2014,18 +2022,31 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
             <HugeiconsIcon icon={Image03Icon} strokeWidth={2} />
             Images
             {imageToolsEnabled && !imageDisabled ? (
-              <CheckIcon className="ml-auto" />
+              <HugeiconsIcon
+                icon={Tick02Icon}
+                strokeWidth={2}
+                className="ml-auto"
+              />
             ) : null}
           </DropdownMenuItem>
         )}
         <DropdownMenuSeparator />
         <DropdownMenuItem
-          className={artifactsEnabled ? "text-primary font-medium" : undefined}
-          onSelect={() => setArtifactsEnabled(!artifactsEnabled)}
+          disabled={!ragAvailable}
+          className={
+            ragEnabled && ragAvailable ? "text-primary font-medium" : undefined
+          }
+          onSelect={() => setRagEnabled(!ragEnabled)}
         >
-          <HugeiconsIcon icon={PencilRulerIcon} strokeWidth={2} />
-          Canvas
-          {artifactsEnabled ? <CheckIcon className="ml-auto" /> : null}
+          <HugeiconsIcon icon={FileDatabaseIcon} strokeWidth={2} />
+          Chat with files
+          {ragEnabled && ragAvailable ? (
+            <HugeiconsIcon
+              icon={Tick02Icon}
+              strokeWidth={2}
+              className="ml-auto"
+            />
+          ) : null}
         </DropdownMenuItem>
         <DropdownMenuItem
           disabled={mcpDisabled}
@@ -2039,36 +2060,42 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
           <HugeiconsIcon icon={McpServerIcon} strokeWidth={2} />
           MCP
           {mcpEnabledForChat && !mcpDisabled ? (
-            <CheckIcon className="ml-auto" />
+            <HugeiconsIcon
+              icon={Tick02Icon}
+              strokeWidth={2}
+              className="ml-auto"
+            />
           ) : null}
         </DropdownMenuItem>
-        <DropdownMenuItem
-          disabled={!ragAvailable}
-          className={
-            ragEnabled && ragAvailable ? "text-primary font-medium" : undefined
-          }
-          onSelect={() => setRagEnabled(!ragEnabled)}
-        >
-          <LibraryBigIcon />
-          RAG
-          {ragEnabled && ragAvailable ? (
-            <CheckIcon className="ml-auto" />
-          ) : null}
+        <DropdownMenuItem onSelect={() => setPromptStorageOpen(true)}>
+          <HugeiconsIcon icon={Bookmark02Icon} strokeWidth={2} />
+          Saved prompts
         </DropdownMenuItem>
-        <DropdownMenuItem onSelect={() => startCompare()}>
-          <Columns2Icon />
-          Compare chat
-        </DropdownMenuItem>
-        {/* RAG hidden temporarily */}
         <DropdownMenuSub>
           <DropdownMenuSubTrigger>
             <MoreHorizontalIcon className="size-4" />
             More
           </DropdownMenuSubTrigger>
           <DropdownMenuSubContent className="w-[200px]">
-            <DropdownMenuItem onSelect={() => setPromptStorageOpen(true)}>
-              <HugeiconsIcon icon={Bookmark02Icon} strokeWidth={2} />
-              Saved prompts
+            <DropdownMenuItem
+              className={
+                artifactsEnabled ? "text-primary font-medium" : undefined
+              }
+              onSelect={() => setArtifactsEnabled(!artifactsEnabled)}
+            >
+              <HugeiconsIcon icon={PencilRulerIcon} strokeWidth={2} />
+              Canvas
+              {artifactsEnabled ? (
+                <HugeiconsIcon
+                  icon={Tick02Icon}
+                  strokeWidth={2}
+                  className="ml-auto"
+                />
+              ) : null}
+            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => startCompare()}>
+              <Columns2Icon />
+              Compare chat
             </DropdownMenuItem>
             <DropdownMenuSub>
               <DropdownMenuSubTrigger disabled={!activeThreadId}>

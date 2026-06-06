@@ -2,9 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { LibraryBigIcon } from "lucide-react";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { AttachmentIcon } from "@hugeicons/core-free-icons";
+import { AttachmentIcon, FileDatabaseIcon } from "@hugeicons/core-free-icons";
 import { useAui } from "@assistant-ui/react";
 import { cn } from "@/lib/utils";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
@@ -40,7 +39,11 @@ function KnowledgeBaseSourceChip({ kbId }: { kbId: string }) {
         className="composer-pill-btn shrink-0 cursor-default"
         title="This chat retrieves from a knowledge base. Change the source in RAG retrieval settings."
       >
-        <LibraryBigIcon className="size-3.5" />
+        <HugeiconsIcon
+          icon={FileDatabaseIcon}
+          strokeWidth={2}
+          className="size-3.5"
+        />
         <span>{name ? `Knowledge base: ${name}` : "Knowledge base"}</span>
       </span>
     </div>
