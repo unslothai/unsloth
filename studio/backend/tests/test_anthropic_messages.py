@@ -38,6 +38,7 @@ from routes.inference import (
     _normalize_anthropic_openai_images,
     _select_anthropic_server_tools,
     _anthropic_requested_studio_tools,
+    _anthropic_tool_non_streaming,
     anthropic_messages,
 )
 from state.tool_policy import reset_tool_policy, set_tool_policy
@@ -76,6 +77,51 @@ class TestAnthropicModels:
             system = "You are helpful.",
         )
         assert req.system == "You are helpful."
+
+    def test_system_role_message_normalized_to_system_field(self):
+        req = AnthropicMessagesRequest(
+            max_tokens = 50,
+            messages = [
+                {"role": "system", "content": "You are helpful."},
+                {"role": "user", "content": "Hi"},
+            ],
+        )
+        assert req.system == "You are helpful."
+        assert len(req.messages) == 1
+        assert req.messages[0].role == "user"
+
+    def test_system_role_message_merges_with_existing_system_field(self):
+        req = AnthropicMessagesRequest(
+            max_tokens = 50,
+            system = "Base instructions.",
+            messages = [
+                {"role": "user", "content": "Hi"},
+                {"role": "system", "content": "Additional instructions."},
+                {"role": "assistant", "content": "Hello."},
+            ],
+        )
+        assert req.system == "Base instructions.\n\nAdditional instructions."
+        assert [msg.role for msg in req.messages] == ["user", "assistant"]
+
+    def test_system_role_message_with_null_content_ignored(self):
+        req = AnthropicMessagesRequest(
+            max_tokens = 50,
+            system = "Base.",
+            messages = [
+                {"role": "system", "content": None},
+                {
+                    "role": "system",
+                    "content": [
+                        None,
+                        {"type": "text", "text": "Use short answers."},
+                    ],
+                },
+                {"role": "user", "content": "Hi"},
+            ],
+        )
+        assert req.system == "Base.\n\nUse short answers."
+        assert "None" not in str(req.system)
+        assert [msg.role for msg in req.messages] == ["user"]
 
     def test_tools_field_parses(self):
         req = AnthropicMessagesRequest(
@@ -156,6 +202,20 @@ class TestAnthropicMessagesToOpenAI:
         result = anthropic_messages_to_openai(msgs, system = "Be brief.")
         assert result[0] == {"role": "system", "content": "Be brief."}
         assert result[1] == {"role": "user", "content": "Hello"}
+
+    def test_top_level_system_request_translates_unchanged(self):
+        req = AnthropicMessagesRequest(
+            messages = [{"role": "user", "content": "Hello"}],
+            system = "Be brief.",
+        )
+        result = anthropic_messages_to_openai(
+            [m.model_dump() for m in req.messages],
+            req.system,
+        )
+        assert result == [
+            {"role": "system", "content": "Be brief."},
+            {"role": "user", "content": "Hello"},
+        ]
 
     def test_system_as_block_list(self):
         system = [
@@ -551,6 +611,54 @@ class TestAnthropicStreamEmitter:
         assert "tool_use" in events[1]
         assert "input_json_delta" in events[2]
 
+    def test_duplicate_tool_start_merges_into_open_tool_block(self):
+        e = AnthropicStreamEmitter()
+        e.start("msg_1", "m")
+        first_events = e.feed(
+            {
+                "type": "tool_start",
+                "tool_name": "render_html",
+                "tool_call_id": "call_0",
+                "arguments": {},
+            }
+        )
+        second_events = e.feed(
+            {
+                "type": "tool_start",
+                "tool_name": "render_html",
+                "tool_call_id": "call_0",
+                "arguments": {"code": "<!doctype html><html></html>"},
+            }
+        )
+
+        first_payloads = [
+            json.loads(event.split("data: ")[1]) for event in first_events
+        ]
+        second_payloads = [
+            json.loads(event.split("data: ")[1]) for event in second_events
+        ]
+
+        tool_starts = [
+            payload
+            for payload in first_payloads + second_payloads
+            if payload["type"] == "content_block_start"
+            and payload["content_block"]["type"] == "tool_use"
+        ]
+        assert len(tool_starts) == 1
+        assert tool_starts[0]["content_block"]["id"] == "call_0"
+        assert second_payloads == [
+            {
+                "type": "content_block_delta",
+                "index": tool_starts[0]["index"],
+                "delta": {
+                    "type": "input_json_delta",
+                    "partial_json": json.dumps(
+                        {"code": "<!doctype html><html></html>"}
+                    ),
+                },
+            }
+        ]
+
     def test_tool_end_closes_tool_opens_new_text_block(self):
         e = AnthropicStreamEmitter()
         e.start("msg_1", "m")
@@ -672,6 +780,49 @@ class TestAnthropicStreamEmitter:
         events = e.feed({"type": "content", "text": "After tool"})
         parsed = json.loads(events[0].split("data: ")[1])
         assert parsed["delta"]["text"] == "After tool"
+
+
+# =====================================================================
+# Non-streaming tool response tests
+# =====================================================================
+
+
+class TestAnthropicToolNonStreaming:
+    def test_duplicate_tool_start_replaces_provisional_tool_block(self):
+        def _run_gen():
+            yield {
+                "type": "tool_start",
+                "tool_name": "render_html",
+                "tool_call_id": "call_0",
+                "arguments": {},
+            }
+            yield {
+                "type": "tool_start",
+                "tool_name": "render_html",
+                "tool_call_id": "call_0",
+                "arguments": {"code": "<!doctype html><html></html>"},
+            }
+            yield {
+                "type": "tool_end",
+                "tool_name": "render_html",
+                "tool_call_id": "call_0",
+                "result": "Rendered HTML artifact.",
+            }
+
+        response = asyncio.run(_anthropic_tool_non_streaming(_run_gen, "msg_1", "m"))
+        body = json.loads(response.body)
+        tool_blocks = [
+            block for block in body["content"] if block["type"] == "tool_use"
+        ]
+
+        assert tool_blocks == [
+            {
+                "type": "tool_use",
+                "id": "call_0",
+                "name": "render_html",
+                "input": {"code": "<!doctype html><html></html>"},
+            }
+        ]
 
 
 # =====================================================================

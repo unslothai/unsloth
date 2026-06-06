@@ -42,7 +42,11 @@ export function ThreadSidebar({
   const { items } = useChatSidebarItems();
   const storeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const activeId =
-    view.mode === "single" ? (view.threadId ?? storeThreadId) : view.pairId;
+    view.mode === "single"
+      ? (view.threadId ?? storeThreadId)
+      : view.mode === "compare"
+        ? view.pairId
+        : view.projectId;
 
   function viewForItem(item: SidebarItem): ChatView {
     return item.type === "single"

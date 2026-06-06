@@ -391,9 +391,22 @@ export function ChatProvidersSettings({
             const updatedAt = Number.isFinite(Date.parse(config.updated_at))
               ? Date.parse(config.updated_at)
               : Date.now();
+            const registryEntry =
+              registryRows.find((entry) => entry.provider_type === uiProviderType) ??
+              registryRows.find((entry) => entry.provider_type === config.provider_type);
+            const defaultModels = pruneProviderModelIds(
+              uiProviderType,
+              registryEntry?.default_models ?? [],
+            );
+            const savedModels = existing?.models ?? [];
+            const savedAvailableModels = existing?.availableModels ?? [];
             const existingModels = pruneProviderModelIds(
               uiProviderType,
-              existing?.models ?? [],
+              savedModels.length > 0 ? savedModels : defaultModels,
+            );
+            const existingAvailableModels = pruneProviderModelIds(
+              uiProviderType,
+              savedAvailableModels.length > 0 ? savedAvailableModels : defaultModels,
             );
             return {
               id: config.id,
@@ -401,7 +414,7 @@ export function ChatProvidersSettings({
               name: config.display_name,
               baseUrl: config.base_url ?? "",
               models: existingModels,
-              availableModels: existing?.availableModels ?? [],
+              availableModels: existingAvailableModels,
               enablePromptCaching: supportsProviderPromptCaching(uiProviderType)
                 ? (existing?.enablePromptCaching ?? true)
                 : undefined,

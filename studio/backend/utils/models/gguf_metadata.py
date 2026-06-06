@@ -47,6 +47,10 @@ _METADATA_CACHE: Dict[_CacheKey, Optional[Dict[str, str]]] = {}
 _CACHE_LOCK = threading.Lock()
 _CACHE_MAX_ENTRIES = 4096
 
+# Separate cache for single bool capability keys (e.g. clip.has_audio_encoder),
+# keyed by (file cache key, wanted key). None = key absent / file unreadable.
+_BOOL_CACHE: Dict[Tuple[_CacheKey, str], Optional[bool]] = {}
+
 
 def _cache_key(path: str) -> Optional[_CacheKey]:
     try:
@@ -191,6 +195,80 @@ def _skip_gguf_value(f, vtype: int) -> bool:
         return False
     f.seek(sz, 1)
     return True
+
+
+def _parse_gguf_bool(path: str, wanted_key: str) -> Optional[bool]:
+    """Bool value of ``wanted_key`` (GGUF vtype 7), or ``None`` if absent /
+    unreadable. Mirrors ``_parse_gguf_header`` for a single bool key."""
+    try:
+        with open(path, "rb") as f:
+            head = f.read(24)
+            if len(head) < 24:
+                return None
+            magic, _version, _tcount, kv_count = struct.unpack("<IIQQ", head)
+            if magic != _GGUF_MAGIC:
+                return None
+
+            for _ in range(kv_count):
+                try:
+                    klen_bytes = f.read(8)
+                    if len(klen_bytes) < 8:
+                        break
+                    klen = struct.unpack("<Q", klen_bytes)[0]
+                    if klen > 1 << 20:  # 1 MB sanity bound
+                        break
+                    kbytes = f.read(klen)
+                    if len(kbytes) < klen:
+                        break
+                    key = kbytes.decode("utf-8", "replace")
+                    vt_bytes = f.read(4)
+                    if len(vt_bytes) < 4:
+                        break
+                    vtype = struct.unpack("<I", vt_bytes)[0]
+
+                    if key == wanted_key and vtype == 7:  # BOOL (1 byte)
+                        bbyte = f.read(1)
+                        if len(bbyte) < 1:
+                            break
+                        return bbyte[0] != 0
+                    if not _skip_gguf_value(f, vtype):
+                        break
+                except (struct.error, UnicodeDecodeError):
+                    break
+    except OSError as e:
+        logger.debug(f"_parse_gguf_bool: cannot open {path}: {e}")
+        return None
+    except Exception as e:
+        logger.debug(f"_parse_gguf_bool: parse failure on {path}: {e}")
+        return None
+    return None
+
+
+def _read_gguf_bool(path: str, wanted_key: str) -> Optional[bool]:
+    """Cached single-bool-key read, keyed by (path, mtime, size, wanted_key)."""
+    fkey = _cache_key(path)
+    if fkey is None:
+        return None
+    ckey = (fkey, wanted_key)
+    with _CACHE_LOCK:
+        if ckey in _BOOL_CACHE:
+            return _BOOL_CACHE[ckey]
+    result = _parse_gguf_bool(path, wanted_key)
+    with _CACHE_LOCK:
+        while len(_BOOL_CACHE) >= _CACHE_MAX_ENTRIES:
+            try:
+                _BOOL_CACHE.pop(next(iter(_BOOL_CACHE)))
+            except StopIteration:
+                break
+        _BOOL_CACHE[ckey] = result
+    return result
+
+
+def read_mmproj_audio_capability(path: str) -> Optional[bool]:
+    """``clip.has_audio_encoder`` from an mmproj GGUF (e.g. Gemma 4's gemma4ua):
+    ``True``/``False`` if present, ``None`` if absent / unreadable. Flags
+    audio-input models independently of tokenizer token names."""
+    return _read_gguf_bool(path, "clip.has_audio_encoder")
 
 
 def is_mmproj_by_metadata(meta: Optional[Dict[str, str]]) -> Optional[bool]:

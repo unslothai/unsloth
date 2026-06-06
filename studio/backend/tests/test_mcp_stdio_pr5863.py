@@ -200,10 +200,38 @@ def test_validate_url_gate_off_rejects_stdio(monkeypatch):
     from routes.mcp_servers import _validate_url
 
     assert _validate_url("https://example.com/mcp") == "https://example.com/mcp"
-    for bad in ["npx server", "python -m mod", "ftp://host"]:
+    # urlparse reads "localhost:8000" scheme as "localhost", so it lands here too.
+    for bad in [
+        "npx server",
+        "python -m mod",
+        "ftp://host",
+        "example.com",
+        "localhost:8000",
+        r"C:\node\node.exe server.js",
+    ]:
         with pytest.raises(HTTPException) as exc:
             _validate_url(bad)
         assert exc.value.status_code == 400
+
+
+def test_validate_url_gate_off_message_depends_on_whitespace(monkeypatch):
+    # The message names a command only when the value has whitespace, and never
+    # says "desktop app only" (self-hosted hosts can opt in via the env var).
+    _disable(monkeypatch)
+    from routes.mcp_servers import _validate_url
+
+    with pytest.raises(HTTPException) as exc:
+        _validate_url("npx -y @modelcontextprotocol/server-filesystem /tmp")
+    cmd = exc.value.detail.lower()
+    assert "http://" in cmd and "https://" in cmd
+    assert "local command" in cmd
+    assert "desktop app" not in cmd
+
+    with pytest.raises(HTTPException) as exc:
+        _validate_url("example.com")
+    lone = exc.value.detail.lower()
+    assert "http://" in lone and "https://" in lone
+    assert "local command" not in lone
 
 
 def test_validate_url_gate_on_accepts_stdio(monkeypatch):
@@ -217,6 +245,12 @@ def test_validate_url_gate_on_accepts_stdio(monkeypatch):
     assert _validate_url("npx server --url https://x/mcp") == (
         "npx server --url https://x/mcp"
     )
+    # A lone token is ambiguous; keep the prior behaviour and accept it as a
+    # command rather than guessing it's a URL (no regression for single binaries).
+    assert (
+        _validate_url("/usr/local/bin/my-mcp-server") == "/usr/local/bin/my-mcp-server"
+    )
+    assert _validate_url("mcp-server-sqlite") == "mcp-server-sqlite"
     # empty / unparseable still rejected
     for bad in ["   ", '"unclosed']:
         with pytest.raises(HTTPException) as exc:

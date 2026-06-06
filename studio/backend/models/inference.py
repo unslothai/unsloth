@@ -709,11 +709,12 @@ class ChatCompletionRequest(BaseModel):
     enabled_tools: Optional[list[str]] = Field(
         None,
         description = (
-            "[x-unsloth] List of enabled tool names. Local GGUF models accept "
-            "['web_search', 'python', 'terminal']. External providers accept "
-            "['web_search', 'web_fetch', 'code_execution'] for Anthropic and "
-            "['web_search', 'code_execution'] for OpenAI Responses. If None, "
-            "all local tools are enabled and no server-side tools are forwarded."
+            "[x-unsloth] List of enabled tool names. Local GGUF/safetensors models "
+            "accept ['web_search', 'python', 'terminal', 'render_html']. External "
+            "providers accept ['web_search', 'web_fetch', 'code_execution'] for "
+            "Anthropic and ['web_search', 'code_execution', 'image_generation'] for "
+            "OpenAI Responses. If None, all local tools are enabled and no "
+            "server-side tools are forwarded."
         ),
     )
     mcp_enabled: Optional[bool] = Field(
@@ -1430,6 +1431,47 @@ AnthropicContentBlock = Union[
 ]
 
 
+def _anthropic_content_to_system_text(content: Any) -> str:
+    """Convert misplaced system message content into Anthropic system text."""
+    if content is None:  # null content must not become the literal "None"
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                text = block.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+                    continue
+            if block is not None:
+                parts.append(str(block))
+        return "\n\n".join(part for part in parts if part)
+    return str(content)
+
+
+def _merge_anthropic_system(system: Any, additions: list[str]) -> Any:
+    if not additions:
+        return system
+
+    addition_blocks = [
+        {"type": "text", "text": text} for text in additions if text.strip()
+    ]
+    if not addition_blocks:
+        return system
+
+    if system is None:
+        return (
+            addition_blocks[0]["text"] if len(addition_blocks) == 1 else addition_blocks
+        )
+    if isinstance(system, str):
+        return "\n\n".join([system, *[block["text"] for block in addition_blocks]])
+    if isinstance(system, list):
+        return [*system, *addition_blocks]
+    return system
+
+
 class AnthropicMessage(BaseModel):
     role: Literal["user", "assistant"]
     content: Union[str, list[AnthropicContentBlock]]
@@ -1472,6 +1514,39 @@ class AnthropicMessagesRequest(BaseModel):
     session_id: Optional[str] = None
     cancel_id: Optional[str] = None
     model_config = {"extra": "allow"}
+
+    @model_validator(mode = "before")
+    @classmethod
+    def normalize_system_messages(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+
+        messages = data.get("messages")
+        if not isinstance(messages, list):
+            return data
+
+        normalized_messages: list[Any] = []
+        system_additions: list[str] = []
+        changed = False
+
+        for message in messages:
+            if isinstance(message, dict) and message.get("role") == "system":
+                system_additions.append(
+                    _anthropic_content_to_system_text(message.get("content", ""))
+                )
+                changed = True
+                continue
+            normalized_messages.append(message)
+
+        if not changed:
+            return data
+
+        normalized = dict(data)
+        normalized["messages"] = normalized_messages
+        normalized["system"] = _merge_anthropic_system(
+            normalized.get("system"), system_additions
+        )
+        return normalized
 
 
 # ── Response models ────────────────────────────────────────────
