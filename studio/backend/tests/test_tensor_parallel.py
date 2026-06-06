@@ -211,17 +211,17 @@ def _load_model_source() -> str:
 
 def test_split_mode_tensor_is_gated_on_the_toggle():
     src = _load_model_source()
-    assert 'cmd.extend(["--split-mode", "tensor"])' in src, (
-        "the tensor-parallel flag emission must be present in load_model"
-    )
+    assert (
+        'cmd.extend(["--split-mode", "tensor"])' in src
+    ), "the tensor-parallel flag emission must be present in load_model"
     # The emission lives behind `if tensor_parallel:` -- it must never be
     # part of the unconditional base cmd list.
     base_start = src.find("cmd = [")
     base_end = src.find("\n                ]", base_start)
     base_block = src[base_start:base_end] if base_end > base_start else ""
-    assert "--split-mode" not in base_block, (
-        "--split-mode must be conditional, not in the base cmd list"
-    )
+    assert (
+        "--split-mode" not in base_block
+    ), "--split-mode must be conditional, not in the base cmd list"
     gate = src.find("if tensor_parallel:")
     emit = src.find('cmd.extend(["--split-mode", "tensor"])')
     assert 0 <= gate < emit, "emission must sit under `if tensor_parallel:`"
@@ -236,9 +236,9 @@ def test_proportional_tensor_split_is_emitted_in_tensor_mode():
     gate = src.find("if tensor_parallel:")
     ts = src.find('"--tensor-split"')
     nxt_else = src.find("self._tensor_parallel = False")
-    assert 0 <= gate < ts < nxt_else, (
-        "--tensor-split must be emitted under `if tensor_parallel:`"
-    )
+    assert (
+        0 <= gate < ts < nxt_else
+    ), "--tensor-split must be emitted under `if tensor_parallel:`"
 
 
 # ── tensor-mode allocation: conservative VRAM budget ─────────────────
@@ -268,8 +268,7 @@ def test_fit_context_budget_frac_override_is_tighter():
     assert fit_tp <= fit_default, "a tighter budget must not allow MORE context"
     # Omitting the override must reproduce the default budget exactly.
     assert (
-        backend._fit_context_to_vram(131072, pool_mib, model_size, "f16")
-        == fit_default
+        backend._fit_context_to_vram(131072, pool_mib, model_size, "f16") == fit_default
     )
 
 
@@ -300,17 +299,17 @@ def test_unrelated_arch_failure_not_hijacked_by_tensor_message():
 
 _GB = 1024**3
 _ASYM = [(0, 48000), (1, 24000)]  # asymmetric pool, 72000 MiB
-_SYM = [(0, 24000), (1, 24000)]   # symmetric pool
+_SYM = [(0, 24000), (1, 24000)]  # symmetric pool
 
 
-def _plan(model_gb, target=131072, gpus=_ASYM, mtp=False):
+def _plan(model_gb, target = 131072, gpus = _ASYM, mtp = False):
     b = _kv_seeded_backend()
     return b, b._plan_tensor_parallel(
-        gpus, int(model_gb * _GB), target, mtp_engaged=mtp
+        gpus, int(model_gb * _GB), target, mtp_engaged = mtp
     )
 
 
-def _kv_budget_b(model_gb, gpus=_ASYM):
+def _kv_budget_b(model_gb, gpus = _ASYM):
     reserve = LlamaCppBackend._TENSOR_PARALLEL_BUFFER_RESERVE_MIB
     return (sum(f for _, f in gpus) - len(gpus) * reserve) * 1024 * 1024 - int(
         model_gb * _GB
@@ -334,7 +333,7 @@ def test_tp_plan_even_split_when_model_fits():
 
 
 def test_tp_plan_symmetric_gpus_use_even_split():
-    _, (ec, mac, gi, ts) = _plan(8, gpus=_SYM)
+    _, (ec, mac, gi, ts) = _plan(8, gpus = _SYM)
     assert ts is None
 
 
@@ -357,18 +356,18 @@ def test_tp_plan_weights_exceed_pool_floors_context():
 
 
 def test_tp_plan_explicit_context_honored_when_it_fits():
-    _, (ec, mac, gi, ts) = _plan(50, target=8192)
+    _, (ec, mac, gi, ts) = _plan(50, target = 8192)
     assert ec == 8192
 
 
 def test_tp_plan_explicit_context_capped_when_too_large():
-    _, (ec, mac, gi, ts) = _plan(50, target=131072)
+    _, (ec, mac, gi, ts) = _plan(50, target = 131072)
     assert 2048 <= ec < 131072
 
 
 def test_tp_plan_mtp_reserves_extra_and_shrinks_context():
     _, (ec_no, *_rest) = _plan(50)
-    _, (ec_mtp, *_rest) = _plan(50, mtp=True)
+    _, (ec_mtp, *_rest) = _plan(50, mtp = True)
     assert ec_mtp < ec_no
 
 
@@ -415,16 +414,16 @@ def test_route_tensor_load_is_exception_safe_and_retries():
     # call, then (after the call) an `except` that re-raises only for a
     # non-tensor load, otherwise swallows to success=False for the retry.
     pre = body[:tp_call]
-    assert 0 <= pre.rfind("try:") < pre.rfind("success = await"), (
-        "the tensor load_model call must be wrapped in try/except"
-    )
+    assert (
+        0 <= pre.rfind("try:") < pre.rfind("success = await")
+    ), "the tensor load_model call must be wrapped in try/except"
     tail = body[tp_call:]
-    assert "except Exception as exc:" in tail, (
-        "the tensor load must catch a raised crash"
-    )
-    assert "if not request.tensor_parallel:" in tail and "raise" in tail, (
-        "a non-tensor load must still propagate its exception"
-    )
-    assert "tensor_parallel = False," in tail, (
-        "a failed tensor load must retry with layer split"
-    )
+    assert (
+        "except Exception as exc:" in tail
+    ), "the tensor load must catch a raised crash"
+    assert (
+        "if not request.tensor_parallel:" in tail and "raise" in tail
+    ), "a non-tensor load must still propagate its exception"
+    assert (
+        "tensor_parallel = False," in tail
+    ), "a failed tensor load must retry with layer split"

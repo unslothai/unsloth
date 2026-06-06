@@ -2771,8 +2771,8 @@ class LlamaCppBackend:
         pool_mib = sum(free_by_idx.values())
         reserve_mib = self._TENSOR_PARALLEL_BUFFER_RESERVE_MIB
         kv_budget_b = (
-            (pool_mib - len(gpu_indices) * reserve_mib) * 1024 * 1024 - model_size
-        )
+            pool_mib - len(gpu_indices) * reserve_mib
+        ) * 1024 * 1024 - model_size
         if mtp_engaged:
             # MTP keeps a draft model + its own KV cache on GPU.
             kv_budget_b -= 2 * 1024**3
@@ -3355,12 +3355,14 @@ class LlamaCppBackend:
                     cmd.extend(["--split-mode", "tensor"])
                     if tp_tensor_split and len(tp_tensor_split) > 1:
                         cmd.extend(
-                            ["--tensor-split", ",".join(str(int(x)) for x in tp_tensor_split)]
+                            [
+                                "--tensor-split",
+                                ",".join(str(int(x)) for x in tp_tensor_split),
+                            ]
                         )
                     self._tensor_parallel = True
                     logger.info(
-                        "Tensor parallelism: --split-mode tensor, "
-                        "--tensor-split %s",
+                        "Tensor parallelism: --split-mode tensor, " "--tensor-split %s",
                         tp_tensor_split,
                     )
                 else:
