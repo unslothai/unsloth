@@ -129,6 +129,7 @@ try:
         strip_shadowing_flags,
         validate_extra_args,
     )
+    from core.inference.tensor_fallback import load_with_tensor_fallback
     from utils.models import ModelConfig
     from utils.inference import load_inference_config
     from utils.models.model_config import load_model_defaults
@@ -156,6 +157,7 @@ except ImportError:
         strip_shadowing_flags,
         validate_extra_args,
     )
+    from core.inference.tensor_fallback import load_with_tensor_fallback
     from utils.models import ModelConfig
     from utils.inference import load_inference_config
     from utils.models.model_config import load_model_defaults
@@ -1008,46 +1010,32 @@ async def load_model(
                     hf_variant = config.gguf_variant,
                 )
 
-            # Tensor parallelism is arch-gated in llama.cpp and crashes some
-            # loads outright -- e.g. Gemma 3n aborts (GGML_ASSERT in
-            # ggml-backend-meta, SIGABRT); older builds also segfault on a
-            # quantized KV cache (since fixed upstream). load_model *raises* on
-            # such a crash -- it does not return False -- so a tensor load must
-            # treat a raised exception the same as a False return: swallow it to
-            # retry. A non-tensor load keeps its original contract and propagates.
-            try:
-                success = await asyncio.to_thread(
+            # Run a single load attempt with the given tensor flag + extras.
+            async def _attempt_gguf_load(
+                tensor_parallel: bool, attempt_extra_args: Optional[list[str]]
+            ) -> bool:
+                attempt_kwargs = {
+                    **_common_load_kwargs,
+                    "extra_args": attempt_extra_args,
+                }
+                return await asyncio.to_thread(
                     llama_backend.load_model,
                     **_source_load_kwargs,
-                    **_common_load_kwargs,
-                    tensor_parallel = request.tensor_parallel,
+                    **attempt_kwargs,
+                    tensor_parallel = tensor_parallel,
                 )
-            except Exception as exc:
-                if not request.tensor_parallel:
-                    raise
-                logger.warning(
-                    "Tensor-parallel load raised for '%s': %s",
-                    config.identifier,
-                    exc,
-                )
-                success = False
 
-            # If a tensor-parallel load failed, retry once with layer split so the
-            # checkbox never blocks a model from loading. The response reports
-            # the backend's actual tensor_parallel state, so the UI toggle
-            # reflects the fallback to off.
-            if not success and request.tensor_parallel:
-                logger.warning(
-                    "Tensor-parallel load failed for '%s'; retrying with layer "
-                    "split (this model may not support tensor parallelism)",
-                    config.identifier,
-                )
-                success = await asyncio.to_thread(
-                    llama_backend.load_model,
-                    **_source_load_kwargs,
-                    **_common_load_kwargs,
-                    tensor_parallel = False,
-                )
+            # Tensor parallelism is arch-gated in llama.cpp and crashes some loads
+            # outright (e.g. Gemma 3n aborts with a GGML_ASSERT). The helper auto-
+            # falls back to layer split so the checkbox never blocks a model from
+            # loading; the response reports the backend's actual tensor_parallel
+            # state so the UI toggle reflects the fallback.
+            success = await load_with_tensor_fallback(
+                _attempt_gguf_load,
+                requested_tensor = request.tensor_parallel,
+                extra_args = extra_llama_args,
+                label = config.identifier,
+            )
 
             if not success:
                 raise HTTPException(

@@ -17,6 +17,7 @@ reflects what is actually running. These tests pin:
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import sys
 import types as _types
@@ -62,6 +63,8 @@ sys.modules.setdefault("httpx", _httpx_stub)
 
 from core.inference import llama_cpp as llama_cpp_module
 from core.inference.llama_cpp import LlamaCppBackend
+from core.inference.llama_server_args import resolve_tensor_parallel
+from core.inference.tensor_fallback import load_with_tensor_fallback
 from models.inference import (
     InferenceStatusResponse,
     LoadRequest,
@@ -394,36 +397,125 @@ def test_tp_plan_zero_gpus_never_splits():
 
 
 # ── route auto-fallback survives a *raised* tensor-load crash ─────────
-# A tensor-incompatible model makes load_model RAISE RuntimeError (Gemma 3n
-# aborts; quantized KV segfaults) rather than return False. The /load route
-# must catch that and retry with layer split, while a non-tensor load still
-# propagates its exception unchanged.
-
-_ROUTE_SRC = (
-    Path(__file__).resolve().parent.parent / "routes" / "inference.py"
-).read_text()
+# A tensor-incompatible model makes load_model RAISE (Gemma 3n aborts) rather
+# than return False. The /load fallback helper must catch that and retry with
+# layer split -- stripping any --split-mode from the extras so the retry can't
+# relaunch tensor -- while a non-tensor load propagates its exception. These
+# exercise the real helper with a fake loader (no GPU, no llama-server).
 
 
-def test_route_tensor_load_is_exception_safe_and_retries():
-    load_at = _ROUTE_SRC.find("async def load_model(")
-    end_at = _ROUTE_SRC.find("@router.post", load_at + 1)
-    body = _ROUTE_SRC[load_at:end_at]
-    tp_call = body.find("tensor_parallel = request.tensor_parallel,")
-    assert tp_call > 0, "the route must pass the requested tensor_parallel"
-    # The tensor load sits in a try/except: `try:` then the `success = await`
-    # call, then (after the call) an `except` that re-raises only for a
-    # non-tensor load, otherwise swallows to success=False for the retry.
-    pre = body[:tp_call]
-    assert (
-        0 <= pre.rfind("try:") < pre.rfind("success = await")
-    ), "the tensor load_model call must be wrapped in try/except"
-    tail = body[tp_call:]
-    assert (
-        "except Exception as exc:" in tail
-    ), "the tensor load must catch a raised crash"
-    assert (
-        "if not request.tensor_parallel:" in tail and "raise" in tail
-    ), "a non-tensor load must still propagate its exception"
-    assert (
-        "tensor_parallel = False," in tail
-    ), "a failed tensor load must retry with layer split"
+class _RecordingLoader:
+    """Fake ``attempt_load``: crashes whenever tensor mode is effectively
+    engaged (via the bool or a ``--split-mode`` in extras), like a real
+    tensor-incompatible model; succeeds on layer split."""
+
+    def __init__(self):
+        self.calls: list[tuple] = []
+
+    async def __call__(self, tensor_parallel, extra_args):
+        self.calls.append(
+            (tensor_parallel, list(extra_args) if extra_args else extra_args)
+        )
+        if resolve_tensor_parallel(extra_args, tensor_parallel):
+            raise RuntimeError("llama-server failed to start")
+        return True
+
+
+def test_tensor_fallback_retries_layer_on_crash():
+    loader = _RecordingLoader()
+    ok = asyncio.run(
+        load_with_tensor_fallback(
+            loader, requested_tensor = True, extra_args = None, label = "m"
+        )
+    )
+    assert ok is True
+    # tensor first (crashes), then layer split.
+    assert [c[0] for c in loader.calls] == [True, False]
+
+
+def test_tensor_fallback_no_retry_on_success():
+    calls: list[bool] = []
+
+    async def _ok(tensor_parallel, extra_args):
+        calls.append(tensor_parallel)
+        return True
+
+    ok = asyncio.run(
+        load_with_tensor_fallback(
+            _ok, requested_tensor = True, extra_args = None, label = "m"
+        )
+    )
+    assert ok is True
+    assert calls == [True]  # no fallback when the tensor load succeeds
+
+
+def test_tensor_fallback_retries_when_tensor_returns_false():
+    # load_model can signal failure by *returning False* (not only by raising);
+    # that must trigger the layer-split retry just like a crash does.
+    calls: list[bool] = []
+
+    async def _false_on_tensor(tensor_parallel, extra_args):
+        calls.append(tensor_parallel)
+        return not resolve_tensor_parallel(extra_args, tensor_parallel)
+
+    ok = asyncio.run(
+        load_with_tensor_fallback(
+            _false_on_tensor, requested_tensor = True, extra_args = None, label = "m"
+        )
+    )
+    assert ok is True
+    assert calls == [True, False]
+
+
+def test_tensor_fallback_returns_false_when_both_attempts_fail():
+    # Tensor fails and the layer retry also fails -> the helper returns False so
+    # the route raises its own HTTP 500 (it does not crash mid-flight).
+    calls: list[bool] = []
+
+    async def _always_false(tensor_parallel, extra_args):
+        calls.append(tensor_parallel)
+        return False
+
+    ok = asyncio.run(
+        load_with_tensor_fallback(
+            _always_false, requested_tensor = True, extra_args = None, label = "m"
+        )
+    )
+    assert ok is False
+    assert calls == [True, False]  # tried tensor, then layer split
+
+
+@pytest.mark.parametrize(
+    "extras",
+    [
+        ["--split-mode", "tensor", "-c", "4096"],
+        ["-sm", "tensor", "-c", "4096"],
+        ["--split-mode=tensor", "-c", "4096"],
+        ["-sm=tensor", "-c", "4096"],
+    ],
+)
+def test_tensor_fallback_strips_split_mode_from_extras_on_retry(extras):
+    # Tensor engaged via extras (boolean False); the retry must drop every
+    # --split-mode form (long/short, space/=) but keep the user's other flags,
+    # else resolve_tensor_parallel re-enables tensor and relaunches the crash.
+    loader = _RecordingLoader()
+    ok = asyncio.run(
+        load_with_tensor_fallback(
+            loader, requested_tensor = False, extra_args = extras, label = "m"
+        )
+    )
+    assert ok is True
+    assert len(loader.calls) == 2
+    assert loader.calls[1][1] == ["-c", "4096"]  # split-mode stripped, -c kept
+
+
+def test_tensor_fallback_propagates_non_tensor_crash():
+    async def _always_raise(tensor_parallel, extra_args):
+        raise RuntimeError("bad model")
+
+    with pytest.raises(RuntimeError, match = "bad model"):
+        asyncio.run(
+            load_with_tensor_fallback(
+                _always_raise, requested_tensor = False, extra_args = None, label = "m"
+            )
+        )

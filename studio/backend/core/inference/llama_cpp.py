@@ -3076,24 +3076,37 @@ class LlamaCppBackend:
                     tp_tensor_split: Optional[list[int]] = None
                     explicit_ctx = requested_ctx > 0
 
-                    if tensor_parallel and len(gpus) < 2:
-                        # Tensor parallelism needs >= 2 GPUs. On a single GPU
-                        # --split-mode tensor is a no-op, and with 0 GPUs detected
-                        # (CPU-only, or GPU probe failed) it must not reach
-                        # llama-server. Drop the flag and fall through to the
-                        # normal layer/CPU allocation below.
+                    # Tensor mode allocates a compute-graph buffer on every
+                    # participating GPU, so a GPU with less free VRAM than that
+                    # reserve can't host it and would OOM at load. Drop those
+                    # from the tensor-parallel set up front (gpu_indices below
+                    # becomes the CUDA_VISIBLE_DEVICES mask, so they're excluded
+                    # from llama-server entirely, not just given zero weight).
+                    tp_gpus = gpus
+                    if tensor_parallel:
+                        reserve_mib = self._TENSOR_PARALLEL_BUFFER_RESERVE_MIB
+                        tp_gpus = [g for g in gpus if g[1] >= reserve_mib]
+
+                    if tensor_parallel and len(tp_gpus) < 2:
+                        # Tensor parallelism needs >= 2 usable GPUs. On a single
+                        # GPU --split-mode tensor is a no-op; with 0 GPUs (CPU-only
+                        # or probe failed) it must not reach llama-server; and a
+                        # GPU below the buffer reserve can't participate. Drop the
+                        # flag and fall through to normal layer/CPU allocation.
                         logger.info(
-                            "Tensor parallelism requested but %d GPU(s) detected; "
+                            "Tensor parallelism requested but only %d of %d GPU(s) "
+                            "have enough free VRAM for the compute buffer; "
                             "ignoring (needs >= 2).",
+                            len(tp_gpus),
                             len(gpus),
                         )
                         tensor_parallel = False
 
-                    if tensor_parallel and gpus:
-                        # Tensor-parallel allocation: use all GPUs, weight the split
-                        # by (free - buffer), and cap context to the pooled VRAM
-                        # after weights + per-device compute-graph buffers. See
-                        # _plan_tensor_parallel for the policy + rationale.
+                    if tensor_parallel and tp_gpus:
+                        # Tensor-parallel allocation: use all usable GPUs, weight
+                        # the split by (free - buffer), and cap context to the
+                        # pooled VRAM after weights + per-device compute-graph
+                        # buffers. See _plan_tensor_parallel for the policy.
                         target_ctx = (
                             effective_ctx
                             if explicit_ctx
@@ -3105,7 +3118,7 @@ class LlamaCppBackend:
                             gpu_indices,
                             tp_tensor_split,
                         ) = self._plan_tensor_parallel(
-                            gpus,
+                            tp_gpus,
                             model_size,
                             target_ctx,
                             cache_type_kv = cache_type_kv,
