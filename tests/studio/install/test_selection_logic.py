@@ -3431,8 +3431,7 @@ class TestCudaDriverToolkitMismatchMessage:
         ) in source
         assert (
             "Update the NVIDIA GPU driver to run CUDA Toolkit $ToolkitVersion, "
-            "or install a CUDA $driverMajor.x toolkit."
-            in source
+            "or install a CUDA $driverMajor.x toolkit." in source
         )
         assert (
             "Or let Studio use the prebuilt CUDA bundle; it does not need the "
@@ -3459,7 +3458,9 @@ class TestCudaDriverToolkitMismatchMessage:
         nvcc.chmod(0o755)
         return nvcc
 
-    def test_setup_sh_major_mismatch_uses_newest_compatible_detected_toolkit(self, tmp_path):
+    def test_setup_sh_major_mismatch_uses_newest_compatible_detected_toolkit(
+        self, tmp_path
+    ):
         blocked_nvcc = self._fake_nvcc(tmp_path, "13.3")
         older_nvcc = self._fake_nvcc(tmp_path, "12.6")
         compatible_nvcc = self._fake_nvcc(tmp_path, "12.8")
