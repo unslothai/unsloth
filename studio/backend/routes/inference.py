@@ -655,9 +655,10 @@ def _request_matches_loaded_settings(
     # Reconcile a user --split-mode in extras into the effective tensor state,
     # so an extras-driven tensor load isn't seen as a settings mismatch (which
     # would force a needless unload/reload of the same server).
-    if resolve_tensor_parallel(
-        request.llama_extra_args, request.tensor_parallel
-    ) != llama_backend.tensor_parallel:
+    if (
+        resolve_tensor_parallel(request.llama_extra_args, request.tensor_parallel)
+        != llama_backend.tensor_parallel
+    ):
         return False
     # Vision loads silently drop speculative decoding (llama_cpp.py gates
     # spec on ``not is_vision``), so treat the request as ``off`` against
