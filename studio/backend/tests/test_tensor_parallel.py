@@ -205,6 +205,25 @@ def test_already_in_target_state_reloads_on_tensor_parallel_change(loaded, reque
     assert _target_state(_loaded_backend(loaded), requested) is False
 
 
+def test_already_in_target_state_reconciles_split_mode_extras():
+    # Tensor engaged via --split-mode in extras (boolean omitted/default False)
+    # must match a server already running tensor mode -- no spurious reload.
+    backend = _loaded_backend(tensor_parallel = True)
+    backend._extra_args = ["--split-mode", "tensor"]
+    assert backend._already_in_target_state(
+        gguf_path = None,
+        model_identifier = "owner/repo",
+        hf_variant = "Q4_K_M",
+        n_ctx = 8192,
+        cache_type_kv = None,
+        speculative_type = "auto",
+        chat_template_override = None,
+        extra_args = ["--split-mode", "tensor"],
+        is_vision = False,
+        tensor_parallel = False,
+    ) is True
+
+
 # ── --split-mode tensor is emitted only behind the toggle ────────────
 
 

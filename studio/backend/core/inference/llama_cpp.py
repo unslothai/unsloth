@@ -4067,7 +4067,12 @@ class LlamaCppBackend:
         if _norm(self._cache_type_kv) != _norm(cache_type_kv):
             return False
 
-        if self._tensor_parallel != tensor_parallel:
+        # Reconcile a user --split-mode in extras (load_model does the same), so
+        # an extras-driven tensor load isn't seen as a mismatch that needlessly
+        # kills/reloads a healthy server.
+        if self._tensor_parallel != resolve_tensor_parallel(
+            extra_args, tensor_parallel
+        ):
             return False
 
         # Compare on the canonical UI-facing mode the user requested.
