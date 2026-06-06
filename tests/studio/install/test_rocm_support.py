@@ -1564,6 +1564,17 @@ class TestDetectWindowsGfxArch:
 class TestInstallBnbWindowsRocm:
     """Verify AMD Windows BNB wheel install helper."""
 
+    @pytest.fixture(autouse = True)
+    def _isolate_sitecustomize_persistence(self, monkeypatch, request):
+        """Keep helper tests from writing to the active interpreter site-packages."""
+        if request.node.name.startswith("test_persist"):
+            return
+        monkeypatch.setattr(
+            stack_mod,
+            "_persist_bnb_rocm_version",
+            lambda version: True,
+        )
+
     def test_calls_pip_install_try_with_win_amd64_url(self):
         """Should call pip_install_try with the win_amd64 wheel URL via plain pip."""
         with patch.object(stack_mod, "pip_install_try", return_value = True) as mock_pip:
@@ -1617,6 +1628,7 @@ class TestInstallBnbWindowsRocm:
         """BNB_ROCM_VERSION is set from the DLL detected after install."""
         with patch.dict(os.environ, {}, clear = False):
             os.environ.pop("BNB_ROCM_VERSION", None)
+            os.environ.pop(stack_mod._BNB_ROCM_VERSION_SOURCE_ENV, None)
             with patch.object(stack_mod, "pip_install_try", return_value = True):
                 with patch.object(stack_mod, "_detect_bnb_rocm_dll_ver", return_value = "72"):
                     stack_mod._install_bnb_windows_rocm()
@@ -1626,6 +1638,7 @@ class TestInstallBnbWindowsRocm:
         """If AMD ships a newer DLL (e.g. rocm713.dll), that version is used."""
         with patch.dict(os.environ, {}, clear = False):
             os.environ.pop("BNB_ROCM_VERSION", None)
+            os.environ.pop(stack_mod._BNB_ROCM_VERSION_SOURCE_ENV, None)
             with patch.object(stack_mod, "pip_install_try", return_value = True):
                 with patch.object(stack_mod, "_detect_bnb_rocm_dll_ver", return_value = "713"):
                     stack_mod._install_bnb_windows_rocm()
@@ -1635,6 +1648,7 @@ class TestInstallBnbWindowsRocm:
         """Falls back to '72' when DLL detection returns None."""
         with patch.dict(os.environ, {}, clear = False):
             os.environ.pop("BNB_ROCM_VERSION", None)
+            os.environ.pop(stack_mod._BNB_ROCM_VERSION_SOURCE_ENV, None)
             with patch.object(stack_mod, "pip_install_try", return_value = True):
                 with patch.object(stack_mod, "_detect_bnb_rocm_dll_ver", return_value = None):
                     stack_mod._install_bnb_windows_rocm()
@@ -1643,9 +1657,118 @@ class TestInstallBnbWindowsRocm:
     def test_does_not_override_existing_bnb_rocm_version(self):
         """An explicit BNB_ROCM_VERSION in the caller's env must not be clobbered."""
         with patch.dict(os.environ, {"BNB_ROCM_VERSION": "60"}):
+            os.environ.pop(stack_mod._BNB_ROCM_VERSION_SOURCE_ENV, None)
             with patch.object(stack_mod, "pip_install_try", return_value = True):
                 stack_mod._install_bnb_windows_rocm()
             assert os.environ.get("BNB_ROCM_VERSION") == "60"
+
+    def test_redetects_when_bnb_rocm_version_came_from_sitecustomize(self):
+        """Persisted defaults should not mask a newer DLL suffix after reinstall."""
+        with patch.dict(
+            os.environ,
+            {
+                "BNB_ROCM_VERSION": "72",
+                stack_mod._BNB_ROCM_VERSION_SOURCE_ENV: (
+                    stack_mod._BNB_ROCM_VERSION_SOURCE_SITECUSTOMIZE
+                ),
+            },
+        ):
+            with patch.object(stack_mod, "pip_install_try", return_value = True):
+                with patch.object(
+                    stack_mod, "_detect_bnb_rocm_dll_ver", return_value = "713"
+                ):
+                    with patch.object(
+                        stack_mod, "_persist_bnb_rocm_version", return_value = True
+                    ) as mock_persist:
+                        stack_mod._install_bnb_windows_rocm()
+
+            assert os.environ.get("BNB_ROCM_VERSION") == "713"
+            assert (
+                os.environ.get(stack_mod._BNB_ROCM_VERSION_SOURCE_ENV)
+                == stack_mod._BNB_ROCM_VERSION_SOURCE_DETECTED
+            )
+            mock_persist.assert_called_once_with("713")
+
+    def test_persists_bnb_rocm_version_for_direct_venv_python(self, tmp_path):
+        """BNB_ROCM_VERSION must apply to a fresh Python process in the venv."""
+        site_packages = tmp_path / "site-packages"
+
+        with patch.dict(os.environ, {}, clear = False):
+            os.environ.pop("BNB_ROCM_VERSION", None)
+            os.environ.pop(stack_mod._BNB_ROCM_VERSION_SOURCE_ENV, None)
+            with patch.object(stack_mod, "pip_install_try", return_value = True):
+                with patch.object(
+                    stack_mod, "_detect_bnb_rocm_dll_ver", return_value = "72"
+                ):
+                    with patch.object(
+                        stack_mod.sysconfig, "get_path", return_value = str(site_packages)
+                    ):
+                        stack_mod._install_bnb_windows_rocm()
+
+        sitecustomize = site_packages / "sitecustomize.py"
+        source = sitecustomize.read_text(encoding = "utf-8")
+        assert "BNB_ROCM_VERSION" in source
+        assert stack_mod._BNB_ROCM_VERSION_SOURCE_ENV in source
+        assert "'72'" in source
+
+        probe_env = os.environ.copy()
+        probe_env.pop("BNB_ROCM_VERSION", None)
+        probe_env.pop(stack_mod._BNB_ROCM_VERSION_SOURCE_ENV, None)
+        probe_env["PYTHONPATH"] = str(site_packages)
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import os; "
+                    "print(os.environ.get('BNB_ROCM_VERSION', ''), "
+                    "os.environ.get('UNSLOTH_BNB_ROCM_VERSION_SOURCE', ''))"
+                ),
+            ],
+            env = probe_env,
+            stdout = subprocess.PIPE,
+            stderr = subprocess.PIPE,
+            text = True,
+            check = True,
+        )
+        assert result.stdout.strip() == "72 sitecustomize"
+
+    def test_persist_bnb_rocm_version_replaces_existing_managed_block(self, tmp_path):
+        """Updating sitecustomize.py must not duplicate the managed BNB block."""
+        site_packages = tmp_path / "site-packages"
+        site_packages.mkdir()
+        sitecustomize = site_packages / "sitecustomize.py"
+        sitecustomize.write_text(
+            "EXISTING = True\n"
+            "# BEGIN Unsloth BNB_ROCM_VERSION\n"
+            "import os as _unsloth_os\n"
+            "_unsloth_os.environ.setdefault('BNB_ROCM_VERSION', '72')\n"
+            "# END Unsloth BNB_ROCM_VERSION\n",
+            encoding = "utf-8",
+        )
+
+        with patch.object(
+            stack_mod.sysconfig, "get_path", return_value = str(site_packages)
+        ):
+            assert stack_mod._persist_bnb_rocm_version("713") is True
+
+        source = sitecustomize.read_text(encoding = "utf-8")
+        assert source.count("# BEGIN Unsloth BNB_ROCM_VERSION") == 1
+        assert "EXISTING = True" in source
+        assert "'713'" in source
+        assert "'72'" not in source
+
+    def test_persist_bnb_rocm_version_handles_non_utf8_sitecustomize(self, tmp_path):
+        """A legacy non-UTF-8 sitecustomize.py should not abort installation."""
+        site_packages = tmp_path / "site-packages"
+        site_packages.mkdir()
+        sitecustomize = site_packages / "sitecustomize.py"
+        sitecustomize.write_bytes(b"\xff\xfe\x00")
+
+        with patch.object(
+            stack_mod.sysconfig, "get_path", return_value = str(site_packages)
+        ):
+            assert stack_mod._persist_bnb_rocm_version("72") is False
 
 
 class TestDetectBnbRocmDllVer:
