@@ -947,6 +947,14 @@ async def load_model(
                     # --chat-template-file survives an Apply that omits
                     # chat_template_override.
                     fields_set = getattr(request, "model_fields_set", set())
+                    # The binary toggle can't carry --split-mode's row/none/layer
+                    # modes, so only strip an inherited split mode when the toggle
+                    # overrides it: tensor turned on, or the inherited mode is
+                    # tensor (toggle turning it off).
+                    strip_split_mode = "tensor_parallel" in fields_set and (
+                        request.tensor_parallel
+                        or resolve_tensor_parallel(llama_backend.extra_args, False)
+                    )
                     stripped = strip_shadowing_flags(
                         llama_backend.extra_args,
                         strip_context = "max_seq_length" in fields_set,
@@ -956,7 +964,7 @@ async def load_model(
                             or "spec_draft_n_max" in fields_set
                         ),
                         strip_template = "chat_template_override" in fields_set,
-                        strip_split_mode = "tensor_parallel" in fields_set,
+                        strip_split_mode = strip_split_mode,
                     )
                     try:
                         extra_llama_args = validate_extra_args(stripped)
