@@ -243,6 +243,26 @@ function exportTs(): string {
   return new Date().toISOString().slice(0, 19).replace(/:/g, "-");
 }
 
+/**
+ * Flatten a stored message's content blocks AND any separately-stored
+ * attachments (images/audio/files sent via the composer) into a single string.
+ * Attachments keep their content in msg.attachments[].content rather than
+ * msg.content, so without this they would be silently dropped on export.
+ */
+function messageToText(msg: { content: unknown; attachments?: unknown }): string {
+  const parts: string[] = [];
+  const main = contentBlocksToText(msg.content);
+  if (main) parts.push(main);
+  if (Array.isArray(msg.attachments)) {
+    for (const attachment of msg.attachments as Array<{ content?: unknown }>) {
+      if (!attachment?.content) continue;
+      const attText = contentBlocksToText(attachment.content);
+      if (attText) parts.push(attText);
+    }
+  }
+  return parts.join("\n\n");
+}
+
 // Conversation export — ShareGPT training JSONL (human/gpt turns).
 export async function exportConversationShareGPT(threadId: string): Promise<void> {
   const messages = await loadConversationMessages(threadId);
@@ -252,7 +272,7 @@ export async function exportConversationShareGPT(threadId: string): Promise<void
   for (const msg of messages) {
     const role = msg.role as string;
     const from = role === "user" ? "human" : "gpt";
-    const value = contentBlocksToText(msg.content);
+    const value = messageToText(msg);
     if (value.trim()) conversations.push({ from, value });
   }
 
@@ -271,7 +291,7 @@ export async function exportConversationRawJsonl(threadId: string): Promise<void
 
   const lines = messages
     .map((msg) => {
-      const content = contentBlocksToText(msg.content);
+      const content = messageToText(msg);
       if (!content.trim()) return null;
       return JSON.stringify({ role: msg.role, content });
     })
@@ -289,7 +309,7 @@ export async function exportConversationCsv(threadId: string): Promise<void> {
 
   const rows = ["role,content"];
   for (const msg of messages) {
-    const content = contentBlocksToText(msg.content);
+    const content = messageToText(msg);
     if (!content.trim()) continue;
     rows.push(`${csvEscape(msg.role as string)},${csvEscape(content)}`);
   }
