@@ -533,7 +533,7 @@ class ChatMessage(BaseModel):
 
         if self.role == "tool":
             # tool_call_id resolution happens at ChatCompletionRequest scope.
-            if not self.content:
+            if self.content is None:
                 raise ValueError('role="tool" messages require non-empty "content".')
         elif self.role == "assistant":
             # Post-Stop sentinel: collapse content="" / [] to None.
