@@ -38,6 +38,7 @@ import {
 } from "lucide-react";
 import {
   AttachmentIcon,
+  Bookmark02Icon,
   CodeIcon,
   Download01Icon,
   Folder01Icon,
@@ -49,6 +50,12 @@ import {
 import { useNavigate } from "@tanstack/react-router";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { toast } from "@/lib/toast";
+import {
+  PromptStorageDialog,
+  exportConversationShareGPT,
+  exportConversationRawJsonl,
+  exportConversationCsv,
+} from "./prompt-storage/prompt-storage-dialog";
 import { McpComposerButton } from "./mcp-composer-button";
 import { KnowledgeBaseComposerButton } from "@/features/rag/components/knowledge-base-composer-button";
 import { NewProjectDialog } from "./components/new-project-dialog";
@@ -391,11 +398,15 @@ export function SharedComposer({
   model1,
   model2,
   onExitCompare,
+  model1ThreadId,
+  model2ThreadId,
 }: {
   handlesRef: CompareHandles;
   model1?: CompareModelSelection;
   model2?: CompareModelSelection;
   onExitCompare?: () => void;
+  model1ThreadId?: string;
+  model2ThreadId?: string;
 }): ReactElement {
   const navigate = useNavigate();
   // Exit compare. Uses the parent's restore handler, or a fresh chat when
@@ -418,6 +429,17 @@ export function SharedComposer({
   const [dragging, setDragging] = useState(false);
   const [isComposing, setIsComposing] = useState(false);
   const [newProjectOpen, setNewProjectOpen] = useState(false);
+  // ── Prompt storage & queue ────────────────────────────────────────────────
+  const [promptStorageOpen, setPromptStorageOpen] = useState(false);
+  const [isQueueRunning, setIsQueueRunning] = useState(false);
+  const [queueProgress, setQueueProgress] = useState({ current: 0, total: 0 });
+  const queueRef = useRef<string[]>([]);
+  const queueIndexRef = useRef(0);
+  const isQueueRunningRef = useRef(false);
+  const prevRunningRef = useRef(false);
+  const prevComparingRef = useRef(false);
+  const sendRef = useRef<(() => void) | null>(null);
+  // ─────────────────────────────────────────────────────────────────────────
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const composingRef = useRef(false);
   const stuckImeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -491,6 +513,7 @@ export function SharedComposer({
   );
   const ragEnabled = useChatRuntimeStore((s) => s.ragEnabled);
   const setRagEnabled = useChatRuntimeStore((s) => s.setRagEnabled);
+  const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const lastOpenRouterChosenModel = useChatRuntimeStore(
     (s) => s.lastOpenRouterChosenModel,
   );
@@ -663,6 +686,44 @@ export function SharedComposer({
     }, 200);
     return () => clearInterval(id);
   }, [handlesRef]);
+
+  function advanceQueue() {
+    const nextIndex = queueIndexRef.current + 1;
+    if (nextIndex >= queueRef.current.length) {
+      isQueueRunningRef.current = false;
+      setIsQueueRunning(false);
+      queueRef.current = [];
+      queueIndexRef.current = 0;
+      setQueueProgress({ current: 0, total: 0 });
+      toast.success("Prompt queue complete");
+      return;
+    }
+    queueIndexRef.current = nextIndex;
+    setQueueProgress({ current: nextIndex + 1, total: queueRef.current.length });
+    const next = queueRef.current[nextIndex];
+    toast(`Prompt ${nextIndex + 1} / ${queueRef.current.length}`, {
+      description: next.length > 80 ? next.slice(0, 80) + "…" : next,
+    });
+    setText(next);
+    setTimeout(() => { sendRef.current?.(); }, 100);
+  }
+
+  // Compare mode: advance queue when the full compare cycle finishes.
+  useEffect(() => {
+    const wasComparing = prevComparingRef.current;
+    prevComparingRef.current = comparing;
+    if (!isQueueRunningRef.current || !wasComparing || comparing) return;
+    prevRunningRef.current = false;
+    advanceQueue();
+  }, [comparing]);
+
+  // Single-chat mode: advance queue when running transitions true → false.
+  useEffect(() => {
+    const wasRunning = prevRunningRef.current;
+    prevRunningRef.current = running;
+    if (!isQueueRunningRef.current || !wasRunning || running || comparing) return;
+    advanceQueue();
+  }, [running, comparing]);
 
   // Auto-expand textarea up to 6 rows, then scroll (matches regular chat composer).
   useEffect(() => {
@@ -981,6 +1042,7 @@ export function SharedComposer({
       }
     }
   }
+  sendRef.current = send;
 
   function stop() {
     if (isDictating) stopDictation();
@@ -1037,6 +1099,41 @@ export function SharedComposer({
         addFiles(e.dataTransfer.files);
       }}
     >
+      <PromptStorageDialog
+        open={promptStorageOpen}
+        onOpenChange={setPromptStorageOpen}
+        onUse={(t) => {
+          setText(t);
+          requestAnimationFrame(() => textareaRef.current?.focus());
+        }}
+        onRunList={(items) => {
+          const filtered = items.filter((p) => p.trim());
+          if (!filtered.length) return;
+          const hasCompareHandles = Boolean(
+            handlesRef.current["model1"] || handlesRef.current["model2"],
+          );
+          const isGeneralizedCompare =
+            hasCompareHandles && Boolean(model1?.id && model2?.id);
+          if (hasCompareHandles && !isGeneralizedCompare) {
+            toast.error("Pick a model in each pane to compare", {
+              description:
+                "Use the model dropdown above each pane, then send your prompt.",
+            });
+            return;
+          }
+          setPromptStorageOpen(false);
+          queueRef.current = filtered;
+          queueIndexRef.current = 0;
+          isQueueRunningRef.current = true;
+          setIsQueueRunning(true);
+          setQueueProgress({ current: 1, total: filtered.length });
+          toast(`Prompt 1 / ${filtered.length}`, {
+            description: filtered[0].length > 80 ? filtered[0].slice(0, 80) + "…" : filtered[0],
+          });
+          setText(filtered[0]);
+          setTimeout(() => { sendRef.current?.(); }, 100);
+        }}
+      />
       {/* Gemini-style drop affordance, mirrored from the single composer. */}
       <div
         className={`pointer-events-none absolute inset-0 z-20 flex flex-col items-center justify-center gap-1 overflow-hidden rounded-[32px] bg-background/90 backdrop-blur-sm transition-opacity duration-150 dark:bg-card/90 ${dragging ? "opacity-100" : "opacity-0"}`}
@@ -1265,6 +1362,43 @@ export function SharedComposer({
                   <CheckIcon className="ml-auto" />
                 ) : null}
               </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => setPromptStorageOpen(true)}>
+                <HugeiconsIcon icon={Bookmark02Icon} strokeWidth={2} />
+                Saved prompts
+              </DropdownMenuItem>
+              <DropdownMenuSub>
+                <DropdownMenuSubTrigger>
+                  <HugeiconsIcon icon={Download01Icon} strokeWidth={2} />
+                  Export chat
+                </DropdownMenuSubTrigger>
+                <DropdownMenuSubContent className="unsloth-plus-menu w-[200px]">
+                  {[
+                    { label: "Raw JSONL", fn: exportConversationRawJsonl },
+                    { label: "CSV", fn: exportConversationCsv },
+                    { label: "ShareGPT JSONL (training)", fn: exportConversationShareGPT },
+                  ].map(({ label, fn }) => {
+                    const ids = [model1ThreadId, model2ThreadId, activeThreadId]
+                      .filter((id): id is string => Boolean(id));
+                    return (
+                      <DropdownMenuItem
+                        key={label}
+                        disabled={ids.length === 0}
+                        onSelect={() => {
+                          if (!ids.length) {
+                            toast.error("No conversation to export yet.");
+                            return;
+                          }
+                          Promise.all(ids.map((id) => fn(id))).catch(() =>
+                            toast.error("Export failed."),
+                          );
+                        }}
+                      >
+                        {label}
+                      </DropdownMenuItem>
+                    );
+                  })}
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
               {/* Always active: this menu only renders in compare mode.
                   Ticked like Web search/Code; click toggles it off. */}
               <DropdownMenuItem
@@ -1641,7 +1775,26 @@ export function SharedComposer({
               )}
             </>
           )}
-          {busy ? (
+          {isQueueRunning ? (
+            <button
+              type="button"
+              onClick={() => {
+                isQueueRunningRef.current = false;
+                setIsQueueRunning(false);
+                queueRef.current = [];
+                queueIndexRef.current = 0;
+                setQueueProgress({ current: 0, total: 0 });
+                stop();
+              }}
+              aria-label="Stop prompt queue"
+              className="ml-1.5 flex items-center gap-1.5 rounded-full border border-border/60 bg-muted/60 px-2.5 py-1 text-xs font-semibold text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            >
+              <SquareIcon className="size-2.5 shrink-0 fill-current" />
+              <span className="tabular-nums">
+                Stop queue {queueProgress.current}/{queueProgress.total}
+              </span>
+            </button>
+          ) : busy ? (
             <Button
               type="button"
               variant="default"

@@ -530,7 +530,12 @@ const LoraCompareContent = memo(function LoraCompareContent({
   const [baseThreadId, setBaseThreadId] = useState<string>();
   const [loraThreadId, setLoraThreadId] = useState<string>();
 
+  const compareRunning = useChatRuntimeStore(
+    (s) => Object.keys(s.runningByThreadId).length > 0,
+  );
+
   useEffect(() => {
+    if (compareRunning) return;
     let isActive = true;
     listStoredChatThreads({ pairId })
       .then((threads) => {
@@ -546,7 +551,7 @@ const LoraCompareContent = memo(function LoraCompareContent({
     return () => {
       isActive = false;
     };
-  }, [pairId]);
+  }, [pairId, compareRunning]);
 
   return (
     <CompareShell
@@ -555,6 +560,8 @@ const LoraCompareContent = memo(function LoraCompareContent({
         <SharedComposer
           handlesRef={handlesRef}
           onExitCompare={onExitCompare}
+          model1ThreadId={baseThreadId}
+          model2ThreadId={loraThreadId}
         />
       }
     >
@@ -674,6 +681,9 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
 
   const globalCheckpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const globalGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
+  const compareRunning = useChatRuntimeStore(
+    (s) => Object.keys(s.runningByThreadId).length > 0,
+  );
   const [model1, setModel1] = useState<CompareModelSelection>({
     id: globalCheckpoint || "",
     isLora: false,
@@ -698,6 +708,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
   );
 
   useEffect(() => {
+    if (compareRunning) return;
     let isActive = true;
     listStoredChatThreads({ pairId })
       .then((threads) => {
@@ -721,7 +732,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
     return () => {
       isActive = false;
     };
-  }, [pairId]);
+  }, [pairId, compareRunning]);
 
   return (
     <CompareShell
@@ -732,6 +743,8 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
           model1={model1}
           model2={model2}
           onExitCompare={onExitCompare}
+          model1ThreadId={model1ThreadId}
+          model2ThreadId={model2ThreadId}
         />
       }
     >

@@ -433,6 +433,8 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
     routes_module.__path__ = []
     settings_module = ModuleType("routes.settings")
     settings_module.router = APIRouter()
+    prompts_module = ModuleType("routes.prompts")
+    prompts_module.router = APIRouter()
 
     for name, router in {
         "auth_router": APIRouter(),
@@ -455,6 +457,7 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
 
     monkeypatch.setitem(sys.modules, "routes", routes_module)
     monkeypatch.setitem(sys.modules, "routes.settings", settings_module)
+    monkeypatch.setitem(sys.modules, "routes.prompts", prompts_module)
 
     import studio.backend.main as backend_main
 
