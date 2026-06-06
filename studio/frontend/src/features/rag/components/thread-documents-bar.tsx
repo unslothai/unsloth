@@ -2,8 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { LibraryBigIcon, PaperclipIcon } from "lucide-react";
+import { LibraryBigIcon } from "lucide-react";
+import { HugeiconsIcon } from "@hugeicons/react";
+import { AttachmentIcon } from "@hugeicons/core-free-icons";
 import { useAui } from "@assistant-ui/react";
+import { cn } from "@/lib/utils";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { useRagToolAvailable } from "@/features/chat/hooks/use-rag-tool-available";
 import { toast } from "@/lib/toast";
@@ -32,7 +35,7 @@ function KnowledgeBaseSourceChip({ kbId }: { kbId: string }) {
     };
   }, [kbId]);
   return (
-    <div className="mb-2 flex w-full flex-row items-center gap-1.5 px-1.5 pt-0.5 pb-1">
+    <div className="mb-2 flex w-full flex-row items-center gap-1.5 pl-0.5 pr-1.5 pt-0.5 pb-1">
       <span
         className="composer-pill-btn shrink-0 cursor-default"
         title="This chat retrieves from a knowledge base. Change the source in RAG retrieval settings."
@@ -118,6 +121,19 @@ export function ThreadDocumentsBar({
     return pending;
   }, [aui, effectiveThreadId]);
 
+  // Fade the bottom edge of the chip area (sidebar-style) while more chips sit
+  // below the fold; clears at the very bottom and for short, non-scrolling sets.
+  const chipScrollRef = useRef<HTMLDivElement>(null);
+  const [chipsOverflow, setChipsOverflow] = useState(false);
+  const updateChipFade = useCallback(() => {
+    const el = chipScrollRef.current;
+    if (!el) return;
+    setChipsOverflow(el.scrollHeight - el.scrollTop - el.clientHeight > 1);
+  }, []);
+  useEffect(() => {
+    updateChipFade();
+  }, [documents, updateChipFade]);
+
   // Just open the picker synchronously so the click's user activation survives. Do
   // NOT materialize the thread here: that fires setActiveThreadId while the native
   // dialog sits open, which can remount the composer and orphan this <input> so the
@@ -135,7 +151,7 @@ export function ThreadDocumentsBar({
   }
 
   return (
-    <div className="mb-2 flex w-full flex-row items-start gap-1.5 px-1.5 pt-0.5 pb-1">
+    <div className="mb-2 flex w-full flex-row items-start gap-1.5 pl-0.5 pr-1.5 pt-0.5 pb-1">
       <button
         type="button"
         onClick={handleAddDocs}
@@ -144,8 +160,12 @@ export function ThreadDocumentsBar({
         aria-label="Attach documents to this thread"
         title="Attach documents for retrieval"
       >
-        <PaperclipIcon className="size-3.5" />
-        <span>Add Files</span>
+        <HugeiconsIcon
+          icon={AttachmentIcon}
+          strokeWidth={2}
+          className="size-3.5"
+        />
+        <span>Add files to chat with</span>
       </button>
       <input
         ref={fileInputRef}
@@ -168,8 +188,15 @@ export function ThreadDocumentsBar({
           );
         }}
       />
-      {/* Cap the chip area so a large set scrolls. */}
-      <div className="flex max-h-24 flex-1 flex-row flex-wrap items-center gap-1.5 overflow-y-auto">
+      {/* Cap the chip area so a large set scrolls; fade the cut-off edge. */}
+      <div
+        ref={chipScrollRef}
+        onScroll={updateChipFade}
+        className={cn(
+          "flex max-h-24 flex-1 flex-row flex-wrap items-center gap-1.5 overflow-y-auto",
+          chipsOverflow && "rag-docs-bottom-fade",
+        )}
+      >
         {documents.map((doc) => (
           <DocumentStatusChip
             key={doc.id}

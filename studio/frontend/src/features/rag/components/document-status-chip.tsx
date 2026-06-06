@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { CheckIcon, FileTextIcon, LoaderIcon, XIcon } from "lucide-react";
+import { LoaderIcon, XIcon } from "lucide-react";
+import { HugeiconsIcon } from "@hugeicons/react";
+import { CheckmarkCircle02Icon, File02Icon } from "@hugeicons/core-free-icons";
 import { Spinner } from "@/components/ui/spinner";
 import { Badge } from "@/components/assistant-ui/badge";
 import { cn } from "@/lib/utils";
@@ -44,7 +46,11 @@ export function DocumentStatusChip({
       )}
     >
       {status === "completed" ? (
-        <CheckIcon className="size-3 shrink-0" />
+        <HugeiconsIcon
+          icon={CheckmarkCircle02Icon}
+          strokeWidth={2}
+          className="size-3 shrink-0"
+        />
       ) : status === "failed" ? (
         <XIcon className="size-3 shrink-0" />
       ) : status === "running" ? (
@@ -52,7 +58,11 @@ export function DocumentStatusChip({
       ) : (
         <LoaderIcon className="size-3 shrink-0 animate-spin" />
       )}
-      <FileTextIcon className="size-3 shrink-0" />
+      <HugeiconsIcon
+        icon={File02Icon}
+        strokeWidth={2}
+        className="size-3 shrink-0"
+      />
       <span className="truncate">{filename}</span>
       <span className="shrink-0 text-[10px] text-muted-foreground">
         {STATUS_LABEL[status]}
