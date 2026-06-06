@@ -2797,6 +2797,13 @@ def _normalise_responses_input(payload: ResponsesRequest) -> list[ChatMessage]:
             output = item.output
             if not isinstance(output, str):
                 output = json.dumps(output)
+            if not output:
+                # An empty/falsy result (e.g. an image-only tool output whose
+                # payload lives outside `output`) would otherwise build a
+                # role="tool" ChatMessage with content="", which the strict
+                # validator rejects with a 500. Emit a placeholder so the turn
+                # normalises gracefully.
+                output = "(no output)"
             messages.append(
                 ChatMessage(
                     role = "tool",
