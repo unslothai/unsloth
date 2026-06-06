@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useState } from "react";
 import {
   SidebarContent,
   SidebarFooter,
@@ -14,17 +15,63 @@ import {
   SidebarMenuItem,
 } from "@/components/ui/sidebar";
 import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import {
   BookOpen02Icon,
   ColumnInsertIcon,
   Delete02Icon,
+  Download01Icon,
+  MoreHorizontalIcon,
   NewReleasesIcon,
   PencilEdit02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { toast } from "sonner";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import type { ChatView } from "./types";
-import { deleteChatItem, useChatSidebarItems } from "./hooks/use-chat-sidebar-items";
+import {
+  deleteChatItem,
+  renameChatItem,
+  useChatSidebarItems,
+} from "./hooks/use-chat-sidebar-items";
 import type { SidebarItem } from "./hooks/use-chat-sidebar-items";
+import {
+  exportConversationRawJsonl,
+  exportConversationCsv,
+  exportConversationShareGPT,
+} from "./prompt-storage/prompt-storage-dialog";
+import {
+  listStoredChatThreads,
+} from "./utils/chat-history-storage";
+
+const EXPORT_FORMATS = [
+  { label: "Raw JSONL", fn: exportConversationRawJsonl },
+  { label: "CSV", fn: exportConversationCsv },
+  { label: "ShareGPT JSONL (training)", fn: exportConversationShareGPT },
+] as const;
+
+async function getThreadIdsForItem(item: SidebarItem): Promise<string[]> {
+  if (item.type === "single") return [item.id];
+  const threads = await listStoredChatThreads({ pairId: item.id });
+  return threads.map((t) => t.id);
+}
 
 export function ThreadSidebar({
   view,
@@ -48,6 +95,9 @@ export function ThreadSidebar({
         ? view.pairId
         : view.projectId;
 
+  const [renamingItem, setRenamingItem] = useState<SidebarItem | null>(null);
+  const [renameDraft, setRenameDraft] = useState("");
+
   function viewForItem(item: SidebarItem): ChatView {
     return item.type === "single"
       ? { mode: "single", threadId: item.id }
@@ -55,10 +105,35 @@ export function ThreadSidebar({
   }
 
   async function handleDelete(item: SidebarItem) {
-    // Directly set a new view with a nonce rather than going through
-    // onNewThread(), which may return early if the guard sees no
-    // threadId and no activeThreadId (after we just cleared it).
     await deleteChatItem(item, activeId ?? undefined, onSelect);
+  }
+
+  function openRename(item: SidebarItem) {
+    setRenameDraft(item.title);
+    setRenamingItem(item);
+  }
+
+  async function commitRename() {
+    if (!renamingItem) return;
+    try {
+      await renameChatItem(renamingItem, renameDraft);
+    } catch {
+      toast.error("Failed to rename chat.");
+    } finally {
+      setRenamingItem(null);
+    }
+  }
+
+  async function handleExport(
+    item: SidebarItem,
+    fn: (threadId: string) => Promise<void>,
+  ) {
+    try {
+      const ids = await getThreadIdsForItem(item);
+      await Promise.all(ids.map((id) => fn(id)));
+    } catch {
+      toast.error("Export failed.");
+    }
   }
 
   return (
@@ -99,12 +174,48 @@ export function ThreadSidebar({
                   >
                     <span>{item.title}</span>
                   </SidebarMenuButton>
-                  <SidebarMenuAction
-                    showOnHover={true}
-                    onClick={() => handleDelete(item)}
-                    title="Delete"
-                  >
-                    <HugeiconsIcon icon={Delete02Icon} />
+                  <SidebarMenuAction showOnHover={true} asChild>
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <button
+                          className="flex items-center justify-center rounded-sm p-0.5 hover:bg-accent"
+                          title="More options"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <HugeiconsIcon icon={MoreHorizontalIcon} className="size-4" />
+                        </button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent side="right" align="start" className="w-44">
+                        <DropdownMenuItem onSelect={() => openRename(item)}>
+                          <HugeiconsIcon icon={PencilEdit02Icon} className="mr-2 size-4" />
+                          Rename
+                        </DropdownMenuItem>
+                        <DropdownMenuSub>
+                          <DropdownMenuSubTrigger>
+                            <HugeiconsIcon icon={Download01Icon} className="mr-2 size-4" />
+                            Export
+                          </DropdownMenuSubTrigger>
+                          <DropdownMenuSubContent className="w-52">
+                            {EXPORT_FORMATS.map(({ label, fn }) => (
+                              <DropdownMenuItem
+                                key={label}
+                                onSelect={() => handleExport(item, fn)}
+                              >
+                                {label}
+                              </DropdownMenuItem>
+                            ))}
+                          </DropdownMenuSubContent>
+                        </DropdownMenuSub>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem
+                          className="text-destructive focus:text-destructive"
+                          onSelect={() => void handleDelete(item)}
+                        >
+                          <HugeiconsIcon icon={Delete02Icon} className="mr-2 size-4" />
+                          Delete
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
                   </SidebarMenuAction>
                 </SidebarMenuItem>
               ))}
@@ -137,6 +248,30 @@ export function ThreadSidebar({
           <span>What&apos;s new</span>
         </a>
       </SidebarFooter>
+
+      {/* Rename dialog */}
+      <Dialog open={renamingItem !== null} onOpenChange={(open) => { if (!open) setRenamingItem(null); }}>
+        <DialogContent className="corner-squircle border border-border/60 bg-background/98 shadow-none sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Rename chat</DialogTitle>
+          </DialogHeader>
+          <Input
+            value={renameDraft}
+            onChange={(e) => setRenameDraft(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") void commitRename(); }}
+            autoFocus
+          />
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setRenamingItem(null)}>Cancel</Button>
+            <Button
+              onClick={() => void commitRename()}
+              disabled={!renameDraft.trim() || renameDraft.trim() === renamingItem?.title}
+            >
+              Rename
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </>
   );
 }

@@ -436,6 +436,7 @@ export function SharedComposer({
   const isQueueRunningRef = useRef(false);
   const prevRunningRef = useRef(false);
   const prevComparingRef = useRef(false);
+  const compareStepSucceededRef = useRef(false);
   const sendRef = useRef<(() => void) | null>(null);
   // ─────────────────────────────────────────────────────────────────────────
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -698,11 +699,24 @@ export function SharedComposer({
     setTimeout(() => { sendRef.current?.(); }, 100);
   }
 
-  // Compare mode: advance queue when the full compare cycle finishes.
+  // Compare mode: advance queue when the full compare cycle finishes, but
+  // stop the queue if the compare step failed to avoid burning through prompts
+  // with incomplete results.
   useEffect(() => {
     const wasComparing = prevComparingRef.current;
     prevComparingRef.current = comparing;
     if (!isQueueRunningRef.current || !wasComparing || comparing) return;
+    if (!compareStepSucceededRef.current) {
+      isQueueRunningRef.current = false;
+      setIsQueueRunning(false);
+      queueRef.current = [];
+      queueIndexRef.current = 0;
+      setQueueProgress({ current: 0, total: 0 });
+      toast.error("Prompt queue stopped", {
+        description: "A compare step failed — remaining prompts were not sent.",
+      });
+      return;
+    }
     prevRunningRef.current = false;
     advanceQueue();
   }, [comparing]);
@@ -1015,8 +1029,10 @@ export function SharedComposer({
           await done;
         }
 
+        compareStepSucceededRef.current = true;
         toast.success("Compare complete", { id: toastId, duration: 2000 });
       } catch (err) {
+        compareStepSucceededRef.current = false;
         toast.error("Compare failed", {
           id: toastId,
           description: err instanceof Error ? err.message : "Unknown error",
