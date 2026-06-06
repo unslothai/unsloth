@@ -45,7 +45,13 @@ function KnowledgeBaseSourceChip({ kbId }: { kbId: string }) {
 }
 
 /** Per-thread document strip above the composer; chips track indexing status live via SSE. */
-export function ThreadDocumentsBar({ threadId }: { threadId: string | null }) {
+export function ThreadDocumentsBar({
+  threadId,
+  onIndexingChange,
+}: {
+  threadId: string | null;
+  onIndexingChange?: (active: boolean) => void;
+}) {
   const ragEnabled = useChatRuntimeStore((s) => s.ragEnabled);
   const ragAvailable = useRagToolAvailable();
   const ragSource = useChatRuntimeStore((s) => s.ragSource);
@@ -76,6 +82,17 @@ export function ThreadDocumentsBar({ threadId }: { threadId: string | null }) {
       : null,
     lister,
   );
+
+  // Tell the composer whether any attached doc is still indexing, so it can hold a
+  // queued send until retrieval covers all of them (Composer.enqueueSend). Scope is
+  // null for KB source / RAG-off, so `documents` is empty and this reads false.
+  const hasIndexing = documents.some(
+    (d) => d.status === "pending" || d.status === "running",
+  );
+  useEffect(() => {
+    onIndexingChange?.(hasIndexing);
+  }, [hasIndexing, onIndexingChange]);
+  useEffect(() => () => onIndexingChange?.(false), [onIndexingChange]);
 
   // Resolve the thread id, materializing on first use. Ref-deduped so a double-click
   // can't start two threads.

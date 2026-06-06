@@ -35,6 +35,7 @@ import {
   useScrollThreadToBottom,
 } from "@/components/assistant-ui/use-intent-aware-autoscroll";
 import { Button } from "@/components/ui/button";
+import { Spinner } from "@/components/ui/spinner";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -721,18 +722,92 @@ const Composer: FC<{
   // Docked composer opens upward; the centered welcome composer opens downward
   // by default and only flips up via collision detection when it would not fit.
   const effectiveMenuSide = menuSide ?? "bottom";
+
+  // RAG queue-and-auto-send. While this thread's documents are still indexing,
+  // hold the user's send and fire it automatically once every doc is terminal, so
+  // retrieval covers all of them instead of whatever subset happened to finish.
+  // `indexingActive` is fed by ThreadDocumentsBar; `pendingSend` means a send is
+  // parked. The blocked send never ran, so the composer still holds the message.
+  const [indexingActive, setIndexingActive] = useState(false);
+  const [pendingSend, setPendingSend] = useState(false);
+  const pendingSendRef = useRef(false);
+  const waitToastRef = useRef<string | number | null>(null);
+
+  const dismissWaitToast = useCallback(() => {
+    if (waitToastRef.current !== null) {
+      toast.dismiss(waitToastRef.current);
+      waitToastRef.current = null;
+    }
+  }, []);
+
+  const cancelQueuedSend = useCallback(() => {
+    pendingSendRef.current = false;
+    setPendingSend(false);
+    dismissWaitToast();
+  }, [dismissWaitToast]);
+
+  const enqueueSend = useCallback(() => {
+    if (pendingSendRef.current) return;
+    pendingSendRef.current = true;
+    setPendingSend(true);
+    waitToastRef.current = toast("Waiting for documents to finish indexing", {
+      description:
+        "Your message will send automatically once indexing finishes.",
+      duration: Infinity,
+      cancel: { label: "Cancel", onClick: cancelQueuedSend },
+    });
+  }, [cancelQueuedSend]);
+
   const shouldBlockSend = useCallback(
     () =>
       !hasSendableContent || isComposingRef.current || hasPendingAttachments,
     [hasPendingAttachments, hasSendableContent, isComposingRef],
   );
 
-  const handleSubmit = useCallback(
-    (event: Parameters<NonNullable<ComponentProps<"form">["onSubmit"]>>[0]) => {
+  // One gate for both the form (Enter / submit) and the Send button click. Returns
+  // true when it handled the event (hard-blocked or queued) so callers stop.
+  const interceptSend = useCallback(
+    (event: { preventDefault: () => void }) => {
       if (disabled || shouldBlockSend()) {
         event.preventDefault();
-        return;
+        return true;
       }
+      if (indexingActive && !overlay) {
+        event.preventDefault();
+        enqueueSend();
+        return true;
+      }
+      return false;
+    },
+    [disabled, shouldBlockSend, indexingActive, overlay, enqueueSend],
+  );
+
+  // Fire the queued send the moment indexing clears (every doc completed or failed).
+  // The composer was never cleared, so just dispatch it now -- unless the user
+  // emptied it while waiting, in which case quietly drop the queued send.
+  useEffect(() => {
+    if (!pendingSend || indexingActive) return;
+    const { text, attachments } = aui.composer().getState();
+    pendingSendRef.current = false;
+    setPendingSend(false);
+    dismissWaitToast();
+    if (text.trim().length > 0 || attachments.length > 0) {
+      aui.composer().send();
+    }
+  }, [pendingSend, indexingActive, aui, dismissWaitToast]);
+
+  // Drop any queued send + its toast if the composer unmounts (e.g. thread switch).
+  useEffect(
+    () => () => {
+      pendingSendRef.current = false;
+      if (waitToastRef.current !== null) toast.dismiss(waitToastRef.current);
+    },
+    [],
+  );
+
+  const handleSubmit = useCallback(
+    (event: Parameters<NonNullable<ComponentProps<"form">["onSubmit"]>>[0]) => {
+      if (interceptSend(event)) return;
 
       if (overlay) {
         const trimmed = composerText.trim();
@@ -780,12 +855,11 @@ const Composer: FC<{
       aui,
       closeOverlay,
       composerText,
-      disabled,
+      interceptSend,
       overlay,
       referenceThreadId,
       setImageToolsEnabled,
       setPendingImageEditReference,
-      shouldBlockSend,
     ],
   );
 
@@ -793,7 +867,10 @@ const Composer: FC<{
     <>
       <ComposerAttachments />
       <PendingAudioChip />
-      <ThreadDocumentsBar threadId={referenceThreadId} />
+      <ThreadDocumentsBar
+        threadId={referenceThreadId}
+        onIndexingChange={setIndexingActive}
+      />
       <ToolStatusDisplay />
       <div
         className="unsloth-composer-line"
@@ -840,7 +917,8 @@ const Composer: FC<{
             isComposing ||
             hasPendingAttachments
           }
-          shouldBlockSend={shouldBlockSend}
+          onSendClick={interceptSend}
+          pendingSend={pendingSend}
           menuSide={effectiveMenuSide}
         />
       </div>
@@ -1873,9 +1951,10 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
 
 const ComposerRightControls: FC<{
   disabled?: boolean;
-  shouldBlockSend?: () => boolean;
+  onSendClick?: (event: { preventDefault: () => void }) => void;
+  pendingSend?: boolean;
   menuSide?: "top" | "bottom";
-}> = ({ disabled, shouldBlockSend, menuSide }) => {
+}> = ({ disabled, onSendClick, pendingSend, menuSide }) => {
   return (
     <div className="aui-composer-action-wrapper flex shrink-0 items-center gap-1.5">
       <ReasoningToggle side={menuSide} />
@@ -1906,21 +1985,23 @@ const ComposerRightControls: FC<{
       <AuiIf condition={({ thread }) => !thread.isRunning}>
         <ComposerPrimitive.Send asChild={true}>
           <TooltipIconButton
-            tooltip="Send message"
+            tooltip={pendingSend ? "Waiting for documents…" : "Send message"}
             side="bottom"
             type="submit"
             variant="default"
             size="icon"
-            disabled={disabled}
-            onClick={(event) => {
-              if (shouldBlockSend?.()) {
-                event.preventDefault();
-              }
-            }}
+            // Stay clickable while docs index (so a click can queue the send); only
+            // go disabled once a send is already parked.
+            disabled={disabled || pendingSend}
+            onClick={(event) => onSendClick?.(event)}
             className="aui-composer-send ml-1.5 size-8 rounded-full"
             aria-label="Send message"
           >
-            <ArrowUpIcon className="aui-composer-send-icon size-[21px] stroke-2" />
+            {pendingSend ? (
+              <Spinner className="size-[18px]" />
+            ) : (
+              <ArrowUpIcon className="aui-composer-send-icon size-[21px] stroke-2" />
+            )}
           </TooltipIconButton>
         </ComposerPrimitive.Send>
       </AuiIf>
