@@ -396,6 +396,19 @@ def test_tp_plan_zero_gpus_never_splits():
     assert gi == []
 
 
+def test_tp_plan_drops_gpu_below_buffer_reserve():
+    # A GPU with less free VRAM than the per-device compute-buffer reserve
+    # can't host tensor mode; it's excluded, which here leaves <2 usable -> no
+    # split (and gpu_indices reflects only the usable device).
+    b = _kv_seeded_backend()
+    reserve = LlamaCppBackend._TENSOR_PARALLEL_BUFFER_RESERVE_MIB
+    ec, mac, gi, ts = b._plan_tensor_parallel(
+        [(0, 48000), (1, reserve - 1)], int(8 * _GB), 8192
+    )
+    assert gi == [0]
+    assert ts is None
+
+
 # ── route auto-fallback survives a *raised* tensor-load crash ─────────
 # A tensor-incompatible model makes load_model RAISE (Gemma 3n aborts) rather
 # than return False. The /load fallback helper must catch that and retry with

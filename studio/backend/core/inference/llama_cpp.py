@@ -2757,7 +2757,13 @@ class LlamaCppBackend:
           ``(free - buffer)`` so the roomier GPU absorbs more weight and the
           smallest GPU keeps room for KV.
         """
-        gpu_indices = sorted(idx for idx, _ in gpus)
+        # Drop GPUs that can't hold the per-device compute-graph buffer; they'd
+        # OOM in tensor mode. load_model already filters before calling, so this
+        # is defense-in-depth that also keeps the pure function self-contained
+        # (and unit-testable without a GPU).
+        reserve_mib = self._TENSOR_PARALLEL_BUFFER_RESERVE_MIB
+        usable_gpus = [g for g in gpus if g[1] >= reserve_mib]
+        gpu_indices = sorted(idx for idx, _ in usable_gpus)
         if len(gpu_indices) < 2:
             # Tensor parallelism is meaningless on <2 GPUs (the caller drops the
             # toggle before this); be defensive and never emit a split here.
@@ -2767,9 +2773,8 @@ class LlamaCppBackend:
                 gpu_indices,
                 None,
             )
-        free_by_idx = {idx: free for idx, free in gpus}
+        free_by_idx = {idx: free for idx, free in usable_gpus}
         pool_mib = sum(free_by_idx.values())
-        reserve_mib = self._TENSOR_PARALLEL_BUFFER_RESERVE_MIB
         kv_budget_b = (
             pool_mib - len(gpu_indices) * reserve_mib
         ) * 1024 * 1024 - model_size

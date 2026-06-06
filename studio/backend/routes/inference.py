@@ -126,6 +126,7 @@ try:
         detect_reasoning_flags,
     )
     from core.inference.llama_server_args import (
+        resolve_tensor_parallel,
         strip_shadowing_flags,
         validate_extra_args,
     )
@@ -154,6 +155,7 @@ except ImportError:
         detect_reasoning_flags,
     )
     from core.inference.llama_server_args import (
+        resolve_tensor_parallel,
         strip_shadowing_flags,
         validate_extra_args,
     )
@@ -650,7 +652,12 @@ def _request_matches_loaded_settings(
         llama_backend.cache_type_kv
     ):
         return False
-    if request.tensor_parallel != llama_backend.tensor_parallel:
+    # Reconcile a user --split-mode in extras into the effective tensor state,
+    # so an extras-driven tensor load isn't seen as a settings mismatch (which
+    # would force a needless unload/reload of the same server).
+    if resolve_tensor_parallel(
+        request.llama_extra_args, request.tensor_parallel
+    ) != llama_backend.tensor_parallel:
         return False
     # Vision loads silently drop speculative decoding (llama_cpp.py gates
     # spec on ``not is_vision``), so treat the request as ``off`` against
