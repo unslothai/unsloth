@@ -1930,8 +1930,7 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
   const aui = useAui();
   const { startQueue } = useContext(PromptQueueContext);
 
-  // The Saved prompts submenu previews the 3 most recently updated prompts;
-  // refreshed each time the + menu opens so new saves show up immediately.
+  // 3 most recent prompts for the Saved prompts submenu; refreshed on menu open.
   const [recentPrompts, setRecentPrompts] = useState<PromptEntry[]>([]);
   const refreshRecentPrompts = useCallback(async () => {
     try {

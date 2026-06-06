@@ -44,9 +44,8 @@
 		height: 40px;
 		background: linear-gradient(to top, var(--sidebar), transparent);
 	}
-	/* RAG thread-docs chip strip: when more chips sit below the scroll fold, the
-	   cut-off row dissolves at the bottom edge, sidebar-style (mask — fades
-	   content to transparent). Applied only while scrollable-down (JS toggle). */
+	/* RAG chip strip: sidebar-style bottom fade while more chips sit below
+	   the scroll fold (JS-toggled). */
 	.rag-docs-bottom-fade {
 		-webkit-mask-image: linear-gradient(
 			to bottom,

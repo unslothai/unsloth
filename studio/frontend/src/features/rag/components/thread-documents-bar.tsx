@@ -124,8 +124,7 @@ export function ThreadDocumentsBar({
     return pending;
   }, [aui, effectiveThreadId]);
 
-  // Fade the bottom edge of the chip area (sidebar-style) while more chips sit
-  // below the fold; clears at the very bottom and for short, non-scrolling sets.
+  // Sidebar-style bottom fade while more chips sit below the scroll fold.
   const chipScrollRef = useRef<HTMLDivElement>(null);
   const [chipsOverflow, setChipsOverflow] = useState(false);
   const updateChipFade = useCallback(() => {
@@ -168,7 +167,8 @@ export function ThreadDocumentsBar({
           strokeWidth={2}
           className="size-3.5"
         />
-        <span>Add files to chat with</span>
+        {/* Icon-only once documents are attached. */}
+        {documents.length === 0 && <span>Add files to chat with</span>}
       </button>
       <input
         ref={fileInputRef}
@@ -191,7 +191,7 @@ export function ThreadDocumentsBar({
           );
         }}
       />
-      {/* Cap the chip area so a large set scrolls; fade the cut-off edge. */}
+      {/* Cap the chip area so a large set scrolls; fade the cut-off row. */}
       <div
         ref={chipScrollRef}
         onScroll={updateChipFade}
