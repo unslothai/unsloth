@@ -32,8 +32,10 @@ import httpx
 from core.inference.llama_server_args import (
     parse_cache_override,
     parse_ctx_override,
+    parse_split_mode_override,
     resolve_cache_type_kv,
     resolve_requested_ctx,
+    resolve_tensor_parallel,
 )
 from core.tool_healing import (
     _TC_END_TAG_RE,
@@ -640,6 +642,8 @@ class LlamaCppBackend:
         self._supports_preserve_thinking: bool = False
         self._supports_tools: bool = False
         self._cache_type_kv: Optional[str] = None
+        # Whether --split-mode tensor was applied on the active load.
+        self._tensor_parallel: bool = False
         self._reasoning_default: bool = True
         self._speculative_type: Optional[str] = None
         # Canonical UI-facing mode the user requested: one of
@@ -936,6 +940,11 @@ class LlamaCppBackend:
     @property
     def cache_type_kv(self) -> Optional[str]:
         return self._cache_type_kv
+
+    @property
+    def tensor_parallel(self) -> bool:
+        """Whether --split-mode tensor is active on the loaded server."""
+        return self._tensor_parallel
 
     @property
     def speculative_type(self) -> Optional[str]:
@@ -1466,6 +1475,19 @@ class LlamaCppBackend:
     # the truly-too-large case.
     _GPU_PIN_VRAM_FRACTION = 0.95
 
+    # Per-GPU compute-graph buffer to reserve in tensor mode (MiB). This is the
+    # logits buffer (n_batch x vocab) + activation scratch that llama.cpp sizes
+    # via graph_reserve -- it is roughly EQUAL on every device (not proportional
+    # to the tensor split) and independent of context. Measured ~2.3 GB
+    # (gemma-3-27B) to ~3.8 GB (gemma-4-31B) on a 256k-vocab model; we reserve a
+    # conservative headroom above that. It is (a) subtracted from each GPU's free
+    # VRAM before computing --tensor-split, so the roomier GPU absorbs more
+    # weight and the smallest GPU keeps room for KV, and (b) reserved per device
+    # when capping context. The auto-fallback to layer split covers any
+    # underestimate. NOTE: scales with the model's vocab / batch size; tune if a
+    # large-vocab model OOMs at load.
+    _TENSOR_PARALLEL_BUFFER_RESERVE_MIB = 5120
+
     @staticmethod
     def _windows_pip_nvidia_dll_dirs(prefix: str) -> list[str]:
         """Return DLL dirs from pip-installed CUDA wheels under
@@ -1811,6 +1833,7 @@ class LlamaCppBackend:
         ctx_checkpoints: int = 0,
         kv_on_gpu: bool = True,
         mtp_engaged: bool = False,
+        budget_frac: Optional[float] = None,
     ) -> int:
         """Return the largest context length that fits in GPU VRAM.
 
@@ -1850,8 +1873,10 @@ class LlamaCppBackend:
             ctx_checkpoints = ctx_checkpoints,
         )
 
-        # MTP needs a tighter budget; drop from 0.90 to 0.85.
-        budget_frac = 0.85 if mtp_engaged else 0.90
+        # MTP needs a tighter budget; drop from 0.90 to 0.85. Callers can
+        # override outright (tensor-parallel mode passes a fatter margin).
+        if budget_frac is None:
+            budget_frac = 0.85 if mtp_engaged else 0.90
         budget_bytes = available_mib * 1024 * 1024 * budget_frac
         model_footprint = model_size_bytes
 
@@ -2638,6 +2663,16 @@ class LlamaCppBackend:
         """
         lowered = (output or "").lower()
 
+        # Tensor parallelism (--split-mode tensor) is arch-gated in llama.cpp;
+        # unsupported architectures abort the load with this marker. Point the
+        # user at the toggle instead of a generic invalid-GGUF/OOM message.
+        if "split_mode_tensor not implemented" in lowered:
+            return (
+                "Tensor parallelism is not supported for this model's "
+                "architecture. Turn off Tensor Parallelism in the model "
+                "settings and reload."
+            )
+
         # Detect Ollama source up front so the arch branch can keep the
         # Ollama hint instead of the generic "unsupported arch" message.
         gguf = gguf_path or ""
@@ -2694,6 +2729,90 @@ class LlamaCppBackend:
             "Check that the GGUF file is valid and you have enough memory."
         )
 
+    def _plan_tensor_parallel(
+        self,
+        gpus: list[tuple[int, int]],
+        model_size: int,
+        target_ctx: int,
+        cache_type_kv: Optional[str] = None,
+        n_parallel: int = 1,
+        mtp_engaged: bool = False,
+    ) -> tuple[int, int, list[int], Optional[list[int]]]:
+        """Plan a ``--split-mode tensor`` load. Pure: no model or GPU needed.
+
+        ``gpus`` is a list of ``(gpu_index, free_mib)``; ``model_size`` is the
+        weight size in bytes; ``target_ctx`` is the context to fit (the explicit
+        request, or the model's native length for auto). Returns
+        ``(effective_ctx, max_available_ctx, gpu_indices, tensor_split)``.
+
+        Policy (assumes >= 2 GPUs; the caller drops the toggle below that):
+        - Cap context to the KV that fits the pooled VRAM after the weights and
+          one per-device compute-graph buffer (``_TENSOR_PARALLEL_BUFFER_RESERVE_MIB``).
+          llama.cpp's ``--fit`` is a no-op in tensor mode, so this is the only
+          cap, honored even for an explicit ``-c``. It is more accurate than the
+          0.80 whole-pool heuristic, which over-reserves and leaves VRAM unused.
+        - ``tensor_split`` is None (llama.cpp's even default, safe for every arch
+          incl. Gemma 3n which GGML_ASSERTs on a weighted split) when an even
+          share fits the smallest GPU; otherwise it is weighted by
+          ``(free - buffer)`` so the roomier GPU absorbs more weight and the
+          smallest GPU keeps room for KV.
+        """
+        gpu_indices = sorted(idx for idx, _ in gpus)
+        if len(gpu_indices) < 2:
+            # Tensor parallelism is meaningless on <2 GPUs (the caller drops the
+            # toggle before this); be defensive and never emit a split here.
+            return (
+                target_ctx if target_ctx > 0 else 4096,
+                target_ctx if target_ctx > 0 else 4096,
+                gpu_indices,
+                None,
+            )
+        free_by_idx = {idx: free for idx, free in gpus}
+        pool_mib = sum(free_by_idx.values())
+        reserve_mib = self._TENSOR_PARALLEL_BUFFER_RESERVE_MIB
+        kv_budget_b = (
+            (pool_mib - len(gpu_indices) * reserve_mib) * 1024 * 1024 - model_size
+        )
+        if mtp_engaged:
+            # MTP keeps a draft model + its own KV cache on GPU.
+            kv_budget_b -= 2 * 1024**3
+
+        if self._can_estimate_kv() and target_ctx > 0:
+            if kv_budget_b <= 0:
+                # Weights + buffers exceed the pool -> no context fits; floor and
+                # let the load fall back to layer split.
+                effective_ctx = 2048
+            else:
+                kv_at_target = self._estimate_kv_cache_bytes(
+                    target_ctx, cache_type_kv, n_parallel = n_parallel
+                )
+                if kv_at_target <= kv_budget_b:
+                    effective_ctx = target_ctx
+                else:
+                    effective_ctx = max(
+                        2048, int(target_ctx * kv_budget_b / kv_at_target)
+                    )
+        else:
+            # KV size unknown -> can't prove a safe cap; floor.
+            effective_ctx = min(4096, target_ctx) if target_ctx > 0 else 4096
+        max_available_ctx = effective_ctx
+
+        min_free_mib = min(free_by_idx.values())
+        kv_bytes = (
+            self._estimate_kv_cache_bytes(
+                effective_ctx, cache_type_kv, n_parallel = n_parallel
+            )
+            if (self._can_estimate_kv() and effective_ctx > 0)
+            else 0
+        )
+        even_share_mib = (model_size + kv_bytes) / len(gpu_indices) / (1024 * 1024)
+        tensor_split: Optional[list[int]] = None
+        if even_share_mib > (min_free_mib - reserve_mib):
+            adj = [max(0, int(free_by_idx[i] - reserve_mib)) for i in gpu_indices]
+            if sum(adj) > 0:
+                tensor_split = adj
+        return effective_ctx, max_available_ctx, gpu_indices, tensor_split
+
     def load_model(
         self,
         *,
@@ -2713,6 +2832,7 @@ class LlamaCppBackend:
         cache_type_kv: Optional[str] = None,
         speculative_type: Optional[str] = None,
         spec_draft_n_max: Optional[int] = None,
+        tensor_parallel: bool = False,
         n_threads: Optional[int] = None,
         n_gpu_layers: Optional[int] = None,  # Accepted for caller compat, unused
         n_parallel: int = 1,
@@ -2745,6 +2865,7 @@ class LlamaCppBackend:
                 cache_type_kv = cache_type_kv,
                 speculative_type = speculative_type,
                 spec_draft_n_max = spec_draft_n_max,
+                tensor_parallel = tensor_parallel,
                 chat_template_override = chat_template_override,
                 extra_args = extra_args,
                 is_vision = is_vision,
@@ -2866,6 +2987,10 @@ class LlamaCppBackend:
                 requested_ctx = resolve_requested_ctx(extra_args, n_ctx)
                 cache_override = parse_cache_override(extra_args)
                 cache_type_kv = resolve_cache_type_kv(extra_args, cache_type_kv)
+                # A user --split-mode in extras last-wins-overrides the
+                # toggle, so reconcile it back into tensor_parallel state.
+                split_mode_override = parse_split_mode_override(extra_args)
+                tensor_parallel = resolve_tensor_parallel(extra_args, tensor_parallel)
                 if ctx_override is not None and ctx_override > 0:
                     logger.info(
                         f"User --ctx-size {ctx_override} honored; "
@@ -2875,6 +3000,11 @@ class LlamaCppBackend:
                     logger.info(
                         f"User --cache-type-k/-v {cache_override} "
                         "honored for KV estimate"
+                    )
+                if split_mode_override is not None:
+                    logger.info(
+                        f"User --split-mode {split_mode_override} honored; "
+                        "reconciled into tensor_parallel state"
                     )
                 effective_ctx = (
                     requested_ctx if requested_ctx > 0 else (self._context_length or 0)
@@ -2942,9 +3072,48 @@ class LlamaCppBackend:
                     #   since multi-GPU is slower and the user didn't ask for a
                     #   specific context length.
                     gpu_indices, use_fit = None, True
+                    # Per-GPU weight proportions for tensor mode (None = even).
+                    tp_tensor_split: Optional[list[int]] = None
                     explicit_ctx = requested_ctx > 0
 
-                    if gpus and self._can_estimate_kv() and effective_ctx > 0:
+                    if tensor_parallel and len(gpus) < 2:
+                        # Tensor parallelism needs >= 2 GPUs. On a single GPU
+                        # --split-mode tensor is a no-op, and with 0 GPUs detected
+                        # (CPU-only, or GPU probe failed) it must not reach
+                        # llama-server. Drop the flag and fall through to the
+                        # normal layer/CPU allocation below.
+                        logger.info(
+                            "Tensor parallelism requested but %d GPU(s) detected; "
+                            "ignoring (needs >= 2).",
+                            len(gpus),
+                        )
+                        tensor_parallel = False
+
+                    if tensor_parallel and gpus:
+                        # Tensor-parallel allocation: use all GPUs, weight the split
+                        # by (free - buffer), and cap context to the pooled VRAM
+                        # after weights + per-device compute-graph buffers. See
+                        # _plan_tensor_parallel for the policy + rationale.
+                        target_ctx = (
+                            effective_ctx
+                            if explicit_ctx
+                            else (self._context_length or effective_ctx)
+                        )
+                        (
+                            effective_ctx,
+                            max_available_ctx,
+                            gpu_indices,
+                            tp_tensor_split,
+                        ) = self._plan_tensor_parallel(
+                            gpus,
+                            model_size,
+                            target_ctx,
+                            cache_type_kv = cache_type_kv,
+                            n_parallel = n_parallel,
+                            mtp_engaged = _mtp_will_engage,
+                        )
+                        use_fit = False
+                    elif gpus and self._can_estimate_kv() and effective_ctx > 0:
                         # Compute the largest hardware-aware cap from the model's
                         # native context across all usable GPU subsets (for UI
                         # bounds), independent of the currently requested context.
@@ -3088,6 +3257,7 @@ class LlamaCppBackend:
                 except Exception as e:
                     logger.warning(f"GPU selection failed ({e}), using --fit on")
                     gpu_indices, use_fit = None, True
+                    tp_tensor_split = None
                     effective_ctx = requested_ctx  # fall back to original
 
                 launch_mmproj_path = self._resolve_launch_mmproj_path(
@@ -3176,6 +3346,25 @@ class LlamaCppBackend:
                     logger.info(f"KV cache type: {cache_type_kv}")
                 else:
                     self._cache_type_kv = None
+
+                # Tensor parallelism: split the model across GPUs by tensor
+                # rather than by layer. Multi-GPU only -- a no-op on a single
+                # GPU. Default (layer split) is left implicit by omitting the
+                # flag. See llama.cpp --split-mode.
+                if tensor_parallel:
+                    cmd.extend(["--split-mode", "tensor"])
+                    if tp_tensor_split and len(tp_tensor_split) > 1:
+                        cmd.extend(
+                            ["--tensor-split", ",".join(str(int(x)) for x in tp_tensor_split)]
+                        )
+                    self._tensor_parallel = True
+                    logger.info(
+                        "Tensor parallelism: --split-mode tensor, "
+                        "--tensor-split %s",
+                        tp_tensor_split,
+                    )
+                else:
+                    self._tensor_parallel = False
 
                 # Speculative decoding (n-gram self-speculation, zero VRAM cost)
                 # ngram-mod: ~16 MB shared hash pool, constant memory/complexity,
@@ -3821,6 +4010,7 @@ class LlamaCppBackend:
         is_vision: bool,
         gguf_path: Optional[str] = None,
         spec_draft_n_max: Optional[int] = None,
+        tensor_parallel: bool = False,
     ) -> bool:
         """True iff the live server already satisfies these load kwargs.
 
@@ -3855,6 +4045,9 @@ class LlamaCppBackend:
             return value
 
         if _norm(self._cache_type_kv) != _norm(cache_type_kv):
+            return False
+
+        if self._tensor_parallel != tensor_parallel:
             return False
 
         # Compare on the canonical UI-facing mode the user requested.
@@ -3949,6 +4142,7 @@ class LlamaCppBackend:
             self._supports_preserve_thinking = False
             self._supports_tools = False
             self._cache_type_kv = None
+            self._tensor_parallel = False
             self._speculative_type = None
             self._requested_spec_mode = None
             self._spec_draft_n_max = None

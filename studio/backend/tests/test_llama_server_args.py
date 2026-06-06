@@ -32,7 +32,9 @@ _spec.loader.exec_module(_lsa)
 is_managed_flag = _lsa.is_managed_flag
 parse_cache_override = _lsa.parse_cache_override
 parse_ctx_override = _lsa.parse_ctx_override
+parse_split_mode_override = _lsa.parse_split_mode_override
 resolve_cache_type_kv = _lsa.resolve_cache_type_kv
+resolve_tensor_parallel = _lsa.resolve_tensor_parallel
 strip_shadowing_flags = _lsa.strip_shadowing_flags
 validate_extra_args = _lsa.validate_extra_args
 
@@ -531,3 +533,138 @@ def test_strip_shadowing_flags_defaults_strip_everything():
         ["-c", "4096", "--cache-type-k", "q8_0", "--spec-default", "--jinja"]
     )
     assert out == []
+
+
+# ── --split-mode (Tensor Parallelism toggle) ─────────────────────────
+# Soft-shadowed exactly like --cache-type-*: pass-through allowed (keeps
+# the row/none/layer modes the boolean toggle doesn't expose), stripped
+# on inherit, and reconciled back into the round-tripped tensor_parallel
+# state.
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["--split-mode", "tensor"],
+        ["--split-mode", "row"],
+        ["--split-mode", "none"],
+        ["--split-mode", "layer"],
+        ["-sm", "tensor"],
+        ["--split-mode=row"],
+        ["-sm=tensor"],
+    ],
+)
+def test_split_mode_passes_through(args):
+    # Not denylisted -- a user keeps row/none/layer via extras.
+    assert validate_extra_args(args) == args
+
+
+def test_split_mode_is_not_managed():
+    assert is_managed_flag("--split-mode") is False
+    assert is_managed_flag("-sm") is False
+
+
+@pytest.mark.parametrize(
+    "args,expected",
+    [
+        (None, None),
+        ([], None),
+        (["--top-k", "20"], None),
+        (["--split-mode", "tensor"], "tensor"),
+        (["--split-mode", "row"], "row"),
+        (["-sm", "none"], "none"),
+        (["--split-mode=layer"], "layer"),
+        (["-sm=tensor"], "tensor"),
+        # last-wins when supplied twice
+        (["-sm", "row", "--split-mode", "tensor"], "tensor"),
+    ],
+)
+def test_parse_split_mode_override(args, expected):
+    assert parse_split_mode_override(args) == expected
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["--split-mode"],
+        ["-sm"],
+        ["--split-mode", "-c", "4096"],  # next token is a flag, not a value
+    ],
+)
+def test_parse_split_mode_override_rejects_malformed_values(args):
+    with pytest.raises(ValueError, match = "split-mode|'-sm'"):
+        parse_split_mode_override(args)
+
+
+def test_validate_extra_args_rejects_malformed_split_mode():
+    # Validation catches a value-less --split-mode at the boundary,
+    # mirroring the early --ctx-size / --cache-type checks.
+    with pytest.raises(ValueError, match = "split-mode"):
+        validate_extra_args(["--split-mode"])
+
+
+@pytest.mark.parametrize(
+    "args,fallback,expected",
+    [
+        # No override -> fall back to the toggle value, both directions.
+        (["--top-k", "20"], True, True),
+        (["--top-k", "20"], False, False),
+        (None, True, True),
+        ([], False, False),
+        # Explicit override wins: tensor -> on, anything else -> off,
+        # regardless of the toggle fallback.
+        (["--split-mode", "tensor"], False, True),
+        (["-sm", "tensor"], False, True),
+        (["--split-mode", "row"], True, False),
+        (["--split-mode", "none"], True, False),
+        (["--split-mode", "layer"], True, False),
+        (["--split-mode=tensor"], False, True),
+        # Case-insensitive on the mode string.
+        (["--split-mode", "TENSOR"], False, True),
+        # last-wins across multiple --split-mode flags.
+        (["-sm", "tensor", "--split-mode", "row"], True, False),
+    ],
+)
+def test_resolve_tensor_parallel(args, fallback, expected):
+    assert resolve_tensor_parallel(args, fallback) is expected
+
+
+def test_strip_shadowing_flags_drops_split_mode_when_requested():
+    out = strip_shadowing_flags(
+        ["--split-mode", "row", "--top-k", "20"],
+        strip_context = False,
+        strip_cache = False,
+        strip_spec = False,
+        strip_template = False,
+        strip_split_mode = True,
+    )
+    assert out == ["--top-k", "20"]
+
+
+def test_strip_shadowing_flags_keeps_split_mode_when_not_requested():
+    # No tensor_parallel field supplied on the Apply -> an inherited
+    # --split-mode survives (mirrors the chat-template keep behavior).
+    out = strip_shadowing_flags(
+        ["--split-mode", "row", "--top-k", "20"],
+        strip_context = True,
+        strip_cache = True,
+        strip_spec = True,
+        strip_template = True,
+        strip_split_mode = False,
+    )
+    assert out == ["--split-mode", "row", "--top-k", "20"]
+
+
+def test_strip_shadowing_flags_drops_split_mode_short_alias_and_equals():
+    assert strip_shadowing_flags(
+        ["-sm", "tensor", "--top-k", "20"], strip_split_mode = True
+    ) == ["--top-k", "20"]
+    assert strip_shadowing_flags(
+        ["--split-mode=row", "--seed", "-1"], strip_split_mode = True
+    ) == ["--seed", "-1"]
+
+
+def test_strip_shadowing_flags_defaults_strip_split_mode_too():
+    # The route's already-loaded comparator (no kwargs) must see a stored
+    # --split-mode as a shadowing flag so it forces a reload.
+    assert strip_shadowing_flags(["--split-mode", "tensor"]) == []

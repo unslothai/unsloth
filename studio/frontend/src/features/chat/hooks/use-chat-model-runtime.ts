@@ -380,6 +380,11 @@ export function useChatModelRuntime() {
               kvCacheDtype: statusRes.cache_type_kv,
               loadedKvCacheDtype: statusRes.cache_type_kv,
             }),
+          ...(statusRes.tensor_parallel !== undefined &&
+            prevState.loadedTensorParallel === null && {
+              tensorParallel: statusRes.tensor_parallel,
+              loadedTensorParallel: statusRes.tensor_parallel,
+            }),
           ...(statusRes.chat_template_override !== undefined &&
             prevState.loadedChatTemplateOverride === null &&
             prevState.chatTemplateOverride === null && {
@@ -614,6 +619,7 @@ export function useChatModelRuntime() {
               ggufContextLength,
               speculativeType,
               specDraftNMax,
+              tensorParallel,
               activePresetSource,
               activeGgufVariant,
             } = useChatRuntimeStore.getState();
@@ -642,6 +648,7 @@ export function useChatModelRuntime() {
               cache_type_kv: kvCacheDtype,
               speculative_type: speculativeType,
               spec_draft_n_max: specDraftNMax,
+              tensor_parallel: tensorParallel,
             });
 
             // If cancelled while loading, don't update UI to show
@@ -669,6 +676,7 @@ export function useChatModelRuntime() {
               }
             }
             const loadedKv = loadResponse.cache_type_kv ?? null;
+            const loadedTp = loadResponse.tensor_parallel ?? false;
             const loadedSpec = normalizeSpeculativeType(
               loadResponse.speculative_type,
             );
@@ -725,6 +733,8 @@ export function useChatModelRuntime() {
                 : resolveToolsEnabledOnLoad(supportsTools)),
               kvCacheDtype: loadedKv,
               loadedKvCacheDtype: loadedKv,
+              tensorParallel: loadedTp,
+              loadedTensorParallel: loadedTp,
               speculativeType: loadedSpec,
               loadedSpeculativeType: loadedSpec,
               specDraftNMax: loadResponse.spec_draft_n_max ?? null,

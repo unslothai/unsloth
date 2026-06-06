@@ -326,6 +326,10 @@ type ChatRuntimeStore = {
   /** User --spec-draft-n-max override (null = platform default). */
   specDraftNMax: number | null;
   loadedSpecDraftNMax: number | null;
+  /** Tensor-parallel split (--split-mode tensor) toggle, GGUF multi-GPU only. */
+  tensorParallel: boolean;
+  /** Backend-reported tensor-parallel state; null until first hydrated. */
+  loadedTensorParallel: boolean | null;
   loadedIsMultimodal: boolean;
   customContextLength: number | null;
   defaultChatTemplate: string | null;
@@ -394,6 +398,7 @@ type ChatRuntimeStore = {
   setKvCacheDtype: (dtype: string | null) => void;
   setSpeculativeType: (type: string | null) => void;
   setSpecDraftNMax: (value: number | null) => void;
+  setTensorParallel: (value: boolean) => void;
   setCustomContextLength: (v: number | null) => void;
   setChatTemplateOverride: (template: string | null) => void;
   setPendingAudio: (base64: string, name: string) => void;
@@ -658,6 +663,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   loadedSpeculativeType: null,
   specDraftNMax: null,
   loadedSpecDraftNMax: null,
+  tensorParallel: false,
+  loadedTensorParallel: null,
   loadedIsMultimodal: false,
   customContextLength: null,
   defaultChatTemplate: null,
@@ -873,6 +880,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       loadedSpeculativeType: null,
       specDraftNMax: null,
       loadedSpecDraftNMax: null,
+      tensorParallel: false,
+      loadedTensorParallel: null,
       loadedIsMultimodal: false,
       customContextLength: null,
       defaultChatTemplate: null,
@@ -998,6 +1007,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   setKvCacheDtype: (kvCacheDtype) => set({ kvCacheDtype }),
   setSpeculativeType: (speculativeType) => set({ speculativeType }),
   setSpecDraftNMax: (specDraftNMax) => set({ specDraftNMax }),
+  setTensorParallel: (tensorParallel) => set({ tensorParallel }),
   setCustomContextLength: (customContextLength) => set({ customContextLength }),
   setChatTemplateOverride: (chatTemplateOverride) =>
     set({ chatTemplateOverride }),

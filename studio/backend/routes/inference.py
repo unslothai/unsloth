@@ -648,6 +648,8 @@ def _request_matches_loaded_settings(
         llama_backend.cache_type_kv
     ):
         return False
+    if request.tensor_parallel != llama_backend.tensor_parallel:
+        return False
     # Vision loads silently drop speculative decoding (llama_cpp.py gates
     # spec on ``not is_vision``), so treat the request as ``off`` against
     # the backend's ``None`` to avoid forcing a redundant reload.
@@ -810,6 +812,7 @@ async def load_model(
                     chat_template = llama_backend.chat_template,
                     speculative_type = llama_backend.requested_spec_mode,
                     spec_draft_n_max = llama_backend.spec_draft_n_max,
+                    tensor_parallel = llama_backend.tensor_parallel,
                 )
         else:
             if (
@@ -943,6 +946,7 @@ async def load_model(
                             or "spec_draft_n_max" in fields_set
                         ),
                         strip_template = "chat_template_override" in fields_set,
+                        strip_split_mode = "tensor_parallel" in fields_set,
                     )
                     try:
                         extra_llama_args = validate_extra_args(stripped)
@@ -969,22 +973,25 @@ async def load_model(
             # GGUF download + llama-server startup.
             _n_parallel = getattr(fastapi_request.app.state, "llama_parallel_slots", 1)
 
+            # Load kwargs common to HF and local modes; the two differ only by
+            # the model-source args (hf_repo/-token vs gguf_path/mmproj).
+            _common_load_kwargs = dict(
+                model_identifier = config.identifier,
+                is_vision = config.is_vision,
+                n_ctx = request.max_seq_length,
+                chat_template_override = request.chat_template_override,
+                cache_type_kv = request.cache_type_kv,
+                speculative_type = request.speculative_type,
+                spec_draft_n_max = request.spec_draft_n_max,
+                n_parallel = _n_parallel,
+                extra_args = extra_llama_args,
+            )
             if config.gguf_hf_repo:
                 # HF mode: download via huggingface_hub then start llama-server
-                success = await asyncio.to_thread(
-                    llama_backend.load_model,
+                _source_load_kwargs = dict(
                     hf_repo = config.gguf_hf_repo,
                     hf_variant = config.gguf_variant,
                     hf_token = request.hf_token,
-                    model_identifier = config.identifier,
-                    is_vision = config.is_vision,
-                    n_ctx = request.max_seq_length,
-                    chat_template_override = request.chat_template_override,
-                    cache_type_kv = request.cache_type_kv,
-                    speculative_type = request.speculative_type,
-                    spec_draft_n_max = request.spec_draft_n_max,
-                    n_parallel = _n_parallel,
-                    extra_args = extra_llama_args,
                 )
             else:
                 # Local mode: llama-server loads via -m <path>
@@ -992,23 +999,54 @@ async def load_model(
                     _validate_native_mmproj_companion(
                         config.gguf_mmproj_file, config.gguf_file
                     )
-                success = await asyncio.to_thread(
-                    llama_backend.load_model,
+                _source_load_kwargs = dict(
                     gguf_path = config.gguf_file,
                     mmproj_path = config.gguf_mmproj_file,
                     # Pass the resolved variant so _extra_args_source
                     # is keyed off the same string the inheritance
                     # check at the top of /load uses (#5401 followup).
                     hf_variant = config.gguf_variant,
-                    model_identifier = config.identifier,
-                    is_vision = config.is_vision,
-                    n_ctx = request.max_seq_length,
-                    chat_template_override = request.chat_template_override,
-                    cache_type_kv = request.cache_type_kv,
-                    speculative_type = request.speculative_type,
-                    spec_draft_n_max = request.spec_draft_n_max,
-                    n_parallel = _n_parallel,
-                    extra_args = extra_llama_args,
+                )
+
+            # Tensor parallelism is arch-gated in llama.cpp and crashes some
+            # loads outright -- e.g. Gemma 3n aborts (GGML_ASSERT in
+            # ggml-backend-meta, SIGABRT); older builds also segfault on a
+            # quantized KV cache (since fixed upstream). load_model *raises* on
+            # such a crash -- it does not return False -- so a tensor load must
+            # treat a raised exception the same as a False return: swallow it to
+            # retry. A non-tensor load keeps its original contract and propagates.
+            try:
+                success = await asyncio.to_thread(
+                    llama_backend.load_model,
+                    **_source_load_kwargs,
+                    **_common_load_kwargs,
+                    tensor_parallel = request.tensor_parallel,
+                )
+            except Exception as exc:
+                if not request.tensor_parallel:
+                    raise
+                logger.warning(
+                    "Tensor-parallel load raised for '%s': %s",
+                    config.identifier,
+                    exc,
+                )
+                success = False
+
+            # If a tensor-parallel load failed, retry once with layer split so the
+            # checkbox never blocks a model from loading. The response reports
+            # the backend's actual tensor_parallel state, so the UI toggle
+            # reflects the fallback to off.
+            if not success and request.tensor_parallel:
+                logger.warning(
+                    "Tensor-parallel load failed for '%s'; retrying with layer "
+                    "split (this model may not support tensor parallelism)",
+                    config.identifier,
+                )
+                success = await asyncio.to_thread(
+                    llama_backend.load_model,
+                    **_source_load_kwargs,
+                    **_common_load_kwargs,
+                    tensor_parallel = False,
                 )
 
             if not success:
@@ -1061,6 +1099,7 @@ async def load_model(
                 chat_template = llama_backend.chat_template,
                 speculative_type = llama_backend.requested_spec_mode,
                 spec_draft_n_max = llama_backend.spec_draft_n_max,
+                tensor_parallel = llama_backend.tensor_parallel,
             )
 
         # ── Standard path: load via Unsloth/transformers ──────────
@@ -1551,6 +1590,7 @@ async def get_status(
                 chat_template_override = llama_backend.chat_template_override,
                 speculative_type = llama_backend.requested_spec_mode,
                 spec_draft_n_max = llama_backend.spec_draft_n_max,
+                tensor_parallel = llama_backend.tensor_parallel,
                 llama_cpp_supports_mtp = _supports_mtp,
                 llama_cpp_prebuilt_stale = _stale,
                 llama_cpp_installed_tag = _installed_tag,
