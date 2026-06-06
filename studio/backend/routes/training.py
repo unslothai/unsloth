@@ -742,9 +742,7 @@ async def stream_training_progress(
         # ── Live polling loop ────────────────────────────────────
         last_step = resume_from_step if resume_from_step is not None else -1
         no_update_count = 0
-        max_no_updates = (
-            1800  # Timeout after 30 min (large models need compile time)
-        )
+        max_no_updates = 1800  # Timeout after 30 min (large models need compile time)
 
         while backend.is_training_active():
             try:
