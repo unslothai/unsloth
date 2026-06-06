@@ -483,6 +483,7 @@ fi
 VENV_DIR="$STUDIO_HOME/unsloth_studio"
 VENV_T5_530_DIR="$STUDIO_HOME/.venv_t5_530"
 VENV_T5_550_DIR="$STUDIO_HOME/.venv_t5_550"
+VENV_T5_510_DIR="$STUDIO_HOME/.venv_t5_510"
 
 [ -d "$REPO_ROOT/.venv" ] && rm -rf "$REPO_ROOT/.venv"
 [ -d "$REPO_ROOT/.venv_overlay" ] && rm -rf "$REPO_ROOT/.venv_overlay"
@@ -596,9 +597,9 @@ else
     verbose_substep "python deps check: installed=$_PKG_NAME@${INSTALLED_VER:-unknown} latest=${LATEST_VER:-unknown}"
 fi
 
-# ── 6b. Pre-install transformers 5.x into .venv_t5_530/ and .venv_t5_550/ ──
+# ── 6b. Pre-install transformers 5.x into .venv_t5_530/, .venv_t5_550/, and .venv_t5_510/ ──
 # Models like GLM-4.7-Flash, Qwen3 MoE need transformers>=5.3.0.
-# Gemma 4 models need transformers>=5.5.0.
+# Gemma 4 models need transformers>=5.5.0; Gemma 4 Unified needs 5.10.x.
 # Pre-install into separate directories to avoid runtime pip overhead.
 # The training subprocess prepends the appropriate dir to sys.path.
 #
@@ -633,6 +634,21 @@ _assert_studio_owned_or_absent() {
         exit 1
     fi
 }
+_target_has_pkg_version() {
+    _thpv_dir="$1"
+    _thpv_pkg="$2"
+    _thpv_version="$3"
+    [ -d "$_thpv_dir" ] || return 1
+    _thpv_pkg_norm=$(printf '%s' "$_thpv_pkg" | tr '-' '_')
+    for _thpv_metadata in \
+        "$_thpv_dir"/"$_thpv_pkg_norm"-*.dist-info/METADATA \
+        "$_thpv_dir"/"$_thpv_pkg"-*.dist-info/METADATA
+    do
+        [ -f "$_thpv_metadata" ] || continue
+        grep -qx "Version: $_thpv_version" "$_thpv_metadata" && return 0
+    done
+    return 1
+}
 _NEED_T5_INSTALL=false
 if [ -d "$STUDIO_HOME/.venv_t5" ]; then
     # Legacy layout — migrate
@@ -642,6 +658,10 @@ if [ -d "$STUDIO_HOME/.venv_t5" ]; then
 fi
 [ ! -d "$VENV_T5_530_DIR" ] && _NEED_T5_INSTALL=true
 [ ! -d "$VENV_T5_550_DIR" ] && _NEED_T5_INSTALL=true
+[ ! -d "$VENV_T5_510_DIR" ] && _NEED_T5_INSTALL=true
+_target_has_pkg_version "$VENV_T5_530_DIR" "transformers" "5.3.0" || _NEED_T5_INSTALL=true
+_target_has_pkg_version "$VENV_T5_550_DIR" "transformers" "5.5.0" || _NEED_T5_INSTALL=true
+_target_has_pkg_version "$VENV_T5_510_DIR" "transformers" "5.10.2" || _NEED_T5_INSTALL=true
 # Also reinstall when python deps were updated (packages may need rebuild)
 [ "$_SKIP_PYTHON_DEPS" = false ] && _NEED_T5_INSTALL=true
 
@@ -665,6 +685,16 @@ if [ "$_NEED_T5_INSTALL" = true ]; then
     run_quiet "install hf_xet for t5_550" fast_install --target "$VENV_T5_550_DIR" --no-deps "hf_xet==1.4.2"
     run_quiet "install tiktoken for t5_550" fast_install --target "$VENV_T5_550_DIR" "tiktoken"
     step "transformers" "5.5.0 pre-installed"
+
+    _assert_studio_owned_or_absent "$VENV_T5_510_DIR" "transformers 5.10 sidecar venv"
+    [ -d "$VENV_T5_510_DIR" ] && rm -rf "$VENV_T5_510_DIR"
+    mkdir -p "$VENV_T5_510_DIR"
+    : > "$VENV_T5_510_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
+    run_quiet "install transformers 5.10.2" fast_install --target "$VENV_T5_510_DIR" --no-deps "transformers==5.10.2"
+    run_quiet "install huggingface_hub for t5_510" fast_install --target "$VENV_T5_510_DIR" --no-deps "huggingface_hub==1.8.0"
+    run_quiet "install hf_xet for t5_510" fast_install --target "$VENV_T5_510_DIR" --no-deps "hf_xet==1.4.2"
+    run_quiet "install tiktoken for t5_510" fast_install --target "$VENV_T5_510_DIR" "tiktoken"
+    step "transformers" "5.10.2 pre-installed"
 fi
 fi
 

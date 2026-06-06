@@ -1417,13 +1417,60 @@ if ($IsPipInstall) {
     }
 }
 
-# 1g. Python (>= 3.11 and < 3.14). Prefer py.exe so a 3.14 ahead of 3.13 on PATH does not trip the gate.
+# 1g. Python (>= 3.11 and < 3.14). Prefer the Studio venv that install.ps1
+# just created, then py.exe so a 3.14 ahead of 3.13 on PATH does not trip the gate.
 $HasPython = $null -ne (Get-Command python -ErrorAction SilentlyContinue)
 $PyLauncher = Get-Command py -CommandType Application -ErrorAction SilentlyContinue
 $PythonOk = $false
 $DetectedPyVer = $null
 
-if ($PyLauncher) {
+function Get-CompatiblePythonVersion {
+    param([string]$PythonExe)
+    try {
+        $out = & $PythonExe --version 2>&1 | Out-String
+        if ($out -match 'Python (3\.(11|12|13)(\.\d+)?)') {
+            return $Matches[1]
+        }
+    } catch { }
+    return $null
+}
+
+function Add-PythonDirToProcessPath {
+    param([string]$PythonExe)
+    try {
+        if ($PythonExe -and (Test-Path -LiteralPath $PythonExe)) {
+            $resolvedDir = Split-Path -Parent $PythonExe
+            $alreadyOnPath = ($env:PATH -split ';' | Where-Object { $_.TrimEnd('\') -ieq $resolvedDir.TrimEnd('\') }).Count -gt 0
+            if (-not $alreadyOnPath) {
+                $env:PATH = "$resolvedDir;$env:PATH"
+            }
+            $script:HasPython = $true
+        }
+    } catch { }
+}
+
+$_prereqStudioHome = $null
+if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_STUDIO_HOME)) {
+    $_prereqStudioHome = $env:UNSLOTH_STUDIO_HOME.Trim()
+} elseif (-not [string]::IsNullOrWhiteSpace($env:STUDIO_HOME)) {
+    $_prereqStudioHome = $env:STUDIO_HOME.Trim()
+} else {
+    $_prereqStudioHome = Join-Path $env:USERPROFILE ".unsloth\studio"
+}
+if ($_prereqStudioHome -eq "~" -or $_prereqStudioHome -like "~/*" -or $_prereqStudioHome -like "~\*") {
+    $_prereqStudioHome = (Join-Path $env:USERPROFILE $_prereqStudioHome.Substring(1).TrimStart('/','\'))
+}
+$_prereqVenvPython = Join-Path $_prereqStudioHome "unsloth_studio\Scripts\python.exe"
+if (Test-Path -LiteralPath $_prereqVenvPython) {
+    $_venvPyVer = Get-CompatiblePythonVersion $_prereqVenvPython
+    if ($_venvPyVer) {
+        $DetectedPyVer = $_venvPyVer
+        Add-PythonDirToProcessPath $_prereqVenvPython
+        $PythonOk = $true
+    }
+}
+
+if (-not $PythonOk -and $PyLauncher) {
     foreach ($minor in @("3.13", "3.12", "3.11")) {
         try {
             $out = & $PyLauncher.Source "-$minor" --version 2>&1 | Out-String
@@ -1435,12 +1482,7 @@ if ($PyLauncher) {
                 try {
                     $resolvedExe = (& $PyLauncher.Source "-$minor" -c "import sys; print(sys.executable)" 2>$null | Select-Object -First 1)
                     if ($resolvedExe -and (Test-Path $resolvedExe)) {
-                        $resolvedDir = Split-Path -Parent $resolvedExe
-                        $alreadyOnPath = ($env:PATH -split ';' | Where-Object { $_.TrimEnd('\') -ieq $resolvedDir.TrimEnd('\') }).Count -gt 0
-                        if (-not $alreadyOnPath) {
-                            $env:PATH = "$resolvedDir;$env:PATH"
-                        }
-                        $HasPython = $true
+                        Add-PythonDirToProcessPath $resolvedExe
                     }
                 } catch { }
                 $PythonOk = $true
@@ -2237,13 +2279,34 @@ if ($stackExit -ne 0) {
     $ErrorActionPreference = $prevEAP
 }
 
-# ── Pre-install transformers 5.x into .venv_t5_530/ and .venv_t5_550/ ──
+# ── Pre-install transformers 5.x into .venv_t5_530/, .venv_t5_550/, and .venv_t5_510/ ──
 # Runs outside the deps fast-path gate so that upgrades from the legacy
 # single .venv_t5 are always migrated to the tiered layout.
 # T5 sidecar venvs live under the resolved $StudioHome so custom installs are self-contained.
 $VenvT5_530Dir = Join-Path $StudioHome ".venv_t5_530"
 $VenvT5_550Dir = Join-Path $StudioHome ".venv_t5_550"
+$VenvT5_510Dir = Join-Path $StudioHome ".venv_t5_510"
 $VenvT5Legacy = Join-Path $StudioHome ".venv_t5"
+
+function Test-TargetPackageVersion {
+    param(
+        [Parameter(Mandatory = $true)][string]$TargetDir,
+        [Parameter(Mandatory = $true)][string]$PackageName,
+        [Parameter(Mandatory = $true)][string]$ExpectedVersion
+    )
+    if (-not (Test-Path -LiteralPath $TargetDir -PathType Container)) { return $false }
+    $packageNorm = $PackageName.Replace("-", "_")
+    foreach ($pattern in @("$packageNorm-*.dist-info", "$PackageName-*.dist-info")) {
+        foreach ($distInfo in @(Get-ChildItem -LiteralPath $TargetDir -Directory -Filter $pattern -ErrorAction SilentlyContinue)) {
+            $metadata = Join-Path $distInfo.FullName "METADATA"
+            if (-not (Test-Path -LiteralPath $metadata -PathType Leaf)) { continue }
+            foreach ($line in (Get-Content -LiteralPath $metadata -ErrorAction SilentlyContinue)) {
+                if ($line -eq "Version: $ExpectedVersion") { return $true }
+            }
+        }
+    }
+    return $false
+}
 
 $_NeedT5Install = $false
 if (Test-Path -LiteralPath $VenvT5Legacy) {
@@ -2253,6 +2316,10 @@ if (Test-Path -LiteralPath $VenvT5Legacy) {
 }
 if (-not (Test-Path -LiteralPath $VenvT5_530Dir)) { $_NeedT5Install = $true }
 if (-not (Test-Path -LiteralPath $VenvT5_550Dir)) { $_NeedT5Install = $true }
+if (-not (Test-Path -LiteralPath $VenvT5_510Dir)) { $_NeedT5Install = $true }
+if (-not (Test-TargetPackageVersion -TargetDir $VenvT5_530Dir -PackageName "transformers" -ExpectedVersion "5.3.0")) { $_NeedT5Install = $true }
+if (-not (Test-TargetPackageVersion -TargetDir $VenvT5_550Dir -PackageName "transformers" -ExpectedVersion "5.5.0")) { $_NeedT5Install = $true }
+if (-not (Test-TargetPackageVersion -TargetDir $VenvT5_510Dir -PackageName "transformers" -ExpectedVersion "5.10.2")) { $_NeedT5Install = $true }
 # Also reinstall when python deps were updated
 if (-not $SkipPythonDeps) { $_NeedT5Install = $true }
 
@@ -2330,8 +2397,43 @@ if ($script:UnslothVerbose) {
 if ($tiktokenInstallExit -ne 0) {
     substep "Could not install tiktoken into .venv_t5_550/ -- Qwen tokenizers may fail" "Yellow"
 }
-$ErrorActionPreference = $prevEAP_t5
 step "transformers" "5.5.0 pre-installed"
+
+# --- .venv_t5_510 (transformers 5.10.2) ---
+substep "pre-installing transformers 5.10.2 for Gemma 4 Unified support..."
+Assert-StudioOwnedOrAbsent -Path $VenvT5_510Dir -Label "transformers 5.10 sidecar venv"
+if (Test-Path -LiteralPath $VenvT5_510Dir) { Remove-Item -LiteralPath $VenvT5_510Dir -Recurse -Force }
+[System.IO.Directory]::CreateDirectory($VenvT5_510Dir) | Out-Null
+Mark-StudioOwned -Path $VenvT5_510Dir
+foreach ($pkg in @("transformers==5.10.2", "huggingface_hub==1.8.0", "hf_xet==1.4.2")) {
+    if ($script:UnslothVerbose) {
+        Fast-Install --target $VenvT5_510Dir --no-deps $pkg
+        $t5PkgExit = $LASTEXITCODE
+        $output = ""
+    } else {
+        $output = Fast-Install --target $VenvT5_510Dir --no-deps $pkg | Out-String
+        $t5PkgExit = $LASTEXITCODE
+    }
+    if ($t5PkgExit -ne 0) {
+        Write-Host "[FAIL] Could not install $pkg into .venv_t5_510/" -ForegroundColor Red
+        Write-Host $output -ForegroundColor Red
+        $ErrorActionPreference = $prevEAP_t5
+        exit 1
+    }
+}
+if ($script:UnslothVerbose) {
+    Fast-Install --target $VenvT5_510Dir tiktoken
+    $tiktokenInstallExit = $LASTEXITCODE
+    $output = ""
+} else {
+    $output = Fast-Install --target $VenvT5_510Dir tiktoken | Out-String
+    $tiktokenInstallExit = $LASTEXITCODE
+}
+if ($tiktokenInstallExit -ne 0) {
+    substep "Could not install tiktoken into .venv_t5_510/ -- Qwen tokenizers may fail" "Yellow"
+}
+$ErrorActionPreference = $prevEAP_t5
+step "transformers" "5.10.2 pre-installed"
 
 } # end $_NeedT5Install
 

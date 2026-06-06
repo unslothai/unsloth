@@ -1897,7 +1897,7 @@ def run_training_process(
                 }
             )
             return
-        # Activate correct transformers version (Gemma-4 needs 5.5.0, etc.)
+        # Activate correct transformers version (Gemma-4 needs the sidecar, etc.)
         # Must happen before any transformers/mlx-lm imports in _run_mlx_training.
         try:
             _activate_transformers_version(model_name)

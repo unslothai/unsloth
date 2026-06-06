@@ -18,6 +18,7 @@ Pattern follows core/training/training.py.
 import atexit
 import base64
 import os
+import signal
 import structlog
 from loggers import get_logger
 import multiprocessing as mp
@@ -253,6 +254,36 @@ class InferenceOrchestrator:
         """Check if subprocess is alive."""
         return self._proc is not None and self._proc.is_alive()
 
+    def _subprocess_crash_message(self, context: str) -> str:
+        """Return a user-facing crash message with the worker exit status."""
+        if self._proc is None:
+            return f"Inference subprocess crashed during {context} (process missing)"
+
+        exitcode = self._proc.exitcode
+        pid = self._proc.pid
+        if exitcode is None:
+            return f"Inference subprocess crashed during {context} (pid={pid})"
+
+        if exitcode < 0:
+            signum = -exitcode
+            try:
+                sig_name = signal.Signals(signum).name
+            except ValueError:
+                sig_name = f"SIG{signum}"
+
+            suffix = ""
+            if sig_name == "SIGKILL":
+                suffix = "; this commonly means the OS killed the worker for OOM"
+            return (
+                f"Inference subprocess crashed during {context} "
+                f"(pid={pid}, signal={sig_name}, exitcode={exitcode}{suffix})"
+            )
+
+        return (
+            f"Inference subprocess crashed during {context} "
+            f"(pid={pid}, exitcode={exitcode})"
+        )
+
     # ------------------------------------------------------------------
     # Queue helpers
     # ------------------------------------------------------------------
@@ -298,7 +329,7 @@ class InferenceOrchestrator:
             if resp is None:
                 # Check subprocess health
                 if not self._ensure_subprocess_alive():
-                    raise RuntimeError("Inference subprocess crashed during wait")
+                    raise RuntimeError(self._subprocess_crash_message("wait"))
                 continue
 
             rtype = resp.get("type", "")
@@ -528,7 +559,7 @@ class InferenceOrchestrator:
                 except queue.Empty:
                     # Timeout — check subprocess health
                     if not self._ensure_subprocess_alive():
-                        yield "Error: Inference subprocess crashed during generation"
+                        yield f"Error: {self._subprocess_crash_message('generation')}"
                         return
                     continue
 
@@ -1041,7 +1072,7 @@ class InferenceOrchestrator:
             if resp is None:
                 # Check subprocess health
                 if not self._ensure_subprocess_alive():
-                    yield "Error: Inference subprocess crashed during generation"
+                    yield f"Error: {self._subprocess_crash_message('generation')}"
                     return
                 continue
 
@@ -1138,7 +1169,7 @@ class InferenceOrchestrator:
             if resp is None:
                 if not self._ensure_subprocess_alive():
                     raise RuntimeError(
-                        "Inference subprocess crashed during audio generation"
+                        self._subprocess_crash_message("audio generation")
                     )
                 continue
 
@@ -1263,7 +1294,10 @@ class InferenceOrchestrator:
 
                 if resp is None:
                     if not self._ensure_subprocess_alive():
-                        yield "Error: Inference subprocess crashed during audio input generation"
+                        yield (
+                            "Error: "
+                            + self._subprocess_crash_message("audio input generation")
+                        )
                         return
                     continue
 
