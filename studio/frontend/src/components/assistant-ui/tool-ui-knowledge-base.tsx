@@ -22,113 +22,16 @@ import {
 } from "@/components/ui/hover-card";
 import { useDocumentPreviewStore } from "@/features/rag/components/preview-store";
 
-const RAG_SOURCES_SENTINEL = "__RAG_SOURCES__:";
-
-interface Citation {
-  id: string;
-  filename: string;
-  page?: number | null;
-  score?: number | null;
-  text: string;
-  /** Set when the citation can open its source in the viewer. */
-  documentId?: string | null;
-  chunkId?: string | null;
-}
-
-function asNumber(value: unknown): number | null {
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
-}
-
-/** Parse the post-sentinel source-map; null if absent so callers fall back to generic JSON shapes. */
-function parseSentinelSources(result: unknown): Citation[] | null {
-  if (typeof result !== "string") return null;
-  const idx = result.indexOf(RAG_SOURCES_SENTINEL);
-  if (idx < 0) return null;
-  const payload = result.slice(idx + RAG_SOURCES_SENTINEL.length).trim();
-  let rows: unknown;
-  try {
-    rows = JSON.parse(payload);
-  } catch {
-    return [];
-  }
-  if (!Array.isArray(rows)) return [];
-  return rows.map((row, i) => {
-    const r = (row ?? {}) as Record<string, unknown>;
-    const documentId = typeof r.documentId === "string" ? r.documentId : null;
-    const chunkId = typeof r.chunkId === "string" ? r.chunkId : null;
-    const filename =
-      typeof r.filename === "string" ? r.filename : `Source ${i + 1}`;
-    return {
-      id: chunkId ?? `${filename}-${i}`,
-      filename,
-      page: asNumber(r.page),
-      score: asNumber(r.score),
-      text: typeof r.text === "string" ? r.text : "",
-      documentId,
-      chunkId,
-    };
-  });
-}
-
-/** Normalize a provider-shaped tool result (array, `{results:[...]}`, or string) to Citations. */
-function parseCitations(result: unknown): Citation[] {
-  const sentinel = parseSentinelSources(result);
-  if (sentinel !== null) return sentinel;
-
-  let rows: unknown[] | null = null;
-  if (Array.isArray(result)) {
-    rows = result;
-  } else if (typeof result === "string") {
-    const trimmed = result.trim();
-    if (trimmed.startsWith("[") || trimmed.startsWith("{")) {
-      try {
-        const parsed = JSON.parse(trimmed);
-        if (Array.isArray(parsed)) rows = parsed;
-        else if (parsed && Array.isArray((parsed as { results?: unknown }).results)) {
-          rows = (parsed as { results: unknown[] }).results;
-        }
-      } catch {
-        rows = null;
-      }
-    }
-  } else if (result && Array.isArray((result as { results?: unknown }).results)) {
-    rows = (result as { results: unknown[] }).results;
-  }
-  if (!rows) return [];
-
-  const citations: Citation[] = [];
-  rows.forEach((row, i) => {
-    if (!row || typeof row !== "object") return;
-    const r = row as Record<string, unknown>;
-    const text =
-      typeof r.text === "string"
-        ? r.text
-        : typeof r.chunk === "string"
-          ? r.chunk
-          : typeof r.content === "string"
-            ? r.content
-            : "";
-    const filename =
-      typeof r.filename === "string"
-        ? r.filename
-        : typeof r.documentId === "string"
-          ? r.documentId
-          : `Source ${i + 1}`;
-    const chunkId =
-      typeof r.chunkId === "string" ? r.chunkId : `${filename}-${i}`;
-    citations.push({
-      id: chunkId,
-      filename,
-      page: asNumber(r.page),
-      score: asNumber(r.score),
-      text,
-    });
-  });
-  return citations;
-}
+import { type Citation, parseCitations } from "./citation-utils";
 
 /** Citation badge: filename + page, chunk text on hover; clicking opens the source viewer when a documentId is present. */
-function CitationBadge({ citation, index }: { citation: Citation; index: number }) {
+export function CitationBadge({
+  citation,
+  index,
+}: {
+  citation: Citation;
+  index: number;
+}) {
   const openPreview = useDocumentPreviewStore((s) => s.openPreview);
   const clickable = Boolean(citation.documentId);
   const label =
@@ -221,6 +124,12 @@ const KnowledgeBaseToolUIImpl: ToolCallMessagePartComponent = ({
   const query = (args as { query?: string })?.query ?? "";
   const isRunning = status?.type === "running";
   const citations = useMemo(() => parseCitations(result), [result]);
+  // Citations themselves now render as a "Sources" list at the bottom of the
+  // message (RagSourcesGroup); the block keeps only a one-line summary.
+  const docCount = useMemo(
+    () => new Set(citations.map((c) => c.documentId ?? c.filename)).size,
+    [citations],
+  );
 
   // Collapse once the model starts answering.
   const hasText = useAuiState(({ message }) =>
@@ -257,10 +166,10 @@ const KnowledgeBaseToolUIImpl: ToolCallMessagePartComponent = ({
             </span>
           </div>
         ) : citations.length > 0 ? (
-          <div className="flex flex-wrap gap-1.5">
-            {citations.map((citation, i) => (
-              <CitationBadge key={citation.id} citation={citation} index={i} />
-            ))}
+          <div className="text-sm text-muted-foreground">
+            Retrieved {citations.length} passage
+            {citations.length === 1 ? "" : "s"} from {docCount} document
+            {docCount === 1 ? "" : "s"}. See Sources below.
           </div>
         ) : result ? (
           <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded bg-muted/50 p-2 text-xs">

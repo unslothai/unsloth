@@ -13,6 +13,7 @@ import { downloadImagePart } from "@/components/assistant-ui/image";
 import { MarkdownText } from "@/components/assistant-ui/markdown-text";
 import { MessageTiming } from "@/components/assistant-ui/message-timing";
 import { Reasoning, ReasoningGroup } from "@/components/assistant-ui/reasoning";
+import { RagSourcesGroup } from "@/components/assistant-ui/rag-sources";
 import { Sources, SourcesGroup } from "@/components/assistant-ui/sources";
 import {
   thinkEffortAriaLabel,
@@ -2092,6 +2093,7 @@ const AssistantMessage: FC = () => {
           }}
         />
         <SourcesGroup />
+        <RagSourcesGroup />
         <MessageError />
       </div>
 
