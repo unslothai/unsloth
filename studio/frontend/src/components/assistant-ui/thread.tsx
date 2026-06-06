@@ -55,6 +55,10 @@ import {
   exportConversationRawJsonl,
   exportConversationCsv,
 } from "@/features/chat/prompt-storage/prompt-storage-dialog";
+import {
+  listPromptEntries,
+  type PromptEntry,
+} from "@/features/chat/api/prompts-api";
 import { useChatProjects } from "@/features/chat/hooks/use-chat-projects";
 import { NewProjectDialog } from "@/features/chat/components/new-project-dialog";
 import { parseExternalModelId } from "@/features/chat/external-providers";
@@ -1919,6 +1923,20 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
   const aui = useAui();
   const { startQueue } = useContext(PromptQueueContext);
 
+  // The Saved prompts submenu previews the 3 most recently updated prompts;
+  // refreshed each time the + menu opens so new saves show up immediately.
+  const [recentPrompts, setRecentPrompts] = useState<PromptEntry[]>([]);
+  const refreshRecentPrompts = useCallback(async () => {
+    try {
+      const rows = await listPromptEntries();
+      setRecentPrompts(
+        [...rows].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 3),
+      );
+    } catch {
+      // Keep prior state on failure.
+    }
+  }, []);
+
   return (
     <>
     <PromptStorageDialog
@@ -1932,7 +1950,11 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
         startQueue(items);
       }}
     />
-    <DropdownMenu>
+    <DropdownMenu
+      onOpenChange={(open) => {
+        if (open) void refreshRecentPrompts();
+      }}
+    >
       <DropdownMenuTrigger asChild={true}>
         <button
           type="button"
@@ -2039,7 +2061,7 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
           onSelect={() => setRagEnabled(!ragEnabled)}
         >
           <HugeiconsIcon icon={FileDatabaseIcon} strokeWidth={2} />
-          Chat with files
+          RAG
           {ragEnabled && ragAvailable ? (
             <HugeiconsIcon
               icon={Tick02Icon}
@@ -2067,10 +2089,26 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
             />
           ) : null}
         </DropdownMenuItem>
-        <DropdownMenuItem onSelect={() => setPromptStorageOpen(true)}>
-          <HugeiconsIcon icon={Bookmark02Icon} strokeWidth={2} />
-          Saved prompts
-        </DropdownMenuItem>
+        <DropdownMenuSub>
+          <DropdownMenuSubTrigger>
+            <HugeiconsIcon icon={Bookmark02Icon} strokeWidth={2} />
+            Saved prompts
+          </DropdownMenuSubTrigger>
+          <DropdownMenuSubContent className="unsloth-plus-menu w-[220px]">
+            {recentPrompts.map((p) => (
+              <DropdownMenuItem
+                key={p.id}
+                onSelect={() => aui.composer().setText(p.text)}
+              >
+                <span className="truncate">{p.name}</span>
+              </DropdownMenuItem>
+            ))}
+            {recentPrompts.length > 0 ? <DropdownMenuSeparator /> : null}
+            <DropdownMenuItem onSelect={() => setPromptStorageOpen(true)}>
+              All saved prompts…
+            </DropdownMenuItem>
+          </DropdownMenuSubContent>
+        </DropdownMenuSub>
         <DropdownMenuSub>
           <DropdownMenuSubTrigger>
             <MoreHorizontalIcon className="size-4" />
@@ -2119,7 +2157,7 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
                   if (!activeThreadId) return;
                   exportConversationShareGPT(activeThreadId).catch(() => toast.error("Export failed."));
                 }}>
-                  ShareGPT JSONL (training)
+                  ShareGPT JSONL
                 </DropdownMenuItem>
               </DropdownMenuSubContent>
             </DropdownMenuSub>

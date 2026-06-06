@@ -58,6 +58,7 @@ import {
   exportConversationRawJsonl,
   exportConversationCsv,
 } from "./prompt-storage/prompt-storage-dialog";
+import { listPromptEntries, type PromptEntry } from "./api/prompts-api";
 import { McpComposerButton } from "./mcp-composer-button";
 import { KnowledgeBaseComposerButton } from "@/features/rag/components/knowledge-base-composer-button";
 import { NewProjectDialog } from "./components/new-project-dialog";
@@ -433,6 +434,19 @@ export function SharedComposer({
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   // ── Prompt storage & queue ────────────────────────────────────────────────
   const [promptStorageOpen, setPromptStorageOpen] = useState(false);
+  // The Saved prompts submenu previews the 3 most recently updated prompts;
+  // refreshed each time the + menu opens so new saves show up immediately.
+  const [recentPrompts, setRecentPrompts] = useState<PromptEntry[]>([]);
+  const refreshRecentPrompts = useCallback(async () => {
+    try {
+      const rows = await listPromptEntries();
+      setRecentPrompts(
+        [...rows].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 3),
+      );
+    } catch {
+      // Keep prior state on failure.
+    }
+  }, []);
   const [isQueueRunning, setIsQueueRunning] = useState(false);
   const [queueProgress, setQueueProgress] = useState({ current: 0, total: 0 });
   const queueRef = useRef<string[]>([]);
@@ -1238,7 +1252,11 @@ export function SharedComposer({
           />
           {/* Same + side menu as the single-chat composer (ComposerToolsMenu),
               wired to the compare composer's own file/audio inputs and tools. */}
-          <DropdownMenu>
+          <DropdownMenu
+            onOpenChange={(open) => {
+              if (open) void refreshRecentPrompts();
+            }}
+          >
             <DropdownMenuTrigger asChild={true}>
               <button
                 type="button"
@@ -1350,7 +1368,7 @@ export function SharedComposer({
                 onSelect={() => setRagEnabled(!ragEnabled)}
               >
                 <HugeiconsIcon icon={FileDatabaseIcon} strokeWidth={2} />
-                Chat with files
+                RAG
                 {ragEnabled && !ragDisabled ? (
                   <HugeiconsIcon
                     icon={Tick02Icon}
@@ -1376,10 +1394,31 @@ export function SharedComposer({
                   />
                 ) : null}
               </DropdownMenuItem>
-              <DropdownMenuItem onSelect={() => setPromptStorageOpen(true)}>
-                <HugeiconsIcon icon={Bookmark02Icon} strokeWidth={2} />
-                Saved prompts
-              </DropdownMenuItem>
+              <DropdownMenuSub>
+                <DropdownMenuSubTrigger>
+                  <HugeiconsIcon icon={Bookmark02Icon} strokeWidth={2} />
+                  Saved prompts
+                </DropdownMenuSubTrigger>
+                <DropdownMenuSubContent className="unsloth-plus-menu w-[220px]">
+                  {recentPrompts.map((p) => (
+                    <DropdownMenuItem
+                      key={p.id}
+                      onSelect={() => {
+                        setText(p.text);
+                        requestAnimationFrame(() =>
+                          textareaRef.current?.focus(),
+                        );
+                      }}
+                    >
+                      <span className="truncate">{p.name}</span>
+                    </DropdownMenuItem>
+                  ))}
+                  {recentPrompts.length > 0 ? <DropdownMenuSeparator /> : null}
+                  <DropdownMenuItem onSelect={() => setPromptStorageOpen(true)}>
+                    All saved prompts…
+                  </DropdownMenuItem>
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
               <DropdownMenuSub>
                 <DropdownMenuSubTrigger>
                   <MoreHorizontalIcon className="size-4" />
@@ -1429,7 +1468,7 @@ export function SharedComposer({
                         { label: "Raw JSONL", fn: exportConversationRawJsonl },
                         { label: "CSV", fn: exportConversationCsv },
                         {
-                          label: "ShareGPT JSONL (training)",
+                          label: "ShareGPT JSONL",
                           fn: exportConversationShareGPT,
                         },
                       ].map(({ label, fn }) => {

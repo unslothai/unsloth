@@ -129,7 +129,7 @@ export function KnowledgeBaseComposerButton({
               />
               <XIcon className="composer-pill-x" />
             </span>
-            <span>Chat with files</span>
+            <span>RAG</span>
             <ArrowDownStandardIcon className="composer-pill-caret size-[15px]" />
           </button>
         </DropdownMenuTrigger>
