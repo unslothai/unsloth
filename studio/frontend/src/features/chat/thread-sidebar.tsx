@@ -201,13 +201,14 @@ export function ThreadSidebar({
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <button
+                  type="button"
                   className="flex items-center justify-center rounded-sm p-0.5 text-muted-foreground opacity-60 hover:opacity-100 hover:bg-accent"
                   title="Export options"
                 >
                   <HugeiconsIcon icon={MoreHorizontalIcon} className="size-3.5" />
                 </button>
               </DropdownMenuTrigger>
-              <DropdownMenuContent side="right" align="start" className="w-56">
+              <DropdownMenuContent side="bottom" align="end" className="w-56">
                 <DropdownMenuSub>
                   <DropdownMenuSubTrigger>
                     <HugeiconsIcon icon={Download01Icon} className="mr-2 size-4" />
@@ -259,49 +260,44 @@ export function ThreadSidebar({
                   >
                     <span>{item.title}</span>
                   </SidebarMenuButton>
-                  <SidebarMenuAction showOnHover={true} asChild>
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <button
-                          className="flex items-center justify-center rounded-sm p-0.5 hover:bg-accent"
-                          title="More options"
-                          onClick={(e) => e.stopPropagation()}
-                        >
-                          <HugeiconsIcon icon={MoreHorizontalIcon} className="size-4" />
-                        </button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent side="right" align="start" className="w-44">
-                        <DropdownMenuItem onSelect={() => openRename(item)}>
-                          <HugeiconsIcon icon={PencilEdit02Icon} className="mr-2 size-4" />
-                          Rename
-                        </DropdownMenuItem>
-                        <DropdownMenuSub>
-                          <DropdownMenuSubTrigger>
-                            <HugeiconsIcon icon={Download01Icon} className="mr-2 size-4" />
-                            Export
-                          </DropdownMenuSubTrigger>
-                          <DropdownMenuSubContent className="w-52">
-                            {EXPORT_FORMATS.map(({ label, fn }) => (
-                              <DropdownMenuItem
-                                key={label}
-                                onSelect={() => handleExport(item, fn)}
-                              >
-                                {label}
-                              </DropdownMenuItem>
-                            ))}
-                          </DropdownMenuSubContent>
-                        </DropdownMenuSub>
-                        <DropdownMenuSeparator />
-                        <DropdownMenuItem
-                          className="text-destructive focus:text-destructive"
-                          onSelect={() => void handleDelete(item)}
-                        >
-                          <HugeiconsIcon icon={Delete02Icon} className="mr-2 size-4" />
-                          Delete
-                        </DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  </SidebarMenuAction>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <SidebarMenuAction showOnHover onClick={(e) => e.stopPropagation()}>
+                        <HugeiconsIcon icon={MoreHorizontalIcon} className="size-4" />
+                        <span className="sr-only">More options</span>
+                      </SidebarMenuAction>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent side="right" align="start" className="w-44">
+                      <DropdownMenuItem onSelect={() => openRename(item)}>
+                        <HugeiconsIcon icon={PencilEdit02Icon} className="mr-2 size-4" />
+                        Rename
+                      </DropdownMenuItem>
+                      <DropdownMenuSub>
+                        <DropdownMenuSubTrigger>
+                          <HugeiconsIcon icon={Download01Icon} className="mr-2 size-4" />
+                          Export
+                        </DropdownMenuSubTrigger>
+                        <DropdownMenuSubContent className="w-52">
+                          {EXPORT_FORMATS.map(({ label, fn }) => (
+                            <DropdownMenuItem
+                              key={label}
+                              onSelect={() => handleExport(item, fn)}
+                            >
+                              {label}
+                            </DropdownMenuItem>
+                          ))}
+                        </DropdownMenuSubContent>
+                      </DropdownMenuSub>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem
+                        className="text-destructive focus:text-destructive"
+                        onSelect={() => void handleDelete(item)}
+                      >
+                        <HugeiconsIcon icon={Delete02Icon} className="mr-2 size-4" />
+                        Delete
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
                 </SidebarMenuItem>
               ))}
             </SidebarMenu>
