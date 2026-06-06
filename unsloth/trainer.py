@@ -19,6 +19,7 @@ import warnings
 from dataclasses import dataclass, field
 from typing import Optional, List
 from functools import wraps
+import torch
 
 import trl
 import inspect
@@ -49,6 +50,8 @@ __all__ = [
     "_patch_trl_trainer",
     "UnslothVisionDataCollator",
     "QGaloreConfig",
+    "MuonConfig",
+    "_MuonAdamWChained",
 ]
 
 logger = logging.getLogger(__name__)
@@ -132,6 +135,11 @@ try:
 except:
     from transformers import TrainingArguments
 
+try:
+    from peft import PeftModel
+except ImportError:
+    PeftModel = None
+
 
 @dataclass
 class QGaloreConfig:
@@ -156,18 +164,183 @@ class QGaloreConfig:
     target_modules: Optional[List[str]] = None
 
 
+@dataclass
+class MuonConfig:
+    """Configuration for the Muon optimizer integration.
+
+    Muon (Momentum + Newton-Schulz orthogonalization) only applies to 2D
+    hidden-layer weight matrices. Embedding matrices, biases, layernorm
+    params, and all 1D/0D parameters fall back to AdamW.
+
+    .. note::
+
+        * Requires PyTorch >= 2.9.0.
+        * ``torch.optim.Muon`` internally casts gradients to ``bfloat16``
+          for the Newton-Schulz iteration, even when the model is trained
+          in ``float32``. This may affect numerical stability for full-
+          precision training.
+        * The Muon state dict format (``{"muon": ..., "adamw": ...}``) is
+          **incompatible with FSDP**. Use DDP only.
+
+    Example:
+        model, tokenizer = FastLanguageModel.from_pretrained(
+            "unsloth/Qwen3-8B",
+            full_finetuning=True,
+        )
+
+        trainer = UnslothTrainer(
+            model=model,
+            tokenizer=tokenizer,
+            args=UnslothTrainingArguments(
+                muon_config=MuonConfig(
+                    momentum=0.95,
+                    ns_steps=5,
+                    muon_lr_scale=1.0,
+                ),
+                learning_rate=1e-4,
+                output_dir="./output",
+            ),
+            train_dataset=dataset,
+        )
+    """
+
+    _ADAMW_EPS_UNSET = object()
+    _ADAMW_BETAS_UNSET = object()
+
+    momentum: float = 0.95
+    nesterov: bool = True
+    ns_steps: int = 5
+    ns_coefficients: Optional[tuple[float, float, float]] = None
+    muon_lr_scale: float = 1.0
+    adjust_lr_fn: Optional[str] = None
+    muon_eps: float = 1e-7
+    muon_weight_decay: Optional[float] = None
+    adamw_lr: Optional[float] = None
+    adamw_betas: object = _ADAMW_BETAS_UNSET
+    adamw_eps: object = _ADAMW_EPS_UNSET
+    adamw_weight_decay: Optional[float] = None
+    target_modules: Optional[List[str]] = None
+    embedding_lr: Optional[float] = None
+
+    def __post_init__(self):
+        import warnings as _warnings
+
+        if not hasattr(torch.optim, "Muon"):
+            raise ImportError(
+                f"MuonConfig requires PyTorch >= 2.9.0 (got {torch.__version__}). "
+                "torch.optim.Muon is not available in this version."
+            )
+        if not isinstance(self.ns_steps, int):
+            raise TypeError(
+                f"MuonConfig.ns_steps must be an int, got {type(self.ns_steps).__name__}."
+            )
+        if not isinstance(self.momentum, (int, float)):
+            raise TypeError(
+                f"MuonConfig.momentum must be a number, got {type(self.momentum).__name__}."
+            )
+        if not isinstance(self.muon_eps, (int, float)):
+            raise TypeError(
+                f"MuonConfig.muon_eps must be a number, got {type(self.muon_eps).__name__}."
+            )
+        if not isinstance(self.muon_lr_scale, (int, float)):
+            raise TypeError(
+                f"MuonConfig.muon_lr_scale must be a number, got {type(self.muon_lr_scale).__name__}."
+            )
+        if self.muon_weight_decay is not None and not isinstance(
+            self.muon_weight_decay, (int, float)
+        ):
+            raise TypeError(
+                f"MuonConfig.muon_weight_decay must be a number, got {type(self.muon_weight_decay).__name__}."
+            )
+        if self.adamw_weight_decay is not None and not isinstance(
+            self.adamw_weight_decay, (int, float)
+        ):
+            raise TypeError(
+                f"MuonConfig.adamw_weight_decay must be a number, got {type(self.adamw_weight_decay).__name__}."
+            )
+        if self.ns_steps >= 100:
+            raise ValueError(
+                f"MuonConfig.ns_steps must be < 100, got {self.ns_steps}. "
+                "PyTorch's Newton-Schulz iteration raises an error for ns_steps >= 100."
+            )
+        if self.ns_steps < 1:
+            raise ValueError(f"MuonConfig.ns_steps must be >= 1, got {self.ns_steps}.")
+        if self.ns_steps > 20:
+            _warnings.warn(
+                f"MuonConfig.ns_steps={self.ns_steps} is large. "
+                "Each Newton-Schulz step performs a matrix multiplication. "
+                "Consider reducing ns_steps (default: 5) for better performance."
+            )
+        if self.ns_coefficients is not None:
+            if (
+                not isinstance(self.ns_coefficients, tuple)
+                or len(self.ns_coefficients) != 3
+            ):
+                raise ValueError(
+                    f"MuonConfig.ns_coefficients must be a tuple of 3 floats, "
+                    f"got {self.ns_coefficients}."
+                )
+            if not all(isinstance(v, (int, float)) for v in self.ns_coefficients):
+                raise ValueError(
+                    f"MuonConfig.ns_coefficients must contain only numbers, "
+                    f"got {self.ns_coefficients}."
+                )
+        if self.momentum < 0.0:
+            raise ValueError(
+                f"MuonConfig.momentum must be >= 0.0, got {self.momentum}."
+            )
+        if self.muon_eps <= 0.0:
+            raise ValueError(f"MuonConfig.muon_eps must be > 0.0, got {self.muon_eps}.")
+        if self.muon_lr_scale <= 0.0:
+            raise ValueError(
+                f"MuonConfig.muon_lr_scale must be > 0.0, got {self.muon_lr_scale}."
+            )
+        if self.muon_weight_decay is not None and self.muon_weight_decay < 0.0:
+            raise ValueError(
+                f"MuonConfig.muon_weight_decay must be >= 0.0, got {self.muon_weight_decay}."
+            )
+        if self.adamw_weight_decay is not None and self.adamw_weight_decay < 0.0:
+            raise ValueError(
+                f"MuonConfig.adamw_weight_decay must be >= 0.0, got {self.adamw_weight_decay}."
+            )
+        if not isinstance(self.nesterov, bool):
+            raise TypeError(
+                f"MuonConfig.nesterov must be a bool, got {type(self.nesterov).__name__}."
+            )
+        if self.adamw_betas is not MuonConfig._ADAMW_BETAS_UNSET:
+            if not isinstance(self.adamw_betas, tuple) or len(self.adamw_betas) != 2:
+                raise ValueError(
+                    f"MuonConfig.adamw_betas must be a tuple of 2 floats, "
+                    f"got {self.adamw_betas}."
+                )
+        if self.adjust_lr_fn is not None:
+            if not isinstance(self.adjust_lr_fn, str):
+                raise TypeError(
+                    f"MuonConfig.adjust_lr_fn must be a string, "
+                    f"got {type(self.adjust_lr_fn).__name__}."
+                )
+            norm = self.adjust_lr_fn.lower()
+            if norm not in ("original", "match_rms_adamw"):
+                raise ValueError(
+                    f"MuonConfig.adjust_lr_fn must be None, 'original', or "
+                    f"'match_rms_adamw', got '{self.adjust_lr_fn}'."
+                )
+            self.adjust_lr_fn = norm
+
+
 class UnslothTrainingArguments(TrainingArguments):
     def __init__(
         self,
         embedding_learning_rate: float = None,
         q_galore_config: Optional[QGaloreConfig] = None,
+        muon_config: Optional[MuonConfig] = None,
         *args,
         **kwargs,
     ):
         self.q_galore_config = q_galore_config
+        self.muon_config = muon_config
         self.embedding_learning_rate = embedding_learning_rate
         super().__init__(*args, **kwargs)
-        self.embedding_learning_rate = embedding_learning_rate
 
 
 def _create_unsloth_optimizer(
@@ -213,10 +386,218 @@ def _create_unsloth_optimizer(
     return optimizer
 
 
+class _MuonAdamWChained(torch.optim.Optimizer):
+    """Chained wrapper around a Muon optimizer and an AdamW fallback.
+
+    Exposes a unified ``step()``, ``zero_grad()``, ``state_dict()``, and
+    ``load_state_dict()`` API while delegating the actual optimization to
+    the two sub-optimizers.
+
+    ``param_groups`` is the concatenation of both sub-optimizers' groups.
+    The groups are **identity-shared** — ``self.param_groups[i] is
+    sub_optimizer.param_groups[i]``.  LR schedulers applied to this object
+    will have their LR changes visible to sub-optimizers immediately.
+    A group count check (``_assert_group_count_matches``) fires on every
+    ``step()`` to detect external ``add_param_group`` calls on sub-optimizers.
+
+    .. warning::
+
+        ``torch.save(optimizer, ...)`` / ``pickle.dump(optimizer, ...)``
+        is **not supported**. Use ``state_dict()`` / ``load_state_dict()``
+        for checkpoint save/load instead.
+
+    ``add_param_group()`` is not supported — add groups to the
+    sub-optimizers directly.
+    """
+
+    def __init__(self, muon, adamw, needs_deterministic = False):
+        self.muon = muon
+        self.adamw = adamw
+        self._needs_deterministic = needs_deterministic
+        all_groups = []
+        if muon is not None:
+            all_groups.extend(muon.param_groups)
+        if adamw is not None:
+            all_groups.extend(adamw.param_groups)
+        # Use only Muon defaults to prevent AdamW-specific keys (e.g. amsgrad,
+        # betas, maximize, fused, capturable) from leaking into Muon param
+        # groups via add_param_group's defaults-fill in the parent constructor.
+        # AdamW groups are already fully constructed by their own __init__ and
+        # need no additional key filling.
+        muon_defaults = muon.defaults if muon is not None else {}
+        self._init_done = False
+        super().__init__(all_groups, muon_defaults)
+        # Restore self.defaults with both Muon and AdamW keys, so downstream
+        # code (LR schedulers, callbacks, custom training loops) can inspect
+        # hyperparameters without them being polluted by the defaults-merge
+        # which would have leaked AdamW keys into Muon param groups.
+        self.defaults = {}
+        if muon is not None:
+            self.defaults.update(muon.defaults)
+        if adamw is not None:
+            self.defaults.update(adamw.defaults)
+        offset = len(muon.param_groups) if muon is not None else 0
+        if muon is not None:
+            for i in range(len(muon.param_groups)):
+                if self.param_groups[i] is not muon.param_groups[i]:
+                    raise RuntimeError(
+                        f"_MuonAdamWChained identity-sharing broken: "
+                        f"group {i} is not the same object as muon.param_groups[{i}]. "
+                        "This can happen if param_groups were deep-copied or reassigned."
+                    )
+        if adamw is not None:
+            for i in range(len(adamw.param_groups)):
+                if self.param_groups[offset + i] is not adamw.param_groups[i]:
+                    raise RuntimeError(
+                        f"_MuonAdamWChained identity-sharing broken: "
+                        f"group {offset + i} is not the same object as adamw.param_groups[{i}]. "
+                        "This can happen if param_groups were deep-copied or reassigned."
+                    )
+        self._init_done = True
+
+    def add_param_group(self, param_group):
+        if not getattr(self, "_init_done", False):
+            return super().add_param_group(param_group)
+        raise NotImplementedError(
+            "add_param_group is not supported for _MuonAdamWChained. "
+            "Add param groups to the sub-optimizers directly."
+        )
+
+    def _assert_group_count_matches(self):
+        n_muon = len(self.muon.param_groups) if self.muon is not None else 0
+        n_adamw = len(self.adamw.param_groups) if self.adamw is not None else 0
+        if n_muon + n_adamw != len(self.param_groups):
+            raise RuntimeError(
+                f"_MuonAdamWChained group count mismatch: "
+                f"muon={n_muon}, adamw={n_adamw}, "
+                f"chained={len(self.param_groups)}. "
+                "This can happen if add_param_group was called on a sub-optimizer."
+            )
+
+    def _muon_step_deterministic(self):
+        if not self._needs_deterministic:
+            self.muon.step()
+            return
+        was_enabled = torch.are_deterministic_algorithms_enabled()
+        was_warn_only = (
+            torch.is_deterministic_algorithms_warn_only_enabled()
+            if was_enabled
+            else False
+        )
+        if not was_enabled or not was_warn_only:
+            torch.use_deterministic_algorithms(True, warn_only = False)
+        else:
+            torch.use_deterministic_algorithms(True, warn_only = True)
+        try:
+            self.muon.step()
+        finally:
+            if was_enabled:
+                torch.use_deterministic_algorithms(True, warn_only = was_warn_only)
+            else:
+                torch.use_deterministic_algorithms(False)
+
+    def step(self, closure = None):
+        self._assert_group_count_matches()
+        if closure is not None:
+            with torch.enable_grad():
+                loss = closure()
+        if self.muon is not None:
+            self._muon_step_deterministic()
+        if self.adamw is not None:
+            self.adamw.step()
+        if closure is not None:
+            return loss
+
+    def zero_grad(self, set_to_none = True):
+        if self.muon is not None:
+            self.muon.zero_grad(set_to_none = set_to_none)
+        if self.adamw is not None:
+            self.adamw.zero_grad(set_to_none = set_to_none)
+
+    MUON_STATE_DICT_VERSION = 1
+
+    def state_dict(self):
+        sd: dict = {"_muon_version": self.MUON_STATE_DICT_VERSION}
+        if self.muon is not None:
+            sd["muon"] = self.muon.state_dict()
+        if self.adamw is not None:
+            sd["adamw"] = self.adamw.state_dict()
+        return sd
+
+    def load_state_dict(self, state_dict):
+        if state_dict.get("_muon_version") != self.MUON_STATE_DICT_VERSION:
+            raise RuntimeError(
+                "_MuonAdamWChained state dict version mismatch: "
+                f"expected version {self.MUON_STATE_DICT_VERSION}, "
+                f"got {state_dict.get('_muon_version', 'missing')}. "
+                "This checkpoint is not compatible with the current Muon optimizer format."
+            )
+        if self.muon is not None:
+            muon_sd = state_dict.get("muon")
+            if muon_sd is None:
+                raise RuntimeError(
+                    "Checkpoint has no Muon state, but current model has Muon-eligible parameters. "
+                    "This can happen when the model structure changed between save and load."
+                )
+            self.muon.load_state_dict(muon_sd)
+        if self.adamw is not None:
+            adamw_sd = state_dict.get("adamw")
+            if adamw_sd is None:
+                raise RuntimeError(
+                    "Checkpoint has no AdamW state, but current model has AdamW-eligible parameters. "
+                    "This can happen when the model structure changed between save and load."
+                )
+            self.adamw.load_state_dict(adamw_sd)
+        # C2 fix: re-sync chained groups to match freshly loaded sub-optimizer groups.
+        refreshed = []
+        if self.muon is not None:
+            refreshed.extend(self.muon.param_groups)
+        if self.adamw is not None:
+            refreshed.extend(self.adamw.param_groups)
+        self.param_groups = refreshed
+        self.defaults = {}
+        if self.muon is not None:
+            self.defaults.update(self.muon.defaults)
+        if self.adamw is not None:
+            self.defaults.update(self.adamw.defaults)
+
+    def __getstate__(self):
+        return self.state_dict()
+
+    def __setstate__(self, state):
+        raise NotImplementedError(
+            "_MuonAdamWChained does not support unpickling directly. "
+            "Use state_dict()/load_state_dict() for checkpoint save/load. "
+            "The sub-optimizers must be reconstructed from the model first."
+        )
+
+    def __repr__(self):
+        def _param_count(sub):
+            if sub is None:
+                return 0
+            return sum(p.numel() for g in sub.param_groups for p in g["params"])
+
+        muon_str = f"Muon({_param_count(self.muon)} elements)"
+        adamw_str = f"AdamW({_param_count(self.adamw)} elements)"
+        return f"{type(self).__name__}({muon_str}, {adamw_str})"
+
+
 class UnslothTrainer(SFTTrainer):
     def create_optimizer(self):
-        # --- Q-GaLore optimizer ---
+        # --- Muon optimizer (checked first, before Q-GaLore) ---
+        muon_config = getattr(self.args, "muon_config", None)
         q_galore_config = getattr(self.args, "q_galore_config", None)
+
+        if muon_config is not None and q_galore_config is not None:
+            logger.warning(
+                "Unsloth: Both MuonConfig and QGaloreConfig are set. "
+                "Muon takes precedence over Q-GaLore."
+            )
+
+        if muon_config is not None and self.optimizer is None:
+            return self._create_muon_optimizer(muon_config)
+
+        # --- Q-GaLore optimizer ---
         if q_galore_config is not None and self.optimizer is None:
             embedding_lr = getattr(self.args, "embedding_learning_rate", None)
             return self._create_q_galore_optimizer(q_galore_config, embedding_lr)
@@ -236,6 +617,180 @@ class UnslothTrainer(SFTTrainer):
                 optimizer_kwargs,
                 embedding_learning_rate,
             )
+        return self.optimizer
+
+    def _create_muon_optimizer(self, config: "MuonConfig"):
+        """Build a mixed Muon + AdamW optimizer from a MuonConfig."""
+        if self.optimizer is not None:
+            raise RuntimeError(
+                "Unsloth: _create_muon_optimizer called when self.optimizer is already set. "
+                "This indicates a double-call (possibly from a training callback)."
+            )
+        if not hasattr(torch.optim, "Muon"):
+            raise ImportError(
+                "Unsloth: torch.optim.Muon requires PyTorch >= 2.9.0.\n"
+                f"Current version: {torch.__version__}\n"
+                "Update with: pip install --upgrade torch"
+            )
+
+        import os as _os
+
+        try:
+            import torch.distributed as dist
+        except ImportError:
+            raise RuntimeError(
+                "Unsloth: torch.distributed is not available. "
+                "Muon optimizer requires torch.distributed for distributed training "
+                "guard checks. If using a custom PyTorch build without distributed, "
+                "use a standard PyTorch distribution."
+            )
+        needs_deterministic = False
+        if dist.is_available() and dist.is_initialized():
+            if _os.environ.get("UNSLOTH_MUON_DISTRIBUTED", "0") != "1":
+                raise RuntimeError(
+                    "Unsloth: Muon optimizer with distributed training is blocked "
+                    "due to known correctness issues:\n"
+                    "  1) FSDP state_dict format incompatible with Muon's nested format;\n"
+                    "  2) CuBLAS non-determinism in the Newton-Schulz iteration causes "
+                    "parameter divergence across ranks — this is a CORRECTNESS issue, "
+                    "not just a reproducibility issue;\n"
+                    "  3) DeepSpeed ZeRO may not handle Muon's orthogonalization correctly.\n"
+                    "To proceed (not recommended), set UNSLOTH_MUON_DISTRIBUTED=1."
+                )
+            else:
+                logger.warning(
+                    "Unsloth: UNSLOTH_MUON_DISTRIBUTED=1 detected — Muon step will "
+                    "enforce deterministic algorithms. This may reduce performance."
+                )
+                needs_deterministic = True
+
+        from unsloth.optimizers.muon import make_muon_param_groups
+
+        lr = self.args.learning_rate
+        weight_decay = self.args.weight_decay  # save original for AdamW fallback
+        embedding_lr = (
+            config.embedding_lr
+            if config.embedding_lr is not None
+            else getattr(self.args, "embedding_learning_rate", None)
+        )
+        if embedding_lr is not None and embedding_lr == 0.0:
+            logger.warning(
+                "Unsloth: embedding_lr=0.0 — embeddings will receive zero gradient updates. "
+                "Leave embedding_lr=None (default) to use the AdamW learning rate, "
+                "or set a positive value."
+            )
+
+        muon_weight_decay = (
+            config.muon_weight_decay
+            if config.muon_weight_decay is not None
+            else weight_decay
+        )
+        adamw_weight_decay = (
+            config.adamw_weight_decay
+            if config.adamw_weight_decay is not None
+            else weight_decay
+        )
+
+        muon_groups, adamw_groups = make_muon_param_groups(
+            self.model,
+            lr = lr,
+            muon_weight_decay = muon_weight_decay,
+            muon_lr_scale = config.muon_lr_scale,
+            adamw_lr = config.adamw_lr,
+            adamw_weight_decay = adamw_weight_decay,
+            target_modules = config.target_modules,
+            embedding_lr = embedding_lr,
+        )
+
+        if PeftModel is not None and isinstance(self.model, PeftModel):
+            logger.warning(
+                "Unsloth Muon: PEFT/LoRA model detected. "
+                "Muon will be applied to 2D adapters. "
+                "Results not guaranteed — use full_finetuning=True for expected behaviour."
+            )
+
+        try:
+            from bitsandbytes.nn import Params4bit
+        except ImportError:
+            Params4bit = None
+        if Params4bit is not None:
+            for _, param in self.model.named_parameters():
+                if isinstance(param, Params4bit):
+                    logger.warning(
+                        "Unsloth Muon: 4-bit quantized model detected. "
+                        "Only LoRA adapters are trainable; base weights are frozen. "
+                        "Muon's orthogonalization on low-rank adapters is uncharacterized. "
+                        "Use full_finetuning=True for expected Muon behaviour."
+                    )
+                    break
+
+        n_muon = sum(p.numel() for g in muon_groups for p in g["params"])
+        n_adamw = sum(p.numel() for g in adamw_groups for p in g["params"])
+        total = n_muon + n_adamw
+
+        logger.info(
+            f"Unsloth: Muon enabled — "
+            f"{n_muon:,} elements via Muon ({100*n_muon/total:.1f}%), "
+            f"{n_adamw:,} elements via AdamW fallback ({100*n_adamw/total:.1f}%)"
+        )
+        logger.info(
+            "Unsloth Muon: checkpoint format is incompatible with vanilla AdamW. "
+            "See the _muon_version marker in state_dict for format detection."
+        )
+
+        muon_kwargs = dict(
+            momentum = config.momentum,
+            nesterov = config.nesterov,
+            ns_steps = config.ns_steps,
+            eps = config.muon_eps,
+            ns_coefficients = config.ns_coefficients,
+            adjust_lr_fn = config.adjust_lr_fn,
+            weight_decay = muon_weight_decay,
+        )
+        # Filter None values — upstream torch.optim.Muon stores them verbatim in defaults,
+        # then crashes in step() when iterating None (e.g. len(None) in _zeropower_via_newtonschulz).
+        muon_kwargs = {k: v for k, v in muon_kwargs.items() if v is not None}
+
+        has_muon_params = sum(len(g["params"]) for g in muon_groups) > 0
+        if has_muon_params:
+            try:
+                muon_optimizer = torch.optim.Muon(muon_groups, **muon_kwargs)
+            except Exception as e:
+                raise RuntimeError(
+                    f"Unsloth: Failed to construct torch.optim.Muon (PyTorch {torch.__version__}). "
+                    f"Got error: {e}"
+                ) from e
+        else:
+            muon_optimizer = None
+
+        if config.adamw_betas is not MuonConfig._ADAMW_BETAS_UNSET:
+            adamw_betas = config.adamw_betas
+        else:
+            adamw_betas = (
+                getattr(self.args, "adam_beta1", 0.9),
+                getattr(self.args, "adam_beta2", 0.999),
+            )
+        if config.adamw_eps is not MuonConfig._ADAMW_EPS_UNSET:
+            adamw_eps = config.adamw_eps
+        else:
+            adamw_eps = getattr(self.args, "adam_epsilon", 1e-8)
+        adamw_lr = config.adamw_lr if config.adamw_lr is not None else lr
+        adamw_kwargs = dict(
+            lr = adamw_lr,
+            betas = adamw_betas,
+            eps = adamw_eps,
+            weight_decay = adamw_weight_decay,
+        )
+        if adamw_groups:
+            adamw_optimizer = torch.optim.AdamW(adamw_groups, **adamw_kwargs)
+        else:
+            adamw_optimizer = None
+
+        self.optimizer = _MuonAdamWChained(
+            muon_optimizer,
+            adamw_optimizer,
+            needs_deterministic = needs_deterministic,
+        )
         return self.optimizer
 
     def _create_q_galore_optimizer(self, config: "QGaloreConfig", embedding_lr = None):
