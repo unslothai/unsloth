@@ -320,22 +320,22 @@ export async function exportConversationCsv(threadId: string): Promise<void> {
 
 // ─── Bulk / multi-thread export ───────────────────────────────────────────────
 
-export type ExportFormat = "jsonl-raw" | "csv" | "sharegpt";
+export type ConvExportFormat = "jsonl-raw" | "csv" | "sharegpt";
 
-const EXPORT_FORMAT_LABELS: Record<ExportFormat, string> = {
+const EXPORT_FORMAT_LABELS: Record<ConvExportFormat, string> = {
   "jsonl-raw": "Raw JSONL",
   csv: "CSV",
   sharegpt: "ShareGPT JSONL (training)",
 };
 
 export const EXPORT_FORMATS_LIST = (
-  Object.keys(EXPORT_FORMAT_LABELS) as ExportFormat[]
+  Object.keys(EXPORT_FORMAT_LABELS) as ConvExportFormat[]
 ).map((fmt) => ({ fmt, label: EXPORT_FORMAT_LABELS[fmt] }));
 
 /** Build the exportable text for a single thread, or null if empty. */
 async function buildThreadContent(
   threadId: string,
-  format: ExportFormat,
+  format: ConvExportFormat,
   opts?: { includeThreadId?: boolean },
 ): Promise<string | null> {
   const messages = await loadConversationMessages(threadId);
@@ -380,18 +380,18 @@ async function buildThreadContent(
   return rows.length > 0 ? rows.join("\n") : null;
 }
 
-function csvHeader(format: ExportFormat, includeThreadId?: boolean): string {
+function csvHeader(format: ConvExportFormat, includeThreadId?: boolean): string {
   if (format === "csv") {
     return includeThreadId ? "thread_id,role,content" : "role,content";
   }
   return "";
 }
 
-function exportExt(format: ExportFormat): string {
+function exportExt(format: ConvExportFormat): string {
   return format === "csv" ? "csv" : "jsonl";
 }
 
-function exportMime(format: ExportFormat): string {
+function exportMime(format: ConvExportFormat): string {
   return format === "csv" ? "text/csv" : "application/x-ndjson";
 }
 
@@ -402,7 +402,7 @@ function exportMime(format: ExportFormat): string {
  */
 export async function exportBulkConversationsMerged(
   threadIds: string[],
-  format: ExportFormat,
+  format: ConvExportFormat,
   basename: string,
 ): Promise<void> {
   if (threadIds.length === 0) { toast.info("No conversations to export."); return; }
@@ -429,7 +429,7 @@ export async function exportBulkConversationsMerged(
  */
 export async function exportBulkConversationsSeparate(
   threadIds: string[],
-  format: ExportFormat,
+  format: ConvExportFormat,
   basename: string,
 ): Promise<void> {
   if (threadIds.length === 0) { toast.info("No conversations to export."); return; }
@@ -464,7 +464,7 @@ export async function exportBulkConversationsSeparate(
  */
 export async function exportProjectConversations(
   threadIds: string[],
-  format: ExportFormat,
+  format: ConvExportFormat,
   projectName: string,
 ): Promise<void> {
   const safe = projectName.replace(/[^a-z0-9_-]/gi, "_").slice(0, 40);

@@ -58,6 +58,7 @@ import {
   exportBulkConversationsMerged,
   exportBulkConversationsSeparate,
   EXPORT_FORMATS_LIST,
+  type ConvExportFormat,
 } from "./prompt-storage/prompt-storage-dialog";
 import {
   listStoredChatThreads,
@@ -149,7 +150,7 @@ export function ThreadSidebar({
 
   async function handleBulkExport(
     scope: "recents" | "all",
-    fmt: (typeof EXPORT_FORMATS_LIST)[number]["fmt"],
+    fmt: ConvExportFormat,
     merged: boolean,
   ) {
     try {

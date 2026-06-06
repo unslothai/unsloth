@@ -53,7 +53,7 @@ import {
   exportBulkConversationsMerged,
   exportBulkConversationsSeparate,
   EXPORT_FORMATS_LIST,
-  type ExportFormat,
+  type ConvExportFormat,
 } from "./prompt-storage/prompt-storage-dialog";
 import {
   listStoredChatThreads,
@@ -143,7 +143,7 @@ export function ProjectsPage() {
     }
   }
 
-  async function handleProjectExport(project: ProjectRecord, fmt: ExportFormat) {
+  async function handleProjectExport(project: ProjectRecord, fmt: ConvExportFormat) {
     try {
       const threads = await listStoredChatThreads({ projectId: project.id, includeArchived: false });
       const ids = [...new Set(threads.map((t) => t.id))];
@@ -155,7 +155,7 @@ export function ProjectsPage() {
 
   async function handleBulkProjectExport(
     scope: "projects" | "all",
-    fmt: ExportFormat,
+    fmt: ConvExportFormat,
     merged: boolean,
   ) {
     try {
