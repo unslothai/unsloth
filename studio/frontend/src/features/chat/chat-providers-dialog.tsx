@@ -212,6 +212,7 @@ export function ChatProvidersSettings({
   onProvidersChange,
 }: ChatProvidersSettingsProps) {
   const providersRef = useRef(providers);
+  const seededProviderTypeRef = useRef<string | null>(null);
   const [page, setPage] = useState<"list" | "form">("list");
   const [providerType, setProviderType] = useState<string>("");
   const [apiKey, setApiKey] = useState("");
@@ -317,14 +318,17 @@ export function ChatProvidersSettings({
 
   useEffect(() => {
     if (!providerType || editingProviderId) return;
+    if (seededProviderTypeRef.current === providerType) return;
     const entry = registryByType.get(providerType);
     if (!entry) {
       if (isCustomProviderType(providerType)) {
+        seededProviderTypeRef.current = providerType;
         setCustomProviderName(customProviderDisplayName(providerType));
         setBaseUrlDraft("");
       }
       return;
     }
+    seededProviderTypeRef.current = providerType;
     // Seed default_models only for curated providers (catalog too large to
     // enumerate — defaults are the suggestion shortlist). Remote-mode cloud
     // providers and local OpenAI-compat presets stay empty until the user
@@ -364,7 +368,8 @@ export function ChatProvidersSettings({
         setProviderType((current) => {
           if (
             current &&
-            registryRows.some((entry) => entry.provider_type === current)
+            (isCustomProviderType(current) ||
+              registryRows.some((entry) => entry.provider_type === current))
           ) {
             return current;
           }
