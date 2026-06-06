@@ -1798,6 +1798,11 @@ shell.Run cmd, 0, False
     $studioArgs = @('studio', 'setup')
     if ($script:UnslothVerbose) { $studioArgs += '--verbose' }
     $env:UNSLOTH_INSTALL_ROLLBACK_MANAGED = "1"
+    # Hand the venv interpreter to setup.ps1 so it reuses the Python we already
+    # resolved and built the venv with, instead of re-probing the system (which
+    # can trip over an unsupported `python` 3.14 or a Store stub on PATH even
+    # though the venv is fine). setup.ps1 Test-Path-guards this before use.
+    $env:UNSLOTH_SETUP_PYTHON = Join-Path $VenvDir "Scripts\python.exe"
     try {
         & $UnslothExe @studioArgs
         $setupExit = $LASTEXITCODE
@@ -1808,6 +1813,7 @@ shell.Run cmd, 0, False
             Remove-Item Env:UNSLOTH_STUDIO_HOME -ErrorAction SilentlyContinue
         }
         Remove-Item Env:UNSLOTH_INSTALL_ROLLBACK_MANAGED -ErrorAction SilentlyContinue
+        Remove-Item Env:UNSLOTH_SETUP_PYTHON -ErrorAction SilentlyContinue
     }
     if ($setupExit -ne 0) {
         Write-Host "[ERROR] unsloth studio setup failed (exit code $setupExit)" -ForegroundColor Red

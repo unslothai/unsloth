@@ -1417,16 +1417,58 @@ if ($IsPipInstall) {
     }
 }
 
-# 1g. Python (>= 3.11 and < 3.14). Prefer py.exe so a 3.14 ahead of 3.13 on PATH does not trip the gate.
+# 1g. Python (>= 3.11 and < 3.14). Prefer the interpreter install.ps1 already
+# resolved and built the venv with, then py.exe, so a 3.14 ahead of 3.13 on
+# PATH -- or a WindowsApps stub -- does not trip the gate.
+#
+# install.ps1 validates a supported, non-conda Python, builds the venv, and
+# exports its path as UNSLOTH_SETUP_PYTHON. setup.ps1 only updates packages in
+# that venv, so trust the handoff (or the existing venv python) before
+# re-probing the system from scratch.
+function Resolve-ReusedSetupPython {
+    if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_SETUP_PYTHON) -and
+        (Test-Path -LiteralPath $env:UNSLOTH_SETUP_PYTHON)) {
+        return $env:UNSLOTH_SETUP_PYTHON
+    }
+    # Standalone `unsloth studio setup/update` (install.ps1 did not run): derive
+    # the venv python from the studio root, mirroring the resolver below.
+    $root = if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_STUDIO_HOME)) { $env:UNSLOTH_STUDIO_HOME.Trim() }
+            elseif (-not [string]::IsNullOrWhiteSpace($env:STUDIO_HOME)) { $env:STUDIO_HOME.Trim() }
+            else { Join-Path $env:USERPROFILE ".unsloth\studio" }
+    if ($root -eq "~" -or $root -like "~/*" -or $root -like "~\*") {
+        $root = Join-Path $env:USERPROFILE $root.Substring(1).TrimStart('/', '\')
+    }
+    $venvPy = Join-Path $root "unsloth_studio\Scripts\python.exe"
+    if (Test-Path -LiteralPath $venvPy) { return $venvPy }
+    return $null
+}
+$ReusedSetupPython = Resolve-ReusedSetupPython
+
 $HasPython = $null -ne (Get-Command python -ErrorAction SilentlyContinue)
-# Enumerate ALL py.exe on PATH (all-users C:\Windows\py.exe and the per-user
-# launcher can both register), then search each for a supported minor. Using a
-# single launcher would miss a working interpreter behind a broken first one,
-# and Get-Command returns an array when >1 py.exe exists -- which breaks the
-# call operator if used directly.
-$PyLaunchers = @(Get-Command py -CommandType Application -ErrorAction SilentlyContinue)
 $PythonOk = $false
 $DetectedPyVer = $null
+
+# Reuse the install.ps1 / venv interpreter before any system probe.
+if ($ReusedSetupPython) {
+    try {
+        $out = & $ReusedSetupPython --version 2>&1 | Out-String
+        if ($out -match 'Python (3\.(?:1[1-3])\.\d+)') {
+            $DetectedPyVer = $Matches[1]
+            $resolvedDir = Split-Path -Parent $ReusedSetupPython
+            $alreadyOnPath = ($env:PATH -split ';' | Where-Object { $_.TrimEnd('\') -ieq $resolvedDir.TrimEnd('\') }).Count -gt 0
+            if (-not $alreadyOnPath) { $env:PATH = "$resolvedDir;$env:PATH" }
+            $HasPython = $true
+            $PythonOk = $true
+        }
+    } catch { }
+}
+
+# Fall back to enumerating ALL py.exe on PATH (all-users C:\Windows\py.exe and
+# the per-user launcher can both register), then search each for a supported
+# minor. Using a single launcher would miss a working interpreter behind a
+# broken first one, and Get-Command returns an array when >1 py.exe exists --
+# which breaks the call operator if used directly.
+$PyLaunchers = if ($PythonOk) { @() } else { @(Get-Command py -CommandType Application -ErrorAction SilentlyContinue) }
 
 foreach ($PyLauncher in $PyLaunchers) {
     foreach ($minor in @("3.13", "3.12", "3.11")) {
@@ -1712,12 +1754,28 @@ function Test-IsConda {
     return $false
 }
 
+# 0. Reuse the interpreter install.ps1 already resolved and built the venv with
+#    (UNSLOTH_SETUP_PYTHON, or the existing venv python) before probing the
+#    system -- it is already validated as supported and non-conda.
+if ($ReusedSetupPython) {
+    try {
+        $out = & $ReusedSetupPython --version 2>&1 | Out-String
+        if ($out -match 'Python 3\.(\d+)') {
+            $pyMinor = [int]$Matches[1]
+            if ($pyMinor -ge 11 -and $pyMinor -le 13 -and -not (Test-IsConda $ReusedSetupPython)) {
+                $PythonCmd = $ReusedSetupPython
+            }
+        }
+    } catch { }
+}
+
 # 1. Try the Python Launcher (py.exe) first -- most reliable on Windows.
 #    py.exe is installed by python.org and resolves to standalone CPython.
 # Enumerate every py.exe on PATH and search each for a supported, non-conda
 # interpreter (a single launcher could be conda or lack 3.11-3.13; Get-Command
 # also returns an array when >1 py.exe exists).
-foreach ($pyLauncher in @(Get-Command py -CommandType Application -ErrorAction SilentlyContinue)) {
+$PyLaunchersResolve = if ($PythonCmd) { @() } else { @(Get-Command py -CommandType Application -ErrorAction SilentlyContinue) }
+foreach ($pyLauncher in $PyLaunchersResolve) {
     if ($pyLauncher.Source -match $CondaSkipPattern) { continue }
     foreach ($minor in @("3.13", "3.12", "3.11")) {
         try {
