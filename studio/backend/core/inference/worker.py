@@ -342,6 +342,8 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                 "is_vision": mc.is_vision,
                 "is_lora": mc.is_lora,
                 "is_gguf": False,
+                # MLX backend sets device="mlx"; lets the UI tag MLX models.
+                "is_mlx": getattr(backend, "device", None) == "mlx",
                 "is_audio": getattr(mc, "is_audio", False),
                 "audio_type": getattr(mc, "audio_type", None),
                 "has_audio_input": getattr(mc, "has_audio_input", False),
@@ -481,6 +483,8 @@ def _handle_generate(
             {
                 "type": "gen_done",
                 "request_id": request_id,
+                # usage/timings from the MLX backend (None elsewhere).
+                "stats": getattr(backend, "last_generation_stats", None),
                 "ts": time.time(),
             },
         )

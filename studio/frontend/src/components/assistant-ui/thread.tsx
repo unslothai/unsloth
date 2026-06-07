@@ -137,6 +137,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
 } from "react";
@@ -222,6 +223,18 @@ const PromptQueueContext = createContext<_QueueCallbacks>({
   startQueue: () => {}, stopQueue: () => {},
 });
 
+// Gap (px) between the last message and the floating composer. The bottom
+// spacer tracks composer height plus this gap so the chat can always be
+// scrolled fully above the composer.
+const COMPOSER_SCROLL_GAP_PX = 24;
+// The scroll-to-bottom footer sits 10px below the spacer top.
+const FOOTER_GAP_BELOW_SPACER_PX = 10;
+// Composer shrinks this soon after a run start (send clears the chips)
+// apply immediately: the run-start pin owns the bottom, so the clamp is
+// the intended glide. Covers instant responses where isRunning is
+// already false by the time the dock resize is observed.
+const RUN_SHRINK_WINDOW_MS = 1000;
+
 export const Thread: FC<{
   hideComposer?: boolean;
   hideWelcome?: boolean;
@@ -239,15 +252,156 @@ export const Thread: FC<{
   );
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const threadId = targetThreadId ?? activeThreadId ?? null;
+  const aui = useAui();
 
-  // Conversation reserves this at the bottom so a tall composer never covers
-  // the last message.
-  const [dockHeight, setDockHeight] = useState(150);
+  // Measured height of the floating composer dock (null until measured).
+  // Drives the bottom spacer and the scroll-to-bottom footer offset.
+  const [composerHeight, setComposerHeight] = useState<number | null>(null);
+  const footerBottomPx =
+    composerHeight == null
+      ? null
+      : composerHeight + COMPOSER_SCROLL_GAP_PX - FOOTER_GAP_BELOW_SPACER_PX;
+
+  // The viewport element is owned by the autoscroll hook; mirror it
+  // locally for the spacer clamp math below. State, not a ref: the keyed
+  // provider below remounts the viewport on thread switches, and the
+  // scroll listener effect must re-attach to the new element.
+  const [viewportEl, setViewportEl] = useState<HTMLElement | null>(null);
+  const composedViewportRef = useCallback(
+    (node: HTMLElement | null) => {
+      setViewportEl(node);
+      viewportRef(node);
+    },
+    [viewportRef],
+  );
+
+  // Bottom spacer sizing. Invariant: the chat never moves on its own when
+  // the composer resizes.
+  // - Grow (attachment added, multiline input): grow the spacer at once.
+  //   Growth below the scroll position is invisible and only adds room.
+  // - Shrink (attachment removed): shrinking scrollHeight near the bottom
+  //   would clamp scrollTop and yank the chat down. Defer the shrink until
+  //   it is invisible (user scrolled up) or a bottom-pinning moment.
+  // Applied imperatively so a remounted spacer can be sized from refs even
+  // when composerHeight did not change (e.g. thread switch).
+  const spacerElRef = useRef<HTMLDivElement | null>(null);
+  const desiredSpacerPxRef = useRef<number | null>(null);
+  const appliedSpacerPxRef = useRef<number | null>(null);
+
+  const applySpacerPx = useCallback((px: number) => {
+    appliedSpacerPxRef.current = px;
+    const node = spacerElRef.current;
+    if (node) {
+      node.style.height = `${px}px`;
+    }
+  }, []);
+
+  // Release any deferred shrink; used at moments that pin to the bottom
+  // anyway, where the clamp is the intended motion.
+  const releaseSpacerExcess = useCallback(() => {
+    const desired = desiredSpacerPxRef.current;
+    const applied = appliedSpacerPxRef.current;
+    if (desired != null && applied != null && applied > desired) {
+      applySpacerPx(desired);
+    }
+  }, [applySpacerPx]);
+
+  const spacerRef = useCallback(
+    (node: HTMLDivElement | null) => {
+      spacerElRef.current = node;
+      // Fresh mounts (thread switch, first message) start at the desired
+      // size; deferral state from a previous mount is moot.
+      const desired = desiredSpacerPxRef.current;
+      if (node && desired != null) {
+        applySpacerPx(desired);
+      }
+    },
+    [applySpacerPx],
+  );
+
+  const prevComposerHeightRef = useRef<number | null>(null);
+  // Set on thread.runStart; see RUN_SHRINK_WINDOW_MS.
+  const runStartAtRef = useRef(0);
+  useLayoutEffect(() => {
+    const prev = prevComposerHeightRef.current;
+    prevComposerHeightRef.current = composerHeight;
+    if (composerHeight == null || hideComposer) {
+      desiredSpacerPxRef.current = null;
+      appliedSpacerPxRef.current = null;
+      spacerElRef.current?.style.removeProperty("height");
+      return;
+    }
+    const desired = composerHeight + COMPOSER_SCROLL_GAP_PX;
+    desiredSpacerPxRef.current = desired;
+    const applied = appliedSpacerPxRef.current;
+    if (applied == null || desired >= applied) {
+      applySpacerPx(desired);
+    } else {
+      const distance = viewportEl
+        ? viewportEl.scrollHeight - viewportEl.scrollTop - viewportEl.clientHeight
+        : Number.POSITIVE_INFINITY;
+      const runOwnsBottom =
+        aui.thread().getState().isRunning ||
+        performance.now() - runStartAtRef.current < RUN_SHRINK_WINDOW_MS;
+      // At the bottom the shrink only drops blank spacer, so apply it now
+      // instead of stranding dead space until the next pin.
+      if (
+        runOwnsBottom ||
+        distance >= applied - desired ||
+        autoScrollContext.getIsAtBottom()
+      ) {
+        applySpacerPx(desired);
+      }
+      // else: deferred; released on scroll or a bottom-pinning event.
+    }
+    if (prev != null && composerHeight > prev) {
+      // The chat is now above the new bottom. Detach as if the user had
+      // scrolled up so no later signal re-pins and shoves the chat up.
+      // Scrolling back down re-attaches; explicit pins still work.
+      // Mid-run growth comes from tool-status rows, not the user, and
+      // detaching then would break streaming autoscroll, so skip it.
+      if (!aui.thread().getState().isRunning) {
+        autoScrollContext.detachFromBottom();
+      }
+    }
+  }, [composerHeight, hideComposer, autoScrollContext, aui, applySpacerPx, viewportEl]);
+
+  // Drop deferred spacer excess as soon as the user has scrolled far
+  // enough above the bottom that the shrink cannot clamp scrollTop.
+  // Keyed on viewportEl so the listener follows viewport remounts.
+  useEffect(() => {
+    const el = viewportEl;
+    if (!el) {
+      return;
+    }
+    const onScroll = () => {
+      const desired = desiredSpacerPxRef.current;
+      const applied = appliedSpacerPxRef.current;
+      if (desired == null || applied == null || applied <= desired) {
+        return;
+      }
+      const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
+      if (distance >= applied - desired) {
+        applySpacerPx(desired);
+      }
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
+  }, [viewportEl, applySpacerPx]);
+
+  // These pin to the bottom, so releasing the excess here is invisible.
+  // runStart also opens the shrink window for the send-clears-chips case.
+  useAuiEvent("thread.runStart", () => {
+    runStartAtRef.current = performance.now();
+    releaseSpacerExcess();
+  });
+  useAuiEvent("thread.initialize", releaseSpacerExcess);
+  useAuiEvent("threadListItem.switchedTo", releaseSpacerExcess);
+
   // Page-wide drag-and-drop: dropping a file anywhere on the chat page (not
   // just on the composer) attaches it and shows the composer drop affordance.
   // The composer's own dropzone still handles drops on the box itself; its
   // handler calls preventDefault, so the page handler skips them (no double-add).
-  const aui = useAui();
   const [pageDragging, setPageDragging] = useState(false);
   const dragDepth = useRef(0);
   const hasFiles = (e: ReactDragEvent) =>
@@ -298,7 +452,6 @@ export const Thread: FC<{
           ["--thread-max-width" as string]: "48rem",
           ["--thread-content-max-width" as string]:
             "calc(var(--thread-max-width) - 1.5rem)",
-          ["--aui-dock-h" as string]: `${dockHeight}px`,
         }}
         onDragEnter={onDragEnter}
         onDragOver={onDragOver}
@@ -307,7 +460,7 @@ export const Thread: FC<{
       >
         <IntentAwareScrollProvider value={autoScrollContext}>
           <ThreadPrimitive.Viewport
-            ref={viewportRef}
+            ref={composedViewportRef}
             autoScroll={false}
             scrollToBottomOnRunStart={false}
             scrollToBottomOnInitialize={false}
@@ -336,9 +489,14 @@ export const Thread: FC<{
             {/* Bottom slack so the last message clears the floating composer. */}
             <AuiIf condition={({ thread }) => hideWelcome || !thread.isEmpty}>
               <div
+                ref={spacerRef}
                 className={cn(
                   "shrink-0",
-                  hideComposer ? "h-16" : "h-[calc(var(--aui-dock-h)_+_16px)]",
+                  hideComposer
+                    ? "h-16"
+                    : composerHeight == null
+                      ? "h-40"
+                      : undefined,
                 )}
                 aria-hidden={true}
               />
@@ -348,22 +506,35 @@ export const Thread: FC<{
               <ThreadPrimitive.ViewportFooter
                 className={cn(
                   "aui-thread-viewport-footer pointer-events-none sticky z-20 flex w-full justify-center bg-transparent",
-                  hideComposer ? "bottom-3" : "bottom-[calc(var(--aui-dock-h)_+_4px)]",
+                  // 150px (was 140px) to add a small gap above the composer
+                  hideComposer
+                    ? "bottom-3"
+                    : footerBottomPx == null
+                      ? "bottom-[150px]"
+                      : undefined,
                 )}
+                style={
+                  !hideComposer && footerBottomPx != null
+                    ? { bottom: footerBottomPx }
+                    : undefined
+                }
               >
                 <ThreadScrollToBottom />
               </ThreadPrimitive.ViewportFooter>
             </AuiIf>
           </ThreadPrimitive.Viewport>
 
-          <GeneratedImageViewportOverlay hideComposer={hideComposer} />
+          <GeneratedImageViewportOverlay
+            hideComposer={hideComposer}
+            bottomOffsetPx={footerBottomPx}
+          />
 
           {!hideComposer && (
             <AuiIf condition={({ thread }) => hideWelcome || !thread.isEmpty}>
               <ThreadComposerDock
                 disabled={isComposerAttachPending}
                 threadId={threadId}
-                onHeightChange={setDockHeight}
+                onHeightChange={setComposerHeight}
               />
             </AuiIf>
           )}
@@ -376,9 +547,10 @@ export const Thread: FC<{
   );
 };
 
-const GeneratedImageViewportOverlay: FC<{ hideComposer?: boolean }> = ({
-  hideComposer,
-}) => {
+const GeneratedImageViewportOverlay: FC<{
+  hideComposer?: boolean;
+  bottomOffsetPx?: number | null;
+}> = ({ hideComposer, bottomOffsetPx }) => {
   const { overlay, closeOverlay } = useGeneratedImageOverlay();
 
   useEffect(() => {
@@ -403,8 +575,17 @@ const GeneratedImageViewportOverlay: FC<{ hideComposer?: boolean }> = ({
       <section
         className={cn(
           "pointer-events-none absolute inset-x-5 top-[48px] flex flex-col items-center",
-          hideComposer ? "bottom-4" : "bottom-[150px]",
+          hideComposer
+            ? "bottom-4"
+            : bottomOffsetPx == null
+              ? "bottom-[150px]"
+              : undefined,
         )}
+        style={
+          !hideComposer && bottomOffsetPx != null
+            ? { bottom: bottomOffsetPx }
+            : undefined
+        }
         aria-label="Generated image preview"
       >
         <div className="pointer-events-auto relative flex min-h-0 w-full max-w-[1100px] flex-1 flex-col items-center justify-center gap-3 rounded-3xl bg-muted/10 p-3 ring-1 ring-border/20">
@@ -471,23 +652,29 @@ const GeneratedImageViewportOverlay: FC<{ hideComposer?: boolean }> = ({
 const ThreadComposerDock: FC<{
   disabled?: boolean;
   threadId?: string | null;
-  onHeightChange?: (height: number) => void;
+  onHeightChange?: (height: number | null) => void;
 }> = ({ disabled, threadId, onHeightChange }) => {
   const { overlay } = useGeneratedImageOverlay();
-  const contentRef = useRef<HTMLDivElement>(null);
 
+  // Report the dock's rendered height so the viewport can reserve matching
+  // scroll space when attachments or multiline input grow the composer.
+  const dockRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
-    const el = contentRef.current;
+    const el = dockRef.current;
     if (!el || !onHeightChange) return;
-    const report = () => onHeightChange(el.offsetHeight);
-    report();
-    const ro = new ResizeObserver(report);
-    ro.observe(el);
-    return () => ro.disconnect();
+    const measure = () => onHeightChange(el.offsetHeight);
+    measure();
+    const resizeObserver = new ResizeObserver(measure);
+    resizeObserver.observe(el);
+    return () => {
+      resizeObserver.disconnect();
+      onHeightChange(null);
+    };
   }, [onHeightChange]);
 
   return (
     <div
+      ref={dockRef}
       className={cn(
         "aui-thread-composer-dock pointer-events-none absolute bottom-0 left-0 right-0 md:right-[10px]",
         overlay ? "z-40" : "z-20",
@@ -498,7 +685,7 @@ const ThreadComposerDock: FC<{
         aria-hidden={true}
         className="absolute inset-x-0 bottom-0 top-[10px] bg-gradient-to-t from-background from-[calc(100%_-_28px)] to-transparent"
       />
-      <div ref={contentRef} className="relative px-5 pb-2">
+      <div className="relative px-5 pb-2">
         <div className="pointer-events-auto mx-auto w-full max-w-(--thread-max-width)">
           <ComposerAnimated
             disabled={disabled}
@@ -2301,7 +2488,7 @@ const ComposerRightControls: FC<{
 const MessageError: FC = () => {
   return (
     <MessagePrimitive.Error>
-      <ErrorPrimitive.Root className="aui-message-error-root mt-2 rounded-md border border-destructive bg-destructive/10 p-3 text-destructive text-sm dark:bg-destructive/5 dark:text-red-200">
+      <ErrorPrimitive.Root className="aui-message-error-root mt-2 rounded-md bg-destructive/10 p-3 text-destructive text-sm dark:bg-destructive/5 dark:text-red-200">
         <ErrorPrimitive.Message className="aui-message-error-message line-clamp-2" />
       </ErrorPrimitive.Root>
     </MessagePrimitive.Error>
