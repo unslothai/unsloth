@@ -81,8 +81,6 @@ class InferenceOrchestrator:
         self.models: dict = {}
         self.loading_models: set = set()
         self.loaded_local_models: list = []
-        # usage/timings from the worker's gen_done (MLX backend).
-        self.last_generation_stats: Optional[dict] = None
         from core.inference.defaults import get_default_models
 
         self._static_models = get_default_models()
@@ -455,6 +453,7 @@ class InferenceOrchestrator:
         enable_thinking: Optional[bool] = None,
         reasoning_effort: Optional[str] = None,
         preserve_thinking: Optional[bool] = None,
+        stats_holder: Optional[dict] = None,
     ) -> Generator[str, None, None]:
         """Dispatched generation — sends command without holding _gen_lock.
 
@@ -522,9 +521,6 @@ class InferenceOrchestrator:
             yield f"Error: {exc}"
             return
 
-        # Reset so this run cannot surface stale stats.
-        self.last_generation_stats = None
-
         # Read tokens from our private mailbox
         try:
             while True:
@@ -549,7 +545,8 @@ class InferenceOrchestrator:
                     yield resp.get("text", "")
 
                 elif rtype == "gen_done":
-                    self.last_generation_stats = resp.get("stats")
+                    if stats_holder is not None:
+                        stats_holder["stats"] = resp.get("stats")
                     return
 
                 elif rtype == "gen_error":
@@ -799,6 +796,7 @@ class InferenceOrchestrator:
         enable_thinking: Optional[bool] = None,
         reasoning_effort: Optional[str] = None,
         preserve_thinking: Optional[bool] = None,
+        stats_holder: Optional[dict] = None,
     ) -> Generator[str, None, None]:
         """Generate response, streaming tokens from subprocess.
 
@@ -806,6 +804,10 @@ class InferenceOrchestrator:
         ``preserve_thinking`` kwargs are forwarded into the worker so
         ``tokenizer.apply_chat_template`` can render tool schemas and
         reasoning controls when the template understands them.
+
+        ``stats_holder``: caller-owned dict; on gen_done its "stats" key
+        receives the worker's usage/timings. Request-scoped by design so
+        concurrent streams cannot read each other's stats.
         """
         yield from self._generate_inner(
             messages = messages,
@@ -823,6 +825,7 @@ class InferenceOrchestrator:
             enable_thinking = enable_thinking,
             reasoning_effort = reasoning_effort,
             preserve_thinking = preserve_thinking,
+            stats_holder = stats_holder,
         )
 
     def generate_chat_completion_with_tools(
@@ -845,6 +848,7 @@ class InferenceOrchestrator:
         tool_call_timeout: int = 300,
         session_id: Optional[str] = None,
         use_adapter: Optional[Union[bool, str]] = None,
+        stats_holder: Optional[dict] = None,
         **_unused,
     ):
         """Run the safetensors agentic tool loop in this (parent)
@@ -878,6 +882,8 @@ class InferenceOrchestrator:
                 enable_thinking = enable_thinking,
                 reasoning_effort = reasoning_effort,
                 preserve_thinking = preserve_thinking,
+                # last turn wins, same as the GGUF tool loop's metadata
+                stats_holder = stats_holder,
             )
             if use_adapter is not None:
                 yield from self.generate_with_adapter_control(
@@ -907,6 +913,7 @@ class InferenceOrchestrator:
         self,
         use_adapter: Optional[Union[bool, str]] = None,
         cancel_event = None,
+        stats_holder: Optional[dict] = None,
         **gen_kwargs,
     ) -> Generator[str, None, None]:
         """Generate with adapter control, streaming tokens from subprocess.
@@ -918,6 +925,7 @@ class InferenceOrchestrator:
         yield from self._generate_dispatched(
             use_adapter = use_adapter,
             cancel_event = cancel_event,
+            stats_holder = stats_holder,
             **gen_kwargs,
         )
 
@@ -938,6 +946,7 @@ class InferenceOrchestrator:
         enable_thinking: Optional[bool] = None,
         reasoning_effort: Optional[str] = None,
         preserve_thinking: Optional[bool] = None,
+        stats_holder: Optional[dict] = None,
     ) -> Generator[str, None, None]:
         """Inner generation logic — sends command to subprocess, yields tokens.
 
@@ -978,6 +987,7 @@ class InferenceOrchestrator:
                 enable_thinking = enable_thinking,
                 reasoning_effort = reasoning_effort,
                 preserve_thinking = preserve_thinking,
+                stats_holder = stats_holder,
             )
 
     def _generate_locked(
@@ -997,6 +1007,7 @@ class InferenceOrchestrator:
         enable_thinking: Optional[bool] = None,
         reasoning_effort: Optional[str] = None,
         preserve_thinking: Optional[bool] = None,
+        stats_holder: Optional[dict] = None,
     ) -> Generator[str, None, None]:
         """Actual generation logic — must be called under _gen_lock."""
         request_id = str(uuid.uuid4())
@@ -1039,9 +1050,6 @@ class InferenceOrchestrator:
             yield f"Error: {exc}"
             return
 
-        # Reset so this run cannot surface stale stats.
-        self.last_generation_stats = None
-
         # Yield tokens from response queue — we are the only reader
         # because _gen_lock is held.
         while True:
@@ -1078,7 +1086,8 @@ class InferenceOrchestrator:
                 yield resp.get("text", "")
 
             elif rtype == "gen_done":
-                self.last_generation_stats = resp.get("stats")
+                if stats_holder is not None:
+                    stats_holder["stats"] = resp.get("stats")
                 return
 
             elif rtype == "gen_error":

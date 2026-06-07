@@ -3426,6 +3426,9 @@ async def openai_chat_completions(
             else:
                 _sf_chat_messages.append(_msg)
 
+        # Request-scoped usage/timings receptacle (filled at gen_done).
+        _sf_stats_holder: dict = {}
+
         def sf_generate_with_tools():
             return backend.generate_chat_completion_with_tools(
                 messages = _sf_chat_messages,
@@ -3450,6 +3453,7 @@ async def openai_chat_completions(
                 else 300,
                 session_id = payload.session_id,
                 use_adapter = payload.use_adapter,
+                stats_holder = _sf_stats_holder,
             )
 
         _sf_tool_sentinel = object()
@@ -3538,8 +3542,9 @@ async def openai_chat_completions(
                 )
                 yield f"data: {final_chunk.model_dump_json(exclude_none = True)}\n\n"
                 # Usage chunk from the last turn, same shape as the
-                # GGUF tool loop's metadata.
-                _stats = getattr(backend, "last_generation_stats", None)
+                # GGUF tool loop's metadata. Request-scoped holder, so
+                # concurrent streams cannot read each other's stats.
+                _stats = _sf_stats_holder.get("stats")
                 if _stats:
                     _stream_usage = _stats.get("usage") or {}
                     usage_chunk = ChatCompletionChunk(
@@ -3645,19 +3650,25 @@ async def openai_chat_completions(
     if payload.preserve_thinking is not None:
         gen_kwargs["preserve_thinking"] = payload.preserve_thinking
 
+    # Request-scoped usage/timings receptacle (filled at gen_done).
+    stats_holder: dict = {}
+
     if payload.use_adapter is not None:
 
         def generate():
             return backend.generate_with_adapter_control(
                 use_adapter = payload.use_adapter,
                 cancel_event = cancel_event,
+                stats_holder = stats_holder,
                 **gen_kwargs,
             )
     else:
 
         def generate():
             return backend.generate_chat_response(
-                cancel_event = cancel_event, **gen_kwargs
+                cancel_event = cancel_event,
+                stats_holder = stats_holder,
+                **gen_kwargs,
             )
 
     # ── Streaming response ────────────────────────────────────────
@@ -3736,7 +3747,9 @@ async def openai_chat_completions(
                 yield f"data: {final_chunk.model_dump_json(exclude_none = True)}\n\n"
                 # Usage chunk (choices=[], usage set), same shape as the
                 # GGUF path so the speed popover works for MLX too.
-                _stats = getattr(backend, "last_generation_stats", None)
+                # Request-scoped holder, so concurrent streams cannot
+                # read each other's stats.
+                _stats = stats_holder.get("stats")
                 if _stats:
                     _stream_usage = _stats.get("usage") or {}
                     usage_chunk = ChatCompletionChunk(
