@@ -168,11 +168,13 @@ export const Thread: FC<{
       : composerHeight + COMPOSER_SCROLL_GAP_PX - FOOTER_GAP_BELOW_SPACER_PX;
 
   // The viewport element is owned by the autoscroll hook; mirror it
-  // locally for the spacer clamp math below.
-  const localViewportRef = useRef<HTMLElement | null>(null);
+  // locally for the spacer clamp math below. State, not a ref: the keyed
+  // provider below remounts the viewport on thread switches, and the
+  // scroll listener effect must re-attach to the new element.
+  const [viewportEl, setViewportEl] = useState<HTMLElement | null>(null);
   const composedViewportRef = useCallback(
     (node: HTMLElement | null) => {
-      localViewportRef.current = node;
+      setViewportEl(node);
       viewportRef(node);
     },
     [viewportRef],
@@ -240,9 +242,8 @@ export const Thread: FC<{
     if (applied == null || desired >= applied) {
       applySpacerPx(desired);
     } else {
-      const el = localViewportRef.current;
-      const distance = el
-        ? el.scrollHeight - el.scrollTop - el.clientHeight
+      const distance = viewportEl
+        ? viewportEl.scrollHeight - viewportEl.scrollTop - viewportEl.clientHeight
         : Number.POSITIVE_INFINITY;
       const runOwnsBottom =
         aui.thread().getState().isRunning ||
@@ -262,12 +263,13 @@ export const Thread: FC<{
         autoScrollContext.detachFromBottom();
       }
     }
-  }, [composerHeight, hideComposer, autoScrollContext, aui, applySpacerPx]);
+  }, [composerHeight, hideComposer, autoScrollContext, aui, applySpacerPx, viewportEl]);
 
   // Drop deferred spacer excess as soon as the user has scrolled far
   // enough above the bottom that the shrink cannot clamp scrollTop.
+  // Keyed on viewportEl so the listener follows viewport remounts.
   useEffect(() => {
-    const el = localViewportRef.current;
+    const el = viewportEl;
     if (!el) {
       return;
     }
@@ -284,7 +286,7 @@ export const Thread: FC<{
     };
     el.addEventListener("scroll", onScroll, { passive: true });
     return () => el.removeEventListener("scroll", onScroll);
-  }, [applySpacerPx]);
+  }, [viewportEl, applySpacerPx]);
 
   // These pin to the bottom, so releasing the excess here is invisible.
   // runStart also opens the shrink window for the send-clears-chips case.
