@@ -81,6 +81,8 @@ class InferenceOrchestrator:
         self.models: dict = {}
         self.loading_models: set = set()
         self.loaded_local_models: list = []
+        # usage/timings from the worker's gen_done (MLX backend).
+        self.last_generation_stats: Optional[dict] = None
         from core.inference.defaults import get_default_models
 
         self._static_models = get_default_models()
@@ -520,6 +522,9 @@ class InferenceOrchestrator:
             yield f"Error: {exc}"
             return
 
+        # Reset so this run cannot surface stale stats.
+        self.last_generation_stats = None
+
         # Read tokens from our private mailbox
         try:
             while True:
@@ -544,6 +549,7 @@ class InferenceOrchestrator:
                     yield resp.get("text", "")
 
                 elif rtype == "gen_done":
+                    self.last_generation_stats = resp.get("stats")
                     return
 
                 elif rtype == "gen_error":
@@ -1033,6 +1039,9 @@ class InferenceOrchestrator:
             yield f"Error: {exc}"
             return
 
+        # Reset so this run cannot surface stale stats.
+        self.last_generation_stats = None
+
         # Yield tokens from response queue — we are the only reader
         # because _gen_lock is held.
         while True:
@@ -1069,6 +1078,7 @@ class InferenceOrchestrator:
                 yield resp.get("text", "")
 
             elif rtype == "gen_done":
+                self.last_generation_stats = resp.get("stats")
                 return
 
             elif rtype == "gen_error":

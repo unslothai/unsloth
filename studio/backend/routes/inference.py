@@ -3537,6 +3537,26 @@ async def openai_chat_completions(
                     ],
                 )
                 yield f"data: {final_chunk.model_dump_json(exclude_none = True)}\n\n"
+                # Usage chunk from the last turn, same shape as the
+                # GGUF tool loop's metadata.
+                _stats = getattr(backend, "last_generation_stats", None)
+                if _stats:
+                    _stream_usage = _stats.get("usage") or {}
+                    usage_chunk = ChatCompletionChunk(
+                        id = completion_id,
+                        created = created,
+                        model = model_name,
+                        choices = [],
+                        usage = CompletionUsage(
+                            prompt_tokens = _stream_usage.get("prompt_tokens", 0),
+                            completion_tokens = _stream_usage.get(
+                                "completion_tokens", 0
+                            ),
+                            total_tokens = _stream_usage.get("total_tokens", 0),
+                        ),
+                        timings = _stats.get("timings"),
+                    )
+                    yield f"data: {usage_chunk.model_dump_json(exclude_none = True)}\n\n"
                 yield "data: [DONE]\n\n"
 
             except asyncio.CancelledError:
@@ -3716,6 +3736,26 @@ async def openai_chat_completions(
                     ],
                 )
                 yield f"data: {final_chunk.model_dump_json(exclude_none = True)}\n\n"
+                # Usage chunk (choices=[], usage set), same shape as the
+                # GGUF path so the speed popover works for MLX too.
+                _stats = getattr(backend, "last_generation_stats", None)
+                if _stats:
+                    _stream_usage = _stats.get("usage") or {}
+                    usage_chunk = ChatCompletionChunk(
+                        id = completion_id,
+                        created = created,
+                        model = model_name,
+                        choices = [],
+                        usage = CompletionUsage(
+                            prompt_tokens = _stream_usage.get("prompt_tokens", 0),
+                            completion_tokens = _stream_usage.get(
+                                "completion_tokens", 0
+                            ),
+                            total_tokens = _stream_usage.get("total_tokens", 0),
+                        ),
+                        timings = _stats.get("timings"),
+                    )
+                    yield f"data: {usage_chunk.model_dump_json(exclude_none = True)}\n\n"
                 yield "data: [DONE]\n\n"
 
             except asyncio.CancelledError:
