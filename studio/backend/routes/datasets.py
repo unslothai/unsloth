@@ -650,9 +650,7 @@ def check_format(
         raise
     except Exception as e:
         logger.error(f"Error checking dataset format: {e}", exc_info = True)
-        raise HTTPException(
-            status_code = 500, detail = "Failed to check dataset format"
-        )
+        raise HTTPException(status_code = 500, detail = "Failed to check dataset format")
 
 
 @router.post("/ai-assist-mapping", response_model = AiAssistMappingResponse)
