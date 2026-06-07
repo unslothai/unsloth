@@ -22,7 +22,10 @@ logger = get_logger(__name__)
 # filesystem paths, stack detail, or dependency internals. Log the full
 # exception server-side and return a generic message to the client.
 
-def safe_error_detail(error: Exception, fallback: str = "An internal error occurred") -> str:
+
+def safe_error_detail(
+    error: Exception, fallback: str = "An internal error occurred"
+) -> str:
     """Map a caught exception to a generic, client-safe message.
 
     Never includes raw ``str(error)`` (which can leak internal paths or stack
