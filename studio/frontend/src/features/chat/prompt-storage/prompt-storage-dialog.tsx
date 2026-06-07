@@ -263,6 +263,109 @@ function messageToText(msg: { content: unknown; attachments?: unknown }): string
   return parts.join("\n\n");
 }
 
+// ── OpenAI-format structured message builder ─────────────────────────────────
+//
+// Converts stored assistant-ui messages into the OpenAI messages array format
+// used for tool-calling and multimodal fine-tuning. Key differences vs the
+// plain-text messageToText path:
+//   - Tool calls → proper "tool_calls" array + separate "role":"tool" messages
+//   - Images     → "image_url" content parts with the stored data-URL
+//   - Audio      → dropped (no standard training format exists)
+//   - Thinking   → included as a text part (some trainers handle it)
+
+type OAIContentPart =
+  | { type: "text"; text: string }
+  | { type: "image_url"; image_url: { url: string } };
+
+type OAIToolCall = {
+  id: string;
+  type: "function";
+  function: { name: string; arguments: string };
+};
+
+type OAIMessage =
+  | { role: "user" | "system"; content: string | OAIContentPart[] }
+  | { role: "assistant"; content: string | null; tool_calls?: OAIToolCall[] }
+  | { role: "tool"; tool_call_id: string; name: string; content: string };
+
+/**
+ * Convert a single stored message into one or more OAIMessages.
+ * Tool-call parts split into an assistant message + tool-result messages.
+ * Image parts become image_url content parts (multimodal training).
+ */
+function messageToOpenAI(msg: { role: unknown; content: unknown; attachments?: unknown }): OAIMessage[] {
+  const role = (msg.role as string) ?? "user";
+  const blocks = Array.isArray(msg.content) ? msg.content : [];
+  const attachments = Array.isArray(msg.attachments) ? msg.attachments : [];
+
+  // Collect all content parts from both blocks and attachments
+  const allParts: Record<string, unknown>[] = [
+    ...blocks.map((b) => b as Record<string, unknown>),
+    ...attachments.flatMap((a) => {
+      const att = a as { content?: unknown };
+      return Array.isArray(att.content)
+        ? (att.content as Record<string, unknown>[])
+        : [];
+    }),
+  ];
+
+  if (role === "assistant") {
+    const textParts: string[] = [];
+    const toolCalls: OAIToolCall[] = [];
+    const toolResults: OAIMessage[] = [];
+
+    for (const p of allParts) {
+      if (p.type === "text" && typeof p.text === "string") {
+        textParts.push(p.text);
+      } else if (p.type === "reasoning" || p.type === "thinking") {
+        // Include thinking as a text part — some trainers preserve it
+        const t = typeof p.thinking === "string" ? p.thinking : typeof p.text === "string" ? p.text : "";
+        if (t) textParts.push(`<thinking>\n${t}\n</thinking>`);
+      } else if (p.type === "tool-call") {
+        const id = typeof p.toolCallId === "string" ? p.toolCallId : `call_${toolCalls.length}`;
+        const name = typeof p.toolName === "string" ? p.toolName : "unknown";
+        const argsStr = p.args != null ? JSON.stringify(p.args) : (typeof p.argsText === "string" ? p.argsText : "{}");
+        toolCalls.push({ id, type: "function", function: { name, arguments: argsStr } });
+        // Emit the result as a tool message immediately after
+        if (p.result !== undefined && p.result !== null) {
+          const resultStr = typeof p.result === "string" ? p.result : JSON.stringify(p.result);
+          toolResults.push({ role: "tool", tool_call_id: id, name, content: resultStr });
+        }
+      }
+    }
+
+    const content = textParts.join("\n\n") || null;
+    const assistantMsg: OAIMessage = toolCalls.length > 0
+      ? { role: "assistant", content, tool_calls: toolCalls }
+      : { role: "assistant", content: content ?? "" };
+
+    return toolResults.length > 0
+      ? [assistantMsg, ...toolResults]
+      : [assistantMsg];
+  }
+
+  // User / system: support multimodal content parts
+  const contentParts: OAIContentPart[] = [];
+  let hasNonText = false;
+
+  for (const p of allParts) {
+    if (p.type === "text" && typeof p.text === "string") {
+      contentParts.push({ type: "text", text: p.text });
+    } else if (p.type === "image" && typeof p.image === "string") {
+      contentParts.push({ type: "image_url", image_url: { url: p.image } });
+      hasNonText = true;
+    }
+    // audio: no standard training format — skip
+  }
+
+  // Flat string content → more compact; only use array if multimodal
+  if (!hasNonText) {
+    const text = contentParts.map((p) => (p.type === "text" ? p.text : "")).join("\n\n");
+    return text ? [{ role: role as "user" | "system", content: text }] : [];
+  }
+  return contentParts.length > 0 ? [{ role: role as "user" | "system", content: contentParts }] : [];
+}
+
 // Conversation export — ShareGPT training JSONL (human/gpt turns).
 export async function exportConversationShareGPT(threadId: string): Promise<void> {
   const messages = await loadConversationMessages(threadId);
@@ -291,15 +394,10 @@ export async function exportConversationRawJsonl(threadId: string): Promise<void
   const messages = await loadConversationMessages(threadId);
   if (!messages) return;
 
-  const msgs: Array<{ role: string; content: string }> = [];
-  for (const msg of messages) {
-    const content = messageToText(msg);
-    if (content.trim()) msgs.push({ role: msg.role as string, content });
-  }
-
-  if (msgs.length === 0) { toast.info("No exportable content."); return; }
+  const oaiMsgs: OAIMessage[] = messages.flatMap((msg) => messageToOpenAI(msg));
+  if (oaiMsgs.length === 0) { toast.info("No exportable content."); return; }
   downloadBlob(
-    JSON.stringify({ messages: msgs }),
+    JSON.stringify({ messages: oaiMsgs }),
     "conversation-" + exportTs() + ".jsonl",
     "application/x-ndjson",
   );
@@ -345,17 +443,13 @@ async function buildThreadContent(
   if (!messages) return null;
 
   if (format === "jsonl-raw") {
-    // OpenAI/ChatML format: one JSON object per conversation, recognised by the
-    // Unsloth trainer as a ChatML-format dataset (looks for a "messages" column).
-    const msgs = messages
-      .map((msg) => {
-        const content = messageToText(msg);
-        if (!content.trim()) return null;
-        return { role: msg.role as string, content };
-      })
-      .filter(Boolean) as Array<{ role: string; content: string }>;
-    if (msgs.length === 0) return null;
-    const record: Record<string, unknown> = { messages: msgs };
+    // OpenAI/ChatML format with proper tool-call and multimodal support.
+    // The Unsloth trainer recognises this as a ChatML-format dataset via the
+    // "messages" key. Tool calls use the OpenAI tool_calls array format;
+    // images are emitted as image_url content parts.
+    const oaiMsgs: OAIMessage[] = messages.flatMap((msg) => messageToOpenAI(msg));
+    if (oaiMsgs.length === 0) return null;
+    const record: Record<string, unknown> = { messages: oaiMsgs };
     if (opts?.includeThreadId) record.thread_id = threadId;
     return JSON.stringify(record);
   }
