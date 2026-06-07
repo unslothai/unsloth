@@ -135,7 +135,8 @@ function toChatModelSummary(model: {
 // models[] entry. /api/models/list omits audio capability for default and
 // active-GGUF entries, so the attach gates (`activeModel?.hasAudioInput`)
 // would otherwise stay false. Mirrors the compare composer's sync.
-function syncModelCapabilities(
+// Exported for tests.
+export function syncModelCapabilities(
   modelId: string,
   resp: {
     display_name?: string | null;
