@@ -46,7 +46,13 @@ import {
   savePromptEntry,
   savePromptList,
 } from "../api/prompts-api";
-import { listStoredChatMessages } from "../utils/chat-history-storage";
+import {
+  listStoredChatMessages,
+  saveStoredChatThread,
+  syncStoredChatMessages,
+} from "../utils/chat-history-storage";
+import { notifyChatHistoryUpdated } from "../api/chat-api";
+import type { ThreadRecord, MessageRecord } from "../types";
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -573,6 +579,267 @@ export async function exportProjectConversations(
     format,
     `project-${safe}-${exportTs()}`,
   );
+}
+
+// ─── Conversation import ──────────────────────────────────────────────────────
+
+/**
+ * Convert an OpenAI messages array back into assistant-ui MessageRecord[].
+ * Tool results (role:"tool") are absorbed into the preceding assistant message's
+ * tool-call part as a `result` field; they don't become separate records.
+ */
+function oaiMessagesToRecords(
+  oaiMsgs: unknown[],
+  threadId: string,
+  baseTs: number,
+): MessageRecord[] {
+  // Pass 1: index tool results by tool_call_id so we can attach them
+  const toolResults = new Map<string, string>();
+  for (const m of oaiMsgs) {
+    const msg = m as Record<string, unknown>;
+    if (msg.role === "tool" && typeof msg.tool_call_id === "string") {
+      toolResults.set(msg.tool_call_id, typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content ?? ""));
+    }
+  }
+
+  const records: MessageRecord[] = [];
+  let prevId: string | null = null;
+  let idx = 0;
+
+  for (const m of oaiMsgs) {
+    const msg = m as Record<string, unknown>;
+    const role = msg.role as string;
+    if (role === "tool") continue; // absorbed into assistant tool-calls
+
+    const id = crypto.randomUUID();
+
+    let content: unknown[];
+
+    if (role === "assistant") {
+      const parts: unknown[] = [];
+      if (typeof msg.content === "string" && msg.content.trim()) {
+        parts.push({ type: "text", text: msg.content });
+      }
+      if (Array.isArray(msg.tool_calls)) {
+        for (const tc of msg.tool_calls) {
+          const tcObj = tc as Record<string, unknown>;
+          const fn = (tcObj.function as Record<string, unknown>) ?? {};
+          const tcId = typeof tcObj.id === "string" ? tcObj.id : crypto.randomUUID();
+          const name = typeof fn.name === "string" ? fn.name : "unknown";
+          const argsStr = typeof fn.arguments === "string" ? fn.arguments : "{}";
+          let args: unknown = {};
+          try { args = JSON.parse(argsStr); } catch { /* keep empty */ }
+          const result = toolResults.get(tcId);
+          parts.push({
+            type: "tool-call",
+            toolCallId: tcId,
+            toolName: name,
+            args,
+            argsText: argsStr,
+            ...(result !== undefined ? { result } : {}),
+          });
+        }
+      }
+      content = parts;
+    } else {
+      // user / system — may be multimodal
+      const raw = msg.content;
+      if (Array.isArray(raw)) {
+        content = raw.flatMap((p): unknown[] => {
+          const part = p as Record<string, unknown>;
+          if (part.type === "text" && typeof part.text === "string") {
+            return [{ type: "text", text: part.text }];
+          }
+          if (part.type === "image_url") {
+            const iu = (part.image_url as Record<string, unknown>) ?? {};
+            return [{ type: "image", image: typeof iu.url === "string" ? iu.url : "" }];
+          }
+          return [];
+        });
+      } else {
+        content = typeof raw === "string" && raw.trim() ? [{ type: "text", text: raw }] : [];
+      }
+    }
+
+    if (content.length === 0) continue;
+
+    records.push({
+      id,
+      threadId,
+      parentId: prevId,
+      role: role as MessageRecord["role"],
+      content: content as MessageRecord["content"],
+      createdAt: baseTs + idx,
+    });
+    prevId = id;
+    idx++;
+  }
+
+  return records;
+}
+
+/** Convert a ShareGPT conversations array into assistant-ui MessageRecord[]. */
+function sharegptToRecords(
+  conversations: unknown[],
+  threadId: string,
+  baseTs: number,
+): MessageRecord[] {
+  const records: MessageRecord[] = [];
+  let prevId: string | null = null;
+  let idx = 0;
+  for (const c of conversations) {
+    const conv = c as Record<string, unknown>;
+    const from = typeof conv.from === "string" ? conv.from : "";
+    const value = typeof conv.value === "string" ? conv.value : "";
+    if (!value.trim()) continue;
+    const role: MessageRecord["role"] = from === "human" ? "user" : from === "system" ? "system" : "assistant";
+    const id = crypto.randomUUID();
+    records.push({
+      id,
+      threadId,
+      parentId: prevId,
+      role,
+      content: [{ type: "text", text: value }] as MessageRecord["content"],
+      createdAt: baseTs + idx,
+    });
+    prevId = id;
+    idx++;
+  }
+  return records;
+}
+
+/** Convert a CSV table (role, content columns) into assistant-ui MessageRecord[]. */
+function csvToRecords(csvText: string, threadId: string, baseTs: number): MessageRecord[] {
+  const lines = csvText.split(/\r?\n/);
+  const records: MessageRecord[] = [];
+  let prevId: string | null = null;
+  let idx = 0;
+  // Skip header row
+  for (let i = 1; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (!line) continue;
+    // Minimal CSV parse: first quoted or unquoted field = role, rest = content
+    let role = "";
+    let content = "";
+    if (line.startsWith('"')) {
+      const m = line.match(/^"((?:[^"]|"")*)"\s*,\s*([\s\S]*)$/);
+      if (!m) continue;
+      role = m[1].replace(/""/g, '"');
+      content = m[2].startsWith('"')
+        ? m[2].slice(1, m[2].endsWith('"') ? -1 : undefined).replace(/""/g, '"')
+        : m[2];
+    } else {
+      const comma = line.indexOf(",");
+      if (comma === -1) continue;
+      role = line.slice(0, comma);
+      content = line.slice(comma + 1).startsWith('"')
+        ? line.slice(comma + 2, line.endsWith('"') ? -1 : undefined).replace(/""/g, '"')
+        : line.slice(comma + 1);
+    }
+    if (!content.trim()) continue;
+    const validRole = role === "user" || role === "assistant" || role === "system" ? role : "user";
+    const id = crypto.randomUUID();
+    records.push({
+      id,
+      threadId,
+      parentId: prevId,
+      role: validRole as MessageRecord["role"],
+      content: [{ type: "text", text: content }] as MessageRecord["content"],
+      createdAt: baseTs + idx,
+    });
+    prevId = id;
+    idx++;
+  }
+  return records;
+}
+
+interface ParsedConversation {
+  title: string;
+  threadId: string;
+  messages: MessageRecord[];
+}
+
+/** Parse a file's text content into an array of conversations. */
+function parseImportText(text: string, filename: string): ParsedConversation[] {
+  const results: ParsedConversation[] = [];
+  const basename = filename.replace(/\.[^.]+$/, "");
+
+  const isJsonl = /\.(jsonl|ndjson)$/i.test(filename);
+  const isCsv = /\.csv$/i.test(filename);
+
+  if (isCsv) {
+    // Entire file = one conversation
+    const threadId = crypto.randomUUID();
+    const messages = csvToRecords(text, threadId, Date.now());
+    if (messages.length > 0) {
+      results.push({ title: basename, threadId, messages });
+    }
+    return results;
+  }
+
+  if (isJsonl) {
+    const lines = text.split(/\r?\n/).filter((l) => l.trim());
+    lines.forEach((line, lineIdx) => {
+      let obj: Record<string, unknown>;
+      try { obj = JSON.parse(line); } catch { return; }
+
+      const threadId = typeof obj.thread_id === "string" ? obj.thread_id : crypto.randomUUID();
+      const title = typeof obj.title === "string" ? obj.title : `${basename} ${lineIdx + 1}`;
+      const baseTs = typeof obj.created_at === "number" ? obj.created_at : Date.now() + lineIdx;
+
+      let messages: MessageRecord[] = [];
+
+      if (Array.isArray(obj.messages)) {
+        // Raw JSONL (OpenAI format)
+        messages = oaiMessagesToRecords(obj.messages, threadId, baseTs);
+      } else if (Array.isArray(obj.conversations)) {
+        // ShareGPT format
+        messages = sharegptToRecords(obj.conversations, threadId, baseTs);
+      }
+
+      if (messages.length > 0) {
+        results.push({ title, threadId, messages });
+      }
+    });
+    return results;
+  }
+
+  // Unknown extension — try JSONL, then CSV fallback
+  return parseImportText(text, filename + ".jsonl");
+}
+
+/**
+ * Import conversations from a File into chat storage.
+ * @param file   The file to import (.jsonl, .ndjson, or .csv)
+ * @param projectId  null = Recents, string = put in this project
+ * @returns number of threads imported
+ */
+export async function importConversationsFromFile(
+  file: File,
+  projectId: string | null = null,
+): Promise<number> {
+  const text = await file.text();
+  const parsed = parseImportText(text, file.name);
+  if (parsed.length === 0) return 0;
+
+  const now = Date.now();
+  await Promise.all(
+    parsed.map(async ({ title, threadId, messages }) => {
+      const thread: ThreadRecord = {
+        id: threadId,
+        title,
+        modelType: "base",
+        projectId: projectId ?? null,
+        archived: false,
+        createdAt: messages[0]?.createdAt ?? now,
+      };
+      await saveStoredChatThread(thread);
+      await syncStoredChatMessages(threadId, messages, { pruneMissing: true });
+    }),
+  );
+
+  notifyChatHistoryUpdated();
+  return parsed.length;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

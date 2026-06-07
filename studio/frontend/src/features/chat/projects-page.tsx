@@ -43,15 +43,17 @@ import {
   Edit03Icon,
   FolderAddIcon,
   Search01Icon,
+  Upload01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { MoreHorizontalIcon } from "lucide-react";
 import { useNavigate } from "@tanstack/react-router";
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import {
   exportProjectConversations,
   exportBulkConversationsMerged,
   exportBulkConversationsSeparate,
+  importConversationsFromFile,
   EXPORT_FORMATS_LIST,
   type ConvExportFormat,
 } from "./prompt-storage/prompt-storage-dialog";
@@ -90,6 +92,26 @@ export function ProjectsPage() {
   const [renaming, setRenaming] = useState<ProjectRecord | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
   const [deleting, setDeleting] = useState<ProjectRecord | null>(null);
+
+  // Import refs: one for global "import to Recents", one per-project (keyed by id)
+  const recentsImportRef = useRef<HTMLInputElement>(null);
+  const projectImportRefs = useRef<Map<string, HTMLInputElement>>(new Map());
+
+  async function handleImport(file: File, projectId: string | null) {
+    try {
+      const count = await importConversationsFromFile(file, projectId);
+      if (count === 0) {
+        toast.info("No conversations found in file.");
+      } else {
+        const dest = projectId
+          ? (projects.find((p) => p.id === projectId)?.name ?? "project")
+          : "Recents";
+        toast.success(`Imported ${count} conversation${count === 1 ? "" : "s"} to ${dest}.`);
+      }
+    } catch {
+      toast.error("Import failed.");
+    }
+  }
 
   const visibleProjects = useMemo(() => {
     const trimmed = query.trim().toLowerCase();
@@ -200,6 +222,18 @@ export function ProjectsPage() {
 
   return (
     <main className="mx-auto w-full max-w-7xl px-4 py-8 font-heading sm:px-6">
+      {/* Hidden import inputs */}
+      <input
+        ref={recentsImportRef}
+        type="file"
+        accept=".jsonl,.ndjson,.csv"
+        className="hidden"
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          if (file) void handleImport(file, null);
+          e.target.value = "";
+        }}
+      />
       <div className="flex flex-wrap items-center justify-between gap-4">
         <h1 className="text-2xl font-semibold tracking-tight text-foreground">
           Projects
@@ -220,6 +254,9 @@ export function ProjectsPage() {
               </SelectContent>
             </Select>
           </div>
+          <Button variant="outline" size="icon" title="Import chats" onClick={() => recentsImportRef.current?.click()}>
+            <HugeiconsIcon icon={Upload01Icon} strokeWidth={1.75} className="size-icon" />
+          </Button>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button variant="outline" size="icon" title="Export projects">
@@ -323,6 +360,22 @@ export function ProjectsPage() {
       ) : (
         <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {visibleProjects.map((project) => (
+            <div key={`wrap-${project.id}`} className="contents">
+            <input
+              key={`import-${project.id}`}
+              type="file"
+              accept=".jsonl,.ndjson,.csv"
+              className="hidden"
+              ref={(el) => {
+                if (el) projectImportRefs.current.set(project.id, el);
+                else projectImportRefs.current.delete(project.id);
+              }}
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (file) void handleImport(file, project.id);
+                e.target.value = "";
+              }}
+            />
             <div
               key={project.id}
               role="button"
@@ -368,6 +421,15 @@ export function ProjectsPage() {
                       <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
                       <span>Rename</span>
                     </DropdownMenuItem>
+                    <DropdownMenuItem
+                      onSelect={(e) => {
+                        e.stopPropagation();
+                        projectImportRefs.current.get(project.id)?.click();
+                      }}
+                    >
+                      <HugeiconsIcon icon={Upload01Icon} strokeWidth={1.75} className="size-icon" />
+                      <span>Import chats</span>
+                    </DropdownMenuItem>
                     <DropdownMenuSub>
                       <DropdownMenuSubTrigger>
                         <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-icon mr-1" />
@@ -406,6 +468,7 @@ export function ProjectsPage() {
               <span className="mt-auto pt-4 text-xs text-muted-foreground">
                 Updated {formatUpdatedAgo(project.updatedAt)}
               </span>
+            </div>
             </div>
           ))}
         </div>
