@@ -57,7 +57,6 @@ import { deleteThreadMessage } from "@/features/chat/utils/delete-thread-message
 import { useUserProfileStore } from "@/features/profile/stores/user-profile-store";
 import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
 import { isTauri } from "@/lib/api-base";
-import { AUDIO_ACCEPT, MAX_AUDIO_SIZE, fileToBase64 } from "@/lib/audio-utils";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
@@ -977,63 +976,6 @@ function useImeComposerInputHandlers() {
   };
 }
 
-// Audio upload row, only for audio-input models.
-const ComposerAudioMenuItem: FC = () => {
-  const setPendingAudio = useChatRuntimeStore((s) => s.setPendingAudio);
-  const activeModel = useChatRuntimeStore((s) => {
-    const checkpoint = s.params.checkpoint;
-    return s.models.find((m) => m.id === checkpoint);
-  });
-
-  const handleAudioFile = useCallback(
-    async (file: File) => {
-      if (file.size > MAX_AUDIO_SIZE) {
-        return;
-      }
-      try {
-        const base64 = await fileToBase64(file);
-        setPendingAudio(base64, file.name);
-      } catch {
-        // skip
-      }
-    },
-    [setPendingAudio],
-  );
-
-  // Build the input on document.body, not in the menu: selecting the item
-  // closes the dropdown, which would unmount a menu-rendered input before the
-  // OS picker returns and drop the file.
-  const pickAudio = useCallback(() => {
-    const input = document.createElement("input");
-    input.type = "file";
-    input.accept = AUDIO_ACCEPT;
-    input.hidden = true;
-    document.body.appendChild(input);
-    input.onchange = () => {
-      const file = input.files?.[0];
-      if (file) handleAudioFile(file);
-      document.body.removeChild(input);
-    };
-    input.oncancel = () => {
-      if (!input.files || input.files.length === 0) {
-        document.body.removeChild(input);
-      }
-    };
-    input.click();
-  }, [handleAudioFile]);
-
-  if (!activeModel?.hasAudioInput) {
-    return null;
-  }
-
-  return (
-    <DropdownMenuItem onSelect={() => pickAudio()}>
-      <HeadphonesIcon />
-      Upload audio
-    </DropdownMenuItem>
-  );
-};
-
 // Phosphor microphone. Inlined to avoid a new icon dependency.
 const MicIcon: FC<{ className?: string }> = ({ className }) => (
   <svg
@@ -1693,7 +1635,6 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
             Add photos &amp; files
           </DropdownMenuItem>
         </ComposerPrimitive.AddAttachment>
-        <ComposerAudioMenuItem />
         <DropdownMenuItem
           disabled={searchDisabled}
           className={

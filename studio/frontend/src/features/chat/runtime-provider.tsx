@@ -51,6 +51,11 @@ import {
   readActiveOpenDocumentAttachmentContent,
   readOpenDocumentAttachmentContent,
 } from "./open-document";
+import {
+  AUDIO_ACCEPT,
+  MAX_AUDIO_SIZE,
+  fileToBase64,
+} from "@/lib/audio-utils";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import type { MessageRecord, ModelType, ThreadRecord } from "./types";
 import {
@@ -156,6 +161,63 @@ class VisionImageAdapter implements AttachmentAdapter {
       reader.onerror = () => reject(new Error("Failed to read image file"));
       reader.readAsDataURL(file);
     });
+  }
+}
+
+// Audio shares the "Add photos & files" picker. Like VisionImageAdapter,
+// unsupported models are rejected at add() time with a toast.
+class AudioAttachmentAdapter implements AttachmentAdapter {
+  // MIME is unreliable for some containers (m4a), so also match by extension.
+  accept = `${AUDIO_ACCEPT},audio/x-m4a,.wav,.mp3,.m4a,.ogg,.oga,.flac,.webm`;
+
+  async add({ file }: { file: File }): Promise<PendingAttachment> {
+    const state = useChatRuntimeStore.getState();
+    const checkpoint = state.params.checkpoint;
+    const activeModel = state.models.find((m) => m.id === checkpoint);
+    const modelLoaded = !!checkpoint && !state.modelLoading;
+    let unavailableReason: string | null = null;
+    if (!modelLoaded) {
+      unavailableReason = "Load a model before adding audio files.";
+    } else if (!activeModel?.hasAudioInput) {
+      const label = activeModel?.name || checkpoint || "Current model";
+      unavailableReason = `${label} cannot accept audio. Load an audio-input model before attaching audio files.`;
+    }
+    if (unavailableReason) {
+      toast.error(unavailableReason);
+      throw new Error(unavailableReason);
+    }
+    if (file.size > MAX_AUDIO_SIZE) {
+      const sizeReason = "Audio size exceeds 50MB limit";
+      toast.error(sizeReason);
+      throw new Error(sizeReason);
+    }
+
+    return {
+      id: crypto.randomUUID(),
+      type: "file",
+      name: file.name,
+      contentType: file.type,
+      file,
+      status: { type: "requires-action", reason: "composer-send" },
+    };
+  }
+
+  async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
+    const base64 = await fileToBase64(attachment.file);
+    // Backend takes raw base64; format only satisfies the part type.
+    const format = attachment.contentType === "audio/mpeg" ? "mp3" : "wav";
+    return {
+      id: attachment.id,
+      type: "file",
+      name: attachment.name,
+      contentType: attachment.contentType,
+      content: [{ type: "audio", audio: { data: base64, format } }],
+      status: { type: "complete" },
+    };
+  }
+
+  remove(): Promise<void> {
+    return Promise.resolve();
   }
 }
 
@@ -988,6 +1050,7 @@ function useStudioRuntimeAdapters(
     () =>
       new CompositeAttachmentAdapter([
         new VisionImageAdapter(),
+        new AudioAttachmentAdapter(),
         new TextAttachmentAdapter(),
         new HtmlAttachmentAdapter(),
         new PDFAttachmentAdapter(),

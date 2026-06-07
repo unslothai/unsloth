@@ -857,27 +857,42 @@ function findLatestUserImageBase64(messages: RunMessages): string | undefined {
   return undefined;
 }
 
+function extractAudioPartBase64(part: { type: string }): string | undefined {
+  if (part.type !== "audio" || !("audio" in part)) return undefined;
+  const audioPart = (
+    part as unknown as {
+      type: "audio";
+      audio: string | { data: string; format: string };
+    }
+  ).audio;
+  const raw = typeof audioPart === "string" ? audioPart : audioPart?.data;
+  if (!raw) return undefined;
+  return raw.startsWith("data:") ? raw.split(",")[1] : raw;
+}
+
 function findLatestUserAudioBase64(messages: RunMessages): string | undefined {
-  // Check message content parts (from compare view's CompareMessagePart with type: "audio")
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     const message = messages[i];
     if (!message || message.role !== "user") continue;
 
+    // Message content parts (from compare view's CompareMessagePart with type: "audio")
     for (const part of message.content ?? []) {
-      if (part.type === "audio" && "audio" in part) {
-        const audioPart = (
-          part as unknown as {
-            type: "audio";
-            audio: string | { data: string; format: string };
-          }
-        ).audio;
-        const raw = typeof audioPart === "string" ? audioPart : audioPart?.data;
-        if (raw) return raw.startsWith("data:") ? raw.split(",")[1] : raw;
+      const base64 = extractAudioPartBase64(part);
+      if (base64) return base64;
+    }
+
+    // Attachment content parts (from AudioAttachmentAdapter)
+    if ("attachments" in message) {
+      for (const attachment of message.attachments ?? []) {
+        for (const part of attachment.content ?? []) {
+          const base64 = extractAudioPartBase64(part);
+          if (base64) return base64;
+        }
       }
     }
   }
 
-  // Check the runtime store (from main composer's audio upload)
+  // Check the runtime store (legacy main-composer audio upload path)
   const pendingAudio = useChatRuntimeStore.getState().pendingAudioBase64;
   return pendingAudio ?? undefined;
 }
