@@ -202,7 +202,7 @@ export function ThreadSidebar({
               <DropdownMenuTrigger asChild>
                 <button
                   type="button"
-                  className="flex items-center justify-center rounded-sm p-0.5 text-muted-foreground opacity-60 hover:opacity-100 hover:bg-accent focus:outline-none focus-visible:ring-0"
+                  className="flex items-center justify-center rounded-sm p-0.5 text-muted-foreground hover:bg-accent focus:outline-none focus-visible:ring-0"
                   title="Export options"
                 >
                   <HugeiconsIcon icon={MoreHorizontalIcon} className="size-3.5" />
@@ -257,20 +257,15 @@ export function ThreadSidebar({
                   <SidebarMenuButton
                     isActive={activeId === item.id}
                     onClick={() => onSelect(viewForItem(item))}
-                    className="pr-7"
                   >
                     <span>{item.title}</span>
                   </SidebarMenuButton>
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
-                      <button
-                        type="button"
-                        onClick={(e) => e.stopPropagation()}
-                        className="absolute right-1 top-1/2 -translate-y-1/2 flex size-6 items-center justify-center rounded-md text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus:outline-none focus-visible:ring-0"
-                        aria-label="More options"
-                      >
+                      <SidebarMenuAction showOnHover className="focus:outline-none focus-visible:ring-0" onClick={(e) => e.stopPropagation()}>
                         <HugeiconsIcon icon={MoreHorizontalIcon} className="size-4" />
-                      </button>
+                        <span className="sr-only">More options</span>
+                      </SidebarMenuAction>
                     </DropdownMenuTrigger>
                     <DropdownMenuContent side="bottom" align="end" className="w-44">
                       <DropdownMenuItem onSelect={() => openRename(item)}>
