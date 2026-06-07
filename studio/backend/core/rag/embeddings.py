@@ -27,12 +27,12 @@ from . import config
 logger = logging.getLogger(__name__)
 
 # "false" silences the fast tokenizer's fork warning; encode() flips it to "true"
-# only during a batch tokenize (rayon speedup) and restores it.
+# only during a batch tokenize (rayon speedup), then restores it.
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 _lock = threading.Lock()
-# Serializes encode/tokenize: the HF fast tokenizer isn't thread-safe. Separate
-# from _lock so a long encode never blocks a reload.
+# Serializes encode/tokenize (HF fast tokenizer isn't thread-safe). Separate from
+# _lock so a long encode never blocks a reload.
 _compute_lock = threading.Lock()
 _model = None
 _name: str | None = None
@@ -136,8 +136,8 @@ class _SentenceTransformersBackend:
         try:
             return _st_encode(texts, model_name = model_name, normalize = normalize)
         except Exception as st_err:  # noqa: BLE001 - runtime ST/CUDA encode failure
-            # ST loaded but this encode blew up; swap the whole process to the
-            # llama-server embedder (so later encodes stay in one space) and retry.
+            # ST loaded but this encode blew up; swap the process to the llama-server
+            # embedder (so later encodes stay in one space) and retry.
             fallback = _switch_to_llama_fallback(st_err)
             if fallback is None:
                 raise

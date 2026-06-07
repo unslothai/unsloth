@@ -146,18 +146,16 @@ import {
 const PageDragContext = createContext(false);
 
 // ── Single-chat prompt queue ───────────────────────────────────────────────
-// All persistent state lives at module level so it survives the Composer
-// remount that happens when the first queued message creates a new thread
-// (welcome-screen → conversation navigation).
-//
-// Detection uses useChatRuntimeStore.subscribe on runningByThreadId — the
-// same mechanism as RegisterCompareHandle.waitForRunEnd — so it works even
-// when aui.thread() on the welcome screen isn't bound to the new thread.
+// State lives at module level so it survives the Composer remount when the
+// first queued message creates a new thread (welcome-screen → conversation).
+// Detection subscribes to useChatRuntimeStore.runningByThreadId (like
+// RegisterCompareHandle.waitForRunEnd) so it works even when aui.thread() on
+// the welcome screen isn't bound to the new thread.
 
 import { create as _createZustand } from "zustand";
 
-// Reactive UI state — module-level Zustand so ComposerRightControls can
-// subscribe and re-render across Composer mounts.
+// Reactive UI state: module-level Zustand so ComposerRightControls re-renders
+// across Composer mounts.
 interface _QueueUIState { isRunning: boolean; current: number; total: number; }
 const _useQueueUI = _createZustand<_QueueUIState>(() => ({
   isRunning: false, current: 0, total: 0,
@@ -170,8 +168,8 @@ let _qIsRunning = false;
 let _qPrevStoreRunning = false;
 let _qStoreUnsub: (() => void) | null = null;
 
-// Always points to the current Composer's aui; updated on every render.
-// Safe to call after a remount because Composer sets it before children mount.
+// Always points to the current Composer's aui (updated every render). Safe
+// after a remount because Composer sets it before children mount.
 let _qGetAui: () => ReturnType<typeof useAui> = () => {
   throw new Error("aui not initialised");
 };
@@ -819,11 +817,9 @@ const Composer: FC<{
   // by default and only flips up via collision detection when it would not fit.
   const effectiveMenuSide = menuSide ?? "bottom";
 
-  // RAG queue-and-auto-send. While this thread's documents are still indexing,
-  // hold the user's send and fire it automatically once every doc is terminal, so
-  // retrieval covers all of them instead of whatever subset happened to finish.
-  // `indexingActive` is fed by ThreadDocumentsBar; `pendingSend` means a send is
-  // parked. The blocked send never ran, so the composer still holds the message.
+  // RAG queue-and-auto-send: while this thread's docs index, hold the send and fire
+  // it once every doc is terminal, so retrieval covers all of them. indexingActive
+  // comes from ThreadDocumentsBar; pendingSend marks a parked send (message stays).
   const [indexingActive, setIndexingActive] = useState(false);
   const [pendingSend, setPendingSend] = useState(false);
   const pendingSendRef = useRef(false);
@@ -878,9 +874,8 @@ const Composer: FC<{
     [disabled, shouldBlockSend, indexingActive, overlay, enqueueSend],
   );
 
-  // Fire the queued send the moment indexing clears (every doc completed or failed).
-  // The composer was never cleared, so just dispatch it now -- unless the user
-  // emptied it while waiting, in which case quietly drop the queued send.
+  // Fire the parked send once indexing clears. The composer still holds the text, so
+  // dispatch now -- unless the user emptied it while waiting (then drop it quietly).
   useEffect(() => {
     if (!pendingSend || indexingActive) return;
     const { text, attachments } = aui.composer().getState();
@@ -1928,8 +1923,8 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
   const [promptStorageOpen, setPromptStorageOpen] = useState(false);
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const aui = useAui();
-  // Disable Export chat until the conversation actually has content: an empty
-  // thread (e.g. one materialized just to attach a doc) has nothing to export.
+  // Disable Export chat until the thread has content (an empty thread, e.g. one made
+  // just to attach a doc, has nothing to export).
   const messageCount = useAuiState(({ thread }) => thread.messages.length);
   const { startQueue } = useContext(PromptQueueContext);
 

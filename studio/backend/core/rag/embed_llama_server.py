@@ -60,8 +60,8 @@ class LlamaServerBackend:
         self._binary: str | None = None
         # Sticky after an auto GPU start fails: later spawns stay on CPU.
         self._force_cpu = False
-        # Pooled client; requests pass full URLs, so a respawn's new port needs no
-        # rebuild.
+        # Pooled client; requests pass full URLs, so a respawn's new port needs
+        # no rebuild.
         self._client = httpx.Client(timeout = config.EMBED_REQUEST_TIMEOUT_S)
         atexit.register(self._shutdown)
 
@@ -166,8 +166,8 @@ class LlamaServerBackend:
     def _build_cmd(
         self, binary: str, model_path: str, port: int, *, use_gpu: bool
     ) -> list[str]:
-        # No --embd-normalize (not in every build; we normalize in Python to match
-        # the ST path). --fit off: don't auto-resize ctx/offload to device memory.
+        # No --embd-normalize (not in every build; we normalize in Python to match the
+        # ST path). --fit off: don't auto-resize ctx/offload to device memory.
         cmd = [
             binary,
             "-m",

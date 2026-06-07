@@ -4633,8 +4633,8 @@ class LlamaCppBackend:
         conversation = list(messages)
 
         # Forced first-pass RAG: consult attached docs up front so a doc question
-        # doesn't lose to web_search. Gated on a cosine floor in build_rag_autoinject;
-        # emits the same tool card + citations a real call would.
+        # doesn't lose to web_search. Gated on a cosine floor in
+        # build_rag_autoinject; emits the same tool card + citations a real call would.
         _auto = build_rag_autoinject(conversation, rag_scope)
         if _auto:
             for _ev in _auto["events"]:
@@ -5320,8 +5320,8 @@ class LlamaCppBackend:
                         tool_name == "search_knowledge_base"
                         and _kb_search_count >= RAG_MAX_SEARCHES_PER_TURN
                     ):
-                        # Paraphrased KB re-searches slip past the exact-args
-                        # guard but just fragment the answer; cap them per turn.
+                        # Paraphrased KB re-searches slip past the exact-args guard but
+                        # just fragment the answer; cap them per turn.
                         result = RAG_SEARCH_CAP_NUDGE
                     else:
                         _effective_timeout = (

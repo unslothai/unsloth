@@ -16,8 +16,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-# Anchor: up to MAX interior words from the chunk's start, shrunk toward MIN to
-# recover a unique match.
+# Anchor: up to MAX interior words from the chunk's start, shrunk toward MIN
+# to recover a unique match.
 MAX_ANCHOR_WORDS = 12
 MIN_ANCHOR_WORDS = 4
 

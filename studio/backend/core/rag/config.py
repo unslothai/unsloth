@@ -8,8 +8,8 @@ from __future__ import annotations
 import os
 
 EMBEDDING_MODEL = os.environ.get("RAG_EMBEDDING_MODEL", "unsloth/bge-small-en-v1.5")
-# Under bge's 512 limit with headroom for the 2 special tokens the embedder adds
-# (else overflow: llama-server 500s, ST truncates). Keep <= embedder_max - ~12.
+# Under bge's 512 limit, leaving headroom for the 2 special tokens (else overflow:
+# llama-server 500s, ST truncates). Keep <= embedder_max - ~12.
 CHUNK_TOKENS = int(os.environ.get("RAG_CHUNK_TOKENS", "500"))
 CHUNK_OVERLAP = int(os.environ.get("RAG_CHUNK_OVERLAP", "64"))
 TOP_K_LEXICAL = int(os.environ.get("RAG_TOP_K_LEXICAL", "30"))
@@ -26,8 +26,8 @@ CAPTION_MAX_IMAGES = int(os.environ.get("RAG_CAPTION_MAX_IMAGES", "8"))
 CAPTION_TIMEOUT_S = float(os.environ.get("RAG_CAPTION_TIMEOUT_S", "30"))
 
 # Embedder backend. "auto": sentence-transformers on a CUDA/ROCm GPU (torch fp16
-# wins bulk indexing), else torch-free GGUF llama-server. Switching backends
-# changes the vectors, so the index must be rebuilt.
+# wins bulk indexing), else torch-free GGUF llama-server. Switching backends changes
+# the vectors, so the index must be rebuilt.
 EMBED_BACKEND = os.environ.get("RAG_EMBED_BACKEND", "auto")
 # llama-server backend only. F16 over Q8_0: faster (no per-block dequant for this
 # tiny model) and exact vs fp32, for ~30MB more on disk.

@@ -4,11 +4,11 @@
 /**
  * Parameter count parsed from a model id / repo name.
  *
- * Reads the first plain "<n>B" token in the repo name (the part after the last
- * "/"), e.g. "Qwen3-0.6B" -> 0.6, "meta-llama/Llama-3.1-8B" -> 8. The leading
- * boundary (`^` or `-`/`_`) means family-version digits ("Qwen3-", "gemma-3-")
- * and MoE active-param notation ("A3B", whose `a` breaks the boundary) are
- * skipped, so "Qwen3-30B-A3B" reads as the 30B total, not the 3B active.
+ * Reads the first plain "<n>B" token in the repo name (part after the last "/"),
+ * e.g. "Qwen3-0.6B" -> 0.6, "meta-llama/Llama-3.1-8B" -> 8. The leading boundary
+ * (`^` or `-`/`_`) skips family-version digits ("Qwen3-", "gemma-3-") and MoE
+ * active-param notation ("A3B", whose `a` breaks the boundary), so "Qwen3-30B-A3B"
+ * reads as 30B total, not 3B active.
  */
 
 const PARAM_COUNT_RE = /(?:^|[-_])(\d+(?:\.\d+)?)[Bb](?:[-_]|$)/;

@@ -76,10 +76,10 @@ import {
   isProviderKeyRotationError,
 } from "./providers-api";
 
-// "Auto" auto-retrieve resolves by the loaded model's total size: small models
-// (<=9B) tend to answer from memory instead of calling search, so force
-// retrieval; leave it to larger ones. Size comes from the shared param-count
-// parser, which reads total params (ignoring MoE active "A3B" notation).
+// "Auto" auto-retrieve resolves by the model's total size: small models (<=9B)
+// answer from memory instead of calling search, so force retrieval; leave it to
+// larger ones. Size comes from the shared param-count parser, which reads total
+// params (ignoring MoE active "A3B" notation).
 const AUTOINJECT_AUTO_MAX_SIZE_B = 9;
 
 /** Resolve the tri-state auto-retrieve to the boolean the backend expects. */

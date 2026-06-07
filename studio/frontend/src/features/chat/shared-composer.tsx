@@ -529,8 +529,7 @@ export function SharedComposer({
   const ragEnabled = useChatRuntimeStore((s) => s.ragEnabled);
   const setRagEnabled = useChatRuntimeStore((s) => s.setRagEnabled);
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
-  // Threads with content to export; empty until a compare run materializes them.
-  // Gates Export chat so it isn't selectable when there's nothing to export.
+  // Exportable thread ids; empty until a compare run, which gates Export chat off.
   const exportThreadIds = [model1ThreadId, model2ThreadId, activeThreadId].filter(
     (id): id is string => Boolean(id),
   );
@@ -669,7 +668,7 @@ export function SharedComposer({
   const webFetchDisabled = !modelLoaded || !supportsBuiltinWebFetch;
   const showWebFetchPill = supportsBuiltinWebFetch;
   // Docs (RAG) pill is local-only: search_knowledge_base needs the local tool
-  // runtime, so it's off for external models.
+  // runtime, off for external models.
   const ragDisabled = !modelLoaded || isExternalModel || !supportsTools;
   const showRagPill = !isExternalModel;
   // With more than 4 pills showing, collapse them to icons only to cut clutter.
@@ -728,9 +727,8 @@ export function SharedComposer({
     setTimeout(() => { sendRef.current?.(); }, 100);
   }
 
-  // Compare mode: advance queue when the full compare cycle finishes, but
-  // stop the queue if the compare step failed to avoid burning through prompts
-  // with incomplete results.
+  // Compare mode: advance the queue when the full compare cycle finishes, but stop
+  // it if the step failed, to avoid burning prompts on incomplete results.
   useEffect(() => {
     const wasComparing = prevComparingRef.current;
     prevComparingRef.current = comparing;

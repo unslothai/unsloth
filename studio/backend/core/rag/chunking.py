@@ -82,8 +82,8 @@ def _merge(
         pt = count(piece)
         if buf and buf_tok + pt > max_tokens:
             _flush()
-            # Bound the carry so carry + this piece fits max_tokens, else a full
-            # overlap before a near-max piece would overflow the embedder.
+            # Bound the carry so carry + this piece fits max_tokens; else a full
+            # overlap before a near-max piece overflows the embedder.
             carry_budget = min(overlap, max(0, max_tokens - pt))
             carry, carry_starts, run = [], [], 0
             for prev, prev_start in zip(reversed(buf), reversed(buf_starts)):

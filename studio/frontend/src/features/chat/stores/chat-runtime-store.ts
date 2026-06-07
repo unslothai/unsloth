@@ -54,8 +54,8 @@ export const DEFAULT_RAG_SOURCE: RagSource = { type: "thread" };
 export const DEFAULT_RAG_MODE: RagMode = "hybrid";
 export const DEFAULT_RAG_TOP_K = 5;
 // Auto-retrieve mode. `auto` forces retrieval for smaller models (<=9B) that
-// tend to answer from memory instead of calling search, and leaves it to the
-// model on larger ones; `on`/`off` force it. Gated by a high cosine floor.
+// answer from memory instead of calling search, and leaves it to larger ones;
+// `on`/`off` force it. Gated by a high cosine floor.
 export type RagAutoInject = "auto" | "on" | "off";
 export const DEFAULT_RAG_AUTOINJECT: RagAutoInject = "auto";
 export const DEFAULT_RAG_AUTOINJECT_MIN_SCORE = 0.7;

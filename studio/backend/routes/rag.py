@@ -363,8 +363,8 @@ def search(payload: SearchRequest, subject: str = Depends(get_current_subject)) 
 # ---------------------------------------------------------------------------
 # Document preview (citation -> source file + highlight regions)
 # ---------------------------------------------------------------------------
-# Per-process secret so pdf.js range requests fetch the file without a bearer
-# header; tokens only work on this server instance.
+# Per-process secret so pdf.js range requests fetch the file without a bearer header;
+# tokens only work on this server instance.
 _PREVIEW_SECRET = secrets.token_bytes(32)
 _PREVIEW_TTL = 600  # seconds
 

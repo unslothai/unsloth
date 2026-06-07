@@ -464,8 +464,8 @@ class TestLoopBehaviour:
         assert "do not repeat" in tool_end_events[1]["result"].lower()
 
     def test_nonadjacent_duplicate_tool_call_blocked(self):
-        # A, B, then A again: the second A is a prior successful call, so it is
-        # blocked even though it is not the immediately preceding call.
+        # A, B, then A again: the second A is a prior successful call, so it is blocked
+        # even though it is not the immediately preceding call.
         loop, exec_fn = _make_loop(
             turns = [
                 [

@@ -10,12 +10,11 @@ import { type Citation, parseCitations } from "./citation-utils";
 import { CitationBadge } from "./tool-ui-knowledge-base";
 
 /**
- * Footnote-style "Sources" row for RAG document citations, shown at the bottom of
- * an assistant message (mirrors the web-citation SourcesGroup). It reads the
- * search_knowledge_base tool-call parts off the message, parses their citations,
- * dedupes to one pill per document (keeping the best-scoring chunk as the link
- * target), and reuses CitationBadge so click-to-preview and the hovercard match
- * the rest of the app.
+ * Footnote-style "Sources" row for RAG citations at the bottom of an assistant
+ * message (mirrors the web-citation SourcesGroup). Reads the message's
+ * search_knowledge_base tool-call parts, parses their citations, dedupes to one
+ * pill per document (keeping the best-scoring chunk as the link target), and
+ * reuses CitationBadge so click-to-preview and the hovercard match the app.
  */
 export const RagSourcesGroup: FC = () => {
   const message = useMessage();

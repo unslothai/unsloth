@@ -125,7 +125,7 @@ function exportAllListsJsonl(entries: PromptListEntry[]): void {
   downloadBlob(lines, "prompt-lists.jsonl", "application/x-ndjson");
 }
 
-// CSV for lists: list_name,order,prompt_text so multiple lists fit in one file
+// CSV columns list_name,order,prompt_text so multiple lists fit one file
 function exportListCsv(entry: PromptListEntry): void {
   const rows = entry.items
     .map((text, i) => `${csvEscape(entry.name)},${i + 1},${csvEscape(text)}`)
@@ -144,7 +144,7 @@ function exportAllListsCsv(entries: PromptListEntry[]): void {
   downloadBlob(`list_name,order,prompt_text\n${rows}`, "prompt-lists.csv", "text/csv");
 }
 
-// Collection: all prompts + all lists in one JSONL, each line tagged with "type"
+// Collection: all prompts + lists in one JSONL, each line tagged with "type"
 function exportCollectionJsonl(prompts: PromptEntry[], lists: PromptListEntry[]): void {
   const lines = [
     ...prompts.map((e) => JSON.stringify({ type: "prompt", name: e.name, text: e.text })),
@@ -193,11 +193,10 @@ function contentBlocksToText(content: unknown): string {
   }
 
 /**
- * Walk the parentId chain to reconstruct the correct conversation order.
- * listStoredChatMessages sorts by createdAt, but GPT response slots are
- * created with an earlier timestamp than the user's next message, causing
- * messages to appear out of order. Walking the parent chain guarantees the
- * correct turn sequence regardless of timestamps.
+ * Reorder by walking the parentId chain. createdAt sort (from
+ * listStoredChatMessages) misorders turns because GPT response slots get an
+ * earlier timestamp than the user's next message; the parent chain is correct
+ * regardless of timestamps.
  */
 type _Msg = { id: string; parentId?: string | null; createdAt?: number };
 
@@ -210,12 +209,12 @@ function orderByParentChain<T extends _Msg>(messages: T[]): T[] {
     childrenOf.get(pid)!.push(m);
   }
 
-  // Walk the main branch from the root, always taking the most-recent child.
+  // Walk the main branch from root, taking the most-recent child each step.
   const result: T[] = [];
   let cur: string | null = null;
   while (childrenOf.has(cur)) {
     const children: T[] = childrenOf.get(cur)!;
-    // Pick the child with the highest createdAt (most recent branch/edit).
+    // Highest createdAt = most recent branch/edit.
     const next: T = children.reduce((a: T, b: T) =>
       (a.createdAt ?? 0) >= (b.createdAt ?? 0) ? a : b,
     );
@@ -224,7 +223,7 @@ function orderByParentChain<T extends _Msg>(messages: T[]): T[] {
     byId.delete(next.id);
   }
 
-  // Append any orphaned messages (shouldn't normally occur) at the end.
+  // Append any orphans (shouldn't normally occur).
   for (const [, m] of byId) result.push(m);
   return result;
 }
@@ -236,9 +235,9 @@ async function loadConversationMessages(threadId: string) {
     toast.info("No messages in this conversation to export.");
     return null;
   }
-  // If no message has a parentId the thread is fully legacy (flat list already
-  // sorted by createdAt from the DB). Walking the chain in that case picks the
-  // newest message first, which inverts the order. Fall back to raw order.
+  // No parentId anywhere = legacy flat thread (already createdAt-sorted by the
+  // DB). Walking the chain there picks the newest first, inverting order, so
+  // fall back to raw order.
   const hasParentIds = raw.some((m) => (m as { parentId?: unknown }).parentId != null);
   if (!hasParentIds) return raw;
   return orderByParentChain(raw) as typeof raw;
@@ -250,10 +249,10 @@ function exportTs(): string {
 }
 
 /**
- * Flatten a stored message's content blocks AND any separately-stored
- * attachments (images/audio/files sent via the composer) into a single string.
- * Attachments keep their content in msg.attachments[].content rather than
- * msg.content, so without this they would be silently dropped on export.
+ * Flatten a message's content blocks plus separately-stored attachments
+ * (images/audio/files from the composer) into one string. Attachments live in
+ * msg.attachments[].content, not msg.content, so they'd otherwise be dropped on
+ * export.
  */
 function messageToText(msg: { content: unknown; attachments?: unknown }): string {
   const parts: string[] = [];
@@ -270,14 +269,13 @@ function messageToText(msg: { content: unknown; attachments?: unknown }): string
 }
 
 // ── OpenAI-format structured message builder ─────────────────────────────────
-//
-// Converts stored assistant-ui messages into the OpenAI messages array format
-// used for tool-calling and multimodal fine-tuning. Key differences vs the
-// plain-text messageToText path:
-//   - Tool calls → proper "tool_calls" array + separate "role":"tool" messages
-//   - Images     → "image_url" content parts with the stored data-URL
-//   - Audio      → dropped (no standard training format exists)
-//   - Thinking   → included as a text part (some trainers handle it)
+// Converts stored assistant-ui messages into the OpenAI messages array (for
+// tool-calling and multimodal fine-tuning). Differences vs the plain-text
+// messageToText path:
+//   - Tool calls → "tool_calls" array + separate "role":"tool" messages
+//   - Images     → "image_url" parts with the stored data-URL
+//   - Audio      → dropped (no standard training format)
+//   - Thinking   → kept as a text part (some trainers handle it)
 
 type OAIContentPart =
   | { type: "text"; text: string }
@@ -295,16 +293,16 @@ type OAIMessage =
   | { role: "tool"; tool_call_id: string; name: string; content: string };
 
 /**
- * Convert a single stored message into one or more OAIMessages.
- * Tool-call parts split into an assistant message + tool-result messages.
- * Image parts become image_url content parts (multimodal training).
+ * Convert a stored message into one or more OAIMessages. Tool-call parts split
+ * into an assistant message + tool-result messages; image parts become
+ * image_url parts (multimodal training).
  */
 function messageToOpenAI(msg: { role: unknown; content: unknown; attachments?: unknown }): OAIMessage[] {
   const role = (msg.role as string) ?? "user";
   const blocks = Array.isArray(msg.content) ? msg.content : [];
   const attachments = Array.isArray(msg.attachments) ? msg.attachments : [];
 
-  // Collect all content parts from both blocks and attachments
+  // Content parts from blocks + attachments.
   const allParts: Record<string, unknown>[] = [
     ...blocks.map((b) => b as Record<string, unknown>),
     ...attachments.flatMap((a) => {
@@ -331,7 +329,7 @@ function messageToOpenAI(msg: { role: unknown; content: unknown; attachments?: u
         const name = typeof p.toolName === "string" ? p.toolName : "unknown";
         const argsStr = p.args != null ? JSON.stringify(p.args) : (typeof p.argsText === "string" ? p.argsText : "{}");
         toolCalls.push({ id, type: "function", function: { name, arguments: argsStr } });
-        // Emit the result as a tool message immediately after
+        // Emit the result as a tool message right after.
         if (p.result !== undefined && p.result !== null) {
           const resultStr = typeof p.result === "string" ? p.result : JSON.stringify(p.result);
           toolResults.push({ role: "tool", tool_call_id: id, name, content: resultStr });
@@ -349,7 +347,7 @@ function messageToOpenAI(msg: { role: unknown; content: unknown; attachments?: u
       : [assistantMsg];
   }
 
-  // User / system: support multimodal content parts
+  // User / system: support multimodal parts.
   const contentParts: OAIContentPart[] = [];
   let hasNonText = false;
 
@@ -360,10 +358,10 @@ function messageToOpenAI(msg: { role: unknown; content: unknown; attachments?: u
       contentParts.push({ type: "image_url", image_url: { url: p.image } });
       hasNonText = true;
     }
-    // audio: no standard training format — skip
+    // audio: no standard training format, skipped.
   }
 
-  // Flat string content → more compact; only use array if multimodal
+  // Flat string is more compact; use an array only when multimodal.
   if (!hasNonText) {
     const text = contentParts.map((p) => (p.type === "text" ? p.text : "")).join("\n\n");
     return text ? [{ role: role as "user" | "system", content: text }] : [];
@@ -392,9 +390,9 @@ export async function exportConversationShareGPT(threadId: string): Promise<void
   );
 }
 
-// Conversation export — raw JSONL, OpenAI/ChatML format (one object per conversation).
-// {"messages": [{"role": "user", "content": "..."}, ...]}
-// This is recognised by the Unsloth trainer as a ChatML-format dataset.
+// Conversation export — raw JSONL, OpenAI/ChatML (one object per conversation):
+// {"messages": [{"role": "user", "content": "..."}, ...]}. The Unsloth trainer
+// recognises this as a ChatML-format dataset.
 export async function exportConversationRawJsonl(threadId: string): Promise<void> {
   const messages = await loadConversationMessages(threadId);
   if (!messages) return;
@@ -447,10 +445,9 @@ async function buildThreadContent(
   if (!messages) return null;
 
   if (format === "jsonl-raw") {
-    // OpenAI/ChatML format with proper tool-call and multimodal support.
-    // The Unsloth trainer recognises this as a ChatML-format dataset via the
-    // "messages" key. Tool calls use the OpenAI tool_calls array format;
-    // images are emitted as image_url content parts.
+    // OpenAI/ChatML with tool-call and multimodal support. The Unsloth trainer
+    // recognises it as ChatML via the "messages" key; tool calls use the OpenAI
+    // tool_calls array, images become image_url parts.
     const oaiMsgs: OAIMessage[] = messages.flatMap((msg) => messageToOpenAI(msg));
     if (oaiMsgs.length === 0) return null;
     return JSON.stringify({ messages: oaiMsgs });
@@ -490,9 +487,8 @@ function exportMime(format: ConvExportFormat): string {
 }
 
 /**
- * Export multiple threads as a single merged file (all messages concatenated).
- * For JSONL formats each thread's records are on their own lines with a
- * thread_id field; for CSV a thread_id column is prepended.
+ * Export multiple threads as one merged file. JSONL: each thread's records on
+ * their own lines with a thread_id field; CSV: a thread_id column prepended.
  */
 export async function exportBulkConversationsMerged(
   threadIds: string[],
@@ -518,9 +514,7 @@ export async function exportBulkConversationsMerged(
   downloadBlob(body, `${basename}.${exportExt(format)}`, exportMime(format));
 }
 
-/**
- * Export multiple threads as a ZIP archive — one file per thread.
- */
+/** Export multiple threads as a ZIP archive, one file per thread. */
 export async function exportBulkConversationsSeparate(
   threadIds: string[],
   format: ConvExportFormat,
@@ -553,8 +547,8 @@ export async function exportBulkConversationsSeparate(
 // ─── Single-project export ─────────────────────────────────────────────────
 
 /**
- * Export all threads in a single project as a merged file.
- * Caller provides the list of thread IDs already resolved for the project.
+ * Export all threads in one project as a merged file. Caller provides the
+ * already-resolved thread IDs for the project.
  */
 export async function exportProjectConversations(
   threadIds: string[],
@@ -574,14 +568,14 @@ export async function exportProjectConversations(
 /**
  * Convert an OpenAI messages array back into assistant-ui MessageRecord[].
  * Tool results (role:"tool") are absorbed into the preceding assistant message's
- * tool-call part as a `result` field; they don't become separate records.
+ * tool-call part as a `result` field, not made into separate records.
  */
 function oaiMessagesToRecords(
   oaiMsgs: unknown[],
   threadId: string,
   baseTs: number,
 ): MessageRecord[] {
-  // Pass 1: index tool results by tool_call_id so we can attach them
+  // Pass 1: index tool results by tool_call_id for later attachment.
   const toolResults = new Map<string, string>();
   for (const m of oaiMsgs) {
     const msg = m as Record<string, unknown>;
@@ -630,7 +624,7 @@ function oaiMessagesToRecords(
       }
       content = parts;
     } else {
-      // user / system — may be multimodal
+      // user / system — may be multimodal.
       const raw = msg.content;
       if (Array.isArray(raw)) {
         content = raw.flatMap((p): unknown[] => {
@@ -706,7 +700,7 @@ function csvToRecords(csvText: string, threadId: string, baseTs: number): Messag
   for (let i = 1; i < lines.length; i++) {
     const line = lines[i].trim();
     if (!line) continue;
-    // Minimal CSV parse: first quoted or unquoted field = role, rest = content
+    // Minimal CSV parse: first field = role, rest = content.
     let role = "";
     let content = "";
     if (line.startsWith('"')) {
@@ -771,8 +765,8 @@ function parseImportText(text: string, filename: string): ParsedConversation[] {
       let obj: Record<string, unknown>;
       try { obj = JSON.parse(line); } catch { return; }
 
-      // Always generate a fresh ID — never reuse the exported thread_id.
-      // Reusing it would clobber existing threads with the same ID on import.
+      // Fresh ID — never reuse the exported thread_id, which would clobber an
+      // existing thread with the same ID on import.
       const threadId = crypto.randomUUID();
       const title = typeof obj.title === "string" ? obj.title : `${basename} ${lineIdx + 1}`;
       const baseTs = typeof obj.created_at === "number" ? obj.created_at : Date.now() + lineIdx;
@@ -794,14 +788,14 @@ function parseImportText(text: string, filename: string): ParsedConversation[] {
     return results;
   }
 
-  // Unknown extension — try JSONL, then CSV fallback
+  // Unknown extension — retry as JSONL.
   return parseImportText(text, filename + ".jsonl");
 }
 
 /**
  * Import conversations from a File into chat storage.
  * @param file   The file to import (.jsonl, .ndjson, or .csv)
- * @param projectId  null = Recents, string = put in this project
+ * @param projectId  null = Recents, else target project
  * @returns number of threads imported
  */
 export async function importConversationsFromFile(
@@ -834,9 +828,9 @@ export async function importConversationsFromFile(
 
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Training exports — ShareGPT format used by Unsloth fine-tuning pipelines.
-// Each prompt → one {"conversations": [...]} record; human turn + empty gpt slot.
-// Each list → one multi-turn record where every item is a human turn.
+// Training exports — ShareGPT format for Unsloth fine-tuning pipelines.
+// Prompt → one {"conversations": [...]} record (human turn + empty gpt slot).
+// List → one multi-turn record with every item as a human turn.
 function exportPromptTrainingJsonl(entry: PromptEntry): void {
   const record = {
     conversations: [
@@ -892,7 +886,7 @@ function exportListsTrainingJsonl(entries: PromptListEntry[]): void {
 
 // ── Import helpers ────────────────────────────────────────────────────────────
 
-/** Full RFC 4180 CSV parser. Handles quoted fields with embedded newlines and commas. */
+/** RFC 4180 CSV parser; handles quoted fields with embedded newlines/commas. */
 function parseCsv(text: string): string[][] {
   const rows: string[][] = [];
   let row: string[] = [];
@@ -905,7 +899,7 @@ function parseCsv(text: string): string[][] {
 
   while (i < text.length) {
     if (text[i] === '"') {
-      // Quoted field — may span multiple lines.
+      // Quoted field — may span lines.
       i++;
       let cell = "";
       while (i < text.length) {
@@ -1798,7 +1792,7 @@ export function PromptStorageDialog({
       const text = await file.text();
       const isCsv = file.name.toLowerCase().endsWith(".csv");
       try {
-        // Auto-detect collection JSONL by checking if first line has a "type" field
+        // Auto-detect collection JSONL: first line has a "type" field.
         if (!isCsv) {
           const firstLine = text.split("\n").find((l) => l.trim());
           if (firstLine) {

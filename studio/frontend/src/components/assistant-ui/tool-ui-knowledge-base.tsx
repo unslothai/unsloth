@@ -77,8 +77,8 @@ const KnowledgeBaseToolUIImpl: ToolCallMessagePartComponent = ({
   const query = (args as { query?: string })?.query ?? "";
   const isRunning = status?.type === "running";
   const citations = useMemo(() => parseCitations(result), [result]);
-  // Citations themselves now render as a "Sources" list at the bottom of the
-  // message (RagSourcesGroup); the block keeps only a one-line summary.
+  // Citations now render as a bottom-of-message "Sources" list (RagSourcesGroup);
+  // the block keeps a one-line summary.
   const docCount = useMemo(
     () => new Set(citations.map((c) => c.documentId ?? c.filename)).size,
     [citations],
