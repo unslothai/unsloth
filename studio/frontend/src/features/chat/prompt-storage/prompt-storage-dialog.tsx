@@ -324,7 +324,6 @@ function messageToOpenAI(msg: { role: unknown; content: unknown; attachments?: u
       if (p.type === "text" && typeof p.text === "string") {
         textParts.push(p.text);
       } else if (p.type === "reasoning" || p.type === "thinking") {
-        // Include thinking as a text part — some trainers preserve it
         const t = typeof p.thinking === "string" ? p.thinking : typeof p.text === "string" ? p.text : "";
         if (t) textParts.push(`<thinking>\n${t}\n</thinking>`);
       } else if (p.type === "tool-call") {
