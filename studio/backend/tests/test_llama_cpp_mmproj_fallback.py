@@ -57,8 +57,7 @@ _OOM_OUT = (
     "device 0: cudaMalloc failed: out of memory"
 )
 _BAD_ARCH_OUT = (
-    "llama_model_load: error loading model: unknown model architecture: "
-    "'qwen_image'"
+    "llama_model_load: error loading model: unknown model architecture: " "'qwen_image'"
 )
 _PORT_OUT = "srv start: failed to bind: address already in use"
 _MISSING_OUT = "error: failed to open GGUF file: no such file or directory"
@@ -112,17 +111,25 @@ class TestProjectorIncompatibilityDetector:
 # command), projector pair at the end.
 _VISION_CMD = [
     "/home/u/.unsloth/llama.cpp/build/bin/llama-server",
-    "-m", "/cache/gemma-4-E2B-it-UD-Q4_K_XL.gguf",
-    "--port", "55473",
-    "-c", "131072",
-    "--parallel", "1",
-    "--flash-attn", "on",
+    "-m",
+    "/cache/gemma-4-E2B-it-UD-Q4_K_XL.gguf",
+    "--port",
+    "55473",
+    "-c",
+    "131072",
+    "--parallel",
+    "1",
+    "--flash-attn",
+    "on",
     "--no-context-shift",
-    "-ngl", "-1",
-    "--threads", "-1",
+    "-ngl",
+    "-1",
+    "--threads",
+    "-1",
     "--jinja",
     "--spec-default",
-    "--mmproj", "/cache/mmproj-F16.gguf",
+    "--mmproj",
+    "/cache/mmproj-F16.gguf",
 ]
 
 
@@ -135,9 +142,18 @@ class TestStripMmprojArgs:
     def test_preserves_every_text_flag(self):
         stripped = _strip(_VISION_CMD)
         for flag in (
-            "-m", "/cache/gemma-4-E2B-it-UD-Q4_K_XL.gguf",
-            "--port", "55473", "-c", "131072", "-ngl", "-1",
-            "--jinja", "--spec-default", "--flash-attn", "on",
+            "-m",
+            "/cache/gemma-4-E2B-it-UD-Q4_K_XL.gguf",
+            "--port",
+            "55473",
+            "-c",
+            "131072",
+            "-ngl",
+            "-1",
+            "--jinja",
+            "--spec-default",
+            "--flash-attn",
+            "on",
         ):
             assert flag in stripped
         # Exactly the two projector tokens are dropped.

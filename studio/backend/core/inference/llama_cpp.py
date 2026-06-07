@@ -3566,9 +3566,7 @@ class LlamaCppBackend:
                 if not self._wait_for_health(timeout = 600.0):
                     out = "\n".join(self._stdout_lines[-50:])
                     self._kill_process()
-                    if launched_with_mmproj and self._is_projector_incompatibility(
-                        out
-                    ):
+                    if launched_with_mmproj and self._is_projector_incompatibility(out):
                         logger.warning(
                             "llama-server could not load this model's vision "
                             "projector (--mmproj). The installed llama.cpp build is "
