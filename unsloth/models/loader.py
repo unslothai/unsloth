@@ -421,7 +421,9 @@ class FastLanguageModel(FastLlamaModel):
                     load_in_8bit,
                     load_in_16bit,
                 )
-                model_name = _offline_quantize_to_fp8(model_name, fp8_mode, force_text_only = True)
+                model_name = _offline_quantize_to_fp8(
+                    model_name, fp8_mode, force_text_only = True
+                )
             else:
                 assert new_model_name is not None
                 model_name = new_model_name
@@ -1037,7 +1039,9 @@ class FastModel(FastBaseModel):
                     load_in_8bit,
                     load_in_16bit,
                 )
-                model_name = _offline_quantize_to_fp8(model_name, fp8_mode, force_text_only = _force_text_only)
+                model_name = _offline_quantize_to_fp8(
+                    model_name, fp8_mode, force_text_only = _force_text_only
+                )
             else:
                 assert new_model_name is not None
                 model_name = new_model_name

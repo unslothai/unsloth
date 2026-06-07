@@ -527,16 +527,35 @@ def _remap_text_only_skip_modules(qc):
     # module is model.layers.12.mlp. Remap so the skip still matches and drop vision/
     # audio entries. Returns qc unchanged when there is nothing to remap. See PR #5816.
     is_dict = isinstance(qc, dict)
-    skip = qc.get("llm_int8_skip_modules") if is_dict else getattr(qc, "llm_int8_skip_modules", None)
+    skip = (
+        qc.get("llm_int8_skip_modules")
+        if is_dict
+        else getattr(qc, "llm_int8_skip_modules", None)
+    )
     if not skip:
         return qc
     remapped = []
     for name in skip:
-        for pref in ("language_model.model.", "model.language_model.", "language_model."):
+        for pref in (
+            "language_model.model.",
+            "model.language_model.",
+            "language_model.",
+        ):
             if name.startswith(pref):
-                name = ("model." + name[len(pref):]) if pref != "language_model." else name[len(pref):]
+                name = (
+                    ("model." + name[len(pref) :])
+                    if pref != "language_model."
+                    else name[len(pref) :]
+                )
                 break
-        if name.startswith(("vision_tower", "multi_modal_projector", "audio_tower", "modality_projection")):
+        if name.startswith(
+            (
+                "vision_tower",
+                "multi_modal_projector",
+                "audio_tower",
+                "modality_projection",
+            )
+        ):
             continue
         remapped.append(name)
     remapped = list(dict.fromkeys(remapped))

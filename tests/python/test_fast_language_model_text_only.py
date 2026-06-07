@@ -62,7 +62,11 @@ def _load_text_only_namespace():
     import transformers
     from packaging.version import Version
 
-    ns = {"copy": copy, "Version": Version, "transformers_version": transformers.__version__}
+    ns = {
+        "copy": copy,
+        "Version": Version,
+        "transformers_version": transformers.__version__,
+    }
     funcs = {
         node.name: ast.get_source_segment(source, node)
         for node in ast.parse(source).body
@@ -343,13 +347,15 @@ def test_text_only_key_mapping_targets_published_prefixes():
     # transformers >=5 (on 4.x base_model_prefix handles it and a mapping hurts).
     transformers = pytest.importorskip("transformers")
     get_key_mapping = _load_util_func("_get_text_only_key_mapping")
-    mapping = get_key_mapping(transformers.Gemma3Config(), transformers.Gemma3TextConfig())
+    mapping = get_key_mapping(
+        transformers.Gemma3Config(), transformers.Gemma3TextConfig()
+    )
     if int(transformers.__version__.split(".")[0]) < 5:
         assert mapping is None
     else:
         assert isinstance(mapping, dict)
-        assert mapping.get(r"^language_model\.model\.") == "model."   # gemma3
-        assert mapping.get(r"^model\.language_model\.") == "model."    # gemma3n
+        assert mapping.get(r"^language_model\.model\.") == "model."  # gemma3
+        assert mapping.get(r"^model\.language_model\.") == "model."  # gemma3n
         assert mapping.get(r"^language_model\.lm_head\.") == "lm_head."
 
 
@@ -367,23 +373,37 @@ def test_gemma3_text_only_loads_real_language_weights_from_vlm_checkpoint(tmp_pa
 
     sentinel = 0.1234
     text_cfg = transformers.Gemma3TextConfig(
-        hidden_size = 32, intermediate_size = 64, num_hidden_layers = 1,
-        num_attention_heads = 2, num_key_value_heads = 1, head_dim = 16,
-        vocab_size = 128, max_position_embeddings = 128, sliding_window = 64,
+        hidden_size = 32,
+        intermediate_size = 64,
+        num_hidden_layers = 1,
+        num_attention_heads = 2,
+        num_key_value_heads = 1,
+        head_dim = 16,
+        vocab_size = 128,
+        max_position_embeddings = 128,
+        sliding_window = 64,
     )
     vision_cfg = transformers.SiglipVisionConfig(
-        hidden_size = 32, intermediate_size = 64, num_hidden_layers = 1,
-        num_attention_heads = 2, image_size = 16, patch_size = 8, num_channels = 3,
+        hidden_size = 32,
+        intermediate_size = 64,
+        num_hidden_layers = 1,
+        num_attention_heads = 2,
+        image_size = 16,
+        patch_size = 8,
+        num_channels = 3,
     )
     full_config = transformers.Gemma3Config(
-        text_config = text_cfg.to_dict(), vision_config = vision_cfg.to_dict(),
+        text_config = text_cfg.to_dict(),
+        vision_config = vision_cfg.to_dict(),
     )
     full_model = transformers.Gemma3ForConditionalGeneration(full_config)
 
     state = full_model.state_dict()
     text_q = [
-        k for k in state
-        if "language_model" in k and "vision" not in k
+        k
+        for k in state
+        if "language_model" in k
+        and "vision" not in k
         and k.endswith("layers.0.self_attn.q_proj.weight")
     ]
     assert text_q, [k for k in state if "q_proj" in k][:5]
@@ -405,7 +425,7 @@ def test_gemma3_text_only_loads_real_language_weights_from_vlm_checkpoint(tmp_pa
     for f in save_dir.glob("*.bin"):
         weights.update(torch.load(f, map_location = "cpu", weights_only = True))
     weights = {
-        (k[len("model."):] if k.startswith("model.") else k): v.contiguous()
+        (k[len("model.") :] if k.startswith("model.") else k): v.contiguous()
         for k, v in weights.items()
     }
     for p in save_dir.iterdir():
@@ -419,14 +439,19 @@ def test_gemma3_text_only_loads_real_language_weights_from_vlm_checkpoint(tmp_pa
     if key_mapping is not None:
         load_kwargs["key_mapping"] = key_mapping
     model = transformers.AutoModelForCausalLM.from_pretrained(
-        real_dir, config = text_config, dtype = torch.float32,
-        local_files_only = True, **load_kwargs,
+        real_dir,
+        config = text_config,
+        dtype = torch.float32,
+        local_files_only = True,
+        **load_kwargs,
     )
 
     loaded = model.state_dict()
     q_key = [k for k in loaded if k.endswith("model.layers.0.self_attn.q_proj.weight")]
     assert q_key, "text decoder q_proj weight missing from the loaded model"
-    assert float(loaded[q_key[0]].flatten()[0]) == pytest.approx(sentinel), \
-        "text weights were randomly initialized instead of loaded from the checkpoint"
-    assert not any("vision_tower" in n for n, _ in model.named_modules()), \
-        "vision tower should be skipped on the text-only path"
+    assert float(loaded[q_key[0]].flatten()[0]) == pytest.approx(
+        sentinel
+    ), "text weights were randomly initialized instead of loaded from the checkpoint"
+    assert not any(
+        "vision_tower" in n for n, _ in model.named_modules()
+    ), "vision tower should be skipped on the text-only path"

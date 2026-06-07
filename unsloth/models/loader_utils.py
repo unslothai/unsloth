@@ -277,7 +277,9 @@ def get_model_name(
     return new_model_name
 
 
-def _offline_quantize_to_fp8(model_name: str, fp8_mode: str, *, force_text_only: bool = False) -> str:
+def _offline_quantize_to_fp8(
+    model_name: str, fp8_mode: str, *, force_text_only: bool = False
+) -> str:
     """
     Quantizes the model to fp8 using torchao and saving the quantized model to a
     temporary location. Return the path to the quantized model.
@@ -314,7 +316,9 @@ def _offline_quantize_to_fp8(model_name: str, fp8_mode: str, *, force_text_only:
             for x in config.architectures
         )
         is_vlm = is_vlm or hasattr(config, "vision_config")
-        load_kwargs = dict(torch_dtype = "auto", device_map = "auto", quantization_config = qconfig)
+        load_kwargs = dict(
+            torch_dtype = "auto", device_map = "auto", quantization_config = qconfig
+        )
         # Mirror the loader's text-only guard so load_in_fp8 does not build the vision
         # tower for a text-only request (e.g. Gemma 3 via FastLanguageModel). See PR #5816.
         if force_text_only and hasattr(config, "vision_config"):
