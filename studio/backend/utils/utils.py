@@ -65,8 +65,9 @@ def _log_event(log, event: str, error: Exception) -> None:
     try:
         log.error(event, error = str(error), exc_info = True)
     except TypeError:
-        # stdlib logging.Logger rejects structlog-style keyword fields.
-        log.error("%s: %s", event, error, exc_info = True)
+        # stdlib logging.Logger rejects structlog-style keyword fields; pass the
+        # original error as exc_info so we log its traceback, not this TypeError.
+        log.error("%s: %s", event, error, exc_info = error)
 
 
 def log_and_http_error(
