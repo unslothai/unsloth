@@ -957,16 +957,17 @@ export function AppSidebar() {
           <Collapsible open={chatOpen} onOpenChange={setChatOpen} asChild>
             <SidebarGroup className="group-data-[collapsible=icon]:hidden px-0 py-0">
               <SidebarGroupLabel className={cn("sidebar-sticky-label sidebar-sticky-label-following", scrolled && "is-scrolled")} asChild>
-                <CollapsibleTrigger className="cursor-pointer flex w-full items-center gap-1 group/sb-collap">
-                  {t("shell.navigation.recents")}
-                  <ChevronDown className="size-3.5 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg] [[data-state=closed]_&]:opacity-100" />
+                <div className="flex w-full items-center group/sb-collap">
+                  <CollapsibleTrigger className="cursor-pointer flex flex-1 items-center gap-1 min-w-0">
+                    {t("shell.navigation.recents")}
+                    <ChevronDown className="size-3.5 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg] [[data-state=closed]_&]:opacity-100" />
+                  </CollapsibleTrigger>
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
                       <button
                         type="button"
                         className="ml-auto flex items-center justify-center rounded-sm p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground focus:outline-none focus-visible:ring-0"
                         title="Export recents"
-                        onClick={(e) => e.stopPropagation()}
                       >
                         <MoreHorizontalIcon className="size-3.5" />
                       </button>
@@ -1017,7 +1018,7 @@ export function AppSidebar() {
                       </DropdownMenuSub>
                     </DropdownMenuContent>
                   </DropdownMenu>
-                </CollapsibleTrigger>
+                </div>
               </SidebarGroupLabel>
               <CollapsibleContent>
                 <SidebarGroupContent className="px-2">
