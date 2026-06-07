@@ -935,7 +935,7 @@ export function AppSidebar() {
                     <DropdownMenuTrigger asChild>
                       <button
                         type="button"
-                        className="ml-auto flex items-center justify-center rounded-sm p-0.5 opacity-0 hover:opacity-100 hover:bg-accent group-hover/sb-collap:opacity-60"
+                        className="ml-auto flex items-center justify-center rounded-sm p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground focus:outline-none focus-visible:ring-0"
                         title="Export recents"
                         onClick={(e) => e.stopPropagation()}
                       >
@@ -948,7 +948,7 @@ export function AppSidebar() {
                           <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-icon mr-1" />
                           Export Recents
                         </DropdownMenuSubTrigger>
-                        <DropdownMenuSubContent className="unsloth-plus-menu w-52">
+                        <DropdownMenuSubContent avoidCollisions={false} className="unsloth-plus-menu w-52">
                           {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
                             <DropdownMenuItem key={`r-m-${fmt}`} onSelect={() => void handleBulkExport("recents", fmt, true)}>
                               {label} — combined
@@ -967,7 +967,7 @@ export function AppSidebar() {
                           <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-icon mr-1" />
                           Export Recents + Projects
                         </DropdownMenuSubTrigger>
-                        <DropdownMenuSubContent className="unsloth-plus-menu w-52">
+                        <DropdownMenuSubContent avoidCollisions={false} className="unsloth-plus-menu w-52">
                           {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
                             <DropdownMenuItem key={`a-m-${fmt}`} onSelect={() => void handleBulkExport("all", fmt, true)}>
                               {label} — combined
