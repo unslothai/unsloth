@@ -1,26 +1,23 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { LoaderIcon, XIcon } from "lucide-react";
+import { XIcon } from "lucide-react";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { CheckmarkCircle02Icon, File02Icon } from "@hugeicons/core-free-icons";
-import { Spinner } from "@/components/ui/spinner";
+import {
+  CheckmarkCircle02Icon,
+  File02Icon,
+  Loading03Icon,
+} from "@hugeicons/core-free-icons";
 import { Badge } from "@/components/assistant-ui/badge";
 import { cn } from "@/lib/utils";
 import type { DocumentStatus } from "../types/rag";
 
-const STATUS_LABEL: Record<DocumentStatus, string> = {
-  pending: "Queued",
-  running: "Indexing",
-  completed: "Ready",
-  failed: "Failed",
-};
-
-/** Status pill for a RAG document, reused across lists. */
+/** Status pill for a RAG document, reused across lists. State is shown by the
+ * leading icon alone (a spinner matching the toasts while processing, a check
+ * when ready); no status word. */
 export function DocumentStatusChip({
   filename,
   status,
-  progress,
   error,
   onRemove,
 }: {
@@ -30,11 +27,6 @@ export function DocumentStatusChip({
   error?: string | null;
   onRemove?: () => void;
 }) {
-  const indexing = status === "pending" || status === "running";
-  const pct =
-    indexing && typeof progress === "number" && progress > 0
-      ? ` ${Math.round(progress * 100)}%`
-      : "";
   return (
     <Badge
       variant="outline"
@@ -53,10 +45,13 @@ export function DocumentStatusChip({
         />
       ) : status === "failed" ? (
         <XIcon className="size-3 shrink-0" />
-      ) : status === "running" ? (
-        <Spinner className="size-3 shrink-0" />
       ) : (
-        <LoaderIcon className="size-3 shrink-0 animate-spin" />
+        // Same spinner as the toast notifications (sonner loading icon).
+        <HugeiconsIcon
+          icon={Loading03Icon}
+          strokeWidth={2}
+          className="size-3 shrink-0 animate-spin"
+        />
       )}
       <HugeiconsIcon
         icon={File02Icon}
@@ -64,10 +59,6 @@ export function DocumentStatusChip({
         className="size-3 shrink-0"
       />
       <span className="truncate">{filename}</span>
-      <span className="shrink-0 text-[10px] text-muted-foreground">
-        {STATUS_LABEL[status]}
-        {pct}
-      </span>
       {onRemove && (
         <button
           type="button"
