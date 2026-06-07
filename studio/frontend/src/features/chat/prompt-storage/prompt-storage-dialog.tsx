@@ -772,7 +772,9 @@ function parseImportText(text: string, filename: string): ParsedConversation[] {
       let obj: Record<string, unknown>;
       try { obj = JSON.parse(line); } catch { return; }
 
-      const threadId = typeof obj.thread_id === "string" ? obj.thread_id : crypto.randomUUID();
+      // Always generate a fresh ID — never reuse the exported thread_id.
+      // Reusing it would clobber existing threads with the same ID on import.
+      const threadId = crypto.randomUUID();
       const title = typeof obj.title === "string" ? obj.title : `${basename} ${lineIdx + 1}`;
       const baseTs = typeof obj.created_at === "number" ? obj.created_at : Date.now() + lineIdx;
 
@@ -823,7 +825,7 @@ export async function importConversationsFromFile(
         createdAt: messages[0]?.createdAt ?? now,
       };
       await saveStoredChatThread(thread);
-      await syncStoredChatMessages(threadId, messages, { pruneMissing: true });
+      await syncStoredChatMessages(threadId, messages, { pruneMissing: false });
     }),
   );
 
