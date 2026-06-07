@@ -1233,8 +1233,7 @@ async def load_model(
             )
             raise HTTPException(status_code = 400, detail = redacted_msg)
         logger.warning("Rejected inference GPU selection: %s", e)
-        # User-facing validation message (e.g. "Invalid gpu_ids [99]"); redact
-        # any native filesystem paths but keep the actionable detail.
+        # User-facing validation (e.g. "Invalid gpu_ids [99]"): redact paths, keep detail.
         raise HTTPException(status_code = 400, detail = redact_native_paths(str(e)))
     except Exception as e:
         # Surface a friendlier message for models that Unsloth cannot load
@@ -3897,9 +3896,8 @@ async def serve_sandbox_file(
     safe_filename = os.path.basename(filename)
     if not safe_filename or safe_filename in (".", ".."):
         raise HTTPException(status_code = 404, detail = "Not found")
-    # Defense-in-depth: fullmatch allowlist forbidding separators/control chars
-    # (clears CodeQL py/path-injection) but allowing names like "loss curve.png".
-    # basename + extension + realpath containment below are the real guards.
+    # Defense-in-depth allowlist (clears CodeQL py/path-injection), still allowing
+    # names like "loss curve.png"; basename + extension + realpath below are the guards.
     if not _re.fullmatch(r"[^/\\\x00-\x1f]{1,255}", safe_filename):
         raise HTTPException(status_code = 404, detail = "Not found")
 

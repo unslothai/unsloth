@@ -26,7 +26,6 @@ if str(backend_path) not in sys.path:
 # Auth
 from auth.authentication import get_current_subject
 
-# Client-safe error helpers
 from utils.utils import safe_error_detail
 
 # Import backend functions

@@ -71,8 +71,6 @@ from utils.datasets import check_dataset_format
 from utils.upload_limits import get_upload_limit_bytes, get_upload_limit_label
 from auth.authentication import get_current_subject
 
-# Client-safe error helpers
-
 router = APIRouter()
 logger = get_logger(__name__)
 

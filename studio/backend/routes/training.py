@@ -51,7 +51,6 @@ except ImportError:
 # Auth
 from auth.authentication import get_current_subject
 
-# Client-safe error helpers
 from utils.utils import log_and_http_error
 
 from models import (
@@ -174,7 +173,7 @@ async def start_training(
                     request.resume_from_checkpoint
                 )
             except ValueError as e:
-                # Deliberate, user-facing validation message (no internal detail).
+                # Deliberate user-facing validation message.
                 validation_message = str(e)
                 raise HTTPException(status_code = 400, detail = validation_message)
 
@@ -324,7 +323,7 @@ async def start_training(
 
     except ValueError as e:
         logger.warning("Rejected training GPU selection: %s", e)
-        # Deliberate, user-facing GPU-selection validation message (no internal detail).
+        # Deliberate user-facing GPU-selection validation message.
         validation_message = str(e)
         raise HTTPException(status_code = 400, detail = validation_message)
     except Exception as e:

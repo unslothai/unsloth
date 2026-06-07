@@ -857,9 +857,8 @@ async def add_scan_folder_endpoint(
         folder = add_scan_folder(body.path)
     except ValueError as e:
         logger.warning("Scan folder rejected: %s (path=%s)", e, body.path)
-        # These ValueError messages are curated, path-free validation feedback
-        # (e.g. "Path does not exist") meant to be shown to the user, not raw
-        # Python internals; forward the message text rather than the exception.
+        # Curated, path-free validation message (e.g. "Path does not exist"):
+        # forward the text, not the raw exception.
         rejection_message = str(e)
         raise HTTPException(status_code = 400, detail = rejection_message)
     logger.info("Scan folder added: %s", folder.get("path"))
