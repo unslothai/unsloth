@@ -1446,6 +1446,15 @@ async def browse_folders(
     )
 
 
+def _looks_like_mlx_repo(model_id: str) -> bool:
+    """Name heuristic for unloaded models, mirrors the -GGUF suffix check.
+    Tokenized so MLX only matches as a whole name segment."""
+    if model_id.lower().startswith("mlx-community/"):
+        return True
+    tail = model_id.split("/")[-1]
+    return "MLX" in _re.split(r"[-_.]", tail.upper())
+
+
 @router.get("/list")
 async def list_models(
     current_subject: str = Depends(get_current_subject),
@@ -1510,6 +1519,7 @@ async def list_models(
                     id = model_id,
                     name = model_id.split("/")[-1] if "/" in model_id else model_id,
                     is_gguf = model_id.upper().endswith("-GGUF"),
+                    is_mlx = _looks_like_mlx_repo(model_id),
                 )
                 all_models.append(model_info)
                 seen_ids.add(model_id)
