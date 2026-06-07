@@ -134,6 +134,11 @@ const PageDragContext = createContext(false);
 const COMPOSER_SCROLL_GAP_PX = 24;
 // The scroll-to-bottom footer sits 10px below the spacer top.
 const FOOTER_GAP_BELOW_SPACER_PX = 10;
+// Composer shrinks this soon after a run start (send clears the chips)
+// apply immediately: the run-start pin owns the bottom, so the clamp is
+// the intended glide. Covers instant responses where isRunning is
+// already false by the time the dock resize is observed.
+const RUN_SHRINK_WINDOW_MS = 1000;
 
 export const Thread: FC<{
   hideComposer?: boolean;
@@ -218,6 +223,8 @@ export const Thread: FC<{
   );
 
   const prevComposerHeightRef = useRef<number | null>(null);
+  // Set on thread.runStart; see RUN_SHRINK_WINDOW_MS.
+  const runStartAtRef = useRef(0);
   useLayoutEffect(() => {
     const prev = prevComposerHeightRef.current;
     prevComposerHeightRef.current = composerHeight;
@@ -237,7 +244,10 @@ export const Thread: FC<{
       const distance = el
         ? el.scrollHeight - el.scrollTop - el.clientHeight
         : Number.POSITIVE_INFINITY;
-      if (distance >= applied - desired) {
+      const runOwnsBottom =
+        aui.thread().getState().isRunning ||
+        performance.now() - runStartAtRef.current < RUN_SHRINK_WINDOW_MS;
+      if (runOwnsBottom || distance >= applied - desired) {
         applySpacerPx(desired);
       }
       // else: deferred; released on scroll or a bottom-pinning event.
@@ -277,7 +287,11 @@ export const Thread: FC<{
   }, [applySpacerPx]);
 
   // These pin to the bottom, so releasing the excess here is invisible.
-  useAuiEvent("thread.runStart", releaseSpacerExcess);
+  // runStart also opens the shrink window for the send-clears-chips case.
+  useAuiEvent("thread.runStart", () => {
+    runStartAtRef.current = performance.now();
+    releaseSpacerExcess();
+  });
   useAuiEvent("thread.initialize", releaseSpacerExcess);
   useAuiEvent("threadListItem.switchedTo", releaseSpacerExcess);
 
