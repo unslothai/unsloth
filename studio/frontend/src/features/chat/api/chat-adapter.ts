@@ -857,8 +857,10 @@ function findLatestUserImageBase64(messages: RunMessages): string | undefined {
   return undefined;
 }
 
-function extractAudioPartBase64(part: { type: string }): string | undefined {
-  if (part.type !== "audio" || !("audio" in part)) return undefined;
+function extractAudioPartBase64(
+  part: { type: string } | null | undefined,
+): string | undefined {
+  if (!part || part.type !== "audio" || !("audio" in part)) return undefined;
   const audioPart = (
     part as unknown as {
       type: "audio";
@@ -893,6 +895,13 @@ export function findLatestUserAudioBase64(
         }
       }
     }
+
+    // Only the newest user message counts. audio_base64 switches the
+    // backend onto the audio generation path, so replaying audio from an
+    // older turn would hijack text follow-ups (Whisper would retranscribe
+    // the stale clip). Matches the consumed-on-send semantics of the
+    // legacy pendingAudio path.
+    break;
   }
 
   // Check the runtime store (legacy main-composer audio upload path)
