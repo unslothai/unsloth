@@ -23,7 +23,6 @@ export interface RagDocument {
   createdAt?: string | null;
 }
 
-/** Document upload response (KB or thread). */
 export interface DocumentUploadResult {
   documentId: string;
   jobId: string;
@@ -49,7 +48,7 @@ export interface JobEvent {
   error?: string | null;
 }
 
-/** A chunk's highlight rect on a PDF page; coords 0..1, top-left origin. */
+/** Coords 0..1, top-left origin. */
 export interface PdfRegion {
   pageIndex: number;
   pageNumber: number;
@@ -59,7 +58,6 @@ export interface PdfRegion {
   height: number;
 }
 
-/** Where a citation lives: page + highlight rects (PDF) or chunk text. */
 export interface PreviewTarget {
   documentId: string;
   filename: string;
@@ -69,5 +67,4 @@ export interface PreviewTarget {
   text?: string | null;
 }
 
-/** File types the indexer accepts. */
 export const RAG_UPLOAD_ACCEPT = ".pdf,.txt,.md,.markdown,.docx,.html,.htm";

@@ -346,9 +346,6 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     )
 
 
-# ── Prompt entries ────────────────────────────────────────────────────────────
-
-
 def _prompt_entry_from_row(row: sqlite3.Row) -> dict:
     return {
         "id": row["id"],
@@ -428,9 +425,6 @@ def bulk_upsert_prompt_entries(entries: list[dict]) -> int:
         return len(entries)
     finally:
         conn.close()
-
-
-# ── Prompt lists ──────────────────────────────────────────────────────────────
 
 
 def _prompt_list_from_row(row: sqlite3.Row) -> dict:

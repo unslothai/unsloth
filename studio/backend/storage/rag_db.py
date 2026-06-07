@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 from utils.paths import rag_db_path, ensure_dir
 
-# Optional dep: import must never crash this module (Studio imports it unconditionally).
+# Optional dep: import must never crash this module (imported unconditionally).
 try:
     import sqlite_vec
 

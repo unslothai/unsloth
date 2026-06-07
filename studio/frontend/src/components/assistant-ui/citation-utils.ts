@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Pure parsing of a search_knowledge_base tool result into citations. Kept out of
-// the component files so both the tool UI and the message Sources list can reuse it.
-
 const RAG_SOURCES_SENTINEL = "__RAG_SOURCES__:";
 
 export interface Citation {
@@ -12,7 +9,6 @@ export interface Citation {
   page?: number | null;
   score?: number | null;
   text: string;
-  /** Set when the citation can open its source in the viewer. */
   documentId?: string | null;
   chunkId?: string | null;
 }
@@ -21,7 +17,7 @@ function asNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
-/** Parse the post-sentinel source-map; null if absent so callers fall back to generic JSON shapes. */
+// null if absent so callers fall back to generic JSON shapes.
 function parseSentinelSources(result: unknown): Citation[] | null {
   if (typeof result !== "string") return null;
   const idx = result.indexOf(RAG_SOURCES_SENTINEL);
@@ -52,7 +48,6 @@ function parseSentinelSources(result: unknown): Citation[] | null {
   });
 }
 
-/** Normalize a provider-shaped tool result (array, `{results:[...]}`, or string) to Citations. */
 export function parseCitations(result: unknown): Citation[] {
   const sentinel = parseSentinelSources(result);
   if (sentinel !== null) return sentinel;

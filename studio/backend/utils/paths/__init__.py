@@ -95,6 +95,5 @@ __all__ = [
     "resolve_dataset_path",
 ]
 
-# Bind the re-exports so the import-hoist verifier counts them as used
-# (consumed via `from utils.paths import rag_db_path`, etc.).
+# Bind the re-exports so the import-hoist verifier counts them as used.
 _ = (rag_root, rag_db_path, rag_uploads_root)

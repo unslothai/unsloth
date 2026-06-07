@@ -44,9 +44,6 @@ class _FakeProc:
         return self.returncode
 
 
-# ── Backend selection (facade) ───────────────────────────────────
-
-
 def _mock_auto(monkeypatch, *, gpus, binary):
     from core.inference.llama_cpp import LlamaCppBackend
 
@@ -118,9 +115,6 @@ def test_llama_backend_imports_no_torch():
     assert "OK" in proc.stdout
 
 
-# ── Spawn command / env ──────────────────────────────────────────
-
-
 def test_build_cmd_cpu_flags():
     b = LlamaServerBackend()
     cmd = b._build_cmd("/bin/llama-server", "/m/bge.gguf", 9999, use_gpu = False)
@@ -149,9 +143,6 @@ def test_build_env_gpu_inherits_devices(monkeypatch):
     b = LlamaServerBackend()
     env = b._build_env("/bin/llama-server", use_gpu = True)
     assert env.get("CUDA_VISIBLE_DEVICES") == "0,1"  # inherit Studio's selection
-
-
-# ── Device selection (torch-free) ────────────────────────────────
 
 
 def test_use_gpu_explicit_modes(monkeypatch):
@@ -212,9 +203,6 @@ def test_gpu_available_apple_metal(monkeypatch):
     assert LlamaServerBackend._gpu_available() is True
 
 
-# ── Spawn / readiness ────────────────────────────────────────────
-
-
 def _patch_spawn_deps(monkeypatch, proc, *, free_port = 54321):
     # Force CPU so spawn never depends on a host GPU.
     monkeypatch.setattr(config, "EMBED_DEVICE", "cpu")
@@ -251,7 +239,6 @@ def test_spawn_uses_free_port_when_auto(monkeypatch):
 def test_spawn_fails_loud_on_early_exit(monkeypatch):
     monkeypatch.setattr(config, "EMBED_PORT", 8124)
     b = LlamaServerBackend()
-    # Dead process -> health check fails on the first poll.
     _patch_spawn_deps(monkeypatch, _FakeProc(alive = False, returncode = 1))
     with pytest.raises(RuntimeError, match = "failed to become healthy"):
         b._spawn()
@@ -287,9 +274,6 @@ def test_spawn_explicit_gpu_does_not_fall_back(monkeypatch):
     with pytest.raises(RuntimeError, match = "out of memory"):
         b._spawn()
     assert b._force_cpu is False  # explicit gpu never silently downgrades
-
-
-# ── encode / dim / token_counter (HTTP mocked) ───────────────────
 
 
 def _embed_response(vectors):
@@ -392,12 +376,9 @@ def test_token_counter_hits_tokenize(monkeypatch):
     assert seen["content"] == "hello world"
 
 
-# ── Self-healing respawn ─────────────────────────────────────────
-
-
 def test_ensure_ready_respawns_dead_process(monkeypatch):
     b = LlamaServerBackend()
-    b._process = _FakeProc(alive = False, returncode = 0)  # killed
+    b._process = _FakeProc(alive = False, returncode = 0)
     spawned = {"n": 0}
 
     def fake_spawn():

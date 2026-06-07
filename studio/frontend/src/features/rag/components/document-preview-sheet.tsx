@@ -32,7 +32,7 @@ pdfjs.GlobalWorkerOptions.workerSrc = new URL(
   import.meta.url,
 ).toString();
 
-/** Highlight rects for a page; coords 0..1 of the page box. */
+// Highlight rects; coords are 0..1 of the page box.
 function RegionOverlay({ regions }: { regions: PdfRegion[] }) {
   if (regions.length === 0) return null;
   return (
@@ -53,7 +53,7 @@ function RegionOverlay({ regions }: { regions: PdfRegion[] }) {
   );
 }
 
-// Zoom multiplies fit-to-panel width: 1 = fit. Stepped so buttons and wheel stay in sync.
+// Zoom multiplies fit-to-panel width: 1 = fit.
 const ZOOM_MIN = 0.5;
 const ZOOM_MAX = 3;
 const ZOOM_STEP = 0.25;
@@ -85,13 +85,11 @@ function PdfPreview({
     top: number;
   } | null>(null);
 
-  // Reset to the cited page when a new citation reuses this viewer.
+  // Reset page/zoom when a new citation reuses this viewer.
   useEffect(() => setPage(initialPage), [initialPage, fileUrl]);
 
-  // Reset each newly opened document to fit-to-panel.
   useEffect(() => setScale(1), [fileUrl]);
 
-  // Track panel width so the page scales to it.
   useLayoutEffect(() => {
     const el = containerRef.current;
     if (!el) return;
@@ -102,7 +100,7 @@ function PdfPreview({
     return () => ro.disconnect();
   }, []);
 
-  // Wheel zooms. Non-passive so preventDefault can stop the panel scrolling.
+  // Non-passive wheel listener so preventDefault can stop the panel scrolling.
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
@@ -127,8 +125,7 @@ function PdfPreview({
     [],
   );
 
-  // Does the page overflow the panel (so panning matters)? Re-checked on layout
-  // changes and after the canvas renders.
+  // Whether the page overflows the panel (so panning matters).
   const recheckScrollable = useCallback(() => {
     const el = containerRef.current;
     if (!el) return;
@@ -142,8 +139,7 @@ function PdfPreview({
     recheckScrollable();
   }, [recheckScrollable, width, scale, page, numPages]);
 
-  // Grab-to-pan an overflowing page. Listen on window so the drag keeps tracking
-  // when the cursor leaves the panel.
+  // Grab-to-pan; listen on window so the drag tracks past the panel edge.
   useEffect(() => {
     if (!grabbing) return;
     const onMove = (e: MouseEvent) => {
@@ -218,8 +214,8 @@ function PdfPreview({
           }
         >
           {width > 0 && (
-            // min-w-fit lets the zoomed row grow past the panel so the centered
-            // page stays reachable on both sides.
+            // min-w-fit lets the zoomed row grow past the panel so the page stays
+            // centered and reachable on both sides.
             <div className="flex min-w-fit justify-center">
               <div className="relative w-fit shadow-sm">
                 <Page
@@ -301,7 +297,6 @@ function PdfPreview({
   );
 }
 
-/** Shared preview panel: resolves a document + chunk to page + highlight regions and renders the PDF or chunk text. */
 export function DocumentPreviewSheet() {
   const { open, documentId, chunkId, filename, page, closePreview } =
     useDocumentPreviewStore();
@@ -347,7 +342,7 @@ export function DocumentPreviewSheet() {
         className="flex w-full flex-col gap-0 p-0 sm:max-w-[44rem]"
       >
         <SheetHeader className="gap-1 border-b p-4">
-          {/* pr-10 reserves room for the absolute close button so a long label never runs under it. */}
+          {/* pr-10 reserves room for the absolute close button. */}
           <SheetTitle className="flex items-center gap-2 pr-10 text-sm">
             <FileTextIcon className="size-4 shrink-0" />
             <span className="min-w-0 truncate">{headerName}</span>

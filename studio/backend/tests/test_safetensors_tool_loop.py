@@ -464,8 +464,7 @@ class TestLoopBehaviour:
         assert "do not repeat" in tool_end_events[1]["result"].lower()
 
     def test_nonadjacent_duplicate_tool_call_blocked(self):
-        # A, B, then A again: the second A is a prior successful call, so it is blocked
-        # even though it is not the immediately preceding call.
+        # A, B, then A: the second A is blocked even though not adjacent.
         loop, exec_fn = _make_loop(
             turns = [
                 [
@@ -482,14 +481,13 @@ class TestLoopBehaviour:
             exec_results = ["res-a", "res-b"],
         )
         events = _collect_events(loop)
-        # Only A and B actually executed; the repeated A is short-circuited.
         assert [a[1].get("query") for a in exec_fn.calls] == ["a", "b"]
         tool_end_events = [e for e in events if e["type"] == "tool_end"]
         assert "do not repeat" in tool_end_events[2]["result"].lower()
 
     def test_kb_search_capped_per_turn(self):
-        # Paraphrased KB searches differ by args, so the dup guard misses them;
-        # the per-turn cap stops the runaway re-search loop. First N run, then nudge.
+        # Paraphrased KB searches differ by args (dup guard misses them); the
+        # per-turn cap stops the runaway re-search loop.
         n = RAG_MAX_SEARCHES_PER_TURN
         queries = [f"paraphrase {i}" for i in range(n + 1)]
         turns = [
@@ -519,7 +517,6 @@ class TestLoopBehaviour:
             execute_tool = exec_fn,
         )
         events = _collect_events(loop)
-        # Exactly the cap executed; the (n+1)-th was short-circuited.
         assert len(exec_fn.calls) == n
         assert all(c[0] == "search_knowledge_base" for c in exec_fn.calls)
         tool_end_events = [e for e in events if e["type"] == "tool_end"]

@@ -167,8 +167,7 @@ def run_safetensors_tool_loop(
     """
     conversation = list(messages)
 
-    # Forced first-pass RAG (mirrors the GGUF loop): splice doc passages + citations
-    # before answering, gated on a cosine floor, so doc Qs don't lose to web_search.
+    # Forced first-pass RAG (mirrors the GGUF loop) so doc Qs don't lose to web_search.
     from core.inference.tools import build_rag_autoinject
 
     _auto = build_rag_autoinject(conversation, rag_scope)
@@ -179,7 +178,7 @@ def run_safetensors_tool_loop(
 
     tool_call_history: list[tuple[str, bool]] = []
     render_html_succeeded = False
-    kb_search_count = 0  # executed search_knowledge_base calls this turn
+    kb_search_count = 0
     final_attempt_done = False
     allowed_tool_names = {
         (tool.get("function") or {}).get("name")

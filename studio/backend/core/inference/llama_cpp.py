@@ -4632,9 +4632,8 @@ class LlamaCppBackend:
 
         conversation = list(messages)
 
-        # Forced first-pass RAG: consult attached docs up front so a doc question
-        # doesn't lose to web_search. Gated on a cosine floor in
-        # build_rag_autoinject; emits the same tool card + citations a real call would.
+        # Forced first-pass RAG so a doc question doesn't lose to web_search. Emits
+        # the same tool card + citations a real call would.
         _auto = build_rag_autoinject(conversation, rag_scope)
         if _auto:
             for _ev in _auto["events"]:
@@ -4666,7 +4665,7 @@ class LlamaCppBackend:
         # identical call succeeded).
         _tool_call_history: list[tuple[str, bool]] = []  # (key, failed)
         _render_html_succeeded = False
-        _kb_search_count = 0  # executed search_knowledge_base calls this turn
+        _kb_search_count = 0
 
         # ── Re-prompt on plan-without-action ─────────────────
         # When the model describes what it intends to do (forward-looking
@@ -5305,9 +5304,8 @@ class LlamaCppBackend:
                         }
 
                     # ── Duplicate call detection ──────────────
-                    # _tc_key is stable (one json.loads, deterministic key order).
-                    # Scan the whole turn for a prior *successful* identical call
-                    # (like the safetensors loop); retries after a failure are ok.
+                    # Match a prior *successful* identical call; retries after a
+                    # failure are ok.
                     _tc_key = tool_name + str(arguments)
                     _already_ran_ok = any(
                         k == _tc_key and not err for k, err in _tool_call_history
@@ -5320,8 +5318,8 @@ class LlamaCppBackend:
                         tool_name == "search_knowledge_base"
                         and _kb_search_count >= RAG_MAX_SEARCHES_PER_TURN
                     ):
-                        # Paraphrased KB re-searches slip past the exact-args guard but
-                        # just fragment the answer; cap them per turn.
+                        # Cap paraphrased KB re-searches that slip past the
+                        # exact-args guard.
                         result = RAG_SEARCH_CAP_NUDGE
                     else:
                         _effective_timeout = (

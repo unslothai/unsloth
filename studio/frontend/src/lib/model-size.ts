@@ -1,16 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/**
- * Parameter count parsed from a model id / repo name.
- *
- * Reads the first plain "<n>B" token in the repo name (part after the last "/"),
- * e.g. "Qwen3-0.6B" -> 0.6, "meta-llama/Llama-3.1-8B" -> 8. The leading boundary
- * (`^` or `-`/`_`) skips family-version digits ("Qwen3-", "gemma-3-") and MoE
- * active-param notation ("A3B", whose `a` breaks the boundary), so "Qwen3-30B-A3B"
- * reads as 30B total, not 3B active.
- */
-
+// The leading boundary skips family-version digits ("Qwen3-") and MoE active-param
+// notation ("A3B"), so "Qwen3-30B-A3B" reads as 30B total, not 3B active.
 const PARAM_COUNT_RE = /(?:^|[-_])(\d+(?:\.\d+)?)[Bb](?:[-_]|$)/;
 
 function matchParamCount(id: string): RegExpMatchArray | null {
@@ -18,13 +10,11 @@ function matchParamCount(id: string): RegExpMatchArray | null {
   return name.match(PARAM_COUNT_RE);
 }
 
-/** Param-count display label, e.g. "Qwen3-0.6B" -> "0.6B". Null when absent. */
 export function extractParamLabel(id: string): string | null {
   const m = matchParamCount(id);
   return m ? `${m[1]}B` : null;
 }
 
-/** Param count in billions, e.g. "Qwen3-0.6B" -> 0.6. Null when absent. */
 export function parseParamCountB(id: string): number | null {
   const m = matchParamCount(id);
   if (!m) return null;

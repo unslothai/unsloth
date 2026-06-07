@@ -51,9 +51,6 @@ def _add_doc(conn, scope, doc_id, filename, sha, text, page = None):
     store.add_chunks(conn, scope, doc_id, [_chunk(text, 0, page)], [_embed(text)])
 
 
-# --------------------------------------------------------------------------
-# RRF / hybrid
-# --------------------------------------------------------------------------
 def test_rrf_ranks_doc_in_both_lists_first():
     # A chunk near the top of both rankings beats one in a single list.
     lexical = [
@@ -65,10 +62,10 @@ def test_rrf_ranks_doc_in_both_lists_first():
         retrieval.Hit("c", 0.8, dense_score = 0.8),
     ]
     fused = retrieval._rrf([lexical, dense], rrf_k = 60, top_k = 10)
-    assert fused[0].chunk_id == "a"  # present in both rankings
+    assert fused[0].chunk_id == "a"
     assert (
         fused[0].lexical_score == 1.0 and fused[0].dense_score == 0.9
-    )  # scores survive fusion
+    )
 
 
 def test_retrieve_hybrid_returns_relevant_chunk(rag_conn, bow_embeddings):
@@ -98,9 +95,6 @@ def test_filter_min_score_gates_dense_hits():
     assert retrieval.filter_min_score(hits, 0.0) == hits  # floor off = identity
 
 
-# --------------------------------------------------------------------------
-# Tool: scope precedence, messages, formatting, sources
-# --------------------------------------------------------------------------
 def test_tool_kb_scope_wins_over_thread(rag_conn, bow_embeddings, monkeypatch):
     seen = {}
 
@@ -146,7 +140,7 @@ def test_tool_formats_chunks_and_sources(rag_conn, bow_embeddings, monkeypatch):
 
 
 def test_tool_kb_scope_retrieves_from_db(rag_conn, bow_embeddings):
-    # End-to-end (no retrieve stub): a KB-scoped doc is found via its scope_kb_id (#8).
+    # End-to-end (no retrieve stub): doc found via its scope_kb_id (#8).
     _add_doc(rag_conn, "kb_K", "d1", "kb.pdf", "h1", "alpha bravo charlie", page = 1)
     text, sources = tool.search_knowledge_base_with_sources(
         query = "alpha bravo", scope_kb_id = "K"
@@ -192,9 +186,6 @@ def test_dispatcher_no_sentinel_when_no_hits(rag_home, monkeypatch):
     assert tools.RAG_SOURCES_SENTINEL not in out
 
 
-# --------------------------------------------------------------------------
-# Forced first-pass auto-injection
-# --------------------------------------------------------------------------
 def test_search_for_autoinject_gates_on_dense_score(
     rag_conn, bow_embeddings, monkeypatch
 ):
@@ -271,7 +262,7 @@ def test_search_for_autoinject_empty_query_or_scope(rag_home):
 
 
 def test_build_rag_autoinject_emits_pipeline(monkeypatch):
-    # Auto-inject yields the same tool card + source-map; tool message has the sentinel stripped.
+    # Auto-inject yields the same tool card + source-map a real call would.
     from core.inference import tools
     from storage import rag_db
 
@@ -292,7 +283,6 @@ def test_build_rag_autoinject_emits_pipeline(monkeypatch):
     te = next(e for e in out["events"] if e["type"] == "tool_end")
     assert te["tool_name"] == "search_knowledge_base"
     assert tools.RAG_SOURCES_SENTINEL in te["result"]
-    # tool message is clean (sentinel stripped)
     assert (
         out["messages"][0]["tool_calls"][0]["function"]["name"]
         == "search_knowledge_base"
@@ -315,7 +305,6 @@ def test_build_rag_autoinject_skips_without_hit(monkeypatch):
 
 
 def test_build_rag_autoinject_enabled_by_default(monkeypatch):
-    # No env, no scope toggle -> forced inject on at the default 0.70 floor.
     from core.inference import tools
     from storage import rag_db
 
@@ -332,12 +321,11 @@ def test_build_rag_autoinject_enabled_by_default(monkeypatch):
     out = tools.build_rag_autoinject(
         [{"role": "user", "content": "hi"}], {"thread_id": "t1"}
     )
-    assert out is not None  # on by default
+    assert out is not None
     assert seen["min_dense_score"] == 0.70  # high-precision floor by default
 
 
 def test_build_rag_autoinject_caps_top_k(monkeypatch):
-    # Forced inject uses RAG_AUTOINJECT_TOP_K, capped by a lower user top_k.
     from core.inference import tools
     from storage import rag_db
 
@@ -355,7 +343,7 @@ def test_build_rag_autoinject_caps_top_k(monkeypatch):
     tools.build_rag_autoinject(conv, {"thread_id": "t1"})
     assert seen["top_k"] == 4  # lean default
     tools.build_rag_autoinject(conv, {"thread_id": "t1", "default_top_k": 2})
-    assert seen["top_k"] == 2  # a lower user setting still wins
+    assert seen["top_k"] == 2  # lower user setting wins
 
 
 def test_build_rag_autoinject_disabled_by_env(monkeypatch):
@@ -373,9 +361,6 @@ def test_build_rag_autoinject_disabled_by_env(monkeypatch):
     assert tools.build_rag_autoinject([{"role": "user", "content": "hi"}], None) is None
 
 
-# --------------------------------------------------------------------------
-# Per-request query-time overrides (rag_scope -> retrieval)
-# --------------------------------------------------------------------------
 def test_retrieve_hybrid_mode_selects_backend(monkeypatch):
     # ``mode`` runs only the chosen backend; hybrid uses config counts + rrf_k.
     calls: list = []
@@ -413,7 +398,6 @@ def test_retrieve_hybrid_mode_selects_backend(monkeypatch):
 
 
 def test_scope_overrides_reach_retrieval(monkeypatch):
-    # rag_scope mode + default_top_k flow through _search_knowledge_base.
     from core.inference import tools
     from storage import rag_db
 
@@ -438,7 +422,6 @@ def test_scope_overrides_reach_retrieval(monkeypatch):
 
 
 def test_build_rag_autoinject_scope_overrides_env(monkeypatch):
-    # rag_scope wins over env; autoinject=False disables even with env on.
     from core.inference import tools
     from storage import rag_db
 

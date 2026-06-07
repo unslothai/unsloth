@@ -144,7 +144,6 @@ export function ThreadSidebar({
       includeArchived: false,
       ...(scope === "recents" ? { projectId: null } : {}),
     });
-    // For compare pairs deduplicate to unique thread IDs
     return [...new Set(threads.map((t) => t.id))];
   }
 
@@ -195,7 +194,7 @@ export function ThreadSidebar({
           </SidebarGroupContent>
         </SidebarGroup>
         <SidebarGroup className="flex-1 px-4">
-          {/* Recents label with export-all "…" */}
+          {/* Recents label with export-all menu */}
           <div className="flex items-center justify-between px-2 py-1.5">
             <span className="text-xs font-medium text-muted-foreground/80">Recents</span>
             <DropdownMenu>

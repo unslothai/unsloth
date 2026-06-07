@@ -130,9 +130,6 @@ def test_token_counter_enables_parallelism_only_during_call(monkeypatch):
     assert os.environ.get("TOKENIZERS_PARALLELISM") == "false"  # restored after
 
 
-# ── ST -> llama-server init fallback ──────────────────────────────
-
-
 class _SentinelLlamaBackend:
     """Stand-in for LlamaServerBackend; never spawns a real server."""
 

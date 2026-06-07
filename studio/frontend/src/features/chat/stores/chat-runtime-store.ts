@@ -43,7 +43,6 @@ export const CHAT_RAG_AUTOINJECT_KEY = "unsloth_chat_rag_autoinject";
 export const CHAT_RAG_AUTOINJECT_MIN_SCORE_KEY =
   "unsloth_chat_rag_autoinject_min_score";
 
-/** search_knowledge_base source: `thread` (this thread's docs) or `kb` (`kbId`). */
 export type RagSource =
   | { type: "thread" }
   | { type: "kb"; kbId: string };
@@ -53,9 +52,7 @@ export type RagMode = "hybrid" | "lexical" | "dense";
 export const DEFAULT_RAG_SOURCE: RagSource = { type: "thread" };
 export const DEFAULT_RAG_MODE: RagMode = "hybrid";
 export const DEFAULT_RAG_TOP_K = 5;
-// Auto-retrieve mode. `auto` forces retrieval for smaller models (<=9B) that
-// answer from memory instead of calling search, and leaves it to larger ones;
-// `on`/`off` force it. Gated by a high cosine floor.
+// `auto` forces retrieval for smaller models (<=9B); `on`/`off` force it.
 export type RagAutoInject = "auto" | "on" | "off";
 export const DEFAULT_RAG_AUTOINJECT: RagAutoInject = "auto";
 export const DEFAULT_RAG_AUTOINJECT_MIN_SCORE = 0.7;
@@ -81,7 +78,6 @@ function saveRagSource(value: RagSource): void {
   try {
     window.localStorage.setItem(CHAT_RAG_SOURCE_KEY, JSON.stringify(value));
   } catch {
-    // ignore
   }
 }
 
@@ -93,7 +89,7 @@ function loadRagMode(): RagMode {
 function loadRagAutoInject(): RagAutoInject {
   const raw = loadString(CHAT_RAG_AUTOINJECT_KEY, DEFAULT_RAG_AUTOINJECT);
   if (raw === "auto" || raw === "on" || raw === "off") return raw;
-  // Migrate the legacy boolean: the old on-by-default becomes Auto, false -> Off.
+  // Legacy boolean migration: false -> Off, else Auto.
   return raw === "false" ? "off" : "auto";
 }
 
@@ -109,8 +105,7 @@ function loadRagTopK(): number {
   }
 }
 
-// Clamped numeric loader that preserves a stored 0 (unlike loadRagTopK, score
-// floors can legitimately be 0). Missing key -> fallback.
+// Preserves a stored 0 (score floors can legitimately be 0).
 function loadRagNumber(
   key: string,
   fallback: number,
@@ -401,14 +396,11 @@ type ChatRuntimeStore = {
   collapseHtmlArtifacts: boolean;
   allowArtifactNetworkAccess: boolean;
   mcpEnabledForChat: boolean;
-  /** RAG composer pill: when on, the request gets search_knowledge_base plus a
-   * `rag_scope` from `ragSource`/`ragMode`/`ragTopK`. */
   ragEnabled: boolean;
   ragSource: RagSource;
   ragMode: RagMode;
   ragTopK: number;
-  // Query-time retrieval knobs sent in rag_scope; absent ones fall back to
-  // server config. autoInject = forced first-pass retrieval before answering.
+  // autoInject = forced first-pass retrieval before answering.
   ragAutoInject: RagAutoInject;
   ragAutoInjectMinScore: number;
   /**
@@ -984,8 +976,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       artifactsEnabled: false,
       mcpEnabledForChat: false,
       webFetchToolsEnabled: false,
-      // RAG source / mode / top_k are user preferences and survive model
-      // unload; only the per-session enable pill resets like the others.
+      // Only the per-session enable pill resets; source/mode/top_k persist.
       ragEnabled: false,
       toolStatus: null,
       kvCacheDtype: null,

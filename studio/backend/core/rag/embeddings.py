@@ -267,9 +267,6 @@ def _reset_backend() -> None:
         _backend_key = None
 
 
-# Public API (dispatches to the selected backend).
-
-
 def warm(model_name: str | None = None) -> None:
     """Eagerly load the embedder so the first real request isn't slow."""
     _get_backend().warm(model_name = model_name)

@@ -66,9 +66,8 @@ BUDGET_EXHAUSTED_NUDGE = (
     "any more tools."
 )
 
-# KB search is idempotent over a scope, so paraphrased re-searches in one turn return
-# overlapping passages and just fragment the answer. The exact-args dup guard misses
-# paraphrases, so also cap executed KB searches per turn, then nudge.
+# The exact-args dup guard misses paraphrased re-searches, so also cap executed
+# KB searches per turn, then nudge.
 RAG_MAX_SEARCHES_PER_TURN = 3
 RAG_SEARCH_CAP_NUDGE = (
     "You have already searched the knowledge base several times this turn. "

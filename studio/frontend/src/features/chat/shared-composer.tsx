@@ -431,9 +431,7 @@ export function SharedComposer({
   const [dragging, setDragging] = useState(false);
   const [isComposing, setIsComposing] = useState(false);
   const [newProjectOpen, setNewProjectOpen] = useState(false);
-  // ── Prompt storage & queue ────────────────────────────────────────────────
   const [promptStorageOpen, setPromptStorageOpen] = useState(false);
-  // 3 most recent prompts for the Saved prompts submenu; refreshed on menu open.
   const [recentPrompts, setRecentPrompts] = useState<PromptEntry[]>([]);
   const refreshRecentPrompts = useCallback(async () => {
     try {
@@ -442,7 +440,6 @@ export function SharedComposer({
         [...rows].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 3),
       );
     } catch {
-      // Keep prior state on failure.
     }
   }, []);
   const [isQueueRunning, setIsQueueRunning] = useState(false);
@@ -454,7 +451,6 @@ export function SharedComposer({
   const prevComparingRef = useRef(false);
   const compareStepSucceededRef = useRef(false);
   const sendRef = useRef<(() => void) | null>(null);
-  // ─────────────────────────────────────────────────────────────────────────
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const composingRef = useRef(false);
   const stuckImeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -529,7 +525,7 @@ export function SharedComposer({
   const ragEnabled = useChatRuntimeStore((s) => s.ragEnabled);
   const setRagEnabled = useChatRuntimeStore((s) => s.setRagEnabled);
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
-  // Exportable thread ids; empty until a compare run, which gates Export chat off.
+  // Empty until a compare run; gates Export chat off.
   const exportThreadIds = [model1ThreadId, model2ThreadId, activeThreadId].filter(
     (id): id is string => Boolean(id),
   );
@@ -667,13 +663,10 @@ export function SharedComposer({
   // Fetch pill: Anthropic-only (web_fetch_20250910 / web_fetch_20260209).
   const webFetchDisabled = !modelLoaded || !supportsBuiltinWebFetch;
   const showWebFetchPill = supportsBuiltinWebFetch;
-  // Docs (RAG) pill is local-only: search_knowledge_base needs the local tool
-  // runtime, off for external models.
+  // Docs (RAG) pill is local-only: search_knowledge_base needs the local runtime.
   const ragDisabled = !modelLoaded || isExternalModel || !supportsTools;
   const showRagPill = !isExternalModel;
   // With more than 4 pills showing, collapse them to icons only to cut clutter.
-  // Compare, Search and Code always show; the rest are conditional. RAG mirrors
-  // MCP: a single dropdown pill that appears only once enabled on a local model.
   const pillsCompact =
     3 +
       (showImagePill ? 1 : 0) +
@@ -727,8 +720,8 @@ export function SharedComposer({
     setTimeout(() => { sendRef.current?.(); }, 100);
   }
 
-  // Compare mode: advance the queue when the full compare cycle finishes, but stop
-  // it if the step failed, to avoid burning prompts on incomplete results.
+  // Compare mode: advance the queue on cycle end, but stop on a failed step so we
+  // don't burn prompts on incomplete results.
   useEffect(() => {
     const wasComparing = prevComparingRef.current;
     prevComparingRef.current = comparing;
@@ -748,7 +741,6 @@ export function SharedComposer({
     advanceQueue();
   }, [comparing]);
 
-  // Single-chat mode: advance queue when running transitions true → false.
   useEffect(() => {
     const wasRunning = prevRunningRef.current;
     prevRunningRef.current = running;
@@ -1436,9 +1428,8 @@ export function SharedComposer({
                   </DropdownMenuItem>
                 </DropdownMenuSubContent>
               </DropdownMenuSub>
-              {/* Top-level so the format list is a single hop from the + menu;
-                  a third-level submenu (under "More") collision-flips at narrow
-                  widths and is awkward to reach with a mouse. */}
+              {/* Top-level: a third-level submenu collision-flips at narrow
+                  widths and is awkward to reach. */}
               <DropdownMenuSub>
                 <DropdownMenuSubTrigger disabled={exportThreadIds.length === 0}>
                   <HugeiconsIcon icon={Download01Icon} strokeWidth={2} />
@@ -1496,8 +1487,7 @@ export function SharedComposer({
                       />
                     ) : null}
                   </DropdownMenuItem>
-                  {/* Always active: this menu only renders in compare mode.
-                      Ticked like Web search/Code; click toggles it off. */}
+                  {/* Click toggles compare mode off. */}
                   <DropdownMenuItem
                     className="text-primary font-medium"
                     onSelect={handleExitCompare}

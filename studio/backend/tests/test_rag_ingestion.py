@@ -57,7 +57,7 @@ def test_ingestion_lifecycle_pending_to_completed(rag_home, stub_embeddings, tmp
         doc = store.get_document(conn, doc_id)
         assert doc["status"] == "completed"
         assert doc["num_chunks"] > 0
-        assert store.search_lexical(conn, scope, "alpha", 10)  # searchable
+        assert store.search_lexical(conn, scope, "alpha", 10)
     finally:
         conn.close()
 

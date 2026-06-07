@@ -54,8 +54,6 @@ import {
 import { notifyChatHistoryUpdated } from "../api/chat-api";
 import type { ThreadRecord, MessageRecord } from "../types";
 
-// ── helpers ──────────────────────────────────────────────────────────────────
-
 function newId(): string {
   return crypto.randomUUID().replace(/-/g, "").slice(0, 12);
 }
@@ -83,8 +81,6 @@ function downloadBlob(content: string | Blob, filename: string, mimeType: string
 function csvEscape(val: string): string {
   return `"${val.replace(/"/g, '""')}"`;
 }
-
-// ── Export helpers ────────────────────────────────────────────────────────────
 
 function exportPromptJsonl(entry: PromptEntry): void {
   downloadBlob(
@@ -125,7 +121,6 @@ function exportAllListsJsonl(entries: PromptListEntry[]): void {
   downloadBlob(lines, "prompt-lists.jsonl", "application/x-ndjson");
 }
 
-// CSV columns list_name,order,prompt_text so multiple lists fit one file
 function exportListCsv(entry: PromptListEntry): void {
   const rows = entry.items
     .map((text, i) => `${csvEscape(entry.name)},${i + 1},${csvEscape(text)}`)
@@ -144,7 +139,6 @@ function exportAllListsCsv(entries: PromptListEntry[]): void {
   downloadBlob(`list_name,order,prompt_text\n${rows}`, "prompt-lists.csv", "text/csv");
 }
 
-// Collection: all prompts + lists in one JSONL, each line tagged with "type"
 function exportCollectionJsonl(prompts: PromptEntry[], lists: PromptListEntry[]): void {
   const lines = [
     ...prompts.map((e) => JSON.stringify({ type: "prompt", name: e.name, text: e.text })),
@@ -153,9 +147,6 @@ function exportCollectionJsonl(prompts: PromptEntry[], lists: PromptListEntry[])
   downloadBlob(lines, "prompt-collection.jsonl", "application/x-ndjson");
 }
 
-// ── Conversation export helpers ───────────────────────────────────────────
-
-/** Flatten a message content value to a readable string. */
 function contentBlocksToText(content: unknown): string {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return JSON.stringify(content);
@@ -192,12 +183,8 @@ function contentBlocksToText(content: unknown): string {
     return parts.join("\n\n");
   }
 
-/**
- * Reorder by walking the parentId chain. createdAt sort (from
- * listStoredChatMessages) misorders turns because GPT response slots get an
- * earlier timestamp than the user's next message; the parent chain is correct
- * regardless of timestamps.
- */
+// Order via parentId chain: createdAt misorders turns (GPT response slots
+// predate the user's next message); the parent chain is timestamp-independent.
 type _Msg = { id: string; parentId?: string | null; createdAt?: number };
 
 function orderByParentChain<T extends _Msg>(messages: T[]): T[] {
@@ -209,12 +196,10 @@ function orderByParentChain<T extends _Msg>(messages: T[]): T[] {
     childrenOf.get(pid)!.push(m);
   }
 
-  // Walk the main branch from root, taking the most-recent child each step.
   const result: T[] = [];
   let cur: string | null = null;
   while (childrenOf.has(cur)) {
     const children: T[] = childrenOf.get(cur)!;
-    // Highest createdAt = most recent branch/edit.
     const next: T = children.reduce((a: T, b: T) =>
       (a.createdAt ?? 0) >= (b.createdAt ?? 0) ? a : b,
     );
@@ -223,37 +208,29 @@ function orderByParentChain<T extends _Msg>(messages: T[]): T[] {
     byId.delete(next.id);
   }
 
-  // Append any orphans (shouldn't normally occur).
   for (const [, m] of byId) result.push(m);
   return result;
 }
 
-/** Load messages for a thread in correct conversation order, or null if empty. */
 async function loadConversationMessages(threadId: string) {
   const raw = await listStoredChatMessages(threadId);
   if (raw.length === 0) {
     toast.info("No messages in this conversation to export.");
     return null;
   }
-  // No parentId anywhere = legacy flat thread (already createdAt-sorted by the
-  // DB). Walking the chain there picks the newest first, inverting order, so
-  // fall back to raw order.
+  // No parentId = legacy flat thread (already DB createdAt-sorted); walking the
+  // chain would invert order, so keep raw order.
   const hasParentIds = raw.some((m) => (m as { parentId?: unknown }).parentId != null);
   if (!hasParentIds) return raw;
   return orderByParentChain(raw) as typeof raw;
 }
 
-/** Timestamp suffix for filenames. */
 function exportTs(): string {
   return new Date().toISOString().slice(0, 19).replace(/:/g, "-");
 }
 
-/**
- * Flatten a message's content blocks plus separately-stored attachments
- * (images/audio/files from the composer) into one string. Attachments live in
- * msg.attachments[].content, not msg.content, so they'd otherwise be dropped on
- * export.
- */
+// Attachments live in msg.attachments[].content, not msg.content, so flatten
+// both here or they'd be dropped on export.
 function messageToText(msg: { content: unknown; attachments?: unknown }): string {
   const parts: string[] = [];
   const main = contentBlocksToText(msg.content);
@@ -268,14 +245,9 @@ function messageToText(msg: { content: unknown; attachments?: unknown }): string
   return parts.join("\n\n");
 }
 
-// ── OpenAI-format structured message builder ─────────────────────────────────
-// Converts stored assistant-ui messages into the OpenAI messages array (for
-// tool-calling and multimodal fine-tuning). Differences vs the plain-text
-// messageToText path:
-//   - Tool calls → "tool_calls" array + separate "role":"tool" messages
-//   - Images     → "image_url" parts with the stored data-URL
-//   - Audio      → dropped (no standard training format)
-//   - Thinking   → kept as a text part (some trainers handle it)
+// OpenAI messages array (tool-calling + multimodal fine-tuning): tool calls →
+// "tool_calls" + separate "role":"tool" messages; images → "image_url" parts;
+// audio dropped; thinking kept as a text part.
 
 type OAIContentPart =
   | { type: "text"; text: string }
@@ -292,17 +264,11 @@ type OAIMessage =
   | { role: "assistant"; content: string | null; tool_calls?: OAIToolCall[] }
   | { role: "tool"; tool_call_id: string; name: string; content: string };
 
-/**
- * Convert a stored message into one or more OAIMessages. Tool-call parts split
- * into an assistant message + tool-result messages; image parts become
- * image_url parts (multimodal training).
- */
 function messageToOpenAI(msg: { role: unknown; content: unknown; attachments?: unknown }): OAIMessage[] {
   const role = (msg.role as string) ?? "user";
   const blocks = Array.isArray(msg.content) ? msg.content : [];
   const attachments = Array.isArray(msg.attachments) ? msg.attachments : [];
 
-  // Content parts from blocks + attachments.
   const allParts: Record<string, unknown>[] = [
     ...blocks.map((b) => b as Record<string, unknown>),
     ...attachments.flatMap((a) => {
@@ -329,7 +295,6 @@ function messageToOpenAI(msg: { role: unknown; content: unknown; attachments?: u
         const name = typeof p.toolName === "string" ? p.toolName : "unknown";
         const argsStr = p.args != null ? JSON.stringify(p.args) : (typeof p.argsText === "string" ? p.argsText : "{}");
         toolCalls.push({ id, type: "function", function: { name, arguments: argsStr } });
-        // Emit the result as a tool message right after.
         if (p.result !== undefined && p.result !== null) {
           const resultStr = typeof p.result === "string" ? p.result : JSON.stringify(p.result);
           toolResults.push({ role: "tool", tool_call_id: id, name, content: resultStr });
@@ -347,7 +312,6 @@ function messageToOpenAI(msg: { role: unknown; content: unknown; attachments?: u
       : [assistantMsg];
   }
 
-  // User / system: support multimodal parts.
   const contentParts: OAIContentPart[] = [];
   let hasNonText = false;
 
@@ -358,10 +322,8 @@ function messageToOpenAI(msg: { role: unknown; content: unknown; attachments?: u
       contentParts.push({ type: "image_url", image_url: { url: p.image } });
       hasNonText = true;
     }
-    // audio: no standard training format, skipped.
   }
 
-  // Flat string is more compact; use an array only when multimodal.
   if (!hasNonText) {
     const text = contentParts.map((p) => (p.type === "text" ? p.text : "")).join("\n\n");
     return text ? [{ role: role as "user" | "system", content: text }] : [];
@@ -369,7 +331,7 @@ function messageToOpenAI(msg: { role: unknown; content: unknown; attachments?: u
   return contentParts.length > 0 ? [{ role: role as "user" | "system", content: contentParts }] : [];
 }
 
-// Conversation export — ShareGPT training JSONL (human/gpt turns).
+// ShareGPT training JSONL (human/gpt turns).
 export async function exportConversationShareGPT(threadId: string): Promise<void> {
   const messages = await loadConversationMessages(threadId);
   if (!messages) return;
@@ -390,9 +352,8 @@ export async function exportConversationShareGPT(threadId: string): Promise<void
   );
 }
 
-// Conversation export — raw JSONL, OpenAI/ChatML (one object per conversation):
-// {"messages": [{"role": "user", "content": "..."}, ...]}. The Unsloth trainer
-// recognises this as a ChatML-format dataset.
+// OpenAI/ChatML JSONL: {"messages": [{"role","content"}, ...]} per conversation;
+// Unsloth reads this as a ChatML dataset.
 export async function exportConversationRawJsonl(threadId: string): Promise<void> {
   const messages = await loadConversationMessages(threadId);
   if (!messages) return;
@@ -406,7 +367,6 @@ export async function exportConversationRawJsonl(threadId: string): Promise<void
   );
 }
 
-// Conversation export — CSV with role and content columns.
 export async function exportConversationCsv(threadId: string): Promise<void> {
   const messages = await loadConversationMessages(threadId);
   if (!messages) return;
@@ -422,8 +382,6 @@ export async function exportConversationCsv(threadId: string): Promise<void> {
   downloadBlob(rows.join("\n"), "conversation-" + exportTs() + ".csv", "text/csv");
 }
 
-// ─── Bulk / multi-thread export ───────────────────────────────────────────────
-
 export type ConvExportFormat = "jsonl-raw" | "csv" | "sharegpt";
 
 const EXPORT_FORMAT_LABELS: Record<ConvExportFormat, string> = {
@@ -436,7 +394,6 @@ export const EXPORT_FORMATS_LIST = (
   Object.keys(EXPORT_FORMAT_LABELS) as ConvExportFormat[]
 ).map((fmt) => ({ fmt, label: EXPORT_FORMAT_LABELS[fmt] }));
 
-/** Build the exportable text for a single thread, or null if empty. */
 async function buildThreadContent(
   threadId: string,
   format: ConvExportFormat,
@@ -445,9 +402,7 @@ async function buildThreadContent(
   if (!messages) return null;
 
   if (format === "jsonl-raw") {
-    // OpenAI/ChatML with tool-call and multimodal support. The Unsloth trainer
-    // recognises it as ChatML via the "messages" key; tool calls use the OpenAI
-    // tool_calls array, images become image_url parts.
+    // OpenAI/ChatML: Unsloth reads the "messages" key as ChatML.
     const oaiMsgs: OAIMessage[] = messages.flatMap((msg) => messageToOpenAI(msg));
     if (oaiMsgs.length === 0) return null;
     return JSON.stringify({ messages: oaiMsgs });
@@ -464,7 +419,6 @@ async function buildThreadContent(
     return JSON.stringify({ conversations });
   }
 
-  // csv
   const rows: string[] = [];
   for (const msg of messages) {
     const content = messageToText(msg);
@@ -486,10 +440,6 @@ function exportMime(format: ConvExportFormat): string {
   return format === "csv" ? "text/csv" : "application/x-ndjson";
 }
 
-/**
- * Export multiple threads as one merged file. JSONL: each thread's records on
- * their own lines with a thread_id field; CSV: a thread_id column prepended.
- */
 export async function exportBulkConversationsMerged(
   threadIds: string[],
   format: ConvExportFormat,
@@ -514,7 +464,6 @@ export async function exportBulkConversationsMerged(
   downloadBlob(body, `${basename}.${exportExt(format)}`, exportMime(format));
 }
 
-/** Export multiple threads as a ZIP archive, one file per thread. */
 export async function exportBulkConversationsSeparate(
   threadIds: string[],
   format: ConvExportFormat,
@@ -544,12 +493,6 @@ export async function exportBulkConversationsSeparate(
   );
 }
 
-// ─── Single-project export ─────────────────────────────────────────────────
-
-/**
- * Export all threads in one project as a merged file. Caller provides the
- * already-resolved thread IDs for the project.
- */
 export async function exportProjectConversations(
   threadIds: string[],
   format: ConvExportFormat,
@@ -563,19 +506,13 @@ export async function exportProjectConversations(
   );
 }
 
-// ─── Conversation import ──────────────────────────────────────────────────────
-
-/**
- * Convert an OpenAI messages array back into assistant-ui MessageRecord[].
- * Tool results (role:"tool") are absorbed into the preceding assistant message's
- * tool-call part as a `result` field, not made into separate records.
- */
+// role:"tool" results are absorbed into the preceding assistant tool-call
+// part's `result` field rather than becoming separate records.
 function oaiMessagesToRecords(
   oaiMsgs: unknown[],
   threadId: string,
   baseTs: number,
 ): MessageRecord[] {
-  // Pass 1: index tool results by tool_call_id for later attachment.
   const toolResults = new Map<string, string>();
   for (const m of oaiMsgs) {
     const msg = m as Record<string, unknown>;
@@ -591,7 +528,7 @@ function oaiMessagesToRecords(
   for (const m of oaiMsgs) {
     const msg = m as Record<string, unknown>;
     const role = msg.role as string;
-    if (role === "tool") continue; // absorbed into assistant tool-calls
+    if (role === "tool") continue;
 
     const id = crypto.randomUUID();
 
@@ -624,7 +561,6 @@ function oaiMessagesToRecords(
       }
       content = parts;
     } else {
-      // user / system — may be multimodal.
       const raw = msg.content;
       if (Array.isArray(raw)) {
         content = raw.flatMap((p): unknown[] => {
@@ -660,7 +596,6 @@ function oaiMessagesToRecords(
   return records;
 }
 
-/** Convert a ShareGPT conversations array into assistant-ui MessageRecord[]. */
 function sharegptToRecords(
   conversations: unknown[],
   threadId: string,
@@ -690,17 +625,14 @@ function sharegptToRecords(
   return records;
 }
 
-/** Convert a CSV table (role, content columns) into assistant-ui MessageRecord[]. */
 function csvToRecords(csvText: string, threadId: string, baseTs: number): MessageRecord[] {
   const lines = csvText.split(/\r?\n/);
   const records: MessageRecord[] = [];
   let prevId: string | null = null;
   let idx = 0;
-  // Skip header row
   for (let i = 1; i < lines.length; i++) {
     const line = lines[i].trim();
     if (!line) continue;
-    // Minimal CSV parse: first field = role, rest = content.
     let role = "";
     let content = "";
     if (line.startsWith('"')) {
@@ -741,7 +673,6 @@ interface ParsedConversation {
   messages: MessageRecord[];
 }
 
-/** Parse a file's text content into an array of conversations. */
 function parseImportText(text: string, filename: string): ParsedConversation[] {
   const results: ParsedConversation[] = [];
   const basename = filename.replace(/\.[^.]+$/, "");
@@ -750,7 +681,6 @@ function parseImportText(text: string, filename: string): ParsedConversation[] {
   const isCsv = /\.csv$/i.test(filename);
 
   if (isCsv) {
-    // Entire file = one conversation
     const threadId = crypto.randomUUID();
     const messages = csvToRecords(text, threadId, Date.now());
     if (messages.length > 0) {
@@ -765,8 +695,8 @@ function parseImportText(text: string, filename: string): ParsedConversation[] {
       let obj: Record<string, unknown>;
       try { obj = JSON.parse(line); } catch { return; }
 
-      // Fresh ID — never reuse the exported thread_id, which would clobber an
-      // existing thread with the same ID on import.
+      // Fresh ID: reusing the exported thread_id would clobber an existing
+      // thread on import.
       const threadId = crypto.randomUUID();
       const title = typeof obj.title === "string" ? obj.title : `${basename} ${lineIdx + 1}`;
       const baseTs = typeof obj.created_at === "number" ? obj.created_at : Date.now() + lineIdx;
@@ -774,10 +704,8 @@ function parseImportText(text: string, filename: string): ParsedConversation[] {
       let messages: MessageRecord[] = [];
 
       if (Array.isArray(obj.messages)) {
-        // Raw JSONL (OpenAI format)
         messages = oaiMessagesToRecords(obj.messages, threadId, baseTs);
       } else if (Array.isArray(obj.conversations)) {
-        // ShareGPT format
         messages = sharegptToRecords(obj.conversations, threadId, baseTs);
       }
 
@@ -788,16 +716,10 @@ function parseImportText(text: string, filename: string): ParsedConversation[] {
     return results;
   }
 
-  // Unknown extension — retry as JSONL.
+  // Unknown extension: retry as JSONL.
   return parseImportText(text, filename + ".jsonl");
 }
 
-/**
- * Import conversations from a File into chat storage.
- * @param file   The file to import (.jsonl, .ndjson, or .csv)
- * @param projectId  null = Recents, else target project
- * @returns number of threads imported
- */
 export async function importConversationsFromFile(
   file: File,
   projectId: string | null = null,
@@ -826,11 +748,8 @@ export async function importConversationsFromFile(
   return parsed.length;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-
-// Training exports — ShareGPT format for Unsloth fine-tuning pipelines.
-// Prompt → one {"conversations": [...]} record (human turn + empty gpt slot).
-// List → one multi-turn record with every item as a human turn.
+// ShareGPT training exports: prompt → one record (human turn + empty gpt slot);
+// list → one multi-turn record, each item a human turn.
 function exportPromptTrainingJsonl(entry: PromptEntry): void {
   const record = {
     conversations: [
@@ -884,9 +803,7 @@ function exportListsTrainingJsonl(entries: PromptListEntry[]): void {
   downloadBlob(lines, "prompt-lists-training.jsonl", "application/x-ndjson");
 }
 
-// ── Import helpers ────────────────────────────────────────────────────────────
-
-/** RFC 4180 CSV parser; handles quoted fields with embedded newlines/commas. */
+// RFC 4180 CSV parser: handles quoted fields with embedded newlines/commas.
 function parseCsv(text: string): string[][] {
   const rows: string[][] = [];
   let row: string[] = [];
@@ -899,7 +816,6 @@ function parseCsv(text: string): string[][] {
 
   while (i < text.length) {
     if (text[i] === '"') {
-      // Quoted field — may span lines.
       i++;
       let cell = "";
       while (i < text.length) {
@@ -908,7 +824,7 @@ function parseCsv(text: string): string[][] {
             cell += '"';
             i += 2;
           } else {
-            i++; // closing quote
+            i++;
             break;
           }
         } else {
@@ -929,7 +845,6 @@ function parseCsv(text: string): string[][] {
       row.push("");
       finishRow();
     } else {
-      // Unquoted field.
       let cell = "";
       while (i < text.length && text[i] !== "," && text[i] !== "\r" && text[i] !== "\n") {
         cell += text[i++];
@@ -948,7 +863,7 @@ async function importPromptsFromText(text: string, isCsv: boolean): Promise<{ co
   const entries: PromptEntry[] = [];
   let skipped = 0;
   if (isCsv) {
-    const rows = parseCsv(text).slice(1); // skip header row
+    const rows = parseCsv(text).slice(1);
     for (const cells of rows) {
       const name = cells[0]?.trim();
       const promptText = cells[1]?.trim();
@@ -992,7 +907,7 @@ async function importListsFromText(text: string, isCsv: boolean): Promise<{ coun
   const lists: PromptListEntry[] = [];
   let skipped = 0;
   if (isCsv) {
-    const rows = parseCsv(text).slice(1); // skip header row
+    const rows = parseCsv(text).slice(1);
     const listMap = new Map<string, Array<{ order: number; text: string }>>();
     for (const cells of rows) {
       const listName = cells[0]?.trim();
@@ -1079,15 +994,13 @@ async function importCollectionFromText(text: string): Promise<{ prompts: number
         }
       }
     } catch {
-      /* skip malformed lines */
+      /* */
     }
   }
   if (entries.length > 0) await bulkSavePromptEntries(entries);
   if (listEntries.length > 0) await bulkSavePromptLists(listEntries);
   return { prompts: entries.length, lists: listEntries.length };
 }
-
-// ── Export modal ──────────────────────────────────────────────────────────────
 
 type ExportScope = "single" | "training";
 type ExportFormat = "jsonl" | "csv";
@@ -1123,7 +1036,6 @@ function ExportModal({
       else if (format === "csv") exportListCsv(ctx.entry);
       else exportListJsonl(ctx.entry);
     } else {
-      // bulk
       const { tab, prompts, lists } = ctx;
       if (scope === "training") {
         if (tab === "prompts") {
@@ -1168,20 +1080,20 @@ function ExportModal({
 
   return (
     <Dialog open onOpenChange={onClose}>
-      {/* Override base p-6 gap-6 defaults */}
+      {/* */}
       <DialogContent className="sm:max-w-[520px] gap-0 p-0 overflow-hidden">
         <div className="flex flex-col gap-5 p-6">
-          {/* Title */}
+          {/* */}
           <DialogTitle className="text-base font-semibold tracking-tight">Export</DialogTitle>
           <DialogDescription className="sr-only">Choose export type and format.</DialogDescription>
 
-          {/* Scope */}
+          {/* */}
           <div className="flex flex-col gap-2">
             <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/60">
               Export as
             </p>
             <div className="flex flex-col gap-2">
-              {/* Single / All */}
+              {/* */}
               <label
                 className={cn(
                   "flex w-full cursor-pointer items-center gap-3 rounded-lg border px-4 py-3 transition-all",
@@ -1204,7 +1116,7 @@ function ExportModal({
                 </div>
               </label>
 
-              {/* Training Style */}
+              {/* */}
               <label
                 className={cn(
                   "flex w-full cursor-pointer items-start gap-3 rounded-lg border px-4 py-3 transition-all",
@@ -1234,7 +1146,7 @@ function ExportModal({
             </div>
           </div>
 
-          {/* Format */}
+          {/* */}
           <div className="flex flex-col gap-2">
             <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/60">
               Format
@@ -1277,7 +1189,7 @@ function ExportModal({
           </div>
         </div>
 
-        {/* Footer */}
+        {/* */}
         <div className="flex items-center justify-end gap-2 border-t border-border/50 px-6 py-4">
           <Button variant="ghost" size="sm" onClick={onClose}>
             Cancel
@@ -1291,8 +1203,6 @@ function ExportModal({
     </Dialog>
   );
 }
-
-// ── Prompt card ───────────────────────────────────────────────────────────────
 
 function PromptCard({
   entry,
@@ -1396,8 +1306,6 @@ function PromptCard({
   );
 }
 
-// ── New prompt form ───────────────────────────────────────────────────────────
-
 function NewPromptForm({ onClose, onRefresh }: { onClose: () => void; onRefresh: () => void }): ReactElement {
   const [name, setName] = useState("");
   const [text, setText] = useState("");
@@ -1445,8 +1353,6 @@ function NewPromptForm({ onClose, onRefresh }: { onClose: () => void; onRefresh:
     </div>
   );
 }
-
-// ── Prompt list card ──────────────────────────────────────────────────────────
 
 function PromptListCard({
   entry,
@@ -1609,8 +1515,6 @@ function PromptListCard({
   );
 }
 
-// ── New prompt list form ──────────────────────────────────────────────────────
-
 function NewPromptListForm({ onClose, onRefresh }: { onClose: () => void; onRefresh: () => void }): ReactElement {
   const [name, setName] = useState("");
   const [items, setItems] = useState<string[]>(["", ""]);
@@ -1700,8 +1604,6 @@ function NewPromptListForm({ onClose, onRefresh }: { onClose: () => void; onRefr
   );
 }
 
-// ── Main dialog ───────────────────────────────────────────────────────────────
-
 type Tab = "prompts" | "lists";
 
 export function PromptStorageDialog({
@@ -1712,9 +1614,7 @@ export function PromptStorageDialog({
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  /** Called when the user clicks "Use" on a saved prompt. Injects text into the composer. */
   onUse: (text: string) => void;
-  /** Optional: called when the user clicks "Run" on a prompt list (e.g. for eval). */
   onRunList?: (items: string[]) => void;
 }): ReactElement {
   const [activeTab, setActiveTab] = useState<Tab>("prompts");
@@ -1729,13 +1629,12 @@ export function PromptStorageDialog({
   const [promptLists, setPromptLists] = useState<PromptListEntry[]>([]);
 
   const refreshEntries = useCallback(async () => {
-    try { setPromptEntries(await listPromptEntries()); } catch { /* ignore */ }
+    try { setPromptEntries(await listPromptEntries()); } catch {}
   }, []);
   const refreshLists = useCallback(async () => {
-    try { setPromptLists(await listPromptLists()); } catch { /* ignore */ }
+    try { setPromptLists(await listPromptLists()); } catch {}
   }, []);
 
-  // Fetch on open
   useEffect(() => {
     if (open) {
       void refreshEntries();
@@ -1792,7 +1691,7 @@ export function PromptStorageDialog({
       const text = await file.text();
       const isCsv = file.name.toLowerCase().endsWith(".csv");
       try {
-        // Auto-detect collection JSONL: first line has a "type" field.
+        // Collection JSONL: first line carries a "type" field.
         if (!isCsv) {
           const firstLine = text.split("\n").find((l) => l.trim());
           if (firstLine) {
@@ -1816,7 +1715,7 @@ export function PromptStorageDialog({
                 return;
               }
             } catch {
-              /* not JSON — fall through to tab-specific import */
+              /* */
             }
           }
         }
@@ -1865,7 +1764,7 @@ export function PromptStorageDialog({
     <>
       <Dialog open={open} onOpenChange={onOpenChange}>
         <DialogContent showCloseButton={false} className="sm:max-w-[min(1100px,88vw)] max-h-[94vh] flex flex-col gap-0 p-0 overflow-hidden">
-          {/* Header */}
+          {/* */}
           <DialogHeader className="px-6 pt-5 pb-4 shrink-0 border-b border-border/50">
             <div className="flex items-center gap-3">
               <div className="flex-1 min-w-0">
@@ -1918,9 +1817,9 @@ export function PromptStorageDialog({
             </DialogDescription>
           </DialogHeader>
 
-          {/* Tabs + search */}
+          {/* */}
           <div className="px-6 pt-4 pb-3 shrink-0 flex flex-col gap-3">
-            {/* Segmented tab control */}
+            {/* */}
             <div className="flex items-center gap-1 self-start rounded-lg bg-muted/60 p-1">
               {(["prompts", "lists"] as Tab[]).map((tab) => (
                 <button
@@ -1939,7 +1838,7 @@ export function PromptStorageDialog({
               ))}
             </div>
 
-            {/* Search */}
+            {/* */}
             <div className="relative">
               <SearchIcon className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground/60" />
               <input
@@ -1969,7 +1868,7 @@ export function PromptStorageDialog({
             </div>
           </div>
 
-          {/* Content */}
+          {/* */}
           <div className="flex-1 min-h-0 overflow-y-auto px-6 pb-6 flex flex-col gap-2.5">
             {activeTab === "prompts" && (
               <>

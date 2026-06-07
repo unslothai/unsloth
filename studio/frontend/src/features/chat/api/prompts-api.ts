@@ -14,7 +14,6 @@ export interface PromptEntry {
 export interface PromptListEntry {
   id: string;
   name: string;
-  /** Ordered list of prompt texts */
   items: string[];
   createdAt: number;
   updatedAt: number;
@@ -28,8 +27,6 @@ async function parseJsonOrThrow<T>(res: Response): Promise<T> {
   }
   return body as T;
 }
-
-// ── Prompt entries ────────────────────────────────────────────────────────────
 
 export async function listPromptEntries(): Promise<PromptEntry[]> {
   const res = await authFetch("/api/prompts/entries");
@@ -61,8 +58,6 @@ export async function bulkSavePromptEntries(entries: PromptEntry[]): Promise<num
   const data = await parseJsonOrThrow<{ count: number }>(res);
   return data.count;
 }
-
-// ── Prompt lists ──────────────────────────────────────────────────────────────
 
 export async function listPromptLists(): Promise<PromptListEntry[]> {
   const res = await authFetch("/api/prompts/lists");

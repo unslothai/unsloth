@@ -38,9 +38,6 @@ def _add_doc(conn, scope, doc_id, filename, sha, texts):
     store.add_chunks(conn, scope, doc_id, chunks, vectors)
 
 
-# --------------------------------------------------------------------------
-# Lexical / scope
-# --------------------------------------------------------------------------
 def test_lexical_returns_only_matching_docs(rag_conn):
     _add_doc(rag_conn, "kb_a", "d1", "d1.txt", "h1", ["alpha bravo charlie"])
     _add_doc(rag_conn, "kb_a", "d2", "d2.txt", "h2", ["golf hotel india"])
@@ -66,9 +63,6 @@ def test_lexical_does_not_crash_on_punctuation(rag_conn):
     store.search_lexical(rag_conn, "kb_a", 'NEAR("x" AND', 5)
 
 
-# --------------------------------------------------------------------------
-# Dense
-# --------------------------------------------------------------------------
 def test_dense_ranks_by_cosine(rag_conn):
     _add_doc(rag_conn, "kb_a", "d1", "f", "h1", ["alpha alpha"])
     _add_doc(rag_conn, "kb_a", "d2", "f", "h2", ["hotel golf"])
@@ -81,9 +75,6 @@ def test_dense_empty_before_any_ingest(rag_conn):
     assert store.search_dense(rag_conn, "kb_a", embed("alpha"), 10) == []
 
 
-# --------------------------------------------------------------------------
-# Dedupe / delete
-# --------------------------------------------------------------------------
 def test_dedupe_by_hash(rag_conn):
     _add_doc(rag_conn, "kb_a", "d1", "f", "SHA", ["alpha"])
     assert store.document_by_hash(rag_conn, "kb_a", "SHA") == "d1"
@@ -99,9 +90,6 @@ def test_delete_document_purges_all_tables(rag_conn):
     assert store.get_document(rag_conn, "d1") is None
 
 
-# --------------------------------------------------------------------------
-# Incremental append keeps earlier doc rows stable
-# --------------------------------------------------------------------------
 def test_incremental_add_is_flat(rag_conn):
     # Adding doc2 must not touch doc1's fts rowids (append, not rebuild).
     _add_doc(rag_conn, "kb_a", "d1", "f", "h1", ["alpha bravo charlie"])
@@ -116,7 +104,7 @@ def test_incremental_add_is_flat(rag_conn):
         (r["rowid"], r["chunk_id"]) for r in before if r["chunk_id"].startswith("d1:")
     ]
     after_d1 = [(r["rowid"], r["chunk_id"]) for r in after]
-    assert before_d1 == after_d1  # d1 rowids unchanged
+    assert before_d1 == after_d1
 
 
 def test_chunks_by_id_joins_filename(rag_conn):
@@ -126,9 +114,6 @@ def test_chunks_by_id_joins_filename(rag_conn):
     assert rows["d1:0"]["text"] == "body text here"
 
 
-# --------------------------------------------------------------------------
-# Knowledge bases
-# --------------------------------------------------------------------------
 def test_kb_crud_and_delete_cascades(rag_conn):
     kb_id = store.create_kb(rag_conn, name = "My KB", description = "d", kb_id = "K1")
     assert store.get_kb(rag_conn, kb_id)["name"] == "My KB"

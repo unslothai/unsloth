@@ -52,8 +52,6 @@ async function ragUpload(path: string, file: File): Promise<DocumentUploadResult
   return json as DocumentUploadResult;
 }
 
-// ── Knowledge bases ──────────────────────────────────────────
-
 export async function listKnowledgeBases(): Promise<KnowledgeBase[]> {
   const data = await ragRequest<{ knowledgeBases: KnowledgeBase[] }>(
     "/knowledge-bases",
@@ -92,8 +90,6 @@ export function deleteKnowledgeBase(kbId: string): Promise<{ ok: boolean }> {
     method: "DELETE",
   });
 }
-
-// ── Documents ────────────────────────────────────────────────
 
 export async function listKnowledgeBaseDocuments(
   kbId: string,
@@ -136,13 +132,11 @@ export function deleteDocument(documentId: string): Promise<{ ok: boolean }> {
   });
 }
 
-// ── Index jobs ───────────────────────────────────────────────
-
 export function getJob(jobId: string): Promise<IndexJob> {
   return ragRequest(`/jobs/${encodeURIComponent(jobId)}`);
 }
 
-/** Stream indexing progress over SSE; returns on `[DONE]`. Transport errors propagate so callers can poll getJob instead. */
+// SSE; returns on [DONE]. Transport errors propagate so callers can poll getJob.
 export async function* streamJobEvents(
   jobId: string,
   signal?: AbortSignal,
@@ -190,9 +184,6 @@ export async function* streamJobEvents(
   }
 }
 
-// ── Preview ──────────────────────────────────────────────────
-
-/** Resolve a citation to its source: page + highlight rects (PDF) or chunk text. */
 export function getPreviewTarget(
   documentId: string,
   chunkId?: string,
@@ -203,7 +194,7 @@ export function getPreviewTarget(
   );
 }
 
-/** Mint a short-lived signed URL (no bearer) so pdf.js can issue Range requests. */
+// Signed URL (no bearer) so pdf.js can issue Range requests.
 export async function getDocumentFileUrl(documentId: string): Promise<string> {
   const data = await ragRequest<{ url: string }>(
     `/documents/${encodeURIComponent(documentId)}/file-url`,

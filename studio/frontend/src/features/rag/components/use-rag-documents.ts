@@ -12,12 +12,11 @@ import {
 } from "../api/rag-api";
 import type { DocumentStatus, RagDocument } from "../types/rag";
 
-/** Document with live indexing progress. */
 export interface TrackedDocument extends RagDocument {
   progress?: number | null;
 }
 
-/** Client-side dedup identity: name + size + last-modified. Backend dedups by content hash (authoritative). */
+// Client-side dedup key; backend dedups authoritatively by content hash.
 function fileSignature(file: File): string {
   return `${file.name}|${file.size}|${file.lastModified}`;
 }
@@ -28,10 +27,6 @@ export type RagDocumentScope =
 
 type Lister = () => Promise<RagDocument[]>;
 
-/**
- * Manage one scope's documents (KB or thread): list, upload, delete, with live
- * indexing status via SSE (getJob polling on error).
- */
 export function useRagDocuments(
   scope: RagDocumentScope | null,
   lister: Lister,
@@ -46,8 +41,7 @@ export function useRagDocuments(
   useEffect(() => {
     documentsRef.current = documents;
   }, [documents]);
-  // documentId -> file signature. Forgotten on delete (re-upload re-indexes),
-  // cleared on scope change.
+  // documentId -> signature; forgotten on delete, cleared on scope change.
   const sigByDocId = useRef<Map<string, string>>(new Map());
   const sigAttached = useCallback(
     (sig: string) => {
@@ -56,7 +50,7 @@ export function useRagDocuments(
     },
     [],
   );
-  // True while upload() runs. Lets the scope-change effect tell a real context switch
+  // True while upload() runs, so the scope-change effect can tell a real switch
   // from lazy thread materialization mid-upload (which must not reset).
   const uploadInFlightRef = useRef(false);
 
@@ -86,7 +80,7 @@ export function useRagDocuments(
 
       const finish = (status: DocumentStatus, error?: string | null) => {
         if (status === "failed") {
-          // Drop the chip instead of showing "Failed"; warn via toast.
+          // Drop the chip rather than show "Failed"; warn via toast.
           setDocuments((rows) => rows.filter((row) => row.id !== documentId));
           toast.error(`Couldn't index ${filename}`, {
             description: error ?? "Indexing failed",
@@ -156,8 +150,8 @@ export function useRagDocuments(
     if (!scope) return;
     if (!opts?.quiet) setLoading(true);
     try {
-      // Merge server truth with local progress so a refresh mid-index keeps a live
-      // "running %" chip. Failed docs are hidden (toast warned at upload).
+      // Merge server truth with local progress so a refresh mid-index keeps a
+      // live "running %" chip. Failed docs hidden (toast warned at upload).
       const rows = (await lister()).filter((row) => row.status !== "failed");
       setDocuments((prev) => {
         const merged = rows.map((row) => {
@@ -166,8 +160,8 @@ export function useRagDocuments(
             ? { ...row, progress: tracked.progress }
             : row;
         });
-        // Keep optimistic chips for in-flight uploads (not yet listed) so a refresh
-        // racing an upload can't make them vanish.
+        // Keep optimistic chips (not yet listed) so a refresh racing an upload
+        // can't make them vanish.
         const serverIds = new Set(rows.map((row) => row.id));
         const pendingLocal = prev.filter(
           (row) => row.id.startsWith("pending_") && !serverIds.has(row.id),
@@ -183,10 +177,9 @@ export function useRagDocuments(
     }
   }, [scope, lister]);
 
-  // On scope change: a real switch (thread/KB swap) resets + reloads; first acquiring
-  // a scope just loads. Skip both during lazy thread materialization mid-upload (scope
-  // goes null -> new thread while upload() runs) so we don't abort job tracking or wipe
-  // optimistic chips.
+  // A real switch (thread/KB swap) resets + reloads; first acquiring a scope just
+  // loads. Skip both during materialization mid-upload (scope null -> new thread
+  // while upload() runs) so we don't abort tracking or wipe optimistic chips.
   useEffect(() => {
     const prev = prevScopeKeyRef.current;
     prevScopeKeyRef.current = scopeKey;
@@ -200,8 +193,8 @@ export function useRagDocuments(
       void refresh();
     }
     return () => {
-      // Preserve an in-flight upload's tracking when cleanup is the lazy
-      // materialization flip rather than a real switch/unmount.
+      // Preserve in-flight tracking when cleanup is the materialization flip,
+      // not a real switch/unmount.
       if (uploadInFlightRef.current) return;
       for (const controller of trackedJobs.current.values()) controller.abort();
       trackedJobs.current.clear();
@@ -209,12 +202,10 @@ export function useRagDocuments(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scopeKey]);
 
-  // Safety net for the per-job SSE streams: a big upload opens one stream per doc,
-  // and over HTTP/1.1 the browser caps concurrent connections, so streams past the
-  // cap queue behind the app's polling and may never deliver a terminal frame --
-  // leaving a chip spinning even though the doc already finished. While anything is
-  // still indexing, reconcile against the server's document list (one request
-  // covers every doc) so chips always resolve.
+  // Safety net: a big upload opens one SSE stream per doc, but HTTP/1.1 caps
+  // concurrent connections, so streams past the cap may never deliver a terminal
+  // frame and leave a chip spinning. While anything is indexing, reconcile against
+  // the document list (one request covers every doc) so chips always resolve.
   const hasIndexing = documents.some(
     (d) => d.status === "pending" || d.status === "running",
   );
@@ -225,9 +216,8 @@ export function useRagDocuments(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scopeKey, hasIndexing]);
 
-  // POST one file, then swap its optimistic chip (`tempId`) to the real id. If the
-  // backend deduped to an existing document, drop the chip. `seenIds` holds ids
-  // present/added this batch.
+  // POST one file, then swap its optimistic chip (`tempId`) to the real id; drop
+  // the chip if the backend deduped. `seenIds` holds ids present/added this batch.
   const uploadOne = useCallback(
     async (
       file: File,
@@ -262,7 +252,7 @@ export function useRagDocuments(
         trackJob(result.jobId, result.documentId, result.filename || file.name);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        // Drop the chip instead of showing "Failed"; warn via toast.
+        // Drop the chip rather than show "Failed"; warn via toast.
         setDocuments((rows) => rows.filter((row) => row.id !== tempId));
         toast.error(`Couldn't upload ${file.name}`, { description: message });
       }
@@ -270,24 +260,23 @@ export function useRagDocuments(
     [trackJob],
   );
 
-  // `overrideScope` lets a caller pass a freshly-resolved scope, or a promise of one
-  // (the thread bar materializes its id at upload time, so the hook's `scope` is still
-  // null on the first click); falls back to the hook scope.
+  // `overrideScope` lets a caller pass a freshly-resolved scope (or a promise of
+  // one), since the thread bar's id is still null on the first click; falls back to
+  // the hook scope.
   const upload = useCallback(
     async (
       files: FileList | File[],
       overrideScope?: RagDocumentScope | Promise<RagDocumentScope | null>,
     ) => {
-      // Flip the in-flight guard synchronously, before awaiting a thread id that may
-      // still be materializing. The scope-change effect reads it to tell a real switch
-      // from the null -> new-thread flip that fires mid-upload, so it neither aborts
-      // job tracking nor wipes optimistic chips.
+      // Flip the in-flight guard synchronously, before awaiting a thread id that
+      // may still be materializing, so the scope-change effect reads it and leaves
+      // job tracking and optimistic chips alone.
       uploadInFlightRef.current = true;
       setUploading(true);
       try {
-        // Show an optimistic chip per accepted file NOW, before awaiting the thread id:
-        // materializing a new thread is a round-trip, and gating chips behind it makes a
-        // slow one look like nothing happened. Dedup identical re-selections up front.
+        // Show an optimistic chip per file before awaiting the thread id;
+        // materialization is a round-trip and gating chips behind it makes a slow
+        // one look like nothing happened. Dedup re-selections up front.
         const fresh: Array<{ tempId: string; file: File }> = [];
         for (const file of Array.from(files)) {
           if (sigAttached(fileSignature(file))) {
@@ -314,8 +303,7 @@ export function useRagDocuments(
           overrideScope instanceof Promise ? await overrideScope : overrideScope;
         const activeScope = resolved ?? scope;
         if (!activeScope) {
-          // Materialization failed: drop the optimistic chips rather than leaving them
-          // stuck "pending" forever.
+          // Materialization failed: drop the chips so they don't hang "pending".
           const tempIds = new Set(fresh.map((f) => f.tempId));
           setDocuments((rows) => rows.filter((row) => !tempIds.has(row.id)));
           toast.error("Couldn't attach documents", {
@@ -324,7 +312,6 @@ export function useRagDocuments(
           return;
         }
 
-        // Dedup within the batch against real (non-pending) document ids.
         const seenIds = new Set(
           documentsRef.current
             .filter((d) => !d.id.startsWith("pending_"))

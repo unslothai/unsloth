@@ -76,18 +76,15 @@ import {
   isProviderKeyRotationError,
 } from "./providers-api";
 
-// "Auto" auto-retrieve resolves by the model's total size: small models (<=9B)
-// answer from memory instead of calling search, so force retrieval; leave it to
-// larger ones. Size comes from the shared param-count parser, which reads total
-// params (ignoring MoE active "A3B" notation).
+// Small models (<=9B) answer from memory instead of calling search, so "auto"
+// forces retrieval for them and leaves it to larger ones.
 const AUTOINJECT_AUTO_MAX_SIZE_B = 9;
 
-/** Resolve the tri-state auto-retrieve to the boolean the backend expects. */
 function resolveAutoInject(mode: RagAutoInject, checkpoint: string): boolean {
   if (mode === "on") return true;
   if (mode === "off") return false;
   const size = parseParamCountB(checkpoint);
-  // Unknown size -> enable (err toward consulting attachments).
+  // Unknown size -> enable.
   return size === null || size <= AUTOINJECT_AUTO_MAX_SIZE_B;
 }
 
@@ -2209,8 +2206,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
               ? {
                   enable_tools: true,
                   enabled_tools: [
-                    // search_knowledge_base first so retrieval is the primary
-                    // tool when Docs is on.
+                    // First so retrieval is the primary tool when Docs is on.
                     ...(ragEnabled ? ["search_knowledge_base"] : []),
                     ...(toolsEnabled ? ["web_search"] : []),
                     ...(codeToolsEnabled ? ["python", "terminal"] : []),
@@ -2219,8 +2215,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                       : []),
                   ],
                   mcp_enabled: mcpEnabledForChat,
-                  // Retrieval scope: thread_id = this thread's docs, kb_id = a
-                  // selected KB.
+                  // Scope: thread_id = this thread's docs, kb_id = a KB.
                   ...(ragEnabled
                     ? {
                         rag_scope: {

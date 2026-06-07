@@ -93,11 +93,11 @@ export function ProjectsPage() {
   const [renameDraft, setRenameDraft] = useState("");
   const [deleting, setDeleting] = useState<ProjectRecord | null>(null);
 
-  // Import: hidden file input + pending project destination state
   const globalImportRef = useRef<HTMLInputElement>(null);
   const projectImportRefs = useRef<Map<string, HTMLInputElement>>(new Map());
   const [importFile, setImportFile] = useState<File | null>(null);
-  const [importTargetId, setImportTargetId] = useState<string | null>(null); // null = Recents
+  // null = Recents
+  const [importTargetId, setImportTargetId] = useState<string | null>(null);
 
   async function handleImport(file: File, projectId: string | null) {
     try {
@@ -232,7 +232,7 @@ export function ProjectsPage() {
 
   return (
     <main className="mx-auto w-full max-w-7xl px-4 py-8 font-heading sm:px-6">
-      {/* Hidden file input for global import (project picker dialog follows) */}
+      {/* Global import file input */}
       <input
         ref={globalImportRef}
         type="file"
@@ -241,7 +241,6 @@ export function ProjectsPage() {
         onChange={(e) => {
           const file = e.target.files?.[0];
           if (file) {
-            // Pre-select first available project, or null if none
             setImportTargetId(projects[0]?.id ?? null);
             setImportFile(file);
           }

@@ -14,10 +14,7 @@ import { RAG_UPLOAD_ACCEPT } from "../types/rag";
 import { DocumentStatusChip } from "./document-status-chip";
 import { useRagDocuments } from "./use-rag-documents";
 
-/**
- * Read-only chip shown above the composer when retrieval comes from a knowledge base
- * instead of this thread's uploads, so a KB source isn't invisible.
- */
+// Read-only chip shown when retrieval comes from a KB, so the source isn't invisible.
 function KnowledgeBaseSourceChip({ kbId }: { kbId: string }) {
   const [name, setName] = useState<string | null>(null);
   useEffect(() => {
@@ -50,7 +47,6 @@ function KnowledgeBaseSourceChip({ kbId }: { kbId: string }) {
   );
 }
 
-/** Per-thread document strip above the composer; chips track indexing status live via SSE. */
 export function ThreadDocumentsBar({
   threadId,
   onIndexingChange,
@@ -64,11 +60,10 @@ export function ThreadDocumentsBar({
   const aui = useAui();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // A fresh chat has no thread id until the first message. Materialize one on demand
-  // so docs can attach before sending; append() in runtime-provider reuses it. Track
-  // the id locally only: pushing it to global activeThreadId would, in a project, flip
-  // ProjectLanding into its pendingNewThreadId branch and swap the composer for a fresh
-  // <Thread>, remounting this bar mid-upload and dropping the just-attached chips.
+  // A fresh chat has no thread id until the first message; materialize one on demand
+  // so docs can attach (append() in runtime-provider reuses it). Track it locally:
+  // pushing to global activeThreadId would, in a project, remount this bar mid-upload
+  // (ProjectLanding's pendingNewThreadId branch) and drop the just-attached chips.
   const [materializedId, setMaterializedId] = useState<string | null>(null);
   const effectiveThreadId = threadId ?? materializedId;
   useEffect(() => {
@@ -89,9 +84,9 @@ export function ThreadDocumentsBar({
     lister,
   );
 
-  // Tell the composer whether any attached doc is still indexing, so it can hold a
-  // queued send until retrieval covers all of them (Composer.enqueueSend). Scope is
-  // null for KB source / RAG-off, so `documents` is empty and this reads false.
+  // Tell the composer whether any doc is still indexing, so it can hold a queued
+  // send until retrieval covers them (Composer.enqueueSend). For KB / RAG-off scope
+  // is null, so `documents` is empty and this reads false.
   const hasIndexing = documents.some(
     (d) => d.status === "pending" || d.status === "running",
   );
@@ -100,8 +95,8 @@ export function ThreadDocumentsBar({
   }, [hasIndexing, onIndexingChange]);
   useEffect(() => () => onIndexingChange?.(false), [onIndexingChange]);
 
-  // Resolve the thread id, materializing on first use. Ref-deduped so a double-click
-  // can't start two threads.
+  // Materialize the thread id on first use; ref-deduped so a double-click can't
+  // start two threads.
   const initPromiseRef = useRef<Promise<string | null> | null>(null);
   const ensureThreadId = useCallback((): Promise<string | null> => {
     if (effectiveThreadId) return Promise.resolve(effectiveThreadId);
@@ -124,7 +119,6 @@ export function ThreadDocumentsBar({
     return pending;
   }, [aui, effectiveThreadId]);
 
-  // Sidebar-style bottom fade while more chips sit below the scroll fold.
   const chipScrollRef = useRef<HTMLDivElement>(null);
   const [chipsOverflow, setChipsOverflow] = useState(false);
   const updateChipFade = useCallback(() => {
@@ -136,16 +130,14 @@ export function ThreadDocumentsBar({
     updateChipFade();
   }, [documents, updateChipFade]);
 
-  // Just open the picker synchronously so the click's user activation survives. Do
-  // NOT materialize the thread here: that fires setActiveThreadId while the native
-  // dialog sits open, which can remount the composer and orphan this <input> so the
-  // file selection lands on a detached node. Materialize in onChange instead.
+  // Open the picker synchronously to keep the click's user activation. Do NOT
+  // materialize here: setActiveThreadId while the native dialog is open can remount
+  // the composer and orphan this <input>. Materialize in onChange instead.
   const handleAddDocs = useCallback(() => {
     fileInputRef.current?.click();
   }, []);
 
-  // Show only when the RAG pill is effectively on: enabled AND a local tool-capable
-  // model is loaded (matches the pill's disabled gate).
+  // Only when the RAG pill is on: enabled AND a tool-capable model loaded.
   if (!ragEnabled || !ragAvailable) return null;
   // A KB source uploads via the KB dialog, not here; show which KB is active.
   if (ragSource.type === "kb") {
@@ -159,10 +151,8 @@ export function ThreadDocumentsBar({
         onClick={handleAddDocs}
         disabled={uploading}
         className={cn(
-          // Slightly darker than the default pill label (/70) so the empty-state
-          // "Add files to chat with" hint reads a touch stronger.
           "composer-pill-btn shrink-0 -translate-y-px !text-muted-foreground/90",
-          // Icon-only: square button so the rounded-full hover reads as a circle.
+          // Square button so the rounded-full hover reads as a circle.
           documents.length > 0 && "size-8 justify-center px-0",
         )}
         aria-label="Attach documents to this thread"
@@ -186,9 +176,8 @@ export function ThreadDocumentsBar({
           const files = Array.from(e.target.files ?? []);
           e.target.value = "";
           if (files.length === 0) return;
-          // Pass the thread id as a promise so upload() flips its in-flight guard
-          // synchronously, before materialization re-renders us. On the first click
-          // the hook's `scope` is still null, so we upload to the resolved id.
+          // Pass the id as a promise so upload() flips its in-flight guard before
+          // materialization re-renders us; on the first click `scope` is still null.
           void upload(
             files,
             ensureThreadId().then((id) =>
@@ -197,7 +186,7 @@ export function ThreadDocumentsBar({
           );
         }}
       />
-      {/* Cap the chip area so a large set scrolls; fade the cut-off row. */}
+      {/* Cap height so a large set scrolls; fade the cut-off row. */}
       <div
         ref={chipScrollRef}
         onScroll={updateChipFade}

@@ -97,10 +97,7 @@ function SliderRow({
   );
 }
 
-/**
- * Retrieval settings for search_knowledge_base: search backend, passage count, and
- * the auto-retrieve gate. The retrieval source is picked from the composer dropdown.
- */
+// Retrieval settings; the source itself is picked from the composer dropdown.
 export function RetrievalSettingsSection() {
   const ragMode = useChatRuntimeStore((s) => s.ragMode);
   const setRagMode = useChatRuntimeStore((s) => s.setRagMode);

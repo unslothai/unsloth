@@ -38,11 +38,8 @@ const ArrowDownStandardIcon: FC<{ className?: string }> = ({ className }) => (
   </svg>
 );
 
-/**
- * Composer dropdown that picks the retrieval source (this thread's documents or a
- * saved knowledge base) and links to "Manage knowledge bases". Only rendered when
- * retrieval is on and the loaded model can run search_knowledge_base.
- */
+// Picks the retrieval source. Only rendered when retrieval is on and the loaded
+// model can run search_knowledge_base.
 export function KnowledgeBaseComposerButton({
   side = "bottom",
 }: {
@@ -76,9 +73,8 @@ export function KnowledgeBaseComposerButton({
   }, [refresh]);
 
   // If the selected KB was deleted, fall back to thread source so we never send a
-  // stale kb_id. Gate on kbsLoaded (not kbs.length): deleting the *last* KB empties
-  // the list, so a length>0 guard would skip the reset and leave the source stuck
-  // on a ghost KB.
+  // stale kb_id. Gate on kbsLoaded, not kbs.length: deleting the last KB empties the
+  // list, so a length>0 guard would skip the reset and stick on a ghost KB.
   useEffect(() => {
     if (
       kbsLoaded &&
@@ -89,8 +85,6 @@ export function KnowledgeBaseComposerButton({
     }
   }, [kbs, kbsLoaded, ragSource, setRagSource]);
 
-  // Only shown while the feature is on (RAG enabled and the model can run
-  // search_knowledge_base), so when visible it always reads as active.
   if (!ragEnabled || !ragAvailable) return null;
 
   return (
@@ -109,8 +103,8 @@ export function KnowledgeBaseComposerButton({
             data-active="true"
             aria-label="Retrieval source"
           >
-            {/* Icon doubles as an off switch: on hover it swaps to an X (shared
-                pill CSS); clicking it turns RAG off without opening the menu. */}
+            {/* Icon doubles as an off switch: hover swaps to an X; clicking it
+                turns RAG off without opening the menu. */}
             <span
               role="button"
               aria-label="Turn off retrieval"
@@ -196,7 +190,6 @@ export function KnowledgeBaseComposerButton({
         open={dialogOpen}
         onOpenChange={(next) => {
           setDialogOpen(next);
-          // Resync after KB edits.
           if (!next) void refresh();
         }}
       />

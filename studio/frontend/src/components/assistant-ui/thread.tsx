@@ -145,31 +145,27 @@ import {
 // composer), so the composer can show its "Drop files here" affordance.
 const PageDragContext = createContext(false);
 
-// ── Single-chat prompt queue ───────────────────────────────────────────────
-// State lives at module level so it survives the Composer remount when the
-// first queued message creates a new thread (welcome-screen → conversation).
-// Detection subscribes to useChatRuntimeStore.runningByThreadId (like
-// RegisterCompareHandle.waitForRunEnd) so it works even when aui.thread() on
-// the welcome screen isn't bound to the new thread.
+// Single-chat prompt queue. State lives at module level so it survives the
+// Composer remount when the first queued message creates a new thread, and
+// detection subscribes to the store's runningByThreadId rather than
+// aui.thread() (unbound on the welcome screen).
 
 import { create as _createZustand } from "zustand";
 
-// Reactive UI state: module-level Zustand so ComposerRightControls re-renders
-// across Composer mounts.
+// Module-level Zustand so ComposerRightControls re-renders across Composer mounts.
 interface _QueueUIState { isRunning: boolean; current: number; total: number; }
 const _useQueueUI = _createZustand<_QueueUIState>(() => ({
   isRunning: false, current: 0, total: 0,
 }));
 
-// Non-reactive module-level data
 let _qItems: string[] = [];
 let _qIndex = 0;
 let _qIsRunning = false;
 let _qPrevStoreRunning = false;
 let _qStoreUnsub: (() => void) | null = null;
 
-// Always points to the current Composer's aui (updated every render). Safe
-// after a remount because Composer sets it before children mount.
+// Points to the current Composer's aui (updated every render), so it stays valid
+// after a remount.
 let _qGetAui: () => ReturnType<typeof useAui> = () => {
   throw new Error("aui not initialised");
 };
@@ -196,7 +192,7 @@ function _qAdvance() {
   toast(`Prompt ${nextIndex + 1} / ${_qItems.length}`, {
     description: next.length > 80 ? next.slice(0, 80) + "…" : next,
   });
-  _qPrevStoreRunning = false; // reset so we catch the next run
+  _qPrevStoreRunning = false; // catch the next run
   setTimeout(() => {
     _qGetAui().thread().append({
       role: "user",
@@ -208,8 +204,8 @@ function _qAdvance() {
 
 function _qStartSubscription() {
   _qStopSubscription();
-  // Subscribe to the store's runningByThreadId — works across navigation
-  // because it's module-level and tracks the actual thread, not aui.thread().
+  // runningByThreadId tracks the actual thread (not aui.thread()), so detection
+  // survives navigation.
   _qStoreUnsub = useChatRuntimeStore.subscribe((state) => {
     if (!_qIsRunning) { _qStopSubscription(); return; }
     const isRunning = Object.keys(state.runningByThreadId).length > 0;
@@ -221,12 +217,10 @@ function _qStartSubscription() {
   });
 }
 
-// Context only carries callbacks so ComposerToolsMenu can call startQueue.
 interface _QueueCallbacks { startQueue: (items: string[]) => void; stopQueue: () => void; }
 const PromptQueueContext = createContext<_QueueCallbacks>({
   startQueue: () => {}, stopQueue: () => {},
 });
-// ──────────────────────────────────────────────────────────────────────────
 
 export const Thread: FC<{
   hideComposer?: boolean;
@@ -246,8 +240,8 @@ export const Thread: FC<{
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const threadId = targetThreadId ?? activeThreadId ?? null;
 
-  // Measured composer-dock height; the conversation reserves this much at the
-  // bottom so a tall composer never covers the last message.
+  // Conversation reserves this at the bottom so a tall composer never covers
+  // the last message.
   const [dockHeight, setDockHeight] = useState(150);
   // Page-wide drag-and-drop: dropping a file anywhere on the chat page (not
   // just on the composer) attaches it and shows the composer drop affordance.
@@ -339,8 +333,7 @@ export const Thread: FC<{
               }}
             />
 
-            {/* Bottom slack (= --aui-dock-h) so the last message clears the
-            floating composer, even when the document strip makes it tall. */}
+            {/* Bottom slack so the last message clears the floating composer. */}
             <AuiIf condition={({ thread }) => hideWelcome || !thread.isEmpty}>
               <div
                 className={cn(
@@ -376,7 +369,7 @@ export const Thread: FC<{
           )}
         </IntentAwareScrollProvider>
       </ThreadPrimitive.Root>
-      {/* Shared document preview, opened by citation badges; pdf.js loads lazily. */}
+      {/* Document preview, opened by citation badges. */}
       <DocumentPreviewMount />
       </PageDragContext.Provider>
     </GeneratedImageOverlayProvider>
@@ -483,7 +476,6 @@ const ThreadComposerDock: FC<{
   const { overlay } = useGeneratedImageOverlay();
   const contentRef = useRef<HTMLDivElement>(null);
 
-  // Report the composer's height so the viewport can reserve matching slack.
   useEffect(() => {
     const el = contentRef.current;
     if (!el || !onHeightChange) return;
@@ -702,8 +694,6 @@ const Composer: FC<{
   const ragEnabled = useChatRuntimeStore((s) => s.ragEnabled);
   const ragToolAvailable = useRagToolAvailable();
   // With more than 4 pills showing, collapse them to icons only to cut clutter.
-  // Search and Code always show; RAG, Images, Canvas and MCP are conditional.
-  // RAG mirrors MCP: a single dropdown pill that appears only once enabled.
   const pillsCompact =
     2 +
       (ragEnabled && ragToolAvailable ? 1 : 0) +
@@ -817,9 +807,8 @@ const Composer: FC<{
   // by default and only flips up via collision detection when it would not fit.
   const effectiveMenuSide = menuSide ?? "bottom";
 
-  // RAG queue-and-auto-send: while this thread's docs index, hold the send and fire
-  // it once every doc is terminal, so retrieval covers all of them. indexingActive
-  // comes from ThreadDocumentsBar; pendingSend marks a parked send (message stays).
+  // While this thread's docs index, hold the send and fire it once they finish so
+  // retrieval covers all of them.
   const [indexingActive, setIndexingActive] = useState(false);
   const [pendingSend, setPendingSend] = useState(false);
   const pendingSendRef = useRef(false);
@@ -856,8 +845,8 @@ const Composer: FC<{
     [hasPendingAttachments, hasSendableContent, isComposingRef],
   );
 
-  // One gate for both the form (Enter / submit) and the Send button click. Returns
-  // true when it handled the event (hard-blocked or queued) so callers stop.
+  // Gate for both form submit and the Send button. Returns true when it handled
+  // the event (blocked or queued) so callers stop.
   const interceptSend = useCallback(
     (event: { preventDefault: () => void }) => {
       if (disabled || shouldBlockSend()) {
@@ -874,8 +863,8 @@ const Composer: FC<{
     [disabled, shouldBlockSend, indexingActive, overlay, enqueueSend],
   );
 
-  // Fire the parked send once indexing clears. The composer still holds the text, so
-  // dispatch now -- unless the user emptied it while waiting (then drop it quietly).
+  // Fire the parked send once indexing clears, unless the user emptied the
+  // composer while waiting (then drop it quietly).
   useEffect(() => {
     if (!pendingSend || indexingActive) return;
     const { text, attachments } = aui.composer().getState();
@@ -887,7 +876,7 @@ const Composer: FC<{
     }
   }, [pendingSend, indexingActive, aui, dismissWaitToast]);
 
-  // Drop any queued send + its toast if the composer unmounts (e.g. thread switch).
+  // Drop any queued send + toast on unmount (e.g. thread switch).
   useEffect(
     () => () => {
       pendingSendRef.current = false;
@@ -954,9 +943,8 @@ const Composer: FC<{
     ],
   );
 
-  // ── Prompt queue ──────────────────────────────────────────────────────────
-  // Update the module-level aui getter on every render so _qAdvance and
-  // stopQueue always call the current Composer's aui (post-remount).
+  // Update the getter every render so the queue always calls the current
+  // Composer's aui (post-remount).
   _qGetAui = () => aui;
 
   const stopQueue = useCallback(() => {
@@ -965,7 +953,7 @@ const Composer: FC<{
     _useQueueUI.setState({ isRunning: false, current: 0, total: 0 });
     _qItems = [];
     _qIndex = 0;
-    try { _qGetAui().thread().cancelRun(); } catch { /* ignore */ }
+    try { _qGetAui().thread().cancelRun(); } catch {}
   }, []);
 
   const startQueue = useCallback((items: string[]) => {
@@ -978,8 +966,7 @@ const Composer: FC<{
     toast(`Prompt 1 / ${filtered.length}`, {
       description: filtered[0].length > 80 ? filtered[0].slice(0, 80) + "…" : filtered[0],
     });
-    // Start the module-level store subscription BEFORE appending so we
-    // don't miss a very fast completion.
+    // Subscribe BEFORE appending so we don't miss a very fast completion.
     _qStartSubscription();
     setTimeout(() => {
       _qGetAui().thread().append({
@@ -991,7 +978,6 @@ const Composer: FC<{
   }, []);
 
   const queueContextValue: _QueueCallbacks = { startQueue, stopQueue };
-  // ─────────────────────────────────────────────────────────────────────────
 
   const composerContent = (
     <>
@@ -1853,8 +1839,7 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
   );
   const ragEnabled = useChatRuntimeStore((s) => s.ragEnabled);
   const setRagEnabled = useChatRuntimeStore((s) => s.setRagEnabled);
-  // search_knowledge_base is local-only; this is the single source of truth the
-  // RAG pill and Add Files bar share, so the menu row agrees with both.
+  // Shared gate so the menu row agrees with the RAG pill and Add Files bar.
   const ragAvailable = useRagToolAvailable();
   // Capability gating, mirroring the visible pills so menu and pills agree on
   // what a loaded model supports (a tool the backend drops must not look on).
@@ -1923,12 +1908,10 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
   const [promptStorageOpen, setPromptStorageOpen] = useState(false);
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const aui = useAui();
-  // Disable Export chat until the thread has content (an empty thread, e.g. one made
-  // just to attach a doc, has nothing to export).
+  // Disable Export chat until the thread has content.
   const messageCount = useAuiState(({ thread }) => thread.messages.length);
   const { startQueue } = useContext(PromptQueueContext);
 
-  // 3 most recent prompts for the Saved prompts submenu; refreshed on menu open.
   const [recentPrompts, setRecentPrompts] = useState<PromptEntry[]>([]);
   const refreshRecentPrompts = useCallback(async () => {
     try {
@@ -1937,7 +1920,6 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
         [...rows].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 3),
       );
     } catch {
-      // Keep prior state on failure.
     }
   }, []);
 
@@ -2113,9 +2095,8 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
             </DropdownMenuItem>
           </DropdownMenuSubContent>
         </DropdownMenuSub>
-        {/* Top-level so the format list is a single hop from the + menu; a
-            third-level submenu (under "More") collision-flips at narrow widths
-            and is awkward to reach with a mouse. */}
+        {/* Top-level: a third-level submenu collision-flips at narrow widths
+            and is awkward to reach. */}
         <DropdownMenuSub>
           <DropdownMenuSubTrigger disabled={!activeThreadId || messageCount === 0}>
             <HugeiconsIcon icon={Download01Icon} strokeWidth={2} />
@@ -2230,11 +2211,9 @@ const ComposerRightControls: FC<{
   pendingSend?: boolean;
   menuSide?: "top" | "bottom";
 }> = ({ disabled, onSendClick, pendingSend, menuSide }) => {
-  // Read reactive queue state from the module-level store — survives Composer remounts
   const isQueueRunning = _useQueueUI((s) => s.isRunning);
   const queueCurrent = _useQueueUI((s) => s.current);
   const queueTotal = _useQueueUI((s) => s.total);
-  // Get stopQueue callback from context (provided by the current Composer instance)
   const { stopQueue } = useContext(PromptQueueContext);
   return (
     <div className="aui-composer-action-wrapper flex shrink-0 items-center gap-1.5">
@@ -2264,7 +2243,6 @@ const ComposerRightControls: FC<{
         </ComposerPrimitive.StopDictation>
       </ComposerPrimitive.If>
       {isQueueRunning ? (
-        // Replaces both send and cancel while a prompt list is running
         <button
           type="button"
           onClick={stopQueue}
@@ -2286,8 +2264,8 @@ const ComposerRightControls: FC<{
                 type="submit"
                 variant="default"
                 size="icon"
-                // Stay clickable while docs index (so a click can queue the send); only
-                // go disabled once a send is already parked.
+                // Stay clickable while docs index so a click can queue the send;
+                // disabled only once a send is parked.
                 disabled={disabled || pendingSend}
                 onClick={(event) => onSendClick?.(event)}
                 className="aui-composer-send ml-1.5 size-8 rounded-full"

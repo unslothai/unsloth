@@ -19,7 +19,6 @@ import { useDocumentPreviewStore } from "@/features/rag/components/preview-store
 
 import { type Citation, parseCitations } from "./citation-utils";
 
-/** Citation badge: numbered filename pill; clicking opens the source in the preview panel when a documentId is present. */
 export function CitationBadge({
   citation,
   index,
@@ -77,14 +76,12 @@ const KnowledgeBaseToolUIImpl: ToolCallMessagePartComponent = ({
   const query = (args as { query?: string })?.query ?? "";
   const isRunning = status?.type === "running";
   const citations = useMemo(() => parseCitations(result), [result]);
-  // Citations now render as a bottom-of-message "Sources" list (RagSourcesGroup);
-  // the block keeps a one-line summary.
+  // Citations render in RagSourcesGroup; this block keeps a one-line summary.
   const docCount = useMemo(
     () => new Set(citations.map((c) => c.documentId ?? c.filename)).size,
     [citations],
   );
 
-  // Collapse once the model starts answering.
   const hasText = useAuiState(({ message }) =>
     message.content.some(
       (p) =>

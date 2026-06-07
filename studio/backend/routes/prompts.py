@@ -47,9 +47,6 @@ class BulkListsRequest(BaseModel):
     lists: list[PromptList]
 
 
-# ── Prompt entries ────────────────────────────────────────────────────────────
-
-
 @router.get("/entries")
 def get_entries(current_subject: str = Depends(get_current_subject)):
     return {"entries": list_prompt_entries()}
@@ -78,9 +75,6 @@ def bulk_entries(
 ):
     count = bulk_upsert_prompt_entries([e.model_dump() for e in req.entries])
     return {"count": count}
-
-
-# ── Prompt lists ──────────────────────────────────────────────────────────────
 
 
 @router.get("/lists")

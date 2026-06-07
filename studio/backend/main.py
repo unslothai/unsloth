@@ -398,7 +398,7 @@ async def lifespan(app: FastAPI):
 
             embeddings.warm()
         except Exception:
-            pass  # non-critical
+            pass
 
     threading.Thread(target = _warm_rag_embedder, daemon = True).start()
 

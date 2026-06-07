@@ -154,7 +154,6 @@ def test_locator_handles_midword_anchor_and_locates_line():
         (72, 200), "alpha beta gamma delta epsilon zeta eta theta", fontsize = 12
     )
     page_text = doc[0].get_text("text")  # mirrors what the parser stores
-    # Span starts/ends mid-word, so trimming must recover the interior phrase.
     start = page_text.index("lpha")
     end = page_text.index("theta") + 3
     match = LocatorMatch(page_index = 0, page_number = 1, start = start, end = end)

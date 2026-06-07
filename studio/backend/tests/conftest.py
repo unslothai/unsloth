@@ -182,7 +182,6 @@ def stub_embeddings(monkeypatch):
     dim = 32
 
     def _vec(text: str):
-        # Deterministic, normalized pseudo-embedding seeded by the text hash.
         seed = hashlib.sha256(text.encode("utf-8")).digest()
         raw = [seed[i % len(seed)] / 255.0 for i in range(dim)]
         norm = math.sqrt(sum(x * x for x in raw)) or 1.0

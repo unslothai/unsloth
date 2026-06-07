@@ -42,7 +42,7 @@ logger = get_logger(__name__)
 
 _EXEC_TIMEOUT = 300  # 5 minutes
 
-# Splits the UI source-map from the result; loops strip from here on (like __IMAGES__).
+# Splits the UI source-map from the result; loops strip it (like __IMAGES__).
 RAG_SOURCES_SENTINEL = "\n__RAG_SOURCES__:"
 
 # Pre-import modules used in _sandbox_preexec at module level so that
@@ -585,8 +585,8 @@ RENDER_HTML_TOOL = {
     },
 }
 
-# Spec duplicated (not imported from core.rag.tool) so the registry never pulls in the
-# RAG stack; dispatch imports it lazily.
+# Duplicated (not imported from core.rag.tool) so the registry never pulls in
+# the RAG stack; dispatch imports it lazily.
 SEARCH_KNOWLEDGE_BASE_TOOL = {
     "type": "function",
     "function": {
@@ -841,16 +841,13 @@ def _search_knowledge_base(arguments: dict, rag_scope: dict | None) -> str:
     return text
 
 
-# ── Forced first-pass RAG retrieval (auto-inject) ───────────────────────────
-# With a rag_scope, retrieve once up front (don't trust the model to pick search over
-# web_search). A high cosine floor keeps it precise: fires on on-topic queries, skips
-# weak/off-topic ones (left to the model's search call), and helps small models that
-# under-call the tool. Tunable via RAG_AUTOINJECT_MIN_SCORE.
+# Forced first-pass RAG retrieval: a high cosine floor keeps it precise (fires on
+# on-topic queries, skips weak ones) and helps small models that under-call the tool.
+# Tunable via RAG_AUTOINJECT_MIN_SCORE.
 _AUTOINJECT_DEFAULT_FLOOR = 0.70
 
 
 def _autoinject_enabled() -> bool:
-    # On by default; disable with RAG_AUTOINJECT=0.
     return os.environ.get("RAG_AUTOINJECT", "1").strip().lower() not in (
         "0",
         "false",
@@ -869,8 +866,7 @@ def _autoinject_floor() -> float:
     return _AUTOINJECT_DEFAULT_FLOOR
 
 
-# Leaner than the model-driven tool: a few chunks usually suffice, and injecting the
-# full top_k every turn prefills thousands of tokens (slow on small machines).
+# Lean: injecting the full top_k every turn prefills thousands of tokens.
 _AUTOINJECT_DEFAULT_TOP_K = 4
 
 
@@ -936,7 +932,7 @@ def build_rag_autoinject(
 
     floor_override = rag_scope.get("autoinject_min_score")
     floor = float(floor_override) if floor_override is not None else _autoinject_floor()
-    # Cap the forced inject to the lean auto-inject top_k, but honor a lower user setting.
+    # Cap at the lean top_k, but honor a lower user setting.
     lean_k = _autoinject_top_k()
     sidebar_k = _opt_int(rag_scope.get("default_top_k"))
     top_k = min(sidebar_k, lean_k) if sidebar_k is not None else lean_k

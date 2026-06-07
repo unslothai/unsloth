@@ -8,9 +8,6 @@ import { Badge } from "@/components/assistant-ui/badge";
 import { cn } from "@/lib/utils";
 import type { DocumentStatus } from "../types/rag";
 
-/** Status pill for a RAG document, reused across lists. Two sections: the file
- * (icon + name) on the left, and a trailing slot that shows a loading spinner
- * while the document is indexing or a close button once it is done. */
 export function DocumentStatusChip({
   filename,
   status,
@@ -34,14 +31,14 @@ export function DocumentStatusChip({
         status === "failed" && "border-destructive/40 text-destructive",
       )}
     >
-      {/* Filename */}
+      {/* file */}
       <HugeiconsIcon
         icon={File02Icon}
         strokeWidth={2}
         className="size-3 shrink-0"
       />
       <span className="truncate">{filename}</span>
-      {/* Loading spinner while indexing, otherwise a close button. */}
+      {/* spinner while indexing, else close button */}
       {processing ? (
         <LoaderCircleIcon
           className="shrink-0 animate-spin size-3.5 text-muted-foreground"

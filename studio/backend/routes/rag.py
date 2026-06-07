@@ -33,9 +33,6 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 def _require_rag() -> None:
     if not rag_db.RAG_AVAILABLE:
         raise HTTPException(
@@ -91,9 +88,6 @@ def _doc_view(row: dict) -> dict:
     }
 
 
-# ---------------------------------------------------------------------------
-# Schemas
-# ---------------------------------------------------------------------------
 class CreateKbRequest(BaseModel):
     name: str = Field(min_length = 1, max_length = 200)
     description: str | None = None
@@ -113,9 +107,6 @@ class SearchRequest(BaseModel):
     mode: str = "hybrid"  # hybrid | lexical | dense
 
 
-# ---------------------------------------------------------------------------
-# Knowledge bases
-# ---------------------------------------------------------------------------
 @router.get("/knowledge-bases")
 def list_knowledge_bases(subject: str = Depends(get_current_subject)) -> dict:
     _require_rag()
@@ -199,9 +190,6 @@ def delete_knowledge_base(
         conn.close()
 
 
-# ---------------------------------------------------------------------------
-# Documents (KB + per-thread)
-# ---------------------------------------------------------------------------
 @router.post("/knowledge-bases/{kb_id}/documents")
 async def upload_kb_document(
     kb_id: str,
@@ -275,9 +263,6 @@ def delete_document(
         conn.close()
 
 
-# ---------------------------------------------------------------------------
-# Ingestion jobs
-# ---------------------------------------------------------------------------
 @router.get("/jobs/{job_id}")
 def job_status(job_id: str, subject: str = Depends(get_current_subject)) -> dict:
     _require_rag()
@@ -315,9 +300,6 @@ def job_events(
     )
 
 
-# ---------------------------------------------------------------------------
-# Direct search (UI / debug)
-# ---------------------------------------------------------------------------
 @router.post("/search")
 def search(payload: SearchRequest, subject: str = Depends(get_current_subject)) -> dict:
     _require_rag()
@@ -360,11 +342,8 @@ def search(payload: SearchRequest, subject: str = Depends(get_current_subject)) 
         conn.close()
 
 
-# ---------------------------------------------------------------------------
-# Document preview (citation -> source file + highlight regions)
-# ---------------------------------------------------------------------------
-# Per-process secret so pdf.js range requests fetch the file without a bearer header;
-# tokens only work on this server instance.
+# Per-process secret so pdf.js range requests fetch the file without a bearer
+# header; tokens only work on this server instance.
 _PREVIEW_SECRET = secrets.token_bytes(32)
 _PREVIEW_TTL = 600  # seconds
 
