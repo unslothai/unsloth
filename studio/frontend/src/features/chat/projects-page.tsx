@@ -93,9 +93,11 @@ export function ProjectsPage() {
   const [renameDraft, setRenameDraft] = useState("");
   const [deleting, setDeleting] = useState<ProjectRecord | null>(null);
 
-  // Import refs: one for global "import to Recents", one per-project (keyed by id)
-  const recentsImportRef = useRef<HTMLInputElement>(null);
+  // Import: hidden file input + pending project destination state
+  const globalImportRef = useRef<HTMLInputElement>(null);
   const projectImportRefs = useRef<Map<string, HTMLInputElement>>(new Map());
+  const [importFile, setImportFile] = useState<File | null>(null);
+  const [importTargetId, setImportTargetId] = useState<string | null>(null); // null = Recents
 
   async function handleImport(file: File, projectId: string | null) {
     try {
@@ -111,6 +113,14 @@ export function ProjectsPage() {
     } catch {
       toast.error("Import failed.");
     }
+  }
+
+  async function commitImport() {
+    if (!importFile) return;
+    const file = importFile;
+    const target = importTargetId;
+    setImportFile(null);
+    await handleImport(file, target);
   }
 
   const visibleProjects = useMemo(() => {
@@ -222,15 +232,19 @@ export function ProjectsPage() {
 
   return (
     <main className="mx-auto w-full max-w-7xl px-4 py-8 font-heading sm:px-6">
-      {/* Hidden import inputs */}
+      {/* Hidden file input for global import (project picker dialog follows) */}
       <input
-        ref={recentsImportRef}
+        ref={globalImportRef}
         type="file"
         accept=".jsonl,.ndjson,.csv"
         className="hidden"
         onChange={(e) => {
           const file = e.target.files?.[0];
-          if (file) void handleImport(file, null);
+          if (file) {
+            // Pre-select first available project, or null if none
+            setImportTargetId(projects[0]?.id ?? null);
+            setImportFile(file);
+          }
           e.target.value = "";
         }}
       />
@@ -254,16 +268,18 @@ export function ProjectsPage() {
               </SelectContent>
             </Select>
           </div>
-          <Button variant="outline" size="icon" title="Import chats" onClick={() => recentsImportRef.current?.click()}>
-            <HugeiconsIcon icon={Upload01Icon} strokeWidth={1.75} className="size-icon" />
-          </Button>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button variant="outline" size="icon" title="Export projects">
+              <Button variant="outline" size="icon" title="Import / Export projects">
                 <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-icon" />
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-56">
+              <DropdownMenuItem onSelect={() => globalImportRef.current?.click()}>
+                <HugeiconsIcon icon={Upload01Icon} strokeWidth={1.75} className="size-icon" />
+                Import chats…
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
               <DropdownMenuSub>
                 <DropdownMenuSubTrigger>Export All Projects</DropdownMenuSubTrigger>
                 <DropdownMenuSubContent className="w-52">
@@ -548,6 +564,36 @@ export function ProjectsPage() {
             >
               Save
             </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Import destination picker */}
+      <Dialog open={importFile !== null} onOpenChange={(open) => { if (!open) setImportFile(null); }}>
+        <DialogContent className="corner-squircle border border-border/60 bg-background/98 shadow-none sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Import chats</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            <span className="font-medium text-foreground">{importFile?.name}</span> — choose where to import:
+          </p>
+          <Select
+            value={importTargetId ?? "__recents__"}
+            onValueChange={(v) => setImportTargetId(v === "__recents__" ? null : v)}
+          >
+            <SelectTrigger>
+              <SelectValue placeholder="Select destination" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="__recents__">Recents</SelectItem>
+              {projects.map((p) => (
+                <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <DialogFooter className="flex-wrap gap-2 sm:justify-end">
+            <Button type="button" variant="ghost" onClick={() => setImportFile(null)}>Cancel</Button>
+            <Button type="button" onClick={() => void commitImport()}>Import</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
