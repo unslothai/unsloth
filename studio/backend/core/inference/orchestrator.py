@@ -702,6 +702,7 @@ class InferenceOrchestrator:
                     self.models[self.active_model_name] = {
                         "is_vision": model_info.get("is_vision", False),
                         "is_lora": model_info.get("is_lora", False),
+                        "is_mlx": model_info.get("is_mlx", False),
                         "display_name": model_info.get("display_name", model_name),
                         "is_audio": model_info.get("is_audio", False),
                         "audio_type": model_info.get("audio_type"),

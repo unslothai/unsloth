@@ -1471,6 +1471,7 @@ async def list_models(
                 name = model_name.split("/")[-1] if "/" in model_name else model_name,
                 is_vision = _is_vision,
                 is_lora = model_data.get("is_lora", False),
+                is_mlx = model_data.get("is_mlx", False),
                 is_audio = model_data.get("is_audio", False),
                 audio_type = _audio_type,
                 has_audio_input = model_data.get("has_audio_input", False),
@@ -1498,10 +1499,14 @@ async def list_models(
         all_models = []
         seen_ids = set()
 
+        # Prefer loaded entries for duplicate ids so runtime flags
+        # (is_mlx, is_vision, is_audio, ...) are not lost.
+        loaded_by_id = {model_info.id: model_info for model_info in loaded_models}
+
         # Add default models
         for model_id in default_models:
             if model_id not in seen_ids:
-                model_info = ModelDetails(
+                model_info = loaded_by_id.get(model_id) or ModelDetails(
                     id = model_id,
                     name = model_id.split("/")[-1] if "/" in model_id else model_id,
                     is_gguf = model_id.upper().endswith("-GGUF"),
