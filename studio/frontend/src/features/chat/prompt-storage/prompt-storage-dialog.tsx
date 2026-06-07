@@ -284,22 +284,25 @@ export async function exportConversationShareGPT(threadId: string): Promise<void
   );
 }
 
-// Conversation export — raw JSONL, one message per line.
+// Conversation export — raw JSONL, OpenAI/ChatML format (one object per conversation).
+// {"messages": [{"role": "user", "content": "..."}, ...]}
+// This is recognised by the Unsloth trainer as a ChatML-format dataset.
 export async function exportConversationRawJsonl(threadId: string): Promise<void> {
   const messages = await loadConversationMessages(threadId);
   if (!messages) return;
 
-  const lines = messages
-    .map((msg) => {
-      const content = messageToText(msg);
-      if (!content.trim()) return null;
-      return JSON.stringify({ role: msg.role, content });
-    })
-    .filter(Boolean)
-    .join("\n");
+  const msgs: Array<{ role: string; content: string }> = [];
+  for (const msg of messages) {
+    const content = messageToText(msg);
+    if (content.trim()) msgs.push({ role: msg.role as string, content });
+  }
 
-  if (!lines) { toast.info("No exportable content."); return; }
-  downloadBlob(lines, "conversation-" + exportTs() + ".jsonl", "application/x-ndjson");
+  if (msgs.length === 0) { toast.info("No exportable content."); return; }
+  downloadBlob(
+    JSON.stringify({ messages: msgs }),
+    "conversation-" + exportTs() + ".jsonl",
+    "application/x-ndjson",
+  );
 }
 
 // Conversation export — CSV with role and content columns.
@@ -342,16 +345,19 @@ async function buildThreadContent(
   if (!messages) return null;
 
   if (format === "jsonl-raw") {
-    const lines = messages
+    // OpenAI/ChatML format: one JSON object per conversation, recognised by the
+    // Unsloth trainer as a ChatML-format dataset (looks for a "messages" column).
+    const msgs = messages
       .map((msg) => {
         const content = messageToText(msg);
         if (!content.trim()) return null;
-        const record: Record<string, string> = { role: msg.role as string, content };
-        if (opts?.includeThreadId) record.thread_id = threadId;
-        return JSON.stringify(record);
+        return { role: msg.role as string, content };
       })
-      .filter(Boolean);
-    return lines.length > 0 ? lines.join("\n") : null;
+      .filter(Boolean) as Array<{ role: string; content: string }>;
+    if (msgs.length === 0) return null;
+    const record: Record<string, unknown> = { messages: msgs };
+    if (opts?.includeThreadId) record.thread_id = threadId;
+    return JSON.stringify(record);
   }
 
   if (format === "sharegpt") {
