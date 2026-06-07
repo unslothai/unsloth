@@ -31,6 +31,7 @@ import {
   Columns2Icon,
   GlobeIcon,
   HeadphonesIcon,
+  MoreHorizontalIcon,
   PlusIcon,
   SquareIcon,
   XIcon,
@@ -1354,10 +1355,54 @@ export function SharedComposer({
                 {mcpEnabledForChat ? <CheckIcon className="ml-auto" /> : null}
               </DropdownMenuItem>
               {/* RAG hidden temporarily */}
-              <DropdownMenuItem onSelect={() => setPromptStorageOpen(true)}>
-                <HugeiconsIcon icon={Bookmark02Icon} strokeWidth={2} />
-                Saved prompts
-              </DropdownMenuItem>
+              <DropdownMenuSub>
+                <DropdownMenuSubTrigger>
+                  <MoreHorizontalIcon className="size-4" />
+                  More
+                </DropdownMenuSubTrigger>
+                <DropdownMenuSubContent className="unsloth-plus-menu w-[200px]">
+                  <DropdownMenuItem onSelect={() => setPromptStorageOpen(true)}>
+                    <HugeiconsIcon icon={Bookmark02Icon} strokeWidth={2} />
+                    Saved prompts
+                  </DropdownMenuItem>
+                  <DropdownMenuSub>
+                    <DropdownMenuSubTrigger>
+                      <HugeiconsIcon icon={Download01Icon} strokeWidth={2} />
+                      Export chat
+                    </DropdownMenuSubTrigger>
+                    <DropdownMenuSubContent
+                      className="unsloth-plus-menu w-[200px]"
+                      collisionPadding={16}
+                    >
+                      {(
+                        [
+                          {
+                            label: "Raw JSONL",
+                            fn: exportConversationRawJsonl,
+                          },
+                          { label: "CSV", fn: exportConversationCsv },
+                          {
+                            label: "ShareGPT JSONL (training)",
+                            fn: exportConversationShareGPT,
+                          },
+                        ] as const
+                      ).map(({ label, fn }) => {
+                        const threadId =
+                          model1ThreadId ?? model2ThreadId ?? activeThreadId;
+                        return (
+                          <DropdownMenuItem
+                            key={label}
+                            disabled={!threadId}
+                            onSelect={() => threadId && fn(threadId)}
+                          >
+                            {label}
+                          </DropdownMenuItem>
+                        );
+                      })}
+                    </DropdownMenuSubContent>
+                  </DropdownMenuSub>
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
               {/* Always active: this menu only renders in compare mode.
                   Ticked like Web search/Code; click toggles it off. */}
               <DropdownMenuItem
