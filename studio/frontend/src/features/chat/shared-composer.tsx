@@ -1358,39 +1358,6 @@ export function SharedComposer({
                 <HugeiconsIcon icon={Bookmark02Icon} strokeWidth={2} />
                 Saved prompts
               </DropdownMenuItem>
-              <DropdownMenuSub>
-                <DropdownMenuSubTrigger>
-                  <HugeiconsIcon icon={Download01Icon} strokeWidth={2} />
-                  Export chat
-                </DropdownMenuSubTrigger>
-                <DropdownMenuSubContent className="unsloth-plus-menu w-[200px]">
-                  {[
-                    { label: "Raw JSONL", fn: exportConversationRawJsonl },
-                    { label: "CSV", fn: exportConversationCsv },
-                    { label: "ShareGPT JSONL (training)", fn: exportConversationShareGPT },
-                  ].map(({ label, fn }) => {
-                    const ids = [model1ThreadId, model2ThreadId, activeThreadId]
-                      .filter((id): id is string => Boolean(id));
-                    return (
-                      <DropdownMenuItem
-                        key={label}
-                        disabled={ids.length === 0}
-                        onSelect={() => {
-                          if (!ids.length) {
-                            toast.error("No conversation to export yet.");
-                            return;
-                          }
-                          Promise.all(ids.map((id) => fn(id))).catch(() =>
-                            toast.error("Export failed."),
-                          );
-                        }}
-                      >
-                        {label}
-                      </DropdownMenuItem>
-                    );
-                  })}
-                </DropdownMenuSubContent>
-              </DropdownMenuSub>
               {/* Always active: this menu only renders in compare mode.
                   Ticked like Web search/Code; click toggles it off. */}
               <DropdownMenuItem
