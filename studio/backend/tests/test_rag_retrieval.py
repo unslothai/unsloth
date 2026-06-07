@@ -63,9 +63,7 @@ def test_rrf_ranks_doc_in_both_lists_first():
     ]
     fused = retrieval._rrf([lexical, dense], rrf_k = 60, top_k = 10)
     assert fused[0].chunk_id == "a"
-    assert (
-        fused[0].lexical_score == 1.0 and fused[0].dense_score == 0.9
-    )
+    assert fused[0].lexical_score == 1.0 and fused[0].dense_score == 0.9
 
 
 def test_retrieve_hybrid_returns_relevant_chunk(rag_conn, bow_embeddings):
