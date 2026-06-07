@@ -62,8 +62,8 @@ function sanitizeFilename(name: string): string {
   return name.replace(/[\\/:*?"<>|]/g, "_").slice(0, 80) || "export";
 }
 
-function downloadBlob(content: string, filename: string, mimeType: string): void {
-  const blob = new Blob([content], { type: mimeType });
+function downloadBlob(content: string | Blob, filename: string, mimeType: string): void {
+  const blob = content instanceof Blob ? content : new Blob([content], { type: mimeType });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
@@ -243,6 +243,26 @@ function exportTs(): string {
   return new Date().toISOString().slice(0, 19).replace(/:/g, "-");
 }
 
+/**
+ * Flatten a stored message's content blocks AND any separately-stored
+ * attachments (images/audio/files sent via the composer) into a single string.
+ * Attachments keep their content in msg.attachments[].content rather than
+ * msg.content, so without this they would be silently dropped on export.
+ */
+function messageToText(msg: { content: unknown; attachments?: unknown }): string {
+  const parts: string[] = [];
+  const main = contentBlocksToText(msg.content);
+  if (main) parts.push(main);
+  if (Array.isArray(msg.attachments)) {
+    for (const attachment of msg.attachments as Array<{ content?: unknown }>) {
+      if (!attachment?.content) continue;
+      const attText = contentBlocksToText(attachment.content);
+      if (attText) parts.push(attText);
+    }
+  }
+  return parts.join("\n\n");
+}
+
 // Conversation export — ShareGPT training JSONL (human/gpt turns).
 export async function exportConversationShareGPT(threadId: string): Promise<void> {
   const messages = await loadConversationMessages(threadId);
@@ -252,7 +272,7 @@ export async function exportConversationShareGPT(threadId: string): Promise<void
   for (const msg of messages) {
     const role = msg.role as string;
     const from = role === "user" ? "human" : "gpt";
-    const value = contentBlocksToText(msg.content);
+    const value = messageToText(msg);
     if (value.trim()) conversations.push({ from, value });
   }
 
@@ -264,22 +284,25 @@ export async function exportConversationShareGPT(threadId: string): Promise<void
   );
 }
 
-// Conversation export — raw JSONL, one message per line.
+// Conversation export — raw JSONL, OpenAI/ChatML format (one object per conversation).
+// {"messages": [{"role": "user", "content": "..."}, ...]}
+// This is recognised by the Unsloth trainer as a ChatML-format dataset.
 export async function exportConversationRawJsonl(threadId: string): Promise<void> {
   const messages = await loadConversationMessages(threadId);
   if (!messages) return;
 
-  const lines = messages
-    .map((msg) => {
-      const content = contentBlocksToText(msg.content);
-      if (!content.trim()) return null;
-      return JSON.stringify({ role: msg.role, content });
-    })
-    .filter(Boolean)
-    .join("\n");
+  const msgs: Array<{ role: string; content: string }> = [];
+  for (const msg of messages) {
+    const content = messageToText(msg);
+    if (content.trim()) msgs.push({ role: msg.role as string, content });
+  }
 
-  if (!lines) { toast.info("No exportable content."); return; }
-  downloadBlob(lines, "conversation-" + exportTs() + ".jsonl", "application/x-ndjson");
+  if (msgs.length === 0) { toast.info("No exportable content."); return; }
+  downloadBlob(
+    JSON.stringify({ messages: msgs }),
+    "conversation-" + exportTs() + ".jsonl",
+    "application/x-ndjson",
+  );
 }
 
 // Conversation export — CSV with role and content columns.
@@ -289,7 +312,7 @@ export async function exportConversationCsv(threadId: string): Promise<void> {
 
   const rows = ["role,content"];
   for (const msg of messages) {
-    const content = contentBlocksToText(msg.content);
+    const content = messageToText(msg);
     if (!content.trim()) continue;
     rows.push(`${csvEscape(msg.role as string)},${csvEscape(content)}`);
   }
@@ -297,6 +320,168 @@ export async function exportConversationCsv(threadId: string): Promise<void> {
   if (rows.length <= 1) { toast.info("No exportable content."); return; }
   downloadBlob(rows.join("\n"), "conversation-" + exportTs() + ".csv", "text/csv");
 }
+
+// ─── Bulk / multi-thread export ───────────────────────────────────────────────
+
+export type ConvExportFormat = "jsonl-raw" | "csv" | "sharegpt";
+
+const EXPORT_FORMAT_LABELS: Record<ConvExportFormat, string> = {
+  "jsonl-raw": "Raw JSONL",
+  csv: "CSV",
+  sharegpt: "ShareGPT JSONL (training)",
+};
+
+export const EXPORT_FORMATS_LIST = (
+  Object.keys(EXPORT_FORMAT_LABELS) as ConvExportFormat[]
+).map((fmt) => ({ fmt, label: EXPORT_FORMAT_LABELS[fmt] }));
+
+/** Build the exportable text for a single thread, or null if empty. */
+async function buildThreadContent(
+  threadId: string,
+  format: ConvExportFormat,
+  opts?: { includeThreadId?: boolean },
+): Promise<string | null> {
+  const messages = await loadConversationMessages(threadId);
+  if (!messages) return null;
+
+  if (format === "jsonl-raw") {
+    // OpenAI/ChatML format: one JSON object per conversation, recognised by the
+    // Unsloth trainer as a ChatML-format dataset (looks for a "messages" column).
+    const msgs = messages
+      .map((msg) => {
+        const content = messageToText(msg);
+        if (!content.trim()) return null;
+        return { role: msg.role as string, content };
+      })
+      .filter(Boolean) as Array<{ role: string; content: string }>;
+    if (msgs.length === 0) return null;
+    const record: Record<string, unknown> = { messages: msgs };
+    if (opts?.includeThreadId) record.thread_id = threadId;
+    return JSON.stringify(record);
+  }
+
+  if (format === "sharegpt") {
+    const conversations: Array<{ from: string; value: string }> = [];
+    for (const msg of messages) {
+      const role = msg.role as string;
+      const value = messageToText(msg);
+      if (value.trim()) conversations.push({ from: role === "user" ? "human" : "gpt", value });
+    }
+    if (conversations.length === 0) return null;
+    const record: Record<string, unknown> = { conversations };
+    if (opts?.includeThreadId) record.thread_id = threadId;
+    return JSON.stringify(record);
+  }
+
+  // csv
+  const rows: string[] = [];
+  for (const msg of messages) {
+    const content = messageToText(msg);
+    if (!content.trim()) continue;
+    const row = opts?.includeThreadId
+      ? `${csvEscape(threadId)},${csvEscape(msg.role as string)},${csvEscape(content)}`
+      : `${csvEscape(msg.role as string)},${csvEscape(content)}`;
+    rows.push(row);
+  }
+  return rows.length > 0 ? rows.join("\n") : null;
+}
+
+function csvHeader(format: ConvExportFormat, includeThreadId?: boolean): string {
+  if (format === "csv") {
+    return includeThreadId ? "thread_id,role,content" : "role,content";
+  }
+  return "";
+}
+
+function exportExt(format: ConvExportFormat): string {
+  return format === "csv" ? "csv" : "jsonl";
+}
+
+function exportMime(format: ConvExportFormat): string {
+  return format === "csv" ? "text/csv" : "application/x-ndjson";
+}
+
+/**
+ * Export multiple threads as a single merged file (all messages concatenated).
+ * For JSONL formats each thread's records are on their own lines with a
+ * thread_id field; for CSV a thread_id column is prepended.
+ */
+export async function exportBulkConversationsMerged(
+  threadIds: string[],
+  format: ConvExportFormat,
+  basename: string,
+): Promise<void> {
+  if (threadIds.length === 0) { toast.info("No conversations to export."); return; }
+
+  const parts: string[] = [];
+  const header = csvHeader(format, true);
+
+  for (const id of threadIds) {
+    const content = await buildThreadContent(id, format, { includeThreadId: true });
+    if (content) parts.push(content);
+  }
+
+  if (parts.length === 0) { toast.info("No exportable content."); return; }
+
+  const body = header
+    ? header + "\n" + parts.join("\n")
+    : parts.join("\n");
+
+  downloadBlob(body, `${basename}.${exportExt(format)}`, exportMime(format));
+}
+
+/**
+ * Export multiple threads as a ZIP archive — one file per thread.
+ */
+export async function exportBulkConversationsSeparate(
+  threadIds: string[],
+  format: ConvExportFormat,
+  basename: string,
+): Promise<void> {
+  if (threadIds.length === 0) { toast.info("No conversations to export."); return; }
+
+  const { zipSync, strToU8 } = await import("fflate");
+  const ext = exportExt(format);
+  const header = csvHeader(format);
+  const files: Record<string, Uint8Array> = {};
+
+  for (const id of threadIds) {
+    const content = await buildThreadContent(id, format);
+    if (!content) continue;
+    const body = header ? header + "\n" + content : content;
+    files[`${id}.${ext}`] = strToU8(body);
+  }
+
+  if (Object.keys(files).length === 0) { toast.info("No exportable content."); return; }
+
+  const zipped = zipSync(files);
+  downloadBlob(
+    new Blob([zipped], { type: "application/zip" }),
+    `${basename}.zip`,
+    "application/zip",
+  );
+}
+
+// ─── Single-project export ─────────────────────────────────────────────────
+
+/**
+ * Export all threads in a single project as a merged file.
+ * Caller provides the list of thread IDs already resolved for the project.
+ */
+export async function exportProjectConversations(
+  threadIds: string[],
+  format: ConvExportFormat,
+  projectName: string,
+): Promise<void> {
+  const safe = projectName.replace(/[^a-z0-9_-]/gi, "_").slice(0, 40);
+  await exportBulkConversationsMerged(
+    threadIds,
+    format,
+    `project-${safe}-${exportTs()}`,
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 // Training exports — ShareGPT format used by Unsloth fine-tuning pipelines.
 // Each prompt → one {"conversations": [...]} record; human turn + empty gpt slot.

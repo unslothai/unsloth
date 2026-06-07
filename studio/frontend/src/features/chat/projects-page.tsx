@@ -13,6 +13,10 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
@@ -35,6 +39,7 @@ import {
 } from "@/features/chat";
 import {
   Delete02Icon,
+  Download01Icon,
   Edit03Icon,
   FolderAddIcon,
   Search01Icon,
@@ -43,6 +48,16 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { MoreHorizontalIcon } from "lucide-react";
 import { useNavigate } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
+import {
+  exportProjectConversations,
+  exportBulkConversationsMerged,
+  exportBulkConversationsSeparate,
+  EXPORT_FORMATS_LIST,
+  type ConvExportFormat,
+} from "./prompt-storage/prompt-storage-dialog";
+import {
+  listStoredChatThreads,
+} from "./utils/chat-history-storage";
 
 type SortMode = "activity" | "name";
 
@@ -128,6 +143,48 @@ export function ProjectsPage() {
     }
   }
 
+  async function handleProjectExport(project: ProjectRecord, fmt: ConvExportFormat) {
+    try {
+      const threads = await listStoredChatThreads({ projectId: project.id, includeArchived: false });
+      const ids = [...new Set(threads.map((t) => t.id))];
+      await exportProjectConversations(ids, fmt, project.name);
+    } catch {
+      toast.error("Export failed.");
+    }
+  }
+
+  async function handleBulkProjectExport(
+    scope: "projects" | "all",
+    fmt: ConvExportFormat,
+    merged: boolean,
+  ) {
+    try {
+      let threads;
+      if (scope === "projects") {
+        threads = (
+          await Promise.all(
+            projects.map((p) =>
+              listStoredChatThreads({ projectId: p.id, includeArchived: false }),
+            ),
+          )
+        ).flat();
+      } else {
+        threads = await listStoredChatThreads({ includeArchived: false });
+      }
+      const ids = [...new Set(threads.map((t) => t.id))];
+      if (ids.length === 0) { toast.info("No conversations to export."); return; }
+      const ts = new Date().toISOString().slice(0, 10);
+      const basename = `${scope === "all" ? "all-chats" : "all-projects"}-${ts}`;
+      if (merged) {
+        await exportBulkConversationsMerged(ids, fmt, basename);
+      } else {
+        await exportBulkConversationsSeparate(ids, fmt, basename);
+      }
+    } catch {
+      toast.error("Export failed.");
+    }
+  }
+
   async function commitDelete() {
     const target = deleting;
     if (!target) return;
@@ -163,6 +220,47 @@ export function ProjectsPage() {
               </SelectContent>
             </Select>
           </div>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="outline" size="icon" title="Export projects">
+                <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-icon" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-56">
+              <DropdownMenuSub>
+                <DropdownMenuSubTrigger>Export All Projects</DropdownMenuSubTrigger>
+                <DropdownMenuSubContent className="w-52">
+                  {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
+                    <DropdownMenuItem key={`ap-m-${fmt}`} onSelect={() => void handleBulkProjectExport("projects", fmt, true)}>
+                      {label} — combined
+                    </DropdownMenuItem>
+                  ))}
+                  <DropdownMenuSeparator />
+                  {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
+                    <DropdownMenuItem key={`ap-s-${fmt}`} onSelect={() => void handleBulkProjectExport("projects", fmt, false)}>
+                      {label} — per chat
+                    </DropdownMenuItem>
+                  ))}
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
+              <DropdownMenuSub>
+                <DropdownMenuSubTrigger>Export Projects + Recents</DropdownMenuSubTrigger>
+                <DropdownMenuSubContent className="w-52">
+                  {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
+                    <DropdownMenuItem key={`all-m-${fmt}`} onSelect={() => void handleBulkProjectExport("all", fmt, true)}>
+                      {label} — combined
+                    </DropdownMenuItem>
+                  ))}
+                  <DropdownMenuSeparator />
+                  {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
+                    <DropdownMenuItem key={`all-s-${fmt}`} onSelect={() => void handleBulkProjectExport("all", fmt, false)}>
+                      {label} — per chat
+                    </DropdownMenuItem>
+                  ))}
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
+            </DropdownMenuContent>
+          </DropdownMenu>
           <Button
             onClick={() => {
               setNameDraft("");
@@ -270,6 +368,26 @@ export function ProjectsPage() {
                       <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
                       <span>Rename</span>
                     </DropdownMenuItem>
+                    <DropdownMenuSub>
+                      <DropdownMenuSubTrigger>
+                        <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-icon mr-1" />
+                        <span>Export</span>
+                      </DropdownMenuSubTrigger>
+                      <DropdownMenuSubContent className="w-52">
+                        {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
+                          <DropdownMenuItem
+                            key={fmt}
+                            onSelect={(e) => {
+                              e.stopPropagation();
+                              void handleProjectExport(project, fmt);
+                            }}
+                          >
+                            {label}
+                          </DropdownMenuItem>
+                        ))}
+                      </DropdownMenuSubContent>
+                    </DropdownMenuSub>
+                    <DropdownMenuSeparator />
                     <DropdownMenuItem
                       variant="destructive"
                       onSelect={() => setDeleting(project)}
