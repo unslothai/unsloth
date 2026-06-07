@@ -704,7 +704,7 @@ export function AppSidebar() {
                 {[
                   { label: "Raw JSONL", fn: exportConversationRawJsonl },
                   { label: "CSV", fn: exportConversationCsv },
-                  { label: "ShareGPT JSONL (training)", fn: exportConversationShareGPT },
+                  { label: "ShareGPT JSONL", fn: exportConversationShareGPT },
                 ].map(({ label, fn }) => (
                   <DropdownMenuItem
                     key={label}

@@ -67,7 +67,7 @@ import {
 const EXPORT_FORMATS = [
   { label: "Raw JSONL", fn: exportConversationRawJsonl },
   { label: "CSV", fn: exportConversationCsv },
-  { label: "ShareGPT JSONL (training)", fn: exportConversationShareGPT },
+  { label: "ShareGPT JSONL", fn: exportConversationShareGPT },
 ] as const;
 
 async function getThreadIdsForItem(item: SidebarItem): Promise<string[]> {

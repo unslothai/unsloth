@@ -431,7 +431,7 @@ export type ConvExportFormat = "jsonl-raw" | "csv" | "sharegpt";
 const EXPORT_FORMAT_LABELS: Record<ConvExportFormat, string> = {
   "jsonl-raw": "Raw JSONL",
   csv: "CSV",
-  sharegpt: "ShareGPT JSONL (training)",
+  sharegpt: "ShareGPT JSONL",
 };
 
 export const EXPORT_FORMATS_LIST = (
