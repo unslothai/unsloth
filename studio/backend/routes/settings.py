@@ -5,6 +5,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from auth.authentication import get_current_subject
+from loggers import get_logger
+from utils.utils import safe_error_detail, log_and_http_error
 from utils.upload_limits import (
     MAX_UPLOAD_LIMIT_MB,
     MIN_UPLOAD_LIMIT_MB,
@@ -16,6 +18,8 @@ from utils.upload_limits import (
 )
 
 router = APIRouter()
+
+logger = get_logger(__name__)
 
 
 class UploadLimitPayload(BaseModel):
@@ -55,5 +59,11 @@ def update_upload_limit(
     try:
         limit_mb = set_upload_limit_mb(payload.max_upload_size_mb)
     except ValueError as exc:
-        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+        raise log_and_http_error(
+            exc,
+            400,
+            safe_error_detail(exc, fallback = "Invalid upload limit."),
+            event = "settings.update_upload_limit_failed",
+            log = logger,
+        ) from exc
     return _upload_limit_response(limit_mb)

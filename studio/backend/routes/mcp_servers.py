@@ -26,6 +26,7 @@ from models.mcp_servers import (
     McpServerUpdate,
 )
 from storage import mcp_servers_db
+from utils.utils import safe_error_detail, log_and_http_error
 
 logger = structlog.get_logger(__name__)
 
@@ -51,7 +52,13 @@ def _validate_url(url: str) -> str:
         try:
             parts = parse_stdio_command(trimmed)
         except ValueError as exc:
-            raise HTTPException(status_code = 400, detail = f"Invalid command: {exc}")
+            raise log_and_http_error(
+                exc,
+                400,
+                "Invalid command. Check quoting and try again.",
+                event = "mcp_servers.invalid_command",
+                log = logger,
+            )
         if not parts or not parts[0].strip():
             raise HTTPException(status_code = 400, detail = "command must not be empty")
         if "://" in parts[0]:
@@ -241,8 +248,13 @@ async def refresh_mcp_server_tools(
             use_oauth = use_oauth,
         )
     except Exception as exc:  # noqa: BLE001 — surface transport+timeout errors to UI
-        logger.warning("MCP refresh failed", server_id = server_id, error = str(exc))
-        return McpServerProbeResult(ok = False, error = str(exc))
+        logger.error(
+            "mcp_servers.refresh_failed",
+            server_id = server_id,
+            error = str(exc),
+            exc_info = True,
+        )
+        return McpServerProbeResult(ok = False, error = safe_error_detail(exc))
 
     return McpServerProbeResult(ok = True, tool_count = len(tools))
 
@@ -265,6 +277,11 @@ async def test_mcp_server(
             use_oauth = payload.use_oauth,
         )
     except Exception as exc:  # noqa: BLE001
-        return McpServerProbeResult(ok = False, error = str(exc))
+        logger.error(
+            "mcp_servers.test_failed",
+            error = str(exc),
+            exc_info = True,
+        )
+        return McpServerProbeResult(ok = False, error = safe_error_detail(exc))
 
     return McpServerProbeResult(ok = True, tool_count = len(tools))

@@ -17,6 +17,50 @@ import tempfile
 logger = get_logger(__name__)
 
 
+# ── Client-safe error helpers ───────────────────────────────────
+# Never hand raw exception text to API clients: it can leak internal
+# filesystem paths, stack detail, or dependency internals. Log the full
+# exception server-side and return a generic message to the client.
+
+def safe_error_detail(error: Exception, fallback: str = "An internal error occurred") -> str:
+    """Map a caught exception to a generic, client-safe message.
+
+    Never includes raw ``str(error)`` (which can leak internal paths or stack
+    detail); known transient conditions get a friendlier hint. Always log the
+    real exception server-side (e.g. via ``log_and_http_error``) for diagnosis.
+    """
+    text = str(error).lower()
+    if (
+        isinstance(error, (ConnectionError, TimeoutError))
+        or "connection" in text
+        or "timed out" in text
+        or "timeout" in text
+    ):
+        return "Could not reach an upstream service. Please try again."
+    if "out of memory" in text or "cuda error" in text:
+        return "Ran out of memory. Try a smaller model or shorter input."
+    return fallback
+
+
+def log_and_http_error(
+    error: Exception,
+    status_code: int,
+    public_message: str,
+    *,
+    event: str = "request_failed",
+    log = None,
+):
+    """Log ``error`` in full server-side and return an ``HTTPException`` whose
+    ``detail`` is only ``public_message`` -- never the raw exception text.
+
+    Usage:  raise log_and_http_error(e, 500, "Failed to start training")
+    """
+    from fastapi import HTTPException
+
+    (log or logger).error(event, error = str(error), exc_info = True)
+    return HTTPException(status_code = status_code, detail = public_message)
+
+
 @contextmanager
 def without_hf_auth():
     """

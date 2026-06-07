@@ -71,6 +71,9 @@ from utils.datasets import check_dataset_format
 from utils.upload_limits import get_upload_limit_bytes, get_upload_limit_label
 from auth.authentication import get_current_subject
 
+# Client-safe error helpers
+from utils.utils import safe_error_detail, log_and_http_error
+
 router = APIRouter()
 logger = get_logger(__name__)
 
@@ -648,7 +651,7 @@ def check_format(
     except Exception as e:
         logger.error(f"Error checking dataset format: {e}", exc_info = True)
         raise HTTPException(
-            status_code = 500, detail = f"Failed to check dataset format: {str(e)}"
+            status_code = 500, detail = "Failed to check dataset format"
         )
 
 
@@ -705,4 +708,4 @@ def ai_assist_mapping(
 
     except Exception as e:
         logger.error(f"AI assist mapping failed: {e}", exc_info = True)
-        raise HTTPException(status_code = 500, detail = f"AI assist failed: {str(e)}")
+        raise HTTPException(status_code = 500, detail = "AI assist failed")

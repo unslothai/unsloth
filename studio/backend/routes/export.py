@@ -26,6 +26,9 @@ if str(backend_path) not in sys.path:
 # Auth
 from auth.authentication import get_current_subject
 
+# Client-safe error helpers
+from utils.utils import safe_error_detail, log_and_http_error
+
 # Import backend functions
 try:
     from core.export import get_export_backend
@@ -125,7 +128,7 @@ async def load_checkpoint(
         logger.error(f"Error loading checkpoint: {e}", exc_info = True)
         raise HTTPException(
             status_code = 500,
-            detail = f"Failed to load checkpoint: {str(e)}",
+            detail = "Failed to load checkpoint",
         )
 
 
@@ -158,7 +161,7 @@ async def cleanup_export_memory(
         logger.error(f"Error during export memory cleanup: {e}", exc_info = True)
         raise HTTPException(
             status_code = 500,
-            detail = f"Failed to cleanup export memory: {str(e)}",
+            detail = "Failed to cleanup export memory",
         )
 
 
@@ -180,7 +183,7 @@ async def get_export_status(
         logger.error(f"Error getting export status: {e}", exc_info = True)
         raise HTTPException(
             status_code = 500,
-            detail = f"Failed to get export status: {str(e)}",
+            detail = "Failed to get export status",
         )
 
 
@@ -235,7 +238,7 @@ async def export_merged_model(
         logger.error(f"Error exporting merged model: {e}", exc_info = True)
         raise HTTPException(
             status_code = 500,
-            detail = f"Failed to export merged model: {str(e)}",
+            detail = "Failed to export merged model",
         )
 
 
@@ -275,7 +278,7 @@ async def export_base_model(
         logger.error(f"Error exporting base model: {e}", exc_info = True)
         raise HTTPException(
             status_code = 500,
-            detail = f"Failed to export base model: {str(e)}",
+            detail = "Failed to export base model",
         )
 
 
@@ -314,7 +317,7 @@ async def export_gguf(
         logger.error(f"Error exporting GGUF model: {e}", exc_info = True)
         raise HTTPException(
             status_code = 500,
-            detail = f"Failed to export GGUF model: {str(e)}",
+            detail = "Failed to export GGUF model",
         )
 
 
@@ -353,7 +356,7 @@ async def export_lora_adapter(
         logger.error(f"Error exporting LoRA adapter: {e}", exc_info = True)
         raise HTTPException(
             status_code = 500,
-            detail = f"Failed to export LoRA adapter: {str(e)}",
+            detail = "Failed to export LoRA adapter",
         )
 
 
@@ -492,7 +495,7 @@ async def stream_export_logs(
             logger.error("Export log stream failed: %s", exc, exc_info = True)
             try:
                 yield _format_sse(
-                    json.dumps({"error": str(exc)}),
+                    json.dumps({"error": safe_error_detail(exc)}),
                     event = "error",
                 )
             except Exception:

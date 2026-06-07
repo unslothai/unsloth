@@ -16,6 +16,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from typing import List, Optional
 import structlog
 from loggers import get_logger
+from utils.utils import safe_error_detail, log_and_http_error
 
 import re as _re
 
@@ -825,10 +826,12 @@ async def list_local_models(
             models = models,
         )
     except Exception as e:
-        logger.error(f"Error listing local models: {e}", exc_info = True)
-        raise HTTPException(
-            status_code = 500,
-            detail = f"Failed to list local models: {str(e)}",
+        raise log_and_http_error(
+            e,
+            500,
+            "Failed to list local models",
+            event = "models.list_local_models_failed",
+            log = logger,
         )
 
 
@@ -854,7 +857,11 @@ async def add_scan_folder_endpoint(
         folder = add_scan_folder(body.path)
     except ValueError as e:
         logger.warning("Scan folder rejected: %s (path=%s)", e, body.path)
-        raise HTTPException(status_code = 400, detail = str(e))
+        # These ValueError messages are curated, path-free validation feedback
+        # (e.g. "Path does not exist") meant to be shown to the user, not raw
+        # Python internals; forward the message text rather than the exception.
+        rejection_message = str(e)
+        raise HTTPException(status_code = 400, detail = rejection_message)
     logger.info("Scan folder added: %s", folder.get("path"))
     return folder
 
@@ -1182,12 +1189,15 @@ def _match_browse_child(current: Path, name: str) -> Optional[Path]:
     except PermissionError:
         raise HTTPException(
             status_code = 403,
-            detail = f"Permission denied reading {current}",
+            detail = f"Permission denied reading {os.path.basename(str(current))}",
         ) from None
     except OSError as exc:
+        logger.warning(
+            "browse-folders: could not read %s: %s", current, exc, exc_info = True
+        )
         raise HTTPException(
             status_code = 500,
-            detail = f"Could not read {current}: {exc}",
+            detail = f"Could not read {os.path.basename(str(current))}",
         ) from exc
     return None
 
@@ -1219,14 +1229,21 @@ def _resolve_browse_target(path: Optional[str], allowed_roots: list[Path]) -> Pa
             if child is None:
                 raise HTTPException(
                     status_code = 404,
-                    detail = f"Path does not exist: {requested_path}",
+                    detail = f"Path does not exist: {os.path.basename(requested_path)}",
                 )
             try:
                 resolved_child = child.resolve()
             except OSError as exc:
+                logger.warning(
+                    "browse-folders: invalid path component %r under %s: %s",
+                    part,
+                    current,
+                    exc,
+                    exc_info = True,
+                )
                 raise HTTPException(
                     status_code = 400,
-                    detail = f"Invalid path: {exc}",
+                    detail = "Invalid path",
                 ) from exc
             if not _is_path_inside_allowlist(resolved_child, resolved_roots):
                 raise HTTPException(
@@ -1242,7 +1259,7 @@ def _resolve_browse_target(path: Optional[str], allowed_roots: list[Path]) -> Pa
         if not current.is_dir():
             raise HTTPException(
                 status_code = 400,
-                detail = f"Not a directory: {current}",
+                detail = f"Not a directory: {os.path.basename(str(current))}",
             )
         return current
 
@@ -1325,12 +1342,15 @@ async def browse_folders(
     except PermissionError:
         raise HTTPException(
             status_code = 403,
-            detail = f"Permission denied reading {target}",
+            detail = f"Permission denied reading {os.path.basename(str(target))}",
         )
     except OSError as exc:
+        logger.warning(
+            "browse-folders: could not read %s: %s", target, exc, exc_info = True
+        )
         raise HTTPException(
             status_code = 500,
-            detail = f"Could not read {target}: {exc}",
+            detail = f"Could not read {os.path.basename(str(target))}",
         )
 
     try:
@@ -1518,8 +1538,13 @@ async def list_models(
         return ModelListResponse(models = all_models, default_models = default_models)
 
     except Exception as e:
-        logger.error(f"Error listing models: {e}", exc_info = True)
-        raise HTTPException(status_code = 500, detail = f"Failed to list models: {str(e)}")
+        raise log_and_http_error(
+            e,
+            500,
+            "Failed to list models",
+            event = "models.list_models_failed",
+            log = logger,
+        )
 
 
 def _get_max_position_embeddings(config) -> Optional[int]:
@@ -1638,9 +1663,12 @@ async def get_model_config(
         )
 
     except Exception as e:
-        logger.error(f"Error getting model config: {e}", exc_info = True)
-        raise HTTPException(
-            status_code = 500, detail = f"Failed to get model config: {str(e)}"
+        raise log_and_http_error(
+            e,
+            500,
+            "Failed to get model config",
+            event = "models.get_model_config_failed",
+            log = logger,
         )
 
 
@@ -1695,9 +1723,12 @@ async def scan_loras(
         return LoRAScanResponse(loras = lora_list, outputs_dir = resolved_outputs_dir)
 
     except Exception as e:
-        logger.error(f"Error scanning LoRAs: {e}", exc_info = True)
-        raise HTTPException(
-            status_code = 500, detail = f"Failed to scan LoRA adapters: {str(e)}"
+        raise log_and_http_error(
+            e,
+            500,
+            "Failed to scan LoRA adapters",
+            event = "models.scan_loras_failed",
+            log = logger,
         )
 
 
@@ -2029,7 +2060,7 @@ async def delete_finetuned_model(
         )
         raise HTTPException(
             status_code = 500,
-            detail = f"Failed to delete fine-tuned model: {str(e)}",
+            detail = "Failed to delete fine-tuned model",
         )
 
 
@@ -2060,9 +2091,12 @@ async def get_lora_base_model(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error getting LoRA base model: {e}", exc_info = True)
-        raise HTTPException(
-            status_code = 500, detail = f"Failed to get base model: {str(e)}"
+        raise log_and_http_error(
+            e,
+            500,
+            "Failed to get base model",
+            event = "models.get_lora_base_model_failed",
+            log = logger,
         )
 
 
@@ -2087,9 +2121,12 @@ async def check_vision_model(
         )
 
     except Exception as e:
-        logger.error(f"Error checking vision model: {e}", exc_info = True)
-        raise HTTPException(
-            status_code = 500, detail = f"Failed to check vision model: {str(e)}"
+        raise log_and_http_error(
+            e,
+            500,
+            "Failed to check vision model",
+            event = "models.check_vision_model_failed",
+            log = logger,
         )
 
 
@@ -2117,9 +2154,12 @@ async def check_embedding_model(
         )
 
     except Exception as e:
-        logger.error(f"Error checking embedding model: {e}", exc_info = True)
-        raise HTTPException(
-            status_code = 500, detail = f"Failed to check embedding model: {str(e)}"
+        raise log_and_http_error(
+            e,
+            500,
+            "Failed to check embedding model",
+            event = "models.check_embedding_model_failed",
+            log = logger,
         )
 
 
@@ -2232,7 +2272,7 @@ async def get_gguf_variants(
         logger.error(f"Error listing GGUF variants for '{repo_id}': {e}", exc_info = True)
         raise HTTPException(
             status_code = 500,
-            detail = f"Failed to list GGUF variants: {str(e)}",
+            detail = "Failed to list GGUF variants",
         )
 
 
@@ -2707,7 +2747,7 @@ async def delete_cached_model(
         logger.error(f"Error deleting cached model {repo_id}: {e}", exc_info = True)
         raise HTTPException(
             status_code = 500,
-            detail = f"Failed to delete cached model: {str(e)}",
+            detail = "Failed to delete cached model",
         )
 
 
@@ -2748,8 +2788,10 @@ async def list_checkpoints(
             models = models,
         )
     except Exception as e:
-        logger.error(f"Error listing checkpoints: {e}", exc_info = True)
-        raise HTTPException(
-            status_code = 500,
-            detail = f"Failed to list checkpoints: {str(e)}",
+        raise log_and_http_error(
+            e,
+            500,
+            "Failed to list checkpoints",
+            event = "models.list_checkpoints_failed",
+            log = logger,
         )
