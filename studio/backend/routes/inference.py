@@ -742,8 +742,7 @@ async def load_model(
         try:
             extra_llama_args = validate_extra_args(request.llama_extra_args)
         except ValueError as exc:
-            # Curated user-facing validation message (names the offending
-            # flag); keep it actionable, just strip any absolute paths.
+            # Keep the curated validation message (names the flag); just strip paths.
             logger.warning("inference.validate_extra_args_failed: %s", exc)
             raise HTTPException(
                 status_code = 400,
@@ -3898,12 +3897,9 @@ async def serve_sandbox_file(
     safe_filename = os.path.basename(filename)
     if not safe_filename or safe_filename in (".", ".."):
         raise HTTPException(status_code = 404, detail = "Not found")
-    # Defense-in-depth: fullmatch allowlist that forbids path separators and
-    # control characters before the path is built (clears CodeQL
-    # py/path-injection with a clear sanitizer), while still permitting ordinary
-    # artifact names like "loss curve.png" or "report(1).png" that the Python
-    # tool can generate. basename(), the extension allowlist and the realpath
-    # containment check below remain the primary traversal guards.
+    # Defense-in-depth: fullmatch allowlist forbidding separators/control chars
+    # (clears CodeQL py/path-injection) but allowing names like "loss curve.png".
+    # basename + extension + realpath containment below are the real guards.
     if not _re.fullmatch(r"[^/\\\x00-\x1f]{1,255}", safe_filename):
         raise HTTPException(status_code = 404, detail = "Not found")
 

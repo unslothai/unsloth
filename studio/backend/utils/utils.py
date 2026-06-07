@@ -18,9 +18,8 @@ logger = get_logger(__name__)
 
 
 # ── Client-safe error helpers ───────────────────────────────────
-# Never hand raw exception text to API clients: it can leak internal
-# filesystem paths, stack detail, or dependency internals. Log the full
-# exception server-side and return a generic message to the client.
+# Never return raw exception text to clients (it can leak paths/internals);
+# log the full exception server-side and return a generic message.
 
 
 def safe_error_detail(
@@ -48,13 +47,10 @@ def safe_error_detail(
 def safe_curated_detail(
     error: Exception, fallback: str = "An internal error occurred"
 ) -> str:
-    """Client-safe text for *curated* domain/validation exceptions whose message
-    is intentionally user-facing (e.g. "Load a model first", "job already
-    running", an upstream "401 Unauthorized").
+    """Client-safe text for curated domain/validation exceptions meant for the user.
 
-    Unlike ``safe_error_detail`` it keeps the actual message so the user knows
-    what to fix, only stripping absolute filesystem paths. Use it for known
-    domain exception types; keep ``safe_error_detail`` for generic ``Exception``.
+    Keeps the message (paths stripped) instead of a generic fallback; use for known
+    exception types, keep ``safe_error_detail`` for generic ``Exception``.
     """
     from utils.native_path_leases import redact_native_paths
 
@@ -67,8 +63,7 @@ def _log_event(log, event: str, error: Exception) -> None:
     try:
         log.error(event, error = str(error), exc_info = True)
     except TypeError:
-        # stdlib logging.Logger rejects structlog-style keyword fields; pass the
-        # original error as exc_info so we log its traceback, not this TypeError.
+        # stdlib logging.Logger rejects structlog kwargs; pass the error as exc_info.
         log.error("%s: %s", event, error, exc_info = error)
 
 
