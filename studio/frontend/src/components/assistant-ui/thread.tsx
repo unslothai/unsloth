@@ -248,7 +248,13 @@ export const Thread: FC<{
       const runOwnsBottom =
         aui.thread().getState().isRunning ||
         performance.now() - runStartAtRef.current < RUN_SHRINK_WINDOW_MS;
-      if (runOwnsBottom || distance >= applied - desired) {
+      // At the bottom the shrink only drops blank spacer, so apply it now
+      // instead of stranding dead space until the next pin.
+      if (
+        runOwnsBottom ||
+        distance >= applied - desired ||
+        autoScrollContext.getIsAtBottom()
+      ) {
         applySpacerPx(desired);
       }
       // else: deferred; released on scroll or a bottom-pinning event.
