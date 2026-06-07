@@ -3235,6 +3235,7 @@ class TestCpuFallback:
 # ===========================================================================
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="bash-only Studio installer tests")
 class TestCudaDriverToolkitMismatchMessage:
     _SETUP_SH = PACKAGE_ROOT / "studio" / "setup.sh"
     _SETUP_PS1 = PACKAGE_ROOT / "studio" / "setup.ps1"
@@ -3571,3 +3572,102 @@ class TestCudaDriverToolkitMismatchMessage:
         output = self._run_bash(script)
         assert output.splitlines()[0] == "too_old"
         assert "12.0" in output
+
+    def test_setup_sh_compatible_finder_rejects_too_old_only_candidate(self, tmp_path):
+        # If the only same-major-or-lower toolkit is below the llama minimum,
+        # the finder must fail so setup falls back to CPU, not pick 12.0.
+        blocked_nvcc = self._fake_nvcc(tmp_path, "13.3")
+        too_old_nvcc = self._fake_nvcc(tmp_path, "12.0")
+        script = textwrap.dedent(
+            f"""\
+            set -euo pipefail
+            {self._setup_sh_cuda_helper_fragment()}
+            _cuda_nvcc_candidate_paths() {{
+                printf '%s\\n' "{blocked_nvcc}" "{too_old_nvcc}"
+            }}
+            if _ALT="$(_cuda_find_compatible_nvcc_for_driver "12.9" "{blocked_nvcc}")"; then
+                printf 'FOUND:%s\\n' "$_ALT"
+            else
+                printf 'NONE\\n'
+            fi
+            """
+        )
+        output = self._run_bash(script)
+        assert "NONE" in output
+        assert "FOUND" not in output
+
+    def _cuda_build_decision_output(self, *, nvcc_path, driver):
+        # Mirror the setup.sh source-build branch that decides whether to keep
+        # the toolkit, switch to a compatible one, or degrade to CPU.
+        script = textwrap.dedent(
+            f"""\
+            set -euo pipefail
+            C_WARN=
+            substep() {{ printf '%s\\n' "$1"; }}
+            {self._setup_sh_cuda_helper_fragment()}
+            NVCC_PATH="{nvcc_path}"
+            GPU_BACKEND="cuda"
+            _DRIVER_MAX_CUDA="{driver}"
+            _NVCC_CHECK="$(_nvcc_meets_llama_minimum "$NVCC_PATH")"
+            _NVCC_STATUS="$(printf '%s\\n' "$_NVCC_CHECK" | sed -n '1p')"
+            _NVCC_VER="$(printf '%s\\n' "$_NVCC_CHECK" | sed -n '2p')"
+            _CUDA_TOOLKIT_ALLOWED=true
+            if [ "$_NVCC_STATUS" = "too_old" ]; then
+                NVCC_PATH=""; GPU_BACKEND=""; _CUDA_TOOLKIT_ALLOWED=false
+            elif [ -n "$_NVCC_VER" ] && [ -n "$_DRIVER_MAX_CUDA" ] && _cuda_toolkit_major_gt_driver "$_NVCC_VER" "$_DRIVER_MAX_CUDA"; then
+                if _ALT="$(_cuda_find_compatible_nvcc_for_driver "$_DRIVER_MAX_CUDA" "$NVCC_PATH")"; then
+                    NVCC_PATH="$(printf '%s\\n' "$_ALT" | sed -n '1p')"
+                    _NVCC_VER="$(printf '%s\\n' "$_ALT" | sed -n '2p')"
+                else
+                    NVCC_PATH=""; GPU_BACKEND=""; _CUDA_TOOLKIT_ALLOWED=false
+                fi
+            fi
+            printf 'NVCC_PATH=%s\\n' "$NVCC_PATH"
+            printf 'NVCC_VER=%s\\n' "$_NVCC_VER"
+            printf 'GPU_BACKEND=%s\\n' "$GPU_BACKEND"
+            printf 'ALLOWED=%s\\n' "$_CUDA_TOOLKIT_ALLOWED"
+            """
+        )
+        return self._run_bash(script)
+
+    def test_setup_sh_same_major_newer_minor_keeps_original_toolkit(self, tmp_path):
+        # A same-major, newer-minor toolkit (13.3 vs driver 13.0) must build
+        # CUDA with the original toolkit, never fall back.
+        toolkit = self._fake_nvcc(tmp_path, "13.3")
+        output = self._cuda_build_decision_output(nvcc_path = toolkit, driver = "13.0")
+        assert f"NVCC_PATH={toolkit}" in output
+        assert "NVCC_VER=13.3" in output
+        assert "GPU_BACKEND=cuda" in output
+        assert "ALLOWED=true" in output
+
+    def test_setup_sh_missing_driver_version_still_enables_cuda(self, tmp_path):
+        # If nvidia-smi cannot report a driver CUDA version, the guard must keep
+        # CUDA enabled (matching pre-fix behavior) rather than degrade to CPU.
+        toolkit = self._fake_nvcc(tmp_path, "13.3")
+        output = self._cuda_build_decision_output(nvcc_path = toolkit, driver = "")
+        assert f"NVCC_PATH={toolkit}" in output
+        assert "GPU_BACKEND=cuda" in output
+        assert "ALLOWED=true" in output
+
+    def test_setup_sh_compatible_finder_rejects_newer_major_only_candidate(self, tmp_path):
+        # The only alternative still has a major newer than the driver, so the
+        # finder must fail rather than select another driver-incompatible toolkit.
+        blocked_nvcc = self._fake_nvcc(tmp_path, "13.3")
+        other_newer_nvcc = self._fake_nvcc(tmp_path, "13.1")
+        script = textwrap.dedent(
+            f"""\
+            set -euo pipefail
+            {self._setup_sh_cuda_helper_fragment()}
+            _cuda_nvcc_candidate_paths() {{
+                printf '%s\\n' "{blocked_nvcc}" "{other_newer_nvcc}"
+            }}
+            if _ALT="$(_cuda_find_compatible_nvcc_for_driver "12.9" "{blocked_nvcc}")"; then
+                printf 'FOUND:%s\\n' "$_ALT"
+            else
+                printf 'NONE\\n'
+            fi
+            """
+        )
+        output = self._run_bash(script)
+        assert "NONE" in output
+        assert "FOUND" not in output
