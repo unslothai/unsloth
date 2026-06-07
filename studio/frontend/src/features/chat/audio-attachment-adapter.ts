@@ -25,8 +25,10 @@ function newAttachmentId(): string {
 // Audio shares the "Add photos & files" picker. Like VisionImageAdapter,
 // unsupported models are rejected at add() time with a toast.
 export class AudioAttachmentAdapter implements AttachmentAdapter {
-  // MIME is unreliable for some containers (m4a), so also match by extension.
-  accept = `${AUDIO_ACCEPT},audio/x-m4a,.wav,.mp3,.m4a,.ogg,.oga,.flac,.webm`;
+  // MIME is unreliable for some containers (m4a), so also match by
+  // extension. No .webm extension: it would claim video/webm files; real
+  // audio webm (MediaRecorder) always reports the audio/webm MIME.
+  accept = `${AUDIO_ACCEPT},audio/x-m4a,.wav,.mp3,.m4a,.ogg,.oga,.flac`;
 
   async add({ file }: { file: File }): Promise<PendingAttachment> {
     const state = useChatRuntimeStore.getState();
