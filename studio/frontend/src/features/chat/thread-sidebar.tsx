@@ -257,15 +257,20 @@ export function ThreadSidebar({
                   <SidebarMenuButton
                     isActive={activeId === item.id}
                     onClick={() => onSelect(viewForItem(item))}
+                    className="pr-7"
                   >
                     <span>{item.title}</span>
                   </SidebarMenuButton>
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
-                      <SidebarMenuAction className="focus:outline-none focus-visible:ring-0" onClick={(e) => e.stopPropagation()}>
+                      <button
+                        type="button"
+                        onClick={(e) => e.stopPropagation()}
+                        className="absolute right-1 top-1/2 -translate-y-1/2 flex size-6 items-center justify-center rounded-md text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus:outline-none focus-visible:ring-0"
+                        aria-label="More options"
+                      >
                         <HugeiconsIcon icon={MoreHorizontalIcon} className="size-4" />
-                        <span className="sr-only">More options</span>
-                      </SidebarMenuAction>
+                      </button>
                     </DropdownMenuTrigger>
                     <DropdownMenuContent side="bottom" align="end" className="w-44">
                       <DropdownMenuItem onSelect={() => openRename(item)}>
