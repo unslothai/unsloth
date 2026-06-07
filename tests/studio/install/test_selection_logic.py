@@ -3235,7 +3235,7 @@ class TestCpuFallback:
 # ===========================================================================
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="bash-only Studio installer tests")
+@pytest.mark.skipif(sys.platform == "win32", reason = "bash-only Studio installer tests")
 class TestCudaDriverToolkitMismatchMessage:
     _SETUP_SH = PACKAGE_ROOT / "studio" / "setup.sh"
     _SETUP_PS1 = PACKAGE_ROOT / "studio" / "setup.ps1"
@@ -3649,7 +3649,9 @@ class TestCudaDriverToolkitMismatchMessage:
         assert "GPU_BACKEND=cuda" in output
         assert "ALLOWED=true" in output
 
-    def test_setup_sh_compatible_finder_rejects_newer_major_only_candidate(self, tmp_path):
+    def test_setup_sh_compatible_finder_rejects_newer_major_only_candidate(
+        self, tmp_path
+    ):
         # The only alternative still has a major newer than the driver, so the
         # finder must fail rather than select another driver-incompatible toolkit.
         blocked_nvcc = self._fake_nvcc(tmp_path, "13.3")
