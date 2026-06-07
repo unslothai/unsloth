@@ -100,6 +100,7 @@ from ._utils import (
     _get_text_only_config,
     resolve_model_class,
     _is_family_text_decoder,
+    _apply_text_only_key_mapping,
 )
 
 # Single source of truth is unsloth_zoo.model_lists. Re-exported so callers
@@ -420,7 +421,7 @@ class FastLanguageModel(FastLlamaModel):
                     load_in_8bit,
                     load_in_16bit,
                 )
-                model_name = _offline_quantize_to_fp8(model_name, fp8_mode)
+                model_name = _offline_quantize_to_fp8(model_name, fp8_mode, force_text_only = True)
             else:
                 assert new_model_name is not None
                 model_name = new_model_name
@@ -1036,7 +1037,7 @@ class FastModel(FastBaseModel):
                     load_in_8bit,
                     load_in_16bit,
                 )
-                model_name = _offline_quantize_to_fp8(model_name, fp8_mode)
+                model_name = _offline_quantize_to_fp8(model_name, fp8_mode, force_text_only = _force_text_only)
             else:
                 assert new_model_name is not None
                 model_name = new_model_name
@@ -1484,6 +1485,10 @@ class FastModel(FastBaseModel):
                         f"Loading {old_model_name} as text-only; vision/audio towers skipped. "
                         "Use FastVisionModel for multimodal inputs."
                     )
+                    # transformers >=5 needs an explicit key remap to load the VLM
+                    # text weights; compute it here while the parent model_type is
+                    # still available, before reassigning model_config. See PR #5816.
+                    _apply_text_only_key_mapping(kwargs, model_config, text_config)
                     model_config = text_config
                     is_vlm = False
             else:

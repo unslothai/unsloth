@@ -36,6 +36,8 @@ from ._utils import (
     resolve_model_class,
     resolve_attention_implementation,
     _get_text_only_config,
+    _is_family_text_decoder,
+    _apply_text_only_key_mapping,
 )
 from ._utils import *
 from .loader_utils import _get_fp8_mode_and_check_settings
@@ -789,7 +791,25 @@ class FastBaseModel:
                 trust_remote_code = trust_remote_code,
             )
         if _force_text_only and hasattr(auto_config, "vision_config"):
-            auto_config = _get_text_only_config(auto_config, model_name)
+            # Mirror the loader guard for direct FastBaseModel callers: only skip the
+            # vision tower when the family has its own text decoder that loads the
+            # checkpoint correctly (e.g. Gemma 3); otherwise keep the full model so we
+            # do not silently init random weights (Llava/PaliGemma reuse a generic
+            # decoder). transformers >=5 also needs the key remap. See PR #5816.
+            parent_config = auto_config
+            text_config = _get_text_only_config(parent_config, model_name)
+            text_class = resolve_model_class(AutoModelForCausalLM, text_config)
+            if text_class is not None and _is_family_text_decoder(
+                getattr(parent_config, "model_type", ""),
+                getattr(text_config, "model_type", ""),
+            ):
+                auto_config = text_config
+                auto_model = AutoModelForCausalLM
+                _apply_text_only_key_mapping(kwargs, parent_config, text_config)
+            else:
+                auto_model = AutoModelForVision2Seq
+            is_vlm = auto_model in [AutoModelForVision2Seq, AutoModelForImageTextToText]
+            auto_processor = AutoProcessor if (is_vlm or is_whisper) else AutoTokenizer
         model_class = resolve_model_class(auto_model, auto_config)
         attn_impl = resolve_attention_implementation(
             model_class,

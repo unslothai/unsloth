@@ -517,8 +517,66 @@ def _get_text_only_config(model_config, model_name):
     qc = getattr(model_config, "quantization_config", None)
     if qc is not None and getattr(text_config, "quantization_config", None) is None:
         text_config = copy.copy(text_config)
-        text_config.quantization_config = qc
+        text_config.quantization_config = _remap_text_only_skip_modules(qc)
     return text_config
+
+
+def _remap_text_only_skip_modules(qc):
+    # Pre-quantized VLMs list llm_int8_skip_modules under the wrapper prefix
+    # (language_model.model.layers.12.mlp); after stripping to the text model the live
+    # module is model.layers.12.mlp. Remap so the skip still matches and drop vision/
+    # audio entries. Returns qc unchanged when there is nothing to remap. See PR #5816.
+    is_dict = isinstance(qc, dict)
+    skip = qc.get("llm_int8_skip_modules") if is_dict else getattr(qc, "llm_int8_skip_modules", None)
+    if not skip:
+        return qc
+    remapped = []
+    for name in skip:
+        for pref in ("language_model.model.", "model.language_model.", "language_model."):
+            if name.startswith(pref):
+                name = ("model." + name[len(pref):]) if pref != "language_model." else name[len(pref):]
+                break
+        if name.startswith(("vision_tower", "multi_modal_projector", "audio_tower", "modality_projection")):
+            continue
+        remapped.append(name)
+    remapped = list(dict.fromkeys(remapped))
+    qc = dict(qc) if is_dict else copy.copy(qc)
+    if is_dict:
+        qc["llm_int8_skip_modules"] = remapped
+    else:
+        qc.llm_int8_skip_modules = remapped
+    return qc
+
+
+def _get_text_only_key_mapping(parent_config, text_config):
+    # VLM checkpoints store text weights under a wrapper prefix (gemma3:
+    # language_model.model.*, gemma3n: model.language_model.*). transformers >=5 stopped
+    # auto-stripping it (base_model_prefix changed from language_model to model), so the
+    # text weights would init randomly; remap them onto the text decoder's keys. None on
+    # tf <5 (the prefix still strips and a mapping would break the load) and for a generic
+    # reused decoder that is not the family's own text variant. See PR #5816.
+    if Version(transformers_version) < Version("5.0.0"):
+        return None
+    if not _is_family_text_decoder(
+        getattr(parent_config, "model_type", ""),
+        getattr(text_config, "model_type", ""),
+    ):
+        return None
+    return {
+        r"^language_model\.model\.": "model.",
+        r"^model\.language_model\.": "model.",
+        r"^language_model\.lm_head\.": "lm_head.",
+    }
+
+
+def _apply_text_only_key_mapping(kwargs, parent_config, text_config):
+    # Inject the text-only key_mapping into from_pretrained kwargs, merging under any
+    # user-supplied mapping. No-op when not needed (tf <5 / non-family). See PR #5816.
+    mapping = _get_text_only_key_mapping(parent_config, text_config)
+    if not mapping:
+        return
+    user_mapping = kwargs.get("key_mapping", None)
+    kwargs["key_mapping"] = {**mapping, **user_mapping} if user_mapping else mapping
 
 
 def resolve_attention_implementation(
