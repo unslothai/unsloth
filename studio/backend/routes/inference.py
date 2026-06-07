@@ -3549,9 +3549,7 @@ async def openai_chat_completions(
                         choices = [],
                         usage = CompletionUsage(
                             prompt_tokens = _stream_usage.get("prompt_tokens", 0),
-                            completion_tokens = _stream_usage.get(
-                                "completion_tokens", 0
-                            ),
+                            completion_tokens = _stream_usage.get("completion_tokens", 0),
                             total_tokens = _stream_usage.get("total_tokens", 0),
                         ),
                         timings = _stats.get("timings"),
@@ -3748,9 +3746,7 @@ async def openai_chat_completions(
                         choices = [],
                         usage = CompletionUsage(
                             prompt_tokens = _stream_usage.get("prompt_tokens", 0),
-                            completion_tokens = _stream_usage.get(
-                                "completion_tokens", 0
-                            ),
+                            completion_tokens = _stream_usage.get("completion_tokens", 0),
                             total_tokens = _stream_usage.get("total_tokens", 0),
                         ),
                         timings = _stats.get("timings"),
