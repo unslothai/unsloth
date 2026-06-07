@@ -291,53 +291,63 @@ def _offline_quantize_to_fp8(
         hf_overrides={"quantization_config_file": "torchao_config.json"},
       )
     """
+    from transformers import (
+        AutoModelForCausalLM,
+        AutoModelForImageTextToText,
+        AutoTokenizer,
+        AutoProcessor,
+        TorchAoConfig,
+        AutoConfig,
+    )
+
+    config = AutoConfig.from_pretrained(model_name)
+    is_vlm = any(
+        x.endswith(("ForConditionalGeneration", "ForVisionText2Text"))
+        for x in (getattr(config, "architectures", None) or [])
+    )
+    is_vlm = is_vlm or hasattr(config, "vision_config")
+    # Mirror the loader's text-only guard so load_in_fp8 does not build the vision
+    # tower for a text-only request (e.g. Gemma 3 via FastLanguageModel). Decide here,
+    # before the cache name, so the artifact and its path stay in sync. See PR #5816.
+    text_config = None
+    if force_text_only and hasattr(config, "vision_config"):
+        from ._utils import (
+            _get_text_only_config,
+            resolve_model_class,
+            _is_family_text_decoder,
+        )
+
+        candidate = _get_text_only_config(config, model_name)
+        text_class = resolve_model_class(AutoModelForCausalLM, candidate)
+        if text_class is not None and _is_family_text_decoder(
+            getattr(config, "model_type", ""),
+            getattr(candidate, "model_type", ""),
+        ):
+            text_config = candidate
+            is_vlm = False
+
     temp_dir = tempfile.gettempdir()
-    new_model_name = model_name.split("/")[-1] + "-fp8-" + fp8_mode
-    new_model_name = os.path.join(temp_dir, new_model_name)
+    # Text-only and full-VLM artifacts differ, so cache them separately; otherwise one
+    # mode could reuse the other's directory and load the wrong architecture. See PR #5816.
+    cache_name = model_name.split("/")[-1] + "-fp8-" + fp8_mode
+    if text_config is not None:
+        cache_name += "-text-only"
+    new_model_name = os.path.join(temp_dir, cache_name)
     print(
         f"Unsloth: Quantizing '{model_name}' to fp8, using model_name='{new_model_name}' instead"
     )
 
     if not os.path.isdir(new_model_name):
-        from transformers import (
-            AutoModelForCausalLM,
-            AutoModelForImageTextToText,
-            AutoTokenizer,
-            AutoProcessor,
-            TorchAoConfig,
-            AutoConfig,
-        )
+        from ._utils import _apply_text_only_key_mapping
 
         qconfig = _get_torchao_fp8_config(fp8_mode)
         qconfig = TorchAoConfig(qconfig)
-        config = AutoConfig.from_pretrained(model_name)
-        is_vlm = any(
-            x.endswith(("ForConditionalGeneration", "ForVisionText2Text"))
-            for x in config.architectures
-        )
-        is_vlm = is_vlm or hasattr(config, "vision_config")
         load_kwargs = dict(
             torch_dtype = "auto", device_map = "auto", quantization_config = qconfig
         )
-        # Mirror the loader's text-only guard so load_in_fp8 does not build the vision
-        # tower for a text-only request (e.g. Gemma 3 via FastLanguageModel). See PR #5816.
-        if force_text_only and hasattr(config, "vision_config"):
-            from ._utils import (
-                _get_text_only_config,
-                resolve_model_class,
-                _is_family_text_decoder,
-                _apply_text_only_key_mapping,
-            )
-
-            text_config = _get_text_only_config(config, model_name)
-            text_class = resolve_model_class(AutoModelForCausalLM, text_config)
-            if text_class is not None and _is_family_text_decoder(
-                getattr(config, "model_type", ""),
-                getattr(text_config, "model_type", ""),
-            ):
-                _apply_text_only_key_mapping(load_kwargs, config, text_config)
-                config = text_config
-                is_vlm = False
+        if text_config is not None:
+            _apply_text_only_key_mapping(load_kwargs, config, text_config)
+            config = text_config
         auto_model = AutoModelForImageTextToText if is_vlm else AutoModelForCausalLM
         auto_processor = AutoProcessor if is_vlm else AutoTokenizer
         model = auto_model.from_pretrained(

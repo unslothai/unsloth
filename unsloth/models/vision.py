@@ -626,10 +626,33 @@ class FastBaseModel:
         if os.environ.get("UNSLOTH_MODEL_NAME", "") == "":
             os.environ["UNSLOTH_MODEL_NAME"] = model_name.lower()
 
-        if _force_text_only and auto_model in [
+        # Resolve the text-only decision up front, before the is_vlm / vLLM checks below,
+        # using the same family guard as loader.py so is_vlm stays consistent. Only skip
+        # the vision tower when the family has its own text decoder (e.g. Gemma 3); keep
+        # the full model otherwise (Llava/PaliGemma reuse a generic decoder that would
+        # load random weights). transformers >=5 also needs the key remap. See PR #5816.
+        if _force_text_only and auto_config is None:
+            auto_config = AutoConfig.from_pretrained(
+                model_name,
+                token = token,
+                trust_remote_code = trust_remote_code,
+            )
+        if _force_text_only and hasattr(auto_config, "vision_config"):
+            parent_config = auto_config
+            text_config = _get_text_only_config(parent_config, model_name)
+            text_class = resolve_model_class(AutoModelForCausalLM, text_config)
+            if text_class is not None and _is_family_text_decoder(
+                getattr(parent_config, "model_type", ""),
+                getattr(text_config, "model_type", ""),
+            ):
+                auto_config = text_config
+                auto_model = AutoModelForCausalLM
+                _apply_text_only_key_mapping(kwargs, parent_config, text_config)
+        elif _force_text_only and auto_model in [
             AutoModelForVision2Seq,
             AutoModelForImageTextToText,
         ]:
+            # Pure text model requested text-only with a VLM auto class.
             auto_model = AutoModelForCausalLM
         is_vlm = auto_model in [AutoModelForVision2Seq, AutoModelForImageTextToText]
         is_whisper = whisper_language is not None and whisper_task is not None
@@ -790,26 +813,6 @@ class FastBaseModel:
                 token = token,
                 trust_remote_code = trust_remote_code,
             )
-        if _force_text_only and hasattr(auto_config, "vision_config"):
-            # Mirror the loader guard for direct FastBaseModel callers: only skip the
-            # vision tower when the family has its own text decoder that loads the
-            # checkpoint correctly (e.g. Gemma 3); otherwise keep the full model so we
-            # do not silently init random weights (Llava/PaliGemma reuse a generic
-            # decoder). transformers >=5 also needs the key remap. See PR #5816.
-            parent_config = auto_config
-            text_config = _get_text_only_config(parent_config, model_name)
-            text_class = resolve_model_class(AutoModelForCausalLM, text_config)
-            if text_class is not None and _is_family_text_decoder(
-                getattr(parent_config, "model_type", ""),
-                getattr(text_config, "model_type", ""),
-            ):
-                auto_config = text_config
-                auto_model = AutoModelForCausalLM
-                _apply_text_only_key_mapping(kwargs, parent_config, text_config)
-            else:
-                auto_model = AutoModelForVision2Seq
-            is_vlm = auto_model in [AutoModelForVision2Seq, AutoModelForImageTextToText]
-            auto_processor = AutoProcessor if (is_vlm or is_whisper) else AutoTokenizer
         model_class = resolve_model_class(auto_model, auto_config)
         attn_impl = resolve_attention_implementation(
             model_class,
