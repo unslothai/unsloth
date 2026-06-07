@@ -45,7 +45,9 @@ def safe_error_detail(
     return fallback
 
 
-def safe_curated_detail(error: Exception, fallback: str = "An internal error occurred") -> str:
+def safe_curated_detail(
+    error: Exception, fallback: str = "An internal error occurred"
+) -> str:
     """Client-safe text for *curated* domain/validation exceptions whose message
     is intentionally user-facing (e.g. "Load a model first", "job already
     running", an upstream "401 Unauthorized").
