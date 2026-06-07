@@ -1928,6 +1928,9 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
   const [promptStorageOpen, setPromptStorageOpen] = useState(false);
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const aui = useAui();
+  // Disable Export chat until the conversation actually has content: an empty
+  // thread (e.g. one materialized just to attach a doc) has nothing to export.
+  const messageCount = useAuiState(({ thread }) => thread.messages.length);
   const { startQueue } = useContext(PromptQueueContext);
 
   // 3 most recent prompts for the Saved prompts submenu; refreshed on menu open.
@@ -2119,7 +2122,7 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
             third-level submenu (under "More") collision-flips at narrow widths
             and is awkward to reach with a mouse. */}
         <DropdownMenuSub>
-          <DropdownMenuSubTrigger disabled={!activeThreadId}>
+          <DropdownMenuSubTrigger disabled={!activeThreadId || messageCount === 0}>
             <HugeiconsIcon icon={Download01Icon} strokeWidth={2} />
             Export chat
           </DropdownMenuSubTrigger>

@@ -529,6 +529,11 @@ export function SharedComposer({
   const ragEnabled = useChatRuntimeStore((s) => s.ragEnabled);
   const setRagEnabled = useChatRuntimeStore((s) => s.setRagEnabled);
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
+  // Threads with content to export; empty until a compare run materializes them.
+  // Gates Export chat so it isn't selectable when there's nothing to export.
+  const exportThreadIds = [model1ThreadId, model2ThreadId, activeThreadId].filter(
+    (id): id is string => Boolean(id),
+  );
   const lastOpenRouterChosenModel = useChatRuntimeStore(
     (s) => s.lastOpenRouterChosenModel,
   );
@@ -1437,7 +1442,7 @@ export function SharedComposer({
                   a third-level submenu (under "More") collision-flips at narrow
                   widths and is awkward to reach with a mouse. */}
               <DropdownMenuSub>
-                <DropdownMenuSubTrigger>
+                <DropdownMenuSubTrigger disabled={exportThreadIds.length === 0}>
                   <HugeiconsIcon icon={Download01Icon} strokeWidth={2} />
                   Export chat
                 </DropdownMenuSubTrigger>
@@ -1452,30 +1457,23 @@ export function SharedComposer({
                       label: "ShareGPT JSONL",
                       fn: exportConversationShareGPT,
                     },
-                  ].map(({ label, fn }) => {
-                    const ids = [
-                      model1ThreadId,
-                      model2ThreadId,
-                      activeThreadId,
-                    ].filter((id): id is string => Boolean(id));
-                    return (
-                      <DropdownMenuItem
-                        key={label}
-                        disabled={ids.length === 0}
-                        onSelect={() => {
-                          if (!ids.length) {
-                            toast.error("No conversation to export yet.");
-                            return;
-                          }
-                          Promise.all(ids.map((id) => fn(id))).catch(() =>
-                            toast.error("Export failed."),
-                          );
-                        }}
-                      >
-                        {label}
-                      </DropdownMenuItem>
-                    );
-                  })}
+                  ].map(({ label, fn }) => (
+                    <DropdownMenuItem
+                      key={label}
+                      disabled={exportThreadIds.length === 0}
+                      onSelect={() => {
+                        if (!exportThreadIds.length) {
+                          toast.error("No conversation to export yet.");
+                          return;
+                        }
+                        Promise.all(exportThreadIds.map((id) => fn(id))).catch(
+                          () => toast.error("Export failed."),
+                        );
+                      }}
+                    >
+                      {label}
+                    </DropdownMenuItem>
+                  ))}
                 </DropdownMenuSubContent>
               </DropdownMenuSub>
               <DropdownMenuSub>
