@@ -202,7 +202,7 @@ export function ThreadSidebar({
               <DropdownMenuTrigger asChild>
                 <button
                   type="button"
-                  className="flex items-center justify-center rounded-sm p-0.5 text-muted-foreground opacity-60 hover:opacity-100 hover:bg-accent"
+                  className="flex items-center justify-center rounded-sm p-0.5 text-muted-foreground opacity-60 hover:opacity-100 hover:bg-accent focus:outline-none focus-visible:ring-0"
                   title="Export options"
                 >
                   <HugeiconsIcon icon={MoreHorizontalIcon} className="size-3.5" />
@@ -214,7 +214,7 @@ export function ThreadSidebar({
                     <HugeiconsIcon icon={Download01Icon} className="mr-2 size-4" />
                     Export Recents
                   </DropdownMenuSubTrigger>
-                  <DropdownMenuSubContent className="w-52">
+                  <DropdownMenuSubContent avoidCollisions={false} className="w-52">
                     {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
                       <DropdownMenuItem key={`r-m-${fmt}`} onSelect={() => void handleBulkExport("recents", fmt, true)}>
                         {label} — combined
@@ -233,7 +233,7 @@ export function ThreadSidebar({
                     <HugeiconsIcon icon={Download01Icon} className="mr-2 size-4" />
                     Export Recents + Projects
                   </DropdownMenuSubTrigger>
-                  <DropdownMenuSubContent className="w-52">
+                  <DropdownMenuSubContent avoidCollisions={false} className="w-52">
                     {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
                       <DropdownMenuItem key={`a-m-${fmt}`} onSelect={() => void handleBulkExport("all", fmt, true)}>
                         {label} — combined
@@ -262,12 +262,12 @@ export function ThreadSidebar({
                   </SidebarMenuButton>
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
-                      <SidebarMenuAction showOnHover onClick={(e) => e.stopPropagation()}>
+                      <SidebarMenuAction className="focus:outline-none focus-visible:ring-0" onClick={(e) => e.stopPropagation()}>
                         <HugeiconsIcon icon={MoreHorizontalIcon} className="size-4" />
                         <span className="sr-only">More options</span>
                       </SidebarMenuAction>
                     </DropdownMenuTrigger>
-                    <DropdownMenuContent side="right" align="start" className="w-44">
+                    <DropdownMenuContent side="bottom" align="end" className="w-44">
                       <DropdownMenuItem onSelect={() => openRename(item)}>
                         <HugeiconsIcon icon={PencilEdit02Icon} className="mr-2 size-4" />
                         Rename
@@ -277,7 +277,7 @@ export function ThreadSidebar({
                           <HugeiconsIcon icon={Download01Icon} className="mr-2 size-4" />
                           Export
                         </DropdownMenuSubTrigger>
-                        <DropdownMenuSubContent className="w-52">
+                        <DropdownMenuSubContent avoidCollisions={false} className="w-52">
                           {EXPORT_FORMATS.map(({ label, fn }) => (
                             <DropdownMenuItem
                               key={label}
