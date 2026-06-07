@@ -46,7 +46,13 @@ import {
   savePromptEntry,
   savePromptList,
 } from "../api/prompts-api";
-import { listStoredChatMessages } from "../utils/chat-history-storage";
+import {
+  listStoredChatMessages,
+  saveStoredChatThread,
+  syncStoredChatMessages,
+} from "../utils/chat-history-storage";
+import { notifyChatHistoryUpdated } from "../api/chat-api";
+import type { ThreadRecord, MessageRecord } from "../types";
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -263,6 +269,108 @@ function messageToText(msg: { content: unknown; attachments?: unknown }): string
   return parts.join("\n\n");
 }
 
+// ── OpenAI-format structured message builder ─────────────────────────────────
+//
+// Converts stored assistant-ui messages into the OpenAI messages array format
+// used for tool-calling and multimodal fine-tuning. Key differences vs the
+// plain-text messageToText path:
+//   - Tool calls → proper "tool_calls" array + separate "role":"tool" messages
+//   - Images     → "image_url" content parts with the stored data-URL
+//   - Audio      → dropped (no standard training format exists)
+//   - Thinking   → included as a text part (some trainers handle it)
+
+type OAIContentPart =
+  | { type: "text"; text: string }
+  | { type: "image_url"; image_url: { url: string } };
+
+type OAIToolCall = {
+  id: string;
+  type: "function";
+  function: { name: string; arguments: string };
+};
+
+type OAIMessage =
+  | { role: "user" | "system"; content: string | OAIContentPart[] }
+  | { role: "assistant"; content: string | null; tool_calls?: OAIToolCall[] }
+  | { role: "tool"; tool_call_id: string; name: string; content: string };
+
+/**
+ * Convert a single stored message into one or more OAIMessages.
+ * Tool-call parts split into an assistant message + tool-result messages.
+ * Image parts become image_url content parts (multimodal training).
+ */
+function messageToOpenAI(msg: { role: unknown; content: unknown; attachments?: unknown }): OAIMessage[] {
+  const role = (msg.role as string) ?? "user";
+  const blocks = Array.isArray(msg.content) ? msg.content : [];
+  const attachments = Array.isArray(msg.attachments) ? msg.attachments : [];
+
+  // Collect all content parts from both blocks and attachments
+  const allParts: Record<string, unknown>[] = [
+    ...blocks.map((b) => b as Record<string, unknown>),
+    ...attachments.flatMap((a) => {
+      const att = a as { content?: unknown };
+      return Array.isArray(att.content)
+        ? (att.content as Record<string, unknown>[])
+        : [];
+    }),
+  ];
+
+  if (role === "assistant") {
+    const textParts: string[] = [];
+    const toolCalls: OAIToolCall[] = [];
+    const toolResults: OAIMessage[] = [];
+
+    for (const p of allParts) {
+      if (p.type === "text" && typeof p.text === "string") {
+        textParts.push(p.text);
+      } else if (p.type === "reasoning" || p.type === "thinking") {
+        const t = typeof p.thinking === "string" ? p.thinking : typeof p.text === "string" ? p.text : "";
+        if (t) textParts.push(`<thinking>\n${t}\n</thinking>`);
+      } else if (p.type === "tool-call") {
+        const id = typeof p.toolCallId === "string" ? p.toolCallId : `call_${toolCalls.length}`;
+        const name = typeof p.toolName === "string" ? p.toolName : "unknown";
+        const argsStr = p.args != null ? JSON.stringify(p.args) : (typeof p.argsText === "string" ? p.argsText : "{}");
+        toolCalls.push({ id, type: "function", function: { name, arguments: argsStr } });
+        // Emit the result as a tool message immediately after
+        if (p.result !== undefined && p.result !== null) {
+          const resultStr = typeof p.result === "string" ? p.result : JSON.stringify(p.result);
+          toolResults.push({ role: "tool", tool_call_id: id, name, content: resultStr });
+        }
+      }
+    }
+
+    const content = textParts.join("\n\n") || null;
+    const assistantMsg: OAIMessage = toolCalls.length > 0
+      ? { role: "assistant", content, tool_calls: toolCalls }
+      : { role: "assistant", content: content ?? "" };
+
+    return toolResults.length > 0
+      ? [assistantMsg, ...toolResults]
+      : [assistantMsg];
+  }
+
+  // User / system: support multimodal content parts
+  const contentParts: OAIContentPart[] = [];
+  let hasNonText = false;
+
+  for (const p of allParts) {
+    if (p.type === "text" && typeof p.text === "string") {
+      contentParts.push({ type: "text", text: p.text });
+    } else if (p.type === "image" && typeof p.image === "string") {
+      contentParts.push({ type: "image_url", image_url: { url: p.image } });
+      hasNonText = true;
+    }
+    // audio: no standard training format — skip
+  }
+
+  // Flat string content → more compact; only use array if multimodal
+  if (!hasNonText) {
+    const text = contentParts.map((p) => (p.type === "text" ? p.text : "")).join("\n\n");
+    return text ? [{ role: role as "user" | "system", content: text }] : [];
+  }
+  return contentParts.length > 0 ? [{ role: role as "user" | "system", content: contentParts }] : [];
+}
+
 // Conversation export — ShareGPT training JSONL (human/gpt turns).
 export async function exportConversationShareGPT(threadId: string): Promise<void> {
   const messages = await loadConversationMessages(threadId);
@@ -291,15 +399,10 @@ export async function exportConversationRawJsonl(threadId: string): Promise<void
   const messages = await loadConversationMessages(threadId);
   if (!messages) return;
 
-  const msgs: Array<{ role: string; content: string }> = [];
-  for (const msg of messages) {
-    const content = messageToText(msg);
-    if (content.trim()) msgs.push({ role: msg.role as string, content });
-  }
-
-  if (msgs.length === 0) { toast.info("No exportable content."); return; }
+  const oaiMsgs: OAIMessage[] = messages.flatMap((msg) => messageToOpenAI(msg));
+  if (oaiMsgs.length === 0) { toast.info("No exportable content."); return; }
   downloadBlob(
-    JSON.stringify({ messages: msgs }),
+    JSON.stringify({ messages: oaiMsgs }),
     "conversation-" + exportTs() + ".jsonl",
     "application/x-ndjson",
   );
@@ -339,25 +442,18 @@ export const EXPORT_FORMATS_LIST = (
 async function buildThreadContent(
   threadId: string,
   format: ConvExportFormat,
-  opts?: { includeThreadId?: boolean },
 ): Promise<string | null> {
   const messages = await loadConversationMessages(threadId);
   if (!messages) return null;
 
   if (format === "jsonl-raw") {
-    // OpenAI/ChatML format: one JSON object per conversation, recognised by the
-    // Unsloth trainer as a ChatML-format dataset (looks for a "messages" column).
-    const msgs = messages
-      .map((msg) => {
-        const content = messageToText(msg);
-        if (!content.trim()) return null;
-        return { role: msg.role as string, content };
-      })
-      .filter(Boolean) as Array<{ role: string; content: string }>;
-    if (msgs.length === 0) return null;
-    const record: Record<string, unknown> = { messages: msgs };
-    if (opts?.includeThreadId) record.thread_id = threadId;
-    return JSON.stringify(record);
+    // OpenAI/ChatML format with proper tool-call and multimodal support.
+    // The Unsloth trainer recognises this as a ChatML-format dataset via the
+    // "messages" key. Tool calls use the OpenAI tool_calls array format;
+    // images are emitted as image_url content parts.
+    const oaiMsgs: OAIMessage[] = messages.flatMap((msg) => messageToOpenAI(msg));
+    if (oaiMsgs.length === 0) return null;
+    return JSON.stringify({ messages: oaiMsgs });
   }
 
   if (format === "sharegpt") {
@@ -368,9 +464,7 @@ async function buildThreadContent(
       if (value.trim()) conversations.push({ from: role === "user" ? "human" : "gpt", value });
     }
     if (conversations.length === 0) return null;
-    const record: Record<string, unknown> = { conversations };
-    if (opts?.includeThreadId) record.thread_id = threadId;
-    return JSON.stringify(record);
+    return JSON.stringify({ conversations });
   }
 
   // csv
@@ -378,19 +472,13 @@ async function buildThreadContent(
   for (const msg of messages) {
     const content = messageToText(msg);
     if (!content.trim()) continue;
-    const row = opts?.includeThreadId
-      ? `${csvEscape(threadId)},${csvEscape(msg.role as string)},${csvEscape(content)}`
-      : `${csvEscape(msg.role as string)},${csvEscape(content)}`;
-    rows.push(row);
+    rows.push(`${csvEscape(msg.role as string)},${csvEscape(content)}`);
   }
   return rows.length > 0 ? rows.join("\n") : null;
 }
 
-function csvHeader(format: ConvExportFormat, includeThreadId?: boolean): string {
-  if (format === "csv") {
-    return includeThreadId ? "thread_id,role,content" : "role,content";
-  }
-  return "";
+function csvHeader(format: ConvExportFormat): string {
+  return format === "csv" ? "role,content" : "";
 }
 
 function exportExt(format: ConvExportFormat): string {
@@ -414,10 +502,10 @@ export async function exportBulkConversationsMerged(
   if (threadIds.length === 0) { toast.info("No conversations to export."); return; }
 
   const parts: string[] = [];
-  const header = csvHeader(format, true);
+  const header = csvHeader(format);
 
   for (const id of threadIds) {
-    const content = await buildThreadContent(id, format, { includeThreadId: true });
+    const content = await buildThreadContent(id, format);
     if (content) parts.push(content);
   }
 
@@ -479,6 +567,269 @@ export async function exportProjectConversations(
     format,
     `project-${safe}-${exportTs()}`,
   );
+}
+
+// ─── Conversation import ──────────────────────────────────────────────────────
+
+/**
+ * Convert an OpenAI messages array back into assistant-ui MessageRecord[].
+ * Tool results (role:"tool") are absorbed into the preceding assistant message's
+ * tool-call part as a `result` field; they don't become separate records.
+ */
+function oaiMessagesToRecords(
+  oaiMsgs: unknown[],
+  threadId: string,
+  baseTs: number,
+): MessageRecord[] {
+  // Pass 1: index tool results by tool_call_id so we can attach them
+  const toolResults = new Map<string, string>();
+  for (const m of oaiMsgs) {
+    const msg = m as Record<string, unknown>;
+    if (msg.role === "tool" && typeof msg.tool_call_id === "string") {
+      toolResults.set(msg.tool_call_id, typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content ?? ""));
+    }
+  }
+
+  const records: MessageRecord[] = [];
+  let prevId: string | null = null;
+  let idx = 0;
+
+  for (const m of oaiMsgs) {
+    const msg = m as Record<string, unknown>;
+    const role = msg.role as string;
+    if (role === "tool") continue; // absorbed into assistant tool-calls
+
+    const id = crypto.randomUUID();
+
+    let content: unknown[];
+
+    if (role === "assistant") {
+      const parts: unknown[] = [];
+      if (typeof msg.content === "string" && msg.content.trim()) {
+        parts.push({ type: "text", text: msg.content });
+      }
+      if (Array.isArray(msg.tool_calls)) {
+        for (const tc of msg.tool_calls) {
+          const tcObj = tc as Record<string, unknown>;
+          const fn = (tcObj.function as Record<string, unknown>) ?? {};
+          const tcId = typeof tcObj.id === "string" ? tcObj.id : crypto.randomUUID();
+          const name = typeof fn.name === "string" ? fn.name : "unknown";
+          const argsStr = typeof fn.arguments === "string" ? fn.arguments : "{}";
+          let args: unknown = {};
+          try { args = JSON.parse(argsStr); } catch { /* keep empty */ }
+          const result = toolResults.get(tcId);
+          parts.push({
+            type: "tool-call",
+            toolCallId: tcId,
+            toolName: name,
+            args,
+            argsText: argsStr,
+            ...(result !== undefined ? { result } : {}),
+          });
+        }
+      }
+      content = parts;
+    } else {
+      // user / system — may be multimodal
+      const raw = msg.content;
+      if (Array.isArray(raw)) {
+        content = raw.flatMap((p): unknown[] => {
+          const part = p as Record<string, unknown>;
+          if (part.type === "text" && typeof part.text === "string") {
+            return [{ type: "text", text: part.text }];
+          }
+          if (part.type === "image_url") {
+            const iu = (part.image_url as Record<string, unknown>) ?? {};
+            return [{ type: "image", image: typeof iu.url === "string" ? iu.url : "" }];
+          }
+          return [];
+        });
+      } else {
+        content = typeof raw === "string" && raw.trim() ? [{ type: "text", text: raw }] : [];
+      }
+    }
+
+    if (content.length === 0) continue;
+
+    records.push({
+      id,
+      threadId,
+      parentId: prevId,
+      role: role as MessageRecord["role"],
+      content: content as MessageRecord["content"],
+      createdAt: baseTs + idx,
+    });
+    prevId = id;
+    idx++;
+  }
+
+  return records;
+}
+
+/** Convert a ShareGPT conversations array into assistant-ui MessageRecord[]. */
+function sharegptToRecords(
+  conversations: unknown[],
+  threadId: string,
+  baseTs: number,
+): MessageRecord[] {
+  const records: MessageRecord[] = [];
+  let prevId: string | null = null;
+  let idx = 0;
+  for (const c of conversations) {
+    const conv = c as Record<string, unknown>;
+    const from = typeof conv.from === "string" ? conv.from : "";
+    const value = typeof conv.value === "string" ? conv.value : "";
+    if (!value.trim()) continue;
+    const role: MessageRecord["role"] = from === "human" ? "user" : from === "system" ? "system" : "assistant";
+    const id = crypto.randomUUID();
+    records.push({
+      id,
+      threadId,
+      parentId: prevId,
+      role,
+      content: [{ type: "text", text: value }] as MessageRecord["content"],
+      createdAt: baseTs + idx,
+    });
+    prevId = id;
+    idx++;
+  }
+  return records;
+}
+
+/** Convert a CSV table (role, content columns) into assistant-ui MessageRecord[]. */
+function csvToRecords(csvText: string, threadId: string, baseTs: number): MessageRecord[] {
+  const lines = csvText.split(/\r?\n/);
+  const records: MessageRecord[] = [];
+  let prevId: string | null = null;
+  let idx = 0;
+  // Skip header row
+  for (let i = 1; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (!line) continue;
+    // Minimal CSV parse: first quoted or unquoted field = role, rest = content
+    let role = "";
+    let content = "";
+    if (line.startsWith('"')) {
+      const m = line.match(/^"((?:[^"]|"")*)"\s*,\s*([\s\S]*)$/);
+      if (!m) continue;
+      role = m[1].replace(/""/g, '"');
+      content = m[2].startsWith('"')
+        ? m[2].slice(1, m[2].endsWith('"') ? -1 : undefined).replace(/""/g, '"')
+        : m[2];
+    } else {
+      const comma = line.indexOf(",");
+      if (comma === -1) continue;
+      role = line.slice(0, comma);
+      content = line.slice(comma + 1).startsWith('"')
+        ? line.slice(comma + 2, line.endsWith('"') ? -1 : undefined).replace(/""/g, '"')
+        : line.slice(comma + 1);
+    }
+    if (!content.trim()) continue;
+    const validRole = role === "user" || role === "assistant" || role === "system" ? role : "user";
+    const id = crypto.randomUUID();
+    records.push({
+      id,
+      threadId,
+      parentId: prevId,
+      role: validRole as MessageRecord["role"],
+      content: [{ type: "text", text: content }] as MessageRecord["content"],
+      createdAt: baseTs + idx,
+    });
+    prevId = id;
+    idx++;
+  }
+  return records;
+}
+
+interface ParsedConversation {
+  title: string;
+  threadId: string;
+  messages: MessageRecord[];
+}
+
+/** Parse a file's text content into an array of conversations. */
+function parseImportText(text: string, filename: string): ParsedConversation[] {
+  const results: ParsedConversation[] = [];
+  const basename = filename.replace(/\.[^.]+$/, "");
+
+  const isJsonl = /\.(jsonl|ndjson)$/i.test(filename);
+  const isCsv = /\.csv$/i.test(filename);
+
+  if (isCsv) {
+    // Entire file = one conversation
+    const threadId = crypto.randomUUID();
+    const messages = csvToRecords(text, threadId, Date.now());
+    if (messages.length > 0) {
+      results.push({ title: basename, threadId, messages });
+    }
+    return results;
+  }
+
+  if (isJsonl) {
+    const lines = text.split(/\r?\n/).filter((l) => l.trim());
+    lines.forEach((line, lineIdx) => {
+      let obj: Record<string, unknown>;
+      try { obj = JSON.parse(line); } catch { return; }
+
+      // Always generate a fresh ID — never reuse the exported thread_id.
+      // Reusing it would clobber existing threads with the same ID on import.
+      const threadId = crypto.randomUUID();
+      const title = typeof obj.title === "string" ? obj.title : `${basename} ${lineIdx + 1}`;
+      const baseTs = typeof obj.created_at === "number" ? obj.created_at : Date.now() + lineIdx;
+
+      let messages: MessageRecord[] = [];
+
+      if (Array.isArray(obj.messages)) {
+        // Raw JSONL (OpenAI format)
+        messages = oaiMessagesToRecords(obj.messages, threadId, baseTs);
+      } else if (Array.isArray(obj.conversations)) {
+        // ShareGPT format
+        messages = sharegptToRecords(obj.conversations, threadId, baseTs);
+      }
+
+      if (messages.length > 0) {
+        results.push({ title, threadId, messages });
+      }
+    });
+    return results;
+  }
+
+  // Unknown extension — try JSONL, then CSV fallback
+  return parseImportText(text, filename + ".jsonl");
+}
+
+/**
+ * Import conversations from a File into chat storage.
+ * @param file   The file to import (.jsonl, .ndjson, or .csv)
+ * @param projectId  null = Recents, string = put in this project
+ * @returns number of threads imported
+ */
+export async function importConversationsFromFile(
+  file: File,
+  projectId: string | null = null,
+): Promise<number> {
+  const text = await file.text();
+  const parsed = parseImportText(text, file.name);
+  if (parsed.length === 0) return 0;
+
+  const now = Date.now();
+  await Promise.all(
+    parsed.map(async ({ title, threadId, messages }) => {
+      const thread: ThreadRecord = {
+        id: threadId,
+        title,
+        modelType: "base",
+        projectId: projectId ?? null,
+        archived: false,
+        createdAt: messages[0]?.createdAt ?? now,
+      };
+      await saveStoredChatThread(thread);
+      await syncStoredChatMessages(threadId, messages, { pruneMissing: false });
+    }),
+  );
+
+  notifyChatHistoryUpdated();
+  return parsed.length;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -50,6 +50,7 @@ import {
   Delete02Icon,
   Download01Icon,
   DownloadSquare01Icon,
+  Upload01Icon,
   Edit03Icon,
   FolderAddIcon,
   FolderExportIcon,
@@ -72,6 +73,7 @@ import {
   exportConversationShareGPT,
   exportBulkConversationsMerged,
   exportBulkConversationsSeparate,
+  importConversationsFromFile,
   EXPORT_FORMATS_LIST,
   type ConvExportFormat,
 } from "@/features/chat/prompt-storage/prompt-storage-dialog";
@@ -258,6 +260,21 @@ export function AppSidebar() {
   const isChatRoute = pathname.startsWith("/chat");
   const isStudioRoute = pathname === "/studio" || pathname.startsWith("/studio/");
   const [chatOpen, setChatOpen] = useState(true);
+
+  const recentsImportInputRef = useRef<HTMLInputElement>(null);
+
+  async function handleImportToRecents(file: File) {
+    try {
+      const count = await importConversationsFromFile(file, null);
+      if (count === 0) {
+        toast.info("No conversations found in file.");
+      } else {
+        toast.success(`Imported ${count} conversation${count === 1 ? "" : "s"} to Recents.`);
+      }
+    } catch {
+      toast.error("Import failed.");
+    }
+  }
 
   async function handleBulkExport(scope: "recents" | "all", fmt: ConvExportFormat, merged: boolean) {
     try {
@@ -722,6 +739,18 @@ export function AppSidebar() {
 
   return (
     <>
+    {/* Hidden file inputs for chat import */}
+    <input
+      ref={recentsImportInputRef}
+      type="file"
+      accept=".jsonl,.ndjson,.csv"
+      className="hidden"
+      onChange={(e) => {
+        const file = e.target.files?.[0];
+        if (file) void handleImportToRecents(file);
+        e.target.value = "";
+      }}
+    />
     <Sidebar
       collapsible="icon"
       variant="sidebar"
@@ -928,21 +957,27 @@ export function AppSidebar() {
           <Collapsible open={chatOpen} onOpenChange={setChatOpen} asChild>
             <SidebarGroup className="group-data-[collapsible=icon]:hidden px-0 py-0">
               <SidebarGroupLabel className={cn("sidebar-sticky-label sidebar-sticky-label-following", scrolled && "is-scrolled")} asChild>
-                <CollapsibleTrigger className="cursor-pointer flex w-full items-center gap-1 group/sb-collap">
-                  {t("shell.navigation.recents")}
-                  <ChevronDown className="size-3.5 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg] [[data-state=closed]_&]:opacity-100" />
+                <div className="flex w-full items-center group/sb-collap">
+                  <CollapsibleTrigger className="cursor-pointer flex flex-1 items-center gap-1 min-w-0">
+                    {t("shell.navigation.recents")}
+                    <ChevronDown className="size-3.5 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg] [[data-state=closed]_&]:opacity-100" />
+                  </CollapsibleTrigger>
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
                       <button
                         type="button"
                         className="ml-auto flex items-center justify-center rounded-sm p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground focus:outline-none focus-visible:ring-0"
                         title="Export recents"
-                        onClick={(e) => e.stopPropagation()}
                       >
                         <MoreHorizontalIcon className="size-3.5" />
                       </button>
                     </DropdownMenuTrigger>
-                    <DropdownMenuContent side="bottom" align="end" className="w-56">
+                    <DropdownMenuContent side="bottom" align="start" className="w-56">
+                      <DropdownMenuItem onSelect={() => recentsImportInputRef.current?.click()}>
+                        <HugeiconsIcon icon={Upload01Icon} strokeWidth={1.75} className="size-icon mr-1" />
+                        Import chats
+                      </DropdownMenuItem>
+                      <DropdownMenuSeparator />
                       <DropdownMenuSub>
                         <DropdownMenuSubTrigger>
                           <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-icon mr-1" />
@@ -983,7 +1018,7 @@ export function AppSidebar() {
                       </DropdownMenuSub>
                     </DropdownMenuContent>
                   </DropdownMenu>
-                </CollapsibleTrigger>
+                </div>
               </SidebarGroupLabel>
               <CollapsibleContent>
                 <SidebarGroupContent className="px-2">
