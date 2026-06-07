@@ -2115,6 +2115,50 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
             </DropdownMenuItem>
           </DropdownMenuSubContent>
         </DropdownMenuSub>
+        {/* Top-level so the format list is a single hop from the + menu; a
+            third-level submenu (under "More") collision-flips at narrow widths
+            and is awkward to reach with a mouse. */}
+        <DropdownMenuSub>
+          <DropdownMenuSubTrigger disabled={!activeThreadId}>
+            <HugeiconsIcon icon={Download01Icon} strokeWidth={2} />
+            Export chat
+          </DropdownMenuSubTrigger>
+          <DropdownMenuSubContent
+            collisionPadding={16}
+            className="unsloth-plus-menu w-[176px]"
+          >
+            <DropdownMenuItem
+              onSelect={() => {
+                if (!activeThreadId) return;
+                exportConversationRawJsonl(activeThreadId).catch(() =>
+                  toast.error("Export failed."),
+                );
+              }}
+            >
+              Raw JSONL
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              onSelect={() => {
+                if (!activeThreadId) return;
+                exportConversationCsv(activeThreadId).catch(() =>
+                  toast.error("Export failed."),
+                );
+              }}
+            >
+              CSV
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              onSelect={() => {
+                if (!activeThreadId) return;
+                exportConversationShareGPT(activeThreadId).catch(() =>
+                  toast.error("Export failed."),
+                );
+              }}
+            >
+              ShareGPT JSONL
+            </DropdownMenuItem>
+          </DropdownMenuSubContent>
+        </DropdownMenuSub>
         <DropdownMenuSub>
           <DropdownMenuSubTrigger>
             <MoreHorizontalIcon className="size-4" />
@@ -2141,35 +2185,6 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
               <Columns2Icon />
               Compare chat
             </DropdownMenuItem>
-            <DropdownMenuSub>
-              <DropdownMenuSubTrigger disabled={!activeThreadId}>
-                <HugeiconsIcon icon={Download01Icon} strokeWidth={2} />
-                Export chat
-              </DropdownMenuSubTrigger>
-              <DropdownMenuSubContent
-                collisionPadding={16}
-                className="unsloth-plus-menu w-[176px]"
-              >
-                <DropdownMenuItem onSelect={() => {
-                  if (!activeThreadId) return;
-                  exportConversationRawJsonl(activeThreadId).catch(() => toast.error("Export failed."));
-                }}>
-                  Raw JSONL
-                </DropdownMenuItem>
-                <DropdownMenuItem onSelect={() => {
-                  if (!activeThreadId) return;
-                  exportConversationCsv(activeThreadId).catch(() => toast.error("Export failed."));
-                }}>
-                  CSV
-                </DropdownMenuItem>
-                <DropdownMenuItem onSelect={() => {
-                  if (!activeThreadId) return;
-                  exportConversationShareGPT(activeThreadId).catch(() => toast.error("Export failed."));
-                }}>
-                  ShareGPT JSONL
-                </DropdownMenuItem>
-              </DropdownMenuSubContent>
-            </DropdownMenuSub>
           </DropdownMenuSubContent>
         </DropdownMenuSub>
         <DropdownMenuSeparator />
