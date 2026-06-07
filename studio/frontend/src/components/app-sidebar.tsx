@@ -942,7 +942,7 @@ export function AppSidebar() {
                         <MoreHorizontalIcon className="size-3.5" />
                       </button>
                     </DropdownMenuTrigger>
-                    <DropdownMenuContent side="bottom" align="end" className="w-56">
+                    <DropdownMenuContent side="bottom" align="start" className="w-56">
                       <DropdownMenuSub>
                         <DropdownMenuSubTrigger>
                           <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-icon mr-1" />
