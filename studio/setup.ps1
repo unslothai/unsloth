@@ -1152,12 +1152,20 @@ if ($DriverMaxCuda) {
                 }
             }
         } else {
-            # Check if there's an incompatible (too new) toolkit installed
+            # No side-by-side match. A compatible toolkit may still be on PATH /
+            # process CUDA_PATH / a custom location: accept it when its major is
+            # compatible, else record it as too-new to explain the mismatch.
             $AnyNvcc = Find-Nvcc
             if ($AnyNvcc) {
                 $NvccOut = & $AnyNvcc --version 2>&1 | Out-String
-                if ($NvccOut -match "release\s+([\d]+\.[\d]+)") {
-                    $IncompatibleToolkit = $Matches[1]
+                if ($NvccOut -match "release\s+(\d+)\.(\d+)") {
+                    $tkMaj = [int]$Matches[1]; $tkMin = [int]$Matches[2]
+                    if ($tkMaj -le $drMajorCuda) {
+                        $NvccPath = $AnyNvcc
+                        substep "found compatible CUDA Toolkit (nvcc: $NvccPath)"
+                    } else {
+                        $IncompatibleToolkit = "$tkMaj.$tkMin"
+                    }
                 }
             }
         }

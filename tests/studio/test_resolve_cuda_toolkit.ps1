@@ -136,6 +136,15 @@ try {
     Check "winget attempted"             ($r.Out -match "installing via winget")
     Check "exits non-zero"               ($r.Exit -ne 0)
     Check "preserved nvcc-required error" ($r.Out -match "CUDA Toolkit \(nvcc\) is required")
+
+    Write-Host "Scenario 7: same-major toolkit only on PATH, missed by -MaxVersion (-RequireOrExit) -> accepted, not rejected"
+    # -MaxVersion returns $null (not in the side-by-side base) but plain Find-Nvcc
+    # finds a same-major toolkit via PATH/CUDA_PATH. It must be used, not flagged.
+    $r = Run-Case -FindMode "incompatible" -Require $true -DriverMode "same-major"
+    Check "exits 0"                      ($r.Exit -eq 0)
+    Check "CudaToolkitReady = true"      ($r.Out -match "ready=True")
+    Check "NvccPath published"           ($r.Out -match "nvcc=.*nvcc-13\.3")
+    Check "no mismatch warning"          (-not ($r.Out -match "major-version mismatch"))
 }
 finally {
     Remove-Item -Recurse -Force -LiteralPath $work -ErrorAction SilentlyContinue
