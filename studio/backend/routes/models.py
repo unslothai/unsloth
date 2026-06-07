@@ -16,7 +16,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from typing import List, Optional
 import structlog
 from loggers import get_logger
-from utils.utils import safe_error_detail, log_and_http_error
+from utils.utils import log_and_http_error
 
 import re as _re
 

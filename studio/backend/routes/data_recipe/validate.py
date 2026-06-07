@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 
 from core.data_recipe.service import (
     build_config_builder,
@@ -16,7 +16,7 @@ from core.data_recipe.service import (
 )
 from loggers import get_logger
 from models.data_recipe import RecipePayload, ValidateError, ValidateResponse
-from utils.utils import safe_error_detail, log_and_http_error
+from utils.utils import safe_error_detail, safe_curated_detail, log_and_http_error
 
 logger = get_logger(__name__)
 router = APIRouter()
@@ -200,7 +200,7 @@ def validate(payload: RecipePayload) -> ValidateResponse:
             error = str(exc),
             exc_info = True,
         )
-        detail = safe_error_detail(exc, fallback = "Validation failed.")
+        detail = safe_curated_detail(exc, fallback = "Validation failed.")
         parsed_errors = _collect_validation_errors(recipe)
         return ValidateResponse(
             valid = False,

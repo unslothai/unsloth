@@ -742,12 +742,12 @@ async def load_model(
         try:
             extra_llama_args = validate_extra_args(request.llama_extra_args)
         except ValueError as exc:
-            raise log_and_http_error(
-                exc,
-                400,
-                safe_error_detail(exc),
-                event = "inference.validate_extra_args_failed",
-                log = logger,
+            # Curated user-facing validation message (names the offending
+            # flag); keep it actionable, just strip any absolute paths.
+            logger.warning("inference.validate_extra_args_failed: %s", exc)
+            raise HTTPException(
+                status_code = 400,
+                detail = redact_native_paths(str(exc)),
             )
         # Re-narrow []-from-None back to None so the inheritance path
         # below can tell "caller omitted" from "caller explicit []".
@@ -1260,7 +1260,7 @@ async def load_model(
                 detail = f"Failed to load native model {model_log_label}: {msg}",
             )
         logger.error(f"Error loading model: {e}", exc_info = True)
-        msg = str(e)
+        msg = redact_native_paths(str(e))
         if any(h.lower() in msg.lower() for h in not_supported_hints):
             msg = f"This model is not supported yet. Try a different model. (Original error: {msg})"
         raise HTTPException(status_code = 500, detail = f"Failed to load model: {msg}")
@@ -2515,14 +2515,12 @@ async def delete_openai_container(
                 detail = f"OpenAI rejected /containers delete: {detail}",
             )
         except httpx.HTTPError as exc:
-            logger.warning(
-                "openai_container_delete.transport_error container_id=%s error=%s",
-                body.container_id,
+            raise log_and_http_error(
                 exc,
-            )
-            raise HTTPException(
-                status_code = 502,
-                detail = "Could not reach OpenAI.",
+                502,
+                "Could not reach OpenAI.",
+                event = "openai_container_delete.transport_error",
+                log = logger,
             )
     finally:
         await client.close()
@@ -3851,10 +3849,13 @@ async def serve_sandbox_file(
     safe_filename = os.path.basename(filename)
     if not safe_filename or safe_filename in (".", ".."):
         raise HTTPException(status_code = 404, detail = "Not found")
-    # Defense-in-depth: restrict to a strict allowlist before the path is
-    # built, so no traversal/separator characters can reach os.path.join
-    # (also clears CodeQL py/path-injection by giving it a clear sanitizer).
-    if not _re.fullmatch(r"[A-Za-z0-9._-]{1,255}", safe_filename):
+    # Defense-in-depth: fullmatch allowlist that forbids path separators and
+    # control characters before the path is built (clears CodeQL
+    # py/path-injection with a clear sanitizer), while still permitting ordinary
+    # artifact names like "loss curve.png" or "report(1).png" that the Python
+    # tool can generate. basename(), the extension allowlist and the realpath
+    # containment check below remain the primary traversal guards.
+    if not _re.fullmatch(r"[^/\\\x00-\x1f]{1,255}", safe_filename):
         raise HTTPException(status_code = 404, detail = "Not found")
 
     # ── Extension allowlist ─────────────────────────────────────

@@ -12,7 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from auth.authentication import get_current_subject
 from loggers import get_logger
-from utils.utils import safe_error_detail, log_and_http_error
+from utils.utils import safe_curated_detail, log_and_http_error
 from storage.studio_db import (
     ChatMessageConflictError,
     CorruptSettingsError,
@@ -413,7 +413,7 @@ async def save_thread_message(
         raise log_and_http_error(
             exc,
             409,
-            safe_error_detail(exc),
+            safe_curated_detail(exc),
             event = "chat_history.save_message_conflict",
             log = logger,
         ) from exc
@@ -455,7 +455,7 @@ async def replace_thread_messages(
         raise log_and_http_error(
             exc,
             409,
-            safe_error_detail(exc),
+            safe_curated_detail(exc),
             event = "chat_history.replace_messages_conflict",
             log = logger,
         ) from exc
@@ -516,7 +516,7 @@ async def put_settings(
         raise log_and_http_error(
             exc,
             409,
-            safe_error_detail(exc),
+            safe_curated_detail(exc),
             event = "chat_history.put_settings_conflict",
             log = logger,
         ) from exc

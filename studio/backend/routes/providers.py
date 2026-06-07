@@ -40,7 +40,7 @@ from models.providers import (
     ProviderUpdate,
 )
 from storage import providers_db
-from utils.utils import safe_error_detail, log_and_http_error
+from utils.utils import safe_curated_detail, log_and_http_error
 
 logger = structlog.get_logger(__name__)
 
@@ -263,7 +263,7 @@ async def test_provider(
         )
         return ProviderTestResult(
             success = False,
-            message = f"Connection failed: {safe_error_detail(exc)}",
+            message = f"Connection failed: {safe_curated_detail(exc)}",
             models_count = None,
         )
     finally:

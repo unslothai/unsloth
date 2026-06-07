@@ -32,7 +32,7 @@ except ImportError:
 from core.data_recipe.jsonable import to_preview_jsonable
 from loggers import get_logger
 from utils.paths import ensure_dir, seed_uploads_root, unstructured_uploads_root
-from utils.utils import safe_error_detail, log_and_http_error
+from utils.utils import log_and_http_error
 from utils.upload_limits import (
     LOCAL_SEED_UPLOAD_MAX_BYTES,
     LOCAL_SEED_UPLOAD_MAX_LABEL,

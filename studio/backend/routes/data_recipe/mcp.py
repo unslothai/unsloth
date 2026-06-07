@@ -16,7 +16,7 @@ from models.data_recipe import (
     McpToolsListResponse,
     McpToolsProviderResult,
 )
-from utils.utils import safe_error_detail, log_and_http_error
+from utils.utils import safe_error_detail
 
 logger = get_logger(__name__)
 router = APIRouter()

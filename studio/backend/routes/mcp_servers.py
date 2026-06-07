@@ -26,7 +26,7 @@ from models.mcp_servers import (
     McpServerUpdate,
 )
 from storage import mcp_servers_db
-from utils.utils import safe_error_detail, log_and_http_error
+from utils.utils import safe_curated_detail, log_and_http_error
 
 logger = structlog.get_logger(__name__)
 
@@ -254,7 +254,7 @@ async def refresh_mcp_server_tools(
             error = str(exc),
             exc_info = True,
         )
-        return McpServerProbeResult(ok = False, error = safe_error_detail(exc))
+        return McpServerProbeResult(ok = False, error = safe_curated_detail(exc))
 
     return McpServerProbeResult(ok = True, tool_count = len(tools))
 
@@ -282,6 +282,6 @@ async def test_mcp_server(
             error = str(exc),
             exc_info = True,
         )
-        return McpServerProbeResult(ok = False, error = safe_error_detail(exc))
+        return McpServerProbeResult(ok = False, error = safe_curated_detail(exc))
 
     return McpServerProbeResult(ok = True, tool_count = len(tools))

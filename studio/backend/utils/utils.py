@@ -42,6 +42,30 @@ def safe_error_detail(error: Exception, fallback: str = "An internal error occur
     return fallback
 
 
+def safe_curated_detail(error: Exception, fallback: str = "An internal error occurred") -> str:
+    """Client-safe text for *curated* domain/validation exceptions whose message
+    is intentionally user-facing (e.g. "Load a model first", "job already
+    running", an upstream "401 Unauthorized").
+
+    Unlike ``safe_error_detail`` it keeps the actual message so the user knows
+    what to fix, only stripping absolute filesystem paths. Use it for known
+    domain exception types; keep ``safe_error_detail`` for generic ``Exception``.
+    """
+    from utils.native_path_leases import redact_native_paths
+
+    msg = redact_native_paths(str(error)).strip()
+    return msg or fallback
+
+
+def _log_event(log, event: str, error: Exception) -> None:
+    """Emit a structured error log, tolerating both structlog and stdlib loggers."""
+    try:
+        log.error(event, error = str(error), exc_info = True)
+    except TypeError:
+        # stdlib logging.Logger rejects structlog-style keyword fields.
+        log.error("%s: %s", event, error, exc_info = True)
+
+
 def log_and_http_error(
     error: Exception,
     status_code: int,
@@ -57,7 +81,7 @@ def log_and_http_error(
     """
     from fastapi import HTTPException
 
-    (log or logger).error(event, error = str(error), exc_info = True)
+    _log_event(log or logger, event, error)
     return HTTPException(status_code = status_code, detail = public_message)
 
 

@@ -72,7 +72,6 @@ from utils.upload_limits import get_upload_limit_bytes, get_upload_limit_label
 from auth.authentication import get_current_subject
 
 # Client-safe error helpers
-from utils.utils import safe_error_detail, log_and_http_error
 
 router = APIRouter()
 logger = get_logger(__name__)

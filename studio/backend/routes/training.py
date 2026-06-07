@@ -52,7 +52,7 @@ except ImportError:
 from auth.authentication import get_current_subject
 
 # Client-safe error helpers
-from utils.utils import safe_error_detail, log_and_http_error
+from utils.utils import log_and_http_error
 
 from models import (
     TrainingStartRequest,

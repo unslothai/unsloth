@@ -26,7 +26,7 @@ from models.data_recipe import (
     PublishDatasetResponse,
     RecipePayload,
 )
-from utils.utils import safe_error_detail, log_and_http_error
+from utils.utils import safe_error_detail, safe_curated_detail, log_and_http_error
 
 logger = get_logger(__name__)
 router = APIRouter()
@@ -456,7 +456,7 @@ def create_job(payload: RecipePayload, request: Request):
         raise log_and_http_error(
             exc,
             400,
-            safe_error_detail(exc),
+            safe_curated_detail(exc),
             event = "data_recipe.jobs.inject_local_providers_failed",
             log = logger,
         ) from exc
@@ -479,7 +479,7 @@ def create_job(payload: RecipePayload, request: Request):
         raise log_and_http_error(
             exc,
             409,
-            safe_error_detail(exc),
+            safe_curated_detail(exc),
             event = "data_recipe.jobs.start_conflict",
             log = logger,
         ) from exc
@@ -489,7 +489,7 @@ def create_job(payload: RecipePayload, request: Request):
         raise log_and_http_error(
             exc,
             400,
-            safe_error_detail(exc),
+            safe_curated_detail(exc),
             event = "data_recipe.jobs.start_failed",
             log = logger,
         ) from exc
@@ -621,7 +621,7 @@ def publish_job_dataset(job_id: str, payload: PublishDatasetRequest):
         raise log_and_http_error(
             exc,
             400,
-            safe_error_detail(exc),
+            safe_curated_detail(exc),
             event = "data_recipe.jobs.publish_failed",
             log = logger,
         ) from exc
