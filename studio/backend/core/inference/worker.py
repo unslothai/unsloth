@@ -481,6 +481,8 @@ def _handle_generate(
             {
                 "type": "gen_done",
                 "request_id": request_id,
+                # usage/timings from the MLX backend (None elsewhere).
+                "stats": getattr(backend, "last_generation_stats", None),
                 "ts": time.time(),
             },
         )
