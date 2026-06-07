@@ -1433,6 +1433,51 @@ export function SharedComposer({
                   </DropdownMenuItem>
                 </DropdownMenuSubContent>
               </DropdownMenuSub>
+              {/* Top-level so the format list is a single hop from the + menu;
+                  a third-level submenu (under "More") collision-flips at narrow
+                  widths and is awkward to reach with a mouse. */}
+              <DropdownMenuSub>
+                <DropdownMenuSubTrigger>
+                  <HugeiconsIcon icon={Download01Icon} strokeWidth={2} />
+                  Export chat
+                </DropdownMenuSubTrigger>
+                <DropdownMenuSubContent
+                  collisionPadding={16}
+                  className="unsloth-plus-menu w-[176px]"
+                >
+                  {[
+                    { label: "Raw JSONL", fn: exportConversationRawJsonl },
+                    { label: "CSV", fn: exportConversationCsv },
+                    {
+                      label: "ShareGPT JSONL",
+                      fn: exportConversationShareGPT,
+                    },
+                  ].map(({ label, fn }) => {
+                    const ids = [
+                      model1ThreadId,
+                      model2ThreadId,
+                      activeThreadId,
+                    ].filter((id): id is string => Boolean(id));
+                    return (
+                      <DropdownMenuItem
+                        key={label}
+                        disabled={ids.length === 0}
+                        onSelect={() => {
+                          if (!ids.length) {
+                            toast.error("No conversation to export yet.");
+                            return;
+                          }
+                          Promise.all(ids.map((id) => fn(id))).catch(() =>
+                            toast.error("Export failed."),
+                          );
+                        }}
+                      >
+                        {label}
+                      </DropdownMenuItem>
+                    );
+                  })}
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
               <DropdownMenuSub>
                 <DropdownMenuSubTrigger>
                   <MoreHorizontalIcon className="size-4" />
@@ -1469,48 +1514,6 @@ export function SharedComposer({
                       className="ml-auto"
                     />
                   </DropdownMenuItem>
-                  <DropdownMenuSub>
-                    <DropdownMenuSubTrigger>
-                      <HugeiconsIcon icon={Download01Icon} strokeWidth={2} />
-                      Export chat
-                    </DropdownMenuSubTrigger>
-                    <DropdownMenuSubContent
-                      collisionPadding={16}
-                      className="unsloth-plus-menu w-[176px]"
-                    >
-                      {[
-                        { label: "Raw JSONL", fn: exportConversationRawJsonl },
-                        { label: "CSV", fn: exportConversationCsv },
-                        {
-                          label: "ShareGPT JSONL",
-                          fn: exportConversationShareGPT,
-                        },
-                      ].map(({ label, fn }) => {
-                        const ids = [
-                          model1ThreadId,
-                          model2ThreadId,
-                          activeThreadId,
-                        ].filter((id): id is string => Boolean(id));
-                        return (
-                          <DropdownMenuItem
-                            key={label}
-                            disabled={ids.length === 0}
-                            onSelect={() => {
-                              if (!ids.length) {
-                                toast.error("No conversation to export yet.");
-                                return;
-                              }
-                              Promise.all(ids.map((id) => fn(id))).catch(() =>
-                                toast.error("Export failed."),
-                              );
-                            }}
-                          >
-                            {label}
-                          </DropdownMenuItem>
-                        );
-                      })}
-                    </DropdownMenuSubContent>
-                  </DropdownMenuSub>
                 </DropdownMenuSubContent>
               </DropdownMenuSub>
               <DropdownMenuSeparator />
