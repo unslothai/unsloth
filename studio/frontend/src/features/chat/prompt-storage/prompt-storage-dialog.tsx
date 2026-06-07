@@ -443,7 +443,6 @@ export const EXPORT_FORMATS_LIST = (
 async function buildThreadContent(
   threadId: string,
   format: ConvExportFormat,
-  opts?: { includeThreadId?: boolean },
 ): Promise<string | null> {
   const messages = await loadConversationMessages(threadId);
   if (!messages) return null;
@@ -455,9 +454,7 @@ async function buildThreadContent(
     // images are emitted as image_url content parts.
     const oaiMsgs: OAIMessage[] = messages.flatMap((msg) => messageToOpenAI(msg));
     if (oaiMsgs.length === 0) return null;
-    const record: Record<string, unknown> = { messages: oaiMsgs };
-    if (opts?.includeThreadId) record.thread_id = threadId;
-    return JSON.stringify(record);
+    return JSON.stringify({ messages: oaiMsgs });
   }
 
   if (format === "sharegpt") {
@@ -468,9 +465,7 @@ async function buildThreadContent(
       if (value.trim()) conversations.push({ from: role === "user" ? "human" : "gpt", value });
     }
     if (conversations.length === 0) return null;
-    const record: Record<string, unknown> = { conversations };
-    if (opts?.includeThreadId) record.thread_id = threadId;
-    return JSON.stringify(record);
+    return JSON.stringify({ conversations });
   }
 
   // csv
@@ -478,19 +473,13 @@ async function buildThreadContent(
   for (const msg of messages) {
     const content = messageToText(msg);
     if (!content.trim()) continue;
-    const row = opts?.includeThreadId
-      ? `${csvEscape(threadId)},${csvEscape(msg.role as string)},${csvEscape(content)}`
-      : `${csvEscape(msg.role as string)},${csvEscape(content)}`;
-    rows.push(row);
+    rows.push(`${csvEscape(msg.role as string)},${csvEscape(content)}`);
   }
   return rows.length > 0 ? rows.join("\n") : null;
 }
 
-function csvHeader(format: ConvExportFormat, includeThreadId?: boolean): string {
-  if (format === "csv") {
-    return includeThreadId ? "thread_id,role,content" : "role,content";
-  }
-  return "";
+function csvHeader(format: ConvExportFormat): string {
+  return format === "csv" ? "role,content" : "";
 }
 
 function exportExt(format: ConvExportFormat): string {
@@ -514,10 +503,10 @@ export async function exportBulkConversationsMerged(
   if (threadIds.length === 0) { toast.info("No conversations to export."); return; }
 
   const parts: string[] = [];
-  const header = csvHeader(format, true);
+  const header = csvHeader(format);
 
   for (const id of threadIds) {
-    const content = await buildThreadContent(id, format, { includeThreadId: true });
+    const content = await buildThreadContent(id, format);
     if (content) parts.push(content);
   }
 
