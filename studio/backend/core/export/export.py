@@ -654,10 +654,6 @@ class ExportBackend:
                 # only clean up dirs created during this run (not unrelated
                 # user directories — important when abs_save_dir is an
                 # existing folder on a different drive, see #6082).
-                # Also track known export-owned subdir names so we can clean
-                # stale intermediates left behind by prior failed runs
-                # (model/, model_gguf/) without touching unrelated user dirs.
-                _EXPORT_OWNED_SUBDIRS = {"model", "model_gguf"}
                 pre_existing_subs = {
                     d.name for d in Path(abs_save_dir).iterdir() if d.is_dir()
                 }

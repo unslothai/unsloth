@@ -185,18 +185,25 @@ async def get_export_status(
 
 
 def _export_details(output_path: Optional[str]) -> Optional[Dict[str, Any]]:
-    """Return the export path relative to exports_root so the install path is not leaked."""
+    """Return the export path. For absolute paths outside exports_root,
+    return the full path so users know where files ended up."""
     if not output_path:
         return None
     try:
         from utils.paths.storage_roots import exports_root
 
+        path = Path(output_path)
+        # If it's outside exports_root, return the full absolute path
+        # so users can find their files on a different drive.
+        if path.is_absolute():
+            try:
+                path.resolve().relative_to(exports_root().resolve())
+            except ValueError:
+                return {"output_path": str(path)}
         rel = os.path.relpath(output_path, exports_root())
-        if rel.startswith(".."):
-            rel = os.path.basename(output_path)
         return {"output_path": rel}
     except Exception:
-        return {"output_path": os.path.basename(output_path)}
+        return {"output_path": output_path}
 
 
 @router.post("/export/merged", response_model = ExportOperationResponse)
