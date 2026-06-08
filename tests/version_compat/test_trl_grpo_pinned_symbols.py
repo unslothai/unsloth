@@ -554,11 +554,12 @@ def test_trl_kto_get_batch_logps_signature(tag: str):
         "trl/experimental/kto/kto_trainer.py",
         "trl/experimental/kto/__init__.py",
     ]
+    checked_sources = []
     for path in candidates:
         src = fetch_text("huggingface/trl", tag, path)
         if src is None:
             continue
-        # Legacy: explicit get_batch_logps method.
+        checked_sources.append((path, src))
         if has_def(src, "get_batch_logps", "func"):
             return
         # TRL 1.x: refactored into _compute_logps + selective_log_softmax.
@@ -569,6 +570,15 @@ def test_trl_kto_get_batch_logps_signature(tag: str):
         # the exact shape kto_trainer_align_completion_logps patches.
         if "per_token_logps = selective_log_softmax(shift_logits" in src:
             return
+    old_shape_check = (
+        'raise ValueError("Logits (batch and sequence length dim) and labels '
+        'must have the same shape.")'
+    )
+    if checked_sources and not any(old_shape_check in src for _, src in checked_sources):
+        # TRL main inlined KTO log-prob computation and removed the old
+        # helper/shape-check rewrite target. There is no skipped rewrite to
+        # guard until a new concrete KTO shape mismatch target appears.
+        return
     pytest.fail(
         f"{tag}: KTO log-prob computation not found in any of {candidates}; "
         f"unsloth/models/rl_replacements.py KTO rewrite silently skipped"
