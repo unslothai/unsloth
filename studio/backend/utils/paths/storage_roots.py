@@ -357,6 +357,17 @@ def resolve_under_root(
 
 
 def resolve_output_dir(path_value: str | None = None) -> Path:
+    if not path_value or not str(path_value).strip():
+        return outputs_root()
+    raw = str(path_value).strip()
+    if "\x00" in raw:
+        raise ValueError("path may not contain null bytes")
+    path = Path(raw).expanduser()
+    if ".." in path.parts:
+        raise ValueError(f"path may not contain '..' segments: {raw!r}")
+    if path.is_absolute():
+        return path
+    # Relative paths: resolve under outputs_root() with strip_prefixes support
     return resolve_under_root(
         path_value,
         root = outputs_root(),
@@ -365,6 +376,17 @@ def resolve_output_dir(path_value: str | None = None) -> Path:
 
 
 def resolve_export_dir(path_value: str | None = None) -> Path:
+    if not path_value or not str(path_value).strip():
+        return exports_root()
+    raw = str(path_value).strip()
+    if "\x00" in raw:
+        raise ValueError("path may not contain null bytes")
+    path = Path(raw).expanduser()
+    if ".." in path.parts:
+        raise ValueError(f"path may not contain '..' segments: {raw!r}")
+    if path.is_absolute():
+        return path
+    # Relative paths: resolve under exports_root() with strip_prefixes support
     return resolve_under_root(
         path_value,
         root = exports_root(),
@@ -373,6 +395,16 @@ def resolve_export_dir(path_value: str | None = None) -> Path:
 
 
 def resolve_tensorboard_dir(path_value: str | None = None) -> Path:
+    if not path_value or not str(path_value).strip():
+        return tensorboard_root()
+    raw = str(path_value).strip()
+    if "\x00" in raw:
+        raise ValueError("path may not contain null bytes")
+    path = Path(raw).expanduser()
+    if ".." in path.parts:
+        raise ValueError(f"path may not contain '..' segments: {raw!r}")
+    if path.is_absolute():
+        return path
     return resolve_under_root(
         path_value,
         root = tensorboard_root(),
