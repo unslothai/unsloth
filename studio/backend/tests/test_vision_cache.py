@@ -221,9 +221,7 @@ class TestVisionCacheDirectPath:
 
     @patch("utils.transformers_version.needs_transformers_5", return_value = False)
     @patch("utils.models.model_config.load_model_config")
-    def test_vision_config_attr_detected_and_cached(
-        self, mock_load_config, mock_needs_t5
-    ):
+    def test_vision_config_attr_detected_and_cached(self, mock_load_config, mock_needs_t5):
         """Models with vision_config (LLaVA, Qwen2-VL, etc.) should be cached as True."""
         cfg = MagicMock(spec = [])  # strict: only explicitly set attrs exist
         cfg.model_type = "qwen2_vl"

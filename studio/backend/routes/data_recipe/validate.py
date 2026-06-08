@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 
 from core.data_recipe.service import (
     build_config_builder,
@@ -16,11 +16,14 @@ from core.data_recipe.service import (
 )
 from loggers import get_logger
 from models.data_recipe import RecipePayload, ValidateError, ValidateResponse
+from utils.utils import safe_error_detail, safe_curated_detail, log_and_http_error
 
 logger = get_logger(__name__)
 router = APIRouter()
 
-_GITHUB_VALIDATE_NOTE = "Recipe shape is valid. GitHub access and rate limits are checked when the run starts."
+_GITHUB_VALIDATE_NOTE = (
+    "Recipe shape is valid. GitHub access and rate limits are checked when the run starts."
+)
 _GITHUB_ITEM_TYPES = {"issues", "pulls", "commits"}
 
 
@@ -43,23 +46,17 @@ def _validate_github_seed_static(source: dict[str, Any]) -> list[ValidateError]:
     else:
         for repo in repos:
             if not isinstance(repo, str) or not repo.strip() or "/" not in repo:
-                errors.append(
-                    ValidateError(message = "GitHub repos must be owner/name strings.")
-                )
+                errors.append(ValidateError(message = "GitHub repos must be owner/name strings."))
                 break
 
     item_types = source.get("item_types")
     if not isinstance(item_types, list) or not item_types:
-        errors.append(
-            ValidateError(message = "GitHub seed requires at least one item type.")
-        )
+        errors.append(ValidateError(message = "GitHub seed requires at least one item type."))
     else:
         invalid_items = [item for item in item_types if item not in _GITHUB_ITEM_TYPES]
         if invalid_items:
             errors.append(
-                ValidateError(
-                    message = "GitHub item types must be issues, pulls, or commits."
-                )
+                ValidateError(message = "GitHub item types must be issues, pulls, or commits.")
             )
 
     try:
@@ -165,12 +162,16 @@ def validate(payload: RecipePayload) -> ValidateResponse:
             if not (exc.name or "").startswith("data_designer"):
                 raise
             logger.debug(
-                "data_designer not installed; deferring full config "
-                "validation to run start",
+                "data_designer not installed; deferring full config validation to run start",
                 missing_module = exc.name,
             )
         except Exception as exc:
-            detail = str(exc).strip() or "Validation failed."
+            logger.error(
+                "data_recipe.validate.github_config_failed",
+                error = str(exc),
+                exc_info = True,
+            )
+            detail = safe_error_detail(exc, fallback = "Validation failed.")
             return ValidateResponse(
                 valid = False,
                 errors = [ValidateError(message = detail)],
@@ -181,9 +182,20 @@ def validate(payload: RecipePayload) -> ValidateResponse:
     try:
         validate_recipe(recipe)
     except RuntimeError as exc:
-        raise HTTPException(status_code = 503, detail = str(exc)) from exc
+        raise log_and_http_error(
+            exc,
+            503,
+            safe_error_detail(exc),
+            event = "data_recipe.validate.service_unavailable",
+            log = logger,
+        ) from exc
     except Exception as exc:
-        detail = str(exc).strip() or "Validation failed."
+        logger.error(
+            "data_recipe.validate.recipe_failed",
+            error = str(exc),
+            exc_info = True,
+        )
+        detail = safe_curated_detail(exc, fallback = "Validation failed.")
         parsed_errors = _collect_validation_errors(recipe)
         return ValidateResponse(
             valid = False,

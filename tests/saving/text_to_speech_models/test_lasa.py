@@ -167,9 +167,7 @@ def extract_speech_ids(speech_tokens_str):
 # TTS start!
 with torch.inference_mode():
     with torch.amp.autocast("cuda", dtype = model.dtype):
-        formatted_text = (
-            f"<|TEXT_UNDERSTANDING_START|>{input_text}<|TEXT_UNDERSTANDING_END|>"
-        )
+        formatted_text = f"<|TEXT_UNDERSTANDING_START|>{input_text}<|TEXT_UNDERSTANDING_END|>"
 
         # Tokenize the text
         chat = [

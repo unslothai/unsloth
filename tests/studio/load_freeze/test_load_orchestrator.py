@@ -3,7 +3,7 @@
 Covers:
   1.  Behavioural canary (the bug class)             — 2 tests
   2.  Behavioural fix-validation                     — 1 test
-  3.  Functional equivalence (sync == to_thread)     — 5 tests, one per codec branch
+  3.  Functional equivalence (sync == to_thread)     — 6 tests, one per codec branch
   4.  Failure modes (HTTP 500, malformed JSON,
       connection reset, unreachable, not-loaded)     — 5 tests
   5.  Stress (50 concurrent probes / 100 healths)    — 2 tests
@@ -103,14 +103,18 @@ def _free_port() -> int:
 
 
 class _UvicornServerThread:
-    def __init__(self, app, *, host: str = "127.0.0.1", port: int) -> None:
+    def __init__(
+        self,
+        app,
+        *,
+        host: str = "127.0.0.1",
+        port: int,
+    ) -> None:
         import uvicorn
 
         self.host = host
         self.port = port
-        cfg = uvicorn.Config(
-            app, host = host, port = port, log_level = "warning", access_log = False
-        )
+        cfg = uvicorn.Config(app, host = host, port = port, log_level = "warning", access_log = False)
         self._server = uvicorn.Server(cfg)
         self._server.install_signal_handlers = lambda: None  # type: ignore[assignment]
         self._thread: threading.Thread | None = None
@@ -169,7 +173,12 @@ def _build_app(backend, *, wrap_in_thread: bool):
     return app
 
 
-def _drive_concurrent_probe_and_health(base_url, *, n_health = 12, gap = 0.05):
+def _drive_concurrent_probe_and_health(
+    base_url,
+    *,
+    n_health = 12,
+    gap = 0.05,
+):
     elapsed = -1.0
     latencies: list[float] = []
 
@@ -211,9 +220,7 @@ def test_buggy_route_blocks_event_loop():
         app = _build_app(backend, wrap_in_thread = False)
         port = _free_port()
         with _UvicornServerThread(app, port = port) as uv:
-            max_lat, probe_t, _ = _drive_concurrent_probe_and_health(
-                f"http://127.0.0.1:{uv.port}"
-            )
+            max_lat, probe_t, _ = _drive_concurrent_probe_and_health(f"http://127.0.0.1:{uv.port}")
     assert probe_t >= 0.5
     assert max_lat >= 0.4, f"expected >=0.4s stall, got {max_lat:.3f}s"
 
@@ -254,6 +261,7 @@ def shim_no_match():
             "<|audio_eos|>": [0, 1],
             "<|startoftranscript|>": [0, 1],
             "<audio_soft_token>": [0, 1],
+            "<|audio|>": [0, 1],
             "<|bicodec_semantic_0|>": [0, 1],
             "<|bicodec_global_0|>": [0, 1],
             "<|c1_0|>": [0, 1],
@@ -314,6 +322,28 @@ def test_functional_equivalence_whisper_match():
     assert sync_result == threaded
 
 
+def test_functional_equivalence_audio_vlm_match():
+    # audio_vlm: snac/csm/whisper fail first, then the Gemma 4 <|audio|>
+    # probe tokenises to a single token. #6000 added this arm alongside
+    # Gemma 3n's <audio_soft_token>; keep <audio_soft_token> at 2 tokens so
+    # it is specifically the new <|audio|> arm that triggers the match.
+    with FakeLlamaServer(
+        detok_map = {128258: "non-snac", 128259: "non-snac"},
+        tok_response_map = {
+            "<|AUDIO|>": [0, 1],  # csm fails (>1 token)
+            "<|audio_eos|>": [0, 1],
+            "<|startoftranscript|>": [0, 1],  # whisper fails
+            "<audio_soft_token>": [0, 1],  # Gemma 3n arm fails ...
+            "<|audio|>": [0],  # ... Gemma 4 arm matches (#6000)
+        },
+    ) as srv:
+        backend = _make_backend(srv.port)
+        sync_result = backend.detect_audio_type()
+        threaded = asyncio.run(asyncio.to_thread(backend.detect_audio_type))
+    assert sync_result == "audio_vlm"
+    assert sync_result == threaded
+
+
 def test_functional_equivalence_bicodec_match():
     # bicodec: snac/csm/whisper/audio_vlm all fail first, then both
     # bicodec_semantic_0 and bicodec_global_0 are single tokens.
@@ -324,6 +354,7 @@ def test_functional_equivalence_bicodec_match():
             "<|audio_eos|>": [0, 1],
             "<|startoftranscript|>": [0, 1],
             "<audio_soft_token>": [0, 1],
+            "<|audio|>": [0, 1],
             "<|bicodec_semantic_0|>": [0],
             "<|bicodec_global_0|>": [0],
         },
@@ -418,9 +449,7 @@ def test_50_concurrent_probes_complete_without_deadlock():
             with ThreadPoolExecutor(max_workers = 50) as pool:
                 futs = [
                     pool.submit(
-                        lambda: httpx.get(
-                            f"http://127.0.0.1:{uv.port}/probe", timeout = 30.0
-                        )
+                        lambda: httpx.get(f"http://127.0.0.1:{uv.port}/probe", timeout = 30.0)
                     )
                     for _ in range(50)
                 ]
@@ -636,7 +665,6 @@ def test_response_shape_matches_pre_fix_for_no_match():
     bodies for the no-match scenario (the dominant code path in
     practice for non-audio models)."""
     import json as _json
-
     with FakeLlamaServer(
         detok_map = {128258: "abc", 128259: "def"},
         tok_response_map = {
@@ -644,6 +672,7 @@ def test_response_shape_matches_pre_fix_for_no_match():
             "<|audio_eos|>": [0, 1],
             "<|startoftranscript|>": [0, 1],
             "<audio_soft_token>": [0, 1],
+            "<|audio|>": [0, 1],
             "<|bicodec_semantic_0|>": [0, 1],
             "<|bicodec_global_0|>": [0, 1],
             "<|c1_0|>": [0, 1],

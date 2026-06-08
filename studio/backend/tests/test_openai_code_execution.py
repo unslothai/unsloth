@@ -117,10 +117,7 @@ def test_shell_tool_added_on_cloud_with_container_auto(monkeypatch):
     _drive(run())
 
     tools = captured["body"].get("tools") or []
-    assert {
-        "type": "shell",
-        "environment": {"type": "container_auto"},
-    } in tools
+    assert {"type": "shell", "environment": {"type": "container_auto"}} in tools
 
 
 def test_shell_tool_uses_container_reference_when_id_supplied(monkeypatch):
@@ -269,7 +266,11 @@ def test_shell_call_emits_tool_start_and_end(monkeypatch):
     assert len(ends) == 1
     assert starts[0]["tool_name"] == "code_execution"
     assert starts[0]["tool_call_id"] == "scall_1"
-    assert starts[0]["arguments"] == {"kind": "bash", "command": "ls -la"}
+    # `_server_tool: True` is the synthetic-builtin marker the
+    # backend stamps onto every provider-side tool_start so the
+    # frontend serializer can distinguish hosted tools from
+    # user-declared functions on history replay.
+    assert starts[0]["arguments"] == {"kind": "bash", "command": "ls -la", "_server_tool": True}
     assert ends[0]["tool_call_id"] == "scall_1"
     assert "total 24" in ends[0]["result"]
 
@@ -531,7 +532,5 @@ def test_expired_container_retries_only_once(monkeypatch):
     # infinite loop.
     assert call_count["n"] == 2
     # The second failure surfaces normally as an error SSE line.
-    error_lines = [
-        line for line in lines if '"error"' in line and "_toolEvent" not in line
-    ]
+    error_lines = [line for line in lines if '"error"' in line and "_toolEvent" not in line]
     assert len(error_lines) >= 1
