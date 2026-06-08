@@ -494,10 +494,8 @@ def resolve_model_class(auto_model, config):
 
 
 def _is_family_text_decoder(parent_model_type, text_model_type):
-    # True only when the text config is the VLM family's own text variant
-    # (gemma3 -> gemma3_text), whose CausalLM remaps the checkpoint correctly.
-    # A generic reused decoder (llava -> llama, paligemma -> gemma) would
-    # silently init random weights, so we keep the full model. See PR #5816.
+    # True only for the family's own text variant (gemma3 -> gemma3_text); a generic
+    # reused decoder (llava -> llama) would load random weights, so keep the full model.
     return bool(parent_model_type) and str(text_model_type).startswith(
         parent_model_type
     )
@@ -512,8 +510,8 @@ def _get_text_only_config(model_config, model_name):
         text_config = getattr(model_config, "text_config", None)
     if text_config is None:
         raise ValueError(f"Cannot load {model_name} as text-only; use FastVisionModel")
-    # Carry over quantization_config (lives on the parent, not the text sub-config).
-    # Copy first since get_text_config() returns the parent's shared object.
+    # Carry over the parent's quantization_config; copy first since get_text_config()
+    # returns the parent's shared object.
     qc = getattr(model_config, "quantization_config", None)
     if qc is not None and getattr(text_config, "quantization_config", None) is None:
         text_config = copy.copy(text_config)
@@ -522,10 +520,8 @@ def _get_text_only_config(model_config, model_name):
 
 
 def _remap_text_only_skip_modules(qc):
-    # Pre-quantized VLMs list llm_int8_skip_modules under the wrapper prefix
-    # (language_model.model.layers.12.mlp); after stripping to the text model the live
-    # module is model.layers.12.mlp. Remap so the skip still matches and drop vision/
-    # audio entries. Returns qc unchanged when there is nothing to remap. See PR #5816.
+    # Remap llm_int8_skip_modules off the VLM wrapper prefix (language_model.model.* ->
+    # model.*) after text-only stripping, and drop vision/audio entries. See PR #5816.
     is_dict = isinstance(qc, dict)
     skip = (
         qc.get("llm_int8_skip_modules")
@@ -568,12 +564,9 @@ def _remap_text_only_skip_modules(qc):
 
 
 def _get_text_only_key_mapping(parent_config, text_config):
-    # VLM checkpoints store text weights under a wrapper prefix (gemma3:
-    # language_model.model.*, gemma3n: model.language_model.*). transformers >=5 stopped
-    # auto-stripping it (base_model_prefix changed from language_model to model), so the
-    # text weights would init randomly; remap them onto the text decoder's keys. None on
-    # tf <5 (the prefix still strips and a mapping would break the load) and for a generic
-    # reused decoder that is not the family's own text variant. See PR #5816.
+    # transformers >=5 stopped auto-stripping the VLM wrapper prefix (base_model_prefix
+    # changed language_model -> model), so remap the text weights onto the decoder keys.
+    # None on tf <5 (still strips; a mapping would break the load) or non-family. See PR #5816.
     if Version(transformers_version) < Version("5.0.0"):
         return None
     if not _is_family_text_decoder(
@@ -589,8 +582,7 @@ def _get_text_only_key_mapping(parent_config, text_config):
 
 
 def _apply_text_only_key_mapping(kwargs, parent_config, text_config):
-    # Inject the text-only key_mapping into from_pretrained kwargs, merging under any
-    # user-supplied mapping. No-op when not needed (tf <5 / non-family). See PR #5816.
+    # Add the text-only key_mapping to from_pretrained kwargs, under any user mapping.
     mapping = _get_text_only_key_mapping(parent_config, text_config)
     if not mapping:
         return

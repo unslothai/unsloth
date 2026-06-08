@@ -1489,9 +1489,8 @@ class FastModel(FastBaseModel):
                         f"Loading {old_model_name} as text-only; vision/audio towers skipped. "
                         "Use FastVisionModel for multimodal inputs."
                     )
-                    # transformers >=5 needs an explicit key remap to load the VLM
-                    # text weights; compute it here while the parent model_type is
-                    # still available, before reassigning model_config. See PR #5816.
+                    # Remap VLM text weights for transformers >=5, while model_config is
+                    # still the parent (before the reassignment below). See PR #5816.
                     _apply_text_only_key_mapping(kwargs, model_config, text_config)
                     model_config = text_config
                     is_vlm = False

@@ -55,9 +55,8 @@ def _names_in(node):
 
 
 def _load_text_only_namespace():
-    # Exec the standalone text-only helpers from _utils into one namespace so tests can
-    # call them without importing unsloth. Seeded with the module globals they reference;
-    # listed in dependency order so cross-references resolve.
+    # Exec the text-only helpers from _utils into one namespace (no unsloth import),
+    # in dependency order so cross-references resolve.
     source = _source(UTILS_PATH)
     import transformers
     from packaging.version import Version
@@ -214,8 +213,7 @@ def test_fast_base_model_text_only_bypasses_vision_auto_model():
         "auto_model",
         lambda v: isinstance(v, ast.Name) and v.id == "AutoModelForCausalLM",
     )
-    # The text-only path strips the config, applies the family guard, and injects the
-    # transformers >=5 key remap before the weight load. See PR #5816.
+    # Text-only path: strip config, apply the family guard, inject the key remap.
     assert _calls_function(method, "_get_text_only_config")
     assert _calls_function(method, "_is_family_text_decoder")
     assert _calls_function(method, "_apply_text_only_key_mapping")
@@ -328,9 +326,8 @@ def test_text_only_guard_predicate_across_vlm_families():
 
 
 def test_text_only_helper_preserves_quantization_config():
-    # quantization_config lives on the parent config; it must survive the strip so
-    # pre-quantized repos still load correctly. A sentinel object avoids a bitsandbytes
-    # dependency in the issue's transformers 4.51.3 environment.
+    # quantization_config must survive the strip so pre-quantized repos still load. A
+    # sentinel object avoids a bitsandbytes dependency on transformers 4.51.3.
     transformers = pytest.importorskip("transformers")
     helper = _load_text_only_helper()
     config = transformers.Gemma3Config()
@@ -360,9 +357,8 @@ def test_text_only_key_mapping_targets_published_prefixes():
 
 
 def test_gemma3_text_only_loads_real_language_weights_from_vlm_checkpoint(tmp_path):
-    # Regression for PR #5816: loading a Gemma 3 VLM checkpoint text-only must load the
-    # real language weights, not silently initialize random ones. Fails on tf >=5 without
-    # the key_mapping fix; the prefix auto-strips on tf 4.x so it passes there either way.
+    # Regression for PR #5816: text-only loading of a Gemma 3 VLM checkpoint must load the
+    # real language weights, not random ones. Fails on tf >=5 without the key_mapping fix.
     transformers = pytest.importorskip("transformers")
     torch = pytest.importorskip("torch")
     import shutil
@@ -414,9 +410,8 @@ def test_gemma3_text_only_loads_real_language_weights_from_vlm_checkpoint(tmp_pa
     save_dir = tmp_path / "vlm"
     full_model.save_pretrained(save_dir, safe_serialization = True)
 
-    # transformers >=5 nests weights under an outer "model." prefix on save; the published
-    # Gemma 3 checkpoints do not, so strip it to reproduce the real language_model.model.*
-    # layout users actually load.
+    # tf >=5 saves under an outer "model." prefix; strip it to reproduce the real
+    # language_model.model.* layout the published Gemma 3 checkpoints use.
     real_dir = tmp_path / "real"
     real_dir.mkdir()
     weights = {}

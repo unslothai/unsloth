@@ -306,9 +306,8 @@ def _offline_quantize_to_fp8(
         for x in (getattr(config, "architectures", None) or [])
     )
     is_vlm = is_vlm or hasattr(config, "vision_config")
-    # Mirror the loader's text-only guard so load_in_fp8 does not build the vision
-    # tower for a text-only request (e.g. Gemma 3 via FastLanguageModel). Decide here,
-    # before the cache name, so the artifact and its path stay in sync. See PR #5816.
+    # Mirror the loader's text-only guard so load_in_fp8 skips the vision tower; decide
+    # before the cache name so the artifact and its path stay in sync. See PR #5816.
     text_config = None
     if force_text_only and hasattr(config, "vision_config"):
         from ._utils import (
@@ -327,8 +326,7 @@ def _offline_quantize_to_fp8(
             is_vlm = False
 
     temp_dir = tempfile.gettempdir()
-    # Text-only and full-VLM artifacts differ, so cache them separately; otherwise one
-    # mode could reuse the other's directory and load the wrong architecture. See PR #5816.
+    # Cache text-only and full-VLM artifacts separately so neither reuses the other. #5816
     cache_name = model_name.split("/")[-1] + "-fp8-" + fp8_mode
     if text_config is not None:
         cache_name += "-text-only"

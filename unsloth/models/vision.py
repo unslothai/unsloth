@@ -626,11 +626,9 @@ class FastBaseModel:
         if os.environ.get("UNSLOTH_MODEL_NAME", "") == "":
             os.environ["UNSLOTH_MODEL_NAME"] = model_name.lower()
 
-        # Resolve the text-only decision up front, before the is_vlm / vLLM checks below,
-        # using the same family guard as loader.py so is_vlm stays consistent. Only skip
-        # the vision tower when the family has its own text decoder (e.g. Gemma 3); keep
-        # the full model otherwise (Llava/PaliGemma reuse a generic decoder that would
-        # load random weights). transformers >=5 also needs the key remap. See PR #5816.
+        # Resolve text-only before the is_vlm / vLLM checks so is_vlm stays consistent.
+        # Skip the vision tower only when the family has its own text decoder (e.g. Gemma
+        # 3); otherwise keep the full model. transformers >=5 needs the key remap. #5816
         if _force_text_only and auto_config is None:
             auto_config = AutoConfig.from_pretrained(
                 model_name,

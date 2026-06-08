@@ -334,11 +334,9 @@ jobs:
           python -m pytest -v --tb=short tests/test_callback_signature_drift.py
 
       - name: unsloth Bucket-A — CPU tests not in Repo tests (CPU)
-        # CPU tests across 6 files under tests/saving/, tests/utils/, and
-        # tests/python/, which Repo tests (CPU) excludes via --ignore because
-        # their sibling files need real GPUs / real HF weights. The files below
-        # are AST/protobuf/regex plus tiny CPU model loads that run cleanly here
-        # (transformers/torch installed). Env inherited from the job block.
+        # CPU tests across 6 files under tests/saving/, tests/utils/, tests/python/
+        # that Repo tests (CPU) --ignores. AST/protobuf/regex plus tiny CPU model
+        # loads; run cleanly here (transformers/torch installed).
         run: |
           python -m pytest -q --tb=short \
             tests/saving/test_save_shell_injection.py \
