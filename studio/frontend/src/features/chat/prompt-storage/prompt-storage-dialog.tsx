@@ -379,7 +379,7 @@ export async function exportConversationShareGPT(threadId: string): Promise<void
   const conversations: Array<{ from: string; value: string }> = [];
   for (const msg of messages) {
     const role = msg.role as string;
-    const from = role === "user" ? "human" : "gpt";
+    const from = role === "user" ? "human" : role === "system" ? "system" : "gpt";
     const value = messageToText(msg);
     if (value.trim()) conversations.push({ from, value });
   }
@@ -461,7 +461,7 @@ async function buildThreadContent(
     for (const msg of messages) {
       const role = msg.role as string;
       const value = messageToText(msg);
-      if (value.trim()) conversations.push({ from: role === "user" ? "human" : "gpt", value });
+      if (value.trim()) conversations.push({ from: role === "user" ? "human" : role === "system" ? "system" : "gpt", value });
     }
     if (conversations.length === 0) return null;
     return JSON.stringify({ conversations });
