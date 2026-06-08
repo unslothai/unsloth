@@ -1261,9 +1261,12 @@ class LlamaCppBackend:
         from utils.hardware.hardware import DeviceType
         import utils.hardware.hardware as _hw_mod
 
-        # Fast path: NVIDIA / nvidia-smi. Only run when backend is CUDA
-        # (not ROCm, not XPU) to avoid feeding wrong indices to other backends.
-        nvidia_eligible = get_device() == DeviceType.CUDA and not getattr(_hw_mod, "IS_ROCM", False)
+        # Fast path: NVIDIA / nvidia-smi. Skip only when we know the backend
+        # is XPU or ROCm -- not CUDA, CPU-only, or undetected.
+        _detected = get_device()
+        nvidia_eligible = _detected != DeviceType.XPU and not getattr(
+            _hw_mod, "IS_ROCM", False
+        )
         try:
             if not nvidia_eligible:
                 raise FileNotFoundError  # skip to generic telemetry path
@@ -1284,7 +1287,7 @@ class LlamaCppBackend:
                 # Skip empty tokens so trailing commas don't disable the filter.
                 allowed = None
                 cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
-                if cvd is not None and cvd.strip():
+                if cvd is not None:
                     try:
                         # `if x.strip()` filters trailing-comma masks like
                         # "0,1," which would otherwise raise ValueError on
