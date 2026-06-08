@@ -228,13 +228,13 @@ from routes import (
     export_router,
     inference_router,
     inference_studio_router,
-    llama_router,
     mcp_servers_router,
     models_router,
     providers_router,
     training_history_router,
     training_router,
 )
+from routes.llama import router as llama_router
 from routes.settings import router as settings_router
 from auth import storage
 from auth.authentication import get_current_subject
