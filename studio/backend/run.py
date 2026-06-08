@@ -907,7 +907,7 @@ def run_server(
     if api_only:
         print(f"TAURI_PORT={port}", flush = True)
 
-     if not silent:
+    if not silent:
           # Probe in background: on kernel.unprivileged_userns_clone=0 hosts
           # sandbox_available() stalls for its full 5s timeout otherwise.
           # The notice fires from whichever path resolves first (fast main
