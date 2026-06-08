@@ -54,9 +54,9 @@ def _resolve_external_ip() -> str:
     try:
         req = urllib.request.Request(
             "http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/access-configs/0/external-ip",
-            headers={"Metadata-Flavor": "Google"},
+            headers = {"Metadata-Flavor": "Google"},
         )
-        with urllib.request.urlopen(req, timeout=1) as resp:
+        with urllib.request.urlopen(req, timeout = 1) as resp:
             ip = resp.read().decode().strip()
             if ip:
                 return ip
@@ -65,7 +65,7 @@ def _resolve_external_ip() -> str:
 
     # 2. Try public IP service
     try:
-        with urllib.request.urlopen("https://ifconfig.me", timeout=3) as resp:
+        with urllib.request.urlopen("https://ifconfig.me", timeout = 3) as resp:
             ip = resp.read().decode().strip()
             if ip:
                 return ip
@@ -139,9 +139,8 @@ def _local_port_open(
 ) -> bool:
     """Return True iff a TCP connection to (host, port) succeeds within timeout."""
     import socket
-
     try:
-        with socket.create_connection((host, port), timeout=timeout):
+        with socket.create_connection((host, port), timeout = timeout):
             return True
     except OSError:
         return False
@@ -227,7 +226,7 @@ def _print_localhost_ipv6_mismatch_warning(local_url: str, port: int) -> None:
         f"{warn_c}  Warning: localhost resolves to IPv6 (::1), but Unsloth "
         f"Studio is listening on 127.0.0.1 only. Open {local_url} instead of "
         f"http://localhost:{port}.{reset}",
-        flush=True,
+        flush = True,
     )
 
 
@@ -265,7 +264,7 @@ def _verify_global_reachability(display_host: str, port: int) -> None:
                 f"{dim}  Note: {display_host} is a private/LAN address -- "
                 f"reachable on this network only, not from the public internet."
                 f"{reset}",
-                flush=True,
+                flush = True,
             )
             return
     except ValueError:
@@ -276,13 +275,13 @@ def _verify_global_reachability(display_host: str, port: int) -> None:
         qs = urllib.parse.urlencode({"host": f"{display_host}:{port}", "max_nodes": 3})
         req = urllib.request.Request(
             f"https://check-host.net/check-tcp?{qs}",
-            headers={
+            headers = {
                 "Accept": "application/json",
                 "User-Agent": "unsloth-studio-reachability/1",
             },
         )
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            init = json.loads(resp.read().decode("utf-8", errors="replace"))
+        with urllib.request.urlopen(req, timeout = 5) as resp:
+            init = json.loads(resp.read().decode("utf-8", errors = "replace"))
         req_id = init.get("request_id")
         if not req_id:
             return
@@ -291,7 +290,7 @@ def _verify_global_reachability(display_host: str, port: int) -> None:
         deadline = time.monotonic() + 15.0
         poll_req = urllib.request.Request(
             f"https://check-host.net/check-result/{req_id}",
-            headers={
+            headers = {
                 "Accept": "application/json",
                 "User-Agent": "unsloth-studio-reachability/1",
             },
@@ -299,8 +298,8 @@ def _verify_global_reachability(display_host: str, port: int) -> None:
         while time.monotonic() < deadline:
             time.sleep(1.5)
             try:
-                with urllib.request.urlopen(poll_req, timeout=5) as resp:
-                    results = json.loads(resp.read().decode("utf-8", errors="replace"))
+                with urllib.request.urlopen(poll_req, timeout = 5) as resp:
+                    results = json.loads(resp.read().decode("utf-8", errors = "replace"))
             except Exception:
                 continue
             if results and all(v is not None for v in results.values()):
@@ -327,52 +326,52 @@ def _verify_global_reachability(display_host: str, port: int) -> None:
                 err_nodes += 1
         total = ok_nodes + err_nodes
 
-        print("", flush=True)
+        print("", flush = True)
         if ok_nodes:
             print(
                 f"{ok_c}  Reachability check: {url}/ is reachable from the "
                 f"public internet ({ok_nodes}/{total} probe nodes connected).{reset}",
-                flush=True,
+                flush = True,
             )
         elif err_nodes:
             print(
                 f"{err_c}  Reachability check: {url}/ is NOT reachable from "
                 f"the public internet ({err_nodes}/{total} probe nodes failed).{reset}",
-                flush=True,
+                flush = True,
             )
-            print(f"{dim}    Common causes:{reset}", flush=True)
+            print(f"{dim}    Common causes:{reset}", flush = True)
             print(
                 f"{dim}      * AWS  -- the instance's Security Group doesn't "
                 f"allow inbound TCP {port}.{reset}",
-                flush=True,
+                flush = True,
             )
             print(
                 f"{dim}      * GCP  -- no firewall rule allowing TCP {port} "
                 f"for the instance's network tag.{reset}",
-                flush=True,
+                flush = True,
             )
             print(
                 f"{dim}      * Azure / other clouds -- equivalent NSG / "
                 f"firewall rule missing.{reset}",
-                flush=True,
+                flush = True,
             )
             print(
                 f"{dim}      * Home -- your router isn't port-forwarding "
                 f"{port} to this machine.{reset}",
-                flush=True,
+                flush = True,
             )
             print(
                 f"{dim}    Workaround that needs no firewall changes -- "
                 f"SSH local-forward from your laptop:{reset}",
-                flush=True,
+                flush = True,
             )
             print(
                 f"{dim}        ssh -L {port}:localhost:{port} " f"<user>@{display_host}{reset}",
-                flush=True,
+                flush = True,
             )
             print(
                 f"{dim}    then open http://localhost:{port}/ in your browser.{reset}",
-                flush=True,
+                flush = True,
             )
             # Only offer the local URL if loopback actually answers.
             local_url = _working_local_url(port)
@@ -380,13 +379,13 @@ def _verify_global_reachability(display_host: str, port: int) -> None:
                 print(
                     f"{local_url_c}  You can access Unsloth Studio locally "
                     f"in the meantime: {local_url}{reset}",
-                    flush=True,
+                    flush = True,
                 )
         else:
             print(
                 f"{warn_c}  Reachability check: probe nodes did not respond "
                 f"in time -- could not verify {url}/.{reset}",
-                flush=True,
+                flush = True,
             )
     except urllib.error.URLError:
         # Outbound HTTPS blocked; skip silently.
@@ -409,10 +408,10 @@ def _emit_startup_output(host: str, port: int, display_host: str) -> None:
     # For wildcard binds, run the reachability check between the URL section
     # and the stop hint so the stop hint stays last on screen.
     print_studio_access_banner(
-        port=port,
-        bind_host=host,
-        display_host=display_host,
-        include_stop_hint=not wildcard_bind and not localhost_mismatch_url,
+        port = port,
+        bind_host = host,
+        display_host = display_host,
+        include_stop_hint = not wildcard_bind and not localhost_mismatch_url,
     )
     if localhost_mismatch_url:
         _print_localhost_ipv6_mismatch_warning(localhost_mismatch_url, port)
@@ -435,7 +434,7 @@ def _get_pid_on_port(port: int) -> "tuple[int, str] | None":
     except ImportError:
         return None
     try:
-        for conn in psutil.net_connections(kind="tcp"):
+        for conn in psutil.net_connections(kind = "tcp"):
             if conn.status == "LISTEN" and conn.laddr.port == port:
                 if conn.pid is None:
                     return None
@@ -535,7 +534,7 @@ if _STUDIO_ROOT_RESOLVED != _LEGACY_STUDIO_ROOT:
 def _write_pid_file():
     """Write the current process PID to the studio PID file."""
     try:
-        _PID_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _PID_FILE.parent.mkdir(parents = True, exist_ok = True)
         _PID_FILE.write_text(str(os.getpid()))
     except OSError:
         pass
@@ -547,12 +546,12 @@ def _remove_pid_file():
         if _PID_FILE.is_file():
             stored = _PID_FILE.read_text().strip()
             if stored == str(os.getpid()):
-                _PID_FILE.unlink(missing_ok=True)
+                _PID_FILE.unlink(missing_ok = True)
     except OSError:
         pass
 
 
-def _graceful_shutdown(server=None):
+def _graceful_shutdown(server = None):
     """Explicitly shut down all subprocess backends and the uvicorn server.
 
     Called from signal handlers to ensure child processes are cleaned up
@@ -569,25 +568,22 @@ def _graceful_shutdown(server=None):
     # 2. Clean up inference subprocess (if instantiated)
     try:
         from core.inference.orchestrator import _inference_backend
-
         if _inference_backend is not None:
-            _inference_backend._shutdown_subprocess(timeout=5.0)
+            _inference_backend._shutdown_subprocess(timeout = 5.0)
     except Exception as e:
         logger.warning("Error shutting down inference subprocess: %s", e)
 
     # 3. Clean up export subprocess (if instantiated)
     try:
         from core.export.orchestrator import _export_backend
-
         if _export_backend is not None:
-            _export_backend._shutdown_subprocess(timeout=5.0)
+            _export_backend._shutdown_subprocess(timeout = 5.0)
     except Exception as e:
         logger.warning("Error shutting down export subprocess: %s", e)
 
     # 4. Clean up training subprocess (if active)
     try:
         from core.training.training import _training_backend
-
         if _training_backend is not None:
             _training_backend.force_terminate()
     except Exception as e:
@@ -596,7 +592,6 @@ def _graceful_shutdown(server=None):
     # 5. Kill llama-server subprocess (if loaded)
     try:
         from routes.inference import _llama_cpp_backend
-
         if _llama_cpp_backend is not None:
             _llama_cpp_backend._kill_process()
     except Exception as e:
@@ -644,7 +639,7 @@ def _iter_frontend_fallback_candidates() -> "list[Path]":
         for sp in venv_dir.glob(sp_pattern):
             for finder in sp.glob("__editable___*_finder.py"):
                 try:
-                    src = finder.read_text(encoding="utf-8")
+                    src = finder.read_text(encoding = "utf-8")
                 except OSError:
                     continue
                 # Tolerate single- or multi-line dict literals; [^}]* still
@@ -725,7 +720,7 @@ def run_server(
     # Reconfigure stdout to UTF-8 so startup messages do not crash the server.
     if sys.platform == "win32" and hasattr(sys.stdout, "reconfigure"):
         try:
-            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+            sys.stdout.reconfigure(encoding = "utf-8", errors = "replace")
         except Exception:
             pass
 
@@ -824,11 +819,11 @@ def run_server(
 
     # server_header=False suppresses uvicorn's "Server: uvicorn"; SecurityHeadersMiddleware sets its own.
     config_kwargs = dict(
-        host=host,
-        port=port,
-        log_level="info",
-        access_log=False,
-        server_header=False,
+        host = host,
+        port = port,
+        log_level = "info",
+        access_log = False,
+        server_header = False,
     )
     # Only in Colab: trust X-Forwarded-* from Colab's reverse proxy so the app
     # sees the real https origin. forwarded_allow_ips="*" is fine inside Colab's
@@ -878,7 +873,7 @@ def run_server(
             if not ready_event.is_set():
                 startup_failed.set()
 
-    thread = Thread(target=_run, daemon=True)
+    thread = Thread(target = _run, daemon = True)
     thread.start()
 
     # Wait until uvicorn has completed lifespan startup and bound sockets, or
@@ -892,7 +887,7 @@ def run_server(
                         "Uvicorn server failed before startup completed"
                     ) from startup_errors[0]
                 raise RuntimeError("Uvicorn server exited before startup completed")
-            ready_event.wait(timeout=0.1)
+            ready_event.wait(timeout = 0.1)
     except KeyboardInterrupt:
         _graceful_shutdown(_server)
         _shutdown_event.set()
@@ -906,7 +901,7 @@ def run_server(
     # Output port for Tauri to parse when in api-only mode. Emit only after
     # uvicorn sockets are bound and FastAPI lifespan/startup has completed.
     if api_only:
-        print(f"TAURI_PORT={port}", flush=True)
+        print(f"TAURI_PORT={port}", flush = True)
 
     if not silent:
         _emit_startup_output(host, port, display_host)
@@ -923,28 +918,28 @@ if __name__ == "__main__":
     # Ensure stderr can handle Unicode on Windows (tracebacks with non-ASCII paths)
     if sys.platform == "win32" and hasattr(sys.stderr, "reconfigure"):
         try:
-            sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+            sys.stderr.reconfigure(encoding = "utf-8", errors = "replace")
         except Exception:
             pass
 
-    parser = argparse.ArgumentParser(description="Run Unsloth UI Backend server")
+    parser = argparse.ArgumentParser(description = "Run Unsloth UI Backend server")
     parser.add_argument(
         "--host",
-        default="127.0.0.1",
-        help="Host to bind to (default: 127.0.0.1; use 0.0.0.0 for network/cloud access)",
+        default = "127.0.0.1",
+        help = "Host to bind to (default: 127.0.0.1; use 0.0.0.0 for network/cloud access)",
     )
-    parser.add_argument("--port", type=int, default=8888, help="Port to bind to")
+    parser.add_argument("--port", type = int, default = 8888, help = "Port to bind to")
     parser.add_argument(
         "--frontend",
-        type=str,
-        default=_DEFAULT_FRONTEND_PATH,
-        help="Path to frontend build",
+        type = str,
+        default = _DEFAULT_FRONTEND_PATH,
+        help = "Path to frontend build",
     )
-    parser.add_argument("--silent", action="store_true", help="Suppress output")
+    parser.add_argument("--silent", action = "store_true", help = "Suppress output")
     parser.add_argument(
         "--api-only",
-        action="store_true",
-        help="API server only, no frontend (for Tauri)",
+        action = "store_true",
+        help = "API server only, no frontend (for Tauri)",
     )
     # Mirror unsloth_cli/commands/studio.py's _PARALLEL_*. Default 1
     # applies only to direct backend launches; `unsloth studio run`
@@ -955,9 +950,9 @@ if __name__ == "__main__":
     parser.add_argument(
         "--parallel",
         "--n-parallel",
-        type=int,
-        default=_PARALLEL_DEFAULT_PLAIN,
-        help=(
+        type = int,
+        default = _PARALLEL_DEFAULT_PLAIN,
+        help = (
             f"llama-server parallel decode slots ({_PARALLEL_MIN}..{_PARALLEL_MAX}). "
             f"Default {_PARALLEL_DEFAULT_PLAIN}; `unsloth studio run` uses 4."
         ),
@@ -968,11 +963,11 @@ if __name__ == "__main__":
         parser.error(f"--parallel must be between {_PARALLEL_MIN} and {_PARALLEL_MAX}")
 
     kwargs = dict(
-        host=args.host,
-        port=args.port,
-        silent=args.silent,
-        api_only=args.api_only,
-        llama_parallel_slots=args.parallel,
+        host = args.host,
+        port = args.port,
+        silent = args.silent,
+        api_only = args.api_only,
+        llama_parallel_slots = args.parallel,
     )
     if args.frontend is not None:
         kwargs["frontend_path"] = Path(args.frontend)
@@ -984,7 +979,7 @@ if __name__ == "__main__":
         sys.stderr.write("=" * 60 + "\n")
         sys.stderr.write("ERROR: Unsloth Studio failed to start.\n")
         sys.stderr.write("=" * 60 + "\n")
-        traceback.print_exc(file=sys.stderr)
+        traceback.print_exc(file = sys.stderr)
         sys.stderr.write("\n")
         sys.stderr.write("If a package is missing, try re-running: unsloth studio setup\n")
         sys.stderr.flush()
@@ -1007,4 +1002,4 @@ if __name__ == "__main__":
     # which prevents Python from delivering SIGINT (Ctrl+C).  Using a
     # short timeout in a loop lets the interpreter process pending signals.
     while not _shutdown_event.is_set():
-        _shutdown_event.wait(timeout=1)
+        _shutdown_event.wait(timeout = 1)

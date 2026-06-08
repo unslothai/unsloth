@@ -84,9 +84,9 @@ def _build_model_config(config: dict):
     gguf_variant = config.get("gguf_variant")
 
     mc = ModelConfig.from_identifier(
-        model_id=model_name,
-        hf_token=hf_token,
-        gguf_variant=gguf_variant,
+        model_id = model_name,
+        hf_token = hf_token,
+        gguf_variant = gguf_variant,
     )
     if not mc:
         raise ValueError(f"Invalid model identifier: {model_name}")
@@ -122,7 +122,6 @@ def _get_hf_download_state(model_names: list[str] | None = None) -> tuple[int, b
 
         if model_names:
             from utils.paths import resolve_cached_repo_id_case
-
             for name in model_names:
                 if not name:
                     continue
@@ -237,7 +236,7 @@ def _start_heartbeat(
                 },
             )
 
-    t = threading.Thread(target=_beat, daemon=True)
+    t = threading.Thread(target = _beat, daemon = True)
     t.start()
     return stop
 
@@ -312,18 +311,18 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
 
         heartbeat_stop = _start_heartbeat(
             resp_queue,
-            interval=30.0,
-            xet_disabled=xet_disabled,
-            model_names=watch_repos,
+            interval = 30.0,
+            xet_disabled = xet_disabled,
+            model_names = watch_repos,
         )
         try:
             success = backend.load_model(
-                config=mc,
-                max_seq_length=config.get("max_seq_length", 2048),
-                load_in_4bit=load_in_4bit,
-                hf_token=hf_token,
-                trust_remote_code=trust_remote_code,
-                gpu_ids=config.get("resolved_gpu_ids"),
+                config = mc,
+                max_seq_length = config.get("max_seq_length", 2048),
+                load_in_4bit = load_in_4bit,
+                hf_token = hf_token,
+                trust_remote_code = trust_remote_code,
+                gpu_ids = config.get("resolved_gpu_ids"),
             )
         finally:
             heartbeat_stop.set()
@@ -389,7 +388,7 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                 "type": "loaded",
                 "success": False,
                 "error": str(exc),
-                "stack": traceback.format_exc(limit=20),
+                "stack": traceback.format_exc(limit = 20),
                 "ts": time.time(),
             },
         )
@@ -443,7 +442,7 @@ def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
         use_adapter = cmd.get("use_adapter")
         if use_adapter is not None:
             generator = backend.generate_with_adapter_control(
-                use_adapter=use_adapter,
+                use_adapter = use_adapter,
                 **gen_kwargs,
             )
         else:
@@ -480,14 +479,14 @@ def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
         logger.info("Finished text generation for request_id=%s", request_id)
 
     except Exception as exc:
-        logger.error("Generation error: %s", exc, exc_info=True)
+        logger.error("Generation error: %s", exc, exc_info = True)
         _send_response(
             resp_queue,
             {
                 "type": "gen_error",
                 "request_id": request_id,
                 "error": str(exc),
-                "stack": traceback.format_exc(limit=20),
+                "stack": traceback.format_exc(limit = 20),
                 "ts": time.time(),
             },
         )
@@ -499,14 +498,14 @@ def _handle_generate_audio(backend, cmd: dict, resp_queue: Any) -> None:
     try:
         logger.info("Starting audio generation for request_id=%s", request_id)
         wav_bytes, sample_rate = backend.generate_audio_response(
-            text=cmd["text"],
-            temperature=cmd.get("temperature", 0.6),
-            top_p=cmd.get("top_p", 0.95),
-            top_k=cmd.get("top_k", 50),
-            min_p=cmd.get("min_p", 0.0),
-            max_new_tokens=cmd.get("max_new_tokens", 2048),
-            repetition_penalty=cmd.get("repetition_penalty", 1.0),
-            use_adapter=cmd.get("use_adapter"),
+            text = cmd["text"],
+            temperature = cmd.get("temperature", 0.6),
+            top_p = cmd.get("top_p", 0.95),
+            top_k = cmd.get("top_k", 50),
+            min_p = cmd.get("min_p", 0.0),
+            max_new_tokens = cmd.get("max_new_tokens", 2048),
+            repetition_penalty = cmd.get("repetition_penalty", 1.0),
+            use_adapter = cmd.get("use_adapter"),
         )
 
         # Send WAV bytes as base64 (bytes can't go through mp.Queue directly)
@@ -523,14 +522,14 @@ def _handle_generate_audio(backend, cmd: dict, resp_queue: Any) -> None:
         logger.info("Finished audio generation for request_id=%s", request_id)
 
     except Exception as exc:
-        logger.error("Audio generation error: %s", exc, exc_info=True)
+        logger.error("Audio generation error: %s", exc, exc_info = True)
         _send_response(
             resp_queue,
             {
                 "type": "audio_error",
                 "request_id": request_id,
                 "error": str(exc),
-                "stack": traceback.format_exc(limit=20),
+                "stack": traceback.format_exc(limit = 20),
                 "ts": time.time(),
             },
         )
@@ -544,27 +543,27 @@ def _handle_generate_audio_input(backend, cmd: dict, resp_queue: Any, cancel_eve
         import numpy as np
 
         # Decode audio array from list (numpy arrays can't go through mp.Queue)
-        audio_array = np.array(cmd["audio_data"], dtype=np.float32)
+        audio_array = np.array(cmd["audio_data"], dtype = np.float32)
 
         audio_type = cmd.get("audio_type")
 
         if audio_type == "whisper":
             generator = backend.generate_whisper_response(
-                audio_array=audio_array,
-                cancel_event=cancel_event,
+                audio_array = audio_array,
+                cancel_event = cancel_event,
             )
         else:
             generator = backend.generate_audio_input_response(
-                messages=cmd.get("messages", []),
-                system_prompt=cmd.get("system_prompt", ""),
-                audio_array=audio_array,
-                temperature=cmd.get("temperature", 0.7),
-                top_p=cmd.get("top_p", 0.9),
-                top_k=cmd.get("top_k", 40),
-                min_p=cmd.get("min_p", 0.0),
-                max_new_tokens=cmd.get("max_new_tokens", 512),
-                repetition_penalty=cmd.get("repetition_penalty", 1.0),
-                cancel_event=cancel_event,
+                messages = cmd.get("messages", []),
+                system_prompt = cmd.get("system_prompt", ""),
+                audio_array = audio_array,
+                temperature = cmd.get("temperature", 0.7),
+                top_p = cmd.get("top_p", 0.9),
+                top_k = cmd.get("top_k", 40),
+                min_p = cmd.get("min_p", 0.0),
+                max_new_tokens = cmd.get("max_new_tokens", 512),
+                repetition_penalty = cmd.get("repetition_penalty", 1.0),
+                cancel_event = cancel_event,
             )
 
         logger.info("Starting audio input generation for request_id=%s", request_id)
@@ -595,14 +594,14 @@ def _handle_generate_audio_input(backend, cmd: dict, resp_queue: Any, cancel_eve
         logger.info("Finished audio input generation for request_id=%s", request_id)
 
     except Exception as exc:
-        logger.error("Audio input generation error: %s", exc, exc_info=True)
+        logger.error("Audio input generation error: %s", exc, exc_info = True)
         _send_response(
             resp_queue,
             {
                 "type": "gen_error",
                 "request_id": request_id,
                 "error": str(exc),
-                "stack": traceback.format_exc(limit=20),
+                "stack": traceback.format_exc(limit = 20),
                 "ts": time.time(),
             },
         )
@@ -661,8 +660,8 @@ def run_inference_process(*, cmd_queue: Any, resp_queue: Any, cancel_event, conf
         warnings.filterwarnings("ignore")
 
     LogConfig.setup_logging(
-        service_name="unsloth-studio-inference-worker",
-        env=os.getenv("ENVIRONMENT_TYPE", "production"),
+        service_name = "unsloth-studio-inference-worker",
+        env = os.getenv("ENVIRONMENT_TYPE", "production"),
     )
 
     apply_gpu_ids(config.get("resolved_gpu_ids"))
@@ -697,7 +696,7 @@ def run_inference_process(*, cmd_queue: Any, resp_queue: Any, cancel_event, conf
                 {
                     "type": "error",
                     "error": f"MLX inference init failed: {exc}",
-                    "stack": traceback.format_exc(limit=20),
+                    "stack": traceback.format_exc(limit = 20),
                     "ts": time.time(),
                 },
             )
@@ -707,7 +706,7 @@ def run_inference_process(*, cmd_queue: Any, resp_queue: Any, cancel_event, conf
         logger.info("MLX inference subprocess ready, entering command loop")
         while True:
             try:
-                cmd = cmd_queue.get(timeout=1.0)
+                cmd = cmd_queue.get(timeout = 1.0)
             except _queue.Empty:
                 continue
             except (EOFError, OSError):
@@ -755,7 +754,7 @@ def run_inference_process(*, cmd_queue: Any, resp_queue: Any, cancel_event, conf
                         "type": "gen_error" if cmd_type == "generate" else "error",
                         "request_id": cmd.get("request_id"),
                         "error": str(exc),
-                        "stack": traceback.format_exc(limit=20),
+                        "stack": traceback.format_exc(limit = 20),
                         "ts": time.time(),
                     },
                 )
@@ -770,7 +769,7 @@ def run_inference_process(*, cmd_queue: Any, resp_queue: Any, cancel_event, conf
             {
                 "type": "error",
                 "error": f"Failed to activate transformers version: {exc}",
-                "stack": traceback.format_exc(limit=20),
+                "stack": traceback.format_exc(limit = 20),
                 "ts": time.time(),
             },
         )
@@ -780,7 +779,6 @@ def run_inference_process(*, cmd_queue: Any, resp_queue: Any, cancel_event, conf
     if sys.platform == "win32":
         try:
             import triton  # noqa: F401
-
             logger.info("Triton available — torch.compile enabled")
         except ImportError:
             os.environ["TORCHDYNAMO_DISABLE"] = "1"
@@ -816,7 +814,7 @@ def run_inference_process(*, cmd_queue: Any, resp_queue: Any, cancel_event, conf
             {
                 "type": "error",
                 "error": f"Failed to import ML libraries: {exc}",
-                "stack": traceback.format_exc(limit=20),
+                "stack": traceback.format_exc(limit = 20),
                 "ts": time.time(),
             },
         )
@@ -843,7 +841,7 @@ def run_inference_process(*, cmd_queue: Any, resp_queue: Any, cancel_event, conf
             {
                 "type": "error",
                 "error": f"Failed to initialize inference backend: {exc}",
-                "stack": traceback.format_exc(limit=20),
+                "stack": traceback.format_exc(limit = 20),
                 "ts": time.time(),
             },
         )
@@ -856,7 +854,7 @@ def run_inference_process(*, cmd_queue: Any, resp_queue: Any, cancel_event, conf
 
     while True:
         try:
-            cmd = cmd_queue.get(timeout=1.0)
+            cmd = cmd_queue.get(timeout = 1.0)
         except _queue.Empty:
             continue
         except (EOFError, OSError):
@@ -956,13 +954,13 @@ def run_inference_process(*, cmd_queue: Any, resp_queue: Any, cancel_event, conf
                 )
 
         except Exception as exc:
-            logger.error("Error handling command '%s': %s", cmd_type, exc, exc_info=True)
+            logger.error("Error handling command '%s': %s", cmd_type, exc, exc_info = True)
             _send_response(
                 resp_queue,
                 {
                     "type": "error",
                     "error": f"Command '{cmd_type}' failed: {exc}",
-                    "stack": traceback.format_exc(limit=20),
+                    "stack": traceback.format_exc(limit = 20),
                     "ts": time.time(),
                 },
             )

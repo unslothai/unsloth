@@ -87,7 +87,7 @@ def _delete_project_workspace(project: dict) -> None:
         return
     root = Path(root_path).expanduser()
     try:
-        root_resolved = root.resolve(strict=False)
+        root_resolved = root.resolve(strict = False)
     except (OSError, RuntimeError, ValueError):
         logger.warning("Skipping project workspace delete for invalid path %r", root_path)
         return
@@ -1322,13 +1322,13 @@ def list_chat_messages_for_threads(thread_ids: list[str]) -> list[dict]:
             messages.extend(_chat_message_from_row(row) for row in rows)
         return sorted(
             messages,
-            key=lambda message: (message["createdAt"], message["id"]),
+            key = lambda message: (message["createdAt"], message["id"]),
         )
     finally:
         conn.close()
 
 
-def get_app_setting(key: str, fallback=None):
+def get_app_setting(key: str, fallback = None):
     conn = get_connection()
     try:
         row = conn.execute("SELECT value_json FROM app_settings WHERE key = ?", (key,)).fetchone()

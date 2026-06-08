@@ -80,9 +80,9 @@ resolve_simple_install_release_plans = INSTALL_LLAMA_PREBUILT.resolve_simple_ins
 
 def load_studio_run_module(monkeypatch):
     logger = types.SimpleNamespace(
-        debug=lambda *a, **k: None,
-        info=lambda *a, **k: None,
-        warning=lambda *a, **k: None,
+        debug = lambda *a, **k: None,
+        info = lambda *a, **k: None,
+        warning = lambda *a, **k: None,
     )
     loggers = types.ModuleType("loggers")
     loggers.get_logger = lambda name: logger
@@ -120,19 +120,19 @@ def make_host(**overrides):
     system = overrides.pop("system", "Linux")
     machine = overrides.pop("machine", "x86_64")
     defaults = dict(
-        system=system,
-        machine=machine,
-        is_linux=system == "Linux",
-        is_windows=system == "Windows",
-        is_macos=system == "Darwin",
-        is_x86_64=machine.lower() in {"x86_64", "amd64"},
-        is_arm64=machine.lower() in {"arm64", "aarch64"},
-        nvidia_smi="/usr/bin/nvidia-smi",
-        driver_cuda_version=(12, 8),
-        compute_caps=["86"],
-        visible_cuda_devices=None,
-        has_physical_nvidia=True,
-        has_usable_nvidia=True,
+        system = system,
+        machine = machine,
+        is_linux = system == "Linux",
+        is_windows = system == "Windows",
+        is_macos = system == "Darwin",
+        is_x86_64 = machine.lower() in {"x86_64", "amd64"},
+        is_arm64 = machine.lower() in {"arm64", "aarch64"},
+        nvidia_smi = "/usr/bin/nvidia-smi",
+        driver_cuda_version = (12, 8),
+        compute_caps = ["86"],
+        visible_cuda_devices = None,
+        has_physical_nvidia = True,
+        has_usable_nvidia = True,
     )
     defaults.update(overrides)
     return HostInfo(**defaults)
@@ -140,15 +140,15 @@ def make_host(**overrides):
 
 def make_artifact(asset_name, **overrides):
     defaults = dict(
-        asset_name=asset_name,
-        install_kind="linux-cuda",
-        runtime_line="cuda12",
-        coverage_class="targeted",
-        supported_sms=["75", "80", "86", "89", "90"],
-        min_sm=75,
-        max_sm=90,
-        bundle_profile="cuda12-newer",
-        rank=100,
+        asset_name = asset_name,
+        install_kind = "linux-cuda",
+        runtime_line = "cuda12",
+        coverage_class = "targeted",
+        supported_sms = ["75", "80", "86", "89", "90"],
+        min_sm = 75,
+        max_sm = 90,
+        bundle_profile = "cuda12-newer",
+        rank = 100,
     )
     defaults.update(overrides)
     return PublishedLlamaArtifact(**defaults)
@@ -156,20 +156,20 @@ def make_artifact(asset_name, **overrides):
 
 def make_release(artifacts, **overrides):
     defaults = dict(
-        repo="unslothai/llama.cpp",
-        release_tag="v1.0",
-        upstream_tag="b8508",
-        source_repo=None,
-        source_repo_url=None,
-        source_ref_kind=None,
-        requested_source_ref=None,
-        resolved_source_ref=None,
-        source_commit=None,
-        source_commit_short=None,
-        assets={a.asset_name: f"https://example.com/{a.asset_name}" for a in artifacts},
-        manifest_asset_name="llama-prebuilt-manifest.json",
-        artifacts=artifacts,
-        selection_log=[],
+        repo = "unslothai/llama.cpp",
+        release_tag = "v1.0",
+        upstream_tag = "b8508",
+        source_repo = None,
+        source_repo_url = None,
+        source_ref_kind = None,
+        requested_source_ref = None,
+        resolved_source_ref = None,
+        source_commit = None,
+        source_commit_short = None,
+        assets = {a.asset_name: f"https://example.com/{a.asset_name}" for a in artifacts},
+        manifest_asset_name = "llama-prebuilt-manifest.json",
+        artifacts = artifacts,
+        selection_log = [],
     )
     defaults.update(overrides)
     return PublishedReleaseBundle(**defaults)
@@ -177,22 +177,22 @@ def make_release(artifacts, **overrides):
 
 def make_checksums(asset_names):
     return ApprovedReleaseChecksums(
-        repo="unslothai/llama.cpp",
-        release_tag="v1.0",
-        upstream_tag="b8508",
-        source_repo=None,
-        source_repo_url=None,
-        source_ref_kind=None,
-        requested_source_ref=None,
-        resolved_source_ref=None,
-        source_commit=None,
-        source_commit_short=None,
-        artifacts={
+        repo = "unslothai/llama.cpp",
+        release_tag = "v1.0",
+        upstream_tag = "b8508",
+        source_repo = None,
+        source_repo_url = None,
+        source_ref_kind = None,
+        requested_source_ref = None,
+        resolved_source_ref = None,
+        source_commit = None,
+        source_commit_short = None,
+        artifacts = {
             name: ApprovedArtifactHash(
-                asset_name=name,
-                sha256="a" * 64,
-                repo="unslothai/llama.cpp",
-                kind="prebuilt",
+                asset_name = name,
+                sha256 = "a" * 64,
+                repo = "unslothai/llama.cpp",
+                kind = "prebuilt",
             )
             for name in asset_names
         },
@@ -202,54 +202,54 @@ def make_checksums(asset_names):
 def make_checksums_with_source(
     asset_names,
     *,
-    release_tag="v1.0",
-    upstream_tag="b8508",
-    source_repo=None,
-    source_repo_url=None,
-    source_ref_kind=None,
-    requested_source_ref=None,
-    resolved_source_ref=None,
-    source_commit=None,
+    release_tag = "v1.0",
+    upstream_tag = "b8508",
+    source_repo = None,
+    source_repo_url = None,
+    source_ref_kind = None,
+    requested_source_ref = None,
+    resolved_source_ref = None,
+    source_commit = None,
 ):
     artifacts = {
         **{
             name: ApprovedArtifactHash(
-                asset_name=name,
-                sha256="a" * 64,
-                repo="unslothai/llama.cpp",
-                kind="prebuilt",
+                asset_name = name,
+                sha256 = "a" * 64,
+                repo = "unslothai/llama.cpp",
+                kind = "prebuilt",
             )
             for name in asset_names
         },
         source_archive_logical_name(upstream_tag): ApprovedArtifactHash(
-            asset_name=source_archive_logical_name(upstream_tag),
-            sha256="b" * 64,
-            repo="ggml-org/llama.cpp",
-            kind="upstream-source",
+            asset_name = source_archive_logical_name(upstream_tag),
+            sha256 = "b" * 64,
+            repo = "ggml-org/llama.cpp",
+            kind = "upstream-source",
         ),
     }
     normalized_source_commit = source_commit.lower() if isinstance(source_commit, str) else None
     if normalized_source_commit:
         artifacts[exact_source_archive_logical_name(normalized_source_commit)] = (
             ApprovedArtifactHash(
-                asset_name=exact_source_archive_logical_name(normalized_source_commit),
-                sha256="c" * 64,
-                repo=source_repo or "example/custom-llama.cpp",
-                kind="exact-source",
+                asset_name = exact_source_archive_logical_name(normalized_source_commit),
+                sha256 = "c" * 64,
+                repo = source_repo or "example/custom-llama.cpp",
+                kind = "exact-source",
             )
         )
     return ApprovedReleaseChecksums(
-        repo="unslothai/llama.cpp",
-        release_tag=release_tag,
-        upstream_tag=upstream_tag,
-        source_repo=source_repo,
-        source_repo_url=source_repo_url,
-        source_ref_kind=source_ref_kind,
-        requested_source_ref=requested_source_ref,
-        resolved_source_ref=resolved_source_ref,
-        source_commit=normalized_source_commit,
-        source_commit_short=normalized_source_commit[:7] if normalized_source_commit else None,
-        artifacts=artifacts,
+        repo = "unslothai/llama.cpp",
+        release_tag = release_tag,
+        upstream_tag = upstream_tag,
+        source_repo = source_repo,
+        source_repo_url = source_repo_url,
+        source_ref_kind = source_ref_kind,
+        requested_source_ref = requested_source_ref,
+        resolved_source_ref = resolved_source_ref,
+        source_commit = normalized_source_commit,
+        source_commit_short = normalized_source_commit[:7] if normalized_source_commit else None,
+        artifacts = artifacts,
     )
 
 
@@ -289,11 +289,11 @@ class TestStudioLocalhostIpv6Warning:
         monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **k: entries)
 
     @staticmethod
-    def _ipv4(port=8888):
+    def _ipv4(port = 8888):
         return (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", port))
 
     @staticmethod
-    def _ipv6(port=8888):
+    def _ipv6(port = 8888):
         return (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("::1", port, 0, 0))
 
     # -- _localhost_ipv6_mismatch_url ------------------------------------
@@ -340,7 +340,7 @@ class TestStudioLocalhostIpv6Warning:
         monkeypatch.setattr(
             run_module,
             "_local_port_open",
-            lambda host, port, timeout=1.0: True,
+            lambda host, port, timeout = 1.0: True,
         )
 
         assert run_module._localhost_ipv6_mismatch_url("127.0.0.1", 8888) == "http://127.0.0.1:8888"
@@ -596,24 +596,24 @@ class TestSelectVisibleGpuRows:
 
 class TestCompatibleLinuxRuntimeLines:
     def test_no_driver(self):
-        host = make_host(driver_cuda_version=None)
+        host = make_host(driver_cuda_version = None)
         assert compatible_linux_runtime_lines(host) == []
 
     def test_driver_11_8(self):
-        host = make_host(driver_cuda_version=(11, 8))
+        host = make_host(driver_cuda_version = (11, 8))
         assert compatible_linux_runtime_lines(host) == []
 
     def test_driver_12_4(self):
-        host = make_host(driver_cuda_version=(12, 4))
+        host = make_host(driver_cuda_version = (12, 4))
         assert compatible_linux_runtime_lines(host) == ["cuda12"]
 
     def test_driver_13_0(self):
-        host = make_host(driver_cuda_version=(13, 0))
+        host = make_host(driver_cuda_version = (13, 0))
         assert compatible_linux_runtime_lines(host) == ["cuda13", "cuda12"]
 
     def test_future_major_derives_lines(self):
         # A future major (14.x) offers cuda14 first, then older majors.
-        host = make_host(driver_cuda_version=(14, 0))
+        host = make_host(driver_cuda_version = (14, 0))
         assert compatible_linux_runtime_lines(host) == ["cuda14", "cuda13", "cuda12"]
 
 
@@ -655,45 +655,45 @@ class TestParseDirectLinuxReleaseBundle:
 
 class TestPickWindowsCudaRuntime:
     def test_no_driver(self):
-        host = make_host(driver_cuda_version=None)
+        host = make_host(driver_cuda_version = None)
         assert pick_windows_cuda_runtime(host) is None
 
     def test_below_threshold(self):
-        host = make_host(driver_cuda_version=(12, 3))
+        host = make_host(driver_cuda_version = (12, 3))
         assert pick_windows_cuda_runtime(host) is None
 
     def test_driver_12_4(self):
-        host = make_host(driver_cuda_version=(12, 4))
+        host = make_host(driver_cuda_version = (12, 4))
         assert pick_windows_cuda_runtime(host) == "12.4"
 
     def test_driver_13_1(self):
-        host = make_host(driver_cuda_version=(13, 1))
+        host = make_host(driver_cuda_version = (13, 1))
         assert pick_windows_cuda_runtime(host) == "13.1"
 
     def test_driver_13_0_uses_cuda13_line(self):
-        host = make_host(driver_cuda_version=(13, 0))
+        host = make_host(driver_cuda_version = (13, 0))
         assert pick_windows_cuda_runtime(host) == "13.1"
 
 
 class TestCompatibleWindowsRuntimeLines:
     def test_no_driver(self):
-        host = make_host(driver_cuda_version=None)
+        host = make_host(driver_cuda_version = None)
         assert compatible_windows_runtime_lines(host) == []
 
     def test_driver_12_4(self):
-        host = make_host(driver_cuda_version=(12, 4))
+        host = make_host(driver_cuda_version = (12, 4))
         assert compatible_windows_runtime_lines(host) == ["cuda12"]
 
     def test_driver_13_1(self):
-        host = make_host(driver_cuda_version=(13, 1))
+        host = make_host(driver_cuda_version = (13, 1))
         assert compatible_windows_runtime_lines(host) == ["cuda13", "cuda12"]
 
     def test_driver_13_0_uses_cuda13_line(self):
-        host = make_host(driver_cuda_version=(13, 0))
+        host = make_host(driver_cuda_version = (13, 0))
         assert compatible_windows_runtime_lines(host) == ["cuda13", "cuda12"]
 
     def test_future_major_derives_lines(self):
-        host = make_host(driver_cuda_version=(14, 0))
+        host = make_host(driver_cuda_version = (14, 0))
         assert compatible_windows_runtime_lines(host) == ["cuda14", "cuda13", "cuda12"]
 
 
@@ -727,11 +727,11 @@ class TestRuntimeLineFromCudaVersion:
 class TestApplyApprovedHashes:
     def _choice(self, name):
         return AssetChoice(
-            repo="test",
-            tag="v1",
-            name=name,
-            url=f"https://x/{name}",
-            source_label="test",
+            repo = "test",
+            tag = "v1",
+            name = name,
+            url = f"https://x/{name}",
+            source_label = "test",
         )
 
     def test_both_approved(self):
@@ -750,22 +750,22 @@ class TestApplyApprovedHashes:
 
     def test_upstream_asset_can_match_compatibility_tag_name(self):
         choice = AssetChoice(
-            repo=UPSTREAM_REPO,
-            tag="main",
-            name="llama-main-bin-macos-arm64.tar.gz",
-            url="https://x/llama-main-bin-macos-arm64.tar.gz",
-            source_label="upstream",
+            repo = UPSTREAM_REPO,
+            tag = "main",
+            name = "llama-main-bin-macos-arm64.tar.gz",
+            url = "https://x/llama-main-bin-macos-arm64.tar.gz",
+            source_label = "upstream",
         )
         checksums = ApprovedReleaseChecksums(
-            repo="unslothai/llama.cpp",
-            release_tag="r1",
-            upstream_tag="b9000",
-            artifacts={
+            repo = "unslothai/llama.cpp",
+            release_tag = "r1",
+            upstream_tag = "b9000",
+            artifacts = {
                 "llama-b9000-bin-macos-arm64.tar.gz": ApprovedArtifactHash(
-                    asset_name="llama-b9000-bin-macos-arm64.tar.gz",
-                    sha256="a" * 64,
-                    repo=UPSTREAM_REPO,
-                    kind="macos-arm64-upstream",
+                    asset_name = "llama-b9000-bin-macos-arm64.tar.gz",
+                    sha256 = "a" * 64,
+                    repo = UPSTREAM_REPO,
+                    kind = "macos-arm64-upstream",
                 )
             },
         )
@@ -775,22 +775,22 @@ class TestApplyApprovedHashes:
 
     def test_windows_cuda_legacy_choice_can_match_current_upstream_name(self):
         choice = AssetChoice(
-            repo=UPSTREAM_REPO,
-            tag="b9000",
-            name="llama-b9000-bin-win-cuda-13.1-x64.zip",
-            url="https://x/llama-b9000-bin-win-cuda-13.1-x64.zip",
-            source_label="upstream",
+            repo = UPSTREAM_REPO,
+            tag = "b9000",
+            name = "llama-b9000-bin-win-cuda-13.1-x64.zip",
+            url = "https://x/llama-b9000-bin-win-cuda-13.1-x64.zip",
+            source_label = "upstream",
         )
         checksums = ApprovedReleaseChecksums(
-            repo="unslothai/llama.cpp",
-            release_tag="r1",
-            upstream_tag="b9000",
-            artifacts={
+            repo = "unslothai/llama.cpp",
+            release_tag = "r1",
+            upstream_tag = "b9000",
+            artifacts = {
                 "cudart-llama-bin-win-cuda-13.1-x64.zip": ApprovedArtifactHash(
-                    asset_name="cudart-llama-bin-win-cuda-13.1-x64.zip",
-                    sha256="b" * 64,
-                    repo=UPSTREAM_REPO,
-                    kind="windows-cuda-upstream",
+                    asset_name = "cudart-llama-bin-win-cuda-13.1-x64.zip",
+                    sha256 = "b" * 64,
+                    repo = UPSTREAM_REPO,
+                    kind = "windows-cuda-upstream",
                 )
             },
         )
@@ -800,22 +800,22 @@ class TestApplyApprovedHashes:
 
     def test_windows_cuda_current_choice_can_match_legacy_compatibility_name(self):
         choice = AssetChoice(
-            repo=UPSTREAM_REPO,
-            tag="main",
-            name="cudart-llama-bin-win-cuda-13.1-x64.zip",
-            url="https://x/cudart-llama-bin-win-cuda-13.1-x64.zip",
-            source_label="upstream",
+            repo = UPSTREAM_REPO,
+            tag = "main",
+            name = "cudart-llama-bin-win-cuda-13.1-x64.zip",
+            url = "https://x/cudart-llama-bin-win-cuda-13.1-x64.zip",
+            source_label = "upstream",
         )
         checksums = ApprovedReleaseChecksums(
-            repo="unslothai/llama.cpp",
-            release_tag="r1",
-            upstream_tag="b9000",
-            artifacts={
+            repo = "unslothai/llama.cpp",
+            release_tag = "r1",
+            upstream_tag = "b9000",
+            artifacts = {
                 "llama-b9000-bin-win-cuda-13.1-x64.zip": ApprovedArtifactHash(
-                    asset_name="llama-b9000-bin-win-cuda-13.1-x64.zip",
-                    sha256="c" * 64,
-                    repo=UPSTREAM_REPO,
-                    kind="windows-cuda-upstream",
+                    asset_name = "llama-b9000-bin-win-cuda-13.1-x64.zip",
+                    sha256 = "c" * 64,
+                    repo = UPSTREAM_REPO,
+                    kind = "windows-cuda-upstream",
                 )
             },
         )
@@ -826,12 +826,12 @@ class TestApplyApprovedHashes:
     def test_none_approved(self):
         c1 = self._choice("missing.tar.gz")
         checksums = make_checksums(["other.tar.gz"])
-        with pytest.raises(PrebuiltFallback, match="approved checksum"):
+        with pytest.raises(PrebuiltFallback, match = "approved checksum"):
             apply_approved_hashes([c1], checksums)
 
     def test_empty_input(self):
         checksums = make_checksums(["a.tar.gz"])
-        with pytest.raises(PrebuiltFallback, match="approved checksum"):
+        with pytest.raises(PrebuiltFallback, match = "approved checksum"):
             apply_approved_hashes([], checksums)
 
 
@@ -842,19 +842,19 @@ class TestApplyApprovedHashes:
 
 class TestPublishedReleaseResolution:
     def test_latest_skips_invalid_release_and_uses_next_valid(self, monkeypatch):
-        invalid = make_release([], release_tag="v2.0", upstream_tag="b9000")
-        valid = make_release([], release_tag="v1.0", upstream_tag="b8999")
+        invalid = make_release([], release_tag = "v2.0", upstream_tag = "b9000")
+        valid = make_release([], release_tag = "v1.0", upstream_tag = "b8999")
 
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "iter_published_release_bundles",
-            lambda repo, published_release_tag="": iter([invalid, valid]),
+            lambda repo, published_release_tag = "": iter([invalid, valid]),
         )
 
         def fake_load(repo, release_tag):
             if release_tag == "v2.0":
                 raise PrebuiltFallback("checksum asset missing")
-            return make_checksums_with_source([], release_tag="v1.0", upstream_tag="b8999")
+            return make_checksums_with_source([], release_tag = "v1.0", upstream_tag = "b8999")
 
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
@@ -868,37 +868,37 @@ class TestPublishedReleaseResolution:
         assert resolved.checksums.release_tag == "v1.0"
 
     def test_concrete_tag_matches_manifest_upstream_tag(self, monkeypatch):
-        release = make_release([], release_tag="release-b8508", upstream_tag="b8508")
+        release = make_release([], release_tag = "release-b8508", upstream_tag = "b8508")
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "iter_published_release_bundles",
-            lambda repo, published_release_tag="": iter([release]),
+            lambda repo, published_release_tag = "": iter([release]),
         )
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "load_approved_release_checksums",
             lambda repo, release_tag: make_checksums_with_source(
                 [],
-                release_tag=release_tag,
-                upstream_tag="b8508",
+                release_tag = release_tag,
+                upstream_tag = "b8508",
             ),
         )
 
         assert resolve_requested_install_tag("b8508", "", "unslothai/llama.cpp") == "b8508"
 
     def test_concrete_tag_without_matching_release_raises(self, monkeypatch):
-        release = make_release([], release_tag="release-b9000", upstream_tag="b9000")
+        release = make_release([], release_tag = "release-b9000", upstream_tag = "b9000")
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "iter_published_release_bundles",
-            lambda repo, published_release_tag="": iter([release]),
+            lambda repo, published_release_tag = "": iter([release]),
         )
 
-        with pytest.raises(PrebuiltFallback, match="matched upstream tag b8508"):
+        with pytest.raises(PrebuiltFallback, match = "matched upstream tag b8508"):
             resolve_requested_install_tag("b8508", "", "unslothai/llama.cpp")
 
     def test_pinned_release_must_match_requested_upstream_tag(self, monkeypatch):
-        bundle = make_release([], release_tag="llama-prebuilt-latest", upstream_tag="b9000")
+        bundle = make_release([], release_tag = "llama-prebuilt-latest", upstream_tag = "b9000")
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "pinned_published_release_bundle",
@@ -909,12 +909,12 @@ class TestPublishedReleaseResolution:
             "load_approved_release_checksums",
             lambda repo, release_tag: make_checksums_with_source(
                 [],
-                release_tag=release_tag,
-                upstream_tag="b9000",
+                release_tag = release_tag,
+                upstream_tag = "b9000",
             ),
         )
 
-        with pytest.raises(PrebuiltFallback, match="but requested b8508"):
+        with pytest.raises(PrebuiltFallback, match = "but requested b8508"):
             resolve_requested_install_tag(
                 "b8508",
                 "llama-prebuilt-latest",
@@ -924,25 +924,25 @@ class TestPublishedReleaseResolution:
     def test_request_matches_requested_source_ref(self, monkeypatch):
         release = make_release(
             [],
-            release_tag="release-main",
-            upstream_tag="b9000",
-            requested_source_ref="main",
-            resolved_source_ref="refs/heads/main",
+            release_tag = "release-main",
+            upstream_tag = "b9000",
+            requested_source_ref = "main",
+            resolved_source_ref = "refs/heads/main",
         )
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "iter_published_release_bundles",
-            lambda repo, published_release_tag="": iter([release]),
+            lambda repo, published_release_tag = "": iter([release]),
         )
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "load_approved_release_checksums",
             lambda repo, release_tag: make_checksums_with_source(
                 [],
-                release_tag=release_tag,
-                upstream_tag="b9000",
-                requested_source_ref="main",
-                resolved_source_ref="refs/heads/main",
+                release_tag = release_tag,
+                upstream_tag = "b9000",
+                requested_source_ref = "main",
+                resolved_source_ref = "refs/heads/main",
             ),
         )
 
@@ -953,23 +953,23 @@ class TestPublishedReleaseResolution:
         commit = "a" * 40
         release = make_release(
             [],
-            release_tag="release-commit",
-            upstream_tag="b9000",
-            source_commit=commit,
+            release_tag = "release-commit",
+            upstream_tag = "b9000",
+            source_commit = commit,
         )
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "iter_published_release_bundles",
-            lambda repo, published_release_tag="": iter([release]),
+            lambda repo, published_release_tag = "": iter([release]),
         )
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "load_approved_release_checksums",
             lambda repo, release_tag: make_checksums_with_source(
                 [],
-                release_tag=release_tag,
-                upstream_tag="b9000",
-                source_commit=commit,
+                release_tag = release_tag,
+                upstream_tag = "b9000",
+                source_commit = commit,
             ),
         )
 
@@ -981,9 +981,9 @@ class TestSourceBuildPlanResolution:
     def test_matches_request_by_non_tag_provenance(self):
         bundle = make_release(
             [],
-            requested_source_ref="main",
-            resolved_source_ref="refs/heads/main",
-            source_commit="a" * 40,
+            requested_source_ref = "main",
+            resolved_source_ref = "refs/heads/main",
+            source_commit = "a" * 40,
         )
         assert published_release_matches_request(bundle, "main") is True
         assert published_release_matches_request(bundle, "refs/heads/main") is True
@@ -993,8 +993,8 @@ class TestSourceBuildPlanResolution:
     def test_matches_pull_ref_aliases(self):
         bundle = make_release(
             [],
-            requested_source_ref="refs/pull/123/head",
-            resolved_source_ref="pull/123/head",
+            requested_source_ref = "refs/pull/123/head",
+            resolved_source_ref = "pull/123/head",
         )
         assert published_release_matches_request(bundle, "refs/pull/123/head") is True
         assert published_release_matches_request(bundle, "pull/123/head") is True
@@ -1002,33 +1002,33 @@ class TestSourceBuildPlanResolution:
     def test_prefers_exact_source_commit_when_available(self, monkeypatch):
         commit = "a" * 40
         resolved = INSTALL_LLAMA_PREBUILT.ResolvedPublishedRelease(
-            bundle=make_release(
+            bundle = make_release(
                 [],
-                release_tag="release-main",
-                upstream_tag="b9000",
-                source_repo="example/custom-llama.cpp",
-                source_repo_url="https://github.com/example/custom-llama.cpp",
-                source_ref_kind="branch",
-                requested_source_ref="main",
-                resolved_source_ref="refs/heads/main",
-                source_commit=commit,
+                release_tag = "release-main",
+                upstream_tag = "b9000",
+                source_repo = "example/custom-llama.cpp",
+                source_repo_url = "https://github.com/example/custom-llama.cpp",
+                source_ref_kind = "branch",
+                requested_source_ref = "main",
+                resolved_source_ref = "refs/heads/main",
+                source_commit = commit,
             ),
-            checksums=make_checksums_with_source(
+            checksums = make_checksums_with_source(
                 [],
-                release_tag="release-main",
-                upstream_tag="b9000",
-                source_repo="example/custom-llama.cpp",
-                source_repo_url="https://github.com/example/custom-llama.cpp",
-                source_ref_kind="branch",
-                requested_source_ref="main",
-                resolved_source_ref="refs/heads/main",
-                source_commit=commit,
+                release_tag = "release-main",
+                upstream_tag = "b9000",
+                source_repo = "example/custom-llama.cpp",
+                source_repo_url = "https://github.com/example/custom-llama.cpp",
+                source_ref_kind = "branch",
+                requested_source_ref = "main",
+                resolved_source_ref = "refs/heads/main",
+                source_commit = commit,
             ),
         )
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "resolve_published_release",
-            lambda requested_tag, published_repo, published_release_tag="": resolved,
+            lambda requested_tag, published_repo, published_release_tag = "": resolved,
         )
 
         plan = resolve_source_build_plan("main", "unslothai/llama.cpp")
@@ -1039,32 +1039,32 @@ class TestSourceBuildPlanResolution:
 
     def test_uses_branch_provenance_without_exact_source_hash(self, monkeypatch):
         resolved = INSTALL_LLAMA_PREBUILT.ResolvedPublishedRelease(
-            bundle=make_release(
+            bundle = make_release(
                 [],
-                release_tag="release-main",
-                upstream_tag="b9000",
-                source_repo="example/custom-llama.cpp",
-                source_repo_url="https://github.com/example/custom-llama.cpp",
-                source_ref_kind="branch",
-                requested_source_ref="main",
-                resolved_source_ref="main",
+                release_tag = "release-main",
+                upstream_tag = "b9000",
+                source_repo = "example/custom-llama.cpp",
+                source_repo_url = "https://github.com/example/custom-llama.cpp",
+                source_ref_kind = "branch",
+                requested_source_ref = "main",
+                resolved_source_ref = "main",
             ),
-            checksums=make_checksums_with_source(
+            checksums = make_checksums_with_source(
                 [],
-                release_tag="release-main",
-                upstream_tag="b9000",
-                source_repo="example/custom-llama.cpp",
-                source_repo_url="https://github.com/example/custom-llama.cpp",
-                source_ref_kind="branch",
-                requested_source_ref="main",
-                resolved_source_ref="main",
-                source_commit=None,
+                release_tag = "release-main",
+                upstream_tag = "b9000",
+                source_repo = "example/custom-llama.cpp",
+                source_repo_url = "https://github.com/example/custom-llama.cpp",
+                source_ref_kind = "branch",
+                requested_source_ref = "main",
+                resolved_source_ref = "main",
+                source_commit = None,
             ),
         )
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "resolve_published_release",
-            lambda requested_tag, published_repo, published_release_tag="": resolved,
+            lambda requested_tag, published_repo, published_release_tag = "": resolved,
         )
 
         plan = resolve_source_build_plan("main", "unslothai/llama.cpp")
@@ -1077,7 +1077,7 @@ class TestSourceBuildPlanResolution:
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "resolve_published_release",
-            lambda requested_tag, published_repo, published_release_tag="": (_ for _ in ()).throw(
+            lambda requested_tag, published_repo, published_release_tag = "": (_ for _ in ()).throw(
                 PrebuiltFallback("missing")
             ),
         )
@@ -1090,7 +1090,7 @@ class TestSourceBuildPlanResolution:
 
 class TestParseApprovedReleaseChecksums:
     def test_rejects_wrong_component(self):
-        with pytest.raises(RuntimeError, match="did not describe llama.cpp"):
+        with pytest.raises(RuntimeError, match = "did not describe llama.cpp"):
             parse_approved_release_checksums(
                 "repo/test",
                 "r1",
@@ -1104,7 +1104,7 @@ class TestParseApprovedReleaseChecksums:
             )
 
     def test_rejects_mismatched_release_tag(self):
-        with pytest.raises(RuntimeError, match="did not match pinned release tag"):
+        with pytest.raises(RuntimeError, match = "did not match pinned release tag"):
             parse_approved_release_checksums(
                 "repo/test",
                 "r1",
@@ -1118,7 +1118,7 @@ class TestParseApprovedReleaseChecksums:
             )
 
     def test_rejects_bad_sha256(self):
-        with pytest.raises(RuntimeError, match="valid sha256"):
+        with pytest.raises(RuntimeError, match = "valid sha256"):
             parse_approved_release_checksums(
                 "repo/test",
                 "r1",
@@ -1136,7 +1136,7 @@ class TestParseApprovedReleaseChecksums:
             )
 
     def test_rejects_unsupported_schema_version(self):
-        with pytest.raises(RuntimeError, match="schema_version=2 is unsupported"):
+        with pytest.raises(RuntimeError, match = "schema_version=2 is unsupported"):
             parse_approved_release_checksums(
                 "repo/test",
                 "r1",
@@ -1152,14 +1152,14 @@ class TestParseApprovedReleaseChecksums:
 
 class TestValidatedChecksumsForBundle:
     def test_rejects_manifest_checksum_mismatch(self, monkeypatch):
-        bundle = make_release([], release_tag="r1", upstream_tag="b8508")
+        bundle = make_release([], release_tag = "r1", upstream_tag = "b8508")
         bundle.manifest_sha256 = "a" * 64
-        checksums = make_checksums_with_source([], release_tag="r1", upstream_tag="b8508")
+        checksums = make_checksums_with_source([], release_tag = "r1", upstream_tag = "b8508")
         checksums.artifacts[bundle.manifest_asset_name] = ApprovedArtifactHash(
-            asset_name=bundle.manifest_asset_name,
-            sha256="b" * 64,
-            repo="unslothai/llama.cpp",
-            kind="published-manifest",
+            asset_name = bundle.manifest_asset_name,
+            sha256 = "b" * 64,
+            repo = "unslothai/llama.cpp",
+            kind = "published-manifest",
         )
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
@@ -1167,7 +1167,7 @@ class TestValidatedChecksumsForBundle:
             lambda repo, release_tag: checksums,
         )
 
-        with pytest.raises(PrebuiltFallback, match="manifest checksum"):
+        with pytest.raises(PrebuiltFallback, match = "manifest checksum"):
             validated_checksums_for_bundle("unslothai/llama.cpp", bundle)
 
 
@@ -1181,22 +1181,22 @@ class TestLinuxCudaChoiceFromRelease:
 
     def test_no_runtime_lines_detected(self, monkeypatch):
         mock_linux_runtime(monkeypatch, [])
-        host = make_host(driver_cuda_version=(12, 8))
+        host = make_host(driver_cuda_version = (12, 8))
         art = make_artifact("bundle-cuda12.tar.gz")
         release = make_release([art])
         assert linux_cuda_choice_from_release(host, release) is None
 
     def test_detected_lines_incompatible_with_driver(self, monkeypatch):
         mock_linux_runtime(monkeypatch, ["cuda13"])
-        host = make_host(driver_cuda_version=(12, 4))
-        art = make_artifact("bundle-cuda13.tar.gz", runtime_line="cuda13")
+        host = make_host(driver_cuda_version = (12, 4))
+        art = make_artifact("bundle-cuda13.tar.gz", runtime_line = "cuda13")
         release = make_release([art])
         assert linux_cuda_choice_from_release(host, release) is None
 
     def test_driver_13_only_cuda12_detected(self, monkeypatch):
         mock_linux_runtime(monkeypatch, ["cuda12"])
-        host = make_host(driver_cuda_version=(13, 0))
-        art = make_artifact("bundle-cuda12.tar.gz", runtime_line="cuda12")
+        host = make_host(driver_cuda_version = (13, 0))
+        art = make_artifact("bundle-cuda12.tar.gz", runtime_line = "cuda12")
         release = make_release([art])
         result = linux_cuda_choice_from_release(host, release)
         assert result is not None
@@ -1204,20 +1204,20 @@ class TestLinuxCudaChoiceFromRelease:
 
     def test_preferred_runtime_line_reorders(self, monkeypatch):
         mock_linux_runtime(monkeypatch, ["cuda13", "cuda12"])
-        host = make_host(driver_cuda_version=(13, 0))
-        art12 = make_artifact("bundle-cuda12.tar.gz", runtime_line="cuda12")
-        art13 = make_artifact("bundle-cuda13.tar.gz", runtime_line="cuda13")
+        host = make_host(driver_cuda_version = (13, 0))
+        art12 = make_artifact("bundle-cuda12.tar.gz", runtime_line = "cuda12")
+        art13 = make_artifact("bundle-cuda13.tar.gz", runtime_line = "cuda13")
         release = make_release([art12, art13])
-        result = linux_cuda_choice_from_release(host, release, preferred_runtime_line="cuda12")
+        result = linux_cuda_choice_from_release(host, release, preferred_runtime_line = "cuda12")
         assert result is not None
         assert result.primary.runtime_line == "cuda12"
 
     def test_preferred_runtime_line_unavailable(self, monkeypatch):
         mock_linux_runtime(monkeypatch, ["cuda12"])
-        host = make_host(driver_cuda_version=(12, 8))
-        art = make_artifact("bundle-cuda12.tar.gz", runtime_line="cuda12")
+        host = make_host(driver_cuda_version = (12, 8))
+        art = make_artifact("bundle-cuda12.tar.gz", runtime_line = "cuda12")
         release = make_release([art])
-        result = linux_cuda_choice_from_release(host, release, preferred_runtime_line="cuda13")
+        result = linux_cuda_choice_from_release(host, release, preferred_runtime_line = "cuda13")
         assert result is not None
         assert result.primary.runtime_line == "cuda12"
         log_entries = result.selection_log
@@ -1227,8 +1227,8 @@ class TestLinuxCudaChoiceFromRelease:
 
     def test_exact_sm_match(self, monkeypatch):
         mock_linux_runtime(monkeypatch, ["cuda12"])
-        host = make_host(compute_caps=["86"])
-        art = make_artifact("bundle.tar.gz", supported_sms=["75", "86", "89"], min_sm=75, max_sm=89)
+        host = make_host(compute_caps = ["86"])
+        art = make_artifact("bundle.tar.gz", supported_sms = ["75", "86", "89"], min_sm = 75, max_sm = 89)
         release = make_release([art])
         result = linux_cuda_choice_from_release(host, release)
         assert result is not None
@@ -1236,25 +1236,25 @@ class TestLinuxCudaChoiceFromRelease:
 
     def test_sm_not_in_supported_sms(self, monkeypatch):
         mock_linux_runtime(monkeypatch, ["cuda12"])
-        host = make_host(compute_caps=["86"])
-        art = make_artifact("bundle.tar.gz", supported_sms=["75", "80", "89"], min_sm=75, max_sm=89)
+        host = make_host(compute_caps = ["86"])
+        art = make_artifact("bundle.tar.gz", supported_sms = ["75", "80", "89"], min_sm = 75, max_sm = 89)
         release = make_release([art])
         result = linux_cuda_choice_from_release(host, release)
         assert result is None
 
     def test_sm_outside_min_range(self, monkeypatch):
         mock_linux_runtime(monkeypatch, ["cuda12"])
-        host = make_host(compute_caps=["50"])
-        art = make_artifact("bundle.tar.gz", supported_sms=["50", "75", "86"], min_sm=75, max_sm=90)
+        host = make_host(compute_caps = ["50"])
+        art = make_artifact("bundle.tar.gz", supported_sms = ["50", "75", "86"], min_sm = 75, max_sm = 90)
         release = make_release([art])
         result = linux_cuda_choice_from_release(host, release)
         assert result is None
 
     def test_sm_outside_max_range(self, monkeypatch):
         mock_linux_runtime(monkeypatch, ["cuda12"])
-        host = make_host(compute_caps=["100"])
+        host = make_host(compute_caps = ["100"])
         art = make_artifact(
-            "bundle.tar.gz", supported_sms=["100", "75", "86"], min_sm=75, max_sm=90
+            "bundle.tar.gz", supported_sms = ["100", "75", "86"], min_sm = 75, max_sm = 90
         )
         release = make_release([art])
         result = linux_cuda_choice_from_release(host, release)
@@ -1262,16 +1262,16 @@ class TestLinuxCudaChoiceFromRelease:
 
     def test_very_old_sm(self, monkeypatch):
         mock_linux_runtime(monkeypatch, ["cuda12"])
-        host = make_host(compute_caps=["50"])
-        art = make_artifact("bundle.tar.gz", min_sm=75, max_sm=90)
+        host = make_host(compute_caps = ["50"])
+        art = make_artifact("bundle.tar.gz", min_sm = 75, max_sm = 90)
         release = make_release([art])
         result = linux_cuda_choice_from_release(host, release)
         assert result is None
 
     def test_very_new_sm(self, monkeypatch):
         mock_linux_runtime(monkeypatch, ["cuda12"])
-        host = make_host(compute_caps=["100"])
-        art = make_artifact("bundle.tar.gz", min_sm=75, max_sm=90)
+        host = make_host(compute_caps = ["100"])
+        art = make_artifact("bundle.tar.gz", min_sm = 75, max_sm = 90)
         release = make_release([art])
         result = linux_cuda_choice_from_release(host, release)
         assert result is None
@@ -1280,9 +1280,9 @@ class TestLinuxCudaChoiceFromRelease:
 
     def test_unknown_caps_only_portable(self, monkeypatch):
         mock_linux_runtime(monkeypatch, ["cuda12"])
-        host = make_host(compute_caps=[])
-        targeted = make_artifact("targeted.tar.gz", coverage_class="targeted")
-        portable = make_artifact("portable.tar.gz", coverage_class="portable")
+        host = make_host(compute_caps = [])
+        targeted = make_artifact("targeted.tar.gz", coverage_class = "targeted")
+        portable = make_artifact("portable.tar.gz", coverage_class = "portable")
         release = make_release([targeted, portable])
         result = linux_cuda_choice_from_release(host, release)
         assert result is not None
@@ -1290,8 +1290,8 @@ class TestLinuxCudaChoiceFromRelease:
 
     def test_unknown_caps_no_portable(self, monkeypatch):
         mock_linux_runtime(monkeypatch, ["cuda12"])
-        host = make_host(compute_caps=[])
-        targeted = make_artifact("targeted.tar.gz", coverage_class="targeted")
+        host = make_host(compute_caps = [])
+        targeted = make_artifact("targeted.tar.gz", coverage_class = "targeted")
         release = make_release([targeted])
         result = linux_cuda_choice_from_release(host, release)
         assert result is None
@@ -1300,12 +1300,12 @@ class TestLinuxCudaChoiceFromRelease:
 
     def test_multi_gpu_all_covered(self, monkeypatch):
         mock_linux_runtime(monkeypatch, ["cuda12"])
-        host = make_host(compute_caps=["75", "89"])
+        host = make_host(compute_caps = ["75", "89"])
         art = make_artifact(
             "bundle.tar.gz",
-            supported_sms=["75", "80", "86", "89", "90"],
-            min_sm=75,
-            max_sm=90,
+            supported_sms = ["75", "80", "86", "89", "90"],
+            min_sm = 75,
+            max_sm = 90,
         )
         release = make_release([art])
         result = linux_cuda_choice_from_release(host, release)
@@ -1313,8 +1313,8 @@ class TestLinuxCudaChoiceFromRelease:
 
     def test_multi_gpu_not_all_covered(self, monkeypatch):
         mock_linux_runtime(monkeypatch, ["cuda12"])
-        host = make_host(compute_caps=["50", "89"])
-        art = make_artifact("bundle.tar.gz", supported_sms=["75", "89"], min_sm=75, max_sm=89)
+        host = make_host(compute_caps = ["50", "89"])
+        art = make_artifact("bundle.tar.gz", supported_sms = ["75", "89"], min_sm = 75, max_sm = 89)
         release = make_release([art])
         result = linux_cuda_choice_from_release(host, release)
         assert result is None
@@ -1323,20 +1323,20 @@ class TestLinuxCudaChoiceFromRelease:
 
     def test_narrowest_sm_range_wins(self, monkeypatch):
         mock_linux_runtime(monkeypatch, ["cuda12"])
-        host = make_host(compute_caps=["86"])
+        host = make_host(compute_caps = ["86"])
         wide = make_artifact(
             "wide.tar.gz",
-            supported_sms=["75", "86", "90"],
-            min_sm=75,
-            max_sm=90,
-            rank=100,
+            supported_sms = ["75", "86", "90"],
+            min_sm = 75,
+            max_sm = 90,
+            rank = 100,
         )
         narrow = make_artifact(
             "narrow.tar.gz",
-            supported_sms=["80", "86", "89"],
-            min_sm=80,
-            max_sm=89,
-            rank=100,
+            supported_sms = ["80", "86", "89"],
+            min_sm = 80,
+            max_sm = 89,
+            rank = 100,
         )
         release = make_release([wide, narrow])
         result = linux_cuda_choice_from_release(host, release)
@@ -1345,20 +1345,20 @@ class TestLinuxCudaChoiceFromRelease:
 
     def test_range_tie_lower_rank_wins(self, monkeypatch):
         mock_linux_runtime(monkeypatch, ["cuda12"])
-        host = make_host(compute_caps=["86"])
+        host = make_host(compute_caps = ["86"])
         high = make_artifact(
             "high.tar.gz",
-            supported_sms=["75", "86", "90"],
-            min_sm=75,
-            max_sm=90,
-            rank=200,
+            supported_sms = ["75", "86", "90"],
+            min_sm = 75,
+            max_sm = 90,
+            rank = 200,
         )
         low = make_artifact(
             "low.tar.gz",
-            supported_sms=["75", "86", "90"],
-            min_sm=75,
-            max_sm=90,
-            rank=50,
+            supported_sms = ["75", "86", "90"],
+            min_sm = 75,
+            max_sm = 90,
+            rank = 50,
         )
         release = make_release([high, low])
         result = linux_cuda_choice_from_release(host, release)
@@ -1367,9 +1367,9 @@ class TestLinuxCudaChoiceFromRelease:
 
     def test_targeted_preferred_portable_fallback(self, monkeypatch):
         mock_linux_runtime(monkeypatch, ["cuda12"])
-        host = make_host(compute_caps=["86"])
-        targeted = make_artifact("targeted.tar.gz", coverage_class="targeted", rank=100)
-        portable = make_artifact("portable.tar.gz", coverage_class="portable", rank=100)
+        host = make_host(compute_caps = ["86"])
+        targeted = make_artifact("targeted.tar.gz", coverage_class = "targeted", rank = 100)
+        portable = make_artifact("portable.tar.gz", coverage_class = "portable", rank = 100)
         release = make_release([targeted, portable])
         result = linux_cuda_choice_from_release(host, release)
         assert result is not None
@@ -1381,47 +1381,47 @@ class TestLinuxCudaChoiceFromRelease:
 
     def test_asset_missing_from_release_assets(self, monkeypatch):
         mock_linux_runtime(monkeypatch, ["cuda12"])
-        host = make_host(compute_caps=["86"])
+        host = make_host(compute_caps = ["86"])
         art = make_artifact("bundle.tar.gz")
-        release = make_release([art], assets={})
+        release = make_release([art], assets = {})
         result = linux_cuda_choice_from_release(host, release)
         assert result is None
 
     def test_artifact_empty_supported_sms(self, monkeypatch):
         mock_linux_runtime(monkeypatch, ["cuda12"])
-        host = make_host(compute_caps=["86"])
-        art = make_artifact("bundle.tar.gz", supported_sms=[])
+        host = make_host(compute_caps = ["86"])
+        art = make_artifact("bundle.tar.gz", supported_sms = [])
         release = make_release([art])
         result = linux_cuda_choice_from_release(host, release)
         assert result is None
 
     def test_artifact_missing_min_sm(self, monkeypatch):
         mock_linux_runtime(monkeypatch, ["cuda12"])
-        host = make_host(compute_caps=["86"])
-        art = make_artifact("bundle.tar.gz", min_sm=None, max_sm=90)
+        host = make_host(compute_caps = ["86"])
+        art = make_artifact("bundle.tar.gz", min_sm = None, max_sm = 90)
         release = make_release([art])
         result = linux_cuda_choice_from_release(host, release)
         assert result is None
 
     def test_artifact_missing_max_sm(self, monkeypatch):
         mock_linux_runtime(monkeypatch, ["cuda12"])
-        host = make_host(compute_caps=["86"])
-        art = make_artifact("bundle.tar.gz", min_sm=75, max_sm=None)
+        host = make_host(compute_caps = ["86"])
+        art = make_artifact("bundle.tar.gz", min_sm = 75, max_sm = None)
         release = make_release([art])
         result = linux_cuda_choice_from_release(host, release)
         assert result is None
 
     def test_no_linux_cuda_artifacts(self, monkeypatch):
         mock_linux_runtime(monkeypatch, ["cuda12"])
-        host = make_host(compute_caps=["86"])
-        art = make_artifact("bundle.tar.gz", install_kind="windows-cuda")
+        host = make_host(compute_caps = ["86"])
+        art = make_artifact("bundle.tar.gz", install_kind = "windows-cuda")
         release = make_release([art])
         result = linux_cuda_choice_from_release(host, release)
         assert result is None
 
     def test_empty_artifacts_list(self, monkeypatch):
         mock_linux_runtime(monkeypatch, ["cuda12"])
-        host = make_host(compute_caps=["86"])
+        host = make_host(compute_caps = ["86"])
         release = make_release([])
         result = linux_cuda_choice_from_release(host, release)
         assert result is None
@@ -1430,13 +1430,13 @@ class TestLinuxCudaChoiceFromRelease:
 def make_profile_artifact(asset_name, profile_name, **overrides):
     profile = INSTALL_LLAMA_PREBUILT.DIRECT_LINUX_BUNDLE_PROFILES[profile_name]
     defaults = dict(
-        runtime_line=profile["runtime_line"],
-        coverage_class=profile["coverage_class"],
-        supported_sms=[str(value) for value in profile["supported_sms"]],
-        min_sm=int(profile["min_sm"]),
-        max_sm=int(profile["max_sm"]),
-        bundle_profile=profile_name,
-        rank=int(profile["rank"]),
+        runtime_line = profile["runtime_line"],
+        coverage_class = profile["coverage_class"],
+        supported_sms = [str(value) for value in profile["supported_sms"]],
+        min_sm = int(profile["min_sm"]),
+        max_sm = int(profile["max_sm"]),
+        bundle_profile = profile_name,
+        rank = int(profile["rank"]),
     )
     defaults.update(overrides)
     return make_artifact(asset_name, **defaults)
@@ -1458,7 +1458,7 @@ class TestBlackwellUltraSm103Coverage:
 
     def test_b300_selects_cuda13_newer_prebuilt(self, monkeypatch):
         mock_linux_runtime(monkeypatch, ["cuda13"])
-        host = make_host(compute_caps=["103"], driver_cuda_version=(13, 0))
+        host = make_host(compute_caps = ["103"], driver_cuda_version = (13, 0))
         art = make_profile_artifact("cuda13-newer.tar.gz", "cuda13-newer")
         release = make_release([art])
         result = linux_cuda_choice_from_release(host, release)
@@ -1467,7 +1467,7 @@ class TestBlackwellUltraSm103Coverage:
 
     def test_b300_selects_cuda12_newer_prebuilt(self, monkeypatch):
         mock_linux_runtime(monkeypatch, ["cuda12"])
-        host = make_host(compute_caps=["103"], driver_cuda_version=(12, 8))
+        host = make_host(compute_caps = ["103"], driver_cuda_version = (12, 8))
         art = make_profile_artifact("cuda12-newer.tar.gz", "cuda12-newer")
         release = make_release([art])
         result = linux_cuda_choice_from_release(host, release)
@@ -1476,7 +1476,7 @@ class TestBlackwellUltraSm103Coverage:
 
     def test_b300_reported_as_decimal_normalizes_and_matches(self, monkeypatch):
         mock_linux_runtime(monkeypatch, ["cuda13"])
-        host = make_host(compute_caps=["10.3"], driver_cuda_version=(13, 0))
+        host = make_host(compute_caps = ["10.3"], driver_cuda_version = (13, 0))
         art = make_profile_artifact("cuda13-portable.tar.gz", "cuda13-portable")
         release = make_release([art])
         result = linux_cuda_choice_from_release(host, release)
@@ -1484,7 +1484,7 @@ class TestBlackwellUltraSm103Coverage:
 
     def test_b300_falls_back_to_portable_when_only_portable_present(self, monkeypatch):
         mock_linux_runtime(monkeypatch, ["cuda13"])
-        host = make_host(compute_caps=["103"], driver_cuda_version=(13, 0))
+        host = make_host(compute_caps = ["103"], driver_cuda_version = (13, 0))
         art = make_profile_artifact("cuda13-portable.tar.gz", "cuda13-portable")
         release = make_release([art])
         result = linux_cuda_choice_from_release(host, release)
@@ -1493,7 +1493,7 @@ class TestBlackwellUltraSm103Coverage:
 
     def test_older_bundle_still_rejects_b300(self, monkeypatch):
         mock_linux_runtime(monkeypatch, ["cuda13"])
-        host = make_host(compute_caps=["103"], driver_cuda_version=(13, 0))
+        host = make_host(compute_caps = ["103"], driver_cuda_version = (13, 0))
         art = make_profile_artifact("cuda13-older.tar.gz", "cuda13-older")
         release = make_release([art])
         result = linux_cuda_choice_from_release(host, release)
@@ -1507,7 +1507,7 @@ class TestBlackwellUltraSm103Coverage:
 
 class TestResolveInstallAttempts:
     def test_windows_cuda_prefers_published_asset_from_selected_release(self, monkeypatch):
-        host = make_host(system="Windows", machine="AMD64")
+        host = make_host(system = "Windows", machine = "AMD64")
         host.driver_cuda_version = (12, 4)
         mock_windows_runtime(monkeypatch, ["cuda12"])
         asset_name = "llama-b9000-bin-win-cuda-12.4-x64.zip"
@@ -1515,33 +1515,33 @@ class TestResolveInstallAttempts:
             [
                 make_artifact(
                     asset_name,
-                    install_kind="windows-cuda",
-                    runtime_line="cuda12",
-                    coverage_class=None,
-                    supported_sms=[],
-                    min_sm=None,
-                    max_sm=None,
-                    bundle_profile=None,
+                    install_kind = "windows-cuda",
+                    runtime_line = "cuda12",
+                    coverage_class = None,
+                    supported_sms = [],
+                    min_sm = None,
+                    max_sm = None,
+                    bundle_profile = None,
                 )
             ],
-            release_tag="llama-prebuilt-latest",
-            upstream_tag="b9000",
-            assets={asset_name: f"https://published.example/{asset_name}"},
+            release_tag = "llama-prebuilt-latest",
+            upstream_tag = "b9000",
+            assets = {asset_name: f"https://published.example/{asset_name}"},
         )
         checksums = make_checksums_with_source(
             [asset_name],
-            release_tag=release.release_tag,
-            upstream_tag="b9000",
+            release_tag = release.release_tag,
+            upstream_tag = "b9000",
         )
 
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "iter_resolved_published_releases",
-            lambda requested_tag, published_repo, published_release_tag="": iter(
+            lambda requested_tag, published_repo, published_release_tag = "": iter(
                 [
                     INSTALL_LLAMA_PREBUILT.ResolvedPublishedRelease(
-                        bundle=release,
-                        checksums=checksums,
+                        bundle = release,
+                        checksums = checksums,
                     )
                 ]
             ),
@@ -1569,24 +1569,24 @@ class TestResolveInstallAttempts:
         assert approved.release_tag == "llama-prebuilt-latest"
 
     def test_windows_cuda_uses_selected_release_upstream_tag(self, monkeypatch):
-        host = make_host(system="Windows", machine="AMD64")
+        host = make_host(system = "Windows", machine = "AMD64")
         host.driver_cuda_version = (12, 4)
         mock_windows_runtime(monkeypatch, ["cuda12"])
-        release = make_release([], release_tag="llama-prebuilt-latest", upstream_tag="b9000")
+        release = make_release([], release_tag = "llama-prebuilt-latest", upstream_tag = "b9000")
         checksums = make_checksums_with_source(
             ["llama-b9000-bin-win-cuda-12.4-x64.zip"],
-            release_tag=release.release_tag,
-            upstream_tag="b9000",
+            release_tag = release.release_tag,
+            upstream_tag = "b9000",
         )
 
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "iter_resolved_published_releases",
-            lambda requested_tag, published_repo, published_release_tag="": iter(
+            lambda requested_tag, published_repo, published_release_tag = "": iter(
                 [
                     INSTALL_LLAMA_PREBUILT.ResolvedPublishedRelease(
-                        bundle=release,
-                        checksums=checksums,
+                        bundle = release,
+                        checksums = checksums,
                     )
                 ]
             ),
@@ -1603,13 +1603,13 @@ class TestResolveInstallAttempts:
             "resolve_windows_cuda_choices",
             lambda host, tag, assets: [
                 AssetChoice(
-                    repo=UPSTREAM_REPO,
-                    tag=tag,
-                    name=f"llama-{tag}-bin-win-cuda-12.4-x64.zip",
-                    url=assets[f"llama-{tag}-bin-win-cuda-12.4-x64.zip"],
-                    source_label="upstream",
-                    install_kind="windows-cuda",
-                    runtime_line="cuda12",
+                    repo = UPSTREAM_REPO,
+                    tag = tag,
+                    name = f"llama-{tag}-bin-win-cuda-12.4-x64.zip",
+                    url = assets[f"llama-{tag}-bin-win-cuda-12.4-x64.zip"],
+                    source_label = "upstream",
+                    install_kind = "windows-cuda",
+                    runtime_line = "cuda12",
                 )
             ],
         )
@@ -1629,25 +1629,25 @@ class TestResolveInstallAttempts:
 
     def test_linux_cpu_uses_same_tag_upstream_asset(self, monkeypatch):
         host = make_host(
-            has_usable_nvidia=False,
-            has_physical_nvidia=False,
-            nvidia_smi=None,
+            has_usable_nvidia = False,
+            has_physical_nvidia = False,
+            nvidia_smi = None,
         )
-        release = make_release([], release_tag="llama-prebuilt-latest", upstream_tag="b9000")
+        release = make_release([], release_tag = "llama-prebuilt-latest", upstream_tag = "b9000")
         checksums = make_checksums_with_source(
             ["llama-b9000-bin-ubuntu-x64.tar.gz"],
-            release_tag=release.release_tag,
-            upstream_tag="b9000",
+            release_tag = release.release_tag,
+            upstream_tag = "b9000",
         )
 
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "iter_resolved_published_releases",
-            lambda requested_tag, published_repo, published_release_tag="": iter(
+            lambda requested_tag, published_repo, published_release_tag = "": iter(
                 [
                     INSTALL_LLAMA_PREBUILT.ResolvedPublishedRelease(
-                        bundle=release,
-                        checksums=checksums,
+                        bundle = release,
+                        checksums = checksums,
                     )
                 ]
             ),
@@ -1673,71 +1673,71 @@ class TestResolveInstallAttempts:
         assert attempts[0].expected_sha256 == "a" * 64
 
     def test_linux_cuda_does_not_fall_back_to_upstream_cpu(self, monkeypatch):
-        host = make_host(system="Linux", machine="x86_64", compute_caps=["86"])
-        release = make_release([], release_tag="llama-prebuilt-latest", upstream_tag="b9000")
+        host = make_host(system = "Linux", machine = "x86_64", compute_caps = ["86"])
+        release = make_release([], release_tag = "llama-prebuilt-latest", upstream_tag = "b9000")
         checksums = make_checksums_with_source(
             [],
-            release_tag=release.release_tag,
-            upstream_tag="b9000",
+            release_tag = release.release_tag,
+            upstream_tag = "b9000",
         )
 
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "iter_resolved_published_releases",
-            lambda requested_tag, published_repo, published_release_tag="": iter(
+            lambda requested_tag, published_repo, published_release_tag = "": iter(
                 [
                     INSTALL_LLAMA_PREBUILT.ResolvedPublishedRelease(
-                        bundle=release,
-                        checksums=checksums,
+                        bundle = release,
+                        checksums = checksums,
                     )
                 ]
             ),
         )
         mock_linux_runtime(monkeypatch, ["cuda12"])
 
-        with pytest.raises(PrebuiltFallback, match="no compatible published Linux CUDA bundle"):
+        with pytest.raises(PrebuiltFallback, match = "no compatible published Linux CUDA bundle"):
             resolve_install_attempts("latest", host, "unslothai/llama.cpp", "")
 
     def test_windows_cpu_prefers_published_asset(self, monkeypatch):
         host = make_host(
-            system="Windows",
-            machine="AMD64",
-            has_usable_nvidia=False,
-            has_physical_nvidia=False,
-            nvidia_smi=None,
+            system = "Windows",
+            machine = "AMD64",
+            has_usable_nvidia = False,
+            has_physical_nvidia = False,
+            nvidia_smi = None,
         )
         asset_name = "llama-b9000-bin-win-cpu-x64.zip"
         release = make_release(
             [
                 make_artifact(
                     asset_name,
-                    install_kind="windows-cpu",
-                    runtime_line=None,
-                    coverage_class=None,
-                    supported_sms=[],
-                    min_sm=None,
-                    max_sm=None,
-                    bundle_profile=None,
+                    install_kind = "windows-cpu",
+                    runtime_line = None,
+                    coverage_class = None,
+                    supported_sms = [],
+                    min_sm = None,
+                    max_sm = None,
+                    bundle_profile = None,
                 )
             ],
-            release_tag="llama-prebuilt-latest",
-            upstream_tag="b9000",
-            assets={asset_name: f"https://published.example/{asset_name}"},
+            release_tag = "llama-prebuilt-latest",
+            upstream_tag = "b9000",
+            assets = {asset_name: f"https://published.example/{asset_name}"},
         )
         checksums = make_checksums_with_source(
             [asset_name],
-            release_tag=release.release_tag,
-            upstream_tag="b9000",
+            release_tag = release.release_tag,
+            upstream_tag = "b9000",
         )
 
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "iter_resolved_published_releases",
-            lambda requested_tag, published_repo, published_release_tag="": iter(
+            lambda requested_tag, published_repo, published_release_tag = "": iter(
                 [
                     INSTALL_LLAMA_PREBUILT.ResolvedPublishedRelease(
-                        bundle=release,
-                        checksums=checksums,
+                        bundle = release,
+                        checksums = checksums,
                     )
                 ]
             ),
@@ -1763,46 +1763,46 @@ class TestResolveInstallAttempts:
 
     def test_macos_prefers_published_asset(self, monkeypatch):
         host = make_host(
-            system="Darwin",
-            machine="arm64",
-            nvidia_smi=None,
-            driver_cuda_version=None,
-            compute_caps=[],
-            has_physical_nvidia=False,
-            has_usable_nvidia=False,
+            system = "Darwin",
+            machine = "arm64",
+            nvidia_smi = None,
+            driver_cuda_version = None,
+            compute_caps = [],
+            has_physical_nvidia = False,
+            has_usable_nvidia = False,
         )
         asset_name = "llama-b9000-bin-macos-arm64.tar.gz"
         release = make_release(
             [
                 make_artifact(
                     asset_name,
-                    install_kind="macos-arm64",
-                    runtime_line=None,
-                    coverage_class=None,
-                    supported_sms=[],
-                    min_sm=None,
-                    max_sm=None,
-                    bundle_profile=None,
+                    install_kind = "macos-arm64",
+                    runtime_line = None,
+                    coverage_class = None,
+                    supported_sms = [],
+                    min_sm = None,
+                    max_sm = None,
+                    bundle_profile = None,
                 )
             ],
-            release_tag="llama-prebuilt-latest",
-            upstream_tag="b9000",
-            assets={asset_name: f"https://published.example/{asset_name}"},
+            release_tag = "llama-prebuilt-latest",
+            upstream_tag = "b9000",
+            assets = {asset_name: f"https://published.example/{asset_name}"},
         )
         checksums = make_checksums_with_source(
             [asset_name],
-            release_tag=release.release_tag,
-            upstream_tag="b9000",
+            release_tag = release.release_tag,
+            upstream_tag = "b9000",
         )
 
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "iter_resolved_published_releases",
-            lambda requested_tag, published_repo, published_release_tag="": iter(
+            lambda requested_tag, published_repo, published_release_tag = "": iter(
                 [
                     INSTALL_LLAMA_PREBUILT.ResolvedPublishedRelease(
-                        bundle=release,
-                        checksums=checksums,
+                        bundle = release,
+                        checksums = checksums,
                     )
                 ]
             ),
@@ -1828,44 +1828,44 @@ class TestResolveInstallAttempts:
 
     def test_windows_cpu_missing_checksum_rejects_install(self, monkeypatch):
         host = make_host(
-            system="Windows",
-            machine="AMD64",
-            has_usable_nvidia=False,
-            has_physical_nvidia=False,
-            nvidia_smi=None,
+            system = "Windows",
+            machine = "AMD64",
+            has_usable_nvidia = False,
+            has_physical_nvidia = False,
+            nvidia_smi = None,
         )
         published_name = "llama-b9000-bin-win-cpu-x64.zip"
         release = make_release(
             [
                 make_artifact(
                     published_name,
-                    install_kind="windows-cpu",
-                    runtime_line=None,
-                    coverage_class=None,
-                    supported_sms=[],
-                    min_sm=None,
-                    max_sm=None,
-                    bundle_profile=None,
+                    install_kind = "windows-cpu",
+                    runtime_line = None,
+                    coverage_class = None,
+                    supported_sms = [],
+                    min_sm = None,
+                    max_sm = None,
+                    bundle_profile = None,
                 )
             ],
-            release_tag="llama-prebuilt-latest",
-            upstream_tag="b9000",
-            assets={published_name: f"https://published.example/{published_name}"},
+            release_tag = "llama-prebuilt-latest",
+            upstream_tag = "b9000",
+            assets = {published_name: f"https://published.example/{published_name}"},
         )
         checksums = make_checksums_with_source(
             [],
-            release_tag=release.release_tag,
-            upstream_tag="b9000",
+            release_tag = release.release_tag,
+            upstream_tag = "b9000",
         )
 
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "iter_resolved_published_releases",
-            lambda requested_tag, published_repo, published_release_tag="": iter(
+            lambda requested_tag, published_repo, published_release_tag = "": iter(
                 [
                     INSTALL_LLAMA_PREBUILT.ResolvedPublishedRelease(
-                        bundle=release,
-                        checksums=checksums,
+                        bundle = release,
+                        checksums = checksums,
                     )
                 ]
             ),
@@ -1880,7 +1880,7 @@ class TestResolveInstallAttempts:
 
         with pytest.raises(
             PrebuiltFallback,
-            match="approved checksum asset did not contain the selected prebuilt archive",
+            match = "approved checksum asset did not contain the selected prebuilt archive",
         ):
             resolve_install_attempts(
                 "latest",
@@ -1893,33 +1893,33 @@ class TestResolveInstallAttempts:
 class TestResolveInstallReleasePlans:
     def test_latest_collects_multiple_older_release_plans_up_to_limit(self, monkeypatch):
         host = make_host(
-            has_usable_nvidia=False,
-            has_physical_nvidia=False,
-            nvidia_smi=None,
+            has_usable_nvidia = False,
+            has_physical_nvidia = False,
+            nvidia_smi = None,
         )
         releases = [
             INSTALL_LLAMA_PREBUILT.ResolvedPublishedRelease(
-                bundle=make_release([], release_tag="r3", upstream_tag="b9003"),
-                checksums=make_checksums_with_source(
+                bundle = make_release([], release_tag = "r3", upstream_tag = "b9003"),
+                checksums = make_checksums_with_source(
                     ["llama-b9003-bin-ubuntu-x64.tar.gz"],
-                    release_tag="r3",
-                    upstream_tag="b9003",
+                    release_tag = "r3",
+                    upstream_tag = "b9003",
                 ),
             ),
             INSTALL_LLAMA_PREBUILT.ResolvedPublishedRelease(
-                bundle=make_release([], release_tag="r2", upstream_tag="b9002"),
-                checksums=make_checksums_with_source(
+                bundle = make_release([], release_tag = "r2", upstream_tag = "b9002"),
+                checksums = make_checksums_with_source(
                     ["llama-b9002-bin-ubuntu-x64.tar.gz"],
-                    release_tag="r2",
-                    upstream_tag="b9002",
+                    release_tag = "r2",
+                    upstream_tag = "b9002",
                 ),
             ),
             INSTALL_LLAMA_PREBUILT.ResolvedPublishedRelease(
-                bundle=make_release([], release_tag="r1", upstream_tag="b9001"),
-                checksums=make_checksums_with_source(
+                bundle = make_release([], release_tag = "r1", upstream_tag = "b9001"),
+                checksums = make_checksums_with_source(
                     ["llama-b9001-bin-ubuntu-x64.tar.gz"],
-                    release_tag="r1",
-                    upstream_tag="b9001",
+                    release_tag = "r1",
+                    upstream_tag = "b9001",
                 ),
             ),
         ]
@@ -1927,7 +1927,7 @@ class TestResolveInstallReleasePlans:
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "iter_resolved_published_releases",
-            lambda requested_tag, published_repo, published_release_tag="": iter(releases),
+            lambda requested_tag, published_repo, published_release_tag = "": iter(releases),
         )
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
@@ -1942,7 +1942,7 @@ class TestResolveInstallReleasePlans:
             host,
             "unslothai/llama.cpp",
             "",
-            max_release_fallbacks=2,
+            max_release_fallbacks = 2,
         )
 
         assert requested_tag == "latest"
@@ -1951,25 +1951,25 @@ class TestResolveInstallReleasePlans:
 
     def test_latest_skips_non_installable_release_and_keeps_searching(self, monkeypatch):
         host = make_host(
-            has_usable_nvidia=False,
-            has_physical_nvidia=False,
-            nvidia_smi=None,
+            has_usable_nvidia = False,
+            has_physical_nvidia = False,
+            nvidia_smi = None,
         )
         releases = [
             INSTALL_LLAMA_PREBUILT.ResolvedPublishedRelease(
-                bundle=make_release([], release_tag="r2", upstream_tag="b9002"),
-                checksums=make_checksums_with_source(
+                bundle = make_release([], release_tag = "r2", upstream_tag = "b9002"),
+                checksums = make_checksums_with_source(
                     [],
-                    release_tag="r2",
-                    upstream_tag="b9002",
+                    release_tag = "r2",
+                    upstream_tag = "b9002",
                 ),
             ),
             INSTALL_LLAMA_PREBUILT.ResolvedPublishedRelease(
-                bundle=make_release([], release_tag="r1", upstream_tag="b9001"),
-                checksums=make_checksums_with_source(
+                bundle = make_release([], release_tag = "r1", upstream_tag = "b9001"),
+                checksums = make_checksums_with_source(
                     ["llama-b9001-bin-ubuntu-x64.tar.gz"],
-                    release_tag="r1",
-                    upstream_tag="b9001",
+                    release_tag = "r1",
+                    upstream_tag = "b9001",
                 ),
             ),
         ]
@@ -1977,7 +1977,7 @@ class TestResolveInstallReleasePlans:
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "iter_resolved_published_releases",
-            lambda requested_tag, published_repo, published_release_tag="": iter(releases),
+            lambda requested_tag, published_repo, published_release_tag = "": iter(releases),
         )
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
@@ -1996,7 +1996,7 @@ class TestResolveInstallReleasePlans:
             host,
             "unslothai/llama.cpp",
             "",
-            max_release_fallbacks=2,
+            max_release_fallbacks = 2,
         )
 
         assert len(plans) == 1
@@ -2005,7 +2005,7 @@ class TestResolveInstallReleasePlans:
 
     def test_malformed_release_fallback_env_uses_default(self, monkeypatch):
         monkeypatch.setenv("UNSLOTH_LLAMA_MAX_PREBUILT_RELEASE_FALLBACKS", "not-an-int")
-        assert env_int("UNSLOTH_LLAMA_MAX_PREBUILT_RELEASE_FALLBACKS", 3, minimum=1) == 3
+        assert env_int("UNSLOTH_LLAMA_MAX_PREBUILT_RELEASE_FALLBACKS", 3, minimum = 1) == 3
 
     def test_import_with_malformed_release_fallback_env_does_not_crash(self, monkeypatch):
         monkeypatch.setenv("UNSLOTH_LLAMA_MAX_PREBUILT_RELEASE_FALLBACKS", "bad-value")
@@ -2047,7 +2047,7 @@ class TestWindowsCudaAttempts:
 
     def test_driver_12_4_no_dlls_fallback(self, monkeypatch):
         mock_windows_runtime(monkeypatch, [])
-        host = make_host(system="Windows", machine="AMD64", driver_cuda_version=(12, 4))
+        host = make_host(system = "Windows", machine = "AMD64", driver_cuda_version = (12, 4))
         assets = self._upstream("12.4")
         result = windows_cuda_attempts(host, self.TAG, assets, None)
         assert len(result) == 1
@@ -2055,7 +2055,7 @@ class TestWindowsCudaAttempts:
 
     def test_driver_13_1_both_dlls(self, monkeypatch):
         mock_windows_runtime(monkeypatch, ["cuda13", "cuda12"])
-        host = make_host(system="Windows", machine="AMD64", driver_cuda_version=(13, 1))
+        host = make_host(system = "Windows", machine = "AMD64", driver_cuda_version = (13, 1))
         assets = self._upstream("13.1", "12.4")
         result = windows_cuda_attempts(host, self.TAG, assets, None)
         assert len(result) == 2
@@ -2067,7 +2067,7 @@ class TestWindowsCudaAttempts:
         # out of cuda13 and falls back to the cuda12 build it can run, even when
         # only the cuda13 runtime libs are detected.
         mock_windows_runtime(monkeypatch, ["cuda13"])
-        host = make_host(system="Windows", machine="AMD64", driver_cuda_version=(13, 0))
+        host = make_host(system = "Windows", machine = "AMD64", driver_cuda_version = (13, 0))
         assets = self._upstream("13.1", "12.4")
         result = windows_cuda_attempts(host, self.TAG, assets, None)
         assert result[0].runtime_line == "cuda12"
@@ -2076,7 +2076,7 @@ class TestWindowsCudaAttempts:
     def test_driver_at_published_minor_selects_cuda13(self, monkeypatch):
         # A 13.1 driver matches the published 13.1 build exactly.
         mock_windows_runtime(monkeypatch, ["cuda13", "cuda12"])
-        host = make_host(system="Windows", machine="AMD64", driver_cuda_version=(13, 1))
+        host = make_host(system = "Windows", machine = "AMD64", driver_cuda_version = (13, 1))
         assets = self._upstream("13.1", "12.4")
         result = windows_cuda_attempts(host, self.TAG, assets, None)
         assert result[0].runtime_line == "cuda13"
@@ -2084,7 +2084,7 @@ class TestWindowsCudaAttempts:
 
     def test_preferred_reorders(self, monkeypatch):
         mock_windows_runtime(monkeypatch, ["cuda13", "cuda12"])
-        host = make_host(system="Windows", machine="AMD64", driver_cuda_version=(13, 1))
+        host = make_host(system = "Windows", machine = "AMD64", driver_cuda_version = (13, 1))
         assets = self._upstream("13.1", "12.4")
         result = windows_cuda_attempts(host, self.TAG, assets, "cuda12")
         assert len(result) == 2
@@ -2092,7 +2092,7 @@ class TestWindowsCudaAttempts:
 
     def test_preferred_unavailable(self, monkeypatch):
         mock_windows_runtime(monkeypatch, ["cuda12"])
-        host = make_host(system="Windows", machine="AMD64", driver_cuda_version=(12, 4))
+        host = make_host(system = "Windows", machine = "AMD64", driver_cuda_version = (12, 4))
         assets = self._upstream("12.4")
         result = windows_cuda_attempts(host, self.TAG, assets, "cuda13")
         assert len(result) == 1
@@ -2100,7 +2100,7 @@ class TestWindowsCudaAttempts:
 
     def test_detected_incompatible_with_driver(self, monkeypatch):
         mock_windows_runtime(monkeypatch, ["cuda13"])
-        host = make_host(system="Windows", machine="AMD64", driver_cuda_version=(12, 4))
+        host = make_host(system = "Windows", machine = "AMD64", driver_cuda_version = (12, 4))
         assets = self._upstream("12.4")
         result = windows_cuda_attempts(host, self.TAG, assets, None)
         assert len(result) == 1
@@ -2108,28 +2108,28 @@ class TestWindowsCudaAttempts:
 
     def test_driver_too_old(self, monkeypatch):
         mock_windows_runtime(monkeypatch, [])
-        host = make_host(system="Windows", machine="AMD64", driver_cuda_version=(11, 8))
+        host = make_host(system = "Windows", machine = "AMD64", driver_cuda_version = (11, 8))
         assets = self._upstream("12.4")
         result = windows_cuda_attempts(host, self.TAG, assets, None)
         assert result == []
 
     def test_asset_missing_from_upstream(self, monkeypatch):
         mock_windows_runtime(monkeypatch, ["cuda12"])
-        host = make_host(system="Windows", machine="AMD64", driver_cuda_version=(12, 4))
+        host = make_host(system = "Windows", machine = "AMD64", driver_cuda_version = (12, 4))
         result = windows_cuda_attempts(host, self.TAG, {}, None)
         assert result == []
 
     def test_both_assets_present(self, monkeypatch):
         mock_windows_runtime(monkeypatch, ["cuda13", "cuda12"])
-        host = make_host(system="Windows", machine="AMD64", driver_cuda_version=(13, 1))
+        host = make_host(system = "Windows", machine = "AMD64", driver_cuda_version = (13, 1))
         assets = self._upstream("13.1", "12.4")
         result = windows_cuda_attempts(host, self.TAG, assets, None)
         assert len(result) == 2
 
     def test_current_upstream_names_are_supported(self, monkeypatch):
         mock_windows_runtime(monkeypatch, ["cuda13", "cuda12"])
-        host = make_host(system="Windows", machine="AMD64", driver_cuda_version=(13, 1))
-        assets = self._upstream("13.1", "12.4", current_names=True)
+        host = make_host(system = "Windows", machine = "AMD64", driver_cuda_version = (13, 1))
+        assets = self._upstream("13.1", "12.4", current_names = True)
         result = windows_cuda_attempts(host, self.TAG, assets, None)
         assert len(result) == 2
         assert result[0].name == "cudart-llama-bin-win-cuda-13.1-x64.zip"
@@ -2139,7 +2139,7 @@ class TestWindowsCudaAttempts:
         # #5106: cudart bundle must surface on runtime_url so
         # install_from_archives downloads it.
         mock_windows_runtime(monkeypatch, ["cuda13", "cuda12"])
-        host = make_host(system="Windows", machine="AMD64", driver_cuda_version=(13, 1))
+        host = make_host(system = "Windows", machine = "AMD64", driver_cuda_version = (13, 1))
         assets = {
             f"llama-{self.TAG}-bin-win-cuda-13.1-x64.zip": f"https://example.com/llama-{self.TAG}-bin-win-cuda-13.1-x64.zip",
             "cudart-llama-bin-win-cuda-13.1-x64.zip": "https://example.com/cudart-llama-bin-win-cuda-13.1-x64.zip",
@@ -2161,7 +2161,7 @@ class TestWindowsCudaAttempts:
     def test_no_runtime_archive_when_cudart_absent(self, monkeypatch):
         # Older releases without the cudart split must still install.
         mock_windows_runtime(monkeypatch, ["cuda12"])
-        host = make_host(system="Windows", machine="AMD64", driver_cuda_version=(12, 4))
+        host = make_host(system = "Windows", machine = "AMD64", driver_cuda_version = (12, 4))
         assets = {
             f"llama-{self.TAG}-bin-win-cuda-12.4-x64.zip": f"https://example.com/llama-{self.TAG}-bin-win-cuda-12.4-x64.zip",
         }
@@ -2173,8 +2173,8 @@ class TestWindowsCudaAttempts:
     def test_cudart_only_assets_do_not_self_pair(self, monkeypatch):
         # Legacy cudart-only naming path must not self-pair.
         mock_windows_runtime(monkeypatch, ["cuda13", "cuda12"])
-        host = make_host(system="Windows", machine="AMD64", driver_cuda_version=(13, 1))
-        assets = self._upstream("13.1", "12.4", current_names=True)
+        host = make_host(system = "Windows", machine = "AMD64", driver_cuda_version = (13, 1))
+        assets = self._upstream("13.1", "12.4", current_names = True)
         result = windows_cuda_attempts(host, self.TAG, assets, None)
         assert len(result) == 2
         for attempt in result:
@@ -2185,7 +2185,7 @@ class TestWindowsCudaAttempts:
         # ggml-org bumped the published Windows cuda13 build 13.1 -> 13.3; the
         # selector must follow it instead of the old hardcoded 13.1 (#5861).
         mock_windows_runtime(monkeypatch, ["cuda13", "cuda12"])
-        host = make_host(system="Windows", machine="AMD64", driver_cuda_version=(13, 3))
+        host = make_host(system = "Windows", machine = "AMD64", driver_cuda_version = (13, 3))
         assets = self._upstream("13.3", "12.4")
         result = windows_cuda_attempts(host, self.TAG, assets, None)
         assert result[0].runtime_line == "cuda13"
@@ -2194,7 +2194,7 @@ class TestWindowsCudaAttempts:
     def test_cuda13_minor_bump_pairs_matching_cudart(self, monkeypatch):
         # The paired cudart bundle must track the same bumped minor.
         mock_windows_runtime(monkeypatch, ["cuda13", "cuda12"])
-        host = make_host(system="Windows", machine="AMD64", driver_cuda_version=(13, 3))
+        host = make_host(system = "Windows", machine = "AMD64", driver_cuda_version = (13, 3))
         assets = {
             f"llama-{self.TAG}-bin-win-cuda-13.3-x64.zip": "https://example.com/llama-13.3",
             "cudart-llama-bin-win-cuda-13.3-x64.zip": "https://example.com/cudart-13.3",
@@ -2210,7 +2210,7 @@ class TestWindowsCudaAttempts:
         # minor), so it is gated to the cuda-12.4 build instead of an
         # unguaranteed 13.3. A 13.3 driver still gets 13.3 (see other tests).
         mock_windows_runtime(monkeypatch, ["cuda13", "cuda12"])
-        host = make_host(system="Windows", machine="AMD64", driver_cuda_version=(13, 1))
+        host = make_host(system = "Windows", machine = "AMD64", driver_cuda_version = (13, 1))
         assets = self._upstream("13.3", "12.4")
         result = windows_cuda_attempts(host, self.TAG, assets, None)
         assert result[0].runtime_line == "cuda12"
@@ -2219,7 +2219,7 @@ class TestWindowsCudaAttempts:
     def test_tracks_future_cuda13_minor(self, monkeypatch):
         # A later within-major bump (13.4) is tracked the same as 13.3.
         mock_windows_runtime(monkeypatch, ["cuda13", "cuda12"])
-        host = make_host(system="Windows", machine="AMD64", driver_cuda_version=(13, 4))
+        host = make_host(system = "Windows", machine = "AMD64", driver_cuda_version = (13, 4))
         assets = self._upstream("13.4", "12.4")
         result = windows_cuda_attempts(host, self.TAG, assets, None)
         assert result[0].name == f"llama-{self.TAG}-bin-win-cuda-13.4-x64.zip"
@@ -2227,7 +2227,7 @@ class TestWindowsCudaAttempts:
     def test_new_cuda_major_selected_when_published(self, monkeypatch):
         # A new CUDA major (14.x) driver picks the published cuda14 build.
         mock_windows_runtime(monkeypatch, ["cuda14", "cuda13", "cuda12"])
-        host = make_host(system="Windows", machine="AMD64", driver_cuda_version=(14, 0))
+        host = make_host(system = "Windows", machine = "AMD64", driver_cuda_version = (14, 0))
         assets = self._upstream("14.0", "13.3", "12.4")
         result = windows_cuda_attempts(host, self.TAG, assets, None)
         assert result[0].runtime_line == "cuda14"
@@ -2237,7 +2237,7 @@ class TestWindowsCudaAttempts:
         # A 14.x driver with no cuda14 build runs the newest published cuda13
         # build via backward compatibility.
         mock_windows_runtime(monkeypatch, ["cuda13", "cuda12"])
-        host = make_host(system="Windows", machine="AMD64", driver_cuda_version=(14, 0))
+        host = make_host(system = "Windows", machine = "AMD64", driver_cuda_version = (14, 0))
         assets = self._upstream("13.3", "12.4")
         result = windows_cuda_attempts(host, self.TAG, assets, None)
         assert result[0].name == f"llama-{self.TAG}-bin-win-cuda-13.3-x64.zip"
@@ -2257,10 +2257,10 @@ class TestPinnedBlackwellCudaFallback:
 
     def _win_host(self, driver, caps):
         return make_host(
-            system="Windows",
-            machine="AMD64",
-            driver_cuda_version=driver,
-            compute_caps=caps,
+            system = "Windows",
+            machine = "AMD64",
+            driver_cuda_version = driver,
+            compute_caps = caps,
         )
 
     def test_pin_offered_for_driver_13_1_blackwell(self):
@@ -2306,10 +2306,10 @@ class TestPinnedBlackwellCudaFallback:
 
     def test_pin_not_offered_on_linux(self):
         host = make_host(
-            system="Linux",
-            machine="x86_64",
-            driver_cuda_version=(13, 1),
-            compute_caps=["120"],
+            system = "Linux",
+            machine = "x86_64",
+            driver_cuda_version = (13, 1),
+            compute_caps = ["120"],
         )
         assert _pinned_windows_cuda_fallback(host, []) is None
 
@@ -2328,13 +2328,13 @@ class TestPinnedBlackwellCudaFallback:
     def _win_cuda_attempt(self, minor):
         major = minor.split(".")[0]
         return AssetChoice(
-            repo=UPSTREAM_REPO,
-            tag=self.TAG,
-            name=f"llama-{self.TAG}-bin-win-cuda-{minor}-x64.zip",
-            url="https://example.com/x",
-            source_label="upstream",
-            install_kind="windows-cuda",
-            runtime_line=f"cuda{major}",
+            repo = UPSTREAM_REPO,
+            tag = self.TAG,
+            name = f"llama-{self.TAG}-bin-win-cuda-{minor}-x64.zip",
+            url = "https://example.com/x",
+            source_label = "upstream",
+            install_kind = "windows-cuda",
+            runtime_line = f"cuda{major}",
         )
 
     def test_pin_dormant_when_runnable_cuda14_present(self, monkeypatch):
@@ -2377,12 +2377,12 @@ class TestPinnedBlackwellCudaFallback:
 
     def test_attempt_covers_blackwell_ignores_non_cuda_kind(self):
         cpu = AssetChoice(
-            repo=UPSTREAM_REPO,
-            tag=self.TAG,
-            name=f"llama-{self.TAG}-bin-win-cpu-x64.zip",
-            url="https://example.com/x",
-            source_label="upstream",
-            install_kind="windows-cpu",
+            repo = UPSTREAM_REPO,
+            tag = self.TAG,
+            name = f"llama-{self.TAG}-bin-win-cpu-x64.zip",
+            url = "https://example.com/x",
+            source_label = "upstream",
+            install_kind = "windows-cpu",
         )
         assert _windows_cuda_attempt_covers_blackwell(cpu) is False
 
@@ -2418,17 +2418,17 @@ class TestDirectUpstreamBlackwellPin:
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "detect_torch_cuda_runtime_preference",
-            lambda host: CudaRuntimePreference(runtime_line=None, selection_log=[]),
+            lambda host: CudaRuntimePreference(runtime_line = None, selection_log = []),
         )
 
     def test_blackwell_13_1_prepends_pin(self, monkeypatch):
         mock_windows_runtime(monkeypatch, ["cuda13", "cuda12"])
         self._no_torch(monkeypatch)
         host = make_host(
-            system="Windows",
-            machine="AMD64",
-            driver_cuda_version=(13, 1),
-            compute_caps=["120"],
+            system = "Windows",
+            machine = "AMD64",
+            driver_cuda_version = (13, 1),
+            compute_caps = ["120"],
         )
         plan = direct_upstream_release_plan(self._release(), host, UPSTREAM_REPO, "latest")
         order = [(a.tag, a.runtime_line or a.install_kind) for a in plan.attempts]
@@ -2441,10 +2441,10 @@ class TestDirectUpstreamBlackwellPin:
         mock_windows_runtime(monkeypatch, ["cuda13", "cuda12"])
         self._no_torch(monkeypatch)
         host = make_host(
-            system="Windows",
-            machine="AMD64",
-            driver_cuda_version=(13, 3),
-            compute_caps=["120"],
+            system = "Windows",
+            machine = "AMD64",
+            driver_cuda_version = (13, 3),
+            compute_caps = ["120"],
         )
         plan = direct_upstream_release_plan(self._release(), host, UPSTREAM_REPO, "latest")
         assert "b9360" not in [a.tag for a in plan.attempts]
@@ -2468,14 +2468,14 @@ class TestPublishedWindowsCudaAttemptsDynamicMajor:
     def _win_cuda_artifact(self, minor, runtime_line):
         return make_artifact(
             f"llama-{self.TAG}-bin-win-cuda-{minor}-x64.zip",
-            install_kind="windows-cuda",
-            runtime_line=runtime_line,
-            max_sm=120,
+            install_kind = "windows-cuda",
+            runtime_line = runtime_line,
+            max_sm = 120,
         )
 
     def _release(self, minors_lines):
         artifacts = [self._win_cuda_artifact(m, line) for m, line in minors_lines]
-        return make_release(artifacts, upstream_tag=self.TAG)
+        return make_release(artifacts, upstream_tag = self.TAG)
 
     def test_future_cuda14_published_is_selected(self, monkeypatch):
         # With the dynamic seed a 14.x driver reaches a published cuda14 build;
@@ -2484,10 +2484,10 @@ class TestPublishedWindowsCudaAttemptsDynamicMajor:
         mock_windows_runtime(monkeypatch, ["cuda14", "cuda13", "cuda12"])
         release = self._release([("14.0", "cuda14"), ("13.3", "cuda13"), ("12.4", "cuda12")])
         host = make_host(
-            system="Windows",
-            machine="AMD64",
-            driver_cuda_version=(14, 0),
-            compute_caps=["120"],
+            system = "Windows",
+            machine = "AMD64",
+            driver_cuda_version = (14, 0),
+            compute_caps = ["120"],
         )
         result = published_windows_cuda_attempts(host, release, None)
         assert result[0].runtime_line == "cuda14"
@@ -2498,10 +2498,10 @@ class TestPublishedWindowsCudaAttemptsDynamicMajor:
         mock_windows_runtime(monkeypatch, ["cuda13", "cuda12"])
         release = self._release([("13.3", "cuda13"), ("12.4", "cuda12")])
         host = make_host(
-            system="Windows",
-            machine="AMD64",
-            driver_cuda_version=(13, 3),
-            compute_caps=["120"],
+            system = "Windows",
+            machine = "AMD64",
+            driver_cuda_version = (13, 3),
+            compute_caps = ["120"],
         )
         result = published_windows_cuda_attempts(host, release, None)
         assert result[0].runtime_line == "cuda13"
@@ -2512,10 +2512,10 @@ class TestPublishedWindowsCudaAttemptsDynamicMajor:
         mock_windows_runtime(monkeypatch, ["cuda13", "cuda12"])
         release = self._release([("13.3", "cuda13"), ("12.4", "cuda12")])
         host = make_host(
-            system="Windows",
-            machine="AMD64",
-            driver_cuda_version=(13, 1),
-            compute_caps=["120"],
+            system = "Windows",
+            machine = "AMD64",
+            driver_cuda_version = (13, 1),
+            compute_caps = ["120"],
         )
         result = published_windows_cuda_attempts(host, release, None)
         assert result[0].runtime_line == "cuda12"
@@ -2536,9 +2536,9 @@ class TestResolveReleaseAssetChoicePin:
         artifacts = [
             make_artifact(
                 f"llama-{self.TAG}-bin-win-cuda-{minor}-x64.zip",
-                install_kind="windows-cuda",
-                runtime_line=line,
-                max_sm=120,
+                install_kind = "windows-cuda",
+                runtime_line = line,
+                max_sm = 120,
             )
             for minor, line in minors_lines
         ]
@@ -2550,7 +2550,7 @@ class TestResolveReleaseAssetChoicePin:
             assets[f"cudart-llama-bin-win-cuda-{minor}-x64.zip"] = (
                 f"https://example.com/cudart-{minor}"
             )
-        return make_release(artifacts, upstream_tag=self.TAG, assets=assets)
+        return make_release(artifacts, upstream_tag = self.TAG, assets = assets)
 
     def _checksums(self, minors):
         names = []
@@ -2563,7 +2563,7 @@ class TestResolveReleaseAssetChoicePin:
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "detect_torch_cuda_runtime_preference",
-            lambda host: CudaRuntimePreference(runtime_line=None, selection_log=[]),
+            lambda host: CudaRuntimePreference(runtime_line = None, selection_log = []),
         )
 
     def test_pin_applied_on_published_path_for_13_1(self, monkeypatch):
@@ -2572,10 +2572,10 @@ class TestResolveReleaseAssetChoicePin:
         release = self._release([("13.3", "cuda13"), ("12.4", "cuda12")])
         checksums = self._checksums(["12.4"])  # 13.3 gated off for a 13.1 driver
         host = make_host(
-            system="Windows",
-            machine="AMD64",
-            driver_cuda_version=(13, 1),
-            compute_caps=["120"],
+            system = "Windows",
+            machine = "AMD64",
+            driver_cuda_version = (13, 1),
+            compute_caps = ["120"],
         )
         result = resolve_release_asset_choice(host, self.TAG, release, checksums)
         assert result[0].tag == "b9360"
@@ -2592,10 +2592,10 @@ class TestResolveReleaseAssetChoicePin:
         release = self._release([("13.3", "cuda13"), ("12.4", "cuda12")])
         checksums = self._checksums(["13.3", "12.4"])
         host = make_host(
-            system="Windows",
-            machine="AMD64",
-            driver_cuda_version=(13, 3),
-            compute_caps=["120"],
+            system = "Windows",
+            machine = "AMD64",
+            driver_cuda_version = (13, 3),
+            compute_caps = ["120"],
         )
         result = resolve_release_asset_choice(host, self.TAG, release, checksums)
         assert "b9360" not in [a.tag for a in result]
@@ -2607,10 +2607,10 @@ class TestResolveReleaseAssetChoicePin:
         release = self._release([("13.3", "cuda13"), ("12.4", "cuda12")])
         checksums = self._checksums(["12.4"])
         host = make_host(
-            system="Windows",
-            machine="AMD64",
-            driver_cuda_version=(13, 1),
-            compute_caps=["89"],
+            system = "Windows",
+            machine = "AMD64",
+            driver_cuda_version = (13, 1),
+            compute_caps = ["89"],
         )
         result = resolve_release_asset_choice(host, self.TAG, release, checksums)
         assert "b9360" not in [a.tag for a in result]
@@ -2628,35 +2628,35 @@ class TestApplyApprovedHashesRuntimePair:
 
     def _runtime_paired_attempt(self) -> AssetChoice:
         return AssetChoice(
-            repo="unslothai/llama.cpp",
-            tag=self.TAG,
-            name=f"llama-{self.TAG}-bin-win-cuda-13.1-x64.zip",
-            url=f"https://x/llama-{self.TAG}-bin-win-cuda-13.1-x64.zip",
-            source_label="published",
-            install_kind="windows-cuda",
-            runtime_line="cuda13",
-            runtime_name="cudart-llama-bin-win-cuda-13.1-x64.zip",
-            runtime_url="https://x/cudart-llama-bin-win-cuda-13.1-x64.zip",
+            repo = "unslothai/llama.cpp",
+            tag = self.TAG,
+            name = f"llama-{self.TAG}-bin-win-cuda-13.1-x64.zip",
+            url = f"https://x/llama-{self.TAG}-bin-win-cuda-13.1-x64.zip",
+            source_label = "published",
+            install_kind = "windows-cuda",
+            runtime_line = "cuda13",
+            runtime_name = "cudart-llama-bin-win-cuda-13.1-x64.zip",
+            runtime_url = "https://x/cudart-llama-bin-win-cuda-13.1-x64.zip",
         )
 
     def test_runtime_hash_threaded_when_present(self):
         attempt = self._runtime_paired_attempt()
         checksums = ApprovedReleaseChecksums(
-            repo="unslothai/llama.cpp",
-            release_tag=self.TAG,
-            upstream_tag=self.TAG,
-            artifacts={
+            repo = "unslothai/llama.cpp",
+            release_tag = self.TAG,
+            upstream_tag = self.TAG,
+            artifacts = {
                 attempt.name: ApprovedArtifactHash(
-                    asset_name=attempt.name,
-                    sha256="0" * 64,
-                    repo="unslothai/llama.cpp",
-                    kind="windows-cuda",
+                    asset_name = attempt.name,
+                    sha256 = "0" * 64,
+                    repo = "unslothai/llama.cpp",
+                    kind = "windows-cuda",
                 ),
                 "cudart-llama-bin-win-cuda-13.1-x64.zip": ApprovedArtifactHash(
-                    asset_name="cudart-llama-bin-win-cuda-13.1-x64.zip",
-                    sha256="1" * 64,
-                    repo="unslothai/llama.cpp",
-                    kind="windows-cuda",
+                    asset_name = "cudart-llama-bin-win-cuda-13.1-x64.zip",
+                    sha256 = "1" * 64,
+                    repo = "unslothai/llama.cpp",
+                    kind = "windows-cuda",
                 ),
             },
         )
@@ -2670,15 +2670,15 @@ class TestApplyApprovedHashesRuntimePair:
         # Drop the pair rather than install an unverified runtime.
         attempt = self._runtime_paired_attempt()
         checksums = ApprovedReleaseChecksums(
-            repo="unslothai/llama.cpp",
-            release_tag=self.TAG,
-            upstream_tag=self.TAG,
-            artifacts={
+            repo = "unslothai/llama.cpp",
+            release_tag = self.TAG,
+            upstream_tag = self.TAG,
+            artifacts = {
                 attempt.name: ApprovedArtifactHash(
-                    asset_name=attempt.name,
-                    sha256="0" * 64,
-                    repo="unslothai/llama.cpp",
-                    kind="windows-cuda",
+                    asset_name = attempt.name,
+                    sha256 = "0" * 64,
+                    repo = "unslothai/llama.cpp",
+                    kind = "windows-cuda",
                 ),
             },
         )
@@ -2708,26 +2708,26 @@ class TestResolveUpstreamAssetChoice:
     def test_linux_x86_64_cpu(self, monkeypatch):
         name = f"llama-{self.TAG}-bin-ubuntu-x64.tar.gz"
         self._mock_github_assets(monkeypatch, {name: f"https://x/{name}"})
-        host = make_host(has_usable_nvidia=False, nvidia_smi=None, has_physical_nvidia=False)
+        host = make_host(has_usable_nvidia = False, nvidia_smi = None, has_physical_nvidia = False)
         result = resolve_upstream_asset_choice(host, self.TAG)
         assert result.install_kind == "linux-cpu"
         assert result.name == name
 
     def test_linux_cpu_missing(self, monkeypatch):
         self._mock_github_assets(monkeypatch, {})
-        host = make_host(has_usable_nvidia=False, nvidia_smi=None, has_physical_nvidia=False)
-        with pytest.raises(PrebuiltFallback, match="Linux CPU"):
+        host = make_host(has_usable_nvidia = False, nvidia_smi = None, has_physical_nvidia = False)
+        with pytest.raises(PrebuiltFallback, match = "Linux CPU"):
             resolve_upstream_asset_choice(host, self.TAG)
 
     def test_windows_x86_64_cpu(self, monkeypatch):
         name = f"llama-{self.TAG}-bin-win-cpu-x64.zip"
         self._mock_github_assets(monkeypatch, {name: f"https://x/{name}"})
         host = make_host(
-            system="Windows",
-            machine="AMD64",
-            has_usable_nvidia=False,
-            nvidia_smi=None,
-            has_physical_nvidia=False,
+            system = "Windows",
+            machine = "AMD64",
+            has_usable_nvidia = False,
+            nvidia_smi = None,
+            has_physical_nvidia = False,
         )
         result = resolve_upstream_asset_choice(host, self.TAG)
         assert result.install_kind == "windows-cpu"
@@ -2736,26 +2736,26 @@ class TestResolveUpstreamAssetChoice:
     def test_windows_cpu_missing(self, monkeypatch):
         self._mock_github_assets(monkeypatch, {})
         host = make_host(
-            system="Windows",
-            machine="AMD64",
-            has_usable_nvidia=False,
-            nvidia_smi=None,
-            has_physical_nvidia=False,
+            system = "Windows",
+            machine = "AMD64",
+            has_usable_nvidia = False,
+            nvidia_smi = None,
+            has_physical_nvidia = False,
         )
-        with pytest.raises(PrebuiltFallback, match="Windows CPU"):
+        with pytest.raises(PrebuiltFallback, match = "Windows CPU"):
             resolve_upstream_asset_choice(host, self.TAG)
 
     def test_macos_arm64(self, monkeypatch):
         name = f"llama-{self.TAG}-bin-macos-arm64.tar.gz"
         self._mock_github_assets(monkeypatch, {name: f"https://x/{name}"})
         host = make_host(
-            system="Darwin",
-            machine="arm64",
-            nvidia_smi=None,
-            driver_cuda_version=None,
-            compute_caps=[],
-            has_physical_nvidia=False,
-            has_usable_nvidia=False,
+            system = "Darwin",
+            machine = "arm64",
+            nvidia_smi = None,
+            driver_cuda_version = None,
+            compute_caps = [],
+            has_physical_nvidia = False,
+            has_usable_nvidia = False,
         )
         result = resolve_upstream_asset_choice(host, self.TAG)
         assert result.install_kind == "macos-arm64"
@@ -2764,28 +2764,28 @@ class TestResolveUpstreamAssetChoice:
     def test_macos_arm64_missing(self, monkeypatch):
         self._mock_github_assets(monkeypatch, {})
         host = make_host(
-            system="Darwin",
-            machine="arm64",
-            nvidia_smi=None,
-            driver_cuda_version=None,
-            compute_caps=[],
-            has_physical_nvidia=False,
-            has_usable_nvidia=False,
+            system = "Darwin",
+            machine = "arm64",
+            nvidia_smi = None,
+            driver_cuda_version = None,
+            compute_caps = [],
+            has_physical_nvidia = False,
+            has_usable_nvidia = False,
         )
-        with pytest.raises(PrebuiltFallback, match="macOS arm64"):
+        with pytest.raises(PrebuiltFallback, match = "macOS arm64"):
             resolve_upstream_asset_choice(host, self.TAG)
 
     def test_macos_x86_64(self, monkeypatch):
         name = f"llama-{self.TAG}-bin-macos-x64.tar.gz"
         self._mock_github_assets(monkeypatch, {name: f"https://x/{name}"})
         host = make_host(
-            system="Darwin",
-            machine="x86_64",
-            nvidia_smi=None,
-            driver_cuda_version=None,
-            compute_caps=[],
-            has_physical_nvidia=False,
-            has_usable_nvidia=False,
+            system = "Darwin",
+            machine = "x86_64",
+            nvidia_smi = None,
+            driver_cuda_version = None,
+            compute_caps = [],
+            has_physical_nvidia = False,
+            has_usable_nvidia = False,
         )
         result = resolve_upstream_asset_choice(host, self.TAG)
         assert result.install_kind == "macos-x64"
@@ -2794,15 +2794,15 @@ class TestResolveUpstreamAssetChoice:
     def test_linux_aarch64(self, monkeypatch):
         self._mock_github_assets(monkeypatch, {})
         host = make_host(
-            system="Linux",
-            machine="aarch64",
-            nvidia_smi=None,
-            driver_cuda_version=None,
-            compute_caps=[],
-            has_physical_nvidia=False,
-            has_usable_nvidia=False,
+            system = "Linux",
+            machine = "aarch64",
+            nvidia_smi = None,
+            driver_cuda_version = None,
+            compute_caps = [],
+            has_physical_nvidia = False,
+            has_usable_nvidia = False,
         )
-        with pytest.raises(PrebuiltFallback, match="no prebuilt policy exists for Linux aarch64"):
+        with pytest.raises(PrebuiltFallback, match = "no prebuilt policy exists for Linux aarch64"):
             resolve_upstream_asset_choice(host, self.TAG)
 
     def test_windows_usable_nvidia_delegates(self, monkeypatch):
@@ -2814,21 +2814,21 @@ class TestResolveUpstreamAssetChoice:
             "resolve_windows_cuda_choices",
             lambda host, tag, assets: [
                 AssetChoice(
-                    repo=UPSTREAM_REPO,
-                    tag=tag,
-                    name=cuda_name,
-                    url=f"https://x/{cuda_name}",
-                    source_label="upstream",
-                    install_kind="windows-cuda",
-                    runtime_line="cuda12",
+                    repo = UPSTREAM_REPO,
+                    tag = tag,
+                    name = cuda_name,
+                    url = f"https://x/{cuda_name}",
+                    source_label = "upstream",
+                    install_kind = "windows-cuda",
+                    runtime_line = "cuda12",
                 )
             ],
         )
         host = make_host(
-            system="Windows",
-            machine="AMD64",
-            driver_cuda_version=(12, 4),
-            has_usable_nvidia=True,
+            system = "Windows",
+            machine = "AMD64",
+            driver_cuda_version = (12, 4),
+            has_usable_nvidia = True,
         )
         result = resolve_upstream_asset_choice(host, self.TAG)
         assert result.install_kind == "windows-cuda"
@@ -2840,16 +2840,16 @@ class TestResolveUpstreamAssetChoice:
 # ===========================================================================
 
 
-def _macos_host(machine="arm64", version=(15, 5)):
+def _macos_host(machine = "arm64", version = (15, 5)):
     return make_host(
-        system="Darwin",
-        machine=machine,
-        nvidia_smi=None,
-        driver_cuda_version=None,
-        compute_caps=[],
-        has_physical_nvidia=False,
-        has_usable_nvidia=False,
-        macos_version=version,
+        system = "Darwin",
+        machine = machine,
+        nvidia_smi = None,
+        driver_cuda_version = None,
+        compute_caps = [],
+        has_physical_nvidia = False,
+        has_usable_nvidia = False,
+        macos_version = version,
     )
 
 
@@ -2889,7 +2889,7 @@ class TestPinnedMacosReleaseTag:
         assert pinned_macos_release_tag(host, fork) is None
 
     def test_non_macos_host_is_dormant(self):
-        host = make_host(system="Linux", machine="x86_64")
+        host = make_host(system = "Linux", machine = "x86_64")
         assert pinned_macos_release_tag(host, UPSTREAM_REPO) is None
 
 
@@ -2917,8 +2917,8 @@ class TestResolveSimpleMacosPin:
 
         def fake_iter(
             repo,
-            published_release_tag="",
-            requested_tag="",
+            published_release_tag = "",
+            requested_tag = "",
         ):
             calls.append((repo, published_release_tag, requested_tag))
             # Emulate the real iterator: a specific tag yields only that release.
@@ -2977,8 +2977,8 @@ class TestLinuxArm64ForkFallsBackToSource:
             raise AssertionError("iterator must not run for arm64 fork hosts")
 
         monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "iter_release_payloads_by_time", _boom)
-        host = make_host(system="Linux", machine="aarch64")
-        with pytest.raises(PrebuiltFallback, match="linux-x64 prebuilts"):
+        host = make_host(system = "Linux", machine = "aarch64")
+        with pytest.raises(PrebuiltFallback, match = "linux-x64 prebuilts"):
             resolve_simple_install_release_plans("latest", host, "unslothai/llama.cpp", "")
 
     def test_x86_64_fork_is_not_blocked_by_the_arch_guard(self, monkeypatch):
@@ -2989,7 +2989,7 @@ class TestLinuxArm64ForkFallsBackToSource:
             "iter_release_payloads_by_time",
             lambda *_a, **_k: iter(()),
         )
-        host = make_host(system="Linux", machine="x86_64")
+        host = make_host(system = "Linux", machine = "x86_64")
         with pytest.raises(PrebuiltFallback) as exc:
             resolve_simple_install_release_plans("latest", host, "unslothai/llama.cpp", "")
         assert "linux-x64 prebuilts" not in str(exc.value)
@@ -3003,13 +3003,13 @@ class TestLinuxArm64ForkFallsBackToSource:
             lambda *_a, **_k: iter(()),
         )
         host = make_host(
-            system="Linux",
-            machine="aarch64",
-            nvidia_smi=None,
-            driver_cuda_version=None,
-            compute_caps=[],
-            has_physical_nvidia=False,
-            has_usable_nvidia=False,
+            system = "Linux",
+            machine = "aarch64",
+            nvidia_smi = None,
+            driver_cuda_version = None,
+            compute_caps = [],
+            has_physical_nvidia = False,
+            has_usable_nvidia = False,
         )
         with pytest.raises(PrebuiltFallback) as exc:
             resolve_simple_install_release_plans("latest", host, "ggml-org/llama.cpp", "")
@@ -3030,12 +3030,12 @@ class TestCpuFallback:
 
     def _arm64_nvidia(self):
         return make_host(
-            system="Linux",
-            machine="aarch64",
-            driver_cuda_version=(13, 0),
-            compute_caps=["90"],
-            has_physical_nvidia=True,
-            has_usable_nvidia=True,
+            system = "Linux",
+            machine = "aarch64",
+            driver_cuda_version = (13, 0),
+            compute_caps = ["90"],
+            has_physical_nvidia = True,
+            has_usable_nvidia = True,
         )
 
     def test_force_cpu_drops_gpu_attrs_before_planning(self, monkeypatch, tmp_path):
@@ -3055,12 +3055,12 @@ class TestCpuFallback:
         # about the host it handed to the resolver before that.
         with pytest.raises(SystemExit):
             INSTALL_LLAMA_PREBUILT.install_prebuilt(
-                install_dir=tmp_path / "llama",
-                llama_tag="latest",
-                published_repo="ggml-org/llama.cpp",
-                published_release_tag="",
-                simple_policy=True,
-                force_cpu=True,
+                install_dir = tmp_path / "llama",
+                llama_tag = "latest",
+                published_repo = "ggml-org/llama.cpp",
+                published_release_tag = "",
+                simple_policy = True,
+                force_cpu = True,
             )
         host = captured["host"]
         assert host.has_usable_nvidia is False
@@ -3091,20 +3091,20 @@ class TestCpuFallback:
             )
         # force_cpu drops the GPU attributes, so the CPU arm64 bundle is selected.
         cpu_host = make_host(
-            system="Linux",
-            machine="aarch64",
-            nvidia_smi=None,
-            driver_cuda_version=None,
-            compute_caps=[],
-            has_physical_nvidia=False,
-            has_usable_nvidia=False,
+            system = "Linux",
+            machine = "aarch64",
+            nvidia_smi = None,
+            driver_cuda_version = None,
+            compute_caps = [],
+            has_physical_nvidia = False,
+            has_usable_nvidia = False,
         )
         plan = direct_upstream_release_plan(release, cpu_host, "ggml-org/llama.cpp", "latest")
         assert plan.attempts[0].install_kind == "linux-arm64"
         assert plan.attempts[0].name == f"llama-{tag}-bin-ubuntu-arm64.tar.gz"
 
     def test_setup_sh_has_arm64_cpu_prebuilt_fallback(self):
-        source = self._SETUP_SH.read_text(encoding="utf-8")
+        source = self._SETUP_SH.read_text(encoding = "utf-8")
         assert "--cpu-fallback" in source
         # Fallback targets ggml-org (the only repo with an arm64 Linux build) and
         # is gated on a degraded source build for arm64.

@@ -26,7 +26,7 @@ from routes.inference import _effective_enable_tools
 from state.tool_policy import reset_tool_policy, set_tool_policy
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture(autouse = True)
 def _reset():
     reset_tool_policy()
     yield
@@ -34,7 +34,7 @@ def _reset():
 
 
 def _payload(value):
-    return SimpleNamespace(enable_tools=value)
+    return SimpleNamespace(enable_tools = value)
 
 
 class TestEffectiveEnableTools:

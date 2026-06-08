@@ -42,7 +42,7 @@ BASE = os.environ["BASE_URL"]
 NEW = os.environ["STUDIO_NEW_PW"]
 ART_DIR = os.environ.get("PW_ART_DIR", "logs/playwright_ime")
 ART = Path(ART_DIR)
-ART.mkdir(parents=True, exist_ok=True)
+ART.mkdir(parents = True, exist_ok = True)
 STRICT = os.environ.get("STUDIO_UI_STRICT", "0") == "1"
 
 # Wall-clock cap. Realistic run is 30-60s; 5 min leaves cold-launch headroom.
@@ -90,11 +90,11 @@ _n = [0]
 
 
 def step(s):
-    print(f"[ime] STEP {s}", flush=True)
+    print(f"[ime] STEP {s}", flush = True)
 
 
 def info(s):
-    print(f"[ime] {s}", flush=True)
+    print(f"[ime] {s}", flush = True)
 
 
 def fail(m):
@@ -111,17 +111,17 @@ def soft_fail(m):
 with sync_playwright() as p:
     _watchdog = install_wall_clock_watchdog(
         WALL_TIMEOUT_S,
-        label="ime",
-        info=info,
+        label = "ime",
+        info = info,
     )
-    wait_for_health(BASE, timeout=30.0, info=info)
+    wait_for_health(BASE, timeout = 30.0, info = info)
     browser = p.chromium.launch(
-        headless=True,
-        args=chromium_launch_args(),
+        headless = True,
+        args = chromium_launch_args(),
     )
     ctx = browser.new_context(
-        viewport={"width": 1280, "height": 900},
-        reduced_motion="reduce",
+        viewport = {"width": 1280, "height": 900},
+        reduced_motion = "reduce",
     )
     install_view_transition_killer(ctx)
     page = ctx.new_page()
@@ -148,10 +148,10 @@ with sync_playwright() as p:
         _n[0] += 1
         try:
             page.screenshot(
-                path=str(ART / f"{_n[0]:02d}-{name}.png"),
-                full_page=True,
-                timeout=90_000,
-                animations="disabled",
+                path = str(ART / f"{_n[0]:02d}-{name}.png"),
+                full_page = True,
+                timeout = 90_000,
+                animations = "disabled",
             )
         except Exception as _shoot_err:
             info(f"WARN: screenshot {name} failed: {_shoot_err}")
@@ -164,25 +164,25 @@ with sync_playwright() as p:
         try:
             page.goto(
                 f"{BASE}/change-password",
-                wait_until="domcontentloaded",
-                timeout=60_000,
+                wait_until = "domcontentloaded",
+                timeout = 60_000,
             )
             try:
-                page.wait_for_load_state("networkidle", timeout=30_000)
+                page.wait_for_load_state("networkidle", timeout = 30_000)
             except Exception:
                 pass
             pw_field = page.locator("#new-password")
-            pw_field.wait_for(state="visible", timeout=60_000)
-            pw_field.fill(NEW, timeout=60_000)
-            page.fill("#confirm-password", NEW, timeout=60_000)
+            pw_field.wait_for(state = "visible", timeout = 60_000)
+            pw_field.fill(NEW, timeout = 60_000)
+            page.fill("#confirm-password", NEW, timeout = 60_000)
             shoot("01-change-password-filled")
             status, _ = click_and_wait_for_response(
                 page,
-                url_substr="/api/auth/change-password",
-                method="POST",
-                do_click=lambda: page.locator('button[type="submit"]').click(),
-                timeout_ms=30_000,
-                info=lambda m: print(f"[ime]   {m}", flush=True),
+                url_substr = "/api/auth/change-password",
+                method = "POST",
+                do_click = lambda: page.locator('button[type="submit"]').click(),
+                timeout_ms = 30_000,
+                info = lambda m: print(f"[ime]   {m}", flush = True),
             )
             if status is not None and status >= 400:
                 raise AssertionError(f"change-password POST returned {status}")
@@ -198,8 +198,8 @@ with sync_playwright() as p:
                 page = recover_or_replace_page(
                     page,
                     ctx,
-                    default_timeout_ms=60_000,
-                    info=lambda m: print(f"[ime]   recovery: {m}", flush=True),
+                    default_timeout_ms = 60_000,
+                    info = lambda m: print(f"[ime]   recovery: {m}", flush = True),
                 )
                 _attach_listeners(page)
     if form_err is not None:
@@ -208,14 +208,14 @@ with sync_playwright() as p:
     # 2. Wait for composer mount. No GGUF: the bug surface is React state, not inference.
     step("wait for composer to mount")
     try:
-        page.wait_for_load_state("networkidle", timeout=30_000)
+        page.wait_for_load_state("networkidle", timeout = 30_000)
     except Exception:
         pass
     composer = page.locator('textarea[aria-label="Message input"]')
     _mount_err: Exception | None = None
     for _mount_attempt in range(2):
         try:
-            composer.wait_for(state="visible", timeout=60_000)
+            composer.wait_for(state = "visible", timeout = 60_000)
             _mount_err = None
             break
         except Exception as e:
@@ -232,8 +232,8 @@ with sync_playwright() as p:
                 page = recover_or_replace_page(
                     page,
                     ctx,
-                    default_timeout_ms=60_000,
-                    info=lambda m: print(f"[ime]   recovery: {m}", flush=True),
+                    default_timeout_ms = 60_000,
+                    info = lambda m: print(f"[ime]   recovery: {m}", flush = True),
                 )
                 _attach_listeners(page)
                 composer = page.locator('textarea[aria-label="Message input"]')
@@ -393,7 +393,7 @@ with sync_playwright() as p:
         page.wait_for_function(
             """(el) => el.value === 'abcd'""",
             composer.element_handle(),
-            timeout=5_000,
+            timeout = 5_000,
         )
     except Exception:
         pass
@@ -414,7 +414,7 @@ with sync_playwright() as p:
         soft_fail("Send button not found after stuck-composition recovery")
     else:
         try:
-            expect(send_btn).not_to_be_disabled(timeout=5_000)
+            expect(send_btn).not_to_be_disabled(timeout = 5_000)
             info("Send button correctly enabled after stuck-composition recovery")
         except Exception:
             soft_fail(
@@ -458,7 +458,7 @@ with sync_playwright() as p:
     else:
         # Watchdog is 2500ms; allow generous slack for slow CI.
         try:
-            expect(send_btn_5546).not_to_be_disabled(timeout=8_000)
+            expect(send_btn_5546).not_to_be_disabled(timeout = 8_000)
             info("Send button enabled after compositionend never fired")
         except Exception:
             shoot("06b-compositionend-watchdog-FAIL")
@@ -501,7 +501,7 @@ with sync_playwright() as p:
     send_btn_keydown = page.locator('button[aria-label="Send message"]')
     # Wait past the watchdog so composingRef has cleared.
     try:
-        expect(send_btn_keydown).not_to_be_disabled(timeout=8_000)
+        expect(send_btn_keydown).not_to_be_disabled(timeout = 8_000)
     except Exception:
         soft_fail("watchdog did not clear before keydown re-pin test")
     # Fire the IME-confirm Enter (keyCode 229, isComposing=true) then trigger
@@ -559,7 +559,7 @@ with sync_playwright() as p:
     send_btn_rearm = page.locator('button[aria-label="Send message"]')
     # First watchdog cycle: wait for it to clear composingRef.
     try:
-        expect(send_btn_rearm).not_to_be_disabled(timeout=8_000)
+        expect(send_btn_rearm).not_to_be_disabled(timeout = 8_000)
     except Exception:
         soft_fail("watchdog did not clear before re-arm test (first cycle)")
     # IME-confirm keydown re-pins composingRef. Without the re-arm fix the

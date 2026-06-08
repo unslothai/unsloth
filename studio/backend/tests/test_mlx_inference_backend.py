@@ -74,15 +74,15 @@ def test_mlx_inference_text_load_forwards_studio_settings(monkeypatch):
     from core.inference.mlx_inference import MLXInferenceBackend
 
     backend = MLXInferenceBackend()
-    config = SimpleNamespace(identifier="fake/text", is_vision=False, is_lora=False)
+    config = SimpleNamespace(identifier = "fake/text", is_vision = False, is_lora = False)
 
     assert backend.load_model(
         config,
-        max_seq_length=4096,
-        load_in_4bit=False,
-        hf_token="hf-token",
-        trust_remote_code=True,
-        dtype="float16",
+        max_seq_length = 4096,
+        load_in_4bit = False,
+        hf_token = "hf-token",
+        trust_remote_code = True,
+        dtype = "float16",
     )
 
     assert calls == [
@@ -126,18 +126,18 @@ def test_mlx_inference_vlm_lora_uses_unsloth_loader_without_native_adapter_rewri
 
     backend = MLXInferenceBackend()
     config = SimpleNamespace(
-        identifier=str(adapter_dir),
-        is_vision=True,
-        is_lora=True,
-        base_model="fake/base",
+        identifier = str(adapter_dir),
+        is_vision = True,
+        is_lora = True,
+        base_model = "fake/base",
     )
 
     assert backend.load_model(
         config,
-        max_seq_length=8192,
-        load_in_4bit=True,
-        hf_token="hf-token",
-        trust_remote_code=True,
+        max_seq_length = 8192,
+        load_in_4bit = True,
+        hf_token = "hf-token",
+        trust_remote_code = True,
     )
 
     assert calls == [
@@ -200,7 +200,7 @@ def test_mlx_generate_text_forwards_kwargs_into_template_helper(monkeypatch):
     monkeypatch.setattr(
         "core.inference.chat_template_helpers.apply_chat_template_for_generation",
         _fake_apply,
-        raising=True,
+        raising = True,
     )
 
     # mlx_lm.stream_generate yields response objects with .token; make a
@@ -230,7 +230,7 @@ def test_mlx_generate_text_forwards_kwargs_into_template_helper(monkeypatch):
         def decode(
             self,
             ids,
-            skip_special_tokens=False,
+            skip_special_tokens = False,
         ):
             return "hi"
 
@@ -241,12 +241,12 @@ def test_mlx_generate_text_forwards_kwargs_into_template_helper(monkeypatch):
 
     out = list(
         backend.generate_chat_response(
-            messages=[{"role": "user", "content": "ping"}],
-            tools=[{"function": {"name": "web_search"}}],
-            enable_thinking=True,
-            reasoning_effort="medium",
-            preserve_thinking=True,
-            max_new_tokens=1,
+            messages = [{"role": "user", "content": "ping"}],
+            tools = [{"function": {"name": "web_search"}}],
+            enable_thinking = True,
+            reasoning_effort = "medium",
+            preserve_thinking = True,
+            max_new_tokens = 1,
         )
     )
     assert out == ["hi"]

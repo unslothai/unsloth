@@ -40,9 +40,9 @@ class _FakeTokenizer:
 def test_missing_placeholder_in_chat_template_raises(template, expected_in_message):
     with pytest.raises(RuntimeError) as exc_info:
         construct_chat_template(
-            tokenizer=_FakeTokenizer(),
-            chat_template=template,
-            extra_eos_tokens=["</s>"],
+            tokenizer = _FakeTokenizer(),
+            chat_template = template,
+            extra_eos_tokens = ["</s>"],
         )
     assert expected_in_message in str(exc_info.value)
 
@@ -54,9 +54,9 @@ def test_single_pair_template_raises_clear_error_not_attribute_error():
     template = "user: {INPUT}\nassistant: {OUTPUT}\n"
     with pytest.raises(RuntimeError):
         construct_chat_template(
-            tokenizer=_FakeTokenizer(),
-            chat_template=template,
-            extra_eos_tokens=["</s>"],
+            tokenizer = _FakeTokenizer(),
+            chat_template = template,
+            extra_eos_tokens = ["</s>"],
         )
 
 
@@ -66,9 +66,9 @@ def test_error_message_excerpt_is_bounded():
     huge = ("garbage " * 5000) + "{INPUT}"  # ~40 KB, missing {OUTPUT}
     with pytest.raises(RuntimeError) as exc_info:
         construct_chat_template(
-            tokenizer=_FakeTokenizer(),
-            chat_template=huge,
-            extra_eos_tokens=["</s>"],
+            tokenizer = _FakeTokenizer(),
+            chat_template = huge,
+            extra_eos_tokens = ["</s>"],
         )
     msg = str(exc_info.value)
     # Excerpt is repr-quoted and capped; total message should stay well

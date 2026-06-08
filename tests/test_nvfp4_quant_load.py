@@ -30,10 +30,10 @@ from unsloth_zoo.utils import get_quant_type
 from unsloth.models.loader_utils import check_and_disable_bitsandbytes_loading
 
 
-def _make_config(quantization_config=None, model_type="llama"):
+def _make_config(quantization_config = None, model_type = "llama"):
     return SimpleNamespace(
-        quantization_config=quantization_config,
-        model_type=model_type,
+        quantization_config = quantization_config,
+        model_type = model_type,
     )
 
 
@@ -52,7 +52,7 @@ _BNB_QCFG_DICT = {
 
 
 def test_nvfp4_config_has_compressed_tensors():
-    config = _make_config(quantization_config=_NVFP4_QCFG_DICT)
+    config = _make_config(quantization_config = _NVFP4_QCFG_DICT)
     qcfg = config.quantization_config
     assert qcfg is not None
     assert qcfg.get("quant_method") == "compressed-tensors"
@@ -60,73 +60,73 @@ def test_nvfp4_config_has_compressed_tensors():
 
 
 def test_regular_bnb_config_has_bitsandbytes():
-    config = _make_config(quantization_config=_BNB_QCFG_DICT)
+    config = _make_config(quantization_config = _BNB_QCFG_DICT)
     qcfg = config.quantization_config
     assert qcfg is not None
     assert qcfg.get("quant_method") == "bitsandbytes"
 
 
 def test_nvfp4_disables_load_in_4bit():
-    config = _make_config(quantization_config=_NVFP4_QCFG_DICT)
+    config = _make_config(quantization_config = _NVFP4_QCFG_DICT)
     quant_method = get_quant_type(config)
     assert quant_method == "compressed-tensors"
 
     load_in_4bit, load_in_8bit, _ = check_and_disable_bitsandbytes_loading(
-        config, load_in_4bit=True, load_in_8bit=False, verbose=False
+        config, load_in_4bit = True, load_in_8bit = False, verbose = False
     )
     assert load_in_4bit is False
     assert load_in_8bit is False
 
 
 def test_bnb_does_not_disable_load_in_4bit():
-    config = _make_config(quantization_config=_BNB_QCFG_DICT)
+    config = _make_config(quantization_config = _BNB_QCFG_DICT)
     quant_method = get_quant_type(config)
     assert quant_method == "bitsandbytes"
 
     load_in_4bit, load_in_8bit, _ = check_and_disable_bitsandbytes_loading(
-        config, load_in_4bit=True, load_in_8bit=False, verbose=False
+        config, load_in_4bit = True, load_in_8bit = False, verbose = False
     )
     assert load_in_4bit is True
     assert load_in_8bit is False
 
 
 def test_no_quantization_config_leaves_settings_unchanged():
-    config = _make_config(quantization_config=None)
+    config = _make_config(quantization_config = None)
     quant_method = get_quant_type(config)
     assert quant_method is None
 
     load_in_4bit, load_in_8bit, _ = check_and_disable_bitsandbytes_loading(
-        config, load_in_4bit=True, load_in_8bit=False, verbose=False
+        config, load_in_4bit = True, load_in_8bit = False, verbose = False
     )
     assert load_in_4bit is True
     assert load_in_8bit is False
 
 
 def test_nvfp4_disables_both_4bit_and_8bit():
-    config = _make_config(quantization_config=_NVFP4_QCFG_DICT)
+    config = _make_config(quantization_config = _NVFP4_QCFG_DICT)
 
     load_in_4bit, load_in_8bit, _ = check_and_disable_bitsandbytes_loading(
-        config, load_in_4bit=True, load_in_8bit=True, verbose=False
+        config, load_in_4bit = True, load_in_8bit = True, verbose = False
     )
     assert load_in_4bit is False
     assert load_in_8bit is False
 
 
 def test_verbose_flag_does_not_raise():
-    config = _make_config(quantization_config=_NVFP4_QCFG_DICT)
+    config = _make_config(quantization_config = _NVFP4_QCFG_DICT)
     load_in_4bit, load_in_8bit, _ = check_and_disable_bitsandbytes_loading(
-        config, load_in_4bit=True, load_in_8bit=False, verbose=True
+        config, load_in_4bit = True, load_in_8bit = False, verbose = True
     )
     assert load_in_4bit is False
     assert load_in_8bit is False
 
 
 def test_empty_quantization_config_is_not_quantized():
-    config = _make_config(quantization_config={})
+    config = _make_config(quantization_config = {})
     assert get_quant_type(config) is None
 
     load_in_4bit, load_in_8bit, _ = check_and_disable_bitsandbytes_loading(
-        config, load_in_4bit=True, load_in_8bit=False, verbose=False
+        config, load_in_4bit = True, load_in_8bit = False, verbose = False
     )
     assert load_in_4bit is True
 

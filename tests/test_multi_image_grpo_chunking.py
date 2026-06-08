@@ -77,12 +77,12 @@ def _simulate_chunk_indices(num_images, B):
 
 
 def test_simulate_multi_image_chunk_image_axis_correct():
-    chunks = _simulate_chunk_indices([2, 1, 3, 1], B=2)
+    chunks = _simulate_chunk_indices([2, 1, 3, 1], B = 2)
     assert chunks == [(0, 2, 0, 3), (2, 4, 3, 7)]
 
 
 def test_simulate_uniform_image_chunking_unchanged():
-    chunks = _simulate_chunk_indices([1, 1, 1, 1], B=2)
+    chunks = _simulate_chunk_indices([1, 1, 1, 1], B = 2)
     assert chunks == [(0, 2, 0, 2), (2, 4, 2, 4)]
 
 

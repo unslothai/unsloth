@@ -99,7 +99,7 @@ def studio_db_path() -> Path:
 def _xdg_user_dir(key: str) -> Path | None:
     config = Path.home() / ".config" / "user-dirs.dirs"
     try:
-        lines = config.read_text(encoding="utf-8").splitlines()
+        lines = config.read_text(encoding = "utf-8").splitlines()
     except OSError:
         return None
     prefix = f"{key}="
@@ -153,7 +153,7 @@ def tensorboard_root() -> Path:
 
 
 def ensure_dir(path: Path) -> Path:
-    path.mkdir(parents=True, exist_ok=True)
+    path.mkdir(parents = True, exist_ok = True)
     return path
 
 
@@ -275,7 +275,7 @@ def _setup_cache_env() -> None:
     for key, value in defaults.items():
         if key not in os.environ:
             os.environ[key] = value
-            Path(value).mkdir(parents=True, exist_ok=True)
+            Path(value).mkdir(parents = True, exist_ok = True)
 
 
 def ensure_studio_directories() -> None:
@@ -345,7 +345,7 @@ def resolve_under_root(
         _assert_contained(path, root)
         return path
 
-    cleaned = _clean_relative_path(raw, strip_prefixes=strip_prefixes)
+    cleaned = _clean_relative_path(raw, strip_prefixes = strip_prefixes)
     candidate = root / cleaned
     _assert_contained(candidate, root)
     return candidate
@@ -354,24 +354,24 @@ def resolve_under_root(
 def resolve_output_dir(path_value: str | None = None) -> Path:
     return resolve_under_root(
         path_value,
-        root=outputs_root(),
-        strip_prefixes=("outputs",),
+        root = outputs_root(),
+        strip_prefixes = ("outputs",),
     )
 
 
 def resolve_export_dir(path_value: str | None = None) -> Path:
     return resolve_under_root(
         path_value,
-        root=exports_root(),
-        strip_prefixes=("exports",),
+        root = exports_root(),
+        strip_prefixes = ("exports",),
     )
 
 
 def resolve_tensorboard_dir(path_value: str | None = None) -> Path:
     return resolve_under_root(
         path_value,
-        root=tensorboard_root(),
-        strip_prefixes=("runs", "tensorboard"),
+        root = tensorboard_root(),
+        strip_prefixes = ("runs", "tensorboard"),
     )
 
 
