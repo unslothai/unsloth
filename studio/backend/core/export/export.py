@@ -21,7 +21,12 @@ from utils.hardware import clear_gpu_cache
 
 from utils.models import is_vision_model, get_base_model_from_lora
 from utils.models.model_config import detect_audio_type
-from utils.paths import ensure_dir, outputs_root, resolve_export_write_dir, resolve_output_dir
+from utils.paths import (
+    ensure_dir,
+    outputs_root,
+    resolve_export_write_dir,
+    resolve_output_dir,
+)
 from core.inference import get_inference_backend
 
 # GPU-only imports — guarded for Apple Silicon where these aren't needed
@@ -665,7 +670,10 @@ class ExportBackend:
                 # to avoid overwriting an unrelated 'model/' dir that may
                 # already exist in the user's absolute destination (#6082).
                 import uuid
-                _model_tmp = os.path.join(abs_save_dir, f"_tmp_model_{uuid.uuid4().hex[:8]}")
+
+                _model_tmp = os.path.join(
+                    abs_save_dir, f"_tmp_model_{uuid.uuid4().hex[:8]}"
+                )
                 self.current_model.save_pretrained_gguf(
                     _model_tmp,
                     self.current_tokenizer,
@@ -709,7 +717,10 @@ class ExportBackend:
                 if self.current_checkpoint:
                     ckpt = Path(self.current_checkpoint)
                     gguf_dir = ckpt.parent / f"{ckpt.name}_gguf"
-                    if gguf_dir.is_dir() and gguf_dir.resolve() != Path(abs_save_dir).resolve():
+                    if (
+                        gguf_dir.is_dir()
+                        and gguf_dir.resolve() != Path(abs_save_dir).resolve()
+                    ):
                         for src in gguf_dir.glob("*.gguf"):
                             dest = os.path.join(abs_save_dir, src.name)
                             shutil.move(str(src), dest)
