@@ -3246,7 +3246,12 @@ class TestCudaDriverToolkitMismatchMessage:
         end = source.index("print_llama_error_log()")
         return source[start:end]
 
-    def _run_bash(self, script, *, env = None):
+    def _run_bash(
+        self,
+        script,
+        *,
+        env = None,
+    ):
         proc = subprocess.run(
             ["/bin/bash", "-c", script],
             check = True,
@@ -3435,8 +3440,7 @@ class TestCudaDriverToolkitMismatchMessage:
             "or install a CUDA $driverMajor.x toolkit." in source
         )
         assert (
-            "Or let Studio use the prebuilt CUDA bundle; it does not need the "
-            "local toolkit."
+            "Or let Studio use the prebuilt CUDA bundle; it does not need the local toolkit."
         ) in source
         assert (
             "Write-CudaDriverToolkitMismatch -ToolkitVersion $IncompatibleToolkit "
@@ -3459,9 +3463,7 @@ class TestCudaDriverToolkitMismatchMessage:
         nvcc.chmod(0o755)
         return nvcc
 
-    def test_setup_sh_major_mismatch_uses_newest_compatible_detected_toolkit(
-        self, tmp_path
-    ):
+    def test_setup_sh_major_mismatch_uses_newest_compatible_detected_toolkit(self, tmp_path):
         blocked_nvcc = self._fake_nvcc(tmp_path, "13.3")
         older_nvcc = self._fake_nvcc(tmp_path, "12.6")
         compatible_nvcc = self._fake_nvcc(tmp_path, "12.8")
@@ -3645,9 +3647,7 @@ class TestCudaDriverToolkitMismatchMessage:
         assert "GPU_BACKEND=cuda" in output
         assert "ALLOWED=true" in output
 
-    def test_setup_sh_compatible_finder_rejects_newer_major_only_candidate(
-        self, tmp_path
-    ):
+    def test_setup_sh_compatible_finder_rejects_newer_major_only_candidate(self, tmp_path):
         # Only alternative is still newer-major than the driver: finder must fail, not pick it.
         blocked_nvcc = self._fake_nvcc(tmp_path, "13.3")
         other_newer_nvcc = self._fake_nvcc(tmp_path, "13.1")
