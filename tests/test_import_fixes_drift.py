@@ -638,7 +638,7 @@ def test_accelerate_recursively_apply_empty_logits_patch():
     e = EmptyLogits()
     patch_accelerate_recursively_apply()
 
-    res = acc_ops.recursively_apply(lambda x: x, e, error_on_other_type = True)
+    res = acc_ops.recursively_apply(lambda x: x, e, error_on_other_type=True)
     assert res is e
 
 
@@ -648,6 +648,8 @@ def test_accelerate_gather_empty_logits_debug_mode_patch():
     from accelerate.state import PartialState, DistributedType
     import accelerate.utils.operations as acc_ops
     from unsloth.import_fixes import patch_accelerate_recursively_apply
+    import unittest.mock as mock
+    import torch
 
     class EmptyLogits:
         pass
@@ -659,20 +661,62 @@ def test_accelerate_gather_empty_logits_debug_mode_patch():
     state = PartialState()
     orig_debug = state.debug
     orig_dist_type = state.distributed_type
+    orig_num_processes = state.num_processes
+
     state.debug = True
-    # Set to a distributed type to trigger verify_operation wrapper
     state.distributed_type = DistributedType.MULTI_GPU
+    state.num_processes = 2
+
+    # Mock gather_object to return [obj] * num_processes
+    def mock_gather_object(obj, *args, **kwargs):
+        return [obj] * state.num_processes
+
+    # Mock _gpu_gather to recursively apply replication of tensors
+    def mock_gpu_gather(tensor, *args, **kwargs):
+        def _gather_one(t):
+            if t.ndim == 0:
+                t = t.clone()[None]
+            return torch.cat([t] * state.num_processes, dim=0)
+        return acc_ops.recursively_apply(_gather_one, tensor, error_on_other_type=True)
+
+    # Mock _gpu_broadcast to return data unchanged
+    def mock_gpu_broadcast(data, *args, **kwargs):
+        return data
 
     try:
-        # Should bypass verify_operation and not raise DistributedOperationException
-        res = acc_ops.gather(e)
-        assert res is e
+        with mock.patch("accelerate.utils.operations.gather_object", side_effect=mock_gather_object), \
+             mock.patch("accelerate.utils.operations._gpu_gather", side_effect=mock_gpu_gather), \
+             mock.patch("accelerate.utils.operations._gpu_broadcast", side_effect=mock_gpu_broadcast):
 
-        res_nested = acc_ops.gather([e])
-        assert isinstance(res_nested, list) and res_nested[0] is e
+            # 1. Top-level EmptyLogits should gather correctly (returns e)
+            res = acc_ops.gather(e)
+            assert res is e
 
-        res_broadcast = acc_ops.broadcast(e)
-        assert res_broadcast is e
+            # 2. Nested EmptyLogits alone
+            res_nested = acc_ops.gather([e])
+            assert isinstance(res_nested, list) and res_nested[0] is e
+
+            # 3. Mixed payload with real tensor and EmptyLogits
+            # Real tensor should be gathered (concatenated across processes)
+            real_tensor = torch.tensor([42])
+            payload = {"labels": real_tensor, "logits": e}
+            res_mixed = acc_ops.gather(payload)
+
+            assert isinstance(res_mixed, dict)
+            assert res_mixed["logits"] is e
+            # Since num_processes = 2, it should be gathered to [42, 42]
+            assert torch.equal(res_mixed["labels"], torch.tensor([42, 42]))
+
+            # 4. Broadcast with EmptyLogits
+            res_broadcast = acc_ops.broadcast(e)
+            assert res_broadcast is e
+
+            # 5. Mixed payload with broadcast
+            res_broadcast_mixed = acc_ops.broadcast(payload)
+            assert isinstance(res_broadcast_mixed, dict)
+            assert res_broadcast_mixed["logits"] is e
+            assert torch.equal(res_broadcast_mixed["labels"], real_tensor)
     finally:
         state.debug = orig_debug
         state.distributed_type = orig_dist_type
+        state.num_processes = orig_num_processes

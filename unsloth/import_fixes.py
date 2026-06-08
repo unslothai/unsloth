@@ -2198,98 +2198,88 @@ def patch_accelerate_recursively_apply():
     """
     Patch accelerate.utils.operations.recursively_apply to avoid raising
     TypeError when encountering Unsloth's EmptyLogits class.
+    Also patches recursively_apply in accelerate.utils and accelerate.accelerator.
+    And patches find_device in accelerate.utils.operations and accelerate.utils
+    to return PartialState().device when finding no device, avoiding AttributeError.
     """
-    original_recursively_apply = None
     try:
         import accelerate.utils.operations as acc_ops
-
-        if hasattr(acc_ops, "recursively_apply"):
-            original_recursively_apply = acc_ops.recursively_apply
     except Exception:
         acc_ops = None
 
-    if original_recursively_apply is None:
-        try:
-            import accelerate.utils as acc_utils
+    try:
+        import accelerate.utils as acc_utils
+    except Exception:
+        acc_utils = None
 
-            if hasattr(acc_utils, "recursively_apply"):
-                original_recursively_apply = acc_utils.recursively_apply
-        except Exception:
-            acc_utils = None
-    else:
-        try:
-            import accelerate.utils as acc_utils
-        except Exception:
-            acc_utils = None
-
-    if original_recursively_apply is not None:
-
-        @functools.wraps(original_recursively_apply)
-        def _patched_recursively_apply(func, data, *args, **kwargs):
-            if type(data).__name__ == "EmptyLogits":
-                return data
-            return original_recursively_apply(func, data, *args, **kwargs)
-
-        if acc_ops is not None:
-            acc_ops.recursively_apply = _patched_recursively_apply
-        if acc_utils is not None and hasattr(acc_utils, "recursively_apply"):
-            acc_utils.recursively_apply = _patched_recursively_apply
-
-    # Also patch gather and broadcast to bypass EmptyLogits structure verification
     try:
         import accelerate.accelerator as acc_accel
     except Exception:
         acc_accel = None
 
-    def _contains_empty_logits(data) -> bool:
-        if type(data).__name__ == "EmptyLogits":
-            return True
-        if isinstance(data, (list, tuple)):
-            return any(_contains_empty_logits(x) for x in data)
-        from collections.abc import Mapping
+    # Resolve original recursively_apply
+    original_recursively_apply = None
+    if acc_ops is not None and hasattr(acc_ops, "recursively_apply"):
+        original_recursively_apply = acc_ops.recursively_apply
+    elif acc_utils is not None and hasattr(acc_utils, "recursively_apply"):
+        original_recursively_apply = acc_utils.recursively_apply
+    elif acc_accel is not None and hasattr(acc_accel, "recursively_apply"):
+        original_recursively_apply = acc_accel.recursively_apply
 
-        if isinstance(data, Mapping):
-            return any(_contains_empty_logits(x) for x in data.values())
-        return False
+    if original_recursively_apply is not None:
+        @functools.wraps(original_recursively_apply)
+        def _patched_recursively_apply(func, data, *args, **kwargs):
+            if type(data).__name__ == "EmptyLogits":
+                cls = type(data)
+                if not hasattr(cls, "__eq__") or cls.__eq__ == object.__eq__:
+                    cls.__eq__ = lambda self, other: type(other).__name__ == "EmptyLogits"
+                return data
+            return original_recursively_apply(func, data, *args, **kwargs)
 
-    # Patch gather if it exists
-    original_gather = None
-    if acc_ops is not None and hasattr(acc_ops, "gather"):
-        original_gather = acc_ops.gather
-    elif acc_utils is not None and hasattr(acc_utils, "gather"):
-        original_gather = acc_utils.gather
+        if acc_ops is not None and hasattr(acc_ops, "recursively_apply"):
+            acc_ops.recursively_apply = _patched_recursively_apply
+        if acc_utils is not None and hasattr(acc_utils, "recursively_apply"):
+            acc_utils.recursively_apply = _patched_recursively_apply
+        if acc_accel is not None and hasattr(acc_accel, "recursively_apply"):
+            acc_accel.recursively_apply = _patched_recursively_apply
 
-    if original_gather is not None:
+        for mod_name, mod in tuple(sys.modules.items()):
+            if mod_name.startswith("accelerate") and mod is not None:
+                if hasattr(mod, "recursively_apply") and getattr(mod, "recursively_apply") is original_recursively_apply:
+                    try:
+                        setattr(mod, "recursively_apply", _patched_recursively_apply)
+                    except Exception:
+                        pass
 
-        @functools.wraps(original_gather)
-        def _patched_gather(tensor, *args, **kwargs):
-            if _contains_empty_logits(tensor):
-                return tensor
-            return original_gather(tensor, *args, **kwargs)
+    # Resolve and patch find_device
+    original_find_device = None
+    if acc_ops is not None and hasattr(acc_ops, "find_device"):
+        original_find_device = acc_ops.find_device
+    elif acc_utils is not None and hasattr(acc_utils, "find_device"):
+        original_find_device = acc_utils.find_device
 
-        if acc_ops is not None and hasattr(acc_ops, "gather"):
-            acc_ops.gather = _patched_gather
-        if acc_utils is not None and hasattr(acc_utils, "gather"):
-            acc_utils.gather = _patched_gather
-        if acc_accel is not None and hasattr(acc_accel, "gather"):
-            acc_accel.gather = _patched_gather
+    if original_find_device is not None:
+        @functools.wraps(original_find_device)
+        def _patched_find_device(data, *args, **kwargs):
+            dev = original_find_device(data, *args, **kwargs)
+            if dev is None:
+                try:
+                    from accelerate.state import PartialState
+                    return PartialState().device
+                except Exception:
+                    pass
+            return dev
 
-    # Patch broadcast if it exists
-    original_broadcast = None
-    if acc_ops is not None and hasattr(acc_ops, "broadcast"):
-        original_broadcast = acc_ops.broadcast
-    elif acc_utils is not None and hasattr(acc_utils, "broadcast"):
-        original_broadcast = acc_utils.broadcast
+        if acc_ops is not None and hasattr(acc_ops, "find_device"):
+            acc_ops.find_device = _patched_find_device
+        if acc_utils is not None and hasattr(acc_utils, "find_device"):
+            acc_utils.find_device = _patched_find_device
 
-    if original_broadcast is not None:
+        for mod_name, mod in tuple(sys.modules.items()):
+            if mod_name.startswith("accelerate") and mod is not None:
+                if hasattr(mod, "find_device") and getattr(mod, "find_device") is original_find_device:
+                    try:
+                        setattr(mod, "find_device", _patched_find_device)
+                    except Exception:
+                        pass
 
-        @functools.wraps(original_broadcast)
-        def _patched_broadcast(tensor, *args, **kwargs):
-            if _contains_empty_logits(tensor):
-                return tensor
-            return original_broadcast(tensor, *args, **kwargs)
-
-        if acc_ops is not None and hasattr(acc_ops, "broadcast"):
-            acc_ops.broadcast = _patched_broadcast
-        if acc_utils is not None and hasattr(acc_utils, "broadcast"):
-            acc_utils.broadcast = _patched_broadcast
