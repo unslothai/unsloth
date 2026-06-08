@@ -5100,9 +5100,7 @@ class LlamaCppBackend:
                     # Match a prior *successful* identical call; retries after a
                     # failure are ok.
                     _tc_key = tool_name + str(arguments)
-                    _already_ran_ok = any(
-                        k == _tc_key and not err for k, err in _tool_call_history
-                    )
+                    _already_ran_ok = any(k == _tc_key and not err for k, err in _tool_call_history)
                     if _repeat_render_html:
                         result = RENDER_HTML_REPEAT_NUDGE
                     elif _already_ran_ok:
@@ -5179,9 +5177,7 @@ class LlamaCppBackend:
                         _result_content = _result_content.rsplit("\n__IMAGES__:", 1)[0]
                     # Strip the RAG source-map (kept for the UI via tool_end above).
                     if "\n__RAG_SOURCES__:" in _result_content:
-                        _result_content = _result_content.split(
-                            "\n__RAG_SOURCES__:", 1
-                        )[0]
+                        _result_content = _result_content.split("\n__RAG_SOURCES__:", 1)[0]
                     if _is_error:
                         _result_content = (
                             _result_content + "\n\nThe tool call encountered an issue. "

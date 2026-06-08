@@ -147,9 +147,7 @@ def _patch_llama_backend(monkeypatch, *, binary):
     from core.inference.llama_cpp import LlamaCppBackend
     from core.rag import embed_llama_server
 
-    monkeypatch.setattr(
-        LlamaCppBackend, "_find_llama_server_binary", staticmethod(lambda: binary)
-    )
+    monkeypatch.setattr(LlamaCppBackend, "_find_llama_server_binary", staticmethod(lambda: binary))
     monkeypatch.setattr(embed_llama_server, "LlamaServerBackend", _SentinelLlamaBackend)
 
 
@@ -191,19 +189,21 @@ class _BoomOnEncodeModel:
 
 def test_st_encode_runtime_failure_switches_to_llama(monkeypatch):
     # encode() blows up mid-run -> switch to llama-server and stay switched.
-    monkeypatch.setattr(
-        embeddings, "_get", lambda model_name = None: _BoomOnEncodeModel()
-    )
+    monkeypatch.setattr(embeddings, "_get", lambda model_name = None: _BoomOnEncodeModel())
     _patch_llama_backend(monkeypatch, binary = "/fake/llama-server")
     calls = {}
 
-    def _sentinel_encode(self, texts, *, model_name = None, normalize = True):
+    def _sentinel_encode(
+        self,
+        texts,
+        *,
+        model_name = None,
+        normalize = True,
+    ):
         calls["used"] = True
         return np.zeros((len(texts), 4), dtype = np.float32)
 
-    monkeypatch.setattr(
-        _SentinelLlamaBackend, "encode", _sentinel_encode, raising = False
-    )
+    monkeypatch.setattr(_SentinelLlamaBackend, "encode", _sentinel_encode, raising = False)
     embeddings._reset_backend()
 
     out = embeddings.encode(["alpha", "beta"])
@@ -215,9 +215,7 @@ def test_st_encode_runtime_failure_switches_to_llama(monkeypatch):
 
 def test_st_encode_failure_without_llama_binary_reraises(monkeypatch):
     # No llama-server binary -> surface the encode error.
-    monkeypatch.setattr(
-        embeddings, "_get", lambda model_name = None: _BoomOnEncodeModel()
-    )
+    monkeypatch.setattr(embeddings, "_get", lambda model_name = None: _BoomOnEncodeModel())
     _patch_llama_backend(monkeypatch, binary = None)
     embeddings._reset_backend()
     with pytest.raises(RuntimeError, match = "CUDA error during encode"):

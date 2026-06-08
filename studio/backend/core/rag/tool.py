@@ -22,8 +22,7 @@ SEARCH_KNOWLEDGE_BASE_TOOL = {
     "function": {
         "name": "search_knowledge_base",
         "description": (
-            "Search the user's uploaded documents and knowledge bases for "
-            "relevant passages."
+            "Search the user's uploaded documents and knowledge bases for relevant passages."
         ),
         "parameters": {
             "type": "object",
@@ -117,7 +116,6 @@ def search_knowledge_base_with_sources(
 def store_rows(conn, hits):
     """Hydrate chunk rows for a list of hits."""
     from . import store
-
     return store.chunks_by_id(conn, [h.chunk_id for h in hits])
 
 
@@ -155,14 +153,10 @@ def search_for_autoinject(
             mode = mode,
         )
         strong = [
-            h
-            for h in hits
-            if h.dense_score is not None and h.dense_score >= min_dense_score
+            h for h in hits if h.dense_score is not None and h.dense_score >= min_dense_score
         ][:k]
         if not strong and hits and mode == "lexical":
-            probe = retrieval.retrieve_dense(
-                conn, scope, query, 1, model_name = model_name
-            )
+            probe = retrieval.retrieve_dense(conn, scope, query, 1, model_name = model_name)
             if (
                 probe
                 and probe[0].dense_score is not None

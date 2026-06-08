@@ -32,7 +32,11 @@ def bow_embeddings(monkeypatch):
     monkeypatch.setattr(embeddings, "dim", lambda model_name = None: len(VOCAB))
 
 
-def _chunk(text, index = 0, page = None):
+def _chunk(
+    text,
+    index = 0,
+    page = None,
+):
     return Chunk(
         text = text,
         token_count = len(text.split()),
@@ -44,10 +48,16 @@ def _chunk(text, index = 0, page = None):
     )
 
 
-def _add_doc(conn, scope, doc_id, filename, sha, text, page = None):
-    store.create_document(
-        conn, scope = scope, filename = filename, sha256 = sha, document_id = doc_id
-    )
+def _add_doc(
+    conn,
+    scope,
+    doc_id,
+    filename,
+    sha,
+    text,
+    page = None,
+):
+    store.create_document(conn, scope = scope, filename = filename, sha256 = sha, document_id = doc_id)
     store.add_chunks(conn, scope, doc_id, [_chunk(text, 0, page)], [_embed(text)])
 
 
@@ -140,9 +150,7 @@ def test_tool_formats_chunks_and_sources(rag_conn, bow_embeddings, monkeypatch):
 def test_tool_kb_scope_retrieves_from_db(rag_conn, bow_embeddings):
     # End-to-end (no retrieve stub): doc found via its scope_kb_id (#8).
     _add_doc(rag_conn, "kb_K", "d1", "kb.pdf", "h1", "alpha bravo charlie", page = 1)
-    text, sources = tool.search_knowledge_base_with_sources(
-        query = "alpha bravo", scope_kb_id = "K"
-    )
+    text, sources = tool.search_knowledge_base_with_sources(query = "alpha bravo", scope_kb_id = "K")
     assert "No matching chunks" not in text
     assert sources and sources[0]["chunkId"] == "d1:0"
     assert sources[0]["filename"] == "kb.pdf"
@@ -184,15 +192,11 @@ def test_dispatcher_no_sentinel_when_no_hits(rag_home, monkeypatch):
     assert tools.RAG_SOURCES_SENTINEL not in out
 
 
-def test_search_for_autoinject_gates_on_dense_score(
-    rag_conn, bow_embeddings, monkeypatch
-):
+def test_search_for_autoinject_gates_on_dense_score(rag_conn, bow_embeddings, monkeypatch):
     _add_doc(rag_conn, "kb_a", "d1", "paper.pdf", "h1", "body text here", page = 3)
 
     def _hits(score, **kw):
-        return lambda conn, scope, q, **k: [
-            retrieval.Hit("d1:0", 1.0, **{kw["key"]: score})
-        ]
+        return lambda conn, scope, q, **k: [retrieval.Hit("d1:0", 1.0, **{kw["key"]: score})]
 
     # Strong dense hit -> injected.
     monkeypatch.setattr(retrieval, "retrieve_hybrid", _hits(0.8, key = "dense_score"))
@@ -203,22 +207,14 @@ def test_search_for_autoinject_gates_on_dense_score(
 
     # Dense below floor -> nothing injected.
     monkeypatch.setattr(retrieval, "retrieve_hybrid", _hits(0.30, key = "dense_score"))
-    assert (
-        tool.search_for_autoinject(query = "q", scope_kb_id = "a", min_dense_score = 0.55)
-        is None
-    )
+    assert tool.search_for_autoinject(query = "q", scope_kb_id = "a", min_dense_score = 0.55) is None
 
     # Lexical-only hit (no dense score) does not auto-inject.
     monkeypatch.setattr(retrieval, "retrieve_hybrid", _hits(1.0, key = "lexical_score"))
-    assert (
-        tool.search_for_autoinject(query = "q", scope_kb_id = "a", min_dense_score = 0.55)
-        is None
-    )
+    assert tool.search_for_autoinject(query = "q", scope_kb_id = "a", min_dense_score = 0.55) is None
 
 
-def test_search_for_autoinject_bm25_gates_on_dense_probe(
-    rag_conn, bow_embeddings, monkeypatch
-):
+def test_search_for_autoinject_bm25_gates_on_dense_probe(rag_conn, bow_embeddings, monkeypatch):
     # BM25 hits carry no cosine, so the gate uses a dense 1-NN probe (#5).
     _add_doc(rag_conn, "kb_a", "d1", "paper.pdf", "h1", "body text here", page = 3)
     monkeypatch.setattr(
@@ -230,9 +226,7 @@ def test_search_for_autoinject_bm25_gates_on_dense_probe(
     monkeypatch.setattr(
         retrieval,
         "retrieve_dense",
-        lambda conn, scope, q, k = None, **kw: [
-            retrieval.Hit("d1:0", 0.82, dense_score = 0.82)
-        ],
+        lambda conn, scope, q, k = None, **kw: [retrieval.Hit("d1:0", 0.82, dense_score = 0.82)],
     )
     found = tool.search_for_autoinject(
         query = "q", scope_kb_id = "a", mode = "lexical", min_dense_score = 0.70
@@ -242,14 +236,10 @@ def test_search_for_autoinject_bm25_gates_on_dense_probe(
     monkeypatch.setattr(
         retrieval,
         "retrieve_dense",
-        lambda conn, scope, q, k = None, **kw: [
-            retrieval.Hit("d1:0", 0.40, dense_score = 0.40)
-        ],
+        lambda conn, scope, q, k = None, **kw: [retrieval.Hit("d1:0", 0.40, dense_score = 0.40)],
     )
     assert (
-        tool.search_for_autoinject(
-            query = "q", scope_kb_id = "a", mode = "lexical", min_dense_score = 0.70
-        )
+        tool.search_for_autoinject(query = "q", scope_kb_id = "a", mode = "lexical", min_dense_score = 0.70)
         is None
     )
 
@@ -281,10 +271,7 @@ def test_build_rag_autoinject_emits_pipeline(monkeypatch):
     te = next(e for e in out["events"] if e["type"] == "tool_end")
     assert te["tool_name"] == "search_knowledge_base"
     assert tools.RAG_SOURCES_SENTINEL in te["result"]
-    assert (
-        out["messages"][0]["tool_calls"][0]["function"]["name"]
-        == "search_knowledge_base"
-    )
+    assert out["messages"][0]["tool_calls"][0]["function"]["name"] == "search_knowledge_base"
     assert "__RAG_SOURCES__" not in out["messages"][1]["content"]
 
 
@@ -295,10 +282,7 @@ def test_build_rag_autoinject_skips_without_hit(monkeypatch):
     monkeypatch.setattr(rag_db, "RAG_AVAILABLE", True, raising = False)
     monkeypatch.setattr(tool, "search_for_autoinject", lambda **k: None)
     assert (
-        tools.build_rag_autoinject(
-            [{"role": "user", "content": "hi"}], {"thread_id": "t1"}
-        )
-        is None
+        tools.build_rag_autoinject([{"role": "user", "content": "hi"}], {"thread_id": "t1"}) is None
     )
 
 
@@ -316,9 +300,7 @@ def test_build_rag_autoinject_enabled_by_default(monkeypatch):
         return ("x", [{"citationId": 1}])
 
     monkeypatch.setattr(tool, "search_for_autoinject", fake)
-    out = tools.build_rag_autoinject(
-        [{"role": "user", "content": "hi"}], {"thread_id": "t1"}
-    )
+    out = tools.build_rag_autoinject([{"role": "user", "content": "hi"}], {"thread_id": "t1"})
     assert out is not None
     assert seen["min_dense_score"] == 0.70  # high-precision floor by default
 
@@ -349,10 +331,7 @@ def test_build_rag_autoinject_disabled_by_env(monkeypatch):
 
     monkeypatch.setenv("RAG_AUTOINJECT", "0")
     assert (
-        tools.build_rag_autoinject(
-            [{"role": "user", "content": "hi"}], {"thread_id": "t1"}
-        )
-        is None
+        tools.build_rag_autoinject([{"role": "user", "content": "hi"}], {"thread_id": "t1"}) is None
     )
     # No scope -> also a no-op.
     monkeypatch.delenv("RAG_AUTOINJECT", raising = False)
@@ -450,7 +429,4 @@ def test_build_rag_autoinject_scope_overrides_env(monkeypatch):
 
     # Explicit False disables even with the env default on.
     monkeypatch.setenv("RAG_AUTOINJECT", "1")
-    assert (
-        tools.build_rag_autoinject(conv, {"thread_id": "t1", "autoinject": False})
-        is None
-    )
+    assert tools.build_rag_autoinject(conv, {"thread_id": "t1", "autoinject": False}) is None

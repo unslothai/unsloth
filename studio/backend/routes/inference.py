@@ -2759,9 +2759,7 @@ async def openai_chat_completions(
             # Drop the RAG tool without a scope: nothing to search over.
             if not payload.rag_scope:
                 tools_to_use = [
-                    t
-                    for t in tools_to_use
-                    if t["function"]["name"] != "search_knowledge_base"
+                    t for t in tools_to_use if t["function"]["name"] != "search_knowledge_base"
                 ]
 
             if _mcp_allowed:
@@ -2838,11 +2836,7 @@ async def openai_chat_completions(
                     "search_knowledge_base to look for more. Do not answer from "
                     "memory when the attached documents are relevant."
                 )
-                _nudge = (
-                    _date_line + " " + _rag_nudge
-                    if not _nudge
-                    else _nudge + " " + _rag_nudge
-                )
+                _nudge = _date_line + " " + _rag_nudge if not _nudge else _nudge + " " + _rag_nudge
 
             if _nudge:
                 _nudge += _tool_action_nudge(_has_artifact, _rag_active)
@@ -3295,9 +3289,7 @@ async def openai_chat_completions(
         # Drop the RAG tool unless the request carries a retrieval scope.
         if not payload.rag_scope:
             _sf_tools_to_use = [
-                t
-                for t in _sf_tools_to_use
-                if t["function"]["name"] != "search_knowledge_base"
+                t for t in _sf_tools_to_use if t["function"]["name"] != "search_knowledge_base"
             ]
 
         if _sf_mcp_allowed:

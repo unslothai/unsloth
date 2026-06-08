@@ -123,9 +123,7 @@ class LlamaServerBackend:
 
         repo = config.EMBED_GGUF_REPO
         token = os.environ.get("HF_TOKEN") or None
-        files = [
-            f for f in list_repo_files(repo, token = token) if f.lower().endswith(".gguf")
-        ]
+        files = [f for f in list_repo_files(repo, token = token) if f.lower().endswith(".gguf")]
         files = [f for f in files if "mmproj" not in f.lower()]
         if not files:
             raise RuntimeError(f"no .gguf file found in embedder repo {repo!r}")
@@ -163,9 +161,7 @@ class LlamaServerBackend:
         gpus = LlamaCppBackend._get_gpu_free_memory()  # [(idx, free_mib)], honors CVD
         return any(free >= LlamaServerBackend._MIN_GPU_FREE_MIB for _, free in gpus)
 
-    def _build_cmd(
-        self, binary: str, model_path: str, port: int, *, use_gpu: bool
-    ) -> list[str]:
+    def _build_cmd(self, binary: str, model_path: str, port: int, *, use_gpu: bool) -> list[str]:
         # No --embd-normalize (not in every build; we normalize in Python to match
         # the ST path). --fit off: don't auto-resize ctx/offload to device memory.
         cmd = [
@@ -208,12 +204,8 @@ class LlamaServerBackend:
         arch = platform.machine()
         lib_dirs = [binary_dir]
         for pattern in (
-            os.path.join(
-                sys.prefix, "lib", "python*", "site-packages", "nvidia", "cu*", "lib"
-            ),
-            os.path.join(
-                sys.prefix, "lib", "python*", "site-packages", "nvidia", "cudnn", "lib"
-            ),
+            os.path.join(sys.prefix, "lib", "python*", "site-packages", "nvidia", "cu*", "lib"),
+            os.path.join(sys.prefix, "lib", "python*", "site-packages", "nvidia", "cudnn", "lib"),
         ):
             lib_dirs.extend(d for d in glob.glob(pattern) if os.path.isdir(d))
         for cuda_lib in (
@@ -289,17 +281,19 @@ class LlamaServerBackend:
             tail = "\n".join(self._stdout_lines[-30:])
             self._kill_process()
             raise RuntimeError(
-                "llama-server embedder failed to become healthy. "
-                f"Last output:\n{tail[:2000]}"
+                f"llama-server embedder failed to become healthy. Last output:\n{tail[:2000]}"
             )
 
     @staticmethod
     def _find_free_port() -> int:
         from core.inference.llama_cpp import LlamaCppBackend
-
         return LlamaCppBackend._find_free_port()
 
-    def _wait_for_health(self, timeout: float, interval: float = 0.5) -> bool:
+    def _wait_for_health(
+        self,
+        timeout: float,
+        interval: float = 0.5,
+    ) -> bool:
         """Poll /health until 200; bail early if the process exits."""
         deadline = time.monotonic() + timeout
         url = f"{self._base_url}/health"
@@ -388,11 +382,15 @@ class LlamaServerBackend:
                 raise RuntimeError(
                     f"llama-server embedder POST {path} -> {e.response.status_code}: {body}"
                 ) from e
-        raise RuntimeError(
-            f"llama-server embedder POST {path} failed after retry"
-        ) from last_exc
+        raise RuntimeError(f"llama-server embedder POST {path} failed after retry") from last_exc
 
-    def encode(self, texts, *, model_name = None, normalize = True):
+    def encode(
+        self,
+        texts,
+        *,
+        model_name = None,
+        normalize = True,
+    ):
         """Embed texts -> (N, dim) float32. ``model_name`` is ignored (the GGUF is
         fixed by config). Normalizes in Python to match the ST backend."""
         n = len(texts)

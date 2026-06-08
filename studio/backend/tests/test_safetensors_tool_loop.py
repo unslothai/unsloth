@@ -457,15 +457,9 @@ class TestLoopBehaviour:
         # A, B, then A: the second A is blocked even though not adjacent.
         loop, exec_fn = _make_loop(
             turns = [
-                [
-                    '<tool_call>{"name":"web_search","arguments":{"query":"a"}}</tool_call>'
-                ],
-                [
-                    '<tool_call>{"name":"web_search","arguments":{"query":"b"}}</tool_call>'
-                ],
-                [
-                    '<tool_call>{"name":"web_search","arguments":{"query":"a"}}</tool_call>'
-                ],
+                ['<tool_call>{"name":"web_search","arguments":{"query":"a"}}</tool_call>'],
+                ['<tool_call>{"name":"web_search","arguments":{"query":"b"}}</tool_call>'],
+                ['<tool_call>{"name":"web_search","arguments":{"query":"a"}}</tool_call>'],
                 ["final"],
             ],
             exec_results = ["res-a", "res-b"],

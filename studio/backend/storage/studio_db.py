@@ -347,9 +347,7 @@ def _prompt_entry_from_row(row: sqlite3.Row) -> dict:
 def list_prompt_entries() -> list[dict]:
     conn = get_connection()
     try:
-        rows = conn.execute(
-            "SELECT * FROM prompt_entries ORDER BY created_at DESC"
-        ).fetchall()
+        rows = conn.execute("SELECT * FROM prompt_entries ORDER BY created_at DESC").fetchall()
         return [_prompt_entry_from_row(r) for r in rows]
     finally:
         conn.close()
@@ -404,10 +402,7 @@ def bulk_upsert_prompt_entries(entries: list[dict]) -> int:
                 text = excluded.text,
                 updated_at = excluded.updated_at
             """,
-            [
-                (e["id"], e["name"], e["text"], e["createdAt"], e["updatedAt"])
-                for e in entries
-            ],
+            [(e["id"], e["name"], e["text"], e["createdAt"], e["updatedAt"]) for e in entries],
         )
         conn.commit()
         return len(entries)
@@ -428,9 +423,7 @@ def _prompt_list_from_row(row: sqlite3.Row) -> dict:
 def list_prompt_lists_db() -> list[dict]:
     conn = get_connection()
     try:
-        rows = conn.execute(
-            "SELECT * FROM prompt_lists ORDER BY created_at DESC"
-        ).fetchall()
+        rows = conn.execute("SELECT * FROM prompt_lists ORDER BY created_at DESC").fetchall()
         return [_prompt_list_from_row(r) for r in rows]
     finally:
         conn.close()

@@ -71,11 +71,9 @@ def _inference_ctx_factory():
     factory so each call gets a fresh single-use guard."""
     try:
         import torch
-
         return torch.inference_mode
     except Exception:  # noqa: BLE001 - torch may be missing or broken
         from contextlib import nullcontext
-
         return nullcontext
 
 
@@ -84,7 +82,10 @@ def _inference_ctx():
 
 
 def _st_encode(
-    texts: list[str], *, model_name: str | None = None, normalize: bool = True
+    texts: list[str],
+    *,
+    model_name: str | None = None,
+    normalize: bool = True,
 ):
     """ST encode -> (N, dim) float32. Serialized (fast-tokenizer borrow check),
     under inference_mode when torch is present, with rayon enabled for the call."""
@@ -132,7 +133,13 @@ class _SentenceTransformersBackend:
     """Default backend; delegates to the module-level ST helpers so the ``_get``
     monkeypatch in tests keeps working."""
 
-    def encode(self, texts, *, model_name = None, normalize = True):
+    def encode(
+        self,
+        texts,
+        *,
+        model_name = None,
+        normalize = True,
+    ):
         try:
             return _st_encode(texts, model_name = model_name, normalize = normalize)
         except Exception as st_err:  # noqa: BLE001 - runtime ST/CUDA encode failure
@@ -248,7 +255,6 @@ def _get_backend():
         elif key in _LLAMA_ALIASES:
             # Imported lazily so the ST path never imports llama plumbing.
             from .embed_llama_server import LlamaServerBackend
-
             _backend = LlamaServerBackend()
         else:
             raise ValueError(
@@ -272,7 +278,12 @@ def warm(model_name: str | None = None) -> None:
     _get_backend().warm(model_name = model_name)
 
 
-def encode(texts: list[str], *, model_name: str | None = None, normalize: bool = True):
+def encode(
+    texts: list[str],
+    *,
+    model_name: str | None = None,
+    normalize: bool = True,
+):
     """Embed texts into an (N, dim) float32 numpy array."""
     return _get_backend().encode(texts, model_name = model_name, normalize = normalize)
 

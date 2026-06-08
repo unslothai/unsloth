@@ -790,7 +790,6 @@ def _search_knowledge_base(arguments: dict, rag_scope: dict | None) -> str:
         return "Error: query is empty."
     try:
         from storage import rag_db
-
         if not rag_db.RAG_AVAILABLE:
             return "Knowledge base search is unavailable on this server."
         from core.rag.tool import search_knowledge_base_with_sources
@@ -809,7 +808,6 @@ def _search_knowledge_base(arguments: dict, rag_scope: dict | None) -> str:
     # Append the UI source-map after the sentinel; loops strip it before the model.
     if sources:
         import json as _json
-
         return text + RAG_SOURCES_SENTINEL + _json.dumps(sources, ensure_ascii = False)
     return text
 
@@ -872,9 +870,7 @@ def _last_user_text(conversation: list[dict]) -> str:
     return ""
 
 
-def build_rag_autoinject(
-    conversation: list[dict], rag_scope: dict | None
-) -> dict | None:
+def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> dict | None:
     """Pre-retrieve the latest user turn; if a hit clears the cosine floor return
     ``{"events": [...], "messages": [...]}`` to splice into the loop, else ``None``.
     Toggle via ``rag_scope.autoinject`` (else env ``RAG_AUTOINJECT``); floor via
@@ -895,7 +891,6 @@ def build_rag_autoinject(
         return None
     try:
         from storage import rag_db
-
         if not rag_db.RAG_AVAILABLE:
             return None
         from core.rag.tool import search_for_autoinject
@@ -970,9 +965,7 @@ def build_rag_autoinject(
             "content": text,
         },
     ]
-    logger.info(
-        "RAG auto-inject: %d passage(s) >= %.2f for %r", len(sources), floor, query[:80]
-    )
+    logger.info("RAG auto-inject: %d passage(s) >= %.2f for %r", len(sources), floor, query[:80])
     return {"events": events, "messages": messages}
 
 

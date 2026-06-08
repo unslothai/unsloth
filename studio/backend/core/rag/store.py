@@ -80,10 +80,7 @@ def delete_kb(conn: sqlite3.Connection, kb_id: str) -> None:
     """Delete a knowledge base and every document (+ chunks) under it."""
     scope = kb_scope(kb_id)
     doc_ids = [
-        r["id"]
-        for r in conn.execute(
-            "SELECT id FROM documents WHERE scope=?", (scope,)
-        ).fetchall()
+        r["id"] for r in conn.execute("SELECT id FROM documents WHERE scope=?", (scope,)).fetchall()
     ]
     for doc_id in doc_ids:
         delete_document(conn, doc_id)
