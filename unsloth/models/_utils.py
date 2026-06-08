@@ -929,8 +929,7 @@ def is_dgx_spark():
         if not (hasattr(torch, "cuda") and torch.cuda.is_available()):
             return False
         names = " ".join(
-            str(torch.cuda.get_device_name(i)).upper()
-            for i in range(torch.cuda.device_count())
+            str(torch.cuda.get_device_name(i)).upper() for i in range(torch.cuda.device_count())
         )
         return any(token in names for token in _DGX_SPARK_DEVICE_TOKENS)
     except Exception:
@@ -1041,7 +1040,6 @@ def patch_dgx_spark_dataloader_defaults():
         return
     try:
         from transformers import training_args as _ta
-
         Base = _ta.TrainingArguments
     except Exception:
         return

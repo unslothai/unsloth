@@ -42,8 +42,7 @@ def _flex_is_dgx_spark():
         if not (hasattr(torch, "cuda") and torch.cuda.is_available()):
             return False
         names = " ".join(
-            str(torch.cuda.get_device_name(i)).upper()
-            for i in range(torch.cuda.device_count())
+            str(torch.cuda.get_device_name(i)).upper() for i in range(torch.cuda.device_count())
         )
         return any(t in names for t in ("GB10", "JMJWOA", "N1X", "DGX SPARK", "GB110"))
     except Exception:
