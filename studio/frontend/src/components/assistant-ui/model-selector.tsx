@@ -111,6 +111,7 @@ interface ModelSelectorProps {
   onFoldersChange?: () => void;
   onPickLocalModel?: () => void | Promise<void>;
   onModelsChange?: (deletedModel?: DeletedModelRef) => void;
+  onListen?: (adapter: LoraModelOption) => void;
   deleteDisabled?: boolean;
   variant?: "outline" | "ghost" | "muted";
   size?: "sm" | "default" | "lg";
@@ -207,6 +208,7 @@ function ModelSelectorContent({
   onFoldersChange,
   onPickLocalModel,
   onModelsChange,
+  onListen,
   deleteDisabled,
   className,
   dataTour,
@@ -220,6 +222,7 @@ function ModelSelectorContent({
   onFoldersChange?: () => void;
   onPickLocalModel?: () => void;
   onModelsChange?: (deletedModel?: DeletedModelRef) => void;
+  onListen?: (adapter: LoraModelOption) => void;
   deleteDisabled?: boolean;
   className?: string;
   dataTour?: string;
@@ -289,6 +292,7 @@ function ModelSelectorContent({
               value={value}
               onSelect={onSelect}
               onModelsChange={onModelsChange}
+              onListen={onListen}
               deleteDisabled={deleteDisabled}
             />
           </TabsContent>
@@ -347,6 +351,7 @@ export function ModelSelector({
   onFoldersChange,
   onPickLocalModel,
   onModelsChange,
+  onListen,
   deleteDisabled,
   variant = "outline",
   size = "default",
@@ -444,6 +449,11 @@ export function ModelSelector({
     void onPickLocalModel?.();
   }
 
+  function handleListen(adapter: LoraModelOption) {
+    setOpen(false);
+    onListen?.(adapter);
+  }
+
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <ModelSelectorTrigger
@@ -465,6 +475,7 @@ export function ModelSelector({
         onFoldersChange={onFoldersChange}
         onPickLocalModel={onPickLocalModel ? handlePickLocalModel : undefined}
         onModelsChange={onModelsChange}
+        onListen={onListen ? handleListen : undefined}
         deleteDisabled={deleteDisabled}
         className={contentClassName}
         dataTour={contentDataTour}

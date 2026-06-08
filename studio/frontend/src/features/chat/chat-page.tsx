@@ -9,6 +9,7 @@ import {
   type ModelOption,
   ModelSelector,
 } from "@/components/assistant-ui/model-selector";
+import { ListenModal } from "@/components/assistant-ui/model-selector/listen-modal";
 import { ProjectComposer, Thread } from "@/components/assistant-ui/thread";
 import {
   ResizableHandle,
@@ -1122,6 +1123,20 @@ export function ChatPage(): ReactElement {
     loadProgress,
     loadToastDismissed,
   } = useChatModelRuntime();
+  const [listenAdapter, setListenAdapter] = useState<LoraModelOption | null>(null);
+  const handleListen = useCallback(
+    (adapter: LoraModelOption) => {
+      setListenAdapter(adapter);
+      if (adapter.id !== inferenceParams.checkpoint) {
+        void selectModel({
+          id: adapter.id,
+          isLora: adapter.exportType !== "merged",
+          isDownloaded: true,
+        });
+      }
+    },
+    [inferenceParams.checkpoint, selectModel],
+  );
   const prevConnectionsEnabledRef = useRef(connectionsEnabled);
   useEffect(() => {
     const turnedOff = prevConnectionsEnabledRef.current && !connectionsEnabled;
@@ -1955,6 +1970,7 @@ export function ChatPage(): ReactElement {
       updatedAt: lora.updatedAt,
       source: lora.source,
       exportType: lora.exportType,
+      audioType: lora.audioType,
     }));
     return [...fromLoras, ...localModels];
   }, [lorasFromStore, localModels]);
@@ -2114,6 +2130,7 @@ export function ChatPage(): ReactElement {
                 onFoldersChange={refreshLocalModels}
                 onPickLocalModel={isTauri ? chooseNativeModel : undefined}
                 onModelsChange={refreshModelLists}
+                onListen={handleListen}
                 deleteDisabled={modelOperationInProgress}
                 variant="ghost"
                 open={modelSelectorOpen}
@@ -2297,6 +2314,12 @@ export function ChatPage(): ReactElement {
           }
         }}
       />
+      {listenAdapter && (
+        <ListenModal
+          adapter={listenAdapter}
+          onClose={() => setListenAdapter(null)}
+        />
+      )}
     </div>
   );
 }

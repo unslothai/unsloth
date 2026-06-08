@@ -43,6 +43,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { sentAudioNames } from "@/features/chat/api/chat-adapter";
+import { TTS_AUDIO_TYPES, useTtsPlayer } from "@/features/chat/hooks/use-tts-player";
 import { parseExternalModelId } from "@/features/chat/external-providers";
 import { McpComposerButton } from "@/features/chat/mcp-composer-button";
 import { getExternalReasoningCapabilities } from "@/features/chat/provider-capabilities";
@@ -1145,8 +1146,6 @@ let _voiceModeActive = false;
 const VoiceToggle: FC = () => {
   const aui = useAui();
   const [voiceModeEnabled, setVoiceModeEnabled] = useState(_voiceModeActive);
-  const [isSpeaking, setIsSpeaking] = useState(false);
-  const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
   const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const prevRunningRef = useRef(false);
   // voiceModeRef is only written in toggle — never in the render body —
@@ -1155,7 +1154,6 @@ const VoiceToggle: FC = () => {
   const voiceModeRef = useRef(_voiceModeActive);
   const isSpeakingRef = useRef(false);
   const auiRef = useRef(aui);
-  isSpeakingRef.current = isSpeaking;
   auiRef.current = aui;
 
   const isThreadRunning = useAuiState(({ thread }) => thread.isRunning);
@@ -1169,6 +1167,31 @@ const VoiceToggle: FC = () => {
   );
   const isDictating =
     dictationStatusType === "starting" || dictationStatusType === "running";
+
+  const activeAudioType = useChatRuntimeStore((s) => {
+    const m = s.models.find((m) => m.id === s.params.checkpoint);
+    return m?.audioType ?? null;
+  });
+  const isTtsModelLoaded = TTS_AUDIO_TYPES.has(activeAudioType ?? "");
+
+  // Called after speaking ends (or immediately if there's nothing to speak).
+  // Stable ref-based callback so useTtsPlayer captures it once.
+  const resumeListen = useCallback(() => {
+    if (voiceModeRef.current) {
+      console.log("[VoiceToggle] resuming dictation after response");
+      document
+        .querySelector<HTMLButtonElement>('button[aria-label="Dictate"]')
+        ?.click();
+    }
+  }, []);
+
+  const { isSpeaking, speak, stop } = useTtsPlayer(activeAudioType, resumeListen);
+  isSpeakingRef.current = isSpeaking;
+  // Keep a ref so the run-lifecycle effect always calls the latest speak
+  // without adding it to the dependency array (avoids re-running on TTS
+  // model switches mid-conversation).
+  const speakRef = useRef(speak);
+  speakRef.current = speak;
 
   // On remount: if voice mode was active when this instance mounted and the
   // model is already idle, open the mic immediately. The common path
@@ -1206,16 +1229,6 @@ const VoiceToggle: FC = () => {
     });
     if (!voiceModeRef.current || isSpeakingRef.current) return;
 
-    // Called after speaking ends (or immediately if there's nothing to speak).
-    // startDictation() works here because mic permission was already granted
-    // when the user first clicked the Voice pill.
-    const resumeListen = () => {
-      if (voiceModeRef.current) {
-        console.log("[VoiceToggle] resuming dictation after response");
-        document.querySelector<HTMLButtonElement>('button[aria-label="Dictate"]')?.click();
-      }
-    };
-
     const messages = auiRef.current.thread().getState().messages;
     let text = "";
     for (let i = messages.length - 1; i >= 0; i--) {
@@ -1233,28 +1246,9 @@ const VoiceToggle: FC = () => {
       resumeListen();
       return;
     }
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.onend = () => {
-      console.log("[VoiceToggle] utterance.onend fired", {
-        voiceMode: voiceModeRef.current,
-      });
-      setIsSpeaking(false);
-      utteranceRef.current = null;
-      resumeListen();
-    };
-    utterance.onerror = () => {
-      setIsSpeaking(false);
-      utteranceRef.current = null;
-      resumeListen();
-    };
-    utteranceRef.current = utterance;
-    console.log(
-      "[VoiceToggle] speechSynthesis.speak called, text length:",
-      text.length,
-    );
-    window.speechSynthesis.speak(utterance);
-    setIsSpeaking(true);
-  }, [isThreadRunning]);
+    console.log("[VoiceToggle] speak called, text length:", text.length);
+    speakRef.current(text);
+  }, [isThreadRunning, resumeListen]);
 
   // Silence timer: reset on each new transcript chunk from the DictationAdapter.
   // 1.5 s after the last update, stop dictation and auto-send.
@@ -1292,31 +1286,31 @@ const VoiceToggle: FC = () => {
         !auiRef.current.thread().getState().isRunning &&
         !isSpeakingRef.current
       ) {
-        document.querySelector<HTMLButtonElement>('button[aria-label="Dictate"]')?.click();
+        document
+          .querySelector<HTMLButtonElement>('button[aria-label="Dictate"]')
+          ?.click();
       }
     } else {
       if (silenceTimerRef.current) {
         clearTimeout(silenceTimerRef.current);
         silenceTimerRef.current = null;
       }
-      if (utteranceRef.current) {
-        window.speechSynthesis.cancel();
-        utteranceRef.current = null;
-        setIsSpeaking(false);
-      }
+      stop();
       const composer = auiRef.current.composer();
       if (composer.getState().dictation) composer.stopDictation();
     }
-  }, []);
+  }, [stop]);
 
   useEffect(() => {
     return () => {
       if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
-      if (utteranceRef.current) window.speechSynthesis.cancel();
     };
   }, []);
 
-  if (typeof window === "undefined" || !("speechSynthesis" in window)) {
+  if (
+    typeof window === "undefined" ||
+    (!("speechSynthesis" in window) && !isTtsModelLoaded)
+  ) {
     return null;
   }
 
@@ -1673,32 +1667,20 @@ const CopyButton: FC = () => {
 
 const SpeakButton: FC = () => {
   const aui = useAui();
-  const [isSpeaking, setIsSpeaking] = useState(false);
-  const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
-
-  useEffect(() => {
-    return () => {
-      if (utteranceRef.current) {
-        window.speechSynthesis.cancel();
-      }
-    };
-  }, []);
+  const activeAudioType = useChatRuntimeStore((s) => {
+    const m = s.models.find((m) => m.id === s.params.checkpoint);
+    return m?.audioType ?? null;
+  });
+  const { isSpeaking, speak, stop } = useTtsPlayer(activeAudioType);
 
   const handleSpeak = () => {
     if (isSpeaking) {
-      window.speechSynthesis.cancel();
-      utteranceRef.current = null;
-      setIsSpeaking(false);
+      stop();
       return;
     }
     const text = aui.message().getCopyText();
     if (!text) return;
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.onend = () => setIsSpeaking(false);
-    utterance.onerror = () => setIsSpeaking(false);
-    utteranceRef.current = utterance;
-    window.speechSynthesis.speak(utterance);
-    setIsSpeaking(true);
+    speak(text);
   };
 
   return (

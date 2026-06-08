@@ -56,4 +56,5 @@ export interface ChatLoraSummary {
   updatedAt?: number;
   source?: "training" | "exported";
   exportType?: "lora" | "merged" | "gguf";
+  audioType?: string | null;
 }

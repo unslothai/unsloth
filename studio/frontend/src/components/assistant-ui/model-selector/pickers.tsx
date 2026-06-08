@@ -42,7 +42,8 @@ import { Add01Icon, Cancel01Icon, Folder02Icon, Search01Icon } from "@hugeicons/
 import { HugeiconsIcon } from "@hugeicons/react";
 import { FolderBrowser } from "./folder-browser";
 import { ModelDeleteAction } from "./model-delete-action";
-import { ChevronDownIcon, ChevronRightIcon, DownloadIcon, StarIcon } from "lucide-react";
+import { ChevronDownIcon, ChevronRightIcon, DownloadIcon, HeadphonesIcon, StarIcon } from "lucide-react";
+import { TTS_AUDIO_TYPES } from "@/features/chat/hooks/use-tts-player";
 import {
   type ReactNode,
   useCallback,
@@ -1423,12 +1424,14 @@ export function LoraModelPicker({
   value,
   onSelect,
   onModelsChange,
+  onListen,
   deleteDisabled = false,
 }: {
   loraModels: LoraModelOption[];
   value?: string;
   onSelect: (id: string, meta: ModelSelectorChangeMeta) => void;
   onModelsChange?: (deletedModel?: DeletedModelRef) => void;
+  onListen?: (adapter: LoraModelOption) => void;
   deleteDisabled?: boolean;
 }) {
   const [query, setQuery] = useState("");
@@ -1581,6 +1584,19 @@ export function LoraModelPicker({
                             }
                           />
                         </div>
+                        {onListen && TTS_AUDIO_TYPES.has(adapter.audioType ?? "") && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onListen(adapter);
+                            }}
+                            className="flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+                            aria-label={`Listen: ${adapter.name}`}
+                          >
+                            <HeadphonesIcon className="size-3.5" />
+                          </button>
+                        )}
                         {canDelete && (
                           <ModelDeleteAction
                             ariaLabel={`Delete ${adapter.name}`}

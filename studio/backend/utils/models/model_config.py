@@ -918,6 +918,36 @@ def _detect_audio_from_tokenizer(
         return None
 
 
+def detect_audio_type_from_local(model_path: str) -> Optional[str]:
+    """Detect audio_type by reading tokenizer_config.json from a local model directory.
+
+    Used for training outputs where the path is local (not an HF repo ID).
+    Skips SNAC because its detection requires counting 10 000+ custom tokens,
+    which is prohibitively expensive at scan time.
+    """
+    from pathlib import Path
+
+    path = Path(model_path)
+    for sub in ("tokenizer_config.json", "LLM/tokenizer_config.json"):
+        tok_file = path / sub
+        if not tok_file.exists():
+            continue
+        try:
+            tok_cfg = json.loads(tok_file.read_text(encoding = "utf-8"))
+            added = tok_cfg.get("added_tokens_decoder", {})
+            if not added:
+                continue
+            tokens = [v.get("content", "") for v in added.values()]
+            for audio_type, check_fn in _AUDIO_TOKEN_PATTERNS.items():
+                if audio_type == "snac":
+                    continue
+                if check_fn(tokens):
+                    return audio_type
+        except Exception:
+            continue
+    return None
+
+
 def is_audio_input_type(audio_type: Optional[str]) -> bool:
     """Check if an audio_type accepts audio input (ASR/speech understanding).
 
