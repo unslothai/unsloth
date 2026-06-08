@@ -27,7 +27,11 @@ import utils.llama_cpp_update as upd  # noqa: E402
 MARKER = "UNSLOTH_PREBUILT_INFO.json"
 
 
-def _write_install(dir_: Path, tag: str, repo: str = "unslothai/llama.cpp") -> str:
+def _write_install(
+    dir_: Path,
+    tag: str,
+    repo: str = "unslothai/llama.cpp",
+) -> str:
     """Create a fake prebuilt install tree and return the llama-server path."""
     bin_dir = dir_ / "build" / "bin"
     bin_dir.mkdir(parents = True, exist_ok = True)

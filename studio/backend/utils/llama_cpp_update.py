@@ -72,7 +72,6 @@ def _find_binary() -> Optional[str]:
     heavy inference module off this module's import path."""
     try:
         from core.inference.llama_cpp import LlamaCppBackend
-
         return LlamaCppBackend._find_llama_server_binary()
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("llama update: binary discovery failed", error = str(exc))
@@ -181,9 +180,7 @@ def _run_update(install_dir: Path, repo: str, from_tag: Optional[str], script: P
         )
         if proc.returncode != 0:
             tail = (proc.stderr or proc.stdout or "").strip()[-1500:]
-            raise RuntimeError(
-                f"installer exited {proc.returncode}: {tail or 'no output'}"
-            )
+            raise RuntimeError(f"installer exited {proc.returncode}: {tail or 'no output'}")
 
         # New UNSLOTH_PREBUILT_INFO.json is on disk; drop caches so the next
         # status read reflects the freshly installed tag.

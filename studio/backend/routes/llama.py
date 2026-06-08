@@ -39,9 +39,7 @@ class LlamaUpdateStatusResponse(BaseModel):
         False,
         description = "True when the install came from an Unsloth prebuilt (has a marker).",
     )
-    update_available: bool = Field(
-        False, description = "True when installed_tag != latest_tag."
-    )
+    update_available: bool = Field(False, description = "True when installed_tag != latest_tag.")
     stale: bool = Field(
         False, description = "Update available AND install older than the staleness threshold."
     )
