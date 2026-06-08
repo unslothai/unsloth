@@ -654,6 +654,10 @@ class ExportBackend:
                 # only clean up dirs created during this run (not unrelated
                 # user directories — important when abs_save_dir is an
                 # existing folder on a different drive, see #6082).
+                # Also track known export-owned subdir names so we can clean
+                # stale intermediates left behind by prior failed runs
+                # (model/, model_gguf/) without touching unrelated user dirs.
+                _EXPORT_OWNED_SUBDIRS = {"model", "model_gguf"}
                 pre_existing_subs = {
                     d.name for d in Path(abs_save_dir).iterdir() if d.is_dir()
                 }
@@ -681,21 +685,25 @@ class ExportBackend:
                         f"Relocated GGUF: {os.path.basename(src)} → {abs_save_dir}/"
                     )
 
-                # Flatten any .gguf files from subdirectories into abs_save_dir.
+                # Flatten .gguf files from subdirectories into abs_save_dir.
                 # save_pretrained_gguf may create subdirs (e.g. model_gguf/)
                 # with a name different from model_save_path.
+                # Skip pre-existing unrelated dirs, but always clean up known
+                # export-owned intermediates (model/, model_gguf/) even if
+                # they were left behind by a prior failed run (#6082).
                 for sub in list(Path(abs_save_dir).iterdir()):
                     if not sub.is_dir():
+                        continue
+                    is_export_owned = sub.name in _EXPORT_OWNED_SUBDIRS
+                    is_pre_existing = sub.name in pre_existing_subs
+                    if is_pre_existing and not is_export_owned:
                         continue
                     for src in sub.glob("*.gguf"):
                         dest = os.path.join(abs_save_dir, src.name)
                         shutil.move(str(src), dest)
                         logger.info(f"Relocated GGUF: {src.name} → {abs_save_dir}/")
-                    # Only clean up subdirectories created during this export,
-                    # not pre-existing user directories.
-                    if sub.name not in pre_existing_subs:
-                        shutil.rmtree(str(sub), ignore_errors = True)
-                        logger.info(f"Cleaned up subdirectory: {sub.name}")
+                    shutil.rmtree(str(sub), ignore_errors = True)
+                    logger.info(f"Cleaned up subdirectory: {sub.name}")
 
                 # For non-PEFT models, save_pretrained_gguf redirects to the
                 # checkpoint path, leaving a *_gguf directory in outputs/.
