@@ -4891,10 +4891,7 @@ def _fetch_validation_model_bytes() -> bytes:
         repo_id, revision, filename = parts
         try:
             from huggingface_hub import hf_hub_download
-
-            local = hf_hub_download(
-                repo_id = repo_id, filename = filename, revision = revision
-            )
+            local = hf_hub_download(repo_id = repo_id, filename = filename, revision = revision)
             return validated_validation_model_bytes(Path(local).read_bytes())
         except Exception as exc:
             log(

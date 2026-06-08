@@ -127,7 +127,6 @@ elif sys.platform.startswith("linux") and "HSA_ENABLE_DXG_DETECTION" not in os.e
         ):
             os.environ["HSA_ENABLE_DXG_DETECTION"] = "1"
             import logging as _logging
-
             _logging.getLogger(__name__).info(
                 "WSL ROCm: set HSA_ENABLE_DXG_DETECTION=1 (librocdxg bridge present)"
             )

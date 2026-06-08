@@ -899,9 +899,7 @@ class TestInstallShStructure:
             # a genuine here-string operator lives outside any quotes.
             unquoted = re.sub(r"'[^']*'", "", line)
             unquoted = re.sub(r'"[^"]*"', "", unquoted)
-            assert (
-                "<<<" not in unquoted
-            ), f"install.sh:{i} uses non-POSIX <<< here-string"
+            assert "<<<" not in unquoted, f"install.sh:{i} uses non-POSIX <<< here-string"
 
     def test_rocm_detection_present(self):
         """install.sh should have ROCm detection in get_torch_index_url."""

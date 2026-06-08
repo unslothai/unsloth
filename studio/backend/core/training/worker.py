@@ -38,8 +38,7 @@ from typing import Any, Callable
 if sys.platform.startswith("linux") and "HSA_ENABLE_DXG_DETECTION" not in os.environ:
     try:
         if os.path.exists("/dev/dxg") and any(
-            os.path.exists(_p + "/librocdxg.so")
-            for _p in ("/opt/rocm/lib", "/opt/rocm/lib64")
+            os.path.exists(_p + "/librocdxg.so") for _p in ("/opt/rocm/lib", "/opt/rocm/lib64")
         ):
             os.environ["HSA_ENABLE_DXG_DETECTION"] = "1"
     except Exception:
