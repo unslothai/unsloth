@@ -676,7 +676,8 @@ class ChatCompletionRequest(BaseModel):
         None, description = "[x-unsloth] Base64-encoded image for vision models"
     )
     audio_base64: Optional[str] = Field(
-        None, description = "[x-unsloth] Base64-encoded WAV for audio-input models (ASR)"
+        None,
+        description = "[x-unsloth] Base64-encoded audio (wav/mp3/ogg/flac/m4a) for audio-input models",
     )
     use_adapter: Optional[Union[bool, str]] = Field(
         None,

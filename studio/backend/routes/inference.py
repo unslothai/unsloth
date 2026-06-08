@@ -1744,18 +1744,16 @@ async def generate_audio(
 
 
 def _decode_audio_base64(b64: str) -> np.ndarray:
-    """Decode base64 audio (any format) → float32 mono numpy array at 16kHz."""
-    import librosa
+    """Decode base64 audio (any format) → float32 numpy array at 16kHz."""
+    import torch
+    import torchaudio
     import tempfile
     import os
     from utils.paths import ensure_dir, tmp_root
 
-    if b64.startswith("data:"):
-        b64 = b64.split(",", 1)[1]
     raw = base64.b64decode(b64)
-    # librosa's audioread/ffmpeg fallback (mp3/m4a) needs a real path, so write
-    # the bytes to a temp file; the format is auto-detected from the content.
-    # sr=16000 resamples and mono=True downmixes.
+    # torchaudio.load needs a file path or file-like object with format hint
+    # Write to a temp file so torchaudio can auto-detect the format
     with tempfile.NamedTemporaryFile(
         suffix = ".audio",
         delete = False,
@@ -1764,25 +1762,126 @@ def _decode_audio_base64(b64: str) -> np.ndarray:
         tmp.write(raw)
         tmp_path = tmp.name
     try:
-        waveform, _ = librosa.load(tmp_path, sr = 16000, mono = True)
+        waveform, sr = torchaudio.load(tmp_path)
     finally:
         os.unlink(tmp_path)
 
-    return waveform
+    # Convert to mono if stereo
+    if waveform.shape[0] > 1:
+        waveform = waveform.mean(dim = 0, keepdim = True)
+
+    # Resample to 16kHz if needed
+    if sr != 16000:
+        resampler = torchaudio.transforms.Resample(orig_freq = sr, new_freq = 16000)
+        waveform = resampler(waveform)
+
+    return waveform.squeeze(0).numpy()
 
 
-def _transcode_audio_to_wav_b64(b64: str) -> str:
-    """Decode base64 audio (any container) and re-encode as base64 16 kHz mono WAV.
+# Reject oversized audio before decoding. base64 inflates raw bytes by ~4/3, so
+# cap the encoded length to bound the upload and the decode that follows.
+_MAX_AUDIO_RAW_BYTES = 25 * 1024 * 1024
+_MAX_AUDIO_B64_CHARS = _MAX_AUDIO_RAW_BYTES * 4 // 3
 
-    llama-server's audio decoder only accepts wav/mp3, so uploads in other
-    containers (m4a/ogg/webm/flac) are normalized here. Blocking (torchaudio +
-    temp file); call via a thread from async paths.
+
+def _sniff_audio_container(raw: bytes) -> Optional[str]:
+    """Return 'wav' or 'mp3' if the bytes are a container llama-server accepts
+    directly (so we can forward them untouched), else None (needs transcoding)."""
+    if len(raw) >= 12 and raw[:4] == b"RIFF" and raw[8:12] == b"WAVE":
+        return "wav"
+    # mp3: ID3 tag, or an MPEG audio frame sync (no other accepted format leads
+    # with 0xFF, so the simple sync check doesn't collide).
+    if raw[:3] == b"ID3" or (len(raw) >= 2 and raw[0] == 0xFF and (raw[1] & 0xE0) == 0xE0):
+        return "mp3"
+    return None
+
+
+def _mono_f32_to_wav_bytes(arr: np.ndarray, sample_rate: int) -> bytes:
+    """Encode a mono float32 array as 16-bit PCM WAV bytes.
+
+    Torch-free (numpy + stdlib only) so it works on no-torch GGUF-only installs;
+    the shared audio_codecs helper pulls in torch at import time.
     """
-    from core.inference.audio_codecs import _numpy_to_wav_bytes
+    import io
+    import wave
 
-    return base64.b64encode(
-        _numpy_to_wav_bytes(_decode_audio_base64(b64), 16000)
-    ).decode("ascii")
+    arr = np.nan_to_num(
+        np.asarray(arr, dtype = np.float32).flatten(), posinf = 0.0, neginf = 0.0
+    )
+    if arr.size == 0:
+        raise ValueError("decoded audio is empty")
+    peak = float(np.abs(arr).max())
+    if peak > 1.0:
+        arr = arr / peak
+    pcm = (arr * 32767.0).astype(np.int16)
+
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(int(sample_rate))
+        wf.writeframes(pcm.tobytes())
+    return buf.getvalue()
+
+
+def _decode_audio_mono(raw: bytes) -> tuple[np.ndarray, int]:
+    """Decode audio bytes to (mono float32 array, native sample_rate).
+
+    soundfile (libsndfile, always installed) reads wav/mp3/ogg/flac straight
+    from memory. librosa (ffmpeg-backed) additionally covers m4a/webm but needs
+    a real path and is skipped on no-torch GGUF-only installs, so those
+    containers raise a clear error there while the common formats keep working.
+    """
+    import io
+    import soundfile as sf
+
+    try:
+        arr, sr = sf.read(io.BytesIO(raw), dtype = "float32")
+    except Exception:
+        try:
+            import librosa
+        except ModuleNotFoundError as e:
+            raise RuntimeError(
+                "this audio format needs librosa, which is not installed in "
+                "GGUF-only environments; use wav, mp3, ogg or flac"
+            ) from e
+        import os
+        import tempfile
+        from utils.paths import ensure_dir, tmp_root
+
+        with tempfile.NamedTemporaryFile(
+            suffix = ".audio",
+            delete = False,
+            dir = str(ensure_dir(tmp_root())),
+        ) as tmp:
+            tmp.write(raw)
+            tmp_path = tmp.name
+        try:
+            arr, sr = librosa.load(tmp_path, sr = None, mono = True)
+        finally:
+            os.unlink(tmp_path)
+    if arr.ndim > 1:
+        arr = arr.mean(axis = 1)
+    return arr, sr
+
+
+def _prepare_audio_for_llama(b64: str) -> tuple[str, str]:
+    """Return (base64, format) ready for llama-server's input_audio part.
+
+    llama-server's API only accepts wav/mp3, and decodes/resamples/down-mixes
+    them itself, so wav and mp3 uploads are forwarded untouched (no decode, no
+    PCM payload inflation). Other containers (m4a/ogg/webm/flac) are decoded to
+    a mono WAV. Blocking; call via a thread from async paths.
+    """
+    if b64.startswith("data:"):
+        b64 = b64.split(",", 1)[1] if "," in b64 else ""
+    raw = base64.b64decode(b64)
+    passthrough = _sniff_audio_container(raw)
+    if passthrough is not None:
+        return b64, passthrough
+
+    arr, sr = _decode_audio_mono(raw)
+    return base64.b64encode(_mono_f32_to_wav_bytes(arr, sr)).decode("ascii"), "wav"
 
 
 def _extract_content_parts(
@@ -2781,25 +2880,32 @@ async def openai_chat_completions(
 
     # ── GGUF path: proxy to llama-server /v1/chat/completions ──
     if using_gguf:
-        # Transcode any uploaded audio to 16 kHz mono WAV and forward it as an
-        # input_audio part. llama-server reads audio natively via the mmproj
-        # audio encoder, but its decoder only accepts wav/mp3, so we normalize
-        # here (the upload may be m4a/ogg/webm/flac).
+        # Forward uploaded audio as an input_audio part. wav/mp3 pass through
+        # untouched (llama-server decodes and resamples them via the mmproj
+        # audio encoder); other containers are transcoded to WAV here. The
+        # audio+tools combination is rejected further below.
         audio_b64 = None
+        audio_format = "wav"
         if payload.audio_base64:
             if not getattr(llama_backend, "_has_audio_input", False):
                 raise HTTPException(
                     status_code = 400,
                     detail = "Audio provided but current GGUF model does not support audio input.",
                 )
+            if len(payload.audio_base64) > _MAX_AUDIO_B64_CHARS:
+                raise HTTPException(
+                    status_code = 413,
+                    detail = "Audio file is too large (max ~25 MB).",
+                )
             try:
-                audio_b64 = await asyncio.to_thread(
-                    _transcode_audio_to_wav_b64, payload.audio_base64
+                audio_b64, audio_format = await asyncio.to_thread(
+                    _prepare_audio_for_llama, payload.audio_base64
                 )
             except Exception as e:
+                logger.warning("Audio decode failed: %s", e, exc_info = True)
                 raise HTTPException(
                     status_code = 400,
-                    detail = f"Could not decode the provided audio: {e}",
+                    detail = "Could not decode the provided audio file.",
                 )
 
         gguf_messages, _ = _openai_messages_for_gguf_chat(
@@ -3116,6 +3222,7 @@ async def openai_chat_completions(
                 messages = gguf_messages,
                 image_b64 = image_b64,
                 audio_b64 = audio_b64,
+                audio_format = audio_format,
                 temperature = payload.temperature,
                 top_p = payload.top_p,
                 top_k = payload.top_k,

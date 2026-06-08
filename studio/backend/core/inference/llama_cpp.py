@@ -4260,6 +4260,7 @@ class LlamaCppBackend:
         messages: list[dict],
         image_b64: Optional[str] = None,
         audio_b64: Optional[str] = None,
+        audio_format: str = "wav",
     ) -> list[dict]:
         """
         Build OpenAI-format messages, optionally injecting image_url and/or
@@ -4286,7 +4287,7 @@ class LlamaCppBackend:
             if isinstance(existing, list):
                 parts: list[dict] = list(existing)
             else:
-                parts = [{"type": "text", "text": existing}]
+                parts = [{"type": "text", "text": existing or ""}]
             if image_b64:
                 parts.append(
                     {
@@ -4295,12 +4296,11 @@ class LlamaCppBackend:
                     }
                 )
             if audio_b64:
-                # llama-server's audio decoder only accepts wav/mp3; callers
-                # pass a wav payload here.
+                # llama-server's audio decoder only accepts wav/mp3.
                 parts.append(
                     {
                         "type": "input_audio",
-                        "input_audio": {"data": audio_b64, "format": "wav"},
+                        "input_audio": {"data": audio_b64, "format": audio_format},
                     }
                 )
             result[last_user_idx]["content"] = parts
@@ -4435,6 +4435,7 @@ class LlamaCppBackend:
         messages: list[dict],
         image_b64: Optional[str] = None,
         audio_b64: Optional[str] = None,
+        audio_format: str = "wav",
         temperature: float = 0.6,
         top_p: float = 0.95,
         top_k: int = 20,
@@ -4459,7 +4460,9 @@ class LlamaCppBackend:
         if not self.is_loaded:
             raise RuntimeError("llama-server is not loaded")
 
-        openai_messages = self._build_openai_messages(messages, image_b64, audio_b64)
+        openai_messages = self._build_openai_messages(
+            messages, image_b64, audio_b64, audio_format
+        )
 
         payload = {
             "messages": openai_messages,
