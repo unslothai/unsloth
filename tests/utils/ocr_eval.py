@@ -55,8 +55,8 @@ class OCRModelEvaluator:
                 messages = sample["messages"]
 
                 # Get ground truth, image, and question
-                ground_truth, image, question, input_messages = (
-                    self._extract_sample_components(messages, i, verbose)
+                ground_truth, image, question, input_messages = self._extract_sample_components(
+                    messages, i, verbose
                 )
 
                 if ground_truth is None or image is None or question is None:
@@ -108,9 +108,7 @@ class OCRModelEvaluator:
         """Extract ground truth, image, question, and input messages from sample."""
 
         # Extract system message (if present)
-        system_message = next(
-            (msg for msg in messages if msg["role"] == "system"), None
-        )
+        system_message = next((msg for msg in messages if msg["role"] == "system"), None)
 
         # Extract user message with the image and question
         user_message = next((msg for msg in messages if msg["role"] == "user"), None)
@@ -120,14 +118,10 @@ class OCRModelEvaluator:
             return None, None, None, []
 
         # Extract assistant message with ground truth
-        assistant_message = next(
-            (msg for msg in messages if msg["role"] == "assistant"), None
-        )
+        assistant_message = next((msg for msg in messages if msg["role"] == "assistant"), None)
         if not assistant_message:
             if verbose:
-                print(
-                    f"Skipping sample {sample_idx}: No assistant message (ground truth) found"
-                )
+                print(f"Skipping sample {sample_idx}: No assistant message (ground truth) found")
             return None, None, None, []
 
         # Extract ground truth text
@@ -139,9 +133,7 @@ class OCRModelEvaluator:
 
         if not ground_truth:
             if verbose:
-                print(
-                    f"Skipping sample {sample_idx}: No text found in assistant message"
-                )
+                print(f"Skipping sample {sample_idx}: No text found in assistant message")
             return None, None, None, []
 
         # Extract image and question from user message
@@ -161,9 +153,7 @@ class OCRModelEvaluator:
 
         if not question:
             if verbose:
-                print(
-                    f"Skipping sample {sample_idx}: No question found in user message"
-                )
+                print(f"Skipping sample {sample_idx}: No question found in user message")
             return None, None, None, []
 
         # Construct messages for the model input (excluding assistant message)
@@ -215,8 +205,7 @@ class OCRModelEvaluator:
 
         # Extract only the generated part (not the input)
         generated_ids_trimmed = [
-            out_ids[len(in_ids) :]
-            for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
+            out_ids[len(in_ids) :] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
         ]
 
         # Decode the generated text
@@ -283,7 +272,9 @@ class OCRModelEvaluator:
         self.model_comparison_results[model_name] = {"wer": wer, "cer": cer}
 
     def print_model_comparison(
-        self, save_csv: bool = True, save_plot: bool = True
+        self,
+        save_csv: bool = True,
+        save_plot: bool = True,
     ) -> Optional[pd.DataFrame]:
         """Print a comparison of all models evaluated so far."""
         if not self.model_comparison_results:
@@ -296,12 +287,8 @@ class OCRModelEvaluator:
         comparison_df = pd.DataFrame(
             {
                 "Model": list(self.model_comparison_results.keys()),
-                "WER": [
-                    results["wer"] for results in self.model_comparison_results.values()
-                ],
-                "CER": [
-                    results["cer"] for results in self.model_comparison_results.values()
-                ],
+                "WER": [results["wer"] for results in self.model_comparison_results.values()],
+                "CER": [results["cer"] for results in self.model_comparison_results.values()],
             }
         )
 
@@ -360,7 +347,11 @@ class OCRModelEvaluator:
 
 
 def evaluate_ocr_model(
-    model, processor, dataset, output_dir = "ocr_evaluation_results", **kwargs
+    model,
+    processor,
+    dataset,
+    output_dir = "ocr_evaluation_results",
+    **kwargs,
 ):
     """
     Convenience function that maintains backward compatibility with the original function.
