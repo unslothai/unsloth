@@ -198,10 +198,16 @@ def parse_tool_calls_from_text(
             body_end = min(body_end, next_func)
             body = content[body_start:body_end]
             if not allow_incomplete:
-                stripped_body = body.rstrip()
-                if not stripped_body.endswith(_FUNC_CLOSE_TAG):
+                # Bound the body at the closing </function> tag rather than
+                # the end of the response, so a complete call followed by
+                # trailing prose is still accepted (matching the JSON-style
+                # <tool_call> path, which already tolerates trailing text).
+                # rfind picks the last </function>, so a literal </function>
+                # inside a code parameter value stays in the body.
+                close_idx = body.rfind(_FUNC_CLOSE_TAG)
+                if close_idx < 0:
                     continue
-                body = stripped_body[: -len(_FUNC_CLOSE_TAG)]
+                body = body[:close_idx]
             else:
                 body = _TC_FUNC_CLOSE_RE.sub("", body)
 
