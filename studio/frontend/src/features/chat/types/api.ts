@@ -7,6 +7,7 @@ export interface BackendModelDetails {
   is_vision?: boolean;
   is_lora?: boolean;
   is_gguf?: boolean;
+  is_mlx?: boolean;
   is_audio?: boolean;
   audio_type?: string | null;
   has_audio_input?: boolean;

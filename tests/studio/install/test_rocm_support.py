@@ -1123,7 +1123,7 @@ class TestWorkerRocmMambaSsm:
         source = _WHEEL_UTILS_PATH.read_text(encoding = "utf-8")
         assert "getattr(torch.version, 'hip', None)" in source
 
-    def test_direct_wheel_url_returns_none_without_cuda_major(self):
+    def test_direct_wheel_url_returns_none_without_cuda_major(self, monkeypatch):
         """_direct_wheel_url should return None when cuda_major is empty (ROCm)."""
         # Load module for function access
         _worker_spec = importlib.util.spec_from_file_location(
@@ -1132,12 +1132,15 @@ class TestWorkerRocmMambaSsm:
         assert _worker_spec is not None and _worker_spec.loader is not None
         worker_mod = importlib.util.module_from_spec(_worker_spec)
 
-        # Mock all the imports worker.py needs
-        sys.modules["structlog"] = MagicMock()
-        sys.modules["loggers"] = MagicMock()
-        sys.modules["loggers"].get_logger = MagicMock(return_value = MagicMock())
-        sys.modules["utils"] = MagicMock()
-        sys.modules["utils.hardware"] = MagicMock()
+        # Stub worker.py's imports via monkeypatch so the fakes (notably a
+        # non-package "utils") are undone and don't break later tests that
+        # import the real utils.* package.
+        loggers_mock = MagicMock()
+        loggers_mock.get_logger = MagicMock(return_value = MagicMock())
+        monkeypatch.setitem(sys.modules, "structlog", MagicMock())
+        monkeypatch.setitem(sys.modules, "loggers", loggers_mock)
+        monkeypatch.setitem(sys.modules, "utils", MagicMock())
+        monkeypatch.setitem(sys.modules, "utils.hardware", MagicMock())
 
         try:
             _worker_spec.loader.exec_module(worker_mod)
@@ -1203,15 +1206,16 @@ class TestAmdGpuMonitoring:
         assert "def get_primary_gpu_utilization" in source
         assert "def get_visible_gpu_utilization" in source
 
-    def test_amd_smi_json_parsing(self):
+    def test_amd_smi_json_parsing(self, monkeypatch):
         """Verify _extract_gpu_metrics parses amd-smi JSON correctly."""
         amd_path = PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "amd.py"
         _amd_spec = importlib.util.spec_from_file_location("test_amd", amd_path)
         assert _amd_spec is not None and _amd_spec.loader is not None
         amd_mod = importlib.util.module_from_spec(_amd_spec)
 
-        sys.modules["loggers"] = MagicMock()
-        sys.modules["loggers"].get_logger = MagicMock(return_value = MagicMock())
+        loggers_mock = MagicMock()
+        loggers_mock.get_logger = MagicMock(return_value = MagicMock())
+        monkeypatch.setitem(sys.modules, "loggers", loggers_mock)
 
         try:
             _amd_spec.loader.exec_module(amd_mod)
@@ -1248,8 +1252,9 @@ class TestAmdGpuMonitoring:
         assert _amd_spec is not None and _amd_spec.loader is not None
         amd_mod = importlib.util.module_from_spec(_amd_spec)
 
-        sys.modules["loggers"] = MagicMock()
-        sys.modules["loggers"].get_logger = MagicMock(return_value = MagicMock())
+        loggers_mock = MagicMock()
+        loggers_mock.get_logger = MagicMock(return_value = MagicMock())
+        monkeypatch.setitem(sys.modules, "loggers", loggers_mock)
 
         try:
             _amd_spec.loader.exec_module(amd_mod)
@@ -1287,15 +1292,16 @@ class TestAmdGpuMonitoring:
         assert result["gpu_utilization_pct"] == 50.0
         assert result["temperature_c"] == 65.0
 
-    def test_amd_smi_not_found_returns_unavailable(self):
+    def test_amd_smi_not_found_returns_unavailable(self, monkeypatch):
         """get_primary_gpu_utilization returns available=False when amd-smi is missing."""
         amd_path = PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "amd.py"
         _amd_spec = importlib.util.spec_from_file_location("test_amd3", amd_path)
         assert _amd_spec is not None and _amd_spec.loader is not None
         amd_mod = importlib.util.module_from_spec(_amd_spec)
 
-        sys.modules["loggers"] = MagicMock()
-        sys.modules["loggers"].get_logger = MagicMock(return_value = MagicMock())
+        loggers_mock = MagicMock()
+        loggers_mock.get_logger = MagicMock(return_value = MagicMock())
+        monkeypatch.setitem(sys.modules, "loggers", loggers_mock)
 
         try:
             _amd_spec.loader.exec_module(amd_mod)
@@ -1306,15 +1312,16 @@ class TestAmdGpuMonitoring:
             result = amd_mod.get_primary_gpu_utilization()
         assert result["available"] is False
 
-    def test_amd_timeout_returns_unavailable(self):
+    def test_amd_timeout_returns_unavailable(self, monkeypatch):
         """get_primary_gpu_utilization handles timeout gracefully."""
         amd_path = PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "amd.py"
         _amd_spec = importlib.util.spec_from_file_location("test_amd4", amd_path)
         assert _amd_spec is not None and _amd_spec.loader is not None
         amd_mod = importlib.util.module_from_spec(_amd_spec)
 
-        sys.modules["loggers"] = MagicMock()
-        sys.modules["loggers"].get_logger = MagicMock(return_value = MagicMock())
+        loggers_mock = MagicMock()
+        loggers_mock.get_logger = MagicMock(return_value = MagicMock())
+        monkeypatch.setitem(sys.modules, "loggers", loggers_mock)
 
         try:
             _amd_spec.loader.exec_module(amd_mod)

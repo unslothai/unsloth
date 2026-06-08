@@ -2780,7 +2780,7 @@ async def openai_chat_completions(
                 detail = "Audio input is not supported for GGUF chat models yet.",
             )
 
-        gguf_messages, has_gguf_image = _openai_messages_for_gguf_chat(
+        gguf_messages, _ = _openai_messages_for_gguf_chat(
             payload,
             llama_backend.is_vision,
         )
@@ -2804,11 +2804,7 @@ async def openai_chat_completions(
         _cli_policy = _get_tool_policy_g()
         _tools_on = _effective_enable_tools(payload)
         _mcp_allowed = bool(payload.mcp_enabled) and _cli_policy is not False
-        use_tools = (
-            (_tools_on or _mcp_allowed)
-            and llama_backend.supports_tools
-            and not has_gguf_image
-        )
+        use_tools = (_tools_on or _mcp_allowed) and llama_backend.supports_tools
 
         if use_tools:
             from core.inference.tools import ALL_TOOLS, get_enabled_mcp_tools
@@ -2897,11 +2893,9 @@ async def openai_chat_completions(
                     system_prompt = system_prompt.rstrip() + "\n\n" + _nudge
                 else:
                     system_prompt = _nudge
-                # Rebuild gguf_messages with updated system prompt
-                gguf_messages = []
-                if system_prompt:
-                    gguf_messages.append({"role": "system", "content": system_prompt})
-                gguf_messages.extend(chat_messages)
+                gguf_messages = _set_or_prepend_system_message(
+                    gguf_messages, system_prompt
+                )
 
             # ── Strip stale tool-call XML from conversation history ─
             for _msg in gguf_messages:
@@ -3432,6 +3426,9 @@ async def openai_chat_completions(
             else:
                 _sf_chat_messages.append(_msg)
 
+        # Request-scoped usage/timings receptacle (filled at gen_done).
+        _sf_stats_holder: dict = {}
+
         def sf_generate_with_tools():
             return backend.generate_chat_completion_with_tools(
                 messages = _sf_chat_messages,
@@ -3456,6 +3453,7 @@ async def openai_chat_completions(
                 else 300,
                 session_id = payload.session_id,
                 use_adapter = payload.use_adapter,
+                stats_holder = _sf_stats_holder,
             )
 
         _sf_tool_sentinel = object()
@@ -3543,6 +3541,25 @@ async def openai_chat_completions(
                     ],
                 )
                 yield f"data: {final_chunk.model_dump_json(exclude_none = True)}\n\n"
+                # Usage chunk from the last turn, same shape as the
+                # GGUF tool loop's metadata. Request-scoped holder, so
+                # concurrent streams cannot read each other's stats.
+                _stats = _sf_stats_holder.get("stats")
+                if _stats:
+                    _stream_usage = _stats.get("usage") or {}
+                    usage_chunk = ChatCompletionChunk(
+                        id = completion_id,
+                        created = created,
+                        model = model_name,
+                        choices = [],
+                        usage = CompletionUsage(
+                            prompt_tokens = _stream_usage.get("prompt_tokens", 0),
+                            completion_tokens = _stream_usage.get("completion_tokens", 0),
+                            total_tokens = _stream_usage.get("total_tokens", 0),
+                        ),
+                        timings = _stats.get("timings"),
+                    )
+                    yield f"data: {usage_chunk.model_dump_json(exclude_none = True)}\n\n"
                 yield "data: [DONE]\n\n"
 
             except asyncio.CancelledError:
@@ -3633,19 +3650,25 @@ async def openai_chat_completions(
     if payload.preserve_thinking is not None:
         gen_kwargs["preserve_thinking"] = payload.preserve_thinking
 
+    # Request-scoped usage/timings receptacle (filled at gen_done).
+    stats_holder: dict = {}
+
     if payload.use_adapter is not None:
 
         def generate():
             return backend.generate_with_adapter_control(
                 use_adapter = payload.use_adapter,
                 cancel_event = cancel_event,
+                stats_holder = stats_holder,
                 **gen_kwargs,
             )
     else:
 
         def generate():
             return backend.generate_chat_response(
-                cancel_event = cancel_event, **gen_kwargs
+                cancel_event = cancel_event,
+                stats_holder = stats_holder,
+                **gen_kwargs,
             )
 
     # ── Streaming response ────────────────────────────────────────
@@ -3722,6 +3745,26 @@ async def openai_chat_completions(
                     ],
                 )
                 yield f"data: {final_chunk.model_dump_json(exclude_none = True)}\n\n"
+                # Usage chunk (choices=[], usage set), same shape as the
+                # GGUF path so the speed popover works for MLX too.
+                # Request-scoped holder, so concurrent streams cannot
+                # read each other's stats.
+                _stats = stats_holder.get("stats")
+                if _stats:
+                    _stream_usage = _stats.get("usage") or {}
+                    usage_chunk = ChatCompletionChunk(
+                        id = completion_id,
+                        created = created,
+                        model = model_name,
+                        choices = [],
+                        usage = CompletionUsage(
+                            prompt_tokens = _stream_usage.get("prompt_tokens", 0),
+                            completion_tokens = _stream_usage.get("completion_tokens", 0),
+                            total_tokens = _stream_usage.get("total_tokens", 0),
+                        ),
+                        timings = _stats.get("timings"),
+                    )
+                    yield f"data: {usage_chunk.model_dump_json(exclude_none = True)}\n\n"
                 yield "data: [DONE]\n\n"
 
             except asyncio.CancelledError:
@@ -4858,6 +4901,20 @@ def _normalize_anthropic_openai_images(
             part["image_url"] = {"url": f"data:image/png;base64,{png_b64}"}
 
     return has_image
+
+
+def _set_or_prepend_system_message(
+    messages: Optional[list[dict]], system_prompt: str
+) -> list[dict]:
+    """Return messages with a single leading system prompt, preserving multimodal parts."""
+    safe_messages = messages or []
+    if not system_prompt:
+        return safe_messages
+
+    # Drop existing system turns so the backend never sees duplicate or
+    # conflicting system instructions, then prepend the resolved prompt.
+    others = [dict(msg) for msg in safe_messages if msg.get("role") != "system"]
+    return [{"role": "system", "content": system_prompt}, *others]
 
 
 @router.post("/messages")
