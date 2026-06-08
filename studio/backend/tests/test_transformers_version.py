@@ -365,29 +365,33 @@ class TestGetTransformersTier:
         assert get_transformers_tier(str(tmp_path)) == "510"
 
     def test_qwen35_returns_530(self):
-        with patch(
-            "utils.transformers_version._check_config_needs_550",
-            return_value = False,
-        ):
-            with patch(
+        with (
+            patch(
+                "utils.transformers_version._check_config_needs_550",
+                return_value = False,
+            ),
+            patch(
                 "utils.transformers_version._check_config_needs_510",
                 return_value = False,
-            ):
-                assert get_transformers_tier("Qwen/Qwen3.5-9B") == "530"
+            ),
+        ):
+            assert get_transformers_tier("Qwen/Qwen3.5-9B") == "530"
 
     def test_ministral_returns_530(self):
-        with patch(
-            "utils.transformers_version._check_config_needs_550",
-            return_value = False,
-        ):
-            with patch(
+        with (
+            patch(
+                "utils.transformers_version._check_config_needs_550",
+                return_value = False,
+            ),
+            patch(
                 "utils.transformers_version._check_config_needs_510",
                 return_value = False,
-            ):
-                assert (
-                    get_transformers_tier("mistralai/Ministral-3-8B-Instruct-2512")
-                    == "530"
-                )
+            ),
+        ):
+            assert (
+                get_transformers_tier("mistralai/Ministral-3-8B-Instruct-2512")
+                == "530"
+            )
 
     def test_llama_returns_default(self):
         with (
@@ -415,15 +419,17 @@ class TestGetTransformersTier:
         """needs_transformers_5 should return True for 510, 530, and 550 models."""
         assert needs_transformers_5("unsloth/gemma-4-12b-it") is True
         assert needs_transformers_5("google/gemma-4-E2B-it") is True
-        with patch(
-            "utils.transformers_version._check_config_needs_550",
-            return_value = False,
-        ):
-            with patch(
+        with (
+            patch(
+                "utils.transformers_version._check_config_needs_550",
+                return_value = False,
+            ),
+            patch(
                 "utils.transformers_version._check_config_needs_510",
                 return_value = False,
-            ):
-                assert needs_transformers_5("Qwen/Qwen3.5-9B") is True
+            ),
+        ):
+            assert needs_transformers_5("Qwen/Qwen3.5-9B") is True
         with (
             patch(
                 "utils.transformers_version._check_config_needs_550",
