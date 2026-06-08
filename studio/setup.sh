@@ -1295,7 +1295,6 @@ else
                                 _cap=$(echo "$_cap" | tr -d '[:space:]')
                                 if [[ "$_cap" =~ ^([0-9]+)\.([0-9]+)$ ]]; then
                                     _arch="${BASH_REMATCH[1]}${BASH_REMATCH[2]}"
-                                    # Append if not already present
                                     case ";$CUDA_ARCHS;" in
                                         *";$_arch;"*) ;;
                                         *) CUDA_ARCHS="${CUDA_ARCHS:+$CUDA_ARCHS;}$_arch" ;;
@@ -1313,10 +1312,8 @@ else
 
                         CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_CUDA_FLAGS=--threads=0"
 
-                        # Accept a host gcc/clang newer than nvcc's whitelist; a fresh
-                        # toolkit (e.g. CUDA 13.3) otherwise aborts with "#error --
-                        # unsupported GNU version". Via env, not CMAKE_ARGS, to avoid
-                        # word-splitting.
+                        # Allow a host gcc/clang newer than nvcc's whitelist (else a fresh
+                        # toolkit aborts with "unsupported GNU version"); via env to avoid word-splitting.
                         export NVCC_PREPEND_FLAGS="${NVCC_PREPEND_FLAGS:+$NVCC_PREPEND_FLAGS }-allow-unsupported-compiler"
                     fi
                 fi

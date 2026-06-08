@@ -138,8 +138,7 @@ try {
     Check "preserved nvcc-required error" ($r.Out -match "CUDA Toolkit \(nvcc\) is required")
 
     Write-Host "Scenario 7: same-major toolkit only on PATH, missed by -MaxVersion (-RequireOrExit) -> accepted, not rejected"
-    # -MaxVersion returns $null (not in the side-by-side base) but plain Find-Nvcc
-    # finds a same-major toolkit via PATH/CUDA_PATH. It must be used, not flagged.
+    # -MaxVersion misses it (not in side-by-side base) but plain Find-Nvcc finds it on PATH: must be used.
     $r = Run-Case -FindMode "incompatible" -Require $true -DriverMode "same-major"
     Check "exits 0"                      ($r.Exit -eq 0)
     Check "CudaToolkitReady = true"      ($r.Out -match "ready=True")

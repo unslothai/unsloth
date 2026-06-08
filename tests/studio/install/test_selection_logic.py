@@ -3574,8 +3574,7 @@ class TestCudaDriverToolkitMismatchMessage:
         assert "12.0" in output
 
     def test_setup_sh_compatible_finder_rejects_too_old_only_candidate(self, tmp_path):
-        # If the only same-major-or-lower toolkit is below the llama minimum,
-        # the finder must fail so setup falls back to CPU, not pick 12.0.
+        # Only candidate is below the llama minimum: finder must fail (CPU fallback), not pick 12.0.
         blocked_nvcc = self._fake_nvcc(tmp_path, "13.3")
         too_old_nvcc = self._fake_nvcc(tmp_path, "12.0")
         script = textwrap.dedent(
@@ -3597,8 +3596,7 @@ class TestCudaDriverToolkitMismatchMessage:
         assert "FOUND" not in output
 
     def _cuda_build_decision_output(self, *, nvcc_path, driver):
-        # Mirror the setup.sh source-build branch that decides whether to keep
-        # the toolkit, switch to a compatible one, or degrade to CPU.
+        # Mirror setup.sh's source-build decision: keep the toolkit, switch, or degrade to CPU.
         script = textwrap.dedent(
             f"""\
             set -euo pipefail
@@ -3631,8 +3629,7 @@ class TestCudaDriverToolkitMismatchMessage:
         return self._run_bash(script)
 
     def test_setup_sh_same_major_newer_minor_keeps_original_toolkit(self, tmp_path):
-        # A same-major, newer-minor toolkit (13.3 vs driver 13.0) must build
-        # CUDA with the original toolkit, never fall back.
+        # Same-major newer-minor (13.3 vs driver 13.0): build CUDA with it, never fall back.
         toolkit = self._fake_nvcc(tmp_path, "13.3")
         output = self._cuda_build_decision_output(nvcc_path = toolkit, driver = "13.0")
         assert f"NVCC_PATH={toolkit}" in output
@@ -3641,8 +3638,7 @@ class TestCudaDriverToolkitMismatchMessage:
         assert "ALLOWED=true" in output
 
     def test_setup_sh_missing_driver_version_still_enables_cuda(self, tmp_path):
-        # If nvidia-smi cannot report a driver CUDA version, the guard must keep
-        # CUDA enabled (matching pre-fix behavior) rather than degrade to CPU.
+        # No driver CUDA version from nvidia-smi: keep CUDA enabled (pre-fix behavior), not CPU.
         toolkit = self._fake_nvcc(tmp_path, "13.3")
         output = self._cuda_build_decision_output(nvcc_path = toolkit, driver = "")
         assert f"NVCC_PATH={toolkit}" in output
@@ -3652,8 +3648,7 @@ class TestCudaDriverToolkitMismatchMessage:
     def test_setup_sh_compatible_finder_rejects_newer_major_only_candidate(
         self, tmp_path
     ):
-        # The only alternative still has a major newer than the driver, so the
-        # finder must fail rather than select another driver-incompatible toolkit.
+        # Only alternative is still newer-major than the driver: finder must fail, not pick it.
         blocked_nvcc = self._fake_nvcc(tmp_path, "13.3")
         other_newer_nvcc = self._fake_nvcc(tmp_path, "13.1")
         script = textwrap.dedent(

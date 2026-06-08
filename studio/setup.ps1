@@ -220,9 +220,7 @@ function Get-InstalledLlamaPrebuiltRelease {
 function Find-Nvcc {
     param([string]$MaxVersion = "")
 
-    # If MaxVersion is set, we need to find a toolkit with a compatible major.
-    # CUDA toolkits install side-by-side under C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\vX.Y\
-
+    # With MaxVersion, pick a major-compatible toolkit from the side-by-side installs.
     $toolkitBase = 'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA'
 
     if ($MaxVersion -and (Test-Path $toolkitBase)) {
@@ -1074,17 +1072,14 @@ if ($vsResult) {
 # or installed. Without it, detection is best-effort and only sets the flag.
 function Resolve-CudaToolkit {
     param([switch]$RequireOrExit)
-# IMPORTANT: The CUDA Toolkit major version must be <= the CUDA major version
-# reported by the NVIDIA driver. nvidia-smi reports this as "CUDA Version: X.Y".
-# If we install a toolkit with a newer major than the driver supports,
-# llama-server will fail at runtime with "ggml_cuda_init: failed to initialize CUDA: (null)".
+# Toolkit major must be <= the driver's max CUDA major (nvidia-smi "CUDA Version: X.Y");
+# a newer-major toolkit fails at runtime ("ggml_cuda_init: failed to initialize CUDA").
 
-# -- Detect max CUDA version the driver supports --
+# Detect max CUDA the driver supports.
 $DriverMaxCuda = $null
 try {
     $smiOut = & $NvidiaSmiExe 2>&1 | Out-String
-    # Newer NVIDIA drivers (e.g. 610.x) report the driver max CUDA as
-    # "CUDA UMD Version: X.Y" rather than "CUDA Version: X.Y"; accept both.
+    # Newer drivers report "CUDA UMD Version: X.Y" instead of "CUDA Version: X.Y"; accept both.
     if ($smiOut -match "CUDA(?: UMD)? Version:\s+([\d]+)\.([\d]+)") {
         $DriverMaxCuda = "$($Matches[1]).$($Matches[2])"
         substep "driver supports up to CUDA $DriverMaxCuda"
@@ -1152,9 +1147,8 @@ if ($DriverMaxCuda) {
                 }
             }
         } else {
-            # No side-by-side match. A compatible toolkit may still be on PATH /
-            # process CUDA_PATH / a custom location: accept it when its major is
-            # compatible, else record it as too-new to explain the mismatch.
+            # No side-by-side match: a major-compatible toolkit may still be on
+            # PATH/CUDA_PATH/a custom dir; use it, else record it as too-new.
             $AnyNvcc = Find-Nvcc
             if ($AnyNvcc) {
                 $NvccOut = & $AnyNvcc --version 2>&1 | Out-String
@@ -1174,16 +1168,15 @@ if ($DriverMaxCuda) {
     $NvccPath = Find-Nvcc
 }
 
-# -- If a newer toolkit is blocked by the current driver, explain the mismatch --
+# A newer-major toolkit blocked by the driver: explain the mismatch.
 if (-not $NvccPath -and $IncompatibleToolkit) {
     Write-CudaDriverToolkitMismatch -ToolkitVersion $IncompatibleToolkit -DriverMaxCuda $DriverMaxCuda
     if (-not $RequireOrExit) {
         $script:CudaToolkitReady = $false
         return
     }
-    # Only a forced source build reaches here; the normal prebuilt path returned
-    # above. With no driver-compatible toolkit it cannot proceed, so fail clearly
-    # (unlike setup.sh, which degrades this run to a CPU build).
+    # Only a forced source build reaches here (prebuilt path returned above) and
+    # cannot proceed without a compatible toolkit, so fail (setup.sh degrades to CPU).
     Write-Host "" -ForegroundColor Red
     Write-Host "========================================================================" -ForegroundColor Red
     Write-Host "[ERROR] CUDA source build cannot use the installed toolkit with this driver." -ForegroundColor Red
