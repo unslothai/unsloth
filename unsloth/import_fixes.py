@@ -2247,6 +2247,7 @@ def patch_accelerate_recursively_apply():
         if isinstance(data, (list, tuple)):
             return any(_contains_empty_logits(x) for x in data)
         from collections.abc import Mapping
+
         if isinstance(data, Mapping):
             return any(_contains_empty_logits(x) for x in data.values())
         return False
@@ -2259,6 +2260,7 @@ def patch_accelerate_recursively_apply():
         original_gather = acc_utils.gather
 
     if original_gather is not None:
+
         @functools.wraps(original_gather)
         def _patched_gather(tensor, *args, **kwargs):
             if _contains_empty_logits(tensor):
@@ -2280,6 +2282,7 @@ def patch_accelerate_recursively_apply():
         original_broadcast = acc_utils.broadcast
 
     if original_broadcast is not None:
+
         @functools.wraps(original_broadcast)
         def _patched_broadcast(tensor, *args, **kwargs):
             if _contains_empty_logits(tensor):
@@ -2290,4 +2293,3 @@ def patch_accelerate_recursively_apply():
             acc_ops.broadcast = _patched_broadcast
         if acc_utils is not None and hasattr(acc_utils, "broadcast"):
             acc_utils.broadcast = _patched_broadcast
-

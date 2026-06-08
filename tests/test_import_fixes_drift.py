@@ -638,7 +638,7 @@ def test_accelerate_recursively_apply_empty_logits_patch():
     e = EmptyLogits()
     patch_accelerate_recursively_apply()
 
-    res = acc_ops.recursively_apply(lambda x: x, e, error_on_other_type=True)
+    res = acc_ops.recursively_apply(lambda x: x, e, error_on_other_type = True)
     assert res is e
 
 
@@ -676,4 +676,3 @@ def test_accelerate_gather_empty_logits_debug_mode_patch():
     finally:
         state.debug = orig_debug
         state.distributed_type = orig_dist_type
-
