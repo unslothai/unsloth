@@ -960,7 +960,9 @@ def _is_dgx_spark_no_cuda_init():
 
         out = subprocess.run(
             ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
-            capture_output = True, text = True, timeout = 5,
+            capture_output = True,
+            text = True,
+            timeout = 5,
         )
         names = (out.stdout or "").upper()
         return any(token in names for token in _DGX_SPARK_DEVICE_TOKENS)
