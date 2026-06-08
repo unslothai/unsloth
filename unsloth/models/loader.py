@@ -358,6 +358,7 @@ class FastLanguageModel(FastLlamaModel):
                 qat_scheme = qat_scheme,
                 load_in_fp8 = load_in_fp8,
                 unsloth_tiled_mlp = unsloth_tiled_mlp,
+                is_text_only = True,
                 *args,
                 **kwargs,
             )
@@ -708,6 +709,7 @@ class FastLanguageModel(FastLlamaModel):
                 qat_scheme = qat_scheme,
                 load_in_fp8 = load_in_fp8,
                 unsloth_tiled_mlp = unsloth_tiled_mlp,
+                is_text_only = True,
                 *args,
                 **kwargs,
             )
@@ -892,6 +894,7 @@ class FastModel(FastBaseModel):
         load_in_fp8 = False,  # fp8 LoRA (True, False, 'block')
         unsloth_tiled_mlp = False,
         target_parameters = None,  # For MoE expert parameters
+        is_text_only = False,  # When True, skip vision tower for VLM checkpoints
         *args,
         **kwargs,
     ):
@@ -1471,7 +1474,13 @@ class FastModel(FastBaseModel):
                 # in their auto_map, not AutoModelForImageTextToText/AutoModelForVision2Seq.
                 _auto_map = getattr(model_config, "auto_map", {}) or {}
                 _vlm_class_name = AutoModelForVision2Seq.__name__
-                if (
+                if is_text_only and hasattr(model_config, "text_config"):
+                    # User called FastLanguageModel on a VLM checkpoint: use the
+                    # text-only CausalLM class so the vision tower is never
+                    # instantiated (e.g. Gemma3ForCausalLM instead of
+                    # Gemma3ForConditionalGeneration).
+                    auto_model = AutoModelForCausalLM
+                elif (
                     "AutoModelForCausalLM" in _auto_map
                     and _vlm_class_name not in _auto_map
                 ):
