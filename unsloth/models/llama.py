@@ -2393,6 +2393,21 @@ class FastLlamaModel:
             kwargs["rope_scaling"] = rope_scaling
 
         bnb_config = None
+        _ckpt_qcfg = getattr(model_config, "quantization_config", None)
+        _ckpt_quant_method = None
+        if _ckpt_qcfg is not None:
+            if isinstance(_ckpt_qcfg, dict):
+                _ckpt_quant_method = _ckpt_qcfg.get("quant_method")
+            else:
+                _ckpt_quant_method = getattr(_ckpt_qcfg, "quant_method", None)
+
+        if load_in_4bit and _ckpt_quant_method is not None and _ckpt_quant_method != "bitsandbytes":
+            print(
+                f"Unsloth: Model already quantized with {_ckpt_quant_method}. "
+                f"Disabling `load_in_4bit` to avoid quantization config conflict."
+            )
+            load_in_4bit = False
+
         if load_in_4bit:
             llm_int8_skip_modules = SKIP_QUANTIZATION_MODULES.copy()
             if IS_FALCON_H1:
@@ -2411,8 +2426,7 @@ class FastLlamaModel:
             # we pass via kwargs. Merge our skip list into that bundled config
             # so task heads like `score` (for *ForSequenceClassification) stay
             # in the compute dtype. See unslothai/unsloth#5027.
-            _ckpt_qcfg = getattr(model_config, "quantization_config", None)
-            if _ckpt_qcfg is not None:
+            if _ckpt_quant_method == "bitsandbytes" and _ckpt_qcfg is not None:
                 if isinstance(_ckpt_qcfg, dict):
                     _ckpt_skip = list(_ckpt_qcfg.get("llm_int8_skip_modules") or [])
                     for _m in llm_int8_skip_modules:
