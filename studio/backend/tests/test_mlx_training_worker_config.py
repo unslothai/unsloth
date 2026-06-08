@@ -35,9 +35,7 @@ def _load_worker_module():
         sys.modules["utils.hardware"] = hardware
 
         native_path_leases = types.ModuleType("utils.native_path_leases")
-        native_path_leases.child_env_without_native_path_secret = (
-            lambda *_args, **_kwargs: None
-        )
+        native_path_leases.child_env_without_native_path_secret = lambda *_args, **_kwargs: None
         sys.modules["utils.native_path_leases"] = native_path_leases
 
         wheel_utils = types.ModuleType("utils.wheel_utils")

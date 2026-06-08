@@ -122,17 +122,13 @@ class TestHasNvidiaGpu:
         # nvidia-smi absent + torch fallback False -> False.
         with (
             mock.patch.object(wheel_utils.shutil, "which", return_value = None),
-            mock.patch.object(
-                wheel_utils, "_torch_nvidia_cuda_available", return_value = False
-            ),
+            mock.patch.object(wheel_utils, "_torch_nvidia_cuda_available", return_value = False),
         ):
             assert wheel_utils.has_nvidia_gpu() is False
 
     def test_returns_true_when_nvidia_smi_reports_gpu(self):
         with (
-            mock.patch.object(
-                wheel_utils.shutil, "which", return_value = "/usr/bin/nvidia-smi"
-            ),
+            mock.patch.object(wheel_utils.shutil, "which", return_value = "/usr/bin/nvidia-smi"),
             mock.patch.object(
                 wheel_utils.subprocess,
                 "run",
@@ -143,47 +139,33 @@ class TestHasNvidiaGpu:
 
     def test_returns_false_when_nvidia_smi_returns_no_gpus_and_no_torch_cuda(self):
         with (
-            mock.patch.object(
-                wheel_utils.shutil, "which", return_value = "/usr/bin/nvidia-smi"
-            ),
-            mock.patch.object(
-                wheel_utils.subprocess, "run", return_value = _smi_result("")
-            ),
-            mock.patch.object(
-                wheel_utils, "_torch_nvidia_cuda_available", return_value = False
-            ),
+            mock.patch.object(wheel_utils.shutil, "which", return_value = "/usr/bin/nvidia-smi"),
+            mock.patch.object(wheel_utils.subprocess, "run", return_value = _smi_result("")),
+            mock.patch.object(wheel_utils, "_torch_nvidia_cuda_available", return_value = False),
         ):
             assert wheel_utils.has_nvidia_gpu() is False
 
     def test_returns_false_when_nvidia_smi_fails_and_no_torch_cuda(self):
         with (
-            mock.patch.object(
-                wheel_utils.shutil, "which", return_value = "/usr/bin/nvidia-smi"
-            ),
+            mock.patch.object(wheel_utils.shutil, "which", return_value = "/usr/bin/nvidia-smi"),
             mock.patch.object(
                 wheel_utils.subprocess,
                 "run",
                 return_value = _smi_result("", returncode = 1),
             ),
-            mock.patch.object(
-                wheel_utils, "_torch_nvidia_cuda_available", return_value = False
-            ),
+            mock.patch.object(wheel_utils, "_torch_nvidia_cuda_available", return_value = False),
         ):
             assert wheel_utils.has_nvidia_gpu() is False
 
     def test_returns_false_on_subprocess_timeout_and_no_torch_cuda(self):
         with (
-            mock.patch.object(
-                wheel_utils.shutil, "which", return_value = "/usr/bin/nvidia-smi"
-            ),
+            mock.patch.object(wheel_utils.shutil, "which", return_value = "/usr/bin/nvidia-smi"),
             mock.patch.object(
                 wheel_utils.subprocess,
                 "run",
                 side_effect = subprocess.TimeoutExpired(cmd = "nvidia-smi", timeout = 10),
             ),
-            mock.patch.object(
-                wheel_utils, "_torch_nvidia_cuda_available", return_value = False
-            ),
+            mock.patch.object(wheel_utils, "_torch_nvidia_cuda_available", return_value = False),
         ):
             assert wheel_utils.has_nvidia_gpu() is False
 
@@ -191,24 +173,16 @@ class TestHasNvidiaGpu:
         # Containerised CUDA host: no nvidia-smi but torch.cuda is_available.
         with (
             mock.patch.object(wheel_utils.shutil, "which", return_value = None),
-            mock.patch.object(
-                wheel_utils, "_torch_nvidia_cuda_available", return_value = True
-            ),
+            mock.patch.object(wheel_utils, "_torch_nvidia_cuda_available", return_value = True),
         ):
             assert wheel_utils.has_nvidia_gpu() is True
 
     def test_falls_back_to_torch_when_nvidia_smi_returns_empty(self):
         # nvidia-smi present but returns no GPUs (driver glitch): torch rescues.
         with (
-            mock.patch.object(
-                wheel_utils.shutil, "which", return_value = "/usr/bin/nvidia-smi"
-            ),
-            mock.patch.object(
-                wheel_utils.subprocess, "run", return_value = _smi_result("")
-            ),
-            mock.patch.object(
-                wheel_utils, "_torch_nvidia_cuda_available", return_value = True
-            ),
+            mock.patch.object(wheel_utils.shutil, "which", return_value = "/usr/bin/nvidia-smi"),
+            mock.patch.object(wheel_utils.subprocess, "run", return_value = _smi_result("")),
+            mock.patch.object(wheel_utils, "_torch_nvidia_cuda_available", return_value = True),
         ):
             assert wheel_utils.has_nvidia_gpu() is True
 
@@ -381,9 +355,7 @@ class TestEnsureFlashAttn:
             ips._ensure_flash_attn()
 
         install_mock.assert_not_called()
-        assert any(
-            label == "warning" and "Blackwell" in msg for label, msg in step_messages
-        )
+        assert any(label == "warning" and "Blackwell" in msg for label, msg in step_messages)
 
     def test_blackwell_gpu_on_windows_emits_blackwell_warning(self):
         step_messages: list[tuple[str, str]] = []
@@ -406,15 +378,17 @@ class TestEnsureFlashAttn:
             ips._ensure_flash_attn()
 
         install_mock.assert_not_called()
-        assert any(
-            label == "warning" and "Blackwell" in msg for label, msg in step_messages
-        )
+        assert any(label == "warning" and "Blackwell" in msg for label, msg in step_messages)
 
     def test_setup_skips_install_without_nvidia_gpu(self):
         # AMD/Intel/CPU Linux: warn and skip, no install_optional_kernel call.
         step_messages: list[tuple[str, str]] = []
 
-        def fake_step(label: str, value: str, color_fn = None):
+        def fake_step(
+            label: str,
+            value: str,
+            color_fn = None,
+        ):
             step_messages.append((label, value))
 
         with (
@@ -429,10 +403,7 @@ class TestEnsureFlashAttn:
             ips._ensure_flash_attn()
 
         install_mock.assert_not_called()
-        assert any(
-            label == "warning" and "no NVIDIA GPU" in msg
-            for label, msg in step_messages
-        )
+        assert any(label == "warning" and "no NVIDIA GPU" in msg for label, msg in step_messages)
 
     def test_non_blackwell_windows_does_not_emit_blackwell_warning(self):
         step_messages: list[tuple[str, str]] = []

@@ -59,9 +59,7 @@ def _missing_module_import(missing: str):
 def test_should_try_runtime_flash_attn_install_threshold_and_skip(monkeypatch):
     monkeypatch.delenv(worker._FLASH_ATTN_SKIP_ENV, raising = False)
     assert worker._should_try_runtime_flash_attn_install(16384) is False
-    assert worker._should_try_runtime_flash_attn_install(
-        16385
-    ) is sys.platform.startswith("linux")
+    assert worker._should_try_runtime_flash_attn_install(16385) is sys.platform.startswith("linux")
 
     monkeypatch.setenv(worker._FLASH_ATTN_SKIP_ENV, "1")
     assert worker._should_try_runtime_flash_attn_install(16385) is False
@@ -110,9 +108,7 @@ def test_runtime_flash_attn_reports_shared_installer_failure(monkeypatch):
         "_send_status",
         lambda queue, message: statuses.append(message),
     )
-    monkeypatch.setattr(
-        worker, "install_optional_kernel", mock.Mock(return_value = False)
-    )
+    monkeypatch.setattr(worker, "install_optional_kernel", mock.Mock(return_value = False))
 
     worker._ensure_flash_attn_for_long_context(event_queue = [], max_seq_length = 16385)
 
@@ -156,9 +152,7 @@ def test_runtime_flash_attn_skips_without_nvidia_gpu(monkeypatch):
     install_mock = mock.Mock()
 
     monkeypatch.delenv(worker._FLASH_ATTN_SKIP_ENV, raising = False)
-    monkeypatch.setattr(
-        worker, "_should_try_runtime_flash_attn_install", lambda max_seq: True
-    )
+    monkeypatch.setattr(worker, "_should_try_runtime_flash_attn_install", lambda max_seq: True)
     monkeypatch.setattr(worker, "has_blackwell_gpu", lambda: False)
     monkeypatch.setattr(worker, "has_nvidia_gpu", lambda: False)
     monkeypatch.setattr(worker, "install_optional_kernel", install_mock)
@@ -285,9 +279,7 @@ def test_flash_linear_attention_skipped_on_blackwell(monkeypatch):
     )
 
     run_mock.assert_not_called()
-    assert statuses == [
-        "Skipping flash-linear-attention install: Blackwell GPU detected"
-    ]
+    assert statuses == ["Skipping flash-linear-attention install: Blackwell GPU detected"]
 
 
 def test_flash_linear_attention_skipped_without_nvidia_gpu(monkeypatch):
@@ -309,9 +301,7 @@ def test_flash_linear_attention_skipped_without_nvidia_gpu(monkeypatch):
     )
 
     run_mock.assert_not_called()
-    assert statuses == [
-        "Skipping flash-linear-attention install: no NVIDIA GPU detected"
-    ]
+    assert statuses == ["Skipping flash-linear-attention install: no NVIDIA GPU detected"]
 
 
 def test_flash_linear_attention_skips_for_unrelated_models(monkeypatch):
@@ -1698,10 +1688,7 @@ def test_install_respects_user_gcc_install_dir(monkeypatch):
 
     # The sanitized child env preserves the user's explicit gcc-install-dir
     # rather than appending a second one.
-    assert (
-        captured.get("HIPCC_COMPILE_FLAGS_APPEND")
-        == "--gcc-install-dir=/opt/custom/gcc-13"
-    )
+    assert captured.get("HIPCC_COMPILE_FLAGS_APPEND") == "--gcc-install-dir=/opt/custom/gcc-13"
 
 
 def test_install_does_not_inject_env_on_cuda(monkeypatch):

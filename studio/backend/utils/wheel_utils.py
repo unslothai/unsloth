@@ -23,12 +23,8 @@ from utils.subprocess_compat import windows_hidden_subprocess_kwargs
 
 _logger = logging.getLogger(__name__)
 
-FLASH_ATTN_RELEASE_BASE_URL = (
-    "https://github.com/Dao-AILab/flash-attention/releases/download"
-)
-CAUSAL_CONV1D_RELEASE_BASE_URL = (
-    "https://github.com/Dao-AILab/causal-conv1d/releases/download"
-)
+FLASH_ATTN_RELEASE_BASE_URL = "https://github.com/Dao-AILab/flash-attention/releases/download"
+CAUSAL_CONV1D_RELEASE_BASE_URL = "https://github.com/Dao-AILab/causal-conv1d/releases/download"
 MAMBA_SSM_RELEASE_BASE_URL = "https://github.com/state-spaces/mamba/releases/download"
 
 
@@ -121,9 +117,7 @@ def has_nvidia_gpu() -> bool:
                 timeout = 10,
                 env = child_env_without_native_path_secret(),
             )
-            if result.returncode == 0 and any(
-                line.strip() for line in result.stdout.splitlines()
-            ):
+            if result.returncode == 0 and any(line.strip() for line in result.stdout.splitlines()):
                 return True
         except (OSError, subprocess.TimeoutExpired):
             pass
@@ -400,11 +394,7 @@ def _package_is_importable(import_name: str) -> bool:
     return True
 
 
-def _default_pypi_status_message(
-    spec: KernelPackageSpec,
-    *,
-    is_hip: bool,
-) -> str:
+def _default_pypi_status_message(spec: KernelPackageSpec, *, is_hip: bool) -> str:
     if spec.pypi_status_message is not None:
         return spec.pypi_status_message
     if is_hip:

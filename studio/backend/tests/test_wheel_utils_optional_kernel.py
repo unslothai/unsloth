@@ -309,15 +309,7 @@ def test_plain_pypi_spec_fallback_runs_plain_pip_install(monkeypatch):
         is True
     )
 
-    assert calls == [
-        [
-            sys.executable,
-            "-m",
-            "pip",
-            "install",
-            "test-pypi-only==1.0.0",
-        ]
-    ]
+    assert calls == [[sys.executable, "-m", "pip", "install", "test-pypi-only==1.0.0"]]
     assert "--no-deps" not in calls[0]
     assert "--no-build-isolation" not in calls[0]
     assert "--no-cache-dir" not in calls[0]
@@ -472,9 +464,7 @@ def _hip_env() -> dict[str, str]:
 
 def test_rocm_without_hipcc_skips_source_build(monkeypatch):
     _patch_missing_package(monkeypatch)
-    monkeypatch.setattr(
-        wheel_utils, "probe_torch_wheel_env", lambda timeout = 30: _hip_env()
-    )
+    monkeypatch.setattr(wheel_utils, "probe_torch_wheel_env", lambda timeout = 30: _hip_env())
     monkeypatch.setattr(wheel_utils, "url_exists", lambda url: False)
     # No hipcc on PATH.
     monkeypatch.setattr(wheel_utils.shutil, "which", lambda name: None)
@@ -498,9 +488,7 @@ def test_rocm_without_hipcc_skips_source_build(monkeypatch):
 
 def test_rocm_with_hipcc_injects_gcc_install_dir_into_subprocess_env(monkeypatch):
     _patch_missing_package(monkeypatch)
-    monkeypatch.setattr(
-        wheel_utils, "probe_torch_wheel_env", lambda timeout = 30: _hip_env()
-    )
+    monkeypatch.setattr(wheel_utils, "probe_torch_wheel_env", lambda timeout = 30: _hip_env())
     monkeypatch.setattr(wheel_utils, "url_exists", lambda url: False)
     monkeypatch.setattr(
         wheel_utils.shutil,
@@ -532,10 +520,7 @@ def test_rocm_with_hipcc_injects_gcc_install_dir_into_subprocess_env(monkeypatch
     )
     assert captured["kwargs"]["timeout"] == 1800
     env = captured["kwargs"]["env"]
-    assert (
-        "--gcc-install-dir=/usr/lib/gcc/x86_64-linux-gnu/13"
-        in env["HIPCC_COMPILE_FLAGS_APPEND"]
-    )
+    assert "--gcc-install-dir=/usr/lib/gcc/x86_64-linux-gnu/13" in env["HIPCC_COMPILE_FLAGS_APPEND"]
 
 
 def test_broken_native_import_is_treated_as_missing(monkeypatch):
