@@ -94,9 +94,7 @@ def test_strips_orphan_tool_call_no_close():
 
 
 def test_strips_orphan_function_no_close():
-    text = (
-        "I'll call python:\n<function=python>\n<parameter=code>\nprint(1)\n</parameter>"
-    )
+    text = "I'll call python:\n<function=python>\n<parameter=code>\nprint(1)\n</parameter>"
     cleaned = _TOOL_XML_RE.sub("", text)
     assert "<function=" not in cleaned
     assert "I'll call python:" in cleaned

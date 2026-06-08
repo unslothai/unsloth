@@ -77,7 +77,10 @@ def weight_dequant_kernel(x_ptr, s_ptr, y_ptr, M, N, BLOCK_SIZE: tl.constexpr):
 
 
 def weight_dequant_block(
-    x: torch.Tensor, s: torch.Tensor, block_size: int = 128, dtype = torch.bfloat16
+    x: torch.Tensor,
+    s: torch.Tensor,
+    block_size: int = 128,
+    dtype = torch.bfloat16,
 ) -> torch.Tensor:
     if not x.is_contiguous():
         x = x.contiguous()
@@ -94,7 +97,11 @@ def weight_dequant_block(
     return y
 
 
-def weight_dequant(x: torch.Tensor, s: torch.Tensor, dtype = torch.bfloat16):
+def weight_dequant(
+    x: torch.Tensor,
+    s: torch.Tensor,
+    dtype = torch.bfloat16,
+):
     # Per-tensor scale: single value for entire weight matrix
     if s.numel() == 1:
         return x.to(dtype) * s.view(1, 1).to(dtype)
@@ -131,9 +138,7 @@ def act_quant_kernel(x_ptr, y_ptr, s_ptr, BLOCK_SIZE: tl.constexpr):
     tl.store(s_ptr + pid, s)
 
 
-def act_quant(
-    x: torch.Tensor, block_size: int = 128
-) -> tuple[torch.Tensor, torch.Tensor]:
+def act_quant(x: torch.Tensor, block_size: int = 128) -> tuple[torch.Tensor, torch.Tensor]:
     if not x.is_contiguous():
         x = x.contiguous()
     assert x.shape[-1] % block_size == 0
@@ -266,9 +271,7 @@ def w8a8_block_fp8_matmul_triton(
     BLOCK_SIZE_K, BLOCK_SIZE_N = block_k, block_n
 
     def grid(META):
-        return (
-            triton.cdiv(M, META["BLOCK_SIZE_M"]) * triton.cdiv(N, META["BLOCK_SIZE_N"]),
-        )
+        return (triton.cdiv(M, META["BLOCK_SIZE_M"]) * triton.cdiv(N, META["BLOCK_SIZE_N"]),)
 
     _w8a8_block_fp8_matmul[grid](
         A,
@@ -321,9 +324,7 @@ def torchao_block_matmul(
 # So our preference order is fbgemm (>=1.4.0) > torchao > triton. All of these have similar outputs/losses. Never use fbgemm (<=1.3.0) for block quantized FP8 matmul.
 # This torchao FP8 matmul seems to be ~3x faster than the w8a8_block_fp8_matmul_triton. Though torchao is 15-30% slower than fbgemm implementation (on H100 GPUs).
 fp8_block_matmul = (
-    torchao_block_matmul
-    if torchao_blockwise_gemm is not None
-    else w8a8_block_fp8_matmul_triton
+    torchao_block_matmul if torchao_blockwise_gemm is not None else w8a8_block_fp8_matmul_triton
 )
 
 
@@ -350,10 +351,7 @@ class FP8BlockQuantLinear(torch.autograd.Function):
             )
             assert block_size is not None, "block_size is not set"
             if triton.cdiv(m, block_size[0]) != p or triton.cdiv(n, block_size[1]) != q:
-                if (
-                    triton.cdiv(m, block_size[0]) == q
-                    and triton.cdiv(n, block_size[1]) == p
-                ):
+                if triton.cdiv(m, block_size[0]) == q and triton.cdiv(n, block_size[1]) == p:
                     weight_scale = weight_scale.T
                     original_weight_scale = weight_scale  # Update for transposed case
                 else:
@@ -393,7 +391,13 @@ def fp8_torch_block_quant_forward(X, weight, weight_scale):
 
 class FbgemmFp8Linear_matmul(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, x, weight, weight_scale, bias = None):
+    def forward(
+        ctx,
+        x,
+        weight,
+        weight_scale,
+        bias = None,
+    ):
         if weight.shape[0] == weight_scale.shape[0] and (
             weight.shape[0] % 8 == 0 and weight.shape[1] % 8 == 0
         ):
@@ -430,8 +434,7 @@ class FbgemmFp8Linear_matmul(torch.autograd.Function):
             output = output.reshape(output_shape)
             del x_quantized, x_scale
         elif (
-            weight.shape[0] != weight_scale.shape[0]
-            and weight.shape[1] == weight_scale.shape[0]
+            weight.shape[0] != weight_scale.shape[0] and weight.shape[1] == weight_scale.shape[0]
         ) or (weight.shape[0] % 8 != 0 or weight.shape[1] % 8 != 0):
             # Either the weight/scale is transposed or its shape is not divisible by 8. Both cases, dequantizing is the preferred way.
             # The transpose case is generally noticed in backward pass when we do dY@W instead of @W.T as we do for forward.
@@ -459,13 +462,24 @@ class FbgemmFp8Linear_matmul(torch.autograd.Function):
 
 
 @torch_compile
-def fbgemm_fp8_linear(X, weight, weight_scale, bias = None):
+def fbgemm_fp8_linear(
+    X,
+    weight,
+    weight_scale,
+    bias = None,
+):
     return FbgemmFp8Linear_matmul.apply(X, weight, weight_scale, bias)
 
 
 class FP8_fbgemm_block_linear(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, X, weight, weight_scale, bias = None):
+    def forward(
+        ctx,
+        X,
+        weight,
+        weight_scale,
+        bias = None,
+    ):
         orig_shape = X.shape
         X = X.view(-1, X.shape[-1])
 
@@ -516,7 +530,12 @@ class FP8_fbgemm_block_linear(torch.autograd.Function):
 
 
 @torch_compile
-def fp8_fbgemm_block_linear(X, weight, weight_scale, bias = None):
+def fp8_fbgemm_block_linear(
+    X,
+    weight,
+    weight_scale,
+    bias = None,
+):
     return FP8_fbgemm_block_linear.apply(X, weight, weight_scale, bias)
 
 
@@ -555,9 +574,7 @@ def test_has_fbgemm():
         is_cutlass_cuda_error = any(err in error_str for err in cutlass_cuda_errors)
 
         if is_cutlass_cuda_error:
-            print(
-                "Unsloth: FBGEMM on the current GPU cannot load - will switch to Triton kernels"
-            )
+            print("Unsloth: FBGEMM on the current GPU cannot load - will switch to Triton kernels")
         else:
             print(
                 f"Unsloth: FBGEMM on the current GPU cannot load with error = {e} - will switch to Triton kernels"
@@ -584,7 +601,6 @@ try:
         # FBGEMM's CUTLASS blockwise kernel (hardcoded SM90) fires thousands of
         # "Arch conditional MMA" lines to stdout fd 1 before aborting.
         from unsloth.import_fixes import suppress_cuda_printf
-
         with suppress_cuda_printf():
             _has_fbgemm = test_has_fbgemm()
         if _has_fbgemm:
@@ -598,12 +614,15 @@ except:
 
 
 @torch_compile
-def fp8_linear(X, weight, weight_scale, bias = None):
+def fp8_linear(
+    X,
+    weight,
+    weight_scale,
+    bias = None,
+):
     # Per-tensor quantization: single scalar scale for entire weight
     # Block quantized FP8: 2D scale tensor with multiple columns
-    if weight_scale.numel() == 1 or (
-        weight_scale.ndim == 2 and weight_scale.shape[1] > 1
-    ):
+    if weight_scale.numel() == 1 or (weight_scale.ndim == 2 and weight_scale.shape[1] > 1):
         out = fp8_block_quant_linear(X, weight, weight_scale)
     # Row/channel quantized FP8: 2D scale with shape (n, 1)
     else:

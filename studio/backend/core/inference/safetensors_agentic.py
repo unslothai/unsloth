@@ -86,9 +86,7 @@ def _detect_render_html_tool_start(content: str) -> bool:
     if not function_match and tool_call_index < 0:
         return False
 
-    if function_match and (
-        tool_call_index < 0 or function_match.start() < tool_call_index
-    ):
+    if function_match and (tool_call_index < 0 or function_match.start() < tool_call_index):
         return function_match.group(1) == "render_html"
 
     if tool_call_index >= 0:

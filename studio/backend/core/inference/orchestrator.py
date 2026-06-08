@@ -63,9 +63,7 @@ class InferenceOrchestrator:
         self._resp_queue: Any = None
         self._cancel_event: Any = None  # mp.Event — set to cancel generation instantly
         self._lock = threading.Lock()
-        self._gen_lock = (
-            threading.Lock()
-        )  # Serializes generation — one request at a time
+        self._gen_lock = threading.Lock()  # Serializes generation — one request at a time
 
         # Dispatcher state — for compare mode (adapter-controlled requests).
         # Instead of serializing via _gen_lock, adapter-controlled requests
@@ -95,9 +93,7 @@ class InferenceOrchestrator:
         logger.info("InferenceOrchestrator initialized (subprocess mode)")
 
         # Kick off background fetch of top models from HF
-        threading.Thread(
-            target = self._fetch_top_models, daemon = True, name = "top-models"
-        ).start()
+        threading.Thread(target = self._fetch_top_models, daemon = True, name = "top-models").start()
 
     # ------------------------------------------------------------------
     # Default models (top GGUFs fetched dynamically from HF)
@@ -125,7 +121,6 @@ class InferenceOrchestrator:
         """Fetch top GGUF and non-GGUF repos from unsloth by downloads."""
         try:
             import httpx
-
             resp = httpx.get(
                 "https://huggingface.co/api/models",
                 params = {
@@ -140,14 +135,12 @@ class InferenceOrchestrator:
                 models = resp.json()
                 # Top 40 GGUFs - frontend pages through them on-demand via
                 # infinite scroll, so we send a deep pool.
-                gguf_ids = [
-                    m["id"] for m in models if m.get("id", "").upper().endswith("-GGUF")
-                ][:40]
+                gguf_ids = [m["id"] for m in models if m.get("id", "").upper().endswith("-GGUF")][
+                    :40
+                ]
                 # Top 40 non-GGUF hub models
                 hub_ids = [
-                    m["id"]
-                    for m in models
-                    if not m.get("id", "").upper().endswith("-GGUF")
+                    m["id"] for m in models if not m.get("id", "").upper().endswith("-GGUF")
                 ][:40]
                 if gguf_ids:
                     self._top_gguf_cache = gguf_ids
@@ -277,7 +270,11 @@ class InferenceOrchestrator:
         except (EOFError, OSError, ValueError):
             return None
 
-    def _wait_response(self, expected_type: str, timeout: float = 300.0) -> dict:
+    def _wait_response(
+        self,
+        expected_type: str,
+        timeout: float = 300.0,
+    ) -> dict:
         """Block until a response of the expected type arrives.
 
         Also handles 'status' and 'error' events during the wait.
@@ -329,8 +326,7 @@ class InferenceOrchestrator:
             )
 
         raise RuntimeError(
-            f"Timeout waiting for '{expected_type}' response "
-            f"(no activity for {timeout}s)"
+            f"Timeout waiting for '{expected_type}' response " f"(no activity for {timeout}s)"
         )
 
     def _drain_queue(self) -> list:
@@ -556,7 +552,11 @@ class InferenceOrchestrator:
             with self._mailbox_lock:
                 self._mailboxes.pop(request_id, None)
 
-    def _drain_mailbox(self, mailbox: queue.Queue, timeout: float = 5.0) -> None:
+    def _drain_mailbox(
+        self,
+        mailbox: queue.Queue,
+        timeout: float = 5.0,
+    ) -> None:
         """Drain a mailbox until gen_done/gen_error, discarding tokens."""
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
@@ -683,8 +683,7 @@ class InferenceOrchestrator:
                     # First stall and Xet was enabled -> retry with Xet disabled
                     if attempt == 0 and not disable_xet:
                         logger.warning(
-                            "Download stalled for '%s' -- retrying with "
-                            "HF_HUB_DISABLE_XET=1",
+                            "Download stalled for '%s' -- retrying with HF_HUB_DISABLE_XET=1",
                             model_name,
                         )
                         self._shutdown_subprocess(timeout = 5)
@@ -715,13 +714,9 @@ class InferenceOrchestrator:
                     # capabilities without re-entering the subprocess.
                     _tpl_info = model_info.get("chat_template_info")
                     if isinstance(_tpl_info, dict):
-                        self.models[self.active_model_name]["chat_template_info"] = (
-                            _tpl_info
-                        )
+                        self.models[self.active_model_name]["chat_template_info"] = _tpl_info
                     self.loading_models.discard(model_name)
-                    logger.info(
-                        "Model '%s' loaded successfully in subprocess", model_name
-                    )
+                    logger.info("Model '%s' loaded successfully in subprocess", model_name)
                     return True
                 else:
                     error = resp.get("error", "Failed to load model")
@@ -1160,9 +1155,7 @@ class InferenceOrchestrator:
 
             if resp is None:
                 if not self._ensure_subprocess_alive():
-                    raise RuntimeError(
-                        "Inference subprocess crashed during audio generation"
-                    )
+                    raise RuntimeError("Inference subprocess crashed during audio generation")
                 continue
 
             rtype = resp.get("type", "")
@@ -1254,9 +1247,7 @@ class InferenceOrchestrator:
 
             # Convert numpy array to list for mp.Queue serialization
             audio_data = (
-                audio_array.tolist()
-                if hasattr(audio_array, "tolist")
-                else list(audio_array)
+                audio_array.tolist() if hasattr(audio_array, "tolist") else list(audio_array)
             )
 
             cmd = {
@@ -1317,7 +1308,11 @@ class InferenceOrchestrator:
     # Local helpers (no subprocess needed)
     # ------------------------------------------------------------------
 
-    def resize_image(self, img, max_size: int = 800):
+    def resize_image(
+        self,
+        img,
+        max_size: int = 800,
+    ):
         """Resize image while maintaining aspect ratio.
         No ML imports needed — runs locally in parent process.
         """
@@ -1360,7 +1355,6 @@ class InferenceOrchestrator:
         """Parent-side gpt-oss detection so the safetensors route can run
         the same guard without an IPC round-trip to the subprocess."""
         from utils.datasets import is_gpt_oss_model_name
-
         return is_gpt_oss_model_name(model_name or self.active_model_name or "")
 
 

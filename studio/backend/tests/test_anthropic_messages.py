@@ -421,10 +421,7 @@ class TestAnthropicMessagesToOpenAI:
         ]
         result = anthropic_messages_to_openai(msgs)
         parts = result[0]["content"]
-        assert parts[1] == {
-            "type": "image_url",
-            "image_url": {"url": "https://x/y.png"},
-        }
+        assert parts[1] == {"type": "image_url", "image_url": {"url": "https://x/y.png"}}
 
     def test_image_only_user_message_emits_no_text_part(self):
         msgs = [
@@ -489,12 +486,7 @@ class TestAnthropicMessagesToOpenAI:
         ]
         result = anthropic_messages_to_openai(msgs)
         parts = result[0]["content"]
-        assert [p["type"] for p in parts] == [
-            "text",
-            "image_url",
-            "text",
-            "image_url",
-        ]
+        assert [p["type"] for p in parts] == ["text", "image_url", "text", "image_url"]
         assert parts[0]["text"] == "before"
         assert parts[2]["text"] == "after"
         assert parts[1]["image_url"]["url"] == "data:image/png;base64,AA"
@@ -572,15 +564,10 @@ class TestAnthropicToolsToOpenAI:
             enabled_tools = ["python"],
         )
 
-        assert [tool["function"]["name"] for tool in result] == [
-            "web_search",
-            "python",
-        ]
+        assert [tool["function"]["name"] for tool in result] == ["web_search", "python"]
 
     def test_pydantic_model_input(self):
-        tool = AnthropicTool(
-            name = "test", description = "desc", input_schema = {"type": "object"}
-        )
+        tool = AnthropicTool(name = "test", description = "desc", input_schema = {"type": "object"})
         result = anthropic_tools_to_openai([tool])
         assert result[0]["function"]["name"] == "test"
 
@@ -680,12 +667,8 @@ class TestAnthropicStreamEmitter:
             }
         )
 
-        first_payloads = [
-            json.loads(event.split("data: ")[1]) for event in first_events
-        ]
-        second_payloads = [
-            json.loads(event.split("data: ")[1]) for event in second_events
-        ]
+        first_payloads = [json.loads(event.split("data: ")[1]) for event in first_events]
+        second_payloads = [json.loads(event.split("data: ")[1]) for event in second_events]
 
         tool_starts = [
             payload
@@ -701,9 +684,7 @@ class TestAnthropicStreamEmitter:
                 "index": tool_starts[0]["index"],
                 "delta": {
                     "type": "input_json_delta",
-                    "partial_json": json.dumps(
-                        {"code": "<!doctype html><html></html>"}
-                    ),
+                    "partial_json": json.dumps({"code": "<!doctype html><html></html>"}),
                 },
             }
         ]
@@ -860,9 +841,7 @@ class TestAnthropicToolNonStreaming:
 
         response = asyncio.run(_anthropic_tool_non_streaming(_run_gen, "msg_1", "m"))
         body = json.loads(response.body)
-        tool_blocks = [
-            block for block in body["content"] if block["type"] == "tool_use"
-        ]
+        tool_blocks = [block for block in body["content"] if block["type"] == "tool_use"]
 
         assert tool_blocks == [
             {
@@ -968,26 +947,14 @@ class TestAnthropicPassthroughEmitter:
         events1 = e.feed_chunk(
             {
                 "choices": [
-                    {
-                        "delta": {
-                            "tool_calls": [
-                                {"index": 0, "function": {"arguments": '{"cmd'}}
-                            ]
-                        }
-                    }
+                    {"delta": {"tool_calls": [{"index": 0, "function": {"arguments": '{"cmd'}}]}}
                 ]
             }
         )
         events2 = e.feed_chunk(
             {
                 "choices": [
-                    {
-                        "delta": {
-                            "tool_calls": [
-                                {"index": 0, "function": {"arguments": '": "ls"}'}}
-                            ]
-                        }
-                    }
+                    {"delta": {"tool_calls": [{"index": 0, "function": {"arguments": '": "ls"}'}}]}}
                 ]
             }
         )
@@ -1380,9 +1347,7 @@ class TestAnthropicMessagesToolRouting:
         assert exc.value.status_code == 400
         assert "Mixing Anthropic server tools" in exc.value.detail
 
-    def test_mixed_rejected_when_client_tool_name_collides_with_server_alias(
-        self, monkeypatch
-    ):
+    def test_mixed_rejected_when_client_tool_name_collides_with_server_alias(self, monkeypatch):
         # Regression: a client tool sharing a name with a mapped server
         # tool (e.g. user defines their own "web_search") must still
         # trigger the mixed-mode 400 — the post-name filter would
@@ -1441,9 +1406,7 @@ class TestAnthropicMessagesToolRouting:
         assert exc.value.status_code == 400
         assert "name" in exc.value.detail
 
-    def test_alias_named_client_tool_without_schema_rejected_with_400(
-        self, monkeypatch
-    ):
+    def test_alias_named_client_tool_without_schema_rejected_with_400(self, monkeypatch):
         # Regression: a typo'd client tool whose name happens to collide
         # with a Studio alias (e.g. user meant a custom "python" tool but
         # forgot input_schema) must surface a 400, not silently switch
