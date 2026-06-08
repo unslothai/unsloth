@@ -374,6 +374,44 @@ class TestNormaliseResponsesInputWithTools:
         # Content is serialised so llama-server sees a string.
         assert json.loads(msgs[0].content) == [{"type": "output_text", "text": "ok"}]
 
+    def test_empty_tool_output_replaced_with_placeholder(self):
+        """Image-only tool results (Anthropic format) send empty output.
+        Before the fix this crashed the validator with
+        "role=\"tool\" messages require non-empty \"content\"".
+        Now it emits "(no output)" so the turn normalises cleanly."""
+        payload = ResponsesRequest(
+            input = [
+                {
+                    "type": "function_call_output",
+                    "call_id": "call_1",
+                    "output": "",
+                }
+            ],
+        )
+        msgs = _normalise_responses_input(payload)
+        assert msgs[0].role == "tool"
+        assert msgs[0].tool_call_id == "call_1"
+        assert msgs[0].content == "(no output)"
+        # Round-trip through ChatMessage validator must not raise.
+        ChatMessage(**msgs[0].model_dump(exclude_none = True))
+
+    def test_empty_list_output_serialised_to_json_array(self):
+        """Empty list output is not falsy after json.dumps (becomes "[]"),
+        so it should not trigger the placeholder."""
+        payload = ResponsesRequest(
+            input = [
+                {
+                    "type": "function_call_output",
+                    "call_id": "call_1",
+                    "output": [],
+                }
+            ],
+        )
+        msgs = _normalise_responses_input(payload)
+        assert msgs[0].role == "tool"
+        assert msgs[0].content == "[]"
+        ChatMessage(**msgs[0].model_dump(exclude_none = True))
+
 
 # =====================================================================
 # Response mapping — tool_calls → function_call output items
