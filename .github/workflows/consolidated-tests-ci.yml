@@ -994,6 +994,7 @@ jobs:
               "beit":            "TimeoutError: compile exceeds per-model budget",
               "sam":             "TimeoutError: compile exceeds per-model budget",
               "sam_hq":          "TimeoutError: compile exceeds per-model budget",
+              "deepseek_ocr2":   "TimeoutError: compile exceeds per-model budget",
           }
 
 
