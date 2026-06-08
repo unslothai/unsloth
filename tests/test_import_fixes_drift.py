@@ -638,5 +638,42 @@ def test_accelerate_recursively_apply_empty_logits_patch():
     e = EmptyLogits()
     patch_accelerate_recursively_apply()
 
-    res = acc_ops.recursively_apply(lambda x: x, e, **{"error_on_other_type": True})
+    res = acc_ops.recursively_apply(lambda x: x, e, error_on_other_type=True)
     assert res is e
+
+
+def test_accelerate_gather_empty_logits_debug_mode_patch():
+    """Verify gather and broadcast bypass EmptyLogits when debug mode is enabled."""
+    pytest.importorskip("accelerate")
+    from accelerate.state import PartialState, DistributedType
+    import accelerate.utils.operations as acc_ops
+    from unsloth.import_fixes import patch_accelerate_recursively_apply
+
+    class EmptyLogits:
+        pass
+
+    e = EmptyLogits()
+    patch_accelerate_recursively_apply()
+
+    # Enable debug mode and mock distributed state
+    state = PartialState()
+    orig_debug = state.debug
+    orig_dist_type = state.distributed_type
+    state.debug = True
+    # Set to a distributed type to trigger verify_operation wrapper
+    state.distributed_type = DistributedType.MULTI_GPU
+
+    try:
+        # Should bypass verify_operation and not raise DistributedOperationException
+        res = acc_ops.gather(e)
+        assert res is e
+
+        res_nested = acc_ops.gather([e])
+        assert isinstance(res_nested, list) and res_nested[0] is e
+
+        res_broadcast = acc_ops.broadcast(e)
+        assert res_broadcast is e
+    finally:
+        state.debug = orig_debug
+        state.distributed_type = orig_dist_type
+

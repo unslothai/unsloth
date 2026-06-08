@@ -2234,3 +2234,60 @@ def patch_accelerate_recursively_apply():
             acc_ops.recursively_apply = _patched_recursively_apply
         if acc_utils is not None and hasattr(acc_utils, "recursively_apply"):
             acc_utils.recursively_apply = _patched_recursively_apply
+
+    # Also patch gather and broadcast to bypass EmptyLogits structure verification
+    try:
+        import accelerate.accelerator as acc_accel
+    except Exception:
+        acc_accel = None
+
+    def _contains_empty_logits(data) -> bool:
+        if type(data).__name__ == "EmptyLogits":
+            return True
+        if isinstance(data, (list, tuple)):
+            return any(_contains_empty_logits(x) for x in data)
+        from collections.abc import Mapping
+        if isinstance(data, Mapping):
+            return any(_contains_empty_logits(x) for x in data.values())
+        return False
+
+    # Patch gather if it exists
+    original_gather = None
+    if acc_ops is not None and hasattr(acc_ops, "gather"):
+        original_gather = acc_ops.gather
+    elif acc_utils is not None and hasattr(acc_utils, "gather"):
+        original_gather = acc_utils.gather
+
+    if original_gather is not None:
+        @functools.wraps(original_gather)
+        def _patched_gather(tensor, *args, **kwargs):
+            if _contains_empty_logits(tensor):
+                return tensor
+            return original_gather(tensor, *args, **kwargs)
+
+        if acc_ops is not None and hasattr(acc_ops, "gather"):
+            acc_ops.gather = _patched_gather
+        if acc_utils is not None and hasattr(acc_utils, "gather"):
+            acc_utils.gather = _patched_gather
+        if acc_accel is not None and hasattr(acc_accel, "gather"):
+            acc_accel.gather = _patched_gather
+
+    # Patch broadcast if it exists
+    original_broadcast = None
+    if acc_ops is not None and hasattr(acc_ops, "broadcast"):
+        original_broadcast = acc_ops.broadcast
+    elif acc_utils is not None and hasattr(acc_utils, "broadcast"):
+        original_broadcast = acc_utils.broadcast
+
+    if original_broadcast is not None:
+        @functools.wraps(original_broadcast)
+        def _patched_broadcast(tensor, *args, **kwargs):
+            if _contains_empty_logits(tensor):
+                return tensor
+            return original_broadcast(tensor, *args, **kwargs)
+
+        if acc_ops is not None and hasattr(acc_ops, "broadcast"):
+            acc_ops.broadcast = _patched_broadcast
+        if acc_utils is not None and hasattr(acc_utils, "broadcast"):
+            acc_utils.broadcast = _patched_broadcast
+
