@@ -770,6 +770,14 @@ class FastBaseModel:
 
         bnb_config = None
         user_quantization_config = kwargs.get("quantization_config", None)
+
+        # Check if model already has a non-bitsandbytes quantization config (e.g. compressed-tensors/NVFP4)
+        from .loader_utils import check_and_disable_bitsandbytes_loading
+
+        load_in_4bit, load_in_8bit, _ = check_and_disable_bitsandbytes_loading(
+            auto_config, load_in_4bit = load_in_4bit, load_in_8bit = load_in_8bit
+        )
+
         if full_finetuning and (load_in_4bit or load_in_8bit):
             print(
                 "Unsloth: You selected full finetuning support, but 4bit / 8bit is enabled - disabling LoRA / QLoRA."

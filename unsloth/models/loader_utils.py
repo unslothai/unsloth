@@ -30,7 +30,7 @@ from .mapper import (
 # https://github.com/huggingface/transformers/pull/26037 allows 4 bit loading!
 from transformers import __version__ as transformers_version
 from unsloth.models._utils import TorchAOConfig
-from unsloth_zoo.utils import Version
+from unsloth_zoo.utils import Version, get_quant_type
 import gc
 
 transformers_version = Version(transformers_version)
@@ -333,6 +333,47 @@ def _tag_model_with_fp8_torchao_config(model: torch.nn.Module, fp8_mode: str):
         )
     except:
         pass
+
+
+def check_and_disable_bitsandbytes_loading(
+    model_config,
+    load_in_4bit = True,
+    load_in_8bit = False,
+    verbose = True,
+):
+    """
+    Check if we should disable bitsandbytes loading (load_in_4bit/load_in_8bit)
+    because the model already has a non-bitsandbytes quantization config.
+    If so, disable BOTH 4bit and 8bit loading and print a warning message.
+
+    Args:
+        model_config: The AutoConfig object from the model
+        load_in_4bit: Whether load_in_4bit is currently enabled
+        load_in_8bit: Whether load_in_8bit is currently enabled
+        verbose: Whether to print warning messages
+
+    Returns:
+        tuple: (load_in_4bit, load_in_8bit, quant_method)
+            load_in_4bit/load_in_8bit will be False if they were disabled
+            quant_method is the detected quantization method or None
+    """
+    quant_method = get_quant_type(model_config)
+
+    if quant_method is None or quant_method == "bitsandbytes":
+        return load_in_4bit, load_in_8bit, quant_method
+
+    # Model has a non-bitsandbytes quantization config (e.g., compressed-tensors, gptq, awq)
+    # We should disable BOTH bitsandbytes loading to avoid config conflicts
+    if load_in_4bit or load_in_8bit:
+        if verbose:
+            print(
+                f"Unsloth: Model already quantized with {quant_method}. "
+                f"Disabling `load_in_4bit` and `load_in_8bit` to avoid quantization config conflict."
+            )
+        load_in_4bit = False
+        load_in_8bit = False
+
+    return load_in_4bit, load_in_8bit, quant_method
 
 
 def _get_fp8_mode_and_check_settings(
