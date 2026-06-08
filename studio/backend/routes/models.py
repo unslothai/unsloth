@@ -1188,7 +1188,7 @@ def _match_browse_child(current: Path, name: str) -> Optional[Path]:
     except PermissionError:
         raise HTTPException(
             status_code = 403,
-            detail = f"Permission denied reading {os.path.basename(str(current))}",
+            detail = f"Permission denied reading {current.name}",
         ) from None
     except OSError as exc:
         logger.warning(

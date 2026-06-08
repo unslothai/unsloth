@@ -58,15 +58,6 @@ def safe_curated_detail(
     return msg or fallback
 
 
-def _log_event(log, event: str, error: Exception) -> None:
-    """Emit a structured error log, tolerating both structlog and stdlib loggers."""
-    try:
-        log.error(event, error = str(error), exc_info = True)
-    except TypeError:
-        # stdlib logging.Logger rejects structlog kwargs; pass the error as exc_info.
-        log.error("%s: %s", event, error, exc_info = error)
-
-
 def log_and_http_error(
     error: Exception,
     status_code: int,
@@ -82,7 +73,8 @@ def log_and_http_error(
     """
     from fastapi import HTTPException
 
-    _log_event(log or logger, event, error)
+    # Works for both structlog and stdlib loggers; exc_info=error logs its traceback.
+    (log or logger).error(f"{event}: {error}", exc_info = error)
     return HTTPException(status_code = status_code, detail = public_message)
 
 

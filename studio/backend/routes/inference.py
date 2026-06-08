@@ -698,12 +698,12 @@ def _resolve_model_identifier_for_request(
             allowed_suffixes = (".gguf",),
         )
     except NativePathLeaseError as exc:
-        raise log_and_http_error(
-            exc,
-            400,
-            safe_error_detail(exc),
-            event = "inference.native_path_lease_failed",
-            log = logger,
+        # Curated, client-correctable lease error (expired / wrong type / re-select);
+        # keep the actionable message, just redact paths.
+        logger.warning("inference.native_path_lease_failed: %s", exc)
+        raise HTTPException(
+            status_code = 400,
+            detail = redact_native_paths(str(exc)),
         ) from exc
     display_label = (
         grant.display_label or Path(request.model_path).name or "Native model"
