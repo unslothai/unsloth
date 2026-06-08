@@ -1791,7 +1791,9 @@ def _sniff_audio_container(raw: bytes) -> Optional[str]:
         return "wav"
     # mp3: ID3 tag, or an MPEG audio frame sync (no other accepted format leads
     # with 0xFF, so the simple sync check doesn't collide).
-    if raw[:3] == b"ID3" or (len(raw) >= 2 and raw[0] == 0xFF and (raw[1] & 0xE0) == 0xE0):
+    if raw[:3] == b"ID3" or (
+        len(raw) >= 2 and raw[0] == 0xFF and (raw[1] & 0xE0) == 0xE0
+    ):
         return "mp3"
     return None
 
