@@ -38,7 +38,6 @@ def _cache_dir() -> Path:
     """Lazy import so tests can stub storage_roots."""
     try:
         from utils.paths.storage_roots import cache_root
-
         return cache_root() / "llama_cpp_freshness"
     except Exception:
         return Path.home() / ".unsloth" / "studio" / "cache" / "llama_cpp_freshness"
@@ -136,9 +135,7 @@ def _fetch_latest_release_tag(repo: str, timeout: float = 5.0) -> Optional[str]:
     return tag if isinstance(tag, str) and tag else None
 
 
-def latest_published_release(
-    repo: str, *, force_refresh: bool = False
-) -> Optional[str]:
+def latest_published_release(repo: str, *, force_refresh: bool = False) -> Optional[str]:
     """Latest release tag for `repo`. Memo + disk-cached (24h TTL).
     None when offline and never previously cached."""
     if not repo:
