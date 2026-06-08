@@ -47,9 +47,7 @@ from pathlib import Path
 try:
     import yaml
 except ImportError:
-    print(
-        "ERROR: PyYAML is required. Install with 'pip install pyyaml'", file = sys.stderr
-    )
+    print("ERROR: PyYAML is required. Install with 'pip install pyyaml'", file = sys.stderr)
     sys.exit(2)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -153,9 +151,7 @@ def main() -> int:
                 )
 
     if findings:
-        print(
-            "Workflow trigger lint failed with the following issues:", file = sys.stderr
-        )
+        print("Workflow trigger lint failed with the following issues:", file = sys.stderr)
         for f in findings:
             print(f"  - {f}", file = sys.stderr)
         return 1

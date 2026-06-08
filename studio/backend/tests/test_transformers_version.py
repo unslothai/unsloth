@@ -388,10 +388,7 @@ class TestGetTransformersTier:
                 return_value = False,
             ),
         ):
-            assert (
-                get_transformers_tier("mistralai/Ministral-3-8B-Instruct-2512")
-                == "530"
-            )
+            assert get_transformers_tier("mistralai/Ministral-3-8B-Instruct-2512") == "530"
 
     def test_llama_returns_default(self):
         with (

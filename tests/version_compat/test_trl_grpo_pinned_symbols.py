@@ -288,9 +288,7 @@ def test_trl_version_parseable(tag: str):
     #   4. `__version__ = f.read().strip()` (TRL 0.22.x reads from a
     #      sibling VERSION file)
     has_literal = bool(re.search(r'^__version__\s*=\s*["\']', src, re.MULTILINE))
-    has_subimport = bool(
-        re.search(r"^from\s+\.version\s+import\s+__version__", src, re.MULTILINE)
-    )
+    has_subimport = bool(re.search(r"^from\s+\.version\s+import\s+__version__", src, re.MULTILINE))
     has_metadata = bool(
         re.search(
             r"^from\s+importlib\.metadata\s+import\s+(?:[\w,\s]+,\s*)?version",
@@ -346,9 +344,7 @@ def test_trl_sft_trainer_module_internals(tag: str):
         f"{tag}: trl/trainer/sft_trainer.py missing; "
         f"unsloth/tokenizer_utils.py:1538 wildcard import fails"
     )
-    assert has_def(
-        src, "SFTTrainer", "class"
-    ), f"{tag}: class SFTTrainer missing in sft_trainer.py"
+    assert has_def(src, "SFTTrainer", "class"), f"{tag}: class SFTTrainer missing in sft_trainer.py"
     # neftune_post_forward_hook: optional (TRL removed it in some
     # versions); soft-imported in tokenizer_utils.py:1542. Don't fail.
     if "neftune_post_forward_hook" not in src:
@@ -368,9 +364,7 @@ def test_trl_dpo_trainer_module_exists(tag: str):
         f"{tag}: trl/trainer/dpo_trainer.py missing; "
         f"unsloth-zoo/temporary_patches/misc.py:1376 import fails"
     )
-    assert has_def(
-        src, "DPOTrainer", "class"
-    ), f"{tag}: class DPOTrainer missing in dpo_trainer.py"
+    assert has_def(src, "DPOTrainer", "class"), f"{tag}: class DPOTrainer missing in dpo_trainer.py"
 
 
 # -------------------------------------------------------------------------
@@ -392,8 +386,7 @@ def test_trl_constant_length_dataset_optional(tag: str):
     _, src = hit
     if "ConstantLengthDataset" not in src:
         pytest.skip(
-            f"{tag}: ConstantLengthDataset removed; unsloth-zoo soft "
-            f"import handles this"
+            f"{tag}: ConstantLengthDataset removed; unsloth-zoo soft " f"import handles this"
         )
 
 
@@ -414,7 +407,6 @@ def test_trl_models_utils_disable_gradient_checkpointing(tag: str):
         # Strip leading 'v' and parse.
         try:
             from packaging.version import Version
-
             require = Version(tag.lstrip("v")) >= Version("1.0.0")
         except Exception:
             require = False
@@ -551,12 +543,12 @@ def test_trl_grpo_source_inference_mode_unwrap(tag: str):
 
 @pytest.mark.parametrize("tag", TRL_TAGS)
 def test_trl_kto_get_batch_logps_signature(tag: str):
-    """TRL 0.27+ moved KTOTrainer to trl.experimental.kto and the
-    canonical kto_trainer.py shrank to a thin re-export wrapper. The
-    real `get_batch_logps` lives at trl/experimental/kto/kto_trainer.py.
-    Unsloth's MRO walk in models/rl.py:592-708 already follows
-    trl.experimental.* parents, so either path is fine — we just
-    require the symbol to exist SOMEWHERE."""
+    """KTO log-prob computation must stay patchable. Through TRL 1.x the
+    target was KTOTrainer.get_batch_logps; TRL 1.x dropped it and moved the
+    math into _compute_logps / compute_ref_log_probs calling
+    selective_log_softmax. unsloth/models/rl_replacements.py patches BOTH
+    shapes (kto_trainer_get_batch_logps + kto_trainer_align_completion_logps),
+    so we require EITHER form to exist wherever KTOTrainer lives."""
     candidates = [
         "trl/trainer/kto_trainer.py",
         "trl/experimental/kto/kto_trainer.py",
@@ -566,11 +558,20 @@ def test_trl_kto_get_batch_logps_signature(tag: str):
         src = fetch_text("huggingface/trl", tag, path)
         if src is None:
             continue
+        # Legacy: explicit get_batch_logps method.
         if has_def(src, "get_batch_logps", "func"):
             return
+        # TRL 1.x: refactored into _compute_logps + selective_log_softmax.
+        if has_def(src, "_compute_logps", "func") and "selective_log_softmax" in src:
+            return
+        # TRL 1.x (current): compute_ref_log_probs / _compute_kl_logps build
+        # per_token_logps via selective_log_softmax(shift_logits, ...); this is
+        # the exact shape kto_trainer_align_completion_logps patches.
+        if "per_token_logps = selective_log_softmax(shift_logits" in src:
+            return
     pytest.fail(
-        f"{tag}: KTOTrainer.get_batch_logps not found in any of {candidates}; "
-        f"unsloth/models/rl_replacements.py:1675 rewrite silently skipped"
+        f"{tag}: KTO log-prob computation not found in any of {candidates}; "
+        f"unsloth/models/rl_replacements.py KTO rewrite silently skipped"
     )
 
 
@@ -616,9 +617,7 @@ def test_trl_dpo_trainer_methods(tag: str):
     src = fetch_text("huggingface/trl", tag, "trl/trainer/dpo_trainer.py")
     assert src is not None
     # The DPO class itself must always exist.
-    assert has_def(
-        src, "DPOTrainer", "class"
-    ), f"{tag}: class DPOTrainer missing in dpo_trainer.py"
+    assert has_def(src, "DPOTrainer", "class"), f"{tag}: class DPOTrainer missing in dpo_trainer.py"
     # Informational only -- pass either way:
     for method in (
         "concatenated_inputs",
