@@ -21,7 +21,7 @@ from utils.hardware import clear_gpu_cache
 
 from utils.models import is_vision_model, get_base_model_from_lora
 from utils.models.model_config import detect_audio_type
-from utils.paths import ensure_dir, outputs_root, resolve_export_dir, resolve_output_dir
+from utils.paths import ensure_dir, outputs_root, resolve_export_write_dir, resolve_output_dir
 from core.inference import get_inference_backend
 
 # GPU-only imports — guarded for Apple Silicon where these aren't needed
@@ -361,7 +361,7 @@ class ExportBackend:
 
             # Save locally if requested
             if save_directory:
-                save_directory = str(resolve_export_dir(save_directory))
+                save_directory = str(resolve_export_write_dir(save_directory))
                 logger.info(f"Saving merged model locally to: {save_directory}")
                 ensure_dir(Path(save_directory))
 
@@ -465,7 +465,7 @@ class ExportBackend:
         try:
             # Save locally if requested
             if save_directory:
-                save_directory = str(resolve_export_dir(save_directory))
+                save_directory = str(resolve_export_write_dir(save_directory))
                 logger.info(f"Saving base model locally to: {save_directory}")
                 ensure_dir(Path(save_directory))
 
@@ -631,7 +631,7 @@ class ExportBackend:
 
             # Save locally if requested
             if save_directory:
-                save_directory = str(resolve_export_dir(save_directory))
+                save_directory = str(resolve_export_write_dir(save_directory))
                 # Resolve to absolute path so unsloth's relative-path internals
                 # (check_llama_cpp, use_local_gguf, _download_convert_hf_to_gguf)
                 # all resolve against the repo root cwd, NOT the export directory.
@@ -685,18 +685,14 @@ class ExportBackend:
                         f"Relocated GGUF: {os.path.basename(src)} → {abs_save_dir}/"
                     )
 
-                # Flatten .gguf files from subdirectories into abs_save_dir.
-                # save_pretrained_gguf may create subdirs (e.g. model_gguf/)
-                # with a name different from model_save_path.
-                # Skip pre-existing unrelated dirs, but always clean up known
-                # export-owned intermediates (model/, model_gguf/) even if
-                # they were left behind by a prior failed run (#6082).
+                # Flatten .gguf files from newly created subdirectories into
+                # abs_save_dir. save_pretrained_gguf may create subdirs
+                # (e.g. model_gguf/) with a name different from model_save_path.
+                # Only process subdirs that did not exist before this export.
                 for sub in list(Path(abs_save_dir).iterdir()):
                     if not sub.is_dir():
                         continue
-                    is_export_owned = sub.name in _EXPORT_OWNED_SUBDIRS
-                    is_pre_existing = sub.name in pre_existing_subs
-                    if is_pre_existing and not is_export_owned:
+                    if sub.name in pre_existing_subs:
                         continue
                     for src in sub.glob("*.gguf"):
                         dest = os.path.join(abs_save_dir, src.name)
@@ -708,10 +704,12 @@ class ExportBackend:
                 # For non-PEFT models, save_pretrained_gguf redirects to the
                 # checkpoint path, leaving a *_gguf directory in outputs/.
                 # Relocate any GGUFs from there and clean it up.
+                # Skip if gguf_dir resolves to the same path as abs_save_dir
+                # to avoid deleting our own output (#6082).
                 if self.current_checkpoint:
                     ckpt = Path(self.current_checkpoint)
                     gguf_dir = ckpt.parent / f"{ckpt.name}_gguf"
-                    if gguf_dir.is_dir():
+                    if gguf_dir.is_dir() and gguf_dir.resolve() != Path(abs_save_dir).resolve():
                         for src in gguf_dir.glob("*.gguf"):
                             dest = os.path.join(abs_save_dir, src.name)
                             shutil.move(str(src), dest)
@@ -795,7 +793,7 @@ class ExportBackend:
         try:
             # Save locally if requested
             if save_directory:
-                save_directory = str(resolve_export_dir(save_directory))
+                save_directory = str(resolve_export_write_dir(save_directory))
                 logger.info(f"Saving LoRA adapter locally to: {save_directory}")
                 ensure_dir(Path(save_directory))
 

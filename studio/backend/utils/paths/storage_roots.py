@@ -365,12 +365,25 @@ def resolve_output_dir(path_value: str | None = None) -> Path:
 
 
 def resolve_export_dir(path_value: str | None = None) -> Path:
-    """Resolve an export save directory.
+    """Resolve an export directory — contained under exports_root().
 
-    Unlike ``resolve_output_dir`` / ``resolve_tensorboard_dir``, this
-    function accepts absolute paths as-is so users can target a
-    different drive when their Studio install lives on a constrained
-    system volume (see :gh-issue:`6082`).
+    Used by scan/read endpoints. Use :func:`resolve_export_write_dir`
+    for the export write path where absolute paths are accepted.
+    """
+    return resolve_under_root(
+        path_value,
+        root = exports_root(),
+        strip_prefixes = ("exports",),
+    )
+
+
+def resolve_export_write_dir(path_value: str | None = None) -> Path:
+    """Resolve an export save directory — accepts absolute paths.
+
+    Unlike :func:`resolve_export_dir`, this function passes absolute
+    paths through as-is so users can target a different drive when
+    their Studio install lives on a constrained system volume
+    (see :gh-issue:`6082`). Used only by the export write path.
     """
     if not path_value or not str(path_value).strip():
         return exports_root()

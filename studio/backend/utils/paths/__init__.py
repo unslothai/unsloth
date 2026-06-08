@@ -42,6 +42,7 @@ from .storage_roots import (
     resolve_under_root,
     resolve_output_dir,
     resolve_export_dir,
+    resolve_export_write_dir,
     resolve_tensorboard_dir,
     resolve_dataset_path,
 )
@@ -85,6 +86,7 @@ __all__ = [
     "resolve_under_root",
     "resolve_output_dir",
     "resolve_export_dir",
+    "resolve_export_write_dir",
     "resolve_tensorboard_dir",
     "resolve_dataset_path",
 ]
