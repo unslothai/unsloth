@@ -25,7 +25,11 @@ def _tool(name: str) -> dict:
     return {"type": "function", "function": {"name": name}}
 
 
-def _call(name: str, args, call_id: str = "call_0") -> dict:
+def _call(
+    name: str,
+    args,
+    call_id: str = "call_0",
+) -> dict:
     return {
         "id": call_id,
         "type": "function",
@@ -65,10 +69,7 @@ def test_status_and_provenance_match_local_event_conventions():
         status_for_tool("web_search", {"url": "https://www.example.com/a"})
         == "Reading: example.com"
     )
-    assert (
-        status_for_tool("python", {"code": "print(1)\nprint(2)"})
-        == "Running Python: print(1)"
-    )
+    assert status_for_tool("python", {"code": "print(1)\nprint(2)"}) == "Running Python: print(1)"
     assert tool_event_provenance(healed = True, forced = False, provisional = None) == {
         "source": "local",
         "healed": True,
@@ -84,10 +85,7 @@ def test_prepare_execute_builds_visible_events_and_model_tool_message():
     assert decision.status_text == "Searching: gpu prices"
     assert decision.tool_start_payload()["arguments"] == {"query": "gpu prices"}
     assert decision.tool_start_event()["type"] == "tool_start"
-    assert (
-        decision.as_assistant_tool_call()["function"]["arguments"]
-        == '{"query":"gpu prices"}'
-    )
+    assert decision.as_assistant_tool_call()["function"]["arguments"] == '{"query":"gpu prices"}'
 
     completion = controller.record_result(decision, "Search result\n__IMAGES__:{...}")
 
@@ -103,14 +101,10 @@ def test_prepare_execute_builds_visible_events_and_model_tool_message():
 
 def test_successful_duplicate_is_internal_noop_and_keeps_remaining_tools():
     controller = ToolLoopController(tools = [_tool("web_search"), _tool("python")])
-    first = controller.prepare_call(
-        _call("web_search", {"query": "gpu prices"}, "call_a")
-    )
+    first = controller.prepare_call(_call("web_search", {"query": "gpu prices"}, "call_a"))
     controller.record_result(first, "ok")
 
-    duplicate = controller.prepare_call(
-        _call("web_search", {"query": "gpu prices"}, "call_b")
-    )
+    duplicate = controller.prepare_call(_call("web_search", {"query": "gpu prices"}, "call_b"))
     completion = controller.record_noop(duplicate)
 
     assert duplicate.action == "duplicate"
@@ -129,14 +123,10 @@ def test_successful_duplicate_is_internal_noop_and_keeps_remaining_tools():
 
 def test_repeated_successful_duplicate_becomes_terminal_after_one_recovery_nudge():
     controller = ToolLoopController(tools = [_tool("web_search"), _tool("python")])
-    first = controller.prepare_call(
-        _call("web_search", {"query": "gpu prices"}, "call_a")
-    )
+    first = controller.prepare_call(_call("web_search", {"query": "gpu prices"}, "call_a"))
     controller.record_result(first, "ok")
 
-    duplicate_one = controller.prepare_call(
-        _call("web_search", {"query": "gpu prices"}, "call_b")
-    )
+    duplicate_one = controller.prepare_call(_call("web_search", {"query": "gpu prices"}, "call_b"))
     completion_one = controller.record_noop(duplicate_one)
 
     assert duplicate_one.action == "duplicate"
@@ -147,9 +137,7 @@ def test_repeated_successful_duplicate_becomes_terminal_after_one_recovery_nudge
         "python",
     ]
 
-    duplicate_two = controller.prepare_call(
-        _call("web_search", {"query": "gpu prices"}, "call_c")
-    )
+    duplicate_two = controller.prepare_call(_call("web_search", {"query": "gpu prices"}, "call_c"))
     completion_two = controller.record_noop(duplicate_two)
 
     assert duplicate_two.action == "duplicate"
@@ -202,16 +190,12 @@ def test_render_html_success_filters_active_tools_and_repeat_is_internal():
         "web_search",
     ]
 
-    first = controller.prepare_call(
-        _call("render_html", {"code": "<html></html>"}, "call_html_1")
-    )
+    first = controller.prepare_call(_call("render_html", {"code": "<html></html>"}, "call_html_1"))
     controller.record_result(first, "Rendered HTML artifact: Demo")
 
     assert [t["function"]["name"] for t in controller.active_tools()] == ["web_search"]
 
-    repeat = controller.prepare_call(
-        _call("render_html", {"code": "<html></html>"}, "call_html_2")
-    )
+    repeat = controller.prepare_call(_call("render_html", {"code": "<html></html>"}, "call_html_2"))
     completion = controller.record_noop(repeat)
 
     assert repeat.action == "render_html_repeat"

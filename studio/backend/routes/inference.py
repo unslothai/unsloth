@@ -595,9 +595,7 @@ def _build_tool_action_nudge(*, tools: list[dict], model_name: str) -> str:
     compact_web_tip = model_size_b is not None and model_size_b < 9
     tool_tip_parts: list[str] = []
     if has_web:
-        tool_tip_parts.append(
-            _TOOL_WEB_COMPACT_TIP if compact_web_tip else _TOOL_WEB_EXPANDED_TIP
-        )
+        tool_tip_parts.append(_TOOL_WEB_COMPACT_TIP if compact_web_tip else _TOOL_WEB_EXPANDED_TIP)
     if has_code:
         tool_tip_parts.append(_TOOL_CODE_TIP)
     if has_artifact:
@@ -2818,9 +2816,7 @@ async def openai_chat_completions(
                 gguf_messages = _set_or_prepend_system_message(gguf_messages, system_prompt)
 
             _gguf_auto_heal_tool_calls = (
-                payload.auto_heal_tool_calls
-                if payload.auto_heal_tool_calls is not None
-                else True
+                payload.auto_heal_tool_calls if payload.auto_heal_tool_calls is not None else True
             )
 
             # ── Strip stale tool-call XML from conversation history ─
@@ -3288,9 +3284,7 @@ async def openai_chat_completions(
                 _sf_system_prompt = _sf_nudge
 
         _sf_auto_heal_tool_calls = (
-            payload.auto_heal_tool_calls
-            if payload.auto_heal_tool_calls is not None
-            else True
+            payload.auto_heal_tool_calls if payload.auto_heal_tool_calls is not None else True
         )
 
         # Strip stale tool-call XML from prior assistant turns.

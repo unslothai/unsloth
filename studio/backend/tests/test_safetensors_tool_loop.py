@@ -309,10 +309,7 @@ def test_active_tools_are_passed_to_single_turn_after_render_html_success():
 
     assert exec_fn.calls == [("render_html", {"code": "<html>one</html>"})]
     assert captured_tool_names == [["render_html", "web_search"], ["web_search"]]
-    assert any(
-        event.get("type") == "content" and event.get("text") == "Done."
-        for event in events
-    )
+    assert any(event.get("type") == "content" and event.get("text") == "Done." for event in events)
 
 
 class TestLoopBasic:
@@ -502,12 +499,8 @@ class TestLoopBehaviour:
         captured_messages: list[list[dict]] = []
         turns = iter(
             [
-                [
-                    '<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'
-                ],
-                [
-                    '<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'
-                ],
+                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
+                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
                 ["final"],
             ]
         )
@@ -532,14 +525,11 @@ class TestLoopBehaviour:
         )
 
         assert exec_fn.calls == [("web_search", {"query": "x"})]
-        assert [e["tool_call_id"] for e in events if e["type"] == "tool_end"] == [
-            "call_0"
-        ]
+        assert [e["tool_call_id"] for e in events if e["type"] == "tool_end"] == ["call_0"]
         assert not [
             e
             for e in events
-            if e.get("tool_call_id") == "call_1"
-            and e.get("type") in {"tool_start", "tool_end"}
+            if e.get("tool_call_id") == "call_1" and e.get("type") in {"tool_start", "tool_end"}
         ]
         duplicate_nudges = [
             message
@@ -554,15 +544,9 @@ class TestLoopBehaviour:
         captured_tool_names: list[list[str]] = []
         turns = iter(
             [
-                [
-                    '<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'
-                ],
-                [
-                    '<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'
-                ],
-                [
-                    '<tool_call>{"name":"python","arguments":{"code":"print(1)"}}</tool_call>'
-                ],
+                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
+                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
+                ['<tool_call>{"name":"python","arguments":{"code":"print(1)"}}</tool_call>'],
                 ["final"],
             ]
         )
@@ -607,8 +591,7 @@ class TestLoopBehaviour:
         assert not [
             e
             for e in events
-            if e.get("tool_call_id") == "call_1"
-            and e.get("type") in {"tool_start", "tool_end"}
+            if e.get("tool_call_id") == "call_1" and e.get("type") in {"tool_start", "tool_end"}
         ]
         duplicate_nudges = [
             message
@@ -623,15 +606,9 @@ class TestLoopBehaviour:
         captured_tool_names: list[list[str]] = []
         turns = iter(
             [
-                [
-                    '<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'
-                ],
-                [
-                    '<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'
-                ],
-                [
-                    '<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'
-                ],
+                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
+                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
+                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
                 ["final from first result"],
             ]
         )
@@ -663,14 +640,11 @@ class TestLoopBehaviour:
 
         assert exec_fn.calls == [("web_search", {"query": "x"})]
         assert [
-            event.get("tool_call_id")
-            for event in events
-            if event.get("type") == "tool_end"
+            event.get("tool_call_id") for event in events if event.get("type") == "tool_end"
         ] == ["call_0"]
         assert captured_tool_names[-1] == []
         assert any(
-            event.get("type") == "content"
-            and "final from first result" in event.get("text", "")
+            event.get("type") == "content" and "final from first result" in event.get("text", "")
             for event in events
         )
 
@@ -969,23 +943,18 @@ class TestGuardrails:
         )
 
         assert exec_fn.calls == []
-        assert not [
-            event for event in events if event.get("type") in {"tool_start", "tool_end"}
-        ]
+        assert not [event for event in events if event.get("type") in {"tool_start", "tool_end"}]
         disabled_nudges = [
             message
             for message in captured_messages[-1]
-            if message.get("role") == "user"
-            and "not enabled" in message.get("content", "")
+            if message.get("role") == "user" and "not enabled" in message.get("content", "")
         ]
         assert len(disabled_nudges) == 1
 
     def test_empty_tools_list_means_allow_all_in_core_loop(self):
         turns = iter(
             [
-                [
-                    '<tool_call>{"name":"python","arguments":{"code":"print(1)"}}</tool_call>'
-                ],
+                ['<tool_call>{"name":"python","arguments":{"code":"print(1)"}}</tool_call>'],
                 ["done"],
             ]
         )
@@ -1056,12 +1025,8 @@ class TestGuardrails:
     def test_auto_heal_disabled_preserves_xml_on_final_no_tools_pass(self):
         turns = iter(
             [
-                [
-                    '<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'
-                ],
-                [
-                    '<tool_call>{"name":"web_search","arguments":{"query":"literal"}}</tool_call>'
-                ],
+                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
+                ['<tool_call>{"name":"web_search","arguments":{"query":"literal"}}</tool_call>'],
             ]
         )
 
@@ -1130,14 +1095,9 @@ class TestGuardrails:
             max_tool_iterations = 4,
         )
         events = _collect_events(loop)
-        assert exec_fn.calls == [
-            ("web_search", {"query": "A"}),
-            ("web_search", {"query": "B"}),
-        ]
+        assert exec_fn.calls == [("web_search", {"query": "A"}), ("web_search", {"query": "B"})]
         assert [
-            event.get("tool_call_id")
-            for event in events
-            if event.get("type") == "tool_end"
+            event.get("tool_call_id") for event in events if event.get("type") == "tool_end"
         ] == ["call_0", "call_1"]
         assert not [
             event
@@ -1161,9 +1121,7 @@ class TestGuardrails:
         events = _collect_events(loop)
         assert exec_fn.calls == [("web_search", {"query": "A"})]
         assert [
-            event.get("tool_call_id")
-            for event in events
-            if event.get("type") == "tool_end"
+            event.get("tool_call_id") for event in events if event.get("type") == "tool_end"
         ] == ["call_0"]
         assert not [
             event

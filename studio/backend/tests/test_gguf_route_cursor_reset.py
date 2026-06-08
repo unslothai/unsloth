@@ -53,7 +53,13 @@ def _make_backend(monkeypatch, streams: list[list[str]], payloads: list[dict]):
     backend._supports_preserve_thinking = False
 
     @contextlib.contextmanager
-    def fake_stream_with_retry(_client, _url, payload, _cancel_event, headers = None):
+    def fake_stream_with_retry(
+        _client,
+        _url,
+        payload,
+        _cancel_event,
+        headers = None,
+    ):
         payloads.append(copy.deepcopy(payload))
         yield type("FakeResponse", (), {"status_code": 200, "chunks": streams.pop(0)})()
 
@@ -93,7 +99,7 @@ def _replay_route_cursor(events: list[dict]) -> dict:
         if etype == "metadata":
             continue
         clean_cumulative = event.get("text", "")
-        new_text = clean_cumulative[len(prev_text):]
+        new_text = clean_cumulative[len(prev_text) :]
         prev_text = clean_cumulative
         if not new_text:
             continue
@@ -121,7 +127,7 @@ def _replay_route_cursor_without_status_reset(events: list[dict]) -> dict:
         if etype == "metadata":
             continue
         clean_cumulative = event.get("text", "")
-        new_text = clean_cumulative[len(prev_text):]
+        new_text = clean_cumulative[len(prev_text) :]
         prev_text = clean_cumulative
         if not new_text:
             continue

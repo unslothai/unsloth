@@ -176,7 +176,10 @@ def canonical_tool_call_key(tool_name: str, arguments: Mapping[str, Any]) -> str
 
 
 def coerce_tool_arguments(
-    raw_args: Any, *, heal: bool, tool_name: str = ""
+    raw_args: Any,
+    *,
+    heal: bool,
+    tool_name: str = "",
 ) -> CoercedArguments:
     """Normalize model-emitted ``function.arguments`` to a dictionary."""
     if isinstance(raw_args, Mapping):
@@ -282,9 +285,7 @@ class ToolLoopController:
         self._restrict_to_allowed = tools is not None
         self._tools = [copy.deepcopy(dict(tool)) for tool in (tools or [])]
         self._allowed_tool_names = {
-            name
-            for name in (_tool_name_from_schema(tool) for tool in self._tools)
-            if name
+            name for name in (_tool_name_from_schema(tool) for tool in self._tools) if name
         }
         self._auto_heal_tool_calls = auto_heal_tool_calls
         self._one_shot_tools = one_shot_tools
@@ -361,9 +362,7 @@ class ToolLoopController:
             noop_result = noop,
         )
 
-    def record_result(
-        self, decision: ToolCallDecision, result: Any
-    ) -> ToolCallCompletion:
+    def record_result(self, decision: ToolCallDecision, result: Any) -> ToolCallCompletion:
         """Record a real tool execution and return model/frontend payload helpers."""
         result_text = result if isinstance(result, str) else str(result)
         failed = is_tool_error(result_text)

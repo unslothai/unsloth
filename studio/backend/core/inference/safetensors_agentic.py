@@ -96,13 +96,23 @@ def _detect_render_html_tool_start(content: str) -> bool:
     return False
 
 
-def _coerce_arguments_with_provenance(raw_args, *, heal: bool, tool_name: str = ""):
+def _coerce_arguments_with_provenance(
+    raw_args,
+    *,
+    heal: bool,
+    tool_name: str = "",
+):
     """Normalise tool ``arguments`` and report whether healing was applied."""
     coerced = coerce_tool_arguments(raw_args, heal = heal, tool_name = tool_name)
     return coerced.arguments, coerced.healed
 
 
-def _coerce_arguments(raw_args, *, heal: bool, tool_name: str = "") -> dict:
+def _coerce_arguments(
+    raw_args,
+    *,
+    heal: bool,
+    tool_name: str = "",
+) -> dict:
     arguments, _ = _coerce_arguments_with_provenance(
         raw_args,
         heal = heal,
@@ -176,9 +186,7 @@ def run_safetensors_tool_loop(
     def _tool_succeeded(tool_name: str) -> bool:
         key_prefix = f"{tool_name}:"
         return any(
-            record.executed
-            and not record.is_error
-            and record.key.startswith(key_prefix)
+            record.executed and not record.is_error and record.key.startswith(key_prefix)
             for record in tool_controller.history
         )
 
@@ -203,9 +211,7 @@ def run_safetensors_tool_loop(
                 final_attempt_done = True
                 active_tools = []
 
-        tool_protocol_active = not final_attempt_done and (
-            unrestricted_tools or bool(active_tools)
-        )
+        tool_protocol_active = not final_attempt_done and (unrestricted_tools or bool(active_tools))
         tool_xml_signals = TOOL_XML_SIGNALS if tool_protocol_active else ()
 
         detect_state = _state_buffering
@@ -494,9 +500,7 @@ def run_safetensors_tool_loop(
                 conversation.append(assistant_msg)
                 assistant_appended = True
             else:
-                assistant_msg.setdefault("tool_calls", []).append(
-                    decision.as_assistant_tool_call()
-                )
+                assistant_msg.setdefault("tool_calls", []).append(decision.as_assistant_tool_call())
 
             yield {"type": "status", "text": decision.status_text}
             yield decision.tool_start_event()

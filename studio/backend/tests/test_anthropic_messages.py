@@ -68,10 +68,7 @@ class TestToolActionNudge:
         assert nudge.startswith("The current date is ")
         assert "Tools are available when they materially improve" in nudge
         assert "prefer using tools rather than answering from memory" not in nudge
-        assert (
-            "fetch its full content by calling web_search with the url parameter"
-            in nudge
-        )
+        assert "fetch its full content by calling web_search with the url parameter" in nudge
         assert "Use code execution for math" in nudge
         assert "render_html" not in nudge
 

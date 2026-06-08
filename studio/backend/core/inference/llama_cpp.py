@@ -111,10 +111,7 @@ _FINAL_ANSWER_SIGNAL = re.compile(
 
 def _is_short_intent_without_action(text: str) -> bool:
     stripped = text.strip()
-    return (
-        0 < len(stripped) < _REPROMPT_MAX_CHARS
-        and _INTENT_SIGNAL.search(stripped) is not None
-    )
+    return 0 < len(stripped) < _REPROMPT_MAX_CHARS and _INTENT_SIGNAL.search(stripped) is not None
 
 
 def _should_suppress_forced_no_tool_output(text: str) -> bool:
@@ -4148,11 +4145,7 @@ class LlamaCppBackend:
     # ── Message building (OpenAI format) ──────────────────────────
 
     @staticmethod
-    def _parse_tool_calls_from_text(
-        content: str,
-        *,
-        allow_incomplete: bool = True,
-    ) -> list[dict]:
+    def _parse_tool_calls_from_text(content: str, *, allow_incomplete: bool = True) -> list[dict]:
         """Thin wrapper around the shared parser in tool_call_parser
         so safetensors and llama_cpp pick up the same fixes."""
         return _shared_parse_tool_calls_from_text(
@@ -4548,9 +4541,7 @@ class LlamaCppBackend:
         def _tool_succeeded(tool_name: str) -> bool:
             key_prefix = f"{tool_name}:"
             return any(
-                record.executed
-                and not record.is_error
-                and record.key.startswith(key_prefix)
+                record.executed and not record.is_error and record.key.startswith(key_prefix)
                 for record in tool_controller.history
             )
 
@@ -4761,9 +4752,7 @@ class LlamaCppBackend:
                                                 and not _tool_succeeded("render_html")
                                                 and any(
                                                     (
-                                                        (
-                                                            tool.get("function") or {}
-                                                        ).get("name")
+                                                        (tool.get("function") or {}).get("name")
                                                         == "render_html"
                                                     )
                                                     for tool in active_tools
@@ -4854,9 +4843,7 @@ class LlamaCppBackend:
                                                 # route sends it before tool_start.
                                                 if reasoning_accum:
                                                     cumulative_display += "<think>"
-                                                    cumulative_display += (
-                                                        reasoning_accum
-                                                    )
+                                                    cumulative_display += reasoning_accum
                                                     cumulative_display += "</think>"
                                                 cumulative_display += content_buffer
                                                 cleaned = _strip_tool_markup_streaming(
@@ -4904,9 +4891,7 @@ class LlamaCppBackend:
                 # ── Resolve BUFFERING at stream end ──
                 if detect_state == _S_BUFFERING:
                     stripped_buf = content_buffer.lstrip()
-                    if stripped_buf and any(
-                        s in stripped_buf for s in _tool_xml_signals
-                    ):
+                    if stripped_buf and any(s in stripped_buf for s in _tool_xml_signals):
                         detect_state = _S_DRAINING
                     elif content_accum or reasoning_accum:
                         detect_state = _S_STREAMING
@@ -5089,9 +5074,7 @@ class LlamaCppBackend:
                             for i in sorted(tool_calls_acc)
                             if (tool_calls_acc[i].get("function", {}).get("name", "").strip())
                         ] or None
-                    if not tool_calls and any(
-                        s in content_accum for s in _tool_xml_signals
-                    ):
+                    if not tool_calls and any(s in content_accum for s in _tool_xml_signals):
                         tool_calls = self._parse_tool_calls_from_text(
                             content_accum,
                             allow_incomplete = auto_heal_tool_calls,
@@ -5182,9 +5165,7 @@ class LlamaCppBackend:
                         break
 
                     if not assistant_appended:
-                        assistant_msg["tool_calls"] = [
-                            decision.as_assistant_tool_call()
-                        ]
+                        assistant_msg["tool_calls"] = [decision.as_assistant_tool_call()]
                         conversation.append(assistant_msg)
                         assistant_appended = True
                     else:
@@ -5195,9 +5176,7 @@ class LlamaCppBackend:
                     yield {"type": "status", "text": decision.status_text}
                     yield decision.tool_start_event()
 
-                    _effective_timeout = (
-                        None if tool_call_timeout >= 9999 else tool_call_timeout
-                    )
+                    _effective_timeout = None if tool_call_timeout >= 9999 else tool_call_timeout
                     result = execute_tool(
                         decision.tool_name,
                         decision.arguments,
@@ -5214,10 +5193,7 @@ class LlamaCppBackend:
 
                 # Clear tool status badge before next generation/final pass.
                 yield {"type": "status", "text": ""}
-                if (
-                    tool_controller.force_final_answer
-                    or not tool_controller.active_tools()
-                ):
+                if tool_controller.force_final_answer or not tool_controller.active_tools():
                     _append_budget_exhausted_nudge = False
                     break
                 continue

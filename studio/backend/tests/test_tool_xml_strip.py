@@ -43,10 +43,7 @@ _strip_tool_xml_for_display = _ns["_strip_tool_xml_for_display"]
 def test_route_display_strip_respects_disabled_auto_heal_contract():
     text = 'literal <tool_call>{"name":"web_search"}</tool_call> survives'
     assert _strip_tool_xml_for_display(text, auto_heal_tool_calls = False) == text
-    assert "<tool_call>" not in _strip_tool_xml_for_display(
-        text,
-        auto_heal_tool_calls = True,
-    )
+    assert "<tool_call>" not in _strip_tool_xml_for_display(text, auto_heal_tool_calls = True)
 
 
 def test_strips_well_formed_tool_call():
