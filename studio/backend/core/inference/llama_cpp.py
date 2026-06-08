@@ -2674,9 +2674,7 @@ class LlamaCppBackend:
         try:
             log_dir = _swa_cache_path().parent / "logs" / "llama-server"
             log_dir.mkdir(parents = True, exist_ok = True)
-            self._llama_log_path = (
-                log_dir / f"llama-{int(time.time())}-port-{self._port}.log"
-            )
+            self._llama_log_path = log_dir / f"llama-{int(time.time())}-port-{self._port}.log"
             self._llama_log_fh = open(
                 self._llama_log_path,
                 "w",
