@@ -109,11 +109,28 @@ assert_eq "hardcoded torch>=2.4 appears exactly once" "1" "$_hardcoded"
 echo ""
 echo "=== Structural: tokenizers in no-torch-runtime.txt ==="
 
-_has_tokenizers=$(grep -c '^tokenizers$' "$NO_TORCH_RT" || true)
-assert_eq "tokenizers present as standalone line" "1" "$_has_tokenizers"
+# Package-name boundary is anything not valid in a PEP 508 name, or EOL.
+# Covers `tokenizers`, `tokenizers<=0.23.0`, `tokenizers[extra]`,
+# `tokenizers; python_version<"3.13"`, etc., but NOT `tokenizers-foo`.
+_TOK_RE='^tokenizers([^a-zA-Z0-9._-]|$)'
+
+_has_tokenizers=$(grep -cE "$_TOK_RE" "$NO_TORCH_RT" || true)
+assert_eq "tokenizers package listed" "1" "$_has_tokenizers"
+
+# Regression guard for #5359: the tokenizers line must carry an upper
+# bound that excludes 0.23.1+. transformers in the allowed 4.56..5.3
+# window rejects 0.23.1 at import time with
+#   `tokenizers<=0.23.0,>=0.22.0 is required, but found 0.23.1`.
+# Accept both `<=0.23.0` and the functionally equivalent `<0.23.1`.
+# Two-stage grep: pick lines that start with the tokenizers package
+# name (PEP 508 name boundary), then require a safe upper bound.
+_has_safe_pin=$(grep -E "$_TOK_RE" "$NO_TORCH_RT" \
+    | grep -cE '(<=[[:space:]]*0\.23\.0|<[[:space:]]*0\.23\.1)' \
+    || true)
+assert_eq "tokenizers pinned with upper bound excluding 0.23.1+" "1" "$_has_safe_pin"
 
 # tokenizers before transformers
-_tok_line=$(grep -n '^tokenizers$' "$NO_TORCH_RT" | head -1 | cut -d: -f1)
+_tok_line=$(grep -nE "$_TOK_RE" "$NO_TORCH_RT" | head -1 | cut -d: -f1)
 _tf_line=$(grep -n '^transformers' "$NO_TORCH_RT" | head -1 | cut -d: -f1)
 _tok_first=$([ "$_tok_line" -lt "$_tf_line" ] && echo "yes" || echo "no")
 assert_eq "tokenizers before transformers" "yes" "$_tok_first"

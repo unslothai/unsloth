@@ -6,6 +6,7 @@ import { listModels } from "@huggingface/hub";
 import { type CachedResult, cachedModelInfo, primeCacheFromListing } from "@/lib/hf-cache";
 import { useCallback, useMemo } from "react";
 import { useHfPaginatedSearch } from "./use-hf-paginated-search";
+import { usePlatformStore } from "@/config/env";
 
 export interface HfModelResult {
   id: string;
@@ -16,11 +17,24 @@ export interface HfModelResult {
   isGguf: boolean;
 }
 
-const EXCLUDED_TAGS = new Set([
+/** Tags to exclude on GPU (CUDA/ROCm) — MLX models won't load on GPU. */
+const EXCLUDED_TAGS_GPU = new Set([
   "gptq",
   "awq",
   "exl2",
   "mlx",
+  "onnx",
+  "openvino",
+  "coreml",
+  "tflite",
+  "ctranslate2",
+]);
+
+/** Tags to exclude on MLX (Mac) — GPU-only quant formats won't load on MLX. */
+const EXCLUDED_TAGS_MLX = new Set([
+  "gptq",
+  "awq",
+  "exl2",
   "onnx",
   "openvino",
   "coreml",
@@ -77,7 +91,7 @@ function estimateSizeFromDtypes(
   return total > 0 ? total : undefined;
 }
 
-function makeMapModel(excludeGguf: boolean) {
+function makeMapModel(excludeGguf: boolean, excludedTags: Set<string>) {
   return (raw: unknown): HfModelResult | null => {
     const m = raw as {
       name: string;
@@ -87,7 +101,7 @@ function makeMapModel(excludeGguf: boolean) {
       tags?: string[];
     };
     const isEmbedding = m.tags?.some((t) => EMBEDDING_TAGS.has(t));
-    if (!isEmbedding && m.tags?.some((t) => EXCLUDED_TAGS.has(t))) {
+    if (!isEmbedding && m.tags?.some((t) => excludedTags.has(t))) {
       return null;
     }
     const isGguf =
@@ -314,7 +328,9 @@ export function useHfModelSearch(
     [trimmed, searchQuery, pinnedId, task, accessToken, priorityIds],
   );
 
-  const mapModel = useMemo(() => makeMapModel(excludeGguf), [excludeGguf]);
+  const deviceType = usePlatformStore((s) => s.deviceType);
+  const excludedTags = deviceType === "mac" ? EXCLUDED_TAGS_MLX : EXCLUDED_TAGS_GPU;
+  const mapModel = useMemo(() => makeMapModel(excludeGguf, excludedTags), [excludeGguf, excludedTags]);
   const search = useHfPaginatedSearch(createIter, mapModel);
 
   // Secondary sort guarantee: unsloth models always float to the top.

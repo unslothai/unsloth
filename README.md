@@ -43,9 +43,10 @@ Unsloth Studio (Beta) lets you run and train text, [audio](https://unsloth.ai/do
 * **Export models**: [Save or export](https://unsloth.ai/docs/new/studio/export) models to GGUF, 16-bit safetensors and other formats.
 * **Tool calling**: Support for [self-healing tool calling](https://unsloth.ai/docs/new/studio/chat#auto-healing-tool-calling) and web search
 * **[Code execution](https://unsloth.ai/docs/new/studio/chat#code-execution)**: lets LLMs test code in Claude artifacts and sandbox environments
-* [Auto-tune inference parameters](https://unsloth.ai/docs/new/studio/chat#auto-parameter-tuning) and customize chat templates.
-* We work directly with teams behind [gpt-oss](https://docs.unsloth.ai/new/gpt-oss-how-to-run-and-fine-tune#unsloth-fixes-for-gpt-oss), [Qwen3](https://www.reddit.com/r/LocalLLaMA/comments/1kaodxu/qwen3_unsloth_dynamic_ggufs_128k_context_bug_fixes/), [Llama 4](https://github.com/ggml-org/llama.cpp/pull/12889), [Mistral](models/tutorials/devstral-how-to-run-and-fine-tune.md), [Gemma 1-3](https://news.ycombinator.com/item?id=39671146), and [Phi-4](https://unsloth.ai/blog/phi4), where we’ve fixed bugs that improve model accuracy.
-* Upload images, audio, PDFs, code, DOCX and more file types to chat with.
+* **[API inference endpoint](https://unsloth.ai/docs/basics/api)**: Deploy and run local LLMs in Claude Code, Codex tools with Unsloth
+* [Auto set inference settings](https://unsloth.ai/docs/new/studio/chat#auto-parameter-tuning) and customize chat templates.
+* We work directly with teams behind [gpt-oss](https://docs.unsloth.ai/new/gpt-oss-how-to-run-and-fine-tune#unsloth-fixes-for-gpt-oss), [Qwen3](https://www.reddit.com/r/LocalLLaMA/comments/1kaodxu/qwen3_unsloth_dynamic_ggufs_128k_context_bug_fixes/), [Llama 4](https://github.com/ggml-org/llama.cpp/pull/12889), [Mistral](https://huggingface.co/mistralai/Mistral-Medium-3.5-128B/discussions/18), [Gemma 1-3](https://news.ycombinator.com/item?id=39671146), and [Phi-4](https://unsloth.ai/blog/phi4), where we’ve fixed bugs that improve model accuracy.
+* Chat with images, audio, PDFs, code, DOCX and more. [Connect API providers](https://unsloth.ai/docs/integrations/connections) (OpenAI, Anthropic) or servers (vLLM, Ollama).
 ### Training
 * Train and RL **500+ models** up to **2x faster** with up to **70% less VRAM**, with no accuracy loss.
 * Custom Triton and mathematical **kernels**. See some collabs we did with [PyTorch](https://unsloth.ai/docs/get-started/reinforcement-learning-rl-guide/fp8-reinforcement-learning) and [Hugging Face](https://unsloth.ai/docs/new/faster-moe).
@@ -63,30 +64,27 @@ Unsloth Studio (Beta) works on **Windows, Linux, WSL** and **macOS**.
 
 * **CPU:** Supported for Chat and Data Recipes currently
 * **NVIDIA:** Training works on RTX 30/40/50, Blackwell, DGX Spark, Station and more
-* **macOS:** Currently supports chat and Data Recipes. **MLX training** is coming very soon
+* **macOS:** Training, MLX and GGUF inference are ALL supported.
 * **AMD:** Chat + Data works. Train with [Unsloth Core](#unsloth-core-code-based). Studio support is out soon.
-* **Coming soon:** Training support for Apple MLX, AMD, and Intel.
 * **Multi-GPU:** Available now, with a major upgrade on the way
 
 #### macOS, Linux, WSL:
 ```bash
 curl -fsSL https://unsloth.ai/install.sh | sh
 ```
+Use the same command to update.
+
 #### Windows:
 ```powershell
 irm https://unsloth.ai/install.ps1 | iex
 ```
+Use the same command to update.
 
 #### Launch
 ```bash
-unsloth studio -H 0.0.0.0 -p 8888
+unsloth studio -p 8888
 ```
-
-#### Update
-To update, use the same install commands as above. Or run (does not work on Windows):
-```bash
-unsloth studio update
-```
+For cloud or global access, add `-H 0.0.0.0`. By default, Unsloth is accessible only locally.
 
 #### Docker
 Use our [Docker image](https://hub.docker.com/r/unsloth/unsloth) ```unsloth/unsloth``` container. Run:
@@ -148,6 +146,9 @@ Read our [guide](https://unsloth.ai/docs/get-started/fine-tuning-llms-guide). Ad
 - See detailed documentation for Unsloth [here](https://unsloth.ai/docs)
 
 ## 🦥 Unsloth News
+- **Connections**: Connect any API provider (OpenAI, Anthropic) or server (vLLM, Ollama). [Guide](https://unsloth.ai/docs/integrations/connections)
+- **MTP**: Run Qwen3.6 MTP in Unsloth. MTP settings are autoset specific to your hardware. [Guide](https://unsloth.ai/docs/models/qwen3.6#mtp-guide)
+- **API inference endpoint**: Deploy and run local LLMs in Claude Code, Codex tools. [Guide](https://unsloth.ai/docs/basics/api)
 - **Qwen3.6**: Qwen3.6-35B-A3B can now be trained and run in Unsloth Studio. [Blog](https://unsloth.ai/docs/models/qwen3.6)
 - **Gemma 4**: Run and train Google’s new models directly in Unsloth. [Blog](https://unsloth.ai/docs/models/gemma-4)
 - **Introducing Unsloth Studio**: our new web UI for running and training LLMs. [Blog](https://unsloth.ai/docs/new/studio)
@@ -158,7 +159,6 @@ Read our [guide](https://unsloth.ai/docs/get-started/fine-tuning-llms-guide). Ad
 - New RoPE & MLP **Triton Kernels** & **Padding Free + Packing**: 3x faster training & 30% less VRAM. [Blog](https://unsloth.ai/docs/new/3x-faster-training-packing)
 - **500K Context**: Training a 20B model with >500K context is now possible on an 80GB GPU. [Blog](https://unsloth.ai/docs/blog/500k-context-length-fine-tuning)
 - **FP8 & Vision RL**: You can now do FP8 & VLM GRPO on consumer GPUs. [FP8 Blog](https://unsloth.ai/docs/get-started/reinforcement-learning-rl-guide/fp8-reinforcement-learning) • [Vision RL](https://unsloth.ai/docs/get-started/reinforcement-learning-rl-guide/vision-reinforcement-learning-vlm-rl)
-- **gpt-oss** by OpenAI: Read our [RL blog](https://unsloth.ai/docs/models/gpt-oss-how-to-run-and-fine-tune/gpt-oss-reinforcement-learning), [Flex Attention](https://unsloth.ai/docs/models/gpt-oss-how-to-run-and-fine-tune/long-context-gpt-oss-training) blog and [Guide](https://unsloth.ai/docs/models/gpt-oss-how-to-run-and-fine-tune).
 
 ## 📥 Advanced Installation
 The below advanced instructions are for Unsloth Studio. For Unsloth Core advanced installation, [view our docs](https://unsloth.ai/docs/get-started/install/pip-install#advanced-pip-installation).
@@ -167,11 +167,13 @@ The below advanced instructions are for Unsloth Studio. For Unsloth Core advance
 git clone https://github.com/unslothai/unsloth
 cd unsloth
 ./install.sh --local
-unsloth studio -H 0.0.0.0 -p 8888
+unsloth studio -p 8888
 ```
 Then to update :
 ```bash
-unsloth studio update
+cd unsloth && git pull
+./install.sh --local
+unsloth studio -p 8888
 ```
 
 #### Developer installs: Windows PowerShell:
@@ -180,11 +182,13 @@ git clone https://github.com/unslothai/unsloth.git
 cd unsloth
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\install.ps1 --local
-unsloth studio -H 0.0.0.0 -p 8888
+unsloth studio -p 8888
 ```
 Then to update :
 ```bash
-unsloth studio update
+cd unsloth && git pull
+./install.sh --local
+unsloth studio -p 8888
 ```
 
 #### Nightly: MacOS, Linux, WSL:
@@ -193,33 +197,64 @@ git clone https://github.com/unslothai/unsloth
 cd unsloth
 git checkout nightly
 ./install.sh --local
-unsloth studio -H 0.0.0.0 -p 8888
+unsloth studio -p 8888
 ```
 Then to launch every time:
 ```bash
-unsloth studio -H 0.0.0.0 -p 8888
+unsloth studio -p 8888
 ```
 
 #### Nightly: Windows:
 Run in Windows Powershell:
-```bash
+```powershell
 git clone https://github.com/unslothai/unsloth.git
 cd unsloth
 git checkout nightly
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\install.ps1 --local
-unsloth studio -H 0.0.0.0 -p 8888
+unsloth studio -p 8888
 ```
 Then to launch every time:
 ```bash
-unsloth studio -H 0.0.0.0 -p 8888
+unsloth studio -p 8888
 ```
 
-#### Uninstall
-You can uninstall Unsloth Studio by deleting its install folder usually located under `$HOME/.unsloth/studio` on Mac/Linux/WSL and `%USERPROFILE%\.unsloth\studio` on Windows. Using the `rm -rf` commands will **delete everything**, including your history, cache:
+#### Advanced launch options
+Installer options can be passed as environment variables. On macOS, Linux and WSL place the variable after the pipe so the shell passes it to `sh`; on Windows set it with `$env:` before piping to `iex`.
 
-* ​ **MacOS, WSL, Linux:** `rm -rf ~/.unsloth/studio`
-* ​ **Windows (PowerShell):** `Remove-Item -Recurse -Force "$HOME\.unsloth\studio"`
+Skip PyTorch (GGUF-only mode):
+```bash
+curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_NO_TORCH=1 sh
+```
+```powershell
+$env:UNSLOTH_NO_TORCH=1; irm https://unsloth.ai/install.ps1 | iex
+```
+
+Pin the Python version:
+```bash
+curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_PYTHON=3.12 sh
+```
+```powershell
+$env:UNSLOTH_PYTHON='3.12'; irm https://unsloth.ai/install.ps1 | iex
+```
+
+Install to a custom location with `UNSLOTH_STUDIO_HOME`:
+```bash
+curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_STUDIO_HOME=/abs/path sh
+```
+```powershell
+$env:UNSLOTH_STUDIO_HOME='C:\path'; irm https://unsloth.ai/install.ps1 | iex
+```
+
+Cap Studio's native CPU thread pools on high-core hosts: `UNSLOTH_CPU_THREADS=8 unsloth studio -p 8888`.
+
+#### Uninstall
+The recommended way to fully remove Unsloth Studio is the matching uninstall script for your OS. It stops any running servers, removes the install dir, the launcher data dir, the desktop shortcut, and any platform-specific entries (macOS `.app` bundle + Launch Services on Mac; Start Menu, `HKCU\Software\Unsloth` registry key and user `PATH` entries on Windows):
+
+* ​ **MacOS, WSL, Linux:** `curl -fsSL https://raw.githubusercontent.com/unslothai/unsloth/main/scripts/uninstall.sh | sh`
+* ​ **Windows (PowerShell):** `irm https://raw.githubusercontent.com/unslothai/unsloth/main/scripts/uninstall.ps1 | iex`
+
+If you only want to drop the install dir and keep the launcher/shortcut for a later reinstall, you can instead run `rm -rf ~/.unsloth/studio` (Mac/Linux/WSL) or `Remove-Item -Recurse -Force "$HOME\.unsloth\studio"` (Windows). The model cache at `~/.cache/huggingface` is not touched by any of these.
 
 For more info, [see our docs](https://unsloth.ai/docs/new/studio/install#uninstall).
 

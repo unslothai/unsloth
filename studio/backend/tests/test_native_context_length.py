@@ -320,10 +320,22 @@ class TestPydanticModels:
         """Field exists in InferenceStatusResponse.model_fields."""
         assert "native_context_length" in InferenceStatusResponse.model_fields
 
+    def test_status_response_has_chat_template_field(self):
+        """Status includes chat_template so the UI can rehydrate after refresh."""
+        assert "chat_template" in InferenceStatusResponse.model_fields
+
     def test_status_response_defaults_none(self):
         """Omitting native_context_length defaults to None."""
         resp = InferenceStatusResponse()
         assert resp.native_context_length is None
+
+    def test_status_response_chat_template_roundtrip(self):
+        """chat_template serializes and validates as part of status."""
+        resp = InferenceStatusResponse(chat_template = "{{ messages }}")
+        roundtripped = InferenceStatusResponse.model_validate_json(
+            resp.model_dump_json()
+        )
+        assert roundtripped.chat_template == "{{ messages }}"
 
     def test_roundtrip_preserves_value(self):
         """model_validate_json(model_dump_json()) round-trips."""

@@ -6,6 +6,7 @@ import {
   Database01Icon,
   Database02Icon,
   Flag02Icon,
+  GithubIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Badge } from "@/components/ui/badge";
@@ -22,6 +23,28 @@ import { isExecutionInProgress } from "../../executions/execution-helpers";
 import type { RecipeExecutionRecord } from "../../execution-types";
 import type { ModelUsageRow } from "./executions-view-helpers";
 import { formatMetricValue } from "./executions-view-helpers";
+
+function formatSourceResource(value: string | null | undefined): string {
+  if (value === "pulls") {
+    return "PRs";
+  }
+  return value ?? "--";
+}
+
+function formatSourceMessage(execution: RecipeExecutionRecord): string {
+  const source = execution.source_progress;
+  if (!source) {
+    return "No source progress captured.";
+  }
+  if (source.status === "rate_limited") {
+    const wait =
+      typeof source.retry_after_sec === "number" && source.retry_after_sec > 0
+        ? ` Waiting ~${formatMetricValue(source.retry_after_sec)}s.`
+        : "";
+    return `Waiting for GitHub rate limit. Studio will resume automatically.${wait}`;
+  }
+  return source.message ?? "Crawling GitHub source.";
+}
 
 type ExecutionOverviewTabProps = {
   execution: RecipeExecutionRecord;
@@ -60,6 +83,8 @@ export function ExecutionOverviewTab({
   canPublish,
   onOpenPublish,
 }: ExecutionOverviewTabProps): ReactElement {
+  const sourceProgress = execution.source_progress;
+
   return (
     <div className="mt-3 space-y-3">
       {showSummaryCards && (
@@ -202,6 +227,47 @@ export function ExecutionOverviewTab({
               )}
             </div>
           )}
+        </div>
+      )}
+      {sourceProgress?.source === "github" && (
+        <div className="rounded-xl border border-border/60 bg-card/55 p-3">
+          <div className="mb-2 flex items-center justify-between">
+            <p className="text-xs text-muted-foreground">Source data</p>
+            <HugeiconsIcon icon={GithubIcon} className="size-4 text-muted-foreground" />
+          </div>
+          <p className="text-sm font-medium text-foreground">
+            {sourceProgress.status === "completed"
+              ? "GitHub source complete"
+              : "Crawling GitHub source"}
+          </p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            {formatSourceMessage(execution)}
+          </p>
+          <div className="mt-2 grid gap-1.5 text-xs sm:grid-cols-2 lg:grid-cols-4">
+            <p className="flex items-center justify-between gap-3">
+              <span className="text-muted-foreground">Repo</span>
+              <span className="truncate font-semibold">{sourceProgress.repo ?? "--"}</span>
+            </p>
+            <p className="flex items-center justify-between gap-3">
+              <span className="text-muted-foreground">Resource</span>
+              <span className="font-semibold">
+                {formatSourceResource(sourceProgress.resource)}
+                {typeof sourceProgress.page === "number" ? ` page ${sourceProgress.page}` : ""}
+              </span>
+            </p>
+            <p className="flex items-center justify-between gap-3">
+              <span className="text-muted-foreground">Fetched</span>
+              <span className="font-semibold">
+                {formatMetricValue(sourceProgress.fetched_items)}
+              </span>
+            </p>
+            <p className="flex items-center justify-between gap-3">
+              <span className="text-muted-foreground">Rate remaining</span>
+              <span className="font-semibold">
+                {formatMetricValue(sourceProgress.rate_remaining)}
+              </span>
+            </p>
+          </div>
         </div>
       )}
       <div className="overflow-hidden rounded-xl corner-squircle border">

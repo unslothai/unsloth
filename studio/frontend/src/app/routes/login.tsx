@@ -13,6 +13,7 @@ const LoginPage = lazy(() =>
 export const Route = createRoute({
   getParentRoute: () => rootRoute,
   path: "/login",
+  staticData: { title: "Login" },
   beforeLoad: () => requireGuest(),
   component: LoginPage,
 });

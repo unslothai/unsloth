@@ -6,10 +6,36 @@ from __future__ import annotations
 import ast
 import argparse
 import io
+import os
 import sys
+import tempfile
 import tokenize
 from collections import defaultdict
 from pathlib import Path
+
+
+def _atomic_write_text(path: Path, data: str, encoding: str) -> None:
+    """Write ``data`` to ``path`` atomically.
+
+    Stages a tmp file in the same directory (so it's on the same
+    filesystem as the destination), fsyncs, then `os.replace`s into
+    place. A crash mid-write therefore leaves either the previous
+    content or the fully new content -- never a truncated source file.
+    """
+    dirpath = str(path.parent) or "."
+    fd, tmp_path = tempfile.mkstemp(prefix=".kwargs_fix.", dir=dirpath)
+    try:
+        with os.fdopen(fd, "w", encoding=encoding) as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_path, path)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
 def enforce_spacing(text: str) -> tuple[str, bool]:
@@ -146,7 +172,7 @@ def process_file(path: Path) -> bool:
     updated, changed = enforce_spacing(original)
     updated, removed = remove_redundant_passes(updated)
     if changed or removed:
-        path.write_text(updated, encoding=encoding)
+        _atomic_write_text(path, updated, encoding)
         return True
     return False
 

@@ -7,6 +7,7 @@ Export API routes: checkpoint discovery and model export operations.
 
 import asyncio
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -184,14 +185,18 @@ async def get_export_status(
 
 
 def _export_details(output_path: Optional[str]) -> Optional[Dict[str, Any]]:
-    """Wrap the resolved on-disk export path into the details dict the
-    frontend reads to populate the Export Complete screen. Returns None
-    when the export had no local component (Hub-only push) so the
-    Pydantic field stays absent rather than ``{"output_path": null}``.
-    """
+    """Return the export path relative to exports_root so the install path is not leaked."""
     if not output_path:
         return None
-    return {"output_path": output_path}
+    try:
+        from utils.paths.storage_roots import exports_root
+
+        rel = os.path.relpath(output_path, exports_root())
+        if rel.startswith(".."):
+            rel = os.path.basename(output_path)
+        return {"output_path": rel}
+    except Exception:
+        return {"output_path": os.path.basename(output_path)}
 
 
 @router.post("/export/merged", response_model = ExportOperationResponse)
