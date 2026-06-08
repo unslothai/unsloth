@@ -84,7 +84,7 @@ Use the same command to update.
 ```bash
 unsloth studio -p 8888
 ```
-For cloud or global access, add `-H 0.0.0.0`. By default, Unsloth is accessible only locally.
+For cloud or global access, add `-H 0.0.0.0`. By default, Unsloth is accessible only locally. You can also launch a hosted GPU on [AI Badgr](https://aibadgr.com/gpu/launch?template=unsloth).
 
 #### Docker
 Use our [Docker image](https://hub.docker.com/r/unsloth/unsloth) ```unsloth/unsloth``` container. Run:
