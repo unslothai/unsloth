@@ -1779,9 +1779,12 @@ def _decode_audio_base64(b64: str) -> np.ndarray:
 
 
 # Reject oversized audio before decoding. base64 inflates raw bytes by ~4/3, so
-# cap the encoded length to bound the upload and the decode that follows.
+# cap the encoded length to bound the upload. _MAX_AUDIO_SECONDS additionally
+# bounds the *decoded* length, since a small compressed file (opus/flac/etc.)
+# can expand to a far larger PCM array than the encoded-size cap implies.
 _MAX_AUDIO_RAW_BYTES = 25 * 1024 * 1024
 _MAX_AUDIO_B64_CHARS = _MAX_AUDIO_RAW_BYTES * 4 // 3
+_MAX_AUDIO_SECONDS = 30 * 60
 
 
 def _sniff_audio_container(raw: bytes) -> Optional[str]:
@@ -1829,15 +1832,17 @@ def _mono_f32_to_wav_bytes(arr: np.ndarray, sample_rate: int) -> bytes:
 def _decode_audio_mono(raw: bytes) -> tuple[np.ndarray, int]:
     """Decode audio bytes to (mono float32 array, native sample_rate).
 
-    soundfile (libsndfile, always installed) reads wav/mp3/ogg/flac straight
-    from memory. librosa (ffmpeg-backed) additionally covers m4a/webm but needs
-    a real path and is skipped on no-torch GGUF-only installs, so those
-    containers raise a clear error there while the common formats keep working.
+    soundfile (libsndfile) reads wav/mp3/ogg/flac straight from memory. librosa
+    (ffmpeg-backed) additionally covers m4a/webm but needs a real path and is
+    absent on no-torch GGUF-only installs. Both imports are inside the fallback
+    so a missing decoder degrades to the next one (and finally a clear error)
+    rather than crashing.
     """
     import io
-    import soundfile as sf
 
     try:
+        import soundfile as sf
+
         arr, sr = sf.read(io.BytesIO(raw), dtype = "float32")
     except Exception:
         try:
@@ -1864,6 +1869,10 @@ def _decode_audio_mono(raw: bytes) -> tuple[np.ndarray, int]:
             os.unlink(tmp_path)
     if arr.ndim > 1:
         arr = arr.mean(axis = 1)
+    if sr > 0 and len(arr) > sr * _MAX_AUDIO_SECONDS:
+        raise ValueError(
+            f"decoded audio exceeds the {_MAX_AUDIO_SECONDS // 60}-minute limit"
+        )
     return arr, sr
 
 
