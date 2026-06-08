@@ -30,7 +30,7 @@ from .mapper import (
 # https://github.com/huggingface/transformers/pull/26037 allows 4 bit loading!
 from transformers import __version__ as transformers_version
 from unsloth.models._utils import TorchAOConfig
-from unsloth_zoo.utils import Version
+from unsloth_zoo.utils import Version, get_quant_type
 import gc
 
 transformers_version = Version(transformers_version)
@@ -343,32 +343,11 @@ def _tag_model_with_fp8_torchao_config(model: torch.nn.Module, fp8_mode: str):
         pass
 
 
-def get_quantization_config_info(model_config):
-    """
-    Extract quantization config info from a model config.
-    
-    Returns:
-        tuple: (quant_method, quantization_config) where quant_method is the quantization method
-        (e.g., "bitsandbytes", "compressed-tensors", "gptq", "awq") or None if not quantized,
-        and quantization_config is the full quantization config dict/object.
-    """
-    _ckpt_qcfg = getattr(model_config, "quantization_config", None)
-    if _ckpt_qcfg is None:
-        return None, None
-    
-    if isinstance(_ckpt_qcfg, dict):
-        quant_method = _ckpt_qcfg.get("quant_method")
-    else:
-        quant_method = getattr(_ckpt_qcfg, "quant_method", None)
-    
-    return quant_method, _ckpt_qcfg
-
-
 def check_and_disable_bitsandbytes_loading(model_config, load_in_4bit=True, load_in_8bit=False, verbose=True):
     """
     Check if we should disable bitsandbytes loading (load_in_4bit/load_in_8bit)
     because the model already has a non-bitsandbytes quantization config.
-    If so, disable them and print a warning message.
+    If so, disable BOTH 4bit and 8bit loading and print a warning message.
     
     Args:
         model_config: The AutoConfig object from the model
@@ -381,27 +360,20 @@ def check_and_disable_bitsandbytes_loading(model_config, load_in_4bit=True, load
             load_in_4bit/load_in_8bit will be False if they were disabled
             quant_method is the detected quantization method or None
     """
-    quant_method, _ = get_quantization_config_info(model_config)
+    quant_method = get_quant_type(model_config)
     
     if quant_method is None or quant_method == "bitsandbytes":
         return load_in_4bit, load_in_8bit, quant_method
     
     # Model has a non-bitsandbytes quantization config (e.g., compressed-tensors, gptq, awq)
-    # We should disable bitsandbytes loading to avoid config conflicts
-    if load_in_4bit:
+    # We should disable BOTH bitsandbytes loading to avoid config conflicts
+    if load_in_4bit or load_in_8bit:
         if verbose:
             print(
                 f"Unsloth: Model already quantized with {quant_method}. "
-                f"Disabling `load_in_4bit` to avoid quantization config conflict."
+                f"Disabling `load_in_4bit` and `load_in_8bit` to avoid quantization config conflict."
             )
         load_in_4bit = False
-    
-    if load_in_8bit:
-        if verbose:
-            print(
-                f"Unsloth: Model already quantized with {quant_method}. "
-                f"Disabling `load_in_8bit` to avoid quantization config conflict."
-            )
         load_in_8bit = False
     
     return load_in_4bit, load_in_8bit, quant_method
