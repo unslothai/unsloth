@@ -279,8 +279,7 @@ class InferenceOrchestrator:
                     "Try a smaller model, lower context length, or close other GPU-heavy apps."
                 )
             return (
-                f"{message}{suffix} "
-                f"Details: pid={pid}, signal={sig_name}, exitcode={exitcode}."
+                f"{message}{suffix} " f"Details: pid={pid}, signal={sig_name}, exitcode={exitcode}."
             )
 
         return f"{message} Details: pid={pid}, exitcode={exitcode}."
