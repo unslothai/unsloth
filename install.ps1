@@ -1043,9 +1043,11 @@ shell.Run cmd, 0, False
             return $null
         }
 
-        # Resolve the latest 3.13.x patch from the python.org listing, falling
-        # back to the pinned version if the listing cannot be fetched.
-        $full = $PythonFallbackFullVersion
+        # Resolve the latest $PythonVersion.x patch from the python.org listing,
+        # falling back to a same-minor version if the listing cannot be fetched.
+        # Use the pinned full version only when it matches the requested minor so a
+        # non-default UNSLOTH_PYTHON (e.g. 3.12) doesn't silently install 3.13.
+        $full = if ($PythonFallbackFullVersion -like "$PythonVersion.*") { $PythonFallbackFullVersion } else { "$PythonVersion.0" }
         try {
             $listing = [string](Invoke-RestMethod -Uri "https://www.python.org/ftp/python/" -UseBasicParsing -TimeoutSec 20)
             $patches = [regex]::Matches($listing, ([regex]::Escape($PythonVersion) + '\.(\d+)/')) |
@@ -1072,6 +1074,9 @@ shell.Run cmd, 0, False
             "InstallAllUsers=0",
             "PrependPath=1",
             "Include_launcher=1",
+            # Launcher per-user too: Include_launcher defaults InstallLauncherAllUsers=1,
+            # which needs admin and would break this non-admin per-user fallback.
+            "InstallLauncherAllUsers=0",
             "Include_pip=1",
             "AssociateFiles=0",
             "Shortcuts=0"
@@ -1594,7 +1599,7 @@ shell.Run cmd, 0, False
                     }
                 } catch {}
             }
-            if (-not $ROCmVersion) {
+            if (-not $ROCmVersion -and $amdSmiAllowed) {
                 $amdSmiVer = Get-Command "amd-smi" -ErrorAction SilentlyContinue
                 if ($amdSmiVer) {
                     try {

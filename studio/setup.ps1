@@ -938,7 +938,7 @@ if (-not $HasNvidiaSmi) {
                 }
             } catch {}
         }
-        if (-not $script:ROCmVersion) {
+        if (-not $script:ROCmVersion -and $amdSmiAllowed) {
             $amdSmiVer = Get-Command "amd-smi" -ErrorAction SilentlyContinue
             if ($amdSmiVer) {
                 try {

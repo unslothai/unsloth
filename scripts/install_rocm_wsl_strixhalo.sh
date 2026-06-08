@@ -95,7 +95,9 @@ _install_windows_sdk_via_winget() {
     # consumes a piped `curl | sh` stdin.
     for _sdk_id in Microsoft.WindowsSDK.10.0.26100 Microsoft.WindowsSDK.10.0.22621; do
         note "winget install ${_sdk_id} ..."
-        powershell.exe -NoProfile -Command "winget install --id ${_sdk_id} -e --accept-source-agreements --accept-package-agreements --disable-interactivity" </dev/null || true
+        # --source winget: pin the community source so a broken default msstore
+        # source (the cert failure this PR fixes) can't abort SDK resolution.
+        powershell.exe -NoProfile -Command "winget install --id ${_sdk_id} -e --source winget --accept-source-agreements --accept-package-agreements --disable-interactivity" </dev/null || true
         if [ -n "$(_find_win_sdk)" ]; then
             note "Windows SDK headers present after install."
             return 0
@@ -245,7 +247,9 @@ if ! printf '%s\n' "$_rocminfo_out" | grep -qE "Name:[[:space:]]*${GFX}([^0-9]|$
     printf '%s\n' "$_rocminfo_out" | head -25 >&2 || true
     die "rocminfo did not enumerate a ${GFX} GPU agent. Most common cause: the Windows AMD driver predates production ROCDXG -- update Adrenalin (install.ps1 offers this), reboot, and re-run."
 fi
-printf '%s\n' "$_rocminfo_out" | grep -E 'Marketing Name|Device Type|Compute Unit' | grep -iE "Radeon|GPU|Compute" | head -3
+# Display-only summary: best-effort (|| true) so head's early pipe-close under
+# `set -o pipefail` can't fail the bootstrap after verification already passed.
+printf '%s\n' "$_rocminfo_out" | grep -E 'Marketing Name|Device Type|Compute Unit' | grep -iE "Radeon|GPU|Compute" | head -3 || true
 note "ROCm-on-WSL runtime is live for ${GFX}."
 
 # ── Step 6 (optional): torch smoke test from the gfx1151 index ───────────────

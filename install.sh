@@ -2010,14 +2010,24 @@ _maybe_bootstrap_rocm_wsl() {
             export TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1
             export PATH="${_rw_rocm}/bin:${PATH}"
             export LD_LIBRARY_PATH="${_rw_rocm}/lib:${LD_LIBRARY_PATH:-}"
-            {
+            # Persist the drop-in so later non-login Studio launches get the env
+            # too. /etc/profile.d is root-owned: a plain redirect fails for a
+            # non-root reinstall (ROCm would silently disappear after this shell),
+            # so tee through sudo when not root. Best-effort -- the current shell
+            # already has the env, so the install proceeds either way.
+            _rw_dropin="$(
                 printf '# >>> Unsloth ROCm-on-WSL (gfx1151) >>>\n'
                 printf 'export HSA_ENABLE_DXG_DETECTION=1\n'
                 printf 'export TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1\n'
                 printf 'export PATH="%s/bin:${PATH}"\n' "${_rw_rocm}"
                 printf 'export LD_LIBRARY_PATH="%s/lib:${LD_LIBRARY_PATH:-}"\n' "${_rw_rocm}"
                 printf '# <<< Unsloth ROCm-on-WSL (gfx1151) <<<\n'
-            } > /etc/profile.d/unsloth-rocm-wsl.sh 2>/dev/null || true
+            )"
+            if [ "$(id -u)" = "0" ]; then
+                printf '%s\n' "$_rw_dropin" > /etc/profile.d/unsloth-rocm-wsl.sh 2>/dev/null || true
+            elif command -v sudo >/dev/null 2>&1; then
+                printf '%s\n' "$_rw_dropin" | sudo tee /etc/profile.d/unsloth-rocm-wsl.sh >/dev/null 2>&1 || true
+            fi
         fi
         return 0
     fi

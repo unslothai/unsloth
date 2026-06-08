@@ -259,18 +259,23 @@ case "$_os" in
     Linux)
         if [ "$_is_wsl" = "1" ]; then
             echo "Removing WSL Windows-side shortcuts..."
-            # install.sh creates 'Unsloth Studio.lnk' on the Windows Desktop and
-            # Start Menu Programs folder via powershell.exe; mirror that path.
-            # Prefer powershell.exe (matches each shortcut by TARGET=wsl.exe, so a
-            # native install's "Unsloth Studio.lnk" is never touched). Test it can
-            # EXECUTE: `command -v` succeeds even with WSL interop OFF (.exe fails
-            # with "Exec format error"), common on systemd-enabled WSL distros.
+            # install.sh creates per-distro 'Unsloth Studio (WSL - <distro>).lnk'
+            # on the Windows Desktop + Start Menu via powershell.exe. Scope removal
+            # to THIS distro (passed as $args[0]) so a multi-distro install keeps the
+            # other distros' launchers; the TARGET=wsl.exe check still spares a
+            # native install's "Unsloth Studio.lnk". Prefer powershell.exe; test it
+            # can EXECUTE (`command -v` succeeds even with interop OFF -- .exe then
+            # fails "Exec format error", common on systemd-enabled distros).
+            _wsl_distro="${WSL_DISTRO_NAME:-}"
             _ps_ran=0
             if command -v powershell.exe >/dev/null 2>&1 && \
                powershell.exe -NoProfile -Command "exit 0" >/dev/null 2>&1; then
                 _ps_ran=1
+                # Inject the distro into the command: a -Command string does not
+                # receive trailing tokens as $args. WSL distro names are safe to
+                # embed (no quotes/$/backtick).
                 # shellcheck disable=SC2016
-                powershell.exe -NoProfile -Command '
+                powershell.exe -NoProfile -Command '$distro = "'"$_wsl_distro"'";
                     $dirs = @(
                         [Environment]::GetFolderPath("Desktop"),
                         (Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs")
@@ -281,9 +286,16 @@ case "$_os" in
                         Get-ChildItem -LiteralPath $d -Filter "Unsloth Studio*.lnk" -ErrorAction SilentlyContinue | ForEach-Object {
                             try {
                                 $sc = $ws.CreateShortcut($_.FullName);
-                                if ("$($sc.TargetPath) $($sc.Arguments)" -match "wsl\.exe") {
-                                    Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue
+                                if ("$($sc.TargetPath) $($sc.Arguments)" -notmatch "wsl\.exe") { return }
+                                # When the distro is known, require the per-distro
+                                # name for this distro or its -d "<distro>" argument
+                                # so launchers for other distros are not removed.
+                                if ($distro) {
+                                    $nameMatch = ($_.Name -eq "Unsloth Studio (WSL - $distro).lnk");
+                                    $argMatch  = ($sc.Arguments -match ("-d\s+`"?" + [regex]::Escape($distro) + "`"?"));
+                                    if (-not ($nameMatch -or $argMatch)) { return }
                                 }
+                                Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue
                             } catch { }
                         }
                     }' >/dev/null 2>&1 || true
@@ -302,9 +314,16 @@ case "$_os" in
                             "$_udir"/OneDrive*/Desktop \
                             "$_udir/AppData/Roaming/Microsoft/Windows/Start Menu/Programs"; do
                             [ -d "$_scdir" ] || continue
-                            for _lnk in "$_scdir"/"Unsloth Studio (WSL"*.lnk; do
+                            if [ -n "$_wsl_distro" ]; then
+                                # Exact per-distro name (no glob) so other distros survive.
+                                _lnk="$_scdir/Unsloth Studio (WSL - ${_wsl_distro}).lnk"
                                 [ -e "$_lnk" ] && rm -f "$_lnk" 2>/dev/null && echo "  removed: $_lnk" || true
-                            done
+                            else
+                                # Distro unknown: fall back to the broad WSL prefix.
+                                for _lnk in "$_scdir"/"Unsloth Studio (WSL"*.lnk; do
+                                    [ -e "$_lnk" ] && rm -f "$_lnk" 2>/dev/null && echo "  removed: $_lnk" || true
+                                done
+                            fi
                         done
                     done
                 done
