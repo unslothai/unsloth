@@ -839,9 +839,7 @@ def studio_update_status(_current_subject: str = Depends(get_current_subject)):
     "/api/studio/download-transport-capabilities",
     response_model = TransportCapabilities,
 )
-def studio_download_transport_capabilities(
-    _current_subject: str = Depends(get_current_subject),
-):
+def studio_download_transport_capabilities(_current_subject: str = Depends(get_current_subject)):
     return asdict(get_download_transport_capabilities())
 
 
@@ -852,6 +850,7 @@ async def shutdown_server(request: Request, current_subject: str = Depends(get_c
     Called by the frontend quit dialog so users can stop the server from the UI
     without needing to use the CLI or kill the process manually.
     """
+
     async def _delayed_shutdown():
         await asyncio.sleep(0.2)  # Let the HTTP response return first
         trigger = getattr(request.app.state, "trigger_shutdown", None)

@@ -117,11 +117,7 @@ def _worker_breadcrumb_path(key: str) -> Optional[Path]:
     return parent / f"{safe}.json"
 
 
-def write_worker_breadcrumb(
-    key: str,
-    pid: int,
-    metadata: Optional["DownloadMetadata"],
-) -> None:
+def write_worker_breadcrumb(key: str, pid: int, metadata: Optional["DownloadMetadata"]) -> None:
     """Record a live worker's PID so a restarted backend can reap it. Best
     effort: a write failure only forfeits boot-time reaping for this worker,
     which the worker's own parent-death watchdog still covers."""
@@ -198,7 +194,6 @@ def _read_process_cmdline(pid: int) -> Optional[str]:
         pass
     try:
         import psutil
-
         return " ".join(psutil.Process(pid).cmdline())
     except Exception:
         return None
@@ -383,24 +378,15 @@ def _iter_active_snapshot_dirs(repo_type: str, repo_id: str) -> Iterator[Path]:
                 yield snapshot
 
 
-def _manifest_verifies_against_active_cache(
-    repo_type: str,
-    repo_id: str,
-    manifest,
-) -> bool:
+def _manifest_verifies_against_active_cache(repo_type: str, repo_id: str, manifest) -> bool:
     from hub.utils import download_manifest
-
     for snapshot_dir in _iter_active_snapshot_dirs(repo_type, repo_id):
         if download_manifest.verify_against_disk(manifest, snapshot_dir).ok:
             return True
     return False
 
 
-def _manifest_has_active_incomplete_blobs(
-    repo_type: str,
-    repo_id: str,
-    manifest,
-) -> bool:
+def _manifest_has_active_incomplete_blobs(repo_type: str, repo_id: str, manifest) -> bool:
     if not getattr(manifest, "variant", None):
         return has_active_incomplete_blobs(repo_type, repo_id)
     expected_hashes = frozenset(
@@ -409,9 +395,7 @@ def _manifest_has_active_incomplete_blobs(
     if not expected_hashes:
         return has_active_incomplete_blobs(repo_type, repo_id)
     return bool(
-        incomplete_blob_hashes(repo_type, repo_id, active_only = True).intersection(
-            expected_hashes
-        )
+        incomplete_blob_hashes(repo_type, repo_id, active_only = True).intersection(expected_hashes)
     )
 
 
@@ -426,9 +410,7 @@ def _is_transport_marker_file(path: Path) -> bool:
     # Matches the marker (".transport"), its per-process tmp (".transport.tmp-*"),
     # variant-scoped markers (".transport.gguf-*") and their tmps. Real HF cache
     # entries (blobs/refs/snapshots/.no_exist) never start with ".transport.".
-    return path.name == TRANSPORT_MARKER_NAME or path.name.startswith(
-        f"{TRANSPORT_MARKER_NAME}."
-    )
+    return path.name == TRANSPORT_MARKER_NAME or path.name.startswith(f"{TRANSPORT_MARKER_NAME}.")
 
 
 def _companion_marker_path(entry: Path) -> Path:
@@ -463,7 +445,11 @@ def _read_marker(entry: Path, variant: Optional[str] = None) -> Optional[str]:
     return _read_marker_value(_marker_path(entry, variant))
 
 
-def _write_marker(entry: Path, mode: str, variant: Optional[str] = None) -> None:
+def _write_marker(
+    entry: Path,
+    mode: str,
+    variant: Optional[str] = None,
+) -> None:
     _write_marker_value(_marker_path(entry, variant), mode)
 
 
@@ -550,13 +536,9 @@ def prepare_cache_for_transport(
             total_purged += _purge_incomplete_blobs(entry, only_blob_hashes, protected)
         else:
             if _read_marker(entry, variant) != mode:
-                total_purged += _purge_incomplete_blobs(
-                    entry, only_blob_hashes, protected
-                )
+                total_purged += _purge_incomplete_blobs(entry, only_blob_hashes, protected)
             if companion_blob_hashes and _read_companion_marker(entry) != mode:
-                total_purged += _purge_incomplete_blobs(
-                    entry, companion_blob_hashes, protected
-                )
+                total_purged += _purge_incomplete_blobs(entry, companion_blob_hashes, protected)
         _write_marker(entry, mode, variant)
         if has_companion:
             _write_companion_marker(entry, mode)
@@ -603,9 +585,7 @@ def purge_empty_marker_dir(
             contents = list(entry.iterdir())
         except OSError:
             continue
-        if not contents or not all(
-            _is_transport_marker_file(item) for item in contents
-        ):
+        if not contents or not all(_is_transport_marker_file(item) for item in contents):
             continue
         own_name = _marker_path(entry, variant).name
         own_markers = [
@@ -679,11 +659,7 @@ def incomplete_blob_hashes(
     return out
 
 
-def completed_blob_bytes(
-    repo_type: str,
-    repo_id: str,
-    blob_hashes: frozenset[str],
-) -> int:
+def completed_blob_bytes(repo_type: str, repo_id: str, blob_hashes: frozenset[str]) -> int:
     """Sum finalized blob bytes for *blob_hashes* in the active HF cache root.
 
     A download worker only writes to the active ``HF_HUB_CACHE`` root, so a
@@ -707,11 +683,7 @@ def completed_blob_bytes(
     return total
 
 
-def existing_blob_bytes(
-    repo_type: str,
-    repo_id: str,
-    blob_hashes: frozenset[str],
-) -> int:
+def existing_blob_bytes(repo_type: str, repo_id: str, blob_hashes: frozenset[str]) -> int:
     """Bytes already on disk (finalized + ``.incomplete``) for *blob_hashes* in
     the active HF cache root. A blob is in exactly one state, so summing both
     candidate names never double-counts. Used to size what a (possibly resumed)
@@ -807,7 +779,6 @@ def persist_cancel_marker(
         return
     try:
         from hub.utils.download_manifest import write_cancel_marker
-
         if not write_cancel_marker(
             repo_type,
             repo_id,
@@ -866,7 +837,10 @@ class DownloadRegistry:
         self._max_terminal = max_terminal
 
     def _put_terminal_job_locked(
-        self, key: str, state: JobState, error: Optional[str] = None
+        self,
+        key: str,
+        state: JobState,
+        error: Optional[str] = None,
     ) -> None:
         self._jobs.pop(key, None)
         self._jobs[key] = DownloadState(state, error)
@@ -879,7 +853,12 @@ class DownloadRegistry:
                     if len(self._jobs) <= self._max_terminal:
                         break
 
-    def set_job(self, key: str, state: JobState, error: Optional[str] = None) -> None:
+    def set_job(
+        self,
+        key: str,
+        state: JobState,
+        error: Optional[str] = None,
+    ) -> None:
         key = normalize_job_key(key)
         with self._lock:
             if state in TERMINAL_STATES:
@@ -909,11 +888,7 @@ class DownloadRegistry:
         with self._lock:
             return self._metadata.get(key)
 
-    def _generation_matches_locked(
-        self,
-        key: str,
-        generation: Optional[int],
-    ) -> bool:
+    def _generation_matches_locked(self, key: str, generation: Optional[int]) -> bool:
         key = normalize_job_key(key)
         return generation is None or self._generations.get(key, 0) == generation
 
@@ -1097,9 +1072,7 @@ class DownloadRegistry:
             return (metadata.variant or "").strip().lower() or None
         return variant_from_key(key)
 
-    def _delete_blocked_by_active_locked(
-        self, repo_id: str, variant: Optional[str]
-    ) -> bool:
+    def _delete_blocked_by_active_locked(self, repo_id: str, variant: Optional[str]) -> bool:
         """Whether an active download conflicts with deleting *repo_id*/*variant*.
 
         A whole-repo delete (``variant is None``) conflicts with any active
@@ -1160,9 +1133,7 @@ class DownloadRegistry:
             if repo_key:
                 candidate_keys = list(self._repo_active.get(repo_key, set()))
             else:
-                candidate_keys = [
-                    key for active in self._repo_active.values() for key in active
-                ]
+                candidate_keys = [key for active in self._repo_active.values() for key in active]
             refs: list[ActiveDownloadRef] = []
             for key in candidate_keys:
                 job = self._jobs.get(key)
@@ -1178,7 +1149,11 @@ class DownloadRegistry:
                 )
             return refs
 
-    def begin_delete(self, repo_id: str, variant: Optional[str] = None) -> bool:
+    def begin_delete(
+        self,
+        repo_id: str,
+        variant: Optional[str] = None,
+    ) -> bool:
         """Reserve *repo_id* (or one GGUF *variant* of it) for deletion. Returns
         ``False`` when a conflicting download is active: a whole-repo delete
         conflicts with any active download, a variant delete only with that same
@@ -1194,7 +1169,11 @@ class DownloadRegistry:
             self._deleting.setdefault(repo_id, set()).add(variant_key)
             return True
 
-    def end_delete(self, repo_id: str, variant: Optional[str] = None) -> None:
+    def end_delete(
+        self,
+        repo_id: str,
+        variant: Optional[str] = None,
+    ) -> None:
         repo_id = normalize_repo_key(repo_id)
         variant_key = (variant or "").strip().lower() or None
         with self._lock:
@@ -1279,9 +1258,7 @@ class DownloadRegistry:
             try:
                 proc.wait(timeout = max(0.0, deadline - time.monotonic()))
             except subprocess.TimeoutExpired:
-                logger.warning(
-                    f"shutdown: {kind} worker for {key} did not exit after kill"
-                )
+                logger.warning(f"shutdown: {kind} worker for {key} did not exit after kill")
             except Exception:
                 pass
             # Mark only genuinely interrupted workers (rc != 0, or None when

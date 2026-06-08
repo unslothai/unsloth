@@ -78,11 +78,7 @@ def preferred_mmproj_sibling(siblings: Sequence) -> Optional[object]:
     if not candidates:
         return None
     return next(
-        (
-            s
-            for s in candidates
-            if extract_quant_label(getattr(s, "rfilename")).upper() == "F16"
-        ),
+        (s for s in candidates if extract_quant_label(getattr(s, "rfilename")).upper() == "F16"),
         candidates[0],
     )
 
@@ -95,13 +91,9 @@ def build_gguf_variant_plans(siblings: Sequence) -> dict[str, GgufVariantPlan]:
         for s in all_mmproj
         if isinstance(getattr(s, "rfilename", None), str)
     )
-    all_mmproj_hashes = frozenset(
-        h for h in (sibling_sha256(s) for s in all_mmproj) if h
-    )
+    all_mmproj_hashes = frozenset(h for h in (sibling_sha256(s) for s in all_mmproj) if h)
     companion = preferred_mmproj_sibling(siblings)
-    companion_expected = (
-        expected_file_from_sibling(companion) if companion is not None else None
-    )
+    companion_expected = expected_file_from_sibling(companion) if companion is not None else None
 
     for sibling in siblings:
         name = getattr(sibling, "rfilename", None)
@@ -141,12 +133,8 @@ def plan_from_expected_files(
     all_mmproj_hashes: frozenset[str] | None = None,
 ) -> GgufVariantPlan:
     expected = tuple(expected_files)
-    main_files = tuple(
-        file for file in expected if is_main_gguf_variant_path(file.path, variant)
-    )
-    companion_files = tuple(
-        file for file in expected if is_companion_gguf_path(file.path)
-    )
+    main_files = tuple(file for file in expected if is_main_gguf_variant_path(file.path, variant))
+    companion_files = tuple(file for file in expected if is_companion_gguf_path(file.path))
     main_hashes = frozenset(file.sha256 for file in main_files if file.sha256)
     companion_hashes = frozenset(file.sha256 for file in companion_files if file.sha256)
     required_hashes = frozenset(file.sha256 for file in expected if file.sha256)
@@ -163,9 +151,7 @@ def plan_from_expected_files(
             if all_mmproj_filenames is not None
             else frozenset(file.path for file in companion_files)
         ),
-        mmproj_hashes = (
-            all_mmproj_hashes if all_mmproj_hashes is not None else companion_hashes
-        ),
+        mmproj_hashes = (all_mmproj_hashes if all_mmproj_hashes is not None else companion_hashes),
         expected_files = expected,
         main_size_bytes = main_size,
         download_size_bytes = download_size,

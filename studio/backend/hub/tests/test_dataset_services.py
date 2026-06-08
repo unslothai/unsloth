@@ -200,9 +200,7 @@ def test_delete_cached_dataset_absent_everywhere_raises_404(monkeypatch):
 
 def test_check_format_rejects_invalid_path_as_400():
     with pytest.raises(HTTPException) as exc_info:
-        formatting.check_format_response(
-            CheckFormatRequest(dataset_name = "../../etc/passwd")
-        )
+        formatting.check_format_response(CheckFormatRequest(dataset_name = "../../etc/passwd"))
 
     assert exc_info.value.status_code == 400
 
@@ -240,12 +238,7 @@ def test_dataset_download_registry_key_is_case_insensitive():
 def test_dataset_idle_status_uses_cancel_marker_after_restart(monkeypatch, tmp_path):
     monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path)
     monkeypatch.setattr(downloads, "_registry", download_registry.DownloadRegistry())
-    assert download_manifest.write_cancel_marker(
-        "dataset",
-        "Owner/Data",
-        None,
-        "http",
-    )
+    assert download_manifest.write_cancel_marker("dataset", "Owner/Data", None, "http")
 
     status = asyncio.run(downloads.get_dataset_download_status_response("owner/data"))
 
@@ -295,9 +288,7 @@ def test_dataset_claim_register_cancel_uses_registry_marker_owner(monkeypatch):
     )
 
     result = asyncio.run(
-        downloads.download_dataset_response(
-            SimpleNamespace(repo_id = "Org/Data", use_xet = False)
-        )
+        downloads.download_dataset_response(SimpleNamespace(repo_id = "Org/Data", use_xet = False))
     )
 
     assert result["state"] == "cancelled"
@@ -339,9 +330,7 @@ def test_upload_dataset_response_writes_non_empty_file(monkeypatch, tmp_path):
     payload = b'{"text":"hello"}\n'
     monkeypatch.setattr(local, "DATASET_UPLOAD_DIR", tmp_path)
 
-    response = asyncio.run(
-        local.upload_dataset_response(_Upload("../train.jsonl", payload))
-    )
+    response = asyncio.run(local.upload_dataset_response(_Upload("../train.jsonl", payload)))
 
     stored_path = Path(response.stored_path)
     assert response.filename == "train.jsonl"

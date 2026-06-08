@@ -228,9 +228,7 @@ def _stream_file_preview_slice(path: Path, preview_size: int):
     return Dataset.from_list(rows), None
 
 
-def _load_local_preview_slice(
-    *, dataset_path: Path, train_split: str, preview_size: int
-):
+def _load_local_preview_slice(*, dataset_path: Path, train_split: str, preview_size: int):
     from datasets import load_dataset
 
     if dataset_path.is_dir():
@@ -266,9 +264,7 @@ def _load_local_preview_slice(
     # surfacing in the UI. JSON/CSV carry no such metadata, so stream them via
     # islice and report total_rows=None (the UI degrades to "Showing N rows").
     if suffix == ".parquet":
-        dataset = load_dataset(
-            "parquet", data_files = str(dataset_path), split = train_split
-        )
+        dataset = load_dataset("parquet", data_files = str(dataset_path), split = train_split)
         total_rows = len(dataset)
         preview_slice = dataset.select(range(min(preview_size, total_rows)))
         return preview_slice, total_rows
@@ -282,9 +278,7 @@ def _load_local_preview_slice(
             )
         return preview
 
-    raise HTTPException(
-        status_code = 400, detail = f"Unsupported file format: {dataset_path.suffix}"
-    )
+    raise HTTPException(status_code = 400, detail = f"Unsupported file format: {dataset_path.suffix}")
 
 
 def _sanitize_filename(filename: str) -> str:
@@ -297,10 +291,7 @@ def _sanitize_filename(filename: str) -> str:
 def _upload_too_large(size_bytes: int) -> HTTPException:
     return HTTPException(
         status_code = 413,
-        detail = (
-            f"Upload is too large "
-            f"({size_bytes:,} bytes; max {LOCAL_UPLOAD_MAX_BYTES:,})."
-        ),
+        detail = (f"Upload is too large " f"({size_bytes:,} bytes; max {LOCAL_UPLOAD_MAX_BYTES:,})."),
     )
 
 

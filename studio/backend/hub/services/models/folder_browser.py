@@ -312,12 +312,7 @@ def _browse_relative_parts(requested_path: str, root: Path) -> Optional[list[str
     parts = [part for part in rel_text.split(os.sep) if part not in ("", ".")]
     altsep = os.altsep
     for part in parts:
-        if (
-            part == ".."
-            or "\x00" in part
-            or os.sep in part
-            or (altsep and altsep in part)
-        ):
+        if part == ".." or "\x00" in part or os.sep in part or (altsep and altsep in part):
             return None
     return parts
 
@@ -539,9 +534,7 @@ def browse_folders_response(
     # would 403 on click. Users can still hop to other allowed roots
     # via the suggestion chips below.
     parent: Optional[str]
-    if target.parent == target or not _is_path_inside_allowlist(
-        target.parent, allowed_roots
-    ):
+    if target.parent == target or not _is_path_inside_allowlist(target.parent, allowed_roots):
         parent = None
     else:
         parent = str(target.parent)

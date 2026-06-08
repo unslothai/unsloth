@@ -81,9 +81,7 @@ def _path_exists_or_symlink(path: Path) -> bool:
         return False
 
 
-def _repo_file_matches(
-    target_repo, predicate
-) -> list[tuple[Path, Optional[Path], str]]:
+def _repo_file_matches(target_repo, predicate) -> list[tuple[Path, Optional[Path], str]]:
     matches: list[tuple[Path, Optional[Path], str]] = []
     for rev in getattr(target_repo, "revisions", ()):
         for f in getattr(rev, "files", ()):
@@ -129,11 +127,7 @@ def _delete_gguf_variant_from_repos(
     completed_hashes: set[str] = set()
 
     for target_repo in target_repos:
-        repo_dir = (
-            Path(target_repo.repo_path)
-            if getattr(target_repo, "repo_path", None)
-            else None
-        )
+        repo_dir = Path(target_repo.repo_path) if getattr(target_repo, "repo_path", None) else None
         matched = _repo_file_matches(
             target_repo,
             lambda name: _is_main_gguf_filename(name)
@@ -244,10 +238,7 @@ def _loaded_id_matches_repo(loaded_id: str, repo_id: str) -> bool:
 
 
 def _loaded_repo_variant_blocks_delete(
-    loaded_id: str,
-    repo_id: str,
-    delete_variant: Optional[str],
-    loaded_variant: Optional[str],
+    loaded_id: str, repo_id: str, delete_variant: Optional[str], loaded_variant: Optional[str]
 ) -> bool:
     if not _loaded_id_matches_repo(loaded_id, repo_id):
         return False
@@ -274,12 +265,9 @@ def _llama_cpp_blocks_delete(repo_id: str, variant: Optional[str]) -> bool:
     fail closed rather than delete weights out from under a live process."""
     try:
         from routes.inference import get_llama_cpp_backend
-
         backend = get_llama_cpp_backend()
     except Exception as e:
-        logger.debug(
-            f"llama.cpp backend unavailable during delete guard for {repo_id}: {e}"
-        )
+        logger.debug(f"llama.cpp backend unavailable during delete guard for {repo_id}: {e}")
         return False
     loaded_id = backend.model_identifier
     loaded_variant = getattr(backend, "hf_variant", None)
@@ -307,19 +295,18 @@ def _inference_backend_blocks_delete(repo_id: str) -> bool:
     :func:`_llama_cpp_blocks_delete`."""
     try:
         from core.inference import get_inference_backend
-
         backend = get_inference_backend()
     except Exception as e:
-        logger.debug(
-            f"Inference backend unavailable during delete guard for {repo_id}: {e}"
-        )
+        logger.debug(f"Inference backend unavailable during delete guard for {repo_id}: {e}")
         return False
     active_name = backend.active_model_name
     return bool(active_name) and _loaded_id_matches_repo(active_name, repo_id)
 
 
 async def delete_cached_model_response(
-    repo_id: str, variant: Optional[str] = None, hf_token: Optional[str] = None
+    repo_id: str,
+    variant: Optional[str] = None,
+    hf_token: Optional[str] = None,
 ):
     """Delete a cached model repo (or a specific GGUF variant) from the HF cache.
 
@@ -346,9 +333,7 @@ async def delete_cached_model_response(
             _inference_backend_blocks_delete(repo_id)
         )
     except Exception as e:
-        logger.warning(
-            f"Load-state verification failed for {repo_id}; refusing delete: {e}"
-        )
+        logger.warning(f"Load-state verification failed for {repo_id}; refusing delete: {e}")
         raise HTTPException(
             status_code = 503,
             detail = _LOAD_STATE_UNVERIFIABLE_DETAIL,
@@ -359,9 +344,7 @@ async def delete_cached_model_response(
             detail = "Unload the model before deleting",
         )
 
-    repo_key = await asyncio.to_thread(
-        resolve_cached_repo_id_case, repo_id, repo_type = "model"
-    )
+    repo_key = await asyncio.to_thread(resolve_cached_repo_id_case, repo_id, repo_type = "model")
     if not downloads.registry.begin_delete(repo_key, variant):
         detail = (
             f"Cancel the {variant} download before deleting it."
@@ -370,9 +353,7 @@ async def delete_cached_model_response(
         )
         raise HTTPException(status_code = 400, detail = detail)
     try:
-        return await asyncio.to_thread(
-            _delete_cached_model_blocking, repo_id, variant, hf_token
-        )
+        return await asyncio.to_thread(_delete_cached_model_blocking, repo_id, variant, hf_token)
     finally:
         downloads.registry.end_delete(repo_key, variant)
         cache_inventory.invalidate_hf_cache_scans()
@@ -415,22 +396,18 @@ def _delete_cached_model_blocking(
 
         if not target_entries:
             if variant is None:
-                cache_purged = purge_repo_cache_dirs(
+                cache_purged = purge_repo_cache_dirs("model", repo_id) or purge_partial_repo(
                     "model", repo_id
-                ) or purge_partial_repo("model", repo_id)
-                state_purged = (
-                    download_manifest.purge_all_state_for_repo("model", repo_id) > 0
                 )
+                state_purged = download_manifest.purge_all_state_for_repo("model", repo_id) > 0
                 if cache_purged or state_purged:
                     return {"status": "deleted", "repo_id": repo_id}
             if variant:
-                incomplete_result = (
-                    gguf_variants.delete_variant_incomplete_blobs_result(
-                        repo_id,
-                        variant,
-                        hf_token,
-                        companions = not sibling_active,
-                    )
+                incomplete_result = gguf_variants.delete_variant_incomplete_blobs_result(
+                    repo_id,
+                    variant,
+                    hf_token,
+                    companions = not sibling_active,
                 )
                 if incomplete_result.unresolved:
                     raise HTTPException(
@@ -466,9 +443,7 @@ def _delete_cached_model_blocking(
         deleted_revisions = False
         for hf_cache, repo_info in target_entries:
             revision_hashes = [
-                rev.commit_hash
-                for rev in repo_info.revisions
-                if getattr(rev, "commit_hash", None)
+                rev.commit_hash for rev in repo_info.revisions if getattr(rev, "commit_hash", None)
             ]
             if not revision_hashes:
                 continue

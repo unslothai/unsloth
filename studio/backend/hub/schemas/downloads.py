@@ -10,9 +10,7 @@ from pydantic import BaseModel, Field
 from typing import List, Literal, Optional
 
 
-DownloadJobState = Literal[
-    "idle", "running", "cancelling", "cancelled", "complete", "error"
-]
+DownloadJobState = Literal["idle", "running", "cancelling", "cancelled", "complete", "error"]
 
 
 class DownloadModelRequest(BaseModel):
@@ -115,8 +113,7 @@ class DownloadProgressResponse(BaseModel):
     complete_on_disk: bool = Field(
         False,
         description = (
-            "True only when the backend verified a usable completed "
-            "snapshot/variant on disk."
+            "True only when the backend verified a usable completed snapshot/variant on disk."
         ),
     )
     expected_bytes: int

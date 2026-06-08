@@ -66,16 +66,14 @@ def get_scan_folders(current_subject: str = Depends(get_current_subject)):
 
 @router.post("/scan-folders", response_model = ScanFolderInfo, status_code = 201)
 def add_scan_folder_endpoint(
-    body: AddScanFolderRequest,
-    current_subject: str = Depends(get_current_subject),
+    body: AddScanFolderRequest, current_subject: str = Depends(get_current_subject)
 ):
     return local_inventory.add_scan_folder_response(body.path)
 
 
 @router.delete("/scan-folders/{folder_id}", response_model = RemoveScanFolderResponse)
 def remove_scan_folder_endpoint(
-    folder_id: int,
-    current_subject: str = Depends(get_current_subject),
+    folder_id: int, current_subject: str = Depends(get_current_subject)
 ):
     return local_inventory.remove_scan_folder_response(folder_id)
 
@@ -125,8 +123,7 @@ async def download_model(
 
 @router.post("/download/cancel", response_model = CancelDownloadResponse, status_code = 202)
 async def cancel_download_model(
-    body: CancelDownloadRequest,
-    current_subject: str = Depends(get_current_subject),
+    body: CancelDownloadRequest, current_subject: str = Depends(get_current_subject)
 ):
     return await downloads.cancel_download_model_response(body)
 
@@ -134,9 +131,7 @@ async def cancel_download_model(
 @router.get("/download-status", response_model = DownloadJobStatus)
 async def get_download_status(
     repo_id: str = Query(..., description = "HuggingFace repo ID"),
-    gguf_variant: str = Query(
-        "", description = "Quantization variant (empty for safetensors)"
-    ),
+    gguf_variant: str = Query("", description = "Quantization variant (empty for safetensors)"),
     current_subject: str = Depends(get_current_subject),
 ):
     return await downloads.get_download_status_response(repo_id, gguf_variant)
@@ -153,9 +148,7 @@ async def get_active_downloads(
 @router.get("/transport-status", response_model = TransportStatusResponse)
 async def get_model_transport_status(
     repo_id: str = Query(..., description = "HuggingFace repo ID"),
-    gguf_variant: str = Query(
-        "", description = "Quantization variant (empty for safetensors)"
-    ),
+    gguf_variant: str = Query("", description = "Quantization variant (empty for safetensors)"),
     hf_token: Optional[str] = Depends(get_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):

@@ -82,9 +82,7 @@ def repo_cache_basename(repo_type: RepoType, repo_id: str) -> str:
     # this via the Literal; this runtime check catches the cases they
     # miss (dynamic strings, JSON-sourced values, etc.).
     if repo_type not in _VALID_REPO_TYPES:
-        raise ValueError(
-            f"repo_type must be one of {_VALID_REPO_TYPES}, got {repo_type!r}"
-        )
+        raise ValueError(f"repo_type must be one of {_VALID_REPO_TYPES}, got {repo_type!r}")
     return f"{repo_type}s--{repo_id.replace('/', '--')}".lower()
 
 

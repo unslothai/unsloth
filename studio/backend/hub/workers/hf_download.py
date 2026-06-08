@@ -189,17 +189,14 @@ def _hf_token_arg(hf_token: str | None) -> HfTokenArg:
 
 
 def _retry_metadata_fetch(repo_id: str, fetch, *, label: str):
-    for attempt, timeout in enumerate(
-        (_METADATA_REQUEST_TIMEOUT, _METADATA_RETRY_TIMEOUT)
-    ):
+    for attempt, timeout in enumerate((_METADATA_REQUEST_TIMEOUT, _METADATA_RETRY_TIMEOUT)):
         try:
             return fetch(timeout)
         except Exception as e:
             if attempt == 1:
                 raise
             print(
-                f"{label} request failed for {repo_id} "
-                f"({type(e).__name__}: {e}); retrying.",
+                f"{label} request failed for {repo_id} " f"({type(e).__name__}: {e}); retrying.",
                 file = sys.stderr,
             )
             time.sleep(_METADATA_RETRY_DELAY)
@@ -208,7 +205,6 @@ def _retry_metadata_fetch(repo_id: str, fetch, *, label: str):
 
 def _model_info_with_retry(repo_id: str, hf_token: str | None):
     from huggingface_hub import model_info as hf_model_info
-
     return _retry_metadata_fetch(
         repo_id,
         lambda timeout: hf_model_info(
@@ -223,7 +219,6 @@ def _model_info_with_retry(repo_id: str, hf_token: str | None):
 
 def _dataset_info_with_retry(repo_id: str, hf_token: str | None):
     from huggingface_hub import HfApi
-
     api = HfApi(token = _hf_token_arg(hf_token))
     return _retry_metadata_fetch(
         repo_id,
@@ -310,11 +305,7 @@ def _verify_completed_download(
     sys.exit(1)
 
 
-def _preflight_disk_space(
-    repo_type: str,
-    repo_id: str,
-    expected_files: list,
-) -> None:
+def _preflight_disk_space(repo_type: str, repo_id: str, expected_files: list) -> None:
     """Fail fast with a clear message when the active HF cache filesystem can't
     hold what's left to download. Best-effort and fail-open: any inability to
     size the work or read free space skips the check, so a real download is
@@ -391,7 +382,6 @@ def _snapshot_download_plan(info) -> tuple[list[str], list]:
 
 def _dataset_expected_files(info) -> list:
     from hub.utils.download_manifest import ExpectedFile
-
     return [
         ExpectedFile(
             path = s.rfilename,
@@ -468,9 +458,7 @@ def _recover_manifest_after_download(
         )
         sys.exit(1)
 
-    fallback_files = download_manifest.expected_files_from_snapshot_dir(
-        Path(snapshot_path)
-    )
+    fallback_files = download_manifest.expected_files_from_snapshot_dir(Path(snapshot_path))
     if fallback_files and download_manifest.write_manifest(
         repo_type,
         repo_id,
@@ -550,9 +538,7 @@ def _download_snapshot(repo_id: str, hf_token: str | None, mode: str) -> None:
             snapshot_path,
             mode,
             fetch_info = lambda: _model_info_with_retry(repo_id, hf_token),
-            expected_files_from_info = lambda recovered: _snapshot_download_plan(
-                recovered
-            )[1],
+            expected_files_from_info = lambda recovered: _snapshot_download_plan(recovered)[1],
         )
     _verify_completed_download(
         "model",
@@ -564,9 +550,7 @@ def _download_snapshot(repo_id: str, hf_token: str | None, mode: str) -> None:
 
 
 def _gguf_variant_target_plan(
-    repo_id: str,
-    variant: str,
-    hf_token: str | None,
+    repo_id: str, variant: str, hf_token: str | None
 ) -> GgufVariantPlan | None:
     try:
         info = _model_info_with_retry(repo_id, hf_token)
@@ -577,18 +561,12 @@ def _gguf_variant_target_plan(
             file = sys.stderr,
         )
         raise RuntimeError(
-            f"Metadata unavailable while resolving GGUF variant '{variant}' "
-            f"for {repo_id}"
+            f"Metadata unavailable while resolving GGUF variant '{variant}' " f"for {repo_id}"
         ) from e
     return build_gguf_variant_plans(list(info.siblings)).get(variant.lower())
 
 
-def _download_gguf_variant(
-    repo_id: str,
-    variant: str,
-    hf_token: str | None,
-    mode: str,
-) -> None:
+def _download_gguf_variant(repo_id: str, variant: str, hf_token: str | None, mode: str) -> None:
     from huggingface_hub import snapshot_download
     from hub.utils.download_registry import prepare_cache_for_transport
     from hub.utils.hf_cache_state import has_active_incomplete_blobs

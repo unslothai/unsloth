@@ -102,7 +102,6 @@ def _serialize_binary_value(data):
 
     try:
         from PIL import Image as PILImageModule
-
         with PILImageModule.open(io.BytesIO(data)) as image:
             return _serialize_pil_image(image)
     except Exception:
@@ -119,7 +118,6 @@ def _serialize_preview_value(value):
 
     try:
         from PIL.Image import Image as PILImage
-
         if isinstance(value, PILImage):
             return _serialize_pil_image(value)
     except Exception:
@@ -148,17 +146,13 @@ def _serialize_preview_rows(rows):
 
 
 def _latest_cached_dataset_snapshot(
-    repo_id: str,
-    local_path: Optional[str] = None,
+    repo_id: str, local_path: Optional[str] = None
 ) -> Optional[Path]:
     return _shared_latest_cached_dataset_snapshot(repo_id, local_path)
 
 
 def _cached_dataset_candidates(
-    snapshot: Path,
-    *,
-    subset: Optional[str],
-    train_split: str,
+    snapshot: Path, *, subset: Optional[str], train_split: str
 ) -> list[Path]:
     return _shared_cached_dataset_candidates(
         snapshot,
@@ -182,19 +176,12 @@ def _repo_file_matches_split(path: str, split: str) -> bool:
 
 
 def _select_tier1_repo_file(
-    files: list[str],
-    *,
-    subset: Optional[str],
-    train_split: str,
+    files: list[str], *, subset: Optional[str], train_split: str
 ) -> Optional[str]:
-    data_files = sorted(
-        f for f in files if any(f.lower().endswith(ext) for ext in DATA_EXTS)
-    )
+    data_files = sorted(f for f in files if any(f.lower().endswith(ext) for ext in DATA_EXTS))
     if not data_files:
         return None
-    tabular_files = [
-        f for f in data_files if any(f.lower().endswith(ext) for ext in _TABULAR_EXTS)
-    ]
+    tabular_files = [f for f in data_files if any(f.lower().endswith(ext) for ext in _TABULAR_EXTS)]
     candidates = tabular_files or data_files
     if subset:
         candidates = [f for f in candidates if _repo_file_matches_label(f, subset)]
@@ -204,10 +191,7 @@ def _select_tier1_repo_file(
     return candidates[0] if candidates else None
 
 
-def _load_cached_hf_preview_slice(
-    request: CheckFormatRequest,
-    preview_size: int,
-):
+def _load_cached_hf_preview_slice(request: CheckFormatRequest, preview_size: int):
     if not _is_valid_repo_id(request.dataset_name):
         return None
     snapshot = _latest_cached_dataset_snapshot(
@@ -425,9 +409,7 @@ def check_format_response(
                     processed = format_dataset_preview(preview_slice)
                     preview_samples = _serialize_preview_rows(processed)
                 except Exception as e:
-                    logger.warning(
-                        f"Processed preview generation failed (non-fatal): {e}"
-                    )
+                    logger.warning(f"Processed preview generation failed (non-fatal): {e}")
                     preview_samples = _serialize_preview_rows(preview_slice)
         else:
             preview_samples = _serialize_preview_rows(preview_slice)
@@ -438,9 +420,7 @@ def check_format_response(
         if image_col and image_col in (result.get("columns") or []):
             try:
                 sample_val = preview_slice[0][image_col]
-                if isinstance(sample_val, str) and sample_val.startswith(
-                    ("http://", "https://")
-                ):
+                if isinstance(sample_val, str) and sample_val.startswith(("http://", "https://")):
                     url_warning = (
                         "This dataset contains image URLs instead of embedded images. "
                         "Images will be downloaded during training, which may be slow for large datasets."
@@ -511,8 +491,7 @@ def ai_assist_mapping_response(
 
         # Truncate sample values for the LLM prompt
         truncated = [
-            {col: str(s.get(col, ""))[:200] for col in request.columns}
-            for s in request.samples[:5]
+            {col: str(s.get(col, ""))[:200] for col in request.columns} for s in request.samples[:5]
         ]
 
         result = llm_conversion_advisor(

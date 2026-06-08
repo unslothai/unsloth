@@ -67,9 +67,7 @@ def _is_immediate_model_weight_file(path: Path) -> bool:
 
 
 def _has_immediate_model_weight(
-    path: Path,
-    *,
-    probe_limit: int = _MODEL_SIGNAL_PROBE_LIMIT,
+    path: Path, *, probe_limit: int = _MODEL_SIGNAL_PROBE_LIMIT
 ) -> bool:
     try:
         for index, entry in enumerate(path.iterdir(), start = 1):
@@ -86,9 +84,7 @@ def _has_immediate_model_weight(
 
 
 def _has_immediate_model_signal(
-    path: Path,
-    *,
-    probe_limit: int = _MODEL_SIGNAL_PROBE_LIMIT,
+    path: Path, *, probe_limit: int = _MODEL_SIGNAL_PROBE_LIMIT
 ) -> bool:
     try:
         if (path / "config.json").exists() or (path / "adapter_config.json").exists():
@@ -102,9 +98,7 @@ def _is_model_directory_for_scan(path: Path, *, entry_limit: int | None) -> bool
     if entry_limit is None:
         return _is_model_directory(path)
     try:
-        has_config = (path / "config.json").exists() or (
-            path / "adapter_config.json"
-        ).exists()
+        has_config = (path / "config.json").exists() or (path / "adapter_config.json").exists()
     except OSError:
         return False
     return has_config and _has_immediate_model_weight(path)
@@ -114,7 +108,6 @@ def _resolve_hf_cache_dir() -> Path:
     """Resolve local HF cache root used by hub downloads."""
     try:
         from huggingface_hub.constants import HF_HUB_CACHE
-
         return Path(HF_HUB_CACHE)
     except Exception:
         return Path.home() / ".cache" / "huggingface" / "hub"
@@ -159,9 +152,7 @@ def _scan_models_dir(
             break
         try:
             is_dir = child.is_dir()
-            is_gguf_file = (
-                not is_dir and child.suffix.lower() == ".gguf" and child.is_file()
-            )
+            is_gguf_file = not is_dir and child.suffix.lower() == ".gguf" and child.is_file()
             if not is_dir and not is_gguf_file:
                 continue
             has_model_files = is_gguf_file or _has_immediate_model_signal(child)
@@ -200,9 +191,7 @@ def _hf_repo_dir_has_content(repo_dir: Path) -> bool:
     return False
 
 
-def _scan_hf_cache(
-    cache_dir: Path, *, entry_limit: int | None = None
-) -> List[LocalModelInfo]:
+def _scan_hf_cache(cache_dir: Path, *, entry_limit: int | None = None) -> List[LocalModelInfo]:
     if not cache_dir.exists() or not cache_dir.is_dir():
         return []
 
@@ -240,9 +229,7 @@ def _scan_hf_cache(
             repo_dir,
         )
         gguf_partial = hf_cache_scan.is_gguf_repo_partial(model_id, repo_dir)
-        has_gguf_variant_state, gguf_variant_state_size = _gguf_variant_state_summary(
-            model_id
-        )
+        has_gguf_variant_state, gguf_variant_state_size = _gguf_variant_state_summary(model_id)
         snapshot_partial_transport = (
             hf_cache_scan.partial_transport_for(
                 "model",
@@ -326,9 +313,7 @@ def _scan_hf_cache(
     return found
 
 
-def _scan_lmstudio_dir(
-    lm_dir: Path, *, entry_limit: int | None = None
-) -> List[LocalModelInfo]:
+def _scan_lmstudio_dir(lm_dir: Path, *, entry_limit: int | None = None) -> List[LocalModelInfo]:
     """Scan an LM Studio models directory for model files.
 
     LM Studio uses a ``publisher/model-name`` folder structure containing
@@ -452,9 +437,7 @@ def _resolve_allowed_models_dir(models_dir: str, allowed_roots: list[Path]) -> P
     if not models_dir or not models_dir.strip():
         raise ValueError("Directory not allowed")
 
-    requested = Path(
-        os.path.realpath(os.path.expanduser(normalize_path(models_dir.strip())))
-    )
+    requested = Path(os.path.realpath(os.path.expanduser(normalize_path(models_dir.strip()))))
     if any(path_is_same_or_child(requested, root) for root in allowed_roots):
         return requested
 
@@ -542,9 +525,7 @@ async def _collect_models_from_default_sources(
         and hf_default.resolve() != hf_cache_dir.resolve()
         and hf_default.resolve() != legacy_hf.resolve()
     ):
-        local_models += await _scan_source(
-            "default HF cache", _scan_hf_cache, hf_default
-        )
+        local_models += await _scan_source("default HF cache", _scan_hf_cache, hf_default)
 
     for lm_dir in lm_dirs:
         local_models += await _scan_source("LM Studio", _scan_lmstudio_dir, lm_dir)
@@ -646,9 +627,7 @@ def _dedupe_local_models(local_models: List[LocalModelInfo]) -> list[LocalModelI
     )
 
 
-async def list_local_models_response(
-    models_dir: str = "./models",
-) -> LocalModelListResponse:
+async def list_local_models_response(models_dir: str = "./models") -> LocalModelListResponse:
     """List local model candidates from every supported on-device source."""
     hf_cache_dir = _resolve_hf_cache_dir()
     legacy_hf = legacy_hf_cache_dir()
