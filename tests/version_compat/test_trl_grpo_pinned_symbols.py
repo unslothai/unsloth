@@ -575,9 +575,7 @@ def test_trl_kto_get_batch_logps_signature(tag: str):
         'raise ValueError("Logits (batch and sequence length dim) and labels '
         'must have the same shape.")'
     )
-    if checked_sources and not any(
-        old_shape_check in src for _, src in checked_sources
-    ):
+    if checked_sources and not any(old_shape_check in src for _, src in checked_sources):
         # TRL main inlined KTO log-prob computation and removed the old
         # helper/shape-check rewrite target. There is no skipped rewrite to
         # guard until a new concrete KTO shape mismatch target appears.
