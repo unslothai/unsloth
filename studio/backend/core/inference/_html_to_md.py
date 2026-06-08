@@ -54,7 +54,7 @@ class _MarkdownRenderer(HTMLParser):
     """HTMLParser subclass that emits Markdown tokens into a list."""
 
     def __init__(self):
-        super().__init__(convert_charrefs = False)
+        super().__init__(convert_charrefs=False)
         self._out: list[str] = []
         self._skip_depth: int = 0
 
@@ -103,7 +103,7 @@ class _MarkdownRenderer(HTMLParser):
     def _prefix_blockquote(self, content: str) -> str:
         """Prefix every line of *content* with ``> ``."""
         # Strip trailing whitespace first, then collapse blank lines
-        content = re.sub(r"[ \t]+$", "", content, flags = re.MULTILINE)
+        content = re.sub(r"[ \t]+$", "", content, flags=re.MULTILINE)
         content = re.sub(r"\n{3,}", "\n\n", content).strip()
         if not content:
             return ""

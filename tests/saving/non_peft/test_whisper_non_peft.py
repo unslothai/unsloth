@@ -16,12 +16,12 @@ print("🔍 PHASE 1: Loading Base Model")
 print(f"{'='*80}")
 
 model, tokenizer = FastModel.from_pretrained(
-    model_name = "unsloth/whisper-large-v3",
-    dtype = None,  # Leave as None for auto detection
-    load_in_4bit = False,  # Set to True to do 4bit quantization which reduces memory
-    auto_model = WhisperForConditionalGeneration,
-    whisper_language = "English",
-    whisper_task = "transcribe",
+    model_name="unsloth/whisper-large-v3",
+    dtype=None,  # Leave as None for auto detection
+    load_in_4bit=False,  # Set to True to do 4bit quantization which reduces memory
+    auto_model=WhisperForConditionalGeneration,
+    whisper_language="English",
+    whisper_task="transcribe",
     # token = "hf_...", # use one if using gated models like meta-llama/Llama-2-7b-hf
 )
 
@@ -34,7 +34,7 @@ print(f"\n{'='*80}")
 print("🔍 PHASE 2: Attempting save_pretrained_merged (Should Warn)")
 print(f"{'='*80}")
 
-with warnings.catch_warnings(record = True) as w:
+with warnings.catch_warnings(record=True) as w:
     warnings.simplefilter("always")
     model.save_pretrained_merged("test_output", tokenizer)
 

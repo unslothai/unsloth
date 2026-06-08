@@ -342,9 +342,7 @@ class GemmaFixedRotaryEmbedding(torch.nn.Module):
     ):
         if device_index is None:
             device_index = get_current_device()
-        return self.multi_gpu_cos_cached[device_index], self.multi_gpu_sin_cached[
-            device_index
-        ]
+        return self.multi_gpu_cos_cached[device_index], self.multi_gpu_sin_cached[device_index]
 
     def extend_rope_embedding(self, x, seq_len):
         if seq_len <= self.current_rope_size:

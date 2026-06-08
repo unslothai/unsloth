@@ -50,7 +50,7 @@ def _rope_embedding_QK(
     if HAS_ROPE_INDICES:
         rot_position = tl.load(
             rope_embedding_indices + row_position,
-            eviction_policy = "evict_first",
+            eviction_policy="evict_first",
         ).to(tl.int32)
     else:
         rot_position = row_position % seqlen
@@ -59,13 +59,13 @@ def _rope_embedding_QK(
     sin_ptr = sin + rot_position * sin_row_stride
     sin1 = tl.load(
         sin_ptr + col_offsets,
-        mask = mask,
-        other = 0,
+        mask=mask,
+        other=0,
     )
     cos1 = tl.load(
         cos_ptr + col_offsets,
-        mask = mask,
-        other = 0,
+        mask=mask,
+        other=0,
     )
     if BACKWARD_PASS:
         sin1 = -sin1
@@ -74,19 +74,19 @@ def _rope_embedding_QK(
     seq_index = row_position - batch_id * seqlen
 
     q_ptr = Q + batch_id * Q_batch_stride + head_position * Q_head_stride + seq_index * Q_seq_stride
-    q0 = tl.load(q_ptr + col_offsets, mask = mask, other = 0)
-    q1 = tl.load(q_ptr + half_head_dim + col_offsets, mask = mask, other = 0)
-    tl.store(q_ptr + col_offsets, q0 * cos1 - q1 * sin1, mask = mask)
-    tl.store(q_ptr + half_head_dim + col_offsets, q1 * cos1 + q0 * sin1, mask = mask)
+    q0 = tl.load(q_ptr + col_offsets, mask=mask, other=0)
+    q1 = tl.load(q_ptr + half_head_dim + col_offsets, mask=mask, other=0)
+    tl.store(q_ptr + col_offsets, q0 * cos1 - q1 * sin1, mask=mask)
+    tl.store(q_ptr + half_head_dim + col_offsets, q1 * cos1 + q0 * sin1, mask=mask)
 
     if head_position < n_heads_K:
         k_ptr = (
             K + batch_id * K_batch_stride + head_position * K_head_stride + seq_index * K_seq_stride
         )
-        k0 = tl.load(k_ptr + col_offsets, mask = mask, other = 0)
-        k1 = tl.load(k_ptr + half_head_dim + col_offsets, mask = mask, other = 0)
-        tl.store(k_ptr + col_offsets, k0 * cos1 - k1 * sin1, mask = mask)
-        tl.store(k_ptr + half_head_dim + col_offsets, k1 * cos1 + k0 * sin1, mask = mask)
+        k0 = tl.load(k_ptr + col_offsets, mask=mask, other=0)
+        k1 = tl.load(k_ptr + half_head_dim + col_offsets, mask=mask, other=0)
+        tl.store(k_ptr + col_offsets, k0 * cos1 - k1 * sin1, mask=mask)
+        tl.store(k_ptr + half_head_dim + col_offsets, k1 * cos1 + k0 * sin1, mask=mask)
 
 
 _rope_embedding_QK = triton.jit(_rope_embedding_QK)
@@ -128,13 +128,13 @@ def _rope_embedding(
 
     sin1 = tl.load(
         sin + (row_position % seqlen) * sin_row_stride + half_head_dim * 0 + col_offsets,
-        mask = mask,
-        other = 0,
+        mask=mask,
+        other=0,
     )
     cos1 = tl.load(
         cos + (row_position % seqlen) * cos_row_stride + half_head_dim * 0 + col_offsets,
-        mask = mask,
-        other = 0,
+        mask=mask,
+        other=0,
     )
 
     if BACKWARD_PASS:
@@ -151,11 +151,11 @@ def _rope_embedding(
         offs_q2 = row_position * Q_row_stride + k * head_dim + col_offsets + half_head_dim
 
         # For Gemma - sometimes RoPE must be done in float32 and not bfloat16
-        Q1 = tl.load(Q + offs_q1, mask = mask, other = 0).to(sin1.dtype)
-        Q2 = tl.load(Q + offs_q2, mask = mask, other = 0).to(sin1.dtype)
+        Q1 = tl.load(Q + offs_q1, mask=mask, other=0).to(sin1.dtype)
+        Q2 = tl.load(Q + offs_q2, mask=mask, other=0).to(sin1.dtype)
 
-        tl.store(Q + offs_q1, Q1 * cos1 - Q2 * sin1, mask = mask)
-        tl.store(Q + offs_q2, Q2 * cos1 + Q1 * sin1, mask = mask)
+        tl.store(Q + offs_q1, Q1 * cos1 - Q2 * sin1, mask=mask)
+        tl.store(Q + offs_q2, Q2 * cos1 + Q1 * sin1, mask=mask)
 
 
 _rope_embedding = triton.jit(_rope_embedding)
@@ -207,9 +207,9 @@ class Fast_RoPE_Embedding(torch.autograd.Function):
                 seq_len,
                 head_dim,
                 n_heads,
-                BACKWARD_PASS = False,
-                BLOCK_SIZE = BLOCK_SIZE,
-                num_warps = num_warps,
+                BACKWARD_PASS=False,
+                BLOCK_SIZE=BLOCK_SIZE,
+                num_warps=num_warps,
             )
         ctx.BLOCK_SIZE = BLOCK_SIZE
         ctx.num_warps = num_warps
@@ -249,9 +249,9 @@ class Fast_RoPE_Embedding(torch.autograd.Function):
                 seq_len,
                 head_dim,
                 n_heads,
-                BACKWARD_PASS = True,
-                BLOCK_SIZE = ctx.BLOCK_SIZE,
-                num_warps = ctx.num_warps,
+                BACKWARD_PASS=True,
+                BLOCK_SIZE=ctx.BLOCK_SIZE,
+                num_warps=ctx.num_warps,
             )
         dY = dY.reshape(batch, seq_len, n_heads, head_dim)
         return (
@@ -268,7 +268,7 @@ def fast_rope_embedding(
     K,
     cos,
     sin,
-    rope_embedding_indices = None,
+    rope_embedding_indices=None,
 ):
     if rope_embedding_indices is not None:
         Q_out, K_out = Fast_RoPE_Embedding_QK.apply(Q, K, cos, sin, rope_embedding_indices)
@@ -295,9 +295,9 @@ class Fast_RoPE_Embedding_QK(torch.autograd.Function):
 
         if has_indices:
             # TRL's rotary indices are always in int32, so casting is just for safety
-            rope_ptr = rope_indices.reshape(-1).to(dtype = torch.int32, device = Q.device)
+            rope_ptr = rope_indices.reshape(-1).to(dtype=torch.int32, device=Q.device)
         else:
-            rope_ptr = cos.new_empty(1, dtype = torch.int32)
+            rope_ptr = cos.new_empty(1, dtype=torch.int32)
 
         BLOCK_SIZE, num_warps = calculate_settings(head_dim)
 
@@ -328,12 +328,12 @@ class Fast_RoPE_Embedding_QK(torch.autograd.Function):
                 sin.stride(0),
                 rope_ptr,
                 seq_len,
-                head_dim = head_dim,
-                n_heads_K = n_heads_K,
-                BACKWARD_PASS = False,
-                HAS_ROPE_INDICES = has_indices,
-                BLOCK_SIZE = BLOCK_SIZE,
-                num_warps = num_warps,
+                head_dim=head_dim,
+                n_heads_K=n_heads_K,
+                BACKWARD_PASS=False,
+                HAS_ROPE_INDICES=has_indices,
+                BLOCK_SIZE=BLOCK_SIZE,
+                num_warps=num_warps,
             )
 
         ctx.block_size = BLOCK_SIZE
@@ -355,7 +355,7 @@ class Fast_RoPE_Embedding_QK(torch.autograd.Function):
     def backward(ctx, dQ, dK):
         batch, _, _, head_dim = dQ.shape
 
-        rope_ptr = ctx.rope_indices if ctx.has_indices else ctx.cos.new_empty(1, dtype = torch.int32)
+        rope_ptr = ctx.rope_indices if ctx.has_indices else ctx.cos.new_empty(1, dtype=torch.int32)
 
         # Inplace rotary embedding is generally fine
         dQ_out = dQ.clone() if not dQ.is_contiguous() else dQ
@@ -388,12 +388,12 @@ class Fast_RoPE_Embedding_QK(torch.autograd.Function):
                 ctx.sin.stride(0),
                 rope_ptr,
                 ctx.seq_len,
-                head_dim = head_dim,
-                n_heads_K = ctx.n_heads_K,
-                BACKWARD_PASS = True,
-                HAS_ROPE_INDICES = ctx.has_indices,
-                BLOCK_SIZE = ctx.block_size,
-                num_warps = ctx.num_warps,
+                head_dim=head_dim,
+                n_heads_K=ctx.n_heads_K,
+                BACKWARD_PASS=True,
+                HAS_ROPE_INDICES=ctx.has_indices,
+                BLOCK_SIZE=ctx.block_size,
+                num_warps=ctx.num_warps,
             )
 
         return (dQ_out, dK_out, None, None, None)
@@ -411,7 +411,7 @@ class Slow_RoPE_Embedding(torch.autograd.Function):
 
         # Q * cos + rotate_half(Q) * sin
         half = Q.shape[-1] // 2
-        RH_Q = torch.cat((-Q[..., half:], Q[..., :half]), dim = -1)
+        RH_Q = torch.cat((-Q[..., half:], Q[..., :half]), dim=-1)
         Q *= cos
         Q.addcmul_(RH_Q, sin)
         # RH_Q *= sin
@@ -424,7 +424,7 @@ class Slow_RoPE_Embedding(torch.autograd.Function):
         cos, sin = ctx.saved_tensors
         # Q * cos + rotate_half.T(Q) * sin
         half = dY.shape[-1] // 2
-        RH_dY = torch.cat((dY[..., half:], -dY[..., :half]), dim = -1)
+        RH_dY = torch.cat((dY[..., half:], -dY[..., :half]), dim=-1)
         dY *= cos
         dY.addcmul_(RH_dY, sin)
         # RH_dY *= sin

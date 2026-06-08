@@ -100,7 +100,7 @@ def _lookup(provider: str, model: str) -> Optional[dict[str, float]]:
     # inherit canonical prices while preventing "claude-opus-4-15"
     # from matching "claude-opus-4-1" or "gpt-5.5-prod" from matching
     # "gpt-5.5-pro". Sort longest-first to pick the most specific row.
-    for key in sorted(table, key = len, reverse = True):
+    for key in sorted(table, key=len, reverse=True):
         if model.startswith(key) and (len(model) == len(key) or model[len(key)] == "-"):
             return table[key]
     return None

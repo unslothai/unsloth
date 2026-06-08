@@ -51,6 +51,7 @@ BAD_MAPPINGS = {
 def _get_torchao_fp8_config(fp8_mode):
     # Import lazily so an optional, broken vLLM install does not break plain `import unsloth`.
     from unsloth_zoo.vllm_utils import _get_torchao_fp8_config as _impl
+
     return _impl(fp8_mode)
 
 
@@ -103,13 +104,13 @@ def prepare_device_map():
 
 def __get_model_name(
     model_name,
-    load_in_4bit = True,
-    INT_TO_FLOAT_MAPPER = None,
-    FLOAT_TO_INT_MAPPER = None,
-    MAP_TO_UNSLOTH_16bit = None,
-    load_in_fp8 = False,
-    FLOAT_TO_FP8_BLOCK_MAPPER = None,
-    FLOAT_TO_FP8_ROW_MAPPER = None,
+    load_in_4bit=True,
+    INT_TO_FLOAT_MAPPER=None,
+    FLOAT_TO_INT_MAPPER=None,
+    MAP_TO_UNSLOTH_16bit=None,
+    load_in_fp8=False,
+    FLOAT_TO_FP8_BLOCK_MAPPER=None,
+    FLOAT_TO_FP8_ROW_MAPPER=None,
 ):
     model_name = str(model_name)
     lower_model_name = model_name.lower()
@@ -132,6 +133,7 @@ def __get_model_name(
         # fall through to offline quantization via _offline_quantize_to_fp8.
         if importlib.util.find_spec("vllm") is not None:
             import vllm
+
             if Version(vllm.__version__) >= Version("0.12.0"):
                 return model_name
         return None
@@ -182,7 +184,7 @@ def _get_new_mapper():
         new_mapper = (
             "https://raw.githubusercontent.com/unslothai/unsloth/main/unsloth/models/mapper.py"
         )
-        with requests.get(new_mapper, timeout = 3) as new_mapper:
+        with requests.get(new_mapper, timeout=3) as new_mapper:
             new_mapper = new_mapper.text
         new_mapper = new_mapper[new_mapper.find("__INT_TO_FLOAT_MAPPER") :]
         new_mapper = (
@@ -205,32 +207,32 @@ def _resolve_with_mappers(
     model_name, load_in_4bit, load_in_fp8, int_to_float, float_to_int, map_to_unsloth_16bit
 ):
     return __get_model_name(
-        model_name = model_name,
-        load_in_4bit = load_in_4bit,
-        INT_TO_FLOAT_MAPPER = int_to_float,
-        FLOAT_TO_INT_MAPPER = float_to_int,
-        MAP_TO_UNSLOTH_16bit = map_to_unsloth_16bit,
-        load_in_fp8 = load_in_fp8,
-        FLOAT_TO_FP8_BLOCK_MAPPER = FLOAT_TO_FP8_BLOCK_MAPPER,
-        FLOAT_TO_FP8_ROW_MAPPER = FLOAT_TO_FP8_ROW_MAPPER,
+        model_name=model_name,
+        load_in_4bit=load_in_4bit,
+        INT_TO_FLOAT_MAPPER=int_to_float,
+        FLOAT_TO_INT_MAPPER=float_to_int,
+        MAP_TO_UNSLOTH_16bit=map_to_unsloth_16bit,
+        load_in_fp8=load_in_fp8,
+        FLOAT_TO_FP8_BLOCK_MAPPER=FLOAT_TO_FP8_BLOCK_MAPPER,
+        FLOAT_TO_FP8_ROW_MAPPER=FLOAT_TO_FP8_ROW_MAPPER,
     )
 
 
 def get_model_name(
     model_name,
-    load_in_4bit = True,
-    load_in_fp8 = False,
-    token = None,
-    trust_remote_code = False,
+    load_in_4bit=True,
+    load_in_fp8=False,
+    token=None,
+    trust_remote_code=False,
 ):
     assert load_in_fp8 in (True, False, "block")
     new_model_name = _resolve_with_mappers(
-        model_name = model_name,
-        load_in_4bit = load_in_4bit,
-        load_in_fp8 = load_in_fp8,
-        int_to_float = INT_TO_FLOAT_MAPPER,
-        float_to_int = FLOAT_TO_INT_MAPPER,
-        map_to_unsloth_16bit = MAP_TO_UNSLOTH_16bit,
+        model_name=model_name,
+        load_in_4bit=load_in_4bit,
+        load_in_fp8=load_in_fp8,
+        int_to_float=INT_TO_FLOAT_MAPPER,
+        float_to_int=FLOAT_TO_INT_MAPPER,
+        map_to_unsloth_16bit=MAP_TO_UNSLOTH_16bit,
     )
     # In the rare case, we convert bad model names to other names
     # For eg too large dynamic quants or MoEs
@@ -247,12 +249,12 @@ def get_model_name(
             _get_new_mapper()
         )
         upgraded_model_name = _resolve_with_mappers(
-            model_name = model_name,
-            load_in_4bit = load_in_4bit,
-            load_in_fp8 = load_in_fp8,
-            int_to_float = NEW_INT_TO_FLOAT_MAPPER,
-            float_to_int = NEW_FLOAT_TO_INT_MAPPER,
-            map_to_unsloth_16bit = NEW_MAP_TO_UNSLOTH_16bit,
+            model_name=model_name,
+            load_in_4bit=load_in_4bit,
+            load_in_fp8=load_in_fp8,
+            int_to_float=NEW_INT_TO_FLOAT_MAPPER,
+            float_to_int=NEW_FLOAT_TO_INT_MAPPER,
+            map_to_unsloth_16bit=NEW_MAP_TO_UNSLOTH_16bit,
         )
         if upgraded_model_name is not None:
             raise NotImplementedError(
@@ -307,12 +309,12 @@ def _offline_quantize_to_fp8(model_name: str, fp8_mode: str) -> str:
         auto_processor = AutoProcessor if is_vlm else AutoTokenizer
         model = auto_model.from_pretrained(
             model_name,
-            torch_dtype = "auto",
-            device_map = "auto",
-            quantization_config = qconfig,
+            torch_dtype="auto",
+            device_map="auto",
+            quantization_config=qconfig,
         )
         tokenizer = auto_processor.from_pretrained(model_name)
-        model.save_pretrained(new_model_name, safe_serialization = False)
+        model.save_pretrained(new_model_name, safe_serialization=False)
         del model
         for _ in range(2):
             torch.cuda.empty_cache()
@@ -328,8 +330,8 @@ def _tag_model_with_fp8_torchao_config(model: torch.nn.Module, fp8_mode: str):
     try:
         base_config = _get_torchao_fp8_config(fp8_mode)
         model.torchao_config = TorchAOConfig(
-            qat_scheme = None,
-            base_config_and_filter_fns = [(base_config, None)],
+            qat_scheme=None,
+            base_config_and_filter_fns=[(base_config, None)],
         )
     except:
         pass
@@ -337,9 +339,9 @@ def _tag_model_with_fp8_torchao_config(model: torch.nn.Module, fp8_mode: str):
 
 def check_and_disable_bitsandbytes_loading(
     model_config,
-    load_in_4bit = True,
-    load_in_8bit = False,
-    verbose = True,
+    load_in_4bit=True,
+    load_in_8bit=False,
+    verbose=True,
 ):
     """
     Check if we should disable bitsandbytes loading (load_in_4bit/load_in_8bit)
@@ -449,10 +451,12 @@ def _get_fp8_mode_and_check_settings(
         and importlib.util.find_spec("fbgemm_gpu.experimental") is not None
     ):
         import fbgemm_gpu.experimental.gen_ai
+
         if Version(fbgemm_gpu.__version__) < Version("1.4.1"):
             # Old FBGEMM version - disable and use Triton kernels instead
             os.environ["UNSLOTH_HAS_FBGEMM"] = "0"
             from unsloth_zoo.log import logger
+
             logger.info(
                 f"Unsloth: fbgemm_gpu_genai=={fbgemm_gpu.__version__} is old for FP8 loading. "
                 f"Using Triton kernels instead."

@@ -27,10 +27,10 @@ resolve_lemonade_rocm_choice = getattr(_mod, "resolve_lemonade_rocm_choice", Non
 _LEMONADE_GFX_FAMILIES = getattr(_mod, "_LEMONADE_GFX_FAMILIES", None)
 
 if resolve_lemonade_rocm_choice is None or _LEMONADE_GFX_FAMILIES is None:
-    pytest.skip("PR symbols not present - check branch", allow_module_level = True)
+    pytest.skip("PR symbols not present - check branch", allow_module_level=True)
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def _clear_lemonade_release_cache():
     """Prevent cross-test pollution of the lemonade release lru_cache when
     future tests vary the fetch_json mock return value."""
@@ -65,21 +65,21 @@ def _stub_lemonade_release() -> dict:
 
 def _make_rocm_host(gfx_target: str, *, windows: bool = False) -> HostInfo:
     return HostInfo(
-        system = "Windows" if windows else "Linux",
-        machine = "amd64" if windows else "x86_64",
-        is_windows = windows,
-        is_linux = not windows,
-        is_macos = False,
-        is_x86_64 = True,
-        is_arm64 = False,
-        nvidia_smi = None,
-        driver_cuda_version = None,
-        compute_caps = [],
-        visible_cuda_devices = None,
-        has_physical_nvidia = False,
-        has_usable_nvidia = False,
-        has_rocm = True,
-        rocm_gfx_target = gfx_target,
+        system="Windows" if windows else "Linux",
+        machine="amd64" if windows else "x86_64",
+        is_windows=windows,
+        is_linux=not windows,
+        is_macos=False,
+        is_x86_64=True,
+        is_arm64=False,
+        nvidia_smi=None,
+        driver_cuda_version=None,
+        compute_caps=[],
+        visible_cuda_devices=None,
+        has_physical_nvidia=False,
+        has_usable_nvidia=False,
+        has_rocm=True,
+        rocm_gfx_target=gfx_target,
     )
 
 
@@ -132,9 +132,9 @@ def test_unknown_gpu_not_in_families():
     ],
 )
 def test_asset_resolves_for_known_gpu(gfx, os_prefix, windows):
-    host = _make_rocm_host(gfx, windows = windows)
-    with patch.object(_mod, "fetch_json", return_value = _stub_lemonade_release()):
-        result = resolve_lemonade_rocm_choice(host, os_prefix, "default", llama_tag = "latest")
+    host = _make_rocm_host(gfx, windows=windows)
+    with patch.object(_mod, "fetch_json", return_value=_stub_lemonade_release()):
+        result = resolve_lemonade_rocm_choice(host, os_prefix, "default", llama_tag="latest")
     assert result is not None, f"Installer will NOT fetch lemonade binary for {gfx} ({os_prefix})"
     assert _lookup_family(gfx) in result.name
     assert result.url.startswith("https://github.com/lemonade-sdk/llamacpp-rocm")
@@ -142,7 +142,7 @@ def test_asset_resolves_for_known_gpu(gfx, os_prefix, windows):
 
 def test_unknown_gpu_falls_through_to_upstream():
     host = _make_rocm_host("gfx999")
-    result = resolve_lemonade_rocm_choice(host, "ubuntu", "default", llama_tag = "latest")
+    result = resolve_lemonade_rocm_choice(host, "ubuntu", "default", llama_tag="latest")
     assert result is None
 
 
@@ -176,11 +176,11 @@ def _stub_unsloth_release(release_tag: str = "b9022") -> dict:
 
 @pytest.mark.skipif(
     direct_linux_release_plan is None,
-    reason = "simple-policy dispatcher not present on this branch",
+    reason="simple-policy dispatcher not present on this branch",
 )
 def test_simple_policy_plans_lemonade_for_rocm_host():
     host = _make_rocm_host("gfx1151")
-    with patch.object(_mod, "fetch_json", return_value = _stub_lemonade_release()):
+    with patch.object(_mod, "fetch_json", return_value=_stub_lemonade_release()):
         plan = direct_linux_release_plan(
             _stub_unsloth_release(),
             host,
@@ -199,16 +199,16 @@ def test_simple_policy_plans_lemonade_for_rocm_host():
 
 @pytest.mark.skipif(
     direct_upstream_release_plan is None,
-    reason = "simple-policy dispatcher not present on this branch",
+    reason="simple-policy dispatcher not present on this branch",
 )
 def test_simple_policy_plans_lemonade_for_windows_hip_host():
-    host = _make_rocm_host("gfx1151", windows = True)
+    host = _make_rocm_host("gfx1151", windows=True)
     release = {
         "tag_name": "b9022",
         "name": "b9022",
         "assets": [],
     }
-    with patch.object(_mod, "fetch_json", return_value = _stub_lemonade_release()):
+    with patch.object(_mod, "fetch_json", return_value=_stub_lemonade_release()):
         plan = direct_upstream_release_plan(release, host, "ggml-org/llama.cpp", "latest")
     assert plan is not None, "Windows ROCm host should plan a lemonade HIP attempt"
     kinds = [a.install_kind for a in plan.attempts]
@@ -219,12 +219,12 @@ def test_simple_policy_plans_lemonade_for_windows_hip_host():
 
 @pytest.mark.skipif(
     direct_upstream_release_plan is None,
-    reason = "simple-policy dispatcher not present on this branch",
+    reason="simple-policy dispatcher not present on this branch",
 )
 def test_simple_policy_windows_hip_falls_back_to_upstream_when_lemonade_unavailable():
     """If lemonade returns None (e.g. gfx999 or transient API failure), the planner
     must still include the upstream HIP asset rather than silently downgrading to CPU."""
-    host = _make_rocm_host("gfx999", windows = True)
+    host = _make_rocm_host("gfx999", windows=True)
     hip_asset = "llama-b9022-bin-win-hip-radeon-x64.zip"
     release = {
         "tag_name": "b9022",
@@ -267,7 +267,7 @@ def test_lemonade_resolver_skipped_by_opt_out_env(monkeypatch):
     """UNSLOTH_DISABLE_LEMONADE_ROCM=1 must short-circuit the resolver."""
     monkeypatch.setenv("UNSLOTH_DISABLE_LEMONADE_ROCM", "1")
     host = _make_rocm_host("gfx1151")
-    res = resolve_lemonade_rocm_choice(host, "ubuntu", "linux-rocm", llama_tag = "latest")
+    res = resolve_lemonade_rocm_choice(host, "ubuntu", "linux-rocm", llama_tag="latest")
     assert res is None
 
 
@@ -285,8 +285,8 @@ def test_lemonade_resolver_rejects_non_github_url(monkeypatch):
         ],
     }
     host = _make_rocm_host("gfx1151")
-    with patch.object(_mod, "fetch_json", return_value = bad_release):
-        res = resolve_lemonade_rocm_choice(host, "ubuntu", "linux-rocm", llama_tag = "latest")
+    with patch.object(_mod, "fetch_json", return_value=bad_release):
+        res = resolve_lemonade_rocm_choice(host, "ubuntu", "linux-rocm", llama_tag="latest")
     assert res is None
 
 
@@ -338,8 +338,8 @@ def test_lemonade_resolver_rejects_empty_browser_download_url():
         ],
     }
     host = _make_rocm_host("gfx1151")
-    with patch.object(_mod, "fetch_json", return_value = release):
-        res = resolve_lemonade_rocm_choice(host, "ubuntu", "linux-rocm", llama_tag = "latest")
+    with patch.object(_mod, "fetch_json", return_value=release):
+        res = resolve_lemonade_rocm_choice(host, "ubuntu", "linux-rocm", llama_tag="latest")
     assert res is None
 
 
@@ -353,12 +353,12 @@ def test_lemonade_runtime_patterns_include_hip_runtime():
     from install_llama_prebuilt import runtime_patterns_for_choice, AssetChoice
 
     choice = AssetChoice(
-        repo = "lemonade-sdk/llamacpp-rocm",
-        tag = "b1262",
-        name = "llama-b1262-ubuntu-rocm-gfx1151-x64.zip",
-        url = "https://github.com/lemonade-sdk/llamacpp-rocm/releases/download/b1262/x.zip",
-        source_label = "lemonade",
-        install_kind = "linux-rocm",
+        repo="lemonade-sdk/llamacpp-rocm",
+        tag="b1262",
+        name="llama-b1262-ubuntu-rocm-gfx1151-x64.zip",
+        url="https://github.com/lemonade-sdk/llamacpp-rocm/releases/download/b1262/x.zip",
+        source_label="lemonade",
+        install_kind="linux-rocm",
     )
     pats = runtime_patterns_for_choice(choice)
     # The broad glob must be present so every .so in the lemonade bundle
@@ -371,35 +371,35 @@ _pick_rocm_gfx_target = getattr(_mod, "_pick_rocm_gfx_target", None)
 
 @pytest.mark.skipif(
     _pick_rocm_gfx_target is None,
-    reason = "_pick_rocm_gfx_target not present on this branch",
+    reason="_pick_rocm_gfx_target not present on this branch",
 )
 def test_pick_rocm_gfx_target_honors_cuda_visible_devices(monkeypatch):
     """AMD HIP honours CUDA_VISIBLE_DEVICES identically to HIP_VISIBLE_DEVICES;
     on a gfx1151 + gfx1100 mixed host, CUDA_VISIBLE_DEVICES=1 must select gfx1100."""
     # Two GPUs; rocminfo reports each token twice (as in the real tool output).
     probe_out = "gfx1151\ngfx1151\ngfx1100\ngfx1100"
-    monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising = False)
-    monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
+    monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising=False)
+    monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising=False)
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1")
     assert _pick_rocm_gfx_target(probe_out) == "gfx1100"
 
 
 @pytest.mark.skipif(
     _pick_rocm_gfx_target is None,
-    reason = "_pick_rocm_gfx_target not present on this branch",
+    reason="_pick_rocm_gfx_target not present on this branch",
 )
 def test_pick_rocm_gfx_target_cuda_visible_devices_minus_one_returns_none(monkeypatch):
     """CUDA_VISIBLE_DEVICES=-1 means no GPU visible; resolver must return None."""
     probe_out = "gfx1151\ngfx1100"
-    monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising = False)
-    monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
+    monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising=False)
+    monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising=False)
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "-1")
     assert _pick_rocm_gfx_target(probe_out) is None
 
 
 @pytest.mark.skipif(
     _pick_rocm_gfx_target is None,
-    reason = "_pick_rocm_gfx_target not present on this branch",
+    reason="_pick_rocm_gfx_target not present on this branch",
 )
 def test_pick_rocm_gfx_target_same_arch_multi_gpu(monkeypatch):
     """Regression: [gfx1100, gfx1100, gfx1151] with HIP_VISIBLE_DEVICES=2 must
@@ -412,7 +412,7 @@ def test_pick_rocm_gfx_target_same_arch_multi_gpu(monkeypatch):
         "***\nAgent 2\n***\n  gfx1100 some info\n  gfx1100\n"
         "***\nAgent 3\n***\n  gfx1151 some info\n  gfx1151\n"
     )
-    monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
-    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
+    monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising=False)
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
     monkeypatch.setenv("HIP_VISIBLE_DEVICES", "2")
     assert _pick_rocm_gfx_target(probe_out) == "gfx1151"
