@@ -3,6 +3,7 @@
 
 import { cn } from "@/lib/utils";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
+import { useT } from "@/i18n";
 import {
   ArrowUpRight01Icon,
   Copy01Icon,
@@ -78,6 +79,7 @@ for chunk in response:
 }
 
 export function UsageExamples() {
+  const t = useT();
   const [lang, setLang] = useState<Lang>("curl");
   const [copied, setCopied] = useState(false);
   const snippets = useMemo(
@@ -97,17 +99,19 @@ export function UsageExamples() {
 
   return (
     <section className="flex min-w-0 max-w-full flex-col">
-      <h2 className="mb-2 text-sm font-semibold text-foreground">Usage examples</h2>
+      <h2 className="mb-2 text-sm font-semibold text-foreground">
+        {t("settings.apiKeys.usageExamples")}
+      </h2>
       <div className="min-w-0 max-w-full overflow-hidden rounded-lg border border-border bg-muted/20">
         <div className="flex min-w-0 items-center justify-between gap-2 border-b border-border px-2 py-1.5">
           <div className="flex min-w-0 items-center gap-0.5">
-            {TABS.map((t) => {
-              const active = lang === t.id;
+            {TABS.map((tab) => {
+              const active = lang === tab.id;
               return (
                 <button
-                  key={t.id}
+                  key={tab.id}
                   type="button"
-                  onClick={() => setLang(t.id)}
+                  onClick={() => setLang(tab.id)}
                   aria-pressed={active}
                   className={cn(
                     "rounded px-2 py-1 text-[11px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
@@ -116,7 +120,9 @@ export function UsageExamples() {
                       : "text-muted-foreground hover:text-foreground",
                   )}
                 >
-                  {t.label}
+                  {tab.id === "tools"
+                    ? t("settings.apiKeys.usageTools")
+                    : tab.label}
                 </button>
               );
             })}
@@ -125,20 +131,20 @@ export function UsageExamples() {
             type="button"
             onClick={handleCopy}
             className="flex items-center gap-1 rounded px-1.5 py-1 text-[11px] text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            aria-label="Copy snippet"
+            aria-label={t("settings.apiKeys.copySnippet")}
           >
             <HugeiconsIcon
               icon={copied ? Tick02Icon : Copy01Icon}
               className={cn("size-3.5", copied && "text-emerald-600")}
             />
-            {copied ? "Copied" : "Copy"}
+            {copied ? t("settings.apiKeys.copied") : t("settings.apiKeys.copy")}
           </button>
         </div>
         <pre className="max-w-full overflow-x-auto whitespace-pre-wrap break-words p-3 font-mono text-[11px] leading-relaxed text-foreground">
           {snippets[lang]}
         </pre>
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-t border-border px-3 py-2 text-[11px] text-muted-foreground">
-          <span>Setup docs:</span>
+          <span>{t("settings.apiKeys.setupDocs")}</span>
           {DOC_LINKS.map((link) => (
             <a
               key={link.href}

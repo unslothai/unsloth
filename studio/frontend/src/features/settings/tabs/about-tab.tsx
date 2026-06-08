@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { usePlatformStore } from "@/config/env";
 import { getAuthToken } from "@/features/auth";
 import { removeTrainingUnloadGuard } from "@/features/training";
+import { useT } from "@/i18n";
 import { apiUrl, isTauri } from "@/lib/api-base";
 import {
   ArrowUpRight01Icon,
@@ -94,6 +95,7 @@ async function fetchInstallSource(): Promise<UpdateInstallSource> {
 }
 
 export function AboutTab() {
+  const t = useT();
   const deviceType = usePlatformStore((s) => s.deviceType);
   const defaultShell = deviceType === "windows" ? "windows" : "unix";
   const [shutdownOpen, setShutdownOpen] = useState(false);
@@ -132,26 +134,28 @@ export function AboutTab() {
   return (
     <div className="flex flex-col gap-6">
       <header className="flex flex-col gap-1">
-        <h1 className="text-lg font-semibold font-heading">Help</h1>
+        <h1 className="text-lg font-semibold font-heading">
+          {t("settings.about.title")}
+        </h1>
         <p className="text-xs text-muted-foreground">
-          Documentation, release notes, feedback, and Studio build info.
+          {t("settings.about.description")}
         </p>
       </header>
 
       <SettingsSection title="Studio">
-        <SettingsRow label="Studio Version">
+        <SettingsRow label={t("settings.about.studioVersion")}>
           <code className="font-mono text-xs text-muted-foreground">
             {studioVersion}
           </code>
         </SettingsRow>
-        <SettingsRow label="Package Version">
+        <SettingsRow label={t("settings.about.packageVersion")}>
           <code className="font-mono text-xs text-muted-foreground">
             {packageVersion}
           </code>
         </SettingsRow>
       </SettingsSection>
 
-      <SettingsSection title="Updates">
+      <SettingsSection title={t("settings.about.updates")}>
         <div className="py-2">
           <UpdateStudioInstructions
             defaultShell={defaultShell}
@@ -161,8 +165,8 @@ export function AboutTab() {
         </div>
       </SettingsSection>
 
-      <SettingsSection title="Help">
-        <SettingsRow label="Documentation">
+      <SettingsSection title={t("settings.about.help")}>
+        <SettingsRow label={t("settings.about.documentation")}>
           <a
             href="https://unsloth.ai/docs"
             target="_blank"
@@ -174,7 +178,7 @@ export function AboutTab() {
             <HugeiconsIcon icon={ArrowUpRight01Icon} className="size-3" />
           </a>
         </SettingsRow>
-        <SettingsRow label="Release notes">
+        <SettingsRow label={t("settings.about.releaseNotes")}>
           <a
             href="https://unsloth.ai/docs/new/changelog"
             target="_blank"
@@ -182,11 +186,11 @@ export function AboutTab() {
             className="inline-flex items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground"
           >
             <HugeiconsIcon icon={NewReleasesIcon} className="size-3.5" />
-            What's new
+            {t("settings.about.whatsNew")}
             <HugeiconsIcon icon={ArrowUpRight01Icon} className="size-3" />
           </a>
         </SettingsRow>
-        <SettingsRow label="Feedback">
+        <SettingsRow label={t("settings.about.feedback")}>
           <a
             href="https://github.com/unslothai/unsloth/issues"
             target="_blank"
@@ -197,17 +201,17 @@ export function AboutTab() {
               icon={MessageNotification01Icon}
               className="size-3.5"
             />
-            Report an issue
+            {t("settings.about.reportIssue")}
             <HugeiconsIcon icon={ArrowUpRight01Icon} className="size-3" />
           </a>
         </SettingsRow>
       </SettingsSection>
 
-      <SettingsSection title="Danger zone">
+      <SettingsSection title={t("settings.about.dangerZone")}>
         <SettingsRow
           destructive={true}
-          label="Shut down Unsloth Studio"
-          description="Stops the Studio server process and ends your session."
+          label={t("settings.about.shutDownStudio")}
+          description={t("settings.about.shutDownStudioDescription")}
         >
           <Button
             variant="outline"
@@ -216,7 +220,7 @@ export function AboutTab() {
             className="text-destructive hover:text-destructive hover:border-destructive/60"
           >
             <HugeiconsIcon icon={Cancel01Icon} className="size-3.5 mr-1.5" />
-            Shut down
+            {t("settings.about.shutDown")}
           </Button>
         </SettingsRow>
       </SettingsSection>

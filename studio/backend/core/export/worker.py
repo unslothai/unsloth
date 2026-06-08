@@ -362,12 +362,7 @@ def _handle_cleanup(backend, resp_queue: Any) -> None:
         )
 
 
-def run_export_process(
-    *,
-    cmd_queue: Any,
-    resp_queue: Any,
-    config: dict,
-) -> None:
+def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None:
     """Subprocess entrypoint. Persistent — runs command loop until shutdown.
 
     Args:
@@ -383,9 +378,7 @@ def run_export_process(
     _setup_log_capture(resp_queue)
 
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
-    os.environ["PYTHONWARNINGS"] = (
-        "ignore"  # Suppress warnings at C-level before imports
-    )
+    os.environ["PYTHONWARNINGS"] = "ignore"  # Suppress warnings at C-level before imports
     # Force unbuffered output from any child Python process (e.g. the
     # GGUF converter) so their prints surface in the log stream as they
     # happen rather than at the end.
@@ -430,7 +423,6 @@ def run_export_process(
     if sys.platform == "win32":
         try:
             import triton  # noqa: F401
-
             logger.info("Triton available — torch.compile enabled")
         except ImportError:
             os.environ["TORCHDYNAMO_DISABLE"] = "1"
@@ -438,6 +430,15 @@ def run_export_process(
                 "Triton not found on Windows — torch.compile disabled. "
                 'Install for better performance: pip install "triton-windows<3.7"'
             )
+
+    # ── 1c. Stub torchao on Windows ROCm ──
+    # Shared with the training worker; see core/_torchao_stub.py for the full
+    # rationale (torchao -> torch.distributed._functional_collectives crashes on
+    # Windows ROCm because the RCCL backend is absent). No-op off Windows ROCm.
+    # Must run before any import of transformers / unsloth_zoo.
+    from core._torchao_stub import install_torchao_windows_rocm_stub
+
+    install_torchao_windows_rocm_stub()
 
     # ── 2. Import ML libraries (fresh in this clean process) ──
     try:
@@ -458,9 +459,7 @@ def run_export_process(
 
         import transformers
 
-        logger.info(
-            "Export subprocess loaded transformers %s", transformers.__version__
-        )
+        logger.info("Export subprocess loaded transformers %s", transformers.__version__)
 
     except Exception as exc:
         _send_response(
@@ -561,9 +560,7 @@ def run_export_process(
                 )
 
         except Exception as exc:
-            logger.error(
-                "Error handling command '%s': %s", cmd_type, exc, exc_info = True
-            )
+            logger.error("Error handling command '%s': %s", cmd_type, exc, exc_info = True)
             _send_response(
                 resp_queue,
                 {

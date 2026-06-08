@@ -182,9 +182,7 @@ def wait_for_health(
         # but accept any 200 -- different Studio builds report differently.
         if status == 200:
             if info is not None:
-                info(
-                    f"health pre-flight OK: status=200, body keys={list((body or {}).keys())}"
-                )
+                info(f"health pre-flight OK: status=200, body keys={list((body or {}).keys())}")
             return True
         time.sleep(0.5)
     if info is not None:
@@ -230,9 +228,7 @@ def recover_or_replace_page(
             info(f"recovery: page.is_closed() check failed: {exc!r}")
     if goto_url is not None:
         try:
-            page.goto(
-                goto_url, wait_until = "domcontentloaded", timeout = default_timeout_ms
-            )
+            page.goto(goto_url, wait_until = "domcontentloaded", timeout = default_timeout_ms)
             if settle_networkidle:
                 try:
                     page.wait_for_load_state("networkidle", timeout = 30_000)
@@ -436,6 +432,8 @@ def evaluate_fetch(
     headers: dict[str, str] | None = None,
     body: Any = None,
     timeout_ms: int = 20_000,
+    transport_retries: int = 2,
+    transport_backoff_ms: int = 250,
 ) -> dict[str, Any]:
     """Run `fetch(url, opts)` inside the page with an AbortSignal deadline.
 
@@ -482,16 +480,47 @@ def evaluate_fetch(
             }
         }
     """
-    return page.evaluate(
-        js,
-        {
-            "url": url,
-            "method": method,
-            "headers": headers or {},
-            "body": body_arg,
-            "timeoutMs": int(timeout_ms),
-        },
-    )
+    payload = {
+        "url": url,
+        "method": method,
+        "headers": headers or {},
+        "body": body_arg,
+        "timeoutMs": int(timeout_ms),
+    }
+    # Bounded retry on transport failures only.
+    #   status != 0  -> real HTTP response (incl. 4xx/5xx); propagate.
+    #   AbortError   -> caller's deadline; propagate.
+    #   else (==0)   -> stale-keepalive / "TypeError: Failed to fetch"
+    #                   on macos-14 right after auth rotations close
+    #                   existing sessions. Retry after backoff so the
+    #                   browser pool evicts the dead socket.
+    last: dict[str, Any] | None = None
+    attempts = max(1, int(transport_retries) + 1)
+    for attempt in range(attempts):
+        result = page.evaluate(js, payload)
+        last = result
+        try:
+            status = int(result.get("status") or 0)
+        except (TypeError, ValueError):
+            status = 0
+        if status != 0:
+            return result
+        err = str(result.get("error") or "")
+        if "AbortError" in err:
+            return result
+        if attempt < attempts - 1:
+            wait_ms = transport_backoff_ms * (2**attempt)
+            try:
+                sys.stderr.write(
+                    f"[evaluate_fetch] {method} {url}: transport failure "
+                    f"({attempt + 1}/{attempts}, err={err!r}); "
+                    f"retrying in {wait_ms}ms\n"
+                )
+                sys.stderr.flush()
+            except Exception:
+                pass
+            time.sleep(wait_ms / 1000.0)
+    return last or {"status": 0, "body": None, "error": "no attempt made"}
 
 
 # ─────────────────────────────────────────────────────────────────────

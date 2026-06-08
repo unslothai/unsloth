@@ -20,16 +20,14 @@ import pytest
 # full backend chain (fastapi / structlog / loggers / utils.hardware)
 # via core/inference/__init__.py. The validator is intentionally
 # dependency-free and unit-tests should reflect that.
-_LSA_PATH = (
-    Path(__file__).resolve().parent.parent
-    / "core"
-    / "inference"
-    / "llama_server_args.py"
-)
+_LSA_PATH = Path(__file__).resolve().parent.parent / "core" / "inference" / "llama_server_args.py"
 _spec = importlib.util.spec_from_file_location("_lsa_test_only", _LSA_PATH)
 _lsa = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_lsa)
 is_managed_flag = _lsa.is_managed_flag
+parse_cache_override = _lsa.parse_cache_override
+parse_ctx_override = _lsa.parse_ctx_override
+resolve_cache_type_kv = _lsa.resolve_cache_type_kv
 strip_shadowing_flags = _lsa.strip_shadowing_flags
 validate_extra_args = _lsa.validate_extra_args
 
@@ -356,14 +354,7 @@ def test_strip_shadowing_flags_keeps_cache_when_cache_disabled():
         ["--cache-type-k", "q8_0", "--cache-type-v", "q8_0", "--top-k", "20"],
         strip_cache = False,
     )
-    assert out == [
-        "--cache-type-k",
-        "q8_0",
-        "--cache-type-v",
-        "q8_0",
-        "--top-k",
-        "20",
-    ]
+    assert out == ["--cache-type-k", "q8_0", "--cache-type-v", "q8_0", "--top-k", "20"]
 
 
 def test_strip_shadowing_flags_keeps_spec_when_spec_disabled():
@@ -371,14 +362,7 @@ def test_strip_shadowing_flags_keeps_spec_when_spec_disabled():
         ["--spec-type", "ngram-mod", "--draft-min", "48", "--top-k", "20"],
         strip_spec = False,
     )
-    assert out == [
-        "--spec-type",
-        "ngram-mod",
-        "--draft-min",
-        "48",
-        "--top-k",
-        "20",
-    ]
+    assert out == ["--spec-type", "ngram-mod", "--draft-min", "48", "--top-k", "20"]
 
 
 def test_strip_shadowing_flags_drops_mtp_flags_when_requested():
@@ -410,6 +394,86 @@ def test_is_managed_flag_false_for_mtp_pass_through():
     assert is_managed_flag("--spec-ngram-mod-n-max") is False
 
 
+# ── parse_ctx_override ───────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "args,expected",
+    [
+        (None, None),
+        ([], None),
+        (["--top-k", "20"], None),
+        (["--ctx-size", "128000"], 128000),
+        (["--ctx-size=128000"], 128000),
+        (["-c", "128000"], 128000),
+        (["-c=128000"], 128000),
+        (["-c", "4096", "--ctx-size", "128000"], 128000),
+    ],
+)
+def test_parse_ctx_override(args, expected):
+    assert parse_ctx_override(args) == expected
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["--ctx-size"],
+        ["--ctx-size", "--top-k"],
+        ["--ctx-size", "abc"],
+        ["--ctx-size=abc"],
+        ["-c", "-1"],
+    ],
+)
+def test_parse_ctx_override_rejects_malformed_values(args):
+    with pytest.raises(ValueError, match = "ctx-size|'-c'"):
+        parse_ctx_override(args)
+
+
+def test_validate_extra_args_rejects_malformed_ctx_override():
+    with pytest.raises(ValueError, match = "ctx-size"):
+        validate_extra_args(["--ctx-size", "abc"])
+
+
+# ── parse_cache_override ─────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "args,expected",
+    [
+        (None, None),
+        ([], None),
+        (["--top-k", "20"], None),
+        (["--cache-type-k", "q8_0"], "q8_0"),
+        (["-ctk", "q4_0"], "q4_0"),
+        (["-ctv", "q4_0"], "q4_0"),
+        (["--cache-type-k=q4_0"], "q4_0"),
+        (["-ctk", "f16", "-ctk", "q8_0"], "q8_0"),
+    ],
+)
+def test_parse_cache_override(args, expected):
+    assert parse_cache_override(args) == expected
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["-ctk"],
+        ["-ctk", "-c", "4096"],
+    ],
+)
+def test_parse_cache_override_rejects_malformed_values(args):
+    with pytest.raises(ValueError, match = "cache-type|'-ctk'"):
+        parse_cache_override(args)
+
+
+def test_resolve_cache_type_kv_uses_override_when_present():
+    assert resolve_cache_type_kv(["--cache-type-k", "q8_0"], "f16") == "q8_0"
+
+
+def test_resolve_cache_type_kv_uses_fallback_without_override():
+    assert resolve_cache_type_kv(["--top-k", "20"], "f16") == "f16"
+
+
 def test_strip_shadowing_flags_boolean_does_not_consume_next_token():
     # `--spec-default` is boolean; drop just the flag, keep the next token.
     out = strip_shadowing_flags(["--spec-default", "ngram-mod"], strip_spec = True)
@@ -422,9 +486,7 @@ def test_strip_shadowing_flags_jinja_boolean_preserves_positional():
 
 
 def test_strip_shadowing_flags_no_jinja_boolean_preserves_positional():
-    out = strip_shadowing_flags(
-        ["--no-jinja", "trailing-positional"], strip_template = True
-    )
+    out = strip_shadowing_flags(["--no-jinja", "trailing-positional"], strip_template = True)
     assert out == ["trailing-positional"]
 
 

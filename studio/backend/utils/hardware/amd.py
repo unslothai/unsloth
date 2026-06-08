@@ -11,18 +11,35 @@ nvidia.py counterparts.
 import json
 import math
 import os
+import platform
 import re
 import subprocess
+import sys
 from typing import Any, Optional
 
 from loggers import get_logger
 from utils.native_path_leases import child_env_without_native_path_secret
+from utils.subprocess_compat import windows_hidden_subprocess_kwargs
 
 logger = get_logger(__name__)
 
+# amd-smi on Windows must initialise the full ROCm runtime on first call, which
+# can take 15-25 s on cold hardware.  Linux is consistently < 2 s.
+_AMD_SMI_DEFAULT_TIMEOUT = 30 if platform.system() == "Windows" else 10
 
-def _run_amd_smi(*args: str, timeout: int = 5) -> Optional[Any]:
+# Circuit breaker: stop calling amd-smi after this many consecutive failures.
+# On Windows, each failed call spawns a process that may show a UAC/DiskPart
+# elevation prompt.  Once we know amd-smi doesn't work we stop polling it.
+_AMD_SMI_FAILURE_LIMIT = 3
+_amd_smi_consecutive_failures = 0
+_amd_smi_disabled = False
+
+
+def _run_amd_smi(*args: str, timeout: int = _AMD_SMI_DEFAULT_TIMEOUT) -> Optional[Any]:
     """Run amd-smi with the given arguments and return parsed JSON, or None."""
+    global _amd_smi_consecutive_failures, _amd_smi_disabled
+    if _amd_smi_disabled:
+        return None
     try:
         result = subprocess.run(
             ["amd-smi", *args, "--json"],
@@ -30,13 +47,40 @@ def _run_amd_smi(*args: str, timeout: int = 5) -> Optional[Any]:
             text = True,
             timeout = timeout,
             env = child_env_without_native_path_secret(),
+            **windows_hidden_subprocess_kwargs(),
         )
     except (OSError, subprocess.TimeoutExpired) as e:
-        logger.warning("amd-smi query failed: %s", e)
+        if isinstance(e, FileNotFoundError):
+            # amd-smi ships with Adrenalin, not the HIP SDK -- absence is
+            # expected on HIP SDK-only Windows setups.  Log at debug only.
+            logger.debug("amd-smi not found (not in PATH): %s", e)
+        else:
+            logger.warning("amd-smi query failed: %s", e)
+        _amd_smi_consecutive_failures += 1
+        if _amd_smi_consecutive_failures >= _AMD_SMI_FAILURE_LIMIT:
+            logger.info(
+                "amd-smi not available (not installed; expected on HIP SDK-only systems); "
+                "GPU VRAM polling disabled"
+            )
+            _amd_smi_disabled = True
         return None
-    if result.returncode != 0 or not result.stdout.strip():
+    if result.returncode != 0:
         logger.warning("amd-smi returned code %d", result.returncode)
+        _amd_smi_consecutive_failures += 1
+        if _amd_smi_consecutive_failures >= _AMD_SMI_FAILURE_LIMIT:
+            logger.info(
+                "amd-smi not available (not installed; expected on HIP SDK-only systems); "
+                "GPU VRAM polling disabled"
+            )
+            _amd_smi_disabled = True
         return None
+    if not result.stdout.strip():
+        # amd-smi exited successfully but produced no output (e.g. no GPUs
+        # visible on this query, or a version that emits nothing for --json).
+        # This is not a tool failure, so don't count against the circuit breaker.
+        logger.debug("amd-smi exited 0 but returned no output")
+        return None
+    _amd_smi_consecutive_failures = 0  # reset on success
     try:
         return json.loads(result.stdout)
     except json.JSONDecodeError:
@@ -116,9 +160,7 @@ def _extract_gpu_metrics(gpu_data: dict) -> dict[str, Any]:
     # amd-smi metric output structure varies by version; try common paths
     usage = gpu_data.get("usage", gpu_data.get("gpu_activity", {}))
     if isinstance(usage, dict):
-        gpu_util = _parse_numeric(
-            usage.get("gfx_activity", usage.get("gpu_use_percent"))
-        )
+        gpu_util = _parse_numeric(usage.get("gfx_activity", usage.get("gpu_use_percent")))
     else:
         gpu_util = _parse_numeric(usage)
 
@@ -144,9 +186,7 @@ def _extract_gpu_metrics(gpu_data: dict) -> dict[str, Any]:
                 power_data.get("average_socket_power", power_data.get("socket_power")),
             )
         )
-        power_limit = _parse_numeric(
-            power_data.get("power_cap", power_data.get("max_power_limit"))
-        )
+        power_limit = _parse_numeric(power_data.get("power_cap", power_data.get("max_power_limit")))
     else:
         power_draw = None
         power_limit = None
@@ -161,14 +201,10 @@ def _extract_gpu_metrics(gpu_data: dict) -> dict[str, Any]:
     )
     if isinstance(vram_data, dict):
         vram_used_mb = _parse_memory_mb(
-            vram_data.get(
-                "used_vram", vram_data.get("vram_used", vram_data.get("used"))
-            )
+            vram_data.get("used_vram", vram_data.get("vram_used", vram_data.get("used")))
         )
         vram_total_mb = _parse_memory_mb(
-            vram_data.get(
-                "total_vram", vram_data.get("vram_total", vram_data.get("total"))
-            )
+            vram_data.get("total_vram", vram_data.get("vram_total", vram_data.get("total")))
         )
     else:
         vram_used_mb = None
@@ -176,9 +212,7 @@ def _extract_gpu_metrics(gpu_data: dict) -> dict[str, Any]:
 
     # Build the standardized dict (same shape as nvidia._build_gpu_metrics)
     vram_used_gb = round(vram_used_mb / 1024, 2) if vram_used_mb is not None else None
-    vram_total_gb = (
-        round(vram_total_mb / 1024, 2) if vram_total_mb is not None else None
-    )
+    vram_total_gb = round(vram_total_mb / 1024, 2) if vram_total_mb is not None else None
     vram_util = (
         round((vram_used_mb / vram_total_mb) * 100, 1)
         if vram_used_mb is not None and vram_total_mb is not None and vram_total_mb > 0
@@ -296,8 +330,7 @@ def get_primary_gpu_utilization() -> dict[str, Any]:
 
 
 def get_visible_gpu_utilization(
-    parent_visible_ids: Optional[list[int]],
-    parent_cuda_visible_devices: Optional[str] = None,
+    parent_visible_ids: Optional[list[int]], parent_cuda_visible_devices: Optional[str] = None
 ) -> dict[str, Any]:
     """Return utilization metrics for visible AMD GPUs."""
     if parent_visible_ids is None:
@@ -347,20 +380,25 @@ def get_visible_gpu_utilization(
         # "unit": "none"}``, so route raw_id through ``_parse_numeric``
         # which already handles bare ints, floats, strings, and that
         # dict shape uniformly.
-        raw_id = gpu_data.get(
-            "gpu", gpu_data.get("gpu_id", gpu_data.get("id", fallback_idx))
-        )
+        raw_id = gpu_data.get("gpu", gpu_data.get("gpu_id", gpu_data.get("id", fallback_idx)))
         parsed_id = _parse_numeric(raw_id)
         if parsed_id is None:
-            logger.debug(
-                "amd-smi GPU id %r could not be parsed; falling back to "
-                "enumeration index %d",
+            logger.warning(
+                "amd-smi GPU id %r could not be parsed; falling back to enumeration index %d",
                 raw_id,
                 fallback_idx,
             )
             idx = fallback_idx
         else:
-            idx = int(parsed_id)
+            rounded = round(parsed_id)
+            if rounded != parsed_id:
+                logger.warning(
+                    "amd-smi GPU id %r parsed as non-integer %r; truncating to %d",
+                    raw_id,
+                    parsed_id,
+                    rounded,
+                )
+            idx = int(rounded)
         if idx not in visible_set:
             continue
         metrics = _extract_gpu_metrics(gpu_data)

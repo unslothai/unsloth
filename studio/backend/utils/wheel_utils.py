@@ -15,12 +15,11 @@ import urllib.request
 from typing import Callable
 
 from utils.native_path_leases import child_env_without_native_path_secret
+from utils.subprocess_compat import windows_hidden_subprocess_kwargs
 
 _logger = logging.getLogger(__name__)
 
-FLASH_ATTN_RELEASE_BASE_URL = (
-    "https://github.com/Dao-AILab/flash-attention/releases/download"
-)
+FLASH_ATTN_RELEASE_BASE_URL = "https://github.com/Dao-AILab/flash-attention/releases/download"
 
 
 @functools.lru_cache(maxsize = 1)
@@ -106,6 +105,7 @@ def probe_torch_wheel_env(*, timeout: int | None = None) -> dict[str, str] | Non
             text = True,
             timeout = timeout,
             env = child_env_without_native_path_secret(),
+            **windows_hidden_subprocess_kwargs(),
         )
     except subprocess.TimeoutExpired:
         return None

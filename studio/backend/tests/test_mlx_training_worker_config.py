@@ -45,12 +45,8 @@ def _load_worker_module():
             setattr(wheel_utils, name, lambda *_args, **_kwargs: None)
         sys.modules["utils.wheel_utils"] = wheel_utils
 
-        worker_path = (
-            Path(__file__).resolve().parents[1] / "core" / "training" / "worker.py"
-        )
-        spec = importlib.util.spec_from_file_location(
-            "mlx_training_worker_under_test", worker_path
-        )
+        worker_path = Path(__file__).resolve().parents[1] / "core" / "training" / "worker.py"
+        spec = importlib.util.spec_from_file_location("mlx_training_worker_under_test", worker_path)
         module = importlib.util.module_from_spec(spec)
         assert spec.loader is not None
         spec.loader.exec_module(module)
@@ -66,6 +62,7 @@ def _load_worker_module():
 _worker = _load_worker_module()
 _normalize_mlx_studio_optimizer = _worker._normalize_mlx_studio_optimizer
 _normalize_mlx_studio_scheduler = _worker._normalize_mlx_studio_scheduler
+_mlx_vlm_max_resized_size = _worker._mlx_vlm_max_resized_size
 
 
 def test_mlx_studio_optimizer_aliases_are_explicit():
@@ -82,3 +79,14 @@ def test_mlx_studio_rejects_unknown_optimizer():
 def test_mlx_studio_rejects_unknown_scheduler():
     with pytest.raises(ValueError, match = "Unsupported LR scheduler for MLX training"):
         _normalize_mlx_studio_scheduler("linear_typo")
+
+
+def test_mlx_vlm_resize_uses_max_dimension_like_torch_trainer():
+    assert _mlx_vlm_max_resized_size(1000, 500, 512) == (512, 256)
+    assert _mlx_vlm_max_resized_size(500, 1000, 512) == (256, 512)
+    assert _mlx_vlm_max_resized_size(1000, 1000, 512) == (512, 512)
+    assert _mlx_vlm_max_resized_size(256, 128, 1536) == (256, 128)
+    assert _mlx_vlm_max_resized_size(512, 256, 512) == (512, 256)
+    # Half-pixel cases must match the Torch collator (not banker's round).
+    assert _mlx_vlm_max_resized_size(333, 1000, 500) == (167, 500)
+    assert _mlx_vlm_max_resized_size(1000, 333, 500) == (500, 167)

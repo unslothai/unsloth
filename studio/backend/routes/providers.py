@@ -40,6 +40,7 @@ from models.providers import (
     ProviderUpdate,
 )
 from storage import providers_db
+from utils.utils import safe_curated_detail, log_and_http_error
 
 logger = structlog.get_logger(__name__)
 
@@ -50,9 +51,7 @@ router = APIRouter()
 
 
 @router.get("/public-key")
-async def get_public_key(
-    current_subject: str = Depends(get_current_subject),
-):
+async def get_public_key(current_subject: str = Depends(get_current_subject)):
     """Return the RSA public key PEM for client-side API key encryption.
 
     The ``fingerprint`` field is a short SHA256 of the PEM and is meant
@@ -71,9 +70,7 @@ async def get_public_key(
 
 
 @router.get("/registry", response_model = list[ProviderRegistryEntry])
-async def list_registry(
-    current_subject: str = Depends(get_current_subject),
-):
+async def list_registry(current_subject: str = Depends(get_current_subject)):
     """List all supported provider types with their default configurations."""
     return list_available_providers()
 
@@ -82,9 +79,7 @@ async def list_registry(
 
 
 @router.get("/pricing")
-async def get_pricing_snapshot(
-    current_subject: str = Depends(get_current_subject),
-):
+async def get_pricing_snapshot(current_subject: str = Depends(get_current_subject)):
     """Static per-MTok pricing table the frontend uses to convert
     upstream usage chunks into a per-turn USD cost. See
     ``core/inference/pricing.py`` for sourcing notes; values reflect
@@ -96,9 +91,7 @@ async def get_pricing_snapshot(
 
 
 @router.get("/", response_model = list[ProviderResponse])
-async def list_provider_configs(
-    current_subject: str = Depends(get_current_subject),
-):
+async def list_provider_configs(current_subject: str = Depends(get_current_subject)):
     """List all saved provider configurations."""
     rows = providers_db.list_providers()
     return [
@@ -117,8 +110,7 @@ async def list_provider_configs(
 
 @router.post("/", response_model = ProviderResponse, status_code = 201)
 async def create_provider_config(
-    payload: ProviderCreate,
-    current_subject: str = Depends(get_current_subject),
+    payload: ProviderCreate, current_subject: str = Depends(get_current_subject)
 ):
     """Create a new saved provider configuration (no API key stored)."""
     info = get_provider_info(payload.provider_type)
@@ -185,8 +177,7 @@ async def update_provider_config(
 
 @router.delete("/{provider_id}", status_code = 204)
 async def delete_provider_config(
-    provider_id: str,
-    current_subject: str = Depends(get_current_subject),
+    provider_id: str, current_subject: str = Depends(get_current_subject)
 ):
     """Delete a saved provider configuration."""
     deleted = providers_db.delete_provider(provider_id)
@@ -199,8 +190,7 @@ async def delete_provider_config(
 
 @router.post("/test", response_model = ProviderTestResult)
 async def test_provider(
-    payload: ProviderTestRequest,
-    current_subject: str = Depends(get_current_subject),
+    payload: ProviderTestRequest, current_subject: str = Depends(get_current_subject)
 ):
     """
     Test connectivity to an external provider.
@@ -220,9 +210,7 @@ async def test_provider(
         try:
             api_key = decrypt_api_key(payload.encrypted_api_key)
         except Exception as exc:
-            logger.warning(
-                "Failed to decrypt API key (%s): %s", type(exc).__name__, exc
-            )
+            logger.warning("Failed to decrypt API key (%s): %s", type(exc).__name__, exc)
             raise HTTPException(
                 status_code = 400,
                 detail = "Failed to decrypt API key. The public key may have changed — try refreshing the page.",
@@ -254,10 +242,15 @@ async def test_provider(
             models_count = len(models),
         )
     except Exception as exc:
-        logger.warning("Provider test failed for %s: %s", payload.provider_type, exc)
+        logger.error(
+            "providers.test_failed",
+            provider_type = payload.provider_type,
+            error = str(exc),
+            exc_info = True,
+        )
         return ProviderTestResult(
             success = False,
-            message = f"Connection failed: {exc}",
+            message = f"Connection failed: {safe_curated_detail(exc)}",
             models_count = None,
         )
     finally:
@@ -269,8 +262,7 @@ async def test_provider(
 
 @router.post("/models", response_model = list[ProviderModelInfo])
 async def list_provider_models(
-    payload: ProviderModelsRequest,
-    current_subject: str = Depends(get_current_subject),
+    payload: ProviderModelsRequest, current_subject: str = Depends(get_current_subject)
 ):
     """
     List models available from an external provider.
@@ -289,9 +281,7 @@ async def list_provider_models(
         try:
             api_key = decrypt_api_key(payload.encrypted_api_key)
         except Exception as exc:
-            logger.warning(
-                "Failed to decrypt API key (%s): %s", type(exc).__name__, exc
-            )
+            logger.warning("Failed to decrypt API key (%s): %s", type(exc).__name__, exc)
             raise HTTPException(
                 status_code = 400,
                 detail = "Failed to decrypt API key. The public key may have changed — try refreshing the page.",
@@ -318,22 +308,42 @@ async def list_provider_models(
 
     try:
         models = await client.list_models()
-        allow_prefixes = info.get("model_id_allow_prefixes")
-        if allow_prefixes is not None:
-            prefix_tuple = tuple(str(p) for p in allow_prefixes if str(p))
-            if prefix_tuple:
-                models = [m for m in models if m.get("id", "").startswith(prefix_tuple)]
-        allowlist = info.get("model_id_allowlist")
-        if allowlist is not None:
-            models = [m for m in models if allowlist.match(m.get("id", ""))]
-        deny_exact = info.get("model_id_deny_exact")
-        if deny_exact is not None:
-            deny_ids = {str(m) for m in deny_exact if str(m)}
-            if deny_ids:
-                models = [m for m in models if m.get("id", "") not in deny_ids]
-        denylist = info.get("model_id_denylist")
-        if denylist is not None:
-            models = [m for m in models if not denylist.search(m.get("id", ""))]
+        # Registry-level model-id filters are scoped to the canonical
+        # native Gemini base. A custom Gemini OAI-compatible proxy
+        # (LiteLLM, deployment gateway) returns IDs like
+        # `google/gemini-2.5-flash`, `gemini/gemini-2.5-flash`, or
+        # team-prefixed deployment aliases; the native allowlist regex
+        # would strip those out and leave the picker empty even though
+        # the chat path now routes them via the OAI-compatible
+        # dispatcher (the same gate ExternalProviderClient applies for
+        # request building). Match the host check here so the model
+        # list and chat dispatch agree on what counts as "native".
+        apply_registry_model_filters = True
+        if payload.provider_type == "gemini":
+            try:
+                from urllib.parse import urlparse as _urlparse
+                _host = (_urlparse(base_url).hostname or "").lower()
+            except Exception:
+                _host = ""
+            apply_registry_model_filters = _host == "generativelanguage.googleapis.com"
+
+        if apply_registry_model_filters:
+            allow_prefixes = info.get("model_id_allow_prefixes")
+            if allow_prefixes is not None:
+                prefix_tuple = tuple(str(p) for p in allow_prefixes if str(p))
+                if prefix_tuple:
+                    models = [m for m in models if m.get("id", "").startswith(prefix_tuple)]
+            allowlist = info.get("model_id_allowlist")
+            if allowlist is not None:
+                models = [m for m in models if allowlist.match(m.get("id", ""))]
+            deny_exact = info.get("model_id_deny_exact")
+            if deny_exact is not None:
+                deny_ids = {str(m) for m in deny_exact if str(m)}
+                if deny_ids:
+                    models = [m for m in models if m.get("id", "") not in deny_ids]
+            denylist = info.get("model_id_denylist")
+            if denylist is not None:
+                models = [m for m in models if not denylist.search(m.get("id", ""))]
         # Apply an optional cap after filtering so registry entries with a
         # large remote catalog (e.g. HF Inference Providers) can stay
         # picker-sized. No popularity sort happens server-side, so this is
@@ -352,10 +362,12 @@ async def list_provider_models(
             for m in models
         ]
     except Exception as exc:
-        logger.error("Failed to list models from %s: %s", payload.provider_type, exc)
-        raise HTTPException(
-            status_code = 502,
-            detail = f"Failed to list models from {payload.provider_type}: {exc}",
+        raise log_and_http_error(
+            exc,
+            502,
+            f"Failed to list models from {payload.provider_type}.",
+            event = "providers.list_models_failed",
+            log = logger,
         )
     finally:
         await client.close()
