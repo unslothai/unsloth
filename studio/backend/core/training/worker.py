@@ -1311,6 +1311,14 @@ def _run_mlx_training(event_queue, stop_queue, config):
         message = "LoftQ is not supported for MLX training yet."
         _send("error", error = message)
         raise NotImplementedError(message)
+    if config.get("is_embedding"):
+        message = "Embedding model training is not supported for MLX training yet."
+        _send("error", error = message)
+        raise NotImplementedError(message)
+    if config.get("training_type") == "Continued Pretraining":
+        message = "Continued Pretraining is not supported for MLX training yet."
+        _send("error", error = message)
+        raise NotImplementedError(message)
 
     optim_name = _normalize_mlx_studio_optimizer(config.get("optim", "adamw_8bit"))
     lr_scheduler_type = _normalize_mlx_studio_scheduler(
