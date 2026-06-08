@@ -9,6 +9,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 
 import ipaddress
 import os
+import shlex
+import sys
 import threading
 import time
 from collections import deque
@@ -36,6 +38,36 @@ from auth.authentication import (
 )
 
 router = APIRouter()
+
+
+def _reset_password_command() -> str:
+    """Shell command shown in the 'incorrect password' hint.
+
+    Prefer the ABSOLUTE path to this install's ``unsloth`` launcher (a sibling
+    of the running interpreter) so the hint works even when the launcher's
+    directory is not on PATH -- e.g. a terminal opened before install, a stale
+    Windows PATH, or ``~/.local/bin`` not on PATH (the default on macOS) -- and
+    regardless of the current working directory.
+
+    On POSIX the path is shell-quoted so spaces are handled. On Windows we only
+    use the bare absolute path when it has no spaces, because a quoted path needs
+    different syntax in cmd (``"..."``) vs PowerShell (``& "..."``); when it has
+    a space we fall back to the PATH-based form to stay unambiguous across
+    shells. If the launcher can't be located we fall back to the PATH form too.
+    """
+    try:
+        bin_dir = os.path.dirname(os.path.abspath(sys.executable))
+        if os.name == "nt":
+            exe = os.path.join(bin_dir, "unsloth.exe")
+            if os.path.isfile(exe) and " " not in exe:
+                return f"{exe} studio reset-password"
+        else:
+            exe = os.path.join(bin_dir, "unsloth")
+            if os.path.isfile(exe):
+                return f"{shlex.quote(exe)} studio reset-password"
+    except Exception:
+        pass
+    return "unsloth studio reset-password"
 
 
 # Per-(ip, username) bucket + per-IP aggregate. Account bucket stops one user's
@@ -195,9 +227,7 @@ async def auth_status() -> AuthStatusResponse:
     return AuthStatusResponse(
         initialized = storage.is_initialized(),
         default_username = storage.DEFAULT_ADMIN_USERNAME,
-        requires_password_change = storage.requires_password_change(
-            storage.DEFAULT_ADMIN_USERNAME
-        )
+        requires_password_change = storage.requires_password_change(storage.DEFAULT_ADMIN_USERNAME)
         if storage.is_initialized()
         else True,
     )
@@ -214,10 +244,7 @@ async def login(payload: AuthLoginRequest, request: Request) -> Token:
             status_code = status.HTTP_429_TOO_MANY_REQUESTS,
             # IP is intentionally not interpolated into the body; behind a
             # proxy or NAT it is either misleading or an info leak.
-            detail = (
-                f"Too many failed login attempts. "
-                f"Try again in {blocked_for} seconds."
-            ),
+            detail = (f"Too many failed login attempts. " f"Try again in {blocked_for} seconds."),
             headers = {"Retry-After": str(blocked_for)},
         )
 
@@ -228,7 +255,7 @@ async def login(payload: AuthLoginRequest, request: Request) -> Token:
         _record_login_failure(unknown_key)
         raise HTTPException(
             status_code = status.HTTP_401_UNAUTHORIZED,
-            detail = "Incorrect password. Run 'unsloth studio reset-password' in your terminal to reset it.",
+            detail = f"Incorrect password. To reset it, run this in your terminal: {_reset_password_command()}",
         )
 
     salt, pwd_hash, _jwt_secret, must_change_password = record
@@ -236,7 +263,7 @@ async def login(payload: AuthLoginRequest, request: Request) -> Token:
         _record_login_failure(key)
         raise HTTPException(
             status_code = status.HTTP_401_UNAUTHORIZED,
-            detail = "Incorrect password. Run 'unsloth studio reset-password' in your terminal to reset it.",
+            detail = f"Incorrect password. To reset it, run this in your terminal: {_reset_password_command()}",
         )
 
     _clear_login_bucket(key)
@@ -253,8 +280,7 @@ async def login(payload: AuthLoginRequest, request: Request) -> Token:
 
 @router.post("/logout", status_code = status.HTTP_204_NO_CONTENT)
 async def logout(
-    request: Request,
-    current_subject: str = Depends(get_current_subject_allow_password_change),
+    request: Request, current_subject: str = Depends(get_current_subject_allow_password_change)
 ) -> Response:
     """Revoke refresh tokens for the subject; the access token is stateless and expires on its own."""
     try:
@@ -303,9 +329,7 @@ async def refresh(payload: RefreshTokenRequest) -> Token:
         access_token = new_access_token,
         refresh_token = new_refresh_token,
         token_type = "bearer",
-        must_change_password = False
-        if is_desktop
-        else storage.requires_password_change(username),
+        must_change_password = False if is_desktop else storage.requires_password_change(username),
     )
 
 
@@ -370,8 +394,7 @@ def _row_to_api_key_response(row: dict) -> ApiKeyResponse:
 
 @router.post("/api-keys", response_model = CreateApiKeyResponse)
 async def create_api_key(
-    payload: CreateApiKeyRequest,
-    current_subject: str = Depends(get_current_subject),
+    payload: CreateApiKeyRequest, current_subject: str = Depends(get_current_subject)
 ) -> CreateApiKeyResponse:
     """Create a new API key. The raw key is returned once and cannot be retrieved later."""
     expires_at = None
@@ -392,9 +415,7 @@ async def create_api_key(
 
 
 @router.get("/api-keys", response_model = ApiKeyListResponse)
-async def list_api_keys(
-    current_subject: str = Depends(get_current_subject),
-) -> ApiKeyListResponse:
+async def list_api_keys(current_subject: str = Depends(get_current_subject)) -> ApiKeyListResponse:
     """List all API keys for the authenticated user (raw keys are never exposed)."""
     rows = storage.list_api_keys(current_subject)
     return ApiKeyListResponse(
@@ -403,10 +424,7 @@ async def list_api_keys(
 
 
 @router.delete("/api-keys/{key_id}")
-async def revoke_api_key(
-    key_id: int,
-    current_subject: str = Depends(get_current_subject),
-) -> dict:
+async def revoke_api_key(key_id: int, current_subject: str = Depends(get_current_subject)) -> dict:
     """Revoke (soft-delete) an API key."""
     if not storage.revoke_api_key(current_subject, key_id):
         raise HTTPException(

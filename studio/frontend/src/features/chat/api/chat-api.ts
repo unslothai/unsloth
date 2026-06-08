@@ -306,7 +306,9 @@ export async function listChatThreads(
   const qs = params.toString();
   const response = await authFetch(`/api/chat/threads${qs ? `?${qs}` : ""}`);
   const data = await parseJsonOrThrow<{ threads: ThreadRecord[] }>(response);
-  return data.threads;
+  // Always hand back an array: an older or misbehaving backend may omit the
+  // field or send a non-array, which would crash list consumers.
+  return Array.isArray(data.threads) ? data.threads : [];
 }
 
 export async function getChatThread(
@@ -370,7 +372,9 @@ export async function listChatProjects(
   const qs = params.toString();
   const response = await authFetch(`/api/chat/projects${qs ? `?${qs}` : ""}`);
   const data = await parseJsonOrThrow<{ projects: ProjectRecord[] }>(response);
-  return data.projects;
+  // Always hand back an array: an older or misbehaving backend may omit the
+  // field or send a non-array, which would crash list consumers.
+  return Array.isArray(data.projects) ? data.projects : [];
 }
 
 export async function getChatProject(

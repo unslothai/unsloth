@@ -136,6 +136,47 @@ function isServerSideBuiltinToolPart(
   return hasNativePart;
 }
 
+const FIRST_THREAD_SAVE_TIMEOUT_MS = 250;
+
+type ThreadAutosaveHandle = {
+  registerFirstSave(threadId: string, promise: Promise<void>): Promise<void>;
+  awaitFirstSave(threadId: string | undefined): Promise<void>;
+};
+
+const pendingFirstThreadSaves = new Map<string, Promise<void>>();
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export const ThreadAutosaveHandle: ThreadAutosaveHandle = {
+  registerFirstSave(threadId, promise) {
+    const trackedPromise = promise.catch(() => {});
+    const cleanupPromise = trackedPromise.finally(() => {
+      if (pendingFirstThreadSaves.get(threadId) === cleanupPromise) {
+        pendingFirstThreadSaves.delete(threadId);
+      }
+    });
+    pendingFirstThreadSaves.set(threadId, cleanupPromise);
+    return cleanupPromise;
+  },
+
+  async awaitFirstSave(threadId) {
+    if (!threadId) {
+      return;
+    }
+    const pending = pendingFirstThreadSaves.get(threadId);
+    if (!pending) {
+      return;
+    }
+    await Promise.race([pending, wait(FIRST_THREAD_SAVE_TIMEOUT_MS)]);
+  },
+};
+
+export function useThreadAutosaveHandle(): ThreadAutosaveHandle {
+  return ThreadAutosaveHandle;
+}
+
 /**
  * Match error messages that indicate the request filled or would fill
  * the KV cache, so the UI can show a dedicated toast pointing at the
@@ -169,10 +210,6 @@ export function isContextLimitError(message: string): boolean {
     // n_ctx mentions that carry an "exceed"/"full" signal.
     (m.includes("n_ctx") && (m.includes("exceed") || m.includes("full")))
   );
-}
-
-function wait(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function updateStoredChatThreadEventually(
@@ -1161,13 +1198,13 @@ async function autoLoadSmallestModel(): Promise<{
     toast("Downloading a small model…", {
       id: toastId,
       description:
-        "No downloaded models found. Fetching Gemma-4-E2B-it (UD-Q4_K_XL).",
+        "No downloaded models found. Fetching Qwen3.5-4B-MTP (UD-Q4_K_XL).",
       duration: 30000,
     });
     try {
       if (
         !(await canAutoLoad({
-          model_path: "unsloth/gemma-4-E2B-it-GGUF",
+          model_path: "unsloth/Qwen3.5-4B-MTP-GGUF",
           max_seq_length: 0,
           is_lora: false,
           gguf_variant: "UD-Q4_K_XL",
@@ -1178,7 +1215,7 @@ async function autoLoadSmallestModel(): Promise<{
       }
       loadAttempts += 1;
       const loadResp = await loadModel({
-        model_path: "unsloth/gemma-4-E2B-it-GGUF",
+        model_path: "unsloth/Qwen3.5-4B-MTP-GGUF",
         hf_token: hfToken,
         max_seq_length: 0,
         load_in_4bit: true,
@@ -1188,7 +1225,7 @@ async function autoLoadSmallestModel(): Promise<{
       });
       useChatRuntimeStore
         .getState()
-        .setCheckpoint("unsloth/gemma-4-E2B-it-GGUF", "UD-Q4_K_XL");
+        .setCheckpoint("unsloth/Qwen3.5-4B-MTP-GGUF", "UD-Q4_K_XL");
       const store = useChatRuntimeStore.getState();
       store.setModelRequiresTrustRemoteCode(
         loadResp.requires_trust_remote_code ?? false,
@@ -1198,13 +1235,13 @@ async function autoLoadSmallestModel(): Promise<{
         maxTokens: loadResp.context_length ?? 131072,
       });
       const defaultModel: ChatModelSummary = {
-        id: "unsloth/gemma-4-E2B-it-GGUF",
-        name: loadResp.display_name ?? "gemma-4-E2B-it-GGUF",
+        id: "unsloth/Qwen3.5-4B-MTP-GGUF",
+        name: loadResp.display_name ?? "Qwen3.5-4B-MTP-GGUF",
         isVision: loadResp.is_vision ?? false,
         isLora: false,
         isGguf: true,
       };
-      if (!store.models.some((m) => m.id === "unsloth/gemma-4-E2B-it-GGUF")) {
+      if (!store.models.some((m) => m.id === "unsloth/Qwen3.5-4B-MTP-GGUF")) {
         store.setModels([...store.models, defaultModel]);
       }
       useChatRuntimeStore.setState({
@@ -1224,7 +1261,7 @@ async function autoLoadSmallestModel(): Promise<{
         chatTemplateOverride: null,
         loadedIsMultimodal: isMultimodalResponse(loadResp),
       });
-      toast.success("Loaded Gemma-4-E2B-it (UD-Q4_K_XL)", { id: toastId });
+      toast.success("Loaded Qwen3.5-4B-MTP (UD-Q4_K_XL)", { id: toastId });
       return { loaded: true, blockedByTrustRemoteCode: false };
     } catch {
       toast.dismiss(toastId);
@@ -2190,6 +2227,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
               throw error;
             }
             clearSelectedImageEditReference();
+            await ThreadAutosaveHandle.awaitFirstSave(resolvedThreadId);
             const stream = streamChatCompletions(requestPayload, abortSignal);
 
             for await (const chunk of stream) {
