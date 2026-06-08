@@ -235,9 +235,7 @@ class TestVisionCacheDirectPath:
 
     @patch("utils.transformers_version.needs_transformers_5", return_value = False)
     @patch("utils.models.model_config.load_model_config")
-    def test_gemma4_model_type_detected_and_cached(
-        self, mock_load_config, mock_needs_t5
-    ):
+    def test_gemma4_model_type_detected_and_cached(self, mock_load_config, mock_needs_t5):
         cfg = MagicMock(spec = [])
         cfg.model_type = "gemma4"
         cfg.architectures = ["Gemma4ForConditionalGeneration"]
@@ -249,9 +247,7 @@ class TestVisionCacheDirectPath:
 
     @patch("utils.transformers_version.needs_transformers_5", return_value = False)
     @patch("utils.models.model_config.load_model_config")
-    def test_gemma4_audio_subconfig_not_detected_as_vision(
-        self, mock_load_config, mock_needs_t5
-    ):
+    def test_gemma4_audio_subconfig_not_detected_as_vision(self, mock_load_config, mock_needs_t5):
         cfg = MagicMock(spec = [])
         cfg.model_type = "gemma4_audio"
         cfg.architectures = ["Gemma4AudioModel"]
@@ -263,9 +259,7 @@ class TestVisionCacheDirectPath:
 
     @patch("utils.transformers_version.needs_transformers_5", return_value = False)
     @patch("utils.models.model_config.load_model_config")
-    def test_gemma4_text_subconfig_not_detected_as_vision(
-        self, mock_load_config, mock_needs_t5
-    ):
+    def test_gemma4_text_subconfig_not_detected_as_vision(self, mock_load_config, mock_needs_t5):
         cfg = MagicMock(spec = [])
         cfg.model_type = "gemma4_text"
         cfg.architectures = ["Gemma4ForCausalLM"]
@@ -413,15 +407,10 @@ class TestSubprocessScript:
             is True
         )
         assert (
-            inline_is_vlm(
-                _C(model_type = "gemma4_text", architectures = ["Gemma4ForCausalLM"])
-            )
+            inline_is_vlm(_C(model_type = "gemma4_text", architectures = ["Gemma4ForCausalLM"]))
             is False
         )
-        assert (
-            inline_is_vlm(_C(model_type = "llama", architectures = ["LlamaForCausalLM"]))
-            is False
-        )
+        assert inline_is_vlm(_C(model_type = "llama", architectures = ["LlamaForCausalLM"])) is False
 
 
 # ---------------------------------------------------------------------------

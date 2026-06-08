@@ -544,7 +544,6 @@ def _raw_config_has_vision_config(
             config_path = Path(normalize_path(model_name)).expanduser() / "config.json"
         else:
             from huggingface_hub import hf_hub_download
-
             config_path = Path(
                 hf_hub_download(
                     repo_id = model_name,
@@ -558,10 +557,7 @@ def _raw_config_has_vision_config(
         if model_type in _AUDIO_ONLY_MODEL_TYPES:
             return False
         return (
-            any(
-                isinstance(x, str) and x.endswith(_VLM_ARCH_SUFFIXES)
-                for x in architectures
-            )
+            any(isinstance(x, str) and x.endswith(_VLM_ARCH_SUFFIXES) for x in architectures)
             or "vision_config" in config
             or "img_processor" in config
             or "image_token_index" in config
@@ -817,7 +813,6 @@ def _is_vision_model_uncached(model_name: str, hf_token: Optional[str] = None) -
                 archs,
             )
             return True
-
 
         return False
 
