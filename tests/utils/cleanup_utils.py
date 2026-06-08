@@ -7,7 +7,11 @@ import sys
 import warnings
 
 
-def clear_memory(variables_to_clear = None, verbose = False, clear_all_caches = True):
+def clear_memory(
+    variables_to_clear = None,
+    verbose = False,
+    clear_all_caches = True,
+):
     """
     Comprehensive memory clearing for persistent memory leaks.
 
@@ -75,9 +79,7 @@ def clear_memory(variables_to_clear = None, verbose = False, clear_all_caches = 
             torch.cuda.reset_accumulated_memory_stats()
 
             # Clear JIT cache
-            if hasattr(torch.jit, "_state") and hasattr(
-                torch.jit._state, "_clear_class_state"
-            ):
+            if hasattr(torch.jit, "_state") and hasattr(torch.jit._state, "_clear_class_state"):
                 torch.jit._state._clear_class_state()
 
             # Force another CUDA cache clear
@@ -89,9 +91,7 @@ def clear_memory(variables_to_clear = None, verbose = False, clear_all_caches = 
         if verbose:
             mem_after = torch.cuda.memory_allocated() / 1024**3
             mem_reserved = torch.cuda.memory_reserved() / 1024**3
-            print(
-                f"GPU memory - Before: {mem_before:.2f} GB, After: {mem_after:.2f} GB"
-            )
+            print(f"GPU memory - Before: {mem_before:.2f} GB, After: {mem_after:.2f} GB")
             print(f"GPU reserved memory: {mem_reserved:.2f} GB")
             if mem_before > 0:
                 print(f"Memory freed: {mem_before - mem_after:.2f} GB")

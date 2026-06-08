@@ -88,9 +88,7 @@ class TestTrustedHostAllowlist:
         _ok(f"import requests; requests.get({url!r})")
 
     def test_wikipedia_subdomain_passes(self):
-        _ok(
-            'import urllib.request; urllib.request.urlopen("https://m.en.wikipedia.org/wiki/Foo")'
-        )
+        _ok('import urllib.request; urllib.request.urlopen("https://m.en.wikipedia.org/wiki/Foo")')
 
     def test_hf_co_short_form_passes(self):
         _ok('import requests; requests.get("https://hf.co/unsloth/Qwen3.5-4B-GGUF")')
@@ -221,10 +219,7 @@ class TestUploadDenylist:
         )
 
     def test_plain_post_json_not_blocked(self):
-        _ok(
-            "import requests\n"
-            'requests.post("https://api.weather.gov/lookup", json={"k": "v"})'
-        )
+        _ok("import requests\n" 'requests.post("https://api.weather.gov/lookup", json={"k": "v"})')
 
 
 class TestSandboxEnvIsolation:
@@ -361,7 +356,6 @@ class TestBashBlocklistPosition:
     @staticmethod
     def _find():
         from core.inference.tools import _find_blocked_commands
-
         return _find_blocked_commands
 
     # ---- argument-position: must NOT be blocked ----
@@ -526,7 +520,7 @@ class TestHfUploadImportGate:
 
     def test_bare_name_upload_file_without_hf_import_allowed(self):
         # No HF import -- local helper named upload_file should pass.
-        _ok("def upload_file(*a, **k):\n    pass\n" "upload_file('x', 'y', 'z')")
+        _ok("def upload_file(*a, **k):\n    pass\nupload_file('x', 'y', 'z')")
 
 
 class TestHfUploadSandboxLocalPaths:

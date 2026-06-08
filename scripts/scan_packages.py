@@ -86,8 +86,7 @@ RE_SUBPROCESS = re.compile(
 
 # Encoding / obfuscation
 RE_BASE64 = re.compile(
-    r"\bbase64\s*\.\s*(b64decode|decodebytes|b32decode|b16decode)\b"
-    r"|\bcodecs\s*\.\s*decode\b",
+    r"\bbase64\s*\.\s*(b64decode|decodebytes|b32decode|b16decode)\b|\bcodecs\s*\.\s*decode\b",
 )
 
 # exec / eval
@@ -299,9 +298,7 @@ RE_CRYPTO_THEFT = re.compile(
 RE_PTH_IMPORT = re.compile(r"^\s*import\s+", re.MULTILINE)
 
 # openssl CLI invocations via subprocess (encrypted exfiltration)
-RE_OPENSSL_CLI = re.compile(
-    r"\bopenssl\s+(enc|rand|rsautl|pkeyutl|genrsa|dgst|s_client)\b"
-)
+RE_OPENSSL_CLI = re.compile(r"\bopenssl\s+(enc|rand|rsautl|pkeyutl|genrsa|dgst|s_client)\b")
 
 # Write to /tmp then execute (staged dropper)
 RE_TEMP_EXEC = re.compile(
@@ -962,7 +959,11 @@ def check_py_file(content: str, filename: str, package: str) -> list[Finding]:
     return findings
 
 
-def _extract_evidence(content: str, pattern: re.Pattern, max_matches: int = 3) -> str:
+def _extract_evidence(
+    content: str,
+    pattern: re.Pattern,
+    max_matches: int = 3,
+) -> str:
     """Pull matching lines as evidence snippets."""
     lines = content.splitlines()
     matches = []
@@ -1266,15 +1267,13 @@ def iter_archive_files(archive_path: str):
                 # have historically dereferenced them on extract.
                 if member.issym() or member.islnk():
                     print(
-                        f"  [WARN] {path.name}: refused link member "
-                        f"{member.name!r}",
+                        f"  [WARN] {path.name}: refused link member " f"{member.name!r}",
                         file = sys.stderr,
                     )
                     continue
                 if member.isdev() or member.isfifo():
                     print(
-                        f"  [WARN] {path.name}: refused special member "
-                        f"{member.name!r}",
+                        f"  [WARN] {path.name}: refused special member " f"{member.name!r}",
                         file = sys.stderr,
                     )
                     continue
@@ -1379,9 +1378,7 @@ def scan_archive(archive_path: str, package: str) -> list[Finding]:
 _RE_PYPI_SPEC_VERSION = re.compile(r"==\s*([A-Za-z0-9_.\-+!]+)")
 
 
-def _check_blocked_pypi_versions(
-    specs: list[str],
-) -> tuple[list[str], list[Finding]]:
+def _check_blocked_pypi_versions(specs: list[str]) -> tuple[list[str], list[Finding]]:
     """Filter ``specs`` against ``BLOCKED_PYPI_VERSIONS``.
 
     Returns ``(safe_specs, findings)``. Each blocked spec emits a CRITICAL
@@ -1502,9 +1499,7 @@ def download_packages(
                 env = env,
             )
             if proc.returncode != 0:
-                msg = (
-                    f"pip download (with deps) failed: " f"{proc.stderr.strip()[:500]}"
-                )
+                msg = f"pip download (with deps) failed: " f"{proc.stderr.strip()[:500]}"
                 print(f"  [ERROR] {msg}", file = sys.stderr)
                 download_errors.append(msg)
         except subprocess.TimeoutExpired:
@@ -1547,10 +1542,7 @@ def download_packages(
                     env = env,
                 )
                 if proc.returncode != 0:
-                    msg = (
-                        f"pip download failed for {spec}: "
-                        f"{proc.stderr.strip()[:500]}"
-                    )
+                    msg = f"pip download failed for {spec}: " f"{proc.stderr.strip()[:500]}"
                     print(f"  [ERROR] {msg}", file = sys.stderr)
                     download_errors.append(msg)
                     continue
@@ -1579,9 +1571,7 @@ def _extract_pkg_name(spec: str) -> str:
     """Extract the package name from a pip spec string."""
     m = _RE_NAME.match(spec)
     return (
-        m.group(1)
-        if m
-        else spec.split("==")[0].split(">=")[0].split("<=")[0].split("[")[0].strip()
+        m.group(1) if m else spec.split("==")[0].split(">=")[0].split("<=")[0].split("[")[0].strip()
     )
 
 
@@ -1917,11 +1907,7 @@ def update_req_file(filepath: str, updates: dict[int, str]) -> None:
         raise
 
 
-def _run_fix(
-    critical_pkgs: set[str],
-    entries: list[dict],
-    max_search: int,
-) -> None:
+def _run_fix(critical_pkgs: set[str], entries: list[dict], max_search: int) -> None:
     """Run the --fix flow: find safe versions, update requirements files."""
     # Map package names to their entries for source tracking
     pkg_entries: dict[str, list[dict]] = {}
@@ -1941,9 +1927,7 @@ def _run_fix(
             if git_entries:
                 for e in git_entries:
                     src = e["source_file"] or "CLI"
-                    print(
-                        f"  [SKIP] {pkg_name} is a git URL dep in {src}, cannot auto-update"
-                    )
+                    print(f"  [SKIP] {pkg_name} is a git URL dep in {src}, cannot auto-update")
                     changes_summary.append(f"  SKIP  {pkg_name} (git URL)")
                 continue
 
@@ -1967,9 +1951,7 @@ def _run_fix(
                 shutil.rmtree(dl_dir, ignore_errors = True)
 
             if not current_ver:
-                print(
-                    f"  [WARN] Cannot determine current version of {pkg_name}, skipping fix"
-                )
+                print(f"  [WARN] Cannot determine current version of {pkg_name}, skipping fix")
                 changes_summary.append(f"  SKIP  {pkg_name} (version unknown)")
                 continue
 
@@ -1986,9 +1968,7 @@ def _run_fix(
                 continue
 
             print(f"  [OK]   {pkg_name}: {current_ver} -> {safe_ver}")
-            changes_summary.append(
-                f"  FIX   {pkg_name}=={current_ver} -> {pkg_name}=={safe_ver}"
-            )
+            changes_summary.append(f"  FIX   {pkg_name}=={current_ver} -> {pkg_name}=={safe_ver}")
 
             # Update all occurrences in requirements files
             file_updates: dict[str, dict[int, str]] = {}
@@ -2038,9 +2018,7 @@ def _find_requirements_files(root: str) -> list[str]:
         dirnames[:] = [
             d
             for d in dirnames
-            if not d.startswith(".")
-            and d not in skip_dirs
-            and not d.endswith(".egg-info")
+            if not d.startswith(".") and d not in skip_dirs and not d.endswith(".egg-info")
         ]
         dirname = os.path.basename(dirpath)
         for fname in sorted(filenames):
@@ -2115,9 +2093,7 @@ def main() -> int:
                 print(f"    {f}")
             req_files.extend(found)
         else:
-            print(
-                f"  [WARN] No requirements files found in {scan_dir}/", file = sys.stderr
-            )
+            print(f"  [WARN] No requirements files found in {scan_dir}/", file = sys.stderr)
 
     # Build unified entry list: list of dicts with source tracking
     entries: list[dict] = []
@@ -2211,7 +2187,7 @@ def main() -> int:
         for err in download_errors:
             print(f"  [ERROR] {err}", file = sys.stderr)
         print(
-            "  Refusing to report 'all clean' on a partial scan; " "exiting 2.",
+            "  Refusing to report 'all clean' on a partial scan; exiting 2.",
             file = sys.stderr,
         )
         return 2
