@@ -48,11 +48,9 @@ async function applyAppWindowLayout(isCurrent: WindowLayoutGuard): Promise<void>
 
   const win = getCurrentWindow();
   // Decide first-launch vs restore from the on-disk state file BEFORE touching the
-  // window. Probing the window itself after restoreStateCurrent is unreliable:
-  // on GTK, set_size against a hidden window is deferred until show(), so
-  // innerSize() reads a stale value and any baseline fallback would overwrite the
-  // queued restore. On macOS the same probe works, hence the inconsistency
-  // between previous iterations of this code.
+  // window. Probing the window after restoreStateCurrent is unreliable: on GTK,
+  // set_size on a hidden window is deferred until show(), so innerSize() reads a
+  // stale value and a baseline fallback would overwrite the queued restore.
   const hasSavedState = await invoke<boolean>("has_saved_window_state");
   if (!isCurrent()) return;
 
@@ -60,9 +58,8 @@ async function applyAppWindowLayout(isCurrent: WindowLayoutGuard): Promise<void>
   if (!isCurrent()) return;
 
   if (hasSavedState) {
-    // Subsequent launch: the plugin handles size, position, and maximized,
-    // with built-in off-screen protection (monitor-intersection check) for
-    // positions saved on a now-disconnected display.
+    // Subsequent launch: plugin restores size/position/maximized, with built-in
+    // off-screen protection for positions saved on a now-disconnected display.
     await restoreStateCurrent(
       StateFlags.SIZE | StateFlags.POSITION | StateFlags.MAXIMIZED,
     );
@@ -87,8 +84,8 @@ async function applyAppWindowLayout(isCurrent: WindowLayoutGuard): Promise<void>
   if (!isCurrent()) return;
   await win.show();
   if (!isCurrent()) return;
-  // Apply constraints after restore/show. Setting constraints before plugin restore
-  // can emit a Resized event and overwrite the plugin's cached saved size.
+  // Apply constraints after restore/show: doing so before plugin restore can emit
+  // a Resized event and overwrite the plugin's cached saved size.
   await win.setSizeConstraints({ minWidth: MIN_WINDOW_WIDTH, minHeight: MIN_WINDOW_HEIGHT });
 }
 

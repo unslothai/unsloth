@@ -44,7 +44,7 @@ function authRedirect(to: "/login" | "/change-password"): never {
 
 export async function requireAuth(): Promise<void> {
   if (isTauri) {
-    // AppProvider owns backend startup + desktop auth; route guards run before it mounts.
+    // AppProvider owns desktop auth; route guards run before it mounts.
     return;
   }
 
