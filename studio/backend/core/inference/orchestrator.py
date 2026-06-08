@@ -272,10 +272,7 @@ class InferenceOrchestrator:
                 f"(pid={pid}, signal={sig_name}, exitcode={exitcode}{suffix})"
             )
 
-        return (
-            f"Inference subprocess crashed during {context} "
-            f"(pid={pid}, exitcode={exitcode})"
-        )
+        return f"Inference subprocess crashed during {context} " f"(pid={pid}, exitcode={exitcode})"
 
     # ------------------------------------------------------------------
     # Queue helpers
@@ -1183,9 +1180,7 @@ class InferenceOrchestrator:
 
             if resp is None:
                 if not self._ensure_subprocess_alive():
-                    raise RuntimeError(
-                        self._subprocess_crash_message("audio generation")
-                    )
+                    raise RuntimeError(self._subprocess_crash_message("audio generation"))
                 continue
 
             rtype = resp.get("type", "")
@@ -1307,10 +1302,7 @@ class InferenceOrchestrator:
 
                 if resp is None:
                     if not self._ensure_subprocess_alive():
-                        yield (
-                            "Error: "
-                            + self._subprocess_crash_message("audio input generation")
-                        )
+                        yield ("Error: " + self._subprocess_crash_message("audio input generation"))
                         return
                     continue
 
