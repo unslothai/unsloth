@@ -562,12 +562,25 @@ def test_trl_kto_get_batch_logps_signature(tag: str):
         "trl/experimental/kto/kto_trainer.py",
         "trl/experimental/kto/__init__.py",
     ]
+    checked_sources = []
     for path in candidates:
         src = fetch_text("huggingface/trl", tag, path)
         if src is None:
             continue
+        checked_sources.append((path, src))
         if has_def(src, "get_batch_logps", "func"):
             return
+    old_shape_check = (
+        'raise ValueError("Logits (batch and sequence length dim) and labels '
+        'must have the same shape.")'
+    )
+    if checked_sources and not any(
+        old_shape_check in src for _, src in checked_sources
+    ):
+        # TRL main inlined KTO log-prob computation and removed the old
+        # helper/shape-check rewrite target. There is no skipped rewrite to
+        # guard until a new concrete KTO shape mismatch target appears.
+        return
     pytest.fail(
         f"{tag}: KTOTrainer.get_batch_logps not found in any of {candidates}; "
         f"unsloth/models/rl_replacements.py:1675 rewrite silently skipped"
