@@ -22,14 +22,10 @@ def ppl_model(model, tokenizer, dataset):
             target_ids = input_ids.clone()
             target_ids[:, :-trg_len] = -100
             # Create attention mask based on pad token id
-            pad_token_id = (
-                tokenizer.pad_token_id if tokenizer.pad_token_id is not None else 0
-            )
+            pad_token_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else 0
             attention_mask = (input_ids != pad_token_id).long()
             with torch.no_grad():
-                outputs = model(
-                    input_ids, labels = target_ids, attention_mask = attention_mask
-                )
+                outputs = model(input_ids, labels = target_ids, attention_mask = attention_mask)
                 neg_log_likelihood = outputs.loss
             nlls.append(neg_log_likelihood)
             prev_end_loc = end_loc
@@ -68,9 +64,7 @@ def print_model_comparison():
             # "Perplexity": [results["ppl"] for results in model_comparison_results.values()],
             "Perplexity": [
                 # Convert tensors to CPU and then to float if needed
-                results["ppl"].cpu().item()
-                if torch.is_tensor(results["ppl"])
-                else results["ppl"]
+                results["ppl"].cpu().item() if torch.is_tensor(results["ppl"]) else results["ppl"]
                 for results in model_comparison_results.values()
             ],
         }

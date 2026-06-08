@@ -58,16 +58,11 @@ def _apply_wsl_sudo_patch():
         import unsloth_zoo.llama_cpp as llama_cpp_module
 
         def _wsl_do_we_need_sudo(system_type = "debian"):
-            logger.info(
-                "WSL detected — skipping sudo check "
-                "(build deps pre-installed by setup.sh)"
-            )
+            logger.info("WSL detected — skipping sudo check (build deps pre-installed by setup.sh)")
             return False
 
         llama_cpp_module.do_we_need_sudo = _wsl_do_we_need_sudo
-        logger.info(
-            "Applied WSL sudo patch to " "unsloth_zoo.llama_cpp.do_we_need_sudo"
-        )
+        logger.info("Applied WSL sudo patch to unsloth_zoo.llama_cpp.do_we_need_sudo")
     except Exception as e:
         logger.warning(f"Could not apply WSL sudo patch: {e}")
 
@@ -146,7 +141,6 @@ class ExportBackend:
             List of tuples: [(model_name, [(display_name, checkpoint_path), ...]), ...]
         """
         from utils.models.checkpoints import scan_checkpoints
-
         return scan_checkpoints(outputs_dir = outputs_dir)
 
     def load_checkpoint(
@@ -224,7 +218,6 @@ class ExportBackend:
 
             elif self._audio_type == "bicodec":
                 from unsloth import FastModel
-
                 logger.info("Loading as BiCodec (Spark-TTS) audio model...")
                 model, tokenizer = FastModel.from_pretrained(
                     model_name = checkpoint_path,
@@ -236,7 +229,6 @@ class ExportBackend:
 
             elif self._audio_type == "dac":
                 from unsloth import FastModel
-
                 logger.info("Loading as DAC (OuteTTS) audio model...")
                 model, tokenizer = FastModel.from_pretrained(
                     model_name = checkpoint_path,
@@ -348,9 +340,7 @@ class ExportBackend:
         output_path: Optional[str] = None
         try:
             if _IS_MLX:
-                mlx_save_method = (
-                    "merged_4bit" if format_type == "4-bit (FP4)" else "merged_16bit"
-                )
+                mlx_save_method = "merged_4bit" if format_type == "4-bit (FP4)" else "merged_16bit"
             else:
                 if format_type == "4-bit (FP4)":
                     save_method = "merged_4bit_forced"
@@ -415,9 +405,7 @@ class ExportBackend:
                                 private = private,
                             )
                 else:
-                    hub_save_method = (
-                        save_method if save_method is not None else "merged_16bit"
-                    )
+                    hub_save_method = save_method if save_method is not None else "merged_16bit"
                     self.current_model.push_to_hub_merged(
                         repo_id,
                         self.current_tokenizer,
@@ -523,9 +511,7 @@ class ExportBackend:
                 else:
                     # Get base model name from request or model config
                     base_model = (
-                        base_model_id
-                        or self.current_model.config._name_or_path
-                        or "unknown"
+                        base_model_id or self.current_model.config._name_or_path or "unknown"
                     )
 
                     # Create repo
@@ -547,9 +533,7 @@ class ExportBackend:
                         extra = "unsloth",
                     )
                     card = ModelCard(content)
-                    card.push_to_hub(
-                        repo_id, token = hf_token, commit_message = "Unsloth Model Card"
-                    )
+                    card.push_to_hub(repo_id, token = hf_token, commit_message = "Unsloth Model Card")
 
                     # Upload model files
                     if save_directory:
@@ -614,10 +598,7 @@ class ExportBackend:
                     LLAMA_CPP_DEFAULT_DIR,
                     _resolve_local_convert_script,  # noqa: F401
                 )
-
-                os.environ.setdefault(
-                    "UNSLOTH_LLAMA_CPP_SCRIPTS_DIR", LLAMA_CPP_DEFAULT_DIR
-                )
+                os.environ.setdefault("UNSLOTH_LLAMA_CPP_SCRIPTS_DIR", LLAMA_CPP_DEFAULT_DIR)
             except ImportError:
                 if not _LLAMA_CPP_SCRIPTS_WARNING_EMITTED:
                     logger.warning(
@@ -663,15 +644,11 @@ class ExportBackend:
                 # Relocate GGUF artifacts into the export directory.
                 # convert_to_gguf writes .gguf files to cwd (repo root)
                 # because --outfile is a relative path like "model.Q4_K_M.gguf".
-                new_ggufs = (
-                    set(glob.glob(os.path.join(cwd, "*.gguf"))) - pre_existing_ggufs
-                )
+                new_ggufs = set(glob.glob(os.path.join(cwd, "*.gguf"))) - pre_existing_ggufs
                 for src in sorted(new_ggufs):
                     dest = os.path.join(abs_save_dir, os.path.basename(src))
                     shutil.move(src, dest)
-                    logger.info(
-                        f"Relocated GGUF: {os.path.basename(src)} → {abs_save_dir}/"
-                    )
+                    logger.info(f"Relocated GGUF: {os.path.basename(src)} → {abs_save_dir}/")
 
                 # Flatten any .gguf files from subdirectories into abs_save_dir.
                 # save_pretrained_gguf may create subdirs (e.g. model_gguf/)
@@ -701,9 +678,7 @@ class ExportBackend:
                         # Also relocate Ollama Modelfile if present
                         modelfile = gguf_dir / "Modelfile"
                         if modelfile.is_file():
-                            shutil.move(
-                                str(modelfile), os.path.join(abs_save_dir, "Modelfile")
-                            )
+                            shutil.move(str(modelfile), os.path.join(abs_save_dir, "Modelfile"))
                             logger.info(f"Relocated Modelfile → {abs_save_dir}/")
                         shutil.rmtree(str(gguf_dir), ignore_errors = True)
                         logger.info(f"Cleaned up intermediate GGUF dir: {gguf_dir}")
@@ -814,12 +789,8 @@ class ExportBackend:
                             repo_type = "model",
                         )
                 else:
-                    self.current_model.push_to_hub(
-                        repo_id, token = hf_token, private = private
-                    )
-                    self.current_tokenizer.push_to_hub(
-                        repo_id, token = hf_token, private = private
-                    )
+                    self.current_model.push_to_hub(repo_id, token = hf_token, private = private)
+                    self.current_tokenizer.push_to_hub(repo_id, token = hf_token, private = private)
                 logger.info(f"Adapter pushed successfully to {repo_id}")
 
             return True, "LoRA adapter exported successfully", output_path

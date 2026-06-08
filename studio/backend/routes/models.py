@@ -141,7 +141,9 @@ logger = get_logger(__name__)
 
 
 def derive_model_type(
-    is_vision: bool, audio_type: Optional[str], is_embedding: bool = False
+    is_vision: bool,
+    audio_type: Optional[str],
+    is_embedding: bool = False,
 ) -> ModelType:
     """Collapse individual capability flags into a single model modality string."""
     if is_embedding:
@@ -157,7 +159,6 @@ def _resolve_hf_cache_dir() -> Path:
     """Resolve local HF cache root used by hub downloads."""
     try:
         from huggingface_hub.constants import HF_HUB_CACHE
-
         return Path(HF_HUB_CACHE)
     except Exception:
         return Path.home() / ".cache" / "huggingface" / "hub"
@@ -194,9 +195,7 @@ def _is_model_directory(d: Path) -> bool:
         return False
 
     try:
-        has_config = (d / "config.json").exists() or (
-            d / "adapter_config.json"
-        ).exists()
+        has_config = (d / "config.json").exists() or (d / "adapter_config.json").exists()
         if not has_config:
             return False
         return any(_is_weight_file(f) for f in d.iterdir() if f.is_file())
@@ -204,11 +203,7 @@ def _is_model_directory(d: Path) -> bool:
         return False
 
 
-def _scan_models_dir(
-    models_dir: Path,
-    *,
-    limit: int | None = None,
-) -> List[LocalModelInfo]:
+def _scan_models_dir(models_dir: Path, *, limit: int | None = None) -> List[LocalModelInfo]:
     if not models_dir.exists() or not models_dir.is_dir():
         return []
 
@@ -449,8 +444,7 @@ def _ollama_links_dir(ollama_dir: Path) -> Optional[Path]:
         return primary
     except OSError as e:
         logger.debug(
-            "Ollama dir %s not writable for .studio_links (%s); "
-            "falling back to Studio cache",
+            "Ollama dir %s not writable for .studio_links (%s); falling back to Studio cache",
             ollama_dir,
             e,
         )
@@ -475,9 +469,7 @@ def _ollama_links_dir(ollama_dir: Path) -> Optional[Path]:
         return None
 
 
-def _scan_ollama_dir(
-    ollama_dir: Path, limit: Optional[int] = None
-) -> List[LocalModelInfo]:
+def _scan_ollama_dir(ollama_dir: Path, limit: Optional[int] = None) -> List[LocalModelInfo]:
     """Scan an Ollama models directory for downloaded models.
 
     Ollama stores models in a content-addressable layout::
@@ -571,9 +563,7 @@ def _scan_ollama_dir(
                 if tmp_path.is_symlink() or tmp_path.exists():
                     tmp_path.unlink()
             except OSError as cleanup_err:
-                logger.debug(
-                    "Could not clean up tmp path %s: %s", tmp_path, cleanup_err
-                )
+                logger.debug("Could not clean up tmp path %s: %s", tmp_path, cleanup_err)
             return None
 
     try:
@@ -590,11 +580,7 @@ def _scan_ollama_dir(
             repo_parts = list(parts[1:-1])
             tag = parts[-1]
 
-            if (
-                host == "registry.ollama.ai"
-                and repo_parts
-                and repo_parts[0] == "library"
-            ):
+            if host == "registry.ollama.ai" and repo_parts and repo_parts[0] == "library":
                 repo_name = "/".join(repo_parts[1:])
             elif host == "registry.ollama.ai":
                 repo_name = "/".join(repo_parts)
@@ -651,9 +637,7 @@ def _scan_ollama_dir(
                     candidate = blobs_dir / digest.replace(":", "-")
                     if candidate.is_file():
                         link_name = f"{safe_name}-{tag}{quant}.gguf"
-                        gguf_link_path = _make_link(
-                            model_link_dir, link_name, candidate
-                        )
+                        gguf_link_path = _make_link(model_link_dir, link_name, candidate)
 
                 elif media == "application/vnd.ollama.image.projector":
                     candidate = blobs_dir / digest.replace(":", "-")
@@ -726,7 +710,6 @@ async def list_local_models(
         allowed_roots.append(hf_default)
     try:
         from utils.paths import studio_root, outputs_root
-
         allowed_roots.extend([studio_root(), outputs_root()])
     except Exception:
         pass
@@ -785,10 +768,7 @@ async def list_local_models(
                         + _scan_hf_cache(folder_path)
                         + _scan_lmstudio_dir(folder_path)
                     )
-                    if not any(
-                        p in (".studio_links", "ollama_links")
-                        for p in Path(m.path).parts
-                    )
+                    if not any(p in (".studio_links", "ollama_links") for p in Path(m.path).parts)
                 ]
                 custom_models = _generic
                 if len(custom_models) < _MAX_MODELS_PER_FOLDER:
@@ -799,9 +779,7 @@ async def list_local_models(
             except OSError as e:
                 logger.warning("Skipping unreadable scan folder %s: %s", folder_path, e)
                 continue
-            local_models += [
-                m.model_copy(update = {"source": "custom"}) for m in custom_models
-            ]
+            local_models += [m.model_copy(update = {"source": "custom"}) for m in custom_models]
 
         # Deduplicate models, but always keep custom folder entries so they
         # appear in the "Custom Folders" UI section even when the same model
@@ -836,19 +814,15 @@ async def list_local_models(
 
 
 @router.get("/scan-folders")
-async def get_scan_folders(
-    current_subject: str = Depends(get_current_subject),
-):
+async def get_scan_folders(current_subject: str = Depends(get_current_subject)):
     """List all registered custom model scan folders."""
     from storage.studio_db import list_scan_folders
-
     return {"folders": list_scan_folders()}
 
 
 @router.post("/scan-folders", response_model = ScanFolderInfo, status_code = 201)
 async def add_scan_folder_endpoint(
-    body: AddScanFolderRequest,
-    current_subject: str = Depends(get_current_subject),
+    body: AddScanFolderRequest, current_subject: str = Depends(get_current_subject)
 ):
     """Register a new directory to scan for local models."""
     from storage.studio_db import add_scan_folder
@@ -867,8 +841,7 @@ async def add_scan_folder_endpoint(
 
 @router.delete("/scan-folders/{folder_id}")
 async def remove_scan_folder_endpoint(
-    folder_id: int,
-    current_subject: str = Depends(get_current_subject),
+    folder_id: int, current_subject: str = Depends(get_current_subject)
 ):
     """Remove a registered custom scan folder."""
     from storage.studio_db import remove_scan_folder
@@ -879,9 +852,7 @@ async def remove_scan_folder_endpoint(
 
 
 @router.get("/recommended-folders")
-async def get_recommended_folders(
-    current_subject: str = Depends(get_current_subject),
-):
+async def get_recommended_folders(current_subject: str = Depends(get_current_subject)):
     """Return well-known model directories that exist on this machine.
 
     Lightweight alternative to ``browse-folders`` for showing quick-pick
@@ -1191,9 +1162,7 @@ def _match_browse_child(current: Path, name: str) -> Optional[Path]:
             detail = f"Permission denied reading {current.name}",
         ) from None
     except OSError as exc:
-        logger.warning(
-            "browse-folders: could not read %s: %s", current, exc, exc_info = True
-        )
+        logger.warning("browse-folders: could not read %s: %s", current, exc, exc_info = True)
         raise HTTPException(
             status_code = 500,
             detail = f"Could not read {os.path.basename(str(current))}",
@@ -1344,9 +1313,7 @@ async def browse_folders(
             detail = f"Permission denied reading {os.path.basename(str(target))}",
         )
     except OSError as exc:
-        logger.warning(
-            "browse-folders: could not read %s: %s", target, exc, exc_info = True
-        )
+        logger.warning("browse-folders: could not read %s: %s", target, exc, exc_info = True)
         raise HTTPException(
             status_code = 500,
             detail = f"Could not read {os.path.basename(str(target))}",
@@ -1404,9 +1371,7 @@ async def browse_folders(
     # would 403 on click. Users can still hop to other allowed roots
     # via the suggestion chips below.
     parent: Optional[str]
-    if target.parent == target or not _is_path_inside_allowlist(
-        target.parent, allowed_roots
-    ):
+    if target.parent == target or not _is_path_inside_allowlist(target.parent, allowed_roots):
         parent = None
     else:
         parent = str(target.parent)
@@ -1475,9 +1440,7 @@ def _looks_like_mlx_repo(model_id: str) -> bool:
 
 
 @router.get("/list")
-async def list_models(
-    current_subject: str = Depends(get_current_subject),
-):
+async def list_models(current_subject: str = Depends(get_current_subject)):
     """
     List available models (default models and loaded models).
 
@@ -1565,16 +1528,12 @@ def _get_max_position_embeddings(config) -> Optional[int]:
     """Extract max_position_embeddings from a model config, checking text_config fallback."""
     if hasattr(config, "max_position_embeddings"):
         return config.max_position_embeddings
-    if hasattr(config, "text_config") and hasattr(
-        config.text_config, "max_position_embeddings"
-    ):
+    if hasattr(config, "text_config") and hasattr(config.text_config, "max_position_embeddings"):
         return config.text_config.max_position_embeddings
     return None
 
 
-def _get_model_size_bytes(
-    model_name: str, hf_token: Optional[str] = None
-) -> Optional[int]:
+def _get_model_size_bytes(model_name: str, hf_token: Optional[str] = None) -> Optional[int]:
     """Get total size of model weight files from HF Hub."""
     try:
         from huggingface_hub import HfApi
@@ -1587,9 +1546,7 @@ def _get_model_size_bytes(
         weight_exts = (".safetensors", ".bin", ".pt", ".pth", ".gguf")
         total = 0
         for sibling in info.siblings:
-            if sibling.rfilename and any(
-                sibling.rfilename.endswith(ext) for ext in weight_exts
-            ):
+            if sibling.rfilename and any(sibling.rfilename.endswith(ext) for ext in weight_exts):
                 if sibling.size is not None:
                     total += sibling.size
 
@@ -1777,15 +1734,10 @@ def _loaded_model_matches_deleted_path(active_model: str, deleted_path: Path) ->
         )
         active_lower = active_model.lower()
         target_lower = str(deleted_path).lower()
-        return active_lower == target_lower or active_lower.startswith(
-            f"{target_lower}{os.sep}"
-        )
+        return active_lower == target_lower or active_lower.startswith(f"{target_lower}{os.sep}")
 
 
-def _loading_model_matches_deleted_path(
-    loading_model: object,
-    deleted_path: Path,
-) -> bool:
+def _loading_model_matches_deleted_path(loading_model: object, deleted_path: Path) -> bool:
     if not loading_model:
         return False
     return _loaded_model_matches_deleted_path(str(loading_model), deleted_path)
@@ -1918,7 +1870,6 @@ async def delete_finetuned_model(
     if source == "training":
         try:
             from core.training import get_training_backend
-
             training_backend = get_training_backend()
             if training_backend.is_training_active():
                 raise HTTPException(
@@ -2005,9 +1956,7 @@ async def delete_finetuned_model(
     except HTTPException:
         raise
     except Exception as e:
-        logger.warning(
-            "Could not check inference backend loaded model before delete: %s", e
-        )
+        logger.warning("Could not check inference backend loaded model before delete: %s", e)
         raise HTTPException(
             status_code = 503,
             detail = "Could not verify model load status before deleting",
@@ -2079,10 +2028,7 @@ async def delete_finetuned_model(
 
 
 @router.get("/loras/{lora_path:path}/base-model", response_model = LoRABaseModelResponse)
-async def get_lora_base_model(
-    lora_path: str,
-    current_subject: str = Depends(get_current_subject),
-):
+async def get_lora_base_model(lora_path: str, current_subject: str = Depends(get_current_subject)):
     """
     Get the base model for a LoRA adapter.
 
@@ -2115,10 +2061,7 @@ async def get_lora_base_model(
 
 
 @router.get("/check-vision/{model_name:path}", response_model = VisionCheckResponse)
-async def check_vision_model(
-    model_name: str,
-    current_subject: str = Depends(get_current_subject),
-):
+async def check_vision_model(model_name: str, current_subject: str = Depends(get_current_subject)):
     """
     Check if a model is a vision model.
 
@@ -2159,9 +2102,7 @@ async def check_embedding_model(
         logger.info(f"Checking if embedding model: {model_name}")
         is_embedding = is_embedding_model(model_name, hf_token = hf_token)
 
-        logger.info(
-            f"Embedding check result for {model_name}: is_embedding={is_embedding}"
-        )
+        logger.info(f"Embedding check result for {model_name}: is_embedding={is_embedding}")
         return EmbeddingCheckResponse(
             model_name = model_name,
             is_embedding = is_embedding,
@@ -2182,9 +2123,7 @@ async def get_gguf_variants(
     repo_id: str = Query(
         ..., description = "HuggingFace repo ID (e.g. 'unsloth/gemma-3-4b-it-GGUF')"
     ),
-    hf_token: Optional[str] = Query(
-        None, description = "HuggingFace token for private repos"
-    ),
+    hf_token: Optional[str] = Query(None, description = "HuggingFace token for private repos"),
     current_subject: str = Depends(get_current_subject),
 ):
     """
@@ -2333,11 +2272,7 @@ async def get_gguf_download_progress(
                 break
 
         total_progress_bytes = downloaded_bytes + in_progress_bytes
-        progress = (
-            min(total_progress_bytes / expected_bytes, 0.99)
-            if expected_bytes > 0
-            else 0
-        )
+        progress = min(total_progress_bytes / expected_bytes, 0.99) if expected_bytes > 0 else 0
         # Only report 1.0 when all bytes are in completed files (not in-progress)
         if expected_bytes > 0 and downloaded_bytes >= expected_bytes:
             progress = 1.0
@@ -2480,7 +2415,6 @@ def _all_hf_cache_scans():
     try:
         # Resolve the active cache dir so we can dedup
         from huggingface_hub.constants import HF_HUB_CACHE
-
         seen.add(str(Path(HF_HUB_CACHE).resolve()))
     except Exception:
         pass
@@ -2553,9 +2487,7 @@ def _repo_has_gguf_files(repo_info) -> bool:
 
 
 @router.get("/cached-gguf")
-async def list_cached_gguf(
-    current_subject: str = Depends(get_current_subject),
-):
+async def list_cached_gguf(current_subject: str = Depends(get_current_subject)):
     """List GGUF repos downloaded to HF cache, legacy Unsloth cache, and HF default cache."""
     try:
         cache_scans = _all_hf_cache_scans()
@@ -2590,9 +2522,7 @@ async def list_cached_gguf(
 
 
 @router.get("/cached-models")
-async def list_cached_models(
-    current_subject: str = Depends(get_current_subject),
-):
+async def list_cached_models(current_subject: str = Depends(get_current_subject)):
     """List non-GGUF model repos downloaded to HF cache, legacy Unsloth cache, and HF default cache."""
     _WEIGHT_EXTENSIONS = (".safetensors", ".bin")
 
@@ -2609,9 +2539,7 @@ async def list_cached_models(
                     if _repo_has_gguf_files(repo_info):
                         continue
                     total_size = sum(
-                        (f.size_on_disk or 0)
-                        for rev in repo_info.revisions
-                        for f in rev.files
+                        (f.size_on_disk or 0) for rev in repo_info.revisions for f in rev.files
                     )
                     if total_size == 0:
                         continue
@@ -2658,7 +2586,6 @@ async def delete_cached_model(
     # Check if model is currently loaded
     try:
         from routes.inference import get_llama_cpp_backend
-
         llama_backend = get_llama_cpp_backend()
         if llama_backend.is_loaded and llama_backend.model_identifier:
             loaded_id = llama_backend.model_identifier.lower()
