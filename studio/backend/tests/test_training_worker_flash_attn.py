@@ -15,7 +15,13 @@ from core.training import worker
 def _missing_flash_attn_import():
     real_import = builtins.__import__
 
-    def fake_import(name, globals = None, locals = None, fromlist = (), level = 0):
+    def fake_import(
+        name,
+        globals = None,
+        locals = None,
+        fromlist = (),
+        level = 0,
+    ):
         if name == "flash_attn":
             raise ImportError
         return real_import(name, globals, locals, fromlist, level)
@@ -26,7 +32,13 @@ def _missing_flash_attn_import():
 def _missing_module_import(missing: str):
     real_import = builtins.__import__
 
-    def fake_import(name, globals = None, locals = None, fromlist = (), level = 0):
+    def fake_import(
+        name,
+        globals = None,
+        locals = None,
+        fromlist = (),
+        level = 0,
+    ):
         if name == missing:
             raise ImportError
         return real_import(name, globals, locals, fromlist, level)
@@ -37,9 +49,7 @@ def _missing_module_import(missing: str):
 def test_should_try_runtime_flash_attn_install_threshold_and_skip(monkeypatch):
     monkeypatch.delenv(worker._FLASH_ATTN_SKIP_ENV, raising = False)
     assert worker._should_try_runtime_flash_attn_install(32767) is False
-    assert worker._should_try_runtime_flash_attn_install(
-        32768
-    ) is sys.platform.startswith("linux")
+    assert worker._should_try_runtime_flash_attn_install(32768) is sys.platform.startswith("linux")
 
     monkeypatch.setenv(worker._FLASH_ATTN_SKIP_ENV, "1")
     assert worker._should_try_runtime_flash_attn_install(32768) is False
@@ -105,7 +115,12 @@ def test_runtime_flash_attn_falls_back_to_pypi(monkeypatch):
     )
     monkeypatch.setattr(worker, "install_wheel", mock.Mock())
 
-    def fake_run(cmd, stdout = None, stderr = None, text = None):
+    def fake_run(
+        cmd,
+        stdout = None,
+        stderr = None,
+        text = None,
+    ):
         calls.append(list(cmd))
         return subprocess.CompletedProcess(cmd, 0, "")
 
@@ -131,9 +146,7 @@ def test_runtime_flash_attn_skips_on_blackwell(monkeypatch):
     install_mock = mock.Mock()
 
     monkeypatch.delenv(worker._FLASH_ATTN_SKIP_ENV, raising = False)
-    monkeypatch.setattr(
-        worker, "_should_try_runtime_flash_attn_install", lambda max_seq: True
-    )
+    monkeypatch.setattr(worker, "_should_try_runtime_flash_attn_install", lambda max_seq: True)
     monkeypatch.setattr(worker, "has_blackwell_gpu", lambda: True)
     monkeypatch.setattr(worker, "_install_package_wheel_first", install_mock)
     monkeypatch.setattr(
@@ -504,14 +517,10 @@ def test_tilelang_backend_reinstalls_when_tvm_ffi_is_broken(monkeypatch):
 
     # Repair: --force-reinstall --no-deps, apache-tvm-ffi ONLY (no tilelang).
     assert "--force-reinstall" in repair_args
-    assert (
-        "--no-deps" in repair_args
-    ), "Repair MUST use --no-deps to avoid replacing torch / CUDA"
+    assert "--no-deps" in repair_args, "Repair MUST use --no-deps to avoid replacing torch / CUDA"
     assert "--only-binary=:all:" in repair_args
     assert f"apache-tvm-ffi=={worker._APACHE_TVM_FFI_PACKAGE_VERSION}" in repair_args
-    assert all(
-        "tilelang" not in a for a in repair_args
-    ), "Repair MUST only touch apache-tvm-ffi"
+    assert all("tilelang" not in a for a in repair_args), "Repair MUST only touch apache-tvm-ffi"
 
     # Install: regular dep-resolving install, NO --force-reinstall.
     assert "--force-reinstall" not in install_args
@@ -689,16 +698,12 @@ def test_hook_installs_when_gate_returns_false(monkeypatch):
 
     conv_install = mock.Mock(side_effect = _conv_install_side_effect)
 
-    monkeypatch.setattr(
-        worker, "_ensure_flash_linear_attention_unconditional", fla_install
-    )
+    monkeypatch.setattr(worker, "_ensure_flash_linear_attention_unconditional", fla_install)
     monkeypatch.setattr(worker, "_ensure_tilelang_backend_unconditional", tile_install)
     monkeypatch.setattr(worker, "_install_package_wheel_first", conv_install)
     monkeypatch.delenv(worker._FAST_PATH_HOOKS_SKIP_ENV, raising = False)
 
-    worker._install_fast_path_hooks(
-        event_queue = _FakeQueue(), model_name = "unsloth/Qwen3.5-2B"
-    )
+    worker._install_fast_path_hooks(event_queue = _FakeQueue(), model_name = "unsloth/Qwen3.5-2B")
 
     from transformers.utils import import_utils as _iu
 
@@ -722,9 +727,7 @@ def test_hook_skips_install_when_gate_already_true(monkeypatch):
     fla_install = mock.Mock()
     tile_install = mock.Mock()
     conv_install = mock.Mock()
-    monkeypatch.setattr(
-        worker, "_ensure_flash_linear_attention_unconditional", fla_install
-    )
+    monkeypatch.setattr(worker, "_ensure_flash_linear_attention_unconditional", fla_install)
     monkeypatch.setattr(worker, "_ensure_tilelang_backend_unconditional", tile_install)
     monkeypatch.setattr(worker, "_install_package_wheel_first", conv_install)
     # Tilelang healthy so the post_available path is a no-op (otherwise
@@ -734,9 +737,7 @@ def test_hook_skips_install_when_gate_already_true(monkeypatch):
     monkeypatch.setattr(worker, "_installed_tvm_ffi_version", lambda: "0.1.9")
     monkeypatch.delenv(worker._FAST_PATH_HOOKS_SKIP_ENV, raising = False)
 
-    worker._install_fast_path_hooks(
-        event_queue = _FakeQueue(), model_name = "unsloth/Qwen3.5-2B"
-    )
+    worker._install_fast_path_hooks(event_queue = _FakeQueue(), model_name = "unsloth/Qwen3.5-2B")
 
     from transformers.utils import import_utils as _iu
 
@@ -764,16 +765,12 @@ def test_hook_idempotent_on_repeat_call(monkeypatch):
         return True
 
     conv_install = mock.Mock(side_effect = _conv_install_side_effect)
-    monkeypatch.setattr(
-        worker, "_ensure_flash_linear_attention_unconditional", fla_install
-    )
+    monkeypatch.setattr(worker, "_ensure_flash_linear_attention_unconditional", fla_install)
     monkeypatch.setattr(worker, "_ensure_tilelang_backend_unconditional", tile_install)
     monkeypatch.setattr(worker, "_install_package_wheel_first", conv_install)
     monkeypatch.delenv(worker._FAST_PATH_HOOKS_SKIP_ENV, raising = False)
 
-    worker._install_fast_path_hooks(
-        event_queue = _FakeQueue(), model_name = "unsloth/Qwen3.5-2B"
-    )
+    worker._install_fast_path_hooks(event_queue = _FakeQueue(), model_name = "unsloth/Qwen3.5-2B")
 
     from transformers.utils import import_utils as _iu
 
@@ -794,18 +791,12 @@ def test_hook_handles_install_failure_gracefully(monkeypatch):
     def raising_install(eq):
         raise RuntimeError("pip failed to fetch wheel")
 
-    monkeypatch.setattr(
-        worker, "_ensure_flash_linear_attention_unconditional", raising_install
-    )
-    monkeypatch.setattr(
-        worker, "_ensure_tilelang_backend_unconditional", lambda eq: None
-    )
+    monkeypatch.setattr(worker, "_ensure_flash_linear_attention_unconditional", raising_install)
+    monkeypatch.setattr(worker, "_ensure_tilelang_backend_unconditional", lambda eq: None)
     monkeypatch.setattr(worker, "_install_package_wheel_first", lambda **kw: None)
     monkeypatch.delenv(worker._FAST_PATH_HOOKS_SKIP_ENV, raising = False)
 
-    worker._install_fast_path_hooks(
-        event_queue = _FakeQueue(), model_name = "unsloth/Qwen3.5-2B"
-    )
+    worker._install_fast_path_hooks(event_queue = _FakeQueue(), model_name = "unsloth/Qwen3.5-2B")
 
     from transformers.utils import import_utils as _iu
 
@@ -819,14 +810,10 @@ def test_hook_can_be_disabled_via_env(monkeypatch):
     _patch_iu_gates(monkeypatch, fla_gate, conv_gate)
 
     fla_install = mock.Mock()
-    monkeypatch.setattr(
-        worker, "_ensure_flash_linear_attention_unconditional", fla_install
-    )
+    monkeypatch.setattr(worker, "_ensure_flash_linear_attention_unconditional", fla_install)
     monkeypatch.setenv(worker._FAST_PATH_HOOKS_SKIP_ENV, "1")
 
-    worker._install_fast_path_hooks(
-        event_queue = _FakeQueue(), model_name = "unsloth/Qwen3.5-2B"
-    )
+    worker._install_fast_path_hooks(event_queue = _FakeQueue(), model_name = "unsloth/Qwen3.5-2B")
 
     from transformers.utils import import_utils as _iu
 
@@ -841,18 +828,12 @@ def test_hook_clears_lru_cache_before_first_check(monkeypatch):
     conv_gate = _make_fake_gate(initial_return = True)
     _patch_iu_gates(monkeypatch, fla_gate, conv_gate)
 
-    monkeypatch.setattr(
-        worker, "_ensure_flash_linear_attention_unconditional", lambda eq: None
-    )
-    monkeypatch.setattr(
-        worker, "_ensure_tilelang_backend_unconditional", lambda eq: None
-    )
+    monkeypatch.setattr(worker, "_ensure_flash_linear_attention_unconditional", lambda eq: None)
+    monkeypatch.setattr(worker, "_ensure_tilelang_backend_unconditional", lambda eq: None)
     monkeypatch.setattr(worker, "_install_package_wheel_first", lambda **kw: None)
     monkeypatch.delenv(worker._FAST_PATH_HOOKS_SKIP_ENV, raising = False)
 
-    worker._install_fast_path_hooks(
-        event_queue = _FakeQueue(), model_name = "unsloth/Qwen3.5-2B"
-    )
+    worker._install_fast_path_hooks(event_queue = _FakeQueue(), model_name = "unsloth/Qwen3.5-2B")
     from transformers.utils import import_utils as _iu
 
     _iu.is_flash_linear_attention_available()
@@ -880,18 +861,12 @@ def test_hook_rewrites_previously_imported_module_bindings(monkeypatch):
         fla_gate.next_return = True
         return True
 
-    monkeypatch.setattr(
-        worker, "_ensure_flash_linear_attention_unconditional", fake_install
-    )
-    monkeypatch.setattr(
-        worker, "_ensure_tilelang_backend_unconditional", lambda eq: True
-    )
+    monkeypatch.setattr(worker, "_ensure_flash_linear_attention_unconditional", fake_install)
+    monkeypatch.setattr(worker, "_ensure_tilelang_backend_unconditional", lambda eq: True)
     monkeypatch.setattr(worker, "_install_package_wheel_first", lambda **kw: True)
     monkeypatch.delenv(worker._FAST_PATH_HOOKS_SKIP_ENV, raising = False)
 
-    worker._install_fast_path_hooks(
-        event_queue = _FakeQueue(), model_name = "unsloth/Qwen3.5-2B"
-    )
+    worker._install_fast_path_hooks(event_queue = _FakeQueue(), model_name = "unsloth/Qwen3.5-2B")
 
     # The fake module's local binding has been rewritten to the wrapper.
     assert fake_mod.is_flash_linear_attention_available is not fla_gate
@@ -915,30 +890,20 @@ def test_hook_skips_when_import_utils_unavailable(monkeypatch):
     monkeypatch.delenv(worker._FAST_PATH_HOOKS_SKIP_ENV, raising = False)
 
     # Should not raise.
-    worker._install_fast_path_hooks(
-        event_queue = _FakeQueue(), model_name = "unsloth/Qwen3.5-2B"
-    )
+    worker._install_fast_path_hooks(event_queue = _FakeQueue(), model_name = "unsloth/Qwen3.5-2B")
 
 
 def test_substring_fallback_unchanged_when_hook_skipped(monkeypatch):
     """Hook disabled -> legacy gate falls back to auto-discovered model types."""
     install_mock = mock.Mock()
-    monkeypatch.setattr(
-        worker, "_ensure_flash_linear_attention_unconditional", install_mock
-    )
-    monkeypatch.setattr(
-        worker, "_discover_fla_model_types", lambda: frozenset({"qwen3_5"})
-    )
+    monkeypatch.setattr(worker, "_ensure_flash_linear_attention_unconditional", install_mock)
+    monkeypatch.setattr(worker, "_discover_fla_model_types", lambda: frozenset({"qwen3_5"}))
     monkeypatch.setenv(worker._FAST_PATH_HOOKS_SKIP_ENV, "1")
 
-    worker._ensure_flash_linear_attention(
-        event_queue = [], model_name = "unsloth/Qwen3.5-2B"
-    )
+    worker._ensure_flash_linear_attention(event_queue = [], model_name = "unsloth/Qwen3.5-2B")
     assert install_mock.call_count == 1
 
-    worker._ensure_flash_linear_attention(
-        event_queue = [], model_name = "meta-llama/Llama-3.1-8B"
-    )
+    worker._ensure_flash_linear_attention(event_queue = [], model_name = "meta-llama/Llama-3.1-8B")
     assert install_mock.call_count == 1
 
 
@@ -968,13 +933,9 @@ def test_hook_does_not_install_tilelang_for_model_outside_allowlist(monkeypatch)
 
     fla_install = mock.Mock(side_effect = _fla_install)
     tile_install = mock.Mock(return_value = True)
-    monkeypatch.setattr(
-        worker, "_ensure_flash_linear_attention_unconditional", fla_install
-    )
+    monkeypatch.setattr(worker, "_ensure_flash_linear_attention_unconditional", fla_install)
     monkeypatch.setattr(worker, "_ensure_tilelang_backend_unconditional", tile_install)
-    monkeypatch.setattr(
-        worker, "_install_package_wheel_first", mock.Mock(return_value = True)
-    )
+    monkeypatch.setattr(worker, "_install_package_wheel_first", mock.Mock(return_value = True))
     monkeypatch.delenv(worker._FAST_PATH_HOOKS_SKIP_ENV, raising = False)
     # Hermetize the auto-discovered set so the test stays valid as new
     # transformers releases add FLA-using model_types (eg olmo_hybrid in
@@ -1009,18 +970,12 @@ def test_hook_does_install_tilelang_for_qwen35(monkeypatch):
 
     fla_install = mock.Mock(side_effect = _fla_install)
     tile_install = mock.Mock(return_value = True)
-    monkeypatch.setattr(
-        worker, "_ensure_flash_linear_attention_unconditional", fla_install
-    )
+    monkeypatch.setattr(worker, "_ensure_flash_linear_attention_unconditional", fla_install)
     monkeypatch.setattr(worker, "_ensure_tilelang_backend_unconditional", tile_install)
-    monkeypatch.setattr(
-        worker, "_install_package_wheel_first", mock.Mock(return_value = True)
-    )
+    monkeypatch.setattr(worker, "_install_package_wheel_first", mock.Mock(return_value = True))
     monkeypatch.delenv(worker._FAST_PATH_HOOKS_SKIP_ENV, raising = False)
 
-    worker._install_fast_path_hooks(
-        event_queue = _FakeQueue(), model_name = "unsloth/Qwen3.5-2B"
-    )
+    worker._install_fast_path_hooks(event_queue = _FakeQueue(), model_name = "unsloth/Qwen3.5-2B")
 
     from transformers.utils import import_utils as _iu
 
@@ -1079,20 +1034,14 @@ def test_hook_trusts_installer_bool_not_metadata(monkeypatch):
         return False  # but deep import is broken
 
     fake_fla_install = mock.Mock(side_effect = _bad_install)
-    monkeypatch.setattr(
-        worker, "_ensure_flash_linear_attention_unconditional", fake_fla_install
-    )
+    monkeypatch.setattr(worker, "_ensure_flash_linear_attention_unconditional", fake_fla_install)
     monkeypatch.setattr(
         worker, "_ensure_tilelang_backend_unconditional", mock.Mock(return_value = True)
     )
-    monkeypatch.setattr(
-        worker, "_install_package_wheel_first", mock.Mock(return_value = True)
-    )
+    monkeypatch.setattr(worker, "_install_package_wheel_first", mock.Mock(return_value = True))
     monkeypatch.delenv(worker._FAST_PATH_HOOKS_SKIP_ENV, raising = False)
 
-    worker._install_fast_path_hooks(
-        event_queue = _FakeQueue(), model_name = "unsloth/Qwen3.5-2B"
-    )
+    worker._install_fast_path_hooks(event_queue = _FakeQueue(), model_name = "unsloth/Qwen3.5-2B")
 
     from transformers.utils import import_utils as _iu
 
@@ -1145,14 +1094,10 @@ def test_hook_skips_tilelang_when_fla_install_is_skipped(monkeypatch):
     monkeypatch.setenv(worker._FLA_SKIP_ENV, "1")
     tile_install = mock.Mock(return_value = True)
     monkeypatch.setattr(worker, "_ensure_tilelang_backend_unconditional", tile_install)
-    monkeypatch.setattr(
-        worker, "_install_package_wheel_first", mock.Mock(return_value = True)
-    )
+    monkeypatch.setattr(worker, "_install_package_wheel_first", mock.Mock(return_value = True))
     monkeypatch.delenv(worker._FAST_PATH_HOOKS_SKIP_ENV, raising = False)
 
-    worker._install_fast_path_hooks(
-        event_queue = _FakeQueue(), model_name = "unsloth/Qwen3.5-2B"
-    )
+    worker._install_fast_path_hooks(event_queue = _FakeQueue(), model_name = "unsloth/Qwen3.5-2B")
 
     from transformers.utils import import_utils as _iu
 
@@ -1172,21 +1117,15 @@ def test_hook_runs_tilelang_repair_when_fla_already_true(monkeypatch):
 
     fla_install = mock.Mock(return_value = True)
     tile_install = mock.Mock(return_value = True)
-    monkeypatch.setattr(
-        worker, "_ensure_flash_linear_attention_unconditional", fla_install
-    )
+    monkeypatch.setattr(worker, "_ensure_flash_linear_attention_unconditional", fla_install)
     monkeypatch.setattr(worker, "_ensure_tilelang_backend_unconditional", tile_install)
-    monkeypatch.setattr(
-        worker, "_install_package_wheel_first", mock.Mock(return_value = True)
-    )
+    monkeypatch.setattr(worker, "_install_package_wheel_first", mock.Mock(return_value = True))
     # tilelang missing AND tvm-ffi is on broken list — both trigger repair.
     monkeypatch.setattr(worker, "_tilelang_importable", lambda: False)
     monkeypatch.setattr(worker, "_installed_tvm_ffi_version", lambda: "0.1.11")
     monkeypatch.delenv(worker._FAST_PATH_HOOKS_SKIP_ENV, raising = False)
 
-    worker._install_fast_path_hooks(
-        event_queue = _FakeQueue(), model_name = "unsloth/Qwen3.5-2B"
-    )
+    worker._install_fast_path_hooks(event_queue = _FakeQueue(), model_name = "unsloth/Qwen3.5-2B")
 
     from transformers.utils import import_utils as _iu
 
@@ -1290,17 +1229,11 @@ def test_install_fast_path_hooks_sets_fla_tilelang_zero_on_hip(monkeypatch):
     monkeypatch.delenv("FLA_TILELANG", raising = False)
     monkeypatch.delenv(worker._FAST_PATH_HOOKS_SKIP_ENV, raising = False)
     monkeypatch.setattr(worker, "_torch_has_hip", lambda: True)
-    monkeypatch.setattr(
-        worker, "_ensure_flash_linear_attention_unconditional", lambda eq: True
-    )
-    monkeypatch.setattr(
-        worker, "_ensure_tilelang_backend_unconditional", lambda eq: True
-    )
+    monkeypatch.setattr(worker, "_ensure_flash_linear_attention_unconditional", lambda eq: True)
+    monkeypatch.setattr(worker, "_ensure_tilelang_backend_unconditional", lambda eq: True)
     monkeypatch.setattr(worker, "_install_package_wheel_first", lambda **kw: True)
 
-    worker._install_fast_path_hooks(
-        event_queue = _FakeQueue(), model_name = "unsloth/Qwen3.5-2B"
-    )
+    worker._install_fast_path_hooks(event_queue = _FakeQueue(), model_name = "unsloth/Qwen3.5-2B")
 
     assert _os.environ.get("FLA_TILELANG") == "0"
 
@@ -1314,17 +1247,11 @@ def test_install_fast_path_hooks_respects_user_fla_tilelang_override(monkeypatch
     monkeypatch.setenv("FLA_TILELANG", "1")
     monkeypatch.delenv(worker._FAST_PATH_HOOKS_SKIP_ENV, raising = False)
     monkeypatch.setattr(worker, "_torch_has_hip", lambda: True)
-    monkeypatch.setattr(
-        worker, "_ensure_flash_linear_attention_unconditional", lambda eq: True
-    )
-    monkeypatch.setattr(
-        worker, "_ensure_tilelang_backend_unconditional", lambda eq: True
-    )
+    monkeypatch.setattr(worker, "_ensure_flash_linear_attention_unconditional", lambda eq: True)
+    monkeypatch.setattr(worker, "_ensure_tilelang_backend_unconditional", lambda eq: True)
     monkeypatch.setattr(worker, "_install_package_wheel_first", lambda **kw: True)
 
-    worker._install_fast_path_hooks(
-        event_queue = _FakeQueue(), model_name = "unsloth/Qwen3.5-2B"
-    )
+    worker._install_fast_path_hooks(event_queue = _FakeQueue(), model_name = "unsloth/Qwen3.5-2B")
 
     assert _os.environ["FLA_TILELANG"] == "1"
 
@@ -1336,17 +1263,11 @@ def test_install_fast_path_hooks_does_not_set_fla_tilelang_on_cuda(monkeypatch):
     monkeypatch.delenv("FLA_TILELANG", raising = False)
     monkeypatch.delenv(worker._FAST_PATH_HOOKS_SKIP_ENV, raising = False)
     monkeypatch.setattr(worker, "_torch_has_hip", lambda: False)
-    monkeypatch.setattr(
-        worker, "_ensure_flash_linear_attention_unconditional", lambda eq: True
-    )
-    monkeypatch.setattr(
-        worker, "_ensure_tilelang_backend_unconditional", lambda eq: True
-    )
+    monkeypatch.setattr(worker, "_ensure_flash_linear_attention_unconditional", lambda eq: True)
+    monkeypatch.setattr(worker, "_ensure_tilelang_backend_unconditional", lambda eq: True)
     monkeypatch.setattr(worker, "_install_package_wheel_first", lambda **kw: True)
 
-    worker._install_fast_path_hooks(
-        event_queue = _FakeQueue(), model_name = "unsloth/Qwen3.5-2B"
-    )
+    worker._install_fast_path_hooks(event_queue = _FakeQueue(), model_name = "unsloth/Qwen3.5-2B")
 
     assert _os.environ.get("FLA_TILELANG") is None
 
@@ -1356,9 +1277,7 @@ def test_install_fast_path_hooks_does_not_set_fla_tilelang_on_cuda(monkeypatch):
 # ───────────────────────────────────────────────────────────────────
 
 
-def _make_fake_transformers_tree(
-    tmp_path, fla_types: list[str], non_fla_types: list[str]
-):
+def _make_fake_transformers_tree(tmp_path, fla_types: list[str], non_fla_types: list[str]):
     """Lay out a tmp dir as `transformers/models/{type}/modeling_{type}.py`."""
     pkg = tmp_path / "transformers"
     models = pkg / "models"
@@ -1401,9 +1320,7 @@ def test_discover_fla_model_types_returns_only_fla_users(tmp_path, monkeypatch):
 
 
 def test_discover_fla_model_types_caches_across_calls(tmp_path, monkeypatch):
-    pkg = _make_fake_transformers_tree(
-        tmp_path, fla_types = ["qwen3_5"], non_fla_types = []
-    )
+    pkg = _make_fake_transformers_tree(tmp_path, fla_types = ["qwen3_5"], non_fla_types = [])
     fake = mock.MagicMock(__file__ = str(pkg / "__init__.py"))
     monkeypatch.setitem(sys.modules, "transformers", fake)
     _reset_fla_cache(monkeypatch)
@@ -1432,7 +1349,13 @@ def test_discover_fla_model_types_handles_missing_transformers(monkeypatch):
 
     real_import = builtins.__import__
 
-    def fake_import(name, globals = None, locals = None, fromlist = (), level = 0):
+    def fake_import(
+        name,
+        globals = None,
+        locals = None,
+        fromlist = (),
+        level = 0,
+    ):
         if name == "transformers":
             raise ImportError("transformers not installed")
         return real_import(name, globals, locals, fromlist, level)
@@ -1443,9 +1366,7 @@ def test_discover_fla_model_types_handles_missing_transformers(monkeypatch):
 
 
 def test_discover_fla_model_types_handles_unreadable_file(tmp_path, monkeypatch):
-    pkg = _make_fake_transformers_tree(
-        tmp_path, fla_types = ["qwen3_5"], non_fla_types = []
-    )
+    pkg = _make_fake_transformers_tree(tmp_path, fla_types = ["qwen3_5"], non_fla_types = [])
     fake = mock.MagicMock(__file__ = str(pkg / "__init__.py"))
     monkeypatch.setitem(sys.modules, "transformers", fake)
     _reset_fla_cache(monkeypatch)
@@ -1491,9 +1412,7 @@ def test_model_wants_tilelang_empty_when_transformers_has_no_fla(monkeypatch):
 
 
 def test_model_wants_tilelang_normalizes_separators(monkeypatch):
-    monkeypatch.setattr(
-        worker, "_discover_fla_model_types", lambda: frozenset({"qwen3_next"})
-    )
+    monkeypatch.setattr(worker, "_discover_fla_model_types", lambda: frozenset({"qwen3_next"}))
     for variant in (
         "qwen3-next",
         "Qwen3.Next",

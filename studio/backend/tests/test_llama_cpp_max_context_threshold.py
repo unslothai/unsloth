@@ -109,7 +109,12 @@ def _make_backend(native_ctx = 131072):
     return inst
 
 
-def _compute_max_available_ctx(native_ctx, model_gib, gpus, kv_per_token_bytes = 325_000):
+def _compute_max_available_ctx(
+    native_ctx,
+    model_gib,
+    gpus,
+    kv_per_token_bytes = 325_000,
+):
     """Run the ceiling-probe block from load_model and return the final
     ``max_available_ctx`` value the backend would assign to
     ``_max_context_length``.

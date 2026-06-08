@@ -130,13 +130,7 @@ def test_resolver_falls_back_to_windows_layout_site_packages(tmp_path, monkeypat
     alongside the POSIX `lib/python*/site-packages` path."""
     studio_home = tmp_path / "studio_home"
     sp_dist = (
-        studio_home
-        / "unsloth_studio"
-        / "Lib"
-        / "site-packages"
-        / "studio"
-        / "frontend"
-        / "dist"
+        studio_home / "unsloth_studio" / "Lib" / "site-packages" / "studio" / "frontend" / "dist"
     )
     sp_dist.mkdir(parents = True)
     (sp_dist / "index.html").write_text("<!doctype html>", encoding = "utf-8")

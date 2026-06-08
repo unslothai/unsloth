@@ -90,8 +90,7 @@ CASES: list[Case] = [
     ),
     Case(
         "C8",
-        "multi-remove with mixed safety: next-themes + "
-        "@huggingface/hub + dexie all unsafe",
+        "multi-remove with mixed safety: next-themes + @huggingface/hub + dexie all unsafe",
         ["next-themes", "@huggingface/hub", "dexie"],
         "FAIL",
         ["next-themes", "@huggingface/hub", "dexie"],
@@ -119,8 +118,7 @@ CASES: list[Case] = [
     ),
     Case(
         "C12",
-        "moving @hugeicons/react from deps to devDeps is NOT a "
-        "removal (still declared)",
+        "moving @hugeicons/react from deps to devDeps is NOT a removal (still declared)",
         [],
         "PASS",
         [],
@@ -136,7 +134,7 @@ CASES: list[Case] = [
     ),
     Case(
         "C14",
-        "removing dexie breaks src imports (no other declared " "dep needs it)",
+        "removing dexie breaks src imports (no other declared dep needs it)",
         ["dexie"],
         "FAIL",
         ["dexie"],
@@ -151,14 +149,14 @@ CASES: list[Case] = [
     ),
     Case(
         "C16",
-        "removing canvas-confetti (imported in confetti.tsx); " "no transitive parent",
+        "removing canvas-confetti (imported in confetti.tsx); no transitive parent",
         ["canvas-confetti"],
         "FAIL",
         ["canvas-confetti"],
     ),
     Case(
         "C17",
-        "removing recharts (imported in chart.tsx); no transitive " "parent",
+        "removing recharts (imported in chart.tsx); no transitive parent",
         ["recharts"],
         "FAIL",
         ["recharts"],
@@ -173,36 +171,35 @@ CASES: list[Case] = [
     ),
     Case(
         "C19",
-        "removing node-forge (imported in providers-api.ts); " "no transitive parent",
+        "removing node-forge (imported in providers-api.ts); no transitive parent",
         ["node-forge"],
         "FAIL",
         ["node-forge"],
     ),
     Case(
         "C20",
-        "removing @tauri-apps/api is safe: all 5 @tauri-apps "
-        "plugins declare it as a direct dep",
+        "removing @tauri-apps/api is safe: all 5 @tauri-apps plugins declare it as a direct dep",
         ["@tauri-apps/api"],
         "PASS",
         [],
     ),
     Case(
         "C21",
-        "removing mammoth (imported in runtime-provider.tsx); " "no transitive parent",
+        "removing mammoth (imported in runtime-provider.tsx); no transitive parent",
         ["mammoth"],
         "FAIL",
         ["mammoth"],
     ),
     Case(
         "C22",
-        "removing unpdf (imported in runtime-provider.tsx); " "no transitive parent",
+        "removing unpdf (imported in runtime-provider.tsx); no transitive parent",
         ["unpdf"],
         "FAIL",
         ["unpdf"],
     ),
     Case(
         "C23",
-        "removing remark-gfm is safe: streamdown declares it " "as a direct dep",
+        "removing remark-gfm is safe: streamdown declares it as a direct dep",
         ["remark-gfm"],
         "PASS",
         [],
@@ -310,9 +307,7 @@ def run_case(case: Case, head_pkg: dict) -> tuple[bool, str]:
         if in_summary and line.strip().startswith("- "):
             failure_pkgs.append(line.strip()[2:])
 
-    ok = actual_status == case.expected_status and set(failure_pkgs) == set(
-        case.expected_failures
-    )
+    ok = actual_status == case.expected_status and set(failure_pkgs) == set(case.expected_failures)
     return ok, (
         f"expected: status={case.expected_status} fails={sorted(case.expected_failures)}\n"
         f"actual:   status={actual_status} fails={sorted(failure_pkgs)}\n"
@@ -532,8 +527,7 @@ CLASSIFY_CASES: list[ClassifyCase] = [
     ),
     ClassifyCase(
         "U23",
-        "package name in Python file (ignored, "
-        "Python can never import npm packages)",
+        "package name in Python file (ignored, Python can never import npm packages)",
         "playwright",
         "tests/x.py",
         'label: str = "playwright"',
@@ -854,7 +848,7 @@ ADV_CASES: list[AdvCase] = [
     ),
     AdvCase(
         "A10",
-        "package referenced only in a Python file should " "NOT trigger a JS FAIL",
+        "package referenced only in a Python file should NOT trigger a JS FAIL",
         "adv10.py",
         'label = "__adv_only_pkg_j__"\n',
         "__adv_only_pkg_j__",
@@ -863,8 +857,7 @@ ADV_CASES: list[AdvCase] = [
     ),
     AdvCase(
         "A11",
-        "package mentioned in a markdown doc file is "
-        "ignored by JS-like-only string_literal",
+        "package mentioned in a markdown doc file is ignored by JS-like-only string_literal",
         "adv11.md",
         "See [docs](https://example.com/__adv_only_pkg_k__).\n",
         "__adv_only_pkg_k__",
@@ -1117,9 +1110,7 @@ def run_pkg_field_cases() -> int:
         finally:
             os.unlink(base_path)
             os.unlink(head_path)
-        actual_status = {0: "PASS", 1: "FAIL"}.get(
-            proc.returncode, f"RC{proc.returncode}"
-        )
+        actual_status = {0: "PASS", 1: "FAIL"}.get(proc.returncode, f"RC{proc.returncode}")
         fails: list[str] = []
         in_summary = False
         for line in proc.stdout.splitlines():
@@ -1130,15 +1121,11 @@ def run_pkg_field_cases() -> int:
                 fails.append(line.strip()[2:])
         # The expected_failures includes the tolerated-FP case (P15); we
         # accept BOTH expected_status and expected_failures matches.
-        ok = actual_status == pc.expected_status and set(fails) == set(
-            pc.expected_failures
-        )
+        ok = actual_status == pc.expected_status and set(fails) == set(pc.expected_failures)
         mark = "PASS" if ok else "FAIL"
         print(f"  [{mark}] {pc.id}: {pc.desc}")
         if not ok:
-            print(
-                f"      expected: status={pc.expected_status} fails={pc.expected_failures}"
-            )
+            print(f"      expected: status={pc.expected_status} fails={pc.expected_failures}")
             print(f"      actual:   status={actual_status} fails={fails}")
             for ln in proc.stdout.splitlines()[:25]:
                 print(f"      {ln}")
@@ -1184,9 +1171,7 @@ def run_adversarial_cases() -> int:
                 )
             finally:
                 os.unlink(base_path)
-            actual_status = {0: "PASS", 1: "FAIL"}.get(
-                proc.returncode, f"RC{proc.returncode}"
-            )
+            actual_status = {0: "PASS", 1: "FAIL"}.get(proc.returncode, f"RC{proc.returncode}")
             fails = []
             in_summary = False
             for line in proc.stdout.splitlines():
@@ -1195,15 +1180,11 @@ def run_adversarial_cases() -> int:
                     continue
                 if in_summary and line.strip().startswith("- "):
                     fails.append(line.strip()[2:])
-            ok = actual_status == ac.expected_status and set(fails) == set(
-                ac.expected_failures
-            )
+            ok = actual_status == ac.expected_status and set(fails) == set(ac.expected_failures)
             mark = "PASS" if ok else "FAIL"
             print(f"  [{mark}] {ac.id}: {ac.desc}")
             if not ok:
-                print(
-                    f"      expected: status={ac.expected_status} fails={ac.expected_failures}"
-                )
+                print(f"      expected: status={ac.expected_status} fails={ac.expected_failures}")
                 print(f"      actual:   status={actual_status} fails={fails}")
                 for ln in proc.stdout.splitlines()[:20]:
                     print(f"      {ln}")
@@ -1385,9 +1366,7 @@ def run_enum_cases() -> int:
         if not ok:
             print(f"      expected unused superset: {sorted(ec.expected_unused)}")
             print(f"      expected used NOT in unused: {sorted(ec.expected_used)}")
-            print(
-                f"      expected orphans superset: {sorted(ec.expected_orphan_types)}"
-            )
+            print(f"      expected orphans superset: {sorted(ec.expected_orphan_types)}")
             print(f"      actual unused: {sorted(unused)}")
             print(f"      actual orphans: {sorted(orphans)}")
             for ln in proc.stdout.splitlines()[:30]:

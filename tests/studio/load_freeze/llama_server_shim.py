@@ -41,7 +41,11 @@ class _Handler(BaseHTTPRequestHandler):
         self.wfile.write(payload)
 
     def _send_raw(
-        self, status: int, body: bytes, *, content_type: str = "application/json"
+        self,
+        status: int,
+        body: bytes,
+        *,
+        content_type: str = "application/json",
     ) -> None:
         self.send_response(status)
         self.send_header("Content-Type", content_type)
@@ -119,9 +123,7 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_raw(srv.config.detok_status, srv.config.detok_body)
                 return
             tids = body.get("tokens") or []
-            content = "".join(
-                srv.config.detok_map.get(int(t), f"<tok_{t}>") for t in tids
-            )
+            content = "".join(srv.config.detok_map.get(int(t), f"<tok_{t}>") for t in tids)
             self._send_json(srv.config.detok_status, {"content": content})
             return
         if path == "/completion":
@@ -224,9 +226,7 @@ class FakeLlamaServer:
     def start(self) -> "FakeLlamaServer":
         # port=0 lets ThreadingHTTPServer pick a free port atomically
         # (avoids find-port-then-bind race); read back via server_address[1].
-        self._server = FakeLlamaServer._Server(
-            (self.host, self._requested_port), _Handler
-        )
+        self._server = FakeLlamaServer._Server((self.host, self._requested_port), _Handler)
         self._server.config = self.config
         bound_port = self._server.server_address[1]
         self._thread = threading.Thread(
