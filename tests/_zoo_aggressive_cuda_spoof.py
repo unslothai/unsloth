@@ -159,7 +159,11 @@ def apply() -> None:
         if _orig is None:
             continue
 
-        def _wrap(*args: Any, _orig = _orig, **kwargs: Any):
+        def _wrap(
+            *args: Any,
+            _orig = _orig,
+            **kwargs: Any,
+        ):
             kwargs.pop("pin_memory", None)
             return _orig(*args, **kwargs)
 

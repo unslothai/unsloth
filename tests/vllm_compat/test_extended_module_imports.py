@@ -52,9 +52,7 @@ def _stub_module(name: str, attrs: dict | None = None) -> None:
         return
     m = types.ModuleType(name)
     # Minimal viable spec so importlib treats the stub as a real module.
-    m.__spec__ = importlib.machinery.ModuleSpec(
-        name = name, loader = None, origin = "<test stub>"
-    )
+    m.__spec__ = importlib.machinery.ModuleSpec(name = name, loader = None, origin = "<test stub>")
     for k, v in (attrs or {}).items():
         setattr(m, k, v)
     sys.modules[name] = m
@@ -142,8 +140,7 @@ def test_unsloth_zoo_module_imports_under_spoof(modname: str):
         importlib.import_module(modname)
     except Exception as e:
         pytest.fail(
-            f"{modname} failed to import under CUDA spoof: "
-            f"{type(e).__name__}: {str(e)[:300]}"
+            f"{modname} failed to import under CUDA spoof: " f"{type(e).__name__}: {str(e)[:300]}"
         )
 
 
@@ -209,8 +206,7 @@ def test_unsloth_core_module_imports_under_spoof(modname: str):
         pytest.skip(f"{modname} env issue: {e!s}")
     except Exception as e:
         pytest.fail(
-            f"{modname} failed to import under CUDA spoof: "
-            f"{type(e).__name__}: {str(e)[:300]}"
+            f"{modname} failed to import under CUDA spoof: " f"{type(e).__name__}: {str(e)[:300]}"
         )
 
 
@@ -269,9 +265,7 @@ def test_unsloth_rl_replacements_dispatch_populated():
     funcs = getattr(rl, "RL_FUNCTIONS", None)
     if funcs is None:
         pytest.skip("RL_FUNCTIONS attribute not present (architecture changed; check)")
-    assert isinstance(
-        funcs, dict
-    ), f"RL_FUNCTIONS expected dict, got {type(funcs).__name__}"
+    assert isinstance(funcs, dict), f"RL_FUNCTIONS expected dict, got {type(funcs).__name__}"
     # The trainer types unsloth-zoo dispatches against MUST be keys.
     for key in ("grpo_trainer", "sft_trainer", "dpo_trainer"):
         assert key in funcs, (
@@ -313,9 +307,7 @@ def test_fast_model_from_pretrained_kwargs_under_spoof():
     sys.modules.pop("unsloth", None)
     import unsloth
 
-    cls = getattr(unsloth, "FastLanguageModel", None) or getattr(
-        unsloth, "FastModel", None
-    )
+    cls = getattr(unsloth, "FastLanguageModel", None) or getattr(unsloth, "FastModel", None)
     if cls is None:
         pytest.skip("FastLanguageModel/FastModel not exported")
     fn = getattr(cls, "from_pretrained", None)
