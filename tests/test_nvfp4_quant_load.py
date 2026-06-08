@@ -20,6 +20,7 @@ don't conflict with Unsloth's default load_in_4bit=True behavior.
 
 import pytest
 from transformers import AutoConfig
+from unsloth.models.loader_utils import get_quantization_config_info, should_disable_bitsandbytes_loading
 
 
 def test_nvfp4_model_has_compressed_tensors_config():
@@ -50,7 +51,6 @@ def test_regular_bnb_model_has_bitsandbytes_config():
 
 def test_load_in_4bit_detection_logic():
     """Test the quantization config detection logic directly."""
-    from unsloth.models.llama import FastLlamaModel
     from transformers import AutoConfig
     
     # Test NVFP4 model
@@ -58,35 +58,28 @@ def test_load_in_4bit_detection_logic():
         "unsloth/Qwen3.6-35B-A3B-NVFP4",
         trust_remote_code=True,
     )
-    _ckpt_qcfg = getattr(config_nvfp4, "quantization_config", None)
-    _ckpt_quant_method = None
-    if _ckpt_qcfg is not None:
-        if isinstance(_ckpt_qcfg, dict):
-            _ckpt_quant_method = _ckpt_qcfg.get("quant_method")
-        else:
-            _ckpt_quant_method = getattr(_ckpt_qcfg, "quant_method", None)
+    quant_method, _ = get_quantization_config_info(config_nvfp4)
     
     # Should detect compressed-tensors and disable load_in_4bit
-    load_in_4bit = True
-    if load_in_4bit and _ckpt_quant_method is not None and _ckpt_quant_method != "bitsandbytes":
-        load_in_4bit = False
-    assert load_in_4bit is False, "load_in_4bit should be disabled for compressed-tensors"
+    disable_4bit, disable_8bit, _ = should_disable_bitsandbytes_loading(config_nvfp4, load_in_4bit=True, load_in_8bit=False)
+    assert disable_4bit is True, "load_in_4bit should be disabled for compressed-tensors"
+    assert disable_8bit is False, "load_in_8bit should not be disabled when not enabled"
+    assert quant_method == "compressed-tensors"
     
     # Test regular bnb-4bit model
     config_bnb = AutoConfig.from_pretrained("unsloth/llama-3-8b-bnb-4bit")
-    _ckpt_qcfg = getattr(config_bnb, "quantization_config", None)
-    _ckpt_quant_method = None
-    if _ckpt_qcfg is not None:
-        if isinstance(_ckpt_qcfg, dict):
-            _ckpt_quant_method = _ckpt_qcfg.get("quant_method")
-        else:
-            _ckpt_quant_method = getattr(_ckpt_qcfg, "quant_method", None)
+    quant_method, _ = get_quantization_config_info(config_bnb)
     
     # Should NOT disable load_in_4bit for bitsandbytes
-    load_in_4bit = True
-    if load_in_4bit and _ckpt_quant_method is not None and _ckpt_quant_method != "bitsandbytes":
-        load_in_4bit = False
-    assert load_in_4bit is True, "load_in_4bit should remain True for bitsandbytes"
+    disable_4bit, disable_8bit, _ = should_disable_bitsandbytes_loading(config_bnb, load_in_4bit=True, load_in_8bit=False)
+    assert disable_4bit is False, "load_in_4bit should remain True for bitsandbytes"
+    assert disable_8bit is False, "load_in_8bit should not be disabled when not enabled"
+    assert quant_method == "bitsandbytes"
+    
+    # Test both 4bit and 8bit disabled for non-bitsandbytes
+    disable_4bit, disable_8bit, _ = should_disable_bitsandbytes_loading(config_nvfp4, load_in_4bit=True, load_in_8bit=True)
+    assert disable_4bit is True, "load_in_4bit should be disabled for compressed-tensors"
+    assert disable_8bit is True, "load_in_8bit should also be disabled for compressed-tensors"
 
 
 if __name__ == "__main__":
