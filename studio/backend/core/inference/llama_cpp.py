@@ -4259,17 +4259,14 @@ class LlamaCppBackend:
     def _build_openai_messages(
         messages: list[dict],
         image_b64: Optional[str] = None,
-        audio_b64: Optional[str] = None,
-        audio_format: str = "wav",
     ) -> list[dict]:
         """
-        Build OpenAI-format messages, optionally injecting image_url and/or
-        input_audio content parts into the last user message for multimodal
-        models.
+        Build OpenAI-format messages, optionally injecting an image_url
+        content part into the last user message for vision models.
 
-        If no media is provided, returns messages as-is.
+        If no image is provided, returns messages as-is.
         """
-        if not image_b64 and not audio_b64:
+        if not image_b64:
             return messages
 
         # Find the last user message and convert to multimodal content parts
@@ -4280,30 +4277,16 @@ class LlamaCppBackend:
                 last_user_idx = i
 
         if last_user_idx is not None:
-            existing = result[last_user_idx].get("content", "")
-            # Content may already be a list of parts (e.g. a vision turn with
-            # image_url parts baked in upstream); preserve those and append to
-            # them rather than wrapping the list inside a text part.
-            if isinstance(existing, list):
-                parts: list[dict] = list(existing)
-            else:
-                parts = [{"type": "text", "text": existing or ""}]
-            if image_b64:
-                parts.append(
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": f"data:image/png;base64,{image_b64}"},
-                    }
-                )
-            if audio_b64:
-                # llama-server's audio decoder only accepts wav/mp3.
-                parts.append(
-                    {
-                        "type": "input_audio",
-                        "input_audio": {"data": audio_b64, "format": audio_format},
-                    }
-                )
-            result[last_user_idx]["content"] = parts
+            text_content = result[last_user_idx].get("content", "")
+            result[last_user_idx]["content"] = [
+                {"type": "text", "text": text_content},
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:image/png;base64,{image_b64}",
+                    },
+                },
+            ]
 
         return result
 
@@ -4434,8 +4417,6 @@ class LlamaCppBackend:
         self,
         messages: list[dict],
         image_b64: Optional[str] = None,
-        audio_b64: Optional[str] = None,
-        audio_format: str = "wav",
         temperature: float = 0.6,
         top_p: float = 0.95,
         top_k: int = 20,
@@ -4460,9 +4441,7 @@ class LlamaCppBackend:
         if not self.is_loaded:
             raise RuntimeError("llama-server is not loaded")
 
-        openai_messages = self._build_openai_messages(
-            messages, image_b64, audio_b64, audio_format
-        )
+        openai_messages = self._build_openai_messages(messages, image_b64)
 
         payload = {
             "messages": openai_messages,

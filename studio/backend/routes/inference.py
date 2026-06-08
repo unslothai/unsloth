@@ -1886,6 +1886,26 @@ def _prepare_audio_for_llama(b64: str) -> tuple[str, str]:
     return base64.b64encode(_mono_f32_to_wav_bytes(arr, sr)).decode("ascii"), "wav"
 
 
+def _inject_audio_part(messages: list[dict], audio_b64: str, audio_format: str) -> None:
+    """Append an input_audio part to the last user message, in place.
+
+    Audio rides in the message list like image_url parts do, so it flows through
+    both the plain and tool-calling generation paths.
+    """
+    part = {
+        "type": "input_audio",
+        "input_audio": {"data": audio_b64, "format": audio_format},
+    }
+    for msg in reversed(messages):
+        if msg.get("role") == "user":
+            content = msg.get("content")
+            if isinstance(content, list):
+                content.append(part)
+            else:
+                msg["content"] = [{"type": "text", "text": content or ""}, part]
+            return
+
+
 def _extract_content_parts(
     messages: list,
 ) -> tuple[str, list[dict], "Optional[str]"]:
@@ -2827,9 +2847,12 @@ async def openai_chat_completions(
         and (_tools_passthrough or _has_response_format)
     ):
         if payload.audio_base64:
+            # This path forwards the request verbatim, so the transcoded audio
+            # never gets injected. (The agentic tool loop below does support
+            # audio.)
             raise HTTPException(
                 status_code = 400,
-                detail = "Audio input is not supported together with tools or guided decoding yet.",
+                detail = "Audio input is not supported together with guided decoding or client-supplied tools yet.",
             )
 
         # Preserve the vision guard that would otherwise run in the
@@ -2884,8 +2907,9 @@ async def openai_chat_completions(
     if using_gguf:
         # Forward uploaded audio as an input_audio part. wav/mp3 pass through
         # untouched (llama-server decodes and resamples them via the mmproj
-        # audio encoder); other containers are transcoded to WAV here. The
-        # audio+tools combination is rejected further below.
+        # audio encoder); other containers are transcoded to WAV here. The part
+        # is injected into the message list below so it rides through both the
+        # plain and tool-calling paths, exactly like image_url parts.
         audio_b64 = None
         audio_format = "wav"
         if payload.audio_base64:
@@ -2915,6 +2939,8 @@ async def openai_chat_completions(
             llama_backend.is_vision,
         )
         image_b64 = None
+        if audio_b64:
+            _inject_audio_part(gguf_messages, audio_b64, audio_format)
 
         cancel_event = threading.Event()
 
@@ -2962,12 +2988,6 @@ async def openai_chat_completions(
             # genuinely empty.
             if not tools_to_use:
                 use_tools = False
-
-        if use_tools and audio_b64:
-            raise HTTPException(
-                status_code = 400,
-                detail = "Audio input is not supported together with tools yet.",
-            )
 
         if use_tools:
             # ── Tool-use system prompt nudge ──────────────────────
@@ -3223,8 +3243,6 @@ async def openai_chat_completions(
             return llama_backend.generate_chat_completion(
                 messages = gguf_messages,
                 image_b64 = image_b64,
-                audio_b64 = audio_b64,
-                audio_format = audio_format,
                 temperature = payload.temperature,
                 top_p = payload.top_p,
                 top_k = payload.top_k,
