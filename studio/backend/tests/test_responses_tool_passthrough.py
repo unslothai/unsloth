@@ -160,9 +160,7 @@ class TestResponsesMultiTurnInput:
 
     def test_function_call_output_missing_call_id_rejected(self):
         with pytest.raises(ValidationError):
-            ResponsesFunctionCallOutputInputItem(
-                type = "function_call_output", output = "x"
-            )
+            ResponsesFunctionCallOutputInputItem(type = "function_call_output", output = "x")
 
     def test_function_call_output_accepts_content_array(self):
         item = ResponsesFunctionCallOutputInputItem(
@@ -222,9 +220,7 @@ class TestToolsTranslation:
         assert _translate_responses_tools_to_chat([]) is None
 
     def test_only_builtin_tools_returns_none(self):
-        assert (
-            _translate_responses_tools_to_chat([{"type": "web_search_preview"}]) is None
-        )
+        assert _translate_responses_tools_to_chat([{"type": "web_search_preview"}]) is None
 
     def test_description_optional(self):
         out = _translate_responses_tools_to_chat(
@@ -256,9 +252,7 @@ class TestToolChoiceTranslation:
         """If a client happens to send the Chat Completions nested shape,
         we don't double-wrap it."""
         already_nested = {"type": "function", "function": {"name": "get_weather"}}
-        assert (
-            _translate_responses_tool_choice_to_chat(already_nested) == already_nested
-        )
+        assert _translate_responses_tool_choice_to_chat(already_nested) == already_nested
 
     def test_unknown_shape_passes_through(self):
         obj = {"type": "allowed_tools", "tools": [{"type": "function", "name": "x"}]}
@@ -625,9 +619,7 @@ class TestCodexStyleRequestShapes:
             input = [
                 {
                     "role": "assistant",
-                    "content": [
-                        {"type": "output_text", "text": "ok", "annotations": []}
-                    ],
+                    "content": [{"type": "output_text", "text": "ok", "annotations": []}],
                 },
                 {"role": "user", "content": "next"},
             ],

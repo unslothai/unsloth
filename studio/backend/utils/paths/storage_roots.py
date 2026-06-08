@@ -263,9 +263,7 @@ def _setup_cache_env() -> None:
     Works on Linux, macOS, and Windows.
     """
     root = cache_root()
-    xdg_cache = Path(
-        os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")
-    ).expanduser()
+    xdg_cache = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")).expanduser()
     hf_default = xdg_cache / "huggingface"
     defaults: dict[str, str] = {
         "HF_HOME": str(hf_default),
@@ -298,9 +296,7 @@ def ensure_studio_directories() -> None:
     _setup_cache_env()
 
 
-def _clean_relative_path(
-    path_value: str, *, strip_prefixes: tuple[str, ...] = ()
-) -> Path:
+def _clean_relative_path(path_value: str, *, strip_prefixes: tuple[str, ...] = ()) -> Path:
     path = Path(path_value).expanduser()
     parts = [part for part in path.parts if part not in ("", ".")]
     while parts and parts[0] in strip_prefixes:
@@ -319,8 +315,7 @@ def _assert_contained(resolved: Path, root: Path) -> None:
         resolved_real.relative_to(root_real)
     except ValueError as exc:
         raise ValueError(
-            f"path escapes root: {resolved!s} -> {resolved_real!s} "
-            f"is not under {root_real!s}"
+            f"path escapes root: {resolved!s} -> {resolved_real!s} " f"is not under {root_real!s}"
         ) from exc
 
 
@@ -394,9 +389,7 @@ def resolve_dataset_path(path_value: str) -> Path:
                 return path
             except ValueError:
                 continue
-        raise ValueError(
-            f"dataset path must be relative or under a dataset root: {raw!r}"
-        )
+        raise ValueError(f"dataset path must be relative or under a dataset root: {raw!r}")
 
     parts = [part for part in Path(path_value).parts if part not in ("", ".")]
     if parts[:2] == ["assets", "datasets"]:
