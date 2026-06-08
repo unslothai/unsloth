@@ -21,10 +21,9 @@ if str(_BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(_BACKEND_ROOT))
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope = "module")
 def main_module():
     import main as _main  # noqa: F401
-
     return _main
 
 
@@ -37,15 +36,15 @@ def _make_protected_app(
     max_bytes: int,
     main_module,
     upload_passthrough_prefixes: tuple = (),
-    upload_passthrough_max_bytes_getter=None,
+    upload_passthrough_max_bytes_getter = None,
 ):
     app = FastAPI()
     app.add_middleware(
         main_module.MaxBodyMiddleware,
-        max_bytes_getter=lambda: max_bytes,
-        protected_prefixes=("/v1/chat/completions", "/api/settings", "/api/train"),
-        upload_passthrough_prefixes=upload_passthrough_prefixes,
-        upload_passthrough_max_bytes_getter=upload_passthrough_max_bytes_getter,
+        max_bytes_getter = lambda: max_bytes,
+        protected_prefixes = ("/v1/chat/completions", "/api/settings", "/api/train"),
+        upload_passthrough_prefixes = upload_passthrough_prefixes,
+        upload_passthrough_max_bytes_getter = upload_passthrough_max_bytes_getter,
     )
 
     @app.post("/v1/chat/completions")
@@ -81,21 +80,21 @@ class TestMaxBodyMiddleware:
     def test_small_protected_body_passes(self, main_module):
         app = _make_protected_app(1024, main_module)
         c = TestClient(app)
-        r = c.post("/v1/chat/completions", json={"text": "x" * 100})
+        r = c.post("/v1/chat/completions", json = {"text": "x" * 100})
         assert r.status_code == 200
         assert r.json()["n"] == 100
 
     def test_large_declared_content_length_rejected(self, main_module):
         app = _make_protected_app(1024, main_module)
         c = TestClient(app)
-        r = c.post("/v1/chat/completions", json={"text": "x" * 5000})
+        r = c.post("/v1/chat/completions", json = {"text": "x" * 5000})
         assert r.status_code == 413
         assert "too large" in r.json()["detail"].lower()
 
     def test_unprotected_prefix_passes_large_body(self, main_module):
         app = _make_protected_app(1024, main_module)
         c = TestClient(app)
-        r = c.post("/api/other", json={"text": "x" * 5000})
+        r = c.post("/api/other", json = {"text": "x" * 5000})
         assert r.status_code == 200
         assert r.json()["unprotected"] is True
 
@@ -104,7 +103,7 @@ class TestMaxBodyMiddleware:
         c = TestClient(app)
         r = c.put(
             "/api/settings/upload-limit",
-            json={"max_upload_size_mb": 500, "padding": "x" * 5000},
+            json = {"max_upload_size_mb": 500, "padding": "x" * 5000},
         )
         assert r.status_code == 413
         assert "too large" in r.json()["detail"].lower()
@@ -123,8 +122,8 @@ class TestMaxBodyMiddleware:
 
         r = c.post(
             "/v1/chat/completions",
-            content=gen(),
-            headers={"content-type": "application/json"},
+            content = gen(),
+            headers = {"content-type": "application/json"},
         )
         assert r.status_code == 413
         assert "too large" in r.json()["detail"].lower()
@@ -140,8 +139,8 @@ class TestMaxBodyMiddleware:
 
         r = c.post(
             "/v1/chat/completions",
-            content=gen(),
-            headers={"content-type": "application/json"},
+            content = gen(),
+            headers = {"content-type": "application/json"},
         )
         assert r.status_code == 200
         assert r.json()["n"] == 50
@@ -156,14 +155,14 @@ class TestMaxBodyMiddleware:
         app = _make_protected_app(
             128,
             main_module,
-            upload_passthrough_prefixes=("/api/train/upload",),
-            upload_passthrough_max_bytes_getter=lambda: 1024,
+            upload_passthrough_prefixes = ("/api/train/upload",),
+            upload_passthrough_max_bytes_getter = lambda: 1024,
         )
         c = TestClient(app)
         r = c.post(
             "/api/train/upload",
-            content=b"x" * 512,
-            headers={"content-type": "application/octet-stream"},
+            content = b"x" * 512,
+            headers = {"content-type": "application/octet-stream"},
         )
         assert r.status_code == 200
         assert r.json()["total"] == 512
@@ -172,14 +171,14 @@ class TestMaxBodyMiddleware:
         app = _make_protected_app(
             128,
             main_module,
-            upload_passthrough_prefixes=("/api/train/upload",),
-            upload_passthrough_max_bytes_getter=lambda: 256,
+            upload_passthrough_prefixes = ("/api/train/upload",),
+            upload_passthrough_max_bytes_getter = lambda: 256,
         )
         c = TestClient(app)
         r = c.post(
             "/api/train/upload",
-            content=b"x" * 512,
-            headers={"content-type": "application/octet-stream"},
+            content = b"x" * 512,
+            headers = {"content-type": "application/octet-stream"},
         )
         assert r.status_code == 413
         assert "256" in r.json()["detail"]
@@ -188,8 +187,8 @@ class TestMaxBodyMiddleware:
         app = _make_protected_app(
             128,
             main_module,
-            upload_passthrough_prefixes=("/api/train/upload",),
-            upload_passthrough_max_bytes_getter=lambda: 1024,
+            upload_passthrough_prefixes = ("/api/train/upload",),
+            upload_passthrough_max_bytes_getter = lambda: 1024,
         )
         c = TestClient(app)
 
@@ -199,8 +198,8 @@ class TestMaxBodyMiddleware:
 
         r = c.post(
             "/api/train/upload",
-            content=gen(),
-            headers={"content-type": "application/octet-stream"},
+            content = gen(),
+            headers = {"content-type": "application/octet-stream"},
         )
         assert r.status_code == 411
         assert "Content-Length" in r.json()["detail"]
@@ -225,9 +224,9 @@ def _make_csp_app(main_module, attach_nonce: str | None = None):
         if attach_nonce:
             headers[main_module._CSP_SCRIPT_NONCE_HEADER] = attach_nonce
         return Response(
-            content=b"<html></html>",
-            media_type="text/html",
-            headers=headers,
+            content = b"<html></html>",
+            media_type = "text/html",
+            headers = headers,
         )
 
     return app
@@ -266,7 +265,7 @@ class TestSecurityHeadersMiddleware:
 
     def test_internal_nonce_header_is_spliced_into_csp_and_stripped(self, main_module):
         nonce = "test-nonce-abc"
-        app = _make_csp_app(main_module, attach_nonce=nonce)
+        app = _make_csp_app(main_module, attach_nonce = nonce)
         c = TestClient(app)
         r = c.get("/with-nonce")
         csp = r.headers["content-security-policy"]
@@ -319,15 +318,15 @@ def health_app(tmp_path, monkeypatch):
     import main as _main
 
     app = FastAPI()
-    app.add_api_route("/api/health", _main.health_check, methods=["GET"])
+    app.add_api_route("/api/health", _main.health_check, methods = ["GET"])
 
     import secrets as _secrets
 
     storage.create_initial_user(
-        username=storage.DEFAULT_ADMIN_USERNAME,
-        password="human-password-123",
-        jwt_secret=_secrets.token_urlsafe(64),
-        must_change_password=False,
+        username = storage.DEFAULT_ADMIN_USERNAME,
+        password = "human-password-123",
+        jwt_secret = _secrets.token_urlsafe(64),
+        must_change_password = False,
     )
     return app
 
@@ -366,7 +365,7 @@ class TestHealthAuthGate:
         c = TestClient(health_app)
         r = c.get(
             "/api/health",
-            headers={"Authorization": "Bearer not-a-real-token"},
+            headers = {"Authorization": "Bearer not-a-real-token"},
         )
         assert r.status_code == 200
         body = r.json()
@@ -384,7 +383,7 @@ class TestHealthAuthGate:
         c = TestClient(health_app)
         r = c.get(
             "/api/health",
-            headers={"Authorization": f"Bearer {token}"},
+            headers = {"Authorization": f"Bearer {token}"},
         )
         assert r.status_code == 200
         body = r.json()

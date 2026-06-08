@@ -27,7 +27,7 @@ class McpServerResponse(BaseModel):
     id: str
     display_name: str
     url: str
-    headers: dict[str, str] = Field(default_factory=dict)
+    headers: dict[str, str] = Field(default_factory = dict)
     is_enabled: bool = True
     use_oauth: bool = False
     created_at: str

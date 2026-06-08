@@ -46,12 +46,12 @@ def _write_marker(install_dir: Path, **overrides) -> Path:
         "asset": "app-b9190-linux-x64-cuda13-newer.tar.gz",
         "asset_sha256": None,
         "source": "published",
-        "installed_at_utc": (datetime.now(tz=timezone.utc) - timedelta(days=1))
+        "installed_at_utc": (datetime.now(tz = timezone.utc) - timedelta(days = 1))
         .isoformat()
         .replace("+00:00", "Z"),
     }
     payload.update(overrides)
-    install_dir.mkdir(parents=True, exist_ok=True)
+    install_dir.mkdir(parents = True, exist_ok = True)
     (install_dir / "UNSLOTH_PREBUILT_INFO.json").write_text(json.dumps(payload))
     return install_dir / "UNSLOTH_PREBUILT_INFO.json"
 
@@ -69,13 +69,13 @@ def _fake_binary(install_dir: Path, *, layout: str = "cmake") -> Path:
         bin_name = "llama-server.exe"
     else:
         raise ValueError(f"unknown layout {layout}")
-    bin_dir.mkdir(parents=True, exist_ok=True)
+    bin_dir.mkdir(parents = True, exist_ok = True)
     bin_path = bin_dir / bin_name
     bin_path.write_text("stub\n")
     return bin_path
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture(autouse = True)
 def _reset(monkeypatch, tmp_path):
     # Isolate disk cache per-test; never touch the user's real cache.
     monkeypatch.setattr(fr, "_cache_dir", lambda: tmp_path / ".freshness")
@@ -89,8 +89,8 @@ def _reset(monkeypatch, tmp_path):
 
 def test_read_install_marker_finds_cmake_layout(tmp_path):
     install_dir = tmp_path / "llama.cpp"
-    _write_marker(install_dir, tag="b9190")
-    bin_path = _fake_binary(install_dir, layout="cmake")
+    _write_marker(install_dir, tag = "b9190")
+    bin_path = _fake_binary(install_dir, layout = "cmake")
     marker = fr.read_install_marker(str(bin_path))
     assert marker is not None
     assert marker["tag"] == "b9190"
@@ -99,8 +99,8 @@ def test_read_install_marker_finds_cmake_layout(tmp_path):
 
 def test_read_install_marker_finds_root_layout(tmp_path):
     install_dir = tmp_path / "llama.cpp"
-    _write_marker(install_dir, tag="b9999")
-    bin_path = _fake_binary(install_dir, layout="root")
+    _write_marker(install_dir, tag = "b9999")
+    bin_path = _fake_binary(install_dir, layout = "root")
     marker = fr.read_install_marker(str(bin_path))
     assert marker is not None
     assert marker["tag"] == "b9999"
@@ -110,8 +110,8 @@ def test_read_install_marker_finds_windows_cmake_layout(tmp_path):
     # Windows cmake puts the .exe under build/bin/Release/, so the
     # marker is four levels above the binary.
     install_dir = tmp_path / "llama.cpp"
-    _write_marker(install_dir, tag="b8888")
-    bin_path = _fake_binary(install_dir, layout="windows")
+    _write_marker(install_dir, tag = "b8888")
+    bin_path = _fake_binary(install_dir, layout = "windows")
     marker = fr.read_install_marker(str(bin_path))
     assert marker is not None
     assert marker["tag"] == "b8888"
@@ -124,23 +124,23 @@ def test_read_install_marker_carries_published_repo_dynamically(tmp_path, repo):
     # (ggml-org), and ROCm source-build (unslothai upstream label)
     # all surface the right "latest" tag.
     install_dir = tmp_path / "llama.cpp"
-    _write_marker(install_dir, tag="b9000", published_repo=repo)
-    bin_path = _fake_binary(install_dir, layout="cmake")
+    _write_marker(install_dir, tag = "b9000", published_repo = repo)
+    bin_path = _fake_binary(install_dir, layout = "cmake")
     marker = fr.read_install_marker(str(bin_path))
     assert marker is not None
     assert marker["published_repo"] == repo
 
 
 def test_read_install_marker_missing_returns_none(tmp_path):
-    bin_path = _fake_binary(tmp_path / "no_marker", layout="root")
+    bin_path = _fake_binary(tmp_path / "no_marker", layout = "root")
     assert fr.read_install_marker(str(bin_path)) is None
 
 
 def test_read_install_marker_handles_invalid_json(tmp_path):
     install_dir = tmp_path / "llama.cpp"
-    install_dir.mkdir(parents=True)
+    install_dir.mkdir(parents = True)
     (install_dir / "UNSLOTH_PREBUILT_INFO.json").write_text("not json")
-    bin_path = _fake_binary(install_dir, layout="root")
+    bin_path = _fake_binary(install_dir, layout = "root")
     assert fr.read_install_marker(str(bin_path)) is None
 
 
@@ -154,7 +154,7 @@ def test_read_install_marker_handles_none_path():
 def test_latest_published_release_uses_disk_cache(monkeypatch):
     calls = []
 
-    def _fake_fetch(repo, timeout=5.0):
+    def _fake_fetch(repo, timeout = 5.0):
         calls.append(repo)
         return "b9999"
 
@@ -168,7 +168,7 @@ def test_latest_published_release_uses_disk_cache(monkeypatch):
 
 
 def test_latest_published_release_returns_none_on_network_failure(monkeypatch):
-    monkeypatch.setattr(fr, "_fetch_latest_release_tag", lambda repo, timeout=5.0: None)
+    monkeypatch.setattr(fr, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: None)
     assert fr.latest_published_release("unslothai/llama.cpp") is None
 
 
@@ -179,7 +179,7 @@ def test_latest_published_release_keeps_old_cache_on_transient_failure(monkeypat
     cache_file = cache_dir / "unslothai__llama.cpp.json"
     yesterday = time.time() - 25 * 60 * 60  # > 24h
     cache_file.write_text(json.dumps({"fetched_at": yesterday, "latest_tag": "b9000"}))
-    monkeypatch.setattr(fr, "_fetch_latest_release_tag", lambda repo, timeout=5.0: None)
+    monkeypatch.setattr(fr, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: None)
     assert fr.latest_published_release("unslothai/llama.cpp") == "b9000"
 
 
@@ -190,13 +190,13 @@ def test_check_prebuilt_freshness_reports_stale_when_old_and_behind(monkeypatch,
     install_dir = tmp_path / "llama.cpp"
     _write_marker(
         install_dir,
-        tag="b9190",
-        installed_at_utc=(datetime.now(tz=timezone.utc) - timedelta(days=5))
+        tag = "b9190",
+        installed_at_utc = (datetime.now(tz = timezone.utc) - timedelta(days = 5))
         .isoformat()
         .replace("+00:00", "Z"),
     )
-    bin_path = _fake_binary(install_dir, layout="root")
-    monkeypatch.setattr(fr, "_fetch_latest_release_tag", lambda repo, timeout=5.0: "b9300")
+    bin_path = _fake_binary(install_dir, layout = "root")
+    monkeypatch.setattr(fr, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9300")
     info = fr.check_prebuilt_freshness(str(bin_path))
     assert info["has_marker"] is True
     assert info["stale"] is True
@@ -210,13 +210,13 @@ def test_check_prebuilt_freshness_not_stale_when_tag_matches(monkeypatch, tmp_pa
     install_dir = tmp_path / "llama.cpp"
     _write_marker(
         install_dir,
-        tag="b9300",
-        installed_at_utc=(datetime.now(tz=timezone.utc) - timedelta(days=30))
+        tag = "b9300",
+        installed_at_utc = (datetime.now(tz = timezone.utc) - timedelta(days = 30))
         .isoformat()
         .replace("+00:00", "Z"),
     )
-    bin_path = _fake_binary(install_dir, layout="root")
-    monkeypatch.setattr(fr, "_fetch_latest_release_tag", lambda repo, timeout=5.0: "b9300")
+    bin_path = _fake_binary(install_dir, layout = "root")
+    monkeypatch.setattr(fr, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9300")
     info = fr.check_prebuilt_freshness(str(bin_path))
     assert info["stale"] is False
     assert info["installed_tag"] == "b9300"
@@ -228,20 +228,20 @@ def test_check_prebuilt_freshness_not_stale_within_threshold(monkeypatch, tmp_pa
     install_dir = tmp_path / "llama.cpp"
     _write_marker(
         install_dir,
-        tag="b9190",
-        installed_at_utc=(datetime.now(tz=timezone.utc) - timedelta(days=1))
+        tag = "b9190",
+        installed_at_utc = (datetime.now(tz = timezone.utc) - timedelta(days = 1))
         .isoformat()
         .replace("+00:00", "Z"),
     )
-    bin_path = _fake_binary(install_dir, layout="root")
-    monkeypatch.setattr(fr, "_fetch_latest_release_tag", lambda repo, timeout=5.0: "b9300")
+    bin_path = _fake_binary(install_dir, layout = "root")
+    monkeypatch.setattr(fr, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9300")
     info = fr.check_prebuilt_freshness(str(bin_path))
     assert info["stale"] is False
     assert info["age_days"] == 1
 
 
 def test_check_prebuilt_freshness_fails_open_without_marker(tmp_path):
-    bin_path = _fake_binary(tmp_path / "custom_build", layout="root")
+    bin_path = _fake_binary(tmp_path / "custom_build", layout = "root")
     info = fr.check_prebuilt_freshness(str(bin_path))
     assert info["has_marker"] is False
     assert info["stale"] is False
@@ -251,13 +251,13 @@ def test_check_prebuilt_freshness_fails_open_when_github_unreachable(monkeypatch
     install_dir = tmp_path / "llama.cpp"
     _write_marker(
         install_dir,
-        tag="b9190",
-        installed_at_utc=(datetime.now(tz=timezone.utc) - timedelta(days=10))
+        tag = "b9190",
+        installed_at_utc = (datetime.now(tz = timezone.utc) - timedelta(days = 10))
         .isoformat()
         .replace("+00:00", "Z"),
     )
-    bin_path = _fake_binary(install_dir, layout="root")
-    monkeypatch.setattr(fr, "_fetch_latest_release_tag", lambda repo, timeout=5.0: None)
+    bin_path = _fake_binary(install_dir, layout = "root")
+    monkeypatch.setattr(fr, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: None)
     info = fr.check_prebuilt_freshness(str(bin_path))
     assert info["has_marker"] is True
     assert info["stale"] is False
@@ -266,9 +266,9 @@ def test_check_prebuilt_freshness_fails_open_when_github_unreachable(monkeypatch
 
 def test_check_prebuilt_freshness_handles_unparseable_install_timestamp(monkeypatch, tmp_path):
     install_dir = tmp_path / "llama.cpp"
-    _write_marker(install_dir, tag="b9190", installed_at_utc="not-a-date")
-    bin_path = _fake_binary(install_dir, layout="root")
-    monkeypatch.setattr(fr, "_fetch_latest_release_tag", lambda repo, timeout=5.0: "b9300")
+    _write_marker(install_dir, tag = "b9190", installed_at_utc = "not-a-date")
+    bin_path = _fake_binary(install_dir, layout = "root")
+    monkeypatch.setattr(fr, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9300")
     info = fr.check_prebuilt_freshness(str(bin_path))
     assert info["stale"] is False
     assert info["age_days"] is None
@@ -278,14 +278,14 @@ def test_check_prebuilt_freshness_respects_custom_threshold(monkeypatch, tmp_pat
     install_dir = tmp_path / "llama.cpp"
     _write_marker(
         install_dir,
-        tag="b9190",
-        installed_at_utc=(datetime.now(tz=timezone.utc) - timedelta(days=2))
+        tag = "b9190",
+        installed_at_utc = (datetime.now(tz = timezone.utc) - timedelta(days = 2))
         .isoformat()
         .replace("+00:00", "Z"),
     )
-    bin_path = _fake_binary(install_dir, layout="root")
-    monkeypatch.setattr(fr, "_fetch_latest_release_tag", lambda repo, timeout=5.0: "b9300")
-    info = fr.check_prebuilt_freshness(str(bin_path), threshold_days=1)
+    bin_path = _fake_binary(install_dir, layout = "root")
+    monkeypatch.setattr(fr, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9300")
+    info = fr.check_prebuilt_freshness(str(bin_path), threshold_days = 1)
     assert info["stale"] is True
 
 

@@ -908,47 +908,47 @@ def run_server(
         print(f"TAURI_PORT={port}", flush = True)
 
     if not silent:
-          # Probe in background: on kernel.unprivileged_userns_clone=0 hosts
-          # sandbox_available() stalls for its full 5s timeout otherwise.
-          # The notice fires from whichever path resolves first (fast main
-          # thread if the probe is quick, deferred background thread if
-          # the probe is slow) so slow-failing sandbox hosts still see it.
-          import threading
+        # Probe in background: on kernel.unprivileged_userns_clone=0 hosts
+        # sandbox_available() stalls for its full 5s timeout otherwise.
+        # The notice fires from whichever path resolves first (fast main
+        # thread if the probe is quick, deferred background thread if
+        # the probe is slow) so slow-failing sandbox hosts still see it.
+        import threading
 
-          from core.inference.sandbox import sandbox_available
-          from core.inference.tools import _strict_sandbox_required
+        from core.inference.sandbox import sandbox_available
+        from core.inference.tools import _strict_sandbox_required
 
-          probe_result: list[bool] = []
-          probe_done = threading.Event()
-          notice_lock = threading.Lock()
-          notice_printed = [False]
-          strict_at_startup = _strict_sandbox_required()
+        probe_result: list[bool] = []
+        probe_done = threading.Event()
+        notice_lock = threading.Lock()
+        notice_printed = [False]
+        strict_at_startup = _strict_sandbox_required()
 
-          def _print_notice_once() -> None:
-              with notice_lock:
-                  if notice_printed[0]:
-                      return
-                  notice_printed[0] = True
-              print_sandbox_unavailable_notice(strict = strict_at_startup)
+        def _print_notice_once() -> None:
+            with notice_lock:
+                if notice_printed[0]:
+                    return
+                notice_printed[0] = True
+            print_sandbox_unavailable_notice(strict = strict_at_startup)
 
-          def _bg_probe():
-              try:
-                  available = sandbox_available()
-                  probe_result.append(available)
-                  if not available:
-                      _print_notice_once()
-              finally:
-                  probe_done.set()
+        def _bg_probe():
+            try:
+                available = sandbox_available()
+                probe_result.append(available)
+                if not available:
+                    _print_notice_once()
+            finally:
+                probe_done.set()
 
-          threading.Thread(target = _bg_probe, daemon = True).start()
-          # Match the per-attempt probe timeout (5s) so the notice has a
-          # chance to land BEFORE the access banner instead of racing
-          # with later log lines. If the probe hasn't decided by then,
-          # the background thread still emits the notice — just later
-          # in the log stream.
-          if probe_done.wait(timeout = 5.0) and probe_result and not probe_result[0]:
-              _print_notice_once()
-          _emit_startup_output(host, port, display_host)
+        threading.Thread(target = _bg_probe, daemon = True).start()
+        # Match the per-attempt probe timeout (5s) so the notice has a
+        # chance to land BEFORE the access banner instead of racing
+        # with later log lines. If the probe hasn't decided by then,
+        # the background thread still emits the notice — just later
+        # in the log stream.
+        if probe_done.wait(timeout = 5.0) and probe_result and not probe_result[0]:
+            _print_notice_once()
+        _emit_startup_output(host, port, display_host)
 
     return app
 

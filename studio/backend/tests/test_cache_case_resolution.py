@@ -14,8 +14,8 @@ if "structlog" not in sys.modules:
             return lambda *args, **kwargs: None
 
     sys.modules["structlog"] = types.SimpleNamespace(
-        BoundLogger=_DummyLogger,
-        get_logger=lambda *args, **kwargs: _DummyLogger(),
+        BoundLogger = _DummyLogger,
+        get_logger = lambda *args, **kwargs: _DummyLogger(),
     )
 
 from utils.paths.path_utils import (
@@ -28,7 +28,7 @@ import utils.paths.path_utils as path_utils
 
 def _mk_cache_repo(cache_root: Path, repo_id: str) -> Path:
     repo_dir = cache_root / f"models--{repo_id.replace('/', '--')}"
-    repo_dir.mkdir(parents=True, exist_ok=True)
+    repo_dir.mkdir(parents = True, exist_ok = True)
     return repo_dir
 
 

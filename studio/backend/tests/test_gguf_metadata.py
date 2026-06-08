@@ -82,7 +82,7 @@ def _write_synthetic_gguf(
         0,  # tensor_count
         kv_count,
     )
-    path.parent.mkdir(parents=True, exist_ok=True)
+    path.parent.mkdir(parents = True, exist_ok = True)
     path.write_bytes(header + body)
     return path
 
@@ -125,8 +125,8 @@ def test_skips_unrelated_fields_without_breaking(tmp_path: Path):
     p = _write_synthetic_gguf(
         tmp_path / "model.gguf",
         {"general.basename": "Foo"},
-        extra_uint32={"qwen2vl.context_length": 32768},
-        extra_string_arrays={"tokenizer.ggml.tokens": ["a", "bc", "def"]},
+        extra_uint32 = {"qwen2vl.context_length": 32768},
+        extra_string_arrays = {"tokenizer.ggml.tokens": ["a", "bc", "def"]},
     )
     meta = read_gguf_general_metadata(str(p))
     assert meta == {"general.basename": "Foo"}
@@ -231,7 +231,7 @@ def test_mmproj_audio_capability_true(tmp_path: Path):
     p = _write_synthetic_gguf(
         tmp_path / "mmproj.gguf",
         {"general.type": "mmproj"},
-        extra_bools={
+        extra_bools = {
             "clip.has_vision_encoder": True,
             "clip.has_audio_encoder": True,
         },
@@ -244,7 +244,7 @@ def test_mmproj_audio_capability_false(tmp_path: Path):
     p = _write_synthetic_gguf(
         tmp_path / "mmproj.gguf",
         {"general.type": "mmproj"},
-        extra_bools={
+        extra_bools = {
             "clip.has_vision_encoder": True,
             "clip.has_audio_encoder": False,
         },
@@ -257,7 +257,7 @@ def test_mmproj_audio_capability_absent_returns_none(tmp_path: Path):
     p = _write_synthetic_gguf(
         tmp_path / "mmproj.gguf",
         {"general.type": "mmproj"},
-        extra_bools={"clip.has_vision_encoder": True},
+        extra_bools = {"clip.has_vision_encoder": True},
     )
     assert read_mmproj_audio_capability(str(p)) is None
 

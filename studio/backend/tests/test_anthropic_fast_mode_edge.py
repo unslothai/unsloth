@@ -25,9 +25,9 @@ def _drive(coro):
 
 def _make_client() -> ExternalProviderClient:
     return ExternalProviderClient(
-        provider_type="anthropic",
-        base_url="https://api.anthropic.com/v1",
-        api_key="sk-ant-test",
+        provider_type = "anthropic",
+        base_url = "https://api.anthropic.com/v1",
+        api_key = "sk-ant-test",
     )
 
 
@@ -73,14 +73,14 @@ def _capture(
         captured["headers"] = dict(request.headers)
         return httpx.Response(
             200,
-            content=sse or _empty_message_sse(kwargs.get("model", "claude-opus-4-7")),
-            headers={"content-type": "text/event-stream"},
+            content = sse or _empty_message_sse(kwargs.get("model", "claude-opus-4-7")),
+            headers = {"content-type": "text/event-stream"},
         )
 
     monkeypatch.setattr(
         ep_mod,
         "_http_client",
-        httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        httpx.AsyncClient(transport = httpx.MockTransport(handler)),
     )
 
     out_lines: list[str] = []
@@ -97,11 +97,11 @@ def _capture(
                 if key in kwargs:
                     extra[key] = kwargs[key]
             async for line in client.stream_chat_completion(
-                messages=[{"role": "user", "content": "hi"}],
-                model=kwargs.get("model", "claude-opus-4-7"),
-                temperature=0.7,
-                top_p=0.95,
-                max_tokens=32,
+                messages = [{"role": "user", "content": "hi"}],
+                model = kwargs.get("model", "claude-opus-4-7"),
+                temperature = 0.7,
+                top_p = 0.95,
+                max_tokens = 32,
                 **extra,
             ):
                 out_lines.append(line)
@@ -115,13 +115,13 @@ def _capture(
 # ──────────────────────────── dated snapshot prefix ────────────────────────────
 def test_fast_mode_attaches_on_dated_opus_4_7_snapshot(monkeypatch):
     """Dated snapshot ``claude-opus-4-7-2026-02-01`` must match the prefix."""
-    cap, _ = _capture(monkeypatch, fast_mode=True, model="claude-opus-4-7-2026-02-01")
+    cap, _ = _capture(monkeypatch, fast_mode = True, model = "claude-opus-4-7-2026-02-01")
     assert cap["body"].get("speed") == "fast", cap["body"]
     assert "fast-mode-2026-02-01" in cap["headers"].get("anthropic-beta", "")
 
 
 def test_fast_mode_attaches_on_dated_opus_4_6_snapshot(monkeypatch):
-    cap, _ = _capture(monkeypatch, fast_mode=True, model="claude-opus-4-6-2026-02-01")
+    cap, _ = _capture(monkeypatch, fast_mode = True, model = "claude-opus-4-6-2026-02-01")
     assert cap["body"].get("speed") == "fast", cap["body"]
     assert "fast-mode-2026-02-01" in cap["headers"].get("anthropic-beta", "")
 
@@ -129,20 +129,20 @@ def test_fast_mode_attaches_on_dated_opus_4_6_snapshot(monkeypatch):
 # ──────────────────────────── strict opt-in semantics ────────────────────────────
 def test_fast_mode_does_not_auto_enable_on_future_opus_4_8(monkeypatch):
     """Future ``claude-opus-4-8`` must not auto-enable; opt-in per family."""
-    cap, _ = _capture(monkeypatch, fast_mode=True, model="claude-opus-4-8")
+    cap, _ = _capture(monkeypatch, fast_mode = True, model = "claude-opus-4-8")
     assert "speed" not in cap["body"], cap["body"]
     assert "fast-mode-2026-02-01" not in cap["headers"].get("anthropic-beta", "")
 
 
 def test_fast_mode_does_not_auto_enable_on_future_opus_5(monkeypatch):
-    cap, _ = _capture(monkeypatch, fast_mode=True, model="claude-opus-5")
+    cap, _ = _capture(monkeypatch, fast_mode = True, model = "claude-opus-5")
     assert "speed" not in cap["body"], cap["body"]
     assert "fast-mode-2026-02-01" not in cap["headers"].get("anthropic-beta", "")
 
 
 def test_fast_mode_does_not_auto_enable_on_sonnet_dated_snapshot(monkeypatch):
     """Sonnet snapshots share the compaction prefix but not fast_mode."""
-    cap, _ = _capture(monkeypatch, fast_mode=True, model="claude-sonnet-4-6-2026-02-01")
+    cap, _ = _capture(monkeypatch, fast_mode = True, model = "claude-sonnet-4-6-2026-02-01")
     assert "speed" not in cap["body"], cap["body"]
     assert "fast-mode-2026-02-01" not in cap["headers"].get("anthropic-beta", "")
 
@@ -157,9 +157,9 @@ def test_fast_mode_merges_with_code_execution_beta(monkeypatch):
     """fast_mode + code_execution -> two comma-separated betas, no overwrite."""
     cap, _ = _capture(
         monkeypatch,
-        fast_mode=True,
-        model="claude-opus-4-7",
-        enabled_tools=["code_execution"],
+        fast_mode = True,
+        model = "claude-opus-4-7",
+        enabled_tools = ["code_execution"],
     )
     parts = _beta_parts(cap["headers"])
     assert "fast-mode-2026-02-01" in parts, cap["headers"]
@@ -172,9 +172,9 @@ def test_fast_mode_merges_with_compaction_beta(monkeypatch):
     """fast_mode + compaction_threshold >= 50K -> both betas present."""
     cap, _ = _capture(
         monkeypatch,
-        fast_mode=True,
-        model="claude-opus-4-7",
-        compaction_threshold=100_000,
+        fast_mode = True,
+        model = "claude-opus-4-7",
+        compaction_threshold = 100_000,
     )
     parts = _beta_parts(cap["headers"])
     assert "fast-mode-2026-02-01" in parts, cap["headers"]
@@ -185,10 +185,10 @@ def test_fast_mode_merges_with_code_execution_and_compaction(monkeypatch):
     """Three betas coexist in one comma-separated header, no duplicates."""
     cap, _ = _capture(
         monkeypatch,
-        fast_mode=True,
-        model="claude-opus-4-7",
-        enabled_tools=["code_execution"],
-        compaction_threshold=100_000,
+        fast_mode = True,
+        model = "claude-opus-4-7",
+        enabled_tools = ["code_execution"],
+        compaction_threshold = 100_000,
     )
     parts = _beta_parts(cap["headers"])
     assert "fast-mode-2026-02-01" in parts
@@ -200,7 +200,7 @@ def test_fast_mode_merges_with_code_execution_and_compaction(monkeypatch):
 
 def test_fast_mode_beta_value_is_pinned(monkeypatch):
     """Pin the exact beta tag ``fast-mode-2026-02-01`` from the docs."""
-    cap, _ = _capture(monkeypatch, fast_mode=True, model="claude-opus-4-7")
+    cap, _ = _capture(monkeypatch, fast_mode = True, model = "claude-opus-4-7")
     parts = _beta_parts(cap["headers"])
     assert "fast-mode-2026-02-01" in parts, parts
     # Reject obvious typos.
@@ -211,7 +211,7 @@ def test_fast_mode_beta_value_is_pinned(monkeypatch):
 # ──────────────────────────── non-destruction guarantee ────────────────────────────
 def test_fast_mode_unset_is_byte_identical_to_omitted(monkeypatch):
     """``fast_mode=None`` must produce the same body/headers as omission."""
-    cap_none, _ = _capture(monkeypatch, fast_mode=None, model="claude-opus-4-7")
+    cap_none, _ = _capture(monkeypatch, fast_mode = None, model = "claude-opus-4-7")
 
     # Re-run without passing fast_mode at all.
     captured: dict = {}
@@ -221,25 +221,25 @@ def test_fast_mode_unset_is_byte_identical_to_omitted(monkeypatch):
         captured["headers"] = dict(request.headers)
         return httpx.Response(
             200,
-            content=_empty_message_sse(),
-            headers={"content-type": "text/event-stream"},
+            content = _empty_message_sse(),
+            headers = {"content-type": "text/event-stream"},
         )
 
     monkeypatch.setattr(
         ep_mod,
         "_http_client",
-        httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        httpx.AsyncClient(transport = httpx.MockTransport(handler)),
     )
 
     async def run():
         client = _make_client()
         try:
             async for _ in client.stream_chat_completion(
-                messages=[{"role": "user", "content": "hi"}],
-                model="claude-opus-4-7",
-                temperature=0.7,
-                top_p=0.95,
-                max_tokens=32,
+                messages = [{"role": "user", "content": "hi"}],
+                model = "claude-opus-4-7",
+                temperature = 0.7,
+                top_p = 0.95,
+                max_tokens = 32,
             ):
                 pass
         finally:
@@ -260,7 +260,7 @@ def test_fast_mode_unset_is_byte_identical_to_omitted(monkeypatch):
 
 def test_fast_mode_false_on_opus_4_7_byte_identical_to_unset(monkeypatch):
     """``fast_mode=False`` produces the same outbound shape as unset."""
-    cap_false, _ = _capture(monkeypatch, fast_mode=False, model="claude-opus-4-7")
+    cap_false, _ = _capture(monkeypatch, fast_mode = False, model = "claude-opus-4-7")
     assert "speed" not in cap_false["body"], cap_false["body"]
     assert "fast-mode-2026-02-01" not in cap_false["headers"].get("anthropic-beta", "")
 
@@ -268,7 +268,7 @@ def test_fast_mode_false_on_opus_4_7_byte_identical_to_unset(monkeypatch):
 # ──────────────────────────── refusal stream ordering ────────────────────────────
 def test_refusal_notice_appears_before_content_filter_chunk(monkeypatch):
     """The notice content delta must precede the finish_reason chunk."""
-    _, lines = _capture(monkeypatch, sse=_refusal_sse(), model="claude-opus-4-7")
+    _, lines = _capture(monkeypatch, sse = _refusal_sse(), model = "claude-opus-4-7")
     notice_idx = next(i for i, l in enumerate(lines) if "stopped by Anthropic" in l)
     filter_idx = next(i for i, l in enumerate(lines) if '"finish_reason": "content_filter"' in l)
     assert notice_idx < filter_idx, (notice_idx, filter_idx, lines)
@@ -276,7 +276,7 @@ def test_refusal_notice_appears_before_content_filter_chunk(monkeypatch):
 
 def test_refusal_tool_event_emitted_exactly_once(monkeypatch):
     """A single refusal emits the chat-adapter drop signal exactly once."""
-    _, lines = _capture(monkeypatch, sse=_refusal_sse())
+    _, lines = _capture(monkeypatch, sse = _refusal_sse())
     body = "\n".join(lines)
     count = body.count('"_toolEvent": {"type": "anthropic_refusal"}')
     assert count == 1, (count, body)
@@ -285,7 +285,7 @@ def test_refusal_tool_event_emitted_exactly_once(monkeypatch):
 def test_refusal_text_carries_no_html_sentinel(monkeypatch):
     """Visible refusal text must not embed a ``studio:anthropic-refusal``
     sentinel; the drop signal rides _toolEvent only."""
-    _, lines = _capture(monkeypatch, sse=_refusal_sse())
+    _, lines = _capture(monkeypatch, sse = _refusal_sse())
     body = "\n".join(lines)
     assert "studio:anthropic-refusal" not in body, body
 
@@ -293,7 +293,7 @@ def test_refusal_text_carries_no_html_sentinel(monkeypatch):
 def test_refusal_handling_works_on_sonnet_model(monkeypatch):
     """Refusal handling is provider-side; Sonnet refusals must also surface."""
     _, lines = _capture(
-        monkeypatch, sse=_refusal_sse("claude-sonnet-4-6"), model="claude-sonnet-4-6"
+        monkeypatch, sse = _refusal_sse("claude-sonnet-4-6"), model = "claude-sonnet-4-6"
     )
     body = "\n".join(lines)
     assert "stopped by Anthropic's safety classifier" in body, body
@@ -303,7 +303,7 @@ def test_refusal_handling_works_on_sonnet_model(monkeypatch):
 
 def test_refusal_preserves_partial_assistant_text(monkeypatch):
     """Partial deltas already streamed must precede the refusal notice."""
-    _, lines = _capture(monkeypatch, sse=_refusal_sse(), model="claude-opus-4-7")
+    _, lines = _capture(monkeypatch, sse = _refusal_sse(), model = "claude-opus-4-7")
     body = "\n".join(lines)
     hello_idx = body.index("Hello.")
     notice_idx = body.index("stopped by Anthropic")
@@ -313,7 +313,7 @@ def test_refusal_preserves_partial_assistant_text(monkeypatch):
 def test_refusal_chunk_is_proper_openai_delta_shape(monkeypatch):
     """The notice rides ``choices[0].delta.content`` (not a finish chunk);
     OpenAI-spec clients treat it as ordinary streamed text."""
-    _, lines = _capture(monkeypatch, sse=_refusal_sse(), model="claude-opus-4-7")
+    _, lines = _capture(monkeypatch, sse = _refusal_sse(), model = "claude-opus-4-7")
     # Find the chunk that carries the refusal text.
     notice_chunk = None
     for line in lines:
@@ -334,7 +334,7 @@ def test_refusal_tool_event_chunk_shape(monkeypatch):
     """Drop signal rides a Studio `_toolEvent` envelope (delta={},
     finish_reason=null); the frontend latches on
     `_toolEvent.type == "anthropic_refusal"`."""
-    _, lines = _capture(monkeypatch, sse=_refusal_sse(), model="claude-opus-4-7")
+    _, lines = _capture(monkeypatch, sse = _refusal_sse(), model = "claude-opus-4-7")
     refusal_chunk = None
     for line in lines:
         if line.startswith("data: ") and "anthropic_refusal" in line:
@@ -352,7 +352,6 @@ def test_fast_mode_prefix_tuple_matches_capability_doc(monkeypatch):
     """Tuple must exactly match the two families in the upstream docs:
     https://platform.claude.com/docs/en/build-with-claude/fast-mode."""
     from core.inference.external_provider import _ANTHROPIC_FAST_MODE_PREFIXES
-
     assert set(_ANTHROPIC_FAST_MODE_PREFIXES) == {
         "claude-opus-4-7",
         "claude-opus-4-6",
@@ -361,32 +360,32 @@ def test_fast_mode_prefix_tuple_matches_capability_doc(monkeypatch):
 
 def test_fast_mode_speed_field_value_is_literal_fast(monkeypatch):
     """Pin the wire value to the literal string ``"fast"``."""
-    cap, _ = _capture(monkeypatch, fast_mode=True, model="claude-opus-4-7")
+    cap, _ = _capture(monkeypatch, fast_mode = True, model = "claude-opus-4-7")
     assert cap["body"]["speed"] == "fast", cap["body"]
 
 
 def test_fast_mode_dropped_on_opus_4_5_dated_snapshot(monkeypatch):
     """Previous-family snapshots like ``claude-opus-4-5-2025-...`` must not match."""
-    cap, _ = _capture(monkeypatch, fast_mode=True, model="claude-opus-4-5-2025-08-01")
+    cap, _ = _capture(monkeypatch, fast_mode = True, model = "claude-opus-4-5-2025-08-01")
     assert "speed" not in cap["body"], cap["body"]
     assert "fast-mode-2026-02-01" not in cap["headers"].get("anthropic-beta", "")
 
 
 def test_fast_mode_rejects_prefix_collision_4_70(monkeypatch):
     """IDs like ``claude-opus-4-70`` / ``-4-7b`` must not match the prefix."""
-    cap, _ = _capture(monkeypatch, fast_mode=True, model="claude-opus-4-70")
+    cap, _ = _capture(monkeypatch, fast_mode = True, model = "claude-opus-4-70")
     assert "speed" not in cap["body"], cap["body"]
     assert "fast-mode-2026-02-01" not in cap["headers"].get("anthropic-beta", "")
 
 
 def test_fast_mode_rejects_prefix_collision_4_7b(monkeypatch):
-    cap, _ = _capture(monkeypatch, fast_mode=True, model="claude-opus-4-7b")
+    cap, _ = _capture(monkeypatch, fast_mode = True, model = "claude-opus-4-7b")
     assert "speed" not in cap["body"], cap["body"]
     assert "fast-mode-2026-02-01" not in cap["headers"].get("anthropic-beta", "")
 
 
 def test_fast_mode_rejects_prefix_collision_4_6_extra(monkeypatch):
-    cap, _ = _capture(monkeypatch, fast_mode=True, model="claude-opus-4-60")
+    cap, _ = _capture(monkeypatch, fast_mode = True, model = "claude-opus-4-60")
     assert "speed" not in cap["body"], cap["body"]
     assert "fast-mode-2026-02-01" not in cap["headers"].get("anthropic-beta", "")
 
@@ -412,7 +411,7 @@ def _fast_speed_sse(model: str = "claude-opus-4-7", speed: str = "fast") -> byte
 
 def test_usage_speed_propagates_to_final_usage_chunk_fast(monkeypatch):
     """``usage.speed == "fast"`` from upstream must reach the Studio usage chunk."""
-    _, lines = _capture(monkeypatch, sse=_fast_speed_sse(speed="fast"))
+    _, lines = _capture(monkeypatch, sse = _fast_speed_sse(speed = "fast"))
     usage_lines = [l for l in lines if l.startswith("data: ") and '"usage"' in l]
     assert usage_lines, lines
     parsed = [json.loads(l[len("data: ") :]) for l in usage_lines]
@@ -421,7 +420,7 @@ def test_usage_speed_propagates_to_final_usage_chunk_fast(monkeypatch):
 
 
 def test_usage_speed_propagates_to_final_usage_chunk_standard(monkeypatch):
-    _, lines = _capture(monkeypatch, sse=_fast_speed_sse(speed="standard"))
+    _, lines = _capture(monkeypatch, sse = _fast_speed_sse(speed = "standard"))
     parsed = [
         json.loads(l[len("data: ") :]) for l in lines if l.startswith("data: ") and '"usage"' in l
     ]

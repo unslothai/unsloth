@@ -8,7 +8,7 @@ from models.data_recipe import RecipePayload
 
 
 def test_github_page_log_updates_source_progress_without_cursor():
-    job = Job(job_id="job-1")
+    job = Job(job_id = "job-1")
     job.source_progress_estimated_total = 200
 
     update = parse_log_message(
@@ -35,7 +35,7 @@ def test_github_page_log_updates_source_progress_without_cursor():
 
 
 def test_github_rate_limit_log_updates_source_progress():
-    job = Job(job_id="job-1")
+    job = Job(job_id = "job-1")
 
     update = parse_log_message("Rate limit hit. Sleeping 123s until reset.")
 
@@ -50,7 +50,7 @@ def test_github_rate_limit_log_updates_source_progress():
 
 
 def test_github_real_sample_prs_and_trial_limit_are_parsed():
-    job = Job(job_id="job-1")
+    job = Job(job_id = "job-1")
 
     for message in (
         "[unslothai/unsloth] PRs page 4 (+25) cursor=abc123 remaining=4983",
@@ -73,7 +73,7 @@ def test_github_real_sample_prs_and_trial_limit_are_parsed():
 def test_github_validate_skips_live_access_with_honest_note():
     response = validate(
         RecipePayload(
-            recipe={
+            recipe = {
                 "seed_config": {
                     "source": {
                         "seed_type": "github_repo",

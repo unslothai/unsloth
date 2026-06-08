@@ -71,7 +71,7 @@ from core.inference.llama_cpp import LlamaCppBackend
 
 pytestmark = pytest.mark.skipif(
     not Path("/proc").exists(),
-    reason="live /proc test is Linux-only",
+    reason = "live /proc test is Linux-only",
 )
 
 
@@ -104,8 +104,8 @@ def test_live_rss_matches_kernel_vmrss(tmp_path):
     )
     proc = subprocess.Popen(
         [sys.executable, str(script)],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        stdout = subprocess.PIPE,
+        stderr = subprocess.PIPE,
     )
     try:
         # Wait for the child to finish touching pages.
@@ -117,7 +117,7 @@ def test_live_rss_matches_kernel_vmrss(tmp_path):
         with open(gguf, "wb") as f:
             f.truncate(200 * 1024 * 1024)
 
-        inst = _make_backend(proc.pid, str(gguf), healthy=False)
+        inst = _make_backend(proc.pid, str(gguf), healthy = False)
         out = inst.load_progress()
 
         assert out is not None, "load_progress returned None for live pid"
@@ -133,7 +133,7 @@ def test_live_rss_matches_kernel_vmrss(tmp_path):
     finally:
         proc.terminate()
         try:
-            proc.wait(timeout=5)
+            proc.wait(timeout = 5)
         except subprocess.TimeoutExpired:
             proc.kill()
 
@@ -143,7 +143,7 @@ def test_live_ready_phase_when_healthy(tmp_path):
     with open(gguf, "wb") as f:
         f.truncate(1 * 1024 * 1024)
 
-    inst = _make_backend(os.getpid(), str(gguf), healthy=True)
+    inst = _make_backend(os.getpid(), str(gguf), healthy = True)
     out = inst.load_progress()
     assert out is not None
     assert out["phase"] == "ready"
@@ -158,7 +158,7 @@ def test_live_dead_pid_returns_none(tmp_path):
     gguf = tmp_path / "m.gguf"
     gguf.touch()
 
-    inst = _make_backend(9_999_999_999, str(gguf), healthy=False)
+    inst = _make_backend(9_999_999_999, str(gguf), healthy = False)
     out = inst.load_progress()
     assert out is None
 
@@ -178,7 +178,7 @@ def test_live_shard_aggregation_counts_real_files(tmp_path):
     inst = _make_backend(
         os.getpid(),
         str(tmp_path / "model-00001-of-00004.gguf"),
-        healthy=False,
+        healthy = False,
     )
     out = inst.load_progress()
     assert out is not None
@@ -192,7 +192,7 @@ def test_live_repeated_polling_stays_sane(tmp_path):
     with open(gguf, "wb") as f:
         f.truncate(500 * 1024 * 1024)
 
-    inst = _make_backend(os.getpid(), str(gguf), healthy=False)
+    inst = _make_backend(os.getpid(), str(gguf), healthy = False)
     seen = []
     for _ in range(20):
         out = inst.load_progress()

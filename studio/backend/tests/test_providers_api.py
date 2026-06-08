@@ -43,7 +43,7 @@ PASSWORD = os.getenv("STUDIO_TEST_PASSWORD", "")
 # (e.g. on CI runners) so pytest discovery does not error out.
 pytestmark = pytest.mark.skipif(
     not PASSWORD,
-    reason="Integration test requires a running Studio server; set STUDIO_TEST_PASSWORD to enable.",
+    reason = "Integration test requires a running Studio server; set STUDIO_TEST_PASSWORD to enable.",
 )
 
 # Map provider_type → (env var name, model to use for inference test)
@@ -109,7 +109,7 @@ def _parse_sse_stream(response: requests.Response) -> tuple[str, bool]:
 # ── Session-scoped fixtures ────────────────────────────────────────
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope = "session")
 def auth_headers() -> dict[str, str]:
     """
     Log in once per session and return auth headers.
@@ -133,8 +133,8 @@ def auth_headers() -> dict[str, str]:
 
     resp = requests.post(
         _url("/api/auth/login"),
-        json={"username": USERNAME, "password": PASSWORD},
-        timeout=10,
+        json = {"username": USERNAME, "password": PASSWORD},
+        timeout = 10,
     )
     assert resp.status_code == 200, f"Login failed ({resp.status_code}): {resp.text}"
     body = resp.json()
@@ -147,9 +147,9 @@ def auth_headers() -> dict[str, str]:
         new_password = os.getenv("STUDIO_TEST_NEW_PASSWORD") or f"{PASSWORD}-test"
         change_resp = requests.post(
             _url("/api/auth/change-password"),
-            headers={"Authorization": f"Bearer {token}"},
-            json={"current_password": PASSWORD, "new_password": new_password},
-            timeout=10,
+            headers = {"Authorization": f"Bearer {token}"},
+            json = {"current_password": PASSWORD, "new_password": new_password},
+            timeout = 10,
         )
         assert (
             change_resp.status_code == 200
@@ -159,13 +159,13 @@ def auth_headers() -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope = "session")
 def public_key_pem(auth_headers: dict[str, str]) -> str:
     """Fetch RSA public key PEM once per session."""
     resp = requests.get(
         _url("/api/providers/public-key"),
-        headers=auth_headers,
-        timeout=10,
+        headers = auth_headers,
+        timeout = 10,
     )
     assert resp.status_code == 200, f"Public key fetch failed: {resp.text}"
     pem = resp.json().get("public_key", "")
@@ -173,7 +173,7 @@ def public_key_pem(auth_headers: dict[str, str]) -> str:
     return pem
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope = "session")
 def vision_image_data_url() -> str:
     """
     Download the sloth image once per session and return it as a base64 data URI.
@@ -182,14 +182,14 @@ def vision_image_data_url() -> str:
     the image inline — Gemini's OpenAI-compatible layer does not fetch external
     HTTP URLs, so raw image_url links silently produce empty replies for Gemini.
     """
-    resp = requests.get(_VISION_IMAGE_URL, timeout=30)
+    resp = requests.get(_VISION_IMAGE_URL, timeout = 30)
     resp.raise_for_status()
     content_type = resp.headers.get("Content-Type", "image/jpeg").split(";")[0].strip()
     b64 = base64.b64encode(resp.content).decode("utf-8")
     return f"data:{content_type};base64,{b64}"
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope = "session")
 def encrypt_key(public_key_pem: str):
     """
     Return a callable encrypt_key(plaintext: str) -> str (base64 RSA-OAEP ciphertext).
@@ -203,9 +203,9 @@ def encrypt_key(public_key_pem: str):
         ciphertext = rsa_pub.encrypt(
             plaintext.encode("utf-8"),
             padding.OAEP(
-                mgf=padding.MGF1(algorithm=hashes.SHA256()),
-                algorithm=hashes.SHA256(),
-                label=None,
+                mgf = padding.MGF1(algorithm = hashes.SHA256()),
+                algorithm = hashes.SHA256(),
+                label = None,
             ),
         )
         return base64.b64encode(ciphertext).decode("utf-8")
@@ -222,8 +222,8 @@ class TestAuth:
         assert PASSWORD, "STUDIO_TEST_PASSWORD not set"
         resp = requests.post(
             _url("/api/auth/login"),
-            json={"username": USERNAME, "password": PASSWORD},
-            timeout=10,
+            json = {"username": USERNAME, "password": PASSWORD},
+            timeout = 10,
         )
         assert resp.status_code == 200, f"Login failed ({resp.status_code}): {resp.text}"
         body = resp.json()
@@ -252,8 +252,8 @@ class TestRegistry:
         """GET /api/providers/registry returns all supported providers."""
         resp = requests.get(
             _url("/api/providers/registry"),
-            headers=auth_headers,
-            timeout=10,
+            headers = auth_headers,
+            timeout = 10,
         )
         assert resp.status_code == 200, f"Registry failed: {resp.text}"
         providers = resp.json()
@@ -267,8 +267,8 @@ class TestRegistry:
         """All expected provider_type values are present in the registry."""
         resp = requests.get(
             _url("/api/providers/registry"),
-            headers=auth_headers,
-            timeout=10,
+            headers = auth_headers,
+            timeout = 10,
         )
         assert resp.status_code == 200
         returned_types = {p["provider_type"] for p in resp.json()}
@@ -277,7 +277,7 @@ class TestRegistry:
 
     def test_registry_entries_have_required_fields(self, auth_headers: dict[str, str]):
         """Each registry entry has provider_type, display_name, base_url, default_models."""
-        resp = requests.get(_url("/api/providers/registry"), headers=auth_headers, timeout=10)
+        resp = requests.get(_url("/api/providers/registry"), headers = auth_headers, timeout = 10)
         assert resp.status_code == 200
         for entry in resp.json():
             for field in (
@@ -308,9 +308,9 @@ class TestProviderCRUD:
         """POST /api/providers/ creates a provider config and returns 201."""
         resp = requests.post(
             _url("/api/providers/"),
-            headers=auth_headers,
-            json={"provider_type": "openai", "display_name": "Test OpenAI (pytest)"},
-            timeout=10,
+            headers = auth_headers,
+            json = {"provider_type": "openai", "display_name": "Test OpenAI (pytest)"},
+            timeout = 10,
         )
         assert resp.status_code == 201, f"Create failed ({resp.status_code}): {resp.text}"
         body = resp.json()
@@ -324,7 +324,7 @@ class TestProviderCRUD:
     def test_list_includes_created(self, auth_headers: dict[str, str]):
         """GET /api/providers/ includes the newly created config."""
         assert TestProviderCRUD._created_id, "No created_id (run test_create_provider first)"
-        resp = requests.get(_url("/api/providers/"), headers=auth_headers, timeout=10)
+        resp = requests.get(_url("/api/providers/"), headers = auth_headers, timeout = 10)
         assert resp.status_code == 200
         ids = [p["id"] for p in resp.json()]
         assert (
@@ -338,9 +338,9 @@ class TestProviderCRUD:
         new_name = "Test OpenAI (pytest updated)"
         resp = requests.put(
             _url(f"/api/providers/{TestProviderCRUD._created_id}"),
-            headers=auth_headers,
-            json={"display_name": new_name},
-            timeout=10,
+            headers = auth_headers,
+            json = {"display_name": new_name},
+            timeout = 10,
         )
         assert resp.status_code == 200, f"Update failed ({resp.status_code}): {resp.text}"
         assert resp.json()["display_name"] == new_name
@@ -351,13 +351,13 @@ class TestProviderCRUD:
         assert TestProviderCRUD._created_id, "No created_id"
         resp = requests.delete(
             _url(f"/api/providers/{TestProviderCRUD._created_id}"),
-            headers=auth_headers,
-            timeout=10,
+            headers = auth_headers,
+            timeout = 10,
         )
         assert resp.status_code == 204, f"Delete failed ({resp.status_code}): {resp.text}"
 
         # Confirm gone from list
-        list_resp = requests.get(_url("/api/providers/"), headers=auth_headers, timeout=10)
+        list_resp = requests.get(_url("/api/providers/"), headers = auth_headers, timeout = 10)
         ids = [p["id"] for p in list_resp.json()]
         assert TestProviderCRUD._created_id not in ids, "Deleted provider still in list"
         print(f"\n  deleted id={TestProviderCRUD._created_id} confirmed gone")
@@ -372,10 +372,10 @@ _INFERENCE_PARAMS = [
         ptype,
         model,
         PROVIDER_KEYS.get(ptype, ""),
-        id=ptype,
-        marks=pytest.mark.skipif(
+        id = ptype,
+        marks = pytest.mark.skipif(
             not PROVIDER_KEYS.get(ptype, ""),
-            reason=f"no {env_var} set",
+            reason = f"no {env_var} set",
         ),
     )
     for ptype, (env_var, model) in _PROVIDER_CONFIGS.items()
@@ -401,9 +401,9 @@ class TestProviderInference:
         encrypted = encrypt_key(api_key)
         resp = requests.post(
             _url("/api/providers/test"),
-            headers=auth_headers,
-            json={"provider_type": provider_type, "encrypted_api_key": encrypted},
-            timeout=30,
+            headers = auth_headers,
+            json = {"provider_type": provider_type, "encrypted_api_key": encrypted},
+            timeout = 30,
         )
         assert resp.status_code == 200, f"Request failed ({resp.status_code}): {resp.text}"
         body = resp.json()
@@ -425,9 +425,9 @@ class TestProviderInference:
         encrypted = encrypt_key(api_key)
         resp = requests.post(
             _url("/api/providers/models"),
-            headers=auth_headers,
-            json={"provider_type": provider_type, "encrypted_api_key": encrypted},
-            timeout=30,
+            headers = auth_headers,
+            json = {"provider_type": provider_type, "encrypted_api_key": encrypted},
+            timeout = 30,
         )
         assert resp.status_code == 200, f"Request failed ({resp.status_code}): {resp.text}"
         models = resp.json()
@@ -458,10 +458,10 @@ class TestProviderInference:
         }
         with requests.post(
             _url("/v1/chat/completions"),
-            headers={**auth_headers, "Content-Type": "application/json"},
-            json=payload,
-            stream=True,
-            timeout=60,
+            headers = {**auth_headers, "Content-Type": "application/json"},
+            json = payload,
+            stream = True,
+            timeout = 60,
         ) as resp:
             assert (
                 resp.status_code == 200
@@ -483,10 +483,10 @@ _VISION_PARAMS = [
         ptype,
         model,
         PROVIDER_KEYS.get(ptype, ""),
-        id=ptype,
-        marks=pytest.mark.skipif(
+        id = ptype,
+        marks = pytest.mark.skipif(
             not PROVIDER_KEYS.get(ptype, ""),
-            reason=f"no key for {ptype}",
+            reason = f"no key for {ptype}",
         ),
     )
     for ptype, (_, model) in _PROVIDER_CONFIGS.items()
@@ -536,10 +536,10 @@ class TestVisionInference:
         }
         with requests.post(
             _url("/v1/chat/completions"),
-            headers={**auth_headers, "Content-Type": "application/json"},
-            json=payload,
-            stream=True,
-            timeout=60,
+            headers = {**auth_headers, "Content-Type": "application/json"},
+            json = payload,
+            stream = True,
+            timeout = 60,
         ) as resp:
             assert (
                 resp.status_code == 200
@@ -565,12 +565,12 @@ class TestLocalInferenceUnaffected:
         """
         resp = requests.post(
             _url("/v1/chat/completions"),
-            headers={**auth_headers, "Content-Type": "application/json"},
-            json={
+            headers = {**auth_headers, "Content-Type": "application/json"},
+            json = {
                 "messages": [{"role": "user", "content": "Hello"}],
                 "stream": False,
             },
-            timeout=15,
+            timeout = 15,
         )
         allowed = {200, 400, 503}
         assert resp.status_code in allowed, (
