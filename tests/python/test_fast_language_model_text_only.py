@@ -158,8 +158,7 @@ def test_fast_model_text_only_does_not_override_explicit_auto_model():
     def _is_guarded_bool(value):
         names = _names_in(value)
         has_none_check = any(
-            isinstance(n, ast.Compare)
-            and any(isinstance(op, (ast.Is, ast.IsNot)) for op in n.ops)
+            isinstance(n, ast.Compare) and any(isinstance(op, (ast.Is, ast.IsNot)) for op in n.ops)
             for n in ast.walk(value)
         )
         return "text_only" in names and "auto_model" in names and has_none_check
@@ -336,9 +335,7 @@ def test_text_only_key_mapping_targets_published_prefixes():
     # transformers >=5 (on 4.x base_model_prefix handles it and a mapping hurts).
     transformers = pytest.importorskip("transformers")
     get_key_mapping = _load_util_func("_get_text_only_key_mapping")
-    mapping = get_key_mapping(
-        transformers.Gemma3Config(), transformers.Gemma3TextConfig()
-    )
+    mapping = get_key_mapping(transformers.Gemma3Config(), transformers.Gemma3TextConfig())
     if int(transformers.__version__.split(".")[0]) < 5:
         assert mapping is None
     else:

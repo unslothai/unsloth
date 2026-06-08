@@ -479,9 +479,7 @@ def resolve_model_class(auto_model, config):
 def _is_family_text_decoder(parent_model_type, text_model_type):
     # True only for the family's own text variant (gemma3 -> gemma3_text); a generic
     # reused decoder (llava -> llama) would load random weights, so keep the full model.
-    return bool(parent_model_type) and str(text_model_type).startswith(
-        parent_model_type
-    )
+    return bool(parent_model_type) and str(text_model_type).startswith(parent_model_type)
 
 
 def _get_text_only_config(model_config, model_name):
@@ -507,9 +505,7 @@ def _remap_text_only_skip_modules(qc):
     # model.*) after text-only stripping, and drop vision/audio entries. See PR #5816.
     is_dict = isinstance(qc, dict)
     skip = (
-        qc.get("llm_int8_skip_modules")
-        if is_dict
-        else getattr(qc, "llm_int8_skip_modules", None)
+        qc.get("llm_int8_skip_modules") if is_dict else getattr(qc, "llm_int8_skip_modules", None)
     )
     if not skip:
         return qc

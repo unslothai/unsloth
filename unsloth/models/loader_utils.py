@@ -269,7 +269,10 @@ def get_model_name(
 
 
 def _offline_quantize_to_fp8(
-    model_name: str, fp8_mode: str, *, text_only: bool = False
+    model_name: str,
+    fp8_mode: str,
+    *,
+    text_only: bool = False,
 ) -> str:
     """
     Quantizes the model to fp8 using torchao and saving the quantized model to a
@@ -322,18 +325,14 @@ def _offline_quantize_to_fp8(
     if text_config is not None:
         cache_name += "-text-only"
     new_model_name = os.path.join(temp_dir, cache_name)
-    print(
-        f"Unsloth: Quantizing '{model_name}' to fp8, using model_name='{new_model_name}' instead"
-    )
+    print(f"Unsloth: Quantizing '{model_name}' to fp8, using model_name='{new_model_name}' instead")
 
     if not os.path.isdir(new_model_name):
         from ._utils import _apply_text_only_key_mapping
 
         qconfig = _get_torchao_fp8_config(fp8_mode)
         qconfig = TorchAoConfig(qconfig)
-        load_kwargs = dict(
-            torch_dtype = "auto", device_map = "auto", quantization_config = qconfig
-        )
+        load_kwargs = dict(torch_dtype = "auto", device_map = "auto", quantization_config = qconfig)
         if text_config is not None:
             _apply_text_only_key_mapping(load_kwargs, config, text_config)
             config = text_config
