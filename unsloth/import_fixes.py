@@ -2192,3 +2192,94 @@ def disable_broken_causal_conv1d():
         "Unsloth: Detected broken causal_conv1d binary; "
         "disabling causal_conv1d fast path and continuing import."
     )
+
+
+def patch_accelerate_recursively_apply():
+    """
+    Patch accelerate.utils.operations.recursively_apply to avoid raising
+    TypeError when encountering Unsloth's EmptyLogits class.
+    Also patches recursively_apply in accelerate.utils and accelerate.accelerator.
+    And patches find_device in accelerate.utils.operations and accelerate.utils
+    to return PartialState().device when finding no device, avoiding AttributeError.
+    """
+    try:
+        import accelerate.utils.operations as acc_ops
+    except Exception:
+        acc_ops = None
+
+    try:
+        import accelerate.utils as acc_utils
+    except Exception:
+        acc_utils = None
+
+    try:
+        import accelerate.accelerator as acc_accel
+    except Exception:
+        acc_accel = None
+
+    # Resolve original recursively_apply
+    original_recursively_apply = None
+    if acc_ops is not None and hasattr(acc_ops, "recursively_apply"):
+        original_recursively_apply = acc_ops.recursively_apply
+    elif acc_utils is not None and hasattr(acc_utils, "recursively_apply"):
+        original_recursively_apply = acc_utils.recursively_apply
+    elif acc_accel is not None and hasattr(acc_accel, "recursively_apply"):
+        original_recursively_apply = acc_accel.recursively_apply
+
+    if original_recursively_apply is not None:
+        @functools.wraps(original_recursively_apply)
+        def _patched_recursively_apply(func, data, *args, **kwargs):
+            if type(data).__name__ == "EmptyLogits":
+                cls = type(data)
+                if not hasattr(cls, "__eq__") or cls.__eq__ == object.__eq__:
+                    cls.__eq__ = lambda self, other: type(other).__name__ == "EmptyLogits"
+                return data
+            return original_recursively_apply(func, data, *args, **kwargs)
+
+        if acc_ops is not None and hasattr(acc_ops, "recursively_apply"):
+            acc_ops.recursively_apply = _patched_recursively_apply
+        if acc_utils is not None and hasattr(acc_utils, "recursively_apply"):
+            acc_utils.recursively_apply = _patched_recursively_apply
+        if acc_accel is not None and hasattr(acc_accel, "recursively_apply"):
+            acc_accel.recursively_apply = _patched_recursively_apply
+
+        for mod_name, mod in tuple(sys.modules.items()):
+            if mod_name.startswith("accelerate") and mod is not None:
+                if hasattr(mod, "recursively_apply") and getattr(mod, "recursively_apply") is original_recursively_apply:
+                    try:
+                        setattr(mod, "recursively_apply", _patched_recursively_apply)
+                    except Exception:
+                        pass
+
+    # Resolve and patch find_device
+    original_find_device = None
+    if acc_ops is not None and hasattr(acc_ops, "find_device"):
+        original_find_device = acc_ops.find_device
+    elif acc_utils is not None and hasattr(acc_utils, "find_device"):
+        original_find_device = acc_utils.find_device
+
+    if original_find_device is not None:
+        @functools.wraps(original_find_device)
+        def _patched_find_device(data, *args, **kwargs):
+            dev = original_find_device(data, *args, **kwargs)
+            if dev is None:
+                try:
+                    from accelerate.state import PartialState
+                    return PartialState().device
+                except Exception:
+                    pass
+            return dev
+
+        if acc_ops is not None and hasattr(acc_ops, "find_device"):
+            acc_ops.find_device = _patched_find_device
+        if acc_utils is not None and hasattr(acc_utils, "find_device"):
+            acc_utils.find_device = _patched_find_device
+
+        for mod_name, mod in tuple(sys.modules.items()):
+            if mod_name.startswith("accelerate") and mod is not None:
+                if hasattr(mod, "find_device") and getattr(mod, "find_device") is original_find_device:
+                    try:
+                        setattr(mod, "find_device", _patched_find_device)
+                    except Exception:
+                        pass
+
