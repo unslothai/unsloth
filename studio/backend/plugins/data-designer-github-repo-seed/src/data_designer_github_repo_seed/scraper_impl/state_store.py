@@ -25,7 +25,11 @@ class StateStore:
             except Exception:
                 self._data = {}
 
-    def get(self, key: str, default: Any = None) -> Any:
+    def get(
+        self,
+        key: str,
+        default: Any = None,
+    ) -> Any:
         with self._lock:
             return self._data.get(key, default)
 

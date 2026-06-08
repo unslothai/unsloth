@@ -25,14 +25,12 @@ import pytest
 # --- Conditional framework imports ---
 try:
     import torch
-
     HAS_TORCH = True
 except ImportError:
     HAS_TORCH = False
 
 try:
     import mlx.core as mx
-
     HAS_MLX = True
 except ImportError:
     HAS_MLX = False
@@ -195,15 +193,12 @@ class TestGetGpuMemoryInfo:
         # AMD hosts (IS_ROCM=True) for the UI label. On CUDA/XPU/MLX/CPU
         # hosts it equals `get_device().value`.
         from utils.hardware.hardware import _backend_label
-
         result = get_gpu_memory_info()
         assert result["backend"] == _backend_label(get_device())
 
     # --- When a GPU IS available ---
 
-    @pytest.mark.skipif(
-        _actual_device() == "cpu", reason = "No GPU available on this machine"
-    )
+    @pytest.mark.skipif(_actual_device() == "cpu", reason = "No GPU available on this machine")
     def test_gpu_available_fields(self):
         result = get_gpu_memory_info()
         assert result["available"] is True
@@ -301,9 +296,7 @@ class TestLogGpuMemory:
             "free_gb": 14.0,
         }
 
-        with patch(
-            "utils.hardware.hardware.get_gpu_memory_info", return_value = fake_info
-        ):
+        with patch("utils.hardware.hardware.get_gpu_memory_info", return_value = fake_info):
             log_gpu_memory("unit-test")
 
         captured = capfd.readouterr()
@@ -314,9 +307,7 @@ class TestLogGpuMemory:
     def test_logs_cpu_fallback_when_no_gpu(self, capfd):
         fake_info = {"available": False, "backend": "cpu"}
 
-        with patch(
-            "utils.hardware.hardware.get_gpu_memory_info", return_value = fake_info
-        ):
+        with patch("utils.hardware.hardware.get_gpu_memory_info", return_value = fake_info):
             log_gpu_memory("cpu-test")
 
         captured = capfd.readouterr()

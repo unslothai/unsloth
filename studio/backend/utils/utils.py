@@ -22,9 +22,7 @@ logger = get_logger(__name__)
 # log the full exception server-side and return a generic message.
 
 
-def safe_error_detail(
-    error: Exception, fallback: str = "An internal error occurred"
-) -> str:
+def safe_error_detail(error: Exception, fallback: str = "An internal error occurred") -> str:
     """Map a caught exception to a generic, client-safe message.
 
     Never includes raw ``str(error)`` (which can leak internal paths or stack
@@ -44,9 +42,7 @@ def safe_error_detail(
     return fallback
 
 
-def safe_curated_detail(
-    error: Exception, fallback: str = "An internal error occurred"
-) -> str:
+def safe_curated_detail(error: Exception, fallback: str = "An internal error occurred") -> str:
     """Client-safe text for curated domain/validation exceptions meant for the user.
 
     Keeps the message (paths stripped) instead of a generic fallback; use for known

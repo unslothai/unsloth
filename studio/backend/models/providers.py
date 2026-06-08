@@ -14,9 +14,7 @@ from pydantic import BaseModel, Field
 class ProviderRegistryEntry(BaseModel):
     """A supported provider type with its default configuration."""
 
-    provider_type: str = Field(
-        ..., description = "Provider identifier (e.g. 'openai', 'mistral')"
-    )
+    provider_type: str = Field(..., description = "Provider identifier (e.g. 'openai', 'mistral')")
     display_name: str = Field(..., description = "Human-readable provider name")
     base_url: str = Field(..., description = "Default API base URL")
     default_models: list[str] = Field(
@@ -44,9 +42,7 @@ class ProviderCreate(BaseModel):
     """Request to create a saved provider configuration."""
 
     provider_type: str = Field(..., description = "Provider type from the registry")
-    display_name: str = Field(
-        ..., description = "User-chosen label (e.g. 'My OpenAI Key')"
-    )
+    display_name: str = Field(..., description = "User-chosen label (e.g. 'My OpenAI Key')")
     base_url: Optional[str] = Field(
         None,
         description = "Custom base URL (overrides registry default). Omit to use the default.",
@@ -58,9 +54,7 @@ class ProviderUpdate(BaseModel):
 
     display_name: Optional[str] = Field(None, description = "New display name")
     base_url: Optional[str] = Field(None, description = "New base URL")
-    is_enabled: Optional[bool] = Field(
-        None, description = "Enable or disable this provider"
-    )
+    is_enabled: Optional[bool] = Field(None, description = "Enable or disable this provider")
 
 
 class ProviderResponse(BaseModel):
@@ -83,9 +77,7 @@ class ProviderModelInfo(BaseModel):
 
     id: str = Field(..., description = "Model ID as expected by the provider API")
     display_name: str = Field("", description = "Human-readable model name")
-    context_length: Optional[int] = Field(
-        None, description = "Maximum context length in tokens"
-    )
+    context_length: Optional[int] = Field(None, description = "Maximum context length in tokens")
     owned_by: Optional[str] = Field(None, description = "Model owner/organization")
 
 

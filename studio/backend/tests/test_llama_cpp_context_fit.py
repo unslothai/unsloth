@@ -141,7 +141,11 @@ def _drive(
     model_size = int(model_gib * GIB)
     cache_type_kv = None
 
-    def fake_estimate(n_ctx_, _type = None, **_kwargs):
+    def fake_estimate(
+        n_ctx_,
+        _type = None,
+        **_kwargs,
+    ):
         return 0 if n_ctx_ <= 0 else n_ctx_ * kv_per_token_bytes
 
     inst._estimate_kv_cache_bytes = fake_estimate
@@ -230,9 +234,7 @@ def _drive(
     elif gpus:
         gpu_indices, use_fit = inst._select_gpus(model_size, gpus)
         if use_fit and not explicit_ctx:
-            effective_ctx = (
-                min(FALLBACK_CTX, effective_ctx) if effective_ctx > 0 else FALLBACK_CTX
-            )
+            effective_ctx = min(FALLBACK_CTX, effective_ctx) if effective_ctx > 0 else FALLBACK_CTX
 
     return {
         "c_arg": effective_ctx if effective_ctx > 0 else 0,

@@ -130,7 +130,6 @@ def test_symlinked_output_dir_skipped(outputs_setup):
 
 def test_missing_output_dir_is_noop(outputs_setup):
     from core.training.training import _cleanup_cancelled_checkpoints
-
     _cleanup_cancelled_checkpoints(outputs_setup / "does-not-exist")
     # Should not raise; nothing to assert beyond non-failure.
 

@@ -61,9 +61,7 @@ def _is_openai_family_cloud(base_url: Optional[str]) -> bool:
     return host == "api.openai.com" or host.endswith(".openai.azure.com")
 
 
-_ANTHROPIC_4_7_SAMPLING_REMOVED = re.compile(
-    r"^claude-(?:opus|sonnet|haiku)-4-7(?:[-.]|$)"
-)
+_ANTHROPIC_4_7_SAMPLING_REMOVED = re.compile(r"^claude-(?:opus|sonnet|haiku)-4-7(?:[-.]|$)")
 _OPENAI_REASONING_SUMMARY_UNSUPPORTED = re.compile(r"^o3(?:[-.]|$)")
 _OPENAI_REASONING_STATUSES = {"in_progress", "completed", "incomplete"}
 
@@ -73,9 +71,7 @@ def _openai_image_replay_requires_reasoning(model: str) -> bool:
     return normalized.startswith("gpt-5") or normalized.startswith("o")
 
 
-def _sanitize_openai_reasoning_replay_item(
-    item: Any,
-) -> Optional[dict[str, Any]]:
+def _sanitize_openai_reasoning_replay_item(item: Any) -> Optional[dict[str, Any]]:
     """Return a Responses input-safe reasoning item, if ``item`` is one.
 
     OpenAI image-generation docs allow follow-up edits via the previous
@@ -124,9 +120,7 @@ _OPENAI_CITATION_MARKER = re.compile(
 )
 
 
-def _build_citation_lookup(
-    url_citations: list[dict[str, Any]],
-) -> dict[str, tuple[int, str]]:
+def _build_citation_lookup(url_citations: list[dict[str, Any]]) -> dict[str, tuple[int, str]]:
     """Map every known ``source_id`` alias to ``(citation_index, url)``.
 
     Accepts singular ``source_id`` and plural ``source_ids``. First-seen
@@ -149,10 +143,7 @@ def _build_citation_lookup(
     return by_source
 
 
-def _replace_openai_citation_markers(
-    text: str,
-    url_citations: list[dict[str, Any]],
-) -> str:
+def _replace_openai_citation_markers(text: str, url_citations: list[dict[str, Any]]) -> str:
     """Rewrite `\\ue200cite\\ue202SOURCE_ID[\\ue202LOCATOR]\\ue201` markers into
     `[[N]](URL)` per resolvable id. Multi-source markers expand to one link
     per id; unresolved tokens drop. Idempotent on text without private-use
@@ -181,8 +172,7 @@ def _replace_openai_citation_markers(
 
 
 def _rewrite_citation_markers_partial(
-    text: str,
-    url_citations: list[dict[str, Any]],
+    text: str, url_citations: list[dict[str, Any]]
 ) -> tuple[str, bool]:
     """Like ``_replace_openai_citation_markers`` but also reports whether
     any marker referenced a source_id not yet in ``url_citations``.
@@ -361,9 +351,7 @@ def _anthropic_supports_compaction(model: str) -> bool:
 def _anthropic_supports_fast_mode(model: str) -> bool:
     # Require a family boundary ("" or "-") after the prefix so IDs like
     # "claude-opus-4-70" / "claude-opus-4-7b" don't match.
-    return any(
-        model == p or model.startswith(f"{p}-") for p in _ANTHROPIC_FAST_MODE_PREFIXES
-    )
+    return any(model == p or model.startswith(f"{p}-") for p in _ANTHROPIC_FAST_MODE_PREFIXES)
 
 
 # Cap on ``cited_text`` forwarded in document_citations tool_events; bounds
@@ -625,9 +613,7 @@ def _safe_fetch_image_for_gemini_sync(
             if rp_info is None:
                 return None
             _rp, current_host, current_port = rp_info
-            ok2, reason2, pinned_ip = _validate_and_resolve_host(
-                current_host, current_port
-            )
+            ok2, reason2, pinned_ip = _validate_and_resolve_host(current_host, current_port)
             if not ok2:
                 logger.warning(
                     "Gemini image fetch: refusing redirect host=%s reason=%s",
@@ -647,13 +633,9 @@ def _safe_fetch_image_for_gemini_sync(
         with resp:
             status = getattr(resp, "status", None) or resp.getcode()
             if status != 200:
-                logger.info(
-                    "Gemini image fetch: status=%s host=%s", status, current_host
-                )
+                logger.info("Gemini image fetch: status=%s host=%s", status, current_host)
                 return None
-            _hdr_mime = (
-                (resp.headers.get("content-type") or "").split(";")[0].strip().lower()
-            )
+            _hdr_mime = (resp.headers.get("content-type") or "").split(";")[0].strip().lower()
             # Declared non-image MIME is refused; missing MIME uses the caller's.
             if _hdr_mime and not _hdr_mime.startswith("image/"):
                 logger.info(
@@ -663,9 +645,7 @@ def _safe_fetch_image_for_gemini_sync(
                 )
                 return None
             _final_mime_pre = _hdr_mime if _hdr_mime else fallback_mime
-            if not isinstance(_final_mime_pre, str) or not _final_mime_pre.startswith(
-                "image/"
-            ):
+            if not isinstance(_final_mime_pre, str) or not _final_mime_pre.startswith("image/"):
                 logger.info(
                     "Gemini image fetch: missing content-type and no image fallback host=%s",
                     current_host,
@@ -707,10 +687,7 @@ async def _safe_fetch_image_for_gemini(
     remaining per-request budget so over-budget URLs are rejected up front.
     """
     import asyncio
-
-    return await asyncio.to_thread(
-        _safe_fetch_image_for_gemini_sync, url, fallback_mime, max_bytes
-    )
+    return await asyncio.to_thread(_safe_fetch_image_for_gemini_sync, url, fallback_mime, max_bytes)
 
 
 # Synthetic-tool names stamped onto outbound _toolEvent.arguments so the
@@ -744,9 +721,7 @@ def _stamp_server_tool_marker(payload: dict[str, Any]) -> None:
 
 
 def _build_kimi_tool_end(
-    synthetic_chunk_fn: Any,
-    tool_call_id: str,
-    citations: list[dict[str, str]],
+    synthetic_chunk_fn: Any, tool_call_id: str, citations: list[dict[str, str]]
 ) -> str:
     """Format Kimi web_search citations into the tool_end payload.
 
@@ -789,10 +764,10 @@ class ExternalProviderClient:
         if self.provider_type == "gemini":
             _parsed_base = urlparse(self.base_url)
             if (
-                (_parsed_base.hostname or "").lower()
-                == "generativelanguage.googleapis.com"
-                and _parsed_base.path.rstrip("/") == "/v1beta/openai"
-            ):
+                _parsed_base.hostname or ""
+            ).lower() == "generativelanguage.googleapis.com" and _parsed_base.path.rstrip(
+                "/"
+            ) == "/v1beta/openai":
                 self.base_url = self.base_url[: -len("/openai")]
         self.api_key = api_key
         self._timeout = httpx.Timeout(timeout, connect = 10.0)
@@ -1009,9 +984,7 @@ class ExternalProviderClient:
             else:
                 body["thinking"] = {"type": "disabled"}
         elif self.provider_type == "mistral":
-            _apply_mistral_reasoning_controls(
-                body, model, enable_thinking, reasoning_effort
-            )
+            _apply_mistral_reasoning_controls(body, model, enable_thinking, reasoning_effort)
         elif self.provider_type == "vllm" and enable_thinking is not None:
             # vLLM gates thinking via chat_template_kwargs.enable_thinking.
             tpl_kw = body.get("chat_template_kwargs")
@@ -1052,9 +1025,7 @@ class ExternalProviderClient:
                 and "web_search" in enabled_tools
             ):
                 plugins = list(body.get("plugins") or [])
-                if not any(
-                    isinstance(p, dict) and p.get("id") == "web" for p in plugins
-                ):
+                if not any(isinstance(p, dict) and p.get("id") == "web" for p in plugins):
                     plugins.append({"id": "web"})
                 body["plugins"] = plugins
                 logger.info(
@@ -1101,9 +1072,7 @@ class ExternalProviderClient:
                         response.status_code,
                         error_text[:500],
                     )
-                    yield _error_sse_line(
-                        response.status_code, error_text, self.provider_type
-                    )
+                    yield _error_sse_line(response.status_code, error_text, self.provider_type)
                     return
 
                 # Manual __anext__ (not `async for`) so we can close the
@@ -1182,11 +1151,7 @@ class ExternalProviderClient:
                         {
                             "type": "tool_end",
                             "tool_call_id": web_search_tool_id,
-                            "result": (
-                                "\n---\n".join(blocks)
-                                if blocks
-                                else "(search complete)"
-                            ),
+                            "result": ("\n---\n".join(blocks) if blocks else "(search complete)"),
                         }
                     )
 
@@ -1234,18 +1199,14 @@ class ExternalProviderClient:
                                     # in particular returns 200 then surfaces the
                                     # failure as an SSE error event.
                                     if "error" in parsed:
-                                        event_counts["error"] = (
-                                            event_counts.get("error", 0) + 1
-                                        )
+                                        event_counts["error"] = event_counts.get("error", 0) + 1
                                         logger.warning(
                                             "%s SSE error event: %s",
                                             self.provider_type,
                                             parsed.get("error"),
                                         )
                                     else:
-                                        event_counts["delta"] = (
-                                            event_counts.get("delta", 0) + 1
-                                        )
+                                        event_counts["delta"] = event_counts.get("delta", 0) + 1
                                     # OpenRouter (and most OAI-compat providers)
                                     # report the handling model in every chunk's
                                     # `model` field. Latch the first non-empty
@@ -1271,20 +1232,13 @@ class ExternalProviderClient:
                                                 ):
                                                     if not isinstance(envelope, dict):
                                                         continue
-                                                    for ann in (
-                                                        envelope.get("annotations")
-                                                        or []
-                                                    ):
+                                                    for ann in envelope.get("annotations") or []:
                                                         _record_or_url_citation(ann)
                         yield line
                     # Stream ended without [DONE] (some upstreams just close
                     # the connection). Emit tool_end so the card doesn't stay
                     # in "running" forever.
-                    if (
-                        web_search_active
-                        and web_search_tool_started
-                        and not web_search_tool_ended
-                    ):
+                    if web_search_active and web_search_tool_started and not web_search_tool_ended:
                         yield _build_web_search_tool_end()
                         web_search_tool_ended = True
                 except GeneratorExit:
@@ -1328,10 +1282,7 @@ class ExternalProviderClient:
             )
 
     async def _stream_kimi_web_search(
-        self,
-        messages: list[dict[str, Any]],
-        model: str,
-        max_tokens: Optional[int],
+        self, messages: list[dict[str, Any]], model: str, max_tokens: Optional[int]
     ) -> AsyncGenerator[str, None]:
         """
         Kimi $web_search round-trip.
@@ -1364,9 +1315,7 @@ class ExternalProviderClient:
             # $web_search forbids thinking; sending the toggle would make the
             # server reject the request with 400.
             "thinking": {"type": "disabled"},
-            "tools": [
-                {"type": "builtin_function", "function": {"name": "$web_search"}}
-            ],
+            "tools": [{"type": "builtin_function", "function": {"name": "$web_search"}}],
         }
         if max_tokens is not None:
             body["max_tokens"] = max_tokens
@@ -1416,9 +1365,7 @@ class ExternalProviderClient:
                         response.status_code,
                         error_text[:500],
                     )
-                    yield _error_sse_line(
-                        response.status_code, error_text, self.provider_type
-                    )
+                    yield _error_sse_line(response.status_code, error_text, self.provider_type)
                     return
 
                 lines_gen = response.aiter_lines().__aiter__()
@@ -1482,14 +1429,11 @@ class ExternalProviderClient:
         # call without the builtin tool. Mirrors the UX of every other
         # provider when web_search is on but the model didn't need it.
         search_calls = [
-            tc
-            for tc in tool_calls_acc.values()
-            if tc["function"]["name"] == "$web_search"
+            tc for tc in tool_calls_acc.values() if tc["function"]["name"] == "$web_search"
         ]
         if not search_calls:
             logger.info(
-                "Kimi $web_search: model did not invoke search; "
-                "falling back to plain stream"
+                "Kimi $web_search: model did not invoke search; falling back to plain stream"
             )
             fallback_body = dict(body)
             fallback_body.pop("tools", None)
@@ -1509,9 +1453,7 @@ class ExternalProviderClient:
                             response.status_code,
                             error_text[:500],
                         )
-                        yield _error_sse_line(
-                            response.status_code, error_text, self.provider_type
-                        )
+                        yield _error_sse_line(response.status_code, error_text, self.provider_type)
                         return
                     # Manual __anext__ loop instead of `async for` — see the
                     # stream_chat_completion comment for the Python 3.13 +
@@ -1625,9 +1567,7 @@ class ExternalProviderClient:
                         response.status_code,
                         error_text[:500],
                     )
-                    yield _error_sse_line(
-                        response.status_code, error_text, self.provider_type
-                    )
+                    yield _error_sse_line(response.status_code, error_text, self.provider_type)
                     return
 
                 lines_gen = response.aiter_lines().__aiter__()
@@ -1670,9 +1610,7 @@ class ExternalProviderClient:
                                         ):
                                             if not isinstance(envelope, dict):
                                                 continue
-                                            for ann in (
-                                                envelope.get("annotations") or []
-                                            ):
+                                            for ann in envelope.get("annotations") or []:
                                                 if isinstance(ann, dict):
                                                     annotation_shapes.add(
                                                         str(ann.get("type") or "?")
@@ -1742,9 +1680,7 @@ class ExternalProviderClient:
                 system = (
                     content
                     if isinstance(content, str)
-                    else "\n".join(
-                        p["text"] for p in content if p.get("type") == "text"
-                    )
+                    else "\n".join(p["text"] for p in content if p.get("type") == "text")
                 )
                 continue
 
@@ -1806,18 +1742,13 @@ class ExternalProviderClient:
                         #   https://platform.claude.com/docs/en/build-with-claude/compaction
                         summary = part.get("content") or ""
                         if isinstance(summary, str) and summary:
-                            anthropic_parts.append(
-                                {"type": "compaction", "content": summary}
-                            )
+                            anthropic_parts.append({"type": "compaction", "content": summary})
                     elif part.get("type") == "image_url":
                         url = part.get("image_url", {}).get("url", "")
                         if url.startswith("data:"):
                             # data:image/png;base64,<DATA> -> split header and data
                             header, _, b64data = url.partition(",")
-                            media_type = (
-                                header.split(";")[0].replace("data:", "")
-                                or "image/jpeg"
-                            )
+                            media_type = header.split(";")[0].replace("data:", "") or "image/jpeg"
                             anthropic_parts.append(
                                 {
                                     "type": "image",
@@ -1899,9 +1830,7 @@ class ExternalProviderClient:
                 # the same message. The native Messages API doesn't accept
                 # OpenAI's top-level `tool_calls` field; the call lives inside a
                 # content block `{type:"tool_use", id, name, input}`.
-                if msg.get("role") == "assistant" and isinstance(
-                    msg.get("tool_calls"), list
-                ):
+                if msg.get("role") == "assistant" and isinstance(msg.get("tool_calls"), list):
                     for _tc in msg["tool_calls"]:
                         if not isinstance(_tc, dict):
                             continue
@@ -1910,9 +1839,7 @@ class ExternalProviderClient:
                             continue
                         _raw = _fn.get("arguments") or "{}"
                         try:
-                            _input = (
-                                _json.loads(_raw) if isinstance(_raw, str) else _raw
-                            )
+                            _input = _json.loads(_raw) if isinstance(_raw, str) else _raw
                         except Exception:
                             _input = {"_raw": _raw}
                         if not isinstance(_input, dict):
@@ -1978,9 +1905,7 @@ class ExternalProviderClient:
                             continue
                         _raw = _fn.get("arguments") or "{}"
                         try:
-                            _input = (
-                                _json.loads(_raw) if isinstance(_raw, str) else _raw
-                            )
+                            _input = _json.loads(_raw) if isinstance(_raw, str) else _raw
                         except Exception:
                             _input = {"_raw": _raw}
                         if not isinstance(_input, dict):
@@ -2074,18 +1999,14 @@ class ExternalProviderClient:
                 last_msg["content"] = head
         thinking_spec = _anthropic_thinking_spec(model)
         allowed_efforts = (
-            thinking_spec.efforts
-            if thinking_spec
-            else ("none", "low", "medium", "high")
+            thinking_spec.efforts if thinking_spec else ("none", "low", "medium", "high")
         )
         effort = reasoning_effort if reasoning_effort in allowed_efforts else None
         # Claude 4.6 Opus/Sonnet accept top-tier adaptive effort as "max" only;
         # "xhigh" is rejected (supported on Claude 4.7). Map our shared "xhigh"
         # to "max" for 4.6 outbound requests while still accepting both in
         # ``allowed_efforts`` for persisted / cross-provider UI state.
-        if effort == "xhigh" and model.startswith(
-            ("claude-opus-4-6", "claude-sonnet-4-6")
-        ):
+        if effort == "xhigh" and model.startswith(("claude-opus-4-6", "claude-sonnet-4-6")):
             effort = "max"
         if effort is None:
             if enable_thinking is False:
@@ -2146,17 +2067,12 @@ class ExternalProviderClient:
             and bool(tool_choice["function"].get("name"))
         )
         _anthropic_hosted_builtins_allowed = (
-            not _anthropic_tool_choice_disabled
-            and not _anthropic_tool_choice_forced_function
+            not _anthropic_tool_choice_disabled and not _anthropic_tool_choice_forced_function
         )
 
         # Anthropic web_search (date-pinned per model family).
         # https://platform.claude.com/docs/en/agents-and-tools/tool-use/web-search-tool
-        if (
-            _anthropic_hosted_builtins_allowed
-            and enabled_tools
-            and "web_search" in enabled_tools
-        ):
+        if _anthropic_hosted_builtins_allowed and enabled_tools and "web_search" in enabled_tools:
             anthropic_tools = list(body.get("tools") or [])
             anthropic_tools.append(
                 {
@@ -2170,9 +2086,7 @@ class ExternalProviderClient:
         # Anthropic web_fetch: only URLs already in conversation. Date-pinned.
         # https://platform.claude.com/docs/en/agents-and-tools/tool-use/web-fetch-tool
         web_fetch_enabled = bool(
-            _anthropic_hosted_builtins_allowed
-            and enabled_tools
-            and "web_fetch" in enabled_tools
+            _anthropic_hosted_builtins_allowed and enabled_tools and "web_fetch" in enabled_tools
         )
         if web_fetch_enabled:
             anthropic_tools = list(body.get("tools") or [])
@@ -2278,9 +2192,7 @@ class ExternalProviderClient:
         # Merge new beta flags onto whatever the registry contributed.
         existing_beta = request_headers.get("anthropic-beta", "").strip()
         beta_parts = (
-            [p.strip() for p in existing_beta.split(",") if p.strip()]
-            if existing_beta
-            else []
+            [p.strip() for p in existing_beta.split(",") if p.strip()] if existing_beta else []
         )
         if code_execution_enabled and _ANTHROPIC_CODE_EXECUTION_BETA not in beta_parts:
             beta_parts.append(_ANTHROPIC_CODE_EXECUTION_BETA)
@@ -2312,10 +2224,7 @@ class ExternalProviderClient:
                     # the id is expired / missing, emit container_invalidated so
                     # the chat adapter clears the stored id and the next turn
                     # falls back to auto-create.
-                    if (
-                        anthropic_code_exec_container_id
-                        and 400 <= response.status_code < 500
-                    ):
+                    if anthropic_code_exec_container_id and 400 <= response.status_code < 500:
                         lowered = error_text.lower()
                         if "container" in lowered and (
                             "expired" in lowered
@@ -2328,9 +2237,7 @@ class ExternalProviderClient:
                                 f"data: "
                                 f"{_json.dumps({'id': completion_id, 'object': 'chat.completion.chunk', 'choices': [{'index': 0, 'delta': {}, 'finish_reason': None}], '_toolEvent': {'type': 'container_invalidated'}})}"
                             )
-                    yield _error_sse_line(
-                        response.status_code, error_text, self.provider_type
-                    )
+                    yield _error_sse_line(response.status_code, error_text, self.provider_type)
                     return
 
                 # NOTE: same manual __anext__ loop as stream_chat_completion — see comment there.
@@ -2429,9 +2336,7 @@ class ExternalProviderClient:
                     }
                     return f"data: {_json.dumps(chunk)}"
 
-                def _format_web_search_results(
-                    results: list[Any],
-                ) -> str:
+                def _format_web_search_results(results: list[Any]) -> str:
                     blocks: list[str] = []
                     for r in results:
                         if not isinstance(r, dict):
@@ -2476,11 +2381,7 @@ class ExternalProviderClient:
                             # Inline a short text preview so the source pill
                             # carries usable context; skip for PDFs (body is
                             # base64-encoded).
-                            if (
-                                media_type.startswith("text/")
-                                and isinstance(data, str)
-                                and data
-                            ):
+                            if media_type.startswith("text/") and isinstance(data, str) and data:
                                 snippet = data[:240].strip()
                     # Frontend parseSourcesFromResult only emits a source pill
                     # when both `Title:` and `URL:` are present, so fall back to
@@ -2497,9 +2398,7 @@ class ExternalProviderClient:
                         parts.append(f"Snippet: {snippet}")
                     return "\n".join(parts) if parts else "(fetch complete)"
 
-                def _format_code_execution_result(
-                    inner: dict[str, Any],
-                ) -> str:
+                def _format_code_execution_result(inner: dict[str, Any]) -> str:
                     """Render an Anthropic code-execution result block as the
                     preformatted text payload the frontend's
                     CodeExecutionToolUI displays inside a <pre>. Handles bash,
@@ -2530,9 +2429,7 @@ class ExternalProviderClient:
                         if "lines" in inner and isinstance(inner.get("lines"), list):
                             return "\n".join(str(line) for line in inner["lines"])
                         if "is_file_update" in inner:
-                            return (
-                                "Updated" if inner.get("is_file_update") else "Created"
-                            )
+                            return "Updated" if inner.get("is_file_update") else "Created"
                         content_field = inner.get("content")
                         if isinstance(content_field, str):
                             return content_field
@@ -2581,10 +2478,7 @@ class ExternalProviderClient:
                             content_block = event.get("content_block") or {}
                             block_type = content_block.get("type")
                             block_name = content_block.get("name")
-                            if (
-                                block_type == "server_tool_use"
-                                and block_name == "web_search"
-                            ):
+                            if block_type == "server_tool_use" and block_name == "web_search":
                                 tool_use_id = content_block.get("id", "") or (
                                     f"ws_{len(web_search_calls)}"
                                 )
@@ -2605,14 +2499,9 @@ class ExternalProviderClient:
                                 content = content_block.get("content") or []
                                 current_result_block = {
                                     "tool_use_id": tool_use_id,
-                                    "results": list(content)
-                                    if isinstance(content, list)
-                                    else [],
+                                    "results": list(content) if isinstance(content, list) else [],
                                 }
-                            elif (
-                                block_type == "server_tool_use"
-                                and block_name == "web_fetch"
-                            ):
+                            elif block_type == "server_tool_use" and block_name == "web_fetch":
                                 tool_use_id = content_block.get("id", "") or (
                                     f"wf_{len(web_fetch_calls)}"
                                 )
@@ -2639,9 +2528,7 @@ class ExternalProviderClient:
                                     f"ce_{len(code_execution_calls)}"
                                 )
                                 kind = (
-                                    "bash"
-                                    if block_name == "bash_code_execution"
-                                    else "text_editor"
+                                    "bash" if block_name == "bash_code_execution" else "text_editor"
                                 )
                                 current_code_exec_use = {
                                     "id": tool_use_id,
@@ -2719,9 +2606,7 @@ class ExternalProviderClient:
                                 if isinstance(cit, dict):
                                     key = _anthropic_citation_key(cit)
                                     idx_for_marker: Optional[int] = None
-                                    for idx, existing in enumerate(
-                                        document_citations, start = 1
-                                    ):
+                                    for idx, existing in enumerate(document_citations, start = 1):
                                         if existing.get("_key") == key:
                                             idx_for_marker = idx
                                             break
@@ -2774,9 +2659,7 @@ class ExternalProviderClient:
                                         "type": "tool_start",
                                         "tool_name": "web_search",
                                         "tool_call_id": tool_use_id,
-                                        "arguments": (
-                                            {"query": query} if query else {}
-                                        ),
+                                        "arguments": ({"query": query} if query else {}),
                                     }
                                 )
                                 current_server_tool_use = None
@@ -2817,9 +2700,7 @@ class ExternalProviderClient:
                                 kind = current_code_exec_use["kind"]
                                 emit_args = {"kind": kind, **parsed_args}
                                 if tool_use_id in code_execution_calls:
-                                    code_execution_calls[tool_use_id]["arguments"] = (
-                                        emit_args
-                                    )
+                                    code_execution_calls[tool_use_id]["arguments"] = emit_args
                                 yield _emit_tool_event(
                                     {
                                         "type": "tool_start",
@@ -2857,17 +2738,13 @@ class ExternalProviderClient:
                                     file_blocks = inner.get("content")
                                     if isinstance(file_blocks, list):
                                         for entry in file_blocks:
-                                            if isinstance(entry, dict) and entry.get(
-                                                "file_id"
-                                            ):
+                                            if isinstance(entry, dict) and entry.get("file_id"):
                                                 code_execution_generated_files += 1
                                 result_text = _format_code_execution_result(
                                     inner if isinstance(inner, dict) else {}
                                 )
                                 if tool_use_id in code_execution_calls:
-                                    code_execution_calls[tool_use_id]["result"] = (
-                                        result_text
-                                    )
+                                    code_execution_calls[tool_use_id]["result"] = result_text
                                 yield _emit_tool_event(
                                     {
                                         "type": "tool_end",
@@ -2952,10 +2829,7 @@ class ExternalProviderClient:
                                     c_in = 0
                                     c_out = 0
                                     for it in iterations:
-                                        if (
-                                            isinstance(it, dict)
-                                            and it.get("type") == "compaction"
-                                        ):
+                                        if isinstance(it, dict) and it.get("type") == "compaction":
                                             c_in += int(it.get("input_tokens") or 0)
                                             c_out += int(it.get("output_tokens") or 0)
                                     if c_in or c_out:
@@ -2971,18 +2845,14 @@ class ExternalProviderClient:
                             # every turn.
                             delta_obj = event.get("delta") or {}
                             container_obj = delta_obj.get("container")
-                            if (
-                                isinstance(container_obj, dict)
-                                and latched_container_id is None
-                            ):
+                            if isinstance(container_obj, dict) and latched_container_id is None:
                                 probe = container_obj.get("id")
                                 if isinstance(probe, str) and probe:
                                     latched_container_id = probe
                             if (
                                 latched_container_id
                                 and not container_id_emitted
-                                and latched_container_id
-                                != anthropic_code_exec_container_id
+                                and latched_container_id != anthropic_code_exec_container_id
                             ):
                                 yield _emit_tool_event(
                                     {
@@ -3021,9 +2891,7 @@ class ExternalProviderClient:
                                         "or remove the previous turn and try "
                                         "again._"
                                     )
-                                    yield _emit_tool_event(
-                                        {"type": "anthropic_refusal"}
-                                    )
+                                    yield _emit_tool_event({"type": "anthropic_refusal"})
                                 if mapped is not None:
                                     chunk = {
                                         "id": completion_id,
@@ -3051,13 +2919,8 @@ class ExternalProviderClient:
                                 for c in document_citations:
                                     entry = {k: v for k, v in c.items() if k != "_key"}
                                     cited = entry.get("cited_text")
-                                    if (
-                                        isinstance(cited, str)
-                                        and len(cited) > _CITED_TEXT_MAX_LEN
-                                    ):
-                                        entry["cited_text"] = (
-                                            cited[:_CITED_TEXT_MAX_LEN] + "…"
-                                        )
+                                    if isinstance(cited, str) and len(cited) > _CITED_TEXT_MAX_LEN:
+                                        entry["cited_text"] = cited[:_CITED_TEXT_MAX_LEN] + "…"
                                     clean_cits.append(entry)
                                 yield _emit_tool_event(
                                     {
@@ -3076,9 +2939,7 @@ class ExternalProviderClient:
                             if usage_line:
                                 yield usage_line
                             yield "data: [DONE]"
-                            await (
-                                response.aclose()
-                            )  # set PoolByteStream._closed=True FIRST
+                            await response.aclose()  # set PoolByteStream._closed=True FIRST
                             break
                 except GeneratorExit:
                     await response.aclose()  # set PoolByteStream._closed=True FIRST
@@ -3088,18 +2949,12 @@ class ExternalProviderClient:
                     # Surface per-event-type counts + web_search summary so
                     # reports of "no reasoning panel content" / "Search didn't
                     # do anything" can be triaged at a glance.
-                    web_search_requested = bool(
-                        enabled_tools and "web_search" in enabled_tools
-                    )
+                    web_search_requested = bool(enabled_tools and "web_search" in enabled_tools)
                     web_search_invocations = len(web_search_calls)
                     total_results = sum(
                         len(sc.get("results") or []) for sc in web_search_calls.values()
                     )
-                    queries = [
-                        sc["query"]
-                        for sc in web_search_calls.values()
-                        if sc.get("query")
-                    ]
+                    queries = [sc["query"] for sc in web_search_calls.values() if sc.get("query")]
                     # cache_read_input_tokens > 0 on turn N proves the
                     # cache_control marker on the system block is working —
                     # turn 1 shows cache_creation > 0 instead. cache_creation
@@ -3107,15 +2962,11 @@ class ExternalProviderClient:
                     # at a discount.
                     code_execution_invocations = len(code_execution_calls)
                     code_execution_results = sum(
-                        1
-                        for c in code_execution_calls.values()
-                        if c.get("result") is not None
+                        1 for c in code_execution_calls.values() if c.get("result") is not None
                     )
                     web_fetch_requested = web_fetch_enabled
                     web_fetch_invocations = len(web_fetch_calls)
-                    web_fetch_urls = [
-                        wf["url"] for wf in web_fetch_calls.values() if wf.get("url")
-                    ]
+                    web_fetch_urls = [wf["url"] for wf in web_fetch_calls.values() if wf.get("url")]
                     logger.info(
                         "Anthropic stream complete (model=%s, "
                         "web_search_requested=%s, web_search_invocations=%s, "
@@ -3306,10 +3157,7 @@ class ExternalProviderClient:
                         if url.startswith("data:"):
                             header, _, b64data = url.partition(",")
                             media_type = (
-                                header.split(";")[0]
-                                .replace("data:", "")
-                                .strip()
-                                .lower()
+                                header.split(";")[0].replace("data:", "").strip().lower()
                                 or "image/jpeg"
                             )
                             # Symmetry with the fetched remote image path, which
@@ -3326,10 +3174,7 @@ class ExternalProviderClient:
                                 # data: URLs share the same caps as fetched
                                 # URLs so inline payloads don't bypass them.
                                 _data_approx_bytes = (len(b64data) * 3) // 4
-                                if (
-                                    _remote_image_count
-                                    >= _GEMINI_REMOTE_IMAGE_MAX_COUNT
-                                ):
+                                if _remote_image_count >= _GEMINI_REMOTE_IMAGE_MAX_COUNT:
                                     logger.info(
                                         "Gemini inlineData: per-request count cap %d reached, dropping image",
                                         _GEMINI_REMOTE_IMAGE_MAX_COUNT,
@@ -3383,8 +3228,7 @@ class ExternalProviderClient:
                             _guessed, _ = mimetypes.guess_type(_img_path)
                             _media_type = (
                                 _guessed
-                                if isinstance(_guessed, str)
-                                and _guessed.startswith("image/")
+                                if isinstance(_guessed, str) and _guessed.startswith("image/")
                                 else "image/jpeg"
                             )
                             if _is_youtube:
@@ -3417,8 +3261,7 @@ class ExternalProviderClient:
                                 # budget is spent; pass the remainder so
                                 # over-budget URLs reject on Content-Length.
                                 _remaining_bytes = (
-                                    _GEMINI_REMOTE_IMAGE_MAX_TOTAL_BYTES
-                                    - _remote_image_total_bytes
+                                    _GEMINI_REMOTE_IMAGE_MAX_TOTAL_BYTES - _remote_image_total_bytes
                                 )
                                 if _remaining_bytes <= 0:
                                     logger.info(
@@ -3463,9 +3306,7 @@ class ExternalProviderClient:
                 if isinstance(_msg_extra, dict):
                     _msg_g = _msg_extra.get("google") or {}
                     if isinstance(_msg_g, dict):
-                        _msg_sig = _msg_g.get("thought_signature") or _msg_g.get(
-                            "thoughtSignature"
-                        )
+                        _msg_sig = _msg_g.get("thought_signature") or _msg_g.get("thoughtSignature")
                         if isinstance(_msg_sig, str) and _msg_sig:
                             for _idx in range(len(parts) - 1, -1, -1):
                                 if "text" in parts[_idx]:
@@ -3536,9 +3377,7 @@ class ExternalProviderClient:
                         and isinstance(args, dict)
                         and (
                             args.get("_server_tool") is True
-                            or isinstance(
-                                (args.get("google") or {}).get("native_part"), dict
-                            )
+                            or isinstance((args.get("google") or {}).get("native_part"), dict)
                         )
                     )
                     if _is_synthetic_server_builtin and not (
@@ -3578,9 +3417,9 @@ class ExternalProviderClient:
                         # thoughtSignature only when one subpart exists; for
                         # code+result, prefer executableCode and drop the
                         # signature elsewhere.
-                        _legacy_sig = _native_part.get(
-                            "thoughtSignature"
-                        ) or _native_part.get("thought_signature")
+                        _legacy_sig = _native_part.get("thoughtSignature") or _native_part.get(
+                            "thought_signature"
+                        )
                         _legacy_subparts = [
                             _k
                             for _k in (
@@ -3722,9 +3561,7 @@ class ExternalProviderClient:
 
         body: dict[str, Any] = {"contents": contents}
         if system_text_parts:
-            body["systemInstruction"] = {
-                "parts": [{"text": "\n\n".join(system_text_parts)}]
-            }
+            body["systemInstruction"] = {"parts": [{"text": "\n\n".join(system_text_parts)}]}
 
         # Generation config -- temperature / topP / topK / maxOutputTokens map
         # straight across. The frontend capability matrix restricts the sliders
@@ -3768,9 +3605,7 @@ class ExternalProviderClient:
             and isinstance(tool_choice.get("function"), dict)
             and bool(tool_choice["function"].get("name"))
         )
-        _hosted_builtins_allowed = (
-            not _tool_choice_disabled and not _tool_choice_forced_function
-        )
+        _hosted_builtins_allowed = not _tool_choice_disabled and not _tool_choice_forced_function
         # Image-tier model IDs reject text-only tools (code_execution, user
         # functions) and thinkingConfig regardless of the Images pill -- those
         # are model-level constraints documented by Google. The pill only
@@ -3780,9 +3615,7 @@ class ExternalProviderClient:
         # `tools: [{codeExecution: {}}]` plus `thinkingConfig` to an image model
         # and 400s.
         image_tool_requested = bool(
-            _hosted_builtins_allowed
-            and enabled_tools
-            and "image_generation" in enabled_tools
+            _hosted_builtins_allowed and enabled_tools and "image_generation" in enabled_tools
         )
         # Strict tool / thinking strip uses the model-id check.
         is_image_model_strict = is_image_picker_model
@@ -3814,13 +3647,10 @@ class ExternalProviderClient:
             "gemini-pro-latest",
         )
         _PRO_THINKING_PREFIXES = ("gemini-2.5-pro",)
-        is_gemini3_thinking = any(
-            model_lc.startswith(p) for p in _GEMINI3_THINKING_PREFIXES
-        )
+        is_gemini3_thinking = any(model_lc.startswith(p) for p in _GEMINI3_THINKING_PREFIXES)
         is_gemini3_pro = any(model_lc.startswith(p) for p in _GEMINI3_PRO_PREFIXES)
         _is_pro_thinking_only = any(
-            model_lc == p or model_lc.startswith(p + "-")
-            for p in _PRO_THINKING_PREFIXES
+            model_lc == p or model_lc.startswith(p + "-") for p in _PRO_THINKING_PREFIXES
         )
         effort_lc = (reasoning_effort or "").strip().lower()
         if not is_image_model_strict and is_gemini3_thinking:
@@ -3897,8 +3727,7 @@ class ExternalProviderClient:
             )
 
         google_search_allowed = (
-            not is_image_model_strict
-            or _gemini_image_model_allows_google_search(model_lc)
+            not is_image_model_strict or _gemini_image_model_allows_google_search(model_lc)
         )
         code_execution_allowed = not is_image_model_strict
         text_tools_allowed = not is_image_model_strict
@@ -3952,9 +3781,7 @@ class ExternalProviderClient:
             }
         )
 
-        def _resolve_local_schema_ref(
-            root: Optional[dict[str, Any]], ref: str
-        ) -> Optional[Any]:
+        def _resolve_local_schema_ref(root: Optional[dict[str, Any]], ref: str) -> Optional[Any]:
             # Walk a `#/foo/bar` JSON pointer against the schema root. Returns
             # None if the pointer doesn't resolve to a dict, so the caller can
             # fall back to the unresolved node.
@@ -4008,9 +3835,7 @@ class ExternalProviderClient:
                             **_target,
                             **{k: v for k, v in node.items() if k != "$ref"},
                         }
-                        return _sanitize_gemini_schema(
-                            _merged, root, _seen_refs | {_ref}
-                        )
+                        return _sanitize_gemini_schema(_merged, root, _seen_refs | {_ref})
                 cleaned: dict[str, Any] = {}
                 _nullable_from_union = False
                 _flattened_type: Optional[str] = None
@@ -4026,9 +3851,7 @@ class ExternalProviderClient:
                         # Preserve multi-type unions as anyOf; flattening to the
                         # first non-null type silently drops the other branches
                         # and changes the tool contract.
-                        _union_any_of = [
-                            {"type": _t} for _t in _non_null if isinstance(_t, str)
-                        ]
+                        _union_any_of = [{"type": _t} for _t in _non_null if isinstance(_t, str)]
                 for _k, _v in node.items():
                     if _k == "type" and isinstance(_v, list):
                         # Handled below via _flattened_type.
@@ -4057,15 +3880,10 @@ class ExternalProviderClient:
                         _non_null_entries = [
                             _entry
                             for _entry in _v
-                            if not (
-                                isinstance(_entry, dict)
-                                and _entry.get("type") == "null"
-                            )
+                            if not (isinstance(_entry, dict) and _entry.get("type") == "null")
                         ]
                         if len(_non_null_entries) == 1 and _saw_null:
-                            _inner = _sanitize_gemini_schema(
-                                _non_null_entries[0], root, _seen_refs
-                            )
+                            _inner = _sanitize_gemini_schema(_non_null_entries[0], root, _seen_refs)
                             if isinstance(_inner, dict):
                                 for _ik, _iv in _inner.items():
                                     cleaned.setdefault(_ik, _iv)
@@ -4084,8 +3902,7 @@ class ExternalProviderClient:
                         cleaned[_k] = _v
                 if _union_any_of is not None and "anyOf" not in cleaned:
                     cleaned["anyOf"] = [
-                        _sanitize_gemini_schema(_s, root, _seen_refs)
-                        for _s in _union_any_of
+                        _sanitize_gemini_schema(_s, root, _seen_refs) for _s in _union_any_of
                     ]
                 elif _flattened_type is not None:
                     cleaned["type"] = _flattened_type
@@ -4127,9 +3944,7 @@ class ExternalProviderClient:
                     _mode = "NONE"
                 elif _tc_lc in ("required", "any"):
                     _mode = "ANY"
-            elif (
-                isinstance(tool_choice, dict) and tool_choice.get("type") == "function"
-            ):
+            elif isinstance(tool_choice, dict) and tool_choice.get("type") == "function":
                 _fn_pick = tool_choice.get("function") or {}
                 _name = _fn_pick.get("name") if isinstance(_fn_pick, dict) else None
                 if isinstance(_name, str) and _name:
@@ -4156,8 +3971,7 @@ class ExternalProviderClient:
         completion_id = f"chatcmpl-gemini-{model.replace('/', '-')}"
 
         logger.info(
-            "Proxying Gemini streamGenerateContent to %s (model=%s, "
-            "tools=%s, image=%s)",
+            "Proxying Gemini streamGenerateContent to %s (model=%s, tools=%s, image=%s)",
             url,
             model,
             [list(t.keys())[0] for t in tools_array] if tools_array else [],
@@ -4180,9 +3994,7 @@ class ExternalProviderClient:
             }
             return f"data: {_json.dumps(chunk)}"
 
-        def _text_chunk(
-            text: str, extra_content: Optional[dict[str, Any]] = None
-        ) -> str:
+        def _text_chunk(text: str, extra_content: Optional[dict[str, Any]] = None) -> str:
             delta: dict[str, Any] = {"content": text}
             if extra_content:
                 delta["extra_content"] = extra_content
@@ -4267,9 +4079,7 @@ class ExternalProviderClient:
                         response.status_code,
                         error_text[:500],
                     )
-                    yield _error_sse_line(
-                        response.status_code, error_text, self.provider_type
-                    )
+                    yield _error_sse_line(response.status_code, error_text, self.provider_type)
                     return
 
                 if web_search_active:
@@ -4325,9 +4135,7 @@ class ExternalProviderClient:
                         # content_filter error event so the UI can render the
                         # block reason.
                         prompt_feedback = event.get("promptFeedback")
-                        if isinstance(prompt_feedback, dict) and prompt_feedback.get(
-                            "blockReason"
-                        ):
+                        if isinstance(prompt_feedback, dict) and prompt_feedback.get("blockReason"):
                             block_reason = str(prompt_feedback.get("blockReason"))
                             # Close out the synthetic web_search start so the UI
                             # doesn't show a spinner stuck on "searching..."
@@ -4378,9 +4186,7 @@ class ExternalProviderClient:
                                         u = web.get("uri") or ""
                                         if not u or not isinstance(u, str):
                                             continue
-                                        if any(
-                                            c["url"] == u for c in web_search_citations
-                                        ):
+                                        if any(c["url"] == u for c in web_search_citations):
                                             continue
                                         web_search_citations.append(
                                             {
@@ -4392,9 +4198,7 @@ class ExternalProviderClient:
 
                             content_obj = cand.get("content") or {}
                             parts = (
-                                content_obj.get("parts")
-                                if isinstance(content_obj, dict)
-                                else None
+                                content_obj.get("parts") if isinstance(content_obj, dict) else None
                             )
                             if isinstance(parts, list):
                                 for part in parts:
@@ -4433,10 +4237,7 @@ class ExternalProviderClient:
                                     if isinstance(fc, dict):
                                         fc_name = fc.get("name") or ""
                                         fc_args = fc.get("args") or {}
-                                        fc_id = (
-                                            fc.get("id")
-                                            or f"call_{fc_name}_{time.time_ns()}"
-                                        )
+                                        fc_id = fc.get("id") or f"call_{fc_name}_{time.time_ns()}"
                                         if fc_id in emitted_function_call_ids:
                                             continue
                                         emitted_function_call_ids.add(fc_id)
@@ -4465,9 +4266,9 @@ class ExternalProviderClient:
                                         # frontend can persist it and our
                                         # outbound translator (below) can replay
                                         # it.
-                                        thought_sig = part.get(
-                                            "thoughtSignature"
-                                        ) or part.get("thought_signature")
+                                        thought_sig = part.get("thoughtSignature") or part.get(
+                                            "thought_signature"
+                                        )
                                         if isinstance(thought_sig, str) and thought_sig:
                                             tool_call_delta["extra_content"] = {
                                                 "google": {
@@ -4481,9 +4282,7 @@ class ExternalProviderClient:
                                             "choices": [
                                                 {
                                                     "index": 0,
-                                                    "delta": {
-                                                        "tool_calls": [tool_call_delta]
-                                                    },
+                                                    "delta": {"tool_calls": [tool_call_delta]},
                                                     "finish_reason": None,
                                                 }
                                             ],
@@ -4538,9 +4337,7 @@ class ExternalProviderClient:
                                                         "kind": "code_execution",
                                                         "language": (
                                                             (
-                                                                exec_code.get(
-                                                                    "language"
-                                                                )
+                                                                exec_code.get("language")
                                                                 or "PYTHON"
                                                             ).lower()
                                                         ),
@@ -4561,9 +4358,7 @@ class ExternalProviderClient:
                                         # outcomes as stderr so the UI surfaces
                                         # the error.
                                         if outcome and outcome != "OUTCOME_OK":
-                                            result_text = (
-                                                f"[{outcome}]\n{output}".rstrip()
-                                            )
+                                            result_text = f"[{outcome}]\n{output}".rstrip()
                                         else:
                                             result_text = output
                                         # Pair tool_end with the most recent
@@ -4629,8 +4424,7 @@ class ExternalProviderClient:
                                                 not is_image_model
                                                 and last_code_exec_tool_id is not None
                                                 and bool(enabled_tools)
-                                                and "code_execution"
-                                                in (enabled_tools or [])
+                                                and "code_execution" in (enabled_tools or [])
                                             )
                                             if attached_to_code_exec:
                                                 updated_result = (
@@ -4654,28 +4448,22 @@ class ExternalProviderClient:
                                                     isinstance(_plot_thought_sig, str)
                                                     and _plot_thought_sig
                                                 ):
-                                                    _plot_part_entry[
-                                                        "thoughtSignature"
-                                                    ] = _plot_thought_sig
+                                                    _plot_part_entry["thoughtSignature"] = (
+                                                        _plot_thought_sig
+                                                    )
                                                 yield _emit_tool_event(
                                                     {
                                                         "type": "tool_end",
-                                                        "tool_call_id": (
-                                                            last_code_exec_tool_id
-                                                        ),
+                                                        "tool_call_id": (last_code_exec_tool_id),
                                                         "result": updated_result,
                                                         "google": {
                                                             "native_part": {
-                                                                "parts": [
-                                                                    _plot_part_entry
-                                                                ],
+                                                                "parts": [_plot_part_entry],
                                                             },
                                                         },
                                                     }
                                                 )
-                                                last_code_exec_result_text = (
-                                                    updated_result
-                                                )
+                                                last_code_exec_result_text = updated_result
                                             else:
                                                 img_id = f"img_{time.time_ns()}"
                                                 yield _emit_tool_event(
@@ -4715,9 +4503,9 @@ class ExternalProviderClient:
                                                     isinstance(_img_thought_sig, str)
                                                     and _img_thought_sig
                                                 ):
-                                                    _img_part_entry[
-                                                        "thoughtSignature"
-                                                    ] = _img_thought_sig
+                                                    _img_part_entry["thoughtSignature"] = (
+                                                        _img_thought_sig
+                                                    )
                                                 _img_native: dict[str, Any] = {
                                                     "parts": [_img_part_entry],
                                                 }
@@ -4744,11 +4532,7 @@ class ExternalProviderClient:
                     # Matches the Anthropic / OpenAI helpers' contract so the
                     # frontend handler needs no provider-specific ordering
                     # knowledge.
-                    if (
-                        web_search_active
-                        and web_search_tool_started
-                        and not web_search_tool_ended
-                    ):
+                    if web_search_active and web_search_tool_started and not web_search_tool_ended:
                         blocks: list[str] = []
                         for cit in web_search_citations:
                             line_out = f"Title: {cit['title']}\nURL: {cit['url']}"
@@ -4760,9 +4544,7 @@ class ExternalProviderClient:
                                 "type": "tool_end",
                                 "tool_call_id": web_search_tool_id,
                                 "result": (
-                                    "\n---\n".join(blocks)
-                                    if blocks
-                                    else "(search complete)"
+                                    "\n---\n".join(blocks) if blocks else "(search complete)"
                                 ),
                             }
                         )
@@ -4798,25 +4580,19 @@ class ExternalProviderClient:
                         # Gemini bills tool-call prompt slices separately via
                         # `toolUsePromptTokenCount`. Fold into input so
                         # total_tokens doesn't undercount tool turns.
-                        tool_use_prompt_tokens = (
-                            last_usage.get("toolUsePromptTokenCount") or 0
-                        )
+                        tool_use_prompt_tokens = last_usage.get("toolUsePromptTokenCount") or 0
                         translated_usage = {
                             "input_tokens": prompt_tokens + tool_use_prompt_tokens,
                             "output_tokens": candidate_tokens + thought_tokens,
                             "input_tokens_details": {
-                                "cached_tokens": (
-                                    last_usage.get("cachedContentTokenCount") or 0
-                                ),
+                                "cached_tokens": (last_usage.get("cachedContentTokenCount") or 0),
                                 "tool_use_prompt_tokens": tool_use_prompt_tokens,
                             },
                             "output_tokens_details": {
                                 "reasoning_tokens": thought_tokens,
                             },
                         }
-                        usage_line = _build_usage_chunk(
-                            completion_id, "openai", translated_usage
-                        )
+                        usage_line = _build_usage_chunk(completion_id, "openai", translated_usage)
                         if usage_line:
                             yield usage_line
 
@@ -5000,13 +4776,9 @@ class ExternalProviderClient:
                         elif _pt == "image_url":
                             _u = _part.get("image_url", {}).get("url", "")
                             if _u:
-                                _asst_parts.append(
-                                    {"type": "input_image", "image_url": _u}
-                                )
+                                _asst_parts.append({"type": "input_image", "image_url": _u})
                     if _asst_parts:
-                        input_items.append(
-                            {"role": "assistant", "content": _asst_parts}
-                        )
+                        input_items.append({"role": "assistant", "content": _asst_parts})
 
                 for _tc in _tool_calls:
                     if not isinstance(_tc, dict):
@@ -5032,9 +4804,7 @@ class ExternalProviderClient:
                                 _is_server_builtin = True
                             else:
                                 _g = _args_obj.get("google")
-                                if isinstance(_g, dict) and isinstance(
-                                    _g.get("native_part"), dict
-                                ):
+                                if isinstance(_g, dict) and isinstance(_g.get("native_part"), dict):
                                     _is_server_builtin = True
                     _call_id_out = _tc.get("id") or f"call_{time.time_ns()}"
                     if _is_server_builtin:
@@ -5070,9 +4840,7 @@ class ExternalProviderClient:
                         if url:
                             # Responses takes image_url as a flat string (both
                             # https:// URLs and data: URLs are accepted).
-                            translated_parts.append(
-                                {"type": "input_image", "image_url": url}
-                            )
+                            translated_parts.append({"type": "input_image", "image_url": url})
                     elif (
                         part_type == "reasoning"
                         and role == "assistant"
@@ -5248,11 +5016,7 @@ class ExternalProviderClient:
 
         # Server-side context compaction (OpenAI cloud only).
         # https://developers.openai.com/api/docs/guides/compaction
-        if (
-            is_openai_cloud
-            and compaction_threshold is not None
-            and compaction_threshold > 0
-        ):
+        if is_openai_cloud and compaction_threshold is not None and compaction_threshold > 0:
             body["context_management"] = [
                 {
                     "type": "compaction",
@@ -5328,13 +5092,10 @@ class ExternalProviderClient:
             and bool(tool_choice["function"].get("name"))
         )
         _responses_hosted_builtins_allowed = (
-            not _responses_tool_choice_none
-            and not _responses_tool_choice_forced_function
+            not _responses_tool_choice_none and not _responses_tool_choice_forced_function
         )
 
-        if (
-            enabled_tools or responses_user_function_tools
-        ) and not _responses_tool_choice_none:
+        if (enabled_tools or responses_user_function_tools) and not _responses_tool_choice_none:
             tools_array: list[dict[str, Any]] = list(responses_user_function_tools)
             if (
                 _responses_hosted_builtins_allowed
@@ -5373,12 +5134,8 @@ class ExternalProviderClient:
             dict so the retry doesn't share state with the first attempt.
             """
             attempt_body = dict(body)
-            if (
-                enabled_tools or responses_user_function_tools
-            ) and not _responses_tool_choice_none:
-                tools_array_attempt: list[dict[str, Any]] = list(
-                    responses_user_function_tools
-                )
+            if (enabled_tools or responses_user_function_tools) and not _responses_tool_choice_none:
+                tools_array_attempt: list[dict[str, Any]] = list(responses_user_function_tools)
                 if (
                     _responses_hosted_builtins_allowed
                     and enabled_tools
@@ -5393,13 +5150,8 @@ class ExternalProviderClient:
                         }
                     else:
                         env_attempt = {"type": "container_auto"}
-                    tools_array_attempt.append(
-                        {"type": "shell", "environment": env_attempt}
-                    )
-                if (
-                    _responses_hosted_builtins_allowed
-                    and image_generation_enabled_openai
-                ):
+                    tools_array_attempt.append({"type": "shell", "environment": env_attempt})
+                if _responses_hosted_builtins_allowed and image_generation_enabled_openai:
                     tools_array_attempt.append(_openai_image_generation_tool())
                 if tools_array_attempt:
                     attempt_body["tools"] = tools_array_attempt
@@ -5457,9 +5209,7 @@ class ExternalProviderClient:
                             retried = True
                             attempt_container_id = None
                             continue
-                        yield _error_sse_line(
-                            response.status_code, error_text, self.provider_type
-                        )
+                        yield _error_sse_line(response.status_code, error_text, self.provider_type)
                         return
 
                     # NOTE: same manual __anext__ loop as stream_chat_completion —
@@ -5555,9 +5305,7 @@ class ExternalProviderClient:
                             # Unterminated: drop the whole tail, else the residual
                             # ``cite<sid>`` would leak as plain text.
                             return ""
-                        rendered = _replace_openai_citation_markers(
-                            tail, all_url_citations
-                        )
+                        rendered = _replace_openai_citation_markers(tail, all_url_citations)
                         # Scrub residual private-use bytes (e.g. a partial opener).
                         for ch in ("", "", ""):
                             rendered = rendered.replace(ch, "")
@@ -5615,11 +5363,7 @@ class ExternalProviderClient:
                                     chunk_parts.append("(timeout)")
                             if chunk_parts:
                                 parts.append("\n".join(chunk_parts))
-                        return (
-                            "\n--- next command ---\n".join(parts)
-                            if parts
-                            else "(no output)"
-                        )
+                        return "\n--- next command ---\n".join(parts) if parts else "(no output)"
 
                     def _record_url_citation(payload: dict[str, Any]) -> None:
                         """Append a url_citation onto the shared all_url_citations
@@ -5687,17 +5431,11 @@ class ExternalProviderClient:
                                 return existing
                         summary_text = ""
                         part = payload.get("part")
-                        if (
-                            isinstance(part, dict)
-                            and part.get("type") == "summary_text"
-                        ):
+                        if isinstance(part, dict) and part.get("type") == "summary_text":
                             text = part.get("text")
                             if isinstance(text, str):
                                 summary_text = text
-                        elif (
-                            payload.get("type")
-                            == "response.reasoning_summary_text.done"
-                        ):
+                        elif payload.get("type") == "response.reasoning_summary_text.done":
                             text = payload.get("text")
                             if isinstance(text, str):
                                 summary_text = text
@@ -5709,22 +5447,16 @@ class ExternalProviderClient:
                                     "type": "summary_text",
                                     "text": summary_text,
                                 }
-                                if (
-                                    isinstance(summary_index, int)
-                                    and summary_index >= 0
-                                ):
+                                if isinstance(summary_index, int) and summary_index >= 0:
                                     while len(summary) <= summary_index:
-                                        summary.append(
-                                            {"type": "summary_text", "text": ""}
-                                        )
+                                        summary.append({"type": "summary_text", "text": ""})
                                     summary[summary_index] = summary_part
                                 else:
                                     summary.append(summary_part)
                         return existing
 
                     def _image_generation_arguments(
-                        prompt: str,
-                        raw_item_id: Any,
+                        prompt: str, raw_item_id: Any
                     ) -> dict[str, Any]:
                         arguments: dict[str, Any] = {"kind": "image", "prompt": prompt}
                         if isinstance(raw_item_id, str) and raw_item_id:
@@ -5732,9 +5464,7 @@ class ExternalProviderClient:
                         if current_openai_response_id:
                             arguments["openai_response_id"] = current_openai_response_id
                         if last_openai_reasoning_replay_item:
-                            arguments["openai_reasoning_item"] = (
-                                last_openai_reasoning_replay_item
-                            )
+                            arguments["openai_reasoning_item"] = last_openai_reasoning_replay_item
                         return arguments
 
                     def _extract_reasoning_text(payload: Any) -> str:
@@ -5793,9 +5523,7 @@ class ExternalProviderClient:
                                 # Flush any held-over partial marker; strip
                                 # private-use bytes so garbled glyphs don't leak.
                                 if pending_marker_tail:
-                                    flushed = _flush_pending_marker_tail(
-                                        pending_marker_tail
-                                    )
+                                    flushed = _flush_pending_marker_tail(pending_marker_tail)
                                     pending_marker_tail = ""
                                     if flushed:
                                         if reasoning_open:
@@ -5838,8 +5566,8 @@ class ExternalProviderClient:
                                     # Prepend any held-over tail so a marker
                                     # straddling two SSE events resolves cleanly.
                                     combined = pending_marker_tail + delta_text
-                                    head, pending_marker_tail = (
-                                        _split_pending_citation_tail(combined)
+                                    head, pending_marker_tail = _split_pending_citation_tail(
+                                        combined
                                     )
                                     if head:
                                         if reasoning_open:
@@ -5861,9 +5589,7 @@ class ExternalProviderClient:
                                             )
                                         )
                                         if has_unresolved or pending_citation_segments:
-                                            pending_citation_segments.append(
-                                                head_rewritten
-                                            )
+                                            pending_citation_segments.append(head_rewritten)
                                         elif head_rewritten:
                                             yield _chunk_with_text(head_rewritten)
 
@@ -5882,24 +5608,14 @@ class ExternalProviderClient:
 
                             elif event_type == "response.output_item.added":
                                 item = event.get("item", {})
-                                if (
-                                    isinstance(item, dict)
-                                    and item.get("type") == "web_search_call"
-                                ):
-                                    item_id = item.get("id", "") or (
-                                        f"ws_{len(web_search_calls)}"
-                                    )
+                                if isinstance(item, dict) and item.get("type") == "web_search_call":
+                                    item_id = item.get("id", "") or (f"ws_{len(web_search_calls)}")
                                     web_search_calls.setdefault(item_id, {"query": ""})
                                 # Register shell_call eagerly so out-of-order
                                 # output links back. Probe env.container_id to
                                 # emit container_ready before response.completed.
-                                if (
-                                    isinstance(item, dict)
-                                    and item.get("type") == "shell_call"
-                                ):
-                                    item_id = item.get("id", "") or (
-                                        f"sc_{len(shell_calls)}"
-                                    )
+                                if isinstance(item, dict) and item.get("type") == "shell_call":
+                                    item_id = item.get("id", "") or (f"sc_{len(shell_calls)}")
                                     shell_calls.setdefault(
                                         item_id,
                                         {"commands": [], "output": None},
@@ -5941,9 +5657,7 @@ class ExternalProviderClient:
                                     last_openai_reasoning_replay_item = (
                                         _record_openai_reasoning_replay_item(item)
                                     )
-                                    summary_text = _extract_reasoning_text(
-                                        item.get("summary")
-                                    )
+                                    summary_text = _extract_reasoning_text(item.get("summary"))
                                     if summary_text and not reasoning_emitted:
                                         if not reasoning_open:
                                             summary_text = f"<think>{summary_text}"
@@ -5960,14 +5674,10 @@ class ExternalProviderClient:
                                     # response.completed with the citation list
                                     # (so source-pill extraction at message tail
                                     # surfaces them once).
-                                    item_id = item.get("id", "") or (
-                                        f"ws_{len(web_search_calls)}"
-                                    )
+                                    item_id = item.get("id", "") or (f"ws_{len(web_search_calls)}")
                                     action = item.get("action")
                                     query = (
-                                        action.get("query", "")
-                                        if isinstance(action, dict)
-                                        else ""
+                                        action.get("query", "") if isinstance(action, dict) else ""
                                     )
                                     web_search_calls[item_id] = {"query": query}
                                     yield _emit_tool_event(
@@ -5975,16 +5685,12 @@ class ExternalProviderClient:
                                             "type": "tool_start",
                                             "tool_name": "web_search",
                                             "tool_call_id": item_id,
-                                            "arguments": (
-                                                {"query": query} if query else {}
-                                            ),
+                                            "arguments": ({"query": query} if query else {}),
                                         }
                                     )
                                     # Per-card text; last call gets overwritten
                                     # with citations at response.completed.
-                                    per_call_result = (
-                                        f"Searching: {query}" if query else ""
-                                    )
+                                    per_call_result = f"Searching: {query}" if query else ""
                                     yield _emit_tool_event(
                                         {
                                             "type": "tool_end",
@@ -6000,14 +5706,10 @@ class ExternalProviderClient:
                                     # single `command`. Multiple commands in one
                                     # shell_call are joined with newlines so they
                                     # still render as one card.
-                                    item_id = item.get("id", "") or (
-                                        f"sc_{len(shell_calls)}"
-                                    )
+                                    item_id = item.get("id", "") or (f"sc_{len(shell_calls)}")
                                     action = item.get("action") or {}
                                     commands = (
-                                        action.get("commands")
-                                        if isinstance(action, dict)
-                                        else None
+                                        action.get("commands") if isinstance(action, dict) else None
                                     ) or []
                                     joined_command = (
                                         "\n".join(str(c) for c in commands)
@@ -6023,9 +5725,7 @@ class ExternalProviderClient:
                                         },
                                     )
                                     shell_calls[item_id]["commands"] = (
-                                        list(commands)
-                                        if isinstance(commands, list)
-                                        else []
+                                        list(commands) if isinstance(commands, list) else []
                                     )
                                     yield _emit_tool_event(
                                         {
@@ -6041,19 +5741,14 @@ class ExternalProviderClient:
                                     # Fallback: output may be bundled on the
                                     # shell_call done event itself.
                                     embedded_output = item.get("output")
-                                    if (
-                                        isinstance(embedded_output, list)
-                                        and embedded_output
-                                    ):
+                                    if isinstance(embedded_output, list) and embedded_output:
                                         shell_calls[item_id]["output"] = embedded_output
                                         shell_calls[item_id]["tool_end_emitted"] = True
                                         yield _emit_tool_event(
                                             {
                                                 "type": "tool_end",
                                                 "tool_call_id": item_id,
-                                                "result": _format_shell_output(
-                                                    embedded_output
-                                                ),
+                                                "result": _format_shell_output(embedded_output),
                                             }
                                         )
                                 elif item.get("type") == "shell_call_output":
@@ -6061,15 +5756,11 @@ class ExternalProviderClient:
                                     # `id`, used as the tool_call_id on
                                     # tool_start. Match on call_id when present so
                                     # the matching card transitions to complete.
-                                    call_id = (
-                                        item.get("call_id") or item.get("id") or ""
-                                    )
+                                    call_id = item.get("call_id") or item.get("id") or ""
                                     output = item.get("output") or []
                                     # Skip if bundled-output path already
                                     # finalised this card.
-                                    if shell_calls.get(call_id, {}).get(
-                                        "tool_end_emitted"
-                                    ):
+                                    if shell_calls.get(call_id, {}).get("tool_end_emitted"):
                                         continue
                                     if call_id in shell_calls:
                                         shell_calls[call_id]["output"] = output
@@ -6089,9 +5780,7 @@ class ExternalProviderClient:
                                     raw_item_id = item.get("id")
                                     item_id = raw_item_id or f"img_{time.time_ns()}"
                                     prompt_in = (
-                                        item.get("revised_prompt")
-                                        or item.get("prompt")
-                                        or ""
+                                        item.get("revised_prompt") or item.get("prompt") or ""
                                     )
                                     done_arguments = _image_generation_arguments(
                                         prompt_in,
@@ -6106,9 +5795,7 @@ class ExternalProviderClient:
                                                 "arguments": done_arguments,
                                             }
                                         )
-                                    b64 = (
-                                        item.get("result") or item.get("b64_json") or ""
-                                    )
+                                    b64 = item.get("result") or item.get("b64_json") or ""
                                     output_format = item.get("output_format") or "png"
                                     yield _emit_tool_event(
                                         {
@@ -6158,9 +5845,7 @@ class ExternalProviderClient:
                                                                     "type": "function",
                                                                     "function": {
                                                                         "name": fn_name,
-                                                                        "arguments": (
-                                                                            fn_args
-                                                                        ),
+                                                                        "arguments": (fn_args),
                                                                     },
                                                                 }
                                                             ],
@@ -6173,17 +5858,10 @@ class ExternalProviderClient:
                                     )
                                     saw_function_call = True
 
-                            elif (
-                                isinstance(event_type, str)
-                                and "reasoning" in event_type
-                            ):
-                                recorded_reasoning = (
-                                    _record_openai_reasoning_replay_item(event)
-                                )
+                            elif isinstance(event_type, str) and "reasoning" in event_type:
+                                recorded_reasoning = _record_openai_reasoning_replay_item(event)
                                 if recorded_reasoning:
-                                    last_openai_reasoning_replay_item = (
-                                        recorded_reasoning
-                                    )
+                                    last_openai_reasoning_replay_item = recorded_reasoning
                                 reasoning_delta = _extract_reasoning_text(event)
                                 if reasoning_delta:
                                     if not reasoning_open:
@@ -6193,9 +5871,7 @@ class ExternalProviderClient:
                                     reasoning_emitted = True
 
                             elif event_type == "response.completed":
-                                completed_usage = (event.get("response") or {}).get(
-                                    "usage"
-                                )
+                                completed_usage = (event.get("response") or {}).get("usage")
                                 if isinstance(completed_usage, dict):
                                     last_usage = completed_usage
                                 # Flush any unterminated citation tail held over
@@ -6205,9 +5881,7 @@ class ExternalProviderClient:
                                 # private-use bytes so no garbled glyph reaches
                                 # the user.
                                 if pending_marker_tail:
-                                    flushed = _flush_pending_marker_tail(
-                                        pending_marker_tail
-                                    )
+                                    flushed = _flush_pending_marker_tail(pending_marker_tail)
                                     pending_marker_tail = ""
                                     if flushed:
                                         if reasoning_open:
@@ -6249,8 +5923,7 @@ class ExternalProviderClient:
                                 if (
                                     latched_container_id
                                     and not container_id_emitted
-                                    and latched_container_id
-                                    != openai_code_exec_container_id
+                                    and latched_container_id != openai_code_exec_container_id
                                 ):
                                     yield _emit_tool_event(
                                         {
@@ -6267,9 +5940,7 @@ class ExternalProviderClient:
                                     last_id = list(web_search_calls.keys())[-1]
                                     blocks: list[str] = []
                                     for cit in all_url_citations:
-                                        line = (
-                                            f"Title: {cit['title']}\nURL: {cit['url']}"
-                                        )
+                                        line = f"Title: {cit['title']}\nURL: {cit['url']}"
                                         if cit.get("snippet"):
                                             line += f"\nSnippet: {cit['snippet']}"
                                         blocks.append(line)
@@ -6303,9 +5974,7 @@ class ExternalProviderClient:
                                             "index": 0,
                                             "delta": {},
                                             "finish_reason": (
-                                                "tool_calls"
-                                                if saw_function_call
-                                                else "stop"
+                                                "tool_calls" if saw_function_call else "stop"
                                             ),
                                         }
                                     ],
@@ -6323,17 +5992,13 @@ class ExternalProviderClient:
                                     yield usage_line
 
                             elif event_type == "response.incomplete":
-                                incomplete_usage = (event.get("response") or {}).get(
-                                    "usage"
-                                )
+                                incomplete_usage = (event.get("response") or {}).get("usage")
                                 if isinstance(incomplete_usage, dict):
                                     last_usage = incomplete_usage
                                 # Same flush as response.completed -- truncated
                                 # streams can leave a half-marker in the buffer.
                                 if pending_marker_tail:
-                                    flushed = _flush_pending_marker_tail(
-                                        pending_marker_tail
-                                    )
+                                    flushed = _flush_pending_marker_tail(pending_marker_tail)
                                     pending_marker_tail = ""
                                     if flushed:
                                         if reasoning_open:
@@ -6363,9 +6028,7 @@ class ExternalProviderClient:
                                     last_id = list(web_search_calls.keys())[-1]
                                     blocks = []
                                     for cit in all_url_citations:
-                                        line = (
-                                            f"Title: {cit['title']}\nURL: {cit['url']}"
-                                        )
+                                        line = f"Title: {cit['title']}\nURL: {cit['url']}"
                                         if cit.get("snippet"):
                                             line += f"\nSnippet: {cit['snippet']}"
                                         blocks.append(line)
@@ -6418,9 +6081,7 @@ class ExternalProviderClient:
                             elif event_type in ("response.failed", "error"):
                                 # Surface the failure to the client; the outer
                                 # route emits [DONE] as part of its cleanup.
-                                error_payload = event.get("response", {}).get(
-                                    "error", {}
-                                ) or {
+                                error_payload = event.get("response", {}).get("error", {}) or {
                                     "message": event.get("message", "Unknown error"),
                                     "code": event.get("code"),
                                 }
@@ -6439,15 +6100,11 @@ class ExternalProviderClient:
                         # reports of "I clicked Search and got nothing" can be
                         # triaged at a glance: was the tool requested, did OpenAI
                         # invoke it, and how many sources came back?
-                        web_search_requested = bool(
-                            enabled_tools and "web_search" in enabled_tools
-                        )
+                        web_search_requested = bool(enabled_tools and "web_search" in enabled_tools)
                         web_search_invocations = len(web_search_calls)
                         total_citations = len(all_url_citations)
                         queries = [
-                            sc["query"]
-                            for sc in web_search_calls.values()
-                            if sc.get("query")
+                            sc["query"] for sc in web_search_calls.values() if sc.get("query")
                         ]
                         # cached_input_tokens > 0 on turn N proves
                         # prompt_cache_retention="24h" is letting the previous
@@ -6463,9 +6120,7 @@ class ExternalProviderClient:
                         code_execution_requested = code_execution_enabled_openai
                         code_execution_invocations = len(shell_calls)
                         code_execution_results = sum(
-                            1
-                            for sc in shell_calls.values()
-                            if sc.get("output") is not None
+                            1 for sc in shell_calls.values() if sc.get("output") is not None
                         )
                         logger.info(
                             "OpenAI Responses stream complete (model=%s, "
@@ -6622,9 +6277,7 @@ class ExternalProviderClient:
             if (
                 isinstance(methods, list)
                 and methods
-                and not any(
-                    m in methods for m in ("generateContent", "streamGenerateContent")
-                )
+                and not any(m in methods for m in ("generateContent", "streamGenerateContent"))
             ):
                 continue
             base_id = entry.get("baseModelId")
@@ -6732,19 +6385,11 @@ class ExternalProviderClient:
         logger.info(
             "openai_container_list.response count=%s items=%s",
             len(result),
-            [
-                {"id": c.get("id"), "status": c.get("status")}
-                for c in result
-                if isinstance(c, dict)
-            ],
+            [{"id": c.get("id"), "status": c.get("status")} for c in result if isinstance(c, dict)],
         )
         return result
 
-    async def create_openai_container(
-        self,
-        name: str,
-        ttl_minutes: int,
-    ) -> dict[str, Any]:
+    async def create_openai_container(self, name: str, ttl_minutes: int) -> dict[str, Any]:
         """
         POST /v1/containers with ``expires_after.anchor="last_active_at"``.
         ``ttl_minutes`` is the idle timeout — every API call touching the
@@ -6816,7 +6461,6 @@ class ExternalProviderClient:
 
 def _provider_display_name(provider_type: str) -> str:
     from core.inference.providers import get_provider_info
-
     info = get_provider_info(provider_type) or {}
     return str(info.get("display_name") or provider_type)
 
@@ -6864,9 +6508,7 @@ def _error_sse_line(status_code: int, message: str, provider_type: str) -> str:
 
 
 def _build_usage_chunk(
-    completion_id: str,
-    provider: Literal["anthropic", "openai"],
-    last_usage: Optional[dict],
+    completion_id: str, provider: Literal["anthropic", "openai"], last_usage: Optional[dict]
 ) -> Optional[str]:
     """Build an OpenAI ``include_usage``-style SSE chunk carrying upstream
     prompt-cache accounting back to the client.

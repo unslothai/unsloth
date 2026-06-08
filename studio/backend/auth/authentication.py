@@ -108,9 +108,7 @@ def create_refresh_token(subject: str, *, desktop: bool = False) -> str:
     return token
 
 
-def refresh_access_token(
-    refresh_token: str,
-) -> Tuple[Optional[str], Optional[str], bool]:
+def refresh_access_token(refresh_token: str) -> Tuple[Optional[str], Optional[str], bool]:
     """
     Validate a refresh token and issue a new access token.
 
@@ -137,9 +135,7 @@ def reload_secret() -> None:
     load_jwt_secret()
 
 
-async def get_current_subject(
-    credentials: HTTPAuthorizationCredentials = Depends(security),
-) -> str:
+async def get_current_subject(credentials: HTTPAuthorizationCredentials = Depends(security)) -> str:
     """Validate JWT and require the password-change flow to be completed."""
     return await _get_current_subject(
         credentials,
@@ -158,9 +154,7 @@ async def get_current_subject_allow_password_change(
 
 
 async def _get_current_subject(
-    credentials: HTTPAuthorizationCredentials,
-    *,
-    allow_password_change: bool,
+    credentials: HTTPAuthorizationCredentials, *, allow_password_change: bool
 ) -> str:
     """
     FastAPI dependency: validate the JWT and return the subject.

@@ -12,10 +12,7 @@ import re
 
 def _keyword_in_column(keyword: str, col_name: str) -> bool:
     """Word-boundary keyword match to avoid false positives like 'pic' in 'topic'."""
-    return (
-        re.search(r"\b" + re.escape(keyword) + r"\b", col_name, re.IGNORECASE)
-        is not None
-    )
+    return re.search(r"\b" + re.escape(keyword) + r"\b", col_name, re.IGNORECASE) is not None
 
 
 def detect_dataset_format(dataset):
@@ -217,10 +214,7 @@ def detect_custom_format_heuristic(dataset):
             return True
 
         for pattern in metadata_prefix_patterns:
-            if (
-                col_lower.startswith(pattern.split("_")[0] + "_")
-                and col_lower != pattern
-            ):
+            if col_lower.startswith(pattern.split("_")[0] + "_") and col_lower != pattern:
                 if "_" in col_lower:
                     prefix = col_lower.split("_")[0]
                     if prefix in ["generation", "pass", "inference"]:
@@ -264,9 +258,7 @@ def detect_custom_format_heuristic(dataset):
         if role_type == "user":
             col_lower = col_name.lower()
             # ONLY "task" (or task_xxx): lower priority for user role
-            if "task" in col_lower and not any(
-                kw in col_lower for kw in user_words_high_priority
-            ):
+            if "task" in col_lower and not any(kw in col_lower for kw in user_words_high_priority):
                 score -= 15  # Significant penalty so other user columns win
 
         priority_bonus = get_priority_score(col_name)
@@ -298,17 +290,13 @@ def detect_custom_format_heuristic(dataset):
     content_columns = [col for col in all_columns if not is_metadata(col)]
 
     # Count candidates
-    assistant_potential = [
-        col for col in content_columns if has_keyword(col, assistant_words)
-    ]
+    assistant_potential = [col for col in content_columns if has_keyword(col, assistant_words)]
     user_potential = [col for col in content_columns if has_keyword(col, user_words)]
 
     # STEP 1: Find best ASSISTANT column
     assistant_candidates = []
     for col in assistant_potential:
-        score = score_column(
-            col, assistant_words, "assistant", len(assistant_potential)
-        )
+        score = score_column(col, assistant_words, "assistant", len(assistant_potential))
         if score > 0:
             assistant_candidates.append((col, score))
 
@@ -514,7 +502,6 @@ def _is_image_value(value) -> bool:
     # PIL Image instance
     try:
         from PIL.Image import Image as PILImage
-
         if isinstance(value, PILImage):
             return True
     except ImportError:
@@ -641,9 +628,7 @@ def detect_vlm_dataset_structure(dataset):
                     if isinstance(content[0], dict) and "type" in content[0]:
                         # Llava format?
                         has_index = any(
-                            "index" in item
-                            for item in content
-                            if isinstance(item, dict)
+                            "index" in item for item in content if isinstance(item, dict)
                         )
                         has_images_column = "images" in column_names
 
@@ -658,9 +643,7 @@ def detect_vlm_dataset_structure(dataset):
 
                         # Standard VLM format
                         has_image = any(
-                            "image" in item
-                            for item in content
-                            if isinstance(item, dict)
+                            "image" in item for item in content if isinstance(item, dict)
                         )
                         if has_image:
                             return {
@@ -769,9 +752,7 @@ def detect_vlm_dataset_structure(dataset):
             return True
 
         # Prefixes
-        if any(
-            col_lower.startswith(prefix) for prefix in metadata_patterns["prefixes"]
-        ):
+        if any(col_lower.startswith(prefix) for prefix in metadata_patterns["prefixes"]):
             return True
 
         return False
@@ -783,9 +764,7 @@ def detect_vlm_dataset_structure(dataset):
             return 100
 
         # Dict with bytes/path from HF Image feature
-        if isinstance(sample_value, dict) and (
-            "bytes" in sample_value or "path" in sample_value
-        ):
+        if isinstance(sample_value, dict) and ("bytes" in sample_value or "path" in sample_value):
             return 75
 
         if isinstance(sample_value, str):
@@ -810,9 +789,7 @@ def detect_vlm_dataset_structure(dataset):
 
         # Local file — check it exists
         if not sample_value.startswith(("http://", "https://")):
-            return os.path.exists(
-                sample_value
-            )  # bare filenames return False here, that's OK
+            return os.path.exists(sample_value)  # bare filenames return False here, that's OK
 
         # URL — quick HEAD with short timeout
         try:

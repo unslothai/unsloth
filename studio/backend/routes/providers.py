@@ -51,9 +51,7 @@ router = APIRouter()
 
 
 @router.get("/public-key")
-async def get_public_key(
-    current_subject: str = Depends(get_current_subject),
-):
+async def get_public_key(current_subject: str = Depends(get_current_subject)):
     """Return the RSA public key PEM for client-side API key encryption.
 
     The ``fingerprint`` field is a short SHA256 of the PEM, for diagnostics: a
@@ -71,9 +69,7 @@ async def get_public_key(
 
 
 @router.get("/registry", response_model = list[ProviderRegistryEntry])
-async def list_registry(
-    current_subject: str = Depends(get_current_subject),
-):
+async def list_registry(current_subject: str = Depends(get_current_subject)):
     """List all supported provider types with their default configurations."""
     return list_available_providers()
 
@@ -82,9 +78,7 @@ async def list_registry(
 
 
 @router.get("/pricing")
-async def get_pricing_snapshot(
-    current_subject: str = Depends(get_current_subject),
-):
+async def get_pricing_snapshot(current_subject: str = Depends(get_current_subject)):
     """Static per-MTok pricing table the frontend uses to convert upstream
     usage chunks into a per-turn USD cost. See ``core/inference/pricing.py``
     for sourcing notes; values reflect the published prices as of the file's
@@ -96,9 +90,7 @@ async def get_pricing_snapshot(
 
 
 @router.get("/", response_model = list[ProviderResponse])
-async def list_provider_configs(
-    current_subject: str = Depends(get_current_subject),
-):
+async def list_provider_configs(current_subject: str = Depends(get_current_subject)):
     """List all saved provider configurations."""
     rows = providers_db.list_providers()
     return [
@@ -117,8 +109,7 @@ async def list_provider_configs(
 
 @router.post("/", response_model = ProviderResponse, status_code = 201)
 async def create_provider_config(
-    payload: ProviderCreate,
-    current_subject: str = Depends(get_current_subject),
+    payload: ProviderCreate, current_subject: str = Depends(get_current_subject)
 ):
     """Create a new saved provider configuration (no API key stored)."""
     info = get_provider_info(payload.provider_type)
@@ -185,8 +176,7 @@ async def update_provider_config(
 
 @router.delete("/{provider_id}", status_code = 204)
 async def delete_provider_config(
-    provider_id: str,
-    current_subject: str = Depends(get_current_subject),
+    provider_id: str, current_subject: str = Depends(get_current_subject)
 ):
     """Delete a saved provider configuration."""
     deleted = providers_db.delete_provider(provider_id)
@@ -199,8 +189,7 @@ async def delete_provider_config(
 
 @router.post("/test", response_model = ProviderTestResult)
 async def test_provider(
-    payload: ProviderTestRequest,
-    current_subject: str = Depends(get_current_subject),
+    payload: ProviderTestRequest, current_subject: str = Depends(get_current_subject)
 ):
     """
     Test connectivity to an external provider.
@@ -220,9 +209,7 @@ async def test_provider(
         try:
             api_key = decrypt_api_key(payload.encrypted_api_key)
         except Exception as exc:
-            logger.warning(
-                "Failed to decrypt API key (%s): %s", type(exc).__name__, exc
-            )
+            logger.warning("Failed to decrypt API key (%s): %s", type(exc).__name__, exc)
             raise HTTPException(
                 status_code = 400,
                 detail = "Failed to decrypt API key. The public key may have changed — try refreshing the page.",
@@ -274,8 +261,7 @@ async def test_provider(
 
 @router.post("/models", response_model = list[ProviderModelInfo])
 async def list_provider_models(
-    payload: ProviderModelsRequest,
-    current_subject: str = Depends(get_current_subject),
+    payload: ProviderModelsRequest, current_subject: str = Depends(get_current_subject)
 ):
     """
     List models available from an external provider.
@@ -294,9 +280,7 @@ async def list_provider_models(
         try:
             api_key = decrypt_api_key(payload.encrypted_api_key)
         except Exception as exc:
-            logger.warning(
-                "Failed to decrypt API key (%s): %s", type(exc).__name__, exc
-            )
+            logger.warning("Failed to decrypt API key (%s): %s", type(exc).__name__, exc)
             raise HTTPException(
                 status_code = 400,
                 detail = "Failed to decrypt API key. The public key may have changed — try refreshing the page.",
@@ -336,7 +320,6 @@ async def list_provider_models(
         if payload.provider_type == "gemini":
             try:
                 from urllib.parse import urlparse as _urlparse
-
                 _host = (_urlparse(base_url).hostname or "").lower()
             except Exception:
                 _host = ""
@@ -347,9 +330,7 @@ async def list_provider_models(
             if allow_prefixes is not None:
                 prefix_tuple = tuple(str(p) for p in allow_prefixes if str(p))
                 if prefix_tuple:
-                    models = [
-                        m for m in models if m.get("id", "").startswith(prefix_tuple)
-                    ]
+                    models = [m for m in models if m.get("id", "").startswith(prefix_tuple)]
             allowlist = info.get("model_id_allowlist")
             if allowlist is not None:
                 models = [m for m in models if allowlist.match(m.get("id", ""))]

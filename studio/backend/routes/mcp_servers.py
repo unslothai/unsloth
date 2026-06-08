@@ -112,16 +112,13 @@ def _row_to_response(row: dict) -> McpServerResponse:
 
 
 @router.get("/", response_model = list[McpServerResponse])
-async def list_mcp_servers(
-    current_subject: str = Depends(get_current_subject),
-):
+async def list_mcp_servers(current_subject: str = Depends(get_current_subject)):
     return [_row_to_response(row) for row in mcp_servers_db.list_servers()]
 
 
 @router.post("/", response_model = McpServerResponse, status_code = 201)
 async def create_mcp_server(
-    payload: McpServerCreate,
-    current_subject: str = Depends(get_current_subject),
+    payload: McpServerCreate, current_subject: str = Depends(get_current_subject)
 ):
     display_name = (payload.display_name or "").strip()
     if not display_name:
@@ -151,9 +148,7 @@ def _changes_from_payload(payload: McpServerUpdate) -> dict:
     if "display_name" in sent:
         name = (payload.display_name or "").strip()
         if not name:
-            raise HTTPException(
-                status_code = 400, detail = "display_name must not be empty"
-            )
+            raise HTTPException(status_code = 400, detail = "display_name must not be empty")
         changes["display_name"] = name
     if "url" in sent:
         changes["url"] = _validate_url(payload.url or "")
@@ -162,15 +157,11 @@ def _changes_from_payload(payload: McpServerUpdate) -> dict:
         changes["headers_json"] = json.dumps(headers) if headers else None
     if "is_enabled" in sent:
         if payload.is_enabled is None:
-            raise HTTPException(
-                status_code = 400, detail = "is_enabled must be true or false"
-            )
+            raise HTTPException(status_code = 400, detail = "is_enabled must be true or false")
         changes["is_enabled"] = payload.is_enabled
     if "use_oauth" in sent:
         if payload.use_oauth is None:
-            raise HTTPException(
-                status_code = 400, detail = "use_oauth must be true or false"
-            )
+            raise HTTPException(status_code = 400, detail = "use_oauth must be true or false")
         changes["use_oauth"] = payload.use_oauth
     # stdio is OAuth-less: drop a stale OAuth flag when switching to a command.
     if "url" in changes and is_stdio(changes["url"]):
@@ -203,8 +194,7 @@ async def update_mcp_server(
     # fastmcp keys tokens by URL and would otherwise let a re-pointed server
     # silently inherit the old account's credentials.
     if bool(old.get("use_oauth")) and (
-        ("url" in changes and changes["url"] != old["url"])
-        or changes.get("use_oauth") is False
+        ("url" in changes and changes["url"] != old["url"]) or changes.get("use_oauth") is False
     ):
         await clear_oauth_tokens_async(old["url"])
     mcp_servers_db.update_server(server_id, changes)
@@ -212,10 +202,7 @@ async def update_mcp_server(
 
 
 @router.delete("/{server_id}", status_code = 204)
-async def delete_mcp_server(
-    server_id: str,
-    current_subject: str = Depends(get_current_subject),
-):
+async def delete_mcp_server(server_id: str, current_subject: str = Depends(get_current_subject)):
     old = mcp_servers_db.get_server(server_id)
     if not old:
         raise HTTPException(status_code = 404, detail = "MCP server not found")
@@ -226,8 +213,7 @@ async def delete_mcp_server(
 
 @router.post("/{server_id}/refresh", response_model = McpServerProbeResult)
 async def refresh_mcp_server_tools(
-    server_id: str,
-    current_subject: str = Depends(get_current_subject),
+    server_id: str, current_subject: str = Depends(get_current_subject)
 ):
     server = mcp_servers_db.get_server(server_id)
     if not server:
@@ -235,9 +221,7 @@ async def refresh_mcp_server_tools(
     # Refresh uses the stored address, so re-check the stdio gate here too: a
     # stdio row from a desktop DB must not spawn on a hosted/network host.
     if is_stdio(server["url"]) and not stdio_mcp_enabled():
-        raise HTTPException(
-            status_code = 400, detail = "stdio MCP servers are disabled on this host"
-        )
+        raise HTTPException(status_code = 400, detail = "stdio MCP servers are disabled on this host")
 
     use_oauth = bool(server.get("use_oauth"))
     try:
@@ -261,8 +245,7 @@ async def refresh_mcp_server_tools(
 
 @router.post("/test", response_model = McpServerProbeResult)
 async def test_mcp_server(
-    payload: McpServerTestRequest,
-    current_subject: str = Depends(get_current_subject),
+    payload: McpServerTestRequest, current_subject: str = Depends(get_current_subject)
 ):
     # URL/header validation must surface as 400 like create/update so the
     # frontend's create-form pre-flight gets the same error semantics as the

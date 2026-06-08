@@ -281,8 +281,7 @@ def is_mmproj_by_metadata(meta: Optional[Dict[str, str]]) -> Optional[bool]:
 
 
 def pairing_score(
-    weight_meta: Optional[Dict[str, str]],
-    mmproj_meta: Optional[Dict[str, str]],
+    weight_meta: Optional[Dict[str, str]], mmproj_meta: Optional[Dict[str, str]]
 ) -> int:
     """Pairing confidence: 100 = base_model URL match, 80 = basename + org,
     60 = basename, -1 = definitive mismatch, 0 = decide from filename."""

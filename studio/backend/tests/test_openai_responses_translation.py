@@ -154,10 +154,7 @@ def test_responses_translates_image_parts(monkeypatch):
 
     parts = captured["body"]["input"][0]["content"]
     assert parts[0] == {"type": "input_text", "text": "What is this?"}
-    assert parts[1] == {
-        "type": "input_image",
-        "image_url": "data:image/png;base64,AAA",
-    }
+    assert parts[1] == {"type": "input_image", "image_url": "data:image/png;base64,AAA"}
     # No max_output_tokens key when caller passes max_tokens=None.
     assert "max_output_tokens" not in captured["body"]
 
@@ -497,8 +494,7 @@ def test_responses_response_incomplete_maps_to_length_finish_reason(monkeypatch)
     finish_reasons = [
         json.loads(line[len("data:") :].strip())["choices"][0]["finish_reason"]
         for line in lines
-        if line.startswith("data:")
-        and line[len("data:") :].strip() not in ("", "[DONE]")
+        if line.startswith("data:") and line[len("data:") :].strip() not in ("", "[DONE]")
     ]
     assert "length" in finish_reasons
 
@@ -730,8 +726,7 @@ def test_responses_reasoning_summary_wrapped_in_think_tags(monkeypatch):
     data_lines = [
         line[len("data:") :].strip()
         for line in lines
-        if line.startswith("data:")
-        and line[len("data:") :].strip() not in ("", "[DONE]")
+        if line.startswith("data:") and line[len("data:") :].strip() not in ("", "[DONE]")
     ]
     payloads = [json.loads(raw) for raw in data_lines]
     combined = "".join(

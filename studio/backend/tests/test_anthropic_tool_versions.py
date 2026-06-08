@@ -167,10 +167,7 @@ def test_outbound_body_uses_new_versions_on_opus_4_7(monkeypatch):
     # Beta header for code execution stays on the existing flag for both
     # _20250825 and _20260120; the API gates the feature by one header, not
     # the date.
-    assert "code-execution-2025-08-25" in captured["headers"].get(
-        "anthropic-beta",
-        "",
-    )
+    assert "code-execution-2025-08-25" in captured["headers"].get("anthropic-beta", "")
 
 
 def test_outbound_body_falls_back_on_haiku_4_5(monkeypatch):

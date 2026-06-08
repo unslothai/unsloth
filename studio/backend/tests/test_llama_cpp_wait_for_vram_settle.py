@@ -131,9 +131,7 @@ def test_stale_kill_skips_wait():
         LlamaCppBackend._wait_for_vram_settle(
             **_kw(since_kill = long_ago, max_wait = 2.0, interval = 0.25)
         )
-    assert (
-        state["calls"] == 0
-    ), "kill older than _VRAM_SETTLE_WINDOW_S must skip the wait"
+    assert state["calls"] == 0, "kill older than _VRAM_SETTLE_WINDOW_S must skip the wait"
 
 
 def test_empty_first_sample_returns_immediately():
@@ -221,9 +219,7 @@ def test_max_wait_respected_when_probe_is_slow():
         elapsed = time.monotonic() - start
     # First probe (0.30 s) + at most one clipped sleep + bail.
     # Hard cap well below the old 0.30 + 0.25 + 0.30 = 0.85.
-    assert (
-        elapsed < 0.85
-    ), f"helper exceeded the deadline due to slow probes: {elapsed:.3f}s"
+    assert elapsed < 0.85, f"helper exceeded the deadline due to slow probes: {elapsed:.3f}s"
 
 
 def test_gpu_index_set_change_returns():

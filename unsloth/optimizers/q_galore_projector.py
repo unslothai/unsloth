@@ -191,11 +191,7 @@ class GaLoreProjector:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _compute_orthogonal(
-        weights: torch.Tensor,
-        rank: int,
-        side: str,
-    ) -> torch.Tensor:
+    def _compute_orthogonal(weights: torch.Tensor, rank: int, side: str) -> torch.Tensor:
         """Compute the top-``rank`` orthogonal matrix via truncated SVD.
 
         Args:
@@ -233,11 +229,7 @@ class GaLoreProjector:
     # Adaptive scheduling
     # ------------------------------------------------------------------
 
-    def _update_adaptive_schedule(
-        self,
-        float_ortho: torch.Tensor,
-        side: str,
-    ) -> None:
+    def _update_adaptive_schedule(self, float_ortho: torch.Tensor, side: str) -> None:
         """Track subspace stability and increase ``update_proj_gap`` if stable."""
         self.svd_count += 1
 
@@ -329,10 +321,7 @@ def _quantize(
 
 @torch.no_grad()
 def _dequantize(
-    w: torch.Tensor,
-    scales: torch.Tensor,
-    zeros: torch.Tensor,
-    original_shape: tuple,
+    w: torch.Tensor, scales: torch.Tensor, zeros: torch.Tensor, original_shape: tuple
 ) -> torch.Tensor:
     """Dequantize from uint8 back to float."""
     # Infer group size: scales has shape (n_groups, 1), so n_groups = scales.shape[0]

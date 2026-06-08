@@ -62,12 +62,7 @@ def get_connection() -> sqlite3.Connection:
     return conn
 
 
-def create_provider(
-    id: str,
-    provider_type: str,
-    display_name: str,
-    base_url: str,
-) -> None:
+def create_provider(id: str, provider_type: str, display_name: str, base_url: str) -> None:
     """Insert a new provider configuration."""
     now = datetime.now(timezone.utc).isoformat()
     conn = get_connection()
@@ -145,9 +140,7 @@ def list_providers() -> list[dict]:
     """List all provider configurations, ordered by creation time."""
     conn = get_connection()
     try:
-        rows = conn.execute(
-            "SELECT * FROM llm_providers ORDER BY created_at"
-        ).fetchall()
+        rows = conn.execute("SELECT * FROM llm_providers ORDER BY created_at").fetchall()
         return [dict(row) for row in rows]
     finally:
         conn.close()

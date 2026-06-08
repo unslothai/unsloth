@@ -38,9 +38,7 @@ from utils.wheel_utils import (
 )
 
 
-def _output_dir_from_resume_checkpoint(
-    resume_from_checkpoint: str | None,
-) -> str | None:
+def _output_dir_from_resume_checkpoint(resume_from_checkpoint: str | None) -> str | None:
     if not resume_from_checkpoint:
         return None
     path = Path(resume_from_checkpoint)
@@ -104,9 +102,7 @@ if sys.platform == "win32":
 
         try:
             if os.path.isdir(_default_root):
-                for _ver in sorted(
-                    os.listdir(_default_root), key = _ver_key, reverse = True
-                ):
+                for _ver in sorted(os.listdir(_default_root), key = _ver_key, reverse = True):
                     _bin = os.path.join(_default_root, _ver, "bin")
                     if os.path.isdir(_bin):
                         _candidates.append(_bin)
@@ -255,9 +251,7 @@ def _install_package_wheel_first(
                 "(this may take several minutes)..."
             )
         else:
-            pypi_status_message = (
-                f"Installing {display_name} from PyPI for faster training..."
-            )
+            pypi_status_message = f"Installing {display_name} from PyPI for faster training..."
 
     _send_status(event_queue, pypi_status_message)
 
@@ -347,8 +341,7 @@ def _install_package_wheel_first(
         )
         _send_status(
             event_queue,
-            f"{display_name} installation timed out after "
-            f"{_run_kwargs.get('timeout')}s",
+            f"{display_name} installation timed out after " f"{_run_kwargs.get('timeout')}s",
         )
         return False
 
@@ -429,7 +422,6 @@ def _flash_linear_attention_importable() -> bool:
     try:
         import fla.modules  # noqa: F401
         import fla.ops.gated_delta_rule  # noqa: F401
-
         return True
     except Exception as exc:
         logger.warning(
@@ -467,9 +459,7 @@ def _ensure_flash_linear_attention_unconditional(event_queue: Any) -> bool:
     if os.getenv(_FLA_SKIP_ENV) == "1":
         return False
     if sys.platform == "win32":
-        logger.info(
-            "Skipping flash-linear-attention install: no prebuilt wheel for Windows"
-        )
+        logger.info("Skipping flash-linear-attention install: no prebuilt wheel for Windows")
         return False
     if sys.version_info < _FLA_MIN_PYTHON:
         logger.info(
@@ -544,9 +534,7 @@ def _ensure_flash_linear_attention_unconditional(event_queue: Any) -> bool:
         )
     except _sp.TimeoutExpired:
         logger.warning("flash-linear-attention install timed out; continuing")
-        _send_status(
-            event_queue, "flash-linear-attention install timed out; continuing"
-        )
+        _send_status(event_queue, "flash-linear-attention install timed out; continuing")
         return False
 
     if result.returncode != 0:
@@ -629,7 +617,6 @@ def _discover_fla_model_types() -> frozenset[str]:
     found: set[str] = set()
     try:
         import transformers
-
         models_root = Path(transformers.__file__).parent / "models"
         for modeling in models_root.glob("*/modeling_*.py"):
             try:
@@ -659,7 +646,6 @@ def _installed_tvm_ffi_version() -> str | None:
     """Installed apache-tvm-ffi version, or None if missing/unimportable."""
     try:
         from importlib.metadata import version as _pkg_version
-
         return _pkg_version("apache-tvm-ffi")
     except Exception:
         return None
@@ -670,7 +656,6 @@ def _tilelang_importable() -> bool:
     try:
         import tilelang  # noqa: F401
         import tvm_ffi  # noqa: F401
-
         return True
     except Exception as exc:
         logger.warning(
@@ -688,7 +673,6 @@ def _torch_has_hip() -> bool:
     """
     try:
         import torch as _torch
-
         return bool(
             getattr(_torch.version, "hip", None)
             or "rocm" in getattr(_torch, "__version__", "").lower()
@@ -728,10 +712,7 @@ def _rocm_classify_unified_memory(props: Any) -> tuple[str, bool]:
     # Arch attrs absent — fall back to device-name matching.
     dev_lower = (getattr(props, "name", "") or "").lower()
     is_unified = (
-        "890m" in dev_lower
-        or "880m" in dev_lower
-        or "8060s" in dev_lower
-        or "8050s" in dev_lower
+        "890m" in dev_lower or "880m" in dev_lower or "8060s" in dev_lower or "8050s" in dev_lower
     )
     return gcn_arch, is_unified
 
@@ -774,9 +755,7 @@ def _run_pip(cmd: list[str], event_queue: Any, label: str) -> bool:
         _send_status(event_queue, f"{label} install timed out; continuing")
         return False
     if result.returncode != 0:
-        logger.warning(
-            "%s install failed (continuing without it):\n%s", label, result.stdout
-        )
+        logger.warning("%s install failed (continuing without it):\n%s", label, result.stdout)
         _send_status(event_queue, f"{label} install failed; continuing")
         return False
     return True
@@ -802,7 +781,6 @@ def _ensure_tilelang_backend_unconditional(event_queue: Any) -> bool:
         return False
     if not _tilelang_platform_supported():
         import platform as _platform
-
         logger.info(
             "Skipping tilelang install: no prebuilt wheel for %s/%s",
             sys.platform,
@@ -878,9 +856,7 @@ def _ensure_tilelang_backend(event_queue: Any, model_name: str) -> None:
 # UNSLOTH_STUDIO_SKIP_FAST_PATH_HOOKS=1 falls back to the legacy substring path.
 
 
-def _rebind_in_already_imported_modules(
-    *, attr_name: str, old_obj: Any, new_obj: Any
-) -> int:
+def _rebind_in_already_imported_modules(*, attr_name: str, old_obj: Any, new_obj: Any) -> int:
     """Rebind `attr_name -> new_obj` in every module that already imported `old_obj`.
 
     `from X import Y` creates a local binding that reassigning X.Y won't reach.
@@ -953,9 +929,7 @@ def _install_fast_path_hooks(event_queue: Any, model_name: str) -> None:
                 try:
                     ok = bool(install_fn(event_queue))
                 except Exception as exc:
-                    logger.warning(
-                        "%s install raised: %s; falling back to torch", gate_name, exc
-                    )
+                    logger.warning("%s install raised: %s; falling back to torch", gate_name, exc)
                     ok = False
                 logger.info("%s hook done; available=%s", gate_name, ok)
             # post_available_fn handles "gate already True but ancillary kernel broken"
@@ -964,9 +938,7 @@ def _install_fast_path_hooks(event_queue: Any, model_name: str) -> None:
                 try:
                     post_available_fn(event_queue)
                 except Exception as exc:
-                    logger.warning(
-                        "%s post-available step raised: %s; continuing", gate_name, exc
-                    )
+                    logger.warning("%s post-available step raised: %s; continuing", gate_name, exc)
             state["installed"] = True
             return ok
 
@@ -977,9 +949,7 @@ def _install_fast_path_hooks(event_queue: Any, model_name: str) -> None:
     def _fla_install(eq: Any) -> bool:
         # FLA alone ~2.35x; +tilelang adds ~26%. tilelang is GDN-only (Qwen3.5 family).
         if not _ensure_flash_linear_attention_unconditional(eq):
-            logger.info(
-                "FLA install did not produce an importable runtime; skipping TileLang"
-            )
+            logger.info("FLA install did not produce an importable runtime; skipping TileLang")
             return False
         if _model_wants_tilelang(model_name):
             _ensure_tilelang_backend_unconditional(eq)
@@ -994,10 +964,7 @@ def _install_fast_path_hooks(event_queue: Any, model_name: str) -> None:
         # FLA imports; repair tilelang if missing or on the broken tvm-ffi list.
         if not _model_wants_tilelang(model_name):
             return
-        if (
-            _installed_tvm_ffi_version() not in _TVM_FFI_BROKEN_VERSIONS
-            and _tilelang_importable()
-        ):
+        if _installed_tvm_ffi_version() not in _TVM_FFI_BROKEN_VERSIONS and _tilelang_importable():
             return
         _ensure_tilelang_backend_unconditional(eq)
 
@@ -1013,9 +980,7 @@ def _install_fast_path_hooks(event_queue: Any, model_name: str) -> None:
             pypi_version = _CAUSAL_CONV1D_PACKAGE_VERSION,
             filename_prefix = "causal_conv1d",
             release_tag = _CAUSAL_CONV1D_RELEASE_TAG,
-            release_base_url = (
-                "https://github.com/Dao-AILab/causal-conv1d/releases/download"
-            ),
+            release_base_url = ("https://github.com/Dao-AILab/causal-conv1d/releases/download"),
         )
         return bool(ok)
 
@@ -1035,9 +1000,7 @@ def _install_fast_path_hooks(event_queue: Any, model_name: str) -> None:
         rebound = _rebind_in_already_imported_modules(
             attr_name = gate_name, old_obj = original, new_obj = wrapped
         )
-        logger.info(
-            "Installed fast-path hook on %s (rebound %d modules)", gate_name, rebound
-        )
+        logger.info("Installed fast-path hook on %s (rebound %d modules)", gate_name, rebound)
 
 
 def _should_try_runtime_flash_attn_install(max_seq_length: int) -> bool:
@@ -1185,8 +1148,7 @@ def _normalize_mlx_studio_optimizer(value):
     except KeyError:
         supported = ", ".join(sorted(_MLX_STUDIO_OPTIM_MAP))
         raise ValueError(
-            f"Unsupported optimizer for MLX training: {value!r}. "
-            f"Supported values: {supported}."
+            f"Unsupported optimizer for MLX training: {value!r}. " f"Supported values: {supported}."
         )
 
 
@@ -1208,9 +1170,7 @@ def _resolve_mlx_local_dataset_files(file_paths: list) -> list[str]:
     all_files: list[str] = []
     for dataset_file in file_paths or []:
         file_path = (
-            dataset_file
-            if os.path.isabs(dataset_file)
-            else str(resolve_dataset_path(dataset_file))
+            dataset_file if os.path.isabs(dataset_file) else str(resolve_dataset_path(dataset_file))
         )
         file_path_obj = Path(file_path)
 
@@ -1308,9 +1268,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
         raise NotImplementedError(message)
 
     optim_name = _normalize_mlx_studio_optimizer(config.get("optim", "adamw_8bit"))
-    lr_scheduler_type = _normalize_mlx_studio_scheduler(
-        config.get("lr_scheduler_type", "linear")
-    )
+    lr_scheduler_type = _normalize_mlx_studio_scheduler(config.get("lr_scheduler_type", "linear"))
 
     # ── 1. Load model ──
     # Force text-only for non-image datasets even on vision-capable models
@@ -1339,8 +1297,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
         _send(
             "status",
             status_message = (
-                "MLX vision image resize ignored for DeepSeek OCR "
-                "(uses fixed Gundam preset)."
+                "MLX vision image resize ignored for DeepSeek OCR (uses fixed Gundam preset)."
             ),
         )
         vision_image_size = None
@@ -1386,15 +1343,9 @@ def _run_mlx_training(event_queue, stop_queue, config):
         finetune_language = config.get("finetune_language_layers", True)
         finetune_attention = config.get("finetune_attention_modules", True)
         finetune_mlp = config.get("finetune_mlp_modules", True)
-        finetune_vision = (
-            config.get("finetune_vision_layers", False) if is_vlm else False
-        )
+        finetune_vision = config.get("finetune_vision_layers", False) if is_vlm else False
 
-        if (
-            (finetune_attention or finetune_mlp)
-            and not finetune_language
-            and not finetune_vision
-        ):
+        if (finetune_attention or finetune_mlp) and not finetune_language and not finetune_vision:
             finetune_language = True
 
         peft_kwargs["finetune_language_layers"] = finetune_language
@@ -1427,9 +1378,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
 
         if len(file_paths) == 1:
             p = Path(file_paths[0])
-            if p.is_dir() and (
-                (p / "dataset_info.json").exists() or (p / "state.json").exists()
-            ):
+            if p.is_dir() and ((p / "dataset_info.json").exists() or (p / "state.json").exists()):
                 return load_from_disk(str(p))
         all_files = _resolve_mlx_local_dataset_files(file_paths)
         if not all_files:
@@ -1469,7 +1418,6 @@ def _run_mlx_training(event_queue, stop_queue, config):
     format_type = config.get("format_type", "")
     try:
         from utils.datasets import format_and_template_dataset
-
         def _fmt_progress(status_message = "", **_kw):
             _send("status", status_message = status_message)
 
@@ -1490,9 +1438,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
                 )
             else:
                 errors = vlm_info.get("errors", [])
-                raise ValueError(
-                    f"VLM dataset format conversion failed: {'; '.join(errors)}"
-                )
+                raise ValueError(f"VLM dataset format conversion failed: {'; '.join(errors)}")
             if eval_dataset is not None:
                 ev_info = format_and_template_dataset(
                     eval_dataset,
@@ -1624,11 +1570,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
             )
 
             template_name = MODEL_TO_TEMPLATE_MAPPER.get(model_name.lower())
-            markers = (
-                TEMPLATE_TO_RESPONSES_MAPPER.get(template_name)
-                if template_name
-                else None
-            )
+            markers = TEMPLATE_TO_RESPONSES_MAPPER.get(template_name) if template_name else None
             if markers:
                 trainer = train_on_responses_only(
                     trainer,
@@ -1720,11 +1662,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
                         "train/tokens_per_sec": tok_s,
                         "train/peak_gb": peak_gb,
                         "train/num_tokens": num_tokens,
-                        **(
-                            {"train/grad_norm": grad_norm}
-                            if grad_norm is not None
-                            else {}
-                        ),
+                        **({"train/grad_norm": grad_norm} if grad_norm is not None else {}),
                     },
                     step = step,
                 )
@@ -1747,9 +1685,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
         _send("progress", step = step, eval_loss = eval_loss)
         if wandb_run is not None:
             try:
-                wandb_run.log(
-                    {"eval/loss": eval_loss, "eval/perplexity": perplexity}, step = step
-                )
+                wandb_run.log({"eval/loss": eval_loss, "eval/perplexity": perplexity}, step = step)
             except Exception:
                 pass
         if tb_writer is not None:
@@ -1808,12 +1744,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
             pass
 
 
-def run_training_process(
-    *,
-    event_queue: Any,
-    stop_queue: Any,
-    config: dict,
-) -> None:
+def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> None:
     """Subprocess entrypoint. Fresh Python — no stale module state.
 
     Args:
@@ -1822,9 +1753,7 @@ def run_training_process(
         config: Training config dict with all parameters.
     """
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
-    os.environ["PYTHONWARNINGS"] = (
-        "ignore"  # Suppress warnings at C-level before imports
-    )
+    os.environ["PYTHONWARNINGS"] = "ignore"  # Suppress warnings at C-level before imports
 
     # Offline auto-detect: skip ~25s of HF retries per call when DNS is dead.
     # Scoped to this subprocess (orchestrator spawns a fresh one).
@@ -1993,7 +1922,6 @@ def run_training_process(
     # override there. Windows has no fork.
     if sys.platform == "linux":
         import multiprocessing as _mp
-
         try:
             _mp.set_start_method("fork", force = True)
         except RuntimeError:
@@ -2003,7 +1931,6 @@ def run_training_process(
     if sys.platform == "win32":
         try:
             import triton  # noqa: F401
-
             logger.info("Triton available — torch.compile enabled")
         except ImportError:
             os.environ["TORCHDYNAMO_DISABLE"] = "1"
@@ -2035,7 +1962,6 @@ def run_training_process(
 
     try:
         import torch.distributed as _td
-
         for _name, _stub in _td_stubs.items():
             if not hasattr(_td, _name):
                 setattr(_td, _name, _stub)
@@ -2046,7 +1972,6 @@ def run_training_process(
         sys.modules["torch.distributed"] = _td_mock
         try:
             import torch as _torch
-
             _torch.distributed = _td_mock
         except Exception:
             pass
@@ -2147,9 +2072,7 @@ def run_training_process(
             # (e.g. "2.11.0+rocm7.13.0" or "2.9.0+rocmsdk20251116"); fall back to
             # that string when version.hip is missing.
             def _hip_ver_at_least(major: int, minor: int) -> bool:
-                _hip_str = getattr(
-                    getattr(_torch_for_rocm, "version", None), "hip", None
-                )
+                _hip_str = getattr(getattr(_torch_for_rocm, "version", None), "hip", None)
                 if not _hip_str:
                     # Try the standard "+rocmX.Y.Z" embedded version first.
                     _ver_match = re.search(r"rocm(\d+)\.(\d+)", _build_version_for_rocm)
@@ -2208,7 +2131,11 @@ def run_training_process(
                     _gm_lib = _torch_for_rocm.library.Library("aten", "IMPL")
 
                     def _grouped_mm_safe_impl(
-                        self, mat2, offs = None, bias = None, out_dtype = None
+                        self,
+                        mat2,
+                        offs = None,
+                        bias = None,
+                        out_dtype = None,
                     ):
                         """Python mm/bmm fallback for _grouped_mm on gfx1200 (null HIP kernel, ROCm ≤ 7.12)."""
                         _t = _torch_for_rocm
@@ -2245,9 +2172,7 @@ def run_training_process(
                             if prev < self.shape[0]:
                                 a_tail = self[prev:].contiguous()
                                 b_tail = (
-                                    mat2[-1].contiguous()
-                                    if mat2.dim() == 3
-                                    else mat2.contiguous()
+                                    mat2[-1].contiguous() if mat2.dim() == 3 else mat2.contiguous()
                                 )
                                 pieces.append(_t.mm(a_tail, b_tail))
                             result = (
@@ -2305,7 +2230,6 @@ def run_training_process(
     if _hw.IS_ROCM:
         try:
             import torch as _torch_mem
-
             if _torch_mem.cuda.is_available():
                 # Classify unified vs discrete via _rocm_classify_unified_memory
                 # (see its docstring for classification priority).
@@ -2515,15 +2439,12 @@ def run_training_process(
 
         if dataset is None or trainer.should_stop:
             if trainer.should_stop:
-                event_queue.put(
-                    {"type": "complete", "output_dir": None, "ts": time.time()}
-                )
+                event_queue.put({"type": "complete", "output_dir": None, "ts": time.time()})
             else:
                 event_queue.put(
                     {
                         "type": "error",
-                        "error": trainer.training_progress.error
-                        or "Failed to load dataset",
+                        "error": trainer.training_progress.error or "Failed to load dataset",
                         "stack": "",
                         "ts": time.time(),
                     }
@@ -2537,7 +2458,6 @@ def run_training_process(
 
         def _monitor_tqdm():
             from tqdm.auto import tqdm as _tqdm_cls
-
             while not _tqdm_stop.is_set():
                 for bar in list(getattr(_tqdm_cls, "_instances", set())):
                     try:
@@ -2545,9 +2465,7 @@ def run_training_process(
                         desc = getattr(bar, "desc", "") or ""
                         if total > 0 and n > 0 and desc:
                             pct = min(int(n * 100 / total), 100)
-                            _send_status(
-                                event_queue, f"{desc.strip()} {pct}% ({n:,}/{total:,})"
-                            )
+                            _send_status(event_queue, f"{desc.strip()} {pct}% ({n:,}/{total:,})")
                     except (AttributeError, ReferenceError):
                         pass
                 _tqdm_stop.wait(3)
@@ -2575,9 +2493,7 @@ def run_training_process(
         )
         if not success or trainer.should_stop:
             if trainer.should_stop:
-                event_queue.put(
-                    {"type": "complete", "output_dir": None, "ts": time.time()}
-                )
+                event_queue.put({"type": "complete", "output_dir": None, "ts": time.time()})
             else:
                 error_msg = trainer.training_progress.error or "Failed to load model"
                 event_queue.put(
@@ -2618,9 +2534,7 @@ def run_training_process(
                 lora_r = config.get("lora_r", 128),
                 lora_alpha = config.get("lora_alpha", 32),
                 lora_dropout = config.get("lora_dropout", 0.0),
-                use_gradient_checkpointing = config.get(
-                    "gradient_checkpointing", "unsloth"
-                ),
+                use_gradient_checkpointing = config.get("gradient_checkpointing", "unsloth"),
                 use_rslora = config.get("use_rslora", False),
                 use_loftq = config.get("use_loftq", False),
             )
@@ -2630,17 +2544,13 @@ def run_training_process(
                 use_lora = True,
                 finetune_vision_layers = config.get("finetune_vision_layers", True),
                 finetune_language_layers = config.get("finetune_language_layers", True),
-                finetune_attention_modules = config.get(
-                    "finetune_attention_modules", True
-                ),
+                finetune_attention_modules = config.get("finetune_attention_modules", True),
                 finetune_mlp_modules = config.get("finetune_mlp_modules", True),
                 target_modules = config.get("target_modules"),
                 lora_r = config.get("lora_r", 16),
                 lora_alpha = config.get("lora_alpha", 16),
                 lora_dropout = config.get("lora_dropout", 0.0),
-                use_gradient_checkpointing = config.get(
-                    "gradient_checkpointing", "unsloth"
-                ),
+                use_gradient_checkpointing = config.get("gradient_checkpointing", "unsloth"),
                 use_rslora = config.get("use_rslora", False),
                 use_loftq = config.get("use_loftq", False),
             )
@@ -2650,15 +2560,12 @@ def run_training_process(
 
         if not success or trainer.should_stop:
             if trainer.should_stop:
-                event_queue.put(
-                    {"type": "complete", "output_dir": None, "ts": time.time()}
-                )
+                event_queue.put({"type": "complete", "output_dir": None, "ts": time.time()})
             else:
                 event_queue.put(
                     {
                         "type": "error",
-                        "error": trainer.training_progress.error
-                        or "Failed to prepare model",
+                        "error": trainer.training_progress.error or "Failed to prepare model",
                         "stack": "",
                         "ts": time.time(),
                     }
@@ -2714,9 +2621,7 @@ def run_training_process(
             ensure_dir(Path(tensorboard_dir))
 
         # Start training directly — no inner thread, we ARE the subprocess.
-        dataset_display = (
-            config.get("hf_dataset", "") or config.get("uploaded_file", "") or ""
-        )
+        dataset_display = config.get("hf_dataset", "") or config.get("uploaded_file", "") or ""
         _send_status(
             event_queue,
             f'Training "{model_name}"'
@@ -2740,9 +2645,7 @@ def run_training_process(
             weight_decay = config.get("weight_decay", 0.001),
             random_seed = config.get("random_seed", 3407),
             packing = config.get("packing", False),
-            train_on_completions = False
-            if is_cpt
-            else config.get("train_on_completions", False),
+            train_on_completions = False if is_cpt else config.get("train_on_completions", False),
             enable_wandb = config.get("enable_wandb", False),
             wandb_project = config.get("wandb_project", "unsloth-training"),
             wandb_token = config.get("wandb_token"),
@@ -3013,9 +2916,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
                     if candidates:
                         all_files.extend(str(c) for c in candidates)
                         continue
-                    raise ValueError(
-                        f"No supported data files in directory: {file_path_obj}"
-                    )
+                    raise ValueError(f"No supported data files in directory: {file_path_obj}")
                 else:
                     all_files.append(file_path)
 
@@ -3028,9 +2929,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
                 elif first_ext == ".parquet":
                     loader = "parquet"
                 else:
-                    raise ValueError(
-                        f"Unsupported local dataset format: {all_files[0]}"
-                    )
+                    raise ValueError(f"Unsupported local dataset format: {all_files[0]}")
                 dataset = load_dataset(loader, data_files = all_files, split = "train")
         else:
             event_queue.put(
@@ -3090,9 +2989,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
         resume_from_checkpoint
     )
     if not output_dir:
-        output_dir = str(
-            resolve_output_dir(f"{model_name.replace('/', '_')}_{int(time.time())}")
-        )
+        output_dir = str(resolve_output_dir(f"{model_name.replace('/', '_')}_{int(time.time())}"))
     output_dir = str(resolve_output_dir(output_dir))
 
     num_epochs = config.get("num_epochs", 2)
@@ -3153,7 +3050,14 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
     class _EmbeddingProgressCallback(TrainerCallback):
         """Send training progress events to the parent via event_queue."""
 
-        def on_log(self, args, state, control, logs = None, **kwargs):
+        def on_log(
+            self,
+            args,
+            state,
+            control,
+            logs = None,
+            **kwargs,
+        ):
             if not logs:
                 return
             loss_value = logs.get("loss", logs.get("train_loss", None))

@@ -66,9 +66,7 @@ def generate_smart_vlm_instruction(
         # OCR / Transcription
         "ocr": {
             "keywords": ["ocr", "transcribe", "transcript"],
-            "content_hints": [
-                r"[A-Za-z\u0600-\u06FF]{10,}"
-            ],  # Long text passages (Latin/Arabic)
+            "content_hints": [r"[A-Za-z\u0600-\u06FF]{10,}"],  # Long text passages (Latin/Arabic)
             "instruction": "Transcribe all the text shown in this image.",
             "confidence": 0.9,
         },
@@ -219,7 +217,6 @@ def generate_smart_vlm_instruction(
             }
     except Exception as e:
         import logging
-
         logging.getLogger(__name__).debug(f"LLM-assisted instruction skipped: {e}")
 
     # ===== LEVEL 5: Generic Fallback =====

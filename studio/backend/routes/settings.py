@@ -45,16 +45,13 @@ def _upload_limit_response(limit_mb: int) -> UploadLimitResponse:
 
 
 @router.get("/upload-limit", response_model = UploadLimitResponse)
-def get_upload_limit(
-    current_subject: str = Depends(get_current_subject),
-) -> UploadLimitResponse:
+def get_upload_limit(current_subject: str = Depends(get_current_subject)) -> UploadLimitResponse:
     return _upload_limit_response(get_upload_limit_mb())
 
 
 @router.put("/upload-limit", response_model = UploadLimitResponse)
 def update_upload_limit(
-    payload: UploadLimitPayload,
-    current_subject: str = Depends(get_current_subject),
+    payload: UploadLimitPayload, current_subject: str = Depends(get_current_subject)
 ) -> UploadLimitResponse:
     try:
         limit_mb = set_upload_limit_mb(payload.max_upload_size_mb)

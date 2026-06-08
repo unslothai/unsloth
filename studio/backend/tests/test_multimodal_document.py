@@ -314,11 +314,7 @@ def test_openai_base64_pdf_becomes_input_file(monkeypatch):
     user_msg = captured["body"]["input"][0]
     parts = user_msg["content"]
     fileblk = next(p for p in parts if p.get("type") == "input_file")
-    assert fileblk == {
-        "type": "input_file",
-        "file_data": _PDF_DATA_URI,
-        "filename": "paper.pdf",
-    }
+    assert fileblk == {"type": "input_file", "file_data": _PDF_DATA_URI, "filename": "paper.pdf"}
 
 
 def test_openai_url_pdf_becomes_input_file(monkeypatch):
@@ -341,10 +337,7 @@ def test_openai_url_pdf_becomes_input_file(monkeypatch):
     )
     parts = captured["body"]["input"][0]["content"]
     fileblk = next(p for p in parts if p.get("type") == "input_file")
-    assert fileblk == {
-        "type": "input_file",
-        "file_url": "https://example.com/doc.pdf",
-    }
+    assert fileblk == {"type": "input_file", "file_url": "https://example.com/doc.pdf"}
 
 
 def test_openai_empty_data_uri_falls_back_to_file_url(monkeypatch):
@@ -506,9 +499,7 @@ def test_build_external_messages_passes_input_document_for_anthropic_and_openai(
         )
     ]
     for provider in ("anthropic", "openai"):
-        out = _build_external_messages(
-            msgs, supports_vision = True, provider_type = provider
-        )
+        out = _build_external_messages(msgs, supports_vision = True, provider_type = provider)
         assert len(out) == 1, (provider, out)
         parts = out[0]["content"]
         assert parts[0] == {"type": "text", "text": "summarise"}, provider
@@ -544,9 +535,7 @@ def test_build_external_messages_strips_input_document_for_unmapped_providers():
         )
     ]
     for provider in ("gemini", "mistral", "kimi", "openrouter", "deepseek", "qwen"):
-        out = _build_external_messages(
-            msgs, supports_vision = True, provider_type = provider
-        )
+        out = _build_external_messages(msgs, supports_vision = True, provider_type = provider)
         assert len(out) == 1, (provider, out)
         parts = out[0]["content"]
         types = [p.get("type") for p in parts if isinstance(p, dict)]

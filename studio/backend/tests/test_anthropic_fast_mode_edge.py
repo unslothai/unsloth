@@ -60,7 +60,11 @@ def _refusal_sse(model: str = "claude-opus-4-7") -> bytes:
     )
 
 
-def _capture(monkeypatch, sse: bytes = b"", **kwargs) -> tuple[dict, list[str]]:
+def _capture(
+    monkeypatch,
+    sse: bytes = b"",
+    **kwargs,
+) -> tuple[dict, list[str]]:
     """Install a MockTransport, drive one streamed call, return body+lines."""
     captured: dict = {}
 
@@ -266,9 +270,7 @@ def test_refusal_notice_appears_before_content_filter_chunk(monkeypatch):
     """The notice content delta must precede the finish_reason chunk."""
     _, lines = _capture(monkeypatch, sse = _refusal_sse(), model = "claude-opus-4-7")
     notice_idx = next(i for i, l in enumerate(lines) if "stopped by Anthropic" in l)
-    filter_idx = next(
-        i for i, l in enumerate(lines) if '"finish_reason": "content_filter"' in l
-    )
+    filter_idx = next(i for i, l in enumerate(lines) if '"finish_reason": "content_filter"' in l)
     assert notice_idx < filter_idx, (notice_idx, filter_idx, lines)
 
 
@@ -349,7 +351,6 @@ def test_fast_mode_prefix_tuple_matches_capability_doc(monkeypatch):
     """Tuple must exactly match the two families in the upstream docs:
     https://platform.claude.com/docs/en/build-with-claude/fast-mode."""
     from core.inference.external_provider import _ANTHROPIC_FAST_MODE_PREFIXES
-
     assert set(_ANTHROPIC_FAST_MODE_PREFIXES) == {
         "claude-opus-4-7",
         "claude-opus-4-6",
@@ -420,9 +421,7 @@ def test_usage_speed_propagates_to_final_usage_chunk_fast(monkeypatch):
 def test_usage_speed_propagates_to_final_usage_chunk_standard(monkeypatch):
     _, lines = _capture(monkeypatch, sse = _fast_speed_sse(speed = "standard"))
     parsed = [
-        json.loads(l[len("data: ") :])
-        for l in lines
-        if l.startswith("data: ") and '"usage"' in l
+        json.loads(l[len("data: ") :]) for l in lines if l.startswith("data: ") and '"usage"' in l
     ]
     speeds = [p["usage"].get("speed") for p in parsed if "usage" in p]
     assert "standard" in speeds, parsed
@@ -432,9 +431,7 @@ def test_usage_speed_absent_when_anthropic_does_not_report(monkeypatch):
     """Studio must not invent ``usage.speed`` when upstream omits it."""
     _, lines = _capture(monkeypatch)
     parsed = [
-        json.loads(l[len("data: ") :])
-        for l in lines
-        if l.startswith("data: ") and '"usage"' in l
+        json.loads(l[len("data: ") :]) for l in lines if l.startswith("data: ") and '"usage"' in l
     ]
     for p in parsed:
         usage = p.get("usage") or {}

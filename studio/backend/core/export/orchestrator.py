@@ -255,7 +255,11 @@ class ExportOrchestrator:
         except (EOFError, OSError, ValueError):
             return None
 
-    def _wait_response(self, expected_type: str, timeout: float = 3600.0) -> dict:
+    def _wait_response(
+        self,
+        expected_type: str,
+        timeout: float = 3600.0,
+    ) -> dict:
         """Block until a response of the expected type arrives.
 
         Export ops can take a long time — GGUF conversion for large
@@ -310,9 +314,7 @@ class ExportOrchestrator:
                 expected_type,
             )
 
-        raise RuntimeError(
-            f"Timeout waiting for '{expected_type}' response after {timeout}s"
-        )
+        raise RuntimeError(f"Timeout waiting for '{expected_type}' response after {timeout}s")
 
     def _drain_queue(self) -> list:
         """Drain all pending responses."""
@@ -362,9 +364,7 @@ class ExportOrchestrator:
                 elif self._proc is not None:
                     self._shutdown_subprocess(timeout = 2)
 
-                logger.info(
-                    "Spawning fresh export subprocess for '%s'", checkpoint_path
-                )
+                logger.info("Spawning fresh export subprocess for '%s'", checkpoint_path)
                 self._spawn_subprocess(sub_config)
 
                 try:
@@ -476,9 +476,7 @@ class ExportOrchestrator:
             },
         )
 
-    def _run_export(
-        self, export_type: str, params: dict
-    ) -> Tuple[bool, str, Optional[str]]:
+    def _run_export(self, export_type: str, params: dict) -> Tuple[bool, str, Optional[str]]:
         """Send an export command to the subprocess and wait for result.
 
         Returns ``(success, message, output_path)``. ``output_path`` is
@@ -544,12 +542,9 @@ class ExportOrchestrator:
             finally:
                 self._export_active = False
 
-    def scan_checkpoints(
-        self, outputs_dir: str = str(outputs_root())
-    ) -> List[Tuple[str, list]]:
+    def scan_checkpoints(self, outputs_dir: str = str(outputs_root())) -> List[Tuple[str, list]]:
         """Scan for checkpoints — runs locally, no ML imports."""
         from utils.models.checkpoints import scan_checkpoints
-
         return scan_checkpoints(outputs_dir = outputs_dir)
 
 

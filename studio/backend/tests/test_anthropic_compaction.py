@@ -40,7 +40,12 @@ def _make_client() -> ExternalProviderClient:
     )
 
 
-def _capture(monkeypatch, model: str, threshold, tools = None) -> dict:
+def _capture(
+    monkeypatch,
+    model: str,
+    threshold,
+    tools = None,
+) -> dict:
     captured: dict = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -120,13 +125,9 @@ def test_supported_model_attaches_compaction_block_and_beta(monkeypatch):
 def test_threshold_clamped_to_50k_minimum(monkeypatch):
     # Below-min values get clamped UP so we don't 400 upstream.
     captured = _capture(monkeypatch, "claude-opus-4-7", 60_000)
-    assert (
-        captured["body"]["context_management"]["edits"][0]["trigger"]["value"] == 60_000
-    )
+    assert captured["body"]["context_management"]["edits"][0]["trigger"]["value"] == 60_000
     captured = _capture(monkeypatch, "claude-opus-4-7", 1)
-    assert (
-        captured["body"]["context_management"]["edits"][0]["trigger"]["value"] == 50_000
-    )
+    assert captured["body"]["context_management"]["edits"][0]["trigger"]["value"] == 50_000
 
 
 # ── beta header merge with code execution ────────────────────────────
@@ -151,10 +152,7 @@ def test_unsupported_model_silently_drops_compaction(monkeypatch):
     captured = _capture(monkeypatch, "claude-haiku-4-5-20251001", 150_000)
     assert "context_management" not in captured["body"]
     # The beta header must not carry compact-2026-01-12 either.
-    assert "compact-2026-01-12" not in captured["headers"].get(
-        "anthropic-beta",
-        "",
-    )
+    assert "compact-2026-01-12" not in captured["headers"].get("anthropic-beta", "")
 
 
 # ── omitted threshold leaves body untouched ─────────────────────────
@@ -163,10 +161,7 @@ def test_unsupported_model_silently_drops_compaction(monkeypatch):
 def test_omitted_threshold_no_body_field(monkeypatch):
     captured = _capture(monkeypatch, "claude-opus-4-7", None)
     assert "context_management" not in captured["body"]
-    assert "compact-2026-01-12" not in captured["headers"].get(
-        "anthropic-beta",
-        "",
-    )
+    assert "compact-2026-01-12" not in captured["headers"].get("anthropic-beta", "")
 
 
 # ── ChatCompletionRequest schema accepts sub-50k threshold ──────────
@@ -211,9 +206,7 @@ def test_chat_completion_request_accepts_sub_50k_compaction_threshold():
 # ── usage.iterations[] surfaces compaction tokens ──────────────────
 
 
-def test_message_delta_iterations_array_aggregates_compaction_tokens(
-    monkeypatch, capsys
-):
+def test_message_delta_iterations_array_aggregates_compaction_tokens(monkeypatch, capsys):
     # When Anthropic compacts mid-stream, the SSE message_delta usage
     # carries `iterations: [{type:"compaction", ...}, ...]`. The top-level
     # input_tokens / output_tokens only cover the `message` iteration, so
@@ -548,9 +541,7 @@ def test_build_external_messages_passes_compaction_for_anthropic_only():
             }
         )
     ]
-    out = _build_external_messages(
-        msgs, supports_vision = True, provider_type = "anthropic"
-    )
+    out = _build_external_messages(msgs, supports_vision = True, provider_type = "anthropic")
     assert len(out) == 1
     parts = out[0]["content"]
     assert parts[0] == {"type": "compaction", "content": "prior summary"}
@@ -578,9 +569,7 @@ def test_build_external_messages_strips_compaction_for_non_anthropic_providers()
         )
     ]
     for provider in ("openai", "deepseek", "mistral", "gemini", "kimi", "openrouter"):
-        out = _build_external_messages(
-            msgs, supports_vision = True, provider_type = provider
-        )
+        out = _build_external_messages(msgs, supports_vision = True, provider_type = provider)
         assert len(out) == 1, (provider, out)
         parts = out[0]["content"]
         types = [p.get("type") for p in parts if isinstance(p, dict)]
@@ -631,14 +620,10 @@ def test_build_external_messages_non_vision_anthropic_keeps_compaction():
             }
         )
     ]
-    out = _build_external_messages(
-        msgs, supports_vision = False, provider_type = "anthropic"
-    )
+    out = _build_external_messages(msgs, supports_vision = False, provider_type = "anthropic")
     parts = out[0]["content"]
     assert {"type": "compaction", "content": "prior summary"} in parts
     # Non-anthropic + non-vision -> compaction stripped, text collapsed
     # back to a string.
-    out2 = _build_external_messages(
-        msgs, supports_vision = False, provider_type = "deepseek"
-    )
+    out2 = _build_external_messages(msgs, supports_vision = False, provider_type = "deepseek")
     assert out2[0]["content"] == "answer", out2

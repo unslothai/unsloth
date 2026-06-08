@@ -172,9 +172,7 @@ def test_latest_published_release_returns_none_on_network_failure(monkeypatch):
     assert fr.latest_published_release("unslothai/llama.cpp") is None
 
 
-def test_latest_published_release_keeps_old_cache_on_transient_failure(
-    monkeypatch, tmp_path
-):
+def test_latest_published_release_keeps_old_cache_on_transient_failure(monkeypatch, tmp_path):
     # Disk entry older than TTL + network fail -> return cached value.
     cache_dir = tmp_path / ".freshness"
     cache_dir.mkdir()
@@ -188,9 +186,7 @@ def test_latest_published_release_keeps_old_cache_on_transient_failure(
 # check_prebuilt_freshness end-to-end.
 
 
-def test_check_prebuilt_freshness_reports_stale_when_old_and_behind(
-    monkeypatch, tmp_path
-):
+def test_check_prebuilt_freshness_reports_stale_when_old_and_behind(monkeypatch, tmp_path):
     install_dir = tmp_path / "llama.cpp"
     _write_marker(
         install_dir,
@@ -200,9 +196,7 @@ def test_check_prebuilt_freshness_reports_stale_when_old_and_behind(
         .replace("+00:00", "Z"),
     )
     bin_path = _fake_binary(install_dir, layout = "root")
-    monkeypatch.setattr(
-        fr, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9300"
-    )
+    monkeypatch.setattr(fr, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9300")
     info = fr.check_prebuilt_freshness(str(bin_path))
     assert info["has_marker"] is True
     assert info["stale"] is True
@@ -222,9 +216,7 @@ def test_check_prebuilt_freshness_not_stale_when_tag_matches(monkeypatch, tmp_pa
         .replace("+00:00", "Z"),
     )
     bin_path = _fake_binary(install_dir, layout = "root")
-    monkeypatch.setattr(
-        fr, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9300"
-    )
+    monkeypatch.setattr(fr, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9300")
     info = fr.check_prebuilt_freshness(str(bin_path))
     assert info["stale"] is False
     assert info["installed_tag"] == "b9300"
@@ -242,9 +234,7 @@ def test_check_prebuilt_freshness_not_stale_within_threshold(monkeypatch, tmp_pa
         .replace("+00:00", "Z"),
     )
     bin_path = _fake_binary(install_dir, layout = "root")
-    monkeypatch.setattr(
-        fr, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9300"
-    )
+    monkeypatch.setattr(fr, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9300")
     info = fr.check_prebuilt_freshness(str(bin_path))
     assert info["stale"] is False
     assert info["age_days"] == 1
@@ -257,9 +247,7 @@ def test_check_prebuilt_freshness_fails_open_without_marker(tmp_path):
     assert info["stale"] is False
 
 
-def test_check_prebuilt_freshness_fails_open_when_github_unreachable(
-    monkeypatch, tmp_path
-):
+def test_check_prebuilt_freshness_fails_open_when_github_unreachable(monkeypatch, tmp_path):
     install_dir = tmp_path / "llama.cpp"
     _write_marker(
         install_dir,
@@ -276,15 +264,11 @@ def test_check_prebuilt_freshness_fails_open_when_github_unreachable(
     assert info["latest_tag"] is None
 
 
-def test_check_prebuilt_freshness_handles_unparseable_install_timestamp(
-    monkeypatch, tmp_path
-):
+def test_check_prebuilt_freshness_handles_unparseable_install_timestamp(monkeypatch, tmp_path):
     install_dir = tmp_path / "llama.cpp"
     _write_marker(install_dir, tag = "b9190", installed_at_utc = "not-a-date")
     bin_path = _fake_binary(install_dir, layout = "root")
-    monkeypatch.setattr(
-        fr, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9300"
-    )
+    monkeypatch.setattr(fr, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9300")
     info = fr.check_prebuilt_freshness(str(bin_path))
     assert info["stale"] is False
     assert info["age_days"] is None
@@ -300,9 +284,7 @@ def test_check_prebuilt_freshness_respects_custom_threshold(monkeypatch, tmp_pat
         .replace("+00:00", "Z"),
     )
     bin_path = _fake_binary(install_dir, layout = "root")
-    monkeypatch.setattr(
-        fr, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9300"
-    )
+    monkeypatch.setattr(fr, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9300")
     info = fr.check_prebuilt_freshness(str(bin_path), threshold_days = 1)
     assert info["stale"] is True
 
@@ -311,9 +293,7 @@ def test_check_prebuilt_freshness_respects_custom_threshold(monkeypatch, tmp_pat
 
 
 def test_format_stale_warning_contains_actionable_command():
-    msg = fr.format_stale_warning(
-        {"installed_tag": "b9190", "latest_tag": "b9300", "age_days": 5}
-    )
+    msg = fr.format_stale_warning({"installed_tag": "b9190", "latest_tag": "b9300", "age_days": 5})
     assert "b9190" in msg
     assert "b9300" in msg
     assert "5 days" in msg
@@ -321,8 +301,6 @@ def test_format_stale_warning_contains_actionable_command():
 
 
 def test_format_stale_warning_singular_day():
-    msg = fr.format_stale_warning(
-        {"installed_tag": "b9190", "latest_tag": "b9300", "age_days": 1}
-    )
+    msg = fr.format_stale_warning({"installed_tag": "b9190", "latest_tag": "b9300", "age_days": 1})
     assert "1 day" in msg
     assert "1 days" not in msg

@@ -116,10 +116,7 @@ def test_code_execution_tool_appended_to_request_body(monkeypatch):
     tools = body.get("tools") or []
     # Opus 4.7 gets the newer date-pinned variant (`_20260120`) with REPL
     # state persistence + programmatic tool calling.
-    assert {
-        "type": "code_execution_20260120",
-        "name": "code_execution",
-    } in tools
+    assert {"type": "code_execution_20260120", "name": "code_execution"} in tools
     # No web_search entry when only code_execution is enabled.
     assert all("web_search" not in (t.get("type") or "") for t in tools)
     # Beta header still carries the flag; both `_20250825` and `_20260120`
@@ -199,9 +196,7 @@ def test_no_code_execution_tool_when_pill_off(monkeypatch):
     assert all("code_execution" not in (t.get("type") or "") for t in tools)
     # Beta header must NOT mention code-execution when the tool is off --
     # that flag is opt-in only.
-    assert "code-execution-2025-08-25" not in captured["headers"].get(
-        "anthropic-beta", ""
-    )
+    assert "code-execution-2025-08-25" not in captured["headers"].get("anthropic-beta", "")
 
 
 def test_bash_code_execution_emits_tool_start_and_end(monkeypatch):
@@ -275,11 +270,7 @@ def test_bash_code_execution_emits_tool_start_and_end(monkeypatch):
     assert start["tool_call_id"] == "srvtoolu_1"
     # `_server_tool: True` marks a provider-side synthetic tool card for
     # the frontend's history serializer.
-    assert start["arguments"] == {
-        "kind": "bash",
-        "command": "ls -la",
-        "_server_tool": True,
-    }
+    assert start["arguments"] == {"kind": "bash", "command": "ls -la", "_server_tool": True}
 
     assert end["type"] == "tool_end"
     assert end["tool_call_id"] == "srvtoolu_1"
@@ -306,8 +297,7 @@ def test_text_editor_create_emits_kind_and_status(monkeypatch):
             "delta": {
                 "type": "input_json_delta",
                 "partial_json": (
-                    '{"command": "create", "path": "new_file.txt", '
-                    '"file_text": "hi"}'
+                    '{"command": "create", "path": "new_file.txt", "file_text": "hi"}'
                 ),
             },
         },

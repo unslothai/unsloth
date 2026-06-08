@@ -252,8 +252,7 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         # /v1/models response is otherwise hundreds of ids long (community
         # fine-tunes, mirrors, fp8 variants, etc.).
         "model_id_allowlist": re.compile(
-            r"^(openai|deepseek-ai|google|meta-llama|Qwen|moonshotai|"
-            r"mistralai|zai-org)/"
+            r"^(openai|deepseek-ai|google|meta-llama|Qwen|moonshotai|mistralai|zai-org)/"
         ),
         # Cap the post-filter list. /v1/models has no server-side limit or
         # popularity sort, so this is just "first N matches"; the

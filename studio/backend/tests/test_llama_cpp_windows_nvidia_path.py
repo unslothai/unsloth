@@ -181,9 +181,7 @@ class TestWindowsPipNvidiaDllDirs:
     def test_missing_prefix_does_not_raise(self):
         # If sys.prefix points to a nonexistent path (unusual but possible
         # during test setup), the resolver must return [], not raise.
-        result = LlamaCppBackend._windows_pip_nvidia_dll_dirs(
-            "/this/path/does/not/exist/anywhere"
-        )
+        result = LlamaCppBackend._windows_pip_nvidia_dll_dirs("/this/path/does/not/exist/anywhere")
         assert result == []
 
     def test_picks_up_cu13_bin_x86_64_layout(self, tmp_path):
@@ -191,9 +189,7 @@ class TestWindowsPipNvidiaDllDirs:
         # Windows wheels ship DLLs under ``nvidia/cu13/bin/x86_64/`` instead
         # of ``nvidia/<pkg>/bin/``. Without this, the new CUDA 13 wheel
         # generation hits the original #5106 failure mode.
-        dll_dir = (
-            tmp_path / "Lib" / "site-packages" / "nvidia" / "cu13" / "bin" / "x86_64"
-        )
+        dll_dir = tmp_path / "Lib" / "site-packages" / "nvidia" / "cu13" / "bin" / "x86_64"
         dll_dir.mkdir(parents = True)
         for name in ("cudart64_13.dll", "cublas64_13.dll", "cublasLt64_13.dll"):
             (dll_dir / name).write_bytes(b"")

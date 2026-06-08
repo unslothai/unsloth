@@ -52,8 +52,7 @@ logger = get_logger(__name__)
 
 @router.post("/load-checkpoint", response_model = ExportOperationResponse)
 async def load_checkpoint(
-    request: LoadCheckpointRequest,
-    current_subject: str = Depends(get_current_subject),
+    request: LoadCheckpointRequest, current_subject: str = Depends(get_current_subject)
 ):
     """Load a checkpoint into the export backend (ExportBackend.load_checkpoint)."""
     try:
@@ -64,7 +63,6 @@ async def load_checkpoint(
         # before loading the export checkpoint (they'd compete for VRAM).
         try:
             from core.inference import get_inference_backend
-
             inf = get_inference_backend()
             if inf.active_model_name:
                 logger.info(
@@ -79,7 +77,6 @@ async def load_checkpoint(
 
         try:
             from core.training import get_training_backend
-
             trn = get_training_backend()
             if trn.is_training_active():
                 logger.info("Stopping active training to free GPU memory for export")
@@ -90,12 +87,9 @@ async def load_checkpoint(
                     if not trn.is_training_active():
                         break
                     import time
-
                     time.sleep(0.5)
                 else:
-                    logger.warning(
-                        "Training subprocess did not exit within 30s, proceeding anyway"
-                    )
+                    logger.warning("Training subprocess did not exit within 30s, proceeding anyway")
         except Exception as e:
             logger.warning("Could not stop training: %s", e)
 
@@ -126,9 +120,7 @@ async def load_checkpoint(
 
 
 @router.post("/cleanup", response_model = ExportOperationResponse)
-async def cleanup_export_memory(
-    current_subject: str = Depends(get_current_subject),
-):
+async def cleanup_export_memory(current_subject: str = Depends(get_current_subject)):
     """Cleanup export-related models from memory (ExportBackend.cleanup_memory)."""
     try:
         backend = get_export_backend()
@@ -155,9 +147,7 @@ async def cleanup_export_memory(
 
 
 @router.get("/status", response_model = ExportStatusResponse)
-async def get_export_status(
-    current_subject: str = Depends(get_current_subject),
-):
+async def get_export_status(current_subject: str = Depends(get_current_subject)):
     """Get export backend status (loaded checkpoint, model type, PEFT flag)."""
     try:
         backend = get_export_backend()
@@ -191,8 +181,7 @@ def _export_details(output_path: Optional[str]) -> Optional[Dict[str, Any]]:
 
 @router.post("/export/merged", response_model = ExportOperationResponse)
 async def export_merged_model(
-    request: ExportMergedModelRequest,
-    current_subject: str = Depends(get_current_subject),
+    request: ExportMergedModelRequest, current_subject: str = Depends(get_current_subject)
 ):
     """Export a merged PEFT model (16-bit or 4-bit), optionally pushing to Hub.
 
@@ -230,8 +219,7 @@ async def export_merged_model(
 
 @router.post("/export/base", response_model = ExportOperationResponse)
 async def export_base_model(
-    request: ExportBaseModelRequest,
-    current_subject: str = Depends(get_current_subject),
+    request: ExportBaseModelRequest, current_subject: str = Depends(get_current_subject)
 ):
     """Export a non-PEFT base model, optionally pushing to Hub.
 
@@ -269,8 +257,7 @@ async def export_base_model(
 
 @router.post("/export/gguf", response_model = ExportOperationResponse)
 async def export_gguf(
-    request: ExportGGUFRequest,
-    current_subject: str = Depends(get_current_subject),
+    request: ExportGGUFRequest, current_subject: str = Depends(get_current_subject)
 ):
     """Export the current model to GGUF format, optionally pushing to Hub.
 
@@ -307,8 +294,7 @@ async def export_gguf(
 
 @router.post("/export/lora", response_model = ExportOperationResponse)
 async def export_lora_adapter(
-    request: ExportLoRAAdapterRequest,
-    current_subject: str = Depends(get_current_subject),
+    request: ExportLoRAAdapterRequest, current_subject: str = Depends(get_current_subject)
 ):
     """Export only the LoRA adapter (if the loaded model is PEFT).
 
@@ -361,7 +347,11 @@ async def export_lora_adapter(
 # `Last-Event-ID` is honored on reconnect.
 
 
-def _format_sse(data: str, event: str, event_id: Optional[int] = None) -> str:
+def _format_sse(
+    data: str,
+    event: str,
+    event_id: Optional[int] = None,
+) -> str:
     """Format a single SSE message with id/event/data fields."""
     lines = []
     if event_id is not None:

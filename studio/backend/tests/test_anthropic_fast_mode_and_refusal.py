@@ -58,7 +58,11 @@ def _refusal_sse() -> bytes:
     )
 
 
-def _capture(monkeypatch, sse: bytes = b"", **kwargs) -> tuple[dict, list[str]]:
+def _capture(
+    monkeypatch,
+    sse: bytes = b"",
+    **kwargs,
+) -> tuple[dict, list[str]]:
     """Install a MockTransport, drive one streamed call; return body+lines."""
     captured: dict = {}
 

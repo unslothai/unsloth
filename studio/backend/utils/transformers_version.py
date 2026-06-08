@@ -195,7 +195,6 @@ def _resolve_base_model(model_name: str) -> str:
     if local_path.is_dir():
         try:
             from utils.models import get_base_model_from_lora
-
             base = get_base_model_from_lora(model_name)
             if base:
                 logger.info(
@@ -269,9 +268,7 @@ def _check_tokenizer_config_needs_v5(model_name: str) -> bool:
         _tokenizer_class_cache[model_name] = result
         return result
     except Exception as exc:
-        logger.debug(
-            "Could not fetch tokenizer_config.json for '%s': %s", model_name, exc
-        )
+        logger.debug("Could not fetch tokenizer_config.json for '%s': %s", model_name, exc)
         _tokenizer_class_cache[model_name] = False
         return False
 
@@ -458,8 +455,7 @@ def _venv_dir_is_valid(venv_dir: str, packages: tuple[str, ...]) -> bool:
         pkg_name_norm = pkg_name.replace("-", "_")
         # Directory must exist.
         if not any(
-            (Path(venv_dir) / d).is_dir()
-            for d in (pkg_name_norm, pkg_name_norm.replace("_", "-"))
+            (Path(venv_dir) / d).is_dir() for d in (pkg_name_norm, pkg_name_norm.replace("_", "-"))
         ):
             return False
         # Unpinned packages: existence is enough.
@@ -554,9 +550,7 @@ def _ensure_venv_dir(venv_dir: str, packages: tuple[str, ...], label: str) -> bo
     if _venv_dir_is_valid(venv_dir, packages):
         return True
 
-    logger.warning(
-        "%s not found or incomplete at %s -- installing at runtime", label, venv_dir
-    )
+    logger.warning("%s not found or incomplete at %s -- installing at runtime", label, venv_dir)
     shutil.rmtree(venv_dir, ignore_errors = True)
     os.makedirs(venv_dir, exist_ok = True)
     for pkg in packages:
@@ -568,16 +562,12 @@ def _ensure_venv_dir(venv_dir: str, packages: tuple[str, ...], label: str) -> bo
 
 def _ensure_venv_t5_530_exists() -> bool:
     """Ensure .venv_t5_530/ exists with transformers 5.3.0."""
-    return _ensure_venv_dir(
-        _VENV_T5_530_DIR, _VENV_T5_530_PACKAGES, "transformers 5.3.0"
-    )
+    return _ensure_venv_dir(_VENV_T5_530_DIR, _VENV_T5_530_PACKAGES, "transformers 5.3.0")
 
 
 def _ensure_venv_t5_550_exists() -> bool:
     """Ensure .venv_t5_550/ exists with transformers 5.5.0."""
-    return _ensure_venv_dir(
-        _VENV_T5_550_DIR, _VENV_T5_550_PACKAGES, "transformers 5.5.0"
-    )
+    return _ensure_venv_dir(_VENV_T5_550_DIR, _VENV_T5_550_PACKAGES, "transformers 5.5.0")
 
 
 def _ensure_venv_t5_exists() -> bool:
@@ -684,15 +674,12 @@ def ensure_transformers_version(model_name: str) -> None:
         _deactivate_5x()
         if not ensure_fn():
             raise RuntimeError(
-                f"Cannot activate transformers {target_version}: "
-                f"venv missing at {venv_dir}"
+                f"Cannot activate transformers {target_version}: " f"venv missing at {venv_dir}"
             )
         logger.info("Activating transformers %s…", target_version)
         _activate_venv(venv_dir, f"transformers {target_version}")
     else:
-        logger.info(
-            "Reverting to default transformers %s…", TRANSFORMERS_DEFAULT_VERSION
-        )
+        logger.info("Reverting to default transformers %s…", TRANSFORMERS_DEFAULT_VERSION)
         _deactivate_5x()
 
     final = _get_in_memory_version()

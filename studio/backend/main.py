@@ -45,9 +45,7 @@ if sys.platform == "win32":
 
         try:
             if os.path.isdir(_default_root):
-                for _ver in sorted(
-                    os.listdir(_default_root), key = _ver_key, reverse = True
-                ):
+                for _ver in sorted(os.listdir(_default_root), key = _ver_key, reverse = True):
                     _bin = os.path.join(_default_root, _ver, "bin")
                     if os.path.isdir(_bin):
                         candidates.append(_bin)
@@ -82,7 +80,6 @@ if sys.platform == "win32":
         _found_rocm_bnb = False
         try:
             import importlib.util as _ilu
-
             _bnb_spec = _ilu.find_spec("bitsandbytes")
             # submodule_search_locations (not spec.origin) handles editable installs
             if _bnb_spec and _bnb_spec.submodule_search_locations:
@@ -90,9 +87,7 @@ if sys.platform == "win32":
 
                 _all_vers_main: list[str] = []
                 for _pkg_dir in _bnb_spec.submodule_search_locations:
-                    for _dll in _glob.glob(
-                        os.path.join(_pkg_dir, "libbitsandbytes_rocm*.dll")
-                    ):
+                    for _dll in _glob.glob(os.path.join(_pkg_dir, "libbitsandbytes_rocm*.dll")):
                         _found_rocm_bnb = True
                         _km = _re_bnb.search(
                             r"libbitsandbytes_rocm(\d+)\.dll", os.path.basename(_dll)
@@ -128,9 +123,7 @@ try:
     configure_cpu_threads()
 except ValueError as exc:
     _raw = os.environ.get("UNSLOTH_CPU_THREADS")
-    raise SystemExit(
-        f"Error: Invalid UNSLOTH_CPU_THREADS value {_raw!r}: {exc}"
-    ) from None
+    raise SystemExit(f"Error: Invalid UNSLOTH_CPU_THREADS value {_raw!r}: {exc}") from None
 
 # Anaconda/conda-forge Python: seed platform._sys_version_cache before any
 # library import triggers attrs -> rich -> structlog -> platform crash.
@@ -180,9 +173,7 @@ def _read_studio_install_id() -> str:
     so the field carries no install-path info for callers reaching /api/health
     (relevant when Studio runs with -H 0.0.0.0)."""
     try:
-        token = (
-            (_STUDIO_ROOT_RESOLVED / "share" / "studio_install_id").read_text().strip()
-        )
+        token = (_STUDIO_ROOT_RESOLVED / "share" / "studio_install_id").read_text().strip()
     except (OSError, ValueError):
         return ""
     return token if _STUDIO_INSTALL_ID_RE.fullmatch(token) else ""
@@ -265,9 +256,7 @@ def get_unsloth_version() -> str:
     except PackageNotFoundError:
         pass
 
-    version_file = (
-        _Path(__file__).resolve().parents[2] / "unsloth" / "models" / "_utils.py"
-    )
+    version_file = _Path(__file__).resolve().parents[2] / "unsloth" / "models" / "_utils.py"
     try:
         for line in version_file.read_text(encoding = "utf-8").splitlines():
             if line.startswith("__version__ = "):
@@ -351,10 +340,7 @@ async def lifespan(app: FastAPI):
             print(f"WARNING: {_msg}", flush = True)
     except Exception as _probe_exc:
         import structlog as _structlog
-
-        _structlog.get_logger(__name__).debug(
-            "llama.cpp startup probes failed: %s", _probe_exc
-        )
+        _structlog.get_logger(__name__).debug("llama.cpp startup probes failed: %s", _probe_exc)
 
     from storage.studio_db import cleanup_orphaned_runs
 
@@ -362,10 +348,7 @@ async def lifespan(app: FastAPI):
         cleanup_orphaned_runs()
     except Exception as exc:
         import structlog
-
-        structlog.get_logger(__name__).warning(
-            "cleanup_orphaned_runs failed at startup: %s", exc
-        )
+        structlog.get_logger(__name__).warning("cleanup_orphaned_runs failed at startup: %s", exc)
 
     # Pre-cache the helper GGUF model for LLM-assisted dataset detection,
     # in a background thread so it doesn't block server startup.
@@ -374,7 +357,6 @@ async def lifespan(app: FastAPI):
     def _precache():
         try:
             from utils.datasets.llm_assist import precache_helper_gguf
-
             precache_helper_gguf()
         except Exception:
             pass  # non-critical
@@ -472,9 +454,7 @@ def _build_csp(script_nonce: "str | None" = None) -> str:
             "https://*.googleusercontent.com wss://*.googleusercontent.com"
         )
     else:
-        connect_src = (
-            "'self' https://huggingface.co https://datasets-server.huggingface.co"
-        )
+        connect_src = "'self' https://huggingface.co https://datasets-server.huggingface.co"
 
     return (
         "default-src 'self'; "
@@ -576,11 +556,7 @@ async def _send_411(send) -> None:
 
 async def _send_413(send, total_bytes: int, max_bytes: int) -> None:
     payload = _json_for_413.dumps(
-        {
-            "detail": (
-                f"Request body too large ({total_bytes:,} bytes; max {max_bytes:,})."
-            )
-        },
+        {"detail": (f"Request body too large ({total_bytes:,} bytes; max {max_bytes:,}).")},
     ).encode("utf-8")
     await send(
         {
@@ -763,9 +739,7 @@ app.include_router(mcp_servers_router, prefix = "/api/mcp/servers", tags = ["mcp
 app.include_router(datasets_router, prefix = "/api/datasets", tags = ["datasets"])
 app.include_router(data_recipe_router, prefix = "/api/data-recipe", tags = ["data-recipe"])
 app.include_router(export_router, prefix = "/api/export", tags = ["export"])
-app.include_router(
-    training_history_router, prefix = "/api/train", tags = ["training-history"]
-)
+app.include_router(training_history_router, prefix = "/api/train", tags = ["training-history"])
 
 
 # ============ Health and System Endpoints ============
@@ -803,9 +777,7 @@ async def health_check(request: Request):
         from auth.authentication import get_current_subject as _gcs
         from fastapi.security import HTTPAuthorizationCredentials
 
-        creds = HTTPAuthorizationCredentials(
-            scheme = "Bearer", credentials = auth.split(" ", 1)[1]
-        )
+        creds = HTTPAuthorizationCredentials(scheme = "Bearer", credentials = auth.split(" ", 1)[1])
         # Must await: a bare coroutine is truthy and would skip the auth check
         subject = await _gcs(creds)
     except HTTPException:
@@ -838,10 +810,7 @@ def studio_update_status(_current_subject: str = Depends(get_current_subject)):
 
 
 @app.post("/api/shutdown")
-async def shutdown_server(
-    request: Request,
-    current_subject: str = Depends(get_current_subject),
-):
+async def shutdown_server(request: Request, current_subject: str = Depends(get_current_subject)):
     """Gracefully shut down the Unsloth Studio server.
 
     Called by the frontend quit dialog so users can stop the server from the UI
@@ -858,7 +827,6 @@ async def shutdown_server(
             # Fallback when not launched via run_server() (e.g. direct uvicorn)
             import signal
             import os
-
             os.kill(os.getpid(), signal.SIGTERM)
 
     request.app.state._shutdown_task = asyncio.create_task(_delayed_shutdown())
@@ -866,9 +834,7 @@ async def shutdown_server(
 
 
 @app.get("/api/system")
-async def get_system_info(
-    current_subject: str = Depends(get_current_subject),
-):
+async def get_system_info(current_subject: str = Depends(get_current_subject)):
     """Get system information.
 
     Gated behind auth: the response includes platform, Python version, GPU name,
@@ -908,23 +874,18 @@ async def get_system_info(
 
 
 @app.get("/api/system/gpu-visibility")
-async def get_gpu_visibility(
-    current_subject: str = Depends(get_current_subject),
-):
+async def get_gpu_visibility(current_subject: str = Depends(get_current_subject)):
     return get_backend_visible_gpu_info()
 
 
 @app.get("/api/system/hardware")
-async def get_hardware_info(
-    current_subject: str = Depends(get_current_subject),
-):
+async def get_hardware_info(current_subject: str = Depends(get_current_subject)):
     """Return GPU name, total VRAM, and key ML package versions.
 
     Gated behind auth alongside /api/system -- same fingerprinting concern.
     /api/system/gpu-visibility is also auth-gated.
     """
     from utils.hardware import get_gpu_summary, get_package_versions
-
     return {
         "gpu": get_gpu_summary(),
         "versions": get_package_versions(),

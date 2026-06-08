@@ -294,9 +294,7 @@ class TestGetTransformersTier:
             "utils.transformers_version._check_config_needs_550",
             return_value = False,
         ):
-            assert (
-                get_transformers_tier("mistralai/Ministral-3-8B-Instruct-2512") == "530"
-            )
+            assert get_transformers_tier("mistralai/Ministral-3-8B-Instruct-2512") == "530"
 
     def test_llama_returns_default(self):
         with (

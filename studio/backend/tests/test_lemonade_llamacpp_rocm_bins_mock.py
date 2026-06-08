@@ -133,12 +133,8 @@ def test_unknown_gpu_not_in_families():
 def test_asset_resolves_for_known_gpu(gfx, os_prefix, windows):
     host = _make_rocm_host(gfx, windows = windows)
     with patch.object(_mod, "fetch_json", return_value = _stub_lemonade_release()):
-        result = resolve_lemonade_rocm_choice(
-            host, os_prefix, "default", llama_tag = "latest"
-        )
-    assert (
-        result is not None
-    ), f"Installer will NOT fetch lemonade binary for {gfx} ({os_prefix})"
+        result = resolve_lemonade_rocm_choice(host, os_prefix, "default", llama_tag = "latest")
+    assert result is not None, f"Installer will NOT fetch lemonade binary for {gfx} ({os_prefix})"
     assert _lookup_family(gfx) in result.name
     assert result.url.startswith("https://github.com/lemonade-sdk/llamacpp-rocm")
 
@@ -211,9 +207,7 @@ def test_simple_policy_plans_lemonade_for_windows_hip_host():
         "assets": [],
     }
     with patch.object(_mod, "fetch_json", return_value = _stub_lemonade_release()):
-        plan = direct_upstream_release_plan(
-            release, host, "ggml-org/llama.cpp", "latest"
-        )
+        plan = direct_upstream_release_plan(release, host, "ggml-org/llama.cpp", "latest")
     assert plan is not None, "Windows ROCm host should plan a lemonade HIP attempt"
     kinds = [a.install_kind for a in plan.attempts]
     assert (
@@ -243,9 +237,7 @@ def test_simple_policy_windows_hip_falls_back_to_upstream_when_lemonade_unavaila
     plan = direct_upstream_release_plan(release, host, "ggml-org/llama.cpp", "latest")
     assert plan is not None
     kinds = [a.install_kind for a in plan.attempts]
-    assert (
-        "windows-hip" in kinds
-    ), f"upstream HIP asset not included as fallback; got {kinds}"
+    assert "windows-hip" in kinds, f"upstream HIP asset not included as fallback; got {kinds}"
     hip_attempt = next(a for a in plan.attempts if a.install_kind == "windows-hip")
     assert hip_attempt.source_label == "upstream"
 
@@ -291,9 +283,7 @@ def test_lemonade_resolver_rejects_non_github_url(monkeypatch):
     }
     host = _make_rocm_host("gfx1151")
     with patch.object(_mod, "fetch_json", return_value = bad_release):
-        res = resolve_lemonade_rocm_choice(
-            host, "ubuntu", "linux-rocm", llama_tag = "latest"
-        )
+        res = resolve_lemonade_rocm_choice(host, "ubuntu", "linux-rocm", llama_tag = "latest")
     assert res is None
 
 
@@ -346,9 +336,7 @@ def test_lemonade_resolver_rejects_empty_browser_download_url():
     }
     host = _make_rocm_host("gfx1151")
     with patch.object(_mod, "fetch_json", return_value = release):
-        res = resolve_lemonade_rocm_choice(
-            host, "ubuntu", "linux-rocm", llama_tag = "latest"
-        )
+        res = resolve_lemonade_rocm_choice(host, "ubuntu", "linux-rocm", llama_tag = "latest")
     assert res is None
 
 
