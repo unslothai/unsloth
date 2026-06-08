@@ -31,7 +31,7 @@ def test_nvfp4_model_has_compressed_tensors_config():
     """Verify the NVFP4 model has compressed-tensors quantization config."""
     config = AutoConfig.from_pretrained(
         "unsloth/Qwen3.6-35B-A3B-NVFP4",
-        trust_remote_code=True,
+        trust_remote_code = True,
     )
     qcfg = config.quantization_config
     assert qcfg is not None, "Model should have quantization_config"
@@ -56,34 +56,48 @@ def test_regular_bnb_model_has_bitsandbytes_config():
 def test_load_in_4bit_detection_logic():
     """Test the quantization config detection logic directly."""
     from transformers import AutoConfig
-    
+
     # Test NVFP4 model
     config_nvfp4 = AutoConfig.from_pretrained(
         "unsloth/Qwen3.6-35B-A3B-NVFP4",
-        trust_remote_code=True,
+        trust_remote_code = True,
     )
     quant_method = get_quant_type(config_nvfp4)
-    
+
     # Should detect compressed-tensors and disable load_in_4bit
-    load_in_4bit, load_in_8bit, _ = check_and_disable_bitsandbytes_loading(config_nvfp4, load_in_4bit=True, load_in_8bit=False, verbose=False)
-    assert load_in_4bit is False, "load_in_4bit should be disabled for compressed-tensors"
-    assert load_in_8bit is False, "load_in_8bit should also be disabled for compressed-tensors"
+    load_in_4bit, load_in_8bit, _ = check_and_disable_bitsandbytes_loading(
+        config_nvfp4, load_in_4bit = True, load_in_8bit = False, verbose = False
+    )
+    assert (
+        load_in_4bit is False
+    ), "load_in_4bit should be disabled for compressed-tensors"
+    assert (
+        load_in_8bit is False
+    ), "load_in_8bit should also be disabled for compressed-tensors"
     assert quant_method == "compressed-tensors"
-    
+
     # Test regular bnb-4bit model
     config_bnb = AutoConfig.from_pretrained("unsloth/llama-3-8b-bnb-4bit")
     quant_method = get_quant_type(config_bnb)
-    
+
     # Should NOT disable load_in_4bit for bitsandbytes
-    load_in_4bit, load_in_8bit, _ = check_and_disable_bitsandbytes_loading(config_bnb, load_in_4bit=True, load_in_8bit=False, verbose=False)
+    load_in_4bit, load_in_8bit, _ = check_and_disable_bitsandbytes_loading(
+        config_bnb, load_in_4bit = True, load_in_8bit = False, verbose = False
+    )
     assert load_in_4bit is True, "load_in_4bit should remain True for bitsandbytes"
     assert load_in_8bit is False, "load_in_8bit should remain False when not enabled"
     assert quant_method == "bitsandbytes"
-    
+
     # Test both 4bit and 8bit disabled for non-bitsandbytes
-    load_in_4bit, load_in_8bit, _ = check_and_disable_bitsandbytes_loading(config_nvfp4, load_in_4bit=True, load_in_8bit=True, verbose=False)
-    assert load_in_4bit is False, "load_in_4bit should be disabled for compressed-tensors"
-    assert load_in_8bit is False, "load_in_8bit should also be disabled for compressed-tensors"
+    load_in_4bit, load_in_8bit, _ = check_and_disable_bitsandbytes_loading(
+        config_nvfp4, load_in_4bit = True, load_in_8bit = True, verbose = False
+    )
+    assert (
+        load_in_4bit is False
+    ), "load_in_4bit should be disabled for compressed-tensors"
+    assert (
+        load_in_8bit is False
+    ), "load_in_8bit should also be disabled for compressed-tensors"
 
 
 if __name__ == "__main__":

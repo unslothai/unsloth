@@ -770,8 +770,9 @@ class FastBaseModel:
 
         # Check if model already has a non-bitsandbytes quantization config (e.g. compressed-tensors/NVFP4)
         from .loader_utils import check_and_disable_bitsandbytes_loading
+
         load_in_4bit, load_in_8bit, _ = check_and_disable_bitsandbytes_loading(
-            auto_config, load_in_4bit=load_in_4bit, load_in_8bit=load_in_8bit
+            auto_config, load_in_4bit = load_in_4bit, load_in_8bit = load_in_8bit
         )
 
         if full_finetuning and (load_in_4bit or load_in_8bit):
