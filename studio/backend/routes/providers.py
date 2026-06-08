@@ -40,6 +40,7 @@ from models.providers import (
     ProviderUpdate,
 )
 from storage import providers_db
+from utils.utils import safe_curated_detail, log_and_http_error
 
 logger = structlog.get_logger(__name__)
 
@@ -254,10 +255,15 @@ async def test_provider(
             models_count = len(models),
         )
     except Exception as exc:
-        logger.warning("Provider test failed for %s: %s", payload.provider_type, exc)
+        logger.error(
+            "providers.test_failed",
+            provider_type = payload.provider_type,
+            error = str(exc),
+            exc_info = True,
+        )
         return ProviderTestResult(
             success = False,
-            message = f"Connection failed: {exc}",
+            message = f"Connection failed: {safe_curated_detail(exc)}",
             models_count = None,
         )
     finally:
@@ -375,10 +381,12 @@ async def list_provider_models(
             for m in models
         ]
     except Exception as exc:
-        logger.error("Failed to list models from %s: %s", payload.provider_type, exc)
-        raise HTTPException(
-            status_code = 502,
-            detail = f"Failed to list models from {payload.provider_type}: {exc}",
+        raise log_and_http_error(
+            exc,
+            502,
+            f"Failed to list models from {payload.provider_type}.",
+            event = "providers.list_models_failed",
+            log = logger,
         )
     finally:
         await client.close()
