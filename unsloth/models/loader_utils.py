@@ -51,7 +51,6 @@ BAD_MAPPINGS = {
 def _get_torchao_fp8_config(fp8_mode):
     # Import lazily so an optional, broken vLLM install does not break plain `import unsloth`.
     from unsloth_zoo.vllm_utils import _get_torchao_fp8_config as _impl
-
     return _impl(fp8_mode)
 
 
@@ -133,7 +132,6 @@ def __get_model_name(
         # fall through to offline quantization via _offline_quantize_to_fp8.
         if importlib.util.find_spec("vllm") is not None:
             import vllm
-
             if Version(vllm.__version__) >= Version("0.12.0"):
                 return model_name
         return None
@@ -181,7 +179,9 @@ def _get_new_mapper():
     try:
         import requests
 
-        new_mapper = "https://raw.githubusercontent.com/unslothai/unsloth/main/unsloth/models/mapper.py"
+        new_mapper = (
+            "https://raw.githubusercontent.com/unslothai/unsloth/main/unsloth/models/mapper.py"
+        )
         with requests.get(new_mapper, timeout = 3) as new_mapper:
             new_mapper = new_mapper.text
         new_mapper = new_mapper[new_mapper.find("__INT_TO_FLOAT_MAPPER") :]
@@ -202,12 +202,7 @@ def _get_new_mapper():
 
 
 def _resolve_with_mappers(
-    model_name,
-    load_in_4bit,
-    load_in_fp8,
-    int_to_float,
-    float_to_int,
-    map_to_unsloth_16bit,
+    model_name, load_in_4bit, load_in_fp8, int_to_float, float_to_int, map_to_unsloth_16bit
 ):
     return __get_model_name(
         model_name = model_name,
@@ -246,11 +241,7 @@ def get_model_name(
     ):
         new_model_name = BAD_MAPPINGS[new_model_name.lower()]
 
-    if (
-        new_model_name is None
-        and model_name.count("/") == 1
-        and model_name[0].isalnum()
-    ):
+    if new_model_name is None and model_name.count("/") == 1 and model_name[0].isalnum():
         # Try checking if a new Unsloth version allows it!
         NEW_INT_TO_FLOAT_MAPPER, NEW_FLOAT_TO_INT_MAPPER, NEW_MAP_TO_UNSLOTH_16bit = (
             _get_new_mapper()
@@ -292,9 +283,7 @@ def _offline_quantize_to_fp8(model_name: str, fp8_mode: str) -> str:
     temp_dir = tempfile.gettempdir()
     new_model_name = model_name.split("/")[-1] + "-fp8-" + fp8_mode
     new_model_name = os.path.join(temp_dir, new_model_name)
-    print(
-        f"Unsloth: Quantizing '{model_name}' to fp8, using model_name='{new_model_name}' instead"
-    )
+    print(f"Unsloth: Quantizing '{model_name}' to fp8, using model_name='{new_model_name}' instead")
 
     if not os.path.isdir(new_model_name):
         from transformers import (
@@ -373,13 +362,9 @@ def _get_fp8_mode_and_check_settings(
 
     # Check user settings
     if fp8_mode not in ["row", "block"]:
-        raise ValueError(
-            f"Unsloth: `load_in_fp8` can only be 'row' or 'block', got '{fp8_mode}'"
-        )
+        raise ValueError(f"Unsloth: `load_in_fp8` can only be 'row' or 'block', got '{fp8_mode}'")
     if full_finetuning:
-        raise ValueError(
-            "Unsloth: `load_in_fp8` is not compatible with full finetuning"
-        )
+        raise ValueError("Unsloth: `load_in_fp8` is not compatible with full finetuning")
     if load_in_4bit or load_in_8bit or load_in_16bit:
         raise ValueError(
             "Unsloth: `load_in_fp8` is not compatible with `load_in_4bit`, `load_in_8bit` or `load_in_16bit`",
@@ -423,12 +408,10 @@ def _get_fp8_mode_and_check_settings(
         and importlib.util.find_spec("fbgemm_gpu.experimental") is not None
     ):
         import fbgemm_gpu.experimental.gen_ai
-
         if Version(fbgemm_gpu.__version__) < Version("1.4.1"):
             # Old FBGEMM version - disable and use Triton kernels instead
             os.environ["UNSLOTH_HAS_FBGEMM"] = "0"
             from unsloth_zoo.log import logger
-
             logger.info(
                 f"Unsloth: fbgemm_gpu_genai=={fbgemm_gpu.__version__} is old for FP8 loading. "
                 f"Using Triton kernels instead."

@@ -133,7 +133,6 @@ class MLXInferenceBackend:
 
         if hf_token:
             import os
-
             os.environ["HF_TOKEN"] = hf_token
         self._configure_memory_limits()
 
@@ -311,9 +310,7 @@ class MLXInferenceBackend:
                     elif isinstance(content, list):
                         # Prepend image if not already there
                         has_image = any(
-                            p.get("type") == "image"
-                            for p in content
-                            if isinstance(p, dict)
+                            p.get("type") == "image" for p in content if isinstance(p, dict)
                         )
                         if not has_image:
                             content.insert(0, {"type": "image"})
@@ -383,9 +380,7 @@ class MLXInferenceBackend:
             preserve_thinking = preserve_thinking,
         )
         if prompt is None:
-            raise RuntimeError(
-                "apply_chat_template returned None — tokenizer may be incompatible"
-            )
+            raise RuntimeError("apply_chat_template returned None — tokenizer may be incompatible")
 
         sampler = make_sampler(
             temp = temperature,
@@ -441,7 +436,6 @@ class MLXInferenceBackend:
                         break
             except Exception as e:
                 import traceback
-
                 logger.error("stream_generate failed:\n%s", traceback.format_exc())
                 raise
             finally:
@@ -538,9 +532,7 @@ class MLXInferenceBackend:
                     **vlm_kwargs,
                 ):
                     final_response = response
-                    token_text = (
-                        response.text if hasattr(response, "text") else str(response)
-                    )
+                    token_text = response.text if hasattr(response, "text") else str(response)
                     cumulative += token_text
                     yield cumulative
                     if cancel_event and cancel_event.is_set():
@@ -556,7 +548,10 @@ class MLXInferenceBackend:
                     )
 
     def generate_with_adapter_control(
-        self, use_adapter = None, cancel_event = None, **gen_kwargs
+        self,
+        use_adapter = None,
+        cancel_event = None,
+        **gen_kwargs,
     ) -> Generator[str, None, None]:
         # MLX LoRA adapter toggling not yet supported — generate normally
         yield from self.generate_chat_response(cancel_event = cancel_event, **gen_kwargs)

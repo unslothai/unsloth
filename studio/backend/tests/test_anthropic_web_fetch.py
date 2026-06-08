@@ -104,11 +104,7 @@ def test_web_fetch_tool_appended_to_request_body(monkeypatch):
     body = captured["body"]
     tools = body.get("tools") or []
     # claude-opus-4-7 routes web_fetch to _20260209 (dynamic filtering).
-    assert {
-        "type": "web_fetch_20260209",
-        "name": "web_fetch",
-        "max_uses": 5,
-    } in tools
+    assert {"type": "web_fetch_20260209", "name": "web_fetch", "max_uses": 5} in tools
     # web_fetch is GA; no beta header is required.
     assert "web-fetch" not in captured["headers"].get("anthropic-beta", "")
 
@@ -183,9 +179,7 @@ def test_no_web_fetch_tool_when_pill_off(monkeypatch):
     _drive(run())
 
     tools = captured["body"].get("tools") or []
-    assert all(
-        t.get("type") not in ("web_fetch_20250910", "web_fetch_20260209") for t in tools
-    )
+    assert all(t.get("type") not in ("web_fetch_20250910", "web_fetch_20260209") for t in tools)
 
 
 # ── SSE translation ─────────────────────────────────────────────────
@@ -253,9 +247,7 @@ def test_web_fetch_success_emits_tool_start_and_end(monkeypatch):
         client = _make_client()
         return await _collect(
             client._stream_anthropic(
-                messages = [
-                    {"role": "user", "content": "Fetch https://example.com/article"}
-                ],
+                messages = [{"role": "user", "content": "Fetch https://example.com/article"}],
                 model = "claude-opus-4-7",
                 temperature = 0.7,
                 top_p = 0.95,
@@ -273,10 +265,7 @@ def test_web_fetch_success_emits_tool_start_and_end(monkeypatch):
     assert start["tool_call_id"] == "srvtoolu_wf1"
     # `_server_tool: True` marks this as a provider-side synthetic
     # tool card for the frontend's history serializer.
-    assert start["arguments"] == {
-        "url": "https://example.com/article",
-        "_server_tool": True,
-    }
+    assert start["arguments"] == {"url": "https://example.com/article", "_server_tool": True}
     assert end["type"] == "tool_end"
     assert end["tool_call_id"] == "srvtoolu_wf1"
     # The source pill uses Title / URL / snippet as parseSourcesFromResult expects.
