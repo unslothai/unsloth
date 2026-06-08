@@ -10,6 +10,7 @@ import {
 } from "@/components/tauri/window-titlebar";
 import { Toaster } from "@/components/ui/sonner";
 import { WebUpdateBanner } from "@/components/web/update-banner";
+import { LlamaUpdateBanner } from "@/components/llama-update-banner";
 import { getTauriAuthFailure, tauriAutoAuth } from "@/features/auth";
 import { NativeIntentDrain } from "@/features/native-intents/native-intent-drain";
 import { useTauriBackend, type BackendStatus } from "@/hooks/use-tauri-backend";
@@ -258,6 +259,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
       <>
         {children}
         <WebUpdateBanner enabled={!WEB_UPDATE_HIDDEN_ROUTES.has(pathname)} />
+        <LlamaUpdateBanner enabled={!WEB_UPDATE_HIDDEN_ROUTES.has(pathname)} />
       </>
     );
   }
@@ -303,6 +305,9 @@ function TauriWrapper({ children }: { children: ReactNode }) {
       <div className="min-h-0 flex-1 overflow-hidden">
         {content}
       </div>
+      <LlamaUpdateBanner
+        enabled={showApp && !HIDDEN_TITLEBAR_SIDEBAR_ROUTES.has(pathname)}
+      />
     </div>
   );
 }
