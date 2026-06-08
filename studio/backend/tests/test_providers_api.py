@@ -225,9 +225,7 @@ class TestAuth:
             json = {"username": USERNAME, "password": PASSWORD},
             timeout = 10,
         )
-        assert (
-            resp.status_code == 200
-        ), f"Login failed ({resp.status_code}): {resp.text}"
+        assert resp.status_code == 200, f"Login failed ({resp.status_code}): {resp.text}"
         body = resp.json()
         assert body.get("access_token"), "access_token is missing or empty"
         assert body.get("token_type") == "bearer"
@@ -237,9 +235,7 @@ class TestAuth:
 
 
 class TestPublicKey:
-    def test_public_key_is_valid_pem(
-        self, auth_headers: dict[str, str], public_key_pem: str
-    ):
+    def test_public_key_is_valid_pem(self, auth_headers: dict[str, str], public_key_pem: str):
         """GET /api/providers/public-key returns an importable RSA PEM key."""
         pem_bytes = public_key_pem.encode("utf-8")
         key = serialization.load_pem_public_key(pem_bytes)
@@ -261,9 +257,7 @@ class TestRegistry:
         )
         assert resp.status_code == 200, f"Registry failed: {resp.text}"
         providers = resp.json()
-        assert (
-            len(providers) == 9
-        ), f"Expected 9 providers, got {len(providers)}: {providers}"
+        assert len(providers) == 9, f"Expected 9 providers, got {len(providers)}: {providers}"
         print(f"\n  {'Provider':<12} {'Base URL'}")
         print(f"  {'-'*12} {'-'*45}")
         for p in providers:
@@ -283,9 +277,7 @@ class TestRegistry:
 
     def test_registry_entries_have_required_fields(self, auth_headers: dict[str, str]):
         """Each registry entry has provider_type, display_name, base_url, default_models."""
-        resp = requests.get(
-            _url("/api/providers/registry"), headers = auth_headers, timeout = 10
-        )
+        resp = requests.get(_url("/api/providers/registry"), headers = auth_headers, timeout = 10)
         assert resp.status_code == 200
         for entry in resp.json():
             for field in (
@@ -320,9 +312,7 @@ class TestProviderCRUD:
             json = {"provider_type": "openai", "display_name": "Test OpenAI (pytest)"},
             timeout = 10,
         )
-        assert (
-            resp.status_code == 201
-        ), f"Create failed ({resp.status_code}): {resp.text}"
+        assert resp.status_code == 201, f"Create failed ({resp.status_code}): {resp.text}"
         body = resp.json()
         assert body.get("id"), "No id in response"
         assert body["provider_type"] == "openai"
@@ -333,9 +323,7 @@ class TestProviderCRUD:
 
     def test_list_includes_created(self, auth_headers: dict[str, str]):
         """GET /api/providers/ includes the newly created config."""
-        assert (
-            TestProviderCRUD._created_id
-        ), "No created_id (run test_create_provider first)"
+        assert TestProviderCRUD._created_id, "No created_id (run test_create_provider first)"
         resp = requests.get(_url("/api/providers/"), headers = auth_headers, timeout = 10)
         assert resp.status_code == 200
         ids = [p["id"] for p in resp.json()]
@@ -354,9 +342,7 @@ class TestProviderCRUD:
             json = {"display_name": new_name},
             timeout = 10,
         )
-        assert (
-            resp.status_code == 200
-        ), f"Update failed ({resp.status_code}): {resp.text}"
+        assert resp.status_code == 200, f"Update failed ({resp.status_code}): {resp.text}"
         assert resp.json()["display_name"] == new_name
         print(f"\n  updated display_name to '{new_name}'")
 
@@ -368,14 +354,10 @@ class TestProviderCRUD:
             headers = auth_headers,
             timeout = 10,
         )
-        assert (
-            resp.status_code == 204
-        ), f"Delete failed ({resp.status_code}): {resp.text}"
+        assert resp.status_code == 204, f"Delete failed ({resp.status_code}): {resp.text}"
 
         # Confirm gone from list
-        list_resp = requests.get(
-            _url("/api/providers/"), headers = auth_headers, timeout = 10
-        )
+        list_resp = requests.get(_url("/api/providers/"), headers = auth_headers, timeout = 10)
         ids = [p["id"] for p in list_resp.json()]
         assert TestProviderCRUD._created_id not in ids, "Deleted provider still in list"
         print(f"\n  deleted id={TestProviderCRUD._created_id} confirmed gone")
@@ -423,9 +405,7 @@ class TestProviderInference:
             json = {"provider_type": provider_type, "encrypted_api_key": encrypted},
             timeout = 30,
         )
-        assert (
-            resp.status_code == 200
-        ), f"Request failed ({resp.status_code}): {resp.text}"
+        assert resp.status_code == 200, f"Request failed ({resp.status_code}): {resp.text}"
         body = resp.json()
         assert (
             body["success"] is True
@@ -449,9 +429,7 @@ class TestProviderInference:
             json = {"provider_type": provider_type, "encrypted_api_key": encrypted},
             timeout = 30,
         )
-        assert (
-            resp.status_code == 200
-        ), f"Request failed ({resp.status_code}): {resp.text}"
+        assert resp.status_code == 200, f"Request failed ({resp.status_code}): {resp.text}"
         models = resp.json()
         assert isinstance(models, list), f"Expected list, got {type(models)}"
         assert len(models) > 0, f"No models returned for {provider_type}"
@@ -498,9 +476,7 @@ class TestProviderInference:
 # ── TestVisionInference ─────────────────────────────────────────────
 
 # Sloth photo — used to test vision routing across providers
-_VISION_IMAGE_URL = (
-    "https://www.travelexcellence.com/images/where-to-see-sloths-in-costa-rica.jpg"
-)
+_VISION_IMAGE_URL = "https://www.travelexcellence.com/images/where-to-see-sloths-in-costa-rica.jpg"
 
 _VISION_PARAMS = [
     pytest.param(
@@ -602,8 +578,6 @@ class TestLocalInferenceUnaffected:
             f"This likely means the provider fields broke the base request schema."
         )
         status_label = (
-            "local model responded"
-            if resp.status_code == 200
-            else "no model loaded (expected)"
+            "local model responded" if resp.status_code == 200 else "no model loaded (expected)"
         )
         print(f"\n  status={resp.status_code} ({status_label}) — local path unaffected")

@@ -19,13 +19,16 @@ from core.data_recipe.huggingface import (
     publish_recipe_dataset,
 )
 from core.data_recipe.jobs import get_job_manager
+from loggers import get_logger
 from models.data_recipe import (
     JobCreateResponse,
     PublishDatasetRequest,
     PublishDatasetResponse,
     RecipePayload,
 )
+from utils.utils import safe_error_detail, safe_curated_detail, log_and_http_error
 
+logger = get_logger(__name__)
 router = APIRouter()
 
 
@@ -156,9 +159,7 @@ def _ensure_selected_local_model_loaded(
 ) -> None:
     model_loaded, active_model, active_variant = _loaded_local_model_identity()
     if not model_loaded:
-        raise ValueError(
-            "No model loaded in Chat. Load a model first, then run the recipe."
-        )
+        raise ValueError("No model loaded in Chat. Load a model first, then run the recipe.")
 
     selection = _single_used_local_model_selection(recipe, local_provider_names)
     if selection is None:
@@ -168,9 +169,7 @@ def _ensure_selected_local_model_loaded(
     variant_matches = not gguf_variant or active_variant == gguf_variant
     if active_model.lower() != target.lower() or not variant_matches:
         selected = f"{target} ({gguf_variant})" if gguf_variant else target
-        active = (
-            f"{active_model} ({active_variant})" if active_variant else active_model
-        )
+        active = f"{active_model} ({active_variant})" if active_variant else active_model
         raise ValueError(
             "Selected local model is not loaded. "
             f"Selected {selected}; active {active or 'none'}. "
@@ -204,9 +203,7 @@ def _inject_local_structured_response_format(
     for mc in model_configs:
         if not isinstance(mc, dict):
             continue
-        if mc.get("provider") in local_provider_names and isinstance(
-            mc.get("alias"), str
-        ):
+        if mc.get("provider") in local_provider_names and isinstance(mc.get("alias"), str):
             alias_to_local_mc[mc["alias"]] = mc
 
     if not alias_to_local_mc:
@@ -304,18 +301,12 @@ def _inject_local_providers(recipe: dict[str, Any], request: Request) -> Optiona
     # from an LLM column through a model_config. Orphan model_config nodes
     # that reference a local provider but that no LLM column uses should
     # not block runs; the recipe would never call /v1 for them.
-    local_names = {
-        providers[i].get("name") for i in local_indices if providers[i].get("name")
-    }
+    local_names = {providers[i].get("name") for i in local_indices if providers[i].get("name")}
     used_aliases = _used_llm_model_aliases(recipe)
     referenced_providers = {
         mc.get("provider")
         for mc in recipe.get("model_configs", [])
-        if (
-            isinstance(mc, dict)
-            and mc.get("provider")
-            and mc.get("alias") in used_aliases
-        )
+        if (isinstance(mc, dict) and mc.get("provider") and mc.get("alias") in used_aliases)
     }
 
     token = ""
@@ -406,9 +397,7 @@ def _normalize_run_name(value: Any) -> str | None:
     if value is None:
         return None
     if not isinstance(value, str):
-        raise HTTPException(
-            status_code = 400, detail = "invalid run_name: must be a string"
-        )
+        raise HTTPException(status_code = 400, detail = "invalid run_name: must be a string")
     trimmed = value.strip()
     if not trimmed:
         return None
@@ -436,17 +425,26 @@ def create_job(payload: RecipePayload, request: Request):
     if run_config_raw is not None:
         try:
             from data_designer.config.run_config import RunConfig
-
             RunConfig.model_validate(run_config_raw)
         except (ImportError, ValidationError, TypeError, ValueError) as exc:
-            raise HTTPException(
-                status_code = 400, detail = f"invalid run_config: {exc}"
+            raise log_and_http_error(
+                exc,
+                400,
+                "invalid run_config",
+                event = "data_recipe.jobs.run_config_invalid",
+                log = logger,
             ) from exc
 
     try:
         internal_api_key_id = _inject_local_providers(recipe, request)
     except ValueError as exc:
-        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+        raise log_and_http_error(
+            exc,
+            400,
+            safe_curated_detail(exc),
+            event = "data_recipe.jobs.inject_local_providers_failed",
+            log = logger,
+        ) from exc
 
     # Single try block covers get_job_manager() AND mgr.start() so a workflow
     # key minted above never outlives the request even when an unexpected
@@ -463,11 +461,23 @@ def create_job(payload: RecipePayload, request: Request):
     except RuntimeError as exc:
         if internal_api_key_id is not None:
             _revoke_internal_api_key_safe(internal_api_key_id)
-        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+        raise log_and_http_error(
+            exc,
+            409,
+            safe_curated_detail(exc),
+            event = "data_recipe.jobs.start_conflict",
+            log = logger,
+        ) from exc
     except ValueError as exc:
         if internal_api_key_id is not None:
             _revoke_internal_api_key_safe(internal_api_key_id)
-        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+        raise log_and_http_error(
+            exc,
+            400,
+            safe_curated_detail(exc),
+            event = "data_recipe.jobs.start_failed",
+            log = logger,
+        ) from exc
     except Exception:
         if internal_api_key_id is not None:
             _revoke_internal_api_key_safe(internal_api_key_id)
@@ -481,7 +491,6 @@ def _revoke_internal_api_key_safe(key_id: int) -> None:
     that revocation failures never mask the caller's own error path."""
     try:
         from auth import storage  # deferred: avoids circular import
-
         storage.revoke_internal_api_key(key_id)
     except Exception:
         pass
@@ -553,9 +562,7 @@ def publish_job_dataset(job_id: str, payload: PublishDatasetRequest):
     description = payload.description.strip()
     hf_token = payload.hf_token.strip() if isinstance(payload.hf_token, str) else None
     artifact_path = (
-        payload.artifact_path.strip()
-        if isinstance(payload.artifact_path, str)
-        else None
+        payload.artifact_path.strip() if isinstance(payload.artifact_path, str) else None
     )
 
     if not repo_id:
@@ -566,10 +573,7 @@ def publish_job_dataset(job_id: str, payload: PublishDatasetRequest):
     mgr = get_job_manager()
     status = mgr.get_status(job_id)
     if status is not None:
-        if (
-            status.get("status") != "completed"
-            or status.get("execution_type") != "full"
-        ):
+        if status.get("status") != "completed" or status.get("execution_type") != "full":
             raise HTTPException(
                 status_code = 409,
                 detail = "Only completed full runs can be published.",
@@ -593,9 +597,21 @@ def publish_job_dataset(job_id: str, payload: PublishDatasetRequest):
             private = payload.private,
         )
     except RecipeDatasetPublishError as exc:
-        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+        raise log_and_http_error(
+            exc,
+            400,
+            safe_curated_detail(exc),
+            event = "data_recipe.jobs.publish_failed",
+            log = logger,
+        ) from exc
     except Exception as exc:
-        raise HTTPException(status_code = 500, detail = str(exc)) from exc
+        raise log_and_http_error(
+            exc,
+            500,
+            safe_error_detail(exc),
+            event = "data_recipe.jobs.publish_error",
+            log = logger,
+        ) from exc
 
     return {
         "success": True,

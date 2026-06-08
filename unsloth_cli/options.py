@@ -80,9 +80,7 @@ def add_options_from_config(config_class: type[BaseModel]) -> Callable:
     which will receive a dict of all CLI-provided config values.
     """
     fields = _collect_config_fields(config_class)
-    field_names = {
-        name for name, field_info in fields if not _is_list_type(field_info.annotation)
-    }
+    field_names = {name for name, field_info in fields if not _is_list_type(field_info.annotation)}
 
     def decorator(func: Callable) -> Callable:
         sig = inspect.signature(func)
