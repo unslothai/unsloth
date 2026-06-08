@@ -39,9 +39,7 @@ torch_Tensor = torch.Tensor
 from unsloth_zoo.utils import Version
 
 if DEVICE_TYPE == "xpu" and Version(torch.__version__) < Version("2.6.0"):
-    raise RuntimeError(
-        "Intel xpu currently supports unsloth with torch.version >= 2.6.0"
-    )
+    raise RuntimeError("Intel xpu currently supports unsloth with torch.version >= 2.6.0")
 
 if Version(torch.__version__) < Version("2.4.0"):
     torch_amp_custom_fwd = torch.cuda.amp.custom_fwd
@@ -64,7 +62,6 @@ if Version(triton.__version__) >= Version("3.0.0"):
         triton_tanh = tl.extra.intel.libdevice.tanh
     else:
         from triton.language.extra import libdevice
-
         triton_tanh = libdevice.tanh
     triton_cast = tl.cast
 else:
@@ -152,7 +149,6 @@ if DEVICE_COUNT > 1:
         torch_gpu_device = torch.xpu.device
 else:
     from contextlib import nullcontext
-
     def torch_gpu_device(device):
         return nullcontext()
 
@@ -273,7 +269,6 @@ if importlib.util.find_spec("torchao") is not None:
         from torchao.quantization import Float8Tensor
     except:
         import torchao
-
         if Version(torchao.__version__) >= Version("0.15.0"):
             print(
                 f"Unsloth: `from torchao.quantization import Float8Tensor` failed on version={torchao.__version__}"
@@ -386,9 +381,7 @@ def get_lora_parameters_bias(proj):
     )
 
 
-def _maybe_fake_quantize_activations(
-    X: torch.Tensor, proj: torch.nn.Module
-) -> torch.Tensor:
+def _maybe_fake_quantize_activations(X: torch.Tensor, proj: torch.nn.Module) -> torch.Tensor:
     """
     If QAT is enabled, fake quantize the input activations.
     Otherwise, just return the input activations as is.
@@ -405,7 +398,12 @@ def _maybe_fake_quantize_activations(
 if DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
 
     @torch.inference_mode
-    def fast_dequantize(W, quant_state = None, out = None, use_global_buffer = False):
+    def fast_dequantize(
+        W,
+        quant_state = None,
+        out = None,
+        use_global_buffer = False,
+    ):
         # TODO: After adding XPU BNB support, check this function
         if isinstance(W, Float8Tensor):
             return W.dequantize()
@@ -464,9 +462,7 @@ if DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
             out_absmax = ABSMAX_BUFFER[:n_elements_absmax]
         else:
             if out is None:
-                out = torch_empty(
-                    shape, dtype = dtype, device = device, requires_grad = False
-                )
+                out = torch_empty(shape, dtype = dtype, device = device, requires_grad = False)
             else:
                 assert out.shape == shape
                 assert out.dtype == dtype
@@ -514,7 +510,12 @@ if DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
 elif DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM:
 
     @torch.inference_mode
-    def fast_dequantize(W, quant_state = None, out = None, use_global_buffer = False):
+    def fast_dequantize(
+        W,
+        quant_state = None,
+        out = None,
+        use_global_buffer = False,
+    ):
         if isinstance(W, Float8Tensor):
             return W.dequantize()
         if quant_state is None:
@@ -574,9 +575,7 @@ elif DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM:
             out_absmax = ABSMAX_BUFFER[:n_elements_absmax]
         else:
             if out is None:
-                out = torch_empty(
-                    shape, dtype = dtype, device = device, requires_grad = False
-                )
+                out = torch_empty(shape, dtype = dtype, device = device, requires_grad = False)
             else:
                 assert out.shape == shape
                 assert out.dtype == dtype
@@ -626,7 +625,12 @@ elif DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM:
 else:
 
     @torch.inference_mode
-    def fast_dequantize(W, quant_state = None, out = None, use_global_buffer = False):
+    def fast_dequantize(
+        W,
+        quant_state = None,
+        out = None,
+        use_global_buffer = False,
+    ):
         if isinstance(W, Float8Tensor):
             return W.dequantize()
         if quant_state is None:
@@ -701,7 +705,12 @@ else:
 # INTEL GPU Specific Logic
 if DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
 
-    def fast_gemv(X, W, quant_state, out = None):
+    def fast_gemv(
+        X,
+        W,
+        quant_state,
+        out = None,
+    ):
         if quant_state is None:
             return torch_matmul(X, W, out = out)
         # For fast X @ W where seq_len == 1
@@ -722,9 +731,7 @@ if DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
             code2 = state2.code
             blocksize2 = state2.blocksize
         else:
-            absmax, shape, dtype, blocksize, compressed_stats, quant_type, stats = (
-                quant_state
-            )
+            absmax, shape, dtype, blocksize, compressed_stats, quant_type, stats = quant_state
             offset, state2 = compressed_stats
             absmax2, code2, blocksize2, _, _, _, _ = state2
         global XPU_STREAMS
@@ -807,7 +814,12 @@ if DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
 
 elif DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM:
 
-    def fast_gemv(X, W, quant_state, out = None):
+    def fast_gemv(
+        X,
+        W,
+        quant_state,
+        out = None,
+    ):
         if quant_state is None:
             return torch_matmul(X, W, out = out)
         # For fast X @ W where seq_len == 1
@@ -828,9 +840,7 @@ elif DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM:
             code2 = state2.code
             blocksize2 = state2.blocksize
         else:
-            absmax, shape, dtype, blocksize, compressed_stats, quant_type, stats = (
-                quant_state
-            )
+            absmax, shape, dtype, blocksize, compressed_stats, quant_type, stats = quant_state
             offset, state2 = compressed_stats
             absmax2, code2, blocksize2, _, _, _, _ = state2
         pass
@@ -912,7 +922,12 @@ elif DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM:
     pass
 else:
 
-    def fast_gemv(X, W, quant_state, out = None):
+    def fast_gemv(
+        X,
+        W,
+        quant_state,
+        out = None,
+    ):
         if quant_state is None:
             return torch_matmul(X, W, out = out)
         # For fast X @ W where seq_len == 1
@@ -933,9 +948,7 @@ else:
             code2 = state2.code
             blocksize2 = state2.blocksize
         else:
-            absmax, shape, dtype, blocksize, compressed_stats, quant_type, stats = (
-                quant_state
-            )
+            absmax, shape, dtype, blocksize, compressed_stats, quant_type, stats = quant_state
             offset, state2 = compressed_stats
             absmax2, code2, blocksize2, _, _, _, _ = state2
         pass
@@ -1009,7 +1022,12 @@ else:
     pass
 
 
-def fast_linear_forward(proj, X, temp_lora = None, out = None):
+def fast_linear_forward(
+    proj,
+    X,
+    temp_lora = None,
+    out = None,
+):
     W, W_quant, lora_A, lora_B, lora_S, bias = get_lora_parameters_bias(proj)
     bsz, q_len, in_dim = X.shape
     if q_len != 1:
@@ -1040,9 +1058,7 @@ def fast_linear_forward(proj, X, temp_lora = None, out = None):
             out.addmv_(lora_B._fast_lora, temp_lora, alpha = lora_S)
         else:
             out = out.view(bsz, out_dim)
-            temp_lora = torch_mm(
-                X.view(bsz, in_dim), lora_A._fast_lora.t(), out = temp_lora
-            )
+            temp_lora = torch_mm(X.view(bsz, in_dim), lora_A._fast_lora.t(), out = temp_lora)
             out.addmm_(temp_lora, lora_B._fast_lora.t(), alpha = lora_S)
         out = out.view(bsz, 1, out_dim)
 
@@ -1052,7 +1068,15 @@ def fast_linear_forward(proj, X, temp_lora = None, out = None):
     return out
 
 
-def matmul_lora(X, W, W_quant, A, B, s, out = None):
+def matmul_lora(
+    X,
+    W,
+    W_quant,
+    A,
+    B,
+    s,
+    out = None,
+):
     dtype = X.dtype
 
     if X.dim() == 3:

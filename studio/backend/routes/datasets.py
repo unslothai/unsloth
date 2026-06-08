@@ -99,7 +99,6 @@ def _serialize_preview_value(value):
 
     try:
         from PIL.Image import Image as PILImage
-
         if isinstance(value, PILImage):
             buffer = io.BytesIO()
             value.convert("RGB").save(buffer, format = "JPEG", quality = 85)
@@ -261,9 +260,7 @@ def _build_local_dataset_items() -> list[LocalDatasetItem]:
     return items
 
 
-def _load_local_preview_slice(
-    *, dataset_path: Path, train_split: str, preview_size: int
-):
+def _load_local_preview_slice(*, dataset_path: Path, train_split: str, preview_size: int):
     from datasets import load_dataset
 
     if dataset_path.is_dir():
@@ -298,9 +295,7 @@ def _load_local_preview_slice(
     elif dataset_path.suffix == ".csv":
         dataset = load_dataset("csv", data_files = str(dataset_path), split = train_split)
     elif dataset_path.suffix == ".parquet":
-        dataset = load_dataset(
-            "parquet", data_files = str(dataset_path), split = train_split
-        )
+        dataset = load_dataset("parquet", data_files = str(dataset_path), split = train_split)
     else:
         raise HTTPException(
             status_code = 400, detail = f"Unsupported file format: {dataset_path.suffix}"
@@ -320,8 +315,7 @@ def _sanitize_filename(filename: str) -> str:
 
 @router.post("/upload", response_model = UploadDatasetResponse)
 async def upload_dataset(
-    file: UploadFile,
-    current_subject: str = Depends(get_current_subject),
+    file: UploadFile, current_subject: str = Depends(get_current_subject)
 ) -> UploadDatasetResponse:
     filename = _sanitize_filename(file.filename or "dataset_upload")
     ext = Path(filename).suffix.lower()
@@ -378,9 +372,7 @@ def list_local_datasets(
 
 @router.get("/download-progress")
 async def get_dataset_download_progress(
-    repo_id: str = Query(
-        ..., description = "HuggingFace dataset repo ID, e.g. 'unsloth/LaTeX_OCR'"
-    ),
+    repo_id: str = Query(..., description = "HuggingFace dataset repo ID, e.g. 'unsloth/LaTeX_OCR'"),
     current_subject: str = Depends(get_current_subject),
 ):
     """Return download progress for a HuggingFace dataset repo.
@@ -460,10 +452,7 @@ async def get_dataset_download_progress(
 
 
 @router.post("/check-format", response_model = CheckFormatResponse)
-def check_format(
-    request: CheckFormatRequest,
-    current_subject: str = Depends(get_current_subject),
-):
+def check_format(request: CheckFormatRequest, current_subject: str = Depends(get_current_subject)):
     """
     Check if a dataset requires manual column mapping.
 
@@ -511,25 +500,19 @@ def check_format(
                     repo_type = "dataset",
                     token = request.hf_token or None,
                 )
-                data_files = [
-                    f for f in repo_files if any(f.endswith(ext) for ext in DATA_EXTS)
-                ]
+                data_files = [f for f in repo_files if any(f.endswith(ext) for ext in DATA_EXTS)]
 
                 # Prefer tabular formats over archives (e.g. images.zip → ImageFolder
                 # with synthetic image/label columns that don't match the real schema).
                 tabular_files = [
-                    f
-                    for f in data_files
-                    if any(f.endswith(ext) for ext in _TABULAR_EXTS)
+                    f for f in data_files if any(f.endswith(ext) for ext in _TABULAR_EXTS)
                 ]
                 candidates = tabular_files or data_files
 
                 # When a subset is specified, narrow to files whose name matches
                 # (e.g. subset="testmini" → prefer "testmini.parquet").
                 if request.subset and candidates:
-                    subset_matches = [
-                        f for f in candidates if request.subset in Path(f).stem
-                    ]
+                    subset_matches = [f for f in candidates if request.subset in Path(f).stem]
                     if subset_matches:
                         candidates = subset_matches
 
@@ -601,9 +584,7 @@ def check_format(
                     processed = format_result["dataset"]
                     preview_samples = _serialize_preview_rows(processed)
                 except Exception as e:
-                    logger.warning(
-                        f"Processed preview generation failed (non-fatal): {e}"
-                    )
+                    logger.warning(f"Processed preview generation failed (non-fatal): {e}")
                     preview_samples = _serialize_preview_rows(preview_slice)
         else:
             preview_samples = _serialize_preview_rows(preview_slice)
@@ -614,9 +595,7 @@ def check_format(
         if image_col and image_col in (result.get("columns") or []):
             try:
                 sample_val = preview_slice[0][image_col]
-                if isinstance(sample_val, str) and sample_val.startswith(
-                    ("http://", "https://")
-                ):
+                if isinstance(sample_val, str) and sample_val.startswith(("http://", "https://")):
                     url_warning = (
                         "This dataset contains image URLs instead of embedded images. "
                         "Images will be downloaded during training, which may be slow for large datasets."
@@ -647,15 +626,12 @@ def check_format(
         raise
     except Exception as e:
         logger.error(f"Error checking dataset format: {e}", exc_info = True)
-        raise HTTPException(
-            status_code = 500, detail = f"Failed to check dataset format: {str(e)}"
-        )
+        raise HTTPException(status_code = 500, detail = "Failed to check dataset format")
 
 
 @router.post("/ai-assist-mapping", response_model = AiAssistMappingResponse)
 def ai_assist_mapping(
-    request: AiAssistMappingRequest,
-    current_subject: str = Depends(get_current_subject),
+    request: AiAssistMappingRequest, current_subject: str = Depends(get_current_subject)
 ):
     """
     Run LLM-assisted dataset conversion advisor (user-triggered).
@@ -672,8 +648,7 @@ def ai_assist_mapping(
 
         # Truncate sample values for the LLM prompt
         truncated = [
-            {col: str(s.get(col, ""))[:200] for col in request.columns}
-            for s in request.samples[:5]
+            {col: str(s.get(col, ""))[:200] for col in request.columns} for s in request.samples[:5]
         ]
 
         result = llm_conversion_advisor(
@@ -705,4 +680,4 @@ def ai_assist_mapping(
 
     except Exception as e:
         logger.error(f"AI assist mapping failed: {e}", exc_info = True)
-        raise HTTPException(status_code = 500, detail = f"AI assist failed: {str(e)}")
+        raise HTTPException(status_code = 500, detail = "AI assist failed")

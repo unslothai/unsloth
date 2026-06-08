@@ -93,9 +93,7 @@ def _build_model_config(config: dict):
     return mc
 
 
-def _get_hf_download_state(
-    model_names: list[str] | None = None,
-) -> tuple[int, bool] | None:
+def _get_hf_download_state(model_names: list[str] | None = None) -> tuple[int, bool] | None:
     """Return (total_bytes, has_incomplete) for the HF Hub cache, or None on error.
 
     When *model_names* is provided, only those models' ``blobs/``
@@ -124,7 +122,6 @@ def _get_hf_download_state(
 
         if model_names:
             from utils.paths import resolve_cached_repo_id_case
-
             for name in model_names:
                 if not name:
                     continue
@@ -265,14 +262,10 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                         adapter_cfg = json.load(f)
                     training_method = adapter_cfg.get("unsloth_training_method")
                     if training_method == "lora" and load_in_4bit:
-                        logger.info(
-                            "adapter_config.json says lora — setting load_in_4bit=False"
-                        )
+                        logger.info("adapter_config.json says lora — setting load_in_4bit=False")
                         load_in_4bit = False
                     elif training_method == "qlora" and not load_in_4bit:
-                        logger.info(
-                            "adapter_config.json says qlora — setting load_in_4bit=True"
-                        )
+                        logger.info("adapter_config.json says qlora — setting load_in_4bit=True")
                         load_in_4bit = True
                     elif not training_method:
                         if (
@@ -342,6 +335,8 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                 "is_vision": mc.is_vision,
                 "is_lora": mc.is_lora,
                 "is_gguf": False,
+                # MLX backend sets device="mlx"; lets the UI tag MLX models.
+                "is_mlx": getattr(backend, "device", None) == "mlx",
                 "is_audio": getattr(mc, "is_audio", False),
                 "audio_type": getattr(mc, "audio_type", None),
                 "has_audio_input": getattr(mc, "has_audio_input", False),
@@ -399,12 +394,7 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
         )
 
 
-def _handle_generate(
-    backend,
-    cmd: dict,
-    resp_queue: Any,
-    cancel_event,
-) -> None:
+def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
     """Handle a generate command: stream tokens back via resp_queue.
 
     cancel_event is an mp.Event shared with the parent process.
@@ -481,6 +471,8 @@ def _handle_generate(
             {
                 "type": "gen_done",
                 "request_id": request_id,
+                # usage/timings from the MLX backend (None elsewhere).
+                "stats": getattr(backend, "last_generation_stats", None),
                 "ts": time.time(),
             },
         )
@@ -500,11 +492,7 @@ def _handle_generate(
         )
 
 
-def _handle_generate_audio(
-    backend,
-    cmd: dict,
-    resp_queue: Any,
-) -> None:
+def _handle_generate_audio(backend, cmd: dict, resp_queue: Any) -> None:
     """Handle TTS audio generation — returns WAV bytes + sample_rate."""
     request_id = cmd.get("request_id", "")
     try:
@@ -547,12 +535,7 @@ def _handle_generate_audio(
         )
 
 
-def _handle_generate_audio_input(
-    backend,
-    cmd: dict,
-    resp_queue: Any,
-    cancel_event,
-) -> None:
+def _handle_generate_audio_input(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
     """Handle audio input generation (ASR/Whisper) — streams text tokens back."""
     request_id = cmd.get("request_id", "")
 
@@ -587,9 +570,7 @@ def _handle_generate_audio_input(
 
         for text_chunk in generator:
             if cancel_event.is_set():
-                logger.info(
-                    "Audio input generation cancelled for request %s", request_id
-                )
+                logger.info("Audio input generation cancelled for request %s", request_id)
                 break
 
             _send_response(
@@ -656,13 +637,7 @@ def _handle_unload(backend, cmd: dict, resp_queue: Any) -> None:
         )
 
 
-def run_inference_process(
-    *,
-    cmd_queue: Any,
-    resp_queue: Any,
-    cancel_event,
-    config: dict,
-) -> None:
+def run_inference_process(*, cmd_queue: Any, resp_queue: Any, cancel_event, config: dict) -> None:
     """Subprocess entrypoint. Persistent — runs command loop until shutdown.
 
     Args:
@@ -672,9 +647,7 @@ def run_inference_process(
         config: Initial configuration dict with model info.
     """
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
-    os.environ["PYTHONWARNINGS"] = (
-        "ignore"  # Suppress warnings at C-level before imports
-    )
+    os.environ["PYTHONWARNINGS"] = "ignore"  # Suppress warnings at C-level before imports
 
     if config.get("disable_xet"):
         os.environ["HF_HUB_DISABLE_XET"] = "1"
@@ -806,7 +779,6 @@ def run_inference_process(
     if sys.platform == "win32":
         try:
             import triton  # noqa: F401
-
             logger.info("Triton available — torch.compile enabled")
         except ImportError:
             os.environ["TORCHDYNAMO_DISABLE"] = "1"
@@ -982,9 +954,7 @@ def run_inference_process(
                 )
 
         except Exception as exc:
-            logger.error(
-                "Error handling command '%s': %s", cmd_type, exc, exc_info = True
-            )
+            logger.error("Error handling command '%s': %s", cmd_type, exc, exc_info = True)
             _send_response(
                 resp_queue,
                 {
