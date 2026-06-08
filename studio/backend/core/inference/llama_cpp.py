@@ -1249,13 +1249,25 @@ class LlamaCppBackend:
     # name (e.g. "NVIDIA A100-SXM4-80GB", "NVIDIA H100 80GB HBM3",
     # "NVIDIA RTX PRO 6000 Blackwell Server Edition").
     _DATACENTER_GPU_MARKERS = (
-        "a100", "a30", "h100", "h200", "h800", "gh200",
-        "b200", "b100", "b300", "gb200", "gb300",
-        "l40", "l4", "rtx pro 6000", "rtx 6000 ada",
+        "a100",
+        "a30",
+        "h100",
+        "h200",
+        "h800",
+        "gh200",
+        "b200",
+        "b100",
+        "b300",
+        "gb200",
+        "gb300",
+        "l40",
+        "l4",
+        "rtx pro 6000",
+        "rtx 6000 ada",
     )
 
     @staticmethod
-    def _is_datacenter_gpu(gpu_indices=None) -> bool:
+    def _is_datacenter_gpu(gpu_indices = None) -> bool:
         """True when every selected NVIDIA GPU is a datacenter/professional part
         (A100/H100/H200/B200/GB200/GB300/L40/RTX PRO 6000 ...). Drives the DC
         llama.cpp env tuning. NVIDIA-only and fails open to False, so consumer
@@ -1288,7 +1300,7 @@ class LlamaCppBackend:
             return False
 
     @staticmethod
-    def _effective_gpu_count(gpu_indices=None) -> int:
+    def _effective_gpu_count(gpu_indices = None) -> int:
         """Number of GPUs llama-server will actually use: the length of an
         explicit selection, else the count of visible CUDA devices (gpu_indices
         is None when we let llama.cpp use every visible GPU). Returns 0 on any
@@ -1297,7 +1309,6 @@ class LlamaCppBackend:
             return len(gpu_indices)
         try:
             import torch
-
             if hasattr(torch, "cuda") and torch.cuda.is_available():
                 return torch.cuda.device_count()
         except Exception:
@@ -1305,7 +1316,7 @@ class LlamaCppBackend:
         return 0
 
     @staticmethod
-    def _apply_datacenter_env(env: dict, gpu_indices=None) -> bool:
+    def _apply_datacenter_env(env: dict, gpu_indices = None) -> bool:
         """Inject data-center llama.cpp tuning into ``env`` in place and report
         whether this box qualified. All writes use ``setdefault`` so a
         user-supplied value always wins. Behaviour:

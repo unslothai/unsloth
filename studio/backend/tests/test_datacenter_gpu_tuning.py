@@ -22,7 +22,12 @@ import pytest
 from core.inference.llama_cpp import LlamaCppBackend
 
 
-def _fake_torch(names, *, hip = None, cuda_ok = True):
+def _fake_torch(
+    names,
+    *,
+    hip = None,
+    cuda_ok = True,
+):
     """A torch stub exposing only what _is_datacenter_gpu / _effective_gpu_count
     touch: torch.version.hip, torch.cuda.is_available/device_count and
     get_device_properties(i).name."""
@@ -39,6 +44,7 @@ def _fake_torch(names, *, hip = None, cuda_ok = True):
 # ---------------------------------------------------------------------------
 # _is_datacenter_gpu
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.parametrize(
     "names,expected",
@@ -78,7 +84,8 @@ def test_is_datacenter_gpu(monkeypatch, names, expected):
 def test_is_datacenter_gpu_respects_selection(monkeypatch):
     # A mixed box where only the DC GPU is selected -> True; only consumer -> False.
     monkeypatch.setitem(
-        sys.modules, "torch",
+        sys.modules,
+        "torch",
         _fake_torch(["NVIDIA B200", "NVIDIA GeForce RTX 4090"]),
     )
     assert LlamaCppBackend._is_datacenter_gpu([0]) is True
@@ -97,7 +104,8 @@ def test_is_datacenter_gpu_out_of_range_indices_skipped(monkeypatch):
 def test_is_datacenter_gpu_rocm_is_false(monkeypatch):
     # ROCm reuses torch.cuda.*; even an MI300X-named part must not qualify here.
     monkeypatch.setitem(
-        sys.modules, "torch",
+        sys.modules,
+        "torch",
         _fake_torch(["AMD Instinct MI300X"], hip = "6.2.0"),
     )
     assert LlamaCppBackend._is_datacenter_gpu() is False
@@ -116,6 +124,7 @@ def test_is_datacenter_gpu_missing_torch_is_false(monkeypatch):
 # ---------------------------------------------------------------------------
 # _effective_gpu_count
 # ---------------------------------------------------------------------------
+
 
 def test_effective_gpu_count_explicit_selection(monkeypatch):
     # Explicit selection: length of the list, regardless of how many are visible.
@@ -143,6 +152,7 @@ def test_effective_gpu_count_missing_torch_is_zero(monkeypatch):
 # ---------------------------------------------------------------------------
 # _apply_datacenter_env (the env-injection decision)
 # ---------------------------------------------------------------------------
+
 
 def test_apply_env_single_dc_gpu_sets_only_fp32(monkeypatch):
     monkeypatch.delenv("UNSLOTH_DISABLE_DC_TUNING", raising = False)
@@ -188,7 +198,7 @@ def test_apply_env_user_value_wins(monkeypatch):
     monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA B200"] * 2))
     env = {
         "GGML_CUDA_FORCE_CUBLAS_COMPUTE_32F": "0",  # user explicitly disabled
-        "CUDA_SCALE_LAUNCH_QUEUES": "8x",           # user override
+        "CUDA_SCALE_LAUNCH_QUEUES": "8x",  # user override
     }
     assert LlamaCppBackend._apply_datacenter_env(env, [0, 1]) is True
     # setdefault must not clobber user-provided values.
