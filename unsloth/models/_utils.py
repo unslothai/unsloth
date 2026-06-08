@@ -3154,9 +3154,7 @@ def _resolve_moe_parameter_name(model, default_name: str, alternate_name: str) -
     return default_name
 
 
-_MOE_BROAD_MLP_TARGETS = frozenset(
-    ("gate_proj", "up_proj", "down_proj", "gate_up_proj")
-)
+_MOE_BROAD_MLP_TARGETS = frozenset(("gate_proj", "up_proj", "down_proj", "gate_up_proj"))
 
 
 def _moe_target_set_from_string(target_modules: str) -> set[str]:
@@ -3218,11 +3216,7 @@ def get_moe_target_parameters(model, target_modules = None) -> Optional[List[str
         target_set = {
             target
             for target in target_modules or ()
-            if (
-                isinstance(target, str)
-                and "." not in target
-                and target in _MOE_BROAD_MLP_TARGETS
-            )
+            if (isinstance(target, str) and "." not in target and target in _MOE_BROAD_MLP_TARGETS)
         }
 
     moe_params = []

@@ -34,7 +34,6 @@ class _FakeMoeModel(torch.nn.Module):
 )
 def test_regex_mlp_targets_discover_moe_parameters(target_modules):
     from unsloth.models._utils import get_moe_target_parameters
-
     assert get_moe_target_parameters(_FakeMoeModel(), target_modules) == [
         "mlp.experts.gate_up_proj",
         "mlp.experts.down_proj",
@@ -43,7 +42,6 @@ def test_regex_mlp_targets_discover_moe_parameters(target_modules):
 
 def test_explicit_dotted_module_target_does_not_discover_moe_parameters():
     from unsloth.models._utils import get_moe_target_parameters
-
     assert (
         get_moe_target_parameters(
             _FakeMoeModel(),

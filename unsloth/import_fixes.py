@@ -1692,9 +1692,7 @@ def _patch_peft_moe_target_conversion(twc):
             return original_convert_moe(peft_config, model_type)
 
         explicit_targets = {
-            target
-            for target in target_modules
-            if isinstance(target, str) and "." in target
+            target for target in target_modules if isinstance(target, str) and "." in target
         }
         if not explicit_targets:
             return original_convert_moe(peft_config, model_type)
@@ -1705,9 +1703,7 @@ def _patch_peft_moe_target_conversion(twc):
 
         peft_config.target_modules = bare_targets
         original_convert_moe(peft_config, model_type)
-        peft_config.target_modules = (
-            set(peft_config.target_modules or ()) | explicit_targets
-        )
+        peft_config.target_modules = set(peft_config.target_modules or ()) | explicit_targets
 
     twc._convert_peft_config_moe = _convert_peft_config_moe_unsloth
     twc._unsloth_moe_target_conversion_patch = True
