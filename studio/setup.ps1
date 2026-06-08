@@ -220,7 +220,6 @@ function Get-InstalledLlamaPrebuiltRelease {
 function Find-Nvcc {
     param([string]$MaxVersion = "")
 
-    # With MaxVersion, pick a major-compatible toolkit from the side-by-side installs.
     $toolkitBase = 'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA'
 
     if ($MaxVersion -and (Test-Path $toolkitBase)) {
@@ -1075,7 +1074,6 @@ function Resolve-CudaToolkit {
 # Toolkit major must be <= the driver's max CUDA major (nvidia-smi "CUDA Version: X.Y");
 # a newer-major toolkit fails at runtime ("ggml_cuda_init: failed to initialize CUDA").
 
-# Detect max CUDA the driver supports.
 $DriverMaxCuda = $null
 try {
     $smiOut = & $NvidiaSmiExe 2>&1 | Out-String
