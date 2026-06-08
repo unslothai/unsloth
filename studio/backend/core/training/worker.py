@@ -1421,6 +1421,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
     # Reuse the GPU path's format pipeline for both VLM (auto-detects OCR/caption/
     # llava/sharegpt+images) and text (alpaca/sharegpt/chatml → "text" column).
     format_type = config.get("format_type", "")
+    custom_format_mapping = config.get("custom_format_mapping")
     try:
         from utils.datasets import format_and_template_dataset
         def _fmt_progress(status_message = "", **_kw):
@@ -1434,6 +1435,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
                 tokenizer = tokenizer,
                 is_vlm = True,
                 dataset_name = hf_dataset or "local",
+                custom_format_mapping = custom_format_mapping,
                 progress_callback = _fmt_progress,
             )
             if vlm_info.get("success"):
@@ -1451,6 +1453,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
                     tokenizer = tokenizer,
                     is_vlm = True,
                     dataset_name = hf_dataset or "local",
+                    custom_format_mapping = custom_format_mapping,
                 )
                 if ev_info.get("success"):
                     eval_dataset = _adapt_for_mlx_vlm(
@@ -1467,6 +1470,8 @@ def _run_mlx_training(event_queue, stop_queue, config):
                 is_vlm = False,
                 format_type = format_type,
                 dataset_name = hf_dataset or "local",
+                custom_format_mapping = custom_format_mapping,
+                progress_callback = _fmt_progress,
             )
             if info.get("success", True):
                 dataset = info.get("dataset", dataset)
@@ -1478,6 +1483,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
                     is_vlm = False,
                     format_type = format_type,
                     dataset_name = hf_dataset or "local",
+                    custom_format_mapping = custom_format_mapping,
                 )
                 if ev.get("success", True):
                     eval_dataset = ev.get("dataset", eval_dataset)
