@@ -1175,8 +1175,8 @@ if (-not $NvccPath -and $IncompatibleToolkit) {
         $script:CudaToolkitReady = $false
         return
     }
-    # Only a forced source build reaches here (prebuilt path returned above) and
-    # cannot proceed without a compatible toolkit, so fail (setup.sh degrades to CPU).
+    # Reached only by a source build (forced, or after a prebuilt-install failure);
+    # with no compatible toolkit it must fail (setup.sh degrades to CPU instead).
     Write-Host "" -ForegroundColor Red
     Write-Host "========================================================================" -ForegroundColor Red
     Write-Host "[ERROR] CUDA source build cannot use the installed toolkit with this driver." -ForegroundColor Red
