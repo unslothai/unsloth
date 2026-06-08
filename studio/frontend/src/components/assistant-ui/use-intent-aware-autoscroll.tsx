@@ -77,6 +77,14 @@ type AutoScrollContextValue = {
   scrollToBottom: ScrollToBottom;
   getIsAtBottom: () => boolean;
   subscribe: (listener: () => void) => () => void;
+  /**
+   * Mark the user as detached from the bottom, as if they had scrolled
+   * up. Called when the composer grows and the bottom spacer grows with
+   * it: the chat is then above the new bottom, and observer-driven pins
+   * must not shove it up. Scrolling back to the bottom re-attaches;
+   * explicit pins (run start, scroll-to-bottom button) still work.
+   */
+  detachFromBottom: () => void;
 };
 
 const noopContext: AutoScrollContextValue = {
@@ -86,6 +94,9 @@ const noopContext: AutoScrollContextValue = {
   getIsAtBottom: () => true,
   subscribe: () => () => {
     /* no-op */
+  },
+  detachFromBottom: () => {
+    /* no viewport mounted */
   },
 };
 
@@ -129,6 +140,9 @@ export function useIntentAwareAutoScroll(): {
   const scrollImplRef = useRef<ScrollToBottom>(() => {
     /* no viewport mounted */
   });
+  const detachImplRef = useRef<() => void>(() => {
+    /* no viewport mounted */
+  });
 
   const getIsAtBottom = useCallback(() => isAtBottomRef.current, []);
 
@@ -153,8 +167,12 @@ export function useIntentAwareAutoScroll(): {
     scrollImplRef.current(behavior);
   }, []);
 
+  const detachFromBottom = useCallback(() => {
+    detachImplRef.current();
+  }, []);
+
   const attach = useCallback(
-    (el: HTMLElement) => {
+    (el: HTMLElement, isRebind: boolean) => {
       let rafId: number | null = null;
       let lastScrollTop = el.scrollTop;
       let lastClientWidth = el.clientWidth;
@@ -283,6 +301,13 @@ export function useIntentAwareAutoScroll(): {
           el.scrollTo({ top: el.scrollHeight, behavior });
         }
         setIsAtBottom(true);
+        requestTick();
+      };
+
+      // Programmatic detach (see detachFromBottom). Same effect as the
+      // user scrolling up; the tick refresh updates isAtBottom.
+      detachImplRef.current = () => {
+        detach();
         requestTick();
       };
 
@@ -476,21 +501,24 @@ export function useIntentAwareAutoScroll(): {
       const mutationObserver = new MutationObserver(onLayoutChange);
       const onViewportResize = onLayoutChange;
 
-      // Fresh attach always starts pinned. `userDetachedRef` survives
-      // ref rebinds (it's hook-scoped), so if the viewport element is
-      // ever unmounted and remounted without an AUI lifecycle event
-      // (e.g. a parent layout refactor that remounts the viewport),
-      // a prior detach would silently disable auto-follow for the
-      // rest of the session.
-      userDetachedRef.current = false;
+      // Fresh attach (a new viewport element) always starts pinned.
+      // Rebinds to the SAME element must not pin or reset detach state:
+      // the Viewport composes refs with an identity that changes on
+      // re-render, so React re-runs the ref (null, then same element)
+      // on unrelated renders such as composer resizes. Pinning here
+      // would yank the chat to the bottom on every such render. The
+      // observers below are re-installed either way.
+      if (!isRebind) {
+        userDetachedRef.current = false;
 
-      // Pin to bottom when the ref first attaches. Covers the case
-      // where `thread.initialize` fires before the ref is bound.
-      extendFollow();
-      if (el.scrollHeight > el.clientHeight) {
-        el.scrollTo({ top: el.scrollHeight, behavior: "instant" });
+        // Pin to bottom when the ref first attaches. Covers the case
+        // where `thread.initialize` fires before the ref is bound.
+        extendFollow();
+        if (el.scrollHeight > el.clientHeight) {
+          el.scrollTo({ top: el.scrollHeight, behavior: "instant" });
+        }
+        setIsAtBottom(true);
       }
-      setIsAtBottom(true);
       requestTick();
 
       // Observe the border box, not the content box. The stabilizer
@@ -544,6 +572,9 @@ export function useIntentAwareAutoScroll(): {
         scrollImplRef.current = () => {
           /* no viewport mounted */
         };
+        detachImplRef.current = () => {
+          /* no viewport mounted */
+        };
       };
     },
     [setIsAtBottom],
@@ -562,6 +593,7 @@ export function useIntentAwareAutoScroll(): {
   useAuiEvent("thread.initialize", () => pinToBottom("instant"));
   useAuiEvent("threadListItem.switchedTo", () => pinToBottom("instant"));
 
+  const lastElRef = useRef<HTMLElement | null>(null);
   const ref = useCallback<RefCallback<HTMLElement>>(
     (el) => {
       if (cleanupRef.current) {
@@ -569,15 +601,20 @@ export function useIntentAwareAutoScroll(): {
         cleanupRef.current = null;
       }
       if (el) {
-        cleanupRef.current = attach(el);
+        // Same-element rebind vs a genuinely new element, see attach().
+        const isRebind = lastElRef.current === el;
+        lastElRef.current = el;
+        cleanupRef.current = attach(el, isRebind);
       }
+      // On null, keep lastElRef so a rebind to the same element is
+      // recognized; a real remount binds a different element anyway.
     },
     [attach],
   );
 
   const context = useMemo<AutoScrollContextValue>(
-    () => ({ scrollToBottom, getIsAtBottom, subscribe }),
-    [scrollToBottom, getIsAtBottom, subscribe],
+    () => ({ scrollToBottom, getIsAtBottom, subscribe, detachFromBottom }),
+    [scrollToBottom, getIsAtBottom, subscribe, detachFromBottom],
   );
 
   return { ref, context };
