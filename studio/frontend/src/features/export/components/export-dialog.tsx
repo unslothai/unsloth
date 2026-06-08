@@ -235,6 +235,10 @@ interface ExportDialogProps {
   onHfTokenChange: (v: string) => void;
   privateRepo: boolean;
   onPrivateRepoChange: (v: boolean) => void;
+  ggufShardSize: string;
+  onGgufShardSizeChange: (v: string) => void;
+  ggufSaveDir: string;
+  onGgufSaveDirChange: (v: string) => void;
   onExport: () => void;
   exporting: boolean;
   exportError: string | null;
@@ -266,6 +270,10 @@ export function ExportDialog({
   onHfTokenChange,
   privateRepo,
   onPrivateRepoChange,
+  ggufShardSize,
+  onGgufShardSizeChange,
+  ggufSaveDir,
+  onGgufSaveDirChange,
   onExport,
   exporting,
   exportError,
@@ -520,6 +528,40 @@ export function ExportDialog({
             <span className="font-medium text-foreground">{estimatedSize}</span>
           </div> */}
             </div>
+
+            {/* GGUF-specific options */}
+            {exportMethod === "gguf" && (
+              <div className="flex flex-col gap-3">
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-xs font-medium text-muted-foreground">
+                    Output folder name
+                  </label>
+                  <Input
+                    placeholder="Auto-derived from model name"
+                    value={ggufSaveDir}
+                    onChange={(e) => onGgufSaveDirChange(e.target.value)}
+                    disabled={exporting}
+                  />
+                  <p className="text-[11px] text-muted-foreground/70">
+                    Leave blank to use the auto-generated name.
+                  </p>
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-xs font-medium text-muted-foreground">
+                    Shard size
+                  </label>
+                  <Input
+                    placeholder='Default (50 GB — one file for most models)'
+                    value={ggufShardSize}
+                    onChange={(e) => onGgufShardSizeChange(e.target.value)}
+                    disabled={exporting}
+                  />
+                  <p className="text-[11px] text-muted-foreground/70">
+                    Set a max size per shard (e.g. <code>2GB</code>, <code>4GB</code>) to split the output into smaller files. Leave blank to keep the default (50 GB, effectively a single file for most models).
+                  </p>
+                </div>
+              </div>
+            )}
 
             {/* Live export output panel */}
             <AnimatePresence>

@@ -1346,6 +1346,7 @@ def save_to_gguf(
     first_conversion: str = None,
     is_vlm: bool = False,
     is_gpt_oss: bool = False,
+    gguf_shard_size: Optional[str] = None,
 ):
     """
     Orchestrates the complete GGUF conversion process.
@@ -1505,7 +1506,7 @@ def save_to_gguf(
             supported_vision_archs = supported_vision_archs,
             is_vlm = is_vlm,
             is_gpt_oss = is_gpt_oss,
-            max_shard_size = "50GB",
+            max_shard_size = gguf_shard_size if gguf_shard_size is not None else "50GB",
             print_output = print_output,
         )
     # update is_vlm switch
@@ -2142,6 +2143,7 @@ def unsloth_save_pretrained_gguf(
     tags: List[str] = None,
     temporary_location: str = "_unsloth_temporary_saved_buffers",
     maximum_memory_usage: float = 0.85,
+    gguf_shard_size: Optional[str] = None,
 ):
     """
     Same as .save_pretrained(...) except 4bit weights are auto
@@ -2379,8 +2381,9 @@ def unsloth_save_pretrained_gguf(
             model_directory = save_directory,
             quantization_method = quantization_methods,
             first_conversion = first_conversion,
-            is_vlm = is_vlm,  # Pass VLM flag
-            is_gpt_oss = is_gpt_oss,  # Pass gpt_oss Flag
+            is_vlm = is_vlm,
+            is_gpt_oss = is_gpt_oss,
+            gguf_shard_size = gguf_shard_size,
         )
     except Exception as e:
         if IS_KAGGLE_ENVIRONMENT:
@@ -2477,6 +2480,7 @@ def unsloth_push_to_hub_gguf(
     temporary_location: str = "_unsloth_temporary_saved_buffers",
     maximum_memory_usage: float = 0.85,
     datasets: Optional[List[str]] = None,
+    gguf_shard_size: Optional[str] = None,
 ):
     """
     Same as .push_to_hub(...) except 4bit weights are auto
@@ -2537,6 +2541,7 @@ def unsloth_push_to_hub_gguf(
             safe_serialization = safe_serialization,
             temporary_location = temporary_location,
             maximum_memory_usage = maximum_memory_usage,
+            gguf_shard_size = gguf_shard_size,
         )
 
         # Extract results
