@@ -661,9 +661,13 @@ class ExportBackend:
                 # Pass absolute path — no os.chdir needed.
                 # unsloth saves intermediate HF model files into model_save_path.
                 # unsloth-zoo's check_llama_cpp() uses ~/.unsloth/llama.cpp by default.
-                model_save_path = os.path.join(abs_save_dir, "model")
+                # Use a unique intermediate directory for HF model files
+                # to avoid overwriting an unrelated 'model/' dir that may
+                # already exist in the user's absolute destination (#6082).
+                import uuid
+                _model_tmp = os.path.join(abs_save_dir, f"_tmp_model_{uuid.uuid4().hex[:8]}")
                 self.current_model.save_pretrained_gguf(
-                    model_save_path,
+                    _model_tmp,
                     self.current_tokenizer,
                     quantization_method = quant_method,
                 )
