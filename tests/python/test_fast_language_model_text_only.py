@@ -54,6 +54,14 @@ def _names_in(node):
     return {n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
 
 
+def _param_default(method, name):
+    # Default-value AST node for a named parameter, or None.
+    args = method.args
+    params = list(args.args) + list(args.kwonlyargs)
+    defaults = list(args.defaults) + list(args.kw_defaults)
+    return dict(zip([p.arg for p in params][-len(defaults) :], defaults)).get(name)
+
+
 def _load_text_only_namespace():
     # Exec the text-only helpers from _utils into one namespace (no unsloth import),
     # in dependency order so cross-references resolve.
@@ -111,28 +119,29 @@ def test_text_only_helper_rejects_configs_without_text_submodel():
         helper(VisionOnlyConfig(), "vision-only")
 
 
-def test_fast_language_model_forces_text_only_when_delegating_to_fast_model():
+def test_fast_language_model_forwards_text_only_to_fast_model():
     source = _source(LOADER_PATH)
     method = _class_method(ast.parse(source), "FastLanguageModel", "from_pretrained")
-    fast_model_calls = []
-    for node in ast.walk(method):
-        if not isinstance(node, ast.Call):
-            continue
-        func = node.func
-        if (
-            isinstance(func, ast.Attribute)
-            and func.attr == "from_pretrained"
-            and isinstance(func.value, ast.Name)
-            and func.value.id == "FastModel"
-        ):
-            fast_model_calls.append(node)
 
+    # text_only is opt-in: a parameter defaulting to False, not hardcoded True.
+    text_only_default = _param_default(method, "text_only")
+    assert isinstance(text_only_default, ast.Constant) and text_only_default.value is False
+
+    # Both FastModel delegations forward text_only = text_only.
+    fast_model_calls = [
+        node
+        for node in ast.walk(method)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "from_pretrained"
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "FastModel"
+    ]
     assert len(fast_model_calls) == 2
     for call in fast_model_calls:
-        force_kwarg = [kw for kw in call.keywords if kw.arg == "_force_text_only"]
-        assert len(force_kwarg) == 1
-        assert isinstance(force_kwarg[0].value, ast.Constant)
-        assert force_kwarg[0].value.value is True
+        kw = [k for k in call.keywords if k.arg == "text_only"]
+        assert len(kw) == 1
+        assert isinstance(kw[0].value, ast.Name) and kw[0].value.id == "text_only"
 
 
 def test_fast_model_text_only_does_not_override_explicit_auto_model():
@@ -141,23 +150,11 @@ def test_fast_model_text_only_does_not_override_explicit_auto_model():
     source = _source(LOADER_PATH)
     method = _class_method(ast.parse(source), "FastModel", "from_pretrained")
 
-    # _force_text_only = kwargs.pop("_force_text_only", False)
-    def _is_kwargs_pop(value):
-        return (
-            isinstance(value, ast.Call)
-            and isinstance(value.func, ast.Attribute)
-            and value.func.attr == "pop"
-            and isinstance(value.func.value, ast.Name)
-            and value.func.value.id == "kwargs"
-            and value.args
-            and isinstance(value.args[0], ast.Constant)
-            and value.args[0].value == "_force_text_only"
-        )
+    # text_only is opt-in: a parameter defaulting to False.
+    text_only_default = _param_default(method, "text_only")
+    assert isinstance(text_only_default, ast.Constant) and text_only_default.value is False
 
-    assert _assigns_name(method, "_force_text_only", _is_kwargs_pop)
-
-    # load_text_only is derived from _force_text_only AND a check that the
-    # caller did not pass an explicit auto_model.
+    # load_text_only is text_only AND a check that the caller did not pass auto_model.
     def _is_guarded_bool(value):
         names = _names_in(value)
         has_none_check = any(
@@ -165,19 +162,18 @@ def test_fast_model_text_only_does_not_override_explicit_auto_model():
             and any(isinstance(op, (ast.Is, ast.IsNot)) for op in n.ops)
             for n in ast.walk(value)
         )
-        return "_force_text_only" in names and "auto_model" in names and has_none_check
+        return "text_only" in names and "auto_model" in names and has_none_check
 
     assert _assigns_name(method, "load_text_only", _is_guarded_bool)
 
     assert _calls_function(method, "_get_text_only_config")
 
-    # The computed load_text_only is forwarded as the _force_text_only kwarg
-    # of the inner from_pretrained delegation.
+    # load_text_only is forwarded as the text_only kwarg of the inner delegation.
     def _forwards_kwarg(node):
         return any(
             isinstance(n, ast.Call)
             and any(
-                kw.arg == "_force_text_only"
+                kw.arg == "text_only"
                 and isinstance(kw.value, ast.Name)
                 and kw.value.id == "load_text_only"
                 for kw in n.keywords
@@ -200,13 +196,9 @@ def test_fast_base_model_text_only_bypasses_vision_auto_model():
     source = _source(VISION_PATH)
     method = _class_method(ast.parse(source), "FastBaseModel", "from_pretrained")
 
-    # _force_text_only is a keyword-only parameter defaulting to False.
-    args = method.args
-    params = list(args.args) + list(args.kwonlyargs)
-    defaults = list(args.defaults) + list(args.kw_defaults)
-    param_defaults = dict(zip([p.arg for p in params][-len(defaults) :], defaults))
-    force_default = param_defaults.get("_force_text_only")
-    assert isinstance(force_default, ast.Constant) and force_default.value is False
+    # text_only is a parameter defaulting to False.
+    text_only_default = _param_default(method, "text_only")
+    assert isinstance(text_only_default, ast.Constant) and text_only_default.value is False
 
     assert _assigns_name(
         method,

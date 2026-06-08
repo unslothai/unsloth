@@ -278,7 +278,7 @@ def get_model_name(
 
 
 def _offline_quantize_to_fp8(
-    model_name: str, fp8_mode: str, *, force_text_only: bool = False
+    model_name: str, fp8_mode: str, *, text_only: bool = False
 ) -> str:
     """
     Quantizes the model to fp8 using torchao and saving the quantized model to a
@@ -309,7 +309,7 @@ def _offline_quantize_to_fp8(
     # Mirror the loader's text-only guard so load_in_fp8 skips the vision tower; decide
     # before the cache name so the artifact and its path stay in sync. See PR #5816.
     text_config = None
-    if force_text_only and hasattr(config, "vision_config"):
+    if text_only and hasattr(config, "vision_config"):
         from ._utils import (
             _get_text_only_config,
             resolve_model_class,

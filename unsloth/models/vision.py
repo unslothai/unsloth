@@ -611,7 +611,7 @@ class FastBaseModel:
         disable_log_stats = False,
         unsloth_vllm_standby = False,
         load_in_fp8 = False,  # fp8 LoRA (True, False, 'block')
-        _force_text_only = False,
+        text_only = False,
         **kwargs,
     ):
         if unsloth_vllm_standby and os.environ.get("UNSLOTH_VLLM_STANDBY", "0") != "1":
@@ -629,13 +629,13 @@ class FastBaseModel:
         # Resolve text-only before the is_vlm / vLLM checks so is_vlm stays consistent.
         # Skip the vision tower only when the family has its own text decoder (e.g. Gemma
         # 3); otherwise keep the full model. transformers >=5 needs the key remap. #5816
-        if _force_text_only and auto_config is None:
+        if text_only and auto_config is None:
             auto_config = AutoConfig.from_pretrained(
                 model_name,
                 token = token,
                 trust_remote_code = trust_remote_code,
             )
-        if _force_text_only and hasattr(auto_config, "vision_config"):
+        if text_only and hasattr(auto_config, "vision_config"):
             parent_config = auto_config
             text_config = _get_text_only_config(parent_config, model_name)
             text_class = resolve_model_class(AutoModelForCausalLM, text_config)
@@ -646,7 +646,7 @@ class FastBaseModel:
                 auto_config = text_config
                 auto_model = AutoModelForCausalLM
                 _apply_text_only_key_mapping(kwargs, parent_config, text_config)
-        elif _force_text_only and auto_model in [
+        elif text_only and auto_model in [
             AutoModelForVision2Seq,
             AutoModelForImageTextToText,
         ]:
