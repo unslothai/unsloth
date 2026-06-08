@@ -560,6 +560,7 @@ def test_trl_kto_get_batch_logps_signature(tag: str):
         if src is None:
             continue
         checked_sources.append((path, src))
+        # Legacy: explicit get_batch_logps method.
         if has_def(src, "get_batch_logps", "func"):
             return
         # TRL 1.x: refactored into _compute_logps + selective_log_softmax.
