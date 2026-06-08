@@ -689,6 +689,13 @@ class TestRouteErrors(unittest.TestCase):
 
         self.assertIn("only supported on CUDA and Intel XPU", str(exc_info.exception))
 
+    def test_prepare_gpu_selection_rejects_gpu_ids_on_non_cuda_backend(self):
+        with patch("utils.hardware.hardware.get_device", return_value = DeviceType.CPU):
+            with self.assertRaises(ValueError) as exc_info:
+                prepare_gpu_selection([0], model_name = "unsloth/test")
+
+        self.assertIn("only supported on", str(exc_info.exception))
+
     def test_inference_route_rejects_gpu_ids_for_gguf(self):
         inference_route = _load_route_module(
             "inference_route_module_for_gguf_gpu_ids_test",
@@ -1302,6 +1309,29 @@ class TestXpuSelection(_GpuCacheResetMixin, unittest.TestCase):
 
         self.assertEqual(selected, [0])
         self.assertEqual(metadata["selection_mode"], "explicit")
+
+
+class TestXpuRejection(_GpuCacheResetMixin, unittest.TestCase):
+    def test_auto_select_returns_non_cuda_for_xpu(self):
+        with (
+            patch("utils.hardware.hardware.get_device", return_value = DeviceType.XPU),
+            patch(
+                "utils.hardware.hardware._get_parent_visible_gpu_spec",
+                return_value = {
+                    "raw": None,
+                    "numeric_ids": [],
+                    "supports_explicit_gpu_ids": False,
+                },
+            ),
+            patch(
+                "utils.hardware.hardware.get_parent_visible_gpu_ids",
+                return_value = [],
+            ),
+        ):
+            selected, metadata = auto_select_gpu_ids("unsloth/test")
+
+        self.assertIsNone(selected)
+        self.assertEqual(metadata["selection_mode"], "non_cuda")
 
 
 class TestEstimateFp16ModelSizeBytesPrefersLocalWeights(unittest.TestCase):
