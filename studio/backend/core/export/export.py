@@ -650,6 +650,14 @@ class ExportBackend:
                 cwd = os.getcwd()
                 pre_existing_ggufs = set(glob.glob(os.path.join(cwd, "*.gguf")))
 
+                # Snapshot existing subdirectories before the export so we
+                # only clean up dirs created during this run (not unrelated
+                # user directories — important when abs_save_dir is an
+                # existing folder on a different drive, see #6082).
+                pre_existing_subs = {
+                    d.name for d in Path(abs_save_dir).iterdir() if d.is_dir()
+                }
+
                 # Pass absolute path — no os.chdir needed.
                 # unsloth saves intermediate HF model files into model_save_path.
                 # unsloth-zoo's check_llama_cpp() uses ~/.unsloth/llama.cpp by default.
@@ -683,9 +691,11 @@ class ExportBackend:
                         dest = os.path.join(abs_save_dir, src.name)
                         shutil.move(str(src), dest)
                         logger.info(f"Relocated GGUF: {src.name} → {abs_save_dir}/")
-                    # Clean up the subdirectory (intermediate HF files, etc.)
-                    shutil.rmtree(str(sub), ignore_errors = True)
-                    logger.info(f"Cleaned up subdirectory: {sub.name}")
+                    # Only clean up subdirectories created during this export,
+                    # not pre-existing user directories.
+                    if sub.name not in pre_existing_subs:
+                        shutil.rmtree(str(sub), ignore_errors = True)
+                        logger.info(f"Cleaned up subdirectory: {sub.name}")
 
                 # For non-PEFT models, save_pretrained_gguf redirects to the
                 # checkpoint path, leaving a *_gguf directory in outputs/.

@@ -356,20 +356,24 @@ def resolve_under_root(
     return candidate
 
 
-def _resolve_user_path(
-    path_value: str | None,
-    *,
-    root: Path,
-    strip_prefixes: tuple[str, ...] = (),
-) -> Path:
-    """Shared path resolution for user-facing export/output/tensorboard dirs.
+def resolve_output_dir(path_value: str | None = None) -> Path:
+    return resolve_under_root(
+        path_value,
+        root = outputs_root(),
+        strip_prefixes = ("outputs",),
+    )
 
-    Validates basic safety (null bytes, ``..`` segments), passes absolute
-    paths through as-is (user may target a different drive), and falls
-    through to :func:`resolve_under_root` for relative paths.
+
+def resolve_export_dir(path_value: str | None = None) -> Path:
+    """Resolve an export save directory.
+
+    Unlike ``resolve_output_dir`` / ``resolve_tensorboard_dir``, this
+    function accepts absolute paths as-is so users can target a
+    different drive when their Studio install lives on a constrained
+    system volume (see :gh-issue:`6082`).
     """
     if not path_value or not str(path_value).strip():
-        return root
+        return exports_root()
     raw = str(path_value).strip()
     if "\x00" in raw:
         raise ValueError("path may not contain null bytes")
@@ -378,19 +382,15 @@ def _resolve_user_path(
         raise ValueError(f"path may not contain '..' segments: {raw!r}")
     if path.is_absolute():
         return path
-    return resolve_under_root(path_value, root = root, strip_prefixes = strip_prefixes)
-
-
-def resolve_output_dir(path_value: str | None = None) -> Path:
-    return _resolve_user_path(path_value, root = outputs_root(), strip_prefixes = ("outputs",))
-
-
-def resolve_export_dir(path_value: str | None = None) -> Path:
-    return _resolve_user_path(path_value, root = exports_root(), strip_prefixes = ("exports",))
+    return resolve_under_root(
+        path_value,
+        root = exports_root(),
+        strip_prefixes = ("exports",),
+    )
 
 
 def resolve_tensorboard_dir(path_value: str | None = None) -> Path:
-    return _resolve_user_path(
+    return resolve_under_root(
         path_value,
         root = tensorboard_root(),
         strip_prefixes = ("runs", "tensorboard"),
