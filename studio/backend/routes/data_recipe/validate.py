@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 
 from core.data_recipe.service import (
     build_config_builder,
@@ -16,6 +16,7 @@ from core.data_recipe.service import (
 )
 from loggers import get_logger
 from models.data_recipe import RecipePayload, ValidateError, ValidateResponse
+from utils.utils import safe_error_detail, safe_curated_detail, log_and_http_error
 
 logger = get_logger(__name__)
 router = APIRouter()
@@ -168,7 +169,12 @@ def validate(payload: RecipePayload) -> ValidateResponse:
                 missing_module = exc.name,
             )
         except Exception as exc:
-            detail = str(exc).strip() or "Validation failed."
+            logger.error(
+                "data_recipe.validate.github_config_failed",
+                error = str(exc),
+                exc_info = True,
+            )
+            detail = safe_error_detail(exc, fallback = "Validation failed.")
             return ValidateResponse(
                 valid = False,
                 errors = [ValidateError(message = detail)],
@@ -179,9 +185,20 @@ def validate(payload: RecipePayload) -> ValidateResponse:
     try:
         validate_recipe(recipe)
     except RuntimeError as exc:
-        raise HTTPException(status_code = 503, detail = str(exc)) from exc
+        raise log_and_http_error(
+            exc,
+            503,
+            safe_error_detail(exc),
+            event = "data_recipe.validate.service_unavailable",
+            log = logger,
+        ) from exc
     except Exception as exc:
-        detail = str(exc).strip() or "Validation failed."
+        logger.error(
+            "data_recipe.validate.recipe_failed",
+            error = str(exc),
+            exc_info = True,
+        )
+        detail = safe_curated_detail(exc, fallback = "Validation failed.")
         parsed_errors = _collect_validation_errors(recipe)
         return ValidateResponse(
             valid = False,

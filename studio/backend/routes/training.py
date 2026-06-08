@@ -50,6 +50,8 @@ except ImportError:
 # Auth
 from auth.authentication import get_current_subject
 
+from utils.utils import log_and_http_error
+
 from models import (
     TrainingStartRequest,
     TrainingJobResponse,
@@ -169,7 +171,9 @@ async def start_training(
                     request.resume_from_checkpoint
                 )
             except ValueError as e:
-                raise HTTPException(status_code = 400, detail = str(e))
+                # Deliberate user-facing validation message.
+                validation_message = str(e)
+                raise HTTPException(status_code = 400, detail = validation_message)
 
             resume_run = get_resumable_run_by_output_dir(resume_output_dir)
             if not resume_run or not can_resume_run(resume_run):
@@ -317,12 +321,16 @@ async def start_training(
 
     except ValueError as e:
         logger.warning("Rejected training GPU selection: %s", e)
-        raise HTTPException(status_code = 400, detail = str(e))
+        # Deliberate user-facing GPU-selection validation message.
+        validation_message = str(e)
+        raise HTTPException(status_code = 400, detail = validation_message)
     except Exception as e:
-        logger.error(f"Error starting training: {e}", exc_info = True)
-        raise HTTPException(
-            status_code = 500,
-            detail = f"Failed to start training: {str(e)}",
+        raise log_and_http_error(
+            e,
+            500,
+            "Failed to start training",
+            event = "training.start_failed",
+            log = logger,
         )
 
 
@@ -355,9 +363,12 @@ async def stop_training(
         )
 
     except Exception as e:
-        logger.error(f"Error stopping training: {e}", exc_info = True)
-        raise HTTPException(
-            status_code = 500, detail = f"Failed to stop training: {str(e)}"
+        raise log_and_http_error(
+            e,
+            500,
+            "Failed to stop training",
+            event = "training.stop_failed",
+            log = logger,
         )
 
 
@@ -407,10 +418,12 @@ async def reset_training(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error resetting training: {e}", exc_info = True)
-        raise HTTPException(
-            status_code = 500,
-            detail = f"Failed to reset training: {str(e)}",
+        raise log_and_http_error(
+            e,
+            500,
+            "Failed to reset training",
+            event = "training.reset_failed",
+            log = logger,
         )
 
 
@@ -500,9 +513,12 @@ async def get_training_status(
         )
 
     except Exception as e:
-        logger.error(f"Error getting training status: {e}", exc_info = True)
-        raise HTTPException(
-            status_code = 500, detail = f"Failed to get training status: {str(e)}"
+        raise log_and_http_error(
+            e,
+            500,
+            "Failed to get training status",
+            event = "training.status_failed",
+            log = logger,
         )
 
 
@@ -540,9 +556,12 @@ async def get_training_metrics(
         )
 
     except Exception as e:
-        logger.error(f"Error getting training metrics: {e}", exc_info = True)
-        raise HTTPException(
-            status_code = 500, detail = f"Failed to get training metrics: {str(e)}"
+        raise log_and_http_error(
+            e,
+            500,
+            "Failed to get training metrics",
+            event = "training.metrics_failed",
+            log = logger,
         )
 
 

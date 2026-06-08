@@ -30,7 +30,9 @@ except ImportError:
     normalize_unstructured_text = None
     resolve_chunking = None
 from core.data_recipe.jsonable import to_preview_jsonable
+from loggers import get_logger
 from utils.paths import ensure_dir, seed_uploads_root, unstructured_uploads_root
+from utils.utils import log_and_http_error
 from utils.upload_limits import (
     LOCAL_SEED_UPLOAD_MAX_BYTES,
     LOCAL_SEED_UPLOAD_MAX_LABEL,
@@ -47,6 +49,7 @@ from models.data_recipe import (
     UnstructuredFileUploadResponse,
 )
 
+logger = get_logger(__name__)
 router = APIRouter()
 
 DATA_EXTS = (".parquet", ".jsonl", ".json", ".csv")
@@ -201,8 +204,12 @@ def _read_preview_rows_from_local_file(
     try:
         import pandas as pd
     except ImportError as exc:
-        raise HTTPException(
-            status_code = 500, detail = f"seed inspect dependencies unavailable: {exc}"
+        raise log_and_http_error(
+            exc,
+            500,
+            "seed inspect dependencies unavailable",
+            event = "data_recipe.seed.dependencies_unavailable",
+            log = logger,
         ) from exc
 
     ext = path.suffix.lower()
@@ -231,8 +238,12 @@ def _read_preview_rows_from_local_file(
     except HTTPException:
         raise
     except (ValueError, OSError) as exc:
-        raise HTTPException(
-            status_code = 422, detail = f"seed inspect failed: {exc}"
+        raise log_and_http_error(
+            exc,
+            422,
+            "seed inspect failed",
+            event = "data_recipe.seed.local_preview_failed",
+            log = logger,
         ) from exc
 
     rows = df.to_dict(orient = "records")
@@ -260,8 +271,12 @@ def _read_preview_rows_from_unstructured_file(
             chunk_overlap = overlap,
         )
     except (FileNotFoundError, RuntimeError, ValueError, OSError) as exc:
-        raise HTTPException(
-            status_code = 422, detail = f"seed inspect failed: {exc}"
+        raise log_and_http_error(
+            exc,
+            422,
+            "seed inspect failed",
+            event = "data_recipe.seed.unstructured_preview_failed",
+            log = logger,
         ) from exc
     return _serialize_preview_rows(rows)
 
@@ -312,8 +327,12 @@ def inspect_seed_dataset(payload: SeedInspectRequest) -> SeedInspectResponse:
     try:
         from datasets import load_dataset
     except ImportError as exc:
-        raise HTTPException(
-            status_code = 500, detail = f"seed inspect dependencies unavailable: {exc}"
+        raise log_and_http_error(
+            exc,
+            500,
+            "seed inspect dependencies unavailable",
+            event = "data_recipe.seed.dependencies_unavailable",
+            log = logger,
         ) from exc
 
     split = _normalize_optional_text(payload.split) or DEFAULT_SPLIT
@@ -356,8 +375,12 @@ def inspect_seed_dataset(payload: SeedInspectRequest) -> SeedInspectResponse:
                 preview_size = preview_size,
             )
         except (ValueError, OSError, RuntimeError) as exc:
-            raise HTTPException(
-                status_code = 422, detail = f"seed inspect failed: {exc}"
+            raise log_and_http_error(
+                exc,
+                422,
+                "seed inspect failed",
+                event = "data_recipe.seed.hf_preview_failed",
+                log = logger,
             ) from exc
 
     if not preview_rows:
@@ -480,12 +503,17 @@ async def upload_unstructured_file(
     except Exception as e:
         raw_path.unlink(missing_ok = True)
         extracted_path.unlink(missing_ok = True)
+        logger.error(
+            "data_recipe.seed.text_extraction_failed",
+            error = str(e),
+            exc_info = True,
+        )
         return UnstructuredFileUploadResponse(
             file_id = file_id,
             filename = original_filename,
             size_bytes = size_bytes,
             status = "error",
-            error = f"Text extraction failed: {type(e).__name__}: {e}",
+            error = "Text extraction failed.",
         )
 
     try:
