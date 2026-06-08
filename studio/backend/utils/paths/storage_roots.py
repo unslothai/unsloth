@@ -356,9 +356,20 @@ def resolve_under_root(
     return candidate
 
 
-def resolve_output_dir(path_value: str | None = None) -> Path:
+def _resolve_user_path(
+    path_value: str | None,
+    *,
+    root: Path,
+    strip_prefixes: tuple[str, ...] = (),
+) -> Path:
+    """Shared path resolution for user-facing export/output/tensorboard dirs.
+
+    Validates basic safety (null bytes, ``..`` segments), passes absolute
+    paths through as-is (user may target a different drive), and falls
+    through to :func:`resolve_under_root` for relative paths.
+    """
     if not path_value or not str(path_value).strip():
-        return outputs_root()
+        return root
     raw = str(path_value).strip()
     if "\x00" in raw:
         raise ValueError("path may not contain null bytes")
@@ -367,45 +378,19 @@ def resolve_output_dir(path_value: str | None = None) -> Path:
         raise ValueError(f"path may not contain '..' segments: {raw!r}")
     if path.is_absolute():
         return path
-    # Relative paths: resolve under outputs_root() with strip_prefixes support
-    return resolve_under_root(
-        path_value,
-        root = outputs_root(),
-        strip_prefixes = ("outputs",),
-    )
+    return resolve_under_root(path_value, root = root, strip_prefixes = strip_prefixes)
+
+
+def resolve_output_dir(path_value: str | None = None) -> Path:
+    return _resolve_user_path(path_value, root = outputs_root(), strip_prefixes = ("outputs",))
 
 
 def resolve_export_dir(path_value: str | None = None) -> Path:
-    if not path_value or not str(path_value).strip():
-        return exports_root()
-    raw = str(path_value).strip()
-    if "\x00" in raw:
-        raise ValueError("path may not contain null bytes")
-    path = Path(raw).expanduser()
-    if ".." in path.parts:
-        raise ValueError(f"path may not contain '..' segments: {raw!r}")
-    if path.is_absolute():
-        return path
-    # Relative paths: resolve under exports_root() with strip_prefixes support
-    return resolve_under_root(
-        path_value,
-        root = exports_root(),
-        strip_prefixes = ("exports",),
-    )
+    return _resolve_user_path(path_value, root = exports_root(), strip_prefixes = ("exports",))
 
 
 def resolve_tensorboard_dir(path_value: str | None = None) -> Path:
-    if not path_value or not str(path_value).strip():
-        return tensorboard_root()
-    raw = str(path_value).strip()
-    if "\x00" in raw:
-        raise ValueError("path may not contain null bytes")
-    path = Path(raw).expanduser()
-    if ".." in path.parts:
-        raise ValueError(f"path may not contain '..' segments: {raw!r}")
-    if path.is_absolute():
-        return path
-    return resolve_under_root(
+    return _resolve_user_path(
         path_value,
         root = tensorboard_root(),
         strip_prefixes = ("runs", "tensorboard"),
