@@ -2628,6 +2628,68 @@ def _decode_diffusion_mask_images(
     return decoded
 
 
+def _decode_diffusion_control_images(
+    payload: DiffusionGenerateRequest,
+) -> Optional[list[Any]]:
+    encoded_images: list[str] = []
+    if payload.control_image_b64 is not None:
+        encoded_images = [payload.control_image_b64]
+    elif payload.control_images_b64 is not None:
+        encoded_images = list(payload.control_images_b64)
+    if not encoded_images:
+        return None
+
+    from PIL import Image
+
+    decoded = []
+    for index, encoded in enumerate(encoded_images):
+        value = encoded.strip()
+        if "," in value and value[:64].lower().startswith("data:"):
+            value = value.split(",", 1)[1]
+        try:
+            raw = base64.b64decode(value, validate = True)
+            image = Image.open(io.BytesIO(raw))
+            image.load()
+        except Exception as exc:
+            raise HTTPException(
+                status_code = 400,
+                detail = f"control image {index + 1} is not a valid base64 image",
+            ) from exc
+        decoded.append(image.convert("RGB"))
+    return decoded
+
+
+def _align_diffusion_mask_images(
+    mask_images: Optional[list[Any]],
+    input_images: Optional[list[Any]],
+) -> Optional[list[Any]]:
+    if not mask_images or not input_images:
+        return mask_images
+    aligned = []
+    for index, mask in enumerate(mask_images):
+        source = input_images[index] if index < len(input_images) else input_images[0]
+        source_size = getattr(source, "size", None)
+        if source_size is None:
+            aligned.append(mask)
+            continue
+        if getattr(mask, "size", None) != source_size:
+            from PIL import Image
+
+            mask = mask.resize(source_size, Image.Resampling.NEAREST)
+        aligned.append(mask.convert("L") if hasattr(mask, "convert") else mask)
+    if len(input_images) == 1 and len(aligned) > 1:
+        try:
+            from PIL import ImageChops
+
+            merged = aligned[0]
+            for mask in aligned[1:]:
+                merged = ImageChops.lighter(merged, mask)
+            return [merged.convert("L")]
+        except Exception:
+            return aligned
+    return aligned
+
+
 def _first_component(
     payload: DiffusionLoadRequest,
     *names: str,
@@ -2646,6 +2708,15 @@ def _first_lora_adapter(payload: DiffusionLoadRequest) -> Any:
         return None
     for adapter in payload.adapters:
         if adapter.type == "lora":
+            return adapter
+    return None
+
+
+def _first_controlnet_adapter(payload: DiffusionLoadRequest) -> Any:
+    if not payload.adapters:
+        return None
+    for adapter in payload.adapters:
+        if adapter.type == "controlnet" and adapter.enabled:
             return adapter
     return None
 
@@ -2710,6 +2781,13 @@ def _diffusion_load_workload_kwargs(payload: DiffusionLoadRequest) -> dict[str, 
                 return None
         return None
 
+    enhance = params.get("enhance") if isinstance(params.get("enhance"), dict) else {}
+    tiling = enhance.get("tiling") if isinstance(enhance.get("tiling"), dict) else {}
+    tiled_execution_enabled = bool(
+        enhance.get("mode") == "large_tiled"
+        or tiling.get("enabled") in ("on", True)
+        or tiling.get("vae_decode") == "on"
+    )
     return {
         "width": _int_or_none("width"),
         "height": _int_or_none("height"),
@@ -2717,6 +2795,7 @@ def _diffusion_load_workload_kwargs(payload: DiffusionLoadRequest) -> dict[str, 
         "batch_size": _int_or_none("batch_size") or _int_or_none("num_images"),
         "guidance_scale": _float_or_none("guidance_scale")
         or _float_or_none("true_cfg_scale"),
+        "tiled_execution_enabled": tiled_execution_enabled,
     }
 
 
@@ -2738,6 +2817,19 @@ class _NormalizedDiffusionLoad:
     lora_adapter_name: Optional[str]
     lora_scale: Optional[float]
     lora_fuse: bool
+    controlnet_repo: Optional[str]
+    controlnet_weight_name: Optional[str]
+    controlnet_model_class: Optional[str]
+    controlnet_pipeline_class: Optional[str]
+    controlnet_conditioning_scale: Optional[float]
+    control_guidance_start: Optional[float]
+    control_guidance_end: Optional[float]
+    upscaler_repo: Optional[str]
+    upscaler_weight_name: Optional[str]
+    upscaler_mode: str
+    upscaler_model_class: Optional[str]
+    upscaler_pipeline_class: Optional[str]
+    upscaler_scale: Optional[float]
     family: Optional[str]
     enable_model_cpu_offload: bool
     offload_policy: Optional[str]
@@ -2764,6 +2856,7 @@ def _normalize_diffusion_load_request(
     )
     prompt_enhancer = _first_component(payload, "prompt_enhancer")
     lora = _first_lora_adapter(payload)
+    controlnet = _first_controlnet_adapter(payload)
     runtime = payload.runtime
 
     transformer_filename = payload.transformer_gguf_filename
@@ -2815,6 +2908,35 @@ def _normalize_diffusion_load_request(
         if payload.lora_scale is not None
         else (lora.scale if lora is not None else None),
         lora_fuse = payload.lora_fuse or bool(lora.fuse if lora is not None else False),
+        controlnet_repo = payload.controlnet_repo
+        or (controlnet.repo_id if controlnet is not None else None),
+        controlnet_weight_name = payload.controlnet_weight_name
+        or (controlnet.weight_name if controlnet is not None else None),
+        controlnet_model_class = payload.controlnet_model_class
+        or (controlnet.model_class if controlnet is not None else None),
+        controlnet_pipeline_class = payload.controlnet_pipeline_class
+        or (controlnet.pipeline_class if controlnet is not None else None),
+        controlnet_conditioning_scale = (
+            payload.controlnet_conditioning_scale
+            if payload.controlnet_conditioning_scale is not None
+            else (controlnet.scale if controlnet is not None else None)
+        ),
+        control_guidance_start = (
+            payload.control_guidance_start
+            if payload.control_guidance_start is not None
+            else (controlnet.start if controlnet is not None else None)
+        ),
+        control_guidance_end = (
+            payload.control_guidance_end
+            if payload.control_guidance_end is not None
+            else (controlnet.end if controlnet is not None else None)
+        ),
+        upscaler_repo = payload.upscaler_repo,
+        upscaler_weight_name = payload.upscaler_weight_name,
+        upscaler_mode = payload.upscaler_mode,
+        upscaler_model_class = payload.upscaler_model_class,
+        upscaler_pipeline_class = payload.upscaler_pipeline_class,
+        upscaler_scale = payload.upscaler_scale,
         family = payload.family or (model.family if model is not None else None),
         enable_model_cpu_offload = (
             runtime.enable_model_cpu_offload
@@ -2853,6 +2975,53 @@ def _prompt_from_inputs(inputs: Optional[list[Any]]) -> Optional[str]:
     return None
 
 
+_DIFFUSION_REFERENCE_ROLE_PROMPT_HINTS: dict[str, str] = {
+    "edit_source": "the source image to edit",
+    "style": "the visual style reference; use its style without copying its subject",
+    "object_identity": "the object/product identity reference to preserve",
+    "person_identity": "the person/character identity reference to preserve",
+    "structure": "the structure/composition reference",
+    "reference": "a general reference image",
+}
+
+
+def _reference_prompt_prefix_from_inputs(inputs: Optional[list[Any]]) -> Optional[str]:
+    if not inputs:
+        return None
+    hints: list[str] = []
+    image_index = 0
+    for item in inputs:
+        if item.type != "image" or not item.b64:
+            continue
+        role = item.role or "reference"
+        if role in (
+            "output",
+            "generated",
+            "mask",
+            "control",
+            "control_image",
+            "controlnet",
+        ):
+            continue
+        image_index += 1
+        hint = _DIFFUSION_REFERENCE_ROLE_PROMPT_HINTS.get(role)
+        if hint is not None:
+            hints.append(f"Reference image {image_index} is {hint}.")
+    if not hints:
+        return None
+    return " ".join(hints)
+
+
+def _apply_reference_prompt_prefix(
+    prompt: str,
+    inputs: Optional[list[Any]],
+) -> str:
+    prefix = _reference_prompt_prefix_from_inputs(inputs)
+    if not prefix:
+        return prompt
+    return f"{prefix}\n\n{prompt}"
+
+
 def _image_b64s_from_inputs(inputs: Optional[list[Any]]) -> list[str]:
     if not inputs:
         return []
@@ -2861,7 +3030,44 @@ def _image_b64s_from_inputs(inputs: Optional[list[Any]]) -> list[str]:
         for item in inputs
         if item.type == "image"
         and item.b64
-        and item.role not in ("output", "generated", "mask")
+        and item.role
+        not in (
+            "output",
+            "generated",
+            "mask",
+            "control",
+            "control_image",
+            "controlnet",
+        )
+    ]
+
+
+def _video_image_b64s_from_inputs(inputs: Optional[list[Any]]) -> list[str]:
+    if not inputs:
+        return []
+    return [
+        item.b64
+        for item in inputs
+        if item.type == "image"
+        and item.b64
+        and item.role
+        not in (
+            "mask",
+            "control",
+            "control_image",
+            "controlnet",
+        )
+    ]
+
+
+def _control_b64s_from_inputs(inputs: Optional[list[Any]]) -> list[str]:
+    if not inputs:
+        return []
+    control_roles = {"control", "control_image", "controlnet"}
+    return [
+        item.b64
+        for item in inputs
+        if item.type == "image" and item.b64 and item.role in control_roles
     ]
 
 
@@ -2881,13 +3087,18 @@ class _NormalizedImageGenerate:
     negative_prompt: Optional[str]
     input_images: Optional[list[Any]]
     mask_images: Optional[list[Any]]
+    control_images: Optional[list[Any]]
     task: Optional[str]
     strength: Optional[float]
+    controlnet_conditioning_scale: Optional[float]
+    control_guidance_start: Optional[float]
+    control_guidance_end: Optional[float]
     num_inference_steps: int
     guidance_scale: float
     width: int
     height: int
     seed: Optional[int]
+    enhance: Optional[Any]
     warnings: list[str]
 
 
@@ -2898,6 +3109,7 @@ def _normalize_diffusion_image_generate_request(
     prompt = payload.prompt or _prompt_from_inputs(payload.inputs)
     if not prompt:
         raise HTTPException(status_code = 400, detail = "prompt is required")
+    prompt = _apply_reference_prompt_prefix(prompt, payload.inputs)
     params = payload.parameters
     sampler = payload.sampler
     requested_steps = (
@@ -2955,11 +3167,46 @@ def _normalize_diffusion_image_generate_request(
         mask_images = _decode_diffusion_mask_images(decode_payload)
     else:
         mask_images = _decode_diffusion_mask_images(payload)
+    mask_images = _align_diffusion_mask_images(mask_images, input_images)
+    control_b64s = _control_b64s_from_inputs(payload.inputs)
+    if control_b64s:
+        decode_payload = payload.model_copy(
+            update = {"control_image_b64": None, "control_images_b64": control_b64s}
+        )
+        control_images = _decode_diffusion_control_images(decode_payload)
+    else:
+        control_images = _decode_diffusion_control_images(payload)
     requested_strength = (
         params.strength
         if params is not None and params.strength is not None
         else payload.strength
     )
+    requested_control_scale = (
+        params.controlnet_conditioning_scale
+        if params is not None and params.controlnet_conditioning_scale is not None
+        else payload.controlnet_conditioning_scale
+    )
+    requested_control_start = (
+        params.control_guidance_start
+        if params is not None and params.control_guidance_start is not None
+        else payload.control_guidance_start
+    )
+    requested_control_end = (
+        params.control_guidance_end
+        if params is not None and params.control_guidance_end is not None
+        else payload.control_guidance_end
+    )
+    task = payload.task
+    effective_task = (task or "auto").strip().lower()
+    has_input_images = bool(input_images)
+    has_mask_images = bool(mask_images)
+    if effective_task in {"auto", "inpaint"} and has_mask_images and not has_input_images:
+        raise HTTPException(
+            status_code = 400,
+            detail = "inpaint requires a source image as well as a mask image",
+        )
+    if effective_task == "inpaint" and not has_mask_images:
+        raise HTTPException(status_code = 400, detail = "inpaint requires a mask image")
     return _NormalizedImageGenerate(
         prompt = prompt,
         negative_prompt = (
@@ -2969,13 +3216,22 @@ def _normalize_diffusion_image_generate_request(
         ),
         input_images = input_images,
         mask_images = mask_images,
-        task = payload.task,
+        control_images = control_images,
+        task = task,
         strength = requested_strength,
+        controlnet_conditioning_scale = requested_control_scale,
+        control_guidance_start = requested_control_start,
+        control_guidance_end = requested_control_end,
         num_inference_steps = int(requested_steps),
         guidance_scale = float(requested_guidance),
         width = int(requested_width),
         height = int(requested_height),
         seed = seed,
+        enhance = (
+            params.enhance
+            if params is not None and params.enhance is not None
+            else payload.enhance
+        ),
         warnings = [],
     )
 
@@ -2984,6 +3240,7 @@ def _normalize_diffusion_image_generate_request(
 class _NormalizedVideoGenerate:
     prompt: str
     negative_prompt: Optional[str]
+    input_images: Optional[list[Any]]
     num_inference_steps: int
     guidance_scale: float
     guidance_scale_2: Optional[float]
@@ -3036,6 +3293,14 @@ def _normalize_diffusion_video_generate_request(
         if params is not None and params.height is not None
         else (payload.height if payload.height is not None else int(defaults["height"]))
     )
+    input_b64s = _video_image_b64s_from_inputs(payload.inputs)
+    if input_b64s:
+        decode_payload = payload.model_copy(
+            update = {"image_b64": None, "images_b64": input_b64s}
+        )
+        input_images = _decode_diffusion_input_images(decode_payload)
+    else:
+        input_images = _decode_diffusion_input_images(payload)
     return _NormalizedVideoGenerate(
         prompt = prompt,
         negative_prompt = (
@@ -3043,6 +3308,7 @@ def _normalize_diffusion_video_generate_request(
             if sampler is not None and sampler.negative_prompt is not None
             else payload.negative_prompt
         ),
+        input_images = input_images,
         num_inference_steps = int(requested_steps),
         guidance_scale = float(requested_guidance),
         guidance_scale_2 = (
@@ -3114,7 +3380,19 @@ def _diffusion_capabilities(*, media_kind: str) -> dict[str, Any]:
         }
     input_roles = ["prompt", "negative_prompt"]
     if media_kind == "image":
-        input_roles.extend(["source", "reference", "mask"])
+        input_roles.extend(
+            [
+                "source",
+                "reference",
+                "edit_source",
+                "style",
+                "object_identity",
+                "person_identity",
+                "structure",
+                "mask",
+                "control",
+            ]
+        )
         outputs = [{"type": "image", "formats": ["png"], "supports_multiple": True}]
     else:
         input_roles.extend(["init_frame", "conditioning_audio", "source_video"])
@@ -3148,6 +3426,27 @@ def _diffusion_capabilities(*, media_kind: str) -> dict[str, Any]:
                 ["text", "image"]
                 if media_kind == "image"
                 else ["text", "image", "audio", "video"]
+            ),
+        },
+        "references": {
+            "roles": [
+                "style",
+                "object_identity",
+                "person_identity",
+                "edit_source",
+                "structure",
+            ]
+            if media_kind == "image"
+            else ["init_frame", "source_video"],
+            "current": (
+                (status.get("sampling_contract") or {}).get("reference_capabilities")
+                if status.get("is_loaded") and status.get("media_kind") == media_kind
+                else None
+            ),
+            "presets": (
+                (status.get("sampling_contract") or {}).get("reference_presets")
+                if status.get("is_loaded") and status.get("media_kind") == media_kind
+                else []
             ),
         },
         "outputs": outputs,
@@ -3184,6 +3483,24 @@ def _diffusion_capabilities(*, media_kind: str) -> dict[str, Any]:
                 "max": 1,
                 "default": 0.6,
             },
+            "controlnet_conditioning_scale": {
+                "type": "float",
+                "min": 0,
+                "max": 10,
+                "default": 1.0,
+            },
+            "control_guidance_start": {
+                "type": "float",
+                "min": 0,
+                "max": 1,
+                "default": 0.0,
+            },
+            "control_guidance_end": {
+                "type": "float",
+                "min": 0,
+                "max": 1,
+                "default": 1.0,
+            },
             "seed": {"type": "uint64_or_int64", "default": None},
             "num_frames": {
                 "type": "int",
@@ -3208,6 +3525,29 @@ def _diffusion_capabilities(*, media_kind: str) -> dict[str, Any]:
             "accepts_var_kwargs": accepts_var_kwargs,
         },
         "runtime": runtime_options,
+        "enhancement": {
+            "supported": media_kind == "image",
+            "modes": (
+                ["off", "upscale", "creative_upscale", "large_tiled"]
+                if media_kind == "image"
+                else ["off"]
+            ),
+            "upscale": {
+                "modes": ["pixel", "super_resolution", "diffusion"],
+                "default_mode": "pixel",
+                "default_scale": 2.0,
+                "scales": [1, 2, 3, 4],
+                "methods": ["nearest", "bilinear", "bicubic", "lanczos"],
+                "supports_tiling": True,
+            },
+            "tiling": {
+                "enabled_values": ["auto", "on", "off"],
+                "tile_size": {"min": 128, "max": 2048, "default": 768},
+                "overlap": {"min": 0, "max": 512, "default": 64},
+                "vae_decode": ["auto", "on", "off"],
+            },
+            "loaded_upscaler": status.get("upscaler"),
+        },
         "families": families,
         "options_schema": {},
         "warnings": [],
@@ -3275,6 +3615,21 @@ async def diffusion_load(
         planned_lora_adapter_name = normalized.lora_adapter_name
         planned_lora_scale = normalized.lora_scale
         planned_lora_fuse = normalized.lora_fuse
+        planned_controlnet_repo = normalized.controlnet_repo
+        planned_controlnet_weight_name = normalized.controlnet_weight_name
+        planned_controlnet_model_class = normalized.controlnet_model_class
+        planned_controlnet_pipeline_class = normalized.controlnet_pipeline_class
+        planned_controlnet_conditioning_scale = (
+            normalized.controlnet_conditioning_scale
+        )
+        planned_control_guidance_start = normalized.control_guidance_start
+        planned_control_guidance_end = normalized.control_guidance_end
+        planned_upscaler_repo = normalized.upscaler_repo
+        planned_upscaler_weight_name = normalized.upscaler_weight_name
+        planned_upscaler_mode = normalized.upscaler_mode
+        planned_upscaler_model_class = normalized.upscaler_model_class
+        planned_upscaler_pipeline_class = normalized.upscaler_pipeline_class
+        planned_upscaler_scale = normalized.upscaler_scale
         planned_family = normalized.family
         planned_offload_policy = normalized.offload_policy
         planned_safetensors_quantization = normalized.safetensors_quantization
@@ -3306,6 +3661,21 @@ async def diffusion_load(
                 lora_adapter_name = normalized.lora_adapter_name,
                 lora_scale = normalized.lora_scale,
                 lora_fuse = normalized.lora_fuse,
+                controlnet_repo = normalized.controlnet_repo,
+                controlnet_weight_name = normalized.controlnet_weight_name,
+                controlnet_model_class = normalized.controlnet_model_class,
+                controlnet_pipeline_class = normalized.controlnet_pipeline_class,
+                controlnet_conditioning_scale = (
+                    normalized.controlnet_conditioning_scale
+                ),
+                control_guidance_start = normalized.control_guidance_start,
+                control_guidance_end = normalized.control_guidance_end,
+                upscaler_repo = normalized.upscaler_repo,
+                upscaler_weight_name = normalized.upscaler_weight_name,
+                upscaler_mode = normalized.upscaler_mode,
+                upscaler_model_class = normalized.upscaler_model_class,
+                upscaler_pipeline_class = normalized.upscaler_pipeline_class,
+                upscaler_scale = normalized.upscaler_scale,
                 family_override = normalized.family,
                 offload_policy = normalized.offload_policy,
                 safetensors_quantization = normalized.safetensors_quantization,
@@ -3337,6 +3707,21 @@ async def diffusion_load(
         planned_lora_adapter_name = load_kwargs["lora_adapter_name"]
         planned_lora_scale = load_kwargs["lora_scale"]
         planned_lora_fuse = load_kwargs["lora_fuse"]
+        planned_controlnet_repo = load_kwargs["controlnet_repo"]
+        planned_controlnet_weight_name = load_kwargs["controlnet_weight_name"]
+        planned_controlnet_model_class = load_kwargs["controlnet_model_class"]
+        planned_controlnet_pipeline_class = load_kwargs["controlnet_pipeline_class"]
+        planned_controlnet_conditioning_scale = load_kwargs[
+            "controlnet_conditioning_scale"
+        ]
+        planned_control_guidance_start = load_kwargs["control_guidance_start"]
+        planned_control_guidance_end = load_kwargs["control_guidance_end"]
+        planned_upscaler_repo = load_kwargs["upscaler_repo"]
+        planned_upscaler_weight_name = load_kwargs["upscaler_weight_name"]
+        planned_upscaler_mode = load_kwargs["upscaler_mode"]
+        planned_upscaler_model_class = load_kwargs["upscaler_model_class"]
+        planned_upscaler_pipeline_class = load_kwargs["upscaler_pipeline_class"]
+        planned_upscaler_scale = load_kwargs["upscaler_scale"]
         planned_family = load_kwargs["family_override"]
         planned_offload_policy = load_kwargs["offload_policy"]
         planned_safetensors_quantization = load_kwargs["safetensors_quantization"]
@@ -3379,6 +3764,16 @@ async def diffusion_load(
             payload.lora_repo_native_path_lease,
             operation = "load-diffusion-model",
         )
+        resolved_controlnet_repo = _resolve_diffusion_repo_for_request(
+            planned_controlnet_repo,
+            payload.controlnet_repo_native_path_lease,
+            operation = "load-diffusion-model",
+        )
+        resolved_upscaler_repo = _resolve_diffusion_repo_for_request(
+            planned_upscaler_repo,
+            payload.upscaler_repo_native_path_lease,
+            operation = "load-diffusion-model",
+        )
         # Round 18 P1 #3 + P1 #7: the route used to drop chat and
         # idle export BEFORE ``backend.load_model`` ran its cheap
         # validation (family inference, GGUF filename checks,
@@ -3411,6 +3806,21 @@ async def diffusion_load(
                 "lora_adapter_name": planned_lora_adapter_name,
                 "lora_scale": planned_lora_scale,
                 "lora_fuse": planned_lora_fuse,
+                "controlnet_repo": resolved_controlnet_repo,
+                "controlnet_weight_name": planned_controlnet_weight_name,
+                "controlnet_model_class": planned_controlnet_model_class,
+                "controlnet_pipeline_class": planned_controlnet_pipeline_class,
+                "controlnet_conditioning_scale": (
+                    planned_controlnet_conditioning_scale
+                ),
+                "control_guidance_start": planned_control_guidance_start,
+                "control_guidance_end": planned_control_guidance_end,
+                "upscaler_repo": resolved_upscaler_repo,
+                "upscaler_weight_name": planned_upscaler_weight_name,
+                "upscaler_mode": planned_upscaler_mode,
+                "upscaler_model_class": planned_upscaler_model_class,
+                "upscaler_pipeline_class": planned_upscaler_pipeline_class,
+                "upscaler_scale": planned_upscaler_scale,
                 "family_override": planned_family,
                 "hf_token": payload.hf_token,
                 "enable_model_cpu_offload": normalized.enable_model_cpu_offload,
@@ -3557,6 +3967,19 @@ async def diffusion_load_plan(
             lora_adapter_name = normalized.lora_adapter_name,
             lora_scale = normalized.lora_scale,
             lora_fuse = normalized.lora_fuse,
+            controlnet_repo = normalized.controlnet_repo,
+            controlnet_weight_name = normalized.controlnet_weight_name,
+            controlnet_model_class = normalized.controlnet_model_class,
+            controlnet_pipeline_class = normalized.controlnet_pipeline_class,
+            controlnet_conditioning_scale = normalized.controlnet_conditioning_scale,
+            control_guidance_start = normalized.control_guidance_start,
+            control_guidance_end = normalized.control_guidance_end,
+            upscaler_repo = normalized.upscaler_repo,
+            upscaler_weight_name = normalized.upscaler_weight_name,
+            upscaler_mode = normalized.upscaler_mode,
+            upscaler_model_class = normalized.upscaler_model_class,
+            upscaler_pipeline_class = normalized.upscaler_pipeline_class,
+            upscaler_scale = normalized.upscaler_scale,
             family_override = normalized.family,
             offload_policy = normalized.offload_policy,
             safetensors_quantization = normalized.safetensors_quantization,
@@ -3671,13 +4094,18 @@ async def diffusion_generate(
             negative_prompt = normalized.negative_prompt,
             input_images = normalized.input_images,
             mask_images = normalized.mask_images,
+            control_images = normalized.control_images,
             image_task = normalized.task,
             strength = normalized.strength,
+            controlnet_conditioning_scale = normalized.controlnet_conditioning_scale,
+            control_guidance_start = normalized.control_guidance_start,
+            control_guidance_end = normalized.control_guidance_end,
             num_inference_steps = normalized.num_inference_steps,
             guidance_scale = normalized.guidance_scale,
             width = normalized.width,
             height = normalized.height,
             seed = normalized.seed,
+            enhance = normalized.enhance,
         )
         image = images[0]
     except ValueError as exc:
@@ -3717,9 +4145,14 @@ async def diffusion_generate(
         "guidance_scale": normalized.guidance_scale,
         "task": normalized.task or "auto",
         "strength": normalized.strength,
+        "controlnet_conditioning_scale": normalized.controlnet_conditioning_scale,
+        "control_guidance_start": normalized.control_guidance_start,
+        "control_guidance_end": normalized.control_guidance_end,
+        "control_images": len(normalized.control_images or []),
+        "enhance": meta.get("enhance"),
         "seed": str(normalized.seed) if normalized.seed is not None else None,
     }
-    metrics = {"duration_ms": duration_ms}
+    metrics = {"duration_ms": duration_ms, "enhance": meta.get("enhance")}
     return DiffusionGenerateResponse(
         image_b64 = encoded_images[0],
         images_b64 = encoded_images if len(encoded_images) > 1 else None,
@@ -3784,6 +4217,7 @@ async def diffusion_video_generate(
             num_frames = normalized.num_frames,
             frame_rate = normalized.frame_rate,
             seed = normalized.seed,
+            input_images = normalized.input_images,
         )
         frame_rate = float(meta.get("frame_rate") or normalized.frame_rate or 16.0)
         video_b64 = encode_mp4_base64(video, fps = frame_rate)
@@ -3812,6 +4246,13 @@ async def diffusion_video_generate(
         "guidance_scale": guidance_scale,
         "guidance_scale_2": meta.get("guidance_scale_2"),
         "seed": str(normalized.seed) if normalized.seed is not None else None,
+        "task": meta.get(
+            "task",
+            "image_to_video" if normalized.input_images else "text_to_video",
+        ),
+        "input_images": int(
+            meta.get("input_images") or len(normalized.input_images or [])
+        ),
     }
     metrics = {"duration_ms": duration_ms}
     return DiffusionVideoGenerateResponse(

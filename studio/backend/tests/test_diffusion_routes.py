@@ -122,6 +122,8 @@ class _FakeBackend:
             "prompt_enhancer_gguf_repo": None,
             "prompt_enhancer_gguf_filename": None,
             "lora": None,
+            "controlnet": None,
+            "upscaler": None,
             "gguf_quantized_cpu_resident": False,
             "gguf_pin_cpu_resident": False,
             "offload_policy": None,
@@ -142,6 +144,10 @@ class _FakeBackend:
             "active_prompt_enhancer_gguf_filename": None,
             "active_lora_repo": None,
             "active_lora_weight_name": None,
+            "active_controlnet_repo": None,
+            "active_controlnet_weight_name": None,
+            "active_upscaler_repo": None,
+            "active_upscaler_weight_name": None,
             "pending_repo_id": None,
             "pending_base_repo": None,
             "pending_gguf_filename": None,
@@ -151,6 +157,10 @@ class _FakeBackend:
             "pending_prompt_enhancer_gguf_filename": None,
             "pending_lora_repo": None,
             "pending_lora_weight_name": None,
+            "pending_controlnet_repo": None,
+            "pending_controlnet_weight_name": None,
+            "pending_upscaler_repo": None,
+            "pending_upscaler_weight_name": None,
             "device": "cpu",
             "device_backend": "cpu",
             "device_capabilities": {
@@ -481,6 +491,335 @@ def test_image_generate_forwards_image_task_and_strength(app_with_stub):
     assert body["effective_parameters"]["strength"] == 0.42
 
 
+def test_image_generate_forwards_structured_reference_roles(app_with_stub):
+    app, stub = app_with_stub
+    c = TestClient(app)
+    stub._loaded = True
+    stub._repo = "Qwen/Qwen-Image-Edit-2511"
+    stub._media_kind = "image"
+
+    buffers = []
+    for color in ((10, 20, 30), (40, 50, 60), (70, 80, 90)):
+        buffer = io.BytesIO()
+        Image.new("RGB", (16, 16), color = color).save(buffer, format = "PNG")
+        buffers.append(base64.b64encode(buffer.getvalue()).decode("ascii"))
+
+    r = c.post(
+        "/api/inference/images/generate",
+        json = {
+            "inputs": [
+                {
+                    "type": "text",
+                    "role": "prompt",
+                    "text": "place the same person in a neon arcade",
+                },
+                {
+                    "id": "style-ref",
+                    "type": "image",
+                    "role": "style",
+                    "mime": "image/png",
+                    "b64": buffers[0],
+                },
+                {
+                    "id": "person-ref",
+                    "type": "image",
+                    "role": "person_identity",
+                    "mime": "image/png",
+                    "b64": buffers[1],
+                },
+                {
+                    "id": "control-ref",
+                    "type": "image",
+                    "role": "control",
+                    "mime": "image/png",
+                    "b64": buffers[2],
+                },
+            ],
+            "task": "edit",
+            "width": 128,
+            "height": 128,
+        },
+    )
+
+    assert r.status_code == 200, r.text
+    call = stub.calls[-1]
+    assert call["op"] == "generate"
+    assert "Reference image 1 is the visual style reference" in call["prompt"]
+    assert "Reference image 2 is the person/character identity reference" in call["prompt"]
+    assert "Reference image 3" not in call["prompt"]
+    assert call["prompt"].endswith("place the same person in a neon arcade")
+    assert call["image_task"] == "edit"
+    assert len(call["input_images"]) == 2
+    assert [image.size for image in call["input_images"]] == [(16, 16), (16, 16)]
+    assert len(call["control_images"]) == 1
+
+
+def test_image_generate_inpaint_aligns_structured_mask_to_source(app_with_stub):
+    app, stub = app_with_stub
+    c = TestClient(app)
+    stub._loaded = True
+    stub._repo = "Tongyi-MAI/Z-Image"
+    stub._media_kind = "image"
+
+    source_buffer = io.BytesIO()
+    Image.new("RGB", (32, 24), color = (10, 20, 30)).save(
+        source_buffer,
+        format = "PNG",
+    )
+    mask_buffer = io.BytesIO()
+    Image.new("L", (8, 6), color = 255).save(mask_buffer, format = "PNG")
+
+    r = c.post(
+        "/api/inference/images/generate",
+        json = {
+            "prompt": "replace the sign with a window",
+            "task": "inpaint",
+            "inputs": [
+                {
+                    "type": "image",
+                    "role": "edit_source",
+                    "mime": "image/png",
+                    "b64": base64.b64encode(source_buffer.getvalue()).decode("ascii"),
+                },
+                {
+                    "type": "image",
+                    "role": "mask",
+                    "mime": "image/png",
+                    "b64": base64.b64encode(mask_buffer.getvalue()).decode("ascii"),
+                },
+            ],
+            "width": 128,
+            "height": 128,
+        },
+    )
+
+    assert r.status_code == 200, r.text
+    call = stub.calls[-1]
+    assert call["op"] == "generate"
+    assert call["image_task"] == "inpaint"
+    assert len(call["input_images"]) == 1
+    assert len(call["mask_images"]) == 1
+    assert call["input_images"][0].size == (32, 24)
+    assert call["mask_images"][0].mode == "L"
+    assert call["mask_images"][0].size == (32, 24)
+
+
+def test_image_generate_inpaint_merges_multiple_masks_for_single_source(app_with_stub):
+    app, stub = app_with_stub
+    c = TestClient(app)
+    stub._loaded = True
+    stub._repo = "Tongyi-MAI/Z-Image"
+    stub._media_kind = "image"
+
+    source_buffer = io.BytesIO()
+    Image.new("RGB", (10, 10), color = (10, 20, 30)).save(
+        source_buffer,
+        format = "PNG",
+    )
+    mask_a = Image.new("L", (10, 10), color = 0)
+    mask_a.putpixel((2, 2), 255)
+    mask_a_buffer = io.BytesIO()
+    mask_a.save(mask_a_buffer, format = "PNG")
+    mask_b = Image.new("L", (5, 5), color = 0)
+    mask_b.putpixel((4, 4), 255)
+    mask_b_buffer = io.BytesIO()
+    mask_b.save(mask_b_buffer, format = "PNG")
+
+    r = c.post(
+        "/api/inference/images/generate",
+        json = {
+            "prompt": "replace the marked areas",
+            "task": "inpaint",
+            "inputs": [
+                {
+                    "type": "image",
+                    "role": "edit_source",
+                    "mime": "image/png",
+                    "b64": base64.b64encode(source_buffer.getvalue()).decode("ascii"),
+                },
+                {
+                    "type": "image",
+                    "role": "mask",
+                    "mime": "image/png",
+                    "b64": base64.b64encode(mask_a_buffer.getvalue()).decode("ascii"),
+                },
+                {
+                    "type": "image",
+                    "role": "mask",
+                    "mime": "image/png",
+                    "b64": base64.b64encode(mask_b_buffer.getvalue()).decode("ascii"),
+                },
+            ],
+            "width": 128,
+            "height": 128,
+        },
+    )
+
+    assert r.status_code == 200, r.text
+    call = stub.calls[-1]
+    assert call["image_task"] == "inpaint"
+    assert len(call["input_images"]) == 1
+    assert len(call["mask_images"]) == 1
+    merged = call["mask_images"][0]
+    assert merged.mode == "L"
+    assert merged.size == (10, 10)
+    assert merged.getpixel((2, 2)) == 255
+    assert merged.getpixel((8, 8)) == 255
+
+
+def test_image_generate_inpaint_requires_source_and_mask(app_with_stub):
+    app, stub = app_with_stub
+    c = TestClient(app)
+    stub._loaded = True
+    stub._repo = "Tongyi-MAI/Z-Image"
+    stub._media_kind = "image"
+
+    buffer = io.BytesIO()
+    Image.new("L", (16, 16), color = 255).save(buffer, format = "PNG")
+    mask_b64 = base64.b64encode(buffer.getvalue()).decode("ascii")
+
+    missing_source = c.post(
+        "/api/inference/images/generate",
+        json = {
+            "prompt": "fill the gap",
+            "task": "inpaint",
+            "inputs": [
+                {
+                    "type": "image",
+                    "role": "mask",
+                    "mime": "image/png",
+                    "b64": mask_b64,
+                }
+            ],
+        },
+    )
+    assert missing_source.status_code == 400
+    assert "source image" in missing_source.json()["detail"]
+
+    missing_mask = c.post(
+        "/api/inference/images/generate",
+        json = {
+            "prompt": "fill the gap",
+            "task": "inpaint",
+            "image_b64": mask_b64,
+        },
+    )
+    assert missing_mask.status_code == 400
+    assert "mask image" in missing_mask.json()["detail"]
+
+
+def test_image_generate_rejects_mixed_structured_and_legacy_image_inputs(
+    app_with_stub,
+):
+    app, stub = app_with_stub
+    c = TestClient(app)
+    stub._loaded = True
+    stub._repo = "Qwen/Qwen-Image-Edit-2511"
+    stub._media_kind = "image"
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (16, 16), color = (10, 20, 30)).save(buffer, format = "PNG")
+    image_b64 = base64.b64encode(buffer.getvalue()).decode("ascii")
+
+    r = c.post(
+        "/api/inference/images/generate",
+        json = {
+            "prompt": "turn this into a portrait",
+            "inputs": [
+                {
+                    "type": "image",
+                    "role": "person_identity",
+                    "b64": image_b64,
+                }
+            ],
+            "image_b64": image_b64,
+        },
+    )
+
+    assert r.status_code == 422
+    assert "structured image inputs" in r.text
+
+
+def test_image_generate_forwards_controlnet_images_and_knobs(app_with_stub):
+    app, stub = app_with_stub
+    c = TestClient(app)
+    stub._loaded = True
+    stub._repo = "Qwen/Qwen-Image"
+    stub._media_kind = "image"
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (16, 16), color = (200, 200, 200)).save(buffer, format = "PNG")
+    image_b64 = base64.b64encode(buffer.getvalue()).decode("ascii")
+
+    r = c.post(
+        "/api/inference/images/generate",
+        json = {
+            "prompt": "follow this pose",
+            "control_image_b64": image_b64,
+            "controlnet_conditioning_scale": 0.7,
+            "control_guidance_start": 0.1,
+            "control_guidance_end": 0.8,
+            "width": 128,
+            "height": 128,
+        },
+    )
+
+    assert r.status_code == 200, r.text
+    call = stub.calls[-1]
+    assert call["op"] == "generate"
+    assert len(call["control_images"]) == 1
+    assert call["control_images"][0].mode == "RGB"
+    assert call["controlnet_conditioning_scale"] == 0.7
+    assert call["control_guidance_start"] == 0.1
+    assert call["control_guidance_end"] == 0.8
+    body = r.json()
+    assert body["effective_parameters"]["control_images"] == 1
+    assert body["effective_parameters"]["controlnet_conditioning_scale"] == 0.7
+
+
+def test_image_generate_forwards_enhance_plan(app_with_stub):
+    app, stub = app_with_stub
+    c = TestClient(app)
+    stub._loaded = True
+    stub._repo = "owner/FLUX.1-finetune-diffusers"
+    stub._media_kind = "image"
+
+    enhance = {
+        "mode": "upscale",
+        "upscale": {
+            "enabled": True,
+            "mode": "pixel",
+            "scale": 2,
+            "method": "lanczos",
+            "tile_size": 512,
+            "tile_overlap": 64,
+        },
+        "tiling": {
+            "enabled": "auto",
+            "tile_size": 512,
+            "overlap": 64,
+            "vae_decode": "auto",
+        },
+    }
+    r = c.post(
+        "/api/inference/images/generate",
+        json = {
+            "prompt": "make it sharper",
+            "width": 128,
+            "height": 128,
+            "enhance": enhance,
+        },
+    )
+
+    assert r.status_code == 200, r.text
+    call = stub.calls[-1]
+    assert call["op"] == "generate"
+    assert call["enhance"].mode == "upscale"
+    assert call["enhance"].upscale.scale == 2
+    body = r.json()
+    assert body["effective_parameters"]["enhance"] is None
+
+
 def test_video_generate_v2_contract_normalizes_parameters(app_with_stub, monkeypatch):
     app, stub = app_with_stub
     c = TestClient(app)
@@ -539,6 +878,69 @@ def test_video_generate_v2_contract_normalizes_parameters(app_with_stub, monkeyp
     assert body["outputs"][0]["type"] == "video"
     assert body["outputs"][0]["num_frames"] == 25
     assert body["effective_parameters"]["seed"] == "456"
+
+
+def test_video_generate_v2_contract_decodes_image_inputs(app_with_stub, monkeypatch):
+    app, stub = app_with_stub
+    c = TestClient(app)
+    stub._loaded = True
+    stub._repo = "diffusers/LTX-2.3-Distilled-Diffusers"
+    stub._media_kind = "video"
+
+    import base64
+    import core.inference.diffusion as d
+
+    source_buffer = io.BytesIO()
+    Image.new("RGB", (12, 16), color = (0, 128, 255)).save(
+        source_buffer,
+        format = "PNG",
+    )
+    encoded = "data:image/png;base64," + base64.b64encode(
+        source_buffer.getvalue()
+    ).decode("ascii")
+
+    monkeypatch.setattr(
+        d,
+        "encode_mp4_base64",
+        lambda frames, *, fps: base64.b64encode(b"fake-mp4").decode("ascii"),
+    )
+
+    r = c.post(
+        "/api/inference/videos/generate",
+        json = {
+            "api_version": "2026-06-03",
+            "inputs": [
+                {
+                    "type": "text",
+                    "role": "prompt",
+                    "text": "a slow orbit shot",
+                },
+                {
+                    "type": "image",
+                    "role": "init_frame",
+                    "mime": "image/png",
+                    "b64": encoded,
+                },
+            ],
+            "parameters": {
+                "width": 640,
+                "height": 384,
+                "num_frames": 25,
+                "frame_rate": 12,
+                "num_inference_steps": 8,
+                "guidance_scale": 1,
+                "seed": 456,
+            },
+        },
+    )
+
+    assert r.status_code == 200, r.text
+    call = stub.calls[-1]
+    assert call["op"] == "generate_video"
+    assert call["input_images"][0].size == (12, 16)
+    body = r.json()
+    assert body["effective_parameters"]["task"] == "image_to_video"
+    assert body["effective_parameters"]["input_images"] == 1
 
 
 def test_generate_decodes_base64_image_input(app_with_stub):
@@ -820,6 +1222,8 @@ def test_image_and_video_capabilities_endpoints(app_with_stub):
     assert image_caps["pipeline_signature"]["accepts_var_kwargs"] is True
     assert image_caps["attention_backend"]["options"]["default"] == "auto"
     assert "flash" in image_caps["attention_backend"]["options"]["available"]
+    assert "person_identity" in image_caps["inputs"]["roles"]
+    assert "object_identity" in image_caps["references"]["roles"]
     assert any(fam["name"] == "flux.2-klein" for fam in image_caps["families"])
 
     r = c.get("/api/inference/videos/capabilities")
@@ -1047,6 +1451,152 @@ def test_load_forwards_lora_fields(app_with_stub):
     assert stub.calls[-1]["lora_adapter_name"] == "studio-style"
     assert stub.calls[-1]["lora_scale"] == 0.75
     assert stub.calls[-1]["lora_fuse"] is True
+
+
+def test_load_forwards_controlnet_fields(app_with_stub):
+    app, stub = app_with_stub
+    c = TestClient(app)
+
+    payload = {
+        "repo_id": "Qwen/Qwen-Image",
+        "family": "qwen-image",
+        "controlnet_repo": "InstantX/Qwen-Image-ControlNet-Union",
+        "controlnet_model_class": "QwenImageControlNetModel",
+        "controlnet_pipeline_class": "QwenImageControlNetPipeline",
+        "controlnet_conditioning_scale": 0.65,
+        "control_guidance_start": 0.15,
+        "control_guidance_end": 0.85,
+    }
+
+    plan = c.post("/api/inference/images/load-plan", json = payload)
+    assert plan.status_code == 200, plan.text
+    plan_body = plan.json()
+    assert plan_body["load_kwargs"]["controlnet_repo"] == (
+        "InstantX/Qwen-Image-ControlNet-Union"
+    )
+    assert plan_body["memory_plan"]["workload"]["controlnet_enabled"] is True
+    assert any(
+        component["name"] == "controlnet"
+        for component in plan_body["memory_plan"]["model"]["components"]
+    )
+
+    r = c.post("/api/inference/images/load", json = payload)
+    assert r.status_code == 200, r.text
+
+    call = stub.calls[-1]
+    assert call["controlnet_repo"] == "InstantX/Qwen-Image-ControlNet-Union"
+    assert call["controlnet_model_class"] == "QwenImageControlNetModel"
+    assert call["controlnet_pipeline_class"] == "QwenImageControlNetPipeline"
+    assert call["controlnet_conditioning_scale"] == 0.65
+    assert call["control_guidance_start"] == 0.15
+    assert call["control_guidance_end"] == 0.85
+
+
+def test_load_forwards_diffusion_upscaler_fields(app_with_stub):
+    app, stub = app_with_stub
+    c = TestClient(app)
+
+    payload = {
+        "repo_id": "owner/FLUX.1-finetune-diffusers",
+        "family": "flux.1",
+        "upscaler_repo": "stabilityai/stable-diffusion-x4-upscaler",
+        "upscaler_mode": "diffusion",
+        "upscaler_pipeline_class": "StableDiffusionUpscalePipeline",
+        "upscaler_scale": 4.0,
+        "parameters": {
+            "width": 1024,
+            "height": 1024,
+            "enhance": {
+                "mode": "large_tiled",
+                "tiling": {
+                    "enabled": "on",
+                    "tile_size": 768,
+                    "overlap": 64,
+                    "vae_decode": "on",
+                },
+            },
+        },
+    }
+
+    plan = c.post("/api/inference/images/load-plan", json = payload)
+    assert plan.status_code == 200, plan.text
+    plan_body = plan.json()
+    assert plan_body["load_kwargs"]["upscaler_repo"] == (
+        "stabilityai/stable-diffusion-x4-upscaler"
+    )
+    assert plan_body["memory_plan"]["workload"]["upscaler_enabled"] is True
+    assert plan_body["memory_plan"]["workload"]["tiled_execution_enabled"] is True
+    assert any(
+        component["name"] == "upscaler"
+        for component in plan_body["memory_plan"]["model"]["components"]
+    )
+    assert plan_body["component_sources"]["upscaler"] == {
+        "repo": "stabilityai/stable-diffusion-x4-upscaler",
+        "weight_name": None,
+        "mode": "diffusion",
+        "model_class": None,
+        "pipeline_class": "StableDiffusionUpscalePipeline",
+        "scale": 4.0,
+    }
+
+    r = c.post("/api/inference/images/load", json = payload)
+    assert r.status_code == 200, r.text
+
+    call = stub.calls[-1]
+    assert call["upscaler_repo"] == "stabilityai/stable-diffusion-x4-upscaler"
+    assert call["upscaler_mode"] == "diffusion"
+    assert call["upscaler_pipeline_class"] == "StableDiffusionUpscalePipeline"
+    assert call["upscaler_scale"] == 4.0
+
+
+def test_load_forwards_super_resolution_upscaler_fields(app_with_stub):
+    app, stub = app_with_stub
+    c = TestClient(app)
+
+    payload = {
+        "repo_id": "owner/FLUX.1-finetune-diffusers",
+        "family": "flux.1",
+        "upscaler_repo": "owner/super-resolution-model",
+        "upscaler_mode": "super_resolution",
+        "upscaler_scale": 4.0,
+        "parameters": {
+            "width": 1024,
+            "height": 1024,
+            "enhance": {
+                "mode": "upscale",
+                "upscale": {
+                    "enabled": True,
+                    "mode": "super_resolution",
+                    "scale": 4.0,
+                },
+            },
+        },
+    }
+
+    plan = c.post("/api/inference/images/load-plan", json = payload)
+    assert plan.status_code == 200, plan.text
+    plan_body = plan.json()
+    assert plan_body["load_kwargs"]["upscaler_mode"] == "super_resolution"
+    assert any(
+        component["name"] == "upscaler" and component["format"] == "transformers"
+        for component in plan_body["memory_plan"]["model"]["components"]
+    )
+    assert plan_body["component_sources"]["upscaler"] == {
+        "repo": "owner/super-resolution-model",
+        "weight_name": None,
+        "mode": "super_resolution",
+        "model_class": None,
+        "pipeline_class": None,
+        "scale": 4.0,
+    }
+
+    r = c.post("/api/inference/images/load", json = payload)
+    assert r.status_code == 200, r.text
+
+    call = stub.calls[-1]
+    assert call["upscaler_repo"] == "owner/super-resolution-model"
+    assert call["upscaler_mode"] == "super_resolution"
+    assert call["upscaler_scale"] == 4.0
 
 
 def test_load_rejects_non_safetensors_lora_weight(app_with_stub):

@@ -140,6 +140,7 @@ def test_detect_family_flux1_variants():
 
     cases = {
         "unsloth/FLUX.1-Kontext-dev-GGUF": ("flux.1-kontext", "FluxKontextPipeline"),
+        "unsloth/FLUX.1-Fill-dev-GGUF": ("flux.1-fill", "FluxFillPipeline"),
         "unsloth/FLUX.1-schnell-GGUF": ("flux.1-schnell", "FluxPipeline"),
     }
     for repo, (family, pipeline) in cases.items():
@@ -298,6 +299,13 @@ def test_detect_family_finds_video_full_repo_families():
     assert wan.default_height == 720
     assert wan.default_num_frames == 81
 
+    ti2v = detect_family("Wan-AI/Wan2.2-TI2V-5B-Diffusers")
+    assert ti2v is not None
+    assert ti2v.name == "wan2-2-ti2v-5b"
+    assert ti2v.media_kind == "video"
+    assert ti2v.pipeline_class == "WanPipeline"
+    assert ti2v.default_num_frames == 121
+
 
 def test_supported_families_payload_shape():
     from core.inference.diffusion import supported_families
@@ -309,10 +317,16 @@ def test_supported_families_payload_shape():
     assert by_name["ltx2-3-base"]["media_kind"] == "video"
     assert by_name["ltx2-3-base"]["default_steps"] == 30
     assert by_name["ltx2-3-base"]["default_guidance_scale"] == 3.0
+    assert "image_to_video" in by_name["ltx2-3-base"]["video_tasks"]
     assert by_name["ltx2-3-distilled"]["media_kind"] == "video"
     assert by_name["ltx2-3-distilled"]["default_steps"] == 8
     assert by_name["ltx2-3-distilled"]["default_guidance_scale"] == 1.0
+    assert "image_to_video" in by_name["ltx2-3-distilled"]["video_tasks"]
     assert by_name["wan2-2-t2v"]["media_kind"] == "video"
+    assert "image_to_video" not in by_name["wan2-2-t2v"]["video_tasks"]
+    assert "image_to_video" in by_name["wan2-2-i2v"]["video_tasks"]
+    assert by_name["wan2-2-ti2v-5b"]["media_kind"] == "video"
+    assert "image_to_video" in by_name["wan2-2-ti2v-5b"]["video_tasks"]
     assert by_name["flux.2"]["media_kind"] == "image"
     for entry in payload:
         assert set(entry.keys()) == {
@@ -331,7 +345,11 @@ def test_supported_families_payload_shape():
             "image_input_mode",
             "supports_image_input",
             "image_tasks",
+            "video_tasks",
             "default_image_strength",
+            "default_inpaint_strength",
+            "reference_presets",
+            "reference_capabilities",
             "supports_gguf_single_file",
         }
         assert entry["media_kind"] in {"image", "video"}
@@ -349,7 +367,45 @@ def test_supported_families_payload_shape():
         assert isinstance(entry["image_input_mode"], str)
         assert isinstance(entry["supports_image_input"], bool)
         assert isinstance(entry["image_tasks"], list)
+        assert isinstance(entry["reference_presets"], list)
+        assert isinstance(entry["reference_capabilities"], dict)
         assert isinstance(entry["supports_gguf_single_file"], bool)
+    assert "style" in by_name["flux.2"]["reference_capabilities"]
+    assert "object_identity" in by_name["flux.2"]["reference_capabilities"]
+    assert "person_identity" in by_name["flux.2"]["reference_capabilities"]
+    assert "edit" in by_name["flux.2"]["image_tasks"]
+    assert "edit" in by_name["flux.2-klein"]["image_tasks"]
+    assert "inpaint" not in by_name["flux.2"]["image_tasks"]
+    assert "inpaint" in by_name["flux.2-klein"]["image_tasks"]
+    assert by_name["flux.2-klein"]["default_inpaint_strength"] == 0.8
+    assert "inpaint" in by_name["flux.1-kontext"]["image_tasks"]
+    assert by_name["flux.1-kontext"]["default_inpaint_strength"] == 1.0
+    assert "inpaint" in by_name["flux.1-fill"]["image_tasks"]
+    assert by_name["flux.1-fill"]["default_inpaint_strength"] == 1.0
+    assert "inpaint" in by_name["qwen-image"]["image_tasks"]
+    assert "inpaint" in by_name["qwen-image-2512"]["image_tasks"]
+    assert "inpaint" in by_name["qwen-image-edit"]["image_tasks"]
+    assert "inpaint" in by_name["qwen-image-edit-2509"]["image_tasks"]
+    assert "inpaint" in by_name["qwen-image-edit-2511"]["image_tasks"]
+    assert "inpaint" in by_name["z-image"]["image_tasks"]
+    assert "inpaint" in by_name["z-image-turbo"]["image_tasks"]
+    assert by_name["qwen-image"]["default_image_strength"] == 0.6
+    assert by_name["qwen-image"]["default_inpaint_strength"] == 0.85
+    assert by_name["qwen-image-edit"]["default_inpaint_strength"] == 1.0
+    assert by_name["z-image-turbo"]["default_inpaint_strength"] == 1.0
+    assert (
+        by_name["qwen-image-edit-2509"]["reference_capabilities"][
+            "person_identity"
+        ]["max_images"]
+        == 3
+    )
+    assert (
+        by_name["qwen-image-edit-2511"]["reference_capabilities"][
+            "object_identity"
+        ]["confidence"]
+        == "high"
+    )
+    assert "person_identity" not in by_name["z-image"]["reference_capabilities"]
 
 
 def test_supported_optimization_options_payload_shape():
@@ -989,6 +1045,82 @@ def test_diffusers_attention_adapter_can_prefer_default_for_video_auto():
     assert pipe.transformer.reset_count == 1
 
 
+def test_generate_image_retries_default_attention_after_flash_kernel_failure(
+    monkeypatch,
+):
+    import core.inference.diffusion as d
+    from PIL import Image
+
+    backend = d.get_diffusion_backend()
+
+    class _Transformer:
+        def __init__(self):
+            self.backend = "_native_flash"
+            self.reset_count = 0
+
+        def set_attention_backend(self, backend):
+            self.backend = backend
+
+        def reset_attention_backend(self):
+            self.backend = None
+            self.reset_count += 1
+
+    class _Pipe:
+        def __init__(self):
+            self.transformer = _Transformer()
+            self.calls = 0
+
+        def __call__(self, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError(
+                    "Dynamo failed to run FX node "
+                    "scaled_dot_product_attention: No available kernel"
+                )
+
+            class _Out:
+                pass
+
+            out = _Out()
+            out.images = [
+                Image.new(
+                    "RGB",
+                    (kwargs["width"], kwargs["height"]),
+                    color = (0, 255, 0),
+                )
+            ]
+            return out
+
+    pipe = _Pipe()
+    backend._pipe = pipe
+    backend._device = "cpu"
+    backend._family = d._FAMILIES[0]
+    backend._repo_id = "stub/stub"
+    backend._attention_backend_config = {
+        "requested": "auto",
+        "effective": "flash",
+        "diffusers_backend": "_native_flash",
+        "applied": True,
+        "warnings": [],
+        "errors": [],
+    }
+
+    img = backend.generate_image(
+        prompt = "a green square",
+        width = 256,
+        height = 256,
+        num_inference_steps = 2,
+        guidance_scale = 4,
+    )
+
+    assert img.size == (256, 256)
+    assert pipe.calls == 2
+    assert pipe.transformer.reset_count == 1
+    status = backend.status()
+    assert status["attention_backend"]["effective"] == "default"
+    assert status["attention_backend"]["runtime_fallback_from"]["effective"] == "flash"
+
+
 # ── singleton ───────────────────────────────────────────────────
 
 
@@ -1119,6 +1251,226 @@ def test_encode_png_base64_round_trip():
     assert decoded.size == (16, 16)
 
 
+# ── image enhancement helpers ───────────────────────────────────
+
+
+def test_pixel_upscale_stage_resizes_with_tiling():
+    from PIL import Image
+
+    from core.inference.diffusion_enhance import (
+        apply_image_enhancement,
+        build_image_enhance_plan,
+    )
+
+    plan = build_image_enhance_plan(
+        {
+            "mode": "upscale",
+            "upscale": {
+                "enabled": True,
+                "mode": "pixel",
+                "scale": 2,
+                "method": "lanczos",
+                "tile_size": 16,
+                "tile_overlap": 4,
+            },
+        }
+    )
+    images, meta = apply_image_enhancement(
+        [Image.new("RGB", (32, 24), color = (10, 20, 30))],
+        plan,
+        prompt = "x",
+        negative_prompt = None,
+    )
+
+    assert images[0].size == (64, 48)
+    assert meta["mode"] == "upscale"
+    assert meta["stages"][0]["type"] == "pixel_upscale"
+    assert meta["stages"][0]["tile_size"] == 16
+
+
+def test_vae_tiling_policy_enables_available_diffusers_hooks():
+    from core.inference.diffusion_enhance import (
+        apply_vae_tiling_policy,
+        build_image_enhance_plan,
+    )
+
+    class _Pipe:
+        def __init__(self):
+            self.calls = []
+
+        def enable_vae_tiling(self):
+            self.calls.append("tiling")
+
+        def enable_vae_slicing(self):
+            self.calls.append("slicing")
+
+    pipe = _Pipe()
+    plan = build_image_enhance_plan(
+        {"mode": "large_tiled", "tiling": {"vae_decode": "on"}}
+    )
+    meta = apply_vae_tiling_policy(pipe, plan, width = 1024, height = 1024)
+
+    assert meta == {"vae_decode": "on", "applied": True}
+    assert pipe.calls == ["tiling", "slicing"]
+
+
+def test_pixel_upscaler_load_rejects_unused_model_class():
+    from core.inference.diffusion import _load_diffusion_upscaler
+
+    with pytest.raises(ValueError, match = "upscaler_model_class"):
+        _load_diffusion_upscaler(
+            SimpleNamespace(),
+            upscaler_repo = "owner/super-resolution-model",
+            upscaler_weight_name = None,
+            upscaler_mode = "pixel",
+            upscaler_model_class = "SomeUpscalerModel",
+            upscaler_pipeline_class = None,
+            upscaler_scale = 2.0,
+            dtype = None,
+            token = None,
+        )
+
+
+def test_super_resolution_upscaler_loads_transformers_pipeline(monkeypatch):
+    from core.inference.diffusion import _load_diffusion_upscaler
+
+    calls = []
+
+    class _Pipeline:
+        def __init__(self):
+            self.model = SimpleNamespace()
+
+    def _pipeline(task, **kwargs):
+        calls.append((task, kwargs))
+        return _Pipeline()
+
+    monkeypatch.setitem(
+        sys.modules,
+        "transformers",
+        SimpleNamespace(pipeline = _pipeline),
+    )
+
+    pipe, state = _load_diffusion_upscaler(
+        SimpleNamespace(),
+        upscaler_repo = "owner/super-resolution-model",
+        upscaler_weight_name = None,
+        upscaler_mode = "super_resolution",
+        upscaler_model_class = None,
+        upscaler_pipeline_class = None,
+        upscaler_scale = 4.0,
+        dtype = None,
+        token = "hf_fake",
+    )
+
+    assert pipe is not None
+    assert calls == [
+        (
+            "image-to-image",
+            {"model": "owner/super-resolution-model", "token": "hf_fake"},
+        )
+    ]
+    assert state.mode == "super_resolution"
+    assert state.repo == "owner/super-resolution-model"
+    assert state.scale == 4.0
+
+
+def test_super_resolution_upscale_stage_uses_loaded_postprocess_model():
+    from PIL import Image
+
+    from core.inference.diffusion_enhance import (
+        apply_image_enhancement,
+        build_image_enhance_plan,
+    )
+
+    calls = []
+
+    class _Upscaler:
+        def __call__(self, image):
+            calls.append(image.size)
+            return Image.new("RGB", (image.width * 4, image.height * 4))
+
+    plan = build_image_enhance_plan(
+        {
+            "mode": "upscale",
+            "upscale": {
+                "enabled": True,
+                "mode": "super_resolution",
+                "scale": 4,
+            },
+        }
+    )
+    images, meta = apply_image_enhancement(
+        [Image.new("RGB", (24, 16))],
+        plan,
+        diffusion_upscaler_pipe = _Upscaler(),
+        prompt = "ignored",
+        negative_prompt = None,
+    )
+
+    assert calls == [(24, 16)]
+    assert images[0].size == (96, 64)
+    assert meta["stages"][0]["type"] == "super_resolution_upscale"
+    assert meta["stages"][0]["scale"] == 4
+
+
+def test_tiled_diffusion_upscale_splits_large_image():
+    from PIL import Image
+
+    from core.inference.diffusion_enhance import (
+        apply_image_enhancement,
+        build_image_enhance_plan,
+    )
+
+    calls = []
+
+    class _UpscalerPipe:
+        def __call__(self, *, prompt, image, width, height, **kwargs):
+            calls.append(
+                {
+                    "prompt": prompt,
+                    "input_size": image.size,
+                    "output_size": (width, height),
+                    "kwargs": kwargs,
+                }
+            )
+            return SimpleNamespace(
+                images = [Image.new("RGB", (width, height), color = (20, 40, 80))]
+            )
+
+    plan = build_image_enhance_plan(
+        {
+            "mode": "creative_upscale",
+            "upscale": {
+                "enabled": True,
+                "mode": "diffusion",
+                "scale": 2,
+                "tile_size": 128,
+                "tile_overlap": 32,
+                "num_inference_steps": 8,
+                "guidance_scale": 4,
+            },
+            "tiling": {"enabled": "on"},
+        }
+    )
+
+    images, meta = apply_image_enhancement(
+        [Image.new("RGB", (192, 192), color = (10, 20, 30))],
+        plan,
+        diffusion_upscaler_pipe = _UpscalerPipe(),
+        prompt = "upscale this",
+        negative_prompt = None,
+    )
+
+    assert images[0].size == (384, 384)
+    assert len(calls) == 4
+    assert calls[0]["prompt"] == "upscale this"
+    assert calls[0]["kwargs"]["num_inference_steps"] == 8
+    assert calls[0]["kwargs"]["guidance_scale"] == 4
+    assert meta["stages"][0]["type"] == "diffusion_upscale"
+    assert meta["stages"][0]["tiled"] is True
+    assert meta["stages"][0]["tile_count"] == 4
+
+
 # ── generation validation (no real pipeline) ────────────────────
 
 
@@ -1155,7 +1507,7 @@ def _stub_pipeline(monkeypatch, *, returns = None, raises = None):
 
 
 def test_generate_image_rejects_empty_prompt(monkeypatch):
-    backend = _stub_pipeline(monkeypatch)
+    backend = d.DiffusionBackend()
     with pytest.raises(ValueError, match = "prompt is empty"):
         backend.generate_image(prompt = "   ")
 
@@ -1192,6 +1544,772 @@ def test_generate_image_calls_pipeline_with_kwargs(monkeypatch):
         seed = 42,
     )
     assert img.size == (256, 256)
+
+
+def test_controlnet_class_names_are_derived_generically():
+    import core.inference.diffusion as d
+
+    assert (
+        d._default_controlnet_pipeline_class_name("QwenImagePipeline")
+        == "QwenImageControlNetPipeline"
+    )
+    assert (
+        d._default_controlnet_pipeline_class_name("ZImageInpaintPipeline")
+        == "ZImageControlNetInpaintPipeline"
+    )
+    assert (
+        d._default_controlnet_pipeline_class_name("FluxImg2ImgPipeline")
+        == "FluxControlNetImg2ImgPipeline"
+    )
+    assert (
+        d._default_controlnet_model_class_name("QwenImagePipeline")
+        == "QwenImageControlNetModel"
+    )
+    assert (
+        d._default_controlnet_model_class_name("StableDiffusion3Pipeline")
+        == "SD3ControlNetModel"
+    )
+    assert (
+        d._default_controlnet_model_class_name("StableDiffusionXLPipeline")
+        == "ControlNetModel"
+    )
+
+
+def test_load_diffusion_controlnet_supports_single_file_safetensors(tmp_path):
+    import core.inference.diffusion as d
+
+    weight_path = tmp_path / "control.safetensors"
+    weight_path.write_bytes(b"fake")
+
+    class FakeControlNetModel:
+        calls = []
+
+        @classmethod
+        def from_single_file(cls, path, **kwargs):
+            cls.calls.append(("single", path, kwargs))
+            return cls()
+
+        @classmethod
+        def from_pretrained(cls, repo, **kwargs):
+            cls.calls.append(("repo", repo, kwargs))
+            return cls()
+
+    class FakeControlNetPipeline:
+        @classmethod
+        def from_pipe(cls, pipe, *, controlnet):
+            instance = cls()
+            instance.pipe = pipe
+            instance.controlnet = controlnet
+            return instance
+
+    diffusers = SimpleNamespace(
+        FakeControlNetModel = FakeControlNetModel,
+        FakeControlNetPipeline = FakeControlNetPipeline,
+    )
+    base_pipe = object()
+
+    control_pipe, state = d._load_diffusion_controlnet(
+        diffusers,
+        base_pipe,
+        controlnet_repo = str(weight_path),
+        controlnet_weight_name = None,
+        controlnet_model_class = "FakeControlNetModel",
+        controlnet_pipeline_class = "FakeControlNetPipeline",
+        conditioning_scale = None,
+        guidance_start = None,
+        guidance_end = None,
+        dtype = "bf16",
+        token = "hf_token",
+    )
+
+    assert isinstance(control_pipe, FakeControlNetPipeline)
+    assert control_pipe.pipe is base_pipe
+    assert FakeControlNetModel.calls == [
+        ("single", str(weight_path), {"torch_dtype": "bf16", "token": "hf_token"})
+    ]
+    assert state.conditioning_scale == 1.0
+    assert state.guidance_start == 0.0
+    assert state.guidance_end == 1.0
+
+
+def test_generate_image_uses_controlnet_pipe_when_control_images_supplied(monkeypatch):
+    import core.inference.diffusion as d
+    from PIL import Image
+
+    backend = _stub_pipeline(monkeypatch)
+    backend._family = None
+    backend._controlnet_state = d.DiffusionControlNetState(
+        repo = "owner/controlnet",
+        weight_name = None,
+        model_class = "ControlNetModel",
+        pipeline_class = "StableDiffusionControlNetPipeline",
+        conditioning_scale = 0.8,
+        guidance_start = 0.2,
+        guidance_end = 0.9,
+    )
+
+    class _ControlPipe:
+        def __init__(self):
+            self.calls = []
+
+        def __call__(
+            self,
+            *,
+            prompt,
+            num_inference_steps,
+            width,
+            height,
+            guidance_scale = None,
+            control_image = None,
+            controlnet_conditioning_scale = None,
+            control_guidance_start = None,
+            control_guidance_end = None,
+            generator = None,
+        ):
+            self.calls.append(
+                {
+                    "control_image": control_image,
+                    "scale": controlnet_conditioning_scale,
+                    "start": control_guidance_start,
+                    "end": control_guidance_end,
+                }
+            )
+
+            class _Out:
+                pass
+
+            out = _Out()
+            out.images = [Image.new("RGB", (width, height), color = (0, 0, 255))]
+            return out
+
+    control_pipe = _ControlPipe()
+    backend._control_pipe = control_pipe
+    control_image = Image.new("RGB", (16, 16), color = (255, 255, 255))
+
+    img = backend.generate_image(
+        prompt = "follow edges",
+        control_images = [control_image],
+        width = 256,
+        height = 256,
+        num_inference_steps = 2,
+        guidance_scale = 4,
+        controlnet_conditioning_scale = 0.7,
+        control_guidance_start = 0.1,
+        control_guidance_end = 0.6,
+    )
+
+    assert img.size == (256, 256)
+    assert len(control_pipe.calls) == 1
+    assert control_pipe.calls[0]["control_image"] is control_image
+    assert control_pipe.calls[0]["scale"] == 0.7
+    assert control_pipe.calls[0]["start"] == 0.1
+    assert control_pipe.calls[0]["end"] == 0.6
+
+
+def test_generate_image_uses_controlnet_task_variant_for_img2img(monkeypatch):
+    import core.inference.diffusion as d
+    from PIL import Image
+
+    backend = d.get_diffusion_backend()
+    controlnet = object()
+    calls = []
+
+    class BasePipeline:
+        @property
+        def components(self):
+            return {}
+
+    class BaseImg2ImgPipeline:
+        def __call__(
+            self,
+            *,
+            prompt,
+            num_inference_steps,
+            width,
+            height,
+            image = None,
+            control_image = None,
+            controlnet_conditioning_scale = None,
+        ):
+            calls.append(
+                {
+                    "pipe": type(self).__name__,
+                    "image": image,
+                    "control_image": control_image,
+                    "scale": controlnet_conditioning_scale,
+                }
+            )
+
+            class _Out:
+                pass
+
+            out = _Out()
+            out.images = [Image.new("RGB", (width, height), color = (0, 0, 255))]
+            return out
+
+    class BaseControlNetPipeline:
+        @property
+        def components(self):
+            return {"controlnet": controlnet}
+
+    class BaseControlNetImg2ImgPipeline(BaseImg2ImgPipeline):
+        @classmethod
+        def from_pipe(cls, pipe, *, controlnet):
+            instance = cls()
+            instance.source_pipe = pipe
+            instance.controlnet = controlnet
+            return instance
+
+    monkeypatch.setitem(
+        sys.modules,
+        "diffusers",
+        SimpleNamespace(
+            BaseImg2ImgPipeline = BaseImg2ImgPipeline,
+            BaseControlNetImg2ImgPipeline = BaseControlNetImg2ImgPipeline,
+        ),
+    )
+    backend._pipe = BasePipeline()
+    backend._control_pipe = BaseControlNetPipeline()
+    backend._controlnet_state = d.DiffusionControlNetState(
+        repo = "owner/controlnet",
+        weight_name = None,
+        model_class = "BaseControlNetModel",
+        pipeline_class = "BaseControlNetPipeline",
+        conditioning_scale = 0.8,
+        guidance_start = 0.0,
+        guidance_end = 1.0,
+    )
+    backend._family = d.DiffusionFamily(
+        name = "base",
+        pipeline_class = "BasePipeline",
+        transformer_class = "BaseTransformer",
+        base_repo = "owner/base",
+        image_task_pipelines = {"image_to_image": "BaseImg2ImgPipeline"},
+    )
+    backend._repo_id = "owner/base"
+    backend._device = "cpu"
+
+    source_image = Image.new("RGB", (16, 16), color = (255, 0, 0))
+    control_image = Image.new("RGB", (16, 16), color = (255, 255, 255))
+    img = backend.generate_image(
+        prompt = "preserve source and follow edges",
+        image_task = "image_to_image",
+        input_images = [source_image],
+        control_images = [control_image],
+        width = 256,
+        height = 256,
+        num_inference_steps = 2,
+    )
+
+    assert img.size == (256, 256)
+    assert calls == [
+        {
+            "pipe": "BaseControlNetImg2ImgPipeline",
+            "image": source_image,
+            "control_image": control_image,
+            "scale": 0.8,
+        }
+    ]
+
+
+def test_generate_image_uses_qwen_inpaint_task_variant(monkeypatch):
+    import core.inference.diffusion as d
+    from PIL import Image
+
+    backend = d.DiffusionBackend()
+    calls = []
+
+    class QwenImagePipeline:
+        @property
+        def components(self):
+            return {}
+
+    class QwenImageInpaintPipeline:
+        @classmethod
+        def from_pipe(cls, pipe):
+            instance = cls()
+            instance.source_pipe = pipe
+            return instance
+
+        def __call__(self, **kwargs):
+            calls.append(
+                {
+                    "pipe": type(self).__name__,
+                    "image": kwargs.get("image"),
+                    "mask_image": kwargs.get("mask_image"),
+                    "true_cfg_scale": kwargs.get("true_cfg_scale"),
+                }
+            )
+
+            class _Out:
+                pass
+
+            out = _Out()
+            out.images = [
+                Image.new(
+                    "RGB",
+                    (kwargs["width"], kwargs["height"]),
+                    color = (0, 0, 255),
+                )
+            ]
+            return out
+
+    monkeypatch.setitem(
+        sys.modules,
+        "diffusers",
+        SimpleNamespace(
+            QwenImagePipeline = QwenImagePipeline,
+            QwenImageInpaintPipeline = QwenImageInpaintPipeline,
+        ),
+    )
+    backend._pipe = QwenImagePipeline()
+    backend._family = d._family_by_name("qwen-image")
+    backend._repo_id = "Qwen/Qwen-Image"
+    backend._device = "cpu"
+
+    source_image = Image.new("RGB", (16, 16), color = (255, 0, 0))
+    mask_image = Image.new("L", (16, 16), color = 255)
+    img = backend.generate_image(
+        prompt = "replace the marked object",
+        image_task = "inpaint",
+        input_images = [source_image],
+        mask_images = [mask_image],
+        width = 256,
+        height = 256,
+        num_inference_steps = 2,
+    )
+
+    assert img.size == (256, 256)
+    assert len(calls) == 1
+    assert calls[0]["pipe"] == "QwenImageInpaintPipeline"
+    assert calls[0]["image"] is source_image
+    assert calls[0]["mask_image"] is mask_image
+    assert calls[0]["true_cfg_scale"] == 4.0
+
+
+@pytest.mark.parametrize(
+    (
+        "family_name",
+        "base_pipeline_name",
+        "target_pipeline_name",
+        "expected_guidance",
+        "expected_strength",
+    ),
+    [
+        ("flux.1-fill", "FluxFillPipeline", "FluxFillPipeline", 30.0, 1.0),
+        (
+            "flux.1-kontext",
+            "FluxKontextPipeline",
+            "FluxKontextInpaintPipeline",
+            2.5,
+            1.0,
+        ),
+        (
+            "flux.2-klein",
+            "Flux2KleinPipeline",
+            "Flux2KleinInpaintPipeline",
+            1.0,
+            0.8,
+        ),
+    ],
+)
+def test_generate_image_uses_flux_inpaint_task_variants(
+    monkeypatch,
+    family_name,
+    base_pipeline_name,
+    target_pipeline_name,
+    expected_guidance,
+    expected_strength,
+):
+    import core.inference.diffusion as d
+    from PIL import Image
+
+    backend = d.DiffusionBackend()
+    calls = []
+
+    class _BasePipeline:
+        @property
+        def components(self):
+            return {}
+
+    class _InpaintPipeline:
+        @classmethod
+        def from_pipe(cls, pipe):
+            instance = cls()
+            instance.source_pipe = pipe
+            return instance
+
+        def __call__(self, **kwargs):
+            calls.append(
+                {
+                    "pipe": type(self).__name__,
+                    "image": kwargs.get("image"),
+                    "mask_image": kwargs.get("mask_image"),
+                    "guidance_scale": kwargs.get("guidance_scale"),
+                    "strength": kwargs.get("strength"),
+                }
+            )
+
+            class _Out:
+                pass
+
+            out = _Out()
+            out.images = [
+                Image.new(
+                    "RGB",
+                    (kwargs["width"], kwargs["height"]),
+                    color = (32, 64, 128),
+                )
+            ]
+            return out
+
+    base_cls = type(base_pipeline_name, (_BasePipeline,), {})
+    target_cls = type(target_pipeline_name, (_InpaintPipeline,), {})
+    if base_pipeline_name == target_pipeline_name:
+        base_cls = type(base_pipeline_name, (_InpaintPipeline,), {})
+        target_cls = base_cls
+
+    monkeypatch.setitem(
+        sys.modules,
+        "diffusers",
+        SimpleNamespace(
+            Flux2KleinPipeline = (
+                base_cls if base_pipeline_name == "Flux2KleinPipeline" else object
+            ),
+            Flux2KleinInpaintPipeline = (
+                target_cls
+                if target_pipeline_name == "Flux2KleinInpaintPipeline"
+                else object
+            ),
+            FluxKontextPipeline = (
+                base_cls if base_pipeline_name == "FluxKontextPipeline" else object
+            ),
+            FluxKontextInpaintPipeline = (
+                target_cls
+                if target_pipeline_name == "FluxKontextInpaintPipeline"
+                else object
+            ),
+            FluxFillPipeline = (
+                base_cls if base_pipeline_name == "FluxFillPipeline" else object
+            ),
+        ),
+    )
+    backend._pipe = base_cls()
+    backend._family = d._family_by_name(family_name)
+    backend._repo_id = backend._family.base_repo
+    backend._device = "cpu"
+
+    source_image = Image.new("RGB", (16, 16), color = (255, 0, 0))
+    mask_image = Image.new("L", (16, 16), color = 255)
+    img = backend.generate_image(
+        prompt = "replace the marked region",
+        image_task = "inpaint",
+        input_images = [source_image],
+        mask_images = [mask_image],
+        width = 256,
+        height = 256,
+        num_inference_steps = 2,
+    )
+
+    assert img.size == (256, 256)
+    assert len(calls) == 1
+    assert calls[0]["pipe"] == target_pipeline_name
+    assert calls[0]["image"] is source_image
+    assert calls[0]["mask_image"] is mask_image
+    assert calls[0]["guidance_scale"] == expected_guidance
+    assert calls[0]["strength"] == expected_strength
+
+
+def test_generate_image_uses_task_specific_inpaint_strength(monkeypatch):
+    import core.inference.diffusion as d
+    from PIL import Image
+
+    backend = _stub_pipeline(monkeypatch)
+    backend._family = d.DiffusionFamily(
+        name = "generic-inpaint",
+        pipeline_class = "GenericPipeline",
+        transformer_class = "GenericTransformer",
+        base_repo = "owner/generic",
+        image_task_pipelines = {"inpaint": "GenericInpaintPipeline"},
+        default_image_strength = 0.6,
+        default_inpaint_strength = 0.9,
+    )
+    calls = []
+
+    class GenericPipeline:
+        @property
+        def components(self):
+            return {}
+
+    class GenericInpaintPipeline:
+        @classmethod
+        def from_pipe(cls, pipe):
+            return cls()
+
+        def __call__(self, **kwargs):
+            calls.append(kwargs)
+
+            class _Out:
+                pass
+
+            out = _Out()
+            out.images = [
+                Image.new(
+                    "RGB",
+                    (kwargs["width"], kwargs["height"]),
+                    color = (0, 0, 255),
+                )
+            ]
+            return out
+
+    monkeypatch.setitem(
+        sys.modules,
+        "diffusers",
+        SimpleNamespace(GenericInpaintPipeline = GenericInpaintPipeline),
+    )
+    backend._pipe = GenericPipeline()
+    backend._repo_id = "owner/generic"
+    backend._device = "cpu"
+    source_image = Image.new("RGB", (16, 16), color = (255, 0, 0))
+    mask_image = Image.new("L", (16, 16), color = 255)
+
+    backend.generate_image(
+        prompt = "replace masked area",
+        image_task = "inpaint",
+        input_images = [source_image],
+        mask_images = [mask_image],
+        width = 256,
+        height = 256,
+        num_inference_steps = 2,
+    )
+
+    assert calls[0]["strength"] == 0.9
+
+
+def test_generate_image_uses_generic_inpaint_strength_fallback(monkeypatch):
+    import core.inference.diffusion as d
+    from PIL import Image
+
+    backend = _stub_pipeline(monkeypatch)
+    backend._family = d.DiffusionFamily(
+        name = "generic-inpaint",
+        pipeline_class = "GenericPipeline",
+        transformer_class = "GenericTransformer",
+        base_repo = "owner/generic",
+        default_image_strength = 0.6,
+    )
+    calls = []
+
+    class _InpaintPipe:
+        def __call__(
+            self,
+            *,
+            prompt,
+            num_inference_steps,
+            width,
+            height,
+            image = None,
+            mask_image = None,
+            strength = None,
+            guidance_scale = None,
+        ):
+            calls.append(
+                {
+                    "image": image,
+                    "mask_image": mask_image,
+                    "strength": strength,
+                }
+            )
+
+            class _Out:
+                pass
+
+            out = _Out()
+            out.images = [Image.new("RGB", (width, height), color = (0, 0, 255))]
+            return out
+
+    pipe = _InpaintPipe()
+    backend._pipe = pipe
+    source_image = Image.new("RGB", (16, 16), color = (255, 0, 0))
+    mask_image = Image.new("L", (16, 16), color = 255)
+
+    backend.generate_image(
+        prompt = "replace masked area",
+        image_task = "inpaint",
+        input_images = [source_image],
+        mask_images = [mask_image],
+        width = 256,
+        height = 256,
+        num_inference_steps = 2,
+    )
+
+    assert calls[0]["strength"] == 1.0
+
+
+def test_generate_image_reinstalls_cpu_offload_on_base_wrapper_when_control_disabled(
+    monkeypatch,
+):
+    import core.inference.diffusion as d
+
+    backend = _stub_pipeline(monkeypatch)
+    backend._family = None
+    backend._cpu_offload_enabled = True
+    enable_calls = []
+
+    class _ControlPipe:
+        def __init__(self):
+            self.free_calls = 0
+
+        def __call__(
+            self,
+            *,
+            prompt,
+            num_inference_steps,
+            width,
+            height,
+            control_image = None,
+            controlnet_conditioning_scale = None,
+            generator = None,
+        ):
+            class _Out:
+                pass
+
+            out = _Out()
+            out.images = [Image.new("RGB", (width, height), color = (0, 0, 255))]
+            return out
+
+        def maybe_free_model_hooks(self):
+            self.free_calls += 1
+
+    def _fake_enable(pipe, device):
+        enable_calls.append((pipe, device))
+
+    control_pipe = _ControlPipe()
+    backend._control_pipe = control_pipe
+    backend._controlnet_state = d.DiffusionControlNetState(
+        repo = "owner/controlnet",
+        weight_name = None,
+        model_class = "ControlNetModel",
+        pipeline_class = "StableDiffusionControlNetPipeline",
+        conditioning_scale = 0.8,
+        guidance_start = 0.2,
+        guidance_end = 0.9,
+    )
+    monkeypatch.setattr(d, "_enable_diffusers_model_cpu_offload", _fake_enable)
+
+    backend.generate_image(
+        prompt = "regular generation while a ControlNet pipeline is loaded",
+        width = 256,
+        height = 256,
+        num_inference_steps = 2,
+        guidance_scale = 4,
+    )
+
+    assert enable_calls == [(backend._pipe, "cpu")]
+    assert control_pipe.free_calls == 0
+
+
+def test_generate_image_cpu_offload_toggle_off_does_not_call_control_pipe(monkeypatch):
+    import core.inference.diffusion as d
+
+    backend = _stub_pipeline(monkeypatch)
+    backend._family = None
+    backend._cpu_offload_enabled = True
+    calls = []
+
+    class _ControlPipe:
+        def __call__(self, **kwargs):
+            calls.append(kwargs)
+            raise AssertionError("ControlNet pipe should not run when toggled off")
+
+        def enable_model_cpu_offload(self, device = None):
+            return None
+
+        def maybe_free_model_hooks(self):
+            return None
+
+        def remove_all_hooks(self):
+            return None
+
+    backend._control_pipe = _ControlPipe()
+    backend._controlnet_state = d.DiffusionControlNetState(
+        repo = "owner/controlnet",
+        weight_name = None,
+        model_class = "ControlNetModel",
+        pipeline_class = "StableDiffusionControlNetPipeline",
+        conditioning_scale = 0.8,
+        guidance_start = 0.2,
+        guidance_end = 0.9,
+    )
+    monkeypatch.setattr(d, "_enable_diffusers_model_cpu_offload", lambda pipe, device: None)
+
+    img = backend.generate_image(
+        prompt = "regular generation with loaded ControlNet disabled",
+        width = 256,
+        height = 256,
+        num_inference_steps = 2,
+        guidance_scale = 4,
+    )
+
+    assert img.size == (256, 256)
+    assert calls == []
+
+
+def test_prepare_controlnet_cpu_offload_keeps_controlnet_resident():
+    import core.inference.diffusion as d
+
+    pipe = SimpleNamespace(
+        components = {"text_encoder": object(), "controlnet": object()},
+        model_cpu_offload_seq = "text_encoder->transformer->vae",
+        _exclude_from_cpu_offload = [],
+    )
+
+    d._prepare_controlnet_cpu_offload(pipe)
+
+    assert pipe.model_cpu_offload_seq == "text_encoder->transformer->vae"
+    assert pipe._exclude_from_cpu_offload == ["controlnet"]
+
+
+def test_move_controlnet_to_device_moves_nested_module():
+    import core.inference.diffusion as d
+
+    class _ControlNet:
+        def __init__(self):
+            self.devices = []
+
+        def to(self, device):
+            self.devices.append(device)
+
+    controlnet = _ControlNet()
+    pipe = SimpleNamespace(controlnet = controlnet)
+
+    d._move_controlnet_to_device(pipe, "cuda")
+
+    assert controlnet.devices == ["cuda"]
+
+
+def test_patch_module_forward_device_guard_moves_before_forward():
+    import core.inference.diffusion as d
+
+    class _Module:
+        def __init__(self):
+            self.devices = []
+            self.forward_calls = 0
+
+        def to(self, device):
+            self.devices.append(device)
+
+        def forward(self, value):
+            self.forward_calls += 1
+            return value + 1
+
+    module = _Module()
+
+    d._patch_module_forward_device_guard(module, "cuda")
+
+    assert module.forward(1) == 2
+    assert module.devices == ["cuda"]
+    assert module.forward_calls == 1
 
 
 def test_generate_image_low_vram_gguf_drains_cuda_cache(monkeypatch):
@@ -2005,6 +3123,9 @@ def _install_fake_diffusers(monkeypatch, *, raise_on_pipeline = False):
     fake.Flux2Pipeline = _FakePipeline
     fake.FluxPipeline = _FakePipeline
     fake.FluxKontextPipeline = _FakePipeline
+    fake.FluxFillPipeline = _FakePipeline
+    fake.Flux2KleinInpaintPipeline = _FakePipeline
+    fake.FluxKontextInpaintPipeline = _FakePipeline
     fake.FluxTransformer2DModel = _FakeTransformer
     fake.QwenImagePipeline = _FakePipeline
     fake.QwenImageTransformer2DModel = _FakeTransformer
@@ -6248,6 +7369,67 @@ def test_load_model_gguf_applies_unfused_lora(monkeypatch):
     ]
 
 
+def test_load_model_applies_lora_before_controlnet_wrap(monkeypatch):
+    fake_diffusers = _install_fake_diffusers(monkeypatch)
+    from core.inference.diffusion import get_diffusion_backend
+
+    class _FakeControlNetModel:
+        @classmethod
+        def from_pretrained(cls, repo, **kwargs):
+            inst = cls()
+            inst.repo = repo
+            inst.kwargs = kwargs
+            return inst
+
+    class _FakeControlNetPipeline:
+        @classmethod
+        def from_pipe(cls, pipe, *, controlnet):
+            inst = cls()
+            inst.base_pipe = pipe
+            inst.controlnet = controlnet
+            inst.components = {"controlnet": controlnet}
+            return inst
+
+        def to(self, device):
+            self.device = device
+            return self
+
+    fake_diffusers.FluxControlNetModel = _FakeControlNetModel
+    fake_diffusers.FluxControlNetPipeline = _FakeControlNetPipeline
+
+    backend = get_diffusion_backend()
+    status = backend.load_model(
+        "owner/FLUX.1-finetune-diffusers",
+        family_override = "flux.1",
+        lora_repo = "owner/my-flux-lora",
+        lora_weight_name = "pytorch_lora_weights.safetensors",
+        lora_adapter_name = "studio-style",
+        lora_scale = 0.75,
+        controlnet_repo = "owner/flux-controlnet",
+        controlnet_model_class = "FluxControlNetModel",
+        controlnet_pipeline_class = "FluxControlNetPipeline",
+    )
+
+    assert status["is_loaded"] is True
+    assert status["lora"]["repo"] == "owner/my-flux-lora"
+    assert status["controlnet"]["repo"] == "owner/flux-controlnet"
+    assert backend._control_pipe.base_pipe is backend._pipe
+    assert backend._pipe.lora_loads == [
+        {
+            "repo": "owner/my-flux-lora",
+            "adapter_name": "studio-style",
+            "use_safetensors": True,
+            "weight_name": "pytorch_lora_weights.safetensors",
+        }
+    ]
+    assert backend._pipe.adapter_calls == [
+        {
+            "adapter_names": "studio-style",
+            "adapter_weights": 0.75,
+        }
+    ]
+
+
 def test_load_model_rejects_non_safetensors_lora_weight(monkeypatch):
     _install_fake_diffusers(monkeypatch)
     from core.inference.diffusion import get_diffusion_backend
@@ -7823,8 +9005,8 @@ def test_generate_video_with_metadata_uses_family_defaults():
     video, meta = backend.generate_video_with_metadata(prompt = "a crane shot")
 
     assert video == ["frame0", "frame1"]
-    assert pipe.last_kwargs["num_inference_steps"] == 40
-    assert pipe.last_kwargs["guidance_scale"] == 4.0
+    assert pipe.last_kwargs["num_inference_steps"] == 20
+    assert pipe.last_kwargs["guidance_scale"] == 3.5
     assert pipe.last_kwargs["guidance_scale_2"] == 3.0
     assert pipe.last_kwargs["width"] == 1280
     assert pipe.last_kwargs["height"] == 720
@@ -7833,6 +9015,191 @@ def test_generate_video_with_metadata_uses_family_defaults():
     assert meta["family"] == "wan2-2-t2v"
     assert meta["num_frames"] == 81
     assert meta["frame_rate"] == 16.0
+    assert meta["guidance_scale_2"] == 3.0
+
+
+def test_generate_video_with_metadata_uses_wan_ti2v_defaults():
+    import core.inference.diffusion as d
+
+    backend = d.DiffusionBackend()
+
+    class _FakeWanPipe:
+        def __init__(self):
+            self.last_kwargs = None
+
+        def __call__(self, **kwargs):
+            self.last_kwargs = kwargs
+            return SimpleNamespace(frames = [["frame0", "frame1"]])
+
+    pipe = _FakeWanPipe()
+    backend._pipe = pipe
+    backend._device = "cpu"
+    backend._repo_id = "Wan-AI/Wan2.2-TI2V-5B-Diffusers"
+    backend._family = d.detect_family("Wan-AI/Wan2.2-TI2V-5B-Diffusers")
+
+    video, meta = backend.generate_video_with_metadata(prompt = "a crane shot")
+
+    assert video == ["frame0", "frame1"]
+    assert pipe.last_kwargs["num_inference_steps"] == 20
+    assert pipe.last_kwargs["guidance_scale"] == 3.5
+    assert "guidance_scale_2" not in pipe.last_kwargs
+    assert pipe.last_kwargs["width"] == 1280
+    assert pipe.last_kwargs["height"] == 720
+    assert pipe.last_kwargs["num_frames"] == 121
+    assert pipe.last_kwargs["output_type"] == "np"
+    assert meta["family"] == "wan2-2-ti2v-5b"
+    assert meta["num_frames"] == 121
+    assert meta["frame_rate"] == 24.0
+    assert meta["guidance_scale_2"] is None
+
+
+def test_generate_video_with_metadata_promotes_ltx_image_to_video(monkeypatch):
+    import core.inference.diffusion as d
+
+    fake_diffusers = types.ModuleType("diffusers")
+    fake_pipelines = types.ModuleType("diffusers.pipelines")
+    fake_ltx2 = types.ModuleType("diffusers.pipelines.ltx2")
+    fake_utils = types.ModuleType("diffusers.pipelines.ltx2.utils")
+    fake_utils.DEFAULT_NEGATIVE_PROMPT = "ltx default negative"
+    fake_utils.DISTILLED_SIGMA_VALUES = [1.0, 0.5]
+
+    class LTX2ImageToVideoPipeline:
+        def __init__(self):
+            self.components = {}
+
+        def __call__(self, *, image, **kwargs):
+            return SimpleNamespace(frames = [["frame0", "frame1"]])
+
+    fake_diffusers.LTX2ImageToVideoPipeline = LTX2ImageToVideoPipeline
+    monkeypatch.setitem(sys.modules, "diffusers", fake_diffusers)
+    monkeypatch.setitem(sys.modules, "diffusers.pipelines", fake_pipelines)
+    monkeypatch.setitem(sys.modules, "diffusers.pipelines.ltx2", fake_ltx2)
+    monkeypatch.setitem(sys.modules, "diffusers.pipelines.ltx2.utils", fake_utils)
+
+    backend = d.DiffusionBackend()
+
+    class LTX2Pipeline:
+        components = {}
+
+    backend._pipe = LTX2Pipeline()
+    backend._device = "cpu"
+    backend._repo_id = "diffusers/LTX-2.3-Distilled-Diffusers"
+    backend._family = d.detect_family("diffusers/LTX-2.3-Distilled-Diffusers")
+    source = object()
+
+    def _fake_two_stage(self, **kwargs):
+        self.two_stage_kwargs = kwargs
+        return ["frame0", "frame1"], {"sampling_profile": "test-i2v"}
+
+    monkeypatch.setattr(
+        d.DiffusionBackend,
+        "_generate_ltx2_distilled_two_stage_video",
+        _fake_two_stage,
+    )
+
+    video, meta = backend.generate_video_with_metadata(
+        prompt = "make this image move",
+        input_images = [source],
+    )
+
+    assert video == ["frame0", "frame1"]
+    assert type(backend.two_stage_kwargs["pipe"]).__name__ == "LTX2ImageToVideoPipeline"
+    assert backend.two_stage_kwargs["base_call_kwargs"]["image"] is source
+    assert meta["task"] == "image_to_video"
+    assert meta["input_images"] == 1
+    assert meta["pipeline_class"] == "LTX2ImageToVideoPipeline"
+
+
+def test_generate_video_with_metadata_uses_wan_image_to_video_pipeline():
+    import core.inference.diffusion as d
+
+    backend = d.DiffusionBackend()
+
+    class WanImageToVideoPipeline:
+        def __init__(self):
+            self.last_kwargs = None
+
+        def __call__(self, *, image, last_image = None, **kwargs):
+            self.last_kwargs = {"image": image, "last_image": last_image, **kwargs}
+            return SimpleNamespace(frames = [["frame0", "frame1"]])
+
+    pipe = WanImageToVideoPipeline()
+    backend._pipe = pipe
+    backend._device = "cpu"
+    backend._repo_id = "Wan-AI/Wan2.2-I2V-A14B-Diffusers"
+    backend._family = d.detect_family("Wan-AI/Wan2.2-I2V-A14B-Diffusers")
+    first = object()
+    last = object()
+
+    video, meta = backend.generate_video_with_metadata(
+        prompt = "a camera move",
+        input_images = [first, last],
+    )
+
+    assert video == ["frame0", "frame1"]
+    assert pipe.last_kwargs["image"] is first
+    assert pipe.last_kwargs["last_image"] is last
+    assert meta["family"] == "wan2-2-i2v"
+    assert meta["task"] == "image_to_video"
+    assert meta["input_images"] == 2
+
+
+def test_pipeline_variant_preserves_pipeline_config(monkeypatch):
+    import sys
+    import types
+
+    import core.inference.diffusion as d
+
+    fake_diffusers = types.ModuleType("diffusers")
+
+    class TargetPipeline:
+        def __init__(
+            self,
+            tokenizer,
+            text_encoder,
+            vae,
+            scheduler,
+            transformer = None,
+            transformer_2 = None,
+            boundary_ratio = None,
+            expand_timesteps = False,
+        ):
+            self.kwargs = {
+                "tokenizer": tokenizer,
+                "text_encoder": text_encoder,
+                "vae": vae,
+                "scheduler": scheduler,
+                "transformer": transformer,
+                "transformer_2": transformer_2,
+                "boundary_ratio": boundary_ratio,
+                "expand_timesteps": expand_timesteps,
+            }
+
+    fake_diffusers.TargetPipeline = TargetPipeline
+    monkeypatch.setitem(sys.modules, "diffusers", fake_diffusers)
+
+    class SourcePipeline:
+        components = {
+            "tokenizer": object(),
+            "text_encoder": object(),
+            "vae": object(),
+            "scheduler": object(),
+            "transformer": object(),
+        }
+        config = {
+            "boundary_ratio": None,
+            "expand_timesteps": True,
+        }
+
+    variant = d.DiffusionBackend()._get_pipeline_variant_unlocked(
+        SourcePipeline(),
+        "TargetPipeline",
+    )
+
+    assert variant.kwargs["tokenizer"] is SourcePipeline.components["tokenizer"]
+    assert variant.kwargs["transformer"] is SourcePipeline.components["transformer"]
+    assert variant.kwargs["boundary_ratio"] is None
+    assert variant.kwargs["expand_timesteps"] is True
 
 
 @pytest.mark.parametrize(

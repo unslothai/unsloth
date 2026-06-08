@@ -26,8 +26,44 @@ export interface DiffusionFamily {
   image_input_mode?: "none" | "optional" | "required" | string;
   supports_image_input?: boolean;
   image_tasks?: string[];
+  video_tasks?: string[];
   default_image_strength?: number | null;
+  default_inpaint_strength?: number | null;
+  reference_presets?: DiffusionReferencePreset[];
+  reference_capabilities?: Record<string, DiffusionReferenceCapability>;
   supports_gguf_single_file: boolean;
+}
+
+export interface DiffusionReferencePreset {
+  id: string;
+  role: string;
+  label: string;
+  description: string;
+  task: string;
+  implementation: string;
+  support: string;
+  confidence: "low" | "medium" | "high" | string;
+  min_images: number;
+  max_images: number;
+  default_steps?: number | null;
+  default_guidance_scale?: number | null;
+  default_strength?: number | null;
+  default_call_kwargs?: Record<string, unknown>;
+  prompt_hint?: string | null;
+  limitations?: string[];
+  source?: string | null;
+}
+
+export interface DiffusionReferenceCapability {
+  supported: boolean;
+  role: string;
+  implementation: string;
+  support: string;
+  confidence: "low" | "medium" | "high" | string;
+  min_images: number;
+  max_images: number;
+  tasks: string[];
+  preset_ids: string[];
 }
 
 export interface DiffusionStatus {
@@ -41,6 +77,23 @@ export interface DiffusionStatus {
   gguf_filename: string | null;
   text_encoder_gguf_repo: string | null;
   text_encoder_gguf_filename: string | null;
+  controlnet: {
+    repo: string;
+    weight_name?: string | null;
+    model_class?: string | null;
+    pipeline_class?: string | null;
+    conditioning_scale?: number | null;
+    guidance_start?: number | null;
+    guidance_end?: number | null;
+  } | null;
+  upscaler: {
+    repo?: string | null;
+    weight_name?: string | null;
+    mode?: "pixel" | "diffusion" | string;
+    model_class?: string | null;
+    pipeline_class?: string | null;
+    scale?: number | null;
+  } | null;
   gguf_quantized_cpu_resident: boolean;
   gguf_pin_cpu_resident: boolean;
   offload_policy: DiffusionOffloadPolicy | null;
@@ -51,6 +104,13 @@ export interface DiffusionStatus {
   loaded_at: number | null;
   last_error: string | null;
   supported_families: DiffusionFamily[];
+  sampling_contract?: {
+    image_tasks?: string[];
+    video_tasks?: string[];
+    reference_presets?: DiffusionReferencePreset[];
+    reference_capabilities?: Record<string, DiffusionReferenceCapability>;
+    [key: string]: unknown;
+  } | null;
 }
 
 export type DiffusionOffloadPolicy =
@@ -67,6 +127,19 @@ export interface DiffusionLoadRequest {
   text_encoder_gguf_repo?: string;
   text_encoder_gguf_filename?: string;
   text_encoder_gguf_component?: "text_encoder" | "text_encoder_2" | "text_encoder_3";
+  controlnet_repo?: string;
+  controlnet_weight_name?: string;
+  controlnet_model_class?: string;
+  controlnet_pipeline_class?: string;
+  controlnet_conditioning_scale?: number;
+  control_guidance_start?: number;
+  control_guidance_end?: number;
+  upscaler_repo?: string;
+  upscaler_weight_name?: string;
+  upscaler_mode?: "pixel" | "super_resolution" | "diffusion";
+  upscaler_model_class?: string;
+  upscaler_pipeline_class?: string;
+  upscaler_scale?: number;
   family?: string;
   hf_token?: string;
   enable_model_cpu_offload?: boolean;
@@ -80,9 +153,12 @@ export interface DiffusionLoadRequest {
   parameters?: {
     width?: number;
     height?: number;
+    num_frames?: number;
+    frame_rate?: number;
     batch_size?: number;
     num_images?: number;
     guidance_scale?: number;
+    enhance?: DiffusionGenerateRequest["enhance"];
   };
   gguf_quantized_cpu_resident?: boolean | null;
   gguf_pin_cpu_resident?: boolean | null;
@@ -91,14 +167,53 @@ export interface DiffusionLoadRequest {
 export interface DiffusionGenerateRequest {
   prompt: string;
   negative_prompt?: string;
+  inputs?: Array<{
+    id?: string;
+    type: "text" | "image" | "audio" | "video";
+    role?: string;
+    text?: string;
+    mime?: string;
+    b64?: string;
+  }>;
   task?: "auto" | "text_to_image" | "image_to_image" | "edit" | "inpaint";
   image_b64?: string;
   images_b64?: string[];
   mask_b64?: string;
   masks_b64?: string[];
+  control_image_b64?: string;
+  control_images_b64?: string[];
   num_inference_steps?: number;
   guidance_scale?: number;
   strength?: number;
+  controlnet_conditioning_scale?: number;
+  control_guidance_start?: number;
+  control_guidance_end?: number;
+  enhance?: {
+    mode?: "off" | "upscale" | "creative_upscale" | "large_tiled";
+    upscale?: {
+      enabled?: boolean;
+      mode?: "pixel" | "super_resolution" | "diffusion";
+      repo_id?: string;
+      weight_name?: string;
+      model_class?: string;
+      pipeline_class?: string;
+      scale?: number;
+      method?: "nearest" | "bilinear" | "bicubic" | "lanczos";
+      tile_size?: number;
+      tile_overlap?: number;
+      strength?: number;
+      num_inference_steps?: number;
+      guidance_scale?: number;
+      prompt?: string;
+      negative_prompt?: string;
+    };
+    tiling?: {
+      enabled?: "auto" | "on" | "off";
+      tile_size?: number;
+      overlap?: number;
+      vae_decode?: "auto" | "on" | "off";
+    };
+  };
   width?: number;
   height?: number;
   // bigint when the seed exceeds Number.MAX_SAFE_INTEGER, otherwise
@@ -143,6 +258,16 @@ export interface DiffusionGenerateResponse {
 export interface DiffusionVideoGenerateRequest {
   prompt: string;
   negative_prompt?: string;
+  inputs?: Array<{
+    id?: string;
+    type: "text" | "image" | "audio" | "video";
+    role?: string;
+    text?: string;
+    mime?: string;
+    b64?: string;
+  }>;
+  image_b64?: string;
+  images_b64?: string[];
   num_inference_steps?: number;
   guidance_scale?: number;
   guidance_scale_2?: number;

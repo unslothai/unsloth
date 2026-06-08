@@ -59,14 +59,25 @@ class DiffusionComponentSpec(BaseModel):
 
 
 class DiffusionAdapterSpec(BaseModel):
-    type: Literal["lora"] = "lora"
+    type: Literal["lora", "controlnet"] = "lora"
     repo_id: Optional[str] = Field(None, max_length = 1024)
     weight_name: Optional[str] = Field(None, max_length = 512)
     adapter_name: Optional[str] = Field(None, max_length = 128)
     scale: Optional[float] = Field(None, ge = 0.0, le = 10.0)
     fuse: bool = False
+    enabled: bool = True
+    start: Optional[float] = Field(None, ge = 0.0, le = 1.0)
+    end: Optional[float] = Field(None, ge = 0.0, le = 1.0)
+    model_class: Optional[str] = Field(None, max_length = 128)
+    pipeline_class: Optional[str] = Field(None, max_length = 128)
 
-    @field_validator("repo_id", "weight_name", "adapter_name")
+    @field_validator(
+        "repo_id",
+        "weight_name",
+        "adapter_name",
+        "model_class",
+        "pipeline_class",
+    )
     @classmethod
     def _no_control_chars(cls, v, info):
         return _no_control_chars(v, info.field_name)
@@ -126,6 +137,60 @@ class DiffusionRuntimeSpec(BaseModel):
     ] = None
 
 
+class DiffusionTileSpec(BaseModel):
+    enabled: Optional[Literal["auto", "on", "off"]] = Field(
+        None,
+        description = "Tile policy for large image enhancement stages.",
+    )
+    tile_size: Optional[int] = Field(None, ge = 128, le = 2048)
+    overlap: Optional[int] = Field(None, ge = 0, le = 512)
+    vae_decode: Optional[Literal["auto", "on", "off"]] = Field(
+        None,
+        description = "Enable Diffusers VAE tiling/slicing when available.",
+    )
+
+
+class DiffusionUpscaleSpec(BaseModel):
+    enabled: bool = False
+    mode: Literal["pixel", "super_resolution", "diffusion"] = "pixel"
+    repo_id: Optional[str] = Field(None, max_length = 1024)
+    weight_name: Optional[str] = Field(None, max_length = 512)
+    model_class: Optional[str] = Field(None, max_length = 128)
+    pipeline_class: Optional[str] = Field(None, max_length = 128)
+    scale: float = Field(2.0, ge = 1.0, le = 8.0)
+    method: Literal["nearest", "bilinear", "bicubic", "lanczos"] = "lanczos"
+    tile_size: Optional[int] = Field(None, ge = 128, le = 2048)
+    tile_overlap: Optional[int] = Field(None, ge = 0, le = 512)
+    strength: Optional[float] = Field(None, ge = 0.0, le = 1.0)
+    num_inference_steps: Optional[int] = Field(None, ge = 1, le = 200)
+    guidance_scale: Optional[float] = Field(None, ge = 0.0, le = 20.0)
+    prompt: Optional[str] = Field(None, max_length = 4000)
+    negative_prompt: Optional[str] = Field(None, max_length = 4000)
+
+    @field_validator(
+        "repo_id",
+        "weight_name",
+        "model_class",
+        "pipeline_class",
+        "prompt",
+        "negative_prompt",
+    )
+    @classmethod
+    def _no_control_chars(cls, v, info):
+        return _no_control_chars(v, info.field_name)
+
+    @field_validator("repo_id", "weight_name")
+    @classmethod
+    def _no_embedded_hf_tokens(cls, v, info):
+        return _reject_embedded_hf_token(v, info.field_name)
+
+
+class DiffusionEnhanceSpec(BaseModel):
+    mode: Literal["off", "upscale", "creative_upscale", "large_tiled"] = "off"
+    upscale: Optional[DiffusionUpscaleSpec] = None
+    tiling: Optional[DiffusionTileSpec] = None
+
+
 class DiffusionInputSpec(BaseModel):
     id: Optional[str] = Field(None, max_length = 128)
     type: Literal["text", "image", "audio", "video"] = "image"
@@ -146,9 +211,13 @@ class DiffusionImageParametersSpec(BaseModel):
     num_inference_steps: Optional[int] = Field(None, ge = 1, le = 200)
     guidance_scale: Optional[float] = Field(None, ge = 0.0, le = 20.0)
     strength: Optional[float] = Field(None, ge = 0.0, le = 1.0)
+    controlnet_conditioning_scale: Optional[float] = Field(None, ge = 0.0, le = 10.0)
+    control_guidance_start: Optional[float] = Field(None, ge = 0.0, le = 1.0)
+    control_guidance_end: Optional[float] = Field(None, ge = 0.0, le = 1.0)
     seed: Optional[int] = Field(None, ge = -(2**63), le = (2**64) - 1)
     batch_size: Optional[int] = Field(None, ge = 1, le = 16)
     num_outputs: Optional[int] = Field(None, ge = 1, le = 16)
+    enhance: Optional[DiffusionEnhanceSpec] = None
 
     @field_validator("width", "height")
     @classmethod
@@ -2032,15 +2101,100 @@ class DiffusionLoadRequest(BaseModel):
             "Rejected for GGUF-backed pipelines."
         ),
     )
+    controlnet_repo: Optional[str] = Field(
+        None,
+        max_length = 1024,
+        description = (
+            "Optional HF repo id or leased local directory for a Diffusers "
+            "ControlNet adapter. Studio creates a ControlNet pipeline variant "
+            "that shares the loaded base pipeline components."
+        ),
+    )
+    controlnet_repo_native_path_lease: Optional[str] = Field(
+        None,
+        description = "Frontend-visible signed native path grant for a local controlnet_repo",
+    )
+    controlnet_weight_name: Optional[str] = Field(
+        None,
+        max_length = 512,
+        description = "Optional ControlNet weight filename inside controlnet_repo",
+    )
+    controlnet_model_class: Optional[str] = Field(
+        None,
+        max_length = 128,
+        description = "Optional Diffusers ControlNet model class override.",
+    )
+    controlnet_pipeline_class: Optional[str] = Field(
+        None,
+        max_length = 128,
+        description = "Optional Diffusers ControlNet pipeline class override.",
+    )
+    controlnet_conditioning_scale: Optional[float] = Field(
+        None,
+        ge = 0.0,
+        le = 10.0,
+        description = "Default ControlNet strength.",
+    )
+    control_guidance_start: Optional[float] = Field(
+        None,
+        ge = 0.0,
+        le = 1.0,
+        description = "Default fraction of denoising where ControlNet starts.",
+    )
+    control_guidance_end: Optional[float] = Field(
+        None,
+        ge = 0.0,
+        le = 1.0,
+        description = "Default fraction of denoising where ControlNet ends.",
+    )
+    upscaler_repo: Optional[str] = Field(
+        None,
+        max_length = 1024,
+        description = (
+            "Optional Diffusers upscaler pipeline repo for creative upscale. "
+            "Pixel upscaling does not require loading a model."
+        ),
+    )
+    upscaler_repo_native_path_lease: Optional[str] = Field(
+        None,
+        description = "Frontend-visible signed native path grant for a local upscaler_repo",
+    )
+    upscaler_weight_name: Optional[str] = Field(
+        None,
+        max_length = 512,
+        description = "Optional upscaler weight filename inside upscaler_repo",
+    )
+    upscaler_mode: Literal["pixel", "super_resolution", "diffusion"] = Field(
+        "pixel",
+        description = (
+            "Loaded upscaler type. pixel uses built-in tiled resizing; "
+            "super_resolution loads a Transformers image-to-image postprocess "
+            "upscaler; diffusion loads a second Diffusers pipeline."
+        ),
+    )
+    upscaler_model_class: Optional[str] = Field(
+        None,
+        max_length = 128,
+        description = "Optional non-pipeline upscaler class override.",
+    )
+    upscaler_pipeline_class: Optional[str] = Field(
+        None,
+        max_length = 128,
+        description = "Optional Diffusers upscaler pipeline class override.",
+    )
+    upscaler_scale: Optional[float] = Field(
+        None,
+        ge = 1.0,
+        le = 8.0,
+        description = "Default upscaler scale factor.",
+    )
     family: Optional[str] = Field(
         None,
         max_length = 64,
         description = (
-            "Force pipeline family: flux.2-klein | flux.2 | flux.1 | "
-            "qwen-image | qwen-image-2512 | qwen-image-edit | "
-            "qwen-image-edit-2509 | qwen-image-edit-2511 | "
-            "qwen-image-layered | z-image | z-image-turbo | "
-            "stable-diffusion-3 | stable-diffusion-xl"
+            "Force pipeline family when auto-detection is ambiguous. "
+            "Supported values are exposed by the image/video capabilities "
+            "endpoints."
         ),
     )
     hf_token: Optional[str] = Field(
@@ -2130,6 +2284,15 @@ class DiffusionLoadRequest(BaseModel):
         "lora_repo",
         "lora_weight_name",
         "lora_adapter_name",
+        "controlnet_repo",
+        "controlnet_weight_name",
+        "controlnet_model_class",
+        "controlnet_pipeline_class",
+        "upscaler_repo",
+        "upscaler_weight_name",
+        "upscaler_mode",
+        "upscaler_model_class",
+        "upscaler_pipeline_class",
         "family",
         "safetensors_quantization",
     )
@@ -2152,6 +2315,10 @@ class DiffusionLoadRequest(BaseModel):
         "lora_repo",
         "lora_weight_name",
         "lora_adapter_name",
+        "controlnet_repo",
+        "controlnet_weight_name",
+        "upscaler_repo",
+        "upscaler_weight_name",
     )
     @classmethod
     def _no_embedded_hf_tokens(cls, v, info):
@@ -2243,6 +2410,10 @@ class DiffusionGenerateRequest(BaseModel):
         None,
         description = "Structured output preferences for the v2 image contract",
     )
+    enhance: Optional[DiffusionEnhanceSpec] = Field(
+        None,
+        description = "Optional image enhancement stages: upscale, creative upscale, or large tiled processing.",
+    )
     options: Optional[Dict[str, Any]] = Field(
         None,
         description = "Forward-compatible model-specific image generation options",
@@ -2281,9 +2452,23 @@ class DiffusionGenerateRequest(BaseModel):
         max_length = 8,
         description = "Optional base64 mask images. Data URLs are accepted.",
     )
+    control_image_b64: Optional[str] = Field(
+        None,
+        max_length = 50_000_000,
+        description = "Optional base64 ControlNet conditioning image.",
+    )
+    control_images_b64: Optional[List[str]] = Field(
+        None,
+        min_length = 1,
+        max_length = 8,
+        description = "Optional base64 ControlNet conditioning images.",
+    )
     num_inference_steps: Optional[int] = Field(None, ge = 1, le = 200)
     guidance_scale: Optional[float] = Field(None, ge = 0.0, le = 20.0)
     strength: Optional[float] = Field(None, ge = 0.0, le = 1.0)
+    controlnet_conditioning_scale: Optional[float] = Field(None, ge = 0.0, le = 10.0)
+    control_guidance_start: Optional[float] = Field(None, ge = 0.0, le = 1.0)
+    control_guidance_end: Optional[float] = Field(None, ge = 0.0, le = 1.0)
     width: Optional[int] = Field(None, ge = 64, le = 2048)
     height: Optional[int] = Field(None, ge = 64, le = 2048)
     seed: Optional[int] = Field(
@@ -2308,6 +2493,44 @@ class DiffusionGenerateRequest(BaseModel):
             raise ValueError("Pass either image_b64 or images_b64, not both")
         if self.mask_b64 is not None and self.masks_b64 is not None:
             raise ValueError("Pass either mask_b64 or masks_b64, not both")
+        if self.control_image_b64 is not None and self.control_images_b64 is not None:
+            raise ValueError(
+                "Pass either control_image_b64 or control_images_b64, not both"
+            )
+        image_roles = {
+            item.role
+            for item in (self.inputs or [])
+            if item.type == "image" and item.b64
+        }
+        structured_native_image_roles = image_roles.difference(
+            {
+                "output",
+                "generated",
+                "mask",
+                "control",
+                "control_image",
+                "controlnet",
+            }
+        )
+        if structured_native_image_roles and (
+            self.image_b64 is not None or self.images_b64 is not None
+        ):
+            raise ValueError(
+                "Pass either structured image inputs or image_b64/images_b64, not both"
+            )
+        if "mask" in image_roles and (
+            self.mask_b64 is not None or self.masks_b64 is not None
+        ):
+            raise ValueError(
+                "Pass either structured mask inputs or mask_b64/masks_b64, not both"
+            )
+        if image_roles.intersection({"control", "control_image", "controlnet"}) and (
+            self.control_image_b64 is not None
+            or self.control_images_b64 is not None
+        ):
+            raise ValueError(
+                "Pass either structured control inputs or control_image_b64/control_images_b64, not both"
+            )
         has_prompt_input = bool(
             self.inputs
             and any(
@@ -2362,6 +2585,17 @@ class DiffusionVideoGenerateRequest(BaseModel):
     api_version: Optional[str] = Field(None, max_length = 32)
     prompt: Optional[str] = Field(None, min_length = 1, max_length = 4000)
     negative_prompt: Optional[str] = Field(None, max_length = 4000)
+    image_b64: Optional[str] = Field(
+        None,
+        max_length = 50_000_000,
+        description = "Initial image/frame for image-to-video generation",
+    )
+    images_b64: Optional[List[str]] = Field(
+        None,
+        min_length = 1,
+        max_length = 8,
+        description = "Initial/reference images for image-to-video generation",
+    )
     inputs: Optional[List[DiffusionInputSpec]] = Field(
         None,
         min_length = 1,
@@ -2421,6 +2655,8 @@ class DiffusionVideoGenerateRequest(BaseModel):
         )
         if not (self.prompt and self.prompt.strip()) and not has_prompt_input:
             raise ValueError("prompt is required")
+        if self.image_b64 is not None and self.images_b64 is not None:
+            raise ValueError("Pass either image_b64 or images_b64, not both")
         return self
 
 

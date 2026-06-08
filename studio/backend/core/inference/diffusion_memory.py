@@ -161,6 +161,11 @@ class DiffusionWorkloadEstimate:
     batch_size: int = 1
     guidance_scale: Optional[float] = None
     requires_image_input: bool = False
+    image_input_mode: str = "none"
+    image_tasks: tuple[str, ...] = ("text_to_image",)
+    controlnet_enabled: bool = False
+    upscaler_enabled: bool = False
+    tiled_execution_enabled: bool = False
 
     def as_public_dict(self) -> dict[str, Any]:
         return {
@@ -172,6 +177,11 @@ class DiffusionWorkloadEstimate:
             "batch_size": self.batch_size,
             "guidance_scale": self.guidance_scale,
             "requires_image_input": self.requires_image_input,
+            "image_input_mode": self.image_input_mode,
+            "image_tasks": list(self.image_tasks),
+            "controlnet_enabled": self.controlnet_enabled,
+            "upscaler_enabled": self.upscaler_enabled,
+            "tiled_execution_enabled": self.tiled_execution_enabled,
         }
 
 
@@ -738,6 +748,8 @@ def estimate_runtime_memory_mib(workload: DiffusionWorkloadEstimate) -> int:
     multiplier = 1.0
     if "edit" in family or "layered" in family or workload.requires_image_input:
         multiplier *= 1.35
+    if workload.controlnet_enabled:
+        multiplier *= 1.25
     if "ltx" in family or workload.media_kind == "video":
         multiplier *= 1.25
     if (

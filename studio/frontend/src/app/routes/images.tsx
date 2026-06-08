@@ -15,7 +15,7 @@ const ImagesPage = lazy(() =>
 export const Route = createRoute({
   getParentRoute: () => rootRoute,
   path: "/images",
-  staticData: { title: "Images" },
+  staticData: { title: "Generation" },
   beforeLoad: () => requireAuth(),
   component: ImagesPage,
 });

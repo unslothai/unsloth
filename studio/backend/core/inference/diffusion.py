@@ -44,7 +44,7 @@ import threading
 import time
 import types
 import warnings
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Optional
 
@@ -62,6 +62,12 @@ from .diffusion_device import (
     DiffusionDeviceTarget,
     diffusion_device_target_from_torch_device,
     resolve_diffusion_device_target,
+)
+from .diffusion_enhance import (
+    ImageEnhancePlan,
+    apply_image_enhancement,
+    apply_vae_tiling_policy,
+    build_image_enhance_plan,
 )
 from .diffusion_memory import (
     DIFFUSION_MEMORY_MODE_AUTO,
@@ -195,7 +201,9 @@ class DiffusionFamily:
     requires_image_input: bool = False
     image_input_mode: str = "none"
     image_task_pipelines: dict[str, str] = field(default_factory = dict)
+    video_task_pipelines: dict[str, str] = field(default_factory = dict)
     default_image_strength: Optional[float] = None
+    default_inpaint_strength: Optional[float] = None
     default_call_kwargs: dict[str, Any] = field(default_factory = dict)
     supports_gguf_single_file: bool = True
     # True for transformers whose activations overflow the float16 range and
@@ -226,6 +234,48 @@ class DiffusionVariant:
     default_steps: Optional[int] = None
     default_guidance_scale: Optional[float] = None
     default_call_kwargs: dict[str, Any] = field(default_factory = dict)
+
+
+@dataclass(frozen = True)
+class DiffusionReferencePreset:
+    id: str
+    role: str
+    label: str
+    description: str
+    task: str = "auto"
+    implementation: str = "native"
+    support: str = "native"
+    confidence: str = "medium"
+    min_images: int = 1
+    max_images: int = 1
+    default_steps: Optional[int] = None
+    default_guidance_scale: Optional[float] = None
+    default_strength: Optional[float] = None
+    default_call_kwargs: dict[str, Any] = field(default_factory = dict)
+    prompt_hint: Optional[str] = None
+    limitations: tuple[str, ...] = field(default_factory = tuple)
+    source: Optional[str] = None
+
+    def as_public_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "role": self.role,
+            "label": self.label,
+            "description": self.description,
+            "task": self.task,
+            "implementation": self.implementation,
+            "support": self.support,
+            "confidence": self.confidence,
+            "min_images": self.min_images,
+            "max_images": self.max_images,
+            "default_steps": self.default_steps,
+            "default_guidance_scale": self.default_guidance_scale,
+            "default_strength": self.default_strength,
+            "default_call_kwargs": dict(self.default_call_kwargs),
+            "prompt_hint": self.prompt_hint,
+            "limitations": list(self.limitations),
+            "source": self.source,
+        }
 
 
 @dataclass(frozen = True)
@@ -280,8 +330,10 @@ class DiffusionSamplingContract:
     requires_image_input: bool
     image_input_mode: str
     image_tasks: tuple[str, ...]
+    video_tasks: tuple[str, ...]
     has_default_negative_prompt: bool
     default_call_kwargs: dict[str, Any]
+    reference_presets: tuple[DiffusionReferencePreset, ...] = field(default_factory = tuple)
 
     def as_public_dict(self) -> dict[str, Any]:
         return {
@@ -306,8 +358,15 @@ class DiffusionSamplingContract:
             "requires_image_input": self.requires_image_input,
             "image_input_mode": self.image_input_mode,
             "image_tasks": list(self.image_tasks),
+            "video_tasks": list(self.video_tasks),
             "has_default_negative_prompt": self.has_default_negative_prompt,
             "default_call_kwargs": dict(self.default_call_kwargs),
+            "reference_presets": [
+                preset.as_public_dict() for preset in self.reference_presets
+            ],
+            "reference_capabilities": _reference_capabilities_from_presets(
+                self.reference_presets
+            ),
         }
 
 
@@ -326,6 +385,48 @@ class DiffusionLoraState:
             "adapter_name": self.adapter_name,
             "scale": self.scale,
             "fused": self.fused,
+        }
+
+
+@dataclass(frozen = True)
+class DiffusionControlNetState:
+    repo: str
+    weight_name: Optional[str]
+    model_class: Optional[str]
+    pipeline_class: Optional[str]
+    conditioning_scale: float
+    guidance_start: float
+    guidance_end: float
+
+    def as_public_dict(self) -> dict[str, Any]:
+        return {
+            "repo": _display_repo_id(self.repo),
+            "weight_name": self.weight_name,
+            "model_class": self.model_class,
+            "pipeline_class": self.pipeline_class,
+            "conditioning_scale": self.conditioning_scale,
+            "guidance_start": self.guidance_start,
+            "guidance_end": self.guidance_end,
+        }
+
+
+@dataclass(frozen = True)
+class DiffusionUpscalerState:
+    repo: Optional[str]
+    weight_name: Optional[str]
+    mode: str
+    model_class: Optional[str]
+    pipeline_class: Optional[str]
+    scale: float
+
+    def as_public_dict(self) -> dict[str, Any]:
+        return {
+            "repo": _display_repo_id(self.repo),
+            "weight_name": self.weight_name,
+            "mode": self.mode,
+            "model_class": self.model_class,
+            "pipeline_class": self.pipeline_class,
+            "scale": self.scale,
         }
 
 
@@ -373,6 +474,10 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         default_steps = 4,
         default_guidance_scale = 1.0,
         image_input_mode = "optional",
+        image_task_pipelines = {
+            "inpaint": "Flux2KleinInpaintPipeline",
+        },
+        default_inpaint_strength = 0.8,
         aliases = ("flux2-klein", "flux-2-klein", "flux.2.klein"),
     ),
     DiffusionFamily(
@@ -394,6 +499,10 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         default_guidance_scale = 2.5,
         requires_image_input = True,
         image_input_mode = "required",
+        image_task_pipelines = {
+            "inpaint": "FluxKontextInpaintPipeline",
+        },
+        default_inpaint_strength = 1.0,
         aliases = (
             "flux1-kontext",
             "flux1-kontext-dev",
@@ -401,6 +510,30 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             "flux-1-kontext-dev",
             "flux.1.kontext",
             "flux.1.kontext.dev",
+        ),
+    ),
+    DiffusionFamily(
+        name = "flux.1-fill",
+        pipeline_class = "FluxFillPipeline",
+        transformer_class = "FluxTransformer2DModel",
+        base_repo = "black-forest-labs/FLUX.1-Fill-dev",
+        default_steps = 50,
+        default_guidance_scale = 30.0,
+        requires_image_input = True,
+        image_input_mode = "required",
+        image_task_pipelines = {
+            "inpaint": "FluxFillPipeline",
+        },
+        default_inpaint_strength = 1.0,
+        aliases = (
+            "flux1-fill",
+            "flux1-fill-dev",
+            "flux-1-fill",
+            "flux-1-fill-dev",
+            "flux.1.fill",
+            "flux.1.fill.dev",
+            "flux-fill",
+            "flux-fill-dev",
         ),
     ),
     DiffusionFamily(
@@ -437,8 +570,10 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         default_negative_prompt = "低分辨率，低画质，肢体畸形，手指畸形，画面过饱和，蜡像感，人脸无细节，过度光滑，画面具有AI感。构图混乱。文字模糊，扭曲。",
         image_task_pipelines = {
             "image_to_image": "QwenImageImg2ImgPipeline",
+            "inpaint": "QwenImageInpaintPipeline",
         },
         default_image_strength = 0.6,
+        default_inpaint_strength = 0.85,
         fp16_incompatible = True,
         aliases = ("qwenimage2512", "qwen_image_2512", "qwen-image-2512"),
     ),
@@ -454,6 +589,10 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         default_call_kwargs = {"guidance_scale": 1.0},
         requires_image_input = True,
         image_input_mode = "required",
+        image_task_pipelines = {
+            "inpaint": "QwenImageEditInpaintPipeline",
+        },
+        default_inpaint_strength = 1.0,
         fp16_incompatible = True,
         aliases = ("qwenimageedit2511", "qwen_image_edit_2511", "qwen-image-edit-2511"),
     ),
@@ -469,6 +608,10 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         default_call_kwargs = {"guidance_scale": 1.0},
         requires_image_input = True,
         image_input_mode = "required",
+        image_task_pipelines = {
+            "inpaint": "QwenImageEditInpaintPipeline",
+        },
+        default_inpaint_strength = 1.0,
         fp16_incompatible = True,
         aliases = ("qwenimageedit2509", "qwen_image_edit_2509", "qwen-image-edit-2509"),
     ),
@@ -483,6 +626,10 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         default_negative_prompt = " ",
         requires_image_input = True,
         image_input_mode = "required",
+        image_task_pipelines = {
+            "inpaint": "QwenImageEditInpaintPipeline",
+        },
+        default_inpaint_strength = 1.0,
         fp16_incompatible = True,
         aliases = ("qwenimageedit", "qwen_image_edit", "qwen-image-edit"),
     ),
@@ -518,8 +665,10 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         default_negative_prompt = " ",
         image_task_pipelines = {
             "image_to_image": "QwenImageImg2ImgPipeline",
+            "inpaint": "QwenImageInpaintPipeline",
         },
         default_image_strength = 0.6,
+        default_inpaint_strength = 0.85,
         fp16_incompatible = True,
         aliases = ("qwenimage", "qwen_image"),
     ),
@@ -535,6 +684,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             "inpaint": "ZImageInpaintPipeline",
         },
         default_image_strength = 0.6,
+        default_inpaint_strength = 1.0,
         fp16_incompatible = True,
         aliases = ("zimage-turbo", "z_image_turbo", "z-image-turbo"),
     ),
@@ -551,6 +701,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             "inpaint": "ZImageInpaintPipeline",
         },
         default_image_strength = 0.6,
+        default_inpaint_strength = 1.0,
         fp16_incompatible = True,
         aliases = ("zimage", "z_image", "z-image"),
     ),
@@ -615,6 +766,8 @@ _DIFFUSION_IMAGE_TASKS = {
     _DIFFUSION_IMAGE_TASK_EDIT,
     _DIFFUSION_IMAGE_TASK_INPAINT,
 }
+_DIFFUSION_VIDEO_TASK_TEXT = "text_to_video"
+_DIFFUSION_VIDEO_TASK_IMAGE = "image_to_video"
 
 
 def _family_supports_image_input(fam: Optional[DiffusionFamily]) -> bool:
@@ -637,7 +790,17 @@ def _family_image_tasks(fam: Optional[DiffusionFamily]) -> tuple[str, ...]:
             tasks.append(_DIFFUSION_IMAGE_TASK_EDIT)
         else:
             tasks.append(_DIFFUSION_IMAGE_TASK_IMAGE)
+        if fam.name in {"flux.2", "flux.2-klein"}:
+            tasks.append(_DIFFUSION_IMAGE_TASK_EDIT)
     tasks.extend(fam.image_task_pipelines.keys())
+    return tuple(dict.fromkeys(tasks))
+
+
+def _family_video_tasks(fam: Optional[DiffusionFamily]) -> tuple[str, ...]:
+    if fam is None or fam.media_kind != "video":
+        return (_DIFFUSION_VIDEO_TASK_TEXT,)
+    tasks: list[str] = [_DIFFUSION_VIDEO_TASK_TEXT]
+    tasks.extend(fam.video_task_pipelines.keys())
     return tuple(dict.fromkeys(tasks))
 
 
@@ -659,6 +822,9 @@ _FULL_REPO_FAMILIES: tuple[DiffusionFamily, ...] = (
         default_height = 1024,
         default_num_frames = 121,
         default_frame_rate = 24.0,
+        video_task_pipelines = {
+            "image_to_video": "LTX2ImageToVideoPipeline",
+        },
         default_call_kwargs = {
             # Lightricks/LTX-2 LTX_2_3_PARAMS for the single-stage
             # base/dev path. The separate high-quality repo pipeline is
@@ -704,6 +870,9 @@ _FULL_REPO_FAMILIES: tuple[DiffusionFamily, ...] = (
         default_height = 1024,
         default_num_frames = 121,
         default_frame_rate = 24.0,
+        video_task_pipelines = {
+            "image_to_video": "LTX2ImageToVideoPipeline",
+        },
         supports_gguf_single_file = True,
         aliases = (
             "ltx2-3-distilled",
@@ -721,8 +890,8 @@ _FULL_REPO_FAMILIES: tuple[DiffusionFamily, ...] = (
         transformer_class = "WanTransformer3DModel",
         base_repo = "Wan-AI/Wan2.2-T2V-A14B-Diffusers",
         media_kind = "video",
-        default_steps = 40,
-        default_guidance_scale = 4.0,
+        default_steps = 20,
+        default_guidance_scale = 3.5,
         default_width = 1280,
         default_height = 720,
         default_num_frames = 81,
@@ -737,6 +906,56 @@ _FULL_REPO_FAMILIES: tuple[DiffusionFamily, ...] = (
             "wan-2.2",
             "wan2-2-t2v",
             "wan2.2-t2v",
+        ),
+    ),
+    DiffusionFamily(
+        name = "wan2-2-i2v",
+        pipeline_class = "WanImageToVideoPipeline",
+        transformer_class = "WanTransformer3DModel",
+        base_repo = "Wan-AI/Wan2.2-I2V-A14B-Diffusers",
+        media_kind = "video",
+        default_steps = 20,
+        default_guidance_scale = 3.5,
+        default_width = 1280,
+        default_height = 720,
+        default_num_frames = 81,
+        default_frame_rate = 16.0,
+        video_task_pipelines = {
+            "image_to_video": "WanImageToVideoPipeline",
+        },
+        supports_gguf_single_file = False,
+        aliases = (
+            "wan2-2-i2v",
+            "wan2.2-i2v",
+            "wan-2-2-i2v",
+            "wan-2.2-i2v",
+            "wan2-2-i2v-a14b",
+            "wan2.2-i2v-a14b",
+        ),
+    ),
+    DiffusionFamily(
+        name = "wan2-2-ti2v-5b",
+        pipeline_class = "WanPipeline",
+        transformer_class = "WanTransformer3DModel",
+        base_repo = "Wan-AI/Wan2.2-TI2V-5B-Diffusers",
+        media_kind = "video",
+        default_steps = 20,
+        default_guidance_scale = 3.5,
+        default_width = 1280,
+        default_height = 720,
+        default_num_frames = 121,
+        default_frame_rate = 24.0,
+        video_task_pipelines = {
+            "image_to_video": "WanImageToVideoPipeline",
+        },
+        supports_gguf_single_file = False,
+        aliases = (
+            "wan2-2-ti2v",
+            "wan2.2-ti2v",
+            "wan-2-2-ti2v",
+            "wan-2.2-ti2v",
+            "wan2-2-ti2v-5b",
+            "wan2.2-ti2v-5b",
         ),
     ),
     DiffusionFamily(
@@ -1257,6 +1476,403 @@ _DIFFUSION_VARIANTS_BY_FAMILY: dict[str, tuple[DiffusionVariant, ...]] = {
 _DIFFUSION_VARIANT_BY_FAMILY_AND_ID: dict[tuple[str, str], DiffusionVariant] = {
     (variant.family, variant.variant): variant for variant in _DIFFUSION_VARIANTS
 }
+
+_REFERENCE_SOURCE_FLUX2 = "https://huggingface.co/black-forest-labs/FLUX.2-dev"
+_REFERENCE_SOURCE_FLUX2_KLEIN = "https://huggingface.co/black-forest-labs/FLUX.2-klein-4B"
+_REFERENCE_SOURCE_FLUX1_KONTEXT = "https://huggingface.co/black-forest-labs/FLUX.1-Kontext-dev"
+_REFERENCE_SOURCE_QWEN_EDIT = "https://huggingface.co/Qwen/Qwen-Image-Edit"
+_REFERENCE_SOURCE_QWEN_EDIT_2509 = "https://huggingface.co/Qwen/Qwen-Image-Edit-2509"
+_REFERENCE_SOURCE_QWEN_EDIT_2511 = "https://huggingface.co/Qwen/Qwen-Image-Edit-2511"
+_REFERENCE_SOURCE_QWEN_IMAGE = "https://huggingface.co/Qwen/Qwen-Image"
+_REFERENCE_SOURCE_QWEN_LAYERED = "https://huggingface.co/Qwen/Qwen-Image-Layered"
+_REFERENCE_SOURCE_Z_IMAGE = "https://huggingface.co/Tongyi-MAI/Z-Image"
+
+
+def _preset(
+    suffix: str,
+    *,
+    role: str,
+    label: str,
+    description: str,
+    task: str,
+    confidence: str,
+    max_images: int = 1,
+    default_steps: Optional[int] = None,
+    default_guidance_scale: Optional[float] = None,
+    default_strength: Optional[float] = None,
+    default_call_kwargs: Optional[dict[str, Any]] = None,
+    prompt_hint: Optional[str] = None,
+    limitations: tuple[str, ...] = (),
+    source: Optional[str] = None,
+) -> DiffusionReferencePreset:
+    return DiffusionReferencePreset(
+        id = suffix,
+        role = role,
+        label = label,
+        description = description,
+        task = task,
+        confidence = confidence,
+        max_images = max_images,
+        default_steps = default_steps,
+        default_guidance_scale = default_guidance_scale,
+        default_strength = default_strength,
+        default_call_kwargs = default_call_kwargs or {},
+        prompt_hint = prompt_hint,
+        limitations = limitations,
+        source = source,
+    )
+
+
+_FLUX_NATIVE_REFERENCE_PRESETS: tuple[DiffusionReferencePreset, ...] = (
+    _preset(
+        "native-style-reference",
+        role = "style",
+        label = "Style reference",
+        description = "Use uploaded image(s) as visual style or aesthetic references.",
+        task = "edit",
+        confidence = "high",
+        max_images = 8,
+        prompt_hint = "Describe the new subject and say to use the reference image only for visual style.",
+    ),
+    _preset(
+        "native-object-reference",
+        role = "object_identity",
+        label = "Object identity",
+        description = "Preserve an object/product/design from one or more references.",
+        task = "edit",
+        confidence = "high",
+        max_images = 8,
+        prompt_hint = "Name the object from the reference and describe the new scene or product shot.",
+    ),
+    _preset(
+        "native-person-reference",
+        role = "person_identity",
+        label = "Person identity",
+        description = "Preserve a character/person reference without training an identity adapter.",
+        task = "edit",
+        confidence = "medium",
+        max_images = 8,
+        prompt_hint = "Use clear portrait references and explicitly ask to preserve facial identity.",
+        limitations = (
+            "Identity preservation is native in-context conditioning, not a face-ID adapter.",
+        ),
+    ),
+    _preset(
+        "native-edit-source",
+        role = "edit_source",
+        label = "Edit source",
+        description = "Edit or combine source image(s) with text instructions.",
+        task = "edit",
+        confidence = "high",
+        max_images = 8,
+    ),
+)
+
+_FLUX2_KLEIN_DISTILLED_REFERENCE_PRESETS: tuple[DiffusionReferencePreset, ...] = tuple(
+    replace(
+        preset,
+        default_steps = 4,
+        default_guidance_scale = 1.0,
+        source = _REFERENCE_SOURCE_FLUX2_KLEIN,
+    )
+    for preset in _FLUX_NATIVE_REFERENCE_PRESETS
+)
+
+_FLUX2_DEV_REFERENCE_PRESETS: tuple[DiffusionReferencePreset, ...] = tuple(
+    replace(
+        preset,
+        default_steps = 50,
+        default_guidance_scale = 4.0,
+        source = _REFERENCE_SOURCE_FLUX2,
+    )
+    for preset in _FLUX_NATIVE_REFERENCE_PRESETS
+) + (
+    _preset(
+        "native-reference-balanced",
+        role = "edit_source",
+        label = "Balanced reference edit",
+        description = "Lower-latency FLUX.2 reference/edit preset noted by the model card.",
+        task = "edit",
+        confidence = "medium",
+        max_images = 8,
+        default_steps = 28,
+        default_guidance_scale = 4.0,
+        source = _REFERENCE_SOURCE_FLUX2,
+    ),
+)
+
+_FLUX1_KONTEXT_REFERENCE_PRESETS: tuple[DiffusionReferencePreset, ...] = tuple(
+    replace(
+        preset,
+        default_steps = 28,
+        default_guidance_scale = 2.5,
+        source = _REFERENCE_SOURCE_FLUX1_KONTEXT,
+    )
+    for preset in _FLUX_NATIVE_REFERENCE_PRESETS
+)
+
+_QWEN_EDIT_REFERENCE_PRESETS: tuple[DiffusionReferencePreset, ...] = (
+    _preset(
+        "native-edit-source",
+        role = "edit_source",
+        label = "Source image edit",
+        description = "Use the image as the source to edit while preserving unchanged regions.",
+        task = "edit",
+        confidence = "high",
+        default_steps = 50,
+        default_guidance_scale = 4.0,
+        source = _REFERENCE_SOURCE_QWEN_EDIT,
+    ),
+    _preset(
+        "native-style-transfer",
+        role = "style",
+        label = "Style transfer",
+        description = "Transform the source into a requested artistic style.",
+        task = "edit",
+        confidence = "high",
+        default_steps = 50,
+        default_guidance_scale = 4.0,
+        prompt_hint = "Ask for the target style and what semantic content should stay consistent.",
+        source = _REFERENCE_SOURCE_QWEN_EDIT,
+    ),
+    _preset(
+        "native-object-ip",
+        role = "object_identity",
+        label = "Object/IP identity",
+        description = "Preserve a character or object while changing pose, view, or context.",
+        task = "edit",
+        confidence = "medium",
+        default_steps = 50,
+        default_guidance_scale = 4.0,
+        source = _REFERENCE_SOURCE_QWEN_EDIT,
+    ),
+    _preset(
+        "native-person-edit",
+        role = "person_identity",
+        label = "Person identity",
+        description = "Preserve a person from the source portrait during semantic edits.",
+        task = "edit",
+        confidence = "medium",
+        default_steps = 50,
+        default_guidance_scale = 4.0,
+        prompt_hint = "Use a clear portrait and explicitly say which attributes should change.",
+        source = _REFERENCE_SOURCE_QWEN_EDIT,
+    ),
+)
+
+_QWEN_EDIT_PLUS_CALL_KWARGS = {"guidance_scale": 1.0, "negative_prompt": " "}
+_QWEN_EDIT_PLUS_REFERENCE_PRESETS: tuple[DiffusionReferencePreset, ...] = (
+    _preset(
+        "native-multi-image-edit",
+        role = "edit_source",
+        label = "Multi-image edit",
+        description = "Combine or edit 1-3 source/reference images in one instruction.",
+        task = "edit",
+        confidence = "high",
+        max_images = 3,
+        default_steps = 40,
+        default_guidance_scale = 4.0,
+        default_call_kwargs = _QWEN_EDIT_PLUS_CALL_KWARGS,
+        source = _REFERENCE_SOURCE_QWEN_EDIT_2509,
+    ),
+    _preset(
+        "native-person-consistency",
+        role = "person_identity",
+        label = "Person identity",
+        description = "Preserve facial/person identity across portrait styles, pose changes, and multi-person composition.",
+        task = "edit",
+        confidence = "high",
+        max_images = 3,
+        default_steps = 40,
+        default_guidance_scale = 4.0,
+        default_call_kwargs = _QWEN_EDIT_PLUS_CALL_KWARGS,
+        prompt_hint = "Use 1-3 clean reference images and state which person each image contains.",
+        source = _REFERENCE_SOURCE_QWEN_EDIT_2509,
+    ),
+    _preset(
+        "native-product-consistency",
+        role = "object_identity",
+        label = "Product/object identity",
+        description = "Preserve products, logos, or objects while changing poster, scene, or material context.",
+        task = "edit",
+        confidence = "high",
+        max_images = 3,
+        default_steps = 40,
+        default_guidance_scale = 4.0,
+        default_call_kwargs = _QWEN_EDIT_PLUS_CALL_KWARGS,
+        source = _REFERENCE_SOURCE_QWEN_EDIT_2509,
+    ),
+    _preset(
+        "native-style-edit",
+        role = "style",
+        label = "Style/appearance edit",
+        description = "Apply portrait, lighting, material, or visual style changes while preserving core subject identity.",
+        task = "edit",
+        confidence = "medium",
+        max_images = 3,
+        default_steps = 40,
+        default_guidance_scale = 4.0,
+        default_call_kwargs = _QWEN_EDIT_PLUS_CALL_KWARGS,
+        source = _REFERENCE_SOURCE_QWEN_EDIT_2509,
+    ),
+    _preset(
+        "native-structure-control",
+        role = "structure",
+        label = "Structure/control image",
+        description = "Use keypoint, depth, edge, or sketch-like image conditions in the multi-image edit stream.",
+        task = "edit",
+        confidence = "medium",
+        max_images = 3,
+        default_steps = 40,
+        default_guidance_scale = 4.0,
+        default_call_kwargs = _QWEN_EDIT_PLUS_CALL_KWARGS,
+        limitations = (
+            "Studio currently forwards this as a native reference image, not as a separate ControlNet adapter.",
+        ),
+        source = _REFERENCE_SOURCE_QWEN_EDIT_2509,
+    ),
+)
+
+_QWEN_EDIT_2511_REFERENCE_PRESETS: tuple[DiffusionReferencePreset, ...] = tuple(
+    replace(preset, source = _REFERENCE_SOURCE_QWEN_EDIT_2511)
+    for preset in _QWEN_EDIT_PLUS_REFERENCE_PRESETS
+)
+
+_QWEN_IMAGE_REFERENCE_PRESETS: tuple[DiffusionReferencePreset, ...] = (
+    _preset(
+        "native-img2img-source",
+        role = "edit_source",
+        label = "Image-to-image source",
+        description = "Use an input image as an img2img/edit source when the Diffusers img2img pipeline is available.",
+        task = "image_to_image",
+        confidence = "medium",
+        default_steps = 50,
+        default_guidance_scale = 4.0,
+        default_strength = 0.6,
+        limitations = (
+            "For person/object identity preservation, prefer Qwen-Image-Edit-2509 or 2511.",
+        ),
+        source = _REFERENCE_SOURCE_QWEN_IMAGE,
+    ),
+)
+
+_QWEN_LAYERED_REFERENCE_PRESETS: tuple[DiffusionReferencePreset, ...] = (
+    _preset(
+        "native-layer-decomposition",
+        role = "edit_source",
+        label = "Layer decomposition source",
+        description = "Decompose a source image into editable RGBA layers.",
+        task = "edit",
+        confidence = "high",
+        default_steps = 50,
+        default_guidance_scale = 4.0,
+        limitations = (
+            "This is for editability/layer extraction, not direct style or identity transfer.",
+        ),
+        source = _REFERENCE_SOURCE_QWEN_LAYERED,
+    ),
+)
+
+_Z_IMAGE_REFERENCE_PRESETS: tuple[DiffusionReferencePreset, ...] = (
+    _preset(
+        "experimental-img2img-source",
+        role = "edit_source",
+        label = "Image-to-image source",
+        description = "Use an input image through Studio's img2img/inpaint pipeline path.",
+        task = "image_to_image",
+        confidence = "low",
+        default_steps = 50,
+        default_guidance_scale = 4.0,
+        default_strength = 0.6,
+        limitations = (
+            "The current Studio Z-Image families are not the dedicated Z-Image-Edit/Omni reference checkpoints.",
+            "Do not rely on this for style, object identity, or person identity preservation.",
+        ),
+        source = _REFERENCE_SOURCE_Z_IMAGE,
+    ),
+)
+
+_Z_IMAGE_TURBO_REFERENCE_PRESETS: tuple[DiffusionReferencePreset, ...] = tuple(
+    replace(
+        preset,
+        default_steps = 9,
+        default_guidance_scale = 0.0,
+    )
+    for preset in _Z_IMAGE_REFERENCE_PRESETS
+)
+
+_DIFFUSION_REFERENCE_PRESETS_BY_FAMILY: dict[
+    str, tuple[DiffusionReferencePreset, ...]
+] = {
+    "flux.2": _FLUX2_DEV_REFERENCE_PRESETS,
+    "flux.2-klein": _FLUX2_KLEIN_DISTILLED_REFERENCE_PRESETS,
+    "flux.1-kontext": _FLUX1_KONTEXT_REFERENCE_PRESETS,
+    "qwen-image-edit": _QWEN_EDIT_REFERENCE_PRESETS,
+    "qwen-image-edit-2509": _QWEN_EDIT_PLUS_REFERENCE_PRESETS,
+    "qwen-image-edit-2511": _QWEN_EDIT_2511_REFERENCE_PRESETS,
+    "qwen-image": _QWEN_IMAGE_REFERENCE_PRESETS,
+    "qwen-image-2512": _QWEN_IMAGE_REFERENCE_PRESETS,
+    "qwen-image-layered": _QWEN_LAYERED_REFERENCE_PRESETS,
+    "z-image": _Z_IMAGE_REFERENCE_PRESETS,
+    "z-image-turbo": _Z_IMAGE_TURBO_REFERENCE_PRESETS,
+}
+
+
+def _reference_presets_for_family(
+    fam: Optional[DiffusionFamily],
+    *,
+    defaults: Optional[DiffusionSamplingDefaults] = None,
+    base_repo_variant: Optional[str] = None,
+) -> tuple[DiffusionReferencePreset, ...]:
+    if fam is None:
+        return ()
+    presets = _DIFFUSION_REFERENCE_PRESETS_BY_FAMILY.get(fam.name, ())
+    if not presets:
+        return ()
+    if fam.name == "flux.2-klein" and defaults is not None and base_repo_variant:
+        return tuple(
+            replace(
+                preset,
+                default_steps = defaults.default_steps,
+                default_guidance_scale = defaults.default_guidance_scale,
+            )
+            for preset in presets
+        )
+    return presets
+
+
+def _reference_capabilities_from_presets(
+    presets: tuple[DiffusionReferencePreset, ...],
+) -> dict[str, dict[str, Any]]:
+    capabilities: dict[str, dict[str, Any]] = {}
+    confidence_rank = {"low": 0, "medium": 1, "high": 2}
+    for preset in presets:
+        role = preset.role
+        existing = capabilities.get(role)
+        if existing is None:
+            capabilities[role] = {
+                "supported": True,
+                "role": role,
+                "implementation": preset.implementation,
+                "support": preset.support,
+                "confidence": preset.confidence,
+                "min_images": preset.min_images,
+                "max_images": preset.max_images,
+                "tasks": [preset.task],
+                "preset_ids": [preset.id],
+            }
+            continue
+        existing["min_images"] = min(int(existing["min_images"]), preset.min_images)
+        existing["max_images"] = max(int(existing["max_images"]), preset.max_images)
+        if preset.task not in existing["tasks"]:
+            existing["tasks"].append(preset.task)
+        existing["preset_ids"].append(preset.id)
+        if confidence_rank.get(preset.confidence, 0) > confidence_rank.get(
+            str(existing["confidence"]),
+            0,
+        ):
+            existing["confidence"] = preset.confidence
+    return capabilities
 
 _CURATED_UNSLOTH_DIFFUSION_GGUFS: tuple[CuratedDiffusionGGUF, ...] = (
     CuratedDiffusionGGUF(
@@ -1855,6 +2471,9 @@ def _public_diffusion_preset(preset: DiffusionLoadPreset) -> dict[str, Any]:
         "default_image_strength": (
             fam.default_image_strength if fam is not None else None
         ),
+        "default_inpaint_strength": (
+            fam.default_inpaint_strength if fam is not None else None
+        ),
         "default_text_encoder_gguf_repo": (
             _preset_default_text_encoder_gguf_repo(fam) if fam is not None else None
         ),
@@ -1914,6 +2533,11 @@ def _build_diffusion_model_memory_estimate(
     text_encoder_gguf_filename: Optional[str],
     prompt_enhancer_gguf_repo: Optional[str],
     prompt_enhancer_gguf_filename: Optional[str],
+    controlnet_repo: Optional[str],
+    controlnet_weight_name: Optional[str],
+    upscaler_repo: Optional[str],
+    upscaler_weight_name: Optional[str],
+    upscaler_mode: Optional[str],
     safetensors_quantization: Optional[str],
 ) -> ModelMemoryEstimate:
     components = []
@@ -1951,6 +2575,29 @@ def _build_diffusion_model_memory_estimate(
                 fmt = "gguf",
                 repo_id = prompt_enhancer_gguf_repo,
                 filename = prompt_enhancer_gguf_filename,
+            )
+        )
+    if controlnet_repo:
+        components.append(
+            component_estimate_from_file_hint(
+                name = "controlnet",
+                fmt = "safetensors",
+                repo_id = controlnet_repo,
+                filename = controlnet_weight_name,
+            )
+        )
+    if upscaler_repo:
+        upscaler_fmt = (
+            "transformers"
+            if (upscaler_mode or "").strip().lower() == "super_resolution"
+            else "diffusers"
+        )
+        components.append(
+            component_estimate_from_file_hint(
+                name = "upscaler",
+                fmt = upscaler_fmt,
+                repo_id = upscaler_repo,
+                filename = upscaler_weight_name,
             )
         )
     if not components:
@@ -1997,6 +2644,11 @@ def _maybe_apply_diffusion_memory_plan(
         text_encoder_gguf_filename = load_kwargs.get("text_encoder_gguf_filename"),
         prompt_enhancer_gguf_repo = load_kwargs.get("prompt_enhancer_gguf_repo"),
         prompt_enhancer_gguf_filename = load_kwargs.get("prompt_enhancer_gguf_filename"),
+        controlnet_repo = load_kwargs.get("controlnet_repo"),
+        controlnet_weight_name = load_kwargs.get("controlnet_weight_name"),
+        upscaler_repo = load_kwargs.get("upscaler_repo"),
+        upscaler_weight_name = load_kwargs.get("upscaler_weight_name"),
+        upscaler_mode = load_kwargs.get("upscaler_mode"),
         safetensors_quantization = load_kwargs.get("safetensors_quantization"),
     )
     workload = DiffusionWorkloadEstimate(
@@ -2018,6 +2670,9 @@ def _maybe_apply_diffusion_memory_plan(
         else False,
         image_input_mode = family.image_input_mode if family is not None else "none",
         image_tasks = _family_image_tasks(family),
+        controlnet_enabled = bool(load_kwargs.get("controlnet_repo")),
+        upscaler_enabled = bool(load_kwargs.get("upscaler_repo")),
+        tiled_execution_enabled = bool(load_kwargs.get("tiled_execution_enabled")),
     )
     plan = select_diffusion_memory_plan(
         requested_mode = normalized_memory_mode,
@@ -2093,6 +2748,19 @@ def resolve_diffusion_load_plan(
     lora_adapter_name: Optional[str] = None,
     lora_scale: Optional[float] = None,
     lora_fuse: bool = False,
+    controlnet_repo: Optional[str] = None,
+    controlnet_weight_name: Optional[str] = None,
+    controlnet_model_class: Optional[str] = None,
+    controlnet_pipeline_class: Optional[str] = None,
+    controlnet_conditioning_scale: Optional[float] = None,
+    control_guidance_start: Optional[float] = None,
+    control_guidance_end: Optional[float] = None,
+    upscaler_repo: Optional[str] = None,
+    upscaler_weight_name: Optional[str] = None,
+    upscaler_mode: str = "pixel",
+    upscaler_model_class: Optional[str] = None,
+    upscaler_pipeline_class: Optional[str] = None,
+    upscaler_scale: Optional[float] = None,
     family_override: Optional[str] = None,
     offload_policy: Optional[str] = None,
     safetensors_quantization: Optional[str] = None,
@@ -2104,6 +2772,7 @@ def resolve_diffusion_load_plan(
     num_frames: Optional[int] = None,
     batch_size: Optional[int] = None,
     guidance_scale: Optional[float] = None,
+    tiled_execution_enabled: bool = False,
     require_loadable: bool = False,
 ) -> dict[str, Any]:
     """Expand a Studio preset into concrete DiffusionBackend kwargs.
@@ -2166,6 +2835,19 @@ def resolve_diffusion_load_plan(
             "lora_adapter_name": lora_adapter_name,
             "lora_scale": lora_scale,
             "lora_fuse": lora_fuse,
+            "controlnet_repo": controlnet_repo,
+            "controlnet_weight_name": controlnet_weight_name,
+            "controlnet_model_class": controlnet_model_class,
+            "controlnet_pipeline_class": controlnet_pipeline_class,
+            "controlnet_conditioning_scale": controlnet_conditioning_scale,
+            "control_guidance_start": control_guidance_start,
+            "control_guidance_end": control_guidance_end,
+            "upscaler_repo": upscaler_repo,
+            "upscaler_weight_name": upscaler_weight_name,
+            "upscaler_mode": upscaler_mode,
+            "upscaler_model_class": upscaler_model_class,
+            "upscaler_pipeline_class": upscaler_pipeline_class,
+            "upscaler_scale": upscaler_scale,
             "family_override": family_override,
             "offload_policy": offload_policy,
             "safetensors_quantization": normalized_safetensors_quantization,
@@ -2173,6 +2855,7 @@ def resolve_diffusion_load_plan(
                 normalized_safetensors_quantization_components
             ),
             "attention_backend": normalized_attention_backend,
+            "tiled_execution_enabled": bool(tiled_execution_enabled),
         }
         fam = _family_by_name(family_override) if family_override else None
         load_kwargs, memory_plan = _maybe_apply_diffusion_memory_plan(
@@ -2189,7 +2872,30 @@ def resolve_diffusion_load_plan(
             "preset": None,
             "ready_to_load": True,
             "load_kwargs": load_kwargs,
-            "component_sources": {},
+            "component_sources": _build_diffusion_component_sources(
+                pipeline_repo = base_repo or repo_id,
+                diffusion_gguf_repo = transformer_gguf_repo or repo_id,
+                diffusion_gguf_filename = transformer_gguf_filename or gguf_filename,
+                text_encoder_gguf_repo = text_encoder_gguf_repo,
+                text_encoder_gguf_filename = text_encoder_gguf_filename,
+                text_encoder_component = text_encoder_gguf_component,
+                prompt_enhancer_gguf_repo = prompt_enhancer_gguf_repo,
+                prompt_enhancer_gguf_filename = prompt_enhancer_gguf_filename,
+                lora_state = None,
+                controlnet_state = None,
+                upscaler_state = (
+                    DiffusionUpscalerState(
+                        repo = upscaler_repo,
+                        weight_name = upscaler_weight_name,
+                        mode = upscaler_mode or "pixel",
+                        model_class = upscaler_model_class,
+                        pipeline_class = upscaler_pipeline_class,
+                        scale = float(upscaler_scale or 2.0),
+                    )
+                    if upscaler_repo
+                    else None
+                ),
+            ),
             "memory_plan": memory_plan,
             "warnings": [],
         }
@@ -2292,6 +2998,19 @@ def resolve_diffusion_load_plan(
         "lora_adapter_name": lora_adapter_name,
         "lora_scale": lora_scale,
         "lora_fuse": lora_fuse,
+        "controlnet_repo": controlnet_repo,
+        "controlnet_weight_name": controlnet_weight_name,
+        "controlnet_model_class": controlnet_model_class,
+        "controlnet_pipeline_class": controlnet_pipeline_class,
+        "controlnet_conditioning_scale": controlnet_conditioning_scale,
+        "control_guidance_start": control_guidance_start,
+        "control_guidance_end": control_guidance_end,
+        "upscaler_repo": upscaler_repo,
+        "upscaler_weight_name": upscaler_weight_name,
+        "upscaler_mode": upscaler_mode,
+        "upscaler_model_class": upscaler_model_class,
+        "upscaler_pipeline_class": upscaler_pipeline_class,
+        "upscaler_scale": upscaler_scale,
         "family_override": family_override or preset.family,
         "offload_policy": offload_policy,
         "safetensors_quantization": normalized_safetensors_quantization,
@@ -2299,6 +3018,7 @@ def resolve_diffusion_load_plan(
             normalized_safetensors_quantization_components
         ),
         "attention_backend": normalized_attention_backend,
+        "tiled_execution_enabled": bool(tiled_execution_enabled),
     }
     load_kwargs, memory_plan = _maybe_apply_diffusion_memory_plan(
         load_kwargs = load_kwargs,
@@ -2325,6 +3045,19 @@ def resolve_diffusion_load_plan(
             prompt_enhancer_gguf_repo = planned_pe_repo,
             prompt_enhancer_gguf_filename = prompt_enhancer_gguf_filename,
             lora_state = None,
+            controlnet_state = None,
+            upscaler_state = (
+                DiffusionUpscalerState(
+                    repo = upscaler_repo,
+                    weight_name = upscaler_weight_name,
+                    mode = upscaler_mode or "pixel",
+                    model_class = upscaler_model_class,
+                    pipeline_class = upscaler_pipeline_class,
+                    scale = float(upscaler_scale or 2.0),
+                )
+                if upscaler_repo
+                else None
+            ),
         ),
         "sampling_defaults": {
             "num_inference_steps": defaults.default_steps,
@@ -2464,8 +3197,14 @@ def _build_sampling_contract(
         requires_image_input = bool(fam.requires_image_input),
         image_input_mode = fam.image_input_mode,
         image_tasks = _family_image_tasks(fam),
+        video_tasks = _family_video_tasks(fam),
         has_default_negative_prompt = _family_has_default_negative_prompt(fam),
         default_call_kwargs = defaults.default_call_kwargs,
+        reference_presets = _reference_presets_for_family(
+            fam,
+            defaults = defaults,
+            base_repo_variant = base_repo_variant,
+        ),
     )
 
 
@@ -2639,6 +3378,311 @@ def _strip_lora_component_prefix(
         if all(key.startswith(prefix) for key in keys):
             return {key[len(prefix) :]: value for key, value in state_dict.items()}
     return None
+
+
+def _validate_diffusers_class_name(value: Optional[str], *, label: str) -> Optional[str]:
+    if value is None:
+        return None
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", value):
+        raise ValueError(f"{label} must be a plain Diffusers class name.")
+    return value
+
+
+def _default_controlnet_pipeline_class_name(base_pipeline_name: str) -> str:
+    replacements = (
+        ("Img2ImgPipeline", "ControlNetImg2ImgPipeline"),
+        ("InpaintPipeline", "ControlNetInpaintPipeline"),
+        ("Pipeline", "ControlNetPipeline"),
+    )
+    for suffix, replacement in replacements:
+        if base_pipeline_name.endswith(suffix):
+            return base_pipeline_name[: -len(suffix)] + replacement
+    return base_pipeline_name + "ControlNetPipeline"
+
+
+def _default_controlnet_model_class_name(base_pipeline_name: str) -> str:
+    if base_pipeline_name.startswith("StableDiffusion3"):
+        return "SD3ControlNetModel"
+    if base_pipeline_name.startswith("StableDiffusion"):
+        return "ControlNetModel"
+    prefix = base_pipeline_name
+    for suffix in ("Img2ImgPipeline", "InpaintPipeline", "Pipeline"):
+        if prefix.endswith(suffix):
+            prefix = prefix[: -len(suffix)]
+            break
+    return prefix + "ControlNetModel"
+
+
+def _controlnet_module_from_pipeline(pipe: Any) -> Any:
+    components = getattr(pipe, "components", None)
+    if isinstance(components, dict) and "controlnet" in components:
+        return components["controlnet"]
+    controlnet = getattr(pipe, "controlnet", None)
+    if controlnet is not None:
+        return controlnet
+    raise RuntimeError(f"{type(pipe).__name__} does not expose a ControlNet module.")
+
+
+def _resolve_controlnet_classes(
+    diffusers: Any,
+    pipe: Any,
+    *,
+    model_class: Optional[str],
+    pipeline_class: Optional[str],
+) -> tuple[type[Any], type[Any]]:
+    base_pipeline_name = type(pipe).__name__
+    pipeline_name = _validate_diffusers_class_name(
+        pipeline_class or _default_controlnet_pipeline_class_name(base_pipeline_name),
+        label = "controlnet_pipeline_class",
+    )
+    model_name = _validate_diffusers_class_name(
+        model_class or _default_controlnet_model_class_name(base_pipeline_name),
+        label = "controlnet_model_class",
+    )
+    try:
+        control_pipeline_cls = getattr(diffusers, pipeline_name)
+        control_model_cls = getattr(diffusers, model_name)
+    except AttributeError as exc:
+        raise RuntimeError(
+            f"Installed Diffusers does not expose {pipeline_name} / {model_name}. "
+            "Pass explicit controlnet_pipeline_class and controlnet_model_class "
+            "if this model family uses different Diffusers class names."
+        ) from exc
+    if not callable(getattr(control_pipeline_cls, "from_pipe", None)):
+        raise RuntimeError(f"{pipeline_name} does not support from_pipe().")
+    return control_pipeline_cls, control_model_cls
+
+
+def _load_diffusion_controlnet(
+    diffusers: Any,
+    pipe: Any,
+    *,
+    controlnet_repo: str,
+    controlnet_weight_name: Optional[str],
+    controlnet_model_class: Optional[str],
+    controlnet_pipeline_class: Optional[str],
+    conditioning_scale: Optional[float],
+    guidance_start: Optional[float],
+    guidance_end: Optional[float],
+    dtype: Any,
+    token: Optional[str],
+) -> tuple[Any, DiffusionControlNetState]:
+    control_pipeline_cls, control_model_cls = _resolve_controlnet_classes(
+        diffusers,
+        pipe,
+        model_class = controlnet_model_class,
+        pipeline_class = controlnet_pipeline_class,
+    )
+    model_kwargs: dict[str, Any] = {
+        "torch_dtype": dtype,
+        "use_safetensors": True,
+    }
+    if token:
+        model_kwargs["token"] = token
+    repo_path = Path(controlnet_repo).expanduser()
+    single_file_path: Optional[str] = None
+    if controlnet_weight_name:
+        weight_path = str(controlnet_weight_name).strip("/")
+        if weight_path.lower().endswith(".safetensors"):
+            if repo_path.is_dir():
+                single_file_path = str(repo_path / weight_path)
+            else:
+                from huggingface_hub import hf_hub_download
+
+                single_file_path = hf_hub_download(
+                    repo_id = controlnet_repo,
+                    filename = weight_path,
+                    token = token,
+                )
+        else:
+            parent = str(Path(weight_path).parent)
+            if parent and parent != ".":
+                model_kwargs["subfolder"] = parent
+    elif repo_path.is_file() and repo_path.suffix.lower() == ".safetensors":
+        single_file_path = str(repo_path)
+
+    if single_file_path is not None:
+        from_single_file = getattr(control_model_cls, "from_single_file", None)
+        if not callable(from_single_file):
+            raise RuntimeError(
+                f"{control_model_cls.__name__} does not support single-file "
+                "ControlNet safetensors loading. Use a Diffusers-format "
+                "ControlNet repo or pass a different controlnet_model_class."
+            )
+        single_file_kwargs = {
+            key: value for key, value in model_kwargs.items() if key != "use_safetensors"
+        }
+        controlnet = from_single_file(single_file_path, **single_file_kwargs)
+    else:
+        controlnet = control_model_cls.from_pretrained(controlnet_repo, **model_kwargs)
+    control_pipe = control_pipeline_cls.from_pipe(pipe, controlnet = controlnet)
+    return control_pipe, DiffusionControlNetState(
+        repo = controlnet_repo,
+        weight_name = controlnet_weight_name,
+        model_class = type(controlnet).__name__,
+        pipeline_class = type(control_pipe).__name__,
+        conditioning_scale = float(
+            1.0 if conditioning_scale is None else conditioning_scale
+        ),
+        guidance_start = float(0.0 if guidance_start is None else guidance_start),
+        guidance_end = float(1.0 if guidance_end is None else guidance_end),
+    )
+
+
+def _load_diffusion_upscaler(
+    diffusers: Any,
+    *,
+    upscaler_repo: str,
+    upscaler_weight_name: Optional[str],
+    upscaler_mode: str,
+    upscaler_model_class: Optional[str],
+    upscaler_pipeline_class: Optional[str],
+    upscaler_scale: Optional[float],
+    dtype: Any,
+    token: Optional[str],
+) -> tuple[Any, DiffusionUpscalerState]:
+    mode = (upscaler_mode or "pixel").strip().lower()
+    if mode == "pixel":
+        if upscaler_model_class:
+            raise ValueError(
+                "upscaler_model_class is not supported for built-in pixel "
+                "upscaling. Use upscaler_mode='diffusion' with "
+                "upscaler_pipeline_class for model-backed creative upscale."
+            )
+        if upscaler_pipeline_class:
+            raise ValueError(
+                "upscaler_pipeline_class is only valid for "
+                "upscaler_mode='diffusion'."
+            )
+        return None, DiffusionUpscalerState(
+            repo = upscaler_repo,
+            weight_name = upscaler_weight_name,
+            mode = "pixel",
+            model_class = upscaler_model_class,
+            pipeline_class = None,
+            scale = float(upscaler_scale or 2.0),
+        )
+    if mode == "super_resolution":
+        if upscaler_model_class:
+            raise ValueError(
+                "upscaler_model_class is not supported for super_resolution "
+                "upscalers. Studio loads them through a generic Transformers "
+                "image-to-image pipeline."
+            )
+        if upscaler_pipeline_class:
+            raise ValueError(
+                "upscaler_pipeline_class is only valid for "
+                "upscaler_mode='diffusion'."
+            )
+        if upscaler_weight_name:
+            raise ValueError(
+                "upscaler_weight_name is not supported for super_resolution "
+                "upscalers. Use a Diffusers-format or Transformers-format repo."
+            )
+        pipe = _load_transformers_image_upscaler(
+            upscaler_repo,
+            dtype = dtype,
+            token = token,
+        )
+        return pipe, DiffusionUpscalerState(
+            repo = upscaler_repo,
+            weight_name = None,
+            mode = "super_resolution",
+            model_class = type(getattr(pipe, "model", pipe)).__name__,
+            pipeline_class = type(pipe).__name__,
+            scale = float(upscaler_scale or 2.0),
+        )
+    if mode != "diffusion":
+        raise ValueError("upscaler_mode must be pixel, super_resolution, or diffusion")
+    pipeline_name = _validate_diffusers_class_name(
+        upscaler_pipeline_class or "DiffusionPipeline",
+        label = "upscaler_pipeline_class",
+    )
+    try:
+        pipeline_cls = getattr(diffusers, pipeline_name)
+    except AttributeError as exc:
+        raise RuntimeError(
+            f"Installed Diffusers does not expose {pipeline_name}. "
+            "Pass a different upscaler_pipeline_class or install a newer Diffusers."
+        ) from exc
+    kwargs: dict[str, Any] = {"torch_dtype": dtype}
+    if token:
+        kwargs["token"] = token
+    if upscaler_weight_name:
+        kwargs["weight_name"] = upscaler_weight_name
+    pipe = pipeline_cls.from_pretrained(upscaler_repo, **kwargs)
+    return pipe, DiffusionUpscalerState(
+        repo = upscaler_repo,
+        weight_name = upscaler_weight_name,
+        mode = "diffusion",
+        model_class = upscaler_model_class,
+        pipeline_class = type(pipe).__name__,
+        scale = float(upscaler_scale or 2.0),
+    )
+
+
+def _load_transformers_image_upscaler(
+    repo: str,
+    *,
+    dtype: Any,
+    token: Optional[str],
+) -> Any:
+    try:
+        import transformers
+    except Exception as exc:
+        raise RuntimeError(
+            "Transformers is required for super_resolution upscalers."
+        ) from exc
+
+    pipeline_factory = getattr(transformers, "pipeline", None)
+    if not callable(pipeline_factory):
+        raise RuntimeError(
+            "Installed Transformers does not expose pipeline(); cannot load "
+            "a super_resolution upscaler."
+        )
+    kwargs: dict[str, Any] = {"model": repo}
+    if dtype is not None:
+        kwargs["torch_dtype"] = dtype
+    if token:
+        kwargs["token"] = token
+    try:
+        return pipeline_factory("image-to-image", **kwargs)
+    except TypeError:
+        kwargs.pop("torch_dtype", None)
+        try:
+            return pipeline_factory("image-to-image", **kwargs)
+        except TypeError:
+            kwargs.pop("token", None)
+            return pipeline_factory("image-to-image", **kwargs)
+
+
+def _place_upscaler_for_runtime(
+    upscaler_pipe: Any,
+    upscaler_state: Optional[DiffusionUpscalerState],
+    *,
+    device: str,
+    cpu_offload_enabled: bool,
+) -> None:
+    if upscaler_pipe is None or upscaler_state is None:
+        return
+    if upscaler_state.mode == "diffusion":
+        if cpu_offload_enabled:
+            _enable_diffusers_model_cpu_offload(upscaler_pipe, device)
+        else:
+            upscaler_pipe.to(device)
+        return
+    if upscaler_state.mode != "super_resolution":
+        return
+    if cpu_offload_enabled:
+        return
+    to_method = getattr(upscaler_pipe, "to", None)
+    if callable(to_method):
+        to_method(device)
+        return
+    model = getattr(upscaler_pipe, "model", None)
+    model_to = getattr(model, "to", None)
+    if callable(model_to):
+        model_to(device)
 
 
 def _expand_existing_local_path(value: str) -> str:
@@ -2954,6 +3998,18 @@ _FAMILY_EXCLUDE: dict[str, tuple[str, ...]] = {
         "qwen_image_edit",
         "qwenimageedit",
     ),
+    "wan2-2-t2v": (
+        "wan2.2-i2v",
+        "wan2-2-i2v",
+        "wan-2.2-i2v",
+        "wan-2-2-i2v",
+        "wan2.2-ti2v",
+        "wan2-2-ti2v",
+        "wan-2.2-ti2v",
+        "wan-2-2-ti2v",
+        "i2v",
+        "ti2v",
+    ),
 }
 
 
@@ -3074,7 +4130,16 @@ def supported_families() -> list[dict[str, Any]]:
             "image_input_mode": fam.image_input_mode,
             "supports_image_input": _family_supports_image_input(fam),
             "image_tasks": list(_family_image_tasks(fam)),
+            "video_tasks": list(_family_video_tasks(fam)),
             "default_image_strength": fam.default_image_strength,
+            "default_inpaint_strength": fam.default_inpaint_strength,
+            "reference_presets": [
+                preset.as_public_dict()
+                for preset in _reference_presets_for_family(fam)
+            ],
+            "reference_capabilities": _reference_capabilities_from_presets(
+                _reference_presets_for_family(fam)
+            ),
             "supports_gguf_single_file": fam.supports_gguf_single_file,
         }
         for fam in _FAMILIES + _FULL_REPO_FAMILIES
@@ -3613,6 +4678,85 @@ def _enable_diffusers_model_cpu_offload(pipe: Any, device: str) -> None:
         method(device = device)
     else:
         method()
+
+
+def _prepare_controlnet_cpu_offload(pipe: Any) -> None:
+    components = getattr(pipe, "components", None)
+    if not isinstance(components, dict) or "controlnet" not in components:
+        return
+    excluded = list(getattr(pipe, "_exclude_from_cpu_offload", []) or [])
+    if "controlnet" not in excluded:
+        excluded.append("controlnet")
+    setattr(pipe, "_exclude_from_cpu_offload", excluded)
+
+
+def _move_controlnet_to_device(pipe: Any, device: str) -> None:
+    controlnet = getattr(pipe, "controlnet", None)
+    if controlnet is not None and callable(getattr(controlnet, "to", None)):
+        controlnet.to(device)
+
+
+def _patch_module_forward_device_guard(module: Any, device: str) -> None:
+    if module is None or not callable(getattr(module, "to", None)):
+        return
+    original = getattr(module, "_unsloth_original_forward", None)
+    if original is None:
+        original = getattr(module, "forward", None)
+        if original is None:
+            return
+        setattr(module, "_unsloth_original_forward", original)
+    setattr(module, "_unsloth_forward_device", device)
+
+    def _forward_with_device_guard(*args: Any, **kwargs: Any) -> Any:
+        module.to(getattr(module, "_unsloth_forward_device", device))
+        return original(*args, **kwargs)
+
+    module.forward = _forward_with_device_guard
+
+
+def _patch_controlnet_runtime_device_guards(pipe: Any, device: str) -> None:
+    _patch_module_forward_device_guard(getattr(pipe, "controlnet", None), device)
+    _patch_module_forward_device_guard(getattr(pipe, "transformer", None), device)
+
+
+def _maybe_free_diffusers_model_hooks(pipe: Any) -> None:
+    method = getattr(pipe, "maybe_free_model_hooks", None)
+    if callable(method):
+        method()
+
+
+def _remove_diffusers_model_hooks(*pipes: Any) -> None:
+    seen: set[int] = set()
+    for pipe in pipes:
+        if pipe is None:
+            continue
+        ident = id(pipe)
+        if ident in seen:
+            continue
+        seen.add(ident)
+        method = getattr(pipe, "remove_all_hooks", None)
+        if callable(method):
+            method()
+
+
+def _should_retry_with_default_attention(
+    exc: BaseException,
+    attention_backend_config: Optional[dict[str, Any]],
+) -> bool:
+    if not isinstance(attention_backend_config, dict):
+        return False
+    if attention_backend_config.get("effective") != "flash":
+        return False
+    diffusers_backend = attention_backend_config.get("diffusers_backend")
+    flash_candidates = set(DIFFUSERS_ATTENTION_BACKEND_CANDIDATES.get("flash", ()))
+    if diffusers_backend not in flash_candidates:
+        return False
+    message = f"{type(exc).__name__}: {exc}"
+    return (
+        "scaled_dot_product_attention" in message
+        or "No available kernel" in message
+        or "Dynamo failed to run FX node" in message
+    )
 
 
 def _clone_prompt_embeds_to_device(value: Any, device: Any) -> Any:
@@ -4340,6 +5484,8 @@ def _build_diffusion_component_sources(
     prompt_enhancer_gguf_repo: Optional[str],
     prompt_enhancer_gguf_filename: Optional[str],
     lora_state: Optional[DiffusionLoraState],
+    controlnet_state: Optional[DiffusionControlNetState],
+    upscaler_state: Optional[DiffusionUpscalerState],
 ) -> dict[str, Any]:
     """Describe which repo owns each loaded pipeline component."""
 
@@ -4386,6 +5532,10 @@ def _build_diffusion_component_sources(
         }
     if lora_state is not None:
         sources["lora"] = lora_state.as_public_dict()
+    if controlnet_state is not None:
+        sources["controlnet"] = controlnet_state.as_public_dict()
+    if upscaler_state is not None:
+        sources["upscaler"] = upscaler_state.as_public_dict()
     return sources
 
 
@@ -4467,6 +5617,10 @@ class DiffusionBackend:
         self._prompt_enhancer_gguf_path: Optional[str] = None
         self._prompt_enhancer_gguf_filename: Optional[str] = None
         self._lora_state: Optional[DiffusionLoraState] = None
+        self._control_pipe: Any = None
+        self._controlnet_state: Optional[DiffusionControlNetState] = None
+        self._upscaler_pipe: Any = None
+        self._upscaler_state: Optional[DiffusionUpscalerState] = None
         self._component_sources: dict[str, Any] = {}
         self._base_repo: Optional[str] = None
         self._base_repo_source: Optional[str] = None
@@ -4502,6 +5656,7 @@ class DiffusionBackend:
         self._ltx2_latent_upsampler_cache_key: Optional[tuple[Any, ...]] = None
         self._ltx2_distilled_lora_cache_key: Optional[tuple[Any, ...]] = None
         self._load_timings: dict[str, float] = {}
+        self._last_image_enhance_meta: Optional[dict[str, Any]] = None
         self._prompt_embedding_cache_key: Optional[tuple[Any, ...]] = None
         self._prompt_embedding_cache_value: Optional[tuple[Any, Any, Any, Any]] = None
         self._loaded_at: Optional[float] = None
@@ -4527,6 +5682,14 @@ class DiffusionBackend:
         self._pending_prompt_enhancer_gguf_filename: Optional[str] = None
         self._pending_lora_repo: Optional[str] = None
         self._pending_lora_weight_name: Optional[str] = None
+        self._pending_controlnet_repo: Optional[str] = None
+        self._pending_controlnet_weight_name: Optional[str] = None
+        self._pending_upscaler_repo: Optional[str] = None
+        self._pending_upscaler_weight_name: Optional[str] = None
+        self._pending_upscaler_mode: Optional[str] = None
+        self._pending_upscaler_model_class: Optional[str] = None
+        self._pending_upscaler_pipeline_class: Optional[str] = None
+        self._pending_upscaler_scale: Optional[float] = None
 
     # ── lifecycle ─────────────────────────────────────────────────
 
@@ -4577,6 +5740,8 @@ class DiffusionBackend:
             active_pe_repo = self._prompt_enhancer_gguf_repo
             active_pe_gguf = self._prompt_enhancer_gguf_filename
             active_lora_state = self._lora_state
+            active_controlnet_state = self._controlnet_state
+            active_upscaler_state = self._upscaler_state
             active_component_sources = dict(self._component_sources)
             pending_repo = self._pending_repo_id if self._loading else None
             pending_diffusion_gguf_repo = (
@@ -4611,6 +5776,30 @@ class DiffusionBackend:
             pending_lora_repo = self._pending_lora_repo if self._loading else None
             pending_lora_weight_name = (
                 self._pending_lora_weight_name if self._loading else None
+            )
+            pending_controlnet_repo = (
+                self._pending_controlnet_repo if self._loading else None
+            )
+            pending_controlnet_weight_name = (
+                self._pending_controlnet_weight_name if self._loading else None
+            )
+            pending_upscaler_repo = (
+                self._pending_upscaler_repo if self._loading else None
+            )
+            pending_upscaler_weight_name = (
+                self._pending_upscaler_weight_name if self._loading else None
+            )
+            pending_upscaler_mode = (
+                self._pending_upscaler_mode if self._loading else None
+            )
+            pending_upscaler_model_class = (
+                self._pending_upscaler_model_class if self._loading else None
+            )
+            pending_upscaler_pipeline_class = (
+                self._pending_upscaler_pipeline_class if self._loading else None
+            )
+            pending_upscaler_scale = (
+                self._pending_upscaler_scale if self._loading else None
             )
             # When a swap is in flight, the UI-facing repo_id /
             # base_repo / gguf_filename advertise the PENDING model
@@ -4650,6 +5839,35 @@ class DiffusionBackend:
                     "adapter_name": None,
                     "scale": None,
                     "fused": None,
+                }
+            active_controlnet_public = (
+                active_controlnet_state.as_public_dict()
+                if active_controlnet_state is not None
+                else None
+            )
+            if pending_controlnet_repo:
+                active_controlnet_public = {
+                    "repo": _display_repo_id(pending_controlnet_repo),
+                    "weight_name": pending_controlnet_weight_name,
+                    "model_class": None,
+                    "pipeline_class": None,
+                    "conditioning_scale": None,
+                    "guidance_start": None,
+                    "guidance_end": None,
+                }
+            active_upscaler_public = (
+                active_upscaler_state.as_public_dict()
+                if active_upscaler_state is not None
+                else None
+            )
+            if pending_upscaler_repo:
+                active_upscaler_public = {
+                    "repo": _display_repo_id(pending_upscaler_repo),
+                    "weight_name": pending_upscaler_weight_name,
+                    "mode": pending_upscaler_mode or "pixel",
+                    "model_class": pending_upscaler_model_class,
+                    "pipeline_class": pending_upscaler_pipeline_class,
+                    "scale": pending_upscaler_scale,
                 }
             # UI-facing ``repo_id`` / ``base_repo`` collapse absolute
             # local paths to their leaf name so ``/images/status``
@@ -4691,6 +5909,8 @@ class DiffusionBackend:
                 ),
                 "prompt_enhancer_gguf_filename": ui_pe_gguf_basename,
                 "lora": active_lora_public,
+                "controlnet": active_controlnet_public,
+                "upscaler": active_upscaler_public,
                 "component_sources": (
                     active_component_sources
                     if active_component_sources and not pending_repo
@@ -4766,6 +5986,22 @@ class DiffusionBackend:
                         "active_lora_weight_name": (
                             active_lora_state.weight_name if active_lora_state else None
                         ),
+                        "active_controlnet_repo": active_controlnet_state.repo
+                        if active_controlnet_state
+                        else None,
+                        "active_controlnet_weight_name": (
+                            active_controlnet_state.weight_name
+                            if active_controlnet_state
+                            else None
+                        ),
+                        "active_upscaler_repo": active_upscaler_state.repo
+                        if active_upscaler_state
+                        else None,
+                        "active_upscaler_weight_name": (
+                            active_upscaler_state.weight_name
+                            if active_upscaler_state
+                            else None
+                        ),
                         "pending_repo_id": pending_repo,
                         "pending_diffusion_gguf_repo": pending_diffusion_gguf_repo,
                         "pending_base_repo": pending_base,
@@ -4780,6 +6016,20 @@ class DiffusionBackend:
                         "pending_prompt_enhancer_gguf_filename": pending_pe_gguf,
                         "pending_lora_repo": pending_lora_repo,
                         "pending_lora_weight_name": pending_lora_weight_name,
+                        "pending_controlnet_repo": pending_controlnet_repo,
+                        "pending_controlnet_weight_name": (
+                            pending_controlnet_weight_name
+                        ),
+                        "pending_upscaler_repo": pending_upscaler_repo,
+                        "pending_upscaler_weight_name": pending_upscaler_weight_name,
+                        "pending_upscaler_mode": pending_upscaler_mode,
+                        "pending_upscaler_model_class": (
+                            pending_upscaler_model_class
+                        ),
+                        "pending_upscaler_pipeline_class": (
+                            pending_upscaler_pipeline_class
+                        ),
+                        "pending_upscaler_scale": pending_upscaler_scale,
                     }
                 )
             return payload
@@ -4850,6 +6100,19 @@ class DiffusionBackend:
         lora_adapter_name: Optional[str] = None,
         lora_scale: Optional[float] = None,
         lora_fuse: bool = False,
+        controlnet_repo: Optional[str] = None,
+        controlnet_weight_name: Optional[str] = None,
+        controlnet_model_class: Optional[str] = None,
+        controlnet_pipeline_class: Optional[str] = None,
+        controlnet_conditioning_scale: Optional[float] = None,
+        control_guidance_start: Optional[float] = None,
+        control_guidance_end: Optional[float] = None,
+        upscaler_repo: Optional[str] = None,
+        upscaler_weight_name: Optional[str] = None,
+        upscaler_mode: str = "pixel",
+        upscaler_model_class: Optional[str] = None,
+        upscaler_pipeline_class: Optional[str] = None,
+        upscaler_scale: Optional[float] = None,
         hf_token: Optional[str] = None,
         family_override: Optional[str] = None,
         enable_model_cpu_offload: bool = True,
@@ -5243,6 +6506,14 @@ class DiffusionBackend:
                 )
                 self._pending_lora_repo = lora_repo
                 self._pending_lora_weight_name = lora_weight_name
+                self._pending_controlnet_repo = controlnet_repo
+                self._pending_controlnet_weight_name = controlnet_weight_name
+                self._pending_upscaler_repo = upscaler_repo
+                self._pending_upscaler_weight_name = upscaler_weight_name
+                self._pending_upscaler_mode = upscaler_mode
+                self._pending_upscaler_model_class = upscaler_model_class
+                self._pending_upscaler_pipeline_class = upscaler_pipeline_class
+                self._pending_upscaler_scale = upscaler_scale
             try:
                 pipeline_cls = getattr(diffusers, fam.pipeline_class, None)
                 if pipeline_cls is None:
@@ -5325,6 +6596,10 @@ class DiffusionBackend:
                 text_encoder = None
                 prompt_enhancer = None
                 lora_state: Optional[DiffusionLoraState] = None
+                control_pipe = None
+                controlnet_state: Optional[DiffusionControlNetState] = None
+                upscaler_pipe = None
+                upscaler_state: Optional[DiffusionUpscalerState] = None
                 torch_compile_stats: Optional[dict[str, Any]] = None
                 local_text_encoder_gguf_path: Optional[str] = None
                 effective_text_encoder_gguf_repo: Optional[str] = None
@@ -5721,6 +6996,8 @@ class DiffusionBackend:
                     _release_chat_backend_for_diffusion(check_helper_advisor = False)
 
                 old = self._pipe
+                old_control = self._control_pipe
+                old_upscaler = self._upscaler_pipe
                 old_ltx2_upsampler = self._ltx2_latent_upsampler
                 if old is not None:
                     with self._lock:
@@ -5730,6 +7007,7 @@ class DiffusionBackend:
                         # pipe. The except block below will restore
                         # last_error so the caller knows what happened.
                         self._pipe = None
+                        self._control_pipe = None
                         self._ltx2_latent_upsampler = None
                         self._ltx2_latent_upsampler_cache_key = None
                         self._ltx2_distilled_lora_cache_key = None
@@ -5745,6 +7023,7 @@ class DiffusionBackend:
                         self._prompt_enhancer_gguf_path = None
                         self._prompt_enhancer_gguf_filename = None
                         self._lora_state = None
+                        self._controlnet_state = None
                         self._component_sources = {}
                         self._base_repo = None
                         self._base_repo_source = None
@@ -5773,8 +7052,10 @@ class DiffusionBackend:
                         self._prompt_embedding_cache_value = None
                         self._loaded_at = None
                     with _load_phase("release_previous_pipeline"):
+                        _release(old_control)
                         _release(old)
                         _release(old_ltx2_upsampler)
+                        old_control = None
                         old = None
                         old_ltx2_upsampler = None
                         # Now that both the attribute and the local
@@ -6112,6 +7393,35 @@ class DiffusionBackend:
                                     or prompt_enhancer_gguf_filename
                                 ),
                             )
+                    if controlnet_repo:
+                        with _load_phase("load_controlnet"):
+                            control_pipe, controlnet_state = _load_diffusion_controlnet(
+                                diffusers,
+                                pipe,
+                                controlnet_repo = controlnet_repo,
+                                controlnet_weight_name = controlnet_weight_name,
+                                controlnet_model_class = controlnet_model_class,
+                                controlnet_pipeline_class = controlnet_pipeline_class,
+                                conditioning_scale = controlnet_conditioning_scale,
+                                guidance_start = control_guidance_start,
+                                guidance_end = control_guidance_end,
+                                dtype = dtype,
+                                token = hf_token,
+                            )
+                    if upscaler_repo:
+                        with _load_phase("load_upscaler"):
+                            upscaler_pipe, upscaler_state = _load_diffusion_upscaler(
+                                diffusers,
+                                upscaler_repo = upscaler_repo,
+                                upscaler_weight_name = upscaler_weight_name,
+                                upscaler_mode = upscaler_mode,
+                                upscaler_model_class = upscaler_model_class,
+                                upscaler_pipeline_class = upscaler_pipeline_class,
+                                upscaler_scale = upscaler_scale,
+                                dtype = dtype,
+                                token = hf_token,
+                            )
+                    runtime_pipe = control_pipe or pipe
                     # Device placement / offload can ALSO raise after
                     # from_pretrained succeeded (OOM at the .to(device)
                     # copy, accelerate offload hook misconfigured, etc.).
@@ -6123,24 +7433,34 @@ class DiffusionBackend:
                     # P2 #11).
                     with _load_phase("device_placement"):
                         if cpu_offload_enabled:
-                            _enable_diffusers_model_cpu_offload(pipe, device)
+                            _prepare_controlnet_cpu_offload(runtime_pipe)
+                            _enable_diffusers_model_cpu_offload(runtime_pipe, device)
                         else:
-                            pipe.to(device)
-                    if _enable_flux2_klein_embedded_guidance(pipe, fam):
+                            runtime_pipe.to(device)
+                        _place_upscaler_for_runtime(
+                            upscaler_pipe,
+                            upscaler_state,
+                            device = device,
+                            cpu_offload_enabled = cpu_offload_enabled,
+                        )
+                    if _enable_flux2_klein_embedded_guidance(runtime_pipe, fam):
                         logger.info(
                             "Enabled single-pass embedded guidance for Flux2 Klein."
                         )
-                    elif _enable_flux2_klein_batched_cfg(pipe, fam):
+                    elif _enable_flux2_klein_batched_cfg(runtime_pipe, fam):
                         logger.info(
                             "Enabled batched classifier-free guidance for Flux2 Klein."
                         )
                     with _load_phase("apply_memory_policy"):
-                        _apply_diffusion_memory_policy(pipe, resolved_offload_policy)
+                        _apply_diffusion_memory_policy(runtime_pipe, resolved_offload_policy)
                     with _load_phase("attention_backend"):
                         attention_backend_config = apply_diffusers_attention_backend(
-                            pipe,
+                            runtime_pipe,
                             resolved_attention_backend,
-                            prefer_default_for_auto = fam.media_kind == "video",
+                            prefer_default_for_auto = (
+                                fam.media_kind == "video"
+                                or fam.name.startswith("z-image")
+                            ),
                         )
                     if resolved_torch_compile != DIFFUSION_TORCH_COMPILE_NONE:
                         if (
@@ -6168,7 +7488,7 @@ class DiffusionBackend:
                                     ] = int(prime_stats["buffers"])
                         with _load_phase("torch_compile"):
                             torch_compile_stats = _apply_diffusion_torch_compile(
-                                pipe,
+                                runtime_pipe,
                                 scope = resolved_torch_compile,
                                 mode = torch_compile_mode,
                                 fullgraph = effective_torch_compile_fullgraph,
@@ -6179,6 +7499,12 @@ class DiffusionBackend:
                     if pipe is not None:
                         _release(pipe)
                         pipe = None
+                    if control_pipe is not None:
+                        _release(control_pipe)
+                        control_pipe = None
+                    if upscaler_pipe is not None:
+                        _release(upscaler_pipe)
+                        upscaler_pipe = None
                     if transformer is not None:
                         _release(transformer)
                         transformer = None
@@ -6196,6 +7522,8 @@ class DiffusionBackend:
 
                 with self._lock:
                     self._pipe = pipe
+                    self._control_pipe = control_pipe
+                    self._upscaler_pipe = upscaler_pipe
                     self._pipeline_variant_cache = {}
                     self._family = fam
                     self._repo_id = repo_id
@@ -6226,6 +7554,8 @@ class DiffusionBackend:
                         else None
                     )
                     self._lora_state = lora_state
+                    self._controlnet_state = controlnet_state
+                    self._upscaler_state = upscaler_state
                     self._component_sources = _build_diffusion_component_sources(
                         pipeline_repo = effective_base,
                         diffusion_gguf_repo = diffusion_gguf_repo,
@@ -6240,6 +7570,8 @@ class DiffusionBackend:
                         prompt_enhancer_gguf_repo = effective_prompt_enhancer_gguf_repo,
                         prompt_enhancer_gguf_filename = prompt_enhancer_gguf_filename,
                         lora_state = lora_state,
+                        controlnet_state = controlnet_state,
+                        upscaler_state = upscaler_state,
                     )
                     self._base_repo = effective_base
                     self._base_repo_source = base_resolution.source
@@ -6346,6 +7678,14 @@ class DiffusionBackend:
                     self._pending_prompt_enhancer_gguf_filename = None
                     self._pending_lora_repo = None
                     self._pending_lora_weight_name = None
+                    self._pending_controlnet_repo = None
+                    self._pending_controlnet_weight_name = None
+                    self._pending_upscaler_repo = None
+                    self._pending_upscaler_weight_name = None
+                    self._pending_upscaler_mode = None
+                    self._pending_upscaler_model_class = None
+                    self._pending_upscaler_pipeline_class = None
+                    self._pending_upscaler_scale = None
 
                 return self.status()
             except Exception as exc:
@@ -6462,6 +7802,10 @@ class DiffusionBackend:
                 )
                 exc_msg = _collapse_local(exc_msg, _locals.get("lora_repo"))
                 exc_msg = _collapse_local(exc_msg, _locals.get("lora_weight_name"))
+                exc_msg = _collapse_local(exc_msg, _locals.get("upscaler_repo"))
+                exc_msg = _collapse_local(
+                    exc_msg, _locals.get("upscaler_weight_name")
+                )
                 with self._lock:
                     self._last_error = exc_msg
                 # ``logger.exception`` would emit the raw exception
@@ -6502,6 +7846,14 @@ class DiffusionBackend:
                     self._pending_prompt_enhancer_gguf_filename = None
                     self._pending_lora_repo = None
                     self._pending_lora_weight_name = None
+                    self._pending_controlnet_repo = None
+                    self._pending_controlnet_weight_name = None
+                    self._pending_upscaler_repo = None
+                    self._pending_upscaler_weight_name = None
+                    self._pending_upscaler_mode = None
+                    self._pending_upscaler_model_class = None
+                    self._pending_upscaler_pipeline_class = None
+                    self._pending_upscaler_scale = None
                 # Round 32 P1 #3: clear the backend-side public-load
                 # pending publish if it was set. Skipped when the
                 # helper-busy snapshot raised (no publish to clear)
@@ -6522,6 +7874,8 @@ class DiffusionBackend:
         with self._load_lock, self._generate_lock:
             with self._lock:
                 old = self._pipe
+                old_control = self._control_pipe
+                old_upscaler = self._upscaler_pipe
                 old_ltx2_upsampler = self._ltx2_latent_upsampler
                 # Mark the slot as busy BEFORE clearing _pipe so a
                 # concurrent helper-busy check (which treats either
@@ -6531,6 +7885,7 @@ class DiffusionBackend:
                 # actually freed.
                 self._loading = True
                 self._pipe = None
+                self._control_pipe = None
                 self._ltx2_latent_upsampler = None
                 self._ltx2_latent_upsampler_cache_key = None
                 self._ltx2_distilled_lora_cache_key = None
@@ -6546,9 +7901,21 @@ class DiffusionBackend:
                 self._prompt_enhancer_gguf_path = None
                 self._prompt_enhancer_gguf_filename = None
                 self._lora_state = None
+                self._control_pipe = None
+                self._controlnet_state = None
+                self._upscaler_pipe = None
+                self._upscaler_state = None
                 self._component_sources = {}
                 self._pending_lora_repo = None
                 self._pending_lora_weight_name = None
+                self._pending_controlnet_repo = None
+                self._pending_controlnet_weight_name = None
+                self._pending_upscaler_repo = None
+                self._pending_upscaler_weight_name = None
+                self._pending_upscaler_mode = None
+                self._pending_upscaler_model_class = None
+                self._pending_upscaler_pipeline_class = None
+                self._pending_upscaler_scale = None
                 self._base_repo = None
                 self._base_repo_source = None
                 self._base_repo_confidence = None
@@ -6577,8 +7944,12 @@ class DiffusionBackend:
                 self._prompt_embedding_cache_value = None
                 self._loaded_at = None
             try:
+                _release(old_control)
+                _release(old_upscaler)
                 _release(old)
                 _release(old_ltx2_upsampler)
+                old_control = None  # noqa: F841
+                old_upscaler = None  # noqa: F841
                 old = None  # noqa: F841
                 old_ltx2_upsampler = None  # noqa: F841
                 _drain_cuda_cache()
@@ -6816,6 +8187,23 @@ class DiffusionBackend:
             and parameter.kind
             in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
         }
+        source_config = getattr(pipe, "config", None)
+        for name, parameter in sig.parameters.items():
+            if (
+                name == "self"
+                or name in kwargs
+                or parameter.kind
+                not in (
+                    inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                    inspect.Parameter.KEYWORD_ONLY,
+                )
+            ):
+                continue
+            try:
+                if source_config is not None and name in source_config:
+                    kwargs[name] = source_config[name]
+            except Exception:
+                continue
         missing = [
             name
             for name, parameter in sig.parameters.items()
@@ -6839,6 +8227,52 @@ class DiffusionBackend:
                 pass
         with self._lock:
             self._pipeline_variant_cache[pipeline_class_name] = variant
+        return variant
+
+    def _get_control_pipeline_variant_unlocked(
+        self,
+        *,
+        pipe: Any,
+        control_pipe: Any,
+    ) -> Any:
+        if pipe is self._pipe:
+            return control_pipe
+        target_class_name = _default_controlnet_pipeline_class_name(type(pipe).__name__)
+        if type(control_pipe).__name__ == target_class_name:
+            return control_pipe
+        cache_key = f"controlnet::{target_class_name}"
+        with self._lock:
+            cached = self._pipeline_variant_cache.get(cache_key)
+            if cached is not None:
+                return cached
+
+        try:
+            import diffusers
+        except ModuleNotFoundError as exc:
+            raise RuntimeError(
+                "ControlNet image generation requires the diffusers runtime."
+            ) from exc
+
+        pipeline_cls = getattr(diffusers, target_class_name, None)
+        if pipeline_cls is None:
+            raise RuntimeError(
+                f"The installed diffusers package does not provide "
+                f"{target_class_name}."
+            )
+        from_pipe = getattr(pipeline_cls, "from_pipe", None)
+        if not callable(from_pipe):
+            raise RuntimeError(f"{target_class_name} does not support from_pipe().")
+        variant = from_pipe(pipe, controlnet = _controlnet_module_from_pipeline(control_pipe))
+        execution_device = getattr(control_pipe, "_execution_device", None) or getattr(
+            pipe, "_execution_device", None
+        )
+        if execution_device is not None:
+            try:
+                setattr(variant, "_execution_device", execution_device)
+            except Exception:
+                pass
+        with self._lock:
+            self._pipeline_variant_cache[cache_key] = variant
         return variant
 
     def _resolve_image_pipeline_for_task_unlocked(
@@ -6919,13 +8353,18 @@ class DiffusionBackend:
         negative_prompt: Optional[str] = None,
         input_images: Optional[list[Any]] = None,
         mask_images: Optional[list[Any]] = None,
+        control_images: Optional[list[Any]] = None,
         image_task: Optional[str] = None,
         strength: Optional[float] = None,
+        controlnet_conditioning_scale: Optional[float] = None,
+        control_guidance_start: Optional[float] = None,
+        control_guidance_end: Optional[float] = None,
         num_inference_steps: Optional[int] = None,
         guidance_scale: Optional[float] = None,
         width: Optional[int] = None,
         height: Optional[int] = None,
         seed: Optional[int] = None,
+        enhance: Any = None,
     ) -> "Any":
         """Generate a single PIL image and return it.
 
@@ -6950,13 +8389,18 @@ class DiffusionBackend:
                 negative_prompt = negative_prompt,
                 input_images = input_images,
                 mask_images = mask_images,
+                control_images = control_images,
                 image_task = image_task,
                 strength = strength,
+                controlnet_conditioning_scale = controlnet_conditioning_scale,
+                control_guidance_start = control_guidance_start,
+                control_guidance_end = control_guidance_end,
                 num_inference_steps = num_inference_steps,
                 guidance_scale = guidance_scale,
                 width = width,
                 height = height,
                 seed = seed,
+                enhance = enhance,
             )
 
     def _generate_image_unlocked(
@@ -6966,13 +8410,18 @@ class DiffusionBackend:
         negative_prompt: Optional[str] = None,
         input_images: Optional[list[Any]] = None,
         mask_images: Optional[list[Any]] = None,
+        control_images: Optional[list[Any]] = None,
         image_task: Optional[str] = None,
         strength: Optional[float] = None,
+        controlnet_conditioning_scale: Optional[float] = None,
+        control_guidance_start: Optional[float] = None,
+        control_guidance_end: Optional[float] = None,
         num_inference_steps: Optional[int] = None,
         guidance_scale: Optional[float] = None,
         width: Optional[int] = None,
         height: Optional[int] = None,
         seed: Optional[int] = None,
+        enhance: Any = None,
         return_all_images: bool = False,
     ) -> "Any":
         """Inner body of ``generate_image`` that ASSUMES the caller
@@ -6989,10 +8438,18 @@ class DiffusionBackend:
             if self._pipe is None:
                 raise RuntimeError("No diffusion model is loaded.")
             pipe = self._pipe
+            control_pipe = self._control_pipe
+            controlnet_state = self._controlnet_state
+            upscaler_pipe = self._upscaler_pipe
             fam = self._family
             base_repo_variant = self._base_repo_variant
             device = self._device or "cpu"
             cpu_offload_enabled = self._cpu_offload_enabled
+            attention_backend_config = (
+                dict(self._attention_backend_config)
+                if self._attention_backend_config is not None
+                else None
+            )
             drain_cache_after_generation = (
                 bool(self._gguf_quantized_cpu_resident) and device == "cuda"
             )
@@ -7046,6 +8503,8 @@ class DiffusionBackend:
             raise ValueError("width and height must be multiples of 8")
         prepared_input_images = list(input_images or [])
         prepared_mask_images = list(mask_images or [])
+        prepared_control_images = list(control_images or [])
+        enhance_plan = build_image_enhance_plan(enhance)
         pipe, resolved_image_task = self._resolve_image_pipeline_for_task_unlocked(
             pipe = pipe,
             fam = fam,
@@ -7053,14 +8512,42 @@ class DiffusionBackend:
             input_images = prepared_input_images,
             mask_images = prepared_mask_images,
         )
+        if prepared_control_images:
+            if control_pipe is None or controlnet_state is None:
+                raise RuntimeError(
+                    "Control images were supplied, but no ControlNet adapter is loaded."
+                )
+            pipe = self._get_control_pipeline_variant_unlocked(
+                pipe = pipe,
+                control_pipe = control_pipe,
+            )
+        if controlnet_conditioning_scale is not None and (
+            controlnet_conditioning_scale < 0.0
+            or controlnet_conditioning_scale > 10.0
+        ):
+            raise ValueError("controlnet_conditioning_scale must be in [0, 10]")
+        if control_guidance_start is not None and (
+            control_guidance_start < 0.0 or control_guidance_start > 1.0
+        ):
+            raise ValueError("control_guidance_start must be in [0, 1]")
+        if control_guidance_end is not None and (
+            control_guidance_end < 0.0 or control_guidance_end > 1.0
+        ):
+            raise ValueError("control_guidance_end must be in [0, 1]")
         if strength is not None and (strength < 0.0 or strength > 1.0):
             raise ValueError("strength must be in [0, 1]")
-        resolved_strength = (
-            float(strength)
-            if strength is not None
-            else (fam.default_image_strength if fam is not None else None)
-        )
+        if strength is not None:
+            resolved_strength = float(strength)
+        elif resolved_image_task == _DIFFUSION_IMAGE_TASK_INPAINT:
+            resolved_strength = (
+                fam.default_inpaint_strength
+                if fam is not None and fam.default_inpaint_strength is not None
+                else 1.0
+            )
+        else:
+            resolved_strength = fam.default_image_strength if fam is not None else None
         generator = None
+        gen_device: Optional[str] = None
         if seed is not None:
             # Match the device of the pipeline so determinism holds
             # across reload cycles. When CPU offload is enabled
@@ -7127,6 +8614,53 @@ class DiffusionBackend:
             else:
                 raise RuntimeError(
                     f"{type(pipe).__name__} does not accept mask_image."
+                )
+        if prepared_control_images:
+            if _pipe_accepts_kwarg(pipe, "control_image"):
+                call_kwargs["control_image"] = (
+                    prepared_control_images[0]
+                    if len(prepared_control_images) == 1
+                    else prepared_control_images
+                )
+            elif _pipe_accepts_kwarg(pipe, "image"):
+                call_kwargs["image"] = (
+                    prepared_control_images[0]
+                    if len(prepared_control_images) == 1
+                    else prepared_control_images
+                )
+            else:
+                raise RuntimeError(
+                    f"{type(pipe).__name__} does not accept ControlNet images."
+                )
+            if _pipe_accepts_kwarg(pipe, "controlnet_conditioning_scale"):
+                call_kwargs["controlnet_conditioning_scale"] = float(
+                    controlnet_conditioning_scale
+                    if controlnet_conditioning_scale is not None
+                    else (
+                        controlnet_state.conditioning_scale
+                        if controlnet_state is not None
+                        else 1.0
+                    )
+                )
+            if _pipe_accepts_kwarg(pipe, "control_guidance_start"):
+                call_kwargs["control_guidance_start"] = float(
+                    control_guidance_start
+                    if control_guidance_start is not None
+                    else (
+                        controlnet_state.guidance_start
+                        if controlnet_state is not None
+                        else 0.0
+                    )
+                )
+            if _pipe_accepts_kwarg(pipe, "control_guidance_end"):
+                call_kwargs["control_guidance_end"] = float(
+                    control_guidance_end
+                    if control_guidance_end is not None
+                    else (
+                        controlnet_state.guidance_end
+                        if controlnet_state is not None
+                        else 1.0
+                    )
                 )
         if (
             resolved_image_task
@@ -7208,14 +8742,88 @@ class DiffusionBackend:
             call_kwargs.setdefault("cfg_normalize", True)
             call_kwargs.setdefault("use_en_prompt", True)
 
+        if cpu_offload_enabled and control_pipe is not None:
+            _remove_diffusers_model_hooks(self._pipe, control_pipe, pipe)
+            _prepare_controlnet_cpu_offload(pipe)
+            _enable_diffusers_model_cpu_offload(pipe, device)
+            _move_controlnet_to_device(pipe, device)
+            _patch_controlnet_runtime_device_guards(pipe, device)
+
         try:
-            out = pipe(**call_kwargs)
+            vae_tiling_meta = apply_vae_tiling_policy(
+                pipe,
+                enhance_plan,
+                width = resolved_width,
+                height = resolved_height,
+            )
+            try:
+                out = pipe(**call_kwargs)
+            except Exception as exc:
+                if not _should_retry_with_default_attention(
+                    exc,
+                    attention_backend_config,
+                ):
+                    raise
+                logger.warning(
+                    "Generation failed with Diffusers flash attention; retrying "
+                    "once with the pipeline default attention backend. Error: %s",
+                    str(exc)[:500],
+                )
+                fallback_attention_config = apply_diffusers_attention_backend(
+                    pipe,
+                    "auto",
+                    prefer_default_for_auto = True,
+                )
+                fallback_attention_config["runtime_fallback_from"] = (
+                    attention_backend_config
+                )
+                fallback_attention_config["runtime_fallback_error"] = (
+                    f"{type(exc).__name__}: {str(exc)[:500]}"
+                )
+                fallback_attention_config.setdefault("warnings", []).append(
+                    "Fell back from Diffusers flash attention after a runtime "
+                    "attention kernel failure."
+                )
+                with self._lock:
+                    self._attention_backend_config = dict(fallback_attention_config)
+                attention_backend_config = fallback_attention_config
+                if seed is not None and gen_device is not None:
+                    call_kwargs["generator"] = torch.Generator(
+                        device = gen_device
+                    ).manual_seed(int(seed))
+                out = pipe(**call_kwargs)
             images = _extract_pipeline_images(out)
+            if images and enhance_plan.enabled:
+                def _enhance_generator() -> Any:
+                    if seed is None or gen_device is None:
+                        return None
+                    return torch.Generator(device = gen_device).manual_seed(int(seed))
+
+                images, enhance_meta = apply_image_enhancement(
+                    images,
+                    enhance_plan,
+                    diffusion_upscaler_pipe = upscaler_pipe,
+                    prompt = prompt,
+                    negative_prompt = (
+                        effective_negative_prompt if should_forward_negative else None
+                    ),
+                    generator_factory = _enhance_generator,
+                )
+                enhance_meta["vae_tiling"] = vae_tiling_meta
+            else:
+                enhance_meta = {
+                    "mode": "off",
+                    "stages": [],
+                    "vae_tiling": vae_tiling_meta,
+                }
         finally:
+            if cpu_offload_enabled:
+                _maybe_free_diffusers_model_hooks(pipe)
             if drain_cache_after_generation:
                 _drain_cuda_cache()
         if not images:
             raise RuntimeError("Diffusion pipeline returned no images.")
+        self._last_image_enhance_meta = enhance_meta
         if return_all_images:
             return images
         return images[0]
@@ -7242,6 +8850,8 @@ class DiffusionBackend:
                     "family": self._family.name if self._family else None,
                     "output_count": len(images),
                 }
+                if self._last_image_enhance_meta is not None:
+                    meta["enhance"] = dict(self._last_image_enhance_meta)
         return images, meta
 
     def generate_image_with_metadata(
@@ -7270,6 +8880,8 @@ class DiffusionBackend:
                     "model": _display_repo_id(self._repo_id),
                     "family": self._family.name if self._family else None,
                 }
+                if self._last_image_enhance_meta is not None:
+                    meta["enhance"] = dict(self._last_image_enhance_meta)
         return image, meta
 
     def _get_ltx2_latent_upsampler(
@@ -7366,6 +8978,7 @@ class DiffusionBackend:
         num_frames: Optional[int] = None,
         frame_rate: Optional[float] = None,
         seed: Optional[int] = None,
+        input_images: Optional[list[Any]] = None,
     ) -> tuple[Any, dict[str, Any]]:
         """Generate video frames and snapshot producer metadata.
 
@@ -7393,6 +9006,20 @@ class DiffusionBackend:
                     f"{fam.name if fam is not None else 'This diffusion model'} "
                     "is not a video generation family."
                 )
+            prepared_input_images = list(input_images or [])
+            video_task = (
+                _DIFFUSION_VIDEO_TASK_IMAGE
+                if prepared_input_images
+                else _DIFFUSION_VIDEO_TASK_TEXT
+            )
+            if prepared_input_images:
+                target_pipeline = fam.video_task_pipelines.get(
+                    _DIFFUSION_VIDEO_TASK_IMAGE
+                )
+                if target_pipeline:
+                    pipe = self._get_pipeline_variant_unlocked(pipe, target_pipeline)
+                if not _pipe_accepts_kwarg(pipe, "image"):
+                    raise RuntimeError(f"{fam.name} does not support image_to_video.")
 
             defaults = _sampling_defaults_for_loaded_pipeline(
                 pipe,
@@ -7486,6 +9113,16 @@ class DiffusionBackend:
                 "negative_prompt",
             ):
                 call_kwargs["negative_prompt"] = effective_negative_prompt
+            if prepared_input_images and _pipe_accepts_kwarg(pipe, "image"):
+                if _pipe_accepts_kwarg(pipe, "last_image") and len(prepared_input_images) > 1:
+                    call_kwargs["image"] = prepared_input_images[0]
+                    call_kwargs["last_image"] = prepared_input_images[1]
+                else:
+                    call_kwargs["image"] = (
+                        prepared_input_images[0]
+                        if len(prepared_input_images) == 1
+                        else prepared_input_images
+                    )
             if generator is not None:
                 call_kwargs["generator"] = generator
 
@@ -7529,7 +9166,10 @@ class DiffusionBackend:
                     "frame_rate": resolved_frame_rate,
                     "num_inference_steps": resolved_steps,
                     "guidance_scale": resolved_guidance,
-                    "guidance_scale_2": guidance_scale_2,
+                    "guidance_scale_2": call_kwargs.get("guidance_scale_2"),
+                    "task": video_task,
+                    "input_images": len(prepared_input_images),
+                    "pipeline_class": type(pipe).__name__,
                 }
                 meta.update(profile_meta)
             return video, meta

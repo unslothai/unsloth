@@ -50,9 +50,8 @@ def video_family_call_defaults(fam: Any) -> dict[str, Any]:
             "output_type": "np",
             "return_dict": False,
         }
-    if fam.name == "wan2-2-t2v":
-        return {
-            "guidance_scale_2": 3.0,
+    if fam.name in {"wan2-2-t2v", "wan2-2-i2v", "wan2-2-ti2v-5b"}:
+        defaults = {
             "negative_prompt": (
                 "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，"
                 "整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，"
@@ -62,6 +61,9 @@ def video_family_call_defaults(fam: Any) -> dict[str, Any]:
             "output_type": "np",
             "return_dict": True,
         }
+        if fam.name in {"wan2-2-t2v", "wan2-2-i2v"}:
+            defaults["guidance_scale_2"] = 3.0
+        return defaults
     return {}
 
 
@@ -73,7 +75,7 @@ def family_load_components(
     hf_token: Optional[str],
 ) -> dict[str, Any]:
     """Load auxiliary components that a video family needs at pipeline load."""
-    if fam.name != "wan2-2-t2v":
+    if fam.name not in {"wan2-2-t2v", "wan2-2-i2v", "wan2-2-ti2v-5b"}:
         return {}
     autoencoder_cls = getattr(diffusers_module, "AutoencoderKLWan", None)
     if autoencoder_cls is None:

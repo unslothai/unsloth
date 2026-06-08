@@ -14,6 +14,7 @@ import {
 import { SectionCard } from "@/components/section-card";
 import { Slider } from "@/components/ui/slider";
 import { Spinner } from "@/components/ui/spinner";
+import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "@/lib/toast";
 import {
@@ -28,13 +29,16 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import {
   fetchDiffusionStatus,
   generateDiffusionImage,
+  generateDiffusionVideo,
   loadDiffusionModel,
   unloadDiffusionModel,
   type DiffusionOffloadPolicy,
   type DiffusionGenerateResponse,
+  type DiffusionReferencePreset,
   type DiffusionStatus,
+  type DiffusionVideoGenerateResponse,
 } from "./api";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type PointerEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 // Curated short list of working diffusion GGUFs. Picked to span
 // size + license so any GPU class has at least one viable option:
@@ -48,10 +52,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 // and base_repo is set explicitly so the backend never falls back to the
 // family default. The CLI on the backend can load anything supported by
 // detect_family(); this list just keeps the picker compact for the v1 UI.
-const CURATED_MODELS: Array<{
+type CuratedDiffusionModel = {
   label: string;
   repo_id: string;
-  default_gguf: string;
+  default_gguf?: string;
   base_repo: string;
   text_encoder_gguf_repo?: string;
   text_encoder_gguf_filename?: string;
@@ -59,8 +63,14 @@ const CURATED_MODELS: Array<{
   family: string;
   default_steps: number;
   default_guidance: number;
+  default_width?: number;
+  default_height?: number;
+  default_num_frames?: number;
+  default_frame_rate?: number;
   notes: string;
-}> = [
+};
+
+const CURATED_MODELS: CuratedDiffusionModel[] = [
   {
     label: "FLUX.2 klein base 4B (Q4_K_M, Apache 2.0)",
     repo_id: "unsloth/FLUX.2-klein-base-4B-GGUF",
@@ -150,9 +160,65 @@ const CURATED_MODELS: Array<{
 
 const DEFAULT_PRESET = CURATED_MODELS[0];
 
+const CURATED_VIDEO_MODELS: CuratedDiffusionModel[] = [
+  {
+    label: "LTX 2.3 Distilled",
+    repo_id: "diffusers/LTX-2.3-Distilled-Diffusers",
+    base_repo: "diffusers/LTX-2.3-Distilled-Diffusers",
+    family: "ltx2-3-distilled",
+    default_steps: 8,
+    default_guidance: 1.0,
+    default_width: 1536,
+    default_height: 1024,
+    default_num_frames: 121,
+    default_frame_rate: 24,
+    notes: "Fast LTX 2.3 distilled video pipeline. Default final output is 1536x1024, 121 frames.",
+  },
+  {
+    label: "LTX 2.3 Base",
+    repo_id: "diffusers/LTX-2.3-Diffusers",
+    base_repo: "diffusers/LTX-2.3-Diffusers",
+    family: "ltx2-3-base",
+    default_steps: 30,
+    default_guidance: 3.0,
+    default_width: 1536,
+    default_height: 1024,
+    default_num_frames: 121,
+    default_frame_rate: 24,
+    notes: "Higher quality LTX 2.3 base video pipeline.",
+  },
+  {
+    label: "Wan 2.2 T2V A14B",
+    repo_id: "Wan-AI/Wan2.2-T2V-A14B-Diffusers",
+    base_repo: "Wan-AI/Wan2.2-T2V-A14B-Diffusers",
+    family: "wan2-2-t2v",
+    default_steps: 40,
+    default_guidance: 4.0,
+    default_width: 1280,
+    default_height: 720,
+    default_num_frames: 81,
+    default_frame_rate: 16,
+    notes: "Wan text-to-video pipeline. Heavier than LTX; use lower resolutions for preview runs.",
+  },
+];
+
+const DEFAULT_VIDEO_PRESET = CURATED_VIDEO_MODELS[0];
+
 type DiffusionOffloadPolicySelection = "auto" | DiffusionOffloadPolicy;
+type MediaKind = "image" | "video";
 type GenerationTask = "auto" | "text_to_image" | "image_to_image" | "edit" | "inpaint";
-type ReferenceImage = {
+type EnhanceMode = "off" | "upscale" | "creative_upscale" | "large_tiled";
+type UpscaleEngine = "pixel" | "super_resolution";
+type UpscaleMethod = "nearest" | "bilinear" | "bicubic" | "lanczos";
+type ReferenceRole =
+  | "edit_source"
+  | "init_frame"
+  | "style"
+  | "object_identity"
+  | "person_identity"
+  | "structure"
+  | "reference";
+type ImageAsset = {
   id: string;
   name: string;
   b64: string;
@@ -160,6 +226,12 @@ type ReferenceImage = {
   width: number;
   height: number;
 };
+type ReferenceImage = ImageAsset & {
+  role: ReferenceRole;
+};
+type GeneratedMediaResult =
+  | ({ kind: "image" } & DiffusionGenerateResponse)
+  | ({ kind: "video" } & DiffusionVideoGenerateResponse);
 
 const GENERATION_TASKS: Array<{ value: GenerationTask; label: string }> = [
   { value: "auto", label: "Auto" },
@@ -167,6 +239,46 @@ const GENERATION_TASKS: Array<{ value: GenerationTask; label: string }> = [
   { value: "image_to_image", label: "Image" },
   { value: "edit", label: "Edit" },
   { value: "inpaint", label: "Inpaint" },
+];
+
+const REFERENCE_ROLE_LABELS: Record<ReferenceRole, string> = {
+  edit_source: "Edit source",
+  init_frame: "Initial frame",
+  style: "Style",
+  object_identity: "Object ID",
+  person_identity: "Person ID",
+  structure: "Structure",
+  reference: "Reference",
+};
+
+function isReferenceRole(value: string): value is ReferenceRole {
+  return value in REFERENCE_ROLE_LABELS;
+}
+
+function isGenerationTask(value: string): value is GenerationTask {
+  return GENERATION_TASKS.some((task) => task.value === value);
+}
+
+function referencePresetSummary(preset: DiffusionReferencePreset): string {
+  const parts = [
+    preset.implementation,
+    preset.confidence,
+    preset.default_steps != null ? `${preset.default_steps} steps` : null,
+    preset.default_guidance_scale != null
+      ? `guidance ${preset.default_guidance_scale}`
+      : null,
+    preset.default_strength != null
+      ? `strength ${preset.default_strength.toFixed(2)}`
+      : null,
+  ].filter(Boolean);
+  return parts.join(" · ");
+}
+
+const ENHANCE_MODES: Array<{ value: EnhanceMode; label: string }> = [
+  { value: "off", label: "Off" },
+  { value: "upscale", label: "Upscale" },
+  { value: "creative_upscale", label: "Creative" },
+  { value: "large_tiled", label: "Large tiled" },
 ];
 
 const OFFLOAD_POLICY_OPTIONS: Array<{
@@ -209,7 +321,7 @@ const RESOLUTION_PRESETS: Array<{ label: string; w: number; h: number }> = [
   { label: "Landscape 1216x832", w: 1216, h: 832 },
 ];
 
-function readReferenceImage(file: File): Promise<ReferenceImage> {
+function readImageAsset(file: File): Promise<ImageAsset> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onerror = () => reject(new Error(`Could not read ${file.name}`));
@@ -233,11 +345,27 @@ function readReferenceImage(file: File): Promise<ReferenceImage> {
   });
 }
 
+async function readReferenceImage(
+  file: File,
+  role: ReferenceRole = "edit_source",
+): Promise<ReferenceImage> {
+  return {
+    ...(await readImageAsset(file)),
+    role,
+  };
+}
+
+function clampGenerationDimension(value: number | undefined): number | undefined {
+  if (!value || !Number.isFinite(value)) return undefined;
+  return Math.max(64, Math.min(2048, Math.round(value / 8) * 8));
+}
+
 export function ImagesPage() {
   const [status, setStatus] = useState<DiffusionStatus | null>(null);
   const [refreshingStatus, setRefreshingStatus] = useState(false);
   const [busy, setBusy] = useState<"idle" | "loading" | "unloading" | "generating">("idle");
 
+  const [mediaKind, setMediaKind] = useState<MediaKind>("image");
   const [presetIndex, setPresetIndex] = useState(0);
   const [customRepoId, setCustomRepoId] = useState("");
   const [customGguf, setCustomGguf] = useState("");
@@ -245,6 +373,9 @@ export function ImagesPage() {
   const [customTextEncoderRepo, setCustomTextEncoderRepo] = useState("");
   const [customTextEncoderGguf, setCustomTextEncoderGguf] = useState("");
   const [customFamily, setCustomFamily] = useState<string>("auto");
+  const [controlNetEnabled, setControlNetEnabled] = useState(false);
+  const [controlNetRepo, setControlNetRepo] = useState("");
+  const [controlNetWeightName, setControlNetWeightName] = useState("");
   const [useCustom, setUseCustom] = useState(false);
   const [hfToken, setHfToken] = useState("");
   const [offloadPolicy, setOffloadPolicy] = useState<DiffusionOffloadPolicySelection>("auto");
@@ -253,19 +384,82 @@ export function ImagesPage() {
   const [negativePrompt, setNegativePrompt] = useState("");
   const [generationTask, setGenerationTask] = useState<GenerationTask>("auto");
   const [referenceImages, setReferenceImages] = useState<ReferenceImage[]>([]);
+  const [maskImages, setMaskImages] = useState<ImageAsset[]>([]);
+  const [paintedMaskDirty, setPaintedMaskDirty] = useState(false);
+  const [maskBrushSize, setMaskBrushSize] = useState(64);
+  const [controlImages, setControlImages] = useState<ReferenceImage[]>([]);
   const [strength, setStrength] = useState(0.6);
+  const [controlScale, setControlScale] = useState(1.0);
+  const [controlStart, setControlStart] = useState(0.0);
+  const [controlEnd, setControlEnd] = useState(1.0);
+  const [enhanceMode, setEnhanceMode] = useState<EnhanceMode>("off");
+  const [upscaleEngine, setUpscaleEngine] = useState<UpscaleEngine>("pixel");
+  const [upscaleModelRepo, setUpscaleModelRepo] = useState("");
+  const [upscaleScale, setUpscaleScale] = useState(2);
+  const [upscaleMethod, setUpscaleMethod] = useState<UpscaleMethod>("lanczos");
+  const [creativeUpscalerRepo, setCreativeUpscalerRepo] = useState("");
+  const [creativeUpscalerPipelineClass, setCreativeUpscalerPipelineClass] = useState("");
+  const [creativeUpscaleSteps, setCreativeUpscaleSteps] = useState(12);
+  const [creativeUpscaleGuidance, setCreativeUpscaleGuidance] = useState(4);
+  const [tileSize, setTileSize] = useState(768);
+  const [tileOverlap, setTileOverlap] = useState(64);
+  const [vaeTiling, setVaeTiling] = useState<"auto" | "on" | "off">("auto");
   const [steps, setSteps] = useState(DEFAULT_PRESET.default_steps);
   const [guidance, setGuidance] = useState(DEFAULT_PRESET.default_guidance);
   const [resolutionIdx, setResolutionIdx] = useState(0);
+  const [videoWidth, setVideoWidth] = useState(DEFAULT_VIDEO_PRESET.default_width);
+  const [videoHeight, setVideoHeight] = useState(DEFAULT_VIDEO_PRESET.default_height);
+  const [videoFrames, setVideoFrames] = useState(DEFAULT_VIDEO_PRESET.default_num_frames);
+  const [videoFrameRate, setVideoFrameRate] = useState(DEFAULT_VIDEO_PRESET.default_frame_rate);
   const [seed, setSeed] = useState<string>("");
 
-  const [results, setResults] = useState<DiffusionGenerateResponse[]>([]);
+  const [results, setResults] = useState<GeneratedMediaResult[]>([]);
   const lastErrorRef = useRef<string | null>(null);
   const imageInputRef = useRef<HTMLInputElement | null>(null);
+  const maskInputRef = useRef<HTMLInputElement | null>(null);
+  const maskCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const maskDrawingRef = useRef(false);
+  const maskLastPointRef = useRef<{ x: number; y: number } | null>(null);
+  const controlInputRef = useRef<HTMLInputElement | null>(null);
   const referenceImagesRef = useRef<ReferenceImage[]>([]);
+  const maskImagesRef = useRef<ImageAsset[]>([]);
+  const controlImagesRef = useRef<ReferenceImage[]>([]);
 
-  const preset = CURATED_MODELS[presetIndex] ?? DEFAULT_PRESET;
+  const activeModelPresets =
+    mediaKind === "video" ? CURATED_VIDEO_MODELS : CURATED_MODELS;
+  const preset =
+    activeModelPresets[presetIndex] ??
+    (mediaKind === "video" ? DEFAULT_VIDEO_PRESET : DEFAULT_PRESET);
   const resolution = RESOLUTION_PRESETS[resolutionIdx];
+
+  const applyPresetDefaults = useCallback((nextPreset: CuratedDiffusionModel) => {
+    setSteps(nextPreset.default_steps);
+    setGuidance(nextPreset.default_guidance);
+    if (nextPreset.default_width && nextPreset.default_height) {
+      setVideoWidth(nextPreset.default_width);
+      setVideoHeight(nextPreset.default_height);
+    }
+    if (nextPreset.default_num_frames) {
+      setVideoFrames(nextPreset.default_num_frames);
+    }
+    if (nextPreset.default_frame_rate) {
+      setVideoFrameRate(nextPreset.default_frame_rate);
+    }
+  }, []);
+
+  const handleMediaKindChange = useCallback(
+    (nextKind: MediaKind) => {
+      if (nextKind === mediaKind) return;
+      const nextPreset =
+        nextKind === "video" ? DEFAULT_VIDEO_PRESET : DEFAULT_PRESET;
+      setMediaKind(nextKind);
+      setUseCustom(false);
+      setPresetIndex(0);
+      setResolutionIdx(0);
+      applyPresetDefaults(nextPreset);
+    },
+    [applyPresetDefaults, mediaKind],
+  );
 
   // Round 30 P2 #12: split the fetch from the spinner toggle so the
   // mount + auto-poll effects can call the fetch without the
@@ -320,8 +514,41 @@ export function ImagesPage() {
   }, [referenceImages]);
 
   useEffect(() => {
+    maskImagesRef.current = maskImages;
+  }, [maskImages]);
+
+  useEffect(() => {
+    controlImagesRef.current = controlImages;
+  }, [controlImages]);
+
+  const inpaintSource = useMemo(
+    () =>
+      referenceImages.find((image) => image.role === "edit_source") ??
+      referenceImages[0] ??
+      null,
+    [referenceImages],
+  );
+
+  useEffect(() => {
+    const canvas = maskCanvasRef.current;
+    if (!canvas || !inpaintSource) return;
+    canvas.width = inpaintSource.width;
+    canvas.height = inpaintSource.height;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.fillStyle = "black";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    setPaintedMaskDirty(false);
+    maskDrawingRef.current = false;
+    maskLastPointRef.current = null;
+  }, [inpaintSource]);
+
+  useEffect(() => {
     return () => {
       for (const image of referenceImagesRef.current) {
+        URL.revokeObjectURL(image.previewUrl);
+      }
+      for (const image of controlImagesRef.current) {
         URL.revokeObjectURL(image.previewUrl);
       }
     };
@@ -363,6 +590,27 @@ export function ImagesPage() {
         toast.error("Pick a model first");
         return;
       }
+      if (mediaKind === "image" && controlNetEnabled && !controlNetRepo.trim()) {
+        toast.error("Enter a ControlNet repo first");
+        return;
+      }
+      if (
+        mediaKind === "image" &&
+        enhanceMode === "creative_upscale" &&
+        !creativeUpscalerRepo.trim()
+      ) {
+        toast.error("Enter a creative upscaler repo first");
+        return;
+      }
+      if (
+        mediaKind === "image" &&
+        enhanceMode === "upscale" &&
+        upscaleEngine === "super_resolution" &&
+        !upscaleModelRepo.trim()
+      ) {
+        toast.error("Enter a super-resolution model repo first");
+        return;
+      }
       const next = await loadDiffusionModel({
         repo_id: repo,
         gguf_filename: gguf,
@@ -370,6 +618,44 @@ export function ImagesPage() {
         text_encoder_gguf_repo: textEncoderRepo,
         text_encoder_gguf_filename: textEncoderGguf,
         text_encoder_gguf_component: textEncoderComponent,
+        controlnet_repo: mediaKind === "image" && controlNetEnabled
+          ? controlNetRepo.trim() || undefined
+          : undefined,
+        controlnet_weight_name: mediaKind === "image" && controlNetEnabled
+          ? controlNetWeightName.trim() || undefined
+          : undefined,
+        controlnet_conditioning_scale:
+          mediaKind === "image" && controlNetEnabled ? controlScale : undefined,
+        control_guidance_start:
+          mediaKind === "image" && controlNetEnabled ? controlStart : undefined,
+        control_guidance_end:
+          mediaKind === "image" && controlNetEnabled ? controlEnd : undefined,
+        upscaler_repo:
+          mediaKind === "image" && enhanceMode === "creative_upscale"
+            ? creativeUpscalerRepo.trim() || undefined
+            : mediaKind === "image" &&
+                enhanceMode === "upscale" &&
+                upscaleEngine === "super_resolution"
+              ? upscaleModelRepo.trim() || undefined
+            : undefined,
+        upscaler_mode:
+          mediaKind === "image" && enhanceMode === "creative_upscale"
+            ? "diffusion"
+            : mediaKind === "image" &&
+                enhanceMode === "upscale" &&
+                upscaleEngine === "super_resolution"
+              ? "super_resolution"
+              : undefined,
+        upscaler_pipeline_class:
+          mediaKind === "image" && enhanceMode === "creative_upscale"
+            ? creativeUpscalerPipelineClass.trim() || undefined
+            : undefined,
+        upscaler_scale:
+          mediaKind === "image" &&
+          (enhanceMode === "creative_upscale" ||
+            (enhanceMode === "upscale" && upscaleEngine === "super_resolution"))
+            ? upscaleScale
+            : undefined,
         family,
         hf_token: hfToken.trim() || undefined,
         runtime: {
@@ -379,16 +665,30 @@ export function ImagesPage() {
           torch_compile: "auto",
         },
         parameters: {
-          width: resolution.w,
-          height: resolution.h,
+          width: mediaKind === "video" ? videoWidth : resolution.w,
+          height: mediaKind === "video" ? videoHeight : resolution.h,
+          num_frames: mediaKind === "video" ? videoFrames : undefined,
+          frame_rate: mediaKind === "video" ? videoFrameRate : undefined,
           batch_size: 1,
           guidance_scale: guidance,
+          enhance:
+            mediaKind === "image"
+              ? {
+                  mode: enhanceMode,
+                  tiling: {
+                    enabled: enhanceMode === "large_tiled" ? "on" : "auto",
+                    tile_size: tileSize,
+                    overlap: tileOverlap,
+                    vae_decode: vaeTiling,
+                  },
+                }
+              : undefined,
         },
       });
       setStatus(next);
-      toast.success("Loaded image model", { description: next.repo_id ?? undefined });
+      toast.success(`Loaded ${mediaKind} model`, { description: next.repo_id ?? undefined });
     } catch (err) {
-      toast.error("Failed to load image model", {
+      toast.error(`Failed to load ${mediaKind} model`, {
         description: err instanceof Error ? err.message : String(err),
       });
       // Backend clears its old pipeline before allocating the new one;
@@ -401,14 +701,34 @@ export function ImagesPage() {
     }
   }, [
     useCustom,
+    mediaKind,
     customRepoId,
     customGguf,
     customBaseRepo,
     customTextEncoderRepo,
     customTextEncoderGguf,
     customFamily,
+    controlNetEnabled,
+    controlNetRepo,
+    controlNetWeightName,
+    controlScale,
+    controlStart,
+    controlEnd,
+    enhanceMode,
+    upscaleEngine,
+    upscaleModelRepo,
+    creativeUpscalerRepo,
+    creativeUpscalerPipelineClass,
+    upscaleScale,
+    tileSize,
+    tileOverlap,
+    vaeTiling,
     preset,
     resolution,
+    videoWidth,
+    videoHeight,
+    videoFrames,
+    videoFrameRate,
     guidance,
     hfToken,
     offloadPolicy,
@@ -439,7 +759,10 @@ export function ImagesPage() {
     const selected = Array.from(files).filter((file) => file.type.startsWith("image/"));
     if (selected.length === 0) return;
     try {
-      const next = await Promise.all(selected.slice(0, 8).map(readReferenceImage));
+      const defaultRole: ReferenceRole = mediaKind === "video" ? "init_frame" : "edit_source";
+      const next = await Promise.all(
+        selected.slice(0, 8).map((file) => readReferenceImage(file, defaultRole)),
+      );
       setReferenceImages((prev) => {
         const merged = [...prev, ...next].slice(0, 8);
         for (const image of [...prev, ...next].slice(8)) {
@@ -456,6 +779,54 @@ export function ImagesPage() {
         imageInputRef.current.value = "";
       }
     }
+  }, [mediaKind]);
+
+  const handleControlFiles = useCallback(async (files: FileList | File[]) => {
+    const selected = Array.from(files).filter((file) => file.type.startsWith("image/"));
+    if (selected.length === 0) return;
+    try {
+      const next = await Promise.all(
+        selected.slice(0, 8).map((file) => readReferenceImage(file)),
+      );
+      setControlImages((prev) => {
+        const merged = [...prev, ...next].slice(0, 8);
+        for (const image of [...prev, ...next].slice(8)) {
+          URL.revokeObjectURL(image.previewUrl);
+        }
+        return merged;
+      });
+    } catch (err) {
+      toast.error("Could not add control image", {
+        description: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      if (controlInputRef.current) {
+        controlInputRef.current.value = "";
+      }
+    }
+  }, []);
+
+  const handleMaskFiles = useCallback(async (files: FileList | File[]) => {
+    const selected = Array.from(files).filter((file) => file.type.startsWith("image/"));
+    if (selected.length === 0) return;
+    try {
+      const next = await Promise.all(selected.slice(0, 4).map(readImageAsset));
+      setMaskImages((prev) => {
+        const merged = [...prev, ...next].slice(0, 4);
+        for (const image of [...prev, ...next].slice(4)) {
+          URL.revokeObjectURL(image.previewUrl);
+        }
+        return merged;
+      });
+    } catch (err) {
+      toast.error("Could not add mask image", {
+        description: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      if (maskInputRef.current) {
+        maskInputRef.current.value = "";
+      }
+    }
   }, []);
 
   const removeReferenceImage = useCallback((id: string) => {
@@ -466,9 +837,182 @@ export function ImagesPage() {
     });
   }, []);
 
+  const updateReferenceRole = useCallback((id: string, role: ReferenceRole) => {
+    setReferenceImages((prev) =>
+      prev.map((image) => (image.id === id ? { ...image, role } : image)),
+    );
+  }, []);
+
+  const addGeneratedImageAsReference = useCallback(
+    (
+      result: DiffusionGenerateResponse,
+      imageB64: string,
+      imageIndex: number,
+      role: ReferenceRole,
+    ) => {
+      const dataUrl = `data:${result.image_mime};base64,${imageB64}`;
+      const asset: ReferenceImage = {
+        id: `generated-${Date.now()}-${crypto.randomUUID()}`,
+        name:
+          imageIndex > 0
+            ? `generated-output-${imageIndex + 1}.png`
+            : "generated-output.png",
+        b64: dataUrl,
+        previewUrl: dataUrl,
+        width: result.width,
+        height: result.height,
+        role,
+      };
+      setReferenceImages((prev) => [asset, ...prev].slice(0, 8));
+      if (role === "init_frame") {
+        setMediaKind("video");
+        const nextWidth = clampGenerationDimension(result.width);
+        const nextHeight = clampGenerationDimension(result.height);
+        if (nextWidth) setVideoWidth(nextWidth);
+        if (nextHeight) setVideoHeight(nextHeight);
+        toast.success("Added generated image as the video input frame");
+      } else {
+        setMediaKind("image");
+        setGenerationTask("edit");
+        toast.success("Added generated image as an image input");
+      }
+    },
+    [],
+  );
+
+  const removeMaskImage = useCallback((id: string) => {
+    setMaskImages((prev) => {
+      const removed = prev.find((image) => image.id === id);
+      if (removed) URL.revokeObjectURL(removed.previewUrl);
+      return prev.filter((image) => image.id !== id);
+    });
+  }, []);
+
+  const clearPaintedMask = useCallback(() => {
+    const canvas = maskCanvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.fillStyle = "black";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    maskDrawingRef.current = false;
+    maskLastPointRef.current = null;
+    setPaintedMaskDirty(false);
+  }, []);
+
+  const drawMaskPoint = useCallback(
+    (event: PointerEvent<HTMLCanvasElement>) => {
+      const canvas = maskCanvasRef.current;
+      if (!canvas) return;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return;
+      const rect = canvas.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return;
+      const x = ((event.clientX - rect.left) / rect.width) * canvas.width;
+      const y = ((event.clientY - rect.top) / rect.height) * canvas.height;
+      const last = maskLastPointRef.current;
+      ctx.save();
+      ctx.strokeStyle = "white";
+      ctx.fillStyle = "white";
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+      ctx.lineWidth = maskBrushSize;
+      if (last) {
+        ctx.beginPath();
+        ctx.moveTo(last.x, last.y);
+        ctx.lineTo(x, y);
+        ctx.stroke();
+      } else {
+        ctx.beginPath();
+        ctx.arc(x, y, maskBrushSize / 2, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.restore();
+      maskLastPointRef.current = { x, y };
+      setPaintedMaskDirty(true);
+    },
+    [maskBrushSize],
+  );
+
+  const startMaskStroke = useCallback(
+    (event: PointerEvent<HTMLCanvasElement>) => {
+      event.currentTarget.setPointerCapture(event.pointerId);
+      maskDrawingRef.current = true;
+      maskLastPointRef.current = null;
+      drawMaskPoint(event);
+    },
+    [drawMaskPoint],
+  );
+
+  const continueMaskStroke = useCallback(
+    (event: PointerEvent<HTMLCanvasElement>) => {
+      if (!maskDrawingRef.current) return;
+      drawMaskPoint(event);
+    },
+    [drawMaskPoint],
+  );
+
+  const endMaskStroke = useCallback((event: PointerEvent<HTMLCanvasElement>) => {
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    maskDrawingRef.current = false;
+    maskLastPointRef.current = null;
+  }, []);
+
+  const applyReferencePreset = useCallback(
+    (preset: DiffusionReferencePreset) => {
+      if (isGenerationTask(preset.task)) {
+        setGenerationTask(preset.task);
+      }
+      if (preset.default_steps != null) {
+        setSteps(preset.default_steps);
+      }
+      if (preset.default_guidance_scale != null) {
+        setGuidance(preset.default_guidance_scale);
+      }
+      if (preset.default_strength != null) {
+        setStrength(preset.default_strength);
+      }
+      toast.success("Reference preset applied", {
+        description: referencePresetSummary(preset),
+      });
+    },
+    [],
+  );
+
+  const removeControlImage = useCallback((id: string) => {
+    setControlImages((prev) => {
+      const removed = prev.find((image) => image.id === id);
+      if (removed) URL.revokeObjectURL(removed.previewUrl);
+      return prev.filter((image) => image.id !== id);
+    });
+  }, []);
+
   const handleGenerate = useCallback(async () => {
     if (!prompt.trim()) {
       toast.error("Prompt is empty");
+      return;
+    }
+    if (
+      mediaKind === "image" &&
+      enhanceMode === "creative_upscale" &&
+      status?.upscaler?.mode !== "diffusion"
+    ) {
+      toast.error("Creative upscale needs a loaded upscaler", {
+        description: "Enter a creative upscaler repo, reload the model, then generate.",
+      });
+      return;
+    }
+    if (
+      mediaKind === "image" &&
+      enhanceMode === "upscale" &&
+      upscaleEngine === "super_resolution" &&
+      status?.upscaler?.mode !== "super_resolution"
+    ) {
+      toast.error("Model upscale needs a loaded upscaler", {
+        description: "Enter a super-resolution model repo, reload the model, then generate.",
+      });
       return;
     }
     setBusy("generating");
@@ -512,30 +1056,135 @@ export function ImagesPage() {
         const SAFE_MIN = -SAFE_MAX;
         parsedSeed = big >= SAFE_MIN && big <= SAFE_MAX ? Number(big) : big;
       }
+      if (mediaKind === "video") {
+        const videoInputs = referenceImages.map((image) => ({
+          id: image.id,
+          type: "image" as const,
+          role: image.role,
+          mime: "image/png",
+          b64: image.b64,
+        }));
+        const out = await generateDiffusionVideo({
+          prompt,
+          negative_prompt: negativePrompt.trim() || undefined,
+          inputs: videoInputs.length > 0 ? videoInputs : undefined,
+          num_inference_steps: steps,
+          guidance_scale: guidance,
+          width: videoWidth,
+          height: videoHeight,
+          num_frames: videoFrames,
+          frame_rate: videoFrameRate,
+          seed: parsedSeed,
+        });
+        const result: GeneratedMediaResult = { ...out, kind: "video" };
+        setResults((prev) => [result, ...prev].slice(0, 12));
+        return;
+      }
       const activeReferenceImages =
         generationTask === "text_to_image" ? [] : referenceImages;
       const imageB64s = activeReferenceImages.map((image) => image.b64);
+      const structuredInputs = activeReferenceImages.map((image) => ({
+        id: image.id,
+        type: "image" as const,
+        role: image.role,
+        mime: "image/png",
+        b64: image.b64,
+      }));
+      const activeMaskImages = generationTask === "inpaint" ? maskImagesRef.current : [];
+      const maskInputs = activeMaskImages.map((image) => ({
+        id: image.id,
+        type: "image" as const,
+        role: "mask",
+        mime: "image/png",
+        b64: image.b64,
+      }));
+      if (generationTask === "inpaint") {
+        if (imageB64s.length === 0) {
+          toast.error("Inpaint needs a source image");
+          return;
+        }
+        const canvas = maskCanvasRef.current;
+        if (paintedMaskDirty && canvas) {
+          maskInputs.push({
+            id: "painted-mask",
+            type: "image" as const,
+            role: "mask",
+            mime: "image/png",
+            b64: canvas.toDataURL("image/png"),
+          });
+        }
+        if (maskInputs.length === 0) {
+          toast.error("Inpaint needs a mask");
+          return;
+        }
+      }
+      const activeControlImages =
+        controlNetEnabled && status?.controlnet ? controlImages : [];
+      const controlB64s = activeControlImages.map((image) => image.b64);
+      const enhance =
+        enhanceMode === "off"
+          ? undefined
+          : {
+              mode: enhanceMode,
+              upscale: {
+                enabled: true,
+                mode:
+                  enhanceMode === "creative_upscale"
+                    ? ("diffusion" as const)
+                    : enhanceMode === "upscale" && upscaleEngine === "super_resolution"
+                      ? ("super_resolution" as const)
+                    : ("pixel" as const),
+                scale: upscaleScale,
+                method: upscaleMethod,
+                tile_size: tileSize,
+                tile_overlap: tileOverlap,
+                num_inference_steps:
+                  enhanceMode === "creative_upscale"
+                    ? creativeUpscaleSteps
+                    : undefined,
+                guidance_scale:
+                  enhanceMode === "creative_upscale"
+                    ? creativeUpscaleGuidance
+                    : undefined,
+              },
+              tiling: {
+                enabled: enhanceMode === "large_tiled" ? ("on" as const) : ("auto" as const),
+                tile_size: tileSize,
+                overlap: tileOverlap,
+                vae_decode: vaeTiling,
+              },
+            };
       const out = await generateDiffusionImage({
         prompt,
         negative_prompt: negativePrompt.trim() || undefined,
         task: generationTask,
-        image_b64: imageB64s.length === 1 ? imageB64s[0] : undefined,
-        images_b64: imageB64s.length > 1 ? imageB64s : undefined,
+        inputs:
+          structuredInputs.length > 0 || maskInputs.length > 0
+            ? [...structuredInputs, ...maskInputs]
+            : undefined,
+        control_image_b64: controlB64s.length === 1 ? controlB64s[0] : undefined,
+        control_images_b64: controlB64s.length > 1 ? controlB64s : undefined,
         strength:
           imageB64s.length > 0 &&
           generationTask !== "text_to_image" &&
           generationTask !== "edit"
             ? strength
             : undefined,
+        controlnet_conditioning_scale:
+          controlB64s.length > 0 ? controlScale : undefined,
+        control_guidance_start: controlB64s.length > 0 ? controlStart : undefined,
+        control_guidance_end: controlB64s.length > 0 ? controlEnd : undefined,
         num_inference_steps: steps,
         guidance_scale: guidance,
         width: resolution.w,
         height: resolution.h,
         seed: parsedSeed,
+        enhance,
       });
-      setResults((prev) => [out, ...prev].slice(0, 12));
+      const result: GeneratedMediaResult = { ...out, kind: "image" };
+      setResults((prev) => [result, ...prev].slice(0, 12));
     } catch (err) {
-      toast.error("Image generation failed", {
+      toast.error(`${mediaKind === "video" ? "Video" : "Image"} generation failed`, {
         description: err instanceof Error ? err.message : String(err),
       });
     } finally {
@@ -544,12 +1193,33 @@ export function ImagesPage() {
   }, [
     prompt,
     negativePrompt,
+    mediaKind,
     generationTask,
     referenceImages,
+    paintedMaskDirty,
+    controlImages,
+    controlNetEnabled,
+    status,
     strength,
+    controlScale,
+    controlStart,
+    controlEnd,
+    enhanceMode,
+    upscaleEngine,
+    upscaleScale,
+    upscaleMethod,
+    creativeUpscaleSteps,
+    creativeUpscaleGuidance,
+    tileSize,
+    tileOverlap,
+    vaeTiling,
     steps,
     guidance,
     resolution,
+    videoWidth,
+    videoHeight,
+    videoFrames,
+    videoFrameRate,
     seed,
   ]);
 
@@ -584,17 +1254,92 @@ export function ImagesPage() {
     return !family.startsWith("flux.2");
   }, [status, useCustom, customFamily, preset.family]);
 
+  const activeFamilyName = status?.family || (useCustom ? customFamily : preset.family);
+  const activeFamily = useMemo(() => {
+    if (!status?.supported_families) return null;
+    return (
+      status.supported_families.find((family) => family.name === activeFamilyName) ??
+      null
+    );
+  }, [status, activeFamilyName]);
+  const referencePresets = useMemo(
+    () =>
+      status?.sampling_contract?.reference_presets?.length
+        ? status.sampling_contract.reference_presets
+        : (activeFamily?.reference_presets ?? []),
+    [status, activeFamily],
+  );
+  const supportedGenerationTasks = useMemo(() => {
+    const contractTasks = status?.sampling_contract?.image_tasks;
+    const familyTasks = activeFamily?.image_tasks;
+    const sourceTasks = contractTasks?.length ? contractTasks : familyTasks;
+    if (!sourceTasks?.length) return null;
+    const tasks = new Set<GenerationTask>(["auto"]);
+    for (const task of sourceTasks) {
+      if (isGenerationTask(task)) tasks.add(task);
+    }
+    return tasks;
+  }, [status?.sampling_contract?.image_tasks, activeFamily?.image_tasks]);
+  useEffect(() => {
+    if (supportedGenerationTasks != null && !supportedGenerationTasks.has(generationTask)) {
+      const id = window.setTimeout(() => setGenerationTask("auto"), 0);
+      return () => window.clearTimeout(id);
+    }
+    return undefined;
+  }, [supportedGenerationTasks, generationTask]);
+  const referenceRoleOptions = useMemo(() => {
+    if (mediaKind === "video") {
+      return ["init_frame", "reference"] as ReferenceRole[];
+    }
+    const roles = referencePresets
+      .map((preset) => preset.role as ReferenceRole)
+      .filter((role): role is ReferenceRole => isReferenceRole(role));
+    const unique = Array.from(new Set<ReferenceRole>(roles));
+    return unique.length > 0 ? unique : (["edit_source", "reference"] as ReferenceRole[]);
+  }, [mediaKind, referencePresets]);
+  const activeReferencePresets = useMemo(() => {
+    if (referenceImages.length === 0) return [];
+    const activeRoles = new Set(referenceImages.map((image) => image.role));
+    const seen = new Set<string>();
+    return referencePresets.filter((preset) => {
+      if (!isReferenceRole(preset.role) || !activeRoles.has(preset.role)) return false;
+      const key = `${preset.role}:${preset.id}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }, [referencePresets, referenceImages]);
+
   return (
     <div className="flex flex-1 flex-col gap-4 overflow-y-auto p-4 sm:p-6">
       <SectionCard
         icon={<HugeiconsIcon icon={GpuIcon} className="size-5" strokeWidth={1.5} />}
-        title="Local image generation"
+        title="Local generation"
         description={
-          "Run diffusion GGUFs from Hugging Face on your own GPU. " +
-          "Pick a curated FLUX.2 model or paste any unsloth/* GGUF repo."
+          "Run diffusion image and video models from Hugging Face on your own GPU."
         }
       >
         <div className="flex flex-col gap-3">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <Label>Media</Label>
+            <div className="grid grid-cols-2 rounded-md border border-border bg-muted/30 p-1">
+              {(["image", "video"] as MediaKind[]).map((kind) => (
+                <button
+                  key={kind}
+                  type="button"
+                  onClick={() => handleMediaKindChange(kind)}
+                  className={[
+                    "min-h-8 px-4 text-xs font-medium capitalize transition",
+                    mediaKind === kind
+                      ? "rounded bg-background text-foreground shadow-sm"
+                      : "text-muted-foreground hover:text-foreground",
+                  ].join(" ")}
+                >
+                  {kind}
+                </button>
+              ))}
+            </div>
+          </div>
           <div className="flex flex-col gap-2">
             <Label>Model</Label>
             <Select
@@ -605,10 +1350,9 @@ export function ImagesPage() {
                 } else {
                   setUseCustom(false);
                   const idx = Number(v);
-                  const nextPreset = CURATED_MODELS[idx] ?? DEFAULT_PRESET;
+                  const nextPreset = activeModelPresets[idx] ?? preset;
                   setPresetIndex(idx);
-                  setSteps(nextPreset.default_steps);
-                  setGuidance(nextPreset.default_guidance);
+                  applyPresetDefaults(nextPreset);
                   setResolutionIdx(0);
                 }
               }}
@@ -617,7 +1361,7 @@ export function ImagesPage() {
                 <SelectValue placeholder="Pick a model" />
               </SelectTrigger>
               <SelectContent>
-                {CURATED_MODELS.map((m, idx) => (
+                {activeModelPresets.map((m, idx) => (
                   <SelectItem key={m.repo_id} value={String(idx)}>
                     {m.label}
                   </SelectItem>
@@ -636,19 +1380,31 @@ export function ImagesPage() {
               <Input
                 value={customRepoId}
                 onChange={(e) => setCustomRepoId(e.target.value)}
-                placeholder="unsloth/FLUX.2-klein-4B-GGUF"
+                placeholder={
+                  mediaKind === "video"
+                    ? "diffusers/LTX-2.3-Distilled-Diffusers"
+                    : "unsloth/FLUX.2-klein-4B-GGUF"
+                }
               />
               <Label>GGUF filename (optional)</Label>
               <Input
                 value={customGguf}
                 onChange={(e) => setCustomGguf(e.target.value)}
-                placeholder="FLUX.2-klein-4B-Q4_K_S.gguf"
+                placeholder={
+                  mediaKind === "video"
+                    ? "optional video transformer GGUF"
+                    : "FLUX.2-klein-4B-Q4_K_S.gguf"
+                }
               />
               <Label>Base diffusers repo (optional)</Label>
               <Input
                 value={customBaseRepo}
                 onChange={(e) => setCustomBaseRepo(e.target.value)}
-                placeholder="black-forest-labs/FLUX.2-klein-9B"
+                placeholder={
+                  mediaKind === "video"
+                    ? "diffusers/LTX-2.3-Distilled-Diffusers"
+                    : "black-forest-labs/FLUX.2-klein-9B"
+                }
               />
               <p className="text-xs text-muted-foreground">
                 {"Optional. Defaults to the family base. Set this when "}
@@ -696,6 +1452,9 @@ export function ImagesPage() {
                   <SelectItem value="ernie-image-turbo">ERNIE-Image Turbo</SelectItem>
                   <SelectItem value="stable-diffusion-3">Stable Diffusion 3</SelectItem>
                   <SelectItem value="stable-diffusion-xl">Stable Diffusion XL</SelectItem>
+                  <SelectItem value="ltx2-3-distilled">LTX 2.3 Distilled</SelectItem>
+                  <SelectItem value="ltx2-3-base">LTX 2.3 Base</SelectItem>
+                  <SelectItem value="wan2-2-t2v">Wan 2.2 T2V</SelectItem>
                 </SelectContent>
               </Select>
               <p className="text-xs text-muted-foreground">
@@ -738,6 +1497,46 @@ export function ImagesPage() {
             </p>
           </div>
 
+          {mediaKind === "image" ? (
+          <div className="flex flex-col gap-2 border-t border-border pt-3">
+            <div className="flex items-center justify-between gap-3">
+              <Label htmlFor="diffusion-controlnet-enabled">ControlNet</Label>
+              <Switch
+                id="diffusion-controlnet-enabled"
+                checked={controlNetEnabled}
+                onCheckedChange={setControlNetEnabled}
+              />
+            </div>
+            {controlNetEnabled ? (
+              <>
+                <Label htmlFor="diffusion-controlnet-repo">ControlNet repo</Label>
+                <Input
+                  id="diffusion-controlnet-repo"
+                  value={controlNetRepo}
+                  onChange={(e) => setControlNetRepo(e.target.value)}
+                  placeholder="InstantX/Qwen-Image-ControlNet-Union"
+                />
+                <Label htmlFor="diffusion-controlnet-weight">Weight filename</Label>
+                <Input
+                  id="diffusion-controlnet-weight"
+                  value={controlNetWeightName}
+                  onChange={(e) => setControlNetWeightName(e.target.value)}
+                  placeholder="optional: controlnet.safetensors"
+                />
+                <p className="text-xs text-muted-foreground">
+                  {"Reload the model after changing this. The adapter shares "}
+                  {"the loaded pipeline and follows the selected VRAM policy."}
+                </p>
+              </>
+            ) : null}
+            {status?.controlnet ? (
+              <p className="text-xs text-muted-foreground">
+                {`Loaded ControlNet: ${status.controlnet.repo}`}
+              </p>
+            ) : null}
+          </div>
+          ) : null}
+
           <div className="flex flex-wrap items-center gap-2">
             <Button
               onClick={handleLoad}
@@ -745,7 +1544,7 @@ export function ImagesPage() {
               data-testid="diffusion-load"
             >
               {busy === "loading" ? <Spinner className="mr-2 size-4" /> : null}
-              Load model
+              {`Load ${mediaKind} model`}
             </Button>
             <Button
               variant="outline"
@@ -774,7 +1573,7 @@ export function ImagesPage() {
 
       <SectionCard
         icon={<HugeiconsIcon icon={PaintBrush02Icon} className="size-5" strokeWidth={1.5} />}
-        title="Prompt"
+        title={mediaKind === "video" ? "Video prompt" : "Prompt"}
         description="The pipeline runs on the GPU you launched Unsloth Studio on."
       >
         <div className="flex flex-col gap-3">
@@ -805,25 +1604,37 @@ export function ImagesPage() {
             </p>
           )}
 
+          {mediaKind === "image" ? (
+          <>
           <div className="flex flex-col gap-3 border-t border-border pt-3">
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
               <Label>Mode</Label>
               <div className="grid grid-cols-5 rounded-md border border-border bg-muted/30 p-1">
-                {GENERATION_TASKS.map((task) => (
-                  <button
-                    key={task.value}
-                    type="button"
-                    onClick={() => setGenerationTask(task.value)}
-                    className={[
-                      "min-h-8 px-2 text-xs font-medium transition",
-                      generationTask === task.value
-                        ? "rounded bg-background text-foreground shadow-sm"
-                        : "text-muted-foreground hover:text-foreground",
-                    ].join(" ")}
-                  >
-                    {task.label}
-                  </button>
-                ))}
+                {GENERATION_TASKS.map((task) => {
+                  const disabled =
+                    supportedGenerationTasks != null &&
+                    !supportedGenerationTasks.has(task.value);
+                  return (
+                    <button
+                      key={task.value}
+                      type="button"
+                      onClick={() => {
+                        if (!disabled) setGenerationTask(task.value);
+                      }}
+                      disabled={disabled}
+                      aria-disabled={disabled}
+                      title={disabled ? "This loaded model does not expose that image task." : undefined}
+                      className={[
+                        "min-h-8 px-2 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-40",
+                        generationTask === task.value
+                          ? "rounded bg-background text-foreground shadow-sm"
+                          : "text-muted-foreground hover:text-foreground",
+                      ].join(" ")}
+                    >
+                      {task.label}
+                    </button>
+                  );
+                })}
               </div>
             </div>
 
@@ -837,9 +1648,543 @@ export function ImagesPage() {
                 if (event.target.files) void handleReferenceFiles(event.target.files);
               }}
             />
+            <input
+              ref={controlInputRef}
+              type="file"
+              accept="image/*"
+              multiple
+              className="hidden"
+              onChange={(event) => {
+                if (event.target.files) void handleControlFiles(event.target.files);
+              }}
+            />
+            <input
+              ref={maskInputRef}
+              type="file"
+              accept="image/*"
+              multiple
+              className="hidden"
+              onChange={(event) => {
+                if (event.target.files) void handleMaskFiles(event.target.files);
+              }}
+            />
             <div className="flex flex-col gap-2">
               <div className="flex items-center justify-between gap-2">
                 <Label>Reference images</Label>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => imageInputRef.current?.click()}
+                >
+                  <HugeiconsIcon icon={Add01Icon} className="mr-2 size-4" strokeWidth={1.5} />
+                  Add
+                </Button>
+              </div>
+              {referenceImages.length > 0 ? (
+                <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                  {referenceImages.map((image) => (
+                    <div
+                      key={image.id}
+                      className="relative overflow-hidden rounded-md border border-border bg-muted/20"
+                    >
+                      <img
+                        src={image.previewUrl}
+                        alt={image.name}
+                        className="aspect-square w-full object-cover"
+                      />
+                      <button
+                        type="button"
+                        aria-label={`Remove ${image.name}`}
+                        onClick={() => removeReferenceImage(image.id)}
+                        className="absolute right-1 top-1 grid size-7 place-items-center rounded bg-background/90 text-foreground shadow-sm hover:bg-background"
+                      >
+                        <HugeiconsIcon icon={Delete02Icon} className="size-4" strokeWidth={1.5} />
+                      </button>
+                      <div className="flex items-center gap-1 px-2 py-1 text-[11px] text-muted-foreground">
+                        <HugeiconsIcon icon={FileImageIcon} className="size-3.5" strokeWidth={1.5} />
+                        <span className="truncate">
+                          {image.width}x{image.height}
+                        </span>
+                      </div>
+                      <div className="border-t border-border px-1.5 py-1.5">
+                        <Select
+                          value={image.role}
+                          onValueChange={(value) =>
+                            updateReferenceRole(image.id, value as ReferenceRole)
+                          }
+                        >
+                          <SelectTrigger className="h-8 text-xs">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {referenceRoleOptions.map((role) => (
+                              <SelectItem key={role} value={role}>
+                                {REFERENCE_ROLE_LABELS[role]}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => imageInputRef.current?.click()}
+                  className="flex min-h-24 items-center justify-center rounded-md border border-dashed border-border bg-muted/20 text-sm text-muted-foreground hover:bg-muted/30 hover:text-foreground"
+                >
+                  <HugeiconsIcon icon={FileImageIcon} className="mr-2 size-4" strokeWidth={1.5} />
+                  Add a source image
+                </button>
+              )}
+              {activeReferencePresets.length > 0 ? (
+                <div className="flex flex-col gap-2 border-t border-border pt-2">
+                  {activeReferencePresets.map((preset) => (
+                    <div
+                      key={`${preset.role}:${preset.id}`}
+                      className="flex items-center justify-between gap-3"
+                    >
+                      <div className="min-w-0">
+                        <div className="truncate text-sm font-medium">
+                          {preset.label}
+                        </div>
+                        <div className="truncate text-xs text-muted-foreground">
+                          {referencePresetSummary(preset)}
+                        </div>
+                      </div>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => applyReferencePreset(preset)}
+                      >
+                        Apply
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+
+            {mediaKind === "image" &&
+            generationTask !== "text_to_image" &&
+            generationTask !== "edit" &&
+            referenceImages.length > 0 ? (
+              <div className="flex flex-col gap-1">
+                <Label>Strength: {strength.toFixed(2)}</Label>
+                <Slider
+                  aria-label="Image strength"
+                  min={0}
+                  max={1}
+                  step={0.01}
+                  value={[strength]}
+                  onValueChange={(v) => setStrength(v[0] ?? strength)}
+                />
+              </div>
+            ) : null}
+
+            {generationTask === "inpaint" ? (
+              <div className="flex flex-col gap-3 border-t border-border pt-3">
+                <div className="flex items-center justify-between gap-2">
+                  <Label>Mask</Label>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => maskInputRef.current?.click()}
+                    >
+                      <HugeiconsIcon icon={Add01Icon} className="mr-2 size-4" strokeWidth={1.5} />
+                      Upload
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={clearPaintedMask}
+                      disabled={!inpaintSource}
+                    >
+                      Clear
+                    </Button>
+                  </div>
+                </div>
+                {inpaintSource ? (
+                  <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_180px]">
+                    <div className="relative overflow-hidden rounded-md border border-border bg-muted/20">
+                      <img
+                        src={inpaintSource.previewUrl}
+                        alt={inpaintSource.name}
+                        className="block w-full"
+                        draggable={false}
+                      />
+                      <canvas
+                        ref={maskCanvasRef}
+                        aria-label="Inpaint mask canvas"
+                        className="absolute inset-0 h-full w-full touch-none opacity-50 mix-blend-screen"
+                        onPointerDown={startMaskStroke}
+                        onPointerMove={continueMaskStroke}
+                        onPointerUp={endMaskStroke}
+                        onPointerCancel={endMaskStroke}
+                        onPointerLeave={endMaskStroke}
+                      />
+                    </div>
+                    <div className="flex flex-col gap-3">
+                      <div className="flex flex-col gap-1">
+                        <Label>Brush: {maskBrushSize}px</Label>
+                        <Slider
+                          aria-label="Mask brush size"
+                          min={8}
+                          max={192}
+                          step={1}
+                          value={[maskBrushSize]}
+                          onValueChange={(v) => setMaskBrushSize(v[0] ?? maskBrushSize)}
+                        />
+                      </div>
+                      {maskImages.length > 0 ? (
+                        <div className="grid grid-cols-2 gap-2">
+                          {maskImages.map((image) => (
+                            <div
+                              key={image.id}
+                              className="relative overflow-hidden rounded-md border border-border bg-muted/20"
+                            >
+                              <img
+                                src={image.previewUrl}
+                                alt={image.name}
+                                className="aspect-square w-full object-cover"
+                              />
+                              <button
+                                type="button"
+                                aria-label={`Remove ${image.name}`}
+                                onClick={() => removeMaskImage(image.id)}
+                                className="absolute right-1 top-1 grid size-7 place-items-center rounded bg-background/90 text-foreground shadow-sm hover:bg-background"
+                              >
+                                <HugeiconsIcon icon={Delete02Icon} className="size-4" strokeWidth={1.5} />
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => imageInputRef.current?.click()}
+                    className="flex min-h-24 items-center justify-center rounded-md border border-dashed border-border bg-muted/20 text-sm text-muted-foreground hover:bg-muted/30 hover:text-foreground"
+                  >
+                    <HugeiconsIcon icon={FileImageIcon} className="mr-2 size-4" strokeWidth={1.5} />
+                    Add a source image
+                  </button>
+                )}
+              </div>
+            ) : null}
+
+            {controlNetEnabled || status?.controlnet ? (
+              <div className="flex flex-col gap-3 border-t border-border pt-3">
+                <div className="flex items-center justify-between gap-2">
+                  <Label>Control images</Label>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => controlInputRef.current?.click()}
+                  >
+                    <HugeiconsIcon icon={Add01Icon} className="mr-2 size-4" strokeWidth={1.5} />
+                    Add
+                  </Button>
+                </div>
+                {controlImages.length > 0 ? (
+                  <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                    {controlImages.map((image) => (
+                      <div
+                        key={image.id}
+                        className="relative overflow-hidden rounded-md border border-border bg-muted/20"
+                      >
+                        <img
+                          src={image.previewUrl}
+                          alt={image.name}
+                          className="aspect-square w-full object-cover"
+                        />
+                        <button
+                          type="button"
+                          aria-label={`Remove ${image.name}`}
+                          onClick={() => removeControlImage(image.id)}
+                          className="absolute right-1 top-1 grid size-7 place-items-center rounded bg-background/90 text-foreground shadow-sm hover:bg-background"
+                        >
+                          <HugeiconsIcon icon={Delete02Icon} className="size-4" strokeWidth={1.5} />
+                        </button>
+                        <div className="flex items-center gap-1 px-2 py-1 text-[11px] text-muted-foreground">
+                          <HugeiconsIcon icon={FileImageIcon} className="size-3.5" strokeWidth={1.5} />
+                          <span className="truncate">
+                            {image.width}x{image.height}
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => controlInputRef.current?.click()}
+                    className="flex min-h-24 items-center justify-center rounded-md border border-dashed border-border bg-muted/20 text-sm text-muted-foreground hover:bg-muted/30 hover:text-foreground"
+                  >
+                    <HugeiconsIcon icon={FileImageIcon} className="mr-2 size-4" strokeWidth={1.5} />
+                    Add a control map
+                  </button>
+                )}
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                  <div className="flex flex-col gap-1">
+                    <Label>Scale: {controlScale.toFixed(2)}</Label>
+                    <Slider
+                      aria-label="ControlNet scale"
+                      min={0}
+                      max={2}
+                      step={0.01}
+                      value={[controlScale]}
+                      onValueChange={(v) => setControlScale(v[0] ?? controlScale)}
+                    />
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <Label>Start: {controlStart.toFixed(2)}</Label>
+                    <Slider
+                      aria-label="ControlNet start"
+                      min={0}
+                      max={1}
+                      step={0.01}
+                      value={[controlStart]}
+                      onValueChange={(v) => setControlStart(v[0] ?? controlStart)}
+                    />
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <Label>End: {controlEnd.toFixed(2)}</Label>
+                    <Slider
+                      aria-label="ControlNet end"
+                      min={0}
+                      max={1}
+                      step={0.01}
+                      value={[controlEnd]}
+                      onValueChange={(v) => setControlEnd(v[0] ?? controlEnd)}
+                    />
+                  </div>
+                </div>
+              </div>
+            ) : null}
+          </div>
+
+          <div className="flex flex-col gap-3 border-t border-border pt-3">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <Label>Enhance</Label>
+              <div className="grid grid-cols-4 rounded-md border border-border bg-muted/30 p-1">
+                {ENHANCE_MODES.map((mode) => (
+                  <button
+                    key={mode.value}
+                    type="button"
+                    onClick={() => setEnhanceMode(mode.value)}
+                    className={[
+                      "min-h-8 px-2 text-xs font-medium transition",
+                      enhanceMode === mode.value
+                        ? "rounded bg-background text-foreground shadow-sm"
+                        : "text-muted-foreground hover:text-foreground",
+                    ].join(" ")}
+                  >
+                    {mode.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {enhanceMode !== "off" ? (
+              <>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                  <div className="flex flex-col gap-1">
+                    <Label>Scale: {upscaleScale.toFixed(1)}x</Label>
+                    <Slider
+                      aria-label="Upscale scale"
+                      min={1}
+                      max={4}
+                      step={0.5}
+                      value={[upscaleScale]}
+                      onValueChange={(v) => setUpscaleScale(v[0] ?? upscaleScale)}
+                    />
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <Label>Tile: {tileSize}px</Label>
+                    <Slider
+                      aria-label="Enhance tile size"
+                      min={256}
+                      max={1536}
+                      step={128}
+                      value={[tileSize]}
+                      onValueChange={(v) => setTileSize(v[0] ?? tileSize)}
+                    />
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <Label>Overlap: {tileOverlap}px</Label>
+                    <Slider
+                      aria-label="Enhance tile overlap"
+                      min={0}
+                      max={256}
+                      step={16}
+                      value={[tileOverlap]}
+                      onValueChange={(v) => setTileOverlap(v[0] ?? tileOverlap)}
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <div className="flex flex-col gap-1">
+                    <Label>Resampling</Label>
+                    <Select
+                      value={upscaleMethod}
+                      onValueChange={(value) => setUpscaleMethod(value as UpscaleMethod)}
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="lanczos">Lanczos</SelectItem>
+                        <SelectItem value="bicubic">Bicubic</SelectItem>
+                        <SelectItem value="bilinear">Bilinear</SelectItem>
+                        <SelectItem value="nearest">Nearest</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <Label>VAE tiling</Label>
+                    <Select
+                      value={vaeTiling}
+                      onValueChange={(value) => setVaeTiling(value as "auto" | "on" | "off")}
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="auto">Auto</SelectItem>
+                        <SelectItem value="on">On</SelectItem>
+                        <SelectItem value="off">Off</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+              </>
+            ) : null}
+
+            {enhanceMode === "upscale" ? (
+              <div className="grid grid-cols-1 gap-3 border-t border-border pt-3 sm:grid-cols-2">
+                <div className="flex flex-col gap-1">
+                  <Label>Upscale engine</Label>
+                  <Select
+                    value={upscaleEngine}
+                    onValueChange={(value) => setUpscaleEngine(value as UpscaleEngine)}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="pixel">Built-in</SelectItem>
+                      <SelectItem value="super_resolution">Model</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="flex flex-col gap-1">
+                  <Label>Upscaler status</Label>
+                  <div className="flex min-h-10 items-center rounded-md border border-border px-3 text-sm text-muted-foreground">
+                    {upscaleEngine === "super_resolution" && status?.upscaler?.mode === "super_resolution"
+                      ? `Loaded: ${status.upscaler.repo ?? "super-resolution upscaler"}`
+                      : upscaleEngine === "pixel"
+                        ? "Built-in"
+                        : "Not loaded"}
+                  </div>
+                </div>
+                {upscaleEngine === "super_resolution" ? (
+                  <div className="flex flex-col gap-1 sm:col-span-2">
+                    <Label>Super-resolution model repo</Label>
+                    <Input
+                      value={upscaleModelRepo}
+                      onChange={(e) => setUpscaleModelRepo(e.target.value)}
+                      placeholder="caidas/swin2SR-realworld-sr-x4-64-bsrgan-psnr"
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      {"Reload the model after changing this. Built-in upscale does not load an extra model."}
+                    </p>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+
+            {enhanceMode === "creative_upscale" ? (
+              <div className="grid grid-cols-1 gap-3 border-t border-border pt-3 sm:grid-cols-2">
+                <div className="flex flex-col gap-1 sm:col-span-2">
+                  <Label>Creative upscaler repo</Label>
+                  <Input
+                    value={creativeUpscalerRepo}
+                    onChange={(e) => setCreativeUpscalerRepo(e.target.value)}
+                    placeholder="stabilityai/stable-diffusion-x4-upscaler"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    {"Reload the model after changing this. Sharp upscale and large tiled modes do not need an extra model."}
+                  </p>
+                </div>
+                <div className="flex flex-col gap-1">
+                  <Label>Pipeline class</Label>
+                  <Input
+                    value={creativeUpscalerPipelineClass}
+                    onChange={(e) => setCreativeUpscalerPipelineClass(e.target.value)}
+                    placeholder="StableDiffusionUpscalePipeline"
+                  />
+                </div>
+                <div className="flex flex-col gap-1">
+                  <Label>Upscaler status</Label>
+                  <div className="flex min-h-10 items-center rounded-md border border-border px-3 text-sm text-muted-foreground">
+                    {status?.upscaler?.mode === "diffusion"
+                      ? `Loaded: ${status.upscaler.repo ?? "diffusion upscaler"}`
+                      : "Not loaded"}
+                  </div>
+                </div>
+                <div className="flex flex-col gap-1">
+                  <Label>Creative steps: {creativeUpscaleSteps}</Label>
+                  <Slider
+                    aria-label="Creative upscale steps"
+                    min={1}
+                    max={80}
+                    step={1}
+                    value={[creativeUpscaleSteps]}
+                    onValueChange={(v) => setCreativeUpscaleSteps(v[0] ?? creativeUpscaleSteps)}
+                  />
+                </div>
+                <div className="flex flex-col gap-1">
+                  <Label>Creative guidance: {creativeUpscaleGuidance.toFixed(1)}</Label>
+                  <Slider
+                    aria-label="Creative upscale guidance"
+                    min={0}
+                    max={15}
+                    step={0.1}
+                    value={[creativeUpscaleGuidance]}
+                    onValueChange={(v) => setCreativeUpscaleGuidance(v[0] ?? creativeUpscaleGuidance)}
+                  />
+                </div>
+              </div>
+            ) : null}
+          </div>
+          </>
+          ) : null}
+
+          {mediaKind === "video" ? (
+            <div className="flex flex-col gap-3 border-t border-border pt-3">
+              <input
+                ref={imageInputRef}
+                type="file"
+                accept="image/*"
+                multiple
+                className="hidden"
+                onChange={(event) => {
+                  if (event.target.files) void handleReferenceFiles(event.target.files);
+                }}
+              />
+              <div className="flex items-center justify-between gap-2">
+                <Label>Input frames</Label>
                 <Button
                   type="button"
                   variant="outline"
@@ -886,57 +2231,75 @@ export function ImagesPage() {
                   className="flex min-h-24 items-center justify-center rounded-md border border-dashed border-border bg-muted/20 text-sm text-muted-foreground hover:bg-muted/30 hover:text-foreground"
                 >
                   <HugeiconsIcon icon={FileImageIcon} className="mr-2 size-4" strokeWidth={1.5} />
-                  Add a source image
+                  Add an initial frame
                 </button>
               )}
             </div>
-
-            {generationTask !== "text_to_image" &&
-            generationTask !== "edit" &&
-            referenceImages.length > 0 ? (
-              <div className="flex flex-col gap-1">
-                <Label>Strength: {strength.toFixed(2)}</Label>
-                <Slider
-                  aria-label="Image strength"
-                  min={0}
-                  max={1}
-                  step={0.01}
-                  value={[strength]}
-                  onValueChange={(v) => setStrength(v[0] ?? strength)}
-                />
-              </div>
-            ) : null}
-          </div>
+          ) : null}
 
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
             <div className="flex flex-col gap-1">
-              <Label>Resolution</Label>
-              <Select
-                value={String(resolutionIdx)}
-                onValueChange={(v) => setResolutionIdx(Number(v))}
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {RESOLUTION_PRESETS.map((r, idx) => (
-                    <SelectItem key={r.label} value={String(idx)}>
-                      {r.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              {mediaKind === "video" ? (
+                <>
+                  <Label htmlFor="diffusion-video-width">Width</Label>
+                  <Input
+                    id="diffusion-video-width"
+                    type="number"
+                    min={64}
+                    max={2048}
+                    step={8}
+                    value={videoWidth}
+                    onChange={(e) => setVideoWidth(Number(e.target.value) || videoWidth)}
+                  />
+                </>
+              ) : (
+                <>
+                  <Label>Resolution</Label>
+                  <Select
+                    value={String(resolutionIdx)}
+                    onValueChange={(v) => setResolutionIdx(Number(v))}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {RESOLUTION_PRESETS.map((r, idx) => (
+                        <SelectItem key={r.label} value={String(idx)}>
+                          {r.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </>
+              )}
             </div>
             <div className="flex flex-col gap-1">
-              <Label>Steps: {steps}</Label>
-              <Slider
-                aria-label="Inference steps"
-                min={1}
-                max={60}
-                step={1}
-                value={[steps]}
-                onValueChange={(v) => setSteps(v[0] ?? steps)}
-              />
+              {mediaKind === "video" ? (
+                <>
+                  <Label htmlFor="diffusion-video-height">Height</Label>
+                  <Input
+                    id="diffusion-video-height"
+                    type="number"
+                    min={64}
+                    max={2048}
+                    step={8}
+                    value={videoHeight}
+                    onChange={(e) => setVideoHeight(Number(e.target.value) || videoHeight)}
+                  />
+                </>
+              ) : (
+                <>
+                  <Label>Steps: {steps}</Label>
+                  <Slider
+                    aria-label="Inference steps"
+                    min={1}
+                    max={60}
+                    step={1}
+                    value={[steps]}
+                    onValueChange={(v) => setSteps(v[0] ?? steps)}
+                  />
+                </>
+              )}
             </div>
             <div className="flex flex-col gap-1">
               <Label>Guidance: {guidance.toFixed(1)}</Label>
@@ -950,6 +2313,46 @@ export function ImagesPage() {
               />
             </div>
           </div>
+
+          {mediaKind === "video" ? (
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+              <div className="flex flex-col gap-1">
+                <Label>Steps: {steps}</Label>
+                <Slider
+                  aria-label="Video inference steps"
+                  min={1}
+                  max={80}
+                  step={1}
+                  value={[steps]}
+                  onValueChange={(v) => setSteps(v[0] ?? steps)}
+                />
+              </div>
+              <div className="flex flex-col gap-1">
+                <Label htmlFor="diffusion-video-frames">Frames</Label>
+                <Input
+                  id="diffusion-video-frames"
+                  type="number"
+                  min={1}
+                  max={513}
+                  step={1}
+                  value={videoFrames}
+                  onChange={(e) => setVideoFrames(Number(e.target.value) || videoFrames)}
+                />
+              </div>
+              <div className="flex flex-col gap-1">
+                <Label htmlFor="diffusion-video-fps">Frame rate</Label>
+                <Input
+                  id="diffusion-video-fps"
+                  type="number"
+                  min={1}
+                  max={240}
+                  step={1}
+                  value={videoFrameRate}
+                  onChange={(e) => setVideoFrameRate(Number(e.target.value) || videoFrameRate)}
+                />
+              </div>
+            </div>
+          ) : null}
 
           <div className="flex flex-col gap-1">
             <Label htmlFor="diffusion-seed">Seed (optional)</Label>
@@ -970,7 +2373,7 @@ export function ImagesPage() {
               data-testid="diffusion-generate"
             >
               {busy === "generating" ? <Spinner className="mr-2 size-4" /> : null}
-              Generate image
+              {`Generate ${mediaKind}`}
             </Button>
           </div>
         </div>
@@ -984,6 +2387,28 @@ export function ImagesPage() {
         >
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {results.flatMap((r, idx) => {
+              if (r.kind === "video") {
+                return [
+                  <figure key={`${idx}-video`} className="flex flex-col gap-2">
+                    <video
+                      src={`data:${r.video_mime};base64,${r.video_b64}`}
+                      controls
+                      playsInline
+                      className="h-auto w-full rounded-md border border-border bg-black object-contain"
+                      data-testid="diffusion-result-video"
+                    />
+                    <figcaption className="text-xs text-muted-foreground">
+                      {r.width}x{r.height} - {r.num_frames} frames - {r.frame_rate} fps - {r.num_inference_steps} steps - g={(r.guidance_scale ?? 0).toFixed(1)}
+                      {r.seed_str
+                        ? ` - seed ${r.seed_str}`
+                        : r.seed !== null && r.seed !== undefined
+                        ? ` - seed ${r.seed}`
+                        : ""} -
+                      {` ${(r.duration_ms / 1000).toFixed(1)}s`}
+                    </figcaption>
+                  </figure>,
+                ];
+              }
               const renderedImages =
                 r.images_b64 && r.images_b64.length > 0 ? r.images_b64 : [r.image_b64];
               return renderedImages.map((imageB64, imageIdx) => (
@@ -1011,6 +2436,28 @@ export function ImagesPage() {
                       : ""} -
                     {` ${(r.duration_ms / 1000).toFixed(1)}s`}
                   </figcaption>
+                  <div className="flex flex-wrap gap-2">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() =>
+                        addGeneratedImageAsReference(r, imageB64, imageIdx, "edit_source")
+                      }
+                    >
+                      Use as image input
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() =>
+                        addGeneratedImageAsReference(r, imageB64, imageIdx, "init_frame")
+                      }
+                    >
+                      Use as video input
+                    </Button>
+                  </div>
                 </figure>
               ));
             })}

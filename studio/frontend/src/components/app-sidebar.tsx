@@ -850,7 +850,7 @@ export function AppSidebar() {
                   />
                   <NavItem
                     icon={PaintBrush02Icon}
-                    label="Images"
+                    label="Generate"
                     active={pathname === "/images" || pathname.startsWith("/images/")}
                     disabled={chatOnly}
                     onClick={() => {
