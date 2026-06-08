@@ -1264,9 +1264,7 @@ class LlamaCppBackend:
         # Fast path: NVIDIA / nvidia-smi. Skip only when we know the backend
         # is XPU or ROCm -- not CUDA, CPU-only, or undetected.
         _detected = get_device()
-        nvidia_eligible = _detected != DeviceType.XPU and not getattr(
-            _hw_mod, "IS_ROCM", False
-        )
+        nvidia_eligible = _detected != DeviceType.XPU and not getattr(_hw_mod, "IS_ROCM", False)
         try:
             if not nvidia_eligible:
                 raise FileNotFoundError  # skip to generic telemetry path
