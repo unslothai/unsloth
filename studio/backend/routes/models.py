@@ -1425,6 +1425,15 @@ async def browse_folders(
     )
 
 
+def _looks_like_mlx_repo(model_id: str) -> bool:
+    """Name heuristic for unloaded models, mirrors the -GGUF suffix check.
+    Tokenized so MLX only matches as a whole name segment."""
+    if model_id.lower().startswith("mlx-community/"):
+        return True
+    tail = model_id.split("/")[-1]
+    return "MLX" in _re.split(r"[-_.]", tail.upper())
+
+
 @router.get("/list")
 async def list_models(
     current_subject: str = Depends(get_current_subject),
@@ -1444,6 +1453,7 @@ async def list_models(
                 name = model_name.split("/")[-1] if "/" in model_name else model_name,
                 is_vision = _is_vision,
                 is_lora = model_data.get("is_lora", False),
+                is_mlx = model_data.get("is_mlx", False),
                 is_audio = model_data.get("is_audio", False),
                 audio_type = _audio_type,
                 has_audio_input = model_data.get("has_audio_input", False),
@@ -1471,13 +1481,17 @@ async def list_models(
         all_models = []
         seen_ids = set()
 
-        # Add default models.
+        # Prefer loaded entries for duplicate ids so runtime flags survive.
+        loaded_by_id = {model_info.id: model_info for model_info in loaded_models}
+
+        # Add default models
         for model_id in default_models:
             if model_id not in seen_ids:
-                model_info = ModelDetails(
+                model_info = loaded_by_id.get(model_id) or ModelDetails(
                     id = model_id,
                     name = model_id.split("/")[-1] if "/" in model_id else model_id,
                     is_gguf = model_id.upper().endswith("-GGUF"),
+                    is_mlx = _looks_like_mlx_repo(model_id),
                 )
                 all_models.append(model_info)
                 seen_ids.add(model_id)

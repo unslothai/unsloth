@@ -74,6 +74,9 @@ class ModelDetails(BaseModel):
     is_gguf: bool = Field(
         False, description = "Whether model is a GGUF model (llama.cpp format)"
     )
+    is_mlx: bool = Field(
+        False, description = "Whether model is served via the MLX backend (Apple Silicon)"
+    )
     is_audio: bool = Field(False, description = "Whether model is a TTS audio model")
     audio_type: Optional[str] = Field(
         None, description = "Audio codec type: snac, csm, bicodec, dac"

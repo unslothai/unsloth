@@ -12,6 +12,35 @@ from loggers import get_logger
 logger = get_logger(__name__)
 
 
+def _build_generation_stats(prompt_n, prompt_tps, gen_n, gen_tps):
+    """Map mlx_lm / mlx_vlm stream stats onto the usage/timings shape
+    llama-server emits so the chat speed popover renders the same."""
+    prompt_n = int(prompt_n or 0)
+    gen_n = int(gen_n or 0)
+    prompt_tps = float(prompt_tps or 0.0)
+    gen_tps = float(gen_tps or 0.0)
+    prompt_ms = (prompt_n / prompt_tps * 1000.0) if prompt_tps > 0 else 0.0
+    predicted_ms = (gen_n / gen_tps * 1000.0) if gen_tps > 0 else 0.0
+    return {
+        "usage": {
+            "prompt_tokens": prompt_n,
+            "completion_tokens": gen_n,
+            "total_tokens": prompt_n + gen_n,
+        },
+        "timings": {
+            "prompt_n": prompt_n,
+            "prompt_ms": prompt_ms,
+            "prompt_per_token_ms": (prompt_ms / prompt_n) if prompt_n > 0 else 0.0,
+            "prompt_per_second": prompt_tps,
+            "predicted_n": gen_n,
+            "predicted_ms": predicted_ms,
+            "predicted_per_token_ms": (predicted_ms / gen_n) if gen_n > 0 else 0.0,
+            "predicted_per_second": gen_tps,
+            "cache_n": 0,
+        },
+    }
+
+
 class MLXInferenceBackend:
     def __init__(self):
         self.models = {}
@@ -20,6 +49,8 @@ class MLXInferenceBackend:
         self.loaded_local_models = []
         self.device = "mlx"
         self._generation_lock = threading.Lock()
+        # usage/timings of the latest generation; shipped on gen_done.
+        self.last_generation_stats = None
 
         # MLX state
         self._model = None
@@ -254,6 +285,9 @@ class MLXInferenceBackend:
         if self._model is None:
             raise RuntimeError("No model loaded")
 
+        # Reset so a failed run cannot surface stale stats.
+        self.last_generation_stats = None
+
         # Build messages with system prompt
         full_messages = []
         if system_prompt:
@@ -376,6 +410,7 @@ class MLXInferenceBackend:
             type(self._tokenizer).__name__,
         )
         with self._generation_lock:
+            final_response = None
             try:
                 gen_kwargs = dict(
                     prompt = prompt,
@@ -389,6 +424,7 @@ class MLXInferenceBackend:
                     self._tokenizer,
                     **gen_kwargs,
                 ):
+                    final_response = response
                     token_ids.append(response.token)
                     # Decode full sequence with skip_special_tokens — like GPU
                     cumulative = self._tokenizer.decode(
@@ -404,6 +440,15 @@ class MLXInferenceBackend:
 
                 logger.error("stream_generate failed:\n%s", traceback.format_exc())
                 raise
+            finally:
+                # Latch final cumulative stats for the usage/timings chunk.
+                if final_response is not None:
+                    self.last_generation_stats = _build_generation_stats(
+                        getattr(final_response, "prompt_tokens", 0),
+                        getattr(final_response, "prompt_tps", 0.0),
+                        getattr(final_response, "generation_tokens", 0),
+                        getattr(final_response, "generation_tps", 0.0),
+                    )
 
     def _generate_vlm(
         self,
@@ -478,20 +523,32 @@ class MLXInferenceBackend:
             vlm_kwargs["repetition_penalty"] = float(repetition_penalty)
 
         with self._generation_lock:
-            for response in vlm_stream(
-                self._model,
-                self._processor,
-                prompt,
-                images,
-                **vlm_kwargs,
-            ):
-                token_text = (
-                    response.text if hasattr(response, "text") else str(response)
-                )
-                cumulative += token_text
-                yield cumulative
-                if cancel_event and cancel_event.is_set():
-                    break
+            final_response = None
+            try:
+                for response in vlm_stream(
+                    self._model,
+                    self._processor,
+                    prompt,
+                    images,
+                    **vlm_kwargs,
+                ):
+                    final_response = response
+                    token_text = (
+                        response.text if hasattr(response, "text") else str(response)
+                    )
+                    cumulative += token_text
+                    yield cumulative
+                    if cancel_event and cancel_event.is_set():
+                        break
+            finally:
+                # mlx_vlm exposes the same stats fields as mlx_lm.
+                if final_response is not None:
+                    self.last_generation_stats = _build_generation_stats(
+                        getattr(final_response, "prompt_tokens", 0),
+                        getattr(final_response, "prompt_tps", 0.0),
+                        getattr(final_response, "generation_tokens", 0),
+                        getattr(final_response, "generation_tps", 0.0),
+                    )
 
     def generate_with_adapter_control(
         self, use_adapter = None, cancel_event = None, **gen_kwargs
