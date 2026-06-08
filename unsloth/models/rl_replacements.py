@@ -1969,14 +1969,14 @@ RL_FUNCTIONS["kto_trainer"].append(kto_trainer_get_batch_logps)
 _KTO_COMPLETION_RE = re.compile(
     r"(?P<ws>[ \t]*)shift_logits = completion_logits\[:, :-1, :\]\.contiguous\(\)\n"
     r"(?P=ws)per_token_logps = selective_log_softmax\(\s*shift_logits,\s*"
-    r"(?P<var>\w+)\[\"completion_input_ids\"\]\[:, 1:\]\.contiguous\(\)\s*\)\n"
-    r"(?P=ws)per_token_logps\[(?P=var)\[\"completion_mask\"\]\[:, 1:\] == 0\] = 0\.0"
+    r"(?P<var>\w+)\[[\"']completion_input_ids[\"']\]\[:, 1:\]\.contiguous\(\)\s*\)\n"
+    r"(?P=ws)per_token_logps\[(?P=var)\[[\"']completion_mask[\"']\]\[:, 1:\] == 0\] = 0\.0"
 )
 _KTO_KL_RE = re.compile(
     r"(?P<ws>[ \t]*)shift_KL_logits = KL_logits\[:, :-1, :\]\.contiguous\(\)\n"
     r"(?P=ws)KL_per_token_logps = selective_log_softmax\(\s*shift_KL_logits,\s*"
-    r"(?P<var>\w+)\[\"KL_completion_input_ids\"\]\[:, 1:\]\.contiguous\(\)\s*\)\n"
-    r"(?P=ws)KL_per_token_logps\[(?P=var)\[\"KL_completion_mask\"\]\[:, 1:\] == 0\] = 0\.0"
+    r"(?P<var>\w+)\[[\"']KL_completion_input_ids[\"']\]\[:, 1:\]\.contiguous\(\)\s*\)\n"
+    r"(?P=ws)KL_per_token_logps\[(?P=var)\[[\"']KL_completion_mask[\"']\]\[:, 1:\] == 0\] = 0\.0"
 )
 
 
