@@ -498,10 +498,7 @@ def _create_shared_http_client() -> httpx.AsyncClient:
         return httpx.AsyncClient()
     except (ImportError, ValueError) as exc:
         exc_str = str(exc)
-        unsupported_proxy = (
-            "Unknown scheme for proxy URL" in exc_str
-            or "socksio" in exc_str
-        )
+        unsupported_proxy = "Unknown scheme for proxy URL" in exc_str or "socksio" in exc_str
         if not unsupported_proxy:
             raise
         logger.warning(
