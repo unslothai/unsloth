@@ -227,6 +227,7 @@ from core.inference.key_exchange import decrypt_api_key
 from core.inference.providers import get_provider_info, get_base_url
 from core.inference.external_provider import ExternalProviderClient
 from storage import providers_db
+from utils.utils import safe_error_detail, log_and_http_error
 
 import io
 import wave
@@ -697,7 +698,13 @@ def _resolve_model_identifier_for_request(
             allowed_suffixes = (".gguf",),
         )
     except NativePathLeaseError as exc:
-        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+        # Curated, client-correctable lease error (expired / wrong type / re-select);
+        # keep the actionable message, just redact paths.
+        logger.warning("inference.native_path_lease_failed: %s", exc)
+        raise HTTPException(
+            status_code = 400,
+            detail = redact_native_paths(str(exc)),
+        ) from exc
     display_label = (
         grant.display_label or Path(request.model_path).name or "Native model"
     )
@@ -735,7 +742,12 @@ async def load_model(
         try:
             extra_llama_args = validate_extra_args(request.llama_extra_args)
         except ValueError as exc:
-            raise HTTPException(status_code = 400, detail = str(exc))
+            # Keep the curated validation message (names the flag); just strip paths.
+            logger.warning("inference.validate_extra_args_failed: %s", exc)
+            raise HTTPException(
+                status_code = 400,
+                detail = redact_native_paths(str(exc)),
+            )
         # Re-narrow []-from-None back to None so the inheritance path
         # below can tell "caller omitted" from "caller explicit []".
         extra_llama_args: Optional[list[str]] = (
@@ -1221,7 +1233,8 @@ async def load_model(
             )
             raise HTTPException(status_code = 400, detail = redacted_msg)
         logger.warning("Rejected inference GPU selection: %s", e)
-        raise HTTPException(status_code = 400, detail = str(e))
+        # User-facing validation (e.g. "Invalid gpu_ids [99]"): redact paths, keep detail.
+        raise HTTPException(status_code = 400, detail = redact_native_paths(str(e)))
     except Exception as e:
         # Surface a friendlier message for models that Unsloth cannot load
         not_supported_hints = [
@@ -1245,7 +1258,7 @@ async def load_model(
                 detail = f"Failed to load native model {model_log_label}: {msg}",
             )
         logger.error(f"Error loading model: {e}", exc_info = True)
-        msg = str(e)
+        msg = redact_native_paths(str(e))
         if any(h.lower() in msg.lower() for h in not_supported_hints):
             msg = f"This model is not supported yet. Try a different model. (Original error: {msg})"
         raise HTTPException(status_code = 500, detail = f"Failed to load model: {msg}")
@@ -1324,7 +1337,7 @@ async def validate_model(
         )
         raise HTTPException(
             status_code = 400,
-            detail = f"Invalid model: {str(e)}",
+            detail = "Invalid model",
         )
 
 
@@ -1359,7 +1372,7 @@ async def unload_model(
 
     except Exception as e:
         logger.error(f"Error unloading model: {e}", exc_info = True)
-        raise HTTPException(status_code = 500, detail = f"Failed to unload model: {str(e)}")
+        raise HTTPException(status_code = 500, detail = "Failed to unload model")
 
 
 @studio_router.post("/cancel")
@@ -1444,8 +1457,12 @@ async def generate_stream(
         except HTTPException:
             raise
         except Exception as e:
-            raise HTTPException(
-                status_code = 400, detail = f"Failed to decode image: {str(e)}"
+            raise log_and_http_error(
+                e,
+                400,
+                "Failed to decode image",
+                event = "inference.decode_image_failed",
+                log = logger,
             )
 
     async def stream():
@@ -1614,7 +1631,7 @@ async def get_status(
 
     except Exception as e:
         logger.error(f"Error getting status: {e}", exc_info = True)
-        raise HTTPException(status_code = 500, detail = f"Failed to get status: {str(e)}")
+        raise HTTPException(status_code = 500, detail = "Failed to get status")
 
 
 @router.get("/load-progress", response_model = LoadProgressResponse)
@@ -1715,7 +1732,7 @@ async def generate_audio(
         )
     except Exception as e:
         logger.error(f"Audio generation error: {e}", exc_info = True)
-        raise HTTPException(status_code = 500, detail = str(e))
+        raise HTTPException(status_code = 500, detail = safe_error_detail(e))
 
     audio_b64 = base64.b64encode(wav_bytes).decode("ascii")
     return JSONResponse(
@@ -2402,9 +2419,12 @@ async def list_openai_containers(
                 detail = f"OpenAI rejected /containers list: {detail}",
             )
         except httpx.HTTPError as exc:
-            raise HTTPException(
-                status_code = 502,
-                detail = f"Failed to reach OpenAI: {exc}",
+            raise log_and_http_error(
+                exc,
+                502,
+                "Could not reach OpenAI.",
+                event = "openai_container_list.transport_error",
+                log = logger,
             )
         # OpenAI keeps expired containers in /v1/containers indefinitely
         # with status="expired" — they're effectively dead but still
@@ -2443,9 +2463,12 @@ async def create_openai_container(
                 detail = f"OpenAI rejected /containers create: {detail}",
             )
         except httpx.HTTPError as exc:
-            raise HTTPException(
-                status_code = 502,
-                detail = f"Failed to reach OpenAI: {exc}",
+            raise log_and_http_error(
+                exc,
+                502,
+                "Could not reach OpenAI.",
+                event = "openai_container_create.transport_error",
+                log = logger,
             )
         if not isinstance(raw, dict):
             raise HTTPException(
@@ -2490,14 +2513,12 @@ async def delete_openai_container(
                 detail = f"OpenAI rejected /containers delete: {detail}",
             )
         except httpx.HTTPError as exc:
-            logger.warning(
-                "openai_container_delete.transport_error container_id=%s error=%s",
-                body.container_id,
+            raise log_and_http_error(
                 exc,
-            )
-            raise HTTPException(
-                status_code = 502,
-                detail = f"Failed to reach OpenAI: {exc}",
+                502,
+                "Could not reach OpenAI.",
+                event = "openai_container_delete.transport_error",
+                log = logger,
             )
     finally:
         await client.close()
@@ -3262,7 +3283,7 @@ async def openai_chat_completions(
 
             except Exception as e:
                 logger.error(f"Error during GGUF completion: {e}", exc_info = True)
-                raise HTTPException(status_code = 500, detail = str(e))
+                raise HTTPException(status_code = 500, detail = safe_error_detail(e))
 
     # ── Standard Unsloth path ─────────────────────────────────
 
@@ -3290,7 +3311,13 @@ async def openai_chat_completions(
         except HTTPException:
             raise
         except Exception as e:
-            raise HTTPException(status_code = 400, detail = f"Failed to decode image: {e}")
+            raise log_and_http_error(
+                e,
+                400,
+                "Failed to decode image",
+                event = "inference.decode_image_failed",
+                log = logger,
+            )
 
     # Classify capability flags from the loaded template.
     _sf_model_info = backend.models.get(backend.active_model_name, {})
@@ -3426,6 +3453,9 @@ async def openai_chat_completions(
             else:
                 _sf_chat_messages.append(_msg)
 
+        # Request-scoped usage/timings receptacle (filled at gen_done).
+        _sf_stats_holder: dict = {}
+
         def sf_generate_with_tools():
             return backend.generate_chat_completion_with_tools(
                 messages = _sf_chat_messages,
@@ -3450,6 +3480,7 @@ async def openai_chat_completions(
                 else 300,
                 session_id = payload.session_id,
                 use_adapter = payload.use_adapter,
+                stats_holder = _sf_stats_holder,
             )
 
         _sf_tool_sentinel = object()
@@ -3537,6 +3568,25 @@ async def openai_chat_completions(
                     ],
                 )
                 yield f"data: {final_chunk.model_dump_json(exclude_none = True)}\n\n"
+                # Usage chunk from the last turn, same shape as the
+                # GGUF tool loop's metadata. Request-scoped holder, so
+                # concurrent streams cannot read each other's stats.
+                _stats = _sf_stats_holder.get("stats")
+                if _stats:
+                    _stream_usage = _stats.get("usage") or {}
+                    usage_chunk = ChatCompletionChunk(
+                        id = completion_id,
+                        created = created,
+                        model = model_name,
+                        choices = [],
+                        usage = CompletionUsage(
+                            prompt_tokens = _stream_usage.get("prompt_tokens", 0),
+                            completion_tokens = _stream_usage.get("completion_tokens", 0),
+                            total_tokens = _stream_usage.get("total_tokens", 0),
+                        ),
+                        timings = _stats.get("timings"),
+                    )
+                    yield f"data: {usage_chunk.model_dump_json(exclude_none = True)}\n\n"
                 yield "data: [DONE]\n\n"
 
             except asyncio.CancelledError:
@@ -3627,19 +3677,25 @@ async def openai_chat_completions(
     if payload.preserve_thinking is not None:
         gen_kwargs["preserve_thinking"] = payload.preserve_thinking
 
+    # Request-scoped usage/timings receptacle (filled at gen_done).
+    stats_holder: dict = {}
+
     if payload.use_adapter is not None:
 
         def generate():
             return backend.generate_with_adapter_control(
                 use_adapter = payload.use_adapter,
                 cancel_event = cancel_event,
+                stats_holder = stats_holder,
                 **gen_kwargs,
             )
     else:
 
         def generate():
             return backend.generate_chat_response(
-                cancel_event = cancel_event, **gen_kwargs
+                cancel_event = cancel_event,
+                stats_holder = stats_holder,
+                **gen_kwargs,
             )
 
     # ── Streaming response ────────────────────────────────────────
@@ -3716,6 +3772,26 @@ async def openai_chat_completions(
                     ],
                 )
                 yield f"data: {final_chunk.model_dump_json(exclude_none = True)}\n\n"
+                # Usage chunk (choices=[], usage set), same shape as the
+                # GGUF path so the speed popover works for MLX too.
+                # Request-scoped holder, so concurrent streams cannot
+                # read each other's stats.
+                _stats = stats_holder.get("stats")
+                if _stats:
+                    _stream_usage = _stats.get("usage") or {}
+                    usage_chunk = ChatCompletionChunk(
+                        id = completion_id,
+                        created = created,
+                        model = model_name,
+                        choices = [],
+                        usage = CompletionUsage(
+                            prompt_tokens = _stream_usage.get("prompt_tokens", 0),
+                            completion_tokens = _stream_usage.get("completion_tokens", 0),
+                            total_tokens = _stream_usage.get("total_tokens", 0),
+                        ),
+                        timings = _stats.get("timings"),
+                    )
+                    yield f"data: {usage_chunk.model_dump_json(exclude_none = True)}\n\n"
                 yield "data: [DONE]\n\n"
 
             except asyncio.CancelledError:
@@ -3768,7 +3844,7 @@ async def openai_chat_completions(
         except Exception as e:
             backend.reset_generation_state()
             logger.error(f"Error during OpenAI completion: {e}", exc_info = True)
-            raise HTTPException(status_code = 500, detail = str(e))
+            raise HTTPException(status_code = 500, detail = safe_error_detail(e))
 
 
 # =====================================================================
@@ -3819,6 +3895,10 @@ async def serve_sandbox_file(
     # ── Filename sanitization ───────────────────────────────────
     safe_filename = os.path.basename(filename)
     if not safe_filename or safe_filename in (".", ".."):
+        raise HTTPException(status_code = 404, detail = "Not found")
+    # Defense-in-depth allowlist (clears CodeQL py/path-injection), still allowing
+    # names like "loss curve.png"; basename + extension + realpath below are the guards.
+    if not _re.fullmatch(r"[^/\\\x00-\x1f]{1,255}", safe_filename):
         raise HTTPException(status_code = 404, detail = "Not found")
 
     # ── Extension allowlist ─────────────────────────────────────

@@ -19,13 +19,16 @@ from core.data_recipe.huggingface import (
     publish_recipe_dataset,
 )
 from core.data_recipe.jobs import get_job_manager
+from loggers import get_logger
 from models.data_recipe import (
     JobCreateResponse,
     PublishDatasetRequest,
     PublishDatasetResponse,
     RecipePayload,
 )
+from utils.utils import safe_error_detail, safe_curated_detail, log_and_http_error
 
+logger = get_logger(__name__)
 router = APIRouter()
 
 
@@ -439,14 +442,24 @@ def create_job(payload: RecipePayload, request: Request):
 
             RunConfig.model_validate(run_config_raw)
         except (ImportError, ValidationError, TypeError, ValueError) as exc:
-            raise HTTPException(
-                status_code = 400, detail = f"invalid run_config: {exc}"
+            raise log_and_http_error(
+                exc,
+                400,
+                "invalid run_config",
+                event = "data_recipe.jobs.run_config_invalid",
+                log = logger,
             ) from exc
 
     try:
         internal_api_key_id = _inject_local_providers(recipe, request)
     except ValueError as exc:
-        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+        raise log_and_http_error(
+            exc,
+            400,
+            safe_curated_detail(exc),
+            event = "data_recipe.jobs.inject_local_providers_failed",
+            log = logger,
+        ) from exc
 
     # Single try block covers get_job_manager() AND mgr.start() so a workflow
     # key minted above never outlives the request even when an unexpected
@@ -463,11 +476,23 @@ def create_job(payload: RecipePayload, request: Request):
     except RuntimeError as exc:
         if internal_api_key_id is not None:
             _revoke_internal_api_key_safe(internal_api_key_id)
-        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+        raise log_and_http_error(
+            exc,
+            409,
+            safe_curated_detail(exc),
+            event = "data_recipe.jobs.start_conflict",
+            log = logger,
+        ) from exc
     except ValueError as exc:
         if internal_api_key_id is not None:
             _revoke_internal_api_key_safe(internal_api_key_id)
-        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+        raise log_and_http_error(
+            exc,
+            400,
+            safe_curated_detail(exc),
+            event = "data_recipe.jobs.start_failed",
+            log = logger,
+        ) from exc
     except Exception:
         if internal_api_key_id is not None:
             _revoke_internal_api_key_safe(internal_api_key_id)
@@ -593,9 +618,21 @@ def publish_job_dataset(job_id: str, payload: PublishDatasetRequest):
             private = payload.private,
         )
     except RecipeDatasetPublishError as exc:
-        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+        raise log_and_http_error(
+            exc,
+            400,
+            safe_curated_detail(exc),
+            event = "data_recipe.jobs.publish_failed",
+            log = logger,
+        ) from exc
     except Exception as exc:
-        raise HTTPException(status_code = 500, detail = str(exc)) from exc
+        raise log_and_http_error(
+            exc,
+            500,
+            safe_error_detail(exc),
+            event = "data_recipe.jobs.publish_error",
+            log = logger,
+        ) from exc
 
     return {
         "success": True,
