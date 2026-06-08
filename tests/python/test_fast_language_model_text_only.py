@@ -123,11 +123,11 @@ def test_fast_language_model_forwards_text_only_to_fast_model():
     source = _source(LOADER_PATH)
     method = _class_method(ast.parse(source), "FastLanguageModel", "from_pretrained")
 
-    # text_only is opt-in: a parameter defaulting to False, not hardcoded True.
+    # text_only defaults False (opt-in, not forced True), and both FastModel
+    # delegations forward it.
     text_only_default = _param_default(method, "text_only")
     assert isinstance(text_only_default, ast.Constant) and text_only_default.value is False
 
-    # Both FastModel delegations forward text_only = text_only.
     fast_model_calls = [
         node
         for node in ast.walk(method)
@@ -145,12 +145,10 @@ def test_fast_language_model_forwards_text_only_to_fast_model():
 
 
 def test_fast_model_text_only_does_not_override_explicit_auto_model():
-    # AST-based (not string matching) so formatting and refactors that keep the
-    # structure intact do not break the test.
+    # AST-based so formatting/refactors that keep the structure do not break it.
     source = _source(LOADER_PATH)
     method = _class_method(ast.parse(source), "FastModel", "from_pretrained")
 
-    # text_only is opt-in: a parameter defaulting to False.
     text_only_default = _param_default(method, "text_only")
     assert isinstance(text_only_default, ast.Constant) and text_only_default.value is False
 
@@ -167,7 +165,6 @@ def test_fast_model_text_only_does_not_override_explicit_auto_model():
 
     assert _calls_function(method, "_get_text_only_config")
 
-    # load_text_only is forwarded as the text_only kwarg of the inner delegation.
     def _forwards_kwarg(node):
         return any(
             isinstance(n, ast.Call)
@@ -191,11 +188,9 @@ def test_fast_model_text_only_does_not_override_explicit_auto_model():
 
 
 def test_fast_base_model_text_only_bypasses_vision_auto_model():
-    # AST-based for the same robustness reasons as the FastModel test above.
     source = _source(VISION_PATH)
     method = _class_method(ast.parse(source), "FastBaseModel", "from_pretrained")
 
-    # text_only is a parameter defaulting to False.
     text_only_default = _param_default(method, "text_only")
     assert isinstance(text_only_default, ast.Constant) and text_only_default.value is False
 
@@ -226,8 +221,7 @@ def test_gemma3_text_only_model_class_resolves_and_has_no_vision_tower():
     full_config = transformers.Gemma3Config()
     text_config = helper(full_config, "google/gemma-3-27b-it")
 
-    # Shrink so a CPU instantiation is cheap; preserve the shape attributes
-    # that the model class reads at construction time.
+    # Shrink for a cheap CPU instantiation; keep the shape attrs read at construction.
     text_config.num_hidden_layers = 1
     text_config.hidden_size = 32
     text_config.intermediate_size = 32
@@ -242,9 +236,7 @@ def test_gemma3_text_only_model_class_resolves_and_has_no_vision_tower():
     # Positive checks: text language model surface is present.
     assert hasattr(model, "lm_head"), "text-only Gemma3 model should expose lm_head"
 
-    # Negative checks: no vision tower or multimodal projector exists on the
-    # model. The presence of either would indicate the helper failed to
-    # strip multimodal components.
+    # Negative checks: no vision tower / multimodal projector remains.
     assert not hasattr(
         model, "vision_tower"
     ), "text-only Gemma3 model should not have a vision_tower"

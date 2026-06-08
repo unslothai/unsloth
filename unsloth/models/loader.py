@@ -1428,11 +1428,8 @@ class FastModel(FastBaseModel):
         if load_text_only:
             if hasattr(model_config, "vision_config"):
                 text_config = _get_text_only_config(model_config, old_model_name)
-                # Only skip the vision tower when the family has its own text
-                # decoder that loads the checkpoint correctly (e.g. Gemma 3).
-                # Otherwise (Qwen2-VL/Mllama have no text class; Llava/PaliGemma
-                # reuse a generic one that would load random weights) keep the
-                # full model; use FastVisionModel for those.
+                # Skip the vision tower only for families with their own text decoder (Gemma 3);
+                # others would load random weights, so keep the full model (use FastVisionModel).
                 text_class = resolve_model_class(AutoModelForCausalLM, text_config)
                 if text_class is None or not _is_family_text_decoder(
                     getattr(model_config, "model_type", ""),
@@ -1444,8 +1441,7 @@ class FastModel(FastBaseModel):
                         f"Loading {old_model_name} as text-only; vision/audio towers skipped. "
                         "Use FastVisionModel for multimodal inputs."
                     )
-                    # Remap VLM text weights for transformers >=5, while model_config is
-                    # still the parent (before the reassignment below). See PR #5816.
+                    # Remap VLM text weights (tf >=5) while model_config is still the parent. #5816
                     _apply_text_only_key_mapping(kwargs, model_config, text_config)
                     model_config = text_config
                     is_vlm = False

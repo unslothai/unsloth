@@ -300,8 +300,7 @@ def _offline_quantize_to_fp8(
         for x in (getattr(config, "architectures", None) or [])
     )
     is_vlm = is_vlm or hasattr(config, "vision_config")
-    # Mirror the loader's text-only guard so load_in_fp8 skips the vision tower; decide
-    # before the cache name so the artifact and its path stay in sync. See PR #5816.
+    # Decide text-only before the cache name so the fp8 artifact and its path stay in sync. #5816
     text_config = None
     if text_only and hasattr(config, "vision_config"):
         from ._utils import (

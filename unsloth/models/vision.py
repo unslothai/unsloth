@@ -605,9 +605,8 @@ class FastBaseModel:
         if os.environ.get("UNSLOTH_MODEL_NAME", "") == "":
             os.environ["UNSLOTH_MODEL_NAME"] = model_name.lower()
 
-        # Resolve text-only before the is_vlm / vLLM checks so is_vlm stays consistent.
-        # Skip the vision tower only when the family has its own text decoder (e.g. Gemma
-        # 3); otherwise keep the full model. transformers >=5 needs the key remap. #5816
+        # Resolve text-only before the is_vlm / vLLM checks so is_vlm stays consistent;
+        # skip the vision tower only for families with their own text decoder (Gemma 3). #5816
         if text_only and auto_config is None:
             auto_config = AutoConfig.from_pretrained(
                 model_name,
