@@ -115,10 +115,9 @@ def _wsl_automount_root() -> str:
     """DrvFs root under which WSL maps Windows drives, with a trailing slash.
 
     Defaults to ``/mnt/`` but is user-configurable via ``/etc/wsl.conf``
-    (``[automount] root``); hard-coding ``/mnt/`` mistranslates Windows paths
-    on any host that set a custom root (e.g. ``root = /`` → ``C:`` at ``/c/``).
-    Resolved once at import; wsl.conf is static for a session and a reboot is
-    required for changes to take effect anyway."""
+    (``[automount] root``); hard-coding ``/mnt/`` mistranslates Windows paths on
+    a host with a custom root (e.g. ``root = /`` → ``C:`` at ``/c/``). Resolved
+    once at import, since wsl.conf is static for a session."""
     default = "/mnt/"
     if not _IS_WSL:
         return default
@@ -244,9 +243,9 @@ def ollama_model_dirs() -> list[Path]:
     return dirs
 
 
-# Per-process memo for resolve_cached_repo_id_case. Bounded LRU so a
-# long-lived process that touches many distinct repo ids can't grow it without
-# limit; eviction only drops cold entries, which simply recompute on next use.
+# Per-process memo for resolve_cached_repo_id_case. Bounded LRU so a long-lived
+# process touching many repo ids can't grow it without limit; evicted cold
+# entries simply recompute on next use.
 _CACHE_CASE_RESOLUTION_MEMO_MAX = 512
 _CACHE_CASE_RESOLUTION_MEMO: "OrderedDict[tuple[str, str], str]" = OrderedDict()
 _CACHE_CASE_RESOLUTION_LOCK = threading.Lock()
@@ -374,10 +373,10 @@ def _assert_contained(resolved: Path, root: Path) -> None:
 def path_is_same_or_child(path: Path, root: Path) -> bool:
     """True when *path* is *root* or lives beneath it.
 
-    Compares real (symlink-resolved, case-normalized) paths so the check
-    holds through symlinks and on case-insensitive filesystems (Windows,
-    macOS), where a plain ``Path.is_relative_to`` would miss a casing-only
-    match. Returns False on any resolution error rather than raising.
+    Compares real (symlink-resolved, case-normalized) paths so the check holds
+    through symlinks and on case-insensitive filesystems, where a plain
+    ``Path.is_relative_to`` would miss a casing-only match. Returns False on any
+    resolution error rather than raising.
     """
     try:
         path_real = os.path.normcase(os.path.realpath(str(path)))
@@ -391,9 +390,9 @@ def resolve_dataset_path(path_value: str) -> Path:
     raw = str(path_value or "").strip()
     if "\x00" in raw:
         raise ValueError("dataset path may not contain null bytes")
-    # Normalize first so a Windows/UNC or backslash path resolves like the rest
-    # of the Hub path layer: C:\data -> /mnt/c/data on WSL, uploads\set ->
-    # uploads/set, and a backslashed '..' is caught by the traversal guard below.
+    # Normalize first so Windows/UNC and backslash paths resolve like the rest
+    # of the Hub path layer (e.g. C:\data -> /mnt/c/data on WSL) and a
+    # backslashed '..' is caught by the traversal guard below.
     normalized = normalize_path(raw)
     path = Path(normalized).expanduser()
     if ".." in path.parts:
@@ -480,8 +479,8 @@ def resolve_cached_repo_id_case(
                 if entry.name.lower() != expected_lower:
                     continue
                 # The lowercased full-name match already proves the prefix
-                # matches; a case-sensitive startswith would reject a
-                # mixed-case imported dir such as Models--Org--Repo.
+                # matches; a case-sensitive startswith would reject a mixed-case
+                # imported dir such as Models--Org--Repo.
                 repo_part = entry.name[len(prefix) :]
                 if not repo_part:
                     continue

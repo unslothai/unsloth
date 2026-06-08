@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Cached model inventory services."""
+"""Cached model inventory."""
 
 from __future__ import annotations
 
@@ -100,17 +100,12 @@ def all_hf_cache_scans():
 
 
 def _repo_gguf_size_bytes(repo_info) -> int:
-    """Return the total on-disk size of primary GGUF weight files across
-    all revisions, excluding mmproj vision-adapter files.
+    """Total on-disk size of primary GGUF weights across revisions, excluding
+    mmproj vision adapters.
 
-    Hugging Face hardlinks blobs shared between revisions, so this
-    deduplicates by blob path (or, as a fallback, by revision commit
-    hash + filename) to avoid double-counting the same bytes. Files
-    with an unknown size (``size_on_disk is None``, e.g. a partial or
-    interrupted download) are treated as zero bytes. mmproj files are
-    excluded so that repos whose only ``.gguf`` artifact is a vision
-    adapter are not classified as GGUF repos: the variant selector
-    filters mmproj out and would otherwise show zero pickable variants.
+    Dedupes by blob path (HF hardlinks shared blobs) to avoid double-counting;
+    unknown-size files count as zero. mmproj is excluded so a repo whose only
+    ``.gguf`` is a vision adapter isn't classed as GGUF (it has no pickable variant).
     """
     unique_blobs: dict[str, int] = {}
     for revision in repo_info.revisions:
@@ -127,9 +122,7 @@ def _repo_gguf_size_bytes(repo_info) -> int:
 
 
 def _repo_has_gguf_files(repo_info) -> bool:
-    """Return True when any revision in a cached repo contains a
-    primary GGUF weight file. Repos whose only ``.gguf`` artifact is
-    an mmproj vision adapter are not treated as GGUF here."""
+    """True if any revision has a primary GGUF weight (mmproj-only repos excluded)."""
     return _repo_gguf_size_bytes(repo_info) > 0
 
 
@@ -171,9 +164,8 @@ def invalidate_hf_cache_scans() -> None:
 
 
 def _scan_cached_gguf() -> list[dict]:
-    """Synchronous HF-cache disk walk for GGUF repos. Runs in a worker thread
-    (see :func:`list_cached_gguf`) so the iterdir/stat calls don't block the
-    event loop."""
+    """Synchronous HF-cache disk walk for GGUF repos; runs in a worker thread
+    so the iterdir/stat calls don't block the event loop."""
     cache_scans = all_hf_cache_scans()
 
     seen_lower: dict[str, dict] = {}
@@ -200,9 +192,8 @@ def _scan_cached_gguf() -> list[dict]:
                     "size_bytes": max(total_size, variant_state_size),
                     "cache_path": str(repo_info.repo_path),
                     "partial": partial,
-                    # GGUF row-level transport is ambiguous (variants may
-                    # differ). Per-variant partial_transport lives on
-                    # GgufVariantDetail via the variants endpoint.
+                    # GGUF row-level transport is ambiguous (variants may differ);
+                    # per-variant detail lives on GgufVariantDetail.
                     "partial_transport": None,
                 }
                 row.update(
@@ -391,9 +382,8 @@ def _cached_model_local_metadata(repo_path: Path) -> dict:
 
 
 def _scan_cached_models() -> list[dict]:
-    """Synchronous HF-cache disk walk for non-GGUF model repos. Runs in a
-    worker thread (see :func:`list_cached_models`) to keep the iterdir/stat
-    calls off the event loop."""
+    """Synchronous HF-cache disk walk for non-GGUF model repos; runs in a worker
+    thread to keep the iterdir/stat calls off the event loop."""
     cache_scans = all_hf_cache_scans()
 
     seen_lower: dict[str, dict] = {}

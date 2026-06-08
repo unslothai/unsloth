@@ -324,8 +324,7 @@ async def lifespan(app: FastAPI):
     # Detect hardware first — sets DEVICE global used everywhere
     detect_hardware()
 
-    # Reap any download workers orphaned by a previous hard crash/restart
-    # before new downloads can start. Self-contained and never raises.
+    # Reap download workers orphaned by a previous crash before new downloads start.
     reap_hub_orphan_workers()
 
     # llama.cpp probes: capability (MTP support) + freshness (release age).
@@ -428,10 +427,8 @@ logger = LogConfig.setup_logging(
 app.add_middleware(LoggingMiddleware)
 
 
-# Images and media may load from any https origin so third-party model-card
-# assets render (HF LFS/XET CDNs, shields/badge hosts, GitHub-hosted images,
-# audio/video samples). This mirrors the desktop CSP in tauri.conf.json. They
-# cannot execute code; scripts, frames, and connect-src stay same-origin + HF.
+# img/media-src allow any https origin so HF model-card assets render (mirrors
+# tauri.conf.json); scripts/frames/connect-src stay same-origin + HF.
 from starlette.middleware.base import BaseHTTPMiddleware  # noqa: E402
 from starlette.requests import Request as _StarletteRequest  # noqa: E402
 

@@ -236,15 +236,15 @@ def list_partial_gguf_variants_from_state(
     """Reconstruct GGUF variants from download manifests/markers alone.
 
     Used when no completed snapshot exists (download cancelled or interrupted)
-    and the HF API is unreachable (offline/gated/private). Each variant keyed
-    on disk maps to one entry whose ``quant`` is the stored variant key so a
-    resume passes the matching ``--variant`` back to the worker.
+    and the HF API is unreachable (offline/gated/private). Each variant's
+    ``quant`` is the stored variant key so a resume passes the matching
+    ``--variant`` back to the worker.
     """
     from hub.utils import download_manifest
 
-    # Variant identity on disk is case-insensitive (state_dir._entry_key lowercases
-    # it), so dedupe on the lowercased key. Manifests are read first, keeping their
-    # original-casing label when a lowercased cancel marker names the same variant.
+    # Variant identity on disk is case-insensitive (_entry_key lowercases it), so
+    # dedupe on the lowercased key. Manifests are read first to keep their
+    # original-casing label over a lowercased cancel marker for the same variant.
     seen: set[str] = set()
     ordered: list[str] = []
     for source in (

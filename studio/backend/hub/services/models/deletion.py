@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Cached model deletion services."""
+"""Cached model deletion."""
 
 from __future__ import annotations
 
@@ -40,12 +40,10 @@ logger = get_logger(__name__)
 def _snapshot_blob_reference_counts(repo_dir: Optional[Path]) -> dict[Path, int]:
     """Map each blob's realpath to how many snapshot symlinks still point at it.
 
-    Used by per-variant deletion to avoid unlinking a content-addressed blob
-    that another revision (or a differently-named file) still references — which
-    would dangle that symlink and make the scanner report the repo as partial.
-    Computed *after* the target variant's own symlinks are removed so they don't
-    self-count. Platforms without symlinks (some Windows setups) yield an empty
-    map, degrading to "no sharing detected"."""
+    Per-variant deletion uses this to avoid unlinking a blob another revision
+    still references (which would dangle that symlink). Computed after the
+    target variant's own symlinks are removed so they don't self-count.
+    """
     counts: dict[Path, int] = {}
     if repo_dir is None:
         return counts
@@ -230,8 +228,7 @@ def _delete_gguf_variant_from_repos(
 
 def _loaded_id_matches_repo(loaded_id: str, repo_id: str) -> bool:
     """True when *loaded_id* is *repo_id* itself or a file within it. Boundary
-    aware on the ``/`` separator so a sibling repo that merely shares a name
-    prefix (``org/model`` vs ``org/model-v2``) does not falsely match."""
+    aware on ``/`` so ``org/model`` doesn't match sibling ``org/model-v2``."""
     rid = repo_id.lower()
     lid = loaded_id.lower()
     return lid == rid or lid.startswith(f"{rid}/")
@@ -258,11 +255,10 @@ _LOAD_STATE_UNVERIFIABLE_DETAIL = (
 def _llama_cpp_blocks_delete(repo_id: str, variant: Optional[str]) -> bool:
     """Whether the llama.cpp backend currently holds *repo_id* (/variant).
 
-    Acquiring the backend is failure-tolerant: an import/construction error
-    means no llama-server runs in this process, so nothing is loaded and the
-    delete is safe. Reading the load state of an *acquired* backend is not
-    guarded here: if it raises, the exception propagates so the caller can
-    fail closed rather than delete weights out from under a live process."""
+    Acquiring the backend fails open (an import error means nothing is loaded);
+    reading an acquired backend's load state is left unguarded so a raise
+    propagates and the caller fails closed rather than delete a live model.
+    """
     try:
         from routes.inference import get_llama_cpp_backend
         backend = get_llama_cpp_backend()
@@ -323,11 +319,8 @@ async def delete_cached_model_response(
             detail = f"Invalid gguf_variant: {variant!r}",
         )
 
-    # Refuse if the model is currently loaded for inference. This guard fails
-    # closed: when a live backend's load state can't be read, abort with 503
-    # rather than risk unlinking weights under a running inference process.
-    # (An absent backend is not an error — nothing can be loaded through one
-    # that isn't running — so the helpers return False in that case.)
+    # Guard fails closed: if a live backend's load state can't be read, abort
+    # with 503 rather than risk unlinking weights under a running process.
     try:
         blocks_delete = _llama_cpp_blocks_delete(repo_id, variant) or (
             _inference_backend_blocks_delete(repo_id)
@@ -363,12 +356,8 @@ def _delete_cached_model_blocking(
     repo_id: str, variant: Optional[str], hf_token: Optional[str]
 ) -> dict:
     try:
-        # A sibling quantization may be downloading concurrently (a per-variant
-        # delete does not block it). When one is, restrict this delete to the
-        # variant's own files and leave the shared mmproj companion for it. This
-        # is a point-in-time check: the finalized companion blob is held by the
-        # reference-count walk below, and a sibling that starts mid-delete simply
-        # re-fetches the companion (no data loss).
+        # If a sibling quant is downloading concurrently, restrict this delete to
+        # the variant's own files and leave the shared mmproj companion for it.
         sibling_active = bool(
             variant and downloads.registry.has_active_peer_variant(repo_id, variant)
         )

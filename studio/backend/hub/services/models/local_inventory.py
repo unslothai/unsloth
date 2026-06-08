@@ -241,9 +241,8 @@ def _scan_hf_cache(cache_dir: Path, *, entry_limit: int | None = None) -> List[L
         )
         resolved = hf_cache_scan.resolve_hf_cache_realpath(repo_dir)
         scan_path = Path(resolved) if resolved else repo_dir
-        # Pass partial=False; _apply_format_aware_partial below rewrites
-        # per-row using format-aware predicates so a hybrid repo's gguf
-        # row doesn't taint its safetensors row (and vice versa).
+        # partial=False here; _apply_format_aware_partial below rewrites per-row
+        # so a hybrid repo's gguf row doesn't taint its safetensors row.
         rows = _classify_local_path(
             scan_path,
             "hf_cache",
@@ -322,10 +321,8 @@ def _scan_lmstudio_dir(lm_dir: Path, *, entry_limit: int | None = None) -> List[
     if not lm_dir.exists() or not lm_dir.is_dir():
         return []
 
-    # If the directory itself is a model directory (has config AND weight
-    # files), it is not an LM Studio publisher structure -- return it as a
-    # single model entry.  We cannot skip it silently because this function
-    # is the only scanner called for default LM Studio roots.
+    # If the dir is itself a model dir (config + weights), it's not an LM Studio
+    # publisher structure -- return it as a single entry rather than descend.
     if _is_model_directory(lm_dir):
         try:
             updated_at = lm_dir.stat().st_mtime
@@ -369,9 +366,7 @@ def _scan_lmstudio_dir(lm_dir: Path, *, entry_limit: int | None = None) -> List[
                     )
                 continue
 
-            # If the child directory itself looks like a model directory
-            # (has config AND weight files), surface it directly instead
-            # of descending into it as a publisher.
+            # Child is itself a model dir: surface it directly, not as a publisher.
             if _is_model_directory(child):
                 try:
                     updated_at = child.stat().st_mtime
@@ -447,9 +442,8 @@ def _resolve_allowed_models_dir(models_dir: str, allowed_roots: list[Path]) -> P
 def _coerce_scan_folder_path(raw_path: str) -> str:
     """Normalize a scan registration target.
 
-    Users often paste a full model file path. The scanner registry stores
-    directories, so supported weight files are represented by their parent
-    folder; standalone GGUF files are then picked up by _scan_models_dir.
+    The registry stores directories, so a pasted weight-file path is reduced to
+    its parent folder (standalone GGUFs are then picked up by _scan_models_dir).
     """
     if not raw_path or not raw_path.strip():
         raise ValueError("Path cannot be empty")

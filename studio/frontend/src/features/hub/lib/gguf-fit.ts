@@ -2,12 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * Single source of truth for "will this GGUF fit on the user's GPU?".
- *
- * Mirrors the backend's GPU selection (llama_cpp.py `_select_gpus`), which
- * budgets 90% of GPU memory for weights + KV cache and otherwise falls back to
- * `--fit` CPU offload. Keeping one formula here means the Hub download card and
- * the chat picker can never disagree about the same file.
+ * Single source of truth for "will this GGUF fit on the user's GPU?". Mirrors the
+ * backend's GPU selection (llama_cpp.py `_select_gpus`): 90% of GPU memory for
+ * weights + KV cache, else `--fit` CPU offload. One formula so the Hub card and
+ * chat picker can't disagree.
  */
 
 export type GgufFitClass = "fits" | "marginal" | "partial" | "ram" | "oom";

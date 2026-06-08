@@ -4,27 +4,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 /**
- * Wires an IntersectionObserver-driven sentinel for infinite scroll, with a
- * ResizeObserver fallback that auto-fetches whenever the scroll container's
- * content doesn't yet overflow.
- *
- * Both fallback observers can fire many times per scroll burst; we coalesce
- * them into one read per animation frame so we only hit `scrollHeight`
- * (a forced-layout property) once per frame. The downstream `fetchMore` is
- * additionally rate-limited at the data-source layer, which is where the
- * real concurrency hazard (parallel pulls on the same iterator) lives.
- *
- * The `signal` parameter is an arbitrary value the caller updates whenever
- * the data layer has produced new state — typically `results.length`. Passing
- * it as a dep guarantees we re-evaluate the fit check after a fetch returns,
- * even when the page-level filter rejected every new row (in which case the
- * DOM doesn't change and the MutationObserver wouldn't fire on its own).
- *
- * The auto-fire fallback is also bounded by `DEFAULT_MAX_AUTO_FILL_FETCHES`: a
- * hard backstop on no-overflow fetches that caps a runaway sweep of the full
- * remote listing. Callers with an explicit manual continuation UI can lower the
- * cap and expose `manualFetchAvailable` once the automatic fill stops.
+ * IntersectionObserver sentinel for infinite scroll, plus a ResizeObserver
+ * fallback that auto-fetches while the scroll container doesn't yet overflow.
+ * `signal` (typically results.length) is a dep so the fit check re-runs after a
+ * fetch even when the page filter rejected every new row and the DOM didn't change.
  */
+// Hard backstop on no-overflow auto-fetches, capping a runaway sweep of the full listing.
 const DEFAULT_MAX_AUTO_FILL_FETCHES = 40;
 
 export interface InfiniteScrollOptions {
@@ -123,9 +108,8 @@ export function useHubInfiniteScroll(
     [],
   );
 
-  // IntersectionObserver: fires when the sentinel scrolls into view. The
-  // sentinel is stable, so this deliberately omits `signal` — rebuilding per
-  // batch could drop an intersection. Refills fall to the auto-fire effect.
+  // Fires when the stable sentinel scrolls into view. Omits `signal` on purpose:
+  // rebuilding per batch could drop an intersection. Refills fall to the auto-fire effect.
   useEffect(() => {
     if (!enabled) return;
     const sentinel = sentinelRef.current;
@@ -170,32 +154,18 @@ export function useHubInfiniteScroll(
     setManualFetchAvailable,
   ]);
 
-  // Auto-fire fallback: keep requesting batches while the scroll container
-  // doesn't overflow yet (initial empty state or aggressive filters). The
-  // primary `IntersectionObserver` above handles "user scrolled near the
-  // sentinel" perfectly once the list overflows, so the fallback only needs
-  // to wake up when the *shape* of the listing changes — not on every frame.
-  //
-  // The previous implementation observed `childList:true, subtree:true` on
-  // the scroll root and re-fired on every scroll event. With a virtualized
-  // list that mounts/unmounts rows constantly while scrolling, that was a
-  // per-frame `scrollHeight/scrollTop/clientHeight` read storm (three forced
-  // layouts every frame), and it was the dominant lag source on the Hub.
-  //
-  // We now drive the fallback purely off:
-  //   - `enabled` / `signal` (caller signals new data or fresh enable)
-  //   - a ResizeObserver on the scroll root (window resize / layout change)
-  // This is enough to cover the no-overflow case without thrashing the main
-  // thread during normal scrolling.
+  // Auto-fire fallback: keep requesting batches while the container doesn't yet
+  // overflow (initial empty state or aggressive filters). Driven only off
+  // `enabled`/`signal` and a ResizeObserver on the scroll root, so it wakes on
+  // listing-shape changes rather than thrashing the main thread every frame
+  // (the prior childList/subtree observer was the dominant Hub lag source).
   useEffect(() => {
     if (!enabled) {
       wasEnabledRef.current = false;
       setManualFetchAvailable(false);
       return;
     }
-    // A fresh enable (new search, or the user resuming after a paused sweep)
-    // or a shrinking list (results reset) clears the backstop so legitimate
-    // loading can refill the viewport.
+    // Fresh enable or a shrinking list clears the backstop so loading can refill the viewport.
     if (
       !wasEnabledRef.current ||
       signal < prevSignalRef.current ||
@@ -220,8 +190,7 @@ export function useHubInfiniteScroll(
       const sentinel = sentinelRef.current;
       if (!sentinel?.isConnected) return;
       if (manualFetchAvailableRef.current) return;
-      // Once the content actually overflows the viewport, the
-      // IntersectionObserver takes over — no need to keep polling.
+      // Once content overflows, the IntersectionObserver takes over — stop polling.
       if (hasScrollableOverflow(root)) {
         setManualFetchAvailable(false);
         return;

@@ -70,23 +70,18 @@ def get_recommended_folders_response() -> dict:
     return {"folders": folders}
 
 
-# Heuristic ceiling on how many children to stat when checking whether a
-# directory "looks like" it contains models. Keeps the browser snappy
-# even when a directory has thousands of unrelated entries.
+# Ceiling on children to stat when guessing if a directory holds models.
 _BROWSE_MODEL_HINT_PROBE = 64
-# Hard cap on how many subdirectory entries we send back. Pointing the
-# browser at something like ``/usr/lib`` or ``/proc`` must not stat-storm
-# the process or send tens of thousands of rows to the client.
+# Hard cap on returned subdirectory entries so pointing at ``/usr/lib`` or
+# ``/proc`` can't stat-storm the process or flood the client.
 _BROWSE_ENTRY_CAP = 2000
 
 
 def _count_model_files(directory: Path, cap: int = 200) -> int:
     """Count GGUF/safetensors files immediately inside *directory*.
 
-    Bounded by *visited entries*, not by *match count*: in directories
-    with many non-model files (or many subdirectories) the scan still
-    stops after ``cap`` entries so a UI hint never costs more than a
-    bounded directory walk.
+    Bounded by visited entries (not matches) so a UI hint never costs more
+    than ``cap`` stats even in a directory full of non-model files.
     """
     n = 0
     visited = 0
@@ -112,10 +107,8 @@ def _count_model_files(directory: Path, cap: int = 200) -> int:
 
 
 def _has_direct_model_signal(directory: Path) -> bool:
-    """Return True if *directory* has an immediate child that signals
-    it holds a model: a GGUF/safetensors/config.json file, or a
-    `models--*` subdir (HF hub cache). Bounded by
-    ``_BROWSE_MODEL_HINT_PROBE`` to stay fast."""
+    """True if an immediate child signals a model: a GGUF/safetensors/config
+    file or a ``models--*`` HF-cache subdir. Bounded by the hint probe."""
     try:
         it = directory.iterdir()
     except OSError:
@@ -142,29 +135,16 @@ def _has_direct_model_signal(directory: Path) -> bool:
 
 
 def _looks_like_model_dir(directory: Path) -> bool:
-    """Bounded heuristic used by the folder browser to flag directories
-    worth exploring. False negatives are fine; the real scanner is
-    authoritative.
-
-    Three signals, cheapest first:
-
-    1. Directory name itself: ``models--*`` is the HuggingFace hub cache
-       layout (``blobs``/``refs``/``snapshots`` children wouldn't match
-       the file-level probes below).
-    2. An immediate child is a weight file or config (handled by
-       :func:`_has_direct_model_signal`).
-    3. A grandchild has a direct signal -- this catches the
-       ``publisher/model/weights.gguf`` layout used by LM Studio and
-       Ollama. We probe at most the first
-       ``_BROWSE_MODEL_HINT_PROBE`` child directories, each of which is
-       checked with a bounded :func:`_has_direct_model_signal` call,
-       so the total cost stays O(PROBE^2) worst-case.
+    """Bounded heuristic flagging directories worth exploring (false negatives
+    are fine; the real scanner is authoritative). Three signals, cheapest first:
+    a ``models--*`` name (HF cache), a direct child signal, or a grandchild
+    signal (the LM Studio / Ollama ``publisher/model/weights.gguf`` layout).
+    The grandchild probe stays O(PROBE^2) worst-case.
     """
     if directory.name.startswith("models--"):
         return True
     if _has_direct_model_signal(directory):
         return True
-    # Grandchild probe: LM Studio / Ollama publisher/model layout.
     try:
         it = directory.iterdir()
     except OSError:
@@ -188,16 +168,12 @@ def _looks_like_model_dir(directory: Path) -> bool:
 
 
 def _build_browse_allowlist() -> list[Path]:
-    """Return the list of root directories the folder browser is allowed
-    to walk. The same list is used to seed the sidebar suggestion chips,
-    so chip targets are always reachable.
+    """Root directories the browser may walk (also seeds the suggestion chips).
 
-    Roots include the current user's HOME, the resolved HF cache dirs,
-    Studio's own outputs/exports/studio root, registered scan folders,
-    and well-known third-party local-LLM dirs (LM Studio, Ollama,
-    `~/models`). Each is added only if it currently resolves to a real
-    directory, so we never produce a "dead" sandbox boundary the user
-    can't navigate into.
+    Roots: HOME, the resolved HF cache dirs, Studio outputs/exports/root,
+    registered scan folders, and well-known local-LLM dirs (LM Studio, Ollama,
+    ``~/models``). Each is added only if it resolves to a real directory so the
+    sandbox never has a dead boundary.
     """
     from hub.storage.scan_folders import list_scan_folders
 
@@ -243,7 +219,6 @@ def _build_browse_allowlist() -> list[Path]:
     except Exception as exc:  # noqa: BLE001 -- best-effort
         logger.debug("browse-folders: well-known dirs unavailable: %s", exc)
 
-    # Dedupe while preserving order.
     seen: set[str] = set()
     deduped: list[Path] = []
     for p in candidates:
@@ -256,10 +231,8 @@ def _build_browse_allowlist() -> list[Path]:
 
 
 def _is_path_inside_allowlist(target: Path, allowed_roots: list[Path]) -> bool:
-    """Return True if *target* equals or is a descendant of any allowed
-    root. The comparison uses ``os.path.realpath`` so symlinks cannot be
-    used to escape the sandbox.
-    """
+    """True if *target* equals or descends from any allowed root. Uses
+    ``os.path.realpath`` so symlinks cannot escape the sandbox."""
     try:
         target_real = os.path.normcase(os.path.realpath(str(target)))
     except OSError:
@@ -318,17 +291,12 @@ def _browse_relative_parts(requested_path: str, root: Path) -> Optional[list[str
 
 
 def _match_browse_child(current: Path, name: str) -> Optional[Path]:
-    """Return the immediate child named ``name`` under ``current``, or None
-    if it does not exist.
+    """Return the immediate child named ``name`` under ``current``, or None.
 
-    ``name`` is already validated as a single, safe path component (no
-    separators, ``..``, or null bytes) by :func:`_browse_relative_parts`,
-    so a direct ``current / name`` join is safe and O(1) -- there is no
-    need to enumerate the whole directory per component. On case-insensitive
-    filesystems (Windows, default macOS) the OS resolves a differently-cased
-    component transparently, and the caller's subsequent ``.resolve()``
-    canonicalizes the on-disk casing; on case-sensitive filesystems an exact
-    match is required, matching the OS's own semantics.
+    ``name`` is pre-validated as a safe single component, so the direct join is
+    O(1). Case-insensitive filesystems resolve differing case transparently
+    (the caller's ``.resolve()`` canonicalizes it); case-sensitive ones require
+    an exact match, matching OS semantics.
     """
     child = current / name
     try:
@@ -393,9 +361,8 @@ def _resolve_browse_target(path: Optional[str], allowed_roots: list[Path]) -> Pa
                         "under your home folder."
                     ),
                 )
-            # Same credential/config denylist scan-folder registration enforces:
-            # HOME is in the allowlist, so without this a user could browse into
-            # ~/.ssh, ~/.aws, etc. even though they can't be registered.
+            # HOME is in the allowlist, so without this denylist (same one
+            # registration enforces) a user could browse into ~/.ssh, ~/.aws, etc.
             if contains_sensitive_path_component(str(resolved_child)):
                 raise HTTPException(
                     status_code = 403,
@@ -423,25 +390,16 @@ def _resolve_browse_target(path: Optional[str], allowed_roots: list[Path]) -> Pa
 def browse_folders_response(
     path: Optional[str] = None, show_hidden: bool = False
 ) -> BrowseFoldersResponse:
-    """
-    List immediate subdirectories of *path* for the Custom Folders picker.
+    """List immediate subdirectories of *path* for the Custom Folders picker.
 
-    Sandbox: requests are bounded to the allowlist returned by
-    :func:`_build_browse_allowlist` (HOME, HF cache, Studio dirs,
-    registered scan folders, well-known model dirs). Paths outside the
-    allowlist return 403 so users cannot probe ``/etc``, ``/proc``,
-    ``/root`` (when not HOME), or other sensitive system locations
-    even if the server process can read them. Symlinks are resolved
-    via ``os.path.realpath`` before the check, so symlink traversal
-    cannot escape the sandbox either.
-
-    Sorting: directories that look like they hold models come first, then
-    plain directories, then hidden entries (if `show_hidden=true`).
+    Requests are bounded to the :func:`_build_browse_allowlist` roots; paths
+    outside it return 403 (symlinks resolved via realpath first, so traversal
+    can't escape). Sorting: model-bearing dirs first, then plain, then hidden.
     """
     from hub.storage.scan_folders import list_scan_folders
 
-    # Build the allowlist once -- both the sandbox check below and the
-    # suggestion chips use the same set, so chips are always navigable.
+    # Build the allowlist once -- the sandbox check and suggestion chips share
+    # it so chips are always navigable.
     allowed_roots = _build_browse_allowlist()
 
     try:
@@ -479,13 +437,8 @@ def browse_folders_response(
 
     try:
         for child in it:
-            # Bound by *visited entries*, not by *appended entries*: in
-            # directories full of files (or hidden subdirs when
-            # ``show_hidden=False``) the cap on ``len(entries)`` would
-            # never trigger and we'd still stat every child. Counting
-            # visits keeps the worst-case work to ``_BROWSE_ENTRY_CAP``
-            # iterdir/is_dir calls regardless of how many of them
-            # survive the filters below.
+            # Bound by visited entries, not appended ones, so a directory full
+            # of files still caps work at ``_BROWSE_ENTRY_CAP`` stats.
             visited += 1
             if visited > _BROWSE_ENTRY_CAP:
                 truncated = True
@@ -499,9 +452,8 @@ def browse_folders_response(
             is_hidden = name.startswith(".")
             if is_hidden and not show_hidden:
                 continue
-            # Don't surface credential/config dirs as navigable options even
-            # with show_hidden: descending into them is refused anyway, and
-            # registration rejects them. Keeps the two surfaces consistent.
+            # Don't surface credential/config dirs even with show_hidden:
+            # descending into them is refused and registration rejects them.
             if contains_sensitive_path_component(name):
                 continue
             entries.append(
@@ -529,10 +481,8 @@ def browse_folders_response(
 
     entries.sort(key = _sort_key)
 
-    # Parent is None at the filesystem root (`p.parent == p`) AND when
-    # the parent would step outside the sandbox -- otherwise the up-row
-    # would 403 on click. Users can still hop to other allowed roots
-    # via the suggestion chips below.
+    # Parent is None at the FS root and when it would step outside the sandbox,
+    # so the up-row never 403s on click.
     parent: Optional[str]
     if target.parent == target or not _is_path_inside_allowlist(target.parent, allowed_roots):
         parent = None
@@ -557,11 +507,9 @@ def browse_folders_response(
             seen_sug.add(resolved)
             suggestions.append(resolved)
 
-    # Home always comes first -- it's the safe fallback when everything
-    # else is cold.
+    # Home first as the safe fallback.
     _add_sug(Path.home())
-    # The HF cache root the process is actually using (honors HF_HOME /
-    # HF_HUB_CACHE), then the platform default as a secondary chip.
+    # The HF cache root in use (honors HF_HOME / HF_HUB_CACHE), then the default.
     try:
         _add_sug(_resolve_hf_cache_dir())
     except Exception:
@@ -576,13 +524,8 @@ def browse_folders_response(
             _add_sug(folder.get("path", ""))
     except Exception as exc:
         logger.debug("browse-folders: could not load scan folders: %s", exc)
-    # Directories commonly used by other local-LLM tools: LM Studio
-    # (`~/.lmstudio/models` + legacy `~/.cache/lm-studio/models` +
-    # user-configured downloadsFolder from LM Studio's settings.json),
-    # Ollama (`~/.ollama/models` + common system paths + OLLAMA_MODELS
-    # env var), and generic user-choice spots (`~/models`, `~/Models`).
-    # Each helper only returns paths that currently exist so we never
-    # show dead chips.
+    # Well-known third-party dirs (LM Studio, Ollama, ~/models). Each helper
+    # only returns existing paths so we never show dead chips.
     try:
         for p in well_known_model_dirs():
             _add_sug(p)

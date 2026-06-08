@@ -76,11 +76,9 @@ def _subdir(name: str) -> Optional[Path]:
 
 
 def repo_cache_basename(repo_type: RepoType, repo_id: str) -> str:
-    # Guard against the implicit-pluralization footgun: a wrong repo_type
-    # would silently produce a wrong filename (e.g. "modelss--..." from
-    # "models") and a misclassified scanner row. Static checkers catch
-    # this via the Literal; this runtime check catches the cases they
-    # miss (dynamic strings, JSON-sourced values, etc.).
+    # Reject a bad repo_type at runtime: a wrong value would silently produce a
+    # wrong filename and a misclassified scanner row (the Literal only guards
+    # statically; dynamic/JSON-sourced values slip past it).
     if repo_type not in _VALID_REPO_TYPES:
         raise ValueError(f"repo_type must be one of {_VALID_REPO_TYPES}, got {repo_type!r}")
     return f"{repo_type}s--{repo_id.replace('/', '--')}".lower()
@@ -90,7 +88,7 @@ def variant_filename_prefix(repo_type: RepoType, repo_id: str) -> str:
     """Lowercased prefix every variant-keyed state file for this repo shares.
 
     The single source the download_manifest enumerators match against, so the
-    on-disk scheme in :func:`_entry_key` cannot drift from them silently."""
+    scheme in :func:`_entry_key` cannot drift from them silently."""
     return f"{repo_cache_basename(repo_type, repo_id)}--variant--"
 
 
@@ -134,9 +132,8 @@ def marker_path(
 def manifests_dir() -> Optional[Path]:
     """Manifests subdirectory, created on demand. ``None`` on failure.
 
-    Exposed for iter_variant_manifests in download_manifest.py: that
-    helper needs to enumerate the directory to find every variant-keyed
-    manifest for a repo (the path-construction helpers above answer
+    Exposed for iter_variant_manifests, which enumerates the directory to find
+    every variant-keyed manifest for a repo (the path helpers above answer
     "where would key X go" but not "what keys exist")."""
     return _subdir(_MANIFESTS_SUBDIR)
 
@@ -149,10 +146,9 @@ def cancelled_dir() -> Optional[Path]:
 
 
 def workers_dir() -> Optional[Path]:
-    """Worker PID-breadcrumb subdirectory, created on demand. ``None`` on
-    failure.
+    """Worker PID-breadcrumb subdirectory, created on demand. ``None`` on failure.
 
     Each live download worker drops one breadcrumb here so a backend that
-    restarts after a hard crash can find and reap workers it can no longer
-    reach through its in-memory registry."""
+    restarts after a hard crash can reap workers it can no longer reach through
+    its in-memory registry."""
     return _subdir(_WORKERS_SUBDIR)

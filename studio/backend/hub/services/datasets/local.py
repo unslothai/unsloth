@@ -19,10 +19,9 @@ from hub.schemas.datasets import (
 )
 from hub.utils.paths import dataset_uploads_root, ensure_dir, recipe_datasets_root
 
-# Recognized data-file extensions for the single-file fallback approach.
-# Tabular formats are preferred over archives for Tier 1 preview because
-# archives (e.g. images.zip) may be loaded as ImageFolder datasets with
-# synthetic columns (image/label) that don't match the real dataset schema.
+# Tabular formats are preferred over archives for Tier 1 preview: archives
+# (e.g. images.zip) load as ImageFolder with synthetic columns that don't
+# match the real schema.
 _TABULAR_EXTS = (".parquet", ".json", ".jsonl", ".csv", ".tsv", ".arrow")
 _ARCHIVE_EXTS = (".tar", ".tar.gz", ".tgz", ".gz", ".zst", ".zip", ".txt")
 DATA_EXTS = _TABULAR_EXTS + _ARCHIVE_EXTS
@@ -193,10 +192,9 @@ def _build_local_dataset_items() -> list[LocalDatasetItem]:
 
 
 def _stream_file_preview_slice(path: Path, preview_size: int):
-    """Read the first ``preview_size`` rows of a single data file via
-    ``streaming=True`` + ``islice``, so a large file is never fully parsed
-    into Arrow just to preview a few rows. Returns ``(Dataset, None)`` (a
-    stream has no exact row count) or ``None`` if empty/unsupported.
+    """Read the first ``preview_size`` rows via streaming + ``islice`` so a large
+    file is never fully parsed into Arrow. Returns ``(Dataset, None)`` (a stream
+    has no exact count) or ``None`` if empty/unsupported.
     """
     from itertools import islice
 
@@ -259,10 +257,8 @@ def _load_local_preview_slice(*, dataset_path: Path, train_split: str, preview_s
         dataset_path = candidate_files[0]
 
     suffix = dataset_path.suffix.lower()
-    # Parquet keeps its row count in footer metadata and Arrow memory-maps the
-    # file, so len()+select stay cheap and yield an exact total_rows worth
-    # surfacing in the UI. JSON/CSV carry no such metadata, so stream them via
-    # islice and report total_rows=None (the UI degrades to "Showing N rows").
+    # Parquet/Arrow give a cheap exact total_rows via len()+select; JSON/CSV
+    # carry no such metadata, so stream them and report total_rows=None.
     if suffix == ".parquet":
         dataset = load_dataset("parquet", data_files = str(dataset_path), split = train_split)
         total_rows = len(dataset)

@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Pydantic schemas for the Hub download manager.
-
-Request/response shapes for /api/hub/downloads/*.
-"""
+"""Pydantic schemas for the Hub download manager (/api/hub/downloads/*)."""
 
 from pydantic import BaseModel, Field
 from typing import List, Literal, Optional
@@ -106,9 +103,8 @@ class TransportStatusResponse(BaseModel):
 
 class DownloadProgressResponse(BaseModel):
     downloaded_bytes: int
-    # Finalized-blob bytes only (no ``.incomplete`` portion). Registry-loss
-    # completion fallbacks must key off this, never the in-progress total, so
-    # a partial is never mistaken for a finished download.
+    # Finalized-blob bytes only (no ``.incomplete``). Registry-loss completion
+    # fallbacks key off this so a partial isn't mistaken for a finished download.
     completed_bytes: int = 0
     complete_on_disk: bool = Field(
         False,

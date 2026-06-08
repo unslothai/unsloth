@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Dataset download orchestration services."""
+"""Start, cancel, and report progress for dataset downloads."""
 
 from __future__ import annotations
 
@@ -59,12 +59,9 @@ def get_dataset_snapshot_metadata_cached(
 ) -> tuple[int, frozenset[str]]:
     """Raw snapshot size + expected blob hashes for a dataset repo.
 
-    The dataset worker downloads every sibling (no ignore patterns), so the
-    denominator is the verbatim sibling-size sum and the hashes cover every
-    file. This is the model resolver's dataset counterpart, consumed by the
-    shared ``snapshot_progress`` accounting so dataset progress filters stale
-    blobs and divides by the actual on-disk total (not, e.g., a parquet size).
-    """
+    The dataset worker downloads every sibling, so the denominator is the full
+    sibling-size sum and the hashes cover every file. Consumed by the shared
+    ``snapshot_progress`` accounting."""
     token_fp = hf_cache_scan.token_fingerprint(hf_token)
     cache_key = (repo_id, token_fp)
     with _dataset_size_cache_lock:
@@ -74,8 +71,7 @@ def get_dataset_snapshot_metadata_cached(
             if (time.monotonic() - ts) >= _DATASET_SIZE_POS_TTL:
                 del _dataset_size_cache[repo_id]
             # A gated/private repo's metadata is only served back to the token
-            # that fetched it: a tokenless caller couldn't fetch it, and another
-            # token may have no access to it at all.
+            # that fetched it; another token may have no access at all.
             elif not restricted or cached_fp == token_fp:
                 _dataset_size_cache.move_to_end(repo_id)
                 return size, hashes
@@ -122,13 +118,9 @@ async def get_dataset_download_progress_response(
 ) -> dict:
     """Return download progress for a HuggingFace dataset repo.
 
-    Mirrors ``GET /api/hub/download-progress`` but scans the
-    ``datasets--owner--name`` cache directory under HF_HUB_CACHE. Shares the
-    blob accounting with the model path via ``snapshot_progress`` so both
-    filter stale-revision blobs by the target revision's expected hashes and
-    divide by the same raw on-disk total. Returns ``cache_path`` so the UI can
-    show users where the dataset blobs landed on disk.
-    """
+    Scans the ``datasets--owner--name`` cache dir and shares the blob accounting
+    with the model path via ``snapshot_progress``. Returns ``cache_path`` for the
+    UI."""
     return await snapshot_progress.snapshot_progress_response(
         repo_type = "dataset",
         repo_id = repo_id,
@@ -175,8 +167,8 @@ async def download_dataset_response(
     )
     generation = _registry.current_generation(key)
     if not claimed:
-        # A rejected claim for this repo's own in-flight job is pollable; one
-        # blocked by an in-progress delete leaves no job, so flag it.
+        # Pollable when rejected by this repo's own in-flight job; an
+        # in-progress delete leaves no job, so flag it via ``adoptable``.
         return {
             "repo_id": repo_id,
             "state": claim_state,
@@ -260,13 +252,9 @@ async def get_active_dataset_downloads_response(repo_id: str = "") -> ActiveDown
 
 
 async def get_dataset_transport_status_response(repo_id: str) -> dict:
-    """Return last transport used for this dataset + whether any partial
-    blobs exist + whether that partial supports byte-level resume.
-
-    See ``models.get_model_transport_status`` for the semantics of
-    ``resumable`` — XET partials are reported via ``has_partial`` but
-    are not byte-level resumable.
-    """
+    """Last transport used, whether partial blobs exist, and whether they
+    support byte-level resume. XET partials show via ``has_partial`` but are not
+    byte-level resumable (see ``models.get_model_transport_status``)."""
     repo_id = repo_id.strip()
     if not _is_valid_repo_id(repo_id):
         return {"has_partial": False, "last_transport": None, "resumable": False}

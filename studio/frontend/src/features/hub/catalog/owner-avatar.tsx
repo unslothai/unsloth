@@ -62,13 +62,8 @@ export function OwnerAvatar({
   className,
 }: {
   owner: string;
-  /**
-   * Repo name (part after `owner/`). When provided alongside an eligible
-   * owner (currently "unsloth"), the avatar tries to match a known upstream
-   * provider from the registry and renders that provider's logo instead of
-   * the owner's HF profile picture. Used so an Unsloth re-upload of e.g.
-   * Qwen2.5-7B shows the Qwen logo while still labeling the owner "unsloth".
-   */
+  // For an eligible owner (currently "unsloth"), match a known upstream provider
+  // and render its logo (e.g. an Unsloth Qwen2.5 re-upload shows the Qwen logo).
   repoName?: string;
   size?: AvatarSize;
   className?: string;
@@ -124,8 +119,7 @@ function ProviderLogoTile({
     );
   }
 
-  // mono treatments paint a silhouette via CSS mask; the host element's
-  // text color drives the silhouette color (theme-aware vs. fixed black).
+  // mono treatments paint a silhouette via CSS mask; host text color drives its color.
   const colorClass =
     provider.treatment === "mono-black" ? "text-black" : "text-foreground";
   return (

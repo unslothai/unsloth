@@ -33,8 +33,7 @@ function loadInitial(): string {
       const fromTraining = parsed?.state?.hfToken;
       if (typeof fromTraining === "string" && fromTraining.length > 0) {
         const normalized = normalize(fromTraining);
-        // Copy only. training-config-store still persists and reads its own
-        // hfToken, so deleting the legacy field drops the training token.
+        // Copy only: training-config-store still reads its own hfToken, so deleting it would drop that token.
         persist(normalized);
         return normalized;
       }

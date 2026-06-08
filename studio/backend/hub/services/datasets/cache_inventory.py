@@ -124,10 +124,8 @@ def _hub_dataset_snapshot_count(path: Path) -> int:
 def _scan_hub_dataset_cache_dirs() -> list[dict]:
     """Fallback scanner for HF Hub dataset cache directories.
 
-    ``scan_cache_dir()`` can fail or skip repos when one cache entry is partially
-    corrupt. The model scanner has several fallback paths already; datasets need
-    the same resilience so the On Device tab reflects what is actually on disk.
-    """
+    ``scan_cache_dir()`` can skip repos when one cache entry is partially corrupt;
+    this resilience keeps the On Device tab matching what's on disk."""
     seen_lower: dict[str, dict] = {}
     for root in _hf_hub_cache_roots():
         try:
@@ -152,8 +150,8 @@ def _scan_hub_dataset_cache_dirs() -> list[dict]:
                 "repo_id": repo_id,
                 "size_bytes": size_bytes,
                 "cache_path": str(entry.resolve()),
-                # snapshot_count == 0 catches "blobs landed but no snapshot
-                # symlinks"; is_snapshot_partial adds active-row state checks.
+                # snapshot_count == 0 catches blobs-but-no-snapshot;
+                # is_snapshot_partial adds active-row state checks.
                 "partial": snapshot_partial,
                 "partial_transport": (
                     hf_cache_scan.partial_transport_for(
@@ -244,10 +242,9 @@ def _looks_like_processed_dataset_cache(path: Path) -> bool:
 def _scan_processed_dataset_caches() -> list[dict]:
     """Return HF datasets-library cache rows keyed by repo_id.
 
-    `datasets.load_dataset()` stores processed Arrow caches separately from the
-    Hub snapshot cache. Older Studio training runs can therefore have usable
-    on-device datasets that `huggingface_hub.scan_cache_dir()` never reports.
-    """
+    `load_dataset()` stores processed Arrow caches separately from the Hub
+    snapshot cache, so they're usable on-device but invisible to
+    `scan_cache_dir()`."""
     seen_lower: dict[str, dict] = {}
     for root in _hf_datasets_cache_roots():
         try:
@@ -286,9 +283,7 @@ def _scan_hf_dataset_caches() -> list[dict]:
         for repo_info in hf_cache.repos:
             inspected += 1
             try:
-                # repo_type is an enum-like string ("dataset"/"model"/"space")
-                # — compare against str(...) to avoid quirks if the library
-                # ever switches to an Enum.
+                # str(...) guards against the library switching repo_type to an Enum.
                 if str(repo_info.repo_type) != "dataset":
                     continue
                 total_size = int(getattr(repo_info, "size_on_disk", 0) or 0)
@@ -350,8 +345,8 @@ def _scan_hf_dataset_caches() -> list[dict]:
             seen_lower[key] = row
         else:
             existing["size_bytes"] = max(existing["size_bytes"], row["size_bytes"])
-            # A repo present as both a snapshot and a processed Arrow cache must
-            # keep the processed-cache marker; merging by size alone dropped it.
+            # Keep the processed-cache marker when a repo is both snapshot and
+            # processed Arrow cache; merging by size alone dropped it.
             if row.get("processed_cache"):
                 existing["processed_cache"] = True
     logger.info(
@@ -439,9 +434,8 @@ def _delete_cached_dataset_blocking(repo_id: str) -> dict:
             ),
         )
 
-    # ``scan_cache_dir()`` skips blob-only/corrupt repos, so the revision
-    # delete above can't touch them, yet the fallback scanner still shows the
-    # row. Purge the whole cache dir (like the model path) so it's deletable.
+    # ``scan_cache_dir()`` skips blob-only/corrupt repos the revision delete
+    # can't touch, yet the fallback scanner shows them; purge the whole dir.
     cache_purged = purge_repo_cache_dirs("dataset", repo_id)
     partial_purged = purge_partial_repo("dataset", repo_id)
     state_purged = download_manifest.purge_all_state_for_repo("dataset", repo_id) > 0

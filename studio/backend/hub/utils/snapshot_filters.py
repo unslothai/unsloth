@@ -91,10 +91,9 @@ def total_size_for_siblings(siblings: Iterable) -> int:
 
 
 def blob_hashes_for_siblings(siblings: Iterable) -> frozenset[str]:
-    # Cache blob filenames are the file etag: the LFS sha256 for LFS files,
-    # otherwise the git blob id. Collecting both lets progress accounting
-    # count exactly this revision's files (large weights and small non-LFS
-    # configs alike) without summing stale blobs from other revisions.
+    # Blob filename == file etag (LFS sha256, else git blob id). Collecting both
+    # lets progress count exactly this revision's files without summing stale
+    # blobs from other revisions.
     hashes: set[str] = set()
     for sibling in siblings:
         sha = getattr(getattr(sibling, "lfs", None), "sha256", None)

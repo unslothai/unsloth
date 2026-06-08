@@ -42,16 +42,11 @@ def spawn_worker(
 ) -> subprocess.Popen:
     """Spawn the download worker.
 
-    Both the XET client and the ``hf_transfer`` Rust extension write file
-    chunks out of order, which makes their partial blobs unsafe to resume
-    under a sequential writer (see the ``download_registry`` module docstring).
-    The HTTP path stays on the built-in sequential downloader so SIGKILL →
-    resume produces a byte-identical final file.
-
-    ``protected_blob_hashes`` are blobs a concurrent same-repo peer is already
-    writing; the worker excludes them from its cache-preparation purge so it
-    never deletes an ``.incomplete`` shared with that peer (e.g. a bundled
-    mmproj). Passed via env so it works identically on every platform.
+    XET and ``hf_transfer`` write chunks out of order, so their partials can't
+    resume under a sequential writer; the HTTP path stays sequential so
+    SIGKILL -> resume is byte-identical. ``protected_blob_hashes`` are blobs a
+    concurrent same-repo peer is writing, excluded from the cache-prep purge so a
+    shared ``.incomplete`` (e.g. bundled mmproj) is never deleted.
     """
     cwd = backend_dir()
     mode = download_registry.TRANSPORT_XET if use_xet else download_registry.TRANSPORT_HTTP
@@ -64,10 +59,8 @@ def spawn_worker(
     env["HF_HUB_DISABLE_TELEMETRY"] = "1"
     env["HF_HUB_DISABLE_XET"] = "0" if use_xet else "1"
     env["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "0" if hf_token else "1"
-    # hf_transfer writes parallel HTTP Range chunks. Even within "http"
-    # mode it can leave sparse partials. Disable unconditionally so that
-    # the writer used by the worker is always single-stream sequential
-    # when transport=http.
+    # hf_transfer's parallel Range chunks can leave sparse partials even in
+    # "http" mode; disable so the worker's writer is always sequential.
     env["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
     for token_key in (
         "HF_TOKEN",
@@ -103,9 +96,8 @@ def spawn_worker(
 def drain_stderr_excerpt(stream, edge_bytes: int = 500) -> bytes:
     """Drain a worker's stderr to EOF, retaining the first and last bytes.
 
-    Reading incrementally keeps the pipe from filling while bounding memory:
-    short messages are preserved whole; long messages keep context from both
-    ends because worker stderr prefixes often identify the failing repo/phase."""
+    Incremental reads keep the pipe from filling while bounding memory; long
+    messages keep both ends since stderr prefixes often name the failing repo."""
     if stream is None:
         return b""
     edge_bytes = max(1, edge_bytes)
@@ -133,11 +125,9 @@ def drain_stderr_excerpt(stream, edge_bytes: int = 500) -> bytes:
 
 
 def _cancellation_return_codes() -> frozenset[int]:
-    """Negative ``Popen.returncode`` values that mean intentional cancellation:
-    the signal we send to stop a worker (SIGKILL) plus the ones it traps
-    (SIGTERM/SIGINT). Crash signals (SIGSEGV, SIGABRT, ...) are deliberately
-    excluded so they surface as errors. ``getattr`` keeps this valid on
-    Windows, where these POSIX signals may be absent."""
+    """Negative returncodes meaning intentional cancellation (SIGKILL/SIGTERM/
+    SIGINT). Crash signals are excluded so they surface as errors; ``getattr``
+    keeps this valid on Windows where these POSIX signals may be absent."""
     codes: set[int] = set()
     for name in ("SIGKILL", "SIGTERM", "SIGINT"):
         sig = getattr(signal, name, None)
@@ -164,26 +154,17 @@ def classify_exit(rc: int, *, cancel_requested: bool = False) -> str:
     """Map a worker process exit code to a job state.
 
     - rc == 0: clean completion.
-    - rc == EXIT_CANCELLED (130): the worker trapped a stop signal (an external
-      SIGTERM/SIGINT, or its own parent-death watchdog) and exited cleanly
-      through its cancellation path, leaving a byte-exact resumable partial. Our
-      own in-app cancel uses untrappable SIGKILL, not this path, and the OOM
-      killer never produces 130, so 130 is always an intentional stop and is
-      treated as a resumable cancel regardless of who sent the signal.
-    - rc killed by a cancellation signal (SIGKILL/SIGTERM/SIGINT): a cancel
-      only when *we* asked for it. The OOM killer also sends SIGKILL, so an
-      unrequested signal kill is surfaced as an error rather than masquerading
-      as a user cancel.
-    - rc killed by SIGPIPE or shell-style 128+SIGPIPE: parent pipe is gone, so
-      the worker can no longer report progress and is treated as cancelled.
-    - any other non-zero rc, including crash signals (SIGSEGV, SIGABRT):
-      worker errored out.
+    - rc == EXIT_CANCELLED (130): the worker trapped a stop signal and exited
+      cleanly with a resumable partial. In-app cancel uses untrappable SIGKILL
+      and the OOM killer never produces 130, so 130 is always a resumable cancel.
+    - rc killed by SIGKILL/SIGTERM/SIGINT: a cancel only when *we* asked for it.
+      The OOM killer also sends SIGKILL, so an unrequested kill surfaces as error.
+    - rc killed by SIGPIPE (or 128+SIGPIPE): parent pipe is gone; treated as
+      cancelled.
+    - any other non-zero rc (incl. crash signals): worker errored out.
 
-    Windows has no POSIX signal exit encoding: ``Popen.kill`` calls
-    ``TerminateProcess`` and the child exits with a positive code (typically
-    1), so a user cancel cannot be told apart from a genuine error by the code
-    alone. There ``cancel_requested`` is the only available signal, so any
-    non-clean exit after we asked to stop is treated as a cancel.
+    Windows has no POSIX signal exit encoding, so a user cancel can't be told from
+    an error by code alone; there ``cancel_requested`` decides.
     """
     if rc == 0:
         return "complete"
@@ -212,16 +193,12 @@ def finalize_worker_exit(
     transport: Optional[str] = None,
 ) -> None:
     """Block until *proc* exits, then record the job's terminal state in
-    *registry*. Drains stderr first so the pipe never fills, scrubs secrets
-    from it, and classifies the exit code. A no-op when the process was
-    already dropped (e.g. superseded by a newer job for the same key).
+    *registry*. Drains and scrubs stderr first, then classifies the exit code.
+    A no-op when the process was already dropped (e.g. superseded).
 
-    There is no stall/liveness watchdog here: huggingface_hub already bounds
-    every chunk read with a socket timeout, retries transient errors a few
-    times (resetting the budget on any byte received), and raises a clean,
-    resumable error on a genuinely dead connection. A custom watchdog could
-    only ever kill a download hf_hub would itself have kept alive. We let the
-    worker's own exit code be the single source of truth."""
+    No stall watchdog: huggingface_hub already times out chunk reads and raises
+    a resumable error on a dead connection, so the worker's exit code is the
+    single source of truth."""
     stderr_data = drain_stderr_excerpt(proc.stderr)
     rc = proc.wait()
     cancel_requested = registry.cancel_requested(key)
@@ -243,10 +220,8 @@ def finalize_worker_exit(
             else:
                 logger.info(f"{log_prefix} worker diagnostics for {label}: {stderr_text}")
         logger.info(f"{log_prefix} complete: {label}")
-        # Defensive cleanup: canonical clear is at download-start in the
-        # worker. This catches the rare case where the start clear failed
-        # (transient disk error) but the download itself succeeded — no
-        # stale marker should outlive a successful completion.
+        # Defensive cleanup: the canonical clear is at download-start; this
+        # catches the rare case where that failed but the download succeeded.
         if repo_type and repo_id:
             try:
                 download_manifest.clear_cancel_marker(
@@ -258,8 +233,7 @@ def finalize_worker_exit(
                 logger.debug(f"clear_cancel_marker failed for {repo_id} (rc=0): {exc}")
     elif state == "cancelled":
         # Read metadata before the terminal set_job so a concurrent eviction
-        # can't drop it; its original casing is only the offline quant label
-        # (listing dedupes case-insensitively), the job key the fallback.
+        # can't drop it; the job key is the fallback variant label.
         metadata = registry.get_job_metadata(key)
         registry.set_job(key, "cancelled")
         logger.info(f"{log_prefix} cancelled: {label} (rc={rc})")
@@ -401,23 +375,21 @@ def cancel_worker(
     logger,
 ) -> str:
     proc = registry.get_process(key)
-    # No worker process yet: arm a pending cancel for the claim-to-register
-    # window so register_process kills it on arrival.
+    # No worker process yet: arm a pending cancel so register_process kills it on
+    # arrival during the claim-to-register window.
     if proc is None:
         if registry.mark_pending_cancel(key, generation):
             return "cancelling"
         return registry.get_job(key).state
-    # Worker already exited; its watcher will classify the real return code.
-    # Arming a pending cancel here would let a genuine failure (or an external
-    # signal kill) be mislabeled as a user cancel and persist a spurious marker.
+    # Worker already exited; let its watcher classify the real return code.
+    # Arming a pending cancel here could mislabel a genuine failure as a cancel.
     if proc.poll() is not None:
         return registry.get_job(key).state
 
     if not registry.request_cancel(key, proc, generation):
         return registry.get_job(key).state
-    # No eager marker: finalize_worker_exit writes it when the reaped exit
-    # classifies as "cancelled". Persisting before the kill races a clean
-    # completion and would strand a stale marker on a finished download.
+    # No eager marker: finalize_worker_exit writes it on a "cancelled" exit.
+    # Persisting before the kill races a clean completion and strands a stale marker.
     try:
         proc.kill()
     except ProcessLookupError:

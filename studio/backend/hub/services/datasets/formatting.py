@@ -269,15 +269,10 @@ def check_format_response(
     """
     Check if a dataset requires manual column mapping.
 
-    Strategy for HuggingFace datasets:
-      1. list_repo_files → pick a requested split/subset file → load_dataset(data_files={…})
-         Avoids resolving thousands of files; typically ~2-4 s.
-      2. Full streaming load_dataset as a last-resort fallback.
-
-    Local files are loaded directly.
-
-    Using a plain `def` (not async) so FastAPI runs this in a thread-pool,
-    preventing any blocking IO from freezing the event loop.
+    HF datasets: tier 1 loads a single requested split/subset file (avoids
+    resolving thousands of files); tier 2 falls back to full streaming. Local
+    files load directly. Plain `def` so FastAPI runs the blocking IO in a
+    thread-pool.
     """
     try:
         from itertools import islice
@@ -289,9 +284,8 @@ def check_format_response(
         try:
             dataset_path = resolve_dataset_path(request.dataset_name)
         except ValueError as e:
-            # Malformed path (null bytes, '..', outside the dataset roots) is a
-            # client error, not a server fault: surface 400 rather than letting
-            # it fall through to the generic 500 handler below.
+            # Malformed path (null bytes, '..', outside roots) is a client error:
+            # surface 400 rather than the generic 500 below.
             raise HTTPException(status_code = 400, detail = str(e)) from e
         total_rows = None
 
@@ -401,8 +395,8 @@ def check_format_response(
         preview_samples = None
         if not result["requires_manual_mapping"]:
             if result.get("suggested_mapping"):
-                # Heuristic-detected: show raw data so columns match the API response.
-                # Processing (column stripping) happens at training time, not preview.
+                # Heuristic-detected: show raw data so columns match the response;
+                # column stripping happens at training time, not preview.
                 preview_samples = _serialize_preview_rows(preview_slice)
             else:
                 try:
@@ -477,14 +471,11 @@ def ai_assist_mapping_response(
     request: AiAssistMappingRequest, hf_token: Optional[str] = None
 ) -> AiAssistMappingResponse:
     """
-    Run LLM-assisted dataset conversion advisor (user-triggered).
+    Run the LLM-assisted dataset conversion advisor (user-triggered).
 
-    Multi-pass analysis using a 7B helper model:
-      Pass 1: Classify dataset type from HF card + samples
-      Pass 2: Generate conversion strategy (system prompt, templates)
-      Pass 3: Validate conversion quality
-
-    Falls back to simple column classification if the advisor fails.
+    Multi-pass analysis with a 7B helper model: classify dataset type, generate
+    a conversion strategy, then validate it. Falls back to simple column
+    classification if the advisor fails.
     """
     try:
         from hub.utils.llm_assist import llm_conversion_advisor

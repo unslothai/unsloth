@@ -51,13 +51,10 @@ const COARSE_POINTER =
   typeof window.matchMedia === "function" &&
   window.matchMedia("(pointer: coarse)").matches;
 
-// Rows defer the heaviest trailing widget — the cached-size chip, which mounts
-// a Radix Tooltip plus two store subscriptions — until the row is first hovered
-// or focused, so flicking the virtualized list doesn't pay that cost for every
-// row that scrolls through the viewport. The static placeholder renders the
-// identical StatChip, so the swap is invisible and shifts nothing. Touch
-// (coarse pointer) has no hover, so it arms immediately to keep the size
-// tooltip tap-reachable. Default true so any out-of-row usage stays functional.
+// Defer the cached-size chip (a Radix Tooltip + two store subscriptions) until the
+// row is hovered/focused so flicking the list doesn't pay that cost per row. The
+// placeholder renders an identical StatChip, so the swap shifts nothing. Coarse
+// pointers have no hover, so arm immediately; default true so out-of-row usage works.
 const CatalogRowInteractiveContext = createContext(true);
 
 function CachedSizeChip(props: {
@@ -756,12 +753,9 @@ export function VirtualRows<T>({
             left: 0,
             width: "100%",
             transform: `translateY(${virtualRow.start}px)`,
-            // Lock every row to the same height as the virtualizer's estimate.
-            // No measureElement ref: dynamic measurement on each row mount
-            // triggers virtualizer state churn (re-renders + occasional offset
-            // recompute) that the user perceives as a jump while new rows
-            // arrive. With a fixed height that matches estimateSize exactly,
-            // appending below the viewport can never shift visible items.
+            // Lock rows to estimateSize with no measureElement ref: per-mount
+            // measurement churns the virtualizer (re-renders + offset recompute)
+            // that reads as a jump. A fixed matching height keeps appends stable.
             height: `${CATALOG_ROW_HEIGHT_PX}px`,
             contain: "layout paint",
           }}

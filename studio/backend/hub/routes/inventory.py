@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Hub model inventory API routes."""
+"""Endpoints mounted at /api/hub/* for the model inventory."""
 
 from __future__ import annotations
 
@@ -56,9 +56,8 @@ async def list_local_models(
     return await local_inventory.list_local_models_response(models_dir)
 
 
-# Plain `def` (not async): these do synchronous SQLite + filesystem work
-# (folder walks, stat storms) that must run in FastAPI's thread-pool rather
-# than block the event loop and stall concurrent download-progress polls.
+# Plain `def` (not async): synchronous SQLite + filesystem work runs in
+# FastAPI's thread-pool instead of blocking the event loop.
 @router.get("/scan-folders", response_model = ScanFoldersResponse)
 def get_scan_folders(current_subject: str = Depends(get_current_subject)):
     return local_inventory.get_scan_folders_response()

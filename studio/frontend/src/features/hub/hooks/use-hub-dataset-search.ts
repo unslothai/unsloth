@@ -356,8 +356,7 @@ function isOcrOrVisionTextDataset(dataset: HfDatasetResult): boolean {
 }
 
 function toCuratedDatasetResult(id: string): HfDatasetResult {
-  // Curated defaults are id-only. This adapter satisfies the shared result shape
-  // used by downstream combobox/ranking code without making extra HF requests.
+  // Curated defaults are id-only; this fills the shared result shape without extra HF requests.
   return {
     id,
     downloads: 0,

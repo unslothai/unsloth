@@ -90,8 +90,8 @@ def _blob_dir_is_partial(blobs_dir: Path) -> bool:
 def blob_bytes_present(path: Path) -> int:
     """Sparse-aware on-disk size: XET/``hf_transfer`` ``.incomplete`` partials
     report a full ``st_size`` while only some blocks are allocated, so prefer
-    ``st_blocks`` and fall back to ``st_size`` where it is unreported (Windows,
-    some network filesystems) to keep non-sparse and HTTP partials exact."""
+    ``st_blocks``, falling back to ``st_size`` where it is unreported (Windows,
+    some network filesystems)."""
     st = path.stat()
     blocks = getattr(st, "st_blocks", 0)
     if blocks > 0:
@@ -132,9 +132,8 @@ def _windows_allocated_size(path: Path) -> Optional[int]:
 def latest_snapshot_dir(repo_dir: Path) -> Optional[Path]:
     """Newest immediate child of ``repo_dir/snapshots`` by mtime, or None.
 
-    mtime is the signal huggingface_hub's from_pretrained resolves to, so
-    this points at whatever snapshot most recently landed on disk. Returns
-    None when there is no snapshots dir, no snapshot, or it cannot be read.
+    mtime is the signal huggingface_hub's from_pretrained resolves to, so this
+    points at whatever snapshot most recently landed on disk.
     """
     snapshots_dir = repo_dir / "snapshots"
     try:

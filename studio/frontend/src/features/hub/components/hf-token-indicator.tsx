@@ -13,15 +13,12 @@ import { AiSecurity03Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 
 interface HfTokenIndicatorProps {
-  /** When true, render a chip with a circular icon badge + "HF Token" label
-   *  (used in the Train page wizard). When false (default), render the
-   *  compact icon-only pill used in the Hub header. */
+  // true: chip with label (Train wizard); false: icon-only pill (Hub header).
   showLabel?: boolean;
 }
 
-// Compact "set / not set" indicator for the app-wide Hugging Face token.
-// Click opens Settings → General where the token field lives. Used by the
-// Hub header and the Train page wizard so all surfaces edit the same store.
+// Compact "set / not set" indicator for the app-wide Hugging Face token; click
+// opens Settings -> General. Shared by the Hub header and Train wizard.
 export function HfTokenIndicator({ showLabel = false }: HfTokenIndicatorProps = {}) {
   const hfToken = useHfTokenStore((s) => s.token);
   const openDialog = useSettingsDialogStore((s) => s.openDialog);

@@ -89,10 +89,8 @@ export function DatasetDownloadSection({
   const downloadAction = useDownloadCardState({
     job,
     variant: null,
-    // Don't seed the download denominator from the datasets-server size shown
-    // above: that is the parquet/original estimate, not the raw repo bytes that
-    // snapshot_download actually fetches. Passing it would divide raw-downloaded
-    // by a mismatched total. 0 lets the backend resolve the true raw size.
+    // The datasets-server size above is a parquet/original estimate, not the raw
+    // repo bytes snapshot_download fetches; 0 lets the backend resolve the true total.
     expectedBytes: 0,
     downloading,
     disabled: cancelling || deleting,
@@ -162,8 +160,7 @@ export function DatasetDownloadSection({
           )}
         </div>
       </div>
-      {/* Train CTA on a downloaded dataset is hidden until Hub→train picker
-          ships; the divider is paired with the action so they hide together. */}
+      {/* Train CTA hidden until Hub->train picker ships; divider pairs with it. */}
       {(!isDownloaded || downloading || HUB_POST_DOWNLOAD_ACTIONS_VISIBLE) && (
         <CardDivider />
       )}

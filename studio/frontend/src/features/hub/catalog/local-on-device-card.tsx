@@ -440,8 +440,7 @@ export function LocalOnDeviceCard({
               className="ml-1 mr-0 h-5 w-px shrink-0 bg-foreground/[0.06] opacity-100 transition-opacity duration-150 group-hover/dl:opacity-0 dark:bg-white/[0.04]"
             />
           )}
-          {/* Run + Train action pair on a downloaded model is hidden for this
-              PR; reveal flips on when the Hub-aware chat / train pickers ship. */}
+          {/* Run + Train pair hidden until Hub->chat/train pickers ship. */}
           <div
             className={cn(
               "group/pair flex h-9 shrink-0 items-stretch gap-1.5",

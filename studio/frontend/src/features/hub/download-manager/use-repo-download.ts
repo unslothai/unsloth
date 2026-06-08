@@ -46,16 +46,14 @@ export interface RepoDownloadConfig {
   onComplete?: JobListeners["onComplete"];
   onCancelled?: JobListeners["onCancelled"];
   onError?: JobListeners["onError"];
-  // Attach to a no-variant download already running on the backend. Per-variant
-  // surfaces (GGUF) resolve their variant and adopt themselves.
+  // Attach to a no-variant backend download already running (GGUF surfaces adopt their own variant).
   autoAdopt?: boolean;
 }
 
 /**
  * Binds a single download surface (one repo, optionally per GGUF variant) to the
- * global download manager. Returns the same shape the card UI consumed before
- * the manager existed, but the job state and polling now live in the store, so a
- * download keeps running and stays visible after the card unmounts.
+ * global download manager. Job state and polling live in the store, so a download
+ * keeps running and stays visible after the card unmounts.
  */
 export function useRepoDownload(config: RepoDownloadConfig): DownloadJob {
   const {

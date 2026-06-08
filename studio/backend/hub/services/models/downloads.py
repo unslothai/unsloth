@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Model download orchestration services."""
+"""Download orchestration."""
 
 from __future__ import annotations
 
@@ -149,10 +149,9 @@ async def download_model_response(body: DownloadModelRequest, hf_token: Optional
     )
     generation = _registry.current_generation(key)
     if not claimed:
-        # claim_state is the state of the job blocking this one. When the
-        # blocker is this key's own in-flight job the client can attach and
-        # poll it; a cross-variant transport conflict or an in-progress
-        # delete leaves no job for this key, so flag it as not accepted.
+        # claim_state is the blocking job's state. The client can attach only
+        # when the blocker is this key's own in-flight job (adoptable); a
+        # cross-variant conflict or in-progress delete is not accepted.
         return {
             "job_key": key,
             "state": claim_state,

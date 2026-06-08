@@ -6,8 +6,7 @@
 Manifests record what a download was supposed to fetch (path + declared
 size per expected file). Consumed by:
   - the worker post-download, to verify on-disk sizes match what HF
-    declared at fetch time, so a resume that no-ops doesn't get
-    classified as success;
+    declared, so a resume that no-ops doesn't get classified as success;
   - the inventory scanner, to mark a row partial when expected files
     are absent or undersized, so a half-finished GGUF/dataset doesn't
     masquerade as a complete on-device row.
@@ -15,17 +14,16 @@ size per expected file). Consumed by:
 Cancel markers record that a user-initiated cancel landed for a
 (repo_type, repo_id, variant) triple. *Existence* is the signal the
 scanner reads; the body carries debuggability metadata. Markers are
-cleared at the start of a new download attempt for the same triple
-(supersedes prior cancel) and on successful completion (defensive
-cleanup if the start-of-attempt clear failed).
+cleared at the start of a new download attempt (supersedes prior cancel)
+and on successful completion (defensive, in case the start clear failed).
 
 I/O contracts:
   - Writes are atomic via ``tmp + os.replace``: a SIGKILL mid-write
     cannot leave a half-written file readable to the next reader.
-  - Manifest reads fail *open*: missing, corrupt, or schema-mismatched
+  - Manifest reads fail *open*: missing/corrupt/schema-mismatched
     manifests return ``None`` and the scanner falls through to the
-    legacy on-disk-only check (matches HF-cache imports and any
-    pre-fix downloads that never wrote a manifest).
+    legacy on-disk-only check (matches HF-cache imports and pre-fix
+    downloads that never wrote a manifest).
   - Cancel-marker reads fail *closed*: file existence is the signal
     regardless of body parseability, so a corrupt marker still
     suppresses the "on device" classification.
@@ -89,8 +87,8 @@ class VerifyResult:
 
 
 def _atomic_write_json(path: Path, payload: dict) -> bool:
-    # Per-write uuid suffix so a defensive concurrent caller (or a stale
-    # tmp from a previous crash) cannot collide with the in-flight write.
+    # Per-write uuid suffix so a concurrent caller or a stale tmp from a
+    # previous crash cannot collide with the in-flight write.
     tmp = path.with_name(f".{path.name}.tmp-{uuid.uuid4().hex[:8]}")
     try:
         with tmp.open("w", encoding = "utf-8") as handle:
@@ -129,10 +127,9 @@ def write_manifest(
 ) -> bool:
     """Write/overwrite the manifest for this triple. Best-effort.
 
-    ``False`` on write failure is logged at debug and returned to the
-    caller, which must not treat it as fatal: the worst-case fallback
-    is the pre-fix scanner behavior (one missed partial detection),
-    which is no regression.
+    ``False`` on write failure must not be treated as fatal: the
+    worst-case fallback is the pre-fix scanner behavior (one missed
+    partial detection), which is no regression.
     """
     path = manifest_path(repo_type, repo_id, variant)
     if path is None:
@@ -164,18 +161,15 @@ def read_manifest(
     """Return the manifest if present and parseable; ``None`` otherwise.
 
     Treats missing-file, parse-error, and any schema mismatch all as
-    ``None`` (fail-open). Scanner callers fall through to existing
-    on-disk-only behavior on ``None`` so this never regresses the
-    classification of legacy/imported repos that have no manifest.
+    ``None`` (fail-open). Scanner callers fall through to on-disk-only
+    behavior on ``None`` so this never regresses legacy/imported repos
+    that have no manifest.
 
-    Forward-compat: this reader accepts only ``version == 1``. An
-    unknown version is treated as no manifest (fall-open), so a future
-    v2 schema MUST either preserve v1's ``expected_files`` shape on the
-    same filename (in which case bump ``_MANIFEST_VERSION`` and widen
-    this check), or live under a different filename so v1 readers
-    ignore it. Silent acceptance of an unknown version would let an
-    incompatible payload mis-classify rows; rejecting it keeps the
-    legacy fallback as the safe default.
+    Forward-compat: accepts only ``version == 1``; an unknown version is
+    treated as no manifest. A future v2 schema MUST either keep v1's
+    ``expected_files`` shape on the same filename (bump
+    ``_MANIFEST_VERSION`` and widen this check) or live under a different
+    filename, so an incompatible payload can never mis-classify rows.
     """
     path = manifest_path(repo_type, repo_id, variant)
     if path is None or not path.is_file():
@@ -228,15 +222,14 @@ def read_manifest(
 def verify_against_disk(manifest: Manifest, snapshot_dir: Path) -> VerifyResult:
     """Check every expected file is present in *snapshot_dir* at its declared size.
 
-    This is a presence + size check, not a content-integrity check: it
-    converts a no-op-on-cached ``snapshot_download`` into a clear error when
-    shards are missing or truncated (worker, post-download) and marks a row
-    partial when expected bytes aren't on disk (scanner). Byte-level integrity
-    is already provided upstream by ``huggingface_hub`` (size/consistency
-    check on the HTTP path, content-addressed chunk hashes on the XET path),
-    so re-hashing finalized multi-GB weights here would only duplicate that at
-    a large cost. ``Path.stat()`` follows symlinks, so HF's symlink-based and
-    Windows copy-based cache layouts both verify correctly.
+    Presence + size only, not content integrity: it converts a
+    no-op-on-cached ``snapshot_download`` into a clear error when shards are
+    missing or truncated, and marks a scanner row partial when expected bytes
+    aren't on disk. Byte-level integrity is already covered upstream by
+    ``huggingface_hub`` (size check on HTTP, content-addressed chunk hashes on
+    XET), so re-hashing finalized multi-GB weights here would only duplicate
+    that at a large cost. ``Path.stat()`` follows symlinks, so HF's symlink and
+    Windows copy cache layouts both verify correctly.
     """
     missing: list[str] = []
     mismatched: list[str] = []
@@ -247,10 +240,8 @@ def verify_against_disk(manifest: Manifest, snapshot_dir: Path) -> VerifyResult:
         except OSError:
             missing.append(expected.path)
             continue
-        # expected.size == 0 means HF sibling metadata had no declared size
-        # (rare). Verify existence only; skip the size cross-check rather
-        # than flagging every such file as mismatched against any on-disk
-        # byte count.
+        # expected.size == 0 means HF metadata had no declared size: verify
+        # existence only rather than flagging every such file as mismatched.
         if expected.size > 0 and actual_size != expected.size:
             mismatched.append(expected.path)
     return VerifyResult(
@@ -264,13 +255,12 @@ def expected_files_from_snapshot_dir(snapshot_dir: Path) -> list[ExpectedFile]:
     """Derive expected-file entries from a completed snapshot directory.
 
     Last-resort manifest source for when HF metadata was unreachable for the
-    whole download. ``snapshot_download`` has already exited cleanly by the
-    time this runs, so every regular file under the snapshot is a finished,
-    correctly-sized blob; recording them keeps the scanner's completion check
-    in agreement with the worker's exit-0 success instead of leaving a
-    finished repo with no manifest (which the scanner reads as perpetually
-    partial). ``stat()`` follows HF's symlink layout and Windows copies alike,
-    so the recorded sizes match what ``verify_against_disk`` later reads.
+    whole download. ``snapshot_download`` has already exited cleanly, so every
+    regular file is a finished, correctly-sized blob; recording them keeps the
+    scanner's completion check in agreement with the worker's exit-0 success
+    instead of leaving a finished repo perpetually partial. ``stat()`` follows
+    HF's symlink layout and Windows copies, so the recorded sizes match what
+    ``verify_against_disk`` later reads.
     """
     out: list[ExpectedFile] = []
     try:
@@ -302,11 +292,9 @@ def write_cancel_marker(
 ) -> bool:
     """Record that this triple was cancelled. Idempotent across repeated cancels.
 
-    ``transport`` records which transport produced the cancelled state
-    ("http" or "xet"). Surfaced via partial_transport on inventory rows
-    so the UI can label HTTP retries as continuable and XET retries as
-    full redownloads. None is accepted for forward-compat callers that
-    haven't been updated.
+    ``transport`` ("http"/"xet") is surfaced via partial_transport on
+    inventory rows so the UI labels HTTP retries as continuable and XET
+    retries as full redownloads. None is accepted for forward-compat.
     """
     path = marker_path(repo_type, repo_id, variant)
     if path is None:
@@ -327,25 +315,20 @@ def read_cancel_marker_transport(
     repo_id: str,
     variant: Optional[str] = None,
 ) -> Optional[str]:
-    """Return the transport recorded in the cancel marker for this triple,
-    or ``None`` if no marker exists or the marker is unreadable.
+    """Return the transport recorded in the cancel marker, or ``None`` if no
+    marker exists or it is unreadable.
 
     Cases:
 
     * No marker on disk → ``None``.
-    * Legacy v1 marker (recognized) → ``"http"``. v1 markers were only
-      written by the HTTP path in the pre-step-5 codebase, so the
-      transport is unambiguous even though the field is absent.
-    * Current v2 marker with a valid ``"http"`` / ``"xet"`` transport →
-      that transport.
-    * Corrupted, unparseable, non-dict, or v2-with-missing-transport
-      marker → ``None``. Defaulting these to ``"http"`` (the previous
-      behavior) misled the UI: a corrupted v2 marker that originally
-      recorded an XET cancel would render the "Continue" button label,
-      implying byte-resume safety that XET partials cannot provide.
-      Returning ``None`` keeps the neutral "Retry" label.
-    * Unknown future versions → ``None`` (forward-compat: unknown layout,
-      unknown transport).
+    * Legacy v1 marker → ``"http"``: v1 markers were only written by the
+      HTTP path, so the transport is unambiguous despite the absent field.
+    * v2 marker with a valid ``"http"`` / ``"xet"`` transport → that value.
+    * Corrupt, non-dict, or v2-with-missing-transport marker → ``None``.
+      Defaulting these to ``"http"`` misled the UI into showing a
+      byte-resume "Continue" label for what may have been an XET cancel;
+      ``None`` keeps the neutral "Retry" label.
+    * Unknown future versions → ``None`` (unknown layout, unknown transport).
     """
     path = marker_path(repo_type, repo_id, variant)
     if path is None or not path.is_file():

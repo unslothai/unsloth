@@ -2,95 +2,54 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * Provider-logo registry for Unsloth re-uploads.
+ * Provider-logo registry for Unsloth re-uploads. Unsloth re-uploads upstream
+ * models (e.g. unsloth/Qwen2.5-7B is Alibaba's Qwen); we render the upstream
+ * provider's logo in place of the Unsloth profile picture.
  *
- * Unsloth re-uploads models from upstream providers (e.g. unsloth/Qwen2.5-7B
- * is Alibaba's Qwen). When we render an avatar for one of these repos we want
- * to show the *upstream* provider's logo, not the Unsloth profile picture —
- * the username stays "unsloth", only the picture swaps.
- *
- * --- Adding a new family ---
- *   1. Drop the logo into /public/hub/profile/logo/
- *   2. Append an entry to PROVIDER_LOGOS or add a prefix to an existing one
- *   3. Pick `treatment`, `background`, and (for "original") `fit`. See the
- *      type docs below for the available options and when to use each.
- *
- * --- Matching rules ---
- * Providers are evaluated in declaration order, and a provider matches if any
- * of its `prefixes` is a prefix of the repo name (the part after "owner/").
- *
- * IMPORTANT — most-specific providers MUST be declared first. Several
- * families share leading substrings, and the first match wins:
- *
- *   - NVIDIA's `Llama-3.1-Nemotron-`, `Llama-3.3-Nemotron-`,
- *     `Llama-3.1-Minitron-` and `Mistral-NeMo-` must come before meta-llama
- *     and mistralai, otherwise the latter win on the shorter prefix.
- *
- *   - DeepSeek's `DeepSeek-R1-Distill-` must come before Qwen / meta-llama
- *     so the distill variants don't get mis-attributed to the distillation
- *     target.
- *
- * Repo names from the HF API are case-sensitive — match the exact casing the
- * upstream publisher uses (e.g. `Qwen` not `qwen`, `phi-` lowercase for v1/v2
- * vs `Phi-` capitalized for v3+).
+ * Providers are evaluated in declaration order; a provider matches if any of its
+ * `prefixes` is a prefix of the repo name (the part after "owner/"). Repo names
+ * are case-sensitive — match the publisher's exact casing.
  */
 
 /**
  * How the logo is colored.
- *   - "original": render the file as-is via <img>. Use for PNG/JPG logos and
- *     any SVG whose own colors you want to preserve.
- *   - "mono-theme": render the SVG via a CSS mask painted with the current
- *     text color (`text-foreground` → light in dark theme, dark in light).
- *     Use for single-color SVGs that should follow the app theme.
- *   - "mono-black": same as mono-theme but the fill is always pure black,
- *     regardless of theme. Use for marks that should read "ink on paper" on
- *     a white tile in both themes.
+ *   - "original": render the file as-is (PNG/JPG, or SVGs whose colors to keep).
+ *   - "mono-theme": CSS mask painted with the current text color (follows theme).
+ *   - "mono-black": like mono-theme but always pure black, regardless of theme.
  */
 export type LogoTreatment = "original" | "mono-theme" | "mono-black";
 
 /**
- * Tile background behind the logo. "white" gives consistent contrast for
- * colored brand marks across light & dark themes; "transparent" lets the
- * surrounding surface show through (useful for logos with their own
- * background or when the surface already provides contrast).
+ * Tile background. "white" gives consistent contrast for colored marks across
+ * themes; "transparent" lets the surrounding surface show through.
  */
 export type LogoBackground = "white" | "transparent";
 
 /**
- * How the logo image is sized within the tile.
- *   - "contain" (default): padded inside the tile at ~75% — gives the logo
- *     breathing room.
- *   - "cover": fills the tile edge-to-edge. Use only for full-bleed assets
- *     (e.g. portrait-style brand cards).
- * Only consulted when `treatment` is `"original"`. Mono treatments always
- * pad the silhouette inside the tile.
+ * Logo sizing within the tile (only consulted for "original"; mono treatments
+ * always pad the silhouette).
+ *   - "contain" (default): padded at ~75%.
+ *   - "cover": full-bleed, edge-to-edge.
  */
 export type LogoFit = "contain" | "cover";
 
 export interface ProviderLogo {
-	/** Stable identifier (kebab-case). Used for debug/telemetry only. */
 	id: string;
-	/** Display name used as the avatar's accessible label. */
 	name: string;
-	/** Path to the logo under /public (Vite serves it at the same URL). */
 	logoPath: string;
 	treatment: LogoTreatment;
 	background: LogoBackground;
-	/** Only consulted when treatment is "original". Defaults to "contain". */
 	fit?: LogoFit;
 	/**
-	 * Prefixes of the repo name (the part after `owner/`) that map to this
-	 * provider. A prefix match is sufficient — variants like `-Instruct`,
-	 * `-bnb-4bit`, `-GGUF` etc. ride along automatically. Match on the family
-	 * stem (e.g. `Qwen`, `gemma-`, `DeepSeek-`) so future minor versions are
-	 * picked up without an extra entry here.
+	 * Repo-name prefixes (after `owner/`) mapping to this provider. A prefix
+	 * match suffices — variants (-Instruct, -bnb-4bit, -GGUF) ride along. Match
+	 * on the family stem so future minor versions are picked up automatically.
 	 */
 	prefixes: readonly string[];
 }
 
 export const PROVIDER_LOGOS: readonly ProviderLogo[] = [
-	// Declared first so `Llama-3.x-Nemotron-`, `Llama-3.x-Minitron-` and
-	// `Mistral-NeMo-` steal priority from meta-llama / mistralai prefixes.
+	// First so Llama-3.x-Nemotron/Minitron and Mistral-NeMo beat meta-llama / mistralai.
 	{
 		id: "nvidia",
 		name: "NVIDIA",
@@ -147,8 +106,7 @@ export const PROVIDER_LOGOS: readonly ProviderLogo[] = [
 		],
 	},
 
-	// The broad `Qwen` prefix also catches Qwen-, Qwen1.5-, Qwen2-, Qwen2.5-,
-	// Qwen3-, future Qwen3.x-, Qwen4-, etc. without explicit entries.
+	// The broad `Qwen` prefix catches Qwen1.5/2/2.5/3/future versions without explicit entries.
 	{
 		id: "qwen",
 		name: "Qwen",
@@ -158,8 +116,6 @@ export const PROVIDER_LOGOS: readonly ProviderLogo[] = [
 		prefixes: ["Qwen", "QwQ-", "QVQ-"],
 	},
 
-	// Full-bleed cover render so the brand asset reads correctly without
-	// padding around it.
 	{
 		id: "moonshotai",
 		name: "Moonshot AI",
@@ -170,8 +126,7 @@ export const PROVIDER_LOGOS: readonly ProviderLogo[] = [
 		prefixes: ["Kimi-", "Moonlight-"],
 	},
 
-	// Z.ai (THUDM successor). Full-bleed cover render so the brand asset fills
-	// the entire avatar tile.
+	// Z.ai (THUDM successor).
 	{
 		id: "zai-org",
 		name: "Z.ai",
@@ -182,7 +137,6 @@ export const PROVIDER_LOGOS: readonly ProviderLogo[] = [
 		prefixes: ["GLM-", "glm-", "chatglm", "codegeex"],
 	},
 
-	// Black silhouette on a white tile, fixed coloring, ignores app theme.
 	{
 		id: "xai-org",
 		name: "xAI",
@@ -211,7 +165,6 @@ export const PROVIDER_LOGOS: readonly ProviderLogo[] = [
 		prefixes: ["SmolLM"],
 	},
 
-	// Full-bleed cover so the IBM mark fills the entire avatar tile.
 	{
 		id: "ibm",
 		name: "IBM",
@@ -231,7 +184,6 @@ export const PROVIDER_LOGOS: readonly ProviderLogo[] = [
 		prefixes: ["c4ai-command", "aya-"],
 	},
 
-	// Mono mark, recolors to match the app theme on a transparent tile.
 	{
 		id: "openai",
 		name: "OpenAI",
@@ -267,8 +219,7 @@ export const PROVIDER_LOGOS: readonly ProviderLogo[] = [
 		],
 	},
 
-	// Declared AFTER NVIDIA so `Mistral-NeMo-` (an NVIDIA collab) wins, while
-	// generic `Mistral-` / `Mixtral-` / etc. fall through to Mistral AI.
+	// After NVIDIA so `Mistral-NeMo-` wins; generic Mistral-/Mixtral- fall through here.
 	{
 		id: "mistralai",
 		name: "Mistral AI",
@@ -278,8 +229,7 @@ export const PROVIDER_LOGOS: readonly ProviderLogo[] = [
 		prefixes: ["Mistral-", "Mixtral-", "Codestral-", "Pixtral-", "Devstral-", "Ministral-", "Voxtral-", "Magistral-"],
 	},
 
-	// Declared LAST among Llama-prefix providers so NVIDIA's
-	// Llama-3.x-Nemotron / Llama-3.x-Minitron variants match first.
+	// Last among Llama-prefix providers so NVIDIA's Llama-3.x-Nemotron/Minitron match first.
 	{
 		id: "meta-llama",
 		name: "Meta",
@@ -299,10 +249,8 @@ export const PROVIDER_LOGOS: readonly ProviderLogo[] = [
 ];
 
 /**
- * Resolve a repo name (the part after `owner/`) to its upstream provider, or
- * null if it doesn't match anything in the registry. Iterates PROVIDER_LOGOS
- * in declaration order; the first provider with any prefix that the repo
- * name starts with wins.
+ * Resolve a repo name (after `owner/`) to its upstream provider, or null.
+ * Iterates PROVIDER_LOGOS in declaration order; first prefix match wins.
  */
 export function matchProviderLogo(repoName: string): ProviderLogo | null {
 	if (!repoName) return null;
@@ -314,18 +262,10 @@ export function matchProviderLogo(repoName: string): ProviderLogo | null {
 	return null;
 }
 
-/**
- * Owners whose models we re-upload from upstream providers, and whose
- * avatars should therefore be swapped for the matched provider's logo. Kept
- * as a set so additional Unsloth-controlled orgs can be added without
- * touching call sites.
- */
+// Owners whose avatars get swapped for the matched provider's logo. A set so
+// more Unsloth-controlled orgs can be added without touching call sites.
 const RELABELED_OWNERS: ReadonlySet<string> = new Set(["unsloth"]);
 
-/**
- * True if the given owner is one whose avatars get replaced with the
- * upstream provider's logo (see PROVIDER_LOGOS for the mapping).
- */
 export function isProviderRelabeledOwner(
 	owner: string | null | undefined,
 ): boolean {
@@ -334,9 +274,8 @@ export function isProviderRelabeledOwner(
 }
 
 /**
- * Given an owner and repo name, return the upstream provider logo to render
- * in place of the owner's profile picture, or null to fall back to the
- * standard avatar. Only owners listed in RELABELED_OWNERS are eligible.
+ * Provider logo to render in place of the owner's profile picture, or null.
+ * Only owners in RELABELED_OWNERS are eligible.
  */
 export function resolveOwnerProviderLogo(
 	owner: string | null | undefined,

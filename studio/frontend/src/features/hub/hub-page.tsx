@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Hub page: browse + download surface only. Per-model config / chat-runtime /
-// "use in train" integrations live outside this PR's scope and are intentionally
-// not wired here.
+// Hub page: browse + download surface only. Train CTA hidden until Hub->train picker ships.
 import { useHubInventory } from "@/features/hub/inventory";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { useGpuInfo } from "@/hooks/use-gpu-info";
@@ -181,14 +179,10 @@ export function ModelsPage() {
   const gpu = useGpuInfo();
   const online = useOnlineStatus();
 
-  // Hub does not own the chat runtime or training state. "Use in chat" simply
-  // navigates to /chat with no model handoff in this PR's scope; the active
-  // checkpoint / variant integration lands when the Hub-aware picker ships.
+  // "Use in chat" just navigates to /chat; checkpoint/variant handoff lands with the Hub-aware picker.
   const activeCheckpoint: string | null = null;
   const activeGgufVariant: string | null = null;
-  // Stubs so the inspector + load-status memo still typecheck while the
-  // chat-runtime integration is deferred. Cast through `as` so TS keeps the
-  // shape instead of narrowing to `never`.
+  // Stubs so the inspector + load-status memo still typecheck; cast keeps the shape from narrowing to `never`.
   const loadingModel = null as { id: string } | null;
   const loadProgress = null as {
     phase?: "downloading" | "starting";
@@ -384,11 +378,8 @@ export function ModelsPage() {
     () => (isDiscoverTab ? [] : tokenizeQuery(deferredDebouncedQuery)),
     [isDiscoverTab, deferredDebouncedQuery],
   );
-  // Format filter is a deliberate scope narrowing — hard-filter it out.
-  // The text query, by contrast, drives dim-not-filter on the On Device tab
-  // (see ModelsCatalog) so selection survives typing. Matching rows are
-  // partitioned to the top so the dim becomes a tail of the list, not noise
-  // the user has to scan past.
+  // Format filter hard-filters; the text query drives dim-not-filter on the On Device
+  // tab so selection survives typing, with matching rows partitioned to the top.
   const filteredCachedRows = useMemo(
     () =>
       partitionByMatch(
@@ -456,11 +447,8 @@ export function ModelsPage() {
     fetchMoreManually: fetchMoreDiscoverManually,
   } = useHubInfiniteScroll(
     fetchMore,
-    // Drive re-evaluation off the raw fetched count, not the filtered one —
-    // the page-level format/capability filters can reject every incoming
-    // row, leaving filteredDiscoverRows.length stalled while results keep
-    // growing. Using the raw count guarantees the auto-fire effect re-runs
-    // after each fetch lands so we don't dead-end on aggressive filters.
+    // Re-evaluate off the raw fetched count, not the filtered one: page-level filters
+    // can reject every incoming row, stalling filteredDiscoverRows while results grow.
     scannedCount,
     {
       enabled: online && isDiscoverTab && hasMore,
@@ -496,10 +484,8 @@ export function ModelsPage() {
   const handleSelect = useCallback(
     (id: string) => {
       setSelected(id);
-      // Only flip the mobile-drawer state when the catalog is the mobile
-      // single-pane layout. On lg+ both panes are visible, so setting state
-      // here just triggers an extra ModelsPage render that ripples through
-      // the catalog's virtualizer during selection.
+      // Only flip the mobile drawer in single-pane layout; on lg+ both panes are
+      // visible and setting state here just churns the catalog's virtualizer.
       if (
         typeof window !== "undefined" &&
         window.matchMedia("(max-width: 1023.98px)").matches
@@ -550,10 +536,8 @@ export function ModelsPage() {
       ? `${Math.floor(gpu.systemRamAvailableGb)} GB`
       : "Unavailable";
 
-  // Out of scope for this PR: handleLoad / handleLoadLocal,
-  // handleUseInChat with runtime check, handleTrain.
-  // Hub right now is browse + download only; once the Hub-aware chat picker
-  // and Hub-aware train picker ship, those handlers wire in there.
+  // Load / use-in-chat / train handlers are stubs; they wire in once the
+  // Hub-aware chat and train pickers ship.
   const handleLoad = useCallback(
     (_opts: ModelLoadOptions) => undefined,
     [],
@@ -566,7 +550,7 @@ export function ModelsPage() {
     void navigate({ to: "/chat" });
   }, [navigate]);
   const handleTrain = useCallback(() => {
-    // Hub → train integration ships in a later PR.
+    // Train CTA hidden until Hub->train picker ships.
   }, []);
 
   const inspectorRuntime = useMemo(

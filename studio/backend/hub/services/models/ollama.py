@@ -74,11 +74,9 @@ def _ollama_blob_path(blobs_dir: Path, digest: object) -> Optional[Path]:
 def _contained_link_path(link_dir: Path, link_name: str) -> Optional[Path]:
     """Resolve *link_name* to a direct child of *link_dir*, or ``None``.
 
-    The link name is built from manifest-derived fields, one of which
-    (``file_type``) is read verbatim from a model's config blob. Asserting the
-    result is a direct child of *link_dir* keeps a crafted value containing path
-    separators, ``..``, or a Windows drive prefix from escaping the links
-    directory on the subsequent symlink/``os.replace``.
+    ``link_name`` derives from manifest fields (one read verbatim from a config
+    blob), so requiring a direct child keeps a crafted value with separators,
+    ``..``, or a drive prefix from escaping the links dir on the later symlink.
     """
     if not link_name or link_name in (".", ".."):
         return None
@@ -94,13 +92,9 @@ def _contained_link_path(link_dir: Path, link_name: str) -> Optional[Path]:
 def _ollama_links_dir(ollama_dir: Path) -> Optional[Path]:
     """Return a writable directory for Ollama ``.gguf`` symlinks.
 
-    Prefers ``<ollama_dir>/.studio_links/`` so the links sit next to the
-    blobs they point at. Falls back to a per-ollama-dir namespace under
-    Studio's own cache when the models directory is read-only (common
-    for system installs under ``/usr/share/ollama`` or ``/var/lib/ollama``)
-    so we still surface Ollama models in those environments. Falls back
-    again to the process temp dir when Studio's cache path exists but the
-    current runtime cannot create children there (sandboxed/dev installs).
+    Prefers ``<ollama_dir>/.studio_links/`` next to the blobs; falls back to
+    Studio's cache (read-only system installs under /usr/share or /var/lib),
+    then the temp dir (sandboxed installs where the cache path isn't writable).
     """
 
     def _ensure_writable_dir(path: Path) -> Optional[Path]:
@@ -143,11 +137,8 @@ def _ollama_links_dir(ollama_dir: Path) -> Optional[Path]:
 def _make_ollama_blob_link(link_dir: Path, link_name: str, target: Path) -> Optional[str]:
     """Create a .gguf-named link to an Ollama blob.
 
-    Tries symlink first, then hardlink (works on Windows without
-    Developer Mode when target is on the same filesystem). Skips the
-    model if neither works -- a full file copy of a multi-GB GGUF inside
-    a synchronous API request would block the backend.
-
+    Tries symlink, then hardlink; skips the model if neither works (a full
+    multi-GB copy inside a sync API request would block the backend).
     Idempotent: skips recreation when a valid link already exists.
     """
     try:
@@ -169,9 +160,8 @@ def _make_ollama_blob_link(link_dir: Path, link_name: str, target: Path) -> Opti
         logger.debug("Could not resolve Ollama blob %s: %s", target, e)
         return None
 
-    # Skip if the link already points at the exact same blob. Only use
-    # samefile -- size-based checks can reuse stale links after
-    # `ollama pull` updates a tag to a same-sized blob.
+    # Skip if the link already points at the same blob. Use samefile, not size:
+    # `ollama pull` can swap a tag to a same-sized blob, leaving a stale link.
     try:
         if link_path.exists() and os.path.samefile(str(link_path), str(resolved)):
             return str(link_path)
@@ -337,28 +327,14 @@ def scan_ollama_dir(
 ) -> List[LocalModelInfo]:
     """Scan an Ollama models directory for downloaded models.
 
-    Ollama stores models in a content-addressable layout::
+    Ollama uses a content-addressable layout
+    (``manifests/<host>/<namespace>/<model>/<tag>`` + ``blobs/sha256-...``),
+    iterated via ``rglob`` to find every depth. Each manifest's ``model`` layer
+    holds the GGUF weights (vision models add a projector layer).
 
-        <ollama_dir>/manifests/<host>/<namespace>/<model>/<tag>
-        <ollama_dir>/blobs/sha256-...
-
-    The default host is ``registry.ollama.ai`` with namespace
-    ``library`` (official models), but users can pull from custom
-    namespaces (``mradermacher/llama3``) or entirely different hosts
-    (``hf.co/org/repo:tag``).  We iterate all manifest files via
-    ``rglob`` so every layout depth is discovered.
-
-    Each manifest is JSON with a ``layers`` array. The layer with
-    ``mediaType == "application/vnd.ollama.image.model"`` contains the
-    GGUF weights. Vision models also have a projector layer
-    (``application/vnd.ollama.image.projector``). We read the config
-    layer to extract family/size info.
-
-    Inventory scans are read-only by default and return an opaque manifest
-    reference. When a user loads one of those rows, the load route calls
-    :func:`materialize_ollama_model_ref`, which creates a ``.gguf``-named
-    symlink/hardlink in a writable cache path. That keeps GET /local free of
-    filesystem writes while still giving llama.cpp a path with a GGUF suffix.
+    Scans are read-only by default and return an opaque manifest reference;
+    the load route later calls :func:`materialize_ollama_model_ref` to create a
+    ``.gguf`` symlink/hardlink, keeping GET /local free of filesystem writes.
     """
     manifests_root = ollama_dir / "manifests"
     if not manifests_root.is_dir():
@@ -395,13 +371,9 @@ def scan_ollama_dir(
 
 
 def _ollama_dir_for_manifest(tag_file: Path) -> Optional[Path]:
-    """Return the discovered Ollama root whose ``manifests/`` directory
-    contains *tag_file*, or ``None`` if it sits outside every known root.
-
-    Validating against :func:`ollama_model_dirs` (the same roots inventory
-    scans) keeps materialization from being driven to an arbitrary path by a
-    crafted reference: only manifests under a real Ollama models directory can
-    create links.
+    """Return the discovered Ollama root whose ``manifests/`` contains
+    *tag_file*, or ``None``. Validating against the known roots keeps a crafted
+    reference from driving materialization to an arbitrary path.
     """
     for ollama_dir in ollama_model_dirs():
         if path_is_same_or_child(tag_file, ollama_dir / "manifests"):
@@ -410,13 +382,8 @@ def _ollama_dir_for_manifest(tag_file: Path) -> Optional[Path]:
 
 
 def materialize_ollama_model_ref(ref: str) -> str:
-    """Resolve an ``ollama-manifest:`` inventory reference to a concrete,
-    loadable ``.gguf`` path, creating the writable symlink/hardlink on demand.
-
-    Inventory scans are read-only and surface Ollama rows as opaque manifest
-    references (see the module docstring). The load/train path passes that
-    reference here to obtain a path with a ``.gguf`` suffix that downstream
-    loaders accept, without the inventory scan ever writing to disk.
+    """Resolve an ``ollama-manifest:`` reference to a loadable ``.gguf`` path,
+    creating the writable symlink/hardlink on demand.
 
     Raises ``ValueError`` if the reference is malformed, points outside a
     discovered Ollama models directory, or cannot be materialized.

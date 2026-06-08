@@ -357,10 +357,9 @@ export const ModelInspector = memo(function ModelInspector({
   const datasetSize = useDatasetSize(datasetRepoId, {
     token: hfToken || undefined,
   });
-  // Inventory rows are snapshots; the download manager is the live source of
-  // truth. When a download is in flight for this hub repo, route through the
-  // download-aware section so progress/cancel remains visible across refreshes
-  // and On Device selections.
+  // Inventory rows are snapshots; the download manager is the live source of truth.
+  // When a download is in flight, route through the download-aware section so
+  // progress/cancel stays visible across refreshes.
   const activeDownloadRepoId = model?.hubRepoId ?? null;
   const hasActiveHubDownload = useDownloadManagerStore((state) =>
     activeDownloadRepoId

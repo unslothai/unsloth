@@ -37,9 +37,8 @@ from hub.utils.hf_cache_state import (
     repo_cache_dir_has_incomplete_blobs,
 )
 
-# Inventory is invalidated explicitly on every app-driven cache mutation
-# (download finish, delete), so this TTL only bounds staleness from
-# out-of-band edits. Keep it long enough to skip re-walking a large cache
+# Inventory is invalidated explicitly on every app-driven cache mutation, so
+# this TTL only bounds staleness from out-of-band edits while skipping re-walks
 # on rapid UI navigation.
 _HF_CACHE_SCANS_TTL_SECONDS = 15.0
 _GGUF_SPLIT_RE = re.compile(r"-(\d{3,})-of-(\d{3,})(?=\.gguf$)", re.IGNORECASE)
@@ -58,9 +57,8 @@ _hf_cache_scans_flight: Optional[_HfCacheScanFlight] = None
 _hf_cache_scans_result: Optional[list] = None
 _hf_cache_scans_cached_at: float = 0.0
 # Bumped on every invalidation. A scan tags itself with the epoch it began
-# under; an invalidation that lands mid-scan changes the epoch so the in-flight
-# result is neither cached nor served to callers that arrived after the mutation
-# (which would otherwise get pre-mutation disk state for up to one TTL window).
+# under; an invalidation mid-scan changes the epoch so the in-flight result is
+# neither cached nor served to callers that arrived after the mutation.
 _hf_cache_scans_epoch: int = 0
 
 
@@ -84,9 +82,9 @@ def all_hf_cache_scans() -> list:
             return list(_hf_cache_scans_result)
         start_epoch = _hf_cache_scans_epoch
         flight = _hf_cache_scans_flight
-        # Only coalesce onto an in-flight scan from the current epoch. A flight
-        # that began before an intervening invalidation is superseded by a fresh
-        # scan so post-mutation callers never receive pre-mutation data.
+        # Only coalesce onto an in-flight scan from the current epoch; one that
+        # began before an intervening invalidation is superseded so
+        # post-mutation callers never receive pre-mutation data.
         if flight is None or flight.epoch != start_epoch:
             flight = _HfCacheScanFlight(event = threading.Event(), epoch = start_epoch)
             _hf_cache_scans_flight = flight
@@ -185,15 +183,13 @@ def resolve_snapshot_dir_for_scan(
 ) -> Optional[Path]:
     """Latest snapshot dir for a cache row, or the first populated HF cache root.
 
-    Scanner-side counterpart to snapshot_download()'s return value
-    (which the worker captured at download time but the scanner has
-    no access to). With a *repo_cache_dir*, returns its newest snapshot.
-    Otherwise scans cache roots in priority order (active, then legacy,
-    then default) and returns the newest snapshot within the first root
-    that holds one — the active root is where snapshot_download writes,
-    so it is authoritative. Within a root, picks by mtime (what
-    from_pretrained resolves to), preferred over refs/main because the
-    user may have downloaded a specific commit that isn't the main ref.
+    Scanner-side counterpart to snapshot_download()'s return value (which the
+    scanner cannot access). With a *repo_cache_dir*, returns its newest
+    snapshot. Otherwise scans roots in priority order (active, legacy, default)
+    and returns the newest snapshot in the first root that holds one; active is
+    where snapshot_download writes, so it is authoritative. Within a root,
+    picks by mtime (what from_pretrained resolves to) rather than refs/main,
+    since the user may have downloaded a non-main commit.
     """
     if repo_cache_dir is not None:
         latest = latest_snapshot_dir(repo_cache_dir)
@@ -452,31 +448,24 @@ def is_variant_partial(
 
 
 def is_gguf_repo_partial(repo_id: str, repo_cache_dir: Optional[Path] = None) -> bool:
-    """Repo-row partial flag for a GGUF repo. The inventory shows ONE
-    row per GGUF repo (requires_variant=True); per-variant detail lives
-    in GET /api/models/gguf-variants and uses is_variant_partial.
+    """Repo-row partial flag for a GGUF repo. The inventory shows ONE row per
+    GGUF repo (requires_variant=True); per-variant detail lives in
+    GET /api/models/gguf-variants and uses is_variant_partial.
 
     *** DO NOT simplify this to "any variant partial -> repo partial" ***
 
-    Tripwire scenario: user downloads Q8_0 fully (manifest verifies, no
-    marker), then starts Q4_K_M and cancels (marker written, manifest
-    declares files not on disk). Both variants share ONE inventory row.
-    If row.partial flips True, _capabilities_for_format flips
-    can_chat=False on that row — the user can no longer chat with the
-    perfectly-good Q8_0 they have, just because of an unrelated Q4_K_M
-    they cancelled.
+    Tripwire scenario: user downloads Q8_0 fully, then starts Q4_K_M and
+    cancels. Both variants share ONE inventory row. If row.partial flips True,
+    _capabilities_for_format flips can_chat=False, so the user can no longer
+    chat with the perfectly-good Q8_0 because of an unrelated cancelled Q4_K_M.
 
-    The correct semantics: partial=True only when at least one variant
-    is broken AND no other variant is clean. A future maintainer who
-    "simplifies" this predicate to the obvious "any broken" form
-    re-introduces the Q8+Q4 mixed-state regression. The per-variant
-    signal is what the variants endpoint surfaces; this predicate is
-    the coarser repo-row flag.
+    Correct semantics: partial=True only when at least one variant is broken
+    AND no other variant is clean. "Simplifying" to the obvious "any broken"
+    form re-introduces this Q8+Q4 mixed-state regression.
 
     Composes signals:
       1. Cheap legacy fast-path (.incomplete blobs / broken symlinks).
-      2. Per-variant manifest + marker enumeration, gated on "all
-         variants broken".
+      2. Per-variant manifest + marker enumeration, gated on "all broken".
     """
     from hub.utils import download_manifest
 
@@ -524,12 +513,11 @@ def partial_transport_for(
 ) -> Optional[str]:
     """Transport to surface on a partial row's resume affordance.
 
-    Prefers the cancel marker's recorded transport, then falls back to the
-    download manifest's transport. The fallback matters for rows that are
-    partial without a cancel marker — an errored or interrupted download
-    leaves the manifest (written at start) but no marker — so the UI can still
-    show HTTP-resume vs XET-redownload instead of the neutral retry label.
-    ``None`` when neither is available."""
+    Prefers the cancel marker's transport, then the manifest's. The fallback
+    matters for rows partial without a marker (an errored/interrupted download
+    leaves the manifest but no marker) so the UI can still show HTTP-resume vs
+    XET-redownload instead of the neutral retry label. ``None`` when neither is
+    available."""
     from hub.utils import download_manifest
 
     if not _state_applies_to_repo_cache_dir(repo_cache_dir):

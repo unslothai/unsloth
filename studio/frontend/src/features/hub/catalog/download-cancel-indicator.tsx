@@ -6,15 +6,10 @@ import { Cancel01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 
 /**
- * In-progress affordance for the inspector action button while a download
- * is running. By default the spinner indicates work; on `.hub-action-btn`
- * hover it cross-fades to the cancel glyph so the click target reads as
- * "stop this download". Both glyphs occupy the same 16×16 slot, so the
- * percentage label beside them never shifts.
- *
- * The hover swap is driven entirely by CSS state selectors in
- * `.hub-action-btn:hover .hub-cta-indicator-*` — no JS hover wiring and no
- * Tailwind group/* variants. The component only carries the marker classes.
+ * Inspector action-button affordance during a download: spinner that cross-fades
+ * to a cancel glyph on `.hub-action-btn` hover, in the same 16x16 slot so the
+ * percentage label never shifts. The swap is pure CSS; the component only carries
+ * the marker classes.
  */
 export function DownloadCancelIndicator() {
   return (

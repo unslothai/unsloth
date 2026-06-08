@@ -3,14 +3,11 @@
 
 """Shared snapshot download-progress computation for models and datasets.
 
-Both repo types download a full HF snapshot and report progress the same way:
-scan the cache's ``blobs/`` dir, split finalized vs ``.incomplete`` bytes,
-filter to the target revision's expected blob hashes, and divide by the
-revision's total size. The only thing that differs is how the
-``(expected_total, expected_hashes)`` metadata is resolved, so callers inject
-that as ``metadata_resolver``. Keeping the scan/accounting in one place stops
-the two copies from drifting (a prior hash-filter fix had landed only on the
-model copy, leaving datasets summing stale blobs against the wrong total)."""
+Both scan the cache's ``blobs/`` dir, split finalized vs ``.incomplete`` bytes,
+filter to the target revision's expected hashes, and divide by its total size;
+only the ``metadata_resolver`` differs. One copy keeps the two from drifting (a
+prior hash-filter fix once landed only on the model copy, leaving datasets
+summing stale blobs against the wrong total)."""
 
 from __future__ import annotations
 
@@ -100,21 +97,17 @@ def compute_snapshot_progress(
     )
 
     expected_total = max(expected_bytes, 0)
-    # Always resolve the revision's blob hashes (cached) so stale blobs from a
-    # superseded revision can't inflate the count even when the caller supplied
-    # a total. Hashes degrade to empty (count-all) only when metadata is
-    # unavailable, e.g. offline. ``expected_total`` is the larger of the caller's
-    # figure and the resolved total, so a stale or low caller hint can't cap the
-    # bar below the revision's real size.
+    # Always resolve the revision's blob hashes so stale blobs from a superseded
+    # revision can't inflate the count; hashes degrade to empty (count-all) only
+    # when metadata is unavailable (e.g. offline). Take the larger total so a low
+    # caller hint can't cap the bar below the revision's real size.
     meta_total, expected_hashes = metadata_resolver(repo_id, hf_token)
     expected_total = max(expected_total, meta_total)
 
-    # When hashes aren't resolved yet, a variant must not count UNSCOPED blobs
-    # (finalized or .incomplete): sibling quants share one blobs/ dir, so a
-    # sibling's bytes would be attributed to this variant. Counting a sibling's
-    # .incomplete is what makes the bar jump backward (e.g. ~99% -> ~78%) the
-    # instant this variant finalizes and its own finalized blob is dropped
-    # unscoped. A no-variant snapshot owns the whole dir, so it counts unscoped.
+    # Without resolved hashes, a variant must not count unscoped blobs: sibling
+    # quants share one blobs/ dir, so a sibling's bytes (or .incomplete) would be
+    # misattributed and make the bar jump backward. A no-variant snapshot owns
+    # the whole dir, so it counts unscoped.
     count_finalized_unscoped = variant is None
 
     readings: list[tuple[int, int, Optional[str], bool]] = []
@@ -133,8 +126,7 @@ def compute_snapshot_progress(
             except OSError:
                 blob_entries = []
             for f in blob_entries:
-                # Skip a blob that vanished mid-poll (renamed out of
-                # *.incomplete) rather than zeroing the whole reading.
+                # Skip a blob that vanished mid-poll rather than zeroing the reading.
                 try:
                     if not f.is_file():
                         continue
@@ -182,10 +174,9 @@ def compute_snapshot_progress(
 
     completed_bytes, in_progress_bytes, cache_path, complete_on_disk = selected
     downloaded_bytes = completed_bytes + in_progress_bytes
-    # Subtract the companion baseline only while it is still counted in
-    # completed_bytes (else a companion that left the count zeros genuine main
-    # progress) and the variant is not yet verified complete (else a full-size
-    # baseline reads a finished variant as 0-byte).
+    # Subtract the companion baseline only while still counted in completed_bytes
+    # and the variant is not yet verified complete, else genuine progress reads as
+    # 0-byte.
     effective_baseline_bytes = (
         completed_baseline_bytes
         if not complete_on_disk and completed_baseline_bytes <= completed_bytes
@@ -213,10 +204,8 @@ def compute_snapshot_progress(
             "cache_path": cache_path,
         }
 
-    # Cap at 0.99 during active polling unless the manifest-backed disk check
-    # has verified completion. A byte ratio alone is not enough: on resume of a
-    # near-complete download, completed bytes can already sit above the
-    # threshold while remaining files are still downloading.
+    # Cap at 0.99 until the manifest-backed disk check verifies completion: on
+    # resume, completed bytes can sit above the threshold while files still download.
     progress = (
         1.0
         if complete_on_disk

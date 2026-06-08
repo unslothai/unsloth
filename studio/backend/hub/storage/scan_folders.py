@@ -3,10 +3,8 @@
 
 """Persistence for user-registered custom model scan folders.
 
-Self-bootstrapping table inside the existing studio SQLite (reusing
-``storage.studio_db.get_connection``), so the Hub module doesn't have to
-modify upstream studio_db.py's schema initialization.
-"""
+Self-bootstrapping table inside the existing studio SQLite so the Hub module
+doesn't have to modify upstream studio_db.py's schema init."""
 
 from __future__ import annotations
 
@@ -86,8 +84,7 @@ def _contains_sensitive_path_component(path: str) -> bool:
 def contains_sensitive_path_component(path: str) -> bool:
     """Public predicate for the credential/config denylist (.ssh, .aws, ...).
 
-    Shared with the folder browser so navigating into and registering these
-    directories enforce one policy instead of diverging."""
+    Shared with the folder browser so browse and register enforce one policy."""
     return _contains_sensitive_path_component(path)
 
 

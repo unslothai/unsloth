@@ -34,9 +34,8 @@ import {
 } from "./use-download-card-state";
 
 /**
- * Shared shell for every download surface (safetensors, GGUF, dataset): card
- * frame, progress bar, transport-conflict dialog, and any card-specific
- * `dialogs`. Each card supplies its row content as children.
+ * Shared shell for every download surface (safetensors, GGUF, dataset): card frame,
+ * progress bar, transport-conflict dialog, plus card-specific `dialogs` and children.
  */
 export function DownloadCard({
   job,
@@ -112,8 +111,8 @@ export function CardDeleteButton({
 }
 
 /**
- * Download / Cancel / Resume button shared by the safetensors and dataset
- * cards. The GGUF card folds Run/Chat into its CTA and stays bespoke.
+ * Download / Cancel / Resume button for the safetensors and dataset cards
+ * (the GGUF card folds Run/Chat into its own bespoke CTA).
  */
 export function DownloadActionButton({
   downloading,
@@ -176,10 +175,7 @@ export function DownloadActionButton({
   );
 }
 
-/**
- * Confirmation dialog shared by the model, quantization, and dataset delete
- * flows.
- */
+/** Confirmation dialog shared by the model, quantization, and dataset delete flows. */
 export function DeleteConfirmDialog({
   open,
   onOpenChange,

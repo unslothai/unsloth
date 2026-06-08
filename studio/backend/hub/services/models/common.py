@@ -31,12 +31,8 @@ LocalModelSource = Literal["models_dir", "hf_cache", "lmstudio", "ollama", "cust
 def _safe_is_dir(path) -> bool:
     """``Path.is_dir()`` that returns ``False`` instead of raising.
 
-    On Python >= 3.12 ``is_dir()``'s ``os.stat`` only suppresses
-    "not found"-class errors and now propagates ``PermissionError``
-    (EACCES); on Python <= 3.11 it returned ``False``. The folder-scan
-    endpoints probe well-known system locations (e.g. a root-owned,
-    mode-700 ``/usr/share/ollama/.ollama/models``) and must treat an
-    un-stat-able path as "not a directory", never 500.
+    Py >= 3.12 propagates ``PermissionError`` (EACCES); folder scans probe
+    root-owned system dirs and must treat un-stat-able paths as not-a-dir.
     """
     try:
         return Path(path).is_dir()
@@ -71,17 +67,10 @@ _HF_CACHE_MODEL_FILE_PROBE_LIMIT = 2000
 
 
 def _is_model_directory(d: Path) -> bool:
-    """Return ``True`` when *d* looks like a model directory.
+    """Return ``True`` when *d* has both a config file and real weight files.
 
-    A model directory must have **both** a config file (``config.json`` or
-    ``adapter_config.json``) **and** actual model weight files.  Both
-    conditions are required: a bare directory with only loose ``.gguf``
-    files (no config) might be a mixed collection, and a ``config.json``
-    alone (no weights) is not a model directory.
-
-    Excludes ``mmproj`` GGUF files (vision projectors) and non-weight
-    ``.bin`` files (``tokenizer.bin``, ``vocab.bin``, etc.) from the
-    weight check to avoid false positives.
+    Excludes mmproj GGUFs (vision projectors) and non-weight ``.bin`` files
+    (``tokenizer.bin``, etc.) from the weight check to avoid false positives.
     """
 
     def _is_weight_file(f: Path) -> bool:
@@ -170,10 +159,9 @@ def _prefer_complete_larger(
 def _gguf_variant_state_summary(repo_id: str) -> tuple[bool, int]:
     """Return whether GGUF variant-scoped state exists and its expected size.
 
-    A cancelled or in-progress GGUF variant may have only manifests, markers,
-    and `.incomplete` blobs in the HF cache. The normal cache scan sees no
-    completed `.gguf` file yet, so inventory needs this variant-scoped state to
-    avoid falling back to a generic/safetensors row for the same repo.
+    A cancelled/in-progress variant may have only manifests, markers, and
+    `.incomplete` blobs (no completed `.gguf` yet), so inventory needs this
+    state to avoid a generic/safetensors fallback row for the same repo.
     """
     from hub.utils import download_manifest
 
@@ -207,21 +195,17 @@ def _apply_format_aware_partial(
     gguf_partial: bool,
     snapshot_partial_transport: Optional[str] = None,
 ) -> List[LocalModelInfo]:
-    """Rewrite each row's partial flag using format-aware predicates so a
-    hybrid (gguf + safetensors) repo with one broken format and one clean
-    format doesn't taint the clean one. Capabilities are recomputed
-    because _capabilities_for_format derives can_chat / can_train /
-    supports_lora from the partial flag."""
+    """Rewrite each row's partial flag with format-aware predicates so a hybrid
+    (gguf + safetensors) repo's broken format doesn't taint the clean one.
+    Capabilities are recomputed since they derive from the partial flag."""
     rewritten: List[LocalModelInfo] = []
     for row in rows:
         target = gguf_partial if row.model_format == "gguf" else snapshot_partial
         if not target:
             rewritten.append(row)
             continue
-        # partial_transport only surfaces for snapshot rows in this step.
-        # GGUF row-level transport is ambiguous (variants may differ);
-        # per-variant detail lives on GgufVariantDetail.partial_transport
-        # via the variants endpoint.
+        # GGUF row-level transport is ambiguous (variants may differ); per-variant
+        # detail lives on GgufVariantDetail.partial_transport via the variants endpoint.
         partial_transport = None if row.model_format == "gguf" else snapshot_partial_transport
         rewritten.append(
             row.model_copy(
@@ -306,8 +290,7 @@ def _classify_non_gguf_model_format(
 
 
 def _is_main_gguf_filename(name: str) -> bool:
-    """A GGUF file that is a primary weight artifact, not an mmproj
-    vision adapter."""
+    """A primary GGUF weight, not an mmproj vision adapter."""
     return _is_gguf_filename(name) and not _is_mmproj_filename(name)
 
 

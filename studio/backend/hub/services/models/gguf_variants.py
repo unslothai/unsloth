@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""GGUF variant resolution services."""
+"""GGUF variant resolution."""
 
 from __future__ import annotations
 
@@ -296,9 +296,8 @@ def delete_variant_incomplete_blobs_result(
     extra_hashes: frozenset[str] = frozenset(),
     companions: bool = True,
 ) -> VariantIncompleteDeleteResult:
-    # With a sibling quantization still downloading, pass ``companions=False`` so
-    # a shared mmproj companion this variant also references is never unlinked
-    # out from under the live sibling; the repo's last variant delete reclaims it.
+    # With a sibling still downloading, ``companions=False`` keeps a shared mmproj
+    # from being unlinked out from under it; the repo's last delete reclaims it.
     target_hashes = (
         gguf_variant_blob_hashes(repo_id, variant, hf_token, include_companions = companions)
         | extra_hashes
@@ -456,12 +455,10 @@ async def get_gguf_variants_response(
         best = pick_best_gguf(filenames)
         default_variant = extract_quant_label(best) if best else None
 
-        # Check which variants are fully downloaded in the HF cache.
-        # Accounting is per snapshot: a variant counts as present only when one
-        # snapshot holds all its files (split GGUFs need every shard in the same
-        # snapshot), and sizes are the max across snapshots so blobs shared
-        # between revisions are not double-counted. HF cache dir casing can
-        # differ from the canonical repo_id, so keys are lowercased.
+        # Per-snapshot accounting: a variant counts as present only when one
+        # snapshot holds all its files (split GGUFs need every shard together),
+        # sizes are max across snapshots so shared blobs aren't double-counted,
+        # and keys are lowercased since cache dir casing can differ from repo_id.
         cached_filenames_by_snapshot: list[dict[str, int]] = []
         cached_quant_bytes_by_snapshot: list[dict[str, int]] = []
         if _is_valid_repo_id(repo_id):
@@ -545,11 +542,9 @@ async def get_gguf_variants_response(
                 requirement.main_size_bytes,
             ):
                 return False
-            # Vision repos package an mmproj adapter alongside each variant.
-            # Any mmproj precision on disk (BF16, F16, F32, quantized, ...) is
-            # enough; the loader picks whichever mmproj is present. Requiring the
-            # specific API-preferred one would falsely demote variants whose cache
-            # was populated against a different mmproj choice.
+            # Vision repos ship an mmproj adapter per variant. Any mmproj
+            # precision on disk suffices (the loader picks whichever is present);
+            # requiring the API-preferred one would falsely demote variants.
             if requirement.mmproj_filenames and not _any_mmproj_cached(
                 requirement.mmproj_filenames,
             ):

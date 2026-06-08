@@ -9,26 +9,22 @@ machine plus the cache/marker inspection those workers depend on.
 
 Resume model
 ------------
-Only the HTTP transport supports true partial-file resume.
-huggingface_hub's HTTP resumer opens ``<etag>.incomplete`` in append
-mode, reads ``resume_size = f.tell()``, and sends ``Range:
-bytes={resume_size}-`` to continue from disk.
+Only the HTTP transport supports true partial-file resume:
+huggingface_hub's HTTP resumer opens ``<etag>.incomplete`` in append mode
+and sends ``Range: bytes={resume_size}-`` to continue from disk.
 
 The XET transport CANNOT resume from a ``.incomplete`` partial:
-``hf_xet.download_files`` takes only ``(destination_path, hash,
-file_size)`` and rewrites the destination from scratch. Network-level
-deduplication does still happen, but through the chunk cache at
-``~/.cache/huggingface/xet/chunk-cache`` (separate from the repo cache),
-which is never touched by these helpers.
+``hf_xet.download_files`` rewrites the destination from scratch.
+Network-level dedup still happens, but through the separate chunk cache at
+``~/.cache/huggingface/xet/chunk-cache``, which these helpers never touch.
 
-Cross-transport corruption: a partial written by XET (or by
-``hf_transfer``'s parallel-Range writer) can be sparse — high reported
-size, zero-filled gaps below. Feeding such a file to the HTTP resumer
-would produce a final blob of correct size whose internal bytes are
-silently wrong. To prevent that, we maintain transport markers at the
-same scope as the download (repo for snapshots/datasets, variant for
-GGUF) and refuse to inherit any HTTP partial unless the marker proves the
-previous writer was the same single-stream sequential writer.
+Cross-transport corruption: a partial written by XET (or ``hf_transfer``'s
+parallel-Range writer) can be sparse — high reported size, zero-filled
+gaps below. Feeding it to the HTTP resumer would produce a correct-sized
+blob whose internal bytes are silently wrong. To prevent that, we keep
+transport markers at the download's scope (repo for snapshots/datasets,
+variant for GGUF) and refuse to inherit an HTTP partial unless the marker
+proves the previous writer was the same single-stream sequential writer.
 
 Marker writes go through tmp+rename in :func:`prepare_cache_for_transport`
 before the worker hands off to ``snapshot_download``, so the next process
@@ -120,7 +116,7 @@ def _worker_breadcrumb_path(key: str) -> Optional[Path]:
 def write_worker_breadcrumb(key: str, pid: int, metadata: Optional["DownloadMetadata"]) -> None:
     """Record a live worker's PID so a restarted backend can reap it. Best
     effort: a write failure only forfeits boot-time reaping for this worker,
-    which the worker's own parent-death watchdog still covers."""
+    still covered by the worker's own parent-death watchdog."""
     path = _worker_breadcrumb_path(key)
     if path is None:
         return
@@ -218,8 +214,8 @@ def _is_our_worker(pid: int, repo_id: Optional[str]) -> bool:
         return False
     if "hub.workers.hf_download" not in cmdline:
         return False
-    # Exact --repo-id match: substring matching would let a stale breadcrumb
-    # for Org/Model reap a live worker for Org/Model-v2.
+    # Exact --repo-id match: a substring match would let a stale breadcrumb for
+    # Org/Model reap a live worker for Org/Model-v2.
     if isinstance(repo_id, str) and repo_id:
         return _cmdline_repo_id(cmdline) == repo_id
     return True
@@ -238,19 +234,18 @@ def _settle_orphaned_download(
     variant: Optional[str],
     transport: Optional[str],
 ) -> None:
-    """Persist a cancel marker for a reaped orphan whose download was still
-    in progress, so the next launch settles it to a resumable "cancelled"
-    state (Continue for HTTP / Retry for XET) instead of a phantom-running row
-    that freezes then silently disappears.
+    """Persist a cancel marker for a reaped orphan whose download was still in
+    progress, so the next launch settles it to a resumable "cancelled" state
+    (Continue for HTTP / Retry for XET) instead of a phantom-running row that
+    freezes then silently disappears.
 
-    Gated on surviving partial state and on the recorded manifest (full
-    snapshot, dataset, or GGUF variant) not already verifying against any
-    active snapshot, so a download that actually finished before its
-    breadcrumb was cleaned up is never mislabeled cancelled. When a GGUF variant
-    manifest has blob hashes, the partial-state check is scoped to those hashes
-    so a sibling GGUF variant cannot contaminate this orphan's state. The breadcrumb's
-    recorded transport is preserved so the resume affordance stays accurate,
-    and a fresh download attempt clears the marker either way."""
+    Gated on surviving partial state and on the recorded manifest not already
+    verifying against any active snapshot, so a download that finished before
+    its breadcrumb was cleaned up is never mislabeled cancelled. For a GGUF
+    variant manifest with blob hashes, the partial-state check is scoped to
+    those hashes so a sibling variant cannot contaminate this orphan's state.
+    The recorded transport is preserved so the resume affordance stays
+    accurate, and a fresh attempt clears the marker either way."""
     if repo_type not in ("model", "dataset") or not repo_id:
         return
     from hub.utils import download_manifest
@@ -272,13 +267,13 @@ def _settle_orphaned_download(
 def reap_orphan_workers() -> None:
     """Kill download workers left running by a previous backend instance.
 
-    Verifies each breadcrumb's PID is still alive AND its command line is one
-    of our workers before terminating, so a recycled PID can never take down
-    an unrelated process. Partial blobs are never touched, so a reaped download
-    stays resumable; an interrupted download with bytes still on disk is settled
-    to a cancelled marker (see :func:`_settle_orphaned_download`) so its resume
-    affordance survives a hard crash the same way a graceful shutdown's does.
-    Runs once at startup and never raises."""
+    Verifies each breadcrumb's PID is alive AND its command line is one of our
+    workers before terminating, so a recycled PID can't take down an unrelated
+    process. Partial blobs are never touched, so a reaped download stays
+    resumable; an interrupted one with bytes on disk is settled to a cancelled
+    marker (see :func:`_settle_orphaned_download`) so its resume affordance
+    survives a hard crash like a graceful shutdown's does. Runs once at startup
+    and never raises."""
     parent = state_dir.workers_dir()
     if parent is None:
         return
@@ -324,17 +319,15 @@ def _purge_incomplete_blobs(
     only_hashes: Optional[frozenset[str]] = None,
     protected_hashes: Optional[frozenset[str]] = None,
 ) -> int:
-    """Delete matching ``*.incomplete`` blobs beneath *entry*. Returns the
-    count removed. Per-file failures are swallowed and counted as zero —
-    a stuck partial shouldn't block the new download from starting; the
-    downloader will detect the existing file and error out clearly if it
-    really is unreadable.
+    """Delete matching ``*.incomplete`` blobs beneath *entry*; return the count
+    removed. Per-file failures are swallowed (a stuck partial shouldn't block
+    the new download; the downloader errors out clearly if it's truly
+    unreadable).
 
     ``only_hashes`` whitelists which partials may be purged; ``None`` means
-    every partial for full-repo snapshot/dataset behaviour. ``protected_hashes``
-    is honoured unconditionally — even when ``only_hashes`` is ``None`` — so a
-    blob a concurrent same-repo peer is writing is never purged out from under
-    that peer."""
+    every partial (full-repo snapshot/dataset). ``protected_hashes`` is honoured
+    unconditionally, even when ``only_hashes`` is ``None``, so a blob a
+    concurrent same-repo peer is writing is never purged from under it."""
     blobs_dir = entry / "blobs"
     if not blobs_dir.is_dir():
         return 0
@@ -357,9 +350,9 @@ def _purge_incomplete_blobs(
             blob.unlink()
             removed += 1
         except OSError:
-            # Swallow: e.g. permission denied on a stale partial. The
-            # downstream snapshot_download call will surface a precise
-            # error message if it actually can't proceed.
+            # Swallow (e.g. permission denied on a stale partial); the
+            # downstream snapshot_download surfaces a precise error if it
+            # actually can't proceed.
             continue
     return removed
 
@@ -407,9 +400,9 @@ def _marker_path(entry: Path, variant: Optional[str] = None) -> Path:
 
 
 def _is_transport_marker_file(path: Path) -> bool:
-    # Matches the marker (".transport"), its per-process tmp (".transport.tmp-*"),
-    # variant-scoped markers (".transport.gguf-*") and their tmps. Real HF cache
-    # entries (blobs/refs/snapshots/.no_exist) never start with ".transport.".
+    # Matches ".transport", its tmps, and variant-scoped ".transport.gguf-*".
+    # Real HF cache entries (blobs/refs/snapshots/.no_exist) never start with
+    # ".transport.".
     return path.name == TRANSPORT_MARKER_NAME or path.name.startswith(f"{TRANSPORT_MARKER_NAME}.")
 
 
@@ -429,15 +422,14 @@ def _read_marker_value(marker: Path) -> Optional[str]:
 
 def _write_marker_value(marker: Path, mode: str) -> None:
     try:
-        # tmp + rename so a SIGKILL mid-write can never leave a half-written
-        # marker that confuses the next run. The tmp name is per-process so two
-        # concurrent writers of the same marker can't clobber each other's tmp.
+        # tmp + rename so a SIGKILL mid-write can't leave a half-written marker.
+        # The tmp name is per-process so concurrent writers don't clobber tmps.
         tmp = marker.with_name(f"{marker.name}.tmp-{os.getpid()}")
         tmp.write_text(mode)
         os.replace(tmp, marker)
     except OSError:
-        # Best-effort: missing marker on the next run will purge the
-        # partial defensively, which is the safe failure mode.
+        # Best-effort: a missing marker next run purges the partial defensively,
+        # the safe failure mode.
         pass
 
 
@@ -470,42 +462,35 @@ def prepare_cache_for_transport(
     companion_blob_hashes: Optional[frozenset[str]] = None,
     protected_blob_hashes: Optional[frozenset[str]] = None,
 ) -> int:
-    """Guarantee any pre-existing ``.incomplete`` blobs are SAFE to resume
-    under *mode*. Returns the number of partial blobs that were purged
-    because their provenance couldn't be trusted.
+    """Guarantee any pre-existing ``.incomplete`` blobs are SAFE to resume under
+    *mode*. Returns the number of partial blobs purged for untrusted provenance.
 
     Two marker scopes govern GGUF downloads. ``only_blob_hashes`` are the
     variant's own (main quant) blobs, judged by the ``variant``-scoped marker;
     ``None`` widens the scope to every partial for full-repo snapshots/datasets.
-    ``companion_blob_hashes`` are blobs shared across sibling variants (a
-    vision mmproj), judged by a separate repo-scoped companion marker — so a
-    companion partial is trusted against the transport that actually wrote it,
-    not against whichever sibling variant happens to resume next.
+    ``companion_blob_hashes`` are blobs shared across sibling variants (a vision
+    mmproj), judged by a separate repo-scoped companion marker — so a companion
+    partial is trusted against the transport that wrote it, not against
+    whichever sibling variant resumes next.
 
     The contract:
     - HTTP mode: a partial is trusted ONLY when its governing marker equals
-      ``"http"``. Any other case — missing, unreadable, or mismatched marker
-      — triggers a purge, because the HTTP resumer would otherwise append to
-      a sparse XET/parallel-Range partial and silently produce a
-      correct-sized-but-corrupt blob.
-    - XET mode: incomplete blobs are purged (``hf_xet.download_files`` has no
-      resume-offset API and rewrites the destination from scratch, so this
-      only fixes UI accounting — bytes already in CAS are reused via the
-      chunk-cache at ``~/.cache/huggingface/xet/chunk-cache``). The purge is
-      scoped to ``only_blob_hashes``: companion blobs fall outside that set and
-      survive (they are shared and XET overwrites them anyway).
+      ``"http"``. Any other case (missing/unreadable/mismatched marker) purges,
+      since the HTTP resumer would otherwise append to a sparse
+      XET/parallel-Range partial and silently produce a corrupt blob.
+    - XET mode: incomplete blobs are purged (``hf_xet.download_files`` rewrites
+      from scratch, so this only fixes UI accounting — bytes already in CAS are
+      reused via the chunk-cache). Scoped to ``only_blob_hashes``: companion
+      blobs fall outside that set and survive (shared, and XET overwrites them).
 
     ``protected_blob_hashes`` are blobs a concurrent same-repo peer is writing;
     they are excluded from every purge so a shared companion is never deleted
     mid-write.
 
-    Scope: only the active ``HF_HUB_CACHE`` root is inspected, unlike the
-    all-roots status/listing helpers. That is sufficient for resume
-    safety because ``snapshot_download`` runs without a ``cache_dir``
-    override and so can only ever read or resume a ``.incomplete`` blob
-    under this same active root; a stale partial in a legacy/default root
-    is never handed to the resumer. The markers are written for the new
-    mode before returning.
+    Scope: only the active ``HF_HUB_CACHE`` root is inspected. That suffices for
+    resume safety because ``snapshot_download`` runs without a ``cache_dir``
+    override and so can only read or resume a ``.incomplete`` under this same
+    active root. Markers are written for the new mode before returning.
     """
     if mode not in VALID_TRANSPORTS:
         raise ValueError(f"Invalid transport mode: {mode!r}")
@@ -518,9 +503,9 @@ def prepare_cache_for_transport(
     except OSError:
         return 0
     if not entries:
-        # First download: pre-create the repo dir so the marker is on disk
-        # before the worker writes any bytes. Without this, a SIGKILL mid-
-        # download leaves a partial with no marker, and the resume purges it.
+        # First download: pre-create the repo dir so the marker lands before the
+        # worker writes any bytes. Otherwise a SIGKILL mid-download leaves a
+        # partial with no marker that the resume then purges.
         canonical = repo_cache_dir_name(repo_type, repo_id)
         new_entry = root / canonical
         try:
@@ -567,17 +552,14 @@ def purge_empty_marker_dir(
 ) -> bool:
     """Remove the failed download's own transport marker from a marker-only dir.
 
-    ``prepare_cache_for_transport`` pre-creates the dir + marker before the
-    worker downloads anything; a failure during validation/auth/network
-    setup leaves the dir as marker-only litter that survives until an
-    explicit delete. Only the failed download's OWN marker is removed: the
-    repo-scope ``.transport`` for snapshots/datasets, or the variant-scoped
-    ``.transport.gguf-*`` for a GGUF quant (plus its ``.tmp-*`` siblings). A
-    concurrent sibling variant's marker and the shared ``.transport.companion``
-    are left intact, so cancelling one quant never strips a peer's transport
-    provenance. A dir holding ``blobs/``/``snapshots/``/``refs/`` (real or
-    in-progress content) won't match and is left untouched, so an
-    interrupted-but-resumable partial isn't blown away.
+    ``prepare_cache_for_transport`` pre-creates the dir + marker before any
+    download; a failure during validation/auth/network setup leaves the dir as
+    marker-only litter. Only the failed download's OWN marker is removed (the
+    repo-scope ``.transport`` or the variant-scoped ``.transport.gguf-*`` plus
+    its ``.tmp-*`` siblings); a sibling variant's marker and the shared
+    ``.transport.companion`` are left intact, so cancelling one quant never
+    strips a peer's provenance. A dir holding ``blobs/``/``snapshots/``/``refs/``
+    won't match and is left untouched, so a resumable partial isn't blown away.
     """
     cleaned = False
     for entry in iter_repo_cache_dirs(repo_type, repo_id):
@@ -625,10 +607,9 @@ def is_resumable_partial(
     repo_id: str,
     variant: Optional[str] = None,
 ) -> bool:
-    """True only when a partial exists AND was produced by a writer that
-    supports byte-level resume — i.e. the HTTP transport. XET partials
-    exist on disk but are not resumable; they will be discarded on the
-    next download attempt."""
+    """True only when a partial exists AND was produced by a byte-resumable
+    writer (the HTTP transport). XET partials exist on disk but are discarded on
+    the next download attempt."""
     if not has_active_incomplete_blobs(repo_type, repo_id):
         return False
     return read_active_transport_marker(repo_type, repo_id, variant) == TRANSPORT_HTTP
@@ -662,9 +643,8 @@ def incomplete_blob_hashes(
 def completed_blob_bytes(repo_type: str, repo_id: str, blob_hashes: frozenset[str]) -> int:
     """Sum finalized blob bytes for *blob_hashes* in the active HF cache root.
 
-    A download worker only writes to the active ``HF_HUB_CACHE`` root, so a
-    baseline must ignore legacy/default roots that inventory scanning may read
-    but ``snapshot_download`` will not reuse for this run.
+    A worker only writes to the active ``HF_HUB_CACHE`` root, so a baseline must
+    ignore legacy/default roots that ``snapshot_download`` won't reuse this run.
     """
     if not blob_hashes:
         return 0
@@ -724,14 +704,14 @@ class DownloadMetadata:
     repo_id: str
     variant: Optional[str]
     transport: Optional[str]
-    # GGUF variant main/writable hashes. These identify the variant-specific
-    # shards for concurrency decisions.
+    # GGUF variant main/writable hashes, identifying the variant-specific shards
+    # for concurrency decisions.
     blob_hashes: frozenset[str] = field(default_factory = frozenset)
-    # Full required hash set for progress/completion. For vision GGUF repos
-    # this includes the shared mmproj companion.
+    # Full required hash set for progress/completion (includes the shared mmproj
+    # companion for vision GGUF repos).
     progress_blob_hashes: frozenset[str] = field(default_factory = frozenset)
-    # Completed bytes that existed before this job started and should not be
-    # presented as newly downloaded progress for this run.
+    # Bytes already complete before this job started; not counted as this run's
+    # progress.
     completed_baseline_bytes: int = 0
 
 
@@ -829,7 +809,7 @@ class DownloadRegistry:
         self._pending_cancel: dict[str, Optional[int]] = {}
         self._generations: dict[str, int] = {}
         # Monotonic across keys so an evicted then re-claimed key never reuses a
-        # prior generation, letting a stale cancel match a new run.
+        # prior generation (which would let a stale cancel match a new run).
         self._generation_seq = 0
         self._deleting: dict[str, set[Optional[str]]] = {}
         self._lock = threading.Lock()
@@ -1010,10 +990,9 @@ class DownloadRegistry:
                     stale_keys.append(other_key)
                     continue
                 other_metadata = self._metadata.get(other_key)
-                # Same-transport variants of one model run concurrently.
-                # Resolved hashes are not required for safety: each worker
-                # purges only its own re-resolved main blobs and the shared
-                # companion is guarded by its transport marker. Cross-transport
+                # Same-transport variants of one model run concurrently: each
+                # worker purges only its own re-resolved main blobs and the
+                # shared companion is guarded by its marker. Cross-transport
                 # stays serialized so an HTTP resume and an XET rewrite never
                 # write one shared blob at once.
                 concurrent_gguf_variants = (
@@ -1077,8 +1056,8 @@ class DownloadRegistry:
 
         A whole-repo delete (``variant is None``) conflicts with any active
         download. A variant delete conflicts only with that same variant or a
-        whole-repo (non-variant) download writing the shared snapshot; other
-        quantizations of the repo download concurrently and never block it."""
+        whole-repo download writing the shared snapshot; other quantizations
+        download concurrently and never block it."""
         for key in self._repo_active.get(repo_id, set()):
             job = self._jobs.get(key)
             if job is None or job.state not in _ACTIVE_STATES:
@@ -1092,9 +1071,9 @@ class DownloadRegistry:
 
     def peer_blob_hashes(self, key: str) -> frozenset[str]:
         """Union of the writable blob hashes of every OTHER active download for
-        this key's repo. A worker excludes these from its cache purge so it
-        never deletes an ``.incomplete`` a concurrent same-repo variant is
-        writing (e.g. a shared mmproj bundled with two GGUF quants)."""
+        this key's repo. A worker excludes these from its purge so it never
+        deletes an ``.incomplete`` a concurrent same-repo variant is writing
+        (e.g. a shared mmproj bundled with two GGUF quants)."""
         key = normalize_job_key(key)
         repo = _repo_of_key(key)
         out: set[str] = set()
@@ -1155,12 +1134,12 @@ class DownloadRegistry:
         variant: Optional[str] = None,
     ) -> bool:
         """Reserve *repo_id* (or one GGUF *variant* of it) for deletion. Returns
-        ``False`` when a conflicting download is active: a whole-repo delete
-        conflicts with any active download, a variant delete only with that same
-        variant or a whole-repo (non-variant) download, so sibling quantizations
-        keep downloading. On success the scope is marked so :func:`claim` rejects
-        new downloads that overlap it until :func:`end_delete` runs, closing the
-        check-then-delete race against a concurrently spawned worker."""
+        ``False`` when a conflicting download is active (a whole-repo delete vs
+        any download, a variant delete vs that same variant or a whole-repo
+        download), so sibling quantizations keep downloading. On success the
+        scope is marked so :func:`claim` rejects overlapping downloads until
+        :func:`end_delete` runs, closing the check-then-delete race against a
+        concurrently spawned worker."""
         repo_id = normalize_repo_key(repo_id)
         variant_key = (variant or "").strip().lower() or None
         with self._lock:
@@ -1187,11 +1166,11 @@ class DownloadRegistry:
     def has_active_peer_variant(self, repo_id: str, variant: Optional[str]) -> bool:
         """Whether a DIFFERENT quantization of *repo_id* is downloading while
         *variant* is being deleted. When one is, the delete reclaims only this
-        variant's own files and leaves the shared companion (mmproj) for the live
-        sibling. A point-in-time check (a sibling may claim just after it returns):
-        the finalized companion blob is held by deletion's reference-count walk,
-        and a sibling that starts mid-delete re-fetches the companion. Deterministic,
-        so protection never depends on the sibling having resolved its blob hashes."""
+        variant's files and leaves the shared companion (mmproj) for the live
+        sibling. Point-in-time (a sibling may claim just after it returns), but
+        safe: the finalized companion is held by deletion's reference-count
+        walk and a sibling starting mid-delete re-fetches it, so protection
+        never depends on the sibling having resolved its blob hashes."""
         repo_id = normalize_repo_key(repo_id)
         target = (variant or "").strip().lower() or None
         with self._lock:
@@ -1230,9 +1209,8 @@ class DownloadRegistry:
                 for key, proc in self._processes.items()
                 if proc.poll() is None
             ]
-            # Flag these as an intentional stop so the per-worker watcher's
-            # exit classification reports them as cancelled rather than as an
-            # OOM/crash error once the SIGKILL lands.
+            # Flag as an intentional stop so the watcher's exit classification
+            # reports them cancelled rather than an OOM/crash once SIGKILL lands.
             for key, _proc, _metadata in live:
                 if self._jobs.get(key, DownloadState("idle")).state == "running":
                     self._jobs[key] = DownloadState("cancelling")
@@ -1261,9 +1239,9 @@ class DownloadRegistry:
                 logger.warning(f"shutdown: {kind} worker for {key} did not exit after kill")
             except Exception:
                 pass
-            # Mark only genuinely interrupted workers (rc != 0, or None when
-            # wait timed out). Persisting before the exit is known would strand
-            # a stale marker on a worker that completed cleanly during shutdown.
+            # Mark only genuinely interrupted workers (rc != 0, or None on wait
+            # timeout); persisting before the exit is known would strand a stale
+            # marker on a worker that completed cleanly during shutdown.
             if metadata is not None and proc.poll() != 0:
                 persist_cancel_marker(
                     metadata.repo_type,

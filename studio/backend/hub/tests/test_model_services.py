@@ -602,10 +602,10 @@ def test_download_dataset_continues_without_metadata_manifest(monkeypatch, tmp_p
 def test_download_snapshot_fails_when_metadata_unavailable_and_partial_remains(
     monkeypatch, tmp_path
 ):
-    """No prior manifest + metadata still unavailable on resume + leftover
-    .incomplete blobs means snapshot_download returned a cached partial without
-    downloading. The worker must exit 1 (honest, resumable error) instead of
-    deriving a self-certifying manifest from the finalized subset."""
+    """No prior manifest + metadata still unavailable + leftover .incomplete
+    blobs means a cached partial was returned without downloading: the worker
+    must exit 1, not derive a self-certifying manifest from the finalized
+    subset."""
     written = []
     verified = []
 
@@ -722,10 +722,8 @@ def test_gguf_download_progress_fallback_logs_warning(monkeypatch):
 
 def test_gguf_progress_counts_completed_mmproj_with_expected_bytes(monkeypatch, tmp_path):
     """A finished mmproj companion must keep counting toward progress once the
-    caller supplies expected bytes (the card passes download_size_bytes, which
-    already includes the mmproj). Resolving the variant requirement lets the
-    completed-byte accounting credit the projector; without it the bar
-    regressed the moment the mmproj finalized."""
+    caller supplies expected bytes; resolving the variant requirement credits
+    the projector, else the bar regressed the moment the mmproj finalized."""
     entry = tmp_path / "models--Org--Model-GGUF"
     snap = entry / "snapshots" / "rev0"
     blobs = entry / "blobs"
@@ -978,11 +976,10 @@ def test_gguf_progress_shows_main_when_companion_left_the_count(monkeypatch, tmp
 
 
 def test_gguf_progress_complete_on_disk_ignores_full_baseline(monkeypatch, tmp_path):
-    # A variant adopted/probed while ALREADY complete on disk carries a baseline
-    # equal to its full size. Subtracting it would report 0 expected / 0
-    # completed for a finished variant, which the frontend reads as 0-byte and
-    # evicts as gone. Once complete_on_disk is verified, the full figures must
-    # survive so completion is unambiguous.
+    # A variant already complete on disk carries a baseline equal to its full
+    # size; subtracting it would report 0/0 for a finished variant (frontend
+    # evicts it as gone). Once complete_on_disk is verified, the full figures
+    # must survive.
     entry = tmp_path / "models--Org--Model-GGUF"
     snap = entry / "snapshots" / "rev0"
     blobs = entry / "blobs"
@@ -1077,10 +1074,10 @@ def test_gguf_progress_complete_on_disk_ignores_full_baseline(monkeypatch, tmp_p
 
 
 def test_gguf_progress_scoped_hashes_exclude_sibling_quant(monkeypatch, tmp_path):
-    # The real "instant ~900 MB": a sibling quant is already fully cached when a
-    # different variant starts. With the variant's hashes resolved, progress must
-    # count ONLY this variant's in-progress blob, never the sibling's finalized
-    # bytes that share the repo's blobs/ dir.
+    # The "instant ~900 MB" bug: a sibling quant is fully cached when a different
+    # variant starts. With this variant's hashes resolved, progress counts ONLY
+    # its in-progress blob, never the sibling's finalized bytes in the shared
+    # blobs/ dir.
     entry = tmp_path / "models--Org--Model-GGUF"
     blobs = entry / "blobs"
     blobs.mkdir(parents = True)
@@ -1144,12 +1141,10 @@ def test_gguf_progress_scoped_hashes_exclude_sibling_quant(monkeypatch, tmp_path
 
 
 def test_gguf_progress_unknown_hashes_does_not_count_foreign_blobs(monkeypatch, tmp_path):
-    # When a variant's blob hashes cannot be resolved (metadata flaked, no
-    # manifest yet) the shared per-repo blobs/ dir must NOT have its FINALIZED
-    # blobs counted wholesale: a fully cached sibling quant (here ``siblinghash``,
-    # ~900 bytes) lives alongside this variant's, and attributing it to a freshly
-    # started variant is the "instant ~900 MB" bug. With no .incomplete present,
-    # downloaded must be 0 (no foreign finalized blob leaks in).
+    # With a variant's hashes unresolved (metadata flaked, no manifest), the
+    # shared blobs/ dir's FINALIZED blobs must NOT be counted wholesale: a cached
+    # sibling quant (``siblinghash``) alongside is the "instant ~900 MB" bug.
+    # With no .incomplete present, downloaded must be 0.
     entry = tmp_path / "models--Org--Model-GGUF"
     snap = entry / "snapshots" / "rev0"
     blobs = entry / "blobs"
@@ -1198,17 +1193,11 @@ def test_gguf_progress_unknown_hashes_does_not_count_foreign_blobs(monkeypatch, 
 
 
 def test_gguf_progress_unknown_hashes_drops_unscoped_incomplete_blob(monkeypatch, tmp_path):
-    # When a variant's hashes are unresolved, an .incomplete blob in the shared
-    # per-repo blobs/ dir CANNOT be attributed to this variant: with two quants
-    # of one repo downloading at once, that .incomplete may be a sibling's own
-    # active write. Counting it leaks the sibling's bytes into this variant's
-    # numerator, which is what makes the bar jump backward (e.g. to ~78%) the
-    # instant this variant finalizes and its finalized blob is dropped unscoped.
-    # So an unscoped .incomplete is dropped for a variant, mirroring how the
-    # finalized-blob branch already drops unscoped blobs (the "instant ~900 MB"
-    # guard). In production the worker writes the variant manifest BEFORE any
-    # .incomplete blob exists, so hashes resolve via the manifest backstop and
-    # this empty-hashes window does not actually suppress real own progress.
+    # With hashes unresolved, an .incomplete in the shared blobs/ dir can't be
+    # attributed to this variant (it may be a concurrent sibling's active write),
+    # so it is dropped, mirroring the finalized-blob guard. In production the
+    # worker writes the manifest before any .incomplete exists, so hashes resolve
+    # via the manifest backstop and this window never suppresses real progress.
     entry = tmp_path / "models--Org--Model-GGUF"
     blobs = entry / "blobs"
     blobs.mkdir(parents = True)
@@ -1253,13 +1242,10 @@ def test_gguf_progress_unknown_hashes_drops_unscoped_incomplete_blob(monkeypatch
 
 
 def test_gguf_progress_unknown_hashes_no_backward_dip_when_variant_finalizes(monkeypatch, tmp_path):
-    # Regression for the two-variant dip: with hashes unresolved (empty), the
-    # first quant finalizes (its finalized blob is correctly dropped unscoped)
-    # while the sibling quant is still writing its own .incomplete. Before the
-    # fix the sibling's in-progress bytes leaked into this variant's numerator,
-    # so the bar jumped from ~99% backward to ~78% (sibling_partial / own_total)
-    # for one poll before flipping to On Device. The unscoped .incomplete must
-    # be dropped so the reading stays 0 (no leak) instead of the sibling ratio.
+    # Regression for the two-variant dip: with hashes unresolved, the first quant
+    # finalizes while the sibling still writes its .incomplete. The sibling's
+    # bytes used to leak into this numerator, dipping the bar ~99% -> ~78% for
+    # one poll. The unscoped .incomplete must be dropped so the reading stays 0.
     entry = tmp_path / "models--unsloth--SmolLM2-360M-Instruct-GGUF"
     blobs = entry / "blobs"
     snap = entry / "snapshots" / "rev0"
@@ -1671,11 +1657,10 @@ def test_download_registry_allows_disjoint_gguf_variant_downloads():
 
 
 def test_download_registry_allows_overlapping_same_transport_variant_downloads():
-    # Vision repos bundle the same mmproj with every quant, so two variants
-    # share a blob. They still download together on one transport: the shared
-    # blob is serialized by huggingface_hub's per-blob download lock, and
-    # prepare_cache_for_transport never purges a blob a peer is actively
-    # writing (lock-aware purge).
+    # Vision repos bundle the same mmproj with every quant, so two variants share
+    # a blob. They still download together on one transport: the shared blob is
+    # serialized by huggingface_hub's per-blob lock and prepare_cache_for_transport
+    # never purges a blob a peer is actively writing.
     registry = download_registry.DownloadRegistry()
 
     claimed, state = registry.claim(
@@ -1704,9 +1689,9 @@ def test_download_registry_allows_overlapping_same_transport_variant_downloads()
 
 
 def test_download_registry_variant_delete_does_not_block_sibling_download():
-    # Deleting one quantization's partial must be allowed while a different
-    # quantization of the same repo is still downloading, and must protect every
-    # blob the live sibling is writing (including a shared mmproj companion).
+    # Deleting one quant's partial must be allowed while a different quant of the
+    # same repo is downloading, and must protect every blob the live sibling is
+    # writing (including a shared mmproj companion).
     registry = download_registry.DownloadRegistry()
     registry.claim(
         "Org/Repo::Q8_0",
@@ -1754,9 +1739,8 @@ def test_download_registry_variant_delete_does_not_block_sibling_download():
 
 
 def test_partial_gguf_reconstruction_dedupes_variant_casing(monkeypatch):
-    # After a cancel, the manifest keeps original casing while the marker is
-    # lowercased; offline state-only reconstruction must collapse them to ONE
-    # variant entry (keeping the manifest's casing), not list it twice.
+    # The manifest keeps original casing while the marker is lowercased; offline
+    # reconstruction must collapse them to ONE entry (manifest's casing), not two.
     monkeypatch.setattr(
         download_manifest,
         "iter_variant_manifests",
@@ -1777,9 +1761,8 @@ def test_partial_gguf_reconstruction_dedupes_variant_casing(monkeypatch):
 
 
 def test_download_registry_serializes_cross_transport_variant_downloads():
-    # An HTTP partial (append-resume) and an XET rewrite of the same shared
-    # blob would corrupt each other, so variants on different transports are
-    # serialized rather than run concurrently.
+    # An HTTP append-resume and an XET rewrite of the same shared blob would
+    # corrupt each other, so different-transport variants are serialized.
     registry = download_registry.DownloadRegistry()
 
     claimed, state = registry.claim(
@@ -1809,11 +1792,9 @@ def test_download_registry_serializes_cross_transport_variant_downloads():
 
 def test_download_registry_allows_unknown_hash_gguf_variant_downloads():
     # Resolved blob hashes are NOT required to run two same-transport variants
-    # concurrently. On-disk safety comes from each worker purging only its own
-    # main-quant blobs plus huggingface_hub's per-etag download lock, not from
-    # the registry knowing the hashes up front. Requiring them here used to
-    # reject the second variant whenever a metadata fetch flaked -- the reported
-    # "two downloads don't work at all" on slow links / vision repos.
+    # concurrently: on-disk safety comes from each worker purging only its own
+    # main-quant blobs plus huggingface_hub's per-etag lock. Requiring them here
+    # used to reject the second variant whenever a metadata fetch flaked.
     registry = download_registry.DownloadRegistry()
 
     claimed, state = registry.claim(
@@ -1844,11 +1825,10 @@ def test_download_registry_allows_unknown_hash_gguf_variant_downloads():
 
 
 def test_finalize_worker_exit_never_kills_a_healthy_worker(monkeypatch, tmp_path):
-    # The stall watchdog was removed: finalize_worker_exit must rely solely on
-    # the worker's own exit code and NEVER proactively kill a live process.
-    # huggingface_hub already bounds each read with a socket timeout, retries
-    # transient errors, and raises a clean resumable error on a dead connection,
-    # so a custom liveness kill could only ever false-cancel a healthy download.
+    # No stall watchdog: finalize_worker_exit relies solely on the worker's exit
+    # code and NEVER kills a live process. huggingface_hub already bounds reads
+    # with timeouts and raises a clean resumable error, so a liveness kill could
+    # only false-cancel a healthy download.
     import inspect
     import io
     import logging
@@ -1939,9 +1919,8 @@ def test_prepare_cache_for_transport_purges_cross_transport_companion(monkeypatc
     companion = frozenset({"shared-mmproj"})
 
     # An interrupted XET download stamps the companion marker "xet" and leaves a
-    # sparse companion partial. A later HTTP download of a *different* variant
-    # must purge it: the HTTP resumer would otherwise append to the sparse bytes
-    # and silently produce a correct-sized-but-corrupt blob.
+    # sparse partial. A later HTTP download of a different variant must purge it,
+    # else the HTTP resumer appends to the sparse bytes and corrupts the blob.
     download_registry.prepare_cache_for_transport(
         "model",
         "Org/Vision",
@@ -2454,10 +2433,9 @@ def test_model_download_watcher_invalidates_hf_cache_scan(monkeypatch):
 
 def test_two_concurrent_same_repo_variants_both_complete(monkeypatch, tmp_path):
     # End-to-end proof that two GGUF variants of ONE repo download concurrently
-    # without cancelling each other: real DownloadRegistry, real
-    # finalize_worker_exit (no stall watchdog), real subprocess workers (quick
-    # clean exit), real _watch threads. Exercises the claim gate, register, the
-    # watch/finalize funnel, and classify_exit under true concurrency.
+    # without cancelling each other, with real registry/finalize/subprocess/watch
+    # threads exercising the claim gate, register, finalize funnel, and
+    # classify_exit under true concurrency.
     import subprocess
     import time
 
@@ -2622,8 +2600,8 @@ def _patch_variant_delete_side_effects(monkeypatch):
 
 
 def test_snapshot_progress_filters_stale_blobs(monkeypatch, tmp_path):
-    """The shared accounting must exclude blobs from a superseded revision and
-    count an in-progress blob only when its hash belongs to the target."""
+    """Accounting must exclude superseded-revision blobs and count an in-progress
+    blob only when its hash belongs to the target."""
     entry = tmp_path / "datasets--Org--Data"
     blobs = entry / "blobs"
     blobs.mkdir(parents = True)
@@ -2722,10 +2700,9 @@ def test_expected_files_from_snapshot_dir_records_relative_paths_and_sizes(tmp_p
 
 
 def test_snapshot_progress_complete_with_manifest_synthesized_from_disk(monkeypatch, tmp_path):
-    """A finished snapshot whose only manifest was synthesized from on-disk
-    files (HF metadata unreachable during download and recovery) must still
-    verify as complete through the real manifest check, so a restart/refresh
-    finalizes it complete instead of capping at 99% and evicting it as gone."""
+    """A finished snapshot whose only manifest was synthesized from on-disk files
+    must still verify as complete, so a restart/refresh finalizes it instead of
+    capping at 99% and evicting it as gone."""
     entry = tmp_path / "models--Org--Model"
     blobs = entry / "blobs"
     snap = entry / "snapshots" / "rev0"
