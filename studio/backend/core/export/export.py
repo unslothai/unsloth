@@ -658,12 +658,7 @@ class ExportBackend:
                 model_save_path = os.path.join(abs_save_dir, "model")
                 save_gguf_kwargs = dict(quantization_method = quant_method)
                 if gguf_shard_size is not None:
-                    resolved_shard = (
-                        None
-                        if gguf_shard_size.strip().lower() in ("0", "none", "")
-                        else gguf_shard_size.strip()
-                    )
-                    save_gguf_kwargs["gguf_shard_size"] = resolved_shard
+                    save_gguf_kwargs["gguf_shard_size"] = gguf_shard_size
                 self.current_model.save_pretrained_gguf(
                     model_save_path,
                     self.current_tokenizer,
@@ -748,12 +743,7 @@ class ExportBackend:
                     private = private,
                 )
                 if gguf_shard_size is not None:
-                    resolved_shard = (
-                        None
-                        if gguf_shard_size.strip().lower() in ("0", "none", "")
-                        else gguf_shard_size.strip()
-                    )
-                    push_gguf_kwargs["gguf_shard_size"] = resolved_shard
+                    push_gguf_kwargs["gguf_shard_size"] = gguf_shard_size
                 self.current_model.push_to_hub_gguf(
                     repo_id,
                     self.current_tokenizer,

@@ -557,7 +557,7 @@ export function ExportDialog({
                     disabled={exporting}
                   />
                   <p className="text-[11px] text-muted-foreground/70">
-                    Set a max size per shard (e.g. <code>2GB</code>, <code>4GB</code>) to split the output into smaller files. Leave blank to keep the default (50 GB, effectively a single file for most models).
+                    Controls the max size of each shard during the initial full-precision conversion (e.g. <code>2GB</code>, <code>4GB</code>). Leave blank for the 50 GB default (one file for most models). Quantized outputs (Q4_K_M etc.) are always a single file regardless of this setting.
                   </p>
                 </div>
               </div>

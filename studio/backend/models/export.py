@@ -143,10 +143,11 @@ class ExportGGUFRequest(ExportCommonOptions):
     gguf_shard_size: Optional[str] = Field(
         None,
         description = (
-            "Maximum shard size for the output GGUF file(s). "
-            "Pass None to use the default (50GB, effectively one file for most models). "
-            "Pass '0' or 'none' to disable sharding entirely. "
-            "Examples: '2GB', '4GB', '10GB'."
+            "Maximum shard size for the initial full-precision GGUF conversion. "
+            "Pass None or '' to use the default (50GB, one file for most models). "
+            "Pass '0' or 'none' to force a single file regardless of model size. "
+            "Examples: '2GB', '4GB', '10GB'. "
+            "Note: quantized outputs (Q4_K_M etc.) are always a single file."
         ),
     )
 

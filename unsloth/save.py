@@ -1336,6 +1336,23 @@ def get_executable(executables):
     return None
 
 
+def _resolve_gguf_shard_size(gguf_shard_size: Optional[str]) -> str:
+    """
+    Resolve a user-supplied gguf_shard_size value to the string passed to
+    convert_to_gguf's max_shard_size argument.
+
+    - None or ""      → "50GB"  (default: effectively one file for most models)
+    - "0" or "none"   → "100000GB"  (no sharding: one file regardless of size)
+    - anything else   → passed through as-is (e.g. "2GB", "4GB")
+    """
+    if gguf_shard_size is None:
+        return "50GB"
+    cleaned = gguf_shard_size.strip().lower()
+    if cleaned in ("", "0", "none"):
+        return "100000GB"
+    return gguf_shard_size.strip()
+
+
 def save_to_gguf(
     model_name: str,
     model_type: str,
@@ -1506,7 +1523,7 @@ def save_to_gguf(
             supported_vision_archs = supported_vision_archs,
             is_vlm = is_vlm,
             is_gpt_oss = is_gpt_oss,
-            max_shard_size = gguf_shard_size if gguf_shard_size is not None else "50GB",
+            max_shard_size = _resolve_gguf_shard_size(gguf_shard_size),
             print_output = print_output,
         )
     # update is_vlm switch
