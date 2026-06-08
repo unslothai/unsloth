@@ -249,13 +249,21 @@ class InferenceOrchestrator:
 
     def _subprocess_crash_message(self, context: str) -> str:
         """Return a user-facing crash message with the worker exit status."""
+        context_label = {
+            "wait": "loading the model",
+            "generation": "generating a response",
+            "audio generation": "generating audio",
+            "audio input generation": "processing audio input",
+        }.get(context, context)
+        message = f"The inference worker stopped unexpectedly while {context_label}."
+
         if self._proc is None:
-            return f"Inference subprocess crashed during {context} (process missing)"
+            return f"{message} Details: process missing."
 
         exitcode = self._proc.exitcode
         pid = self._proc.pid
         if exitcode is None:
-            return f"Inference subprocess crashed during {context} (pid={pid})"
+            return f"{message} Details: pid={pid}."
 
         if exitcode < 0:
             signum = -exitcode
@@ -266,13 +274,16 @@ class InferenceOrchestrator:
 
             suffix = ""
             if sig_name == "SIGKILL":
-                suffix = "; this commonly means the OS killed the worker for OOM"
+                suffix = (
+                    " This usually means the system killed it under memory pressure. "
+                    "Try a smaller model, lower context length, or close other GPU-heavy apps."
+                )
             return (
-                f"Inference subprocess crashed during {context} "
-                f"(pid={pid}, signal={sig_name}, exitcode={exitcode}{suffix})"
+                f"{message}{suffix} "
+                f"Details: pid={pid}, signal={sig_name}, exitcode={exitcode}."
             )
 
-        return f"Inference subprocess crashed during {context} " f"(pid={pid}, exitcode={exitcode})"
+        return f"{message} Details: pid={pid}, exitcode={exitcode}."
 
     # ------------------------------------------------------------------
     # Queue helpers
