@@ -11,6 +11,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from auth.authentication import get_current_subject
+from loggers import get_logger
+from utils.utils import safe_curated_detail, log_and_http_error
 from storage.studio_db import (
     ChatMessageConflictError,
     CorruptSettingsError,
@@ -39,6 +41,8 @@ from storage.studio_db import (
 )
 
 router = APIRouter()
+
+logger = get_logger(__name__)
 
 
 class ChatThread(BaseModel):
@@ -159,9 +163,7 @@ class ChatSettingsPayload(BaseModel):
     inferenceParams: Optional[ChatInferenceSettings] = None
     customPresets: Optional[list[ChatPreset]] = None
     activePreset: Optional[str] = None
-    activePresetSource: Optional[Literal["builtin-default", "custom", "modified"]] = (
-        None
-    )
+    activePresetSource: Optional[Literal["builtin-default", "custom", "modified"]] = None
     autoTitle: Optional[bool] = None
     reasoningEffort: Optional[
         Literal["none", "minimal", "low", "medium", "high", "max", "xhigh"]
@@ -224,10 +226,7 @@ async def list_threads(
 
 
 @router.post("/threads", response_model = ChatThread)
-async def save_thread(
-    payload: ChatThread,
-    current_subject: str = Depends(get_current_subject),
-):
+async def save_thread(payload: ChatThread, current_subject: str = Depends(get_current_subject)):
     if payload.projectId and get_chat_project(payload.projectId) is None:
         raise HTTPException(
             status_code = 404,
@@ -237,10 +236,7 @@ async def save_thread(
 
 
 @router.get("/threads/{thread_id}", response_model = ChatThread)
-async def get_thread(
-    thread_id: str,
-    current_subject: str = Depends(get_current_subject),
-):
+async def get_thread(thread_id: str, current_subject: str = Depends(get_current_subject)):
     thread = get_chat_thread(thread_id)
     if thread is None:
         raise HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
@@ -273,8 +269,7 @@ async def patch_thread(
 
 @router.delete("/threads")
 async def delete_threads(
-    payload: ChatDeleteRequest,
-    current_subject: str = Depends(get_current_subject),
+    payload: ChatDeleteRequest, current_subject: str = Depends(get_current_subject)
 ):
     delete_chat_threads(payload.ids)
     return {"status": "deleted"}
@@ -282,8 +277,7 @@ async def delete_threads(
 
 @router.get("/projects", response_model = ChatProjectListResponse)
 async def list_projects(
-    include_archived: bool = Query(False),
-    current_subject: str = Depends(get_current_subject),
+    include_archived: bool = Query(False), current_subject: str = Depends(get_current_subject)
 ):
     return ChatProjectListResponse(
         projects = [
@@ -294,18 +288,12 @@ async def list_projects(
 
 
 @router.post("/projects", response_model = ChatProject)
-async def save_project(
-    payload: ChatProject,
-    current_subject: str = Depends(get_current_subject),
-):
+async def save_project(payload: ChatProject, current_subject: str = Depends(get_current_subject)):
     return ChatProject(**upsert_chat_project(payload.model_dump()))
 
 
 @router.get("/projects/{project_id}", response_model = ChatProject)
-async def get_project(
-    project_id: str,
-    current_subject: str = Depends(get_current_subject),
-):
+async def get_project(project_id: str, current_subject: str = Depends(get_current_subject)):
     project = ensure_chat_project_workspace(project_id)
     if project is None:
         raise HTTPException(
@@ -352,10 +340,7 @@ async def delete_project(
 
 
 @router.get("/threads/{thread_id}/messages", response_model = ChatMessageListResponse)
-async def get_thread_messages(
-    thread_id: str,
-    current_subject: str = Depends(get_current_subject),
-):
+async def get_thread_messages(thread_id: str, current_subject: str = Depends(get_current_subject)):
     if get_chat_thread(thread_id) is None:
         raise HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
     return ChatMessageListResponse(
@@ -365,8 +350,7 @@ async def get_thread_messages(
 
 @router.post("/messages:batch", response_model = ChatMessagesBatchResponse)
 async def batch_thread_messages(
-    payload: ChatMessagesBatchRequest,
-    current_subject: str = Depends(get_current_subject),
+    payload: ChatMessagesBatchRequest, current_subject: str = Depends(get_current_subject)
 ):
     """One round-trip per sidebar/search rebuild instead of N. Unknown thread
     ids are returned as empty lists so callers don't need a pre-flight."""
@@ -406,7 +390,13 @@ async def save_thread_message(
     try:
         return ChatMessage(**upsert_chat_message(payload.model_dump()))
     except ChatMessageConflictError as exc:
-        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+        raise log_and_http_error(
+            exc,
+            409,
+            safe_curated_detail(exc),
+            event = "chat_history.save_message_conflict",
+            log = logger,
+        ) from exc
 
 
 @router.put("/threads/{thread_id}/messages", response_model = ChatMessageListResponse)
@@ -415,14 +405,10 @@ async def replace_thread_messages(
     payload: ChatMessageSyncRequest,
     current_subject: str = Depends(get_current_subject),
 ):
-    mismatched_ids = [
-        message.id for message in payload.messages if message.threadId != thread_id
-    ]
+    mismatched_ids = [message.id for message in payload.messages if message.threadId != thread_id]
     if mismatched_ids:
         preview = ", ".join(mismatched_ids[:5])
-        suffix = (
-            "" if len(mismatched_ids) <= 5 else f" (+{len(mismatched_ids) - 5} more)"
-        )
+        suffix = "" if len(mismatched_ids) <= 5 else f" (+{len(mismatched_ids) - 5} more)"
         raise HTTPException(
             status_code = 400,
             detail = f"Message threadId mismatch: {preview}{suffix}",
@@ -442,7 +428,13 @@ async def replace_thread_messages(
             ]
         )
     except ChatMessageConflictError as exc:
-        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+        raise log_and_http_error(
+            exc,
+            409,
+            safe_curated_detail(exc),
+            event = "chat_history.replace_messages_conflict",
+            log = logger,
+        ) from exc
 
 
 @router.get("/count", response_model = ChatCountResponse)
@@ -462,8 +454,7 @@ async def get_import_ledger(current_subject: str = Depends(get_current_subject))
 
 @router.post("/import-ledger", response_model = ChatImportLedgerRecordResponse)
 async def record_import_ledger(
-    payload: ChatImportLedgerRecordRequest,
-    current_subject: str = Depends(get_current_subject),
+    payload: ChatImportLedgerRecordRequest, current_subject: str = Depends(get_current_subject)
 ):
     """Mark each legacy thread id as imported. Idempotent."""
     accepted, inserted = upsert_chat_legacy_imports(payload.threadIds)
@@ -483,8 +474,7 @@ async def get_settings(current_subject: str = Depends(get_current_subject)):
 
 @router.put("/settings", response_model = ChatSettingsResponse)
 async def put_settings(
-    payload: dict[str, Any],
-    current_subject: str = Depends(get_current_subject),
+    payload: dict[str, Any], current_subject: str = Depends(get_current_subject)
 ):
     try:
         parsed = ChatSettingsPayload.model_validate(payload)
@@ -497,7 +487,13 @@ async def put_settings(
             settings = upsert_chat_settings_merge(parsed.model_dump(exclude_unset = True))
         )
     except CorruptSettingsError as exc:
-        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+        raise log_and_http_error(
+            exc,
+            409,
+            safe_curated_detail(exc),
+            event = "chat_history.put_settings_conflict",
+            log = logger,
+        ) from exc
 
 
 @router.get("/export", response_model = ChatExportResponse)
