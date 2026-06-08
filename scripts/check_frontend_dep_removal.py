@@ -52,9 +52,7 @@ EXPECTED_NOISE_FILES = {
 }
 
 # Only quoted-string occurrences in these file types can be module specifiers.
-JS_LIKE_EXT = re.compile(
-    r"\.(ts|tsx|js|jsx|mjs|cjs|html|htm|css|scss|sass|json|jsonc)$"
-)
+JS_LIKE_EXT = re.compile(r"\.(ts|tsx|js|jsx|mjs|cjs|html|htm|css|scss|sass|json|jsonc)$")
 # Files where JS-syntactic import patterns (static/dynamic/require/re-export)
 # could be a real module reference. Markdown gets a separate gate (.mdx is
 # real ESM; .md code fences are not).
@@ -273,9 +271,7 @@ def classify(pkg: str, file: str, content: str) -> str | None:
     if is_script and re.search(rf"\bimport\(\s*['\"]{esc}{sub}['\"]\s*\)", content):
         return "dynamic_import"
     # require / require.resolve
-    if is_script and re.search(
-        rf"\brequire(?:\.resolve)?\(\s*['\"]{esc}{sub}['\"]\s*\)", content
-    ):
+    if is_script and re.search(rf"\brequire(?:\.resolve)?\(\s*['\"]{esc}{sub}['\"]\s*\)", content):
         return "require"
     # Re-exports: `export * from "pkg"`, `export { x } from "pkg"`,
     # `export type { Foo } from "pkg"`. Multi-line supported.
@@ -289,16 +285,12 @@ def classify(pkg: str, file: str, content: str) -> str | None:
     # segment bounded by a quote / `#` / `?` or a subpath `/`, so
     # `/node_modules/foo-extra/...` is NOT treated as usage of `foo`.
     html_pkg = rf"{esc}(?:/[^'\"#?]*)?(?=['\"#?])"
-    if is_html and re.search(
-        rf"<script[^>]*src\s*=\s*['\"][^'\"]*/{html_pkg}", content
-    ):
+    if is_html and re.search(rf"<script[^>]*src\s*=\s*['\"][^'\"]*/{html_pkg}", content):
         return "html_script"
     if is_html and re.search(rf"<link[^>]*href\s*=\s*['\"][^'\"]*/{html_pkg}", content):
         return "html_link"
     # TypeScript triple-slash
-    if is_ts and re.search(
-        rf"///\s*<reference\s+types\s*=\s*['\"]{esc}{sub}['\"]", content
-    ):
+    if is_ts and re.search(rf"///\s*<reference\s+types\s*=\s*['\"]{esc}{sub}['\"]", content):
         return "tsc_triple_slash"
     # new URL("pkg/...", import.meta.url)
     if is_script and re.search(rf"\bnew\s+URL\(\s*['\"]{esc}{sub}['\"]", content):
@@ -544,19 +536,13 @@ def _next_real_bin(words: list[str], idx: int) -> str | None:
         if first in {"npx", "pnpx", "bunx"} and idx + 1 < len(words):
             idx += 1
             continue
-        if (
-            first in {"pnpm", "yarn"}
-            and idx + 2 < len(words)
-            and words[idx + 1] in {"exec", "dlx"}
-        ):
+        if first in {"pnpm", "yarn"} and idx + 2 < len(words) and words[idx + 1] in {"exec", "dlx"}:
             idx += 2
             continue
 
         # 3. Wrapper bin (cross-env, dotenv, etc.). Skip the wrapper's
         # own flags and any subsequent env-prefix tokens, then re-loop.
-        bin_token = first.removeprefix("./node_modules/.bin/").removeprefix(
-            "node_modules/.bin/"
-        )
+        bin_token = first.removeprefix("./node_modules/.bin/").removeprefix("node_modules/.bin/")
         if bin_token in _SCRIPT_WRAPPERS and bin_token not in seen_wrappers:
             seen_wrappers.add(bin_token)
             idx += 1
@@ -585,9 +571,7 @@ def _next_real_bin(words: list[str], idx: int) -> str | None:
     return None
 
 
-def scripts_bin_refs(
-    head_pkg: dict, bin_to_pkg: dict[str, str]
-) -> dict[str, list[str]]:
+def scripts_bin_refs(head_pkg: dict, bin_to_pkg: dict[str, str]) -> dict[str, list[str]]:
     """Return `{package_name: ['scripts.X: cmd', ...]}` listing every
     package referenced via its bin name in package.json scripts.
 
@@ -652,11 +636,7 @@ def tsconfig_compiler_types_refs() -> set[str]:
             if not isinstance(t, str):
                 continue
             # `vite/client` resolves to `vite` package.
-            pkg = (
-                t.split("/", 1)[0]
-                if not t.startswith("@")
-                else "/".join(t.split("/", 2)[:2])
-            )
+            pkg = t.split("/", 1)[0] if not t.startswith("@") else "/".join(t.split("/", 2)[:2])
             out.add(pkg)
     return out
 
@@ -820,9 +800,7 @@ _file_lines_cache: dict[str, list[str]] = {}
 def _read_file(path: str) -> list[str]:
     if path not in _file_lines_cache:
         try:
-            _file_lines_cache[path] = (
-                Path(path).read_text(errors = "replace").splitlines()
-            )
+            _file_lines_cache[path] = Path(path).read_text(errors = "replace").splitlines()
         except (OSError, UnicodeDecodeError):
             _file_lines_cache[path] = []
     return _file_lines_cache[path]
@@ -952,18 +930,14 @@ def find_types_runtime_usage(pkg: str, tsc_types: set[str]) -> list[Hit]:
 
 
 def main() -> int:
-    p = argparse.ArgumentParser(
-        description = __doc__, formatter_class = argparse.RawTextHelpFormatter
-    )
+    p = argparse.ArgumentParser(description = __doc__, formatter_class = argparse.RawTextHelpFormatter)
     p.add_argument(
         "--base",
         default = "origin/main",
         help = "git ref to diff against (default: origin/main). "
         "Examples: HEAD~1, main, a-tag, a-sha.",
     )
-    p.add_argument(
-        "--base-pkg", help = "optional override: read base package.json from this path"
-    )
+    p.add_argument("--base-pkg", help = "optional override: read base package.json from this path")
     p.add_argument(
         "--base-lock",
         help = "optional override: read base package-lock.json from this path. "
@@ -1057,9 +1031,7 @@ def main() -> int:
                 print(f"  - {w}")
             print()
         if missing_imports:
-            print(
-                f"Imports without a matching package.json dep ({len(missing_imports)}):"
-            )
+            print(f"Imports without a matching package.json dep ({len(missing_imports)}):")
             for file, ln, spec in missing_imports[:20]:
                 print(f"  - {file}:{ln}  imports '{spec}'")
             print()
@@ -1097,9 +1069,7 @@ def main() -> int:
             return 1
         return 0
 
-    print(
-        f"Checking {len(removed)} removed package(s) from studio/frontend/package.json"
-    )
+    print(f"Checking {len(removed)} removed package(s) from studio/frontend/package.json")
     print(f"Base: {args.base}    Head: working tree")
     print()
 
@@ -1127,9 +1097,7 @@ def main() -> int:
         top = f"node_modules/{name}"
         top_path = top if top in reachable_paths else None
         nested = sorted(
-            p
-            for p in reachable_paths
-            if p != top and p.endswith(f"/node_modules/{name}")
+            p for p in reachable_paths if p != top and p.endswith(f"/node_modules/{name}")
         )
         return top_path, nested
 
@@ -1177,9 +1145,7 @@ def main() -> int:
     _print_hygiene()
 
     if failures:
-        print(
-            f"FAIL: {len(failures)} removed package(s) still referenced and not resolvable"
-        )
+        print(f"FAIL: {len(failures)} removed package(s) still referenced and not resolvable")
         for name, _ in failures:
             print(f"  - {name}")
         return 1

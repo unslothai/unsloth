@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useEffect, useRef, useState } from "react";
-import { CHAT_HISTORY_UPDATED_EVENT } from "../api/chat-api";
+import { batchListChatMessages, CHAT_HISTORY_UPDATED_EVENT } from "../api/chat-api";
 import type { MessageRecord } from "../types";
 import {
   listStoredChatMessages,
@@ -15,6 +15,7 @@ export interface ChatSearchItem {
   title: string;
   preview: string;
   createdAt: number;
+  projectId?: string | null;
 }
 
 const THREAD_LIMIT = 200;
@@ -68,6 +69,7 @@ async function buildIndex(): Promise<ChatSearchItem[]> {
           id: t.pairId,
           title: t.title,
           createdAt: t.createdAt,
+          projectId: t.projectId ?? null,
         },
         threadIds: [t.id],
       });
@@ -78,6 +80,7 @@ async function buildIndex(): Promise<ChatSearchItem[]> {
           id: t.id,
           title: t.title,
           createdAt: t.createdAt,
+          projectId: t.projectId ?? null,
         },
         threadIds: [t.id],
       });
@@ -87,26 +90,34 @@ async function buildIndex(): Promise<ChatSearchItem[]> {
   const allThreadIds = Array.from(itemThreadIds.values()).flatMap(
     (e) => e.threadIds,
   );
-  const storedMessagesByThread = await Promise.all(
-    allThreadIds.map(async (threadId) => ({
-      threadId,
-      messages: await listStoredChatMessages(threadId),
-    })),
+  let messagesByThread = await batchListChatMessages(allThreadIds).catch(
+    () => new Map<string, MessageRecord[]>(),
   );
-  const messages = storedMessagesByThread.flatMap((entry) => entry.messages);
 
-  const byThreadId = new Map<string, MessageRecord[]>();
-  for (const m of messages) {
-    const arr = byThreadId.get(m.threadId);
-    if (arr) arr.push(m);
-    else byThreadId.set(m.threadId, [m]);
+  // Legacy-only chats can exist before server-side history import finishes.
+  // Fill just the missing ids from the legacy-aware path instead of issuing
+  // one request per thread up front.
+  const missingThreadIds = allThreadIds.filter(
+    (threadId) => !messagesByThread.has(threadId),
+  );
+  if (missingThreadIds.length > 0) {
+    const legacyEntries = await Promise.all(
+      missingThreadIds.map(async (threadId) => [
+        threadId,
+        await listStoredChatMessages(threadId).catch(() => []),
+      ] as const),
+    );
+    messagesByThread = new Map(messagesByThread);
+    for (const [threadId, messages] of legacyEntries) {
+      messagesByThread.set(threadId, messages);
+    }
   }
 
   const results: ChatSearchItem[] = [];
   for (const { item, threadIds } of itemThreadIds.values()) {
     const merged: MessageRecord[] = [];
     for (const tid of threadIds) {
-      const arr = byThreadId.get(tid);
+      const arr = messagesByThread.get(tid);
       if (arr) merged.push(...arr);
     }
     if (merged.length === 0) {
@@ -141,6 +152,7 @@ export function useChatSearchIndex(enabled: boolean): {
     if (!enabled) {
       // Clear stale results so the next open doesn't flash old items.
       setItems([]);
+      setLoading(false);
       return;
     }
     let cancelled = false;

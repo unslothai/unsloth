@@ -37,6 +37,12 @@ import { useT } from "@/i18n";
 
 const HF_REPO_REGEX = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
 
+// Tracks which jobs have already played the terminal intro animation. The
+// overlay unmounts when you navigate away from the training page, so without
+// this its typing/fade-in would replay on every return even though the run
+// itself is still going. Module-level so it survives remounts.
+const animatedJobs = new Set<string>();
+
 function formatBytes(n: number): string {
   if (n <= 0) return "0 B";
   if (n < 1024) return `${n} B`;
@@ -254,6 +260,7 @@ export function TrainingStartOverlay({
   const { stopTrainingRun, dismissTrainingRun } = useTrainingActions();
   const isStarting = useTrainingRuntimeStore((s) => s.isStarting);
   const phase = useTrainingRuntimeStore((s) => s.phase);
+  const jobId = useTrainingRuntimeStore((s) => s.jobId);
   const startModelName = useTrainingRuntimeStore((s) => s.startModelName);
   const startDatasetName = useTrainingRuntimeStore((s) => s.startDatasetName);
   const startFromResume = useTrainingRuntimeStore((s) => s.startFromResume);
@@ -298,6 +305,16 @@ export function TrainingStartOverlay({
     }
   }, [isStarting]);
 
+  // Play the intro animation only the first time we mount for a given job.
+  // On later remounts (e.g. leaving the training page and coming back) the
+  // terminal renders its final state instantly so the logs don't restart.
+  const alreadyAnimated = jobId != null && animatedJobs.has(jobId);
+  useEffect(() => {
+    if (jobId != null) {
+      animatedJobs.add(jobId);
+    }
+  }, [jobId]);
+
   return (
     <div className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center rounded-2xl bg-background/45 backdrop-blur-[1px]">
       <div className="pointer-events-auto relative flex w-[860px] max-w-[calc(100%-2rem)] flex-col items-center gap-4">
@@ -311,7 +328,7 @@ export function TrainingStartOverlay({
             <Button
               variant="ghost"
               size="icon"
-              className="absolute right-3 top-3 z-10 size-7 cursor-pointer rounded-full text-muted-foreground/60 hover:bg-destructive/10 hover:text-destructive"
+              className="absolute right-3 top-3 z-10 size-7 cursor-pointer rounded-full text-muted-foreground/90 hover:bg-destructive/10 hover:text-destructive"
               onClick={() => setCancelDialogOpen(true)}
               disabled={cancelRequested}
             >
@@ -349,6 +366,7 @@ export function TrainingStartOverlay({
           <Terminal
             className="w-full min-h-[390px] rounded-2xl px-7 py-6 text-left"
             startOnView={false}
+            instant={alreadyAnimated}
           >
           <TypingAnimation
             duration={36}

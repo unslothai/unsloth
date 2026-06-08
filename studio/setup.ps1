@@ -2016,7 +2016,7 @@ if ($env:SKIP_STUDIO_BASE -ne "1" -and $env:STUDIO_LOCAL_INSTALL -ne "1") {
 #     # the fresh .venv. Install it so run_install() can find its modules
 #     # and bundled requirements files.
 #     Write-Host "   Installing package into venv..." -ForegroundColor Cyan
-#     pip install unsloth-roland-test 2>&1 | Out-Null
+#     pip install unsloth 2>&1 | Out-Null
 # }
 
 if (-not $SkipPythonDeps) {
@@ -2483,6 +2483,12 @@ if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
         )
         if ($HasROCm) {
             $prebuiltArgs += "--has-rocm"
+            # Forward the resolved gfx arch so the lemonade HIP prebuilt is picked
+            # even when the installer's own probe cannot report it (amd-smi-only
+            # hosts, name-inferred arch).
+            if ($script:ROCmGfxArch) {
+                $prebuiltArgs += @("--rocm-gfx", $script:ROCmGfxArch)
+            }
         }
         if ($env:UNSLOTH_LLAMA_RELEASE_TAG) {
             $prebuiltArgs += @("--published-release-tag", $env:UNSLOTH_LLAMA_RELEASE_TAG)

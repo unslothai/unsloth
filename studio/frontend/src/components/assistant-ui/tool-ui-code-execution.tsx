@@ -12,9 +12,9 @@ import {
   CheckIcon,
   CopyIcon,
   FileTextIcon,
-  LoaderIcon,
   TerminalIcon,
 } from "lucide-react";
+import { ToolCallSpinner } from "@/components/assistant-ui/tool-call-spinner";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ToolFallbackContent,
@@ -185,7 +185,7 @@ const CodeExecutionToolUIImpl: ToolCallMessagePartComponent = ({
       <ToolFallbackContent>
         {isRunning ? (
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
-            <LoaderIcon className="size-3.5 animate-spin" />
+            <ToolCallSpinner className="size-3.5" />
             <span>{runningLabel}</span>
           </div>
         ) : resultText ? (

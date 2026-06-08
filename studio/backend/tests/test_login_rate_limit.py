@@ -45,9 +45,12 @@ def env_trust_proxy(monkeypatch):
 
 
 class _FakeRequest:
-    def __init__(self, client_host = "127.0.0.1", headers = None):
+    def __init__(
+        self,
+        client_host = "127.0.0.1",
+        headers = None,
+    ):
         from starlette.datastructures import Headers
-
         self.client = type("Client", (), {"host": client_host})()
         self.headers = Headers(headers or {})
 
@@ -58,12 +61,10 @@ class _FakeRequest:
 class TestClientIp:
     def test_uses_request_client_host_by_default(self, env_no_proxy):
         from routes.auth import _client_ip
-
         assert _client_ip(_FakeRequest("203.0.113.5")) == "203.0.113.5"
 
     def test_ignores_xff_when_trust_off(self, env_no_proxy):
         from routes.auth import _client_ip
-
         req = _FakeRequest(
             "127.0.0.1",
             {"x-forwarded-for": "198.51.100.7, 10.0.0.1"},
@@ -74,7 +75,6 @@ class TestClientIp:
 
     def test_honours_first_xff_when_trust_on(self, env_trust_proxy):
         from routes.auth import _client_ip
-
         req = _FakeRequest(
             "127.0.0.1",
             {"x-forwarded-for": "198.51.100.7, 10.0.0.1"},
@@ -83,12 +83,10 @@ class TestClientIp:
 
     def test_falls_back_to_client_host_when_xff_missing(self, env_trust_proxy):
         from routes.auth import _client_ip
-
         assert _client_ip(_FakeRequest("203.0.113.9")) == "203.0.113.9"
 
     def test_honours_forwarded_header_when_trust_on(self, env_trust_proxy):
         from routes.auth import _client_ip
-
         req = _FakeRequest(
             "127.0.0.1",
             {"forwarded": 'for="198.51.100.42";proto=https'},
@@ -104,34 +102,22 @@ class TestClientIp:
 
     def test_xff_strips_ipv4_port(self, env_trust_proxy):
         from routes.auth import _client_ip
-
-        req = _FakeRequest(
-            "127.0.0.1", {"x-forwarded-for": "198.51.100.7:50001, 10.0.0.1"}
-        )
+        req = _FakeRequest("127.0.0.1", {"x-forwarded-for": "198.51.100.7:50001, 10.0.0.1"})
         assert _client_ip(req) == "198.51.100.7"
 
     def test_xff_strips_bracketed_ipv6_port(self, env_trust_proxy):
         from routes.auth import _client_ip
-
-        req = _FakeRequest(
-            "127.0.0.1", {"x-forwarded-for": "[2001:db8::1]:50001, 10.0.0.1"}
-        )
+        req = _FakeRequest("127.0.0.1", {"x-forwarded-for": "[2001:db8::1]:50001, 10.0.0.1"})
         assert _client_ip(req) == "2001:db8::1"
 
     def test_forwarded_strips_ipv4_port(self, env_trust_proxy):
         from routes.auth import _client_ip
-
-        req = _FakeRequest(
-            "127.0.0.1", {"forwarded": 'for="198.51.100.7:50001";proto=https'}
-        )
+        req = _FakeRequest("127.0.0.1", {"forwarded": 'for="198.51.100.7:50001";proto=https'})
         assert _client_ip(req) == "198.51.100.7"
 
     def test_forwarded_strips_bracketed_ipv6_port(self, env_trust_proxy):
         from routes.auth import _client_ip
-
-        req = _FakeRequest(
-            "127.0.0.1", {"forwarded": 'for="[2001:db8::1]:50001";proto=https'}
-        )
+        req = _FakeRequest("127.0.0.1", {"forwarded": 'for="[2001:db8::1]:50001";proto=https'})
         assert _client_ip(req) == "2001:db8::1"
 
     def test_forwarded_isolates_first_element(self, env_trust_proxy):
@@ -247,9 +233,7 @@ class TestLogin429Body:
         import secrets as _secrets
 
         monkeypatch.setattr(storage, "DB_PATH", tmp_path / "auth.db")
-        monkeypatch.setattr(
-            storage, "_BOOTSTRAP_PW_PATH", tmp_path / ".bootstrap_password"
-        )
+        monkeypatch.setattr(storage, "_BOOTSTRAP_PW_PATH", tmp_path / ".bootstrap_password")
         monkeypatch.setattr(storage, "_bootstrap_password", None)
         storage.create_initial_user(
             username = storage.DEFAULT_ADMIN_USERNAME,

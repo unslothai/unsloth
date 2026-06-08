@@ -45,7 +45,9 @@ def _extract_install_sh_guard_block() -> str:
 
 
 def _build_install_guard_script(
-    studio_home: Path, redirect: str, block: str | None = None
+    studio_home: Path,
+    redirect: str,
+    block: str | None = None,
 ) -> str:
     """Build a self-contained bash script that exercises the extracted
     guard block. Includes stubs for substep / _start_studio_venv_replacement
@@ -135,12 +137,8 @@ def test_install_ps1_has_matching_env_mode_guard():
     assert (
         "$StudioRedirectMode -eq 'env'" in block
     ), "install.ps1 must gate Remove-Item $VenvDir on env-mode"
-    assert (
-        "share\\studio.conf" in block
-    ), "install.ps1 guard must check share\\studio.conf sentinel"
-    assert (
-        "bin\\unsloth.exe" in block
-    ), "install.ps1 guard must check bin\\unsloth.exe sentinel"
+    assert "share\\studio.conf" in block, "install.ps1 guard must check share\\studio.conf sentinel"
+    assert "bin\\unsloth.exe" in block, "install.ps1 guard must check bin\\unsloth.exe sentinel"
     assert "Refusing to delete non-Studio venv" in block
 
 
@@ -243,9 +241,7 @@ def test_setup_ps1_stale_venv_has_env_mode_guard():
     # The guard must fire BEFORE the destructive call.
     guard_idx = block.index("$StudioHomeIsCustom")
     rm_idx = block.index("Remove-Item -LiteralPath $VenvDir")
-    assert (
-        guard_idx < rm_idx
-    ), "custom-root guard must precede Remove-Item -LiteralPath $VenvDir"
+    assert guard_idx < rm_idx, "custom-root guard must precede Remove-Item -LiteralPath $VenvDir"
 
 
 def test_setup_sh_prebuilt_llama_cpp_has_ownership_guard():
@@ -262,9 +258,7 @@ def test_setup_sh_prebuilt_llama_cpp_has_ownership_guard():
     guard_idx = block.index('_assert_studio_owned_or_absent "$LLAMA_CPP_DIR"')
     # Anchor on the actual command-array entry, not the why-comment mention.
     helper_idx = block.index('python "$SCRIPT_DIR/install_llama_prebuilt.py"')
-    assert (
-        guard_idx < helper_idx
-    ), "ownership guard must precede the install_llama_prebuilt.py call"
+    assert guard_idx < helper_idx, "ownership guard must precede the install_llama_prebuilt.py call"
 
 
 def test_setup_ps1_prebuilt_llama_cpp_has_ownership_guard():
@@ -274,8 +268,7 @@ def test_setup_ps1_prebuilt_llama_cpp_has_ownership_guard():
     idx = src.index("installing prebuilt llama.cpp bundle (preferred path)")
     block = src[idx : idx + 2000]
     assert (
-        'Assert-StudioOwnedOrAbsent -Path $LlamaCppDir -Label "llama.cpp install"'
-        in block
+        'Assert-StudioOwnedOrAbsent -Path $LlamaCppDir -Label "llama.cpp install"' in block
     ), "setup.ps1 must guard the prebuilt llama.cpp path with Assert-StudioOwnedOrAbsent"
     guard_idx = block.index("Assert-StudioOwnedOrAbsent -Path $LlamaCppDir")
     # Anchor on the actual command-array entry, not the why-comment mention.
@@ -293,8 +286,7 @@ def test_env_mode_passes_when_venv_marker_present(tmp_path):
     studio_home = tmp_path / "ws"
     res = _run_install_guard(studio_home, redirect = "env", create_venv_marker = True)
     assert res.returncode == 0, (
-        f"in-VENV marker must allow cleanup; "
-        f"stdout={res.stdout!r} stderr={res.stderr!r}"
+        f"in-VENV marker must allow cleanup; " f"stdout={res.stdout!r} stderr={res.stderr!r}"
     )
     assert "RESULT=ok" in res.stdout
     assert not (studio_home / "unsloth_studio").exists()
@@ -450,9 +442,7 @@ def test_setup_ps1_inplace_git_sync_asserts_studio_owned_before_mutation():
     ), "in-place git-sync must Assert-StudioOwnedOrAbsent before mutating $LlamaCppDir"
     guard_idx = inplace_block.index("Assert-StudioOwnedOrAbsent -Path $LlamaCppDir")
     git_idx = inplace_block.index("git -C $LlamaCppDir remote set-url")
-    assert (
-        guard_idx < git_idx
-    ), "Assert-StudioOwnedOrAbsent must precede the first git mutation"
+    assert guard_idx < git_idx, "Assert-StudioOwnedOrAbsent must precede the first git mutation"
 
 
 def _extract_check_health_function() -> str:
@@ -549,9 +539,7 @@ def test_check_health_handles_arbitrary_id_token():
         expected_id,
         f'{{"status":"healthy","service":"Unsloth UI Backend","studio_root_id":"{expected_id}"}}',
     )
-    assert (
-        rc == 0
-    ), "arbitrary 64-hex install id must round-trip cleanly (no JSON escape issue)"
+    assert rc == 0, "arbitrary 64-hex install id must round-trip cleanly (no JSON escape issue)"
 
 
 def test_install_ps1_test_studio_health_verifies_studio_root_id():
@@ -561,9 +549,7 @@ def test_install_ps1_test_studio_health_verifies_studio_root_id():
     fn_start = src.index("function Test-StudioHealth")
     fn_end = src.index("\n}\n", fn_start) + 2
     fn = src[fn_start:fn_end]
-    assert (
-        "studio_root_id" in fn
-    ), "Test-StudioHealth must inspect the studio_root_id field"
+    assert "studio_root_id" in fn, "Test-StudioHealth must inspect the studio_root_id field"
     assert (
         "$_ExpectedStudioRootId" in fn
     ), "Test-StudioHealth must compare against the install-time baked $_ExpectedStudioRootId"
@@ -576,9 +562,7 @@ def test_install_ps1_bakes_studio_root_id_into_launcher():
     verify the backend belongs to THIS install. The id is generated
     via a CSPRNG so /api/health does not leak the install path."""
     src = INSTALL_PS1.read_text()
-    assert (
-        "$_studioRootId" in src
-    ), "install.ps1 must compute $_studioRootId for the launcher"
+    assert "$_studioRootId" in src, "install.ps1 must compute $_studioRootId for the launcher"
     assert (
         '"share"' in src and "studio_install_id" in src
     ), "install.ps1 must persist the id at $StudioHome\\share\\studio_install_id"
@@ -603,15 +587,11 @@ def test_health_endpoint_exposes_studio_root_id_not_raw_path():
     if next_app_idx == -1:
         next_app_idx = len(src)
     health_block = src[health_idx:next_app_idx]
-    assert (
-        '"studio_root_id"' in health_block
-    ), "/api/health must expose studio_root_id (hex digest)"
+    assert '"studio_root_id"' in health_block, "/api/health must expose studio_root_id (hex digest)"
     assert (
         '"studio_root":' not in health_block
     ), "/api/health must NOT expose the raw studio_root path (information disclosure)"
-    assert (
-        "_studio_root_id()" in health_block
-    ), "/api/health must call the _studio_root_id helper"
+    assert "_studio_root_id()" in health_block, "/api/health must call the _studio_root_id helper"
 
 
 def test_install_sh_bakes_studio_root_id_into_launcher():
@@ -685,9 +665,7 @@ def test_install_sh_shim_uses_atomic_replace():
     ), "the explicit rm + ln pair must be replaced by atomic ln -sfn"
 
 
-def test_install_sh_create_shortcuts_seeds_id_from_csprng_with_python_fallback(
-    tmp_path,
-):
+def test_install_sh_create_shortcuts_seeds_id_from_csprng_with_python_fallback(tmp_path):
     """_create_shortcuts must seed new ids from /dev/urandom first (no
     interpreter spawn cost on the install hot path) and fall back to
     `python3 -c 'secrets.token_hex(32)'` only when urandom is unreadable.
@@ -732,12 +710,8 @@ def test_install_sh_create_shortcuts_seeds_id_from_csprng_with_python_fallback(
     )
     res = subprocess.run(["bash", "-c", gen_script], text = True, capture_output = True)
     assert res.returncode == 0, res.stderr
-    out = dict(
-        line.split("=", 1) for line in res.stdout.strip().splitlines() if "=" in line
-    )
-    assert (
-        out.get("LEN") == "64"
-    ), f"id must be 64 hex chars, got LEN={out.get('LEN')!r}"
+    out = dict(line.split("=", 1) for line in res.stdout.strip().splitlines() if "=" in line)
+    assert out.get("LEN") == "64", f"id must be 64 hex chars, got LEN={out.get('LEN')!r}"
     assert all(
         c in "0123456789abcdef" for c in out.get("ID", "")
     ), f"id must be lowercase hex, got {out.get('ID')!r}"
@@ -751,8 +725,7 @@ def test_install_sh_create_shortcuts_fails_fast_when_no_entropy():
     fn_start = src.index('_css_data_dir="$DATA_DIR"')
     block = src[fn_start : fn_start + 3000]
     assert (
-        "[WARN] Cannot create launcher: no entropy source for studio_install_id"
-        in block
+        "[WARN] Cannot create launcher: no entropy source for studio_install_id" in block
     ), "install.sh must warn when neither urandom nor python3 is available"
     assert (
         "[WARN] Cannot create launcher: failed to read" in block
@@ -770,9 +743,7 @@ def test_install_sh_bakes_installed_is_env_mode_flag_in_launcher():
     assert (
         "_INSTALLED_IS_ENV_MODE='@@INSTALLED_IS_ENV_MODE@@'" in src
     ), "launcher heredoc must declare _INSTALLED_IS_ENV_MODE='@@INSTALLED_IS_ENV_MODE@@'"
-    assert (
-        "_css_is_env_mode=false" in src
-    ), "install.sh must default _css_is_env_mode to false"
+    assert "_css_is_env_mode=false" in src, "install.sh must default _css_is_env_mode to false"
     assert (
         '[ "$_STUDIO_HOME_REDIRECT" = "env" ] && _css_is_env_mode=true' in src
     ), "install.sh must set _css_is_env_mode=true only when _STUDIO_HOME_REDIRECT=env"
@@ -798,8 +769,7 @@ def test_install_sh_launcher_gates_port_file_on_baked_flag_not_runtime_env():
     port_block = heredoc[port_block_start:port_block_end]
     assert 'PORT_FILE="$DATA_DIR/studio.port"' in port_block
     assert (
-        'if [ -n "${UNSLOTH_STUDIO_HOME:-}" ]; then\n    if command -v cksum'
-        not in heredoc
+        'if [ -n "${UNSLOTH_STUDIO_HOME:-}" ]; then\n    if command -v cksum' not in heredoc
     ), "launcher must NOT gate PORT_FILE on runtime UNSLOTH_STUDIO_HOME"
 
     def _run_launcher_gate(installed_flag: str, runtime_env: dict) -> str:
@@ -853,9 +823,7 @@ def test_main_py_studio_root_id_caches_at_module_load():
     ), "_studio_root_id() must NOT do filesystem or hash work on every call"
 
 
-def test_main_py_read_studio_install_id_validates_hex_and_handles_missing(
-    tmp_path, monkeypatch
-):
+def test_main_py_read_studio_install_id_validates_hex_and_handles_missing(tmp_path, monkeypatch):
     """_read_studio_install_id reads $STUDIO_HOME/share/studio_install_id and
     returns "" when the file is absent, empty, contains non-hex content, or
     is the wrong length. "" triggers the launcher's "no baked id, accept any
@@ -887,9 +855,7 @@ def test_main_py_read_studio_install_id_validates_hex_and_handles_missing(
     id_file.write_text("")
     assert _read(root) == ""
     # Non-hex content -> empty
-    id_file.write_text(
-        "not-a-hex-id-just-text-padded-to-64-chars-zzzzzzzzzzzzzzzzzzzzzz"
-    )
+    id_file.write_text("not-a-hex-id-just-text-padded-to-64-chars-zzzzzzzzzzzzzzzzzzzzzz")
     assert _read(root) == ""
     # Uppercase hex -> empty (must be lowercase)
     id_file.write_text("F" * 64)

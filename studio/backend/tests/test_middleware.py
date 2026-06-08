@@ -24,7 +24,6 @@ if str(_BACKEND_ROOT) not in sys.path:
 @pytest.fixture(scope = "module")
 def main_module():
     import main as _main  # noqa: F401
-
     return _main
 
 
@@ -33,12 +32,19 @@ def main_module():
 # =====================================================================
 
 
-def _make_protected_app(max_bytes: int, main_module):
+def _make_protected_app(
+    max_bytes: int,
+    main_module,
+    upload_passthrough_prefixes: tuple = (),
+    upload_passthrough_max_bytes_getter = None,
+):
     app = FastAPI()
     app.add_middleware(
         main_module.MaxBodyMiddleware,
-        max_bytes = max_bytes,
-        protected_prefixes = ("/v1/chat/completions", "/api/train"),
+        max_bytes_getter = lambda: max_bytes,
+        protected_prefixes = ("/v1/chat/completions", "/api/settings", "/api/train"),
+        upload_passthrough_prefixes = upload_passthrough_prefixes,
+        upload_passthrough_max_bytes_getter = upload_passthrough_max_bytes_getter,
     )
 
     @app.post("/v1/chat/completions")
@@ -48,6 +54,20 @@ def _make_protected_app(max_bytes: int, main_module):
     @app.post("/api/other")
     async def other(payload: dict):
         return {"ok": True, "unprotected": True}
+
+    @app.put("/api/settings/upload-limit")
+    async def update_upload_limit(payload: dict):
+        return {"ok": True, "limit": payload.get("max_upload_size_mb")}
+
+    @app.post("/api/train/upload")
+    async def upload(request: Request):
+        total = 0
+        chunks = 0
+        async for chunk in request.stream():
+            if chunk:
+                chunks += 1
+                total += len(chunk)
+        return {"ok": True, "chunks": chunks, "total": total}
 
     @app.get("/api/train/status")
     async def status_get():
@@ -77,6 +97,16 @@ class TestMaxBodyMiddleware:
         r = c.post("/api/other", json = {"text": "x" * 5000})
         assert r.status_code == 200
         assert r.json()["unprotected"] is True
+
+    def test_settings_put_body_over_cap_rejected(self, main_module):
+        app = _make_protected_app(1024, main_module)
+        c = TestClient(app)
+        r = c.put(
+            "/api/settings/upload-limit",
+            json = {"max_upload_size_mb": 500, "padding": "x" * 5000},
+        )
+        assert r.status_code == 413
+        assert "too large" in r.json()["detail"].lower()
 
     def test_chunked_upload_over_cap_rejected(self, main_module):
         # Regression: declared-Content-Length-only check could be bypassed
@@ -120,6 +150,59 @@ class TestMaxBodyMiddleware:
         c = TestClient(app)
         r = c.get("/api/train/status")
         assert r.status_code == 200
+
+    def test_upload_passthrough_uses_dedicated_declared_cap(self, main_module):
+        app = _make_protected_app(
+            128,
+            main_module,
+            upload_passthrough_prefixes = ("/api/train/upload",),
+            upload_passthrough_max_bytes_getter = lambda: 1024,
+        )
+        c = TestClient(app)
+        r = c.post(
+            "/api/train/upload",
+            content = b"x" * 512,
+            headers = {"content-type": "application/octet-stream"},
+        )
+        assert r.status_code == 200
+        assert r.json()["total"] == 512
+
+    def test_upload_passthrough_rejects_declared_body_over_dedicated_cap(self, main_module):
+        app = _make_protected_app(
+            128,
+            main_module,
+            upload_passthrough_prefixes = ("/api/train/upload",),
+            upload_passthrough_max_bytes_getter = lambda: 256,
+        )
+        c = TestClient(app)
+        r = c.post(
+            "/api/train/upload",
+            content = b"x" * 512,
+            headers = {"content-type": "application/octet-stream"},
+        )
+        assert r.status_code == 413
+        assert "256" in r.json()["detail"]
+
+    def test_upload_passthrough_requires_content_length(self, main_module):
+        app = _make_protected_app(
+            128,
+            main_module,
+            upload_passthrough_prefixes = ("/api/train/upload",),
+            upload_passthrough_max_bytes_getter = lambda: 1024,
+        )
+        c = TestClient(app)
+
+        def gen():
+            yield b"x" * 64
+            yield b"y" * 64
+
+        r = c.post(
+            "/api/train/upload",
+            content = gen(),
+            headers = {"content-type": "application/octet-stream"},
+        )
+        assert r.status_code == 411
+        assert "Content-Length" in r.json()["detail"]
 
 
 # =====================================================================
@@ -174,7 +257,10 @@ class TestSecurityHeadersMiddleware:
         assert r.headers["x-frame-options"] == "DENY"
         assert r.headers["x-content-type-options"] == "nosniff"
         assert r.headers["referrer-policy"] == "no-referrer"
-        assert "camera=()" in r.headers["permissions-policy"]
+        permissions_policy = r.headers["permissions-policy"]
+        assert "camera=()" in permissions_policy
+        assert "microphone=(self)" in permissions_policy
+        assert "geolocation=()" in permissions_policy
         assert r.headers["server"] == "unsloth-studio"
 
     def test_internal_nonce_header_is_spliced_into_csp_and_stripped(self, main_module):
@@ -185,9 +271,7 @@ class TestSecurityHeadersMiddleware:
         csp = r.headers["content-security-policy"]
         assert f"'nonce-{nonce}'" in csp
         # Internal handoff header must not leak to clients.
-        assert main_module._CSP_SCRIPT_NONCE_HEADER not in {
-            k.lower() for k in r.headers.keys()
-        }
+        assert main_module._CSP_SCRIPT_NONCE_HEADER not in {k.lower() for k in r.headers.keys()}
 
     def test_build_csp_helper_shape(self, main_module):
         plain = main_module._build_csp()

@@ -70,10 +70,7 @@ try:
     HAS_GROUPED_GEMM = True
 except ImportError as e:
     import warnings
-
-    warnings.warn(
-        f"Grouped GEMM not available: {e}. MoE will use fallback implementation."
-    )
+    warnings.warn(f"Grouped GEMM not available: {e}. MoE will use fallback implementation.")
 
 
 # Import transformers GLM4 MoE Lite classes
@@ -89,7 +86,6 @@ try:
         Glm4MoeLiteForCausalLM,
         Glm4MoeLiteRMSNorm,
     )
-
     HAS_GLM4_MOE = True
 except ImportError:
     HAS_GLM4_MOE = False
@@ -194,8 +190,7 @@ def Glm4MoeLiteMoE_fast_forward(self, hidden_states):
 
         # Merge topk weights: [num_tokens, top_k, hidden_dim] -> [num_tokens, hidden_dim]
         hidden_states = (
-            expert_output.view(num_tokens, self.top_k, hidden_dim)
-            * topk_weights.unsqueeze(-1)
+            expert_output.view(num_tokens, self.top_k, hidden_dim) * topk_weights.unsqueeze(-1)
         ).sum(dim = 1)
     else:
         # Fallback to naive implementation
@@ -208,10 +203,7 @@ def Glm4MoeLiteMoE_fast_forward(self, hidden_states):
 
 
 def Glm4MoeLiteNaiveMoe_fast_forward(
-    self,
-    hidden_states: torch.Tensor,
-    top_k_index: torch.Tensor,
-    top_k_weights: torch.Tensor,
+    self, hidden_states: torch.Tensor, top_k_index: torch.Tensor, top_k_weights: torch.Tensor
 ) -> torch.Tensor:
     """
     Optimized expert forward using grouped GEMM.
@@ -233,9 +225,7 @@ def Glm4MoeLiteNaiveMoe_fast_forward(
         # Fallback to original naive implementation
         final_hidden_states = torch.zeros_like(hidden_states)
         with torch.no_grad():
-            expert_mask = torch.nn.functional.one_hot(
-                top_k_index, num_classes = self.num_experts
-            )
+            expert_mask = torch.nn.functional.one_hot(top_k_index, num_classes = self.num_experts)
             expert_mask = expert_mask.permute(2, 1, 0)
             expert_hit = torch.greater(expert_mask.sum(dim = (-1, -2)), 0).nonzero()
 
@@ -263,9 +253,7 @@ def Glm4MoeLiteNaiveMoe_fast_forward(
 
     # Get routing indices for grouped GEMM
     with torch.no_grad():
-        token_counts_by_expert, gather_indices = get_routing_indices(
-            top_k_index, self.num_experts
-        )
+        token_counts_by_expert, gather_indices = get_routing_indices(top_k_index, self.num_experts)
 
     # Cast hidden_states to match expert weights dtype
     # Under autocast, hidden_states may be fp32 while weights are bf16
@@ -329,9 +317,7 @@ def Glm4MoeLiteDecoderLayer_fast_forward(
     if is_inference:
         # Self-attention with fast inference path
         residual = hidden_states
-        hidden_states = fast_rms_layernorm_inference(
-            self.input_layernorm, hidden_states
-        )
+        hidden_states = fast_rms_layernorm_inference(self.input_layernorm, hidden_states)
         hidden_states, _ = self.self_attn(
             hidden_states = hidden_states,
             attention_mask = attention_mask,
@@ -346,9 +332,7 @@ def Glm4MoeLiteDecoderLayer_fast_forward(
 
         # MLP/MoE
         residual = hidden_states
-        hidden_states = fast_rms_layernorm_inference(
-            self.post_attention_layernorm, hidden_states
-        )
+        hidden_states = fast_rms_layernorm_inference(self.post_attention_layernorm, hidden_states)
         hidden_states = self.mlp(hidden_states)
         hidden_states = residual + hidden_states
     else:
