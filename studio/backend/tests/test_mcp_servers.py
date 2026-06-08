@@ -45,9 +45,7 @@ def test_list_servers_ordered_by_created_at(tmp_path, monkeypatch):
 def test_update_server_coerces_bools(tmp_path, monkeypatch):
     _reset_db(tmp_path, monkeypatch)
     mcp_servers_db.create_server(id = "srv1", display_name = "A", url = "https://a/m")
-    assert mcp_servers_db.update_server(
-        "srv1", {"is_enabled": False, "use_oauth": True}
-    )
+    assert mcp_servers_db.update_server("srv1", {"is_enabled": False, "use_oauth": True})
     row = mcp_servers_db.get_server("srv1")
     assert row["is_enabled"] == 0
     assert row["use_oauth"] == 1
@@ -81,7 +79,6 @@ def test_validate_url_accepts_http_and_https():
 @pytest.mark.parametrize("bad", ["", "   ", "ftp://x", "http://", "noscheme.com"])
 def test_validate_url_rejects_bad(bad):
     from routes.mcp_servers import _validate_url
-
     with pytest.raises(HTTPException) as exc:
         _validate_url(bad)
     assert exc.value.status_code == 400
@@ -90,9 +87,7 @@ def test_validate_url_rejects_bad(bad):
 def test_normalize_headers():
     from routes.mcp_servers import _normalize_headers
 
-    assert _normalize_headers({"  Auth  ": "Bearer x", "": "ignored"}) == {
-        "Auth": "Bearer x"
-    }
+    assert _normalize_headers({"  Auth  ": "Bearer x", "": "ignored"}) == {"Auth": "Bearer x"}
     assert _normalize_headers({"X": 42}) == {"X": "42"}
     assert _normalize_headers({}) is None
     assert _normalize_headers(None) is None
@@ -104,15 +99,12 @@ def test_changes_from_payload_tristate_headers():
     from models.mcp_servers import McpServerUpdate
 
     # omitted → key absent
-    assert "headers_json" not in _changes_from_payload(
-        McpServerUpdate(display_name = "x")
-    )
+    assert "headers_json" not in _changes_from_payload(McpServerUpdate(display_name = "x"))
     # null → stored as None (clear all headers)
     assert _changes_from_payload(McpServerUpdate(headers = None))["headers_json"] is None
     # dict → serialised JSON
     assert (
-        _changes_from_payload(McpServerUpdate(headers = {"a": "1"}))["headers_json"]
-        == '{"a": "1"}'
+        _changes_from_payload(McpServerUpdate(headers = {"a": "1"}))["headers_json"] == '{"a": "1"}'
     )
 
 
@@ -135,7 +127,6 @@ def test_mcp_specs_skip_oversized_names():
 
 def test_execute_tool_malformed_mcp_name():
     from core.inference.tools import execute_tool
-
     out = execute_tool("mcp__no_double_underscore", {})
     assert out.startswith("Error: malformed MCP tool name")
 
@@ -143,11 +134,7 @@ def test_execute_tool_malformed_mcp_name():
 def test_execute_tool_unknown_server(tmp_path, monkeypatch):
     _reset_db(tmp_path, monkeypatch)
     from core.inference.tools import execute_tool
-
-    assert (
-        execute_tool("mcp__missing__do_thing", {})
-        == "Error: MCP server 'missing' not found"
-    )
+    assert execute_tool("mcp__missing__do_thing", {}) == "Error: MCP server 'missing' not found"
 
 
 def test_execute_tool_disabled_server(tmp_path, monkeypatch):
@@ -160,10 +147,7 @@ def test_execute_tool_disabled_server(tmp_path, monkeypatch):
     )
     from core.inference.tools import execute_tool
 
-    assert (
-        execute_tool("mcp__srv1__do_thing", {})
-        == "Error: MCP server 'srv1' is disabled"
-    )
+    assert execute_tool("mcp__srv1__do_thing", {}) == "Error: MCP server 'srv1' is disabled"
 
 
 def test_mcp_specs_skip_invalid_openai_function_names():
@@ -219,7 +203,6 @@ def test_call_tool_sync_respects_pre_set_cancel_event(monkeypatch):
 
         async def call_tool(self, name, args):
             import asyncio as _asyncio
-
             await _asyncio.sleep(30)  # never finishes within the test
 
     monkeypatch.setattr(mcp_client, "_client", lambda *a, **kw: _StubClient())
@@ -439,8 +422,7 @@ def test_tool_healing_strip_handles_hyphenated_function_names():
     from core.tool_healing import strip_tool_call_markup
 
     out = strip_tool_call_markup(
-        "before <function=mcp__srv__list-issues>"
-        "<parameter=q>x</parameter></function> after"
+        "before <function=mcp__srv__list-issues><parameter=q>x</parameter></function> after"
     )
     assert out == "before  after"
 
@@ -558,9 +540,7 @@ def test_tool_xml_parser_handles_hyphenated_function_names():
     from core.inference.tool_call_parser import parse_tool_calls_from_text
 
     calls = parse_tool_calls_from_text(
-        "<function=mcp__srv__list-issues>"
-        "<parameter=repo>octocat/hello</parameter>"
-        "</function>"
+        "<function=mcp__srv__list-issues><parameter=repo>octocat/hello</parameter></function>"
     )
     assert len(calls) == 1
     assert calls[0]["function"]["name"] == "mcp__srv__list-issues"
@@ -584,8 +564,7 @@ def test_tool_xml_strip_handles_hyphenated_function_names():
     rx = ns["_TOOL_XML_RE"]
     stripped = rx.sub(
         "",
-        "before <function=mcp__srv__list-issues>"
-        "<parameter=q>x</parameter></function> after",
+        "before <function=mcp__srv__list-issues><parameter=q>x</parameter></function> after",
     )
     assert stripped == "before  after"
 

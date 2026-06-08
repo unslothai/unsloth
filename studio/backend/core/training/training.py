@@ -180,9 +180,7 @@ class TrainingBackend:
         if self._pump_thread is not None and self._pump_thread.is_alive():
             self._pump_thread.join(timeout = 5.0)
             if self._pump_thread.is_alive():
-                logger.warning(
-                    "Previous pump thread did not exit within 5s — refusing to start"
-                )
+                logger.warning("Previous pump thread did not exit within 5s — refusing to start")
                 return False
         self._pump_thread = None
 
@@ -234,9 +232,7 @@ class TrainingBackend:
             "train_on_completions": kwargs.get("train_on_completions", False),
             "finetune_vision_layers": kwargs.get("finetune_vision_layers", True),
             "finetune_language_layers": kwargs.get("finetune_language_layers", True),
-            "finetune_attention_modules": kwargs.get(
-                "finetune_attention_modules", True
-            ),
+            "finetune_attention_modules": kwargs.get("finetune_attention_modules", True),
             "finetune_mlp_modules": kwargs.get("finetune_mlp_modules", True),
             "enable_wandb": kwargs.get("enable_wandb", False),
             "wandb_token": kwargs.get("wandb_token"),
@@ -321,9 +317,7 @@ class TrainingBackend:
         self._run_finalized = False
         self._db_run_created = False
         self._db_total_steps_set = False
-        self._db_config = {
-            k: v for k, v in config.items() if k not in {"hf_token", "wandb_token"}
-        }
+        self._db_config = {k: v for k, v in config.items() if k not in {"hf_token", "wandb_token"}}
         self._db_started_at = datetime.now(timezone.utc).isoformat()
 
         # Assign subprocess handles after state reset
@@ -353,9 +347,7 @@ class TrainingBackend:
                     pass
             # Update progress immediately for responsive UI
             self._progress.status_message = (
-                "Stopping training and saving checkpoint..."
-                if save
-                else "Cancelling training..."
+                "Stopping training and saving checkpoint..." if save else "Cancelling training..."
             )
         return True
 
@@ -363,9 +355,7 @@ class TrainingBackend:
         """Force-kill the training subprocess so state can be reset immediately."""
         with self._lock:
             if self._proc is not None and self._proc.is_alive():
-                logger.info(
-                    "Force-terminating training subprocess (pid=%s)", self._proc.pid
-                )
+                logger.info("Force-terminating training subprocess (pid=%s)", self._proc.pid)
                 self._proc.terminate()
             proc = self._proc
             cancelled = self._cancel_requested
@@ -525,8 +515,7 @@ class TrainingBackend:
                     else:
                         self._progress.is_training = False
                         self._progress.error = (
-                            self._progress.error
-                            or "Training process exited unexpectedly"
+                            self._progress.error or "Training process exited unexpectedly"
                         )
 
             self._ensure_db_run_created()
@@ -566,9 +555,7 @@ class TrainingBackend:
                 try:
                     _safe_lr = float(_raw_lr) if _raw_lr is not None else None
                 except (TypeError, ValueError):
-                    logger.debug(
-                        "Could not convert learning_rate to float: %s", _raw_lr
-                    )
+                    logger.debug("Could not convert learning_rate to float: %s", _raw_lr)
                     _safe_lr = None
                 if _safe_lr is not None and not math.isfinite(_safe_lr):
                     _safe_lr = None
@@ -576,9 +563,7 @@ class TrainingBackend:
                     self._progress.loss = _safe_loss
                 if _safe_lr is not None:
                     self._progress.learning_rate = _safe_lr
-                self._progress.total_steps = event.get(
-                    "total_steps", self._progress.total_steps
-                )
+                self._progress.total_steps = event.get("total_steps", self._progress.total_steps)
                 self._progress.elapsed_seconds = event.get("elapsed_seconds")
                 self._progress.eta_seconds = event.get("eta_seconds")
                 self._progress.grad_norm = event.get("grad_norm")
@@ -622,9 +607,7 @@ class TrainingBackend:
                     try:
                         eval_loss = float(eval_loss)
                     except (TypeError, ValueError):
-                        logger.debug(
-                            "Could not convert eval_loss to float: %s", eval_loss
-                        )
+                        logger.debug("Could not convert eval_loss to float: %s", eval_loss)
                         eval_loss = None
                     if step > 0 and eval_loss is not None and math.isfinite(eval_loss):
                         self.eval_loss_history.append(eval_loss)
@@ -654,12 +637,9 @@ class TrainingBackend:
                         "job_id": self.current_job_id,
                         "model_name": self._db_config["model_name"],
                         "dataset_name": self._db_config.get("hf_dataset")
-                        or next(
-                            iter(self._db_config.get("local_datasets") or []), "unknown"
-                        ),
+                        or next(iter(self._db_config.get("local_datasets") or []), "unknown"),
                         "config_json": _json.dumps(self._db_config),
-                        "started_at": self._db_started_at
-                        or datetime.now(timezone.utc).isoformat(),
+                        "started_at": self._db_started_at or datetime.now(timezone.utc).isoformat(),
                         "total_steps": event.get("total_steps"),
                     }
                 elif (
@@ -737,10 +717,7 @@ class TrainingBackend:
         elif db_action == "update_total_steps":
             try:
                 from storage.studio_db import update_run_total_steps
-
-                update_run_total_steps(
-                    db_action_kwargs["job_id"], db_action_kwargs["total_steps"]
-                )
+                update_run_total_steps(db_action_kwargs["job_id"], db_action_kwargs["total_steps"])
                 self._db_total_steps_set = True
             except Exception:
                 logger.warning("Failed to update total_steps in DB", exc_info = True)
@@ -764,15 +741,12 @@ class TrainingBackend:
                 model_name = self._db_config["model_name"],
                 dataset_name = dataset_name,
                 config_json = _json.dumps(self._db_config),
-                started_at = self._db_started_at
-                or datetime.now(timezone.utc).isoformat(),
+                started_at = self._db_started_at or datetime.now(timezone.utc).isoformat(),
                 total_steps = self._progress.total_steps or None,
             )
             self._db_run_created = True
         except Exception:
-            logger.warning(
-                "Failed to create DB run record for early failure", exc_info = True
-            )
+            logger.warning("Failed to create DB run record for early failure", exc_info = True)
 
     def _finalize_run_in_db(
         self,
@@ -795,10 +769,7 @@ class TrainingBackend:
                 ended_at = datetime.now(timezone.utc).isoformat(),
                 final_step = self._progress.step,
                 final_loss = self._progress.loss
-                if (
-                    self._progress.loss is not None
-                    and math.isfinite(self._progress.loss)
-                )
+                if (self._progress.loss is not None and math.isfinite(self._progress.loss))
                 else None,
                 duration_seconds = self._progress.elapsed_seconds,
                 loss_sparkline = _json.dumps(sparkline),
@@ -807,17 +778,11 @@ class TrainingBackend:
             )
             self._run_finalized = True
         except Exception:
-            logger.warning(
-                "Failed to finalize run in DB (status=%s)", status, exc_info = True
-            )
+            logger.warning("Failed to finalize run in DB (status=%s)", status, exc_info = True)
 
     def _flush_metrics_to_db(self) -> None:
         """Flush buffered metrics to the database and update live progress."""
-        if (
-            not self._metric_buffer
-            or not self.current_job_id
-            or not self._db_run_created
-        ):
+        if not self._metric_buffer or not self.current_job_id or not self._db_run_created:
             return
         # Cap buffer to prevent unbounded memory growth
         if len(self._metric_buffer) > 500:
@@ -837,10 +802,7 @@ class TrainingBackend:
                 id = self.current_job_id,
                 step = self._progress.step,
                 loss = self._progress.loss
-                if (
-                    self._progress.loss is not None
-                    and math.isfinite(self._progress.loss)
-                )
+                if (self._progress.loss is not None and math.isfinite(self._progress.loss))
                 else None,
                 duration_seconds = self._progress.elapsed_seconds,
             )
@@ -873,7 +835,9 @@ class TrainingBackend:
     # ------------------------------------------------------------------
 
     def _create_loss_plot(
-        self, progress: TrainingProgress, theme: str = "light"
+        self,
+        progress: TrainingProgress,
+        theme: str = "light",
     ) -> plt.Figure:
         """Create training loss plot with theme-aware styling."""
         plt.close("all")
@@ -956,9 +920,7 @@ class TrainingBackend:
             else:
                 title = "Training Loss"
 
-            ax.set_title(
-                title, fontsize = 11, fontweight = "bold", pad = 10, color = style["text"]
-            )
+            ax.set_title(title, fontsize = 11, fontweight = "bold", pad = 10, color = style["text"])
             ax.grid(True, alpha = 0.4, linestyle = "--", color = style["grid_color"])
             ax.tick_params(colors = style["text"], which = "both")
             ax.spines["top"].set_visible(False)

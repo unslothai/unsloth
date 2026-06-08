@@ -103,8 +103,7 @@ def test_mlx_inference_text_load_forwards_studio_settings(monkeypatch):
 
 
 def test_mlx_inference_vlm_lora_uses_unsloth_loader_without_native_adapter_rewrite(
-    monkeypatch,
-    tmp_path,
+    monkeypatch, tmp_path
 ):
     _install_fake_mlx(monkeypatch)
     calls = []
@@ -199,7 +198,7 @@ def test_mlx_generate_text_forwards_kwargs_into_template_helper(monkeypatch):
         return "<rendered prompt>"
 
     monkeypatch.setattr(
-        "core.inference.chat_template_helpers." "apply_chat_template_for_generation",
+        "core.inference.chat_template_helpers.apply_chat_template_for_generation",
         _fake_apply,
         raising = True,
     )
@@ -228,7 +227,11 @@ def test_mlx_generate_text_forwards_kwargs_into_template_helper(monkeypatch):
     class _Tok:
         chat_template = "x"
 
-        def decode(self, ids, skip_special_tokens = False):
+        def decode(
+            self,
+            ids,
+            skip_special_tokens = False,
+        ):
             return "hi"
 
     backend = MLXInferenceBackend()

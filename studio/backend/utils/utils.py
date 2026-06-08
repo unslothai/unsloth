@@ -17,6 +17,63 @@ import tempfile
 logger = get_logger(__name__)
 
 
+# ── Client-safe error helpers ───────────────────────────────────
+# Never return raw exception text to clients (it can leak paths/internals);
+# log the full exception server-side and return a generic message.
+
+
+def safe_error_detail(error: Exception, fallback: str = "An internal error occurred") -> str:
+    """Map a caught exception to a generic, client-safe message.
+
+    Never includes raw ``str(error)`` (which can leak internal paths or stack
+    detail); known transient conditions get a friendlier hint. Always log the
+    real exception server-side (e.g. via ``log_and_http_error``) for diagnosis.
+    """
+    text = str(error).lower()
+    if (
+        isinstance(error, (ConnectionError, TimeoutError))
+        or "connection" in text
+        or "timed out" in text
+        or "timeout" in text
+    ):
+        return "Could not reach an upstream service. Please try again."
+    if "out of memory" in text or "cuda error" in text:
+        return "Ran out of memory. Try a smaller model or shorter input."
+    return fallback
+
+
+def safe_curated_detail(error: Exception, fallback: str = "An internal error occurred") -> str:
+    """Client-safe text for curated domain/validation exceptions meant for the user.
+
+    Keeps the message (paths stripped) instead of a generic fallback; use for known
+    exception types, keep ``safe_error_detail`` for generic ``Exception``.
+    """
+    from utils.native_path_leases import redact_native_paths
+
+    msg = redact_native_paths(str(error)).strip()
+    return msg or fallback
+
+
+def log_and_http_error(
+    error: Exception,
+    status_code: int,
+    public_message: str,
+    *,
+    event: str = "request_failed",
+    log = None,
+):
+    """Log ``error`` in full server-side and return an ``HTTPException`` whose
+    ``detail`` is only ``public_message`` -- never the raw exception text.
+
+    Usage:  raise log_and_http_error(e, 500, "Failed to start training")
+    """
+    from fastapi import HTTPException
+
+    # Works for both structlog and stdlib loggers; exc_info=error logs its traceback.
+    (log or logger).error(f"{event}: {error}", exc_info = error)
+    return HTTPException(status_code = status_code, detail = public_message)
+
+
 @contextmanager
 def without_hf_auth():
     """

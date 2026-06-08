@@ -67,9 +67,7 @@ def test_is_mlx_gate_uses_three_required_predicates():
     assert target is not None, "_IS_MLX assignment not found in unsloth/__init__.py"
     assert isinstance(target, ast.Call), "_IS_MLX must call the shared MLX helper"
     expr_src = ast.unparse(target)
-    assert (
-        expr_src == "_is_mlx_available()"
-    ), "_IS_MLX must delegate to the shared MLX runtime gate"
+    assert expr_src == "_is_mlx_available()", "_IS_MLX must delegate to the shared MLX runtime gate"
 
     helper = None
     for node in ast.walk(tree):
@@ -166,7 +164,6 @@ def test_is_mlx_gate_false_on_non_apple_silicon():
     if platform.system() == "Darwin" and platform.machine() == "arm64":
         # On a Mac CI runner this assertion would not apply; skip there.
         import pytest
-
         pytest.skip("Test host is Apple Silicon; CUDA-side canary doesn't apply.")
 
     import os
@@ -227,11 +224,8 @@ def test_detect_hardware_picks_cuda_on_real_host():
 
     if not torch.cuda.is_available():
         import pytest
-
         pytest.skip("No CUDA available on this host; canary not applicable.")
 
     hw = _import_studio_hardware()
     detected = hw.detect_hardware()
-    assert (
-        detected == hw.DeviceType.CUDA
-    ), f"CUDA host must dispatch to CUDA, got {detected!r}"
+    assert detected == hw.DeviceType.CUDA, f"CUDA host must dispatch to CUDA, got {detected!r}"
