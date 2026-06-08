@@ -2227,12 +2227,15 @@ def patch_accelerate_recursively_apply():
         original_recursively_apply = acc_accel.recursively_apply
 
     if original_recursively_apply is not None:
+
         @functools.wraps(original_recursively_apply)
         def _patched_recursively_apply(func, data, *args, **kwargs):
             if type(data).__name__ == "EmptyLogits":
                 cls = type(data)
                 if not hasattr(cls, "__eq__") or cls.__eq__ == object.__eq__:
-                    cls.__eq__ = lambda self, other: type(other).__name__ == "EmptyLogits"
+                    cls.__eq__ = (
+                        lambda self, other: type(other).__name__ == "EmptyLogits"
+                    )
                 return data
             return original_recursively_apply(func, data, *args, **kwargs)
 
@@ -2245,7 +2248,10 @@ def patch_accelerate_recursively_apply():
 
         for mod_name, mod in tuple(sys.modules.items()):
             if mod_name.startswith("accelerate") and mod is not None:
-                if hasattr(mod, "recursively_apply") and getattr(mod, "recursively_apply") is original_recursively_apply:
+                if (
+                    hasattr(mod, "recursively_apply")
+                    and getattr(mod, "recursively_apply") is original_recursively_apply
+                ):
                     try:
                         setattr(mod, "recursively_apply", _patched_recursively_apply)
                     except Exception:
@@ -2259,12 +2265,14 @@ def patch_accelerate_recursively_apply():
         original_find_device = acc_utils.find_device
 
     if original_find_device is not None:
+
         @functools.wraps(original_find_device)
         def _patched_find_device(data, *args, **kwargs):
             dev = original_find_device(data, *args, **kwargs)
             if dev is None:
                 try:
                     from accelerate.state import PartialState
+
                     return PartialState().device
                 except Exception:
                     pass
@@ -2277,9 +2285,11 @@ def patch_accelerate_recursively_apply():
 
         for mod_name, mod in tuple(sys.modules.items()):
             if mod_name.startswith("accelerate") and mod is not None:
-                if hasattr(mod, "find_device") and getattr(mod, "find_device") is original_find_device:
+                if (
+                    hasattr(mod, "find_device")
+                    and getattr(mod, "find_device") is original_find_device
+                ):
                     try:
                         setattr(mod, "find_device", _patched_find_device)
                     except Exception:
                         pass
-
