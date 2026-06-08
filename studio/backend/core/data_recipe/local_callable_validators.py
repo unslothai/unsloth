@@ -81,9 +81,7 @@ def split_oxc_local_callable_validators(
 
 
 def register_oxc_local_callable_validators(
-    *,
-    builder,
-    specs: list[OxcLocalCallableValidatorSpec],
+    *, builder, specs: list[OxcLocalCallableValidatorSpec]
 ) -> None:
     if not specs:
         return
@@ -114,10 +112,7 @@ def register_oxc_local_callable_validators(
         )
 
 
-def _parse_oxc_spec(
-    *,
-    column: dict[str, Any],
-) -> OxcLocalCallableValidatorSpec | None:
+def _parse_oxc_spec(*, column: dict[str, Any]) -> OxcLocalCallableValidatorSpec | None:
     if str(column.get("column_type") or "").strip() != "validation":
         return None
     if str(column.get("validator_type") or "").strip() != "local_callable":
@@ -138,11 +133,7 @@ def _parse_oxc_spec(
 
     target_columns_raw = column.get("target_columns")
     target_columns = (
-        [
-            value.strip()
-            for value in target_columns_raw
-            if isinstance(value, str) and value.strip()
-        ]
+        [value.strip() for value in target_columns_raw if isinstance(value, str) and value.strip()]
         if isinstance(target_columns_raw, list)
         else []
     )
@@ -182,9 +173,7 @@ def _parse_oxc_validation_marker(fn_name: str) -> tuple[str, str, str]:
         return "javascript", "syntax", "auto"
     code_lang = parts[0] if parts[0] in _OXC_LANG_TO_NODE_LANG else "javascript"
     mode = parts[1] if parts[1] in _OXC_VALIDATION_MODES else "syntax"
-    code_shape = (
-        parts[2] if len(parts) >= 3 and parts[2] in _OXC_CODE_SHAPES else "auto"
-    )
+    code_shape = parts[2] if len(parts) >= 3 and parts[2] in _OXC_CODE_SHAPES else "auto"
     return code_lang, mode, code_shape
 
 
@@ -205,10 +194,7 @@ def _build_oxc_validation_function(lang: str, validation_mode: str, code_shape: 
         code_values = (
             ["" for _ in range(row_count)]
             if not code_column
-            else [
-                "" if value is None else str(value)
-                for value in df[code_column].tolist()
-            ]
+            else ["" if value is None else str(value) for value in df[code_column].tolist()]
         )
 
         results = _run_oxc_batch(
@@ -224,16 +210,14 @@ def _build_oxc_validation_function(lang: str, validation_mode: str, code_shape: 
             )
         return pd.DataFrame(results)
 
-    _validator.__name__ = f"{OXC_VALIDATION_FN_MARKER}_{node_lang}_{mode.replace('+', '_')}_{normalized_code_shape}"
+    _validator.__name__ = (
+        f"{OXC_VALIDATION_FN_MARKER}_{node_lang}_{mode.replace('+', '_')}_{normalized_code_shape}"
+    )
     return _validator
 
 
 def _run_oxc_batch(
-    *,
-    node_lang: str,
-    validation_mode: str,
-    code_shape: str,
-    code_values: list[str],
+    *, node_lang: str, validation_mode: str, code_shape: str, code_values: list[str]
 ) -> list[dict[str, Any]]:
     if not _OXC_RUNNER_PATH.exists():
         return _fallback_results(
@@ -308,21 +292,13 @@ def _run_oxc_batch(
         warning_count_raw = item.get("warning_count")
         out.append(
             {
-                "is_valid": bool(is_valid_raw)
-                if isinstance(is_valid_raw, bool)
-                else False,
-                "error_count": int(error_count_raw)
-                if isinstance(error_count_raw, int)
-                else 0,
+                "is_valid": bool(is_valid_raw) if isinstance(is_valid_raw, bool) else False,
+                "error_count": int(error_count_raw) if isinstance(error_count_raw, int) else 0,
                 "error_message": str(message_raw or ""),
-                "severity": str(severity_raw)
-                if isinstance(severity_raw, str)
-                else None,
+                "severity": str(severity_raw) if isinstance(severity_raw, str) else None,
                 "code": str(code_raw) if isinstance(code_raw, str) else None,
                 "labels": labels_raw if isinstance(labels_raw, list) else [],
-                "codeframe": str(codeframe_raw)
-                if isinstance(codeframe_raw, str)
-                else None,
+                "codeframe": str(codeframe_raw) if isinstance(codeframe_raw, str) else None,
                 "warning_count": int(warning_count_raw)
                 if isinstance(warning_count_raw, int)
                 else 0,

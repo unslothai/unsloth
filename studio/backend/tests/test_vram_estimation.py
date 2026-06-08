@@ -316,12 +316,8 @@ class TestLoraParams(unittest.TestCase):
         self.assertLess(qv_only, all_mods)
 
     def test_moe_mlp_modules_scale_with_experts(self):
-        dense_lora = compute_lora_params(
-            LLAMA_8B, 16, ["gate_proj", "up_proj", "down_proj"]
-        )
-        moe_lora = compute_lora_params(
-            MOE_CONFIG, 16, ["gate_proj", "up_proj", "down_proj"]
-        )
+        dense_lora = compute_lora_params(LLAMA_8B, 16, ["gate_proj", "up_proj", "down_proj"])
+        moe_lora = compute_lora_params(MOE_CONFIG, 16, ["gate_proj", "up_proj", "down_proj"])
         ratio = moe_lora / dense_lora
         self.assertAlmostEqual(ratio, 8.0, delta = 0.5)
 
@@ -338,12 +334,8 @@ class TestLoraParams(unittest.TestCase):
         self.assertGreater(moe_lora, dense_lora * 20)
 
     def test_attention_modules_same_for_moe(self):
-        dense_attn = compute_lora_params(
-            LLAMA_8B, 16, ["q_proj", "k_proj", "v_proj", "o_proj"]
-        )
-        moe_attn = compute_lora_params(
-            MOE_CONFIG, 16, ["q_proj", "k_proj", "v_proj", "o_proj"]
-        )
+        dense_attn = compute_lora_params(LLAMA_8B, 16, ["q_proj", "k_proj", "v_proj", "o_proj"])
+        moe_attn = compute_lora_params(MOE_CONFIG, 16, ["q_proj", "k_proj", "v_proj", "o_proj"])
         self.assertEqual(dense_attn, moe_attn)
 
     def test_all_linear_uses_default_text_modules(self):
@@ -466,9 +458,7 @@ class TestActivationBytes(unittest.TestCase):
 
     def test_non_flash_attention_uses_quadratic_path(self):
         seq_len = 4096
-        expected_quadratic = (
-            1 * STRUCTURED_MIXED.num_attention_heads * seq_len * seq_len * 2 * 12.0
-        )
+        expected_quadratic = 1 * STRUCTURED_MIXED.num_attention_heads * seq_len * seq_len * 2 * 12.0
         for attention_implementation in ("eager", "unknown_impl", None):
             with self.subTest(attention_implementation = attention_implementation):
                 non_flash = compute_activation_bytes(
@@ -483,9 +473,7 @@ class TestActivationBytes(unittest.TestCase):
 
     def test_non_flash_attention_without_gc_scales_quadratic_path_by_layers(self):
         seq_len = 4096
-        one_layer = (
-            1 * STRUCTURED_MIXED.num_attention_heads * seq_len * seq_len * 2 * 12.0
-        )
+        one_layer = 1 * STRUCTURED_MIXED.num_attention_heads * seq_len * seq_len * 2 * 12.0
         non_flash = compute_activation_bytes(
             STRUCTURED_MIXED,
             1,
@@ -717,9 +705,7 @@ class TestEstimateTrainingVram(unittest.TestCase):
         )
         v8 = estimate_training_vram(LLAMA_8B, opt8)
         v32 = estimate_training_vram(LLAMA_8B, opt32)
-        self.assertAlmostEqual(
-            v32.optimizer_states / v8.optimizer_states, 1.5, delta = 0.1
-        )
+        self.assertAlmostEqual(v32.optimizer_states / v8.optimizer_states, 1.5, delta = 0.1)
 
     def test_min_gpu_vram_treats_activations_as_per_gpu_fixed(self):
         config = TrainingVramConfig(training_method = "qlora", load_in_4bit = True)
@@ -769,9 +755,7 @@ class TestEstimateTrainingVram(unittest.TestCase):
             optimizer = "adamw_8bit",
             load_in_4bit = False,
         )
-        expected_floor = int(
-            compute_model_weights_bytes(LLAMA_8B, "full", False) * 0.15
-        )
+        expected_floor = int(compute_model_weights_bytes(LLAMA_8B, "full", False) * 0.15)
         with patch(
             "utils.hardware.vram_estimation.compute_gradient_bytes",
             return_value = 1,
@@ -1059,7 +1043,6 @@ class TestDenseLayerIndices(unittest.TestCase):
 class TestKvSharedLayer(unittest.TestCase):
     def test_fully_shared_kv_returns_false_matching_upstream(self):
         from utils.hardware.vram_estimation import _is_kv_shared_layer
-
         arch = ModelArchConfig(
             hidden_size = 512,
             num_hidden_layers = 4,
@@ -1293,9 +1276,7 @@ class TestSharedExperts(unittest.TestCase):
         delta_per_layer = 4096 * 1407 * 3 * 2
         expected_delta = delta_per_layer * 32 * 2
         actual_delta = w_yes - w_no
-        self.assertAlmostEqual(
-            actual_delta, expected_delta, delta = expected_delta * 0.01
-        )
+        self.assertAlmostEqual(actual_delta, expected_delta, delta = expected_delta * 0.01)
 
     def test_deepseek_v3_params_in_range(self):
         total = compute_total_params(DEEPSEEK_V3)
@@ -1411,9 +1392,7 @@ class TestDenseMoEMix(unittest.TestCase):
             moe_intermediate_size = 1024,
             num_dense_layers = 5,
         )
-        lora_all = compute_lora_params(
-            all_moe, 16, ["gate_proj", "up_proj", "down_proj"]
-        )
+        lora_all = compute_lora_params(all_moe, 16, ["gate_proj", "up_proj", "down_proj"])
         lora_mix = compute_lora_params(mixed, 16, ["gate_proj", "up_proj", "down_proj"])
         self.assertNotEqual(lora_all, lora_mix)
 
@@ -1497,9 +1476,7 @@ class TestPerLayerInputSkipAlias(unittest.TestCase):
         delta = _compute_skipped_quantizable_elements(arch)
         self.assertEqual(
             delta,
-            arch.hidden_size
-            * arch.num_hidden_layers
-            * arch.hidden_size_per_layer_input,
+            arch.hidden_size * arch.num_hidden_layers * arch.hidden_size_per_layer_input,
         )
 
     def test_layer_aggregate_skip_includes_per_layer_input_modules(self):
@@ -1578,9 +1555,7 @@ class TestSharedExpertVariants(unittest.TestCase):
     def test_shared_expert_size_separate_from_routed_changes_weight_count(self):
         from utils.hardware.vram_estimation import _compute_moe_mlp_elements
 
-        arch_separate = extract_arch_config(
-            self._hf(shared_expert_intermediate_size = 64)
-        )
+        arch_separate = extract_arch_config(self._hf(shared_expert_intermediate_size = 64))
         arch_implicit = extract_arch_config(self._hf(n_shared_experts = 1))
         # Different shared sizes (64 vs default moe_intermediate_size=128) must
         # produce different MoE element counts.
@@ -1624,9 +1599,7 @@ class TestSharedExpertActivation(unittest.TestCase):
             moe_intermediate_size = 64,
             **fields,
         )
-        return extract_arch_config(
-            SimpleNamespace(text_config = text_config, quantization_config = {})
-        )
+        return extract_arch_config(SimpleNamespace(text_config = text_config, quantization_config = {}))
 
     def test_shared_expert_increases_activation_bytes(self):
         with_shared = self._make(shared_expert_intermediate_size = 64)
@@ -1678,9 +1651,7 @@ class TestPerLayerInputActivation(unittest.TestCase):
             tie_word_embeddings = False,
             **fields,
         )
-        return extract_arch_config(
-            SimpleNamespace(text_config = text_config, quantization_config = {})
-        )
+        return extract_arch_config(SimpleNamespace(text_config = text_config, quantization_config = {}))
 
     def test_ple_increases_activation_bytes(self):
         with_ple = self._make(
@@ -1744,9 +1715,7 @@ class TestKvSharedActivation(unittest.TestCase):
             num_kv_shared_layers = kv_shared,
             layer_types = ["full_attention"] * 4,
         )
-        return extract_arch_config(
-            SimpleNamespace(text_config = text_config, quantization_config = {})
-        )
+        return extract_arch_config(SimpleNamespace(text_config = text_config, quantization_config = {}))
 
     def test_kv_shared_layers_keep_activation_bytes(self):
         shared = self._make(kv_shared = 2)
@@ -1792,10 +1761,7 @@ class TestSparseMoeSkipAliases(unittest.TestCase):
 
     def test_gemma4_layers_experts_alias_pulls_routed(self):
         from utils.hardware.vram_estimation import _compute_skipped_quantizable_elements
-
-        arch = extract_arch_config(
-            self._hf(["model.layers.0.experts"], enable_moe_block = True)
-        )
+        arch = extract_arch_config(self._hf(["model.layers.0.experts"], enable_moe_block = True))
         self.assertGreater(_compute_skipped_quantizable_elements(arch), 0)
 
     def test_qwen_shared_expert_skip_pulls_only_shared(self):
@@ -1823,7 +1789,6 @@ class TestSparseMoeSkipAliases(unittest.TestCase):
 
     def test_exaone_shared_experts_plural_alias(self):
         from utils.hardware.vram_estimation import _compute_skipped_quantizable_elements
-
         arch = extract_arch_config(
             self._hf(
                 ["model.layers.0.mlp.shared_experts"],
@@ -1847,9 +1812,7 @@ class TestAllLinearMoELoraExclusion(unittest.TestCase):
             moe_intermediate_size = 64,
             **fields,
         )
-        return extract_arch_config(
-            SimpleNamespace(text_config = text_config, quantization_config = {})
-        )
+        return extract_arch_config(SimpleNamespace(text_config = text_config, quantization_config = {}))
 
     def test_all_linear_drops_routed_moe_expert_lora(self):
         arch = self._arch()
@@ -1867,9 +1830,7 @@ class TestAllLinearMoELoraExclusion(unittest.TestCase):
     def test_all_linear_includes_attention_lora(self):
         arch = self._arch()
         all_linear = compute_lora_params(arch, 8, "all-linear")
-        attn_only = compute_lora_params(
-            arch, 8, ["q_proj", "k_proj", "v_proj", "o_proj"]
-        )
+        attn_only = compute_lora_params(arch, 8, ["q_proj", "k_proj", "v_proj", "o_proj"])
         # all-linear still attaches to attention nn.Linear modules.
         self.assertGreaterEqual(all_linear, attn_only)
 
@@ -1887,9 +1848,7 @@ class TestExplicitPerLayerInputLora(unittest.TestCase):
             hidden_size_per_layer_input = 32,
             vocab_size_per_layer_input = 128,
         )
-        return extract_arch_config(
-            SimpleNamespace(text_config = text_config, quantization_config = {})
-        )
+        return extract_arch_config(SimpleNamespace(text_config = text_config, quantization_config = {}))
 
     def test_explicit_per_layer_input_gate_returns_nonzero(self):
         arch = self._arch()
@@ -1928,9 +1887,7 @@ class TestTopKExpertActivation(unittest.TestCase):
             moe_intermediate_size = 64,
             **fields,
         )
-        return extract_arch_config(
-            SimpleNamespace(text_config = text_config, quantization_config = {})
-        )
+        return extract_arch_config(SimpleNamespace(text_config = text_config, quantization_config = {}))
 
     def test_num_experts_per_tok_extracted(self):
         arch = self._make(num_experts_per_tok = 4)
@@ -2180,13 +2137,11 @@ class TestLlama4ArchExtraction(unittest.TestCase):
 
     def test_llama4_moe_layers_dispatch_uses_explicit_indices(self):
         from utils.hardware.vram_estimation import _compute_dense_layer_indices
-
         cfg = SimpleNamespace(num_hidden_layers = 4, moe_layers = [1, 3])
         self.assertEqual(_compute_dense_layer_indices(cfg, 4), (0, 2))
 
     def test_llama4_moe_layers_takes_priority_over_first_k_dense_replace(self):
         from utils.hardware.vram_estimation import _compute_dense_layer_indices
-
         cfg = SimpleNamespace(
             num_hidden_layers = 6,
             moe_layers = [2, 4],
@@ -2288,7 +2243,6 @@ class TestDbrxFfnConfigExtraction(unittest.TestCase):
 class TestErniePhaseModuloDispatch(unittest.TestCase):
     def test_phase_modulo_with_interval_two_matches_decoder(self):
         from utils.hardware.vram_estimation import _compute_dense_layer_indices
-
         cfg = SimpleNamespace(
             num_hidden_layers = 10,
             moe_layer_start_index = 2,
@@ -2300,7 +2254,6 @@ class TestErniePhaseModuloDispatch(unittest.TestCase):
 
     def test_phase_modulo_with_interval_three(self):
         from utils.hardware.vram_estimation import _compute_dense_layer_indices
-
         cfg = SimpleNamespace(
             num_hidden_layers = 9,
             moe_layer_start_index = 0,

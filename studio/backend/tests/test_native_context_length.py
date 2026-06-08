@@ -332,9 +332,7 @@ class TestPydanticModels:
     def test_status_response_chat_template_roundtrip(self):
         """chat_template serializes and validates as part of status."""
         resp = InferenceStatusResponse(chat_template = "{{ messages }}")
-        roundtripped = InferenceStatusResponse.model_validate_json(
-            resp.model_dump_json()
-        )
+        roundtripped = InferenceStatusResponse.model_validate_json(resp.model_dump_json())
         assert roundtripped.chat_template == "{{ messages }}"
 
     def test_roundtrip_preserves_value(self):
@@ -390,9 +388,7 @@ class TestRouteCompleteness:
     def test_gguf_load_responses_have_field(self):
         """Every GGUF LoadResponse (is_gguf = True) includes native_context_length."""
         blocks = self._find_construction_blocks("LoadResponse")
-        gguf_blocks = [
-            b for b in blocks if "is_gguf = True" in b or "is_gguf=True" in b
-        ]
+        gguf_blocks = [b for b in blocks if "is_gguf = True" in b or "is_gguf=True" in b]
         assert (
             len(gguf_blocks) >= 2
         ), f"Expected at least 2 GGUF LoadResponse blocks, found {len(gguf_blocks)}"
@@ -404,9 +400,7 @@ class TestRouteCompleteness:
     def test_non_gguf_load_responses_omit_field(self):
         """Non-GGUF LoadResponse blocks do not set native_context_length (defaults to None)."""
         blocks = self._find_construction_blocks("LoadResponse")
-        non_gguf = [
-            b for b in blocks if "is_gguf = True" not in b and "is_gguf=True" not in b
-        ]
+        non_gguf = [b for b in blocks if "is_gguf = True" not in b and "is_gguf=True" not in b]
         # Non-GGUF paths should not reference native_context_length
         # (Pydantic defaults it to None, so not setting it is correct)
         for block in non_gguf:
@@ -422,7 +416,9 @@ class TestRouteCompleteness:
             if "llama_backend" in block and "native_context_length" in block:
                 found = True
                 break
-        assert found, "No InferenceStatusResponse block with llama_backend has native_context_length"
+        assert (
+            found
+        ), "No InferenceStatusResponse block with llama_backend has native_context_length"
 
 
 # =====================================================================
