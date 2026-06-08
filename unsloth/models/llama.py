@@ -2392,17 +2392,15 @@ class FastLlamaModel:
             # Add to kwargs
             kwargs["rope_scaling"] = rope_scaling
 
-        from .loader_utils import get_quantization_config_info
+        from .loader_utils import check_and_disable_bitsandbytes_loading, get_quantization_config_info
+
+        # Check and disable bitsandbytes loading if model has non-bitsandbytes quantization
+        load_in_4bit, _, _ckpt_quant_method = check_and_disable_bitsandbytes_loading(
+            model_config, load_in_4bit=load_in_4bit, load_in_8bit=False
+        )
 
         bnb_config = None
         _ckpt_quant_method, _ckpt_qcfg = get_quantization_config_info(model_config)
-
-        if load_in_4bit and _ckpt_quant_method is not None and _ckpt_quant_method != "bitsandbytes":
-            print(
-                f"Unsloth: Model already quantized with {_ckpt_quant_method}. "
-                f"Disabling `load_in_4bit` to avoid quantization config conflict."
-            )
-            load_in_4bit = False
 
         if load_in_4bit:
             llm_int8_skip_modules = SKIP_QUANTIZATION_MODULES.copy()
