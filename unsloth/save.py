@@ -457,6 +457,36 @@ def _preserve_tokenizer_eos_token(
         )
 
 
+def _is_qwen3_5_vlm(model):
+    config = getattr(model, "config", None)
+    if config is None or not hasattr(config, "vision_config"):
+        return False
+    architectures = getattr(config, "architectures", None) or ()
+    return any(
+        architecture
+        in (
+            "Qwen3_5ForConditionalGeneration",
+            "Qwen3_5MoeForConditionalGeneration",
+        )
+        for architecture in architectures
+    ) or getattr(config, "model_type", None) in ("qwen3_5", "qwen3_5_moe")
+
+
+def _qwen3_5_vlm_state_dict_for_save(state_dict):
+    remapped_state_dict = {}
+    for key, value in state_dict.items():
+        if key.startswith("language_model.model."):
+            new_key = "model.language_model." + key[len("language_model.model.") :]
+        elif key.startswith("visual."):
+            new_key = "model.visual." + key[len("visual.") :]
+        elif key.startswith("language_model.lm_head."):
+            new_key = "lm_head." + key[len("language_model.lm_head.") :]
+        else:
+            new_key = key
+        remapped_state_dict[new_key] = value
+    return remapped_state_dict
+
+
 @torch.inference_mode
 def unsloth_save_model(
     model,
@@ -2983,18 +3013,24 @@ def unsloth_generic_save(
         if not is_main_process:
             return
 
-        # Honor merged_16bit by casting to the target dtype if needed
         _save_kwargs = dict(
             safe_serialization = safe_serialization,
             max_shard_size = max_shard_size,
             variant = variant,
         )
+        is_qwen3_5_vlm = _is_qwen3_5_vlm(model)
+        if ("16bit" in save_method or is_qwen3_5_vlm) and state_dict is None:
+            state_dict = model.state_dict()
         if "16bit" in save_method:
             _target_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
-            _save_kwargs["state_dict"] = {
+            state_dict = {
                 k: v.to(dtype = _target_dtype) if v.is_floating_point() else v
-                for k, v in model.state_dict().items()
+                for k, v in state_dict.items()
             }
+        if is_qwen3_5_vlm:
+            state_dict = _qwen3_5_vlm_state_dict_for_save(state_dict)
+        if state_dict is not None:
+            _save_kwargs["state_dict"] = state_dict
 
         if push_to_hub:
             print(f"Unsloth: Pushing full fine-tuned model to '{save_directory}' ...")
