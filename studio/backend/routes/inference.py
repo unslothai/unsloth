@@ -1744,16 +1744,18 @@ async def generate_audio(
 
 
 def _decode_audio_base64(b64: str) -> np.ndarray:
-    """Decode base64 audio (any format) → float32 numpy array at 16kHz."""
-    import torch
-    import torchaudio
+    """Decode base64 audio (any format) → float32 mono numpy array at 16kHz."""
+    import librosa
     import tempfile
     import os
     from utils.paths import ensure_dir, tmp_root
 
+    if b64.startswith("data:"):
+        b64 = b64.split(",", 1)[1]
     raw = base64.b64decode(b64)
-    # torchaudio.load needs a file path or file-like object with format hint
-    # Write to a temp file so torchaudio can auto-detect the format
+    # librosa's audioread/ffmpeg fallback (mp3/m4a) needs a real path, so write
+    # the bytes to a temp file; the format is auto-detected from the content.
+    # sr=16000 resamples and mono=True downmixes.
     with tempfile.NamedTemporaryFile(
         suffix = ".audio",
         delete = False,
@@ -1762,20 +1764,25 @@ def _decode_audio_base64(b64: str) -> np.ndarray:
         tmp.write(raw)
         tmp_path = tmp.name
     try:
-        waveform, sr = torchaudio.load(tmp_path)
+        waveform, _ = librosa.load(tmp_path, sr = 16000, mono = True)
     finally:
         os.unlink(tmp_path)
 
-    # Convert to mono if stereo
-    if waveform.shape[0] > 1:
-        waveform = waveform.mean(dim = 0, keepdim = True)
+    return waveform
 
-    # Resample to 16kHz if needed
-    if sr != 16000:
-        resampler = torchaudio.transforms.Resample(orig_freq = sr, new_freq = 16000)
-        waveform = resampler(waveform)
 
-    return waveform.squeeze(0).numpy()
+def _transcode_audio_to_wav_b64(b64: str) -> str:
+    """Decode base64 audio (any container) and re-encode as base64 16 kHz mono WAV.
+
+    llama-server's audio decoder only accepts wav/mp3, so uploads in other
+    containers (m4a/ogg/webm/flac) are normalized here. Blocking (torchaudio +
+    temp file); call via a thread from async paths.
+    """
+    from core.inference.audio_codecs import _numpy_to_wav_bytes
+
+    return base64.b64encode(
+        _numpy_to_wav_bytes(_decode_audio_base64(b64), 16000)
+    ).decode("ascii")
 
 
 def _extract_content_parts(
@@ -2721,7 +2728,7 @@ async def openai_chat_completions(
         if payload.audio_base64:
             raise HTTPException(
                 status_code = 400,
-                detail = "Audio input is not supported for GGUF chat models yet.",
+                detail = "Audio input is not supported together with tools or guided decoding yet.",
             )
 
         # Preserve the vision guard that would otherwise run in the
@@ -2774,11 +2781,26 @@ async def openai_chat_completions(
 
     # ── GGUF path: proxy to llama-server /v1/chat/completions ──
     if using_gguf:
+        # Transcode any uploaded audio to 16 kHz mono WAV and forward it as an
+        # input_audio part. llama-server reads audio natively via the mmproj
+        # audio encoder, but its decoder only accepts wav/mp3, so we normalize
+        # here (the upload may be m4a/ogg/webm/flac).
+        audio_b64 = None
         if payload.audio_base64:
-            raise HTTPException(
-                status_code = 400,
-                detail = "Audio input is not supported for GGUF chat models yet.",
-            )
+            if not getattr(llama_backend, "_has_audio_input", False):
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "Audio provided but current GGUF model does not support audio input.",
+                )
+            try:
+                audio_b64 = await asyncio.to_thread(
+                    _transcode_audio_to_wav_b64, payload.audio_base64
+                )
+            except Exception as e:
+                raise HTTPException(
+                    status_code = 400,
+                    detail = f"Could not decode the provided audio: {e}",
+                )
 
         gguf_messages, _ = _openai_messages_for_gguf_chat(
             payload,
@@ -2832,6 +2854,12 @@ async def openai_chat_completions(
             # genuinely empty.
             if not tools_to_use:
                 use_tools = False
+
+        if use_tools and audio_b64:
+            raise HTTPException(
+                status_code = 400,
+                detail = "Audio input is not supported together with tools yet.",
+            )
 
         if use_tools:
             # ── Tool-use system prompt nudge ──────────────────────
@@ -3087,6 +3115,7 @@ async def openai_chat_completions(
             return llama_backend.generate_chat_completion(
                 messages = gguf_messages,
                 image_b64 = image_b64,
+                audio_b64 = audio_b64,
                 temperature = payload.temperature,
                 top_p = payload.top_p,
                 top_k = payload.top_k,
