@@ -11,6 +11,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from auth.authentication import get_current_subject
+from loggers import get_logger
+from utils.utils import safe_curated_detail, log_and_http_error
 from storage.studio_db import (
     ChatMessageConflictError,
     CorruptSettingsError,
@@ -39,6 +41,8 @@ from storage.studio_db import (
 )
 
 router = APIRouter()
+
+logger = get_logger(__name__)
 
 
 class ChatThread(BaseModel):
@@ -406,7 +410,13 @@ async def save_thread_message(
     try:
         return ChatMessage(**upsert_chat_message(payload.model_dump()))
     except ChatMessageConflictError as exc:
-        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+        raise log_and_http_error(
+            exc,
+            409,
+            safe_curated_detail(exc),
+            event = "chat_history.save_message_conflict",
+            log = logger,
+        ) from exc
 
 
 @router.put("/threads/{thread_id}/messages", response_model = ChatMessageListResponse)
@@ -442,7 +452,13 @@ async def replace_thread_messages(
             ]
         )
     except ChatMessageConflictError as exc:
-        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+        raise log_and_http_error(
+            exc,
+            409,
+            safe_curated_detail(exc),
+            event = "chat_history.replace_messages_conflict",
+            log = logger,
+        ) from exc
 
 
 @router.get("/count", response_model = ChatCountResponse)
@@ -497,7 +513,13 @@ async def put_settings(
             settings = upsert_chat_settings_merge(parsed.model_dump(exclude_unset = True))
         )
     except CorruptSettingsError as exc:
-        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+        raise log_and_http_error(
+            exc,
+            409,
+            safe_curated_detail(exc),
+            event = "chat_history.put_settings_conflict",
+            log = logger,
+        ) from exc
 
 
 @router.get("/export", response_model = ChatExportResponse)
