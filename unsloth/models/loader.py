@@ -587,6 +587,7 @@ class FastLanguageModel(FastLlamaModel):
             model_config = AutoConfig.from_pretrained(
                 model_name,
                 token = token,
+                revision = revision,
                 trust_remote_code = trust_remote_code,
                 local_files_only = local_files_only,
             )
@@ -1369,6 +1370,7 @@ class FastModel(FastBaseModel):
             model_config = AutoConfig.from_pretrained(
                 model_name,
                 token = token,
+                revision = revision,
                 trust_remote_code = trust_remote_code,
                 local_files_only = local_files_only,
             )
