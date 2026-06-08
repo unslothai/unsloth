@@ -496,12 +496,17 @@ def _apply_mistral_reasoning_controls(
 def _create_shared_http_client() -> httpx.AsyncClient:
     try:
         return httpx.AsyncClient()
-    except ValueError as exc:
-        if "Unknown scheme for proxy URL" not in str(exc):
+    except (ImportError, ValueError) as exc:
+        exc_str = str(exc)
+        unsupported_proxy = (
+            "Unknown scheme for proxy URL" in exc_str
+            or "socksio" in exc_str
+        )
+        if not unsupported_proxy:
             raise
         logger.warning(
             "external_provider_unsupported_env_proxy",
-            error = str(exc),
+            error = exc_str,
         )
         return httpx.AsyncClient(trust_env = False)
 

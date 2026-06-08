@@ -24,7 +24,7 @@ def _load_external_provider_module():
     return module
 
 
-def test_shared_http_client_ignores_unsupported_env_proxy(monkeypatch):
+def test_shared_http_client_ignores_unsupported_proxy_scheme(monkeypatch):
     ep_mod = _load_external_provider_module()
     calls = []
 
@@ -33,6 +33,27 @@ def test_shared_http_client_ignores_unsupported_env_proxy(monkeypatch):
             calls.append(kwargs)
             if kwargs.get("trust_env") is not False:
                 raise ValueError("Unknown scheme for proxy URL URL('socks4://127.0.0.1:12345')")
+
+    monkeypatch.setattr(ep_mod.httpx, "AsyncClient", FakeAsyncClient)
+
+    client = ep_mod._create_shared_http_client()
+
+    assert isinstance(client, FakeAsyncClient)
+    assert calls == [{}, {"trust_env": False}]
+
+
+def test_shared_http_client_ignores_missing_socksio(monkeypatch):
+    ep_mod = _load_external_provider_module()
+    calls = []
+
+    class FakeAsyncClient:
+        def __init__(self, **kwargs):
+            calls.append(kwargs)
+            if kwargs.get("trust_env") is not False:
+                raise ImportError(
+                    "Using SOCKS proxy, but the 'socksio' package is not installed. "
+                    "Make sure to install httpx using `pip install httpx[socks]`."
+                )
 
     monkeypatch.setattr(ep_mod.httpx, "AsyncClient", FakeAsyncClient)
 
