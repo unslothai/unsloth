@@ -936,6 +936,38 @@ def is_dgx_spark():
         return False
 
 
+@functools.lru_cache(maxsize = None)
+def _is_dgx_spark_no_cuda_init():
+    """Spark detection that never initializes a CUDA context.
+
+    `is_dgx_spark()` calls `torch.cuda.get_device_name()`, which lazily initializes CUDA
+    (and the caching allocator). Settings consumed at allocator-init time --
+    `PYTORCH_CUDA_ALLOC_CONF` (expandable_segments) -- must be decided BEFORE that, so this
+    variant reads the GPU name from `nvidia-smi` (a separate process) instead of torch.
+    Honors the same UNSLOTH_FORCE_DGX_SPARK override. Falls back to False on any error.
+    """
+    _force = os.environ.get("UNSLOTH_FORCE_DGX_SPARK")
+    if _force == "1":
+        return True
+    if _force == "0":
+        return False
+    try:
+        import platform
+
+        if platform.machine().lower() not in ("aarch64", "arm64"):
+            return False
+        import subprocess
+
+        out = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+            capture_output = True, text = True, timeout = 5,
+        )
+        names = (out.stdout or "").upper()
+        return any(token in names for token in _DGX_SPARK_DEVICE_TOKENS)
+    except Exception:
+        return False
+
+
 def patch_dgx_spark_caching_allocator_warmup():
     """No-op `transformers.modeling_utils.caching_allocator_warmup` on Spark UMA.
 
@@ -975,13 +1007,15 @@ def patch_dgx_spark_memory_config():
     fragmentation OOMs; headroom for larger models / longer sequences). Pure memory
     management: it never changes any computed value, so accuracy is unaffected.
 
-    Strictly no-op off-Spark (gated by `is_dgx_spark()`). Respects an existing
-    PYTORCH_CUDA_ALLOC_CONF (only appends `expandable_segments` when absent, never
-    overrides a user's setting) and an explicit opt-out
-    (UNSLOTH_NO_EXPANDABLE_SEGMENTS=1). Must run before the first CUDA allocation;
-    `import unsloth` precedes model load, so it is set in time for normal use.
+    Strictly no-op off-Spark. Respects an existing PYTORCH_CUDA_ALLOC_CONF (only appends
+    `expandable_segments` when absent, never overrides a user's setting) and an explicit
+    opt-out (UNSLOTH_NO_EXPANDABLE_SEGMENTS=1). Must run before the first CUDA allocation,
+    so it gates on the CUDA-free `_is_dgx_spark_no_cuda_init()` -- the regular
+    `is_dgx_spark()` calls `torch.cuda.get_device_name()`, which would initialize CUDA (and
+    the allocator) before this env var could take effect. `import unsloth` precedes model
+    load, so it is set in time for normal use.
     """
-    if not is_dgx_spark():
+    if not _is_dgx_spark_no_cuda_init():
         return
     if os.environ.get("UNSLOTH_NO_EXPANDABLE_SEGMENTS") == "1":
         return

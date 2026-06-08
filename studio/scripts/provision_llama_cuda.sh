@@ -42,11 +42,16 @@ fi
 SUDO=""; [ "$(id -u)" -ne 0 ] && SUDO="sudo"
 HAVE_APT=0; command -v apt-get >/dev/null 2>&1 && HAVE_APT=1
 
-# 2. Base toolchain. gcc-14 is required because nvcc rejects gcc-15.
+# 2. Base toolchain (must succeed) THEN gcc-14 (best-effort, separate transaction).
+# gcc-14 is preferred because nvcc rejects gcc-15, but it isn't in the default apt
+# sources on Ubuntu 22.04 / Debian 12 -- installing it in the SAME transaction as
+# cmake/git/curl would make apt abort the whole transaction there, leaving the box
+# without the basic build tools needed to clone/configure llama.cpp.
 if [ "$HAVE_APT" -eq 1 ]; then
     $SUDO apt-get update -y >/dev/null 2>&1 || true
     $SUDO apt-get install -y --no-install-recommends \
-        build-essential cmake git curl ca-certificates gcc-14 g++-14 >/dev/null 2>&1 || true
+        build-essential cmake git curl ca-certificates >/dev/null 2>&1 || true
+    $SUDO apt-get install -y --no-install-recommends gcc-14 g++-14 >/dev/null 2>&1 || true
 fi
 
 # 3. Locate nvcc; install the CUDA toolkit if missing.
@@ -102,12 +107,34 @@ export CC="$HCC" CXX="$HCXX" CUDAHOSTCXX="$HCXX"
 CC_CAP="$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d ' .')"
 if [ -n "$CC_CAP" ]; then CUDA_ARCH="$CC_CAP"; else CUDA_ARCH="native"; fi
 
-# 6. Clone + build into ~/.unsloth/llama.cpp.
+# 6. Clone + build into ~/.unsloth/llama.cpp. Honor a pinned llama.cpp ref
+# (UNSLOTH_LLAMA_TAG, the same var setup.sh uses) so a provisioner-built tree matches
+# the user's request instead of always tracking ggml-org main.
 mkdir -p "$(dirname "$LLAMA_DIR")"
+_LLAMA_REF="${UNSLOTH_LLAMA_TAG:-}"
 if [ ! -d "$LLAMA_DIR/.git" ]; then
-    rm -rf "$LLAMA_DIR"
-    git clone --depth 1 https://github.com/ggml-org/llama.cpp "$LLAMA_DIR" >/dev/null 2>&1 \
-        || { log "git clone failed"; exit 0; }
+    # Preserve any existing (e.g. CPU-only) llama.cpp so a FAILED clone doesn't leave the user
+    # with NO server -- restore it on clone failure. A successful clone makes it obsolete (the
+    # fresh CUDA build replaces it), so the backup is dropped then.
+    _LLAMA_BAK=""
+    if [ -e "$LLAMA_DIR" ]; then
+        _LLAMA_BAK="${LLAMA_DIR}.prev.$$"
+        rm -rf "$_LLAMA_BAK" 2>/dev/null
+        mv "$LLAMA_DIR" "$_LLAMA_BAK" 2>/dev/null || { rm -rf "$LLAMA_DIR" 2>/dev/null; _LLAMA_BAK=""; }
+    fi
+    _clone_ok=0
+    if [ -n "$_LLAMA_REF" ]; then
+        git clone --depth 1 --branch "$_LLAMA_REF" https://github.com/ggml-org/llama.cpp "$LLAMA_DIR" >/dev/null 2>&1 && _clone_ok=1
+    fi
+    if [ "$_clone_ok" -ne 1 ]; then
+        git clone --depth 1 https://github.com/ggml-org/llama.cpp "$LLAMA_DIR" >/dev/null 2>&1 && _clone_ok=1
+    fi
+    if [ "$_clone_ok" -ne 1 ]; then
+        log "git clone failed"
+        [ -n "$_LLAMA_BAK" ] && mv "$_LLAMA_BAK" "$LLAMA_DIR" 2>/dev/null   # restore previous server
+        exit 0
+    fi
+    [ -n "$_LLAMA_BAK" ] && rm -rf "$_LLAMA_BAK" 2>/dev/null
 fi
 cd "$LLAMA_DIR" || exit 0
 

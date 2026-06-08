@@ -1203,7 +1203,8 @@ else
                     if [ -n "$_GLIBC_VER" ]; then
                         _GLIBC_MAJ="${_GLIBC_VER%%.*}"; _GLIBC_MIN="${_GLIBC_VER#*.}"; _GLIBC_MIN="${_GLIBC_MIN%%.*}"
                         _CU_MAJ="${_NVCC_VER%%.*}";     _CU_MIN="${_NVCC_VER#*.}";     _CU_MIN="${_CU_MIN%%.*}"
-                        if [ "${_GLIBC_MAJ:-0}" -eq 2 ] 2>/dev/null && [ "${_GLIBC_MIN:-0}" -ge 41 ] 2>/dev/null \
+                        if { [ "${_GLIBC_MAJ:-0}" -gt 2 ] 2>/dev/null \
+                             || { [ "${_GLIBC_MAJ:-0}" -eq 2 ] 2>/dev/null && [ "${_GLIBC_MIN:-0}" -ge 41 ] 2>/dev/null; }; } \
                            && { [ "${_CU_MAJ:-0}" -lt 13 ] 2>/dev/null \
                                 || { [ "${_CU_MAJ:-0}" -eq 13 ] 2>/dev/null && [ "${_CU_MIN:-0}" -lt 3 ] 2>/dev/null; }; }; then
                             substep "CUDA toolkit ${_NVCC_VER} is incompatible with glibc ${_GLIBC_VER} (rsqrt/rsqrtf header clash)." "$C_ERR"
@@ -1444,14 +1445,17 @@ _have_cuda_llama_server() {
 }
 if [ "$_HOST_SYSTEM" = "Linux" ] \
         && { [ "$_HOST_MACHINE" = "aarch64" ] || [ "$_HOST_MACHINE" = "arm64" ]; } \
-        && ! grep -qi microsoft /proc/version 2>/dev/null \
+        && { ! grep -qi microsoft /proc/version 2>/dev/null || [ "${UNSLOTH_WSL_LLAMA_DEFERRED:-0}" != "1" ]; } \
         && [ "${UNSLOTH_NO_LLAMA_CUDA:-0}" != "1" ] \
         && command -v nvidia-smi >/dev/null 2>&1 \
         && nvidia-smi -L 2>/dev/null | awk '/^GPU[[:space:]]+[0-9]+:/{found=1} END{exit !found}' \
         && ! _have_cuda_llama_server; then
-    # WSL2 is excluded above: there install.ps1 runs this in the background after
-    # setup, so doing it here would duplicate the work in the foreground. Native
-    # Linux (DGX Spark / GB10) only.
+    # Native Linux (DGX Spark / GB10) runs this. Under WSL it runs ONLY for a DIRECT
+    # `install.sh` invocation: when install.ps1 drives the WSL install it exports
+    # UNSLOTH_WSL_LLAMA_DEFERRED=1 and builds the CUDA llama.cpp in the background after
+    # setup, so this foreground build is skipped to avoid duplicating it. A user who runs
+    # install.sh themselves inside WSL has no background builder, so we provision here
+    # rather than leave them with no GGUF server.
     # Resolve provision_llama_cuda.sh: copy beside setup.sh, then local-dev repo,
     # else fetch from GitHub so `curl | sh` works on an older wheel without it.
     _PROV_SH=""
@@ -1475,6 +1479,12 @@ if [ "$_HOST_SYSTEM" = "Linux" ] \
         if _have_cuda_llama_server; then
             step "llama.cpp" "CUDA llama-server ready (aarch64 + NVIDIA)"
             _LLAMA_CPP_DEGRADED=false
+            # The provisioner just created $LLAMA_CPP_DIR. In custom-STUDIO_HOME mode the next
+            # setup/update runs _assert_studio_owned_or_absent on it, so claim ownership now or
+            # that assert would abort on a directory this installer made.
+            if [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
+                : > "$LLAMA_CPP_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
+            fi
         elif [ -f "$LLAMA_SERVER_BIN" ]; then
             substep "CUDA build unavailable; keeping existing (CPU) llama-server" "$C_WARN"
         else

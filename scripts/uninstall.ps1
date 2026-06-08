@@ -374,11 +374,12 @@ function Uninstall-UnslothStudio {
             # `wsl --list` emits UTF-16 PowerShell mis-parses (empty list -> cleanup skipped), so probe a
             # candidate set by exit code instead ('' = default distro), which is encoding-proof.
             # rm runs FIRST (guaranteed) since the kills could SIGKILL this shell. Also rm the dangling
-            # ~/.local/bin/unsloth symlink (its target under ~/.unsloth is gone but the link still resolves
-            # on PATH). pkill patterns use the [x]-regex self-exclusion trick: '[u]nsloth_studio' keeps the
-            # shell's own argv from matching (no literal "unsloth_studio" substring) while real processes
-            # still match. Same for '[l]lama-server' (a dynamic port not covered by fuser -k 8888).
-            $_clean = 'rm -rf /root/.unsloth /home/*/.unsloth /root/llama-cuda /root/provision_llama_cuda.sh /root/llama_cuda_build.log 2>/dev/null; rm -f /root/.local/bin/unsloth /home/*/.local/bin/unsloth 2>/dev/null; fuser -k 8888/tcp 2>/dev/null; pkill -9 -f ''[u]nsloth_studio'' 2>/dev/null; pkill -9 -f ''[l]lama-server'' 2>/dev/null; true'
+            # /root/.local/bin/unsloth symlink (its target under /root/.unsloth is gone but the link still
+            # resolves on PATH). Scope STRICTLY to /root: the WoA fallback installs there (wsl -u root), so
+            # touching /home/*/.unsloth would erase an unrelated WSL user's own Unsloth/cache that this
+            # installer never created. pkill patterns use the [x]-regex self-exclusion trick: '[u]nsloth_studio'
+            # keeps the shell's own argv from matching while real processes still match. Same for '[l]lama-server'.
+            $_clean = 'rm -rf /root/.unsloth /root/llama-cuda /root/provision_llama_cuda.sh /root/llama_cuda_build.log 2>/dev/null; rm -f /root/.local/bin/unsloth 2>/dev/null; fuser -k 8888/tcp 2>/dev/null; pkill -9 -f ''[u]nsloth_studio'' 2>/dev/null; pkill -9 -f ''[l]lama-server'' 2>/dev/null; true'
             $_cands = @('', 'Ubuntu', 'Ubuntu-24.04', 'Ubuntu-22.04', 'Debian')
             if ($env:UNSLOTH_WSL_DISTRO) { $_cands = @($env:UNSLOTH_WSL_DISTRO) + $_cands }
             $_done = @{}
