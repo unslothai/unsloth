@@ -55,6 +55,7 @@ from core.inference.tool_call_parser import (
     RENDER_HTML_REPEAT_NUDGE,
     parse_tool_calls_from_text as _shared_parse_tool_calls_from_text,
 )
+from utils.hardware import clear_gpu_cache
 
 logger = get_logger(__name__)
 
@@ -1269,23 +1270,29 @@ class LlamaCppBackend:
 
     @staticmethod
     def _get_gpu_free_memory() -> list[tuple[int, int]]:
-        """Query free memory per GPU.
+        """Query free memory per visible GPU, backend-aware.
 
-        Order:
-          1. ``nvidia-smi`` (NVIDIA CUDA hosts) -- respects
-             ``CUDA_VISIBLE_DEVICES``.
-          2. ``torch.cuda.mem_get_info`` -- universal fallback that
-             works on AMD ROCm too because the HIP runtime
-             reuses the entire ``torch.cuda.*`` namespace. Covers the
-             AMD case for issue #5106 (nvidia-smi-only probe silently
-             returned [] on AMD hosts) and also rescues NVIDIA hosts
-             where ``nvidia-smi`` is missing from PATH.
-
-        Returns list of (gpu_index, free_mib) sorted by index. Empty
-        list if no supported GPU is reachable.
+        Returns list of ``(gpu_index, free_mib)`` sorted by index. The index
+        space matches whatever the active backend exposes: physical
+        ``nvidia-smi`` indices on NVIDIA; parent-visible numeric IDs on
+        AMD/ROCm and Intel XPU (via Studio's hardware telemetry layer).
+        Returns an empty list if no per-GPU free-memory data is available,
+        which lets the caller fall through to a non-placement launch path.
         """
-        # ── NVIDIA via nvidia-smi ────────────────────────────────────
+        import os
+
+        from utils.hardware import get_device
+        from utils.hardware.hardware import DeviceType
+        import utils.hardware.hardware as _hw_mod
+
+        # Fast path: NVIDIA / nvidia-smi. Only run when backend is CUDA
+        # (not ROCm, not XPU) to avoid feeding wrong indices to other backends.
+        nvidia_eligible = get_device() == DeviceType.CUDA and not getattr(
+            _hw_mod, "IS_ROCM", False
+        )
         try:
+            if not nvidia_eligible:
+                raise FileNotFoundError  # skip to generic telemetry path
             result = subprocess.run(
                 [
                     "nvidia-smi",
@@ -1299,21 +1306,19 @@ class LlamaCppBackend:
                 **_windows_hidden_subprocess_kwargs(),
             )
             if result.returncode == 0:
-                allowed: Optional[set[int]] = None
+                # Filter nvidia-smi output by CUDA_VISIBLE_DEVICES.
+                # Skip empty tokens so trailing commas don't disable the filter.
+                allowed = None
                 cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
-                if cvd is not None:
+                if cvd is not None and cvd.strip():
                     try:
-                        # `if x.strip()` filters trailing-comma masks like
-                        # "0,1," which would otherwise raise ValueError on
-                        # an empty token. An explicitly empty mask (CVD="")
-                        # yields an empty `allowed` set so all GPUs are
-                        # filtered out, matching the codebase convention.
                         allowed = set(
                             int(x.strip()) for x in cvd.split(",") if x.strip()
                         )
                     except ValueError:
-                        pass
-                gpus: list[tuple[int, int]] = []
+                        pass  # Non-numeric (e.g., "GPU-uuid"), ignore filter
+
+                gpus = []
                 for line in result.stdout.strip().splitlines():
                     parts = line.split(",")
                     if len(parts) == 2:
@@ -1322,71 +1327,55 @@ class LlamaCppBackend:
                         if allowed is not None and idx not in allowed:
                             continue
                         gpus.append((idx, free_mib))
-                # Match the docstring's sort-by-id guarantee. nvidia-smi
-                # almost always returns sorted output, but driver order
-                # is not formally guaranteed.
-                gpus.sort(key = lambda g: g[0])
                 if gpus:
-                    return gpus
+                    return sorted(gpus, key = lambda item: item[0])
+        except FileNotFoundError:
+            pass  # nvidia-smi not on PATH — fall through to generic path
         except Exception as e:
-            logger.debug(f"nvidia-smi probe failed: {e}")
+            logger.debug(f"nvidia-smi free-memory query failed: {e}")
 
-        # ── Torch fallback (covers AMD ROCm and missing nvidia-smi) ──
+        # Generic path: ROCm, XPU, or nvidia-smi absent/failed.
         try:
-            import torch
+            from utils.hardware import get_visible_gpu_utilization
 
-            if not hasattr(torch, "cuda") or not torch.cuda.is_available():
-                return []
-            if not hasattr(torch.cuda, "mem_get_info"):
-                return []
-            # torch.cuda enumerates GPUs RELATIVE to the visibility mask.
-            # On NVIDIA builds the mask is CUDA_VISIBLE_DEVICES; on AMD
-            # ROCm builds it is HIP_VISIBLE_DEVICES (or ROCR_VISIBLE_DEVICES
-            # if HIP is unset). Downstream we feed these IDs back into the
-            # llama-server subprocess as CVD, so we must translate visible
-            # ordinals back to physical indices first; otherwise launching
-            # with ``CUDA_VISIBLE_DEVICES=2,3`` would get rewritten to
-            # ``CUDA_VISIBLE_DEVICES=0,1`` and target the wrong GPUs.
-            physical_ids: Optional[list[int]] = None
-            # Match the codebase convention in
-            # ``utils/hardware/hardware.py::_get_parent_visible_gpu_spec``:
-            # treat an explicitly empty mask (``HIP_VISIBLE_DEVICES=""``)
-            # as "set to no GPUs" rather than falling through to the next
-            # var. ``or`` would coerce empty string to falsy and silently
-            # promote the wrong source.
-            if getattr(torch.version, "hip", None) is not None:
-                hip_v = os.environ.get("HIP_VISIBLE_DEVICES")
-                rocr_v = os.environ.get("ROCR_VISIBLE_DEVICES")
-                cvd = (
-                    hip_v
-                    if hip_v is not None
-                    else rocr_v
-                    if rocr_v is not None
-                    else os.environ.get("CUDA_VISIBLE_DEVICES")
+            utilization = get_visible_gpu_utilization()
+
+            # Relative ordinals are not safe to round-trip into
+            # visibility env vars. Return [] so llama-server inherits
+            # the parent's mask unchanged.
+            if utilization.get("index_kind") not in (None, "physical"):
+                logger.debug(
+                    "Skipping GPU placement: telemetry reports index_kind=%r "
+                    "(not reusable for placement)",
+                    utilization.get("index_kind"),
                 )
-            else:
-                cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
-            if cvd is not None:
-                try:
-                    # Empty mask (CVD="") yields an empty list so the
-                    # below loop produces no GPUs, consistent with the
-                    # nvidia-smi path and utils/hardware/hardware.py.
-                    physical_ids = [int(x.strip()) for x in cvd.split(",") if x.strip()]
-                except ValueError:
-                    physical_ids = None
-            gpus = []
-            for ordinal in range(torch.cuda.device_count()):
-                free_bytes, _total_bytes = torch.cuda.mem_get_info(ordinal)
-                idx = (
-                    physical_ids[ordinal]
-                    if physical_ids is not None and ordinal < len(physical_ids)
-                    else ordinal
-                )
-                gpus.append((idx, free_bytes // (1024 * 1024)))
-            # Match the nvidia-smi path's docstring guarantee of sorted-by-id.
-            return sorted(gpus, key = lambda g: g[0])
+                return []
+
+            gpus: list[tuple[int, int]] = []
+            for device in utilization.get("devices", []) or []:
+                index = device.get("index")
+
+                # Use explicit ``is None`` checks -- ``or`` would treat an
+                # idle GPU with vram_used_gb == 0.0 as missing telemetry and
+                # silently drop a perfectly valid free card.
+                total_gb = device.get("vram_total_gb")
+                if total_gb is None:
+                    total_gb = device.get("total_gb")
+
+                used_gb = device.get("vram_used_gb")
+                if used_gb is None:
+                    used_gb = device.get("used_gb")
+
+                if index is None or total_gb is None or used_gb is None:
+                    # Missing telemetry for this device -- skip rather than
+                    # invent a free-memory number that drives placement.
+                    continue
+
+                free_mib = max(int((float(total_gb) - float(used_gb)) * 1024), 0)
+                gpus.append((int(index), free_mib))
+            return sorted(gpus, key = lambda item: item[0])
         except Exception as e:
-            logger.debug(f"torch GPU probe failed: {e}")
+            logger.debug(f"Generic GPU free-memory query failed: {e}")
             return []
 
     # Skip the wait when the last kill is older than this; the GPU
@@ -2826,6 +2815,305 @@ class LlamaCppBackend:
                             hf_repo = hf_repo,
                             hf_token = hf_token,
                         )
+
+                if effective_ctx < original_ctx:
+                    kv_est = self._estimate_kv_cache_bytes(effective_ctx, cache_type_kv)
+                    logger.info(
+                        f"Context auto-reduced: {original_ctx} -> {effective_ctx} "
+                        f"(model: {model_size / (1024**3):.1f} GB, "
+                        f"est. KV cache: {kv_est / (1024**3):.1f} GB)"
+                    )
+
+                kv_cache_bytes = self._estimate_kv_cache_bytes(
+                    effective_ctx, cache_type_kv
+                )
+                logger.info(
+                    f"GGUF size: {model_size / (1024**3):.1f} GB, "
+                    f"est. KV cache: {kv_cache_bytes / (1024**3):.1f} GB, "
+                    f"context: {effective_ctx}, "
+                    f"GPUs free: {gpus}, selected: {gpu_indices}, fit: {use_fit}"
+                )
+            except Exception as e:
+                logger.warning(f"GPU selection failed ({e}), using --fit on")
+                gpu_indices, use_fit = None, True
+                effective_ctx = n_ctx  # fall back to original
+
+            cmd = [
+                binary,
+                "-m",
+                model_path,
+                "--port",
+                str(self._port),
+                "-c",
+                str(effective_ctx) if effective_ctx > 0 else "0",
+                "--parallel",
+                str(n_parallel),
+                "--flash-attn",
+                "on",  # Force flash attention for speed
+                # Error out at n_ctx instead of silently rotating the KV cache; frontend catches it and points the user at "Context Length".
+                "--no-context-shift",
+            ]
+
+            if use_fit:
+                cmd.extend(["--fit", "on"])
+            elif gpu_indices is not None:
+                # Model fits on selected GPU(s) -- offload all layers
+                cmd.extend(["-ngl", "-1"])
+
+            if n_threads is not None:
+                cmd.extend(["--threads", str(n_threads)])
+
+            # Always enable Jinja chat template rendering for proper template support
+            cmd.extend(["--jinja"])
+
+            # KV cache data type
+            _valid_cache_types = {
+                "f16",
+                "bf16",
+                "q8_0",
+                "q4_0",
+                "q4_1",
+                "q5_0",
+                "q5_1",
+                "iq4_nl",
+                "f32",
+            }
+            if cache_type_kv and cache_type_kv in _valid_cache_types:
+                cmd.extend(
+                    ["--cache-type-k", cache_type_kv, "--cache-type-v", cache_type_kv]
+                )
+                self._cache_type_kv = cache_type_kv
+                logger.info(f"KV cache type: {cache_type_kv}")
+            else:
+                self._cache_type_kv = None
+
+            # Speculative decoding (n-gram self-speculation, zero VRAM cost)
+            # ngram-mod: ~16 MB shared hash pool, constant memory/complexity,
+            # variable draft lengths.  Helps most when the model repeats
+            # existing text (code refactoring, summarization, reasoning).
+            # For general chat with low repetition, overhead is ~5 ms.
+            #
+            # Benchmarks from llama.cpp PRs #18471, #19164:
+            #   Scenario                        | Without | With    | Speedup
+            #   gpt-oss-120b code refactor      | 181 t/s | 446 t/s | 2.5x
+            #   Qwen3-235B offloaded            |  12 t/s |  21 t/s | 1.8x
+            #   gpt-oss-120b repeat (92% accept)| 181 t/s | 814 t/s | 4.5x
+            #
+            # Params from llama.cpp docs (docs/speculative.md):
+            #   --spec-ngram-size-n 24  (small n not recommended)
+            #   --draft-min 48 --draft-max 64 (MoEs need long drafts;
+            #     dense models can reduce these)
+            # ref: https://github.com/ggml-org/llama.cpp/blob/master/docs/speculative.md
+            # ref: https://github.com/ggml-org/llama.cpp/pull/19164
+            # ref: https://github.com/ggml-org/llama.cpp/pull/18471
+            _valid_spec_types = {"ngram-simple", "ngram-mod"}
+            if speculative_type and speculative_type in _valid_spec_types:
+                if not is_vision:  # spec decoding disabled for vision models
+                    cmd.extend(["--spec-type", speculative_type])
+                    if speculative_type == "ngram-mod":
+                        cmd.extend(
+                            [
+                                "--spec-ngram-size-n",
+                                "24",
+                                "--draft-min",
+                                "48",
+                                "--draft-max",
+                                "64",
+                            ]
+                        )
+                    self._speculative_type = speculative_type
+                else:
+                    self._speculative_type = None
+            else:
+                self._speculative_type = None
+
+            # Apply custom chat template override if provided
+            if chat_template_override:
+                import tempfile
+
+                self._chat_template_file = tempfile.NamedTemporaryFile(
+                    mode = "w",
+                    suffix = ".jinja",
+                    delete = False,
+                    prefix = "unsloth_chat_template_",
+                )
+                self._chat_template_file.write(chat_template_override)
+                self._chat_template_file.close()
+                cmd.extend(["--chat-template-file", self._chat_template_file.name])
+                logger.info(
+                    f"Using custom chat template file: {self._chat_template_file.name}"
+                )
+
+            # For reasoning models, set default thinking mode.
+            # Qwen3.5/3.6 models below 9B (0.8B, 2B, 4B) disable thinking by default.
+            # Only 9B and larger enable thinking.
+            if self._supports_reasoning:
+                thinking_default = True
+                mid = (model_identifier or "").lower()
+                if "qwen3.5" in mid or "qwen3.6" in mid:
+                    size_val = _extract_model_size_b(mid)
+                    if size_val is not None and size_val < 9:
+                        thinking_default = False
+                self._reasoning_default = thinking_default
+                cmd.extend(
+                    [
+                        "--chat-template-kwargs",
+                        json.dumps({"enable_thinking": thinking_default}),
+                    ]
+                )
+                logger.info(
+                    f"Reasoning model: enable_thinking={thinking_default} by default"
+                )
+
+            if mmproj_path:
+                if not Path(mmproj_path).is_file():
+                    logger.warning(f"mmproj file not found: {mmproj_path}")
+                else:
+                    cmd.extend(["--mmproj", mmproj_path])
+                    logger.info(f"Using mmproj for vision: {mmproj_path}")
+
+            # Option C: add --api-key for direct client access when enabled
+            import os as _os
+            import secrets as _secrets
+
+            if _os.getenv("UNSLOTH_DIRECT_STREAM", "0") == "1":
+                self._api_key = _secrets.token_urlsafe(32)
+                cmd.extend(["--api-key", self._api_key])
+                logger.info("llama-server started with --api-key for direct streaming")
+            else:
+                self._api_key = None
+
+            _log_cmd = list(cmd)
+            if "--api-key" in _log_cmd:
+                _ki = _log_cmd.index("--api-key") + 1
+                if _ki < len(_log_cmd):
+                    _log_cmd[_ki] = "<redacted>"
+            logger.info(f"Starting llama-server: {' '.join(_log_cmd)}")
+
+            # Set library paths so llama-server can find its shared libs and CUDA DLLs
+            import os
+            import sys
+
+            env = os.environ.copy()
+            binary_dir = str(Path(binary).parent)
+
+            if sys.platform == "win32":
+                # On Windows, CUDA DLLs (cublas64_12.dll, cudart64_12.dll, etc.)
+                # must be on PATH. Add CUDA_PATH\bin if available.
+                path_dirs = [binary_dir]
+                cuda_path = os.environ.get("CUDA_PATH", "")
+                if cuda_path:
+                    cuda_bin = os.path.join(cuda_path, "bin")
+                    if os.path.isdir(cuda_bin):
+                        path_dirs.append(cuda_bin)
+                    # Some CUDA installs put DLLs in bin\x64
+                    cuda_bin_x64 = os.path.join(cuda_path, "bin", "x64")
+                    if os.path.isdir(cuda_bin_x64):
+                        path_dirs.append(cuda_bin_x64)
+                existing_path = env.get("PATH", "")
+                env["PATH"] = ";".join(path_dirs) + ";" + existing_path
+            else:
+                # Linux: set LD_LIBRARY_PATH for shared libs next to the binary
+                # and CUDA runtime libs (libcudart, libcublas, etc.)
+                import platform
+
+                lib_dirs = [binary_dir]
+                _arch = platform.machine()  # x86_64, aarch64, etc.
+
+                # Pip-installed nvidia CUDA runtime libs (e.g. torch's
+                # bundled cuda-bindings).  The prebuilt llama.cpp binary
+                # links against libcudart.so.13 / libcublas.so.13 which
+                # live here, not in /usr/local/cuda.
+                import glob as _glob
+
+                for _nv_pattern in [
+                    os.path.join(
+                        sys.prefix,
+                        "lib",
+                        "python*",
+                        "site-packages",
+                        "nvidia",
+                        "cu*",
+                        "lib",
+                    ),
+                    os.path.join(
+                        sys.prefix,
+                        "lib",
+                        "python*",
+                        "site-packages",
+                        "nvidia",
+                        "cudnn",
+                        "lib",
+                    ),
+                    os.path.join(
+                        sys.prefix,
+                        "lib",
+                        "python*",
+                        "site-packages",
+                        "nvidia",
+                        "nvjitlink",
+                        "lib",
+                    ),
+                ]:
+                    for _nv_dir in _glob.glob(_nv_pattern):
+                        if os.path.isdir(_nv_dir):
+                            lib_dirs.append(_nv_dir)
+
+                for cuda_lib in [
+                    "/usr/local/cuda/lib64",
+                    f"/usr/local/cuda/targets/{_arch}-linux/lib",
+                    # Fallback CUDA compat paths (e.g. binary built with
+                    # CUDA 12 on a system where default /usr/local/cuda
+                    # points to CUDA 13+).
+                    "/usr/local/cuda-12/lib64",
+                    "/usr/local/cuda-12.8/lib64",
+                    f"/usr/local/cuda-12/targets/{_arch}-linux/lib",
+                    f"/usr/local/cuda-12.8/targets/{_arch}-linux/lib",
+                ]:
+                    if os.path.isdir(cuda_lib):
+                        lib_dirs.append(cuda_lib)
+                existing_ld = env.get("LD_LIBRARY_PATH", "")
+                new_ld = ":".join(lib_dirs)
+                env["LD_LIBRARY_PATH"] = (
+                    f"{new_ld}:{existing_ld}" if existing_ld else new_ld
+                )
+
+            # Pin to selected GPU(s) via backend-appropriate env var.
+            if gpu_indices is not None:
+                from utils.hardware import get_device
+                from utils.hardware.hardware import DeviceType
+
+                mask = ",".join(str(i) for i in gpu_indices)
+                if get_device() == DeviceType.XPU:
+                    env["ZE_AFFINITY_MASK"] = mask
+                else:
+                    env["CUDA_VISIBLE_DEVICES"] = mask
+
+            self._stdout_lines = []
+            self._process = subprocess.Popen(
+                cmd,
+                stdout = subprocess.PIPE,
+                stderr = subprocess.STDOUT,
+                text = True,
+                env = env,
+            )
+
+            # Start background thread to drain stdout and prevent pipe deadlock
+            self._stdout_thread = threading.Thread(
+                target = self._drain_stdout, daemon = True, name = "llama-stdout"
+            )
+            self._stdout_thread.start()
+
+            # Store the resolved on-disk path, not the caller's kwarg. In
+            # HF mode the caller passes gguf_path=None and the real path
+            # (``model_path``) is what llama-server is actually mmap'ing.
+            # Downstream consumers (load_progress, log lines, etc.) need
+            # the path that exists on disk.
+            self._gguf_path = model_path
+            self._hf_repo = hf_repo
+            # For local GGUF files, extract variant from filename if not provided
+            if hf_variant:
+                self._hf_variant = hf_variant
             elif gguf_path:
                 if not Path(gguf_path).is_file():
                     raise FileNotFoundError(f"GGUF file not found: {gguf_path}")
@@ -3983,10 +4271,7 @@ class LlamaCppBackend:
             if LlamaCppBackend._codec_mgr is not None:
                 LlamaCppBackend._codec_mgr.unload()
                 LlamaCppBackend._codec_mgr = None
-                import torch
-
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
+                clear_gpu_cache()
             return True
 
     def _kill_process(self):
@@ -5667,6 +5952,7 @@ class LlamaCppBackend:
         if LlamaCppBackend._codec_mgr is None:
             LlamaCppBackend._codec_mgr = AudioCodecManager()
 
+        # Audio codecs are only validated on CUDA; stay on CPU otherwise.
         device = "cuda" if torch.cuda.is_available() else "cpu"
         model_repo_path = None
 
@@ -5739,6 +6025,8 @@ class LlamaCppBackend:
             else None
         )
 
+        # Match init_audio_codec: stay on CPU for non-CUDA hosts until the
+        # codec path is validated on XPU.
         import torch
 
         device = "cuda" if torch.cuda.is_available() else "cpu"

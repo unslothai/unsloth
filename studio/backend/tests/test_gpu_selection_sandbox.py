@@ -302,14 +302,14 @@ class TestAutoSelectGpuIds(unittest.TestCase):
             # 35GB (first) + 30*0.85 (second) = 60.5GB > 50GB
             self.assertEqual(len(selected), 2)
 
-    def test_non_cuda_returns_none(self):
+    def test_non_accelerator_returns_none(self):
         from utils.hardware.hardware import auto_select_gpu_ids
         import utils.hardware.hardware as hw
 
         with patch.object(hw, "get_device", return_value = hw.DeviceType.CPU):
             selected, meta = auto_select_gpu_ids("test/model")
             self.assertIsNone(selected)
-            self.assertEqual(meta["selection_mode"], "non_cuda")
+            self.assertEqual(meta["selection_mode"], "non_accelerator")
 
 
 class TestGetDeviceMap(unittest.TestCase):
