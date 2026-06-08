@@ -638,7 +638,7 @@ def test_accelerate_recursively_apply_empty_logits_patch():
     e = EmptyLogits()
     patch_accelerate_recursively_apply()
 
-    res = acc_ops.recursively_apply(lambda x: x, e, error_on_other_type=True)
+    res = acc_ops.recursively_apply(lambda x: x, e, error_on_other_type = True)
     assert res is e
 
 
@@ -676,18 +676,28 @@ def test_accelerate_gather_empty_logits_debug_mode_patch():
         def _gather_one(t):
             if t.ndim == 0:
                 t = t.clone()[None]
-            return torch.cat([t] * state.num_processes, dim=0)
-        return acc_ops.recursively_apply(_gather_one, tensor, error_on_other_type=True)
+            return torch.cat([t] * state.num_processes, dim = 0)
+
+        return acc_ops.recursively_apply(_gather_one, tensor, error_on_other_type = True)
 
     # Mock _gpu_broadcast to return data unchanged
     def mock_gpu_broadcast(data, *args, **kwargs):
         return data
 
     try:
-        with mock.patch("accelerate.utils.operations.gather_object", side_effect=mock_gather_object), \
-             mock.patch("accelerate.utils.operations._gpu_gather", side_effect=mock_gpu_gather), \
-             mock.patch("accelerate.utils.operations._gpu_broadcast", side_effect=mock_gpu_broadcast):
-
+        with (
+            mock.patch(
+                "accelerate.utils.operations.gather_object",
+                side_effect = mock_gather_object,
+            ),
+            mock.patch(
+                "accelerate.utils.operations._gpu_gather", side_effect = mock_gpu_gather
+            ),
+            mock.patch(
+                "accelerate.utils.operations._gpu_broadcast",
+                side_effect = mock_gpu_broadcast,
+            ),
+        ):
             # 1. Top-level EmptyLogits should gather correctly (returns e)
             res = acc_ops.gather(e)
             assert res is e
