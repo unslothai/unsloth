@@ -106,7 +106,7 @@ def test_warning_handler_gated_on_module_flag():
     flag_reads = []
     flag_writes = []
     warning_calls = []
-    for node in ast.walk(ast.Module(body = handler.body, type_ignores = [])):
+    for node in ast.walk(ast.Module(body=handler.body, type_ignores=[])):
         if isinstance(node, ast.Name) and node.id == "_LLAMA_CPP_SCRIPTS_WARNING_EMITTED":
             if isinstance(node.ctx, ast.Load):
                 flag_reads.append(node)
@@ -128,6 +128,7 @@ def test_warning_handler_gated_on_module_flag():
 
 def test_default_dir_is_string_for_setdefault_compat():
     from unsloth_zoo.llama_cpp import LLAMA_CPP_DEFAULT_DIR
+
     assert isinstance(LLAMA_CPP_DEFAULT_DIR, str)
 
 
@@ -140,7 +141,7 @@ def test_setdefault_preserves_explicit_user_override(monkeypatch):
 
 
 def test_setdefault_assigns_default_when_unset(monkeypatch):
-    monkeypatch.delenv("UNSLOTH_LLAMA_CPP_SCRIPTS_DIR", raising = False)
+    monkeypatch.delenv("UNSLOTH_LLAMA_CPP_SCRIPTS_DIR", raising=False)
     from unsloth_zoo.llama_cpp import LLAMA_CPP_DEFAULT_DIR
 
     os.environ.setdefault("UNSLOTH_LLAMA_CPP_SCRIPTS_DIR", LLAMA_CPP_DEFAULT_DIR)
@@ -161,6 +162,7 @@ def _simulate_pin_block(emit_records, set_value):
                 LLAMA_CPP_DEFAULT_DIR,
                 _resolve_local_convert_script,  # noqa: F401
             )
+
             os.environ.setdefault("UNSLOTH_LLAMA_CPP_SCRIPTS_DIR", LLAMA_CPP_DEFAULT_DIR)
         except ImportError:
             if not state["emitted"]:
@@ -171,9 +173,9 @@ def _simulate_pin_block(emit_records, set_value):
 
 
 def test_warning_fires_at_most_once_across_calls(monkeypatch):
-    monkeypatch.delenv("UNSLOTH_LLAMA_CPP_SCRIPTS_DIR", raising = False)
+    monkeypatch.delenv("UNSLOTH_LLAMA_CPP_SCRIPTS_DIR", raising=False)
     emits = []
-    runner = _simulate_pin_block(emits, set_value = "/fake/default")
+    runner = _simulate_pin_block(emits, set_value="/fake/default")
     runner()
     runner()
     runner()
@@ -181,16 +183,16 @@ def test_warning_fires_at_most_once_across_calls(monkeypatch):
 
 
 def test_missing_default_dir_degrades_to_warning(monkeypatch):
-    monkeypatch.delenv("UNSLOTH_LLAMA_CPP_SCRIPTS_DIR", raising = False)
+    monkeypatch.delenv("UNSLOTH_LLAMA_CPP_SCRIPTS_DIR", raising=False)
     emits = []
-    runner = _simulate_pin_block(emits, set_value = None)
+    runner = _simulate_pin_block(emits, set_value=None)
     runner()
     assert emits == ["warned"]
     assert "UNSLOTH_LLAMA_CPP_SCRIPTS_DIR" not in os.environ
 
 
 def test_no_warning_when_both_symbols_present(monkeypatch):
-    monkeypatch.delenv("UNSLOTH_LLAMA_CPP_SCRIPTS_DIR", raising = False)
+    monkeypatch.delenv("UNSLOTH_LLAMA_CPP_SCRIPTS_DIR", raising=False)
     fake = types.ModuleType("unsloth_zoo.llama_cpp")
     fake.LLAMA_CPP_DEFAULT_DIR = "/fake/dir"
     fake._resolve_local_convert_script = lambda: None
@@ -203,6 +205,7 @@ def test_no_warning_when_both_symbols_present(monkeypatch):
             LLAMA_CPP_DEFAULT_DIR,
             _resolve_local_convert_script,  # noqa: F401
         )
+
         os.environ.setdefault("UNSLOTH_LLAMA_CPP_SCRIPTS_DIR", LLAMA_CPP_DEFAULT_DIR)
     except ImportError:
         if not state["emitted"]:

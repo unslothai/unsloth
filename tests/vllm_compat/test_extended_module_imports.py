@@ -52,7 +52,7 @@ def _stub_module(name: str, attrs: dict | None = None) -> None:
         return
     m = types.ModuleType(name)
     # Minimal viable spec so importlib treats the stub as a real module.
-    m.__spec__ = importlib.machinery.ModuleSpec(name = name, loader = None, origin = "<test stub>")
+    m.__spec__ = importlib.machinery.ModuleSpec(name=name, loader=None, origin="<test stub>")
     for k, v in (attrs or {}).items():
         setattr(m, k, v)
     sys.modules[name] = m
@@ -75,16 +75,16 @@ _stub_module(
 _stub_module("torchcodec")
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def _torch_distributed_safe(monkeypatch):
     """unsloth_zoo modules occasionally probe torch.distributed."""
     try:
         import torch.distributed as dist
 
-        monkeypatch.setattr(dist, "is_available", lambda: True, raising = False)
-        monkeypatch.setattr(dist, "is_initialized", lambda: False, raising = False)
-        monkeypatch.setattr(dist, "get_world_size", lambda *a, **k: 1, raising = False)
-        monkeypatch.setattr(dist, "get_rank", lambda *a, **k: 0, raising = False)
+        monkeypatch.setattr(dist, "is_available", lambda: True, raising=False)
+        monkeypatch.setattr(dist, "is_initialized", lambda: False, raising=False)
+        monkeypatch.setattr(dist, "get_world_size", lambda *a, **k: 1, raising=False)
+        monkeypatch.setattr(dist, "get_rank", lambda *a, **k: 0, raising=False)
     except Exception:
         pass
 
@@ -127,7 +127,7 @@ _ZOO_VLLM_FREE_MODULES = [
 ]
 
 
-@pytest.mark.skipif(not _has_unsloth_zoo(), reason = "unsloth_zoo not installed")
+@pytest.mark.skipif(not _has_unsloth_zoo(), reason="unsloth_zoo not installed")
 @pytest.mark.parametrize("modname", _ZOO_VLLM_FREE_MODULES)
 def test_unsloth_zoo_module_imports_under_spoof(modname: str):
     """Each unsloth_zoo module must import cleanly on a CPU-only spoof
@@ -150,7 +150,7 @@ def test_unsloth_zoo_module_imports_under_spoof(modname: str):
 # -------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(not _has_unsloth(), reason = "unsloth not installed")
+@pytest.mark.skipif(not _has_unsloth(), reason="unsloth not installed")
 def test_unsloth_is_mlx_false_under_spoof():
     """The CUDA spoof should not flip the MLX flag on a Linux/Windows CI
     box (real Apple Silicon is the ONLY environment _IS_MLX activates)."""
@@ -181,7 +181,7 @@ _UNSLOTH_CORE_MODULES = [
 ]
 
 
-@pytest.mark.skipif(not _has_unsloth(), reason = "unsloth not installed")
+@pytest.mark.skipif(not _has_unsloth(), reason="unsloth not installed")
 @pytest.mark.parametrize("modname", _UNSLOTH_CORE_MODULES)
 def test_unsloth_core_module_imports_under_spoof(modname: str):
     """Core unsloth modules must import on a CPU-only runner under
@@ -217,7 +217,7 @@ def test_unsloth_core_module_imports_under_spoof(modname: str):
 # -------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(not _has_unsloth(), reason = "unsloth not installed")
+@pytest.mark.skipif(not _has_unsloth(), reason="unsloth not installed")
 def test_fast_model_class_surface_under_spoof():
     sys.modules.pop("unsloth", None)
     import unsloth
@@ -251,7 +251,7 @@ def test_fast_model_class_surface_under_spoof():
 # -------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(not _has_unsloth(), reason = "unsloth not installed")
+@pytest.mark.skipif(not _has_unsloth(), reason="unsloth not installed")
 def test_unsloth_rl_replacements_dispatch_populated():
     try:
         import unsloth  # noqa: F401  -- _gpu_init bootstrap
@@ -284,7 +284,7 @@ def test_unsloth_rl_replacements_dispatch_populated():
 # -------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(not _has_unsloth_zoo(), reason = "unsloth_zoo not installed")
+@pytest.mark.skipif(not _has_unsloth_zoo(), reason="unsloth_zoo not installed")
 def test_zoo_compiler_apply_fused_lm_head_callable():
     sys.modules.pop("unsloth_zoo.compiler", None)
     compiler = importlib.import_module("unsloth_zoo.compiler")
@@ -302,7 +302,7 @@ def test_zoo_compiler_apply_fused_lm_head_callable():
 # -------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(not _has_unsloth(), reason = "unsloth not installed")
+@pytest.mark.skipif(not _has_unsloth(), reason="unsloth not installed")
 def test_fast_model_from_pretrained_kwargs_under_spoof():
     sys.modules.pop("unsloth", None)
     import unsloth

@@ -32,8 +32,8 @@ def _build_prompt_text(host: str) -> str:
             f"If your API key leaks, anyone with it can run code on this machine. "
             f"Do not share the API key. Continue?"
         ),
-        fg = _PROMPT_FG,
-        bold = True,
+        fg=_PROMPT_FG,
+        bold=True,
     )
 
 

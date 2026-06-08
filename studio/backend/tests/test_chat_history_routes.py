@@ -17,12 +17,12 @@ from routes import chat_history
 
 def _message(message_id: str, thread_id: str) -> chat_history.ChatMessage:
     return chat_history.ChatMessage(
-        id = message_id,
-        threadId = thread_id,
-        parentId = None,
-        role = "user",
-        content = [{"type": "text", "text": "hello"}],
-        createdAt = 1_700_000_000_000,
+        id=message_id,
+        threadId=thread_id,
+        parentId=None,
+        role="user",
+        content=[{"type": "text", "text": "hello"}],
+        createdAt=1_700_000_000_000,
     )
 
 
@@ -45,10 +45,10 @@ def test_replace_thread_messages_rejects_body_thread_mismatch(monkeypatch):
             chat_history.replace_thread_messages(
                 "thread-1",
                 chat_history.ChatMessageSyncRequest(
-                    messages = [_message("msg-1", "thread-2")],
-                    pruneMissing = True,
+                    messages=[_message("msg-1", "thread-2")],
+                    pruneMissing=True,
                 ),
-                current_subject = "test-user",
+                current_subject="test-user",
             )
         )
 
@@ -86,7 +86,7 @@ def test_chat_settings_payload_accepts_fast_mode_presets():
         }
     )
 
-    dumped = payload.model_dump(exclude_unset = True)
+    dumped = payload.model_dump(exclude_unset=True)
     assert dumped["inferenceParams"]["fastMode"] is False
     assert dumped["customPresets"][0]["params"]["fastMode"] is True
 
@@ -108,7 +108,7 @@ def test_chat_inference_settings_covers_frontend_persisted_fields():
     if not os.path.exists(runtime_ts):
         pytest.skip("frontend runtime.ts not present")
 
-    with open(runtime_ts, encoding = "utf-8") as fh:
+    with open(runtime_ts, encoding="utf-8") as fh:
         block = re.search(r"interface InferenceParams \{(.*?)\n\}", fh.read(), re.DOTALL)
     assert block, "InferenceParams interface not found in runtime.ts"
     persisted = set(re.findall(r"^\s*(\w+)\??:", block.group(1), re.M)) - {"checkpoint"}
@@ -132,11 +132,11 @@ def test_get_import_ledger_round_trips_through_storage(monkeypatch):
 
     monkeypatch.setattr(chat_history, "list_chat_legacy_imports", fake_list)
 
-    response = asyncio.run(chat_history.get_import_ledger(current_subject = "test-user"))
+    response = asyncio.run(chat_history.get_import_ledger(current_subject="test-user"))
     assert response.threadIds == []
 
     seen.extend(["legacy-a", "legacy-b"])
-    response = asyncio.run(chat_history.get_import_ledger(current_subject = "test-user"))
+    response = asyncio.run(chat_history.get_import_ledger(current_subject="test-user"))
     assert response.threadIds == ["legacy-a", "legacy-b"]
 
 
@@ -152,10 +152,10 @@ def test_record_import_ledger_returns_accepted_and_inserted(monkeypatch):
 
     response = asyncio.run(
         chat_history.record_import_ledger(
-            payload = chat_history.ChatImportLedgerRecordRequest(
-                threadIds = ["a", "b", "c"],
+            payload=chat_history.ChatImportLedgerRecordRequest(
+                threadIds=["a", "b", "c"],
             ),
-            current_subject = "test-user",
+            current_subject="test-user",
         )
     )
     assert response.accepted == 3
@@ -165,7 +165,8 @@ def test_record_import_ledger_returns_accepted_and_inserted(monkeypatch):
 
 def test_record_import_ledger_rejects_oversize_payload():
     from pydantic import ValidationError
+
     with pytest.raises(ValidationError):
         chat_history.ChatImportLedgerRecordRequest(
-            threadIds = [f"id-{i}" for i in range(10_001)],
+            threadIds=[f"id-{i}" for i in range(10_001)],
         )

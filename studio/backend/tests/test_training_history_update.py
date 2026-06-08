@@ -55,7 +55,7 @@ def _patch_run(monkeypatch: pytest.MonkeyPatch, payload: TrainingRunUpdateReques
         training_history.update_training_run(
             "run-1",
             payload,
-            current_subject = "test-user",
+            current_subject="test-user",
         )
     )
     return result, calls

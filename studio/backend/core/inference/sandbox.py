@@ -59,7 +59,11 @@ class _ProbeResult:
 
     __slots__ = ("ok", "transient")
 
-    def __init__(self, ok: bool, transient: bool = False):
+    def __init__(
+        self,
+        ok: bool,
+        transient: bool = False,
+    ):
         self.ok = ok
         self.transient = transient
 
@@ -80,14 +84,10 @@ def _probe(argv: list[str], label: str) -> _ProbeResult:
     except subprocess.TimeoutExpired as e:
         # Slow runner / loaded box / cold filesystem. Don't pin the
         # answer to False forever; let the next caller re-probe.
-        logger.warning(
-            "%s probe timed out (%s); will retry on next tool call", label, e
-        )
+        logger.warning("%s probe timed out (%s); will retry on next tool call", label, e)
         return _ProbeResult(ok = False, transient = True)
     except OSError as e:
-        logger.warning(
-            "%s probe failed (%s); tool execution will run unsandboxed", label, e
-        )
+        logger.warning("%s probe failed (%s); tool execution will run unsandboxed", label, e)
         return _ProbeResult(ok = False)
     if proc.returncode != 0:
         stderr_tail = proc.stderr.decode("utf-8", errors = "replace").strip()[-200:]
@@ -297,9 +297,7 @@ def _macos_seatbelt_profile(workdir: str) -> str:
     # /usr/local/bin but Seatbelt blocks exec/read there, and a stock
     # `bash` that resolves to /usr/local/bin/bash fails.
     homebrew_subpaths = [
-        f'(subpath "{_safe_subpath(p)}")'
-        for p in _MACOS_EXTRA_EXEC_PREFIXES
-        if os.path.isdir(p)
+        f'(subpath "{_safe_subpath(p)}")' for p in _MACOS_EXTRA_EXEC_PREFIXES if os.path.isdir(p)
     ]
     workdir_subpath = f'(subpath "{wd}")'
     # Paths the kernel needs mmap(PROT_EXEC) on so the loader can map
@@ -343,9 +341,7 @@ def _macos_seatbelt_profile(workdir: str) -> str:
         ]
     )
 
-    homebrew_read_block = (
-        "\n    " + "\n    ".join(homebrew_subpaths) if homebrew_subpaths else ""
-    )
+    homebrew_read_block = "\n    " + "\n    ".join(homebrew_subpaths) if homebrew_subpaths else ""
 
     return f"""(version 1)
 (deny default)
@@ -569,9 +565,7 @@ def _linux_bwrap_argv(inner_argv: list[str], workdir: str) -> list[str]:
     # under an existing bind are already reachable via path inheritance.
     bind_flags = ("--ro-bind", "--ro-bind-try", "--bind", "--bind-try")
     bound_dests = [
-        args[i + 2]
-        for i, arg in enumerate(args)
-        if arg in bind_flags and i + 2 < len(args)
+        args[i + 2] for i, arg in enumerate(args) if arg in bind_flags and i + 2 < len(args)
     ]
 
     bound_links: set[str] = set()

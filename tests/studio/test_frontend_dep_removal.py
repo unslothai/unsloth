@@ -122,7 +122,7 @@ CASES: list[Case] = [
         [],
         "PASS",
         [],
-        move_to_dev = ["@hugeicons/react"],
+        move_to_dev=["@hugeicons/react"],
     ),
     Case(
         "C13",
@@ -276,8 +276,8 @@ def synth_head(head_pkg: dict, case: Case) -> dict:
 
 def run_case(case: Case, head_pkg: dict) -> tuple[bool, str]:
     synth = synth_head(head_pkg, case)
-    with tempfile.NamedTemporaryFile("w", suffix = ".json", delete = False) as f:
-        json.dump(synth, f, indent = 2)
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+        json.dump(synth, f, indent=2)
         synth_path = f.name
     try:
         proc = subprocess.run(
@@ -291,8 +291,8 @@ def run_case(case: Case, head_pkg: dict) -> tuple[bool, str]:
                 "--head-lock",
                 str(HEAD_LOCK),
             ],
-            capture_output = True,
-            text = True,
+            capture_output=True,
+            text=True,
         )
     finally:
         os.unlink(synth_path)
@@ -1085,11 +1085,11 @@ def run_pkg_field_cases() -> int:
         # in deps.
         synth_base = json.loads(json.dumps(head_pkg))
         synth_base.setdefault("dependencies", {})[pc.target_pkg] = "^1.0.0"
-        with tempfile.NamedTemporaryFile("w", suffix = ".json", delete = False) as f:
-            json.dump(synth_base, f, indent = 2)
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+            json.dump(synth_base, f, indent=2)
             base_path = f.name
-        with tempfile.NamedTemporaryFile("w", suffix = ".json", delete = False) as f:
-            json.dump(synth_head, f, indent = 2)
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+            json.dump(synth_head, f, indent=2)
             head_path = f.name
         try:
             proc = subprocess.run(
@@ -1103,9 +1103,9 @@ def run_pkg_field_cases() -> int:
                     "--head-lock",
                     str(HEAD_LOCK),
                 ],
-                capture_output = True,
-                text = True,
-                cwd = str(REPO),
+                capture_output=True,
+                text=True,
+                cwd=str(REPO),
             )
         finally:
             os.unlink(base_path)
@@ -1137,7 +1137,7 @@ def run_pkg_field_cases() -> int:
 
 
 def run_adversarial_cases() -> int:
-    ADVERSARIAL_TMP_DIR.mkdir(parents = True, exist_ok = True)
+    ADVERSARIAL_TMP_DIR.mkdir(parents=True, exist_ok=True)
     head_pkg = json.loads(HEAD_PKG.read_text())
     passed = 0
     for ac in ADV_CASES:
@@ -1150,8 +1150,8 @@ def run_adversarial_cases() -> int:
             # removed and scans the repo, which now includes our file.
             synth_base = json.loads(json.dumps(head_pkg))
             synth_base.setdefault("dependencies", {})[ac.target_pkg] = "^1.0.0"
-            with tempfile.NamedTemporaryFile("w", suffix = ".json", delete = False) as f:
-                json.dump(synth_base, f, indent = 2)
+            with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+                json.dump(synth_base, f, indent=2)
                 base_path = f.name
             try:
                 proc = subprocess.run(
@@ -1165,9 +1165,9 @@ def run_adversarial_cases() -> int:
                         "--head-lock",
                         str(HEAD_LOCK),
                     ],
-                    capture_output = True,
-                    text = True,
-                    cwd = str(REPO),
+                    capture_output=True,
+                    text=True,
+                    cwd=str(REPO),
                 )
             finally:
                 os.unlink(base_path)
@@ -1292,7 +1292,7 @@ ENUM_CASES: list[EnumCase] = [
 def run_enum_cases() -> int:
     head_pkg = json.loads(HEAD_PKG.read_text())
     passed = 0
-    ADVERSARIAL_TMP_DIR.mkdir(parents = True, exist_ok = True)
+    ADVERSARIAL_TMP_DIR.mkdir(parents=True, exist_ok=True)
     for ec in ENUM_CASES:
         synth_head = json.loads(json.dumps(head_pkg))
         synth_head.setdefault("dependencies", {}).update(ec.add_deps)
@@ -1304,10 +1304,10 @@ def run_enum_cases() -> int:
         if ec.extra_file:
             rel, content = ec.extra_file
             fpath = REPO / rel
-            fpath.parent.mkdir(parents = True, exist_ok = True)
+            fpath.parent.mkdir(parents=True, exist_ok=True)
             fpath.write_text(content)
-        with tempfile.NamedTemporaryFile("w", suffix = ".json", delete = False) as f:
-            json.dump(synth_head, f, indent = 2)
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+            json.dump(synth_head, f, indent=2)
             head_path = f.name
         try:
             proc = subprocess.run(
@@ -1322,9 +1322,9 @@ def run_enum_cases() -> int:
                     str(HEAD_LOCK),
                     "--enumerate-dead",
                 ],
-                capture_output = True,
-                text = True,
-                cwd = str(REPO),
+                capture_output=True,
+                text=True,
+                cwd=str(REPO),
             )
         finally:
             os.unlink(head_path)
@@ -1474,7 +1474,7 @@ def run_wrapper_cases() -> int:
     passed = 0
     for wc in WRAPPER_CASES:
         try:
-            words = shlex.split(wc.raw_cmd, posix = True)
+            words = shlex.split(wc.raw_cmd, posix=True)
         except ValueError:
             words = wc.raw_cmd.split()
         actual = _next_real_bin(words, 0)

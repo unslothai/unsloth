@@ -7,7 +7,7 @@ import torch
 
 def _load_qwen3_5_vlm_save_helpers():
     source = Path(__file__).parents[2] / "unsloth" / "save.py"
-    tree = ast.parse(source.read_text(encoding = "utf-8"))
+    tree = ast.parse(source.read_text(encoding="utf-8"))
     helpers = [
         node
         for node in tree.body
@@ -18,7 +18,7 @@ def _load_qwen3_5_vlm_save_helpers():
             "_qwen3_5_vlm_state_dict_for_save",
         }
     ]
-    module = ast.Module(body = helpers, type_ignores = [])
+    module = ast.Module(body=helpers, type_ignores=[])
     ast.fix_missing_locations(module)
     namespace = {}
     exec(compile(module, str(source), "exec"), namespace)
@@ -27,10 +27,10 @@ def _load_qwen3_5_vlm_save_helpers():
 
 def _qwen3_5_vlm_model():
     return types.SimpleNamespace(
-        config = types.SimpleNamespace(
-            architectures = ["Qwen3_5ForConditionalGeneration"],
-            model_type = "qwen3_5",
-            vision_config = types.SimpleNamespace(),
+        config=types.SimpleNamespace(
+            architectures=["Qwen3_5ForConditionalGeneration"],
+            model_type="qwen3_5",
+            vision_config=types.SimpleNamespace(),
         )
     )
 
@@ -62,9 +62,9 @@ def test_qwen3_5_vlm_detection_requires_vision_config():
     assert helpers["_is_qwen3_5_vlm"](_qwen3_5_vlm_model())
 
     model = types.SimpleNamespace(
-        config = types.SimpleNamespace(
-            architectures = ["Qwen3_5ForCausalLM"],
-            model_type = "qwen3_5_text",
+        config=types.SimpleNamespace(
+            architectures=["Qwen3_5ForCausalLM"],
+            model_type="qwen3_5_text",
         )
     )
 

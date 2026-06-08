@@ -141,22 +141,22 @@ async def _collect(agen):
 
 def _mock_http_client(monkeypatch, handler):
     transport = httpx.MockTransport(handler)
-    monkeypatch.setattr(ep_mod, "_http_client", httpx.AsyncClient(transport = transport))
+    monkeypatch.setattr(ep_mod, "_http_client", httpx.AsyncClient(transport=transport))
 
 
 def _make_anthropic_client() -> ExternalProviderClient:
     return ExternalProviderClient(
-        provider_type = "anthropic",
-        base_url = "https://api.anthropic.com/v1",
-        api_key = "sk-ant-test",
+        provider_type="anthropic",
+        base_url="https://api.anthropic.com/v1",
+        api_key="sk-ant-test",
     )
 
 
 def _make_openai_client() -> ExternalProviderClient:
     return ExternalProviderClient(
-        provider_type = "openai",
-        base_url = "https://api.openai.com/v1",
-        api_key = "sk-openai-test",
+        provider_type="openai",
+        base_url="https://api.openai.com/v1",
+        api_key="sk-openai-test",
     )
 
 
@@ -220,8 +220,8 @@ def test_anthropic_stream_emits_usage_chunk_before_done(monkeypatch):
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200,
-            content = _anthropic_sse(sse_events),
-            headers = {"content-type": "text/event-stream"},
+            content=_anthropic_sse(sse_events),
+            headers={"content-type": "text/event-stream"},
         )
 
     _mock_http_client(monkeypatch, handler)
@@ -230,11 +230,11 @@ def test_anthropic_stream_emits_usage_chunk_before_done(monkeypatch):
         client = _make_anthropic_client()
         return await _collect(
             client._stream_anthropic(
-                messages = [{"role": "user", "content": "ping"}],
-                model = "claude-opus-4-7",
-                temperature = 0.7,
-                top_p = 0.95,
-                max_tokens = 64,
+                messages=[{"role": "user", "content": "ping"}],
+                model="claude-opus-4-7",
+                temperature=0.7,
+                top_p=0.95,
+                max_tokens=64,
             )
         )
 
@@ -278,8 +278,8 @@ def test_openai_responses_stream_emits_usage_chunk_on_completed(monkeypatch):
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200,
-            content = _openai_sse(sse_events),
-            headers = {"content-type": "text/event-stream"},
+            content=_openai_sse(sse_events),
+            headers={"content-type": "text/event-stream"},
         )
 
     _mock_http_client(monkeypatch, handler)
@@ -288,13 +288,13 @@ def test_openai_responses_stream_emits_usage_chunk_on_completed(monkeypatch):
         client = _make_openai_client()
         return await _collect(
             client._stream_openai_responses(
-                messages = [{"role": "user", "content": "ping"}],
-                model = "gpt-5.5",
-                temperature = 0.7,
-                top_p = 0.95,
-                max_tokens = 64,
-                enable_thinking = None,
-                reasoning_effort = None,
+                messages=[{"role": "user", "content": "ping"}],
+                model="gpt-5.5",
+                temperature=0.7,
+                top_p=0.95,
+                max_tokens=64,
+                enable_thinking=None,
+                reasoning_effort=None,
             )
         )
 
@@ -329,8 +329,8 @@ def test_openai_responses_stream_emits_usage_chunk_on_incomplete(monkeypatch):
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200,
-            content = _openai_sse(sse_events),
-            headers = {"content-type": "text/event-stream"},
+            content=_openai_sse(sse_events),
+            headers={"content-type": "text/event-stream"},
         )
 
     _mock_http_client(monkeypatch, handler)
@@ -339,13 +339,13 @@ def test_openai_responses_stream_emits_usage_chunk_on_incomplete(monkeypatch):
         client = _make_openai_client()
         return await _collect(
             client._stream_openai_responses(
-                messages = [{"role": "user", "content": "ping"}],
-                model = "gpt-5.5",
-                temperature = 0.7,
-                top_p = 0.95,
-                max_tokens = 1024,
-                enable_thinking = None,
-                reasoning_effort = None,
+                messages=[{"role": "user", "content": "ping"}],
+                model="gpt-5.5",
+                temperature=0.7,
+                top_p=0.95,
+                max_tokens=1024,
+                enable_thinking=None,
+                reasoning_effort=None,
             )
         )
 

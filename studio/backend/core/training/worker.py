@@ -105,7 +105,7 @@ if sys.platform == "win32":
 
         try:
             if os.path.isdir(_default_root):
-                for _ver in sorted(os.listdir(_default_root), key = _ver_key, reverse = True):
+                for _ver in sorted(os.listdir(_default_root), key=_ver_key, reverse=True):
                     _bin = os.path.join(_default_root, _ver, "bin")
                     if os.path.isdir(_bin):
                         _candidates.append(_bin)
@@ -198,16 +198,16 @@ def _install_package_wheel_first(
     except ImportError:
         pass
 
-    env = probe_torch_wheel_env(timeout = 30)
+    env = probe_torch_wheel_env(timeout=30)
     if wheel_url_builder is not None:
         wheel_url = wheel_url_builder(env)
     else:
         wheel_url = direct_wheel_url(
-            filename_prefix = filename_prefix,
-            package_version = pypi_version,
-            release_tag = release_tag,
-            release_base_url = release_base_url,
-            env = env,
+            filename_prefix=filename_prefix,
+            package_version=pypi_version,
+            release_tag=release_tag,
+            release_base_url=release_base_url,
+            env=env,
         )
 
     if wheel_url is None:
@@ -216,9 +216,9 @@ def _install_package_wheel_first(
         _send_status(event_queue, f"Installing {display_name} for faster training...")
         for installer, result in install_wheel(
             wheel_url,
-            python_executable = sys.executable,
-            use_uv = bool(shutil.which("uv")),
-            run = _sp.run,
+            python_executable=sys.executable,
+            use_uv=bool(shutil.which("uv")),
+            run=_sp.run,
         ):
             if result.returncode == 0:
                 logger.info("Installed prebuilt %s wheel successfully", display_name)
@@ -400,14 +400,14 @@ def _ensure_causal_conv1d_fast_path(event_queue: Any, model_name: str) -> None:
         return
 
     _install_package_wheel_first(
-        event_queue = event_queue,
-        import_name = "causal_conv1d",
-        display_name = "causal-conv1d",
-        pypi_name = "causal-conv1d",
-        pypi_version = _CAUSAL_CONV1D_PACKAGE_VERSION,
-        filename_prefix = "causal_conv1d",
-        release_tag = _CAUSAL_CONV1D_RELEASE_TAG,
-        release_base_url = "https://github.com/Dao-AILab/causal-conv1d/releases/download",
+        event_queue=event_queue,
+        import_name="causal_conv1d",
+        display_name="causal-conv1d",
+        pypi_name="causal-conv1d",
+        pypi_version=_CAUSAL_CONV1D_PACKAGE_VERSION,
+        filename_prefix="causal_conv1d",
+        release_tag=_CAUSAL_CONV1D_RELEASE_TAG,
+        release_base_url="https://github.com/Dao-AILab/causal-conv1d/releases/download",
     )
 
 
@@ -428,6 +428,7 @@ def _flash_linear_attention_importable() -> bool:
     try:
         import fla.modules  # noqa: F401
         import fla.ops.gated_delta_rule  # noqa: F401
+
         return True
     except Exception as exc:
         logger.warning(
@@ -490,7 +491,7 @@ def _ensure_flash_linear_attention_unconditional(event_queue: Any) -> bool:
     # Probe once; reuse result so the --force-reinstall decision and the short-circuit
     # share the same call count (stable for tests).
     already_importable = _flash_linear_attention_importable()
-    if already_importable and _flash_linear_attention_current(already_importable = True):
+    if already_importable and _flash_linear_attention_current(already_importable=True):
         logger.info("flash-linear-attention already importable at the pinned version")
         return True
 
@@ -533,10 +534,10 @@ def _ensure_flash_linear_attention_unconditional(event_queue: Any) -> bool:
     try:
         result = _sp.run(
             pypi_cmd,
-            stdout = _sp.PIPE,
-            stderr = _sp.STDOUT,
-            text = True,
-            timeout = _TILELANG_INSTALL_TIMEOUT_S,
+            stdout=_sp.PIPE,
+            stderr=_sp.STDOUT,
+            text=True,
+            timeout=_TILELANG_INSTALL_TIMEOUT_S,
         )
     except _sp.TimeoutExpired:
         logger.warning("flash-linear-attention install timed out; continuing")
@@ -597,14 +598,14 @@ def _ensure_mamba_ssm(event_queue: Any, model_name: str) -> None:
 
     logger.info("SSM model detected; setting up mamba-ssm after causal-conv1d")
     _install_package_wheel_first(
-        event_queue = event_queue,
-        import_name = "mamba_ssm",
-        display_name = "mamba-ssm",
-        pypi_name = "mamba-ssm",
-        pypi_version = _MAMBA_SSM_PACKAGE_VERSION,
-        filename_prefix = "mamba_ssm",
-        release_tag = _MAMBA_SSM_RELEASE_TAG,
-        release_base_url = "https://github.com/state-spaces/mamba/releases/download",
+        event_queue=event_queue,
+        import_name="mamba_ssm",
+        display_name="mamba-ssm",
+        pypi_name="mamba-ssm",
+        pypi_version=_MAMBA_SSM_PACKAGE_VERSION,
+        filename_prefix="mamba_ssm",
+        release_tag=_MAMBA_SSM_RELEASE_TAG,
+        release_base_url="https://github.com/state-spaces/mamba/releases/download",
     )
 
 
@@ -623,10 +624,11 @@ def _discover_fla_model_types() -> frozenset[str]:
     found: set[str] = set()
     try:
         import transformers
+
         models_root = Path(transformers.__file__).parent / "models"
         for modeling in models_root.glob("*/modeling_*.py"):
             try:
-                src = modeling.read_text(encoding = "utf-8", errors = "ignore")
+                src = modeling.read_text(encoding="utf-8", errors="ignore")
             except OSError:
                 continue
             if "from fla." in src:
@@ -652,6 +654,7 @@ def _installed_tvm_ffi_version() -> str | None:
     """Installed apache-tvm-ffi version, or None if missing/unimportable."""
     try:
         from importlib.metadata import version as _pkg_version
+
         return _pkg_version("apache-tvm-ffi")
     except Exception:
         return None
@@ -662,6 +665,7 @@ def _tilelang_importable() -> bool:
     try:
         import tilelang  # noqa: F401
         import tvm_ffi  # noqa: F401
+
         return True
     except Exception as exc:
         logger.warning(
@@ -679,6 +683,7 @@ def _torch_has_hip() -> bool:
     """
     try:
         import torch as _torch
+
         return bool(
             getattr(_torch.version, "hip", None)
             or "rocm" in getattr(_torch, "__version__", "").lower()
@@ -751,10 +756,10 @@ def _run_pip(cmd: list[str], event_queue: Any, label: str) -> bool:
     try:
         result = _sp.run(
             cmd,
-            stdout = _sp.PIPE,
-            stderr = _sp.STDOUT,
-            text = True,
-            timeout = _TILELANG_INSTALL_TIMEOUT_S,
+            stdout=_sp.PIPE,
+            stderr=_sp.STDOUT,
+            text=True,
+            timeout=_TILELANG_INSTALL_TIMEOUT_S,
         )
     except _sp.TimeoutExpired:
         logger.warning("%s install timed out; continuing", label)
@@ -786,6 +791,7 @@ def _ensure_tilelang_backend_unconditional(event_queue: Any) -> bool:
         return False
     if not _tilelang_platform_supported():
         import platform as _platform
+
         logger.info(
             "Skipping tilelang install: no prebuilt wheel for %s/%s",
             sys.platform,
@@ -978,14 +984,14 @@ def _install_fast_path_hooks(event_queue: Any, model_name: str) -> None:
             logger.info("causal-conv1d: no prebuilt wheel for Windows; skipping")
             return False
         ok = _install_package_wheel_first(
-            event_queue = eq,
-            import_name = "causal_conv1d",
-            display_name = "causal-conv1d",
-            pypi_name = "causal-conv1d",
-            pypi_version = _CAUSAL_CONV1D_PACKAGE_VERSION,
-            filename_prefix = "causal_conv1d",
-            release_tag = _CAUSAL_CONV1D_RELEASE_TAG,
-            release_base_url = ("https://github.com/Dao-AILab/causal-conv1d/releases/download"),
+            event_queue=eq,
+            import_name="causal_conv1d",
+            display_name="causal-conv1d",
+            pypi_name="causal-conv1d",
+            pypi_version=_CAUSAL_CONV1D_PACKAGE_VERSION,
+            filename_prefix="causal_conv1d",
+            release_tag=_CAUSAL_CONV1D_RELEASE_TAG,
+            release_base_url=("https://github.com/Dao-AILab/causal-conv1d/releases/download"),
         )
         return bool(ok)
 
@@ -1003,7 +1009,7 @@ def _install_fast_path_hooks(event_queue: Any, model_name: str) -> None:
         wrapped = _make_wrapper(original, install_fn, gate_name, post_fn)
         setattr(_iu, gate_name, wrapped)
         rebound = _rebind_in_already_imported_modules(
-            attr_name = gate_name, old_obj = original, new_obj = wrapped
+            attr_name=gate_name, old_obj=original, new_obj=wrapped
         )
         logger.info("Installed fast-path hook on %s (rebound %d modules)", gate_name, rebound)
 
@@ -1027,13 +1033,13 @@ def _ensure_flash_attn_for_long_context(event_queue: Any, max_seq_length: int) -
         return
 
     installed = _install_package_wheel_first(
-        event_queue = event_queue,
-        import_name = "flash_attn",
-        display_name = "flash-attn",
-        pypi_name = "flash-attn",
-        wheel_url_builder = flash_attn_wheel_url,
-        pypi_spec = "flash-attn",
-        pypi_status_message = "Installing flash-attn from PyPI for long-context training...",
+        event_queue=event_queue,
+        import_name="flash_attn",
+        display_name="flash-attn",
+        pypi_name="flash-attn",
+        wheel_url_builder=flash_attn_wheel_url,
+        pypi_spec="flash-attn",
+        pypi_status_message="Installing flash-attn from PyPI for long-context training...",
     )
     if not installed:
         _send_status(event_queue, "Continuing without flash-attn")
@@ -1082,7 +1088,7 @@ def _resize_mlx_vlm_image(image, resize):
     # When a resize is requested, hand mlx-vlm a writable RGB ndarray so its
     # PIL-path square-resize is skipped and HF processors don't warn on
     # non-writable views. resize=None (Default) above keeps the original PIL.
-    return np.array(image, copy = True)
+    return np.array(image, copy=True)
 
 
 def _resize_mlx_vlm_images(value, resize):
@@ -1091,7 +1097,7 @@ def _resize_mlx_vlm_images(value, resize):
     return _resize_mlx_vlm_image(value, resize)
 
 
-def _adapt_for_mlx_vlm(items, resize = None):
+def _adapt_for_mlx_vlm(items, resize=None):
     """Adapt GPU-path VLM dataset output for mlx-vlm consumption.
 
     The GPU path embeds PIL images inside messages content as
@@ -1234,7 +1240,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
                 kwargs["message"] = sm
         event_queue.put({"type": event_type, "ts": time.time(), **kwargs})
 
-    _send("status", status_message = "Loading MLX libraries...")
+    _send("status", status_message="Loading MLX libraries...")
 
     import mlx.core as mx
 
@@ -1269,7 +1275,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
 
     if config.get("use_loftq"):
         message = "LoftQ is not supported for MLX training yet."
-        _send("error", error = message)
+        _send("error", error=message)
         raise NotImplementedError(message)
 
     optim_name = _normalize_mlx_studio_optimizer(config.get("optim", "adamw_8bit"))
@@ -1278,18 +1284,18 @@ def _run_mlx_training(event_queue, stop_queue, config):
     # ── 1. Load model ──
     # Force text-only if the dataset is not an image dataset, even if the model
     # has vision capabilities (e.g. Qwen3.5-VL trained on plain alpaca text).
-    _send("status", status_message = f"Loading {model_name}...")
+    _send("status", status_message=f"Loading {model_name}...")
     is_dataset_image = bool(config.get("is_dataset_image", False))
     training_type = config.get("training_type", "LoRA/QLoRA")
     use_lora = training_type == "LoRA/QLoRA"
     model, tokenizer = FastMLXModel.from_pretrained(
         model_name,
-        load_in_4bit = config.get("load_in_4bit", True),
-        full_finetuning = not use_lora,
-        text_only = None if is_dataset_image else True,
-        token = hf_token,
-        trust_remote_code = bool(config.get("trust_remote_code", False)),
-        random_state = config.get("random_seed", 3407),
+        load_in_4bit=config.get("load_in_4bit", True),
+        full_finetuning=not use_lora,
+        text_only=None if is_dataset_image else True,
+        token=hf_token,
+        trust_remote_code=bool(config.get("trust_remote_code", False)),
+        random_state=config.get("random_seed", 3407),
     )
 
     is_vlm = bool(is_dataset_image and getattr(model, "_is_vlm_model", False))
@@ -1301,7 +1307,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
     if is_vlm and vision_image_size is not None and _is_deepseek_ocr:
         _send(
             "status",
-            status_message = (
+            status_message=(
                 "MLX vision image resize ignored for DeepSeek OCR (uses fixed Gundam preset)."
             ),
         )
@@ -1310,7 +1316,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
         vision_image_size = int(vision_image_size)
         _send(
             "status",
-            status_message = f"MLX vision image resize: {vision_image_size} (max dimension)",
+            status_message=f"MLX vision image resize: {vision_image_size} (max dimension)",
         )
 
     # ── 2. Apply LoRA / full FT ──
@@ -1325,15 +1331,15 @@ def _run_mlx_training(event_queue, stop_queue, config):
         use_grad_checkpoint = gc_setting
 
     if use_lora:
-        _send("status", status_message = "Configuring LoRA adapters...")
+        _send("status", status_message="Configuring LoRA adapters...")
         peft_kwargs = dict(
-            r = config.get("lora_r", 16),
-            lora_alpha = config.get("lora_alpha", 16),
-            lora_dropout = config.get("lora_dropout", 0.0),
-            use_rslora = config.get("use_rslora", False),
-            init_lora_weights = config.get("init_lora_weights", True),
-            random_state = config.get("random_seed", 3407),
-            target_modules = config.get("target_modules")
+            r=config.get("lora_r", 16),
+            lora_alpha=config.get("lora_alpha", 16),
+            lora_dropout=config.get("lora_dropout", 0.0),
+            use_rslora=config.get("use_rslora", False),
+            init_lora_weights=config.get("init_lora_weights", True),
+            random_state=config.get("random_seed", 3407),
+            target_modules=config.get("target_modules")
             or [
                 "q_proj",
                 "k_proj",
@@ -1343,7 +1349,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
                 "up_proj",
                 "down_proj",
             ],
-            use_gradient_checkpointing = use_grad_checkpoint,
+            use_gradient_checkpointing=use_grad_checkpoint,
         )
         finetune_language = config.get("finetune_language_layers", True)
         finetune_attention = config.get("finetune_attention_modules", True)
@@ -1361,7 +1367,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
         model = FastMLXModel.get_peft_model(model, **peft_kwargs)
 
     # ── 3. Load dataset ──
-    _send("status", status_message = "Loading dataset...")
+    _send("status", status_message="Loading dataset...")
     hf_dataset = config.get("hf_dataset", "")
     subset = config.get("subset")
     train_split = config.get("train_split", "train") or "train"
@@ -1389,7 +1395,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
         if not all_files:
             raise ValueError("No local dataset files found")
         loader = _mlx_local_dataset_loader_for_files(all_files)
-        return load_dataset(loader, data_files = all_files, split = "train")
+        return load_dataset(loader, data_files=all_files, split="train")
 
     if hf_dataset:
         load_kwargs = {"split": train_split, "token": hf_token}
@@ -1412,7 +1418,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
         try:
             eval_dataset = load_dataset(hf_dataset, **eval_kwargs)
         except Exception as e:
-            _send("status", status_message = f"Eval split load failed: {e}")
+            _send("status", status_message=f"Eval split load failed: {e}")
             eval_dataset = None
     elif config.get("local_eval_datasets"):
         eval_dataset = _load_local(config["local_eval_datasets"])
@@ -1423,23 +1429,24 @@ def _run_mlx_training(event_queue, stop_queue, config):
     format_type = config.get("format_type", "")
     try:
         from utils.datasets import format_and_template_dataset
-        def _fmt_progress(status_message = "", **_kw):
-            _send("status", status_message = status_message)
+
+        def _fmt_progress(status_message="", **_kw):
+            _send("status", status_message=status_message)
 
         if is_vlm:
-            _send("status", status_message = "Formatting VLM dataset...")
+            _send("status", status_message="Formatting VLM dataset...")
             vlm_info = format_and_template_dataset(
                 dataset,
-                model_name = model_name,
-                tokenizer = tokenizer,
-                is_vlm = True,
-                dataset_name = hf_dataset or "local",
-                progress_callback = _fmt_progress,
+                model_name=model_name,
+                tokenizer=tokenizer,
+                is_vlm=True,
+                dataset_name=hf_dataset or "local",
+                progress_callback=_fmt_progress,
             )
             if vlm_info.get("success"):
                 dataset = _adapt_for_mlx_vlm(
                     vlm_info["dataset"],
-                    resize = vision_image_size,
+                    resize=vision_image_size,
                 )
             else:
                 errors = vlm_info.get("errors", [])
@@ -1447,42 +1454,42 @@ def _run_mlx_training(event_queue, stop_queue, config):
             if eval_dataset is not None:
                 ev_info = format_and_template_dataset(
                     eval_dataset,
-                    model_name = model_name,
-                    tokenizer = tokenizer,
-                    is_vlm = True,
-                    dataset_name = hf_dataset or "local",
+                    model_name=model_name,
+                    tokenizer=tokenizer,
+                    is_vlm=True,
+                    dataset_name=hf_dataset or "local",
                 )
                 if ev_info.get("success"):
                     eval_dataset = _adapt_for_mlx_vlm(
                         ev_info["dataset"],
-                        resize = vision_image_size,
+                        resize=vision_image_size,
                     )
 
         elif format_type:
-            _send("status", status_message = f"Formatting dataset ({format_type})...")
+            _send("status", status_message=f"Formatting dataset ({format_type})...")
             info = format_and_template_dataset(
                 dataset,
-                model_name = model_name,
-                tokenizer = tokenizer,
-                is_vlm = False,
-                format_type = format_type,
-                dataset_name = hf_dataset or "local",
+                model_name=model_name,
+                tokenizer=tokenizer,
+                is_vlm=False,
+                format_type=format_type,
+                dataset_name=hf_dataset or "local",
             )
             if info.get("success", True):
                 dataset = info.get("dataset", dataset)
             if eval_dataset is not None:
                 ev = format_and_template_dataset(
                     eval_dataset,
-                    model_name = model_name,
-                    tokenizer = tokenizer,
-                    is_vlm = False,
-                    format_type = format_type,
-                    dataset_name = hf_dataset or "local",
+                    model_name=model_name,
+                    tokenizer=tokenizer,
+                    is_vlm=False,
+                    format_type=format_type,
+                    dataset_name=hf_dataset or "local",
                 )
                 if ev.get("success", True):
                     eval_dataset = ev.get("dataset", eval_dataset)
     except ImportError:
-        _send("status", status_message = "Format helper unavailable, using raw dataset")
+        _send("status", status_message="Format helper unavailable, using raw dataset")
 
     # ── 4. Resolve training steps ──
     max_steps = config.get("max_steps", 0) or 0
@@ -1532,32 +1539,32 @@ def _run_mlx_training(event_queue, stop_queue, config):
     max_grad_value = 1.0  # TODO: expose MLX grad-clip in Studio UI for power users
 
     trainer = MLXTrainer(
-        model = model,
-        tokenizer = tokenizer,
-        train_dataset = dataset,
-        eval_dataset = eval_dataset,
-        args = MLXTrainingConfig(
-            per_device_train_batch_size = batch_size,
-            gradient_accumulation_steps = grad_accum,
-            max_steps = max_steps,
-            learning_rate = lr_value,
-            warmup_steps = warmup_steps,
-            lr_scheduler_type = lr_scheduler_type,
-            optim = optim_name,
-            weight_decay = float(config.get("weight_decay", 0.001) or 0.001),
-            max_grad_norm = max_grad_norm,
-            max_grad_value = max_grad_value,
-            logging_steps = 1,
-            max_seq_length = max_seq_length,
-            seed = config.get("random_seed", 3407),
-            use_cce = True,
-            compile = True,
-            gradient_checkpointing = use_grad_checkpoint,
-            streaming = is_vlm,
-            packing = bool(config.get("packing", False)),
-            output_dir = output_dir,
-            save_steps = int(config.get("save_steps", 0) or 0),
-            eval_steps = eval_steps_val,
+        model=model,
+        tokenizer=tokenizer,
+        train_dataset=dataset,
+        eval_dataset=eval_dataset,
+        args=MLXTrainingConfig(
+            per_device_train_batch_size=batch_size,
+            gradient_accumulation_steps=grad_accum,
+            max_steps=max_steps,
+            learning_rate=lr_value,
+            warmup_steps=warmup_steps,
+            lr_scheduler_type=lr_scheduler_type,
+            optim=optim_name,
+            weight_decay=float(config.get("weight_decay", 0.001) or 0.001),
+            max_grad_norm=max_grad_norm,
+            max_grad_value=max_grad_value,
+            logging_steps=1,
+            max_seq_length=max_seq_length,
+            seed=config.get("random_seed", 3407),
+            use_cce=True,
+            compile=True,
+            gradient_checkpointing=use_grad_checkpoint,
+            streaming=is_vlm,
+            packing=bool(config.get("packing", False)),
+            output_dir=output_dir,
+            save_steps=int(config.get("save_steps", 0) or 0),
+            eval_steps=eval_steps_val,
         ),
     )
 
@@ -1567,7 +1574,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
 
     # ── 7. Apply train_on_responses_only if requested ──
     if config.get("train_on_completions", False):
-        _send("status", status_message = "Configuring response-only training...")
+        _send("status", status_message="Configuring response-only training...")
         try:
             from utils.datasets import (
                 MODEL_TO_TEMPLATE_MAPPER,
@@ -1579,16 +1586,16 @@ def _run_mlx_training(event_queue, stop_queue, config):
             if markers:
                 trainer = train_on_responses_only(
                     trainer,
-                    instruction_part = markers["instruction"],
-                    response_part = markers["response"],
+                    instruction_part=markers["instruction"],
+                    response_part=markers["response"],
                 )
             else:
                 _send(
                     "status",
-                    status_message = f"train_on_completions skipped (no template for {model_name})",
+                    status_message=f"train_on_completions skipped (no template for {model_name})",
                 )
         except Exception as e:
-            _send("status", status_message = f"train_on_completions failed: {e}")
+            _send("status", status_message=f"train_on_completions failed: {e}")
 
     # ── 8. Setup wandb / tensorboard ──
     wandb_run = None
@@ -1602,12 +1609,12 @@ def _run_mlx_training(event_queue, stop_queue, config):
                 os.environ["WANDB_API_KEY"] = wandb_token
             _wandb_sensitive = {"hf_token", "wandb_token"}
             wandb_run = _wandb.init(
-                project = config.get("wandb_project") or "unsloth-mlx",
-                config = {k: v for k, v in config.items() if k not in _wandb_sensitive},
-                reinit = True,
+                project=config.get("wandb_project") or "unsloth-mlx",
+                config={k: v for k, v in config.items() if k not in _wandb_sensitive},
+                reinit=True,
             )
         except Exception as e:
-            _send("status", status_message = f"wandb init failed: {e}")
+            _send("status", status_message=f"wandb init failed: {e}")
     if config.get("enable_tensorboard", False):
         try:
             from tensorboardX import SummaryWriter
@@ -1619,17 +1626,17 @@ def _run_mlx_training(event_queue, stop_queue, config):
         if SummaryWriter is not None:
             try:
                 tb_dir = config.get("tensorboard_dir") or f"{output_dir}/runs"
-                tb_writer = SummaryWriter(log_dir = tb_dir)
+                tb_writer = SummaryWriter(log_dir=tb_dir)
             except Exception as e:
-                _send("status", status_message = f"tensorboard init failed: {e}")
+                _send("status", status_message=f"tensorboard init failed: {e}")
         else:
             _send(
                 "status",
-                status_message = "tensorboard unavailable (install tensorboardX)",
+                status_message="tensorboard unavailable (install tensorboardX)",
             )
 
     # ── 9. Real-time progress callback ──
-    _send("status", status_message = f"Training {model_name}...")
+    _send("status", status_message=f"Training {model_name}...")
 
     def _on_step(
         step,
@@ -1640,23 +1647,23 @@ def _run_mlx_training(event_queue, stop_queue, config):
         peak_gb,
         elapsed,
         num_tokens,
-        grad_norm = None,
+        grad_norm=None,
     ):
         eta = (elapsed / step * (total - step)) if step > 0 else 0
         _send(
             "progress",
-            step = step,
-            epoch = round(step / total * num_epochs, 2) if total > 0 else 0,
-            loss = loss,
-            learning_rate = lr,
-            total_steps = total,
-            elapsed_seconds = elapsed,
-            eta_seconds = max(0, eta),
-            grad_norm = grad_norm,
-            num_tokens = num_tokens,
-            eval_loss = None,
-            status_message = None,
-            peak_memory_gb = peak_gb,
+            step=step,
+            epoch=round(step / total * num_epochs, 2) if total > 0 else 0,
+            loss=loss,
+            learning_rate=lr,
+            total_steps=total,
+            elapsed_seconds=elapsed,
+            eta_seconds=max(0, eta),
+            grad_norm=grad_norm,
+            num_tokens=num_tokens,
+            eval_loss=None,
+            status_message=None,
+            peak_memory_gb=peak_gb,
         )
         if wandb_run is not None:
             try:
@@ -1669,7 +1676,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
                         "train/num_tokens": num_tokens,
                         **({"train/grad_norm": grad_norm} if grad_norm is not None else {}),
                     },
-                    step = step,
+                    step=step,
                 )
             except Exception:
                 pass
@@ -1687,10 +1694,10 @@ def _run_mlx_training(event_queue, stop_queue, config):
     trainer.add_step_callback(_on_step)
 
     def _on_eval(step, eval_loss, perplexity):
-        _send("progress", step = step, eval_loss = eval_loss)
+        _send("progress", step=step, eval_loss=eval_loss)
         if wandb_run is not None:
             try:
-                wandb_run.log({"eval/loss": eval_loss, "eval/perplexity": perplexity}, step = step)
+                wandb_run.log({"eval/loss": eval_loss, "eval/perplexity": perplexity}, step=step)
             except Exception:
                 pass
         if tb_writer is not None:
@@ -1708,7 +1715,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
     def _poll_stop():
         while True:
             try:
-                msg = stop_queue.get(timeout = 1.0)
+                msg = stop_queue.get(timeout=1.0)
                 if msg and msg.get("type") == "stop":
                     _stop_save[0] = msg.get("save", True)
                     trainer.stop_requested = True
@@ -1719,7 +1726,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
                 # why safe: pipe permanently broken, no further messages can arrive
                 return
 
-    stop_thread = threading.Thread(target = _poll_stop, daemon = True)
+    stop_thread = threading.Thread(target=_poll_stop, daemon=True)
     stop_thread.start()
 
     # ── 11. Run training ──
@@ -1730,12 +1737,12 @@ def _run_mlx_training(event_queue, stop_queue, config):
     # ── 12. Save and finalize ──
     if trainer.stop_requested and not _stop_save[0]:
         # User clicked "Cancel" (save=False) — skip saving
-        _send("complete", output_dir = None, status_message = "Training cancelled")
+        _send("complete", output_dir=None, status_message="Training cancelled")
     else:
-        _send("status", status_message = "Saving model...")
+        _send("status", status_message="Saving model...")
         mx.synchronize()
         trainer.save_model(output_dir)
-        _send("complete", output_dir = output_dir, status_message = "Training completed")
+        _send("complete", output_dir=output_dir, status_message="Training completed")
 
     if tb_writer is not None:
         try:
@@ -1776,7 +1783,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             except Exception:
                 _result[0] = True
 
-        _t = _threading.Thread(target = _probe, daemon = True)
+        _t = _threading.Thread(target=_probe, daemon=True)
         _t.start()
         _t.join(2.0)
         if _result[0] is None or _result[0] is True:
@@ -1786,8 +1793,8 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             # logger isn't configured yet; print to stderr instead.
             print(
                 "huggingface.co unreachable; HF_HUB_OFFLINE=1 set for this worker.",
-                file = sys.stderr,
-                flush = True,
+                file=sys.stderr,
+                flush=True,
             )
 
     import warnings
@@ -1797,8 +1804,8 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         warnings.filterwarnings("ignore")
 
     LogConfig.setup_logging(
-        service_name = "unsloth-studio-training-worker",
-        env = os.getenv("ENVIRONMENT_TYPE", "production"),
+        service_name="unsloth-studio-training-worker",
+        env=os.getenv("ENVIRONMENT_TYPE", "production"),
     )
 
     apply_gpu_ids(config.get("resolved_gpu_ids"))
@@ -1839,7 +1846,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 {
                     "type": "error",
                     "error": str(exc),
-                    "stack": traceback.format_exc(limit = 20),
+                    "stack": traceback.format_exc(limit=20),
                     "ts": time.time(),
                 }
             )
@@ -1853,7 +1860,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             {
                 "type": "error",
                 "error": f"Failed to activate transformers version: {exc}",
-                "stack": traceback.format_exc(limit = 20),
+                "stack": traceback.format_exc(limit=20),
                 "ts": time.time(),
             }
         )
@@ -1916,7 +1923,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                     f"mamba-ssm / tilelang) failed to install "
                     f"with error: {exc}"
                 ),
-                "stack": traceback.format_exc(limit = 20),
+                "stack": traceback.format_exc(limit=20),
                 "ts": time.time(),
             }
         )
@@ -1931,8 +1938,9 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     # do NOT override on macOS. Windows has no fork at all.
     if sys.platform == "linux":
         import multiprocessing as _mp
+
         try:
-            _mp.set_start_method("fork", force = True)
+            _mp.set_start_method("fork", force=True)
         except RuntimeError:
             pass  # Already set
 
@@ -1940,6 +1948,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     if sys.platform == "win32":
         try:
             import triton  # noqa: F401
+
             logger.info("Triton available — torch.compile enabled")
         except ImportError:
             os.environ["TORCHDYNAMO_DISABLE"] = "1"
@@ -1971,6 +1980,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
 
     try:
         import torch.distributed as _td
+
         for _name, _stub in _td_stubs.items():
             if not hasattr(_td, _name):
                 setattr(_td, _name, _stub)
@@ -1981,6 +1991,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         sys.modules["torch.distributed"] = _td_mock
         try:
             import torch as _torch
+
             _torch.distributed = _td_mock
         except Exception:
             pass
@@ -2069,7 +2080,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                         # Filesystem glob order is not guaranteed, so always
                         # sort rather than stopping at the first match.
                         if _all_vers:
-                            _bnb_rocm_ver = max(_all_vers, key = lambda v: int(v))
+                            _bnb_rocm_ver = max(_all_vers, key=lambda v: int(v))
                 except Exception:
                     pass
                 _bnb_rocm_ver = _bnb_rocm_ver or "72"
@@ -2152,9 +2163,9 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                     def _grouped_mm_safe_impl(
                         self,
                         mat2,
-                        offs = None,
-                        bias = None,
-                        out_dtype = None,
+                        offs=None,
+                        bias=None,
+                        out_dtype=None,
                     ):
                         """Python mm/bmm fallback for _grouped_mm on gfx1200 (null HIP kernel, ROCm ≤ 7.12)."""
                         _t = _torch_for_rocm
@@ -2197,13 +2208,13 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                                 )
                                 pieces.append(_t.mm(a_tail, b_tail))
                             result = (
-                                _t.cat(pieces, dim = 0)
+                                _t.cat(pieces, dim=0)
                                 if pieces
                                 else _t.zeros(
                                     0,
                                     mat2.shape[-1],
-                                    device = self.device,
-                                    dtype = self.dtype,
+                                    device=self.device,
+                                    dtype=self.dtype,
                                 )
                             )
                         if bias is not None:
@@ -2254,6 +2265,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     if _hw.IS_ROCM:
         try:
             import torch as _torch_mem
+
             if _torch_mem.cuda.is_available():
                 # Classify unified vs discrete via _rocm_classify_unified_memory.
                 # See that function's docstring for classification priority.
@@ -2303,7 +2315,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             {
                 "type": "error",
                 "error": f"Failed to import ML libraries: {exc}",
-                "stack": traceback.format_exc(limit = 20),
+                "stack": traceback.format_exc(limit=20),
                 "ts": time.time(),
             }
         )
@@ -2321,7 +2333,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 {
                     "type": "error",
                     "error": str(exc),
-                    "stack": traceback.format_exc(limit = 20),
+                    "stack": traceback.format_exc(limit=20),
                     "ts": time.time(),
                 }
             )
@@ -2364,7 +2376,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     def _poll_stop():
         while True:
             try:
-                msg = stop_queue.get(timeout = 1.0)
+                msg = stop_queue.get(timeout=1.0)
                 if msg and msg.get("type") == "stop":
                     save = msg.get("save", True)
                     trainer.should_stop = True
@@ -2376,7 +2388,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             except (EOFError, OSError):
                 return
 
-    stop_thread = threading.Thread(target = _poll_stop, daemon = True)
+    stop_thread = threading.Thread(target=_poll_stop, daemon=True)
     stop_thread.start()
 
     # ── 4. Execute the training pipeline ──
@@ -2390,12 +2402,12 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         # ── 4a. Lightweight detection + tokenizer (no VRAM) ──
         _send_status(event_queue, "Detecting model type...")
         trainer.pre_detect_and_load_tokenizer(
-            model_name = model_name,
-            max_seq_length = config["max_seq_length"],
-            hf_token = hf_token,
-            is_dataset_image = config.get("is_dataset_image", False),
-            is_dataset_audio = config.get("is_dataset_audio", False),
-            trust_remote_code = config.get("trust_remote_code", False),
+            model_name=model_name,
+            max_seq_length=config["max_seq_length"],
+            hf_token=hf_token,
+            is_dataset_image=config.get("is_dataset_image", False),
+            is_dataset_audio=config.get("is_dataset_audio", False),
+            trust_remote_code=config.get("trust_remote_code", False),
         )
         if trainer.should_stop:
             event_queue.put({"type": "complete", "output_dir": None, "ts": time.time()})
@@ -2407,18 +2419,18 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         training_type = config.get("training_type", "LoRA/QLoRA")
         _is_cpt_for_dataset = training_type == "Continued Pretraining"
         dataset_result = trainer.load_and_format_dataset(
-            dataset_source = hf_dataset if hf_dataset and hf_dataset.strip() else None,
-            format_type = config.get("format_type", ""),
-            local_datasets = config.get("local_datasets") or None,
-            local_eval_datasets = config.get("local_eval_datasets") or None,
-            custom_format_mapping = config.get("custom_format_mapping"),
-            subset = config.get("subset"),
-            train_split = config.get("train_split", "train"),
-            eval_split = config.get("eval_split"),
-            eval_steps = config.get("eval_steps", 0.00),
-            dataset_slice_start = config.get("dataset_slice_start"),
-            dataset_slice_end = config.get("dataset_slice_end"),
-            is_cpt = _is_cpt_for_dataset,
+            dataset_source=hf_dataset if hf_dataset and hf_dataset.strip() else None,
+            format_type=config.get("format_type", ""),
+            local_datasets=config.get("local_datasets") or None,
+            local_eval_datasets=config.get("local_eval_datasets") or None,
+            custom_format_mapping=config.get("custom_format_mapping"),
+            subset=config.get("subset"),
+            train_split=config.get("train_split", "train"),
+            eval_split=config.get("eval_split"),
+            eval_steps=config.get("eval_steps", 0.00),
+            dataset_slice_start=config.get("dataset_slice_start"),
+            dataset_slice_end=config.get("dataset_slice_end"),
+            is_cpt=_is_cpt_for_dataset,
         )
 
         if isinstance(dataset_result, tuple):
@@ -2482,6 +2494,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
 
         def _monitor_tqdm():
             from tqdm.auto import tqdm as _tqdm_cls
+
             while not _tqdm_stop.is_set():
                 for bar in list(getattr(_tqdm_cls, "_instances", set())):
                     try:
@@ -2494,7 +2507,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                         pass
                 _tqdm_stop.wait(3)
 
-        _tqdm_thread = _th.Thread(target = _monitor_tqdm, daemon = True)
+        _tqdm_thread = _th.Thread(target=_monitor_tqdm, daemon=True)
         _tqdm_thread.start()
 
         training_type = config.get("training_type", "LoRA/QLoRA")
@@ -2505,15 +2518,15 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         # ── 4c. Load training model (uses VRAM — dataset already formatted) ──
         _send_status(event_queue, "Loading model...")
         success = trainer.load_model(
-            model_name = model_name,
-            max_seq_length = config["max_seq_length"],
-            load_in_4bit = config["load_in_4bit"],
-            full_finetuning = not use_lora,
-            hf_token = hf_token,
-            is_dataset_image = config.get("is_dataset_image", False),
-            is_dataset_audio = config.get("is_dataset_audio", False),
-            trust_remote_code = config.get("trust_remote_code", False),
-            gpu_ids = config.get("resolved_gpu_ids"),
+            model_name=model_name,
+            max_seq_length=config["max_seq_length"],
+            load_in_4bit=config["load_in_4bit"],
+            full_finetuning=not use_lora,
+            hf_token=hf_token,
+            is_dataset_image=config.get("is_dataset_image", False),
+            is_dataset_audio=config.get("is_dataset_audio", False),
+            trust_remote_code=config.get("trust_remote_code", False),
+            gpu_ids=config.get("resolved_gpu_ids"),
         )
         if not success or trainer.should_stop:
             if trainer.should_stop:
@@ -2552,35 +2565,35 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                     "lm_head",
                 ]
             success = trainer.prepare_model_for_training(
-                use_lora = True,
-                target_modules = cpt_target_modules,
-                modules_to_save = ["embed_tokens"] if wants_embed else None,
-                lora_r = config.get("lora_r", 128),
-                lora_alpha = config.get("lora_alpha", 32),
-                lora_dropout = config.get("lora_dropout", 0.0),
-                use_gradient_checkpointing = config.get("gradient_checkpointing", "unsloth"),
-                use_rslora = config.get("use_rslora", False),
-                use_loftq = config.get("use_loftq", False),
+                use_lora=True,
+                target_modules=cpt_target_modules,
+                modules_to_save=["embed_tokens"] if wants_embed else None,
+                lora_r=config.get("lora_r", 128),
+                lora_alpha=config.get("lora_alpha", 32),
+                lora_dropout=config.get("lora_dropout", 0.0),
+                use_gradient_checkpointing=config.get("gradient_checkpointing", "unsloth"),
+                use_rslora=config.get("use_rslora", False),
+                use_loftq=config.get("use_loftq", False),
             )
         elif use_lora:
             _send_status(event_queue, "Configuring LoRA adapters...")
             success = trainer.prepare_model_for_training(
-                use_lora = True,
-                finetune_vision_layers = config.get("finetune_vision_layers", True),
-                finetune_language_layers = config.get("finetune_language_layers", True),
-                finetune_attention_modules = config.get("finetune_attention_modules", True),
-                finetune_mlp_modules = config.get("finetune_mlp_modules", True),
-                target_modules = config.get("target_modules"),
-                lora_r = config.get("lora_r", 16),
-                lora_alpha = config.get("lora_alpha", 16),
-                lora_dropout = config.get("lora_dropout", 0.0),
-                use_gradient_checkpointing = config.get("gradient_checkpointing", "unsloth"),
-                use_rslora = config.get("use_rslora", False),
-                use_loftq = config.get("use_loftq", False),
+                use_lora=True,
+                finetune_vision_layers=config.get("finetune_vision_layers", True),
+                finetune_language_layers=config.get("finetune_language_layers", True),
+                finetune_attention_modules=config.get("finetune_attention_modules", True),
+                finetune_mlp_modules=config.get("finetune_mlp_modules", True),
+                target_modules=config.get("target_modules"),
+                lora_r=config.get("lora_r", 16),
+                lora_alpha=config.get("lora_alpha", 16),
+                lora_dropout=config.get("lora_dropout", 0.0),
+                use_gradient_checkpointing=config.get("gradient_checkpointing", "unsloth"),
+                use_rslora=config.get("use_rslora", False),
+                use_loftq=config.get("use_loftq", False),
             )
         else:
             _send_status(event_queue, "Preparing model for full finetuning...")
-            success = trainer.prepare_model_for_training(use_lora = False)
+            success = trainer.prepare_model_for_training(use_lora=False)
 
         if not success or trainer.should_stop:
             if trainer.should_stop:
@@ -2656,33 +2669,33 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
 
         trainer._train_worker(
             dataset,
-            output_dir = output_dir,
-            num_epochs = config.get("num_epochs", 3),
-            learning_rate = lr_value,
-            embedding_learning_rate = embedding_lr_value,
-            batch_size = config.get("batch_size", 2),
-            gradient_accumulation_steps = config.get("gradient_accumulation_steps", 4),
-            warmup_steps = config.get("warmup_steps"),
-            warmup_ratio = config.get("warmup_ratio"),
-            max_steps = max_steps if max_steps and max_steps > 0 else 0,
-            save_steps = save_steps if save_steps and save_steps > 0 else 0,
-            weight_decay = config.get("weight_decay", 0.001),
-            random_seed = config.get("random_seed", 3407),
-            packing = config.get("packing", False),
-            train_on_completions = False if is_cpt else config.get("train_on_completions", False),
-            enable_wandb = config.get("enable_wandb", False),
-            wandb_project = config.get("wandb_project", "unsloth-training"),
-            wandb_token = config.get("wandb_token"),
-            enable_tensorboard = config.get("enable_tensorboard", False),
-            tensorboard_dir = tensorboard_dir,
-            eval_dataset = eval_dataset,
-            eval_steps = eval_steps,
-            max_seq_length = config.get("max_seq_length", 2048),
-            vision_image_size = config.get("vision_image_size"),
-            optim = config.get("optim", "adamw_8bit"),
-            lr_scheduler_type = config.get("lr_scheduler_type", "linear"),
-            is_cpt = is_cpt,
-            resume_from_checkpoint = resume_from_checkpoint,
+            output_dir=output_dir,
+            num_epochs=config.get("num_epochs", 3),
+            learning_rate=lr_value,
+            embedding_learning_rate=embedding_lr_value,
+            batch_size=config.get("batch_size", 2),
+            gradient_accumulation_steps=config.get("gradient_accumulation_steps", 4),
+            warmup_steps=config.get("warmup_steps"),
+            warmup_ratio=config.get("warmup_ratio"),
+            max_steps=max_steps if max_steps and max_steps > 0 else 0,
+            save_steps=save_steps if save_steps and save_steps > 0 else 0,
+            weight_decay=config.get("weight_decay", 0.001),
+            random_seed=config.get("random_seed", 3407),
+            packing=config.get("packing", False),
+            train_on_completions=False if is_cpt else config.get("train_on_completions", False),
+            enable_wandb=config.get("enable_wandb", False),
+            wandb_project=config.get("wandb_project", "unsloth-training"),
+            wandb_token=config.get("wandb_token"),
+            enable_tensorboard=config.get("enable_tensorboard", False),
+            tensorboard_dir=tensorboard_dir,
+            eval_dataset=eval_dataset,
+            eval_steps=eval_steps,
+            max_seq_length=config.get("max_seq_length", 2048),
+            vision_image_size=config.get("vision_image_size"),
+            optim=config.get("optim", "adamw_8bit"),
+            lr_scheduler_type=config.get("lr_scheduler_type", "linear"),
+            is_cpt=is_cpt,
+            resume_from_checkpoint=resume_from_checkpoint,
         )
 
         _tqdm_stop.set()
@@ -2731,7 +2744,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 {
                     "type": "error",
                     "error": _oom_msg,
-                    "stack": traceback.format_exc(limit = 20),
+                    "stack": traceback.format_exc(limit=20),
                     "ts": time.time(),
                 }
             )
@@ -2740,7 +2753,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 {
                     "type": "error",
                     "error": str(exc),
-                    "stack": traceback.format_exc(limit = 20),
+                    "stack": traceback.format_exc(limit=20),
                     "ts": time.time(),
                 }
             )
@@ -2794,7 +2807,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
                 "type": "error",
                 "error": f"Failed to import embedding libraries: {e}. "
                 "Ensure 'sentence_transformers' and 'unsloth' are installed.",
-                "stack": traceback.format_exc(limit = 20),
+                "stack": traceback.format_exc(limit=20),
                 "ts": time.time(),
             }
         )
@@ -2808,7 +2821,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
         nonlocal _should_stop, _save_on_stop
         while True:
             try:
-                msg = stop_queue.get(timeout = 1.0)
+                msg = stop_queue.get(timeout=1.0)
                 if msg and msg.get("type") == "stop":
                     _save_on_stop = msg.get("save", True)
                     _should_stop = True
@@ -2822,7 +2835,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
             except (EOFError, OSError):
                 return
 
-    stop_thread = threading.Thread(target = _poll_stop, daemon = True)
+    stop_thread = threading.Thread(target=_poll_stop, daemon=True)
     stop_thread.start()
 
     # ── 2. Load model ──
@@ -2835,17 +2848,17 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
         use_lora = training_type == "LoRA/QLoRA"
 
         model = FastSentenceTransformer.from_pretrained(
-            model_name = model_name,
-            max_seq_length = max_seq_length,
-            full_finetuning = not use_lora,
-            token = hf_token,
+            model_name=model_name,
+            max_seq_length=max_seq_length,
+            full_finetuning=not use_lora,
+            token=hf_token,
         )
     except Exception as e:
         event_queue.put(
             {
                 "type": "error",
                 "error": f"Failed to load embedding model '{model_name}': {e}",
-                "stack": traceback.format_exc(limit = 20),
+                "stack": traceback.format_exc(limit=20),
                 "ts": time.time(),
             }
         )
@@ -2866,26 +2879,26 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
 
             model = FastSentenceTransformer.get_peft_model(
                 model,
-                r = config.get("lora_r", 32),
-                target_modules = config.get("target_modules")
+                r=config.get("lora_r", 32),
+                target_modules=config.get("target_modules")
                 or ["q_proj", "k_proj", "v_proj", "o_proj"],
-                lora_alpha = config.get("lora_alpha", 64),
-                lora_dropout = config.get("lora_dropout", 0.0),
-                bias = "none",
-                use_gradient_checkpointing = gradient_checkpointing,
-                random_state = config.get("random_seed", 3407),
-                use_rslora = config.get("use_rslora", False),
-                loftq_config = {"loftq_bits": 4, "loftq_iter": 1}
+                lora_alpha=config.get("lora_alpha", 64),
+                lora_dropout=config.get("lora_dropout", 0.0),
+                bias="none",
+                use_gradient_checkpointing=gradient_checkpointing,
+                random_state=config.get("random_seed", 3407),
+                use_rslora=config.get("use_rslora", False),
+                loftq_config={"loftq_bits": 4, "loftq_iter": 1}
                 if config.get("use_loftq")
                 else None,
-                task_type = "FEATURE_EXTRACTION",
+                task_type="FEATURE_EXTRACTION",
             )
         except Exception as e:
             event_queue.put(
                 {
                     "type": "error",
                     "error": f"Failed to configure LoRA for embedding model: {e}",
-                    "stack": traceback.format_exc(limit = 20),
+                    "stack": traceback.format_exc(limit=20),
                     "ts": time.time(),
                 }
             )
@@ -2909,8 +2922,8 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
             dataset = load_dataset(
                 hf_dataset.strip(),
                 subset,
-                split = train_split,
-                token = hf_token,
+                split=train_split,
+                token=hf_token,
             )
         elif local_datasets:
             # Load from local file(s) — mirrors the non-embedding pipeline's
@@ -2956,7 +2969,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
                     loader = "parquet"
                 else:
                     raise ValueError(f"Unsupported local dataset format: {all_files[0]}")
-                dataset = load_dataset(loader, data_files = all_files, split = "train")
+                dataset = load_dataset(loader, data_files=all_files, split="train")
         else:
             event_queue.put(
                 {
@@ -2982,7 +2995,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
             {
                 "type": "error",
                 "error": f"Failed to load dataset: {e}",
-                "stack": traceback.format_exc(limit = 20),
+                "stack": traceback.format_exc(limit=20),
                 "ts": time.time(),
             }
         )
@@ -3081,7 +3094,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
             args,
             state,
             control,
-            logs = None,
+            logs=None,
             **kwargs,
         ):
             if not logs:
@@ -3124,20 +3137,20 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
     _send_status(event_queue, "Starting embedding training...")
     try:
         trainer = SentenceTransformerTrainer(
-            model = model,
-            train_dataset = dataset,
-            loss = loss,
-            args = args,
-            callbacks = [_EmbeddingProgressCallback()],
+            model=model,
+            train_dataset=dataset,
+            loss=loss,
+            args=args,
+            callbacks=[_EmbeddingProgressCallback()],
         )
 
-        trainer.train(resume_from_checkpoint = resume_from_checkpoint)
+        trainer.train(resume_from_checkpoint=resume_from_checkpoint)
     except Exception as e:
         event_queue.put(
             {
                 "type": "error",
                 "error": f"Embedding training failed: {e}",
-                "stack": traceback.format_exc(limit = 20),
+                "stack": traceback.format_exc(limit=20),
                 "ts": time.time(),
             }
         )
@@ -3158,7 +3171,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
     _send_status(event_queue, "Saving model...")
     try:
         if _should_stop and _save_on_stop:
-            trainer._save_checkpoint(trainer.model, trial = None)
+            trainer._save_checkpoint(trainer.model, trial=None)
         model.save_pretrained(output_dir)
         model.tokenizer.save_pretrained(output_dir)
         logger.info("Embedding model saved to %s", output_dir)
@@ -3168,7 +3181,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
             {
                 "type": "error",
                 "error": f"Training completed but failed to save: {e}",
-                "stack": traceback.format_exc(limit = 20),
+                "stack": traceback.format_exc(limit=20),
                 "ts": time.time(),
             }
         )

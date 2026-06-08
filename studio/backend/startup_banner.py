@@ -69,8 +69,7 @@ def print_sandbox_unavailable_notice(strict: bool = False) -> None:
         return f"{dim}{text}{reset}" if use_color else text
 
     header = (
-        "Sandbox unavailable: tool execution is blocked by "
-        "UNSLOTH_STUDIO_SANDBOX_STRICT."
+        "Sandbox unavailable: tool execution is blocked by UNSLOTH_STUDIO_SANDBOX_STRICT."
         if strict
         else "Sandbox unavailable: tool execution will run unsandboxed."
     )

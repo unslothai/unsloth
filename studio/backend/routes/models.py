@@ -159,6 +159,7 @@ def _resolve_hf_cache_dir() -> Path:
     """Resolve local HF cache root used by hub downloads."""
     try:
         from huggingface_hub.constants import HF_HUB_CACHE
+
         return Path(HF_HUB_CACHE)
     except Exception:
         return Path.home() / ".cache" / "huggingface" / "hub"
@@ -216,11 +217,11 @@ def _scan_models_dir(models_dir: Path, *, limit: int | None = None) -> List[Loca
             updated_at = None
         return [
             LocalModelInfo(
-                id = str(models_dir),
-                display_name = models_dir.name,
-                path = str(models_dir),
-                source = "models_dir",
-                updated_at = updated_at,
+                id=str(models_dir),
+                display_name=models_dir.name,
+                path=str(models_dir),
+                source="models_dir",
+                updated_at=updated_at,
             ),
         ]
 
@@ -250,11 +251,11 @@ def _scan_models_dir(models_dir: Path, *, limit: int | None = None) -> List[Loca
             updated_at = None
         found.append(
             LocalModelInfo(
-                id = str(child),
-                display_name = child.name,
-                path = str(child),
-                source = "models_dir",
-                updated_at = updated_at,
+                id=str(child),
+                display_name=child.name,
+                path=str(child),
+                source="models_dir",
+                updated_at=updated_at,
             ),
         )
     # Also scan for standalone .gguf files directly in the models directory
@@ -269,11 +270,11 @@ def _scan_models_dir(models_dir: Path, *, limit: int | None = None) -> List[Loca
                     updated_at = None
                 found.append(
                     LocalModelInfo(
-                        id = str(gguf_file),
-                        display_name = gguf_file.stem,
-                        path = str(gguf_file),
-                        source = "models_dir",
-                        updated_at = updated_at,
+                        id=str(gguf_file),
+                        display_name=gguf_file.stem,
+                        path=str(gguf_file),
+                        source="models_dir",
+                        updated_at=updated_at,
                     ),
                 )
 
@@ -301,12 +302,12 @@ def _scan_hf_cache(cache_dir: Path) -> List[LocalModelInfo]:
 
         found.append(
             LocalModelInfo(
-                id = model_id,
-                model_id = model_id,
-                display_name = model_id.split("/")[-1],
-                path = str(repo_dir),
-                source = "hf_cache",
-                updated_at = updated_at,
+                id=model_id,
+                model_id=model_id,
+                display_name=model_id.split("/")[-1],
+                path=str(repo_dir),
+                source="hf_cache",
+                updated_at=updated_at,
             ),
         )
     return found
@@ -332,11 +333,11 @@ def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
             updated_at = None
         return [
             LocalModelInfo(
-                id = str(lm_dir),
-                display_name = lm_dir.name,
-                path = str(lm_dir),
-                source = "lmstudio",
-                updated_at = updated_at,
+                id=str(lm_dir),
+                display_name=lm_dir.name,
+                path=str(lm_dir),
+                source="lmstudio",
+                updated_at=updated_at,
             ),
         ]
 
@@ -351,11 +352,11 @@ def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
                         updated_at = None
                     found.append(
                         LocalModelInfo(
-                            id = str(child),
-                            display_name = child.stem,
-                            path = str(child),
-                            source = "lmstudio",
-                            updated_at = updated_at,
+                            id=str(child),
+                            display_name=child.stem,
+                            path=str(child),
+                            source="lmstudio",
+                            updated_at=updated_at,
                         ),
                     )
                 continue
@@ -370,11 +371,11 @@ def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
                     updated_at = None
                 found.append(
                     LocalModelInfo(
-                        id = str(child),
-                        display_name = child.name,
-                        path = str(child),
-                        source = "lmstudio",
-                        updated_at = updated_at,
+                        id=str(child),
+                        display_name=child.name,
+                        path=str(child),
+                        source="lmstudio",
+                        updated_at=updated_at,
                     ),
                 )
                 continue
@@ -397,12 +398,12 @@ def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
                             updated_at = None
                         found.append(
                             LocalModelInfo(
-                                id = str(model_dir),
-                                model_id = model_id,
-                                display_name = model_dir.name,
-                                path = str(model_dir),
-                                source = "lmstudio",
-                                updated_at = updated_at,
+                                id=str(model_dir),
+                                model_id=model_id,
+                                display_name=model_dir.name,
+                                path=str(model_dir),
+                                source="lmstudio",
+                                updated_at=updated_at,
                             ),
                         )
                     elif model_dir.suffix == ".gguf" and model_dir.is_file():
@@ -412,12 +413,12 @@ def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
                             updated_at = None
                         found.append(
                             LocalModelInfo(
-                                id = str(model_dir),
-                                model_id = f"{child.name}/{model_dir.stem}",
-                                display_name = model_dir.stem,
-                                path = str(model_dir),
-                                source = "lmstudio",
-                                updated_at = updated_at,
+                                id=str(model_dir),
+                                model_id=f"{child.name}/{model_dir.stem}",
+                                display_name=model_dir.stem,
+                                path=str(model_dir),
+                                source="lmstudio",
+                                updated_at=updated_at,
                             ),
                         )
                 except OSError:
@@ -440,7 +441,7 @@ def _ollama_links_dir(ollama_dir: Path) -> Optional[Path]:
 
     primary = ollama_dir / ".studio_links"
     try:
-        primary.mkdir(exist_ok = True)
+        primary.mkdir(exist_ok=True)
         return primary
     except OSError as e:
         logger.debug(
@@ -458,7 +459,7 @@ def _ollama_links_dir(ollama_dir: Path) -> Optional[Path]:
         digest = "default"
     fallback = cache_root() / "ollama_links" / digest
     try:
-        fallback.mkdir(parents = True, exist_ok = True)
+        fallback.mkdir(parents=True, exist_ok=True)
         return fallback
     except OSError as e:
         logger.warning(
@@ -525,7 +526,7 @@ def _scan_ollama_dir(ollama_dir: Path, limit: Optional[int] = None) -> List[Loca
 
         Idempotent: skips recreation when a valid link already exists.
         """
-        link_dir.mkdir(parents = True, exist_ok = True)
+        link_dir.mkdir(parents=True, exist_ok=True)
         link_path = link_dir / link_name
         resolved = target.resolve()
 
@@ -662,12 +663,12 @@ def _scan_ollama_dir(ollama_dir: Path, limit: Optional[int] = None) -> List[Loca
 
             found.append(
                 LocalModelInfo(
-                    id = gguf_link_path,
-                    model_id = f"ollama/{repo_name}:{tag}",
-                    display_name = display + suffix,
-                    path = gguf_link_path,
-                    source = "custom",
-                    updated_at = updated_at,
+                    id=gguf_link_path,
+                    model_id=f"ollama/{repo_name}:{tag}",
+                    display_name=display + suffix,
+                    path=gguf_link_path,
+                    source="custom",
+                    updated_at=updated_at,
                 ),
             )
             if limit is not None and len(found) >= limit:
@@ -677,10 +678,10 @@ def _scan_ollama_dir(ollama_dir: Path, limit: Optional[int] = None) -> List[Loca
     return found
 
 
-@router.get("/local", response_model = LocalModelListResponse)
+@router.get("/local", response_model=LocalModelListResponse)
 async def list_local_models(
     models_dir: str = Query(
-        default = "./models", description = "Directory to scan for local model folders"
+        default="./models", description="Directory to scan for local model folders"
     ),
     current_subject: str = Depends(get_current_subject),
 ):
@@ -710,6 +711,7 @@ async def list_local_models(
         allowed_roots.append(hf_default)
     try:
         from utils.paths import studio_root, outputs_root
+
         allowed_roots.extend([studio_root(), outputs_root()])
     except Exception:
         pass
@@ -723,8 +725,8 @@ async def list_local_models(
             break
     if models_root is None:
         raise HTTPException(
-            status_code = 403,
-            detail = "Directory not allowed",
+            status_code=403,
+            detail="Directory not allowed",
         )
 
     try:
@@ -764,7 +766,7 @@ async def list_local_models(
                 _generic = [
                     m
                     for m in (
-                        _scan_models_dir(folder_path, limit = _MAX_MODELS_PER_FOLDER)
+                        _scan_models_dir(folder_path, limit=_MAX_MODELS_PER_FOLDER)
                         + _scan_hf_cache(folder_path)
                         + _scan_lmstudio_dir(folder_path)
                     )
@@ -774,12 +776,12 @@ async def list_local_models(
                 if len(custom_models) < _MAX_MODELS_PER_FOLDER:
                     custom_models += _scan_ollama_dir(
                         folder_path,
-                        limit = _MAX_MODELS_PER_FOLDER - len(custom_models),
+                        limit=_MAX_MODELS_PER_FOLDER - len(custom_models),
                     )
             except OSError as e:
                 logger.warning("Skipping unreadable scan folder %s: %s", folder_path, e)
                 continue
-            local_models += [m.model_copy(update = {"source": "custom"}) for m in custom_models]
+            local_models += [m.model_copy(update={"source": "custom"}) for m in custom_models]
 
         # Deduplicate models, but always keep custom folder entries so they
         # appear in the "Custom Folders" UI section even when the same model
@@ -793,23 +795,23 @@ async def list_local_models(
 
         models = sorted(
             deduped.values(),
-            key = lambda item: (item.updated_at or 0),
-            reverse = True,
+            key=lambda item: (item.updated_at or 0),
+            reverse=True,
         )
 
         return LocalModelListResponse(
-            models_dir = str(models_root),
-            hf_cache_dir = str(hf_cache_dir),
-            lmstudio_dirs = [str(d) for d in lm_dirs],
-            models = models,
+            models_dir=str(models_root),
+            hf_cache_dir=str(hf_cache_dir),
+            lmstudio_dirs=[str(d) for d in lm_dirs],
+            models=models,
         )
     except Exception as e:
         raise log_and_http_error(
             e,
             500,
             "Failed to list local models",
-            event = "models.list_local_models_failed",
-            log = logger,
+            event="models.list_local_models_failed",
+            log=logger,
         )
 
 
@@ -817,10 +819,11 @@ async def list_local_models(
 async def get_scan_folders(current_subject: str = Depends(get_current_subject)):
     """List all registered custom model scan folders."""
     from storage.studio_db import list_scan_folders
+
     return {"folders": list_scan_folders()}
 
 
-@router.post("/scan-folders", response_model = ScanFolderInfo, status_code = 201)
+@router.post("/scan-folders", response_model=ScanFolderInfo, status_code=201)
 async def add_scan_folder_endpoint(
     body: AddScanFolderRequest, current_subject: str = Depends(get_current_subject)
 ):
@@ -834,7 +837,7 @@ async def add_scan_folder_endpoint(
         # Curated, path-free validation message (e.g. "Path does not exist"):
         # forward the text, not the raw exception.
         rejection_message = str(e)
-        raise HTTPException(status_code = 400, detail = rejection_message)
+        raise HTTPException(status_code=400, detail=rejection_message)
     logger.info("Scan folder added: %s", folder.get("path"))
     return folder
 
@@ -1158,14 +1161,14 @@ def _match_browse_child(current: Path, name: str) -> Optional[Path]:
                 return child
     except PermissionError:
         raise HTTPException(
-            status_code = 403,
-            detail = f"Permission denied reading {current.name}",
+            status_code=403,
+            detail=f"Permission denied reading {current.name}",
         ) from None
     except OSError as exc:
-        logger.warning("browse-folders: could not read %s: %s", current, exc, exc_info = True)
+        logger.warning("browse-folders: could not read %s: %s", current, exc, exc_info=True)
         raise HTTPException(
-            status_code = 500,
-            detail = f"Could not read {os.path.basename(str(current))}",
+            status_code=500,
+            detail=f"Could not read {os.path.basename(str(current))}",
         ) from exc
     return None
 
@@ -1175,7 +1178,7 @@ def _resolve_browse_target(path: Optional[str], allowed_roots: list[Path]) -> Pa
     requested_path = _normalize_browse_request_path(path)
     resolved_roots: list[Path] = []
     seen_roots: set[str] = set()
-    for root in sorted(allowed_roots, key = lambda p: len(str(p)), reverse = True):
+    for root in sorted(allowed_roots, key=lambda p: len(str(p)), reverse=True):
         try:
             resolved = root.resolve()
         except OSError:
@@ -1196,8 +1199,8 @@ def _resolve_browse_target(path: Optional[str], allowed_roots: list[Path]) -> Pa
             child = _match_browse_child(current, part)
             if child is None:
                 raise HTTPException(
-                    status_code = 404,
-                    detail = f"Path does not exist: {os.path.basename(requested_path)}",
+                    status_code=404,
+                    detail=f"Path does not exist: {os.path.basename(requested_path)}",
                 )
             try:
                 resolved_child = child.resolve()
@@ -1207,16 +1210,16 @@ def _resolve_browse_target(path: Optional[str], allowed_roots: list[Path]) -> Pa
                     part,
                     current,
                     exc,
-                    exc_info = True,
+                    exc_info=True,
                 )
                 raise HTTPException(
-                    status_code = 400,
-                    detail = "Invalid path",
+                    status_code=400,
+                    detail="Invalid path",
                 ) from exc
             if not _is_path_inside_allowlist(resolved_child, resolved_roots):
                 raise HTTPException(
-                    status_code = 403,
-                    detail = (
+                    status_code=403,
+                    detail=(
                         "Path is not in the browseable allowlist. Register it via "
                         "POST /api/models/scan-folders first, or pick a directory "
                         "under your home folder."
@@ -1226,14 +1229,14 @@ def _resolve_browse_target(path: Optional[str], allowed_roots: list[Path]) -> Pa
 
         if not current.is_dir():
             raise HTTPException(
-                status_code = 400,
-                detail = f"Not a directory: {os.path.basename(str(current))}",
+                status_code=400,
+                detail=f"Not a directory: {os.path.basename(str(current))}",
             )
         return current
 
     raise HTTPException(
-        status_code = 403,
-        detail = (
+        status_code=403,
+        detail=(
             "Path is not in the browseable allowlist. Register it via "
             "POST /api/models/scan-folders first, or pick a directory "
             "under your home folder."
@@ -1241,11 +1244,11 @@ def _resolve_browse_target(path: Optional[str], allowed_roots: list[Path]) -> Pa
     )
 
 
-@router.get("/browse-folders", response_model = BrowseFoldersResponse)
+@router.get("/browse-folders", response_model=BrowseFoldersResponse)
 async def browse_folders(
     path: Optional[str] = Query(
         None,
-        description = (
+        description=(
             "Directory to list. If omitted, defaults to the current user's "
             "home directory. Tilde (`~`) and relative paths are expanded. "
             "Must resolve inside the allowlist of browseable roots (HOME, "
@@ -1255,7 +1258,7 @@ async def browse_folders(
     ),
     show_hidden: bool = Query(
         False,
-        description = "Include entries whose name starts with a dot",
+        description="Include entries whose name starts with a dot",
     ),
     current_subject: str = Depends(get_current_subject),
 ):
@@ -1309,14 +1312,14 @@ async def browse_folders(
         it = target.iterdir()
     except PermissionError:
         raise HTTPException(
-            status_code = 403,
-            detail = f"Permission denied reading {os.path.basename(str(target))}",
+            status_code=403,
+            detail=f"Permission denied reading {os.path.basename(str(target))}",
         )
     except OSError as exc:
-        logger.warning("browse-folders: could not read %s: %s", target, exc, exc_info = True)
+        logger.warning("browse-folders: could not read %s: %s", target, exc, exc_info=True)
         raise HTTPException(
-            status_code = 500,
-            detail = f"Could not read {os.path.basename(str(target))}",
+            status_code=500,
+            detail=f"Could not read {os.path.basename(str(target))}",
         )
 
     try:
@@ -1343,9 +1346,9 @@ async def browse_folders(
                 continue
             entries.append(
                 BrowseEntry(
-                    name = name,
-                    has_models = _looks_like_model_dir(child),
-                    hidden = is_hidden,
+                    name=name,
+                    has_models=_looks_like_model_dir(child),
+                    hidden=is_hidden,
                 )
             )
     except PermissionError as exc:
@@ -1364,7 +1367,7 @@ async def browse_folders(
         bucket = 0 if e.has_models else (2 if e.hidden else 1)
         return (bucket, e.name.lower())
 
-    entries.sort(key = _sort_key)
+    entries.sort(key=_sort_key)
 
     # Parent is None at the filesystem root (`p.parent == p`) AND when
     # the parent would step outside the sandbox -- otherwise the up-row
@@ -1421,12 +1424,12 @@ async def browse_folders(
         logger.debug("browse-folders: could not load well-known dirs: %s", exc)
 
     return BrowseFoldersResponse(
-        current = str(target),
-        parent = parent,
-        entries = entries,
-        suggestions = suggestions,
-        truncated = truncated,
-        model_files_here = _count_model_files(target),
+        current=str(target),
+        parent=parent,
+        entries=entries,
+        suggestions=suggestions,
+        truncated=truncated,
+        model_files_here=_count_model_files(target),
     )
 
 
@@ -1458,15 +1461,15 @@ async def list_models(current_subject: str = Depends(get_current_subject)):
             _is_vision = model_data.get("is_vision", False)
             _audio_type = model_data.get("audio_type")
             model_info = ModelDetails(
-                id = model_name,
-                name = model_name.split("/")[-1] if "/" in model_name else model_name,
-                is_vision = _is_vision,
-                is_lora = model_data.get("is_lora", False),
-                is_mlx = model_data.get("is_mlx", False),
-                is_audio = model_data.get("is_audio", False),
-                audio_type = _audio_type,
-                has_audio_input = model_data.get("has_audio_input", False),
-                model_type = derive_model_type(_is_vision, _audio_type),
+                id=model_name,
+                name=model_name.split("/")[-1] if "/" in model_name else model_name,
+                is_vision=_is_vision,
+                is_lora=model_data.get("is_lora", False),
+                is_mlx=model_data.get("is_mlx", False),
+                is_audio=model_data.get("is_audio", False),
+                audio_type=_audio_type,
+                has_audio_input=model_data.get("has_audio_input", False),
+                model_type=derive_model_type(_is_vision, _audio_type),
             )
             loaded_models.append(model_info)
 
@@ -1477,12 +1480,12 @@ async def list_models(current_subject: str = Depends(get_current_subject)):
         if llama_backend.is_loaded and llama_backend.model_identifier:
             loaded_models.append(
                 ModelDetails(
-                    id = llama_backend.model_identifier,
-                    name = llama_backend.model_identifier.split("/")[-1],
-                    is_gguf = True,
-                    is_vision = llama_backend.is_vision,
-                    is_audio = getattr(llama_backend, "_is_audio", False),
-                    audio_type = getattr(llama_backend, "_audio_type", None),
+                    id=llama_backend.model_identifier,
+                    name=llama_backend.model_identifier.split("/")[-1],
+                    is_gguf=True,
+                    is_vision=llama_backend.is_vision,
+                    is_audio=getattr(llama_backend, "_is_audio", False),
+                    audio_type=getattr(llama_backend, "_audio_type", None),
                 )
             )
 
@@ -1498,10 +1501,10 @@ async def list_models(current_subject: str = Depends(get_current_subject)):
         for model_id in default_models:
             if model_id not in seen_ids:
                 model_info = loaded_by_id.get(model_id) or ModelDetails(
-                    id = model_id,
-                    name = model_id.split("/")[-1] if "/" in model_id else model_id,
-                    is_gguf = model_id.upper().endswith("-GGUF"),
-                    is_mlx = _looks_like_mlx_repo(model_id),
+                    id=model_id,
+                    name=model_id.split("/")[-1] if "/" in model_id else model_id,
+                    is_gguf=model_id.upper().endswith("-GGUF"),
+                    is_mlx=_looks_like_mlx_repo(model_id),
                 )
                 all_models.append(model_info)
                 seen_ids.add(model_id)
@@ -1512,15 +1515,15 @@ async def list_models(current_subject: str = Depends(get_current_subject)):
                 all_models.append(model_info)
                 seen_ids.add(model_info.id)
 
-        return ModelListResponse(models = all_models, default_models = default_models)
+        return ModelListResponse(models=all_models, default_models=default_models)
 
     except Exception as e:
         raise log_and_http_error(
             e,
             500,
             "Failed to list models",
-            event = "models.list_models_failed",
-            log = logger,
+            event="models.list_models_failed",
+            log=logger,
         )
 
 
@@ -1538,8 +1541,8 @@ def _get_model_size_bytes(model_name: str, hf_token: Optional[str] = None) -> Op
     try:
         from huggingface_hub import HfApi
 
-        api = HfApi(token = hf_token)
-        info = api.repo_info(model_name, repo_type = "model", token = hf_token)
+        api = HfApi(token=hf_token)
+        info = api.repo_info(model_name, repo_type="model", token=hf_token)
         if not info.siblings:
             return None
 
@@ -1585,9 +1588,9 @@ async def get_model_config(
         config_dict = load_model_defaults(model_name)
 
         # Detect model capabilities (pass HF token for gated models)
-        is_vision = is_vision_model(model_name, hf_token = hf_token)
-        is_embedding = is_embedding_model(model_name, hf_token = hf_token)
-        audio_type = detect_audio_type(model_name, hf_token = hf_token)
+        is_vision = is_vision_model(model_name, hf_token=hf_token)
+        is_embedding = is_embedding_model(model_name, hf_token=hf_token)
+        audio_type = detect_audio_type(model_name, hf_token=hf_token)
 
         # Check if it's a LoRA adapter
         is_lora = False
@@ -1608,7 +1611,7 @@ async def get_model_config(
 
                 _trust = model_name.lower().startswith("unsloth/")
                 _ac = _AutoConfig.from_pretrained(
-                    model_name, trust_remote_code = _trust, token = hf_token
+                    model_name, trust_remote_code=_trust, token=hf_token
                 )
                 max_position_embeddings = _get_max_position_embeddings(_ac)
             except Exception:
@@ -1618,19 +1621,19 @@ async def get_model_config(
             f"Model config result for {model_name}: is_vision={is_vision}, is_embedding={is_embedding}, audio_type={audio_type}, is_lora={is_lora}, max_position_embeddings={max_position_embeddings}"
         )
         return ModelDetails(
-            id = model_name,
-            model_name = model_name,
-            config = config_dict,
-            is_vision = is_vision,
-            is_embedding = is_embedding,
-            is_lora = is_lora,
-            is_audio = audio_type is not None,
-            audio_type = audio_type,
-            has_audio_input = is_audio_input_type(audio_type),
-            model_type = derive_model_type(is_vision, audio_type, is_embedding),
-            base_model = base_model,
-            max_position_embeddings = max_position_embeddings,
-            model_size_bytes = _get_model_size_bytes(model_name, hf_token),
+            id=model_name,
+            model_name=model_name,
+            config=config_dict,
+            is_vision=is_vision,
+            is_embedding=is_embedding,
+            is_lora=is_lora,
+            is_audio=audio_type is not None,
+            audio_type=audio_type,
+            has_audio_input=is_audio_input_type(audio_type),
+            model_type=derive_model_type(is_vision, audio_type, is_embedding),
+            base_model=base_model,
+            max_position_embeddings=max_position_embeddings,
+            model_size_bytes=_get_model_size_bytes(model_name, hf_token),
         )
 
     except Exception as e:
@@ -1638,18 +1641,18 @@ async def get_model_config(
             e,
             500,
             "Failed to get model config",
-            event = "models.get_model_config_failed",
-            log = logger,
+            event="models.get_model_config_failed",
+            log=logger,
         )
 
 
 @router.get("/loras")
 async def scan_loras(
     outputs_dir: str = Query(
-        default = str(outputs_root()), description = "Directory to scan for LoRA adapters"
+        default=str(outputs_root()), description="Directory to scan for LoRA adapters"
     ),
     exports_dir: str = Query(
-        default = str(exports_root()), description = "Directory to scan for exported models"
+        default=str(exports_root()), description="Directory to scan for exported models"
     ),
     current_subject: str = Depends(get_current_subject),
 ):
@@ -1665,41 +1668,41 @@ async def scan_loras(
         lora_list = []
 
         # Scan training outputs
-        trained_models = scan_trained_models(outputs_dir = resolved_outputs_dir)
+        trained_models = scan_trained_models(outputs_dir=resolved_outputs_dir)
         for display_name, model_path, model_type in trained_models:
             base_model = get_base_model_from_checkpoint(model_path)
             lora_list.append(
                 LoRAInfo(
-                    display_name = display_name,
-                    adapter_path = model_path,
-                    base_model = base_model,
-                    source = "training",
-                    export_type = model_type,
+                    display_name=display_name,
+                    adapter_path=model_path,
+                    base_model=base_model,
+                    source="training",
+                    export_type=model_type,
                 )
             )
 
         # Scan exported models (merged, LoRA, base — skips GGUF)
-        exported = scan_exported_models(exports_dir = resolved_exports_dir)
+        exported = scan_exported_models(exports_dir=resolved_exports_dir)
         for display_name, model_path, export_type, base_model in exported:
             lora_list.append(
                 LoRAInfo(
-                    display_name = display_name,
-                    adapter_path = model_path,
-                    base_model = base_model,
-                    source = "exported",
-                    export_type = export_type,
+                    display_name=display_name,
+                    adapter_path=model_path,
+                    base_model=base_model,
+                    source="exported",
+                    export_type=export_type,
                 )
             )
 
-        return LoRAScanResponse(loras = lora_list, outputs_dir = resolved_outputs_dir)
+        return LoRAScanResponse(loras=lora_list, outputs_dir=resolved_outputs_dir)
 
     except Exception as e:
         raise log_and_http_error(
             e,
             500,
             "Failed to scan LoRA adapters",
-            event = "models.scan_loras_failed",
-            log = logger,
+            event="models.scan_loras_failed",
+            log=logger,
         )
 
 
@@ -1804,17 +1807,17 @@ async def delete_finetuned_model(
     """
     if source not in {"training", "exported"}:
         raise HTTPException(
-            status_code = 400,
-            detail = "Only trained or exported Studio models can be deleted",
+            status_code=400,
+            detail="Only trained or exported Studio models can be deleted",
         )
 
     if not model_path or not model_path.strip():
-        raise HTTPException(status_code = 400, detail = "model_path is required")
+        raise HTTPException(status_code=400, detail="model_path is required")
 
     if export_type == "gguf" and not gguf_variant:
         raise HTTPException(
-            status_code = 400,
-            detail = "gguf_variant is required when export_type is 'gguf'",
+            status_code=400,
+            detail="gguf_variant is required when export_type is 'gguf'",
         )
 
     raw_path = Path(model_path).expanduser()
@@ -1836,15 +1839,15 @@ async def delete_finetuned_model(
     if delete_path_is_symlink:
         if not _is_path_under_lexically(delete_path, allowed_root):
             raise HTTPException(
-                status_code = 400,
-                detail = "Model path is outside Studio storage",
+                status_code=400,
+                detail="Model path is outside Studio storage",
             )
         if export_type == "gguf" and gguf_variant:
             target_path = delete_path.resolve()
             if not _is_path_under(target_path, allowed_root):
                 raise HTTPException(
-                    status_code = 400,
-                    detail = "Model path is outside Studio storage",
+                    status_code=400,
+                    detail="Model path is outside Studio storage",
                 )
         else:
             target_path = delete_path
@@ -1856,33 +1859,34 @@ async def delete_finetuned_model(
     )
     if should_check_resolved_path and not _is_path_under(target_path, allowed_root):
         raise HTTPException(
-            status_code = 400,
-            detail = "Model path is outside Studio storage",
+            status_code=400,
+            detail="Model path is outside Studio storage",
         )
     if target_path == allowed_root:
         raise HTTPException(
-            status_code = 400,
-            detail = "Refusing to delete storage root",
+            status_code=400,
+            detail="Refusing to delete storage root",
         )
     if not target_path.exists() and not target_path.is_symlink():
-        raise HTTPException(status_code = 404, detail = "Model not found on disk")
+        raise HTTPException(status_code=404, detail="Model not found on disk")
 
     if source == "training":
         try:
             from core.training import get_training_backend
+
             training_backend = get_training_backend()
             if training_backend.is_training_active():
                 raise HTTPException(
-                    status_code = 409,
-                    detail = "Cannot delete trained models while training is running",
+                    status_code=409,
+                    detail="Cannot delete trained models while training is running",
                 )
         except HTTPException:
             raise
         except Exception as e:
             logger.warning("Could not check training status before delete: %s", e)
             raise HTTPException(
-                status_code = 500,
-                detail = "Could not verify training status before deleting",
+                status_code=500,
+                detail="Could not verify training status before deleting",
             ) from e
 
     try:
@@ -1904,8 +1908,8 @@ async def delete_finetuned_model(
             )
         ):
             raise HTTPException(
-                status_code = 409,
-                detail = "Cannot delete a model while it is loading",
+                status_code=409,
+                detail="Cannot delete a model while it is loading",
             )
         if (
             llama_backend.is_loaded
@@ -1921,16 +1925,16 @@ async def delete_finetuned_model(
             )
         ):
             raise HTTPException(
-                status_code = 400,
-                detail = "Unload the model before deleting",
+                status_code=400,
+                detail="Unload the model before deleting",
             )
     except HTTPException:
         raise
     except Exception as e:
         logger.warning("Could not check llama.cpp loaded model before delete: %s", e)
         raise HTTPException(
-            status_code = 503,
-            detail = "Could not verify model load status before deleting",
+            status_code=503,
+            detail="Could not verify model load status before deleting",
         ) from e
 
     try:
@@ -1941,8 +1945,8 @@ async def delete_finetuned_model(
             for loading_model in loading_models
         ):
             raise HTTPException(
-                status_code = 409,
-                detail = "Cannot delete a model while it is loading",
+                status_code=409,
+                detail="Cannot delete a model while it is loading",
             )
         if inference_backend.active_model_name:
             if _loaded_model_matches_deleted_path(
@@ -1950,24 +1954,24 @@ async def delete_finetuned_model(
                 target_path,
             ):
                 raise HTTPException(
-                    status_code = 400,
-                    detail = "Unload the model before deleting",
+                    status_code=400,
+                    detail="Unload the model before deleting",
                 )
     except HTTPException:
         raise
     except Exception as e:
         logger.warning("Could not check inference backend loaded model before delete: %s", e)
         raise HTTPException(
-            status_code = 503,
-            detail = "Could not verify model load status before deleting",
+            status_code=503,
+            detail="Could not verify model load status before deleting",
         ) from e
 
     try:
         if export_type == "gguf" and gguf_variant:
             if not target_path.is_dir():
                 raise HTTPException(
-                    status_code = 400,
-                    detail = "GGUF variant deletion requires an export directory",
+                    status_code=400,
+                    detail="GGUF variant deletion requires an export directory",
                 )
             deleted_count, deleted_bytes = _delete_gguf_variant_files(
                 target_path,
@@ -1975,8 +1979,8 @@ async def delete_finetuned_model(
             )
             if deleted_count == 0:
                 raise HTTPException(
-                    status_code = 404,
-                    detail = f"Variant {gguf_variant} not found on disk",
+                    status_code=404,
+                    detail=f"Variant {gguf_variant} not found on disk",
                 )
             try:
                 if not any(target_path.iterdir()):
@@ -2004,8 +2008,8 @@ async def delete_finetuned_model(
 
         if target_path.exists() or target_path.is_symlink():
             raise HTTPException(
-                status_code = 500,
-                detail = "Deletion incomplete; some files could not be removed",
+                status_code=500,
+                detail="Deletion incomplete; some files could not be removed",
             )
 
         _prune_empty_parents(target_path, allowed_root)
@@ -2019,15 +2023,15 @@ async def delete_finetuned_model(
             "Error deleting fine-tuned model %s: %s",
             target_path,
             e,
-            exc_info = True,
+            exc_info=True,
         )
         raise HTTPException(
-            status_code = 500,
-            detail = "Failed to delete fine-tuned model",
+            status_code=500,
+            detail="Failed to delete fine-tuned model",
         )
 
 
-@router.get("/loras/{lora_path:path}/base-model", response_model = LoRABaseModelResponse)
+@router.get("/loras/{lora_path:path}/base-model", response_model=LoRABaseModelResponse)
 async def get_lora_base_model(lora_path: str, current_subject: str = Depends(get_current_subject)):
     """
     Get the base model for a LoRA adapter.
@@ -2039,13 +2043,13 @@ async def get_lora_base_model(lora_path: str, current_subject: str = Depends(get
 
         if base_model is None:
             raise HTTPException(
-                status_code = 404,
-                detail = f"Could not determine base model for LoRA: {lora_path}",
+                status_code=404,
+                detail=f"Could not determine base model for LoRA: {lora_path}",
             )
 
         return LoRABaseModelResponse(
-            lora_path = lora_path,
-            base_model = base_model,
+            lora_path=lora_path,
+            base_model=base_model,
         )
 
     except HTTPException:
@@ -2055,12 +2059,12 @@ async def get_lora_base_model(lora_path: str, current_subject: str = Depends(get
             e,
             500,
             "Failed to get base model",
-            event = "models.get_lora_base_model_failed",
-            log = logger,
+            event="models.get_lora_base_model_failed",
+            log=logger,
         )
 
 
-@router.get("/check-vision/{model_name:path}", response_model = VisionCheckResponse)
+@router.get("/check-vision/{model_name:path}", response_model=VisionCheckResponse)
 async def check_vision_model(model_name: str, current_subject: str = Depends(get_current_subject)):
     """
     Check if a model is a vision model.
@@ -2073,8 +2077,8 @@ async def check_vision_model(model_name: str, current_subject: str = Depends(get
 
         logger.info(f"Vision check result for {model_name}: is_vision={is_vision}")
         return VisionCheckResponse(
-            model_name = model_name,
-            is_vision = is_vision,
+            model_name=model_name,
+            is_vision=is_vision,
         )
 
     except Exception as e:
@@ -2082,12 +2086,12 @@ async def check_vision_model(model_name: str, current_subject: str = Depends(get
             e,
             500,
             "Failed to check vision model",
-            event = "models.check_vision_model_failed",
-            log = logger,
+            event="models.check_vision_model_failed",
+            log=logger,
         )
 
 
-@router.get("/check-embedding/{model_name:path}", response_model = EmbeddingCheckResponse)
+@router.get("/check-embedding/{model_name:path}", response_model=EmbeddingCheckResponse)
 async def check_embedding_model(
     model_name: str,
     hf_token: Optional[str] = Query(None),
@@ -2100,12 +2104,12 @@ async def check_embedding_model(
     """
     try:
         logger.info(f"Checking if embedding model: {model_name}")
-        is_embedding = is_embedding_model(model_name, hf_token = hf_token)
+        is_embedding = is_embedding_model(model_name, hf_token=hf_token)
 
         logger.info(f"Embedding check result for {model_name}: is_embedding={is_embedding}")
         return EmbeddingCheckResponse(
-            model_name = model_name,
-            is_embedding = is_embedding,
+            model_name=model_name,
+            is_embedding=is_embedding,
         )
 
     except Exception as e:
@@ -2113,17 +2117,17 @@ async def check_embedding_model(
             e,
             500,
             "Failed to check embedding model",
-            event = "models.check_embedding_model_failed",
-            log = logger,
+            event="models.check_embedding_model_failed",
+            log=logger,
         )
 
 
-@router.get("/gguf-variants", response_model = GgufVariantsResponse)
+@router.get("/gguf-variants", response_model=GgufVariantsResponse)
 async def get_gguf_variants(
     repo_id: str = Query(
-        ..., description = "HuggingFace repo ID (e.g. 'unsloth/gemma-3-4b-it-GGUF')"
+        ..., description="HuggingFace repo ID (e.g. 'unsloth/gemma-3-4b-it-GGUF')"
     ),
-    hf_token: Optional[str] = Query(None, description = "HuggingFace token for private repos"),
+    hf_token: Optional[str] = Query(None, description="HuggingFace token for private repos"),
     current_subject: str = Depends(get_current_subject),
 ):
     """
@@ -2146,22 +2150,22 @@ async def get_gguf_variants(
             default_variant = _extract_quant_label(best) if best else None
 
             return GgufVariantsResponse(
-                repo_id = repo_id,
-                variants = [
+                repo_id=repo_id,
+                variants=[
                     GgufVariantDetail(
-                        filename = v.filename,
-                        quant = v.quant,
-                        size_bytes = v.size_bytes,
-                        downloaded = True,  # all local variants are downloaded
+                        filename=v.filename,
+                        quant=v.quant,
+                        size_bytes=v.size_bytes,
+                        downloaded=True,  # all local variants are downloaded
                     )
                     for v in variants
                 ],
-                has_vision = has_vision,
-                default_variant = default_variant,
+                has_vision=has_vision,
+                default_variant=default_variant,
             )
 
         # Remote HuggingFace repo — query HF API
-        variants, has_vision = list_gguf_variants(repo_id, hf_token = hf_token)
+        variants, has_vision = list_gguf_variants(repo_id, hf_token=hf_token)
 
         # Determine default variant
         filenames = [v.filename for v in variants]
@@ -2207,33 +2211,33 @@ async def get_gguf_variants(
             return cached >= variant.size_bytes * 0.99
 
         return GgufVariantsResponse(
-            repo_id = repo_id,
-            variants = [
+            repo_id=repo_id,
+            variants=[
                 GgufVariantDetail(
-                    filename = v.filename,
-                    quant = v.quant,
-                    size_bytes = v.size_bytes,
-                    downloaded = _is_fully_downloaded(v),
+                    filename=v.filename,
+                    quant=v.quant,
+                    size_bytes=v.size_bytes,
+                    downloaded=_is_fully_downloaded(v),
                 )
                 for v in variants
             ],
-            has_vision = has_vision,
-            default_variant = default_variant,
+            has_vision=has_vision,
+            default_variant=default_variant,
         )
 
     except Exception as e:
-        logger.error(f"Error listing GGUF variants for '{repo_id}': {e}", exc_info = True)
+        logger.error(f"Error listing GGUF variants for '{repo_id}': {e}", exc_info=True)
         raise HTTPException(
-            status_code = 500,
-            detail = "Failed to list GGUF variants",
+            status_code=500,
+            detail="Failed to list GGUF variants",
         )
 
 
 @router.get("/gguf-download-progress")
 async def get_gguf_download_progress(
-    repo_id: str = Query(..., description = "HuggingFace repo ID"),
-    variant: str = Query("", description = "Quantization variant (e.g. UD-TQ1_0)"),
-    expected_bytes: int = Query(0, description = "Expected total download size in bytes"),
+    repo_id: str = Query(..., description="HuggingFace repo ID"),
+    variant: str = Query("", description="Quantization variant (e.g. UD-TQ1_0)"),
+    expected_bytes: int = Query(0, description="Expected total download size in bytes"),
     current_subject: str = Depends(get_current_subject),
 ):
     """Return download progress by checking cached GGUF files for a specific variant.
@@ -2297,7 +2301,7 @@ def _resolve_hf_cache_realpath(repo_dir: Path) -> Optional[str]:
         if snapshots_dir.is_dir():
             snaps = [s for s in snapshots_dir.iterdir() if s.is_dir()]
             if snaps:
-                latest = max(snaps, key = lambda s: s.stat().st_mtime)
+                latest = max(snaps, key=lambda s: s.stat().st_mtime)
                 return str(latest.resolve())
         return str(repo_dir.resolve())
     except Exception:
@@ -2306,7 +2310,7 @@ def _resolve_hf_cache_realpath(repo_dir: Path) -> Optional[str]:
 
 @router.get("/download-progress")
 async def get_download_progress(
-    repo_id: str = Query(..., description = "HuggingFace repo ID"),
+    repo_id: str = Query(..., description="HuggingFace repo ID"),
     current_subject: str = Depends(get_current_subject),
 ):
     """Return download progress for any HuggingFace model repo.
@@ -2396,7 +2400,7 @@ def _get_repo_size_cached(repo_id: str) -> int:
     try:
         from huggingface_hub import model_info as hf_model_info
 
-        info = hf_model_info(repo_id, token = None, files_metadata = True)
+        info = hf_model_info(repo_id, token=None, files_metadata=True)
         total = sum(s.size for s in info.siblings if s.size)
         _repo_size_cache[repo_id] = total
         return total
@@ -2415,6 +2419,7 @@ def _all_hf_cache_scans():
     try:
         # Resolve the active cache dir so we can dedup
         from huggingface_hub.constants import HF_HUB_CACHE
+
         seen.add(str(Path(HF_HUB_CACHE).resolve()))
     except Exception:
         pass
@@ -2424,7 +2429,7 @@ def _all_hf_cache_scans():
         if extra.is_dir() and str(extra.resolve()) not in seen:
             seen.add(str(extra.resolve()))
             try:
-                scans.append(scan_cache_dir(cache_dir = str(extra)))
+                scans.append(scan_cache_dir(cache_dir=str(extra)))
             except Exception as exc:
                 logger.warning("Could not scan HF cache %s: %s", extra, exc)
     return scans
@@ -2514,10 +2519,10 @@ async def list_cached_gguf(current_subject: str = Depends(get_current_subject)):
                     repo_label = getattr(repo_info, "repo_id", "<unknown>")
                     logger.warning(f"Skipping cached GGUF repo {repo_label}: {e}")
                     continue
-        cached = sorted(seen_lower.values(), key = lambda c: c["repo_id"])
+        cached = sorted(seen_lower.values(), key=lambda c: c["repo_id"])
         return {"cached": cached}
     except Exception as e:
-        logger.error(f"Error listing cached GGUF repos: {e}", exc_info = True)
+        logger.error(f"Error listing cached GGUF repos: {e}", exc_info=True)
         return {"cached": []}
 
 
@@ -2561,10 +2566,10 @@ async def list_cached_models(current_subject: str = Depends(get_current_subject)
                     repo_label = getattr(repo_info, "repo_id", "<unknown>")
                     logger.warning(f"Skipping cached model repo {repo_label}: {e}")
                     continue
-        cached = sorted(seen_lower.values(), key = lambda c: c["repo_id"])
+        cached = sorted(seen_lower.values(), key=lambda c: c["repo_id"])
         return {"cached": cached}
     except Exception as e:
-        logger.error(f"Error listing cached models: {e}", exc_info = True)
+        logger.error(f"Error listing cached models: {e}", exc_info=True)
         return {"cached": []}
 
 
@@ -2581,18 +2586,19 @@ async def delete_cached_model(
     Refuses if the model is currently loaded for inference.
     """
     if not _is_valid_repo_id(repo_id):
-        raise HTTPException(status_code = 400, detail = "Invalid repo_id format")
+        raise HTTPException(status_code=400, detail="Invalid repo_id format")
 
     # Check if model is currently loaded
     try:
         from routes.inference import get_llama_cpp_backend
+
         llama_backend = get_llama_cpp_backend()
         if llama_backend.is_loaded and llama_backend.model_identifier:
             loaded_id = llama_backend.model_identifier.lower()
             if loaded_id == repo_id.lower() or loaded_id.startswith(repo_id.lower()):
                 raise HTTPException(
-                    status_code = 400,
-                    detail = "Unload the model before deleting",
+                    status_code=400,
+                    detail="Unload the model before deleting",
                 )
     except HTTPException:
         raise
@@ -2605,8 +2611,8 @@ async def delete_cached_model(
             active = inference_backend.active_model_name.lower()
             if active == repo_id.lower() or active.startswith(repo_id.lower()):
                 raise HTTPException(
-                    status_code = 400,
-                    detail = "Unload the model before deleting",
+                    status_code=400,
+                    detail="Unload the model before deleting",
                 )
     except HTTPException:
         raise
@@ -2628,7 +2634,7 @@ async def delete_cached_model(
                 break
 
         if target_repo is None:
-            raise HTTPException(status_code = 404, detail = "Model not found in cache")
+            raise HTTPException(status_code=404, detail="Model not found in cache")
 
         # ── Per-variant GGUF deletion ────────────────────────────
         if variant:
@@ -2657,8 +2663,8 @@ async def delete_cached_model(
 
             if deleted_count == 0:
                 raise HTTPException(
-                    status_code = 404,
-                    detail = f"Variant {variant} not found in cache for {repo_id}",
+                    status_code=404,
+                    detail=f"Variant {variant} not found in cache for {repo_id}",
                 )
 
             freed_mb = deleted_bytes / (1024 * 1024)
@@ -2671,7 +2677,7 @@ async def delete_cached_model(
         # ── Full repo deletion ───────────────────────────────────
         revision_hashes = [rev.commit_hash for rev in target_repo.revisions]
         if not revision_hashes:
-            raise HTTPException(status_code = 404, detail = "No revisions found for model")
+            raise HTTPException(status_code=404, detail="No revisions found for model")
 
         delete_strategy = hf_cache.delete_revisions(*revision_hashes)
         logger.info(
@@ -2685,18 +2691,18 @@ async def delete_cached_model(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error deleting cached model {repo_id}: {e}", exc_info = True)
+        logger.error(f"Error deleting cached model {repo_id}: {e}", exc_info=True)
         raise HTTPException(
-            status_code = 500,
-            detail = "Failed to delete cached model",
+            status_code=500,
+            detail="Failed to delete cached model",
         )
 
 
-@router.get("/checkpoints", response_model = CheckpointListResponse)
+@router.get("/checkpoints", response_model=CheckpointListResponse)
 async def list_checkpoints(
     outputs_dir: str = Query(
-        default = str(outputs_root()),
-        description = "Directory to scan for checkpoints",
+        default=str(outputs_root()),
+        description="Directory to scan for checkpoints",
     ),
     current_subject: str = Depends(get_current_subject),
 ):
@@ -2707,32 +2713,32 @@ async def list_checkpoints(
     """
     try:
         resolved_outputs_dir = str(resolve_output_dir(outputs_dir))
-        raw_models = scan_checkpoints(outputs_dir = resolved_outputs_dir)
+        raw_models = scan_checkpoints(outputs_dir=resolved_outputs_dir)
 
         models = [
             ModelCheckpoints(
-                name = model_name,
-                checkpoints = [
-                    CheckpointInfo(display_name = display_name, path = path, loss = loss)
+                name=model_name,
+                checkpoints=[
+                    CheckpointInfo(display_name=display_name, path=path, loss=loss)
                     for display_name, path, loss in checkpoints
                 ],
-                base_model = metadata.get("base_model"),
-                peft_type = metadata.get("peft_type"),
-                lora_rank = metadata.get("lora_rank"),
-                is_quantized = metadata.get("is_quantized", False),
+                base_model=metadata.get("base_model"),
+                peft_type=metadata.get("peft_type"),
+                lora_rank=metadata.get("lora_rank"),
+                is_quantized=metadata.get("is_quantized", False),
             )
             for model_name, checkpoints, metadata in raw_models
         ]
 
         return CheckpointListResponse(
-            outputs_dir = resolved_outputs_dir,
-            models = models,
+            outputs_dir=resolved_outputs_dir,
+            models=models,
         )
     except Exception as e:
         raise log_and_http_error(
             e,
             500,
             "Failed to list checkpoints",
-            event = "models.list_checkpoints_failed",
-            log = logger,
+            event="models.list_checkpoints_failed",
+            log=logger,
         )

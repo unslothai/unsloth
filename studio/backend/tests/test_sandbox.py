@@ -92,13 +92,11 @@ def home_sentinel(tmp_path_factory):
 
 def _run_python(code: str, sid: str) -> str:
     from core.inference.tools import _python_exec
-
     return _python_exec(code, session_id = sid, timeout = 30)
 
 
 def _run_bash(command: str, sid: str) -> str:
     from core.inference.tools import _bash_exec
-
     return _bash_exec(command, session_id = sid, timeout = 30)
 
 
@@ -133,8 +131,7 @@ def test_bash_home_read_denied(sandboxed_workdir, home_sentinel):
     assert secret not in out, out
     # Confirm cat actually ran and was denied, not silently no-op'd.
     assert any(
-        s in out
-        for s in ("Permission denied", "Operation not permitted", "No such file")
+        s in out for s in ("Permission denied", "Operation not permitted", "No such file")
     ), out
 
 
@@ -375,9 +372,7 @@ def test_get_workdir_idempotent(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("strict_value", ["1", "true", "TRUE", "yes", "On"])
-def test_strict_mode_refuses_when_sandbox_unavailable(
-    tmp_path, monkeypatch, strict_value
-):
+def test_strict_mode_refuses_when_sandbox_unavailable(tmp_path, monkeypatch, strict_value):
     from core.inference import tools
 
     monkeypatch.setattr(tools, "sandbox_available", lambda: False)
@@ -565,9 +560,7 @@ def test_macos_only_blocked_commands_blocked_on_macos():
     from core.inference.tools import _find_blocked_commands
 
     assert "open" in _find_blocked_commands("open https://example.com")
-    assert "security" in _find_blocked_commands(
-        "security find-generic-password -s foo",
-    )
+    assert "security" in _find_blocked_commands("security find-generic-password -s foo")
     assert "osascript" in _find_blocked_commands("osascript -e 1")
 
 
@@ -697,13 +690,9 @@ def test_blocklist_catches_language_interpreter_dash_c():
     tool, not on bash). Round 6 surfaces these as the interpreter name."""
     from core.inference.tools import _find_blocked_commands
 
-    assert "python3" in _find_blocked_commands(
-        "python3 -c 'import os; os.system(\"rm x\")'"
-    )
+    assert "python3" in _find_blocked_commands("python3 -c 'import os; os.system(\"rm x\")'")
     assert "perl" in _find_blocked_commands("perl -e 'system(\"rm /tmp/x\")'")
-    assert "node" in _find_blocked_commands(
-        'node -e \'require("child_process").execSync("rm x")\''
-    )
+    assert "node" in _find_blocked_commands('node -e \'require("child_process").execSync("rm x")\'')
     assert "ruby" in _find_blocked_commands("ruby -e 'system(\"rm x\")'")
     # Benign interpreter calls must not false-positive.
     assert _find_blocked_commands("python3 -c 'print(1)'") == set()
@@ -767,9 +756,7 @@ def test_sandbox_unavailable_does_not_cache_on_transient_timeout(monkeypatch):
         if call_count["n"] == 1:
             raise subprocess.TimeoutExpired(cmd = args[0], timeout = 5)
         # On the second call, return a "success" CompletedProcess.
-        return subprocess.CompletedProcess(
-            args = args[0], returncode = 0, stdout = b"", stderr = b""
-        )
+        return subprocess.CompletedProcess(args = args[0], returncode = 0, stdout = b"", stderr = b"")
 
     monkeypatch.setattr(sandbox.subprocess, "run", fake_run)
     monkeypatch.setattr(sandbox.shutil, "which", lambda _: "/usr/bin/bwrap")
