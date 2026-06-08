@@ -343,6 +343,50 @@ def _tag_model_with_fp8_torchao_config(model: torch.nn.Module, fp8_mode: str):
         pass
 
 
+def get_quantization_config_info(model_config):
+    """
+    Extract quantization config info from a model config.
+    
+    Returns:
+        tuple: (quant_method, quantization_config) where quant_method is the quantization method
+        (e.g., "bitsandbytes", "compressed-tensors", "gptq", "awq") or None if not quantized,
+        and quantization_config is the full quantization config dict/object.
+    """
+    _ckpt_qcfg = getattr(model_config, "quantization_config", None)
+    if _ckpt_qcfg is None:
+        return None, None
+    
+    if isinstance(_ckpt_qcfg, dict):
+        quant_method = _ckpt_qcfg.get("quant_method")
+    else:
+        quant_method = getattr(_ckpt_qcfg, "quant_method", None)
+    
+    return quant_method, _ckpt_qcfg
+
+
+def should_disable_bitsandbytes_loading(model_config, load_in_4bit=True, load_in_8bit=False):
+    """
+    Check if we should disable bitsandbytes loading (load_in_4bit/load_in_8bit)
+    because the model already has a non-bitsandbytes quantization config.
+    
+    Args:
+        model_config: The AutoConfig object from the model
+        load_in_4bit: Whether load_in_4bit is currently enabled
+        load_in_8bit: Whether load_in_8bit is currently enabled
+        
+    Returns:
+        tuple: (should_disable_4bit, should_disable_8bit, quant_method)
+    """
+    quant_method, _ = get_quantization_config_info(model_config)
+    
+    if quant_method is None or quant_method == "bitsandbytes":
+        return False, False, quant_method
+    
+    # Model has a non-bitsandbytes quantization config (e.g., compressed-tensors, gptq, awq)
+    # We should disable bitsandbytes loading to avoid config conflicts
+    return load_in_4bit, load_in_8bit, quant_method
+
+
 def _get_fp8_mode_and_check_settings(
     load_in_fp8: Union[bool, str],
     fast_inference: bool,

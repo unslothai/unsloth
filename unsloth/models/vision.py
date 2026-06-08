@@ -769,13 +769,8 @@ class FastBaseModel:
         user_quantization_config = kwargs.get("quantization_config", None)
 
         # Check if model already has a non-bitsandbytes quantization config (e.g. compressed-tensors/NVFP4)
-        _ckpt_qcfg = getattr(auto_config, "quantization_config", None)
-        _ckpt_quant_method = None
-        if _ckpt_qcfg is not None:
-            if isinstance(_ckpt_qcfg, dict):
-                _ckpt_quant_method = _ckpt_qcfg.get("quant_method")
-            else:
-                _ckpt_quant_method = getattr(_ckpt_qcfg, "quant_method", None)
+        from .loader_utils import get_quantization_config_info
+        _ckpt_quant_method, _ckpt_qcfg = get_quantization_config_info(auto_config)
 
         if load_in_4bit and _ckpt_quant_method is not None and _ckpt_quant_method != "bitsandbytes":
             print(

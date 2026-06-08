@@ -2392,14 +2392,10 @@ class FastLlamaModel:
             # Add to kwargs
             kwargs["rope_scaling"] = rope_scaling
 
+        from .loader_utils import get_quantization_config_info
+
         bnb_config = None
-        _ckpt_qcfg = getattr(model_config, "quantization_config", None)
-        _ckpt_quant_method = None
-        if _ckpt_qcfg is not None:
-            if isinstance(_ckpt_qcfg, dict):
-                _ckpt_quant_method = _ckpt_qcfg.get("quant_method")
-            else:
-                _ckpt_quant_method = getattr(_ckpt_qcfg, "quant_method", None)
+        _ckpt_quant_method, _ckpt_qcfg = get_quantization_config_info(model_config)
 
         if load_in_4bit and _ckpt_quant_method is not None and _ckpt_quant_method != "bitsandbytes":
             print(
