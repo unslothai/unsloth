@@ -493,7 +493,20 @@ def _apply_mistral_reasoning_controls(
 # Shared client reused across all requests for HTTP connection pooling.
 # Auth headers and timeouts are passed per-request, so a single client
 # handles every provider without storing credentials.
-_http_client = httpx.AsyncClient()
+def _create_shared_http_client() -> httpx.AsyncClient:
+    try:
+        return httpx.AsyncClient()
+    except ValueError as exc:
+        if "Unknown scheme for proxy URL" not in str(exc):
+            raise
+        logger.warning(
+            "external_provider_unsupported_env_proxy",
+            error = str(exc),
+        )
+        return httpx.AsyncClient(trust_env = False)
+
+
+_http_client = _create_shared_http_client()
 
 
 # Cap per-image fetch well below Gemini's ~20 MB total request budget.
