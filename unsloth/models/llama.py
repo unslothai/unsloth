@@ -2359,10 +2359,8 @@ class FastLlamaModel:
         load_in_8bit = kwargs.get("load_in_8bit", False)
 
         # Check and disable bitsandbytes loading if model has non-bitsandbytes quantization
-        load_in_4bit, load_in_8bit, _ckpt_quant_method = (
-            check_and_disable_bitsandbytes_loading(
-                model_config, load_in_4bit = load_in_4bit, load_in_8bit = load_in_8bit
-            )
+        load_in_4bit, load_in_8bit, _ckpt_quant_method = check_and_disable_bitsandbytes_loading(
+            model_config, load_in_4bit = load_in_4bit, load_in_8bit = load_in_8bit
         )
 
         bnb_config = None

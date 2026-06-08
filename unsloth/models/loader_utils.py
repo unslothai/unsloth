@@ -336,7 +336,10 @@ def _tag_model_with_fp8_torchao_config(model: torch.nn.Module, fp8_mode: str):
 
 
 def check_and_disable_bitsandbytes_loading(
-    model_config, load_in_4bit = True, load_in_8bit = False, verbose = True
+    model_config,
+    load_in_4bit = True,
+    load_in_8bit = False,
+    verbose = True,
 ):
     """
     Check if we should disable bitsandbytes loading (load_in_4bit/load_in_8bit)
