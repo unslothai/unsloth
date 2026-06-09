@@ -2193,10 +2193,11 @@ def validated_checksums_for_bundle(
     # legacy llama.cpp-source-<upstream_tag>.tar.gz entry.
     if exact_source_archive_hash(checksums) is None:
         require_approved_source_hash(checksums, bundle.upstream_tag)
-    elif source_clone_url_from_checksums(checksums) is None:
-        # Without a source repo, preferred_source_archive silently falls back to
-        # ggml-org source at the upstream tag, pairing the prebuilt with a
-        # possibly mismatched tree. Fail closed so the resolver skips this release.
+    elif source_clone_url_for_release(checksums, bundle) is None:
+        # No source repo in either the checksum payload or the manifest bundle:
+        # preferred_source_archive would silently fall back to ggml-org source at
+        # the upstream tag, pairing the prebuilt with a possibly mismatched tree.
+        # Fail closed so the resolver skips this release.
         raise PrebuiltFallback(
             f"approved checksum asset for {repo}@{bundle.release_tag} declared an "
             "exact source archive without a source repo to clone it from"
@@ -2382,8 +2383,16 @@ def exact_source_archive_hash(checksums: ApprovedReleaseChecksums) -> ApprovedAr
     return checksums.artifacts.get(exact_source_archive_logical_name(checksums.source_commit))
 
 
-def source_clone_url_from_checksums(checksums: ApprovedReleaseChecksums) -> str | None:
-    return source_repo_clone_url(checksums.source_repo, checksums.source_repo_url)
+def source_clone_url_for_release(
+    checksums: ApprovedReleaseChecksums, bundle: PublishedReleaseBundle
+) -> str | None:
+    # Single source of truth for "where do we clone source from", shared by the
+    # validation gate and source_build_plan_for_release: take the repo from the
+    # checksum payload, falling back field by field to the manifest bundle.
+    return source_repo_clone_url(
+        checksums.source_repo or bundle.source_repo,
+        checksums.source_repo_url or bundle.source_repo_url,
+    )
 
 
 def source_build_plan_for_release(release: ResolvedPublishedRelease) -> SourceBuildPlan:
@@ -2395,7 +2404,7 @@ def source_build_plan_for_release(release: ResolvedPublishedRelease) -> SourceBu
     resolved_source_ref = checksums.resolved_source_ref or release.bundle.resolved_source_ref
     source_commit = checksums.source_commit or release.bundle.source_commit
     source_ref_kind = checksums.source_ref_kind or release.bundle.source_ref_kind
-    source_url = source_repo_clone_url(source_repo, source_repo_url)
+    source_url = source_clone_url_for_release(checksums, release.bundle)
     if exact_source is not None and source_url and source_commit:
         return SourceBuildPlan(
             source_url = source_url,

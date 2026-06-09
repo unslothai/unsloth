@@ -1164,6 +1164,38 @@ class TestValidatedChecksumsForBundle:
         with pytest.raises(PrebuiltFallback, match = "exact source archive"):
             validated_checksums_for_bundle("unslothai/llama.cpp", bundle)
 
+    def test_accepts_exact_source_when_only_bundle_has_repo(self, monkeypatch):
+        # The source repo can live only in the manifest bundle, not the checksum
+        # payload. source_build_plan_for_release coalesces checksums-or-bundle, so
+        # validation must accept the bundle's repo rather than failing closed.
+        bundle = make_release(
+            [],
+            release_tag = "r1",
+            upstream_tag = "b8508",
+            source_repo = "ggml-org/llama.cpp",
+            source_repo_url = "https://github.com/ggml-org/llama.cpp",
+        )
+        checksums = make_checksums_with_source(
+            [], release_tag = "r1", upstream_tag = "b8508", source_commit = "a" * 40
+        )  # exact source archive, repo only on the bundle
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT,
+            "load_approved_release_checksums",
+            lambda repo, release_tag: checksums,
+        )
+
+        assert (
+            validated_checksums_for_bundle("unslothai/llama.cpp", bundle) is checksums
+        )
+        plan = INSTALL_LLAMA_PREBUILT.source_build_plan_for_release(
+            INSTALL_LLAMA_PREBUILT.ResolvedPublishedRelease(
+                bundle = bundle, checksums = checksums
+            )
+        )
+        assert plan.source_url == "https://github.com/ggml-org/llama.cpp"
+        assert plan.source_ref_kind == "commit"
+        assert plan.source_ref == "a" * 40
+
 
 # ===========================================================================
 # K. linux_cuda_choice_from_release -- core selection
