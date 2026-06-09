@@ -42,8 +42,8 @@ _strip_tool_xml_for_display = _ns["_strip_tool_xml_for_display"]
 
 def test_route_display_strip_respects_disabled_auto_heal_contract():
     text = 'literal <tool_call>{"name":"web_search"}</tool_call> survives'
-    assert _strip_tool_xml_for_display(text, auto_heal_tool_calls = False) == text
-    assert "<tool_call>" not in _strip_tool_xml_for_display(text, auto_heal_tool_calls = True)
+    assert _strip_tool_xml_for_display(text, auto_heal_tool_calls=False) == text
+    assert "<tool_call>" not in _strip_tool_xml_for_display(text, auto_heal_tool_calls=True)
 
 
 def test_strips_well_formed_tool_call():
@@ -210,7 +210,7 @@ REAL_LEAKS = [
 
 
 @pytest.mark.parametrize(
-    "leak", REAL_LEAKS, ids = [f"sweep_sample_{i}" for i in range(len(REAL_LEAKS))]
+    "leak", REAL_LEAKS, ids=[f"sweep_sample_{i}" for i in range(len(REAL_LEAKS))]
 )
 def test_real_world_sweep_leaks_get_stripped(leak):
     cleaned = _TOOL_XML_RE.sub("", leak)
@@ -242,7 +242,7 @@ GDPVAL_PARAMETER_LEAKS = [
 @pytest.mark.parametrize(
     "leak",
     GDPVAL_PARAMETER_LEAKS,
-    ids = [f"gdpval_param_orphan_{i}" for i in range(len(GDPVAL_PARAMETER_LEAKS))],
+    ids=[f"gdpval_param_orphan_{i}" for i in range(len(GDPVAL_PARAMETER_LEAKS))],
 )
 def test_gdpval_parameter_orphans_get_stripped(leak):
     cleaned = _TOOL_XML_RE.sub("", leak)

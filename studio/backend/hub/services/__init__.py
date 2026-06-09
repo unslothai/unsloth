@@ -20,8 +20,8 @@ def resolve_destructive_repo_ids(repo_id: str, candidates: Iterable[str], *, nou
     resolved = resolve_destructive_case_matches(repo_id, candidates)
     if resolved is None:
         raise HTTPException(
-            status_code = 409,
-            detail = (
+            status_code=409,
+            detail=(
                 f"Multiple cached {noun} differ only by case. "
                 "Delete the exact repo casing from On Device."
             ),

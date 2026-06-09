@@ -97,7 +97,7 @@ def _lookup(provider: str, model: str) -> Optional[dict[str, float]]:
         return table[model]
     # Longest-prefix match on a dash boundary: dated snapshots inherit
     # canonical prices, but "claude-opus-4-15" won't match "claude-opus-4-1".
-    for key in sorted(table, key = len, reverse = True):
+    for key in sorted(table, key=len, reverse=True):
         if model.startswith(key) and (len(model) == len(key) or model[len(key)] == "-"):
             return table[key]
     return None

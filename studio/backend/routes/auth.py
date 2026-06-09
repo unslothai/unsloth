@@ -214,19 +214,19 @@ def _clear_login_bucket(key: tuple[str, str]) -> None:
         _LOGIN_IP_BUCKETS.pop(ip, None)
 
 
-@router.get("/status", response_model = AuthStatusResponse)
+@router.get("/status", response_model=AuthStatusResponse)
 async def auth_status() -> AuthStatusResponse:
     """Auth initialization state; ``default_username`` is exposed for first-boot UI prefill only."""
     return AuthStatusResponse(
-        initialized = storage.is_initialized(),
-        default_username = storage.DEFAULT_ADMIN_USERNAME,
-        requires_password_change = storage.requires_password_change(storage.DEFAULT_ADMIN_USERNAME)
+        initialized=storage.is_initialized(),
+        default_username=storage.DEFAULT_ADMIN_USERNAME,
+        requires_password_change=storage.requires_password_change(storage.DEFAULT_ADMIN_USERNAME)
         if storage.is_initialized()
         else True,
     )
 
 
-@router.post("/login", response_model = Token)
+@router.post("/login", response_model=Token)
 async def login(payload: AuthLoginRequest, request: Request) -> Token:
     """Login with username/password. Per-account + per-IP rate-limited."""
     key = _bucket_key(request, payload.username)
@@ -234,11 +234,11 @@ async def login(payload: AuthLoginRequest, request: Request) -> Token:
     blocked_for = max(_login_blocked(key), _login_blocked(unknown_key))
     if blocked_for > 0:
         raise HTTPException(
-            status_code = status.HTTP_429_TOO_MANY_REQUESTS,
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             # IP not interpolated into the body; behind a proxy/NAT it's
             # misleading or an info leak.
-            detail = (f"Too many failed login attempts. " f"Try again in {blocked_for} seconds."),
-            headers = {"Retry-After": str(blocked_for)},
+            detail=(f"Too many failed login attempts. " f"Try again in {blocked_for} seconds."),
+            headers={"Retry-After": str(blocked_for)},
         )
 
     record = storage.get_user_and_secret(payload.username)
@@ -247,31 +247,31 @@ async def login(payload: AuthLoginRequest, request: Request) -> Token:
         # cardinality can't allocate unbounded buckets.
         _record_login_failure(unknown_key)
         raise HTTPException(
-            status_code = status.HTTP_401_UNAUTHORIZED,
-            detail = f"Incorrect password. To reset it, run this in your terminal: {_reset_password_command()}",
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"Incorrect password. To reset it, run this in your terminal: {_reset_password_command()}",
         )
 
     salt, pwd_hash, _jwt_secret, must_change_password = record
     if not hashing.verify_password(payload.password, salt, pwd_hash):
         _record_login_failure(key)
         raise HTTPException(
-            status_code = status.HTTP_401_UNAUTHORIZED,
-            detail = f"Incorrect password. To reset it, run this in your terminal: {_reset_password_command()}",
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"Incorrect password. To reset it, run this in your terminal: {_reset_password_command()}",
         )
 
     _clear_login_bucket(key)
     _clear_login_bucket(unknown_key)
-    access_token = create_access_token(subject = payload.username)
-    refresh_token = create_refresh_token(subject = payload.username)
+    access_token = create_access_token(subject=payload.username)
+    refresh_token = create_refresh_token(subject=payload.username)
     return Token(
-        access_token = access_token,
-        refresh_token = refresh_token,
-        token_type = "bearer",
-        must_change_password = must_change_password,
+        access_token=access_token,
+        refresh_token=refresh_token,
+        token_type="bearer",
+        must_change_password=must_change_password,
     )
 
 
-@router.post("/logout", status_code = status.HTTP_204_NO_CONTENT)
+@router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
 async def logout(
     request: Request, current_subject: str = Depends(get_current_subject_allow_password_change)
 ) -> Response:
@@ -284,49 +284,49 @@ async def logout(
         request.app.state.bootstrap_password = None
     except AttributeError:
         pass
-    return Response(status_code = status.HTTP_204_NO_CONTENT)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-@router.post("/desktop-login", response_model = Token)
+@router.post("/desktop-login", response_model=Token)
 async def desktop_login(payload: DesktopLoginRequest) -> Token:
     """Exchange a local desktop secret for normal admin-subject tokens."""
     username = storage.validate_desktop_secret(payload.secret)
     if username is None:
         raise HTTPException(
-            status_code = status.HTTP_401_UNAUTHORIZED,
-            detail = "Desktop authentication failed",
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Desktop authentication failed",
         )
 
     return Token(
-        access_token = create_access_token(subject = username, desktop = True),
-        refresh_token = create_refresh_token(subject = username, desktop = True),
-        token_type = "bearer",
-        must_change_password = False,
+        access_token=create_access_token(subject=username, desktop=True),
+        refresh_token=create_refresh_token(subject=username, desktop=True),
+        token_type="bearer",
+        must_change_password=False,
     )
 
 
-@router.post("/refresh", response_model = Token)
+@router.post("/refresh", response_model=Token)
 async def refresh(payload: RefreshTokenRequest) -> Token:
     """Exchange a refresh token for a new access+refresh pair (single-use)."""
     consumed = storage.consume_refresh_token(payload.refresh_token)
     if consumed is None:
         raise HTTPException(
-            status_code = status.HTTP_401_UNAUTHORIZED,
-            detail = "Invalid or expired refresh token",
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired refresh token",
         )
     username, is_desktop = consumed
-    new_access_token = create_access_token(subject = username, desktop = is_desktop)
-    new_refresh_token = create_refresh_token(subject = username, desktop = is_desktop)
+    new_access_token = create_access_token(subject=username, desktop=is_desktop)
+    new_refresh_token = create_refresh_token(subject=username, desktop=is_desktop)
 
     return Token(
-        access_token = new_access_token,
-        refresh_token = new_refresh_token,
-        token_type = "bearer",
-        must_change_password = False if is_desktop else storage.requires_password_change(username),
+        access_token=new_access_token,
+        refresh_token=new_refresh_token,
+        token_type="bearer",
+        must_change_password=False if is_desktop else storage.requires_password_change(username),
     )
 
 
-@router.post("/change-password", response_model = Token)
+@router.post("/change-password", response_model=Token)
 async def change_password(
     payload: ChangePasswordRequest,
     request: Request,
@@ -336,20 +336,20 @@ async def change_password(
     record = storage.get_user_and_secret(current_subject)
     if record is None:
         raise HTTPException(
-            status_code = status.HTTP_401_UNAUTHORIZED,
-            detail = "User session is invalid",
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User session is invalid",
         )
 
     salt, pwd_hash, _jwt_secret, _must_change_password = record
     if not hashing.verify_password(payload.current_password, salt, pwd_hash):
         raise HTTPException(
-            status_code = status.HTTP_401_UNAUTHORIZED,
-            detail = "Current password is incorrect",
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Current password is incorrect",
         )
     if payload.current_password == payload.new_password:
         raise HTTPException(
-            status_code = status.HTTP_400_BAD_REQUEST,
-            detail = "New password must be different from the current password",
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="New password must be different from the current password",
         )
 
     storage.update_password(current_subject, payload.new_password)
@@ -358,13 +358,13 @@ async def change_password(
         request.app.state.bootstrap_password = None
     except AttributeError:
         pass
-    access_token = create_access_token(subject = current_subject)
-    refresh_token = create_refresh_token(subject = current_subject)
+    access_token = create_access_token(subject=current_subject)
+    refresh_token = create_refresh_token(subject=current_subject)
     return Token(
-        access_token = access_token,
-        refresh_token = refresh_token,
-        token_type = "bearer",
-        must_change_password = False,
+        access_token=access_token,
+        refresh_token=refresh_token,
+        token_type="bearer",
+        must_change_password=False,
     )
 
 
@@ -375,17 +375,17 @@ async def change_password(
 
 def _row_to_api_key_response(row: dict) -> ApiKeyResponse:
     return ApiKeyResponse(
-        id = row["id"],
-        name = row["name"],
-        key_prefix = row["key_prefix"],
-        created_at = row["created_at"],
-        last_used_at = row.get("last_used_at"),
-        expires_at = row.get("expires_at"),
-        is_active = bool(row["is_active"]),
+        id=row["id"],
+        name=row["name"],
+        key_prefix=row["key_prefix"],
+        created_at=row["created_at"],
+        last_used_at=row.get("last_used_at"),
+        expires_at=row.get("expires_at"),
+        is_active=bool(row["is_active"]),
     )
 
 
-@router.post("/api-keys", response_model = CreateApiKeyResponse)
+@router.post("/api-keys", response_model=CreateApiKeyResponse)
 async def create_api_key(
     payload: CreateApiKeyRequest, current_subject: str = Depends(get_current_subject)
 ) -> CreateApiKeyResponse:
@@ -393,26 +393,26 @@ async def create_api_key(
     expires_at = None
     if payload.expires_in_days is not None:
         expires_at = (
-            datetime.now(timezone.utc) + timedelta(days = payload.expires_in_days)
+            datetime.now(timezone.utc) + timedelta(days=payload.expires_in_days)
         ).isoformat()
 
     raw_key, row = storage.create_api_key(
-        username = current_subject,
-        name = payload.name,
-        expires_at = expires_at,
+        username=current_subject,
+        name=payload.name,
+        expires_at=expires_at,
     )
     return CreateApiKeyResponse(
-        key = raw_key,
-        api_key = _row_to_api_key_response(row),
+        key=raw_key,
+        api_key=_row_to_api_key_response(row),
     )
 
 
-@router.get("/api-keys", response_model = ApiKeyListResponse)
+@router.get("/api-keys", response_model=ApiKeyListResponse)
 async def list_api_keys(current_subject: str = Depends(get_current_subject)) -> ApiKeyListResponse:
     """List all API keys for the authenticated user (raw keys are never exposed)."""
     rows = storage.list_api_keys(current_subject)
     return ApiKeyListResponse(
-        api_keys = [_row_to_api_key_response(r) for r in rows],
+        api_keys=[_row_to_api_key_response(r) for r in rows],
     )
 
 
@@ -421,7 +421,7 @@ async def revoke_api_key(key_id: int, current_subject: str = Depends(get_current
     """Revoke (soft-delete) an API key."""
     if not storage.revoke_api_key(current_subject, key_id):
         raise HTTPException(
-            status_code = status.HTTP_404_NOT_FOUND,
-            detail = "API key not found",
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="API key not found",
         )
     return {"detail": "API key revoked"}

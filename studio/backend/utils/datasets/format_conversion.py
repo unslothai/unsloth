@@ -13,22 +13,22 @@ logger = get_logger(__name__)
 
 def standardize_chat_format(
     dataset,
-    tokenizer = None,
-    aliases_for_system = [
+    tokenizer=None,
+    aliases_for_system=[
         "system",
     ],
-    aliases_for_user = [
+    aliases_for_user=[
         "user",
         "human",
         "input",
     ],
-    aliases_for_assistant = [
+    aliases_for_assistant=[
         "gpt",
         "assistant",
         "output",
     ],
-    batch_size = 1000,
-    num_proc = None,
+    batch_size=1000,
+    num_proc=None,
     chat_column: str | None = None,
 ):
     """
@@ -167,8 +167,8 @@ def standardize_chat_format(
 
 def convert_chatml_to_alpaca(
     dataset,
-    batch_size = 1000,
-    num_proc = None,
+    batch_size=1000,
+    num_proc=None,
     chat_column: str | None = None,
 ):
     """
@@ -180,6 +180,7 @@ def convert_chatml_to_alpaca(
     """
     try:
         from torch.utils.data import IterableDataset
+
         _is_torch_iterable = isinstance(dataset, IterableDataset)
     except ImportError:
         _is_torch_iterable = False
@@ -242,8 +243,8 @@ def convert_chatml_to_alpaca(
 
 def convert_alpaca_to_chatml(
     dataset,
-    batch_size = 1000,
-    num_proc = None,
+    batch_size=1000,
+    num_proc=None,
 ):
     """
     Convert Alpaca format to ChatML format.
@@ -252,6 +253,7 @@ def convert_alpaca_to_chatml(
     """
     try:
         from torch.utils.data import IterableDataset
+
         _is_torch_iterable = isinstance(dataset, IterableDataset)
     except ImportError:
         _is_torch_iterable = False
@@ -312,11 +314,11 @@ def _format_eta(seconds):
 
 def convert_to_vlm_format(
     dataset,
-    instruction = None,
-    text_column = "text",
-    image_column = "image",
-    dataset_name = None,
-    progress_callback = None,
+    instruction=None,
+    text_column="text",
+    image_column="image",
+    dataset_name=None,
+    progress_callback=None,
 ):
     """
     Convert simple {image, text} format to VLM messages format.
@@ -337,15 +339,15 @@ def convert_to_vlm_format(
     def _notify(msg):
         """Send a status update to the training overlay if callback set."""
         if progress_callback:
-            progress_callback(status_message = msg)
+            progress_callback(status_message=msg)
 
     # Generate a smart instruction if none provided
     if instruction is None:
         instruction_info = generate_smart_vlm_instruction(
             dataset,
-            text_column = text_column,
-            image_column = image_column,
-            dataset_name = dataset_name,
+            text_column=text_column,
+            image_column=image_column,
+            dataset_name=dataset_name,
         )
 
         instruction = instruction_info["instruction"]
@@ -371,15 +373,17 @@ def convert_to_vlm_format(
             if image_data.startswith(("http://", "https://")):
                 import fsspec
                 from io import BytesIO
-                with fsspec.open(image_data, "rb", expand = True) as f:
+
+                with fsspec.open(image_data, "rb", expand=True) as f:
                     image_data = Image.open(BytesIO(f.read())).convert("RGB")
             elif _image_lookup is not None and image_data in _image_lookup:
                 # Bare filename → resolve via HF repo lookup
                 from huggingface_hub import hf_hub_download
+
                 local_path = hf_hub_download(
                     dataset_name,
                     _image_lookup[image_data],
-                    repo_type = "dataset",
+                    repo_type="dataset",
                 )
                 image_data = Image.open(local_path).convert("RGB")
             else:
@@ -389,6 +393,7 @@ def convert_to_vlm_format(
         text_data = sample[text_column]
         if isinstance(text_data, list) and len(text_data) > 0:
             import random
+
             text_data = random.choice(text_data)
 
         # Instruction: static or dynamic
@@ -431,7 +436,7 @@ def convert_to_vlm_format(
             logger.info(
                 f"🔍 Image column contains bare filenames (e.g. '{first_image}') — building repo lookup..."
             )
-            repo_files = HfApi().list_repo_files(dataset_name, repo_type = "dataset")
+            repo_files = HfApi().list_repo_files(dataset_name, repo_type="dataset")
             _image_lookup = {
                 os.path.basename(f): f
                 for f in repo_files
@@ -468,7 +473,7 @@ def convert_to_vlm_format(
         probe_fail = 0
         probe_start = time.time()
 
-        with ThreadPoolExecutor(max_workers = num_workers) as executor:
+        with ThreadPoolExecutor(max_workers=num_workers) as executor:
             futures = {executor.submit(_convert_single_sample, s): s for s in probe_samples}
             for future in as_completed(futures):
                 try:
@@ -491,11 +496,12 @@ def convert_to_vlm_format(
             friendly = None
             try:
                 from .llm_assist import llm_generate_dataset_warning
+
                 friendly = llm_generate_dataset_warning(
                     issues,
-                    dataset_name = dataset_name,
-                    modality = "vision",
-                    column_names = [image_column, text_column],
+                    dataset_name=dataset_name,
+                    modality="vision",
+                    column_names=[image_column, text_column],
                 )
             except Exception:
                 pass
@@ -548,7 +554,7 @@ def convert_to_vlm_format(
             batch_end = min(batch_start + batch_size, total)
             batch_samples = [dataset[i] for i in range(batch_start, batch_end)]
 
-            with ThreadPoolExecutor(max_workers = num_workers) as executor:
+            with ThreadPoolExecutor(max_workers=num_workers) as executor:
                 futures = {
                     executor.submit(_convert_single_sample, s): i
                     for i, s in enumerate(batch_samples)
@@ -578,7 +584,7 @@ def convert_to_vlm_format(
             _notify(progress_msg)
     else:
         # Sequential conversion for local/embedded images (no I/O bottleneck)
-        pbar = tqdm(dataset, total = total, desc = "Converting VLM samples", unit = "sample")
+        pbar = tqdm(dataset, total=total, desc="Converting VLM samples", unit="sample")
         for sample in pbar:
             try:
                 converted_list.append(_convert_single_sample(sample))
@@ -587,7 +593,7 @@ def convert_to_vlm_format(
                 if failed_count == 1:
                     # Log the first failure to aid debugging
                     logger.info(f"First VLM conversion failure: {type(e).__name__}: {e}")
-            pbar.set_postfix(ok = len(converted_list), failed = failed_count, refresh = False)
+            pbar.set_postfix(ok=len(converted_list), failed=failed_count, refresh=False)
         pbar.close()
 
     if failed_count > 0:
@@ -604,11 +610,12 @@ def convert_to_vlm_format(
             friendly = None
             try:
                 from .llm_assist import llm_generate_dataset_warning
+
                 friendly = llm_generate_dataset_warning(
                     issues,
-                    dataset_name = dataset_name,
-                    modality = "vision",
-                    column_names = [image_column, text_column],
+                    dataset_name=dataset_name,
+                    modality="vision",
+                    column_names=[image_column, text_column],
                 )
             except Exception:
                 pass
@@ -629,11 +636,12 @@ def convert_to_vlm_format(
         friendly = None
         try:
             from .llm_assist import llm_generate_dataset_warning
+
             friendly = llm_generate_dataset_warning(
                 issues,
-                dataset_name = dataset_name,
-                modality = "vision",
-                column_names = [image_column, text_column],
+                dataset_name=dataset_name,
+                modality="vision",
+                column_names=[image_column, text_column],
             )
         except Exception:
             pass
@@ -654,10 +662,10 @@ def convert_to_vlm_format(
 
 def convert_sharegpt_with_images_to_vlm_format(
     dataset,
-    image_column = "image",
-    messages_column = "conversations",
-    dataset_name = None,
-    progress_callback = None,
+    image_column="image",
+    messages_column="conversations",
+    dataset_name=None,
+    progress_callback=None,
 ):
     """
     Convert ShareGPT/ChatML datasets with a separate image column and
@@ -689,7 +697,7 @@ def convert_sharegpt_with_images_to_vlm_format(
 
     def _notify(msg):
         if progress_callback:
-            progress_callback(status_message = msg)
+            progress_callback(status_message=msg)
 
     # ── Resolve image loading (same 3-tier as convert_to_vlm_format) ──
     total = len(dataset)
@@ -709,7 +717,7 @@ def convert_sharegpt_with_images_to_vlm_format(
             logger.info(
                 f"🔍 Image column contains bare filenames (e.g. '{first_image}') — building repo lookup..."
             )
-            repo_files = HfApi().list_repo_files(dataset_name, repo_type = "dataset")
+            repo_files = HfApi().list_repo_files(dataset_name, repo_type="dataset")
             _image_lookup = {
                 os.path.basename(f): f
                 for f in repo_files
@@ -740,14 +748,16 @@ def convert_sharegpt_with_images_to_vlm_format(
             if image_data.startswith(("http://", "https://")):
                 import fsspec
                 from io import BytesIO
-                with fsspec.open(image_data, "rb", expand = True) as f:
+
+                with fsspec.open(image_data, "rb", expand=True) as f:
                     return Image.open(BytesIO(f.read())).convert("RGB")
             elif _image_lookup is not None and image_data in _image_lookup:
                 from huggingface_hub import hf_hub_download
+
                 local_path = hf_hub_download(
                     dataset_name,
                     _image_lookup[image_data],
-                    repo_type = "dataset",
+                    repo_type="dataset",
                 )
                 return Image.open(local_path).convert("RGB")
             else:
@@ -755,6 +765,7 @@ def convert_sharegpt_with_images_to_vlm_format(
         if isinstance(image_data, dict) and ("bytes" in image_data or "path" in image_data):
             if image_data.get("bytes"):
                 from io import BytesIO
+
                 return Image.open(BytesIO(image_data["bytes"])).convert("RGB")
             if image_data.get("path"):
                 return Image.open(image_data["path"]).convert("RGB")
@@ -796,7 +807,7 @@ def convert_sharegpt_with_images_to_vlm_format(
     converted_list = []
     failed_count = 0
 
-    pbar = tqdm(dataset, total = total, desc = "Converting ShareGPT+image", unit = "sample")
+    pbar = tqdm(dataset, total=total, desc="Converting ShareGPT+image", unit="sample")
     for sample in pbar:
         try:
             converted_list.append(_convert_single_sample(sample))
@@ -804,7 +815,7 @@ def convert_sharegpt_with_images_to_vlm_format(
             failed_count += 1
             if failed_count == 1:
                 logger.info(f"⚠️ First conversion failure: {type(e).__name__}: {e}")
-        pbar.set_postfix(ok = len(converted_list), failed = failed_count, refresh = False)
+        pbar.set_postfix(ok=len(converted_list), failed=failed_count, refresh=False)
     pbar.close()
 
     if failed_count > 0:

@@ -40,6 +40,7 @@ def test_get_total_transformer_layers_reads_text_config():
 
 def test_get_total_transformer_layers_handles_alternative_attr_names():
     from unsloth.models.vision import _get_total_transformer_layers
+
     for attr in ("n_layer", "n_layers", "num_layers"):
         cfg = type("Cfg", (), {attr: 12})()
         model = type("M", (), {"config": cfg})()
@@ -60,6 +61,7 @@ def test_get_total_transformer_layers_returns_none_when_unknown():
 
 def test_get_total_transformer_layers_returns_none_for_missing_config():
     from unsloth.models.vision import _get_total_transformer_layers
+
     class FakeModel:
         pass
 
