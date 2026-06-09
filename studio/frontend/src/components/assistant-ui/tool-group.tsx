@@ -239,8 +239,8 @@ const ToolGroupImpl: FC<
   const forceOpen =
     hasPendingConfirmation || (forcedOpenRef.current && messageRunning);
 
-  // Single tool calls and artifacts render directly so cards never hide inside
-  // a collapsed tool group.
+  // Render single tool calls and artifacts directly so cards never hide in a
+  // collapsed group.
   if (toolCount <= 1 || containsArtifactTool) {
     return <>{children}</>;
   }

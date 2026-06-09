@@ -217,7 +217,7 @@ class SyntheticDataKit:
             elif dtype_val == torch.float32:
                 dtype_val = "float32"
             engine_args["dtype"] = dtype_val
-            # Convert torch.bfloat16, torch.float16, etc. to valid CLI string
+            # Convert torch dtype to valid CLI string
             if hasattr(dtype_val, "name"):
                 engine_args["dtype"] = dtype_val.name
             elif isinstance(dtype_val, str) and dtype_val.startswith("torch."):
@@ -412,7 +412,6 @@ class SyntheticDataKit:
         boundaries = np.stack((boundaries[:-1], (boundaries + self.overlap)[1:])).T
         boundaries = np.minimum(boundaries, length).tolist()
 
-        # Get extension of filename like .txt
         filename, extension = os.path.splitext(filename)
         if filename.endswith("/"):
             filename = filename[:-1]

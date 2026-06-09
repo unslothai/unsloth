@@ -19,10 +19,8 @@ def main(argv: list[str]) -> int:
 
     spacing_script = HERE / "enforce_kwargs_spacing.py"
 
-    # Pre-ruff: normalize def-signature trailing commas (>=3 params with a
-    # default -> one-per-line; everything else collapsible) and strip the magic
-    # comma from a short multi-line assert, so ruff wraps signatures accordingly
-    # and joins the assert back onto one line.
+    # Pre-ruff: normalize def-signature magic commas and strip the magic comma
+    # from short multi-line asserts so ruff wraps/joins accordingly.
     pre_cmd = [sys.executable, str(spacing_script), "--pre", *files]
     pre_proc = subprocess.run(pre_cmd)
     if pre_proc.returncode != 0:

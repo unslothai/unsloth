@@ -1,19 +1,11 @@
-"""Comprehensive E2E sandbox tests for PR #4624 (fix/install-mac-intel-no-torch).
-
-Proves that:
-- The BEFORE state (top-level torch imports) crashes without torch
-- The AFTER state (lazy/removed imports) works without torch
-- Edge cases (broken torch, partial torch) are handled gracefully
-- Hardware detection falls back to CPU without torch
-- install.sh flag parsing and platform detection work correctly
-- install_python_stack.py NO_TORCH filtering is correct
-- Live server starts and responds without torch (optional, requires studio venv)
+"""E2E sandbox tests for PR #4624 (fix/install-mac-intel-no-torch): BEFORE
+(top-level torch) crashes, AFTER (lazy imports) works, broken/partial torch,
+CPU hardware fallback, install.sh parsing, NO_TORCH filtering, and live server.
 
 Run:
-    # Lightweight tests (Groups 1-6, ~26 tests):
+    # Lightweight (Groups 1-6):
     python -m pytest tests/python/test_e2e_no_torch_sandbox.py -v -k "not server"
-
-    # Server tests (Group 7, 4 tests, requires studio venv):
+    # Server (Group 7, requires studio venv):
     python -m pytest tests/python/test_e2e_no_torch_sandbox.py -v -m server
 """
 
@@ -212,12 +204,8 @@ def no_torch_venv(request, tmp_path_factory):
 
 
 class TestBeforeAfterImportChain:
-    """Prove the bug exists in BEFORE state and is fixed in AFTER state.
-
-    BEFORE = PR branch files with top-level torch import synthetically prepended
-             (simulates the main branch).
-    AFTER  = PR branch files as-is (lazy imports / torch import removed).
-    """
+    """BEFORE (PR files with a synthetic top-level torch import, simulating
+    main) crashes; AFTER (PR files as-is, lazy imports) works."""
 
     # -- BEFORE: crashes --
 

@@ -127,19 +127,11 @@ export function InfoHint({ children }: { children: ReactNode }) {
 }
 
 /**
- * Editable numeric value display.
- *
- * Renders as a single <input> that *looks* like text by default —
- * transparent background, no border, no ring — and only shows a faint
- * surface tint on hover/focus to signal editability. When unfocused,
- * the input shows the formatted display string (`displayValue ?? value`,
- * so labels like "Off" / "Max" still render); on focus, it switches to
- * the raw numeric value, selects it, and accepts free text input.
- * Commit happens on blur or Enter; Escape reverts. The clamp-to-range
- * happens on commit so users can type intermediate values without the
- * input fighting them mid-keystroke. Single component shared by every
- * slider value and the Context Length input so the click-to-edit
- * affordance is consistent across the panel.
+ * Editable numeric value display, shared by every slider value and the Context
+ * Length input. An <input> that looks like text (shows `displayValue ?? value`,
+ * so "Off"/"Max" labels render) until focus, when it swaps to the raw number,
+ * selects it, and accepts free text. Commits on blur/Enter, reverts on Escape.
+ * Clamping happens on commit so typing intermediate values isn't fought.
  */
 function snapToStep(
   value: number,
@@ -205,7 +197,7 @@ function NumericValueInput({
         cancelBlurCommitRef.current = false;
         setDraft(String(value));
         setFocused(true);
-        // Defer the select() so it runs after the value swap above.
+        // Defer select() so it runs after the value swap above.
         const target = e.currentTarget;
         requestAnimationFrame(() => target.select());
       }}
@@ -331,10 +323,9 @@ function CollapsibleSection({
 }: {
   label: string;
   /**
-   * When set, the label text becomes an external link (e.g. to the feature's
-   * GitHub PR) instead of part of the collapse toggle. The chevron still
-   * toggles open/close, so we render the two as siblings rather than nesting
-   * an <a> inside the <button> (invalid HTML).
+   * When set, the label becomes an external link (e.g. the feature's GitHub PR)
+   * instead of part of the toggle. The chevron still toggles, so link and button
+   * are siblings rather than an <a> nested in a <button> (invalid HTML).
    */
   labelHref?: string;
   children?: ReactNode;
@@ -412,17 +403,16 @@ interface ChatSettingsPanelProps {
   onParamsChange: (params: InferenceParams) => void;
   isExternalModel?: boolean;
   /**
-   * Sampling-param capability set for the active external provider, or `null`
-   * for local models (in which case every knob is rendered). Drives the
-   * per-param visibility in the sampling section.
+   * Sampling-param capabilities for the active external provider, or `null` for
+   * local models (every knob rendered). Drives per-param sampling visibility.
    */
   providerCapabilities?: ProviderCapabilities | null;
   activeExternalProvider?: ExternalProviderConfig | null;
   onExternalProviderChange?: (provider: ExternalProviderConfig) => void;
   /**
    * Backend provider type for the active external model (e.g. "kimi",
-   * "anthropic", "openai"), or `null` for local models. Drives the
-   * per-provider Max Tokens floor in the slider.
+   * "anthropic", "openai"), or `null` for local models. Drives the per-provider
+   * Max Tokens floor in the slider.
    */
   externalProviderType?: string | null;
   onReloadModel?: () => void;
@@ -440,9 +430,8 @@ export function ChatSettingsPanel({
   externalProviderType = null,
   onReloadModel,
 }: ChatSettingsPanelProps) {
-  // For non-external (local) models we show every knob — providerCapabilities
-  // is only consulted when `isExternalModel` is true. An external model with an
-  // unknown provider falls back to the OpenAI-compat shape via
+  // Local models show every knob; providerCapabilities is only consulted when
+  // isExternalModel. Unknown providers fall back to the OpenAI-compat shape via
   // getProviderCapabilities, so these flags never undercount support.
   const showTemperature =
     !isExternalModel || Boolean(providerCapabilities?.temperature);
@@ -724,8 +713,7 @@ export function ChatSettingsPanel({
   const settingsContent = (
     <>
       <div className="flex h-full min-h-0 flex-col">
-      {/* Header sits outside the scroll area so the scrollbar never shifts the
-          close button. */}
+      {/* Header is outside the scroll area so the scrollbar never shifts the close button. */}
       <div className="flex h-[48px] shrink-0 items-start gap-2 bg-panel-surface pl-[18px] pr-[16px] pt-[11px]">
         {isMobile ? (
           <span className="flex h-[34px] flex-1 items-center text-[16px] font-semibold tracking-[0em] dark:tracking-[0.015em] text-nav-fg">

@@ -16,7 +16,7 @@ def _read_source() -> str:
         return fh.read()
 
 
-# ---------- Per-chunk slicing fixes (cum_rows, cum_imgs, axes) ----------
+# Per-chunk slicing fixes (cum_rows, cum_imgs, axes)
 
 
 def test_cum_rows_materialized_on_cpu():
@@ -60,7 +60,7 @@ def test_image_sizes_chunked_after_branch_decision():
     )
 
 
-# ---------- Behavioral simulation of chunk math ----------
+# Behavioral simulation of chunk math
 
 
 def _simulate_chunk_indices(num_images, B):
@@ -106,7 +106,7 @@ def test_simulate_pixel_attention_mask_axis_decision():
     assert select_axis(2, 2, 2, 2, False) == "sample"
 
 
-# ---------- Zoo compatibility guard ----------
+# Zoo compatibility guard
 
 
 def test_zoo_guard_branch_present():

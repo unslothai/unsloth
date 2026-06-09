@@ -49,7 +49,7 @@ def _get_python_type(annotation: Any) -> type:
 
 def _collect_config_fields(config_class: type[BaseModel]) -> list[tuple[str, Any]]:
     """
-    Collect all fields from a config class, flattening nested models. Returns list of
+    Flatten config class fields (recursing into nested models) into a list of
     (name, field_info) tuples. Raises ValueError on duplicate field names.
     """
     fields = []
@@ -57,7 +57,7 @@ def _collect_config_fields(config_class: type[BaseModel]) -> list[tuple[str, Any
 
     for name, field_info in config_class.model_fields.items():
         annotation = field_info.annotation
-        # Skip nested models - recurse into them
+        # Recurse into nested models
         if isinstance(annotation, type) and issubclass(annotation, BaseModel):
             for nested_name, nested_field in annotation.model_fields.items():
                 if nested_name in seen_names:

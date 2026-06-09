@@ -419,15 +419,13 @@ def fix_sentencepiece_tokenizer(
 
 def fix_sentencepiece_gguf(saved_location):
     """
-    Fixes sentencepiece tokenizers which did not extend the vocabulary with
-    user defined tokens.
-    Inspiration from https://github.com/ggerganov/llama.cpp/blob/master/convert_hf_to_gguf.py
+    Fix sentencepiece tokenizers that didn't extend the vocab with user-defined
+    tokens. Inspired by llama.cpp's convert_hf_to_gguf.py.
 
-    Also fixes special tokens (e.g. Gemma 3's <start_of_turn>/<end_of_turn>) that are
-    already present in the sentencepiece model but are incorrectly typed as NORMAL instead
-    of CONTROL. This causes them to be written to GGUF with token_type=1 (NORMAL) instead
-    of token_type=3 (CONTROL), which breaks chat inference in llama.cpp since parse_special
-    only matches CONTROL tokens.
+    Also retypes special tokens (e.g. Gemma 3's <start_of_turn>/<end_of_turn>)
+    that exist in the sentencepiece model but are typed NORMAL instead of CONTROL.
+    NORMAL writes token_type=1 to GGUF, breaking llama.cpp chat inference since
+    parse_special only matches CONTROL (type=3).
     """
     from copy import deepcopy
     import sys
@@ -1436,9 +1434,8 @@ def check_tokenizer(
 def get_tokenizer_info(tokenizer) -> dict:
     """Return a concise diagnostic summary of a tokenizer instance.
 
-    Collects key properties into a plain dict suitable for logging, debugging,
-    or displaying in the Unsloth Studio UI. All fields are safe to access —
-    missing attributes fall back to ``None`` rather than raising.
+    Collects key properties into a JSON-safe dict for logging, debugging, or the
+    Studio UI. Missing attributes fall back to ``None`` rather than raising.
 
     Example output::
 
@@ -1459,11 +1456,10 @@ def get_tokenizer_info(tokenizer) -> dict:
         }
 
     Args:
-        tokenizer: Any HuggingFace ``PreTrainedTokenizer`` or
-                   ``PreTrainedTokenizerFast`` instance.
+        tokenizer: Any HuggingFace ``PreTrainedTokenizer(Fast)`` instance.
 
     Returns:
-        A ``dict`` of tokenizer properties. Safe to serialize to JSON.
+        A ``dict`` of tokenizer properties.
     """
     return {
         "name_or_path": getattr(tokenizer, "name_or_path", None),
