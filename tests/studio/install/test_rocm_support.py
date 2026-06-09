@@ -1674,9 +1674,7 @@ class TestInstallBnbWindowsRocm:
             },
         ):
             with patch.object(stack_mod, "pip_install_try", return_value = True):
-                with patch.object(
-                    stack_mod, "_detect_bnb_rocm_dll_ver", return_value = "713"
-                ):
+                with patch.object(stack_mod, "_detect_bnb_rocm_dll_ver", return_value = "713"):
                     with patch.object(
                         stack_mod, "_persist_bnb_rocm_version", return_value = True
                     ) as mock_persist:
@@ -1697,9 +1695,7 @@ class TestInstallBnbWindowsRocm:
             os.environ.pop("BNB_ROCM_VERSION", None)
             os.environ.pop(stack_mod._BNB_ROCM_VERSION_SOURCE_ENV, None)
             with patch.object(stack_mod, "pip_install_try", return_value = True):
-                with patch.object(
-                    stack_mod, "_detect_bnb_rocm_dll_ver", return_value = "72"
-                ):
+                with patch.object(stack_mod, "_detect_bnb_rocm_dll_ver", return_value = "72"):
                     with patch.object(
                         stack_mod.sysconfig, "get_path", return_value = str(site_packages)
                     ):
@@ -1747,9 +1743,7 @@ class TestInstallBnbWindowsRocm:
             encoding = "utf-8",
         )
 
-        with patch.object(
-            stack_mod.sysconfig, "get_path", return_value = str(site_packages)
-        ):
+        with patch.object(stack_mod.sysconfig, "get_path", return_value = str(site_packages)):
             assert stack_mod._persist_bnb_rocm_version("713") is True
 
         source = sitecustomize.read_text(encoding = "utf-8")
@@ -1765,9 +1759,7 @@ class TestInstallBnbWindowsRocm:
         sitecustomize = site_packages / "sitecustomize.py"
         sitecustomize.write_bytes(b"\xff\xfe\x00")
 
-        with patch.object(
-            stack_mod.sysconfig, "get_path", return_value = str(site_packages)
-        ):
+        with patch.object(stack_mod.sysconfig, "get_path", return_value = str(site_packages)):
             assert stack_mod._persist_bnb_rocm_version("72") is False
 
 

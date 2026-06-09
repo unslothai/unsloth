@@ -402,9 +402,7 @@ def _persist_bnb_rocm_version(version: str) -> bool:
     try:
         sitecustomize_path.parent.mkdir(parents = True, exist_ok = True)
         existing = (
-            sitecustomize_path.read_text(encoding = "utf-8")
-            if sitecustomize_path.exists()
-            else ""
+            sitecustomize_path.read_text(encoding = "utf-8") if sitecustomize_path.exists() else ""
         )
         pattern = re.compile(
             rf"{re.escape(_BNB_ROCM_SITECUSTOMIZE_BEGIN)}.*?"
@@ -576,8 +574,7 @@ def _install_bnb_windows_rocm() -> bool:
     # Fall back to "72" if detection fails (e.g. install was a no-op / dry-run).
     _env_ver = os.environ.get("BNB_ROCM_VERSION")
     _env_is_persisted_default = (
-        os.environ.get(_BNB_ROCM_VERSION_SOURCE_ENV)
-        == _BNB_ROCM_VERSION_SOURCE_SITECUSTOMIZE
+        os.environ.get(_BNB_ROCM_VERSION_SOURCE_ENV) == _BNB_ROCM_VERSION_SOURCE_SITECUSTOMIZE
     )
     if _env_ver and not _env_is_persisted_default:
         _ver = _env_ver
