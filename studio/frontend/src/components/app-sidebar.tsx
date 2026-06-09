@@ -796,9 +796,7 @@ export function AppSidebar() {
                 icon={DashboardCircleIcon}
                 label={t("shell.navigation.hub")}
                 active={pathname === "/hub" || pathname.startsWith("/hub/")}
-                disabled={chatOnly}
                 onClick={() => {
-                  if (chatOnly) return;
                   navigate({ to: "/hub" });
                   closeMobileIfOpen();
                 }}
