@@ -635,12 +635,14 @@ def test_strip_shadowing_flags_keeps_split_mode_when_not_requested():
 
 
 def test_strip_shadowing_flags_drops_split_mode_short_alias_and_equals():
-    assert strip_shadowing_flags(
-        ["-sm", "tensor", "--top-k", "20"], strip_split_mode = True
-    ) == ["--top-k", "20"]
-    assert strip_shadowing_flags(
-        ["--split-mode=row", "--seed", "-1"], strip_split_mode = True
-    ) == ["--seed", "-1"]
+    assert strip_shadowing_flags(["-sm", "tensor", "--top-k", "20"], strip_split_mode = True) == [
+        "--top-k",
+        "20",
+    ]
+    assert strip_shadowing_flags(["--split-mode=row", "--seed", "-1"], strip_split_mode = True) == [
+        "--seed",
+        "-1",
+    ]
 
 
 def test_strip_shadowing_flags_defaults_strip_split_mode_too():

@@ -87,9 +87,7 @@ def test_load_request_accepts_tensor_parallel():
 
 def test_load_request_round_trips_json_key():
     # The frontend sends the snake_case key verbatim.
-    req = LoadRequest.model_validate(
-        {"model_path": "owner/repo", "tensor_parallel": True}
-    )
+    req = LoadRequest.model_validate({"model_path": "owner/repo", "tensor_parallel": True})
     assert req.tensor_parallel is True
     assert req.model_dump()["tensor_parallel"] is True
 
@@ -261,9 +259,7 @@ def test_proportional_tensor_split_is_emitted_in_tensor_mode():
     gate = src.find("if tensor_parallel:")
     ts = src.find('"--tensor-split"')
     nxt_else = src.find("self._tensor_parallel = False")
-    assert (
-        0 <= gate < ts < nxt_else
-    ), "--tensor-split must be emitted under `if tensor_parallel:`"
+    assert 0 <= gate < ts < nxt_else, "--tensor-split must be emitted under `if tensor_parallel:`"
 
 
 # ── tensor-mode allocation: conservative VRAM budget ─────────────────
@@ -286,15 +282,11 @@ def test_fit_context_budget_frac_override_is_tighter():
     pool_mib = 24 * 1024  # tight enough that KV capping bites
 
     fit_default = backend._fit_context_to_vram(131072, pool_mib, model_size, "f16")
-    fit_tp = backend._fit_context_to_vram(
-        131072, pool_mib, model_size, "f16", budget_frac = 0.80
-    )
+    fit_tp = backend._fit_context_to_vram(131072, pool_mib, model_size, "f16", budget_frac = 0.80)
     assert fit_tp < 131072, "expected the context to be capped at this VRAM tier"
     assert fit_tp <= fit_default, "a tighter budget must not allow MORE context"
     # Omitting the override must reproduce the default budget exactly.
-    assert (
-        backend._fit_context_to_vram(131072, pool_mib, model_size, "f16") == fit_default
-    )
+    assert backend._fit_context_to_vram(131072, pool_mib, model_size, "f16") == fit_default
 
 
 # ── unsupported-arch load failure -> clean message ───────────────────
@@ -327,18 +319,19 @@ _ASYM = [(0, 48000), (1, 24000)]  # asymmetric pool, 72000 MiB
 _SYM = [(0, 24000), (1, 24000)]  # symmetric pool
 
 
-def _plan(model_gb, target = 131072, gpus = _ASYM, mtp = False):
+def _plan(
+    model_gb,
+    target = 131072,
+    gpus = _ASYM,
+    mtp = False,
+):
     b = _kv_seeded_backend()
-    return b, b._plan_tensor_parallel(
-        gpus, int(model_gb * _GB), target, mtp_engaged = mtp
-    )
+    return b, b._plan_tensor_parallel(gpus, int(model_gb * _GB), target, mtp_engaged = mtp)
 
 
 def _kv_budget_b(model_gb, gpus = _ASYM):
     reserve = LlamaCppBackend._TENSOR_PARALLEL_BUFFER_RESERVE_MIB
-    return (sum(f for _, f in gpus) - len(gpus) * reserve) * 1024 * 1024 - int(
-        model_gb * _GB
-    )
+    return (sum(f for _, f in gpus) - len(gpus) * reserve) * 1024 * 1024 - int(model_gb * _GB)
 
 
 def test_tp_plan_weighted_split_on_asymmetric_big_model():
@@ -424,9 +417,7 @@ def test_tp_plan_drops_gpu_below_buffer_reserve():
     # split (and gpu_indices reflects only the usable device).
     b = _kv_seeded_backend()
     reserve = LlamaCppBackend._TENSOR_PARALLEL_BUFFER_RESERVE_MIB
-    ec, mac, gi, ts = b._plan_tensor_parallel(
-        [(0, 48000), (1, reserve - 1)], int(8 * _GB), 8192
-    )
+    ec, mac, gi, ts = b._plan_tensor_parallel([(0, 48000), (1, reserve - 1)], int(8 * _GB), 8192)
     assert gi == [0]
     assert ts is None
 
@@ -448,9 +439,7 @@ class _RecordingLoader:
         self.calls: list[tuple] = []
 
     async def __call__(self, tensor_parallel, extra_args):
-        self.calls.append(
-            (tensor_parallel, list(extra_args) if extra_args else extra_args)
-        )
+        self.calls.append((tensor_parallel, list(extra_args) if extra_args else extra_args))
         if resolve_tensor_parallel(extra_args, tensor_parallel):
             raise RuntimeError("llama-server failed to start")
         return True
@@ -459,9 +448,7 @@ class _RecordingLoader:
 def test_tensor_fallback_retries_layer_on_crash():
     loader = _RecordingLoader()
     ok = asyncio.run(
-        load_with_tensor_fallback(
-            loader, requested_tensor = True, extra_args = None, label = "m"
-        )
+        load_with_tensor_fallback(loader, requested_tensor = True, extra_args = None, label = "m")
     )
     assert ok is True
     # tensor first (crashes), then layer split.
@@ -476,9 +463,7 @@ def test_tensor_fallback_no_retry_on_success():
         return True
 
     ok = asyncio.run(
-        load_with_tensor_fallback(
-            _ok, requested_tensor = True, extra_args = None, label = "m"
-        )
+        load_with_tensor_fallback(_ok, requested_tensor = True, extra_args = None, label = "m")
     )
     assert ok is True
     assert calls == [True]  # no fallback when the tensor load succeeds
@@ -512,9 +497,7 @@ def test_tensor_fallback_returns_false_when_both_attempts_fail():
         return False
 
     ok = asyncio.run(
-        load_with_tensor_fallback(
-            _always_false, requested_tensor = True, extra_args = None, label = "m"
-        )
+        load_with_tensor_fallback(_always_false, requested_tensor = True, extra_args = None, label = "m")
     )
     assert ok is False
     assert calls == [True, False]  # tried tensor, then layer split
@@ -535,9 +518,7 @@ def test_tensor_fallback_strips_split_mode_from_extras_on_retry(extras):
     # else resolve_tensor_parallel re-enables tensor and relaunches the crash.
     loader = _RecordingLoader()
     ok = asyncio.run(
-        load_with_tensor_fallback(
-            loader, requested_tensor = False, extra_args = extras, label = "m"
-        )
+        load_with_tensor_fallback(loader, requested_tensor = False, extra_args = extras, label = "m")
     )
     assert ok is True
     assert len(loader.calls) == 2

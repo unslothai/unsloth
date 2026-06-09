@@ -2691,9 +2691,7 @@ class LlamaCppBackend:
             )
         free_by_idx = {idx: free for idx, free in usable_gpus}
         pool_mib = sum(free_by_idx.values())
-        kv_budget_b = (
-            pool_mib - len(gpu_indices) * reserve_mib
-        ) * 1024 * 1024 - model_size
+        kv_budget_b = (pool_mib - len(gpu_indices) * reserve_mib) * 1024 * 1024 - model_size
         if mtp_engaged:
             # MTP keeps a draft model + its own KV cache on GPU.
             kv_budget_b -= 2 * 1024**3
@@ -2710,9 +2708,7 @@ class LlamaCppBackend:
                 if kv_at_target <= kv_budget_b:
                     effective_ctx = target_ctx
                 else:
-                    effective_ctx = max(
-                        2048, int(target_ctx * kv_budget_b / kv_at_target)
-                    )
+                    effective_ctx = max(2048, int(target_ctx * kv_budget_b / kv_at_target))
         else:
             # KV size unknown -> can't prove a safe cap; floor.
             effective_ctx = min(4096, target_ctx) if target_ctx > 0 else 4096
@@ -2720,9 +2716,7 @@ class LlamaCppBackend:
 
         min_free_mib = min(free_by_idx.values())
         kv_bytes = (
-            self._estimate_kv_cache_bytes(
-                effective_ctx, cache_type_kv, n_parallel = n_parallel
-            )
+            self._estimate_kv_cache_bytes(effective_ctx, cache_type_kv, n_parallel = n_parallel)
             if (self._can_estimate_kv() and effective_ctx > 0)
             else 0
         )
@@ -2916,17 +2910,14 @@ class LlamaCppBackend:
                     logger.info(f"User --ctx-size {ctx_override} honored; skipping auto-reduce")
                 if cache_override is not None:
                     logger.info(
-                        f"User --cache-type-k/-v {cache_override} "
-                        "honored for KV estimate"
+                        f"User --cache-type-k/-v {cache_override} honored for KV estimate"
                     )
                 if split_mode_override is not None:
                     logger.info(
                         f"User --split-mode {split_mode_override} honored; "
                         "reconciled into tensor_parallel state"
                     )
-                effective_ctx = (
-                    requested_ctx if requested_ctx > 0 else (self._context_length or 0)
-                )
+                effective_ctx = requested_ctx if requested_ctx > 0 else (self._context_length or 0)
                 max_available_ctx = self._context_length or effective_ctx
                 gpus: list[tuple[int, int]] = []
                 try:
@@ -3277,7 +3268,7 @@ class LlamaCppBackend:
                         )
                     self._tensor_parallel = True
                     logger.info(
-                        "Tensor parallelism: --split-mode tensor, " "--tensor-split %s",
+                        "Tensor parallelism: --split-mode tensor, --tensor-split %s",
                         tp_tensor_split,
                     )
                 else:
@@ -3944,9 +3935,7 @@ class LlamaCppBackend:
         # Reconcile a user --split-mode in extras (load_model does the same), so
         # an extras-driven tensor load isn't seen as a mismatch that needlessly
         # kills/reloads a healthy server.
-        if self._tensor_parallel != resolve_tensor_parallel(
-            extra_args, tensor_parallel
-        ):
+        if self._tensor_parallel != resolve_tensor_parallel(extra_args, tensor_parallel):
             return False
 
         # Compare on the canonical UI-facing mode the user requested.

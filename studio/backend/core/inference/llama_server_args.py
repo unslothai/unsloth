@@ -221,9 +221,7 @@ def resolve_requested_ctx(args: Optional[Iterable[str]], fallback_n_ctx: int) ->
     return override if override is not None else fallback_n_ctx
 
 
-def _last_flag_value(
-    args: Optional[Iterable[str]], flags: frozenset[str]
-) -> Optional[str]:
+def _last_flag_value(args: Optional[Iterable[str]], flags: frozenset[str]) -> Optional[str]:
     """Return the last-wins string value among ``flags`` in extras, or None.
 
     Handles both ``--flag=value`` and ``--flag value`` forms and raises if a
@@ -293,10 +291,7 @@ def parse_split_mode_override(args: Optional[Iterable[str]]) -> Optional[str]:
     return _last_flag_value(args, _SPLIT_MODE_FLAGS)
 
 
-def resolve_tensor_parallel(
-    args: Optional[Iterable[str]],
-    fallback_tensor_parallel: bool,
-) -> bool:
+def resolve_tensor_parallel(args: Optional[Iterable[str]], fallback_tensor_parallel: bool) -> bool:
     """Return the tensor-parallel state load_model should treat as requested.
 
     A user-supplied ``--split-mode`` in extras last-wins-overrides the

@@ -1006,9 +1006,7 @@ async def load_model(
             else:
                 # Local mode: llama-server loads via -m <path>
                 if native_grant_backed and config.gguf_mmproj_file:
-                    _validate_native_mmproj_companion(
-                        config.gguf_mmproj_file, config.gguf_file
-                    )
+                    _validate_native_mmproj_companion(config.gguf_mmproj_file, config.gguf_file)
                 _source_load_kwargs = dict(
                     gguf_path = config.gguf_file,
                     mmproj_path = config.gguf_mmproj_file,
