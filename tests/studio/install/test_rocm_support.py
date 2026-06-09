@@ -1662,6 +1662,21 @@ class TestInstallBnbWindowsRocm:
                 stack_mod._install_bnb_windows_rocm()
             assert os.environ.get("BNB_ROCM_VERSION") == "60"
 
+    def test_does_not_persist_existing_bnb_rocm_version(self):
+        """A caller override must not become the venv's managed default."""
+        with patch.dict(os.environ, {"BNB_ROCM_VERSION": "60"}):
+            os.environ.pop(stack_mod._BNB_ROCM_VERSION_SOURCE_ENV, None)
+            with patch.object(stack_mod, "pip_install_try", return_value = True):
+                with patch.object(stack_mod, "_detect_bnb_rocm_dll_ver") as mock_detect:
+                    with patch.object(
+                        stack_mod, "_persist_bnb_rocm_version", return_value = True
+                    ) as mock_persist:
+                        stack_mod._install_bnb_windows_rocm()
+
+            assert os.environ.get("BNB_ROCM_VERSION") == "60"
+            mock_detect.assert_not_called()
+            mock_persist.assert_not_called()
+
     def test_redetects_when_bnb_rocm_version_came_from_sitecustomize(self):
         """Persisted defaults should not mask a newer DLL suffix after reinstall."""
         with patch.dict(

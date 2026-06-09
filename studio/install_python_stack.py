@@ -576,13 +576,16 @@ def _install_bnb_windows_rocm() -> bool:
     _env_is_persisted_default = (
         os.environ.get(_BNB_ROCM_VERSION_SOURCE_ENV) == _BNB_ROCM_VERSION_SOURCE_SITECUSTOMIZE
     )
+    _persist_detected_version = False
     if _env_ver and not _env_is_persisted_default:
         _ver = _env_ver
     else:
         _ver = _detect_bnb_rocm_dll_ver() or "72"
         os.environ["BNB_ROCM_VERSION"] = _ver
         os.environ[_BNB_ROCM_VERSION_SOURCE_ENV] = _BNB_ROCM_VERSION_SOURCE_DETECTED
-    _persist_bnb_rocm_version(_ver)
+        _persist_detected_version = True
+    if _persist_detected_version:
+        _persist_bnb_rocm_version(_ver)
     return True
 
 
