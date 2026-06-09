@@ -247,6 +247,7 @@ from utils.update_status import (
     get_studio_update_status,
 )
 from utils.studio_version import get_studio_version
+from utils.api_errors import install_api_error_handlers
 
 
 def get_unsloth_version() -> str:
@@ -290,6 +291,27 @@ if _DESKTOP_OWNER:
 
 def _desktop_owner() -> dict[str, str] | None:
     return _DESKTOP_OWNER
+
+
+def _start_helper_precache_if_enabled() -> None:
+    """Start optional Helper LLM GGUF pre-cache only after explicit opt-in."""
+    try:
+        from utils.helper_precache_settings import should_preload_helper_on_startup
+        if not should_preload_helper_on_startup():
+            return
+    except Exception:
+        return
+
+    import threading
+
+    def _precache():
+        try:
+            from utils.datasets.llm_assist import precache_helper_gguf
+            precache_helper_gguf()
+        except Exception:
+            pass  # non-critical
+
+    threading.Thread(target = _precache, daemon = True, name = "helper-gguf-precache").start()
 
 
 @asynccontextmanager
@@ -350,18 +372,7 @@ async def lifespan(app: FastAPI):
         import structlog
         structlog.get_logger(__name__).warning("cleanup_orphaned_runs failed at startup: %s", exc)
 
-    # Pre-cache the helper GGUF model for LLM-assisted dataset detection,
-    # in a background thread so it doesn't block server startup.
-    import threading
-
-    def _precache():
-        try:
-            from utils.datasets.llm_assist import precache_helper_gguf
-            precache_helper_gguf()
-        except Exception:
-            pass  # non-critical
-
-    threading.Thread(target = _precache, daemon = True).start()
+    _start_helper_precache_if_enabled()
 
     # Initialize RSA key pair for API key encryption (external providers)
     from core.inference.key_exchange import init_key_pair
@@ -709,6 +720,7 @@ app.add_middleware(
     allow_headers = ["*"],
 )
 
+
 # ============ Register API Routes ============
 
 # Register routers
@@ -732,6 +744,10 @@ app.include_router(export_router, prefix = "/api/export", tags = ["export"])
 app.include_router(training_history_router, prefix = "/api/train", tags = ["training-history"])
 app.include_router(hub_inventory_router, prefix = "/api/hub", tags = ["hub"])
 app.include_router(hub_datasets_router, prefix = "/api/hub/datasets", tags = ["hub"])
+
+# Re-wrap client-error responses on the /v1/* surface into OpenAI/Anthropic
+# error envelopes; non-/v1 paths keep FastAPI's default {"detail": ...} shape.
+install_api_error_handlers(app)
 
 
 # ============ Health and System Endpoints ============
@@ -1045,8 +1061,12 @@ def setup_frontend(app: FastAPI, build_path: Path):
 
     @app.get("/{full_path:path}")
     async def serve_frontend(request: Request, full_path: str):
+        # Unknown API paths: raise a real 404 so the api_errors handlers can
+        # render the correct envelope for /v1/* (and {"detail":...} for /api/*).
+        # This handler only sees paths NOT matched by a real route. The full
+        # request path is "/" + full_path.
         if full_path in {"api", "v1"} or full_path.startswith(("api/", "v1/")):
-            return {"error": "API endpoint not found"}
+            raise HTTPException(status_code = 404, detail = "API endpoint not found")
 
         file_path = (build_path / full_path).resolve()
 
