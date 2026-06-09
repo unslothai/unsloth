@@ -2,8 +2,8 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """
-Dependency-light wrapper around tokenizer.apply_chat_template with a
-kwarg fallback for templates that reject reasoning/tools args.
+Dependency-light wrapper around tokenizer.apply_chat_template with a kwarg
+fallback for templates that reject reasoning/tools args.
 """
 
 from typing import Optional

@@ -3,21 +3,15 @@
 
 """Pin the auth-form input-count contract on the change-password page.
 
-PR #5490 added a third visible "Current password" input so the
-admin-forced must_change_password reset path (where no bootstrap
-script is injected) could supply a current password. The side
-effect was that the dominant first-boot UX, where the backend
-injects window.__UNSLOTH_BOOTSTRAP__ and the form silently reuses
-that password, now showed three visible inputs instead of the two
-it had before. PR #5545 restores the two-input first-boot UX by
-rendering the Current password input only when
-window.__UNSLOTH_BOOTSTRAP__ is absent.
+PR #5490 added a third "Current password" input for the admin-forced reset
+path; this regressed the first-boot UX (which reuses the injected
+window.__UNSLOTH_BOOTSTRAP__ password) to three visible inputs. PR #5545
+restores two inputs by rendering Current password only when BOOTSTRAP is
+absent.
 
-These tests inspect the auth-form source file directly. They never
-boot Studio, never spawn a browser, and have no network or device
-dependencies, so they are fully deterministic and run on any CI
-runner without a JS toolchain. The companion Playwright probe lives
-in tests/studio/playwright_chat_ui.py and covers the runtime side.
+These tests inspect the auth-form source directly (no Studio, browser, or
+network), so they run deterministically on any CI runner. The runtime side
+is covered by tests/studio/playwright_chat_ui.py.
 """
 
 from __future__ import annotations

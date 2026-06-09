@@ -104,7 +104,6 @@ class TestGaLoreProjector:
         low = proj.project(grad, step = 0)
         assert low.shape == (16, 4)
 
-        # The projection matrix should be stored as uint8
         assert proj.ortho_matrix.dtype == torch.uint8
 
     def test_quantized_projection_int4(self):
@@ -165,7 +164,7 @@ class TestQuantizationUtils:
         q, scales, zeros, shape = _quantize(w, n_bit = 8)
         w_hat = _dequantize(q, scales, zeros, shape)
 
-        # Error should be bounded by the quantization step size
+        # Error bounded by the quantization step size.
         error = (w - w_hat).abs().max()
         assert error < 0.1, f"Max error {error} exceeds threshold"
 
@@ -215,7 +214,6 @@ class TestParamGroupHelper:
     def test_param_group_separation(self):
         """GaLore vs non-GaLore params are correctly separated."""
 
-        # Create a mini-transformer-like model
         model = nn.Module()
         model.q_proj = nn.Linear(64, 64, bias = False)
         model.k_proj = nn.Linear(64, 64, bias = False)
@@ -224,15 +222,14 @@ class TestParamGroupHelper:
 
         groups = make_q_galore_param_groups(model, rank = 8, weight_quant = False)
 
-        # Should have 2 groups: galore and non-galore
+        # galore + non-galore.
         assert len(groups) == 2
 
         galore_group = [g for g in groups if "rank" in g][0]
         non_galore_group = [g for g in groups if "rank" not in g][0]
 
-        # q_proj and k_proj should be in galore group (2 params)
+        # q_proj + k_proj in galore group.
         assert len(galore_group["params"]) == 2
-        # embed and norm should be in non-galore group
         assert len(non_galore_group["params"]) == 3  # embed weight + norm weight + norm bias
 
     def test_custom_target_modules(self):

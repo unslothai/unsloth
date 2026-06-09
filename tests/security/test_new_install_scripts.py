@@ -44,9 +44,7 @@ def _write(path: Path, content: dict) -> Path:
     return path
 
 
-# ---------------------------------------------------------------------------
-# Lockfile fixtures.
-# ---------------------------------------------------------------------------
+# Lockfile fixtures
 
 
 def _v3_lockfile(packages: dict) -> dict:
@@ -70,9 +68,7 @@ def _v2_lockfile(packages: dict, dependencies: dict) -> dict:
     }
 
 
-# ---------------------------------------------------------------------------
-# Tests.
-# ---------------------------------------------------------------------------
+# Tests
 
 
 def test_no_new_install_scripts_exit_0(tmp_path: Path):

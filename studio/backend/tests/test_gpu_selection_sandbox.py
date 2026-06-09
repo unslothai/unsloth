@@ -2,9 +2,9 @@
 """
 Sandbox test for multi-GPU selection logic.
 
-Tests the core GPU selection, memory estimation, and device_map logic
-in an isolated environment. Can be run on Linux, macOS, and Windows
-without requiring actual GPUs -- all hardware calls are mocked.
+Tests GPU selection, memory estimation, and device_map logic in
+isolation. Runs on Linux, macOS, and Windows without real GPUs -- all
+hardware calls are mocked.
 
 Usage:
     python -m pytest studio/backend/tests/test_gpu_selection_sandbox.py -v
@@ -18,7 +18,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
-# Ensure backend is on sys.path
+# Ensure backend is on sys.path.
 _backend_root = Path(__file__).resolve().parent.parent
 if str(_backend_root) not in sys.path:
     sys.path.insert(0, str(_backend_root))
@@ -33,7 +33,7 @@ def _make_fake_config(
     num_key_value_heads = 8,
     tie_word_embeddings = False,
 ):
-    """Create a fake HF config-like object for estimation tests."""
+    """Fake HF config-like object for estimation tests."""
     from types import SimpleNamespace
     return SimpleNamespace(
         vocab_size = vocab_size,
@@ -47,7 +47,7 @@ def _make_fake_config(
 
 
 class TestEstimateFP16ModelSizeFromConfig(unittest.TestCase):
-    """Test the config-based model size estimation."""
+    """Config-based model size estimation."""
 
     def test_llama_8b_size_reasonable(self):
         from utils.hardware.hardware import _estimate_fp16_model_size_bytes_from_config
@@ -90,7 +90,7 @@ class TestEstimateFP16ModelSizeFromConfig(unittest.TestCase):
         from utils.hardware.hardware import _estimate_fp16_model_size_bytes_from_config
         from types import SimpleNamespace
 
-        config = SimpleNamespace(vocab_size = 32000)  # Missing most fields
+        config = SimpleNamespace(vocab_size = 32000)  # most fields missing
         size = _estimate_fp16_model_size_bytes_from_config(config)
         self.assertIsNone(size)
 
@@ -117,7 +117,7 @@ class TestEstimateFP16ModelSizeFromConfig(unittest.TestCase):
 
 
 class TestEstimateRequiredModelMemory(unittest.TestCase):
-    """Test memory requirement estimation."""
+    """Memory requirement estimation."""
 
     def test_inference_fp16_uses_1_3x(self):
         from utils.hardware.hardware import estimate_required_model_memory_gb
@@ -189,10 +189,10 @@ class TestEstimateRequiredModelMemory(unittest.TestCase):
 
 
 class TestAutoSelectGpuIds(unittest.TestCase):
-    """Test automatic GPU selection based on model size and free memory."""
+    """Automatic GPU selection by model size and free memory."""
 
     def _make_utilization(self, devices):
-        """Create a fake utilization response."""
+        """Fake utilization response."""
         return {
             "available": True,
             "devices": [
@@ -304,7 +304,7 @@ class TestAutoSelectGpuIds(unittest.TestCase):
 
 
 class TestGetDeviceMap(unittest.TestCase):
-    """Test device_map string generation."""
+    """device_map string generation."""
 
     def test_single_gpu_returns_sequential(self):
         from utils.hardware.hardware import get_device_map
@@ -341,7 +341,7 @@ class TestGetDeviceMap(unittest.TestCase):
 
 
 class TestResolveRequestedGpuIds(unittest.TestCase):
-    """Test GPU ID validation."""
+    """GPU ID validation."""
 
     def test_none_returns_parent_visible(self):
         from utils.hardware.hardware import resolve_requested_gpu_ids
@@ -390,7 +390,7 @@ class TestResolveRequestedGpuIds(unittest.TestCase):
 
 
 class TestApplyGpuIds(unittest.TestCase):
-    """Test CUDA_VISIBLE_DEVICES environment variable setting."""
+    """CUDA_VISIBLE_DEVICES environment variable setting."""
 
     def test_apply_list(self):
         from utils.hardware.hardware import apply_gpu_ids
@@ -407,10 +407,10 @@ class TestApplyGpuIds(unittest.TestCase):
 
 
 class TestMultiGpuOverheadAccounting(unittest.TestCase):
-    """Test that multi-GPU overhead is applied correctly.
+    """Multi-GPU overhead is applied correctly.
 
-    The first GPU should keep its full free memory, and only
-    additional GPUs should have the overhead factor applied.
+    The first GPU keeps its full free memory; the overhead factor applies
+    only to additional GPUs.
     """
 
     def _make_utilization(self, devices):

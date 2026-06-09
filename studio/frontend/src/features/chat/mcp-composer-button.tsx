@@ -80,8 +80,8 @@ const MCP_PRESETS: readonly McpPreset[] = [
   },
 ] as const;
 
-// mcp_servers has no UNIQUE(url); dedupe by normalized URL so a preset
-// toggle reuses its row instead of creating duplicates.
+// mcp_servers has no UNIQUE(url); dedupe by normalized URL so a preset toggle
+// reuses its row instead of duplicating.
 function normalizeMcpUrl(url: string): string {
   return (url || "").trim().toLowerCase().replace(/\/+$/, "");
 }
@@ -110,8 +110,8 @@ export function McpComposerButton({
   const [pendingUrl, setPendingUrl] = useState<string | null>(null);
   const [hintKey, setHintKey] = useState<string | null>(null);
 
-  // Grey out only when a loaded model lacks tool support; with no model yet MCP
-  // can still be pre-selected, matching the other composer tools.
+  // Grey out only when a loaded model lacks tool support; with no model yet,
+  // MCP can still be pre-selected, like the other composer tools.
   const usable = !modelLoaded || supportsTools;
 
   const refresh = useCallback(async () => {
@@ -178,10 +178,9 @@ export function McpComposerButton({
     }
   }
 
-  // One dropdown row. Enabled rows get a green underlay and a tick that
-  // becomes an X on hover so a click removes them. A hint shows as a tooltip
-  // driven by row hover; the tooltip anchor is pointer-events-none so the whole
-  // row stays clickable (a Radix TooltipTrigger would swallow the select).
+  // One dropdown row. Enabled rows get a green underlay and a tick that becomes
+  // an X on hover (click removes). The hint tooltip anchor is pointer-events-none
+  // so the row stays clickable (a Radix TooltipTrigger would swallow the select).
   const renderRow = (opts: {
     key: string;
     label: string;
