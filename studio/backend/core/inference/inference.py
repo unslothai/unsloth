@@ -462,7 +462,11 @@ class InferenceBackend:
                     trust_remote_code = trust_remote_code,
                 )
 
-                FastVisionModel.for_inference(model)
+                # Skip unsloth's Triton kernel patching on RDNA2: the compiled
+                # HIP modules fail to load on gfx103x, crashing with
+                # "Module not initialized". Stock transformers inference works.
+                if not _is_rdna2:
+                    FastVisionModel.for_inference(model)
 
                 # FastVisionModel may return a raw tokenizer instead of a
                 # Processor for some models (e.g. Gemma-3); load the real one.
@@ -511,7 +515,11 @@ class InferenceBackend:
                     trust_remote_code = trust_remote_code,
                 )
 
-                FastLanguageModel.for_inference(model)
+                # Skip unsloth's Triton kernel patching on RDNA2: the compiled
+                # HIP modules fail to load on gfx103x, crashing with
+                # "Module not initialized". Stock transformers inference works.
+                if not _is_rdna2:
+                    FastLanguageModel.for_inference(model)
 
                 self.models[model_name]["model"] = model
                 self.models[model_name]["tokenizer"] = tokenizer
