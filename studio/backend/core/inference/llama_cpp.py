@@ -5344,13 +5344,9 @@ class LlamaCppBackend:
                     _final_usage = _metadata_usage or {}
                     _final_completion = _final_usage.get("completion_tokens", 0)
                     _final_prompt = _final_usage.get("prompt_tokens", 0)
-                    _total_completion = (
-                        _final_completion + _accumulated_completion_tokens
-                    )
+                    _total_completion = _final_completion + _accumulated_completion_tokens
                     if _metadata_usage or _metadata_timings or _metadata_finish_reason:
-                        _merged_timings = (
-                            dict(_metadata_timings) if _metadata_timings else {}
-                        )
+                        _merged_timings = dict(_metadata_timings) if _metadata_timings else {}
                         if _accumulated_predicted_ms or _accumulated_predicted_n:
                             _merged_timings["predicted_ms"] = (
                                 _merged_timings.get("predicted_ms", 0) + _accumulated_predicted_ms
@@ -5385,7 +5381,11 @@ class LlamaCppBackend:
     # ── Prompt token counting ──────────────────────────────────
 
     def count_chat_tokens(
-        self, messages, system = None, tools = None, strict: bool = False
+        self,
+        messages,
+        system = None,
+        tools = None,
+        strict: bool = False,
     ) -> int:
         """Count prompt tokens for a chat request via llama-server.
 
@@ -5407,9 +5407,7 @@ class LlamaCppBackend:
                         continue
                     if not isinstance(block, dict):
                         return True
-                    if block.get("type") == "text" and isinstance(
-                        block.get("text"), str
-                    ):
+                    if block.get("type") == "text" and isinstance(block.get("text"), str):
                         continue
                     if isinstance(block.get("text"), str):
                         continue
@@ -5420,9 +5418,7 @@ class LlamaCppBackend:
             if _has_non_text_content(system):
                 return True
             for msg in messages or []:
-                if isinstance(msg, dict) and _has_non_text_content(
-                    msg.get("content", "")
-                ):
+                if isinstance(msg, dict) and _has_non_text_content(msg.get("content", "")):
                     return True
             return False
 
@@ -5433,9 +5429,7 @@ class LlamaCppBackend:
                 parts = []
                 for block in content:
                     if isinstance(block, dict):
-                        if block.get("type") == "text" and isinstance(
-                            block.get("text"), str
-                        ):
+                        if block.get("type") == "text" and isinstance(block.get("text"), str):
                             parts.append(block["text"])
                         elif isinstance(block.get("text"), str):
                             parts.append(block["text"])
@@ -5452,9 +5446,7 @@ class LlamaCppBackend:
             system_text = _block_text(system)
 
         try:
-            _auth_headers = (
-                {"Authorization": f"Bearer {self._api_key}"} if self._api_key else None
-            )
+            _auth_headers = {"Authorization": f"Bearer {self._api_key}"} if self._api_key else None
             with httpx.Client(timeout = 10, headers = _auth_headers) as client:
 
                 def _tokenize(text: str) -> int:
@@ -5469,9 +5461,7 @@ class LlamaCppBackend:
                     tokens = r.json().get("tokens", [])
                     if not isinstance(tokens, list):
                         if strict:
-                            raise RuntimeError(
-                                "llama-server tokenizer returned invalid tokens"
-                            )
+                            raise RuntimeError("llama-server tokenizer returned invalid tokens")
                         return 0
                     return len(tokens)
 

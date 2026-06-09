@@ -645,9 +645,7 @@ class ChatCompletionRequest(BaseModel):
     parallel_tool_calls: Optional[bool] = Field(
         None, description = "Whether to enable parallel function calling during tool use."
     )
-    seed: Optional[int] = Field(
-        None, description = "Best-effort deterministic sampling seed."
-    )
+    seed: Optional[int] = Field(None, description = "Best-effort deterministic sampling seed.")
     stream_options: Optional[dict] = Field(
         None,
         description = 'Streaming options, e.g. {"include_usage": true} to emit a final usage chunk.',

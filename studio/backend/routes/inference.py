@@ -137,11 +137,7 @@ def _effective_max_tokens(payload):
     """Resolve the generation cap: OpenAI deprecated ``max_tokens`` in favor of
     ``max_completion_tokens``, so honor either, preferring the explicit legacy
     field when both are sent. Used by the audio (TTS / audio-input) paths."""
-    return (
-        payload.max_tokens
-        if payload.max_tokens is not None
-        else payload.max_completion_tokens
-    )
+    return payload.max_tokens if payload.max_tokens is not None else payload.max_completion_tokens
 
 
 def _wants_multiple_choices(payload) -> bool:
@@ -161,9 +157,7 @@ def _raise_unsupported_openai_parameter(param: str, message: str) -> None:
 
 
 def _raise_unsupported_n(path_label: str) -> None:
-    _raise_unsupported_openai_parameter(
-        "n", f"n > 1 is not supported for {path_label}."
-    )
+    _raise_unsupported_openai_parameter("n", f"n > 1 is not supported for {path_label}.")
 
 
 def _openai_stream_error_chunk(exc) -> dict:
@@ -174,9 +168,7 @@ def _openai_stream_error_chunk(exc) -> dict:
     (a code-less error hides it)."""
     _cls = _classify_llama_generation_error(exc)
     if _cls:
-        return openai_error_body(
-            _friendly_error(exc), status = 400, code = "context_length_exceeded"
-        )
+        return openai_error_body(_friendly_error(exc), status = 400, code = "context_length_exceeded")
     if _cls is False:
         return openai_error_body(_friendly_error(exc), status = 400)
     return openai_error_body(_friendly_error(exc), status = 500)
@@ -229,9 +221,7 @@ def _drop_parallel_tool_call_deltas(chunk) -> bool:
         delta = ch.get("delta") or {}
         tcs = delta.get("tool_calls")
         if isinstance(tcs, list):
-            kept = [
-                tc for tc in tcs if isinstance(tc, dict) and (tc.get("index") or 0) == 0
-            ]
+            kept = [tc for tc in tcs if isinstance(tc, dict) and (tc.get("index") or 0) == 0]
             if len(kept) != len(tcs):
                 delta["tool_calls"] = kept
                 changed = True
@@ -356,8 +346,7 @@ def _classify_llama_generation_error(exc: Exception) -> Optional[bool]:
     msg = str(exc)
     msg_l = msg.lower()
     if "n_ctx" in msg_l or (
-        "context" in msg_l
-        and any(t in msg_l for t in ("exceed", "length", "window", "too long"))
+        "context" in msg_l and any(t in msg_l for t in ("exceed", "length", "window", "too long"))
     ):
         return True
     if _re.search(r"llama-server returned (4\d\d)", msg):
@@ -3475,16 +3464,10 @@ async def openai_chat_completions(
                         # The prompt is shared across all n choices, so count its
                         # tokens ONCE (OpenAI bills only generated tokens for each
                         # extra choice). Only completion_tokens accumulates.
-                        _prompt_tokens = (
-                            completion_usage.get("prompt_tokens") or _prompt_tokens
-                        )
-                        _sum_completion += (
-                            completion_usage.get("completion_tokens") or 0
-                        )
+                        _prompt_tokens = completion_usage.get("prompt_tokens") or _prompt_tokens
+                        _sum_completion += completion_usage.get("completion_tokens") or 0
                         if _prompt_details is None:
-                            _prompt_details = completion_usage.get(
-                                "prompt_tokens_details"
-                            )
+                            _prompt_details = completion_usage.get("prompt_tokens_details")
 
                 response = ChatCompletion(
                     id = completion_id,
@@ -4203,9 +4186,7 @@ def _openai_model_objects() -> list[dict]:
 
 
 @router.get("/models")
-async def openai_list_models(
-    current_subject: str = Depends(get_current_subject),
-):
+async def openai_list_models(current_subject: str = Depends(get_current_subject)):
     """
     OpenAI-compatible model listing endpoint.
 
@@ -4216,10 +4197,7 @@ async def openai_list_models(
 
 
 @router.get("/models/{model_id:path}")
-async def openai_retrieve_model(
-    model_id: str,
-    current_subject: str = Depends(get_current_subject),
-):
+async def openai_retrieve_model(model_id: str, current_subject: str = Depends(get_current_subject)):
     """
     OpenAI-compatible single-model retrieval endpoint (``GET /v1/models/{id}``).
 
@@ -4278,9 +4256,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
             # separator) so _cmpl_stream_event_out can rewrite the cmpl- id and
             # honor stream_options.include_usage per event, while keeping SSE
             # framing and token bytes intact.
-            _include_usage = bool(
-                (body.get("stream_options") or {}).get("include_usage")
-            )
+            _include_usage = bool((body.get("stream_options") or {}).get("include_usage"))
             client = httpx.AsyncClient(timeout = 600)
             resp = None
             bytes_iter = None
@@ -5722,9 +5698,7 @@ async def _anthropic_plain_stream(
     # makes blocking HTTP calls to llama-server, so run it off the event loop.
     input_tokens = 0
     if llama_backend is not None and openai_messages is not None:
-        input_tokens = await asyncio.to_thread(
-            llama_backend.count_chat_tokens, openai_messages
-        )
+        input_tokens = await asyncio.to_thread(llama_backend.count_chat_tokens, openai_messages)
 
     async def _stream():
         emitter = AnthropicStreamEmitter()
@@ -5760,9 +5734,7 @@ async def _anthropic_plain_stream(
                 yield _error_event
                 return
 
-        stop_reason = openai_finish_to_anthropic_stop(
-            captured_finish_reason, had_tool_calls = False
-        )
+        stop_reason = openai_finish_to_anthropic_stop(captured_finish_reason, had_tool_calls = False)
         for line in emitter.finish(stop_reason = stop_reason, stop_sequence = None):
             yield line
 
@@ -5804,7 +5776,10 @@ def _collect_anthropic_events(run_gen) -> list:
 
 
 async def _anthropic_tool_non_streaming(
-    run_gen, message_id, model_name, disable_parallel_tool_use = False
+    run_gen,
+    message_id,
+    model_name,
+    disable_parallel_tool_use = False,
 ):
     """Non-streaming response for the tool-calling path.
 
@@ -5927,9 +5902,7 @@ async def _anthropic_plain_non_streaming(run_gen, message_id, model_name):
     if full_text:
         content_blocks.append(AnthropicResponseTextBlock(text = full_text))
 
-    stop_reason = openai_finish_to_anthropic_stop(
-        captured_finish_reason, had_tool_calls = False
-    )
+    stop_reason = openai_finish_to_anthropic_stop(captured_finish_reason, had_tool_calls = False)
 
     resp = AnthropicMessagesResponse(
         id = message_id,
@@ -6265,9 +6238,7 @@ async def _anthropic_passthrough_non_streaming(
             )
         )
 
-    stop_reason = openai_finish_to_anthropic_stop(
-        finish_reason, had_tool_calls = bool(tool_calls)
-    )
+    stop_reason = openai_finish_to_anthropic_stop(finish_reason, had_tool_calls = bool(tool_calls))
 
     usage = data.get("usage") or {}
     resp_obj = AnthropicMessagesResponse(
@@ -6651,10 +6622,7 @@ async def _openai_passthrough_stream(
                     # deltas with index>=1 so only the first call streams. Only
                     # lines carrying tool_calls are reparsed; everything else is
                     # relayed byte-for-byte.
-                    if (
-                        payload.parallel_tool_calls is False
-                        and '"tool_calls"' in raw_line
-                    ):
+                    if payload.parallel_tool_calls is False and '"tool_calls"' in raw_line:
                         raw_line = _cap_parallel_tool_calls_sse_line(raw_line)
                     # Relay verbatim to preserve llama-server's native id,
                     # finish_reason, delta.tool_calls, and usage chunks.

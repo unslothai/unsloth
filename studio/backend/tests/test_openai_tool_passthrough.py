@@ -357,7 +357,12 @@ class TestChatCompletionRequestToolFields:
         assert "text/event-stream" not in resp.headers["content-type"]
         assert captured["stream"] is False
 
-    def _v1_client(self, monkeypatch, llama_backend, inference_backend = None):
+    def _v1_client(
+        self,
+        monkeypatch,
+        llama_backend,
+        inference_backend = None,
+    ):
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
 
@@ -365,13 +370,9 @@ class TestChatCompletionRequestToolFields:
         from auth.authentication import get_current_subject
         from utils.api_errors import install_api_error_handlers
 
-        monkeypatch.setattr(
-            inference_route, "get_llama_cpp_backend", lambda: llama_backend
-        )
+        monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: llama_backend)
         if inference_backend is not None:
-            monkeypatch.setattr(
-                inference_route, "get_inference_backend", lambda: inference_backend
-            )
+            monkeypatch.setattr(inference_route, "get_inference_backend", lambda: inference_backend)
 
         app = FastAPI()
         app.include_router(inference_route.router, prefix = "/v1")

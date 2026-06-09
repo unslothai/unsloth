@@ -36,11 +36,7 @@ def anthropic_tool_use_id(upstream_id = None) -> str:
     """Return an Anthropic-style tool_use id (prefix 'toolu_'). Reuses an
     upstream id only if it already starts with 'toolu_'; otherwise mints a fresh
     'toolu_<24 hex>'."""
-    if (
-        upstream_id
-        and isinstance(upstream_id, str)
-        and upstream_id.startswith("toolu_")
-    ):
+    if upstream_id and isinstance(upstream_id, str) and upstream_id.startswith("toolu_"):
         return upstream_id
     return f"toolu_{uuid.uuid4().hex[:24]}"
 
@@ -265,7 +261,12 @@ class AnthropicStreamEmitter:
         self._prev_text: str = ""
         self._usage: dict = {}
 
-    def start(self, message_id: str, model: str, input_tokens: int = 0) -> list[str]:
+    def start(
+        self,
+        message_id: str,
+        model: str,
+        input_tokens: int = 0,
+    ) -> list[str]:
         """Emit message_start and open the first text content block."""
         events = []
         events.append(
@@ -309,7 +310,11 @@ class AnthropicStreamEmitter:
         # status events — no Anthropic equivalent
         return []
 
-    def finish(self, stop_reason: str = "end_turn", stop_sequence = None) -> list[str]:
+    def finish(
+        self,
+        stop_reason: str = "end_turn",
+        stop_sequence = None,
+    ) -> list[str]:
         """Close any open block and emit message_delta + message_stop."""
         events = []
         if self._text_block_open or self._open_tool_call_id is not None:
@@ -486,7 +491,12 @@ class AnthropicPassthroughEmitter:
         self._stop_reason: str = "end_turn"
         self._stop_sequence: Optional[str] = None
 
-    def start(self, message_id: str, model: str, input_tokens: int = 0) -> list[str]:
+    def start(
+        self,
+        message_id: str,
+        model: str,
+        input_tokens: int = 0,
+    ) -> list[str]:
         return [
             build_anthropic_sse_event(
                 "message_start",

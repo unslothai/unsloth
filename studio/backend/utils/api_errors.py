@@ -73,7 +73,12 @@ ANTHROPIC_TYPE_BY_STATUS = {
 
 
 def openai_error_body(
-    message, *, status = 400, err_type = None, code = None, param = None
+    message,
+    *,
+    status = 400,
+    err_type = None,
+    code = None,
+    param = None,
 ) -> dict:
     """Build an OpenAI-style error envelope.
 
@@ -92,7 +97,12 @@ def openai_error_body(
     }
 
 
-def anthropic_error_body(message, *, status = 400, err_type = None) -> dict:
+def anthropic_error_body(
+    message,
+    *,
+    status = 400,
+    err_type = None,
+) -> dict:
     """Build an Anthropic-style error envelope.
 
     Returns ``{"type": "error", "request_id": None, "error": {"type", "message"}}``.
@@ -116,7 +126,13 @@ def is_anthropic_path(path: str) -> bool:
 
 
 def error_body_for_path(
-    path, message, *, status, err_type = None, code = None, param = None
+    path,
+    message,
+    *,
+    status,
+    err_type = None,
+    code = None,
+    param = None,
 ) -> dict:
     """Dispatch to the correct envelope builder based on ``path``.
 
@@ -126,9 +142,7 @@ def error_body_for_path(
     """
     if is_anthropic_path(path):
         return anthropic_error_body(message, status = status, err_type = err_type)
-    return openai_error_body(
-        message, status = status, err_type = err_type, code = code, param = param
-    )
+    return openai_error_body(message, status = status, err_type = err_type, code = code, param = param)
 
 
 def _summarize_validation_errors(errors) -> tuple:
@@ -161,11 +175,7 @@ def _summarize_validation_errors(errors) -> tuple:
                 param = part
                 break
 
-    label = (
-        ".".join(str(p) for p in loc_parts)
-        if loc_parts
-        else ".".join(str(p) for p in loc)
-    )
+    label = ".".join(str(p) for p in loc_parts) if loc_parts else ".".join(str(p) for p in loc)
     summary = f"{label}: {msg}" if label else str(msg)
     return summary, param
 
@@ -204,9 +214,7 @@ def install_api_error_handlers(app) -> None:
         if path.startswith("/v1/"):
             detail = exc.detail
             # Already a fully-formed envelope: pass through untouched.
-            if isinstance(detail, dict) and (
-                "error" in detail or detail.get("type") == "error"
-            ):
+            if isinstance(detail, dict) and ("error" in detail or detail.get("type") == "error"):
                 return JSONResponse(
                     status_code = exc.status_code,
                     content = detail,
