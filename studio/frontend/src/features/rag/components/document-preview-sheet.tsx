@@ -297,6 +297,36 @@ function PdfPreview({
   );
 }
 
+// Resizable preview width (px). Default matches the prior fixed 44rem; drag the
+// left edge to widen. Persisted so it survives reopen.
+const PREVIEW_WIDTH_KEY = "unsloth-rag-preview-width";
+const MIN_PREVIEW_WIDTH = 384;
+const DEFAULT_PREVIEW_WIDTH = 704;
+
+const maxPreviewWidth = () =>
+  typeof window === "undefined"
+    ? DEFAULT_PREVIEW_WIDTH
+    : Math.round(window.innerWidth * 0.95);
+
+const clampPreviewWidth = (w: number) =>
+  Math.min(maxPreviewWidth(), Math.max(MIN_PREVIEW_WIDTH, Math.round(w)));
+
+function readStoredPreviewWidth(): number {
+  if (typeof window === "undefined") return DEFAULT_PREVIEW_WIDTH;
+  const raw = Number(window.localStorage.getItem(PREVIEW_WIDTH_KEY));
+  return Number.isFinite(raw) && raw > 0
+    ? clampPreviewWidth(raw)
+    : DEFAULT_PREVIEW_WIDTH;
+}
+
+function persistPreviewWidth(w: number) {
+  try {
+    window.localStorage.setItem(PREVIEW_WIDTH_KEY, String(Math.round(w)));
+  } catch {
+    // ignore storage errors (private mode, quota, etc.)
+  }
+}
+
 export function DocumentPreviewSheet() {
   const { open, documentId, chunkId, filename, page, closePreview } =
     useDocumentPreviewStore();
@@ -304,6 +334,44 @@ export function DocumentPreviewSheet() {
   const [fileUrl, setFileUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Left-edge drag resizing of the panel.
+  const [previewWidth, setPreviewWidth] = useState<number>(
+    readStoredPreviewWidth,
+  );
+  const [resizing, setResizing] = useState(false);
+  const resizeRef = useRef<{ startX: number; startWidth: number } | null>(null);
+  const widthRef = useRef(previewWidth);
+  widthRef.current = previewWidth;
+
+  const onResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    resizeRef.current = { startX: e.clientX, startWidth: widthRef.current };
+    setResizing(true);
+  }, []);
+
+  useEffect(() => {
+    if (!resizing) return;
+    const onMove = (e: MouseEvent) => {
+      const start = resizeRef.current;
+      if (!start) return;
+      // Right-anchored panel: dragging left (smaller clientX) widens it.
+      setPreviewWidth(
+        clampPreviewWidth(start.startWidth + (start.startX - e.clientX)),
+      );
+    };
+    const onUp = () => {
+      setResizing(false);
+      resizeRef.current = null;
+      persistPreviewWidth(widthRef.current);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+  }, [resizing]);
 
   useEffect(() => {
     if (!open || !documentId) return;
@@ -339,8 +407,27 @@ export function DocumentPreviewSheet() {
     <Sheet open={open} onOpenChange={(o) => !o && closePreview()}>
       <SheetContent
         side="right"
-        className="flex w-full flex-col gap-0 p-0 sm:max-w-[44rem]"
+        style={{ width: previewWidth, maxWidth: "95vw" }}
+        className={cn(
+          "flex w-full flex-col gap-0 p-0",
+          resizing && "select-none",
+        )}
       >
+        {/* Drag the left edge to widen the preview; double-click to reset. */}
+        <div
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize document preview"
+          onMouseDown={onResizeStart}
+          onDoubleClick={() => {
+            setPreviewWidth(DEFAULT_PREVIEW_WIDTH);
+            persistPreviewWidth(DEFAULT_PREVIEW_WIDTH);
+          }}
+          className={cn(
+            "absolute inset-y-0 left-0 z-20 w-2 cursor-col-resize transition-colors hover:bg-primary/25",
+            resizing && "bg-primary/40",
+          )}
+        />
         <SheetHeader className="gap-1 border-b p-4">
           {/* pr-10 reserves room for the absolute close button. */}
           <SheetTitle className="flex items-center gap-2 pr-10 text-sm">
