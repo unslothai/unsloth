@@ -48,7 +48,6 @@ tokenizer = get_chat_template(
     chat_template = "llama-3.1",
 )
 
-# Load small dataset for quick training
 dataset_train = load_dataset("allenai/openassistant-guanaco-reformatted", split = "train[:100]")
 dataset_train = dataset_train.map(formatting_prompts_func, batched = True)
 
@@ -126,7 +125,6 @@ print(f"\n{'='*80}")
 print("🔍 PHASE 4: Loading 4bit Model and Second Fine-tuning")
 print(f"{'='*80}")
 
-# Clean up first model
 del model
 del tokenizer
 torch.cuda.empty_cache()
@@ -146,7 +144,7 @@ tokenizer_4bit = get_chat_template(
 
 print("✅ 4bit model loaded successfully!")
 
-# Add LoRA adapters to the 4bit model
+# Add LoRA adapters
 model_4bit = FastLanguageModel.get_peft_model(
     model_4bit,
     r = 16,
@@ -233,7 +231,6 @@ print(f"\n{'='*80}")
 print("🔍 CLEANUP")
 print(f"{'='*80}")
 
-# Cleanup
 safe_remove_directory("./outputs")
 safe_remove_directory("./outputs_4bit")
 safe_remove_directory("./unsloth_compiled_cache")

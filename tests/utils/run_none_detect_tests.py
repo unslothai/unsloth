@@ -21,10 +21,8 @@ from datetime import datetime
 from io import StringIO
 from pathlib import Path
 
-# Allow running from repo root without install.
-# Insert the datasets directory directly so dataset_none_detect is imported
-# as a top-level module, bypassing utils/datasets/__init__.py which pulls in
-# torch, fastapi, and other heavy studio deps not needed for this utility.
+# Import dataset_none_detect as a top-level module, bypassing
+# utils/datasets/__init__.py which pulls in torch, fastapi, and other heavy deps.
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT / "studio" / "backend" / "utils" / "datasets"))
 
@@ -38,9 +36,7 @@ LOG_DIR = REPO_ROOT / "tests" / "logs"
 LOG_DIR.mkdir(parents = True, exist_ok = True)
 LOG_PATH = LOG_DIR / "none_detect_results.log"
 
-# ---------------------------------------------------------------------------
 # Helpers
-# ---------------------------------------------------------------------------
 
 
 class Tee:
@@ -108,15 +104,10 @@ def assert_exact_recall(stats: dict, expected_bad: set, label: str):
     return all_caught
 
 
-# ---------------------------------------------------------------------------
 # 1. Synthetic datasets
-# ---------------------------------------------------------------------------
 
-
-# ---------------------------------------------------------------------------
 # Minimal mock so find_none_chatml can be called with hand-crafted rows that
 # pyarrow can't represent (e.g. messages=None, messages="not a list").
-# ---------------------------------------------------------------------------
 
 
 class _MockDataset:
@@ -468,9 +459,7 @@ def test_synthetic():
     return results
 
 
-# ---------------------------------------------------------------------------
 # 2. HuggingFace: peteromallet/dataclaw-peteromallet
-# ---------------------------------------------------------------------------
 
 
 def _brute_force_bad_rows(ds, fmt: str) -> set:
@@ -576,9 +565,7 @@ def test_dataclaw():
         return None
 
 
-# ---------------------------------------------------------------------------
 # 3. HuggingFace: peteromallet/my-personal-codex-data
-# ---------------------------------------------------------------------------
 
 
 def test_codex_data():
@@ -613,9 +600,7 @@ def test_codex_data():
         return None
 
 
-# ---------------------------------------------------------------------------
 # Main
-# ---------------------------------------------------------------------------
 
 
 def main():
@@ -648,9 +633,7 @@ def main():
         all_results["dataclaw"] = test_dataclaw()
         all_results["codex_data"] = test_codex_data()
 
-        # ---------------------------------------------------------------------------
         # Summary table
-        # ---------------------------------------------------------------------------
         section("SUMMARY")
         rows = [
             ("Dataset", "Format", "Total rows", "Bad rows", "Bad turns"),

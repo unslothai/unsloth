@@ -462,10 +462,9 @@ if (Version(torch.__version__) < Version("2.4.0")) and not hasattr(
 def patch_loss_functions(torch_compile = True):
     _patch_loss_functions(fast_cross_entropy_loss, torch_compile = torch_compile)
 
-    # Defense-in-depth sweep for LOSS_MAPPING aliases still pointing at the
-    # stock ForCausalLMLoss (e.g. ForConditionalGeneration for Qwen3.5,
-    # CsmForConditionalGeneration). unsloth_zoo also does this; remove once
-    # the floor pin moves past unslothai/unsloth-zoo#656.
+    # Redirect LOSS_MAPPING aliases still pointing at stock ForCausalLMLoss
+    # (e.g. ForConditionalGeneration for Qwen3.5, Csm...). unsloth_zoo also
+    # does this; remove once the floor pin passes unslothai/unsloth-zoo#656.
     try:
         import transformers.loss.loss_utils as _lu
         _unsloth_loss = _lu.LOSS_MAPPING.get("ForCausalLM")

@@ -57,29 +57,10 @@ def describe_param(
     as_str: bool = True,
 ) -> dict:
     """
-    Provide a statistical summary of a 2D weight matrix or tensor.
-    If as_str is True, the summary is returned as a formatted string.
-    Parameters:
-        param: torch.Tensor
-        include_l1 (bool): Whether to include the L1 norm (sum of absolute values).
-        include_l2 (bool): Whether to include the L2 norm (Frobenius norm).
-        include_infinity (bool): Whether to include the infinity norm (max absolute value).
-        as_str (bool): Whether to return the summary as a formatted string.
+    Statistical summary (shape, mean, std, min/max, percentiles) of a tensor.
 
-    Returns:
-        dict: A dictionary with the following statistics:
-              - shape: Dimensions of the matrix.
-              - mean: Average value.
-              - median: Median value.
-              - std: Standard deviation.
-              - min: Minimum value.
-              - max: Maximum value.
-              - percentile_25: 25th percentile.
-              - percentile_75: 75th percentile.
-              Additionally, if enabled:
-              - L1_norm: Sum of absolute values.
-              - L2_norm: Euclidean (Frobenius) norm.
-              - infinity_norm: Maximum absolute value.
+    Optionally includes L1/L2/infinity norms. Returns a formatted string when
+    as_str is True, else a dict.
     """
 
     param = param.float()
@@ -105,16 +86,7 @@ def describe_param(
 
 
 def format_summary(stats: dict, precision: int = 6) -> str:
-    """
-    Format the statistical summary dictionary for printing.
-
-    Parameters:
-        stats (dict): The dictionary returned by describe_param.
-        precision (int): Number of decimal places for floating point numbers.
-
-    Returns:
-        str: A formatted string representing the summary.
-    """
+    """Format the describe_param summary dict into a printable string."""
     lines = []
     for key, value in stats.items():
         if isinstance(value, float):

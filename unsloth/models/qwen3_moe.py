@@ -67,31 +67,26 @@ def Qwen3MoeSparseMoeBlock_fast_forward(
     routing_weights = torch_nn_functional_softmax(router_logits, dim = -1, dtype = torch.float32)
     routing_weights, selected_experts = torch.topk(routing_weights, self.top_k, dim = -1)
     routing_weights /= routing_weights.sum(dim = -1, keepdim = True)
-    # we cast back to the input dtype
+    # cast back to the input dtype
     routing_weights = routing_weights.to(X.dtype)
     final_X = torch.zeros((bsz * seq_len, hd), dtype = torch.float32, device = X.device)
 
-    # One hot encode the selected experts to create an expert mask
-    # this will be used to easily index which expert is going to be sollicitated
+    # One-hot the selected experts into a mask to index which expert is used
     expert_mask = torch.nn.functional.one_hot(
         selected_experts, num_classes = self.num_experts
     ).permute(2, 1, 0)
 
-    # Loop over all available experts in the model and perform the computation on each expert
     for expert_idx in range(self.num_experts):
         expert_layer = self.experts[expert_idx]
         idx, top_x = torch.where(expert_mask[expert_idx])
 
-        # Index the correct hidden states and compute the expert hidden state for
-        # the current expert. We need to make sure to multiply the output hidden
-        # states by `routing_weights` on the corresponding tokens (top-1 and top-2)
+        # Index hidden states for this expert and scale by routing_weights
         current_state = X[None, top_x].reshape(-1, hd)
         current_X = (
             expert_layer(current_state) * routing_weights[top_x, idx, None]
-        )  # Qwen3MoeMLP.forward = fast_swiglu_inference takes care of making this faster. Analogous to Dense models' MLP
+        )  # Qwen3MoeMLP.forward = fast_swiglu_inference speeds this up
 
-        # However `index_add_` only support torch tensors for indexing so we'll use
-        # the `top_x` tensor here.
+        # index_add_ needs a tensor index, so use top_x
         final_X.index_add_(0, top_x, current_X.to(X.dtype))
     final_X = final_X.reshape(bsz, seq_len, hd)
     return final_X, router_logits

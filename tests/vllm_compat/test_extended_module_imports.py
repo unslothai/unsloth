@@ -97,10 +97,8 @@ def _has_unsloth() -> bool:
     return importlib.util.find_spec("unsloth") is not None
 
 
-# -------------------------------------------------------------------------
 # Extended unsloth-zoo module list. Modules with no top-level vllm/CUDA
 # import are expected to load cleanly on a CPU spoof runner.
-# -------------------------------------------------------------------------
 
 
 _ZOO_VLLM_FREE_MODULES = [
@@ -130,11 +128,9 @@ _ZOO_VLLM_FREE_MODULES = [
 @pytest.mark.skipif(not _has_unsloth_zoo(), reason = "unsloth_zoo not installed")
 @pytest.mark.parametrize("modname", _ZOO_VLLM_FREE_MODULES)
 def test_unsloth_zoo_module_imports_under_spoof(modname: str):
-    """Each unsloth_zoo module must import cleanly on a CPU-only spoof
-    runner. Catches transformers/peft/bnb symbol drift that pins fail
-    at import time (vs runtime)."""
-    # Force fresh resolution: drops stale partial-import state from
-    # a previous module's failure.
+    """Each unsloth_zoo module must import cleanly on a CPU-only spoof runner.
+    Catches transformers/peft/bnb symbol drift that fails at import time."""
+    # Force fresh resolution: drop stale partial-import state from a prior failure
     sys.modules.pop(modname, None)
     try:
         importlib.import_module(modname)
@@ -144,10 +140,8 @@ def test_unsloth_zoo_module_imports_under_spoof(modname: str):
         )
 
 
-# -------------------------------------------------------------------------
 # Spoof correctness: _IS_MLX must remain False on a non-Mac runner
-# AND _IS_CUDA / DEVICE_TYPE must reflect the spoofed CUDA layer.
-# -------------------------------------------------------------------------
+# and _IS_CUDA / DEVICE_TYPE must reflect the spoofed CUDA layer.
 
 
 @pytest.mark.skipif(not _has_unsloth(), reason = "unsloth not installed")
@@ -163,11 +157,8 @@ def test_unsloth_is_mlx_false_under_spoof():
     )
 
 
-# -------------------------------------------------------------------------
-# unsloth.models.* — the core RL + sentence-transformer surfaces. These
-# are the entry points unsloth/__init__.py loads transitively when a
-# user does `from unsloth import FastLanguageModel`.
-# -------------------------------------------------------------------------
+# unsloth.models.* — core RL + sentence-transformer surfaces, loaded
+# transitively by `from unsloth import FastLanguageModel`.
 
 
 _UNSLOTH_CORE_MODULES = [
@@ -184,14 +175,11 @@ _UNSLOTH_CORE_MODULES = [
 @pytest.mark.skipif(not _has_unsloth(), reason = "unsloth not installed")
 @pytest.mark.parametrize("modname", _UNSLOTH_CORE_MODULES)
 def test_unsloth_core_module_imports_under_spoof(modname: str):
-    """Core unsloth modules must import on a CPU-only runner under
-    the CUDA spoof. Drift in transformers/peft/trl symbols pinned at
-    module-top crashes here BEFORE any user-visible call.
+    """Core unsloth modules must import on a CPU-only runner under the CUDA
+    spoof; module-top symbol drift crashes here before any user-visible call.
 
-    Bootstraps via `import unsloth` first, since most sub-modules
-    require the package's _gpu_init side effects. Without that, every
-    `import unsloth.models.*` raises a guard `Please restructure your
-    imports with 'import unsloth' at the top of your file.`"""
+    Bootstraps via `import unsloth` first, since most sub-modules need the
+    package's _gpu_init side effects (else an import-guard fires)."""
     try:
         import unsloth  # noqa: F401  -- triggers _gpu_init side effects
     except Exception as e:
@@ -210,11 +198,8 @@ def test_unsloth_core_module_imports_under_spoof(modname: str):
         )
 
 
-# -------------------------------------------------------------------------
-# Public API surface dump for FastLanguageModel / FastVisionModel /
-# FastModel under spoof. Asserts the surface is non-empty and that
-# the patch hooks unsloth-zoo's RL surface relies on are present.
-# -------------------------------------------------------------------------
+# Public API surface for FastLanguageModel / FastVisionModel / FastModel under
+# spoof: surface must be non-empty and the notebook-relied methods present.
 
 
 @pytest.mark.skipif(not _has_unsloth(), reason = "unsloth not installed")
@@ -229,9 +214,7 @@ def test_fast_model_class_surface_under_spoof():
             continue
         found_at_least_one = True
         public = sorted(n for n in dir(cls) if not n.startswith("_"))
-        # Notebooks rely on these methods. Loss of any one is a regression
-        # the existing api-introspect notebook job would catch a step
-        # later — but here at the import / spoof layer.
+        # Notebooks rely on these methods; loss of any one is a regression
         for method in ("from_pretrained", "get_peft_model"):
             assert method in public, (
                 f"unsloth.{cls_name}.{method} missing under spoof; "
@@ -243,12 +226,9 @@ def test_fast_model_class_surface_under_spoof():
     )
 
 
-# -------------------------------------------------------------------------
-# RL surface drill-down: GRPO, SFT, DPO classes must be reachable AND
-# the source-rewriter dispatch table must be populated. Catches the
-# scenario where unsloth.models.rl_replacements imports cleanly but
-# RL_FUNCTIONS or RL_REPLACEMENTS is silently empty.
-# -------------------------------------------------------------------------
+# RL surface drill-down: GRPO/SFT/DPO classes must be reachable and the
+# source-rewriter dispatch table populated. Catches rl_replacements importing
+# cleanly while RL_FUNCTIONS / RL_REPLACEMENTS is silently empty.
 
 
 @pytest.mark.skipif(not _has_unsloth(), reason = "unsloth not installed")
@@ -277,11 +257,8 @@ def test_unsloth_rl_replacements_dispatch_populated():
         ), f"RL_FUNCTIONS[{key!r}] is empty list; rewrites no-op"
 
 
-# -------------------------------------------------------------------------
-# unsloth-zoo compiler test_apply_fused_lm_head — exercises the actual
-# fused-LM-head emit path with a tiny fixture. Already covered as a
-# named test in compiler.py:1983; we just call it.
-# -------------------------------------------------------------------------
+# unsloth-zoo compiler test_apply_fused_lm_head — the fused-LM-head emit path
+# (named test in compiler.py:1983); we just confirm it's callable.
 
 
 @pytest.mark.skipif(not _has_unsloth_zoo(), reason = "unsloth_zoo not installed")
@@ -295,11 +272,8 @@ def test_zoo_compiler_apply_fused_lm_head_callable():
     )
 
 
-# -------------------------------------------------------------------------
-# Spot-check signature stability of FastModel.from_pretrained — every
-# notebook call site relies on these kwargs. A removed kwarg silently
-# becomes positional drift.
-# -------------------------------------------------------------------------
+# Spot-check signature stability of FastModel.from_pretrained — every notebook
+# call site relies on these kwargs; a removal becomes silent positional drift.
 
 
 @pytest.mark.skipif(not _has_unsloth(), reason = "unsloth not installed")

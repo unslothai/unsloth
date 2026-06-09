@@ -52,10 +52,9 @@ export const MessageTiming: FC<{
   // Anthropic-only cache-write count.
   const cacheWrites = custom?.contextUsage?.cacheWriteTokens ?? 0;
 
-  // Guard unphysical tok/s: llama.cpp emits predicted_ms=0 on no-op
-  // turns, blowing the rate up to Infinity. Require >=1 token AND a
-  // non-zero decode window AND a finite rate. Fast cached single-token
-  // responses (sub-10ms) are legitimate and must stay visible.
+  // Guard unphysical tok/s: llama.cpp emits predicted_ms=0 on no-op turns,
+  // blowing the rate up to Infinity. Require >=1 token, a non-zero decode
+  // window, and a finite rate. Fast cached sub-10ms responses are legit.
   const hasPredicted =
     (st?.predicted_n ?? 0) >= 1 && (st?.predicted_ms ?? 0) > 0;
   const predictedRate =

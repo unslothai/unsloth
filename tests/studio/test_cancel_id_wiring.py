@@ -51,11 +51,10 @@ def test_chat_completion_request_has_cancel_id_field():
 
 
 def test_cancel_route_matches_cancel_id_exclusively_when_present():
-    # A stale cancel POST carrying cancel_id AND session_id must not
-    # cancel a later run on the same thread via the shared session_id.
-    # Enforce this by requiring the handler to early-return through an
-    # exclusive-cancel_id path -- either an atomic helper or a keys
-    # list containing ONLY cancel_id (never session_id).
+    # A stale cancel POST carrying cancel_id AND session_id must not cancel a
+    # later run via the shared session_id. Require the handler to early-return
+    # through an exclusive-cancel_id path (atomic helper, or keys list with
+    # ONLY cancel_id, never session_id).
     for node in ast.walk(ast.parse(ROUTES_SRC)):
         if isinstance(node, ast.AsyncFunctionDef) and node.name == "cancel_inference":
             break
@@ -137,10 +136,9 @@ def test_chat_adapter_sends_cancel_id_in_abort_cancel_post():
 
 
 def test_abort_cancel_post_uses_plain_fetch_with_manual_auth_header():
-    # authFetch redirects to login on 401, which would kick the user to
-    # the login page mid-stop if the access token expired during a long
-    # stream. Use plain fetch + manual Authorization header for a
-    # best-effort cancel that never triggers the refresh/redirect flow.
+    # authFetch redirects to login on 401, kicking the user out mid-stop if
+    # the token expired during a long stream. Use plain fetch + manual
+    # Authorization header for a best-effort cancel with no refresh/redirect.
     start = ADAPTER_SRC.find("const onAbortCancel")
     assert start >= 0, "onAbortCancel handler missing"
     rest = ADAPTER_SRC[start:]

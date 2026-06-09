@@ -12,8 +12,8 @@ import type { ReactElement } from "react";
 import type { SyntheticEvent } from "react";
 import { refreshSession } from "../api";
 
-// Bootstrap credentials injected into index.html by the backend
-// (only present while default admin must_change_password is true)
+// Bootstrap credentials injected into index.html by the backend (only present
+// while default admin must_change_password is true)
 declare global {
   interface Window {
     __UNSLOTH_BOOTSTRAP__?: { username: string; password: string };
@@ -93,9 +93,9 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
     let canceled = false;
 
     async function initializeAuthForm(): Promise<void> {
-      // Always check the server first — localStorage flags can be stale
-      // (e.g. tokens from a previous install attempt).  The server's
-      // /api/auth/status is the source of truth for requires_password_change.
+      // Always check the server first; localStorage flags can be stale (e.g.
+      // tokens from a previous install). /api/auth/status is the source of
+      // truth for requires_password_change.
       try {
         const response = await fetch(apiUrl("/api/auth/status"));
         if (!response.ok) throw new Error("Failed to load auth status.");
@@ -109,7 +109,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
             setMustChangePassword(result.requires_password_change);
           }
 
-          // Redirect between login ↔ change-password based on server state
+          // Redirect between login / change-password per server state
           if (mode === "login" && result.requires_password_change) {
             navigate({ to: "/change-password" });
             return;
@@ -119,8 +119,8 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
             return;
           }
 
-          // On login page, if user already has a valid session and no
-          // password change is required, skip straight to the app.
+          // On login, skip to the app if a valid session exists and no
+          // password change is required.
           if (isLoginMode && !result.requires_password_change) {
             if (hasRefreshToken()) {
               const refreshed = await refreshSession();
@@ -293,12 +293,12 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
       storeAuthTokens(token.access_token, token.refresh_token);
       navigate({ to: getPostAuthRoute() });
     } catch (err: unknown) {
-      // The backend already returns the correct, PATH-based command
-      // ("unsloth studio reset-password"), which the installer puts on PATH on
-      // every platform. Do NOT rewrite it to a relative Windows path like
-      // ".\unsloth_studio\Scripts\unsloth.exe ..." -- that only resolves when the
-      // terminal happens to be inside the Studio home dir, so it fails with
-      // CommandNotFoundException everywhere else. Show the backend message as-is.
+      // The backend returns the correct PATH-based command ("unsloth studio
+      // reset-password"), which the installer puts on PATH on every platform.
+      // Do NOT rewrite it to a relative Windows path like
+      // ".\unsloth_studio\Scripts\unsloth.exe ..." -- that only resolves inside
+      // the Studio home dir and fails with CommandNotFoundException elsewhere.
+      // Show the backend message as-is.
       const msg = err instanceof Error ? err.message : "Auth failed.";
       setError(msg);
     } finally {

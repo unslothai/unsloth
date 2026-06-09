@@ -80,7 +80,7 @@ interface ServerUsage {
   completion_tokens: number;
   total_tokens: number;
   // External prompt-cache fields (see _build_usage_chunk in
-  // external_provider.py). cache_creation is Anthropic-only.
+  // external_provider.py); cache_creation is Anthropic-only.
   prompt_tokens_details?: {
     cached_tokens?: number;
   };
@@ -107,9 +107,9 @@ type RunMessage = RunMessages[number];
 /** Tracks which user messages were sent with an audio file (messageId → filename). */
 export const sentAudioNames = new Map<string, string>();
 
-// Synthetic provider-side tool names; backend stamps args._server_tool
-// so user functions with the same name aren't dropped. Mirror of
-// _SERVER_SIDE_BUILTIN_TOOL_NAMES on the backend.
+// Synthetic provider-side tool names; backend stamps args._server_tool so
+// user functions with the same name aren't dropped. Mirror of backend
+// _SERVER_SIDE_BUILTIN_TOOL_NAMES.
 const SERVER_SIDE_BUILTIN_TOOL_NAMES = new Set<string>([
   "web_search",
   "web_fetch",
@@ -118,10 +118,10 @@ const SERVER_SIDE_BUILTIN_TOOL_NAMES = new Set<string>([
 ]);
 
 /**
- * Whether a persisted tool-call part is provider-side synthetic and
- * should be stripped from outbound history. Match on the
- * args._server_tool marker or a Gemini native_part payload — no shape
- * heuristic, because user functions can legitimately share a name.
+ * Whether a persisted tool-call part is provider-side synthetic and should
+ * be stripped from outbound history. Matches on the args._server_tool marker
+ * or a Gemini native_part payload (no shape heuristic, since user functions
+ * can legitimately share a name).
  */
 function isServerSideBuiltinToolPart(
   toolNameLower: string,
@@ -176,23 +176,19 @@ export function useThreadAutosaveHandle(): ThreadAutosaveHandle {
 }
 
 /**
- * Match error messages that indicate the request filled or would fill
- * the KV cache, so the UI can show a dedicated toast pointing at the
- * ``Context Length`` setting.
+ * Match error messages indicating the request filled (or would fill) the KV
+ * cache, so the UI can toast a pointer at the ``Context Length`` setting.
  *
  * Two wordings reach the client and both must hit:
- *
- *   1. The raw llama-server text when ``--no-context-shift`` trips --
+ *   1. Raw llama-server text when ``--no-context-shift`` trips:
  *      "the request exceeds the available context size (N tokens)".
- *   2. The rewritten friendly text emitted by
- *      ``backend/routes/inference.py::_friendly_error`` -- "Message too
- *      long: X tokens exceeds the Y-token context window. Try
- *      increasing the Context Length ..." This is the one most users
- *      see on the streaming GGUF path.
+ *   2. The friendly rewrite from
+ *      ``backend/routes/inference.py::_friendly_error``: "Message too long:
+ *      ... context window. Try increasing the Context Length ..." (the one
+ *      most users see on the streaming GGUF path).
  *
- * We match on substrings rather than full regexes because both layers
- * have drifted across versions (llama.cpp master has tweaked the
- * phrasing; ``_friendly_error`` has gone through several copy edits).
+ * Match substrings, not full regexes: both layers have drifted across
+ * versions (llama.cpp phrasing and _friendly_error copy edits).
  */
 export function isContextLimitError(message: string): boolean {
   if (!message) return false;
@@ -224,10 +220,10 @@ async function updateStoredChatThreadEventually(
 }
 
 /**
- * Return ``raw`` when it is a safe-to-navigate http(s) URL, or "" otherwise.
+ * Return ``raw`` when it is a safe-to-navigate http(s) URL, else "".
  * Rejects non-string input, CR/LF (header injection), and non-http(s)
- * schemes (``javascript:`` / ``data:`` / ``vbscript:``) so provider /
- * tool-controlled strings cannot land in an <a href>.
+ * schemes (``javascript:`` / ``data:`` / ``vbscript:``) so provider/tool-
+ * controlled strings cannot land in an <a href>.
  */
 function isSafeNavigableSourceUrl(raw: unknown): string {
   if (typeof raw !== "string") return "";
@@ -264,10 +260,9 @@ function documentCitationToSource(
     "";
   const docIndex =
     typeof cit.document_index === "number" ? cit.document_index : undefined;
-  // Only treat ``source`` as a navigable URL when it is real http(s);
+  // Only treat ``source`` as navigable when it is real http(s);
   // search_result_location can carry a free-form id (e.g. ``kb-doc-42``)
-  // or a hostile ``javascript:`` / ``data:`` / ``vbscript:`` string.
-  // Fall back to a stable doc anchor otherwise.
+  // or a hostile scheme. Fall back to a stable doc anchor otherwise.
   const url =
     isSafeNavigableSourceUrl(source) || `#anthropic-doc-${docIndex ?? fallbackIdx}`;
   const title = docTitle || source || `Document ${fallbackIdx + 1}`;
@@ -277,9 +272,8 @@ function documentCitationToSource(
   const description =
     cited.length > 240 ? `${cited.slice(0, 240)}...` : cited;
   // Anthropic numbers inline [N] per citation, not per source URL.
-  // Fold citation type + position-bearing fields into the id so two
-  // distinct citations on the same source (or two search_result_locations
-  // with different search_result_index) keep separate Sources entries.
+  // Fold citation type + position-bearing fields into the id so distinct
+  // citations on the same source keep separate Sources entries.
   const citationType =
     typeof cit.type === "string" ? String(cit.type) : "";
   const positionParts = [
@@ -333,8 +327,8 @@ function parseSourcesFromResult(raw: string): {
     const snippetMatch = block.match(/Snippet:\s*(.+)/);
     if (titleMatch && urlMatch) {
       // Drop blocks whose ``URL:`` is not safe http(s); provider/tool
-      // output is attacker-controllable so a hostile ``javascript:`` /
-      // ``data:`` line must not reach the Sources panel <a href>.
+      // output is attacker-controllable, so a hostile scheme must not
+      // reach the Sources panel <a href>.
       const url = isSafeNavigableSourceUrl(urlMatch[1]);
       if (!url) continue;
       const snippet = snippetMatch?.[1]?.trim();
@@ -363,21 +357,18 @@ function estimateTokenCount(text: string): number | undefined {
  * Normalize a streamed `delta.content` to a plain text string.
  *
  * OpenAI Chat Completions originally typed `delta.content` as a string, but
- * a number of providers now emit it as an array of structured content parts.
- * Concatenating that with `cumulativeText += delta` would stringify each
- * part as `[object Object]` — this function is the guard against that.
+ * some providers now emit an array of structured content parts; concatenating
+ * those directly would stringify each as `[object Object]`. This guards that.
  *
  * Handled part shapes:
  *   { type: "text" | "output_text", text | content: "..." }   → text body
  *   { type: "thinking" | "reasoning", thinking | text: "..." } → wrapped as
- *       inline `<think>...</think>` so the downstream parser
- *       (`parseAssistantContent`) lifts it into a reasoning part the same way
- *       it does for providers that emit thinking inline. Without this wrap,
- *       Mistral magistral and similar reasoning-part providers would lose
- *       their thinking panel.
+ *       inline `<think>...</think>` so `parseAssistantContent` lifts it into
+ *       a reasoning part (else Mistral magistral and similar reasoning-part
+ *       providers lose their thinking panel).
  *
- * Unknown part types are skipped — better to drop a stray field than to
- * stringify an object and pollute the rendered chat with `[object Object]`.
+ * Unknown part types are skipped — better to drop a stray field than
+ * stringify an object into the rendered chat.
  */
 function extractDeltaText(delta: unknown): string {
   const extractReasoningText = (payload: unknown): string => {
@@ -564,8 +555,8 @@ function toOpenAIImageEditReferenceMessage(
 
 // Refusal flag stamped on assistant metadata when the backend emits the
 // `anthropic_refusal` _toolEvent. We drop the refused pair from the next
-// request body (Anthropic guidance: leaving refusals in context keeps
-// refusing). Metadata (not text) prevents content from spoofing a reset.
+// request body (Anthropic: leaving refusals in context keeps refusing).
+// Using metadata, not text, prevents content from spoofing a reset.
 function isAnthropicRefusalMessage(message: RunMessage): boolean {
   if (message.role !== "assistant") return false;
   const metadata = (message as { metadata?: unknown }).metadata as
@@ -618,8 +609,8 @@ function collectAssistantToolCalls(
       hasNativePart,
     );
     if (isServerSideBuiltin) {
-      // Gemini code_execution / image_generation still need to round-
-      // trip the native_part payload for native replay; drop the rest.
+      // Gemini code_execution / image_generation must round-trip the
+      // native_part payload for native replay; drop the rest.
       if (!hasNativePart) continue;
     }
     const argumentsStr =
@@ -640,8 +631,8 @@ function collectAssistantToolCalls(
       },
     };
     // Promote args.google to extra_content.google so the backend
-    // native_part replay branch can find it. The backend only inspects
-    // extra_content, not function.arguments.
+    // native_part replay branch finds it (it only inspects
+    // extra_content, not function.arguments).
     if (tc.extra_content !== undefined) {
       entry.extra_content = tc.extra_content;
     } else if (argsGoogle) {
@@ -670,7 +661,7 @@ function collectToolResultMessages(
     if (part.type !== "tool-call") continue;
     const tc = part as ToolCallMessagePart;
     const result = (tc as { result?: unknown }).result;
-    // Skip provider-side builtins; see isServerSideBuiltinToolPart.
+    // Skip provider-side builtins; see isServerSideBuiltinToolPart().
     const argsObj =
       tc.args && typeof tc.args === "object"
         ? (tc.args as Record<string, unknown>)
@@ -702,8 +693,8 @@ function collectToolResultMessages(
     let content: string;
     if (typeof result === "string") {
       // Backend ChatMessage validator rejects role="tool" with empty
-      // content; serialise a sentinel JSON so legitimately empty tool
-      // outputs still round-trip the follow-up turn to the provider.
+      // content; serialise sentinel JSON so legitimately empty tool
+      // outputs still round-trip to the provider.
       content = result.length > 0 ? result : JSON.stringify({ result: "" });
     } else {
       try {
@@ -774,8 +765,8 @@ function toOpenAIMessages(message: RunMessage): SerializedMessage[] {
       "[audio]",
     );
     if (isAnthropicRefusalMessage(message)) {
-      // Prune refused assistant turn from outbound history; the
-      // rendered transcript still shows the user-visible notice.
+      // Prune refused assistant turn from outbound history; the rendered
+      // transcript still shows the user-visible notice.
       return [];
     }
   }
@@ -795,9 +786,9 @@ function toOpenAIMessages(message: RunMessage): SerializedMessage[] {
   };
   if (toolCalls.length > 0) {
     base.tool_calls = toolCalls;
-    // OpenAI requires content === null on assistant turns whose
-    // payload is entirely tool_calls (matches the wire shape Gemini
-    // expects for the next functionCall replay).
+    // OpenAI requires content === null on assistant turns that are
+    // entirely tool_calls (matches the wire shape Gemini expects for
+    // the next functionCall replay).
     if (!textContent && imageParts.length === 0) {
       base.content = null;
     }
@@ -830,7 +821,7 @@ function findLatestUserImageBase64(messages: RunMessages): string | undefined {
       continue;
     }
 
-    // Image in message.content (e.g. compare view appends content with image parts)
+    // Image in message.content (e.g. compare view).
     for (const part of message.content ?? []) {
       if (part.type === "image" && "image" in part) {
         const encoded = extractImageBase64(part.image);
@@ -838,7 +829,7 @@ function findLatestUserImageBase64(messages: RunMessages): string | undefined {
       }
     }
 
-    // Image in message.attachments (e.g. chat composer)
+    // Image in message.attachments (e.g. chat composer).
     if ("attachments" in message && (message.attachments?.length ?? 0) > 0) {
       for (const attachment of message.attachments ?? []) {
         for (const part of attachment.content ?? []) {
@@ -858,7 +849,7 @@ function findLatestUserImageBase64(messages: RunMessages): string | undefined {
 }
 
 function findLatestUserAudioBase64(messages: RunMessages): string | undefined {
-  // Check message content parts (from compare view's CompareMessagePart with type: "audio")
+  // Message content parts (compare view CompareMessagePart type: "audio").
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     const message = messages[i];
     if (!message || message.role !== "user") continue;
@@ -877,7 +868,7 @@ function findLatestUserAudioBase64(messages: RunMessages): string | undefined {
     }
   }
 
-  // Check the runtime store (from main composer's audio upload)
+  // Runtime store (main composer's audio upload).
   const pendingAudio = useChatRuntimeStore.getState().pendingAudioBase64;
   return pendingAudio ?? undefined;
 }
@@ -893,8 +884,8 @@ async function resolveUseAdapter(
     if (!thread?.pairId) {
       return undefined;
     }
-    // model1/model2 threads don't use the adapter toggle — each side
-    // loads its own model via /api/inference/load before generation.
+    // model1/model2 threads skip the adapter toggle — each side loads
+    // its own model via /api/inference/load before generation.
     if (thread.modelType === "model1" || thread.modelType === "model2") {
       return undefined;
     }
@@ -962,9 +953,9 @@ function waitForModelReady(abortSignal?: AbortSignal): Promise<void> {
 }
 
 /**
- * Auto-load the smallest downloaded model when the user tries to chat
- * without selecting one. Prefers GGUF (picks smallest cached variant),
- * falls back to smallest cached safetensors model.
+ * Auto-load the smallest downloaded model when the user chats without
+ * selecting one. Prefers GGUF (smallest cached variant), then smallest
+ * cached safetensors model.
  */
 // Cap cascade so broken cached repos can't spam /api/inference/load.
 const MAX_AUTO_LOAD_ATTEMPTS = 3;
@@ -1009,8 +1000,7 @@ async function autoLoadSmallestModel(): Promise<{
       listCachedModels().catch(() => []),
     ]);
 
-    // Try GGUF first: pick the repo with the smallest total size,
-    // then pick its smallest downloaded variant.
+    // GGUF first: smallest-total-size repo, then its smallest variant.
     if (ggufRepos.length > 0) {
       const sorted = [...ggufRepos].sort((a, b) => a.size_bytes - b.size_bytes);
       for (const repo of sorted) {
@@ -1053,7 +1043,7 @@ async function autoLoadSmallestModel(): Promise<{
               ...store.params,
               maxTokens: loadResp.context_length ?? 131072,
             });
-            // Add model to store so the selector shows the name
+            // Add to store so the selector shows the name.
             const autoModel: ChatModelSummary = {
               id: repo.repo_id,
               name: loadResp.display_name ?? repo.repo_id,
@@ -1101,7 +1091,7 @@ async function autoLoadSmallestModel(): Promise<{
       }
     }
 
-    // Fall back to safetensors models
+    // Fall back to safetensors models.
     if (modelRepos.length > 0) {
       const sorted = [...modelRepos].sort(
         (a, b) => a.size_bytes - b.size_bytes,
@@ -1171,7 +1161,7 @@ async function autoLoadSmallestModel(): Promise<{
       }
     }
 
-    // Cap also gates the default download so the total /api/inference/load
+    // Cap also gates the default download, so total /api/inference/load
     // budget across cached + fallback is MAX_AUTO_LOAD_ATTEMPTS, not +1.
     if (loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS) {
       toast.dismiss(toastId);
@@ -1182,7 +1172,7 @@ async function autoLoadSmallestModel(): Promise<{
       };
     }
 
-    // No cached models found — try downloading a small default GGUF
+    // No cached models — try downloading a small default GGUF.
     toast("Downloading a small model…", {
       id: toastId,
       description:
@@ -1275,8 +1265,8 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
     async *run({ messages, abortSignal, unstable_threadId }) {
       await useChatRuntimeStore.getState().hydratePersistedSettings();
       let runtime = useChatRuntimeStore.getState();
-      // Capture the thread ID once at the start so it stays stable even if
-      // the user switches chats while waiting for model load / auto-load.
+      // Capture the thread ID once so it stays stable even if the user
+      // switches chats while waiting for model load / auto-load.
       const resolvedThreadId =
         (unstable_threadId ?? runtime.activeThreadId) || undefined;
       const sandboxSessionId = await resolveSandboxSessionId(resolvedThreadId);
@@ -1305,7 +1295,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         }
       };
 
-      // Wait for in-progress model load to finish before inferring
+      // Wait for in-progress model load before inferring.
       if (runtime.modelLoading) {
         toast.info("Waiting for model to finish loading…");
         try {
@@ -1317,7 +1307,6 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       }
 
       if (!useChatRuntimeStore.getState().params.checkpoint) {
-        // Auto-load the smallest downloaded model
         let loaded: boolean;
         let blockedByTrustRemoteCode: boolean;
         try {
@@ -1342,7 +1331,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         }
       }
 
-      // Re-read store after potential auto-load / model ready wait
+      // Re-read store after auto-load / model-ready wait.
       runtime = useChatRuntimeStore.getState();
       const { params } = runtime;
       const {
@@ -1405,8 +1394,8 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         throw new Error("Missing connection API key.");
       }
 
-      // Image-generation flag (OpenAI cloud + Responses-capable model).
-      // Computed first so Gemini image mode can suppress Search/Code.
+      // Image-generation flag (OpenAI cloud + Responses-capable model);
+      // computed first so Gemini image mode can suppress Search/Code.
       const imageGenerationEnabledForThisTurn = Boolean(
         externalProvider &&
           externalSelection &&
@@ -1444,9 +1433,8 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
           ),
       );
       // Fetch pill is independent of Search (Anthropic bills web_fetch
-      // separately from web_search). Sourced from `webFetchToolsEnabled`;
-      // on providers without web_fetch the toggle is forced off in
-      // chat-page's runtime setState.
+      // separately). Sourced from `webFetchToolsEnabled`; on providers
+      // without web_fetch the toggle is forced off in chat-page setState.
       const webFetchEnabledForThisTurn = Boolean(
         externalProvider &&
           webFetchToolsEnabled &&
@@ -1482,7 +1470,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
 
       // toOpenAIMessages emits assistant tool_calls + role="tool"
       // follow-ups; the backend Gemini translator rebuilds the
-      // functionCall/functionResponse parts (with thoughtSignature).
+      // functionCall / functionResponse parts (with thoughtSignature).
       const outboundMessages = survivingMessages
         .flatMap(toOpenAIMessages)
         .filter((message): message is NonNullable<typeof message> =>
@@ -1508,9 +1496,8 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
           }
         }
         // OpenAIChatMessage is a structural superset of SerializedMessage
-        // for the role/content axis the outbound pipeline consumes; cast
-        // through unknown since referenceMessage carries no tool_calls
-        // (the image_edit reference is a plain assistant turn).
+        // on the role/content axis; cast through unknown since
+        // referenceMessage carries no tool_calls (plain assistant turn).
         outboundMessages.splice(
           insertAt,
           0,
@@ -1545,10 +1532,9 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         const webLabel = providerShipsWebFetch
           ? "web search or web fetch"
           : "web search";
-        // Treat search and fetch as a single "any web tool" axis so
-        // the guard only warns when neither pill is on; checking
-        // webSearchEnabledForThisTurn alone mis-fired when only Fetch
-        // was on and suppressed live web_fetch calls.
+        // Treat search and fetch as one "any web tool" axis so the guard
+        // only warns when neither pill is on; checking webSearch alone
+        // mis-fired when only Fetch was on and suppressed web_fetch.
         const anyWebEnabledForThisTurn =
           webSearchEnabledForThisTurn || webFetchEnabledForThisTurn;
         if (
@@ -1625,15 +1611,14 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       }
 
       // Scan post-prune history so a refused user turn's image/audio
-      // doesn't gate or mis-attribute the next non-refused turn.
+      // doesn't gate or mis-attribute the next turn.
       const imageBase64 = findLatestUserImageBase64(survivingMessages);
       const audioBase64 = findLatestUserAudioBase64(survivingMessages);
       const hasOutboundImage = Boolean(imageBase64);
 
       // Keep render_html local-only and mirror the backend image-turn gate.
-      // Artifacts are independent of Search/Code: if a local tool-capable
-      // model has Artifacts enabled, expose render_html even when no other
-      // tool pills are active.
+      // Artifacts are independent of Search/Code: a local tool-capable model
+      // with Artifacts on exposes render_html even with no other pills active.
       const renderHtmlToolEnabledForThisTurn = Boolean(
         !isExternalRequest &&
           supportsTools &&
@@ -1652,10 +1637,10 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       addSystemInstruction(outboundMessages, effectiveDisabledToolGuard);
       addSystemInstruction(outboundMessages, artifactInstruction);
 
-      // Block when ANY image is in the outbound payload (current or
-      // prior turns) and the loaded model can't process images. Keeps
-      // the gate simple: once a chat contains an image, a non-vision
-      // model can't respond — user starts a new chat to switch models.
+      // Block when ANY image is in the outbound payload (current or prior
+      // turns) and the loaded model can't process images. Once a chat
+      // contains an image, a non-vision model can't respond — the user
+      // starts a new chat to switch models.
       if (imageBase64) {
         const activeModel = runtime.models.find(
           (m) => m.id === params.checkpoint,
@@ -1672,10 +1657,9 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         });
         if (imageGateReason) {
           toast.error(imageGateReason);
-          // Flip the per-thread running flag on→off so the compare-mode
-          // waitForRunEnd resolves instead of hanging. This gate fires
-          // before the streaming path's setThreadRunning(true), so the
-          // wait promise would otherwise never settle.
+          // Flip the per-thread running flag on→off so compare-mode
+          // waitForRunEnd resolves instead of hanging: this gate fires
+          // before the streaming path's setThreadRunning(true).
           const gatedThreadKey = resolvedThreadId || "__default";
           runtime.setThreadRunning(gatedThreadKey, true);
           runtime.setThreadRunning(gatedThreadKey, false);
@@ -1683,7 +1667,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
           throw new Error(imageGateReason);
         }
       }
-      // Clear pending audio from store after extracting (consumed on send)
+      // Clear pending audio from store after extracting (consumed on send).
       if (audioBase64) {
         const audioName = runtime.pendingAudioName;
         if (audioName) {
@@ -1785,8 +1769,8 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       let reasoningStartAt: number | null = null;
       let reasoningDuration = 0;
       // True while wrapping a `delta.reasoning_content` stream in
-      // <think>...</think> for parseAssistantContent. Lives outside
-      // the SSE loop because the close tag fires when content arrives.
+      // <think>...</think> for parseAssistantContent. Lives outside the
+      // SSE loop because the close tag fires when content arrives.
       let reasoningContentOpen = false;
       // Tool call parts, cumulative; result lands on tool_end.
       const toolCallParts: ToolCallMessagePart[] = [];
@@ -1819,9 +1803,8 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         );
         return [...otherToolParts, ...textParts, ...imageToolParts];
       };
-      // Anthropic document_citations tool_event payload, converted to
-      // Sources-panel source parts at end-of-stream so the inline [N]
-      // markers have matching entries.
+      // Anthropic document_citations payload, converted to Sources-panel
+      // parts at end-of-stream so inline [N] markers have matching entries.
       const documentCitationParts: Array<{
         type: "source";
         sourceType: "url";
@@ -1830,16 +1813,16 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         title: string;
         metadata?: { description: string };
       }> = [];
-      // Latched on the `anthropic_refusal` tool event; stamped onto the
-      // final assistant metadata as `custom.anthropicRefusal` to drive
-      // the history-prune above.
+      // Latched on the `anthropic_refusal` tool event; stamped onto final
+      // assistant metadata as `custom.anthropicRefusal` to drive the
+      // history-prune above.
       let anthropicRefusalSeen = false;
       let serverMetadata: {
         usage?: ServerUsage;
         timings?: ServerTimings;
       } | null = null;
 
-      // Per-run cancellation token so a delayed stop POST cannot match
+      // Per-run cancellation token so a delayed stop POST can't match
       // the next run on the same thread.
       const cancelId =
         typeof crypto !== "undefined" && "randomUUID" in crypto
@@ -1854,10 +1837,9 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         // Plain fetch, not authFetch: authFetch redirects to login on
         // 401, which would kick the user out mid-stop.
         const token = getAuthToken();
-        // Use apiUrl so the cancel POST reaches the right origin in
-        // Tauri production builds (where the webview origin is not the
-        // backend at 127.0.0.1:<port>). Browser/dev builds get the empty
-        // base, so the path is unchanged there.
+        // Use apiUrl so the cancel POST reaches the right origin in Tauri
+        // production builds (webview origin != backend at 127.0.0.1:<port>).
+        // Browser/dev builds get the empty base, so the path is unchanged.
         void fetch(apiUrl("/api/inference/cancel"), {
           method: "POST",
           headers: {
@@ -1948,8 +1930,8 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                 anthropicCodeExecContainerId = null;
               }
               // Pre-send container validation (OpenAI). Stale ids drop
-              // silently and fall through to lazy-create. On list-call
-              // failure, skip and rely on the backend's retry path.
+              // silently and fall through to lazy-create; on list-call
+              // failure, rely on the backend's retry path.
               let activeContainerIds: Set<string> | null = null;
               if (externalProvider.providerType === "openai") {
                 try {
@@ -1972,8 +1954,8 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                   openaiCodeExecContainerId = null;
                 }
               }
-              // Cross-thread inheritance: reuse the most recently used
-              // container from any other thread; opt-out via the picker.
+              // Cross-thread inheritance: reuse the most recent container
+              // from any other thread; opt-out via the picker.
               if (
                 !openaiCodeExecContainerId &&
                 externalProvider.providerType === "openai"
@@ -1985,7 +1967,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                   for (const t of others) {
                     if (t.id === resolvedThreadId) continue;
                     if (!t.openaiCodeExecContainerId) continue;
-                    // Skip ids not in active set; null on source thread so
+                    // Skip ids not in active set; null the source thread so
                     // the next pass doesn't re-pick a dead id.
                     if (
                       activeContainerIds &&
@@ -2006,9 +1988,9 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                   /* fall through to lazy-create below */
                 }
               }
-              // Pre-create our own container (vs container_auto) so it
-              // shows up in the picker with a friendly name and the
-              // configured TTL. Falls back to container_auto on failure.
+              // Pre-create our own container (vs container_auto) so it shows
+              // in the picker with a friendly name and the configured TTL.
+              // Falls back to container_auto on failure.
               if (
                 !openaiCodeExecContainerId &&
                 externalProvider.providerType === "openai"
@@ -2022,10 +2004,9 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                       baseUrl: externalProvider.baseUrl || null,
                     },
                     {
-                      // Friendly English-word name so the container
-                      // is human-readable in the picker list (e.g.
-                      // "kestrel-3f9c") instead of a thread-id slug
-                      // or OpenAI's default blank name.
+                      // Friendly English-word name so the container is
+                      // human-readable in the picker (e.g. "kestrel-3f9c")
+                      // instead of a thread-id slug or blank default.
                       name: pickFriendlyContainerName(),
                       ttlMinutes: ttlToUse,
                     },
@@ -2035,10 +2016,9 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                     openaiCodeExecContainerId: created.id,
                   }).catch(() => {});
                 } catch {
-                  // Fall back to backend's container_auto path on
-                  // failure — keeps the chat moving; the next turn
-                  // can retry. The auto-created container will be
-                  // unnamed, but the chat doesn't break.
+                  // Fall back to the backend's container_auto path on
+                  // failure — keeps the chat moving (the auto-created
+                  // container is unnamed); the next turn can retry.
                   openaiCodeExecContainerId = null;
                 }
               }
@@ -2047,8 +2027,8 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
               model: externalSelection.modelId,
               messages: outboundMessages,
               stream: true,
-              // Reasoning-class models (OpenAI gpt-5.x / o3) reject temperature
-              // and top_p; only forward when the active provider supports them.
+              // Reasoning-class models (OpenAI gpt-5.x / o3) reject
+              // temperature and top_p; forward only when supported.
               ...(externalCapabilities?.temperature !== false
                 ? { temperature: params.temperature }
                 : {}),
@@ -2072,8 +2052,8 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
               ...(externalCapabilities?.presencePenalty
                 ? { presence_penalty: params.presencePenalty }
                 : {}),
-              // Compose the enabled_tools list from the active pills;
-              // backend maps each name to the provider's tool schema.
+              // enabled_tools from active pills; backend maps each name
+              // to the provider's tool schema.
               ...(webSearchEnabledForThisTurn ||
               webFetchEnabledForThisTurn ||
               codeExecEnabledForThisTurn ||
@@ -2128,8 +2108,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                 ? { prompt_cache_ttl: externalProvider.promptCacheTtl }
                 : {}),
               // Anthropic fast mode (Opus 4.6 / 4.7 only); backend
-              // silently drops on unsupported models as a second
-              // line of defence.
+              // silently drops on unsupported models as a backstop.
               ...(params.fastMode &&
               providerSupportsFastMode(
                 externalProvider.providerType,
@@ -2233,8 +2212,8 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
               }
 
               // Emit tool-call content parts for assistant-ui.
-              // On tool_start: add a new tool-call part (renders in "running" state).
-              // On tool_end: set result on the existing part (transitions to "complete").
+              // tool_start: add a part (renders "running").
+              // tool_end: set result on the part (transitions to "complete").
               const toolEvent = (
                 chunk as unknown as { _toolEvent?: Record<string, unknown> }
               )._toolEvent;
@@ -2256,8 +2235,8 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                   continue;
                 }
                 if (toolEvent.type === "document_citations") {
-                  // Convert Anthropic citations_delta footnotes into
-                  // Sources-panel entries matching the inline [N] markers.
+                  // Convert citations_delta footnotes into Sources-panel
+                  // entries matching the inline [N] markers.
                   const cits = toolEvent.citations;
                   if (Array.isArray(cits)) {
                     cits.forEach((entry, idx) => {
@@ -2289,8 +2268,8 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                   continue;
                 }
                 if (toolEvent.type === "anthropic_refusal") {
-                  // Latch the backend refusal signal so the final
-                  // message metadata can drive the prune.
+                  // Latch the backend refusal signal so final message
+                  // metadata can drive the prune.
                   anthropicRefusalSeen = true;
                   continue;
                 }
@@ -2349,7 +2328,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                       imageB64
                     ) {
                       // Backend keeps base64 on separate image_b64 /
-                      // image_mime fields so logs stay small; repackage.
+                      // image_mime fields so logs stay small; repackage here.
                       parsedResult = {
                         image_b64: imageB64,
                         image_mime:
@@ -2362,8 +2341,8 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                       };
                     } else if (imgIdx !== -1) {
                       const text = rawResult.slice(0, imgIdx);
-                      // Fall back to "_default" to match the backend sandbox directory
-                      // used when no session_id is provided (see tools.py _get_workdir).
+                      // Fall back to "_default" to match the backend sandbox
+                      // dir used when no session_id (see tools.py _get_workdir).
                       const sessionId = sandboxSessionId || "_default";
                       try {
                         const images = JSON.parse(
@@ -2389,7 +2368,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                     // Merge tool_end native_part into args.google so the
                     // outbound translator replays both start (executableCode)
                     // and end (result / inlineData) on the same turn.
-                    // Concatenate parts so each keeps its own thoughtSignature.
+                    // Concatenate so each part keeps its own thoughtSignature.
                     const endGoogle = (
                       toolEvent as { google?: { native_part?: unknown } }
                     ).google;
@@ -2413,9 +2392,9 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                         string,
                         unknown
                       >;
-                      // Extract part entries from either parts:[...] or
-                      // legacy single-object native_part. Legacy
-                      // thoughtSignature always belongs on executableCode.
+                      // Extract part entries from parts:[...] or legacy
+                      // single-object native_part. Legacy thoughtSignature
+                      // always belongs on executableCode.
                       const collectParts = (
                         native: Record<string, unknown>,
                       ): Record<string, unknown>[] => {
@@ -2469,8 +2448,8 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                     };
                   }
                 }
-                // Cumulative yield. orderAssistantContent puts search/
-                // code before text and generated images after.
+                // Cumulative yield; orderAssistantContent puts search/code
+                // before text and generated images after.
                 const textParts = pinTextThoughtSignature(
                   parseAssistantContent(cumulativeText),
                 );
@@ -2488,7 +2467,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                 continue;
               }
 
-              // OpenAI-standard usage chunk: choices=[], usage populated
+              // OpenAI-standard usage chunk: choices=[], usage populated.
               if (chunk.choices?.length === 0 && chunk.usage) {
                 serverMetadata = {
                   usage: chunk.usage,
@@ -2500,8 +2479,8 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
               }
 
               totalChunks += 1;
-              // Latch the chunk's `model` field so the openrouter/free
-              // chip can show the chosen underlying model.
+              // Latch the chunk's `model` field so the openrouter/free chip
+              // shows the chosen underlying model.
               if (
                 isExternalRequest &&
                 externalProvider?.providerType === "openrouter" &&
@@ -2520,7 +2499,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                 }
               }
               const rawDelta = chunk.choices?.[0]?.delta?.content;
-              // Normalize structured delta.content (mistral magistral) to text.
+              // Normalize structured delta.content (mistral magistral).
               const delta = extractDeltaText(rawDelta);
               // Latest Gemini text-part thoughtSignature for next-turn replay.
               const deltaExtraContent = (
@@ -2542,15 +2521,15 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                   }
                 }
               }
-              // Kimi / DeepSeek stream thinking via delta.reasoning_content.
-              // Wrap inline as <think>...</think> for parseAssistantContent.
+              // Kimi / DeepSeek stream thinking via delta.reasoning_content;
+              // wrap inline as <think>...</think> for parseAssistantContent.
               const rawReasoning = (
                 chunk.choices?.[0]?.delta as
                   | { reasoning_content?: unknown }
                   | undefined
               )?.reasoning_content;
               // OpenRouter ships reasoning as delta.reasoning_details[]
-              // regardless of underlying provider; merge into the same wrap path.
+              // regardless of provider; merge into the same wrap path.
               const rawReasoningDetails = (
                 chunk.choices?.[0]?.delta as
                   | { reasoning_details?: unknown }
@@ -2570,7 +2549,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                 reasoningFromDetails;
               // OpenAI delta.tool_calls: streams fragments by index;
               // accumulate into one part. extra_content carries Gemini 3
-              // thoughtSignature for next-turn replay.
+              // thoughtSignature for replay.
               const rawDeltaToolCalls = (
                 chunk.choices?.[0]?.delta as
                   | { tool_calls?: unknown }
@@ -2591,9 +2570,9 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                   const idx =
                     typeof call.index === "number" ? call.index : undefined;
                   const stableId = call.id;
-                  // Match an existing fragment by id first (canonical),
-                  // then by index slot. Fall back to a freshly-minted
-                  // tool_call_<n> id for streams that send neither.
+                  // Match an existing fragment by id first (canonical), then
+                  // by index slot; fall back to a minted tool_call_<n> id
+                  // for streams that send neither.
                   let existing = stableId
                     ? toolCallParts.find((p) => p.toolCallId === stableId)
                     : undefined;
@@ -2780,9 +2759,9 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             throw streamError;
           }
         }
-        // If the stream ended while we were still inside a
-        // delta.reasoning_content block (Kimi / DeepSeek path), close
-        // the open <think> tag so the reasoning panel parses cleanly.
+        // If the stream ended inside a delta.reasoning_content block
+        // (Kimi / DeepSeek), close the open <think> tag so the reasoning
+        // panel parses cleanly.
         if (reasoningContentOpen) {
           cumulativeText += "</think>";
           reasoningContentOpen = false;
@@ -2790,9 +2769,8 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         settleFirstTokenOk();
 
         // Extract source parts from completed web_search and web_fetch
-        // tool calls. Both emit the same `Title:` / `URL:` / `Snippet:`
-        // block shape from the Anthropic backend, so the parser does
-        // not need to branch on tool name.
+        // calls. Both emit the same `Title:` / `URL:` / `Snippet:` block
+        // shape, so the parser need not branch on tool name.
         const sourceParts = toolCallParts.flatMap((tc) => {
           if (
             (tc.toolName !== "web_search" && tc.toolName !== "web_fetch") ||
@@ -2821,8 +2799,8 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         const cacheWriteTokens = meta?.usage?.cache_creation_input_tokens ?? 0;
 
         // Gate on the captured checkpoint still being active so a late
-        // completion from provider A doesn't populate the bar after the
-        // user switched to provider B mid-stream.
+        // completion from provider A doesn't populate the bar after a
+        // mid-stream switch to provider B.
         if (
           meta?.usage &&
           typeof meta.usage.prompt_tokens === "number" &&
@@ -2885,10 +2863,9 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         if (!abortSignal.aborted) {
           const msg = err instanceof Error ? err.message : String(err);
           if (isContextLimitError(msg)) {
-            // llama-server was launched with --no-context-shift, so it
-            // returns a hard error instead of silently dropping old
-            // turns from the KV cache. Point the user at the exact
-            // control that raises the ceiling.
+            // llama-server runs with --no-context-shift, returning a hard
+            // error instead of silently dropping old KV-cache turns. Point
+            // the user at the control that raises the ceiling.
             toast.error("Context limit reached", {
               description:
                 "The conversation has filled the model's context window. " +

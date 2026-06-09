@@ -1,16 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Export subprocess entry point.
+"""Export subprocess entry point.
 
-Each export session runs in a persistent subprocess (mp.get_context("spawn")).
-This gives us a clean Python interpreter with no stale module state —
-solving the transformers version-switching problem completely.
-
-The subprocess stays alive while a model is loaded, accepting commands
-(load, export_merged, export_base, export_gguf, export_lora, cleanup,
-shutdown) via mp.Queue.
+Each export session runs in a persistent subprocess (mp spawn), giving a clean
+interpreter with no stale module state, which solves transformers version
+switching. The subprocess stays alive while a model is loaded, accepting commands
+(load, export_*, cleanup, shutdown) via mp.Queue.
 
 Pattern follows core/inference/worker.py and core/training/worker.py.
 """
@@ -31,42 +27,31 @@ from typing import Any
 logger = get_logger(__name__)
 
 
-# Gate that controls whether captured stdout/stderr lines are forwarded
-# to the parent's resp_queue (and from there to the export-dialog SSE
-# stream). Closed by default so the noisy bootstrap phase -- transformers
-# venv activation, Unsloth/torch imports, base-model resolution, "Top
-# GGUF/hub models" lists, vision detection, weight loading bars -- is
-# suppressed in the UI. _handle_export() opens the gate at the start of
-# the actual export work and leaves it open; the orchestrator always
-# spawns a fresh subprocess for the next checkpoint load (see
-# orchestrator._spawn_subprocess) which resets this state.
-#
-# Lines dropped while the gate is closed are still echoed to the saved
-# original stdout/stderr fds so the server console / log file keeps the
-# full output for debugging.
+# Gate controlling whether captured stdout/stderr lines are forwarded to the
+# parent's resp_queue (and on to the export-dialog SSE stream). Closed by default
+# so the noisy bootstrap phase (imports, model resolution, loading bars) is
+# suppressed in the UI; _handle_export() opens it when export work starts. The
+# orchestrator spawns a fresh subprocess per checkpoint load, resetting this.
+# Dropped lines are still echoed to the saved fds so the server log keeps them.
 _log_forward_gate = threading.Event()
 
 
 def _setup_log_capture(resp_queue: Any) -> None:
-    """Redirect fds 1 and 2 through pipes so every line printed by this
-    worker process and any child process it spawns is forwarded to the
-    parent process via resp_queue as {"type": "log", ...} messages.
+    """Redirect fds 1 and 2 through pipes so every line printed by this worker
+    and any child it spawns is forwarded to the parent via resp_queue as
+    {"type": "log", ...} messages.
 
-    Must be called BEFORE LogConfig.setup_logging and BEFORE any ML
-    imports, otherwise library handlers may capture the original stderr
-    reference and bypass the pipe.
-
-    Lines are also echoed back to the original stdout/stderr so the
-    server console keeps receiving the full subprocess output, even
-    while ``_log_forward_gate`` is closed.
+    Must run BEFORE LogConfig.setup_logging and any ML imports, else library
+    handlers may capture the original stderr reference and bypass the pipe.
+    Lines are also echoed back to the original fds so the server console keeps
+    the full output even while ``_log_forward_gate`` is closed.
     """
 
     try:
         saved_out_fd = os.dup(1)
         saved_err_fd = os.dup(2)
     except OSError:
-        # dup failed (exotic platforms) - give up quietly, export still
-        # works, just no live log streaming.
+        # dup failed; give up quietly (export still works, no live streaming).
         return
 
     try:
@@ -88,13 +73,11 @@ def _setup_log_capture(resp_queue: Any) -> None:
                 pass
         return
 
-    # Close the write ends we just dup2'd (fds 1 and 2 are the real
-    # write ends now).
+    # Close the write ends we just dup2'd (fds 1 and 2 are the real write ends).
     os.close(w_out)
     os.close(w_err)
 
-    # Replace Python's sys.stdout/sys.stderr with line-buffered writers
-    # bound to the (now-redirected) fds 1 and 2.
+    # Replace sys.stdout/sys.stderr with line-buffered writers on fds 1 and 2.
     try:
         sys.stdout = os.fdopen(1, "w", buffering = 1, encoding = "utf-8", errors = "replace")
         sys.stderr = os.fdopen(2, "w", buffering = 1, encoding = "utf-8", errors = "replace")
@@ -112,8 +95,7 @@ def _setup_log_capture(resp_queue: Any) -> None:
                 continue
             if not chunk:
                 break
-            # Echo to the original fd so the server console still sees
-            # the full output.
+            # Echo to the original fd so the server console keeps the full output.
             try:
                 os.write(echo_fd, chunk)
             except OSError:
@@ -133,9 +115,8 @@ def _setup_log_capture(resp_queue: Any) -> None:
                 if not line:
                     continue
                 if not _log_forward_gate.is_set():
-                    # Gate closed (bootstrap phase) -- already echoed to
-                    # the saved console fd above; drop the line so the
-                    # export dialog doesn't see import / vendoring noise.
+                    # Gate closed (bootstrap): already echoed above; drop the
+                    # line so the export dialog skips import noise.
                     continue
                 try:
                     resp_queue.put_nowait(
@@ -147,8 +128,7 @@ def _setup_log_capture(resp_queue: Any) -> None:
                         }
                     )
                 except Exception:
-                    # Queue put failed (full, closed, etc.) - drop the
-                    # line rather than crash the reader thread.
+                    # Queue put failed; drop the line rather than crash the thread.
                     pass
         if buf and _log_forward_gate.is_set():
             try:
@@ -181,7 +161,7 @@ def _setup_log_capture(resp_queue: Any) -> None:
 
 def _activate_transformers_version(model_name: str) -> None:
     """Activate the correct transformers version BEFORE any ML imports."""
-    # Ensure backend is on path for utils imports
+    # Ensure backend is on sys.path for utils imports.
     backend_path = str(Path(__file__).resolve().parent.parent.parent)
     if backend_path not in sys.path:
         sys.path.insert(0, backend_path)
@@ -267,11 +247,9 @@ def _handle_export(backend, cmd: dict, resp_queue: Any) -> None:
     export_type = cmd["export_type"]  # "merged", "base", "gguf", "lora"
     response_type = f"export_{export_type}_done"
 
-    # Open the log forwarding gate so the user sees the actual export
-    # progress (Unsloth merge bars, file copies, GGUF conversion, etc.)
-    # in the live log panel. The gate stays open for the rest of this
-    # subprocess's life; the orchestrator spawns a fresh subprocess for
-    # the next checkpoint load, which resets the gate to closed.
+    # Open the log forwarding gate so the user sees export progress in the live
+    # log panel. Stays open for the rest of this subprocess's life; the
+    # orchestrator spawns a fresh subprocess per checkpoint load, resetting it.
     _log_forward_gate.set()
 
     output_path: Any = None
@@ -372,23 +350,16 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
     """
     import queue as _queue
 
-    # Install fd-level stdout/stderr capture FIRST so every subsequent
-    # print and every child process inherits the redirected fds. This
-    # is what powers the live export log stream in the UI.
+    # Install fd-level stdout/stderr capture FIRST so every subsequent print and
+    # every child process inherits the redirected fds (powers the live log stream).
     _setup_log_capture(resp_queue)
 
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
-    os.environ["PYTHONWARNINGS"] = "ignore"  # Suppress warnings at C-level before imports
-    # Force unbuffered output from any child Python process (e.g. the
-    # GGUF converter) so their prints surface in the log stream as they
-    # happen rather than at the end.
+    os.environ["PYTHONWARNINGS"] = "ignore"  # suppress C-level warnings before imports
+    # Unbuffered output from child Python (e.g. GGUF converter) so prints surface live.
     os.environ["PYTHONUNBUFFERED"] = "1"
-    # tqdm defaults to a 10-second mininterval when stdout is not a tty
-    # (which it isn't here -- we redirected fd 1/2 to a pipe). That makes
-    # multi-step progress bars look frozen in the export log panel. Force
-    # frequent flushes so the user sees movement during merge / GGUF
-    # conversion. Has no effect on single-step bars (e.g. "Copying 1
-    # files") which only emit start/end events regardless.
+    # tqdm defaults to a 10s mininterval when stdout isn't a tty (we redirected
+    # fd 1/2 to a pipe), making multi-step bars look frozen; force frequent flushes.
     os.environ.setdefault("TQDM_MININTERVAL", "0.5")
 
     import warnings
@@ -419,7 +390,7 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
         )
         return
 
-    # ── 1b. On Windows, check Triton availability (must be before import torch) ──
+    # ── 1b. Check Triton on Windows (must precede import torch) ──
     if sys.platform == "win32":
         try:
             import triton  # noqa: F401
@@ -432,10 +403,8 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
             )
 
     # ── 1c. Stub torchao on Windows ROCm ──
-    # Shared with the training worker; see core/_torchao_stub.py for the full
-    # rationale (torchao -> torch.distributed._functional_collectives crashes on
-    # Windows ROCm because the RCCL backend is absent). No-op off Windows ROCm.
-    # Must run before any import of transformers / unsloth_zoo.
+    # See core/_torchao_stub.py: torchao crashes on Windows ROCm (RCCL absent).
+    # No-op off Windows ROCm. Must run before importing transformers / unsloth_zoo.
     from core._torchao_stub import install_torchao_windows_rocm_stub
 
     install_torchao_windows_rocm_stub()
@@ -511,7 +480,7 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
 
         try:
             if cmd_type == "load":
-                # Load a new checkpoint (reusing this subprocess)
+                # Load a new checkpoint, reusing this subprocess.
                 backend.cleanup_memory()
                 _handle_load(backend, cmd, resp_queue)
 

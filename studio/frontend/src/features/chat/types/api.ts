@@ -44,18 +44,16 @@ export interface LoadModelRequest {
   chat_template_override?: string | null;
   cache_type_kv?: string | null;
   /**
-   * Speculative decoding mode for GGUF models. Canonical values:
-   * "auto" (platform-aware: MTP on MTP GGUFs, ngram-mod fallback for
-   * sub-3B), "mtp" (force draft-mtp only on both GPU and CPU), "ngram"
-   * (force ngram-mod only), "mtp+ngram" (force ngram-mod + draft-mtp
-   * chain on both platforms), or "off". Legacy values "default" /
-   * "draft-mtp" / "ngram-mod" / "ngram-simple" are still accepted by
-   * the backend.
+   * Speculative decoding mode for GGUF models. Canonical values: "auto"
+   * (platform-aware: MTP on MTP GGUFs, ngram-mod fallback for sub-3B), "mtp"
+   * (force draft-mtp), "ngram" (force ngram-mod), "mtp+ngram" (ngram-mod +
+   * draft-mtp chain), "off". Legacy "default"/"draft-mtp"/"ngram-mod"/
+   * "ngram-simple" are still accepted by the backend.
    */
   speculative_type?: string | null;
   /**
-   * Override --spec-draft-n-max for MTP speculative decoding. Only
-   * applied when speculative_type resolves to "mtp" or "mtp+ngram".
+   * Override --spec-draft-n-max for MTP speculative decoding. Applied only
+   * when speculative_type resolves to "mtp" or "mtp+ngram".
    */
   spec_draft_n_max?: number | null;
 }
@@ -221,13 +219,11 @@ export type OpenAIMessageContentPart =
 export type OpenAIMessageContent = string | OpenAIMessageContentPart[];
 
 /**
- * OpenAI Chat Completions tool_call shape. Assistant turns echo back
- * function/tool calls as `tool_calls`; the matching tool result rides
- * on a separate `role="tool"` message keyed by `tool_call_id`.
- * `extra_content.google.thought_signature` is the Gemini-specific
- * round-trip field the backend translator both emits (on `delta.
- * tool_calls`) and consumes (when rebuilding the native functionCall
- * part on the next turn).
+ * OpenAI Chat Completions tool_call shape. Assistant turns echo function calls
+ * as `tool_calls`; the matching result rides on a separate `role="tool"`
+ * message keyed by `tool_call_id`. `extra_content.google.thought_signature` is
+ * the Gemini round-trip field the backend translator emits (on `delta.
+ * tool_calls`) and consumes (when rebuilding the functionCall part next turn).
  */
 export interface OpenAIToolCallPart {
   id?: string;
@@ -289,36 +285,28 @@ export interface OpenAIChatCompletionsRequest {
   encrypted_api_key?: string;
   provider_base_url?: string | null;
   /**
-   * Boolean toggle for OpenAI/Anthropic ephemeral cache_control. For
-   * Gemini the backend also accepts the cached-content resource name
-   * (`cachedContents/...`) as a string, which is forwarded as
-   * `generationConfig.cachedContent` on the native streamGenerateContent
-   * request.
+   * Boolean toggle for OpenAI/Anthropic ephemeral cache_control. For Gemini the
+   * backend also accepts a cached-content resource name (`cachedContents/...`)
+   * string, forwarded as `generationConfig.cachedContent`.
    */
   enable_prompt_caching?: boolean | string | null;
   /**
-   * OpenAI shell-tool container id captured from the prior response in
-   * this chat thread. When set and the Code pill is on, the backend
-   * routes the next /v1/responses call with
-   * `environment.type="container_reference"` so filesystem state
-   * persists across turns. Unset → backend uses
-   * `environment.type="container_auto"` and OpenAI creates a fresh
-   * container. Only meaningful for OpenAI cloud + gpt-5.5 family.
+   * OpenAI shell-tool container id from the prior response in this thread. When
+   * set and the Code pill is on, the backend routes the next /v1/responses with
+   * `environment.type="container_reference"` so filesystem state persists; unset
+   * → `container_auto` (fresh container). OpenAI cloud + gpt-5.5 family only.
    */
   openai_code_exec_container_id?: string | null;
   /**
-   * Anthropic code_execution container id captured from the prior
-   * response in this chat thread. When set and the Code pill is on,
-   * the backend forwards a top-level `container` field on
-   * /v1/messages so filesystem state persists across turns. Unset →
-   * Anthropic auto-creates a fresh container. Only meaningful for
-   * the Anthropic provider with `code_execution` in `enabled_tools`.
+   * Anthropic code_execution container id from the prior response in this
+   * thread. When set and the Code pill is on, the backend forwards a top-level
+   * `container` on /v1/messages so filesystem state persists; unset →
+   * auto-created. Anthropic provider with `code_execution` in `enabled_tools`.
    */
   anthropic_code_exec_container_id?: string | null;
   /**
-   * Anthropic fast-mode toggle. Opus 4.6 / 4.7 only; backend drops
-   * silently on every other model + provider. See
-   * https://platform.claude.com/docs/en/build-with-claude/fast-mode
+   * Anthropic fast-mode toggle. Opus 4.6 / 4.7 only; dropped silently elsewhere.
+   * See https://platform.claude.com/docs/en/build-with-claude/fast-mode
    */
   fast_mode?: boolean | null;
   /**
@@ -334,16 +322,15 @@ export interface OpenAIChatDelta {
   role?: string;
   content?: string | null;
   /**
-   * Streamed assistant tool calls. The Gemini and OpenAI Responses
-   * translators emit incremental `tool_calls` deltas (function name +
-   * arguments fragments) so the chat-adapter can render tool cards as
-   * they arrive.
+   * Streamed assistant tool calls. The Gemini and OpenAI Responses translators
+   * emit incremental deltas (function name + arguments fragments) so the
+   * chat-adapter can render tool cards as they arrive.
    */
   tool_calls?: OpenAIToolCallPart[];
   /**
-   * Provider-specific passthrough. Gemini ships `thoughtSignature`,
-   * citations, `native_part`, etc., here so the round-trip can replay
-   * them on follow-up turns without bleeding into other providers.
+   * Provider-specific passthrough. Gemini ships `thoughtSignature`, citations,
+   * `native_part`, etc., here so the round-trip can replay them on follow-up
+   * turns without bleeding into other providers.
    */
   extra_content?: Record<string, unknown>;
 }
