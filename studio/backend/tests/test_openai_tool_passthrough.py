@@ -33,6 +33,7 @@ from core.inference.anthropic_compat import (
     anthropic_tool_choice_to_openai,
 )
 from routes.inference import (
+    _build_openai_passthrough_body,
     _build_passthrough_payload,
     _clamp_finish_reason,
     _effective_max_tokens,
@@ -634,6 +635,24 @@ class TestBuildPassthroughPayloadToolChoice:
         assert body.get("repeat_penalty") == 1.1
         assert "repetition_penalty" not in body
 
+    def test_passthrough_body_merges_system_and_developer_messages(self):
+        payload = ChatCompletionRequest(
+            model = "default",
+            messages = [
+                {"role": "system", "content": "original system"},
+                {"role": "developer", "content": "developer rules"},
+                {"role": "user", "content": "hi"},
+            ],
+            tools = self._args()["openai_tools"],
+        )
+
+        body = _build_openai_passthrough_body(payload, backend_ctx = 4096)
+
+        assert body["messages"] == [
+            {"role": "system", "content": "original system\n\ndeveloper rules"},
+            {"role": "user", "content": "hi"},
+        ]
+
 
 # =====================================================================
 # OpenAI API compatibility helpers — verified spec edge cases
@@ -1091,6 +1110,47 @@ class TestGgufVisionToolRouting:
         self._consume_response(response)
 
         assert captured["kwargs"]["disable_parallel_tool_use"] is True
+
+    def test_standard_gguf_merges_system_and_developer_messages(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        captured = {}
+
+        def _generate(**kwargs):
+            captured["messages"] = kwargs["messages"]
+            yield "done"
+            yield {
+                "type": "metadata",
+                "usage": {"prompt_tokens": 3, "completion_tokens": 1, "total_tokens": 4},
+                "finish_reason": "stop",
+            }
+
+        backend = SimpleNamespace(
+            is_loaded = True,
+            is_vision = False,
+            supports_tools = False,
+            model_identifier = "test-gguf",
+            generate_chat_completion = _generate,
+        )
+        monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
+
+        payload = ChatCompletionRequest(
+            model = "default",
+            messages = [
+                {"role": "system", "content": "original system"},
+                {"role": "developer", "content": "developer rules"},
+                {"role": "user", "content": "hi"},
+            ],
+        )
+
+        self._drive(
+            openai_chat_completions(payload, request = self._Request(), current_subject = "test")
+        )
+
+        assert captured["messages"] == [
+            {"role": "system", "content": "original system\n\ndeveloper rules"},
+            {"role": "user", "content": "hi"},
+        ]
 
     @pytest.mark.parametrize(
         ("seed", "expected"),

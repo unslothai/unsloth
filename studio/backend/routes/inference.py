@@ -2050,8 +2050,8 @@ def _extract_content_parts(messages: list) -> tuple[str, list[dict], "Optional[s
     first_image_b64: Optional[str] = None
 
     for msg in messages:
-        # ── System messages → extract as system_prompt ────────
-        if msg.role == "system":
+        # ── System / developer messages → extract as system_prompt ────────
+        if msg.role in ("system", "developer"):
             if isinstance(msg.content, str):
                 system_parts.append(msg.content)
             elif isinstance(msg.content, list):
@@ -3053,6 +3053,7 @@ async def openai_chat_completions(
             payload,
             llama_backend.is_vision,
         )
+        gguf_messages = _set_or_prepend_system_message(gguf_messages, system_prompt)
         image_b64 = None
 
         cancel_event = threading.Event()
@@ -5190,9 +5191,11 @@ def _set_or_prepend_system_message(
     if not system_prompt:
         return safe_messages
 
-    # Drop existing system turns so the backend never sees duplicate or
-    # conflicting system instructions, then prepend the resolved prompt.
-    others = [dict(msg) for msg in safe_messages if msg.get("role") != "system"]
+    # Drop existing system/developer turns so the backend never sees duplicate
+    # or conflicting system instructions, then prepend the resolved prompt.
+    others = [
+        dict(msg) for msg in safe_messages if msg.get("role") not in ("system", "developer")
+    ]
     return [{"role": "system", "content": system_prompt}, *others]
 
 
@@ -6415,6 +6418,8 @@ def _build_openai_passthrough_body(payload, backend_ctx = None) -> dict:
     leak to the backend.
     """
     messages = _openai_messages_for_passthrough(payload)
+    system_prompt, _, _ = _extract_content_parts(payload.messages)
+    messages = _set_or_prepend_system_message(messages, system_prompt)
     tool_choice = payload.tool_choice if payload.tool_choice is not None else "auto"
     # When the caller asked for a specific reasoning mode, forward it via
     # chat_template_kwargs so the Jinja template renders with (or without) the
