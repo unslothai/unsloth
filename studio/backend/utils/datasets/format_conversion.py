@@ -100,9 +100,7 @@ def standardize_chat_format(
             role_key = keys[1]
             content_key = keys[0]
     else:
-        raise ValueError(
-            f"Could not infer role/content keys for chat column '{chat_column}'"
-        )
+        raise ValueError(f"Could not infer role/content keys for chat column '{chat_column}'")
 
     # Mapping for aliases
     aliases_mapping = {}
@@ -133,9 +131,7 @@ def standardize_chat_format(
                 if original_role is None:
                     original_role = message.get("role") or message.get("from") or ""
                 if original_content is None:
-                    original_content = (
-                        message.get("content") or message.get("value") or ""
-                    )
+                    original_content = message.get("content") or message.get("value") or ""
 
                 standard_role = aliases_mapping.get(original_role, original_role)
 
@@ -192,9 +188,7 @@ def convert_chatml_to_alpaca(
         chatml_data = examples.get(chat_column) if chat_column else None
         if chatml_data is None:
             chatml_data = (
-                examples.get("messages")
-                or examples.get("conversations")
-                or examples.get("texts")
+                examples.get("messages") or examples.get("conversations") or examples.get("texts")
             )
 
         if chatml_data is None:

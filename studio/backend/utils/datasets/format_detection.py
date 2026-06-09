@@ -89,9 +89,7 @@ def _inspect_conversation_column(rows: list[dict], column_name: str) -> dict | N
     return None
 
 
-def _detect_conversation_column(
-    rows: list[dict], column_names: list[str]
-) -> dict | None:
+def _detect_conversation_column(rows: list[dict], column_names: list[str]) -> dict | None:
     column_name_set = set(column_names)
     unknown_exact = None
     for column_name in CONVERSATION_COLUMNS:

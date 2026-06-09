@@ -261,11 +261,7 @@ def _select_best_hf_preview_candidate(
 
 
 def _select_hf_preview_file(
-    repo_files: list[str],
-    *,
-    metadata: dict | None,
-    subset: str | None,
-    split: str | None,
+    repo_files: list[str], *, metadata: dict | None, subset: str | None, split: str | None
 ) -> str | None:
     normalized_repo_files = [_normalize_hf_repo_path(path) for path in repo_files]
     repo_file_set = set(normalized_repo_files)
@@ -276,21 +272,13 @@ def _select_hf_preview_file(
         if path in repo_file_set and _is_hf_preview_data_file(path)
     ]
     if metadata_candidates:
-        return _select_best_hf_preview_candidate(
-            metadata_candidates, subset = subset, split = split
-        )
+        return _select_best_hf_preview_candidate(metadata_candidates, subset = subset, split = split)
 
-    data_candidates = [
-        path for path in normalized_repo_files if _is_hf_preview_data_file(path)
-    ]
-    return _select_best_hf_preview_candidate(
-        data_candidates, subset = subset, split = split
-    )
+    data_candidates = [path for path in normalized_repo_files if _is_hf_preview_data_file(path)]
+    return _select_best_hf_preview_candidate(data_candidates, subset = subset, split = split)
 
 
-def _download_hf_metadata(
-    *, repo_id: str, repo_files: list[str], token: str | None
-) -> dict | None:
+def _download_hf_metadata(*, repo_id: str, repo_files: list[str], token: str | None) -> dict | None:
     metadata_file = next(
         (
             path
@@ -304,7 +292,6 @@ def _download_hf_metadata(
 
     try:
         from huggingface_hub import hf_hub_download
-
         local_path = hf_hub_download(
             repo_id = repo_id,
             filename = metadata_file,

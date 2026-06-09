@@ -574,9 +574,7 @@ def format_dataset(
         elif detected["format"] == "chatml" and detected.get("chat_column"):
             return {
                 "dataset": dataset,
-                "detected_format": _chatml_detected_format_label(
-                    detected["chat_column"]
-                ),
+                "detected_format": _chatml_detected_format_label(detected["chat_column"]),
                 "final_format": _chatml_final_format(detected["chat_column"]),
                 "chat_column": detected["chat_column"],
                 "is_standardized": True,
@@ -693,9 +691,7 @@ def format_dataset(
                 "warnings": [],
             }
 
-        elif detected["format"] in ["sharegpt", "chatml"] and detected.get(
-            "chat_column"
-        ):
+        elif detected["format"] in ["sharegpt", "chatml"] and detected.get("chat_column"):
             try:
                 # First standardize if ShareGPT
                 if detected["format"] == "sharegpt":
@@ -812,9 +808,7 @@ def format_dataset(
         elif detected["format"] == "chatml" and detected.get("chat_column"):
             return {
                 "dataset": dataset,
-                "detected_format": _chatml_detected_format_label(
-                    detected["chat_column"]
-                ),
+                "detected_format": _chatml_detected_format_label(detected["chat_column"]),
                 "final_format": _chatml_final_format(detected["chat_column"]),
                 "chat_column": detected["chat_column"],
                 "is_standardized": True,
