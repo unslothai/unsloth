@@ -1,10 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Free-function ``general.*`` reader for GGUF headers, used by
-``detect_mmproj_file`` to pair weights and projectors via
-``general.base_model.0.repo_url``. ~30 ms per file, cached by
-(path, mtime, size)."""
+"""``general.*`` reader for GGUF headers, used by ``detect_mmproj_file`` to
+pair weights and projectors via ``general.base_model.0.repo_url``. ~30 ms
+per file, cached by (path, mtime, size)."""
 
 from __future__ import annotations
 
@@ -65,9 +64,9 @@ def _cache_key(path: str) -> Optional[_CacheKey]:
 
 
 def read_gguf_general_metadata(path: str) -> Optional[Dict[str, str]]:
-    """Return ``general.*`` strings from a GGUF header, or ``None`` if
-    the file is missing, unreadable, or not a GGUF. ``{}`` means the
-    file is valid but carries none of the wanted keys."""
+    """Return ``general.*`` strings from a GGUF header, or ``None`` if the
+    file is missing, unreadable, or not a GGUF. ``{}`` means valid but
+    carrying none of the wanted keys."""
     key = _cache_key(path)
     if key is None:
         return None
@@ -156,9 +155,9 @@ _FIXED_VTYPE_SIZES: Dict[int, int] = {
 
 
 def _skip_gguf_value(f, vtype: int) -> bool:
-    """Advance past one GGUF value. ``f.seek(.., 1)`` past EOF is legal
-    on a regular file so truncation is detected on the next read; we
-    only return False for unknown types or sanity-bound overflow."""
+    """Advance past one GGUF value. ``f.seek(.., 1)`` past EOF is legal on a
+    regular file, so truncation is caught on the next read; return False only
+    for unknown types or sanity-bound overflow."""
     if vtype == 8:  # STRING
         slen_bytes = f.read(8)
         if len(slen_bytes) < 8:
@@ -265,9 +264,9 @@ def _read_gguf_bool(path: str, wanted_key: str) -> Optional[bool]:
 
 
 def read_mmproj_audio_capability(path: str) -> Optional[bool]:
-    """``clip.has_audio_encoder`` from an mmproj GGUF (e.g. Gemma 4's gemma4ua):
-    ``True``/``False`` if present, ``None`` if absent / unreadable. Flags
-    audio-input models independently of tokenizer token names."""
+    """``clip.has_audio_encoder`` from an mmproj GGUF (e.g. Gemma 4's
+    gemma4ua): ``True``/``False`` if present, ``None`` if absent/unreadable.
+    Flags audio-input models independently of tokenizer token names."""
     return _read_gguf_bool(path, "clip.has_audio_encoder")
 
 
@@ -282,8 +281,7 @@ def is_mmproj_by_metadata(meta: Optional[Dict[str, str]]) -> Optional[bool]:
 
 
 def pairing_score(
-    weight_meta: Optional[Dict[str, str]],
-    mmproj_meta: Optional[Dict[str, str]],
+    weight_meta: Optional[Dict[str, str]], mmproj_meta: Optional[Dict[str, str]]
 ) -> int:
     """Pairing confidence: 100 = base_model URL match, 80 = basename + org,
     60 = basename, -1 = definitive mismatch, 0 = decide from filename."""

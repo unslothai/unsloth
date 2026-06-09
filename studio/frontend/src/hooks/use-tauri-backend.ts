@@ -277,12 +277,11 @@ export function useTauriBackend() {
 
     try {
       const { invoke } = await import("@tauri-apps/api/core");
-      // backend/run.py keeps the existing 8888-8908 fallback via
-      // server-port/TAURI_PORT.
+      // backend/run.py keeps the 8888-8908 fallback via server-port/TAURI_PORT.
       await invoke("start_managed_server", { port: 8888 });
 
-      // Wait for the owned backend's server-port event. Do not attach to an
-      // external backend if the managed start does not report a port.
+      // Wait for the owned backend's server-port event. Don't attach to an
+      // external backend if the managed start doesn't report a port.
       const startupResult = await waitForManagedServerReady(
         invoke,
         () => portRef.current,
@@ -348,8 +347,7 @@ export function useTauriBackend() {
 
   async function stopServer() {
     if (isExternalServer) {
-      // We attached to a server we didn't spawn — can't kill it,
-      // just disconnect the UI.
+      // We attached to a server we didn't spawn: can't kill it, just disconnect the UI.
       startingRef.current = false;
       setIsExternalServer(false);
       stopExternalServerPoll();
@@ -373,19 +371,18 @@ export function useTauriBackend() {
     const { invoke } = await import("@tauri-apps/api/core");
     try {
       await invoke("start_install");
-      // Install completed — start the managed backend we just installed.
-      // Do not run the general preflight here: it can attach to an unrelated
-      // already-running CLI/backend server before launching our managed one.
-      // The install-complete event listener does NOT call startServer() to
-      // avoid a double-start race condition.
+      // Install done: start the managed backend we just installed. Don't run the
+      // general preflight here, it can attach to an unrelated running CLI/backend
+      // before launching ours. The install-complete listener does NOT call
+      // startServer() to avoid a double-start race.
       setBackendStatus("starting");
       elevationResumeRef.current = null;
       await startServer();
     } catch (e) {
       const msg = String(e);
-      // NEEDS_ELEVATION is not a real error — the Rust side also emits
-      // install-needs-elevation which sets needs-elevation status.
-      // Don't race with it by setting install-error here.
+      // NEEDS_ELEVATION is not a real error: the Rust side also emits
+      // install-needs-elevation (sets needs-elevation status). Don't race with it
+      // by setting install-error here.
       if (msg.includes("NEEDS_ELEVATION")) return;
       setBackendError(msg, "install-error");
     }
@@ -511,8 +508,8 @@ export function useTauriBackend() {
         setLogs((prev) => [...prev.slice(-499), e.payload]);
       });
 
-      // install-complete is informational only — does NOT trigger startServer.
-      // The invoke("start_install") success path handles that to avoid races.
+      // install-complete is informational only; does NOT trigger startServer. The
+      // invoke("start_install") success path handles that to avoid races.
       register<void>("install-complete", () => {
         setCurrentStepIndex(999); // all steps done
       });

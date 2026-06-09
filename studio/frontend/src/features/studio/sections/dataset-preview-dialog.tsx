@@ -90,8 +90,7 @@ export function DatasetPreviewDialog({
   );
   const { isStarting, startError, startTrainingRun } = useTrainingActions();
 
-  // If the backend reports image data, treat as VLM even if the prop
-  // hasn't caught up yet (isDatasetImage may still be null in the store).
+  // Treat backend-reported image data as VLM even if the prop hasn't caught up.
   const effectiveIsAudio = !!data?.is_audio;
   const effectiveIsVlm = isVlm || !!data?.is_image;
 
@@ -133,7 +132,7 @@ export function DatasetPreviewDialog({
       });
 
       if (result.success && result.suggested_mapping) {
-        // Remap from chatml roles (user/assistant/system) to format-specific roles
+        // Remap chatml roles to format-specific roles
         const table = ROLE_REMAP[datasetFormat];
         const mapped: Record<string, string> = {};
         for (const [col, role] of Object.entries(result.suggested_mapping)) {
@@ -169,14 +168,12 @@ export function DatasetPreviewDialog({
     setManualMapping(remapRolesForFormat(manualMapping, datasetFormat));
   }, [datasetFormat]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Handle role change for a column
   const handleRoleChange = useCallback(
     (colName: string, role: string | undefined) => {
       const next = { ...manualMapping };
-      // Remove this column's previous role
       delete next[colName];
       if (role) {
-        // Remove any other column that had this role (each role can only be assigned once)
+        // Each role maps to one column, so drop any other column holding it
         for (const [col, r] of Object.entries(next)) {
           if (r === role) delete next[col];
         }
@@ -244,7 +241,6 @@ export function DatasetPreviewDialog({
   const rows = data?.preview_samples ?? [];
   const columns = data?.columns ?? [];
 
-  // Determine source label
   const sourceLabel = useMemo(() => {
     if (!datasetName) return "";
     if (datasetSource === "huggingface") {
@@ -257,7 +253,6 @@ export function DatasetPreviewDialog({
     return `Local Files (${datasetName})`;
   }, [datasetName, datasetSource, datasetSubset, datasetSplit]);
 
-  // Build TanStack Table columns from the column names
   const tableColumns = useMemo<ColumnDef<Record<string, unknown>>[]>(() => {
     if (!columns.length) return [];
 
@@ -531,10 +526,7 @@ export function DatasetPreviewDialog({
   );
 }
 
-// ---------------------------------------------------------------------------
 // Metadata row
-// ---------------------------------------------------------------------------
-
 function MetaRow({
   label,
   value,
