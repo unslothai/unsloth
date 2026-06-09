@@ -625,7 +625,7 @@ class TestAnthropicStreamEmitter:
             and payload["content_block"]["type"] == "tool_use"
         ]
         assert len(tool_starts) == 1
-        assert tool_starts[0]["content_block"]["id"] == "call_0"
+        assert tool_starts[0]["content_block"]["id"].startswith("toolu_")
         assert second_payloads == [
             {
                 "type": "content_block_delta",
@@ -640,7 +640,7 @@ class TestAnthropicStreamEmitter:
     def test_tool_end_closes_tool_opens_new_text_block(self):
         e = AnthropicStreamEmitter()
         e.start("msg_1", "m")
-        e.feed(
+        start_events = e.feed(
             {
                 "type": "tool_start",
                 "tool_name": "t",
@@ -648,6 +648,13 @@ class TestAnthropicStreamEmitter:
                 "arguments": {},
             }
         )
+        start_payload = next(
+            json.loads(event.split("data: ")[1])
+            for event in start_events
+            if "content_block_start" in event
+        )
+        tool_use_id = start_payload["content_block"]["id"]
+        assert tool_use_id.startswith("toolu_")
         events = e.feed(
             {
                 "type": "tool_end",
@@ -662,7 +669,7 @@ class TestAnthropicStreamEmitter:
         assert "tool_result" in events[1]
         parsed = json.loads(events[1].split("data: ")[1])
         assert parsed["content"] == "done"
-        assert parsed["tool_use_id"] == "tc_1"
+        assert parsed["tool_use_id"] == tool_use_id
         assert "content_block_start" in events[2]
         assert '"type": "text"' in events[2]
 
@@ -791,14 +798,11 @@ class TestAnthropicToolNonStreaming:
         body = json.loads(response.body)
         tool_blocks = [block for block in body["content"] if block["type"] == "tool_use"]
 
-        assert tool_blocks == [
-            {
-                "type": "tool_use",
-                "id": "call_0",
-                "name": "render_html",
-                "input": {"code": "<!doctype html><html></html>"},
-            }
-        ]
+        assert len(tool_blocks) == 1
+        assert tool_blocks[0]["type"] == "tool_use"
+        assert tool_blocks[0]["id"].startswith("toolu_")
+        assert tool_blocks[0]["name"] == "render_html"
+        assert tool_blocks[0]["input"] == {"code": "<!doctype html><html></html>"}
 
 
 # =====================================================================
@@ -866,7 +870,7 @@ class TestAnthropicPassthroughEmitter:
         parsed = self._parse(events[0])
         assert parsed["type"] == "content_block_start"
         assert parsed["content_block"]["type"] == "tool_use"
-        assert parsed["content_block"]["id"] == "call_1"
+        assert parsed["content_block"]["id"].startswith("toolu_")
         assert parsed["content_block"]["name"] == "Bash"
 
     def test_tool_call_arguments_streamed_as_input_json_delta(self):
@@ -1071,7 +1075,7 @@ class TestAnthropicPassthroughEmitter:
         assert "content_block_start" in events[1]
         parsed = self._parse(events[1])
         assert parsed["content_block"]["name"] == "Read"
-        assert parsed["content_block"]["id"] == "c2"
+        assert parsed["content_block"]["id"].startswith("toolu_")
 
 
 # =====================================================================
@@ -1225,27 +1229,23 @@ class TestAnthropicRequestedStudioTools:
 # =====================================================================
 
 
-class _PlainPathCalled(Exception):
-    pass
-
-
-class _ToolPathCalled(Exception):
-    pass
-
-
 def _mock_backend(monkeypatch, **overrides):
     """Install a minimal stub backend on routes.inference.
 
-    Generation methods raise sentinels so the caller can assert which path
-    the route entered.
+    Generation methods record which path the route entered, then yield one
+    content event so the route can complete normally.
     """
     import routes.inference as inf_mod
 
+    calls = []
+
     def _gen_plain(**kwargs):
-        raise _PlainPathCalled()
+        calls.append(("plain", kwargs))
+        yield {"type": "content", "text": "ok"}
 
     def _gen_tools(**kwargs):
-        raise _ToolPathCalled()
+        calls.append(("tools", kwargs))
+        yield {"type": "content", "text": "ok"}
 
     backend = SimpleNamespace(
         is_loaded = True,
@@ -1254,6 +1254,7 @@ def _mock_backend(monkeypatch, **overrides):
         model_identifier = "test-model",
         generate_chat_completion = _gen_plain,
         generate_chat_completion_with_tools = _gen_tools,
+        calls = calls,
     )
     backend.__dict__.update(overrides)
     monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
@@ -1368,42 +1369,42 @@ class TestAnthropicMessagesToolRouting:
         assert "input_schema" in exc.value.detail
 
     def test_unrecognized_server_tool_accepted_as_noop(self, monkeypatch):
-        _mock_backend(monkeypatch)
+        backend = _mock_backend(monkeypatch)
         payload = _basic_payload(
             tools = [{"type": "code_execution_20250825", "name": "code_execution"}],
         )
 
-        with pytest.raises(_PlainPathCalled):
-            _drive(anthropic_messages(payload, request = None, current_subject = "t"))
+        _drive(anthropic_messages(payload, request = None, current_subject = "t"))
+        assert backend.calls[0][0] == "plain"
 
     def test_disable_tools_policy_overrides_server_tool_alias(self, monkeypatch):
         # CLI `unsloth run --disable-tools` sets policy=False. A request with
         # a Studio server-tool alias must NOT enter the agentic loop then.
-        _mock_backend(monkeypatch)
+        backend = _mock_backend(monkeypatch)
         set_tool_policy(False)
         payload = _basic_payload(
             tools = [{"type": "web_search_20250305", "name": "web_search"}],
         )
 
-        with pytest.raises(_PlainPathCalled):
-            _drive(anthropic_messages(payload, request = None, current_subject = "t"))
+        _drive(anthropic_messages(payload, request = None, current_subject = "t"))
+        assert backend.calls[0][0] == "plain"
 
     def test_server_tool_alias_enters_tool_path_when_policy_unset(self, monkeypatch):
         # Mirror of the previous test for the default (None) policy.
-        _mock_backend(monkeypatch)
+        backend = _mock_backend(monkeypatch)
         payload = _basic_payload(
             tools = [{"type": "web_search_20250305", "name": "web_search"}],
         )
 
-        with pytest.raises(_ToolPathCalled):
-            _drive(anthropic_messages(payload, request = None, current_subject = "t"))
+        _drive(anthropic_messages(payload, request = None, current_subject = "t"))
+        assert backend.calls[0][0] == "tools"
 
     def test_per_request_enable_tools_false_blocks_server_tool_alias(self, monkeypatch):
-        _mock_backend(monkeypatch)
+        backend = _mock_backend(monkeypatch)
         payload = _basic_payload(
             enable_tools = False,
             tools = [{"type": "web_search_20250305", "name": "web_search"}],
         )
 
-        with pytest.raises(_PlainPathCalled):
-            _drive(anthropic_messages(payload, request = None, current_subject = "t"))
+        _drive(anthropic_messages(payload, request = None, current_subject = "t"))
+        assert backend.calls[0][0] == "plain"
