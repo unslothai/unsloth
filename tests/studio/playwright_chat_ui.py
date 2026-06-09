@@ -72,7 +72,7 @@ GGUF_REPO = os.environ.get("GGUF_REPO", "unsloth/gemma-3-270m-it-GGUF")
 GGUF_VARIANT = os.environ.get("GGUF_VARIANT", "UD-Q4_K_XL")
 ART_DIR = os.environ.get("PW_ART_DIR", "logs/playwright")
 ART = Path(ART_DIR)
-ART.mkdir(parents = True, exist_ok = True)
+ART.mkdir(parents=True, exist_ok=True)
 
 # Strict mode -- when on (default in CI), the test fails loudly if any
 # expected button / nav / dialog is missing instead of logging a WARN
@@ -102,11 +102,11 @@ _n = [0]
 
 
 def step(s):
-    print(f"[ui] STEP {s}", flush = True)
+    print(f"[ui] STEP {s}", flush=True)
 
 
 def info(s):
-    print(f"[ui] {s}", flush = True)
+    print(f"[ui] {s}", flush=True)
 
 
 def fail(m):
@@ -168,12 +168,12 @@ def soft_fail(m):
 def login_via_api(pw):
     req = urllib.request.Request(
         f"{BASE}/api/auth/login",
-        data = json.dumps({"username": "unsloth", "password": pw}).encode(),
-        method = "POST",
-        headers = {"Content-Type": "application/json"},
+        data=json.dumps({"username": "unsloth", "password": pw}).encode(),
+        method="POST",
+        headers={"Content-Type": "application/json"},
     )
     try:
-        with urllib.request.urlopen(req, timeout = 10) as r:
+        with urllib.request.urlopen(req, timeout=10) as r:
             return r.status
     except urllib.error.HTTPError as exc:
         return exc.code
@@ -187,8 +187,8 @@ def parse_rgb(s):
 with sync_playwright() as p:
     _watchdog = install_wall_clock_watchdog(
         WALL_TIMEOUT_S,
-        label = "ui",
-        info = info,
+        label="ui",
+        info=info,
     )
     # Pre-flight: bash-side wait_for already gated on /api/health
     # before launching us, but the macos-14 free runner has been
@@ -197,7 +197,7 @@ with sync_playwright() as p:
     # script catches that gap before we sink 60s into a change-
     # password timeout. Diagnostic only -- the workflow's own wait
     # is the authoritative gate, so we don't fail on miss.
-    wait_for_health(BASE, timeout = 30.0, info = info)
+    wait_for_health(BASE, timeout=30.0, info=info)
     # Chromium launch args: see `tests/studio/_playwright_robust.py`.
     # Bundles the macos-14 stability set (--single-process for the
     # pipeTransport.js JSON-RPC crash) + new throttling kill set
@@ -206,16 +206,16 @@ with sync_playwright() as p:
     # CPU/timers when it thinks the window is backgrounded -- which
     # CI runners routinely flag.
     browser = p.chromium.launch(
-        headless = True,
-        args = chromium_launch_args(),
+        headless=True,
+        args=chromium_launch_args(),
     )
     ctx = browser.new_context(
-        viewport = {"width": 1280, "height": 900},
+        viewport={"width": 1280, "height": 900},
         # Reduces motion so the theme toggle's view-transition
         # animation doesn't briefly intercept pointer events
         # (the running CSS view-transition leaves the html in a
         # state where Playwright's actionability check fails).
-        reduced_motion = "reduce",
+        reduced_motion="reduce",
     )
     # Hard-disable CSS view-transitions: see _playwright_robust.py
     # for the underlying init script. Necessary because Studio's theme
@@ -280,10 +280,10 @@ with sync_playwright() as p:
         _n[0] += 1
         try:
             page.screenshot(
-                path = str(ART / f"{_n[0]:02d}-{name}.png"),
-                full_page = True,
-                timeout = 90_000,
-                animations = "disabled",
+                path=str(ART / f"{_n[0]:02d}-{name}.png"),
+                full_page=True,
+                timeout=90_000,
+                animations="disabled",
             )
         except Exception as _shoot_err:
             info(f"WARN: screenshot {name} failed: {_shoot_err}")
@@ -318,19 +318,19 @@ with sync_playwright() as p:
     form_err: Exception | None = None
     for _form_attempt in range(3):
         try:
-            page.goto(f"{BASE}/change-password", wait_until = "domcontentloaded", timeout = 60_000)
+            page.goto(f"{BASE}/change-password", wait_until="domcontentloaded", timeout=60_000)
             try:
-                page.wait_for_load_state("networkidle", timeout = 30_000)
+                page.wait_for_load_state("networkidle", timeout=30_000)
             except Exception:
                 pass  # best-effort -- proceed even if network never idles
             pw_field = page.locator("#new-password")
-            pw_field.wait_for(state = "visible", timeout = 60_000)
+            pw_field.wait_for(state="visible", timeout=60_000)
             # NOTE: do NOT call shoot() between wait_for and fill -- the
             # screenshot's font-load wait gives the React form a chance to
             # detach if any background state-poll fires. Take screenshots
             # AFTER the form is committed instead.
-            pw_field.fill(NEW, timeout = 60_000)
-            page.fill("#confirm-password", NEW, timeout = 60_000)
+            pw_field.fill(NEW, timeout=60_000)
+            page.fill("#confirm-password", NEW, timeout=60_000)
             shoot("01-change-password-filled")
             # Click submit AND wait for the POST /api/auth/change-password
             # response in the same step. macos-14 free runners under
@@ -346,11 +346,11 @@ with sync_playwright() as p:
             # fresh with a known-bad starting state.
             status, _ = click_and_wait_for_response(
                 page,
-                url_substr = "/api/auth/change-password",
-                method = "POST",
-                do_click = lambda: page.locator('button[type="submit"]').click(),
-                timeout_ms = 30_000,
-                info = lambda m: print(f"[ui]   {m}", flush = True),
+                url_substr="/api/auth/change-password",
+                method="POST",
+                do_click=lambda: page.locator('button[type="submit"]').click(),
+                timeout_ms=30_000,
+                info=lambda m: print(f"[ui]   {m}", flush=True),
             )
             if status is not None and status >= 400:
                 raise AssertionError(
@@ -369,15 +369,15 @@ with sync_playwright() as p:
                 f"[ui]   change-password form attempt {_form_attempt + 1} failed: "
                 f"{type(e).__name__}: {str(e)[:200]}; page.url={cur_url}; "
                 f"page_errors={len(page_errors)} console_errors={len(console_errors)}",
-                flush = True,
+                flush=True,
             )
             if console_errors:
                 print(
                     f"[ui]   first console.error: {console_errors[0][:200]!r}",
-                    flush = True,
+                    flush=True,
                 )
             if page_errors:
-                print(f"[ui]   first pageerror:    {page_errors[0][:200]!r}", flush = True)
+                print(f"[ui]   first pageerror:    {page_errors[0][:200]!r}", flush=True)
             try:
                 shoot(f"01-change-password-attempt-{_form_attempt + 1}-fail")
             except Exception:
@@ -391,7 +391,7 @@ with sync_playwright() as p:
                     print(
                         f"[ui]   ENOBUFS detected; sleeping {backoff_s}s "
                         f"before retry to let OS recover socket buffers...",
-                        flush = True,
+                        flush=True,
                     )
                     time.sleep(backoff_s)
                 # Recovery: replace the page if it died, otherwise the
@@ -399,8 +399,8 @@ with sync_playwright() as p:
                 page = recover_or_replace_page(
                     page,
                     ctx,
-                    default_timeout_ms = 60_000,
-                    info = lambda m: print(f"[ui]   recovery: {m}", flush = True),
+                    default_timeout_ms=60_000,
+                    info=lambda m: print(f"[ui]   recovery: {m}", flush=True),
                 )
     if form_err is not None:
         raise form_err
@@ -422,7 +422,7 @@ with sync_playwright() as p:
     # Defend against both: settle network first, then attempt
     # wait_for with one recovery cycle on failure.
     try:
-        page.wait_for_load_state("networkidle", timeout = 30_000)
+        page.wait_for_load_state("networkidle", timeout=30_000)
     except Exception:
         pass  # best-effort -- proceed even if network never idles
 
@@ -430,7 +430,7 @@ with sync_playwright() as p:
     last_err: Exception | None = None
     for _attempt in range(2):
         try:
-            composer.wait_for(state = "visible", timeout = 60_000)
+            composer.wait_for(state="visible", timeout=60_000)
             last_err = None
             break
         except Exception as e:
@@ -443,15 +443,15 @@ with sync_playwright() as p:
                 f"[ui]   composer.wait_for attempt {_attempt + 1} failed: "
                 f"{type(e).__name__}: {str(e)[:200]}; page.url={cur_url}; "
                 f"page_errors={len(page_errors)} console_errors={len(console_errors)}",
-                flush = True,
+                flush=True,
             )
             if console_errors:
                 print(
                     f"[ui]   first console.error: {console_errors[0][:200]!r}",
-                    flush = True,
+                    flush=True,
                 )
             if page_errors:
-                print(f"[ui]   first pageerror:    {page_errors[0][:200]!r}", flush = True)
+                print(f"[ui]   first pageerror:    {page_errors[0][:200]!r}", flush=True)
             try:
                 shoot(f"03-composer-wait-attempt-{_attempt + 1}-fail")
             except Exception:
@@ -465,10 +465,10 @@ with sync_playwright() as p:
                 page = recover_or_replace_page(
                     page,
                     ctx,
-                    default_timeout_ms = 60_000,
-                    goto_url = BASE,
-                    settle_networkidle = True,
-                    info = lambda m: print(f"[ui]   recovery: {m}", flush = True),
+                    default_timeout_ms=60_000,
+                    goto_url=BASE,
+                    settle_networkidle=True,
+                    info=lambda m: print(f"[ui]   recovery: {m}", flush=True),
                 )
                 composer = page.locator('textarea[aria-label="Message input"]')
     if last_err is not None:
@@ -490,10 +490,10 @@ with sync_playwright() as p:
             refresh_resp = evaluate_fetch(
                 page,
                 f"{BASE}/api/auth/refresh",
-                method = "POST",
-                headers = {"Content-Type": "application/json"},
-                body = {"refresh_token": refresh_token},
-                timeout_ms = FETCH_TIMEOUT_MS,
+                method="POST",
+                headers={"Content-Type": "application/json"},
+                body={"refresh_token": refresh_token},
+                timeout_ms=FETCH_TIMEOUT_MS,
             )
             if refresh_resp.get("error"):
                 fail(f"/api/auth/refresh wedged: {refresh_resp['error']!r}")
@@ -513,8 +513,8 @@ with sync_playwright() as p:
     defaults_resp = evaluate_fetch(
         page,
         f"{BASE}/api/models/list",
-        headers = {"Authorization": f"Bearer {token}"},
-        timeout_ms = FETCH_TIMEOUT_MS,
+        headers={"Authorization": f"Bearer {token}"},
+        timeout_ms=FETCH_TIMEOUT_MS,
     )
     if defaults_resp.get("error") or defaults_resp.get("status") != 200:
         fail(
@@ -546,7 +546,7 @@ with sync_playwright() as p:
     # so use a short timeout and skip the snapshot on miss.
     sel_text = ""
     try:
-        sel_text = (selector_btn.text_content(timeout = 2_000) or "").strip()
+        sel_text = (selector_btn.text_content(timeout=2_000) or "").strip()
     except Exception as _sel_err:
         info(f"WARN: model-selector probe skipped: {type(_sel_err).__name__}: {_sel_err}")
     if sel_text:
@@ -568,18 +568,18 @@ with sync_playwright() as p:
     load_resp = evaluate_fetch(
         page,
         f"{BASE}/api/inference/load",
-        method = "POST",
-        headers = {
+        method="POST",
+        headers={
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
         },
-        body = {
+        body={
             "model_path": GGUF_REPO,
             "gguf_variant": GGUF_VARIANT,
             "is_lora": False,
             "max_seq_length": 2048,
         },
-        timeout_ms = LOAD_FETCH_TIMEOUT_MS,
+        timeout_ms=LOAD_FETCH_TIMEOUT_MS,
     )
     if load_resp.get("error"):
         fail(f"/api/inference/load wedged: {load_resp['error']!r}")
@@ -591,7 +591,7 @@ with sync_playwright() as p:
     # to make the chat composer pick up the loaded model.
     page.reload()
     composer = page.locator('textarea[aria-label="Message input"]')
-    composer.wait_for(state = "visible", timeout = 60_000)
+    composer.wait_for(state="visible", timeout=60_000)
 
     # ─────────────────────────────────────────────────────
     # 3b. Model picker search bar -- click the model selector,
@@ -686,22 +686,22 @@ with sync_playwright() as p:
         #    transition).
         page.wait_for_selector(
             'button[aria-label="Send message"]',
-            state = "attached",
-            timeout = TURN_TIMEOUT_MS,
+            state="attached",
+            timeout=TURN_TIMEOUT_MS,
         )
         try:
             page.wait_for_selector(
                 'button[aria-label="Stop generating"]',
-                state = "detached",
-                timeout = 5_000,
+                state="detached",
+                timeout=5_000,
             )
         except Exception:
             # Stop button still hanging on -- that's the prior turn
             # mid-stream. Wait it out at the full per-turn budget.
             page.wait_for_selector(
                 'button[aria-label="Stop generating"]',
-                state = "detached",
-                timeout = TURN_TIMEOUT_MS,
+                state="detached",
+                timeout=TURN_TIMEOUT_MS,
             )
 
         # 2. Snapshot total bubble count BEFORE send. We then wait
@@ -730,8 +730,8 @@ with sync_playwright() as p:
                     '[data-role="assistant"]'
                 ).length >= want;
             }""",
-            arg = bubbles_before + 1,
-            timeout = TURN_TIMEOUT_MS,
+            arg=bubbles_before + 1,
+            timeout=TURN_TIMEOUT_MS,
         )
 
         # 4. Wait for streaming to FINISH for this specific turn.
@@ -743,22 +743,22 @@ with sync_playwright() as p:
         try:
             page.wait_for_selector(
                 'button[aria-label="Stop generating"]',
-                state = "attached",
-                timeout = 3_000,
+                state="attached",
+                timeout=3_000,
             )
         except Exception:
             pass
         try:
             page.wait_for_selector(
                 'button[aria-label="Stop generating"]',
-                state = "detached",
-                timeout = TURN_TIMEOUT_MS,
+                state="detached",
+                timeout=TURN_TIMEOUT_MS,
             )
         except Exception:
             shoot(f"04-turn-{idx}-still-streaming")
             raise
 
-    for i, p_ in enumerate(prompts, start = 1):
+    for i, p_ in enumerate(prompts, start=1):
         step(f"turn {i}: {p_!r}")
         send_and_wait(p_, i)
     shoot("04-after-five-turns")
@@ -789,15 +789,15 @@ with sync_playwright() as p:
     page.wait_for_timeout(400)
     regen_btn = page.get_by_role(
         "button",
-        name = re.compile(r"(reload|regenerate)", re.I),
+        name=re.compile(r"(reload|regenerate)", re.I),
     ).first
     if regen_btn.count() > 0:
         regen_btn.click()
         try:
             page.wait_for_selector(
                 'button[aria-label="Stop generating"]',
-                state = "detached",
-                timeout = 90_000,
+                state="detached",
+                timeout=90_000,
             )
         except Exception:
             pass
@@ -815,7 +815,7 @@ with sync_playwright() as p:
     # 6. Add two more turns AFTER regenerate.
     # ─────────────────────────────────────────────────────
     extra = ["Reply with: yes", "Reply with: no"]
-    for j, p_ in enumerate(extra, start = 1):
+    for j, p_ in enumerate(extra, start=1):
         step(f"extra turn {j}: {p_!r}")
         before_count = len(page.locator('[data-role="assistant"]').all())
         send_and_wait(p_, before_count + 1)
@@ -936,7 +936,7 @@ with sync_playwright() as p:
                         // close animation; treat that as already gone.
                         return m.getAttribute('data-state') === 'closed';
                     }""",
-                    timeout = 7_000,
+                    timeout=7_000,
                 )
             except Exception:
                 pass
@@ -947,7 +947,7 @@ with sync_playwright() as p:
             opened = False
             for attempt in range(2):
                 try:
-                    acct.click(force = True)
+                    acct.click(force=True)
                 except Exception as exc:
                     if attempt == 1:
                         soft_fail(
@@ -957,7 +957,7 @@ with sync_playwright() as p:
                 try:
                     page.wait_for_selector(
                         '[role="menu"][data-state="open"]',
-                        timeout = 5_000,
+                        timeout=5_000,
                     )
                     opened = True
                     break
@@ -969,7 +969,7 @@ with sync_playwright() as p:
                 break
             theme_item = page.get_by_role(
                 "menuitem",
-                name = re.compile(r"^(Light Mode|Dark Mode)$", re.I),
+                name=re.compile(r"^(Light Mode|Dark Mode)$", re.I),
             ).first
             if theme_item.count() == 0:
                 page.keyboard.press("Escape")
@@ -988,10 +988,10 @@ with sync_playwright() as p:
             for click_attempt in range(3):
                 try:
                     if click_attempt == 0:
-                        theme_item.click(force = True, timeout = 3_000)
+                        theme_item.click(force=True, timeout=3_000)
                     elif click_attempt == 1:
-                        theme_item.scroll_into_view_if_needed(timeout = 2_000)
-                        theme_item.click(force = True, timeout = 3_000)
+                        theme_item.scroll_into_view_if_needed(timeout=2_000)
+                        theme_item.click(force=True, timeout=3_000)
                     else:
                         theme_item.evaluate("el => el.click()")
                     click_err = None
@@ -1049,7 +1049,7 @@ with sync_playwright() as p:
     # ─────────────────────────────────────────────────────
     # 10. Sidebar nav: New Chat, Compare, Search, Recipes.
     # ─────────────────────────────────────────────────────
-    def click_nav(label, expected_url_pat = None):
+    def click_nav(label, expected_url_pat=None):
         # Resolve the sidebar nav button. The plain
         # get_by_role("button", name=...) lookup works on Linux
         # Chromium because the accessible-name algorithm there picks
@@ -1059,7 +1059,7 @@ with sync_playwright() as p:
         # progressively more permissive locators so the test stays
         # green on both platforms.
         candidates = [
-            page.get_by_role("button", name = re.compile(rf"^\s*{label}\s*$", re.I)).first,
+            page.get_by_role("button", name=re.compile(rf"^\s*{label}\s*$", re.I)).first,
             page.locator(f'button:has-text("{label}")').first,
             page.locator(f'a:has-text("{label}")').first,
             page.locator(f'[data-sidebar="menu-button"]:has-text("{label}")').first,
@@ -1078,7 +1078,7 @@ with sync_playwright() as p:
         # for a beat (we already neutralise startViewTransition via
         # add_init_script; this is belt-and-suspenders).
         try:
-            btn.click(force = True, timeout = 5_000)
+            btn.click(force=True, timeout=5_000)
         except Exception as exc:
             soft_fail(f"nav '{label}' click failed: {exc!r}")
             return False
@@ -1095,13 +1095,13 @@ with sync_playwright() as p:
     click_nav("New Chat", r"/chat")
     shoot("11-new-chat")
     # Compare moved into the composer + menu (Tools and attachments).
-    plus_btn = page.get_by_role("button", name = re.compile(r"Tools and attachments", re.I)).first
+    plus_btn = page.get_by_role("button", name=re.compile(r"Tools and attachments", re.I)).first
     if plus_btn.count() > 0:
-        plus_btn.click(force = True)
+        plus_btn.click(force=True)
         page.wait_for_timeout(400)
-        compare_item = page.get_by_role("menuitem", name = re.compile(r"Compare chat", re.I)).first
+        compare_item = page.get_by_role("menuitem", name=re.compile(r"Compare chat", re.I)).first
         if compare_item.count() > 0:
-            compare_item.click(force = True)
+            compare_item.click(force=True)
             page.wait_for_timeout(800)
             if not re.search(r"/chat\?", page.url):
                 soft_fail(f"'Compare chat' didn't open compare; current: {page.url}")
@@ -1111,7 +1111,7 @@ with sync_playwright() as p:
         soft_fail("composer + menu: plus button not found")
     shoot("12-compare")
     # Search opens a dialog (not a route change).
-    search_btn = page.get_by_role("button", name = re.compile(r"^search$", re.I)).first
+    search_btn = page.get_by_role("button", name=re.compile(r"^search$", re.I)).first
     if search_btn.count() > 0:
         search_btn.click()
         page.wait_for_timeout(500)
@@ -1122,7 +1122,7 @@ with sync_playwright() as p:
     shoot("14-recipes")
     # Back to chat for subsequent steps.
     page.goto(f"{BASE}/chat")
-    composer.wait_for(state = "visible", timeout = 60_000)
+    composer.wait_for(state="visible", timeout=60_000)
 
     # ─────────────────────────────────────────────────────
     # 11. API / Developer tab via account menu -> opens the
@@ -1134,7 +1134,7 @@ with sync_playwright() as p:
         step("Developer (API) tab via account menu")
         acct.click()
         page.wait_for_timeout(400)
-        dev = page.get_by_role("menuitem", name = re.compile(r"developer|api", re.I)).first
+        dev = page.get_by_role("menuitem", name=re.compile(r"developer|api", re.I)).first
         if dev.count() > 0:
             dev.click()
             page.wait_for_timeout(800)
@@ -1142,7 +1142,7 @@ with sync_playwright() as p:
             # Look for the create-key affordance.
             create_btn = page.get_by_role(
                 "button",
-                name = re.compile(r"create.*key|generate.*key|add.*key|new key", re.I),
+                name=re.compile(r"create.*key|generate.*key|add.*key|new key", re.I),
             ).first
             if create_btn.count() > 0:
                 info("OK 'create API key' affordance visible")
@@ -1186,7 +1186,7 @@ with sync_playwright() as p:
     # Back to chat.
     page.goto(f"{BASE}/chat")
     composer = page.locator('textarea[aria-label="Message input"]')
-    composer.wait_for(state = "visible", timeout = 60_000)
+    composer.wait_for(state="visible", timeout=60_000)
 
     # ─────────────────────────────────────────────────────
     # 11c. Recents: the chat sidebar lists previous threads. We
@@ -1217,7 +1217,7 @@ with sync_playwright() as p:
     deadline = time.monotonic() + 30
     clicked_recent = False
     try:
-        threads.first.wait_for(state = "visible", timeout = 5_000)
+        threads.first.wait_for(state="visible", timeout=5_000)
     except Exception as _wait_err:
         info(f"WARN no recent-thread testid surfaced within 5s: {_wait_err!s}")
     n_threads = threads.count()
@@ -1227,7 +1227,7 @@ with sync_playwright() as p:
         try:
             t = (threads.nth(i).text_content() or "").strip()
             threads.nth(i).scroll_into_view_if_needed()
-            threads.nth(i).click(timeout = 5_000)
+            threads.nth(i).click(timeout=5_000)
             page.wait_for_timeout(500)
             shoot("15d-recent-clicked")
             info(f"OK clicked recent entry: {t[:60]!r}")
@@ -1262,7 +1262,7 @@ with sync_playwright() as p:
     # Back to chat.
     page.goto(f"{BASE}/chat")
     composer = page.locator('textarea[aria-label="Message input"]')
-    composer.wait_for(state = "visible", timeout = 60_000)
+    composer.wait_for(state="visible", timeout=60_000)
 
     # ─────────────────────────────────────────────────────
     # 12. Image attachment UI (upload widget reachable). The
@@ -1286,7 +1286,7 @@ with sync_playwright() as p:
     # ─────────────────────────────────────────────────────
     step("reload + session survives")
     page.reload()
-    composer.wait_for(state = "visible", timeout = 60_000)
+    composer.wait_for(state="visible", timeout=60_000)
     if "/login" in page.url:
         fail(f"unexpected redirect to /login after reload: {page.url}")
     shoot("17-after-reload")
@@ -1297,7 +1297,7 @@ with sync_playwright() as p:
     health = evaluate_fetch(
         page,
         f"{BASE}/api/health",
-        timeout_ms = FETCH_TIMEOUT_MS,
+        timeout_ms=FETCH_TIMEOUT_MS,
     )
     if health.get("error"):
         fail(f"/api/health wedged: {health['error']!r}")
@@ -1340,9 +1340,9 @@ with sync_playwright() as p:
             "-d",
             json.dumps({"username": "unsloth", "password": NEW}),
         ],
-        capture_output = True,
-        text = True,
-        timeout = 15,
+        capture_output=True,
+        text=True,
+        timeout=15,
     )
     if login_proc.returncode != 0:
         fail(f"curl login failed: {login_proc.stderr!r}")
@@ -1366,9 +1366,9 @@ with sync_playwright() as p:
             "-d",
             json.dumps({"current_password": NEW, "new_password": NEW2}),
         ],
-        capture_output = True,
-        text = True,
-        timeout = 15,
+        capture_output=True,
+        text=True,
+        timeout=15,
     )
     if change_proc.returncode != 0:
         fail(
@@ -1390,8 +1390,8 @@ with sync_playwright() as p:
     refresh_after = evaluate_fetch(
         page,
         f"{BASE}/api/auth/refresh",
-        method = "POST",
-        timeout_ms = FETCH_TIMEOUT_MS,
+        method="POST",
+        timeout_ms=FETCH_TIMEOUT_MS,
     )
     if refresh_after.get("error"):
         fail(f"/api/auth/refresh wedged: {refresh_after['error']!r}")
@@ -1416,11 +1416,11 @@ with sync_playwright() as p:
     # was invalidated by the CLI rotation above).
     page.goto(f"{BASE}/login")
     pw_field = page.locator("#password")
-    pw_field.wait_for(state = "visible", timeout = 60_000)
+    pw_field.wait_for(state="visible", timeout=60_000)
     pw_field.fill(NEW2)
     page.locator('button[type="submit"]').click()
     composer = page.locator('textarea[aria-label="Message input"]')
-    composer.wait_for(state = "visible", timeout = 60_000)
+    composer.wait_for(state="visible", timeout=60_000)
     shoot("18-relogin-with-NEW2")
 
     acct_btn = page.locator('button[aria-label$=" account menu"]').first
@@ -1430,7 +1430,7 @@ with sync_playwright() as p:
     page.wait_for_timeout(400)
     shutdown_item = page.get_by_role(
         "menuitem",
-        name = re.compile(r"^\s*Shutdown\s*$", re.I),
+        name=re.compile(r"^\s*Shutdown\s*$", re.I),
     ).first
     if shutdown_item.count() == 0:
         fail("Shutdown menuitem not in account menu")
@@ -1438,9 +1438,9 @@ with sync_playwright() as p:
     shoot("19-shutdown-dialog")
     stop_btn = page.get_by_role(
         "button",
-        name = re.compile(r"^\s*Stop server\s*$", re.I),
+        name=re.compile(r"^\s*Stop server\s*$", re.I),
     ).first
-    stop_btn.wait_for(state = "visible", timeout = 5_000)
+    stop_btn.wait_for(state="visible", timeout=5_000)
     stop_btn.click()
 
     # Wait for the post-shutdown placeholder body. The component
@@ -1449,7 +1449,7 @@ with sync_playwright() as p:
     try:
         page.wait_for_function(
             """() => /Unsloth Studio has stopped/.test(document.body.innerText)""",
-            timeout = 15_000,
+            timeout=15_000,
         )
         shoot("20-shutdown-placeholder")
         info("OK 'Unsloth Studio has stopped' placeholder rendered")
@@ -1463,7 +1463,7 @@ with sync_playwright() as p:
     deadline = time.time() + 15
     while time.time() < deadline:
         try:
-            with socket.create_connection((host, port), timeout = 1):
+            with socket.create_connection((host, port), timeout=1):
                 pass
             time.sleep(0.5)
         except (ConnectionRefusedError, OSError):
@@ -1472,7 +1472,7 @@ with sync_playwright() as p:
     else:
         # Connection still works -> shutdown didn't take effect.
         try:
-            r = urllib.request.urlopen(f"{BASE}/api/health", timeout = 2)
+            r = urllib.request.urlopen(f"{BASE}/api/health", timeout=2)
             fail(f"server still up after Shutdown click; /api/health={r.status}")
         except urllib.error.URLError as exc:
             info(f"OK /api/health unreachable: {exc!r}")

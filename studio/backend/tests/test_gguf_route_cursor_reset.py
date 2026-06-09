@@ -58,7 +58,7 @@ def _make_backend(monkeypatch, streams: list[list[str]], payloads: list[dict]):
         _url,
         payload,
         _cancel_event,
-        headers = None,
+        headers=None,
     ):
         payloads.append(copy.deepcopy(payload))
         yield type("FakeResponse", (), {"status_code": 200, "chunks": streams.pop(0)})()
@@ -193,10 +193,10 @@ def test_final_answer_survives_preface_then_disabled_tool_noop(monkeypatch):
 
     events = list(
         backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "answer me"}],
-            tools = [_web_search_tool()],  # terminal intentionally absent
-            temperature = 0.0,
-            max_tool_iterations = 5,
+            messages=[{"role": "user", "content": "answer me"}],
+            tools=[_web_search_tool()],  # terminal intentionally absent
+            temperature=0.0,
+            max_tool_iterations=5,
         )
     )
 

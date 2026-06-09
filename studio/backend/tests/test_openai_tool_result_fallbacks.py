@@ -30,14 +30,14 @@ async def _collect(agen):
 
 def _mock_http_client(monkeypatch, handler):
     transport = httpx.MockTransport(handler)
-    monkeypatch.setattr(ep_mod, "_http_client", httpx.AsyncClient(transport = transport))
+    monkeypatch.setattr(ep_mod, "_http_client", httpx.AsyncClient(transport=transport))
 
 
 def _make_client(base_url: str = "https://api.openai.com/v1") -> ExternalProviderClient:
     return ExternalProviderClient(
-        provider_type = "openai",
-        base_url = base_url,
-        api_key = "sk-test",
+        provider_type="openai",
+        base_url=base_url,
+        api_key="sk-test",
     )
 
 
@@ -71,8 +71,8 @@ def _drive_stream(sse_events, enabled_tools, monkeypatch):
     def handler(request):
         return httpx.Response(
             200,
-            content = _openai_sse(sse_events),
-            headers = {"content-type": "text/event-stream"},
+            content=_openai_sse(sse_events),
+            headers={"content-type": "text/event-stream"},
         )
 
     _mock_http_client(monkeypatch, handler)
@@ -81,14 +81,14 @@ def _drive_stream(sse_events, enabled_tools, monkeypatch):
         client = _make_client()
         return await _collect(
             client._stream_openai_responses(
-                messages = [{"role": "user", "content": "x"}],
-                model = "gpt-5.5",
-                temperature = 0.7,
-                top_p = 0.95,
-                max_tokens = 4096,
-                enable_thinking = None,
-                reasoning_effort = None,
-                enabled_tools = enabled_tools,
+                messages=[{"role": "user", "content": "x"}],
+                model="gpt-5.5",
+                temperature=0.7,
+                top_p=0.95,
+                max_tokens=4096,
+                enable_thinking=None,
+                reasoning_effort=None,
+                enabled_tools=enabled_tools,
             )
         )
 

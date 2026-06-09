@@ -39,7 +39,7 @@ from utils.models.model_config import (
 # Helpers
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def _clear_vision_cache():
     """Ensure every test starts with a fresh cache."""
     _vision_detection_cache.clear()
@@ -53,21 +53,21 @@ def _clear_vision_cache():
 class TestVisionCacheHitMiss:
     """Verify the cache prevents redundant detection calls."""
 
-    @patch("utils.models.model_config._is_vision_model_uncached", return_value = True)
+    @patch("utils.models.model_config._is_vision_model_uncached", return_value=True)
     def test_second_call_uses_cache(self, mock_uncached):
         """Two calls for the same model invoke the uncached fn once."""
         assert is_vision_model("org/my-vlm") is True
         assert is_vision_model("org/my-vlm") is True
         mock_uncached.assert_called_once_with("org/my-vlm", None)
 
-    @patch("utils.models.model_config._is_vision_model_uncached", return_value = False)
+    @patch("utils.models.model_config._is_vision_model_uncached", return_value=False)
     def test_different_models_each_detected(self, mock_uncached):
         """Different model names should each trigger detection."""
         is_vision_model("model-a")
         is_vision_model("model-b")
         assert mock_uncached.call_count == 2
 
-    @patch("utils.models.model_config._is_vision_model_uncached", return_value = True)
+    @patch("utils.models.model_config._is_vision_model_uncached", return_value=True)
     def test_cache_returns_correct_value(self, mock_uncached):
         """The cached value must match what _is_vision_model_uncached returned."""
         first = is_vision_model("org/vlm")
@@ -79,7 +79,7 @@ class TestVisionCacheHitMiss:
 class TestVisionCacheStoresFalse:
     """Non-VLM results (False) must also be cached to avoid re-detection."""
 
-    @patch("utils.models.model_config._is_vision_model_uncached", return_value = False)
+    @patch("utils.models.model_config._is_vision_model_uncached", return_value=False)
     def test_false_result_cached(self, mock_uncached):
         assert is_vision_model("org/text-only") is False
         assert is_vision_model("org/text-only") is False
@@ -95,8 +95,8 @@ class TestVisionCacheSubprocessPath:
     The cache should spawn the subprocess at most once per model per
     process."""
 
-    @patch("utils.models.model_config._is_vision_model_subprocess", return_value = True)
-    @patch("utils.transformers_version.needs_transformers_5", return_value = True)
+    @patch("utils.models.model_config._is_vision_model_subprocess", return_value=True)
+    @patch("utils.transformers_version.needs_transformers_5", return_value=True)
     def test_subprocess_called_once_with_cache(self, mock_needs_t5, mock_subprocess):
         """Subprocess fires only on the first call; second is cached."""
         # First call: uncached → subprocess
@@ -107,9 +107,9 @@ class TestVisionCacheSubprocessPath:
         mock_subprocess.assert_called_once()
         assert _vision_detection_cache[("unsloth/Qwen3.5-2B", None)] is True
 
-    @patch("utils.models.model_config._raw_config_has_vision_config", return_value = True)
-    @patch("utils.models.model_config._is_vision_model_subprocess", return_value = None)
-    @patch("utils.transformers_version.needs_transformers_5", return_value = True)
+    @patch("utils.models.model_config._raw_config_has_vision_config", return_value=True)
+    @patch("utils.models.model_config._is_vision_model_subprocess", return_value=None)
+    @patch("utils.transformers_version.needs_transformers_5", return_value=True)
     def test_subprocess_none_falls_back_to_raw_vision_config(
         self, mock_needs_t5, mock_subprocess, mock_raw_config
     ):
@@ -117,7 +117,7 @@ class TestVisionCacheSubprocessPath:
         assert is_vision_model("unsloth/gemma-4-E4B-it") is True
 
         mock_subprocess.assert_called_once()
-        mock_raw_config.assert_called_once_with("unsloth/gemma-4-E4B-it", hf_token = None)
+        mock_raw_config.assert_called_once_with("unsloth/gemma-4-E4B-it", hf_token=None)
 
 
 # Exception handling — cache the False fallback
@@ -130,9 +130,9 @@ class TestVisionCacheOnException:
 
     @patch(
         "utils.models.model_config.load_model_config",
-        side_effect = ValueError("bad config"),
+        side_effect=ValueError("bad config"),
     )
-    @patch("utils.transformers_version.needs_transformers_5", return_value = False)
+    @patch("utils.transformers_version.needs_transformers_5", return_value=False)
     def test_permanent_exception_result_cached(self, mock_needs_t5, mock_load_config):
         """A permanent failure (ValueError / RepositoryNotFoundError /
         GatedRepoError / JSONDecodeError) is caught, returns False, and
@@ -145,9 +145,9 @@ class TestVisionCacheOnException:
 
     @patch(
         "utils.models.model_config.load_model_config",
-        side_effect = OSError("network down"),
+        side_effect=OSError("network down"),
     )
-    @patch("utils.transformers_version.needs_transformers_5", return_value = False)
+    @patch("utils.transformers_version.needs_transformers_5", return_value=False)
     def test_transient_exception_not_cached(self, mock_needs_t5, mock_load_config):
         """A transient failure (OSError, timeouts) returns None from
         _is_vision_model_uncached, surfaces as False, and is NOT cached
@@ -165,11 +165,11 @@ class TestVisionCacheDirectPath:
     """Models that do NOT need transformers 5.x detect via
     load_model_config directly. The cache must work the same way."""
 
-    @patch("utils.transformers_version.needs_transformers_5", return_value = False)
+    @patch("utils.transformers_version.needs_transformers_5", return_value=False)
     @patch("utils.models.model_config.load_model_config")
     def test_direct_vlm_detection_cached(self, mock_load_config, mock_needs_t5):
         """A standard VLM detected via architecture suffix should be cached."""
-        cfg = MagicMock(spec = [])  # strict: only explicitly set attrs exist
+        cfg = MagicMock(spec=[])  # strict: only explicitly set attrs exist
         cfg.model_type = "gemma3"
         cfg.architectures = ["Gemma3ForConditionalGeneration"]
         mock_load_config.return_value = cfg
@@ -179,11 +179,11 @@ class TestVisionCacheDirectPath:
         # load_model_config should only be called once
         mock_load_config.assert_called_once()
 
-    @patch("utils.transformers_version.needs_transformers_5", return_value = False)
+    @patch("utils.transformers_version.needs_transformers_5", return_value=False)
     @patch("utils.models.model_config.load_model_config")
     def test_direct_non_vlm_detection_cached(self, mock_load_config, mock_needs_t5):
         """A standard text model (no VLM indicators) should cache False."""
-        cfg = MagicMock(spec = [])  # spec=[] means no attributes at all
+        cfg = MagicMock(spec=[])  # spec=[] means no attributes at all
         cfg.model_type = "llama"
         cfg.architectures = ["LlamaForCausalLM"]
         mock_load_config.return_value = cfg
@@ -193,11 +193,11 @@ class TestVisionCacheDirectPath:
         assert is_vision_model("meta-llama/Llama-3-8B") is False
         mock_load_config.assert_called_once()
 
-    @patch("utils.transformers_version.needs_transformers_5", return_value = False)
+    @patch("utils.transformers_version.needs_transformers_5", return_value=False)
     @patch("utils.models.model_config.load_model_config")
     def test_vision_config_attr_detected_and_cached(self, mock_load_config, mock_needs_t5):
         """Models with vision_config (LLaVA, Qwen2-VL, etc.) should be cached as True."""
-        cfg = MagicMock(spec = [])  # strict: only explicitly set attrs exist
+        cfg = MagicMock(spec=[])  # strict: only explicitly set attrs exist
         cfg.model_type = "qwen2_vl"
         cfg.architectures = ["Qwen2VLForCausalLM"]  # Doesn't match VLM suffixes
         cfg.vision_config = {"hidden_size": 1024}
@@ -207,10 +207,10 @@ class TestVisionCacheDirectPath:
         assert is_vision_model("Qwen/Qwen2-VL-7B") is True
         mock_load_config.assert_called_once()
 
-    @patch("utils.transformers_version.needs_transformers_5", return_value = False)
+    @patch("utils.transformers_version.needs_transformers_5", return_value=False)
     @patch("utils.models.model_config.load_model_config")
     def test_gemma4_model_type_detected_and_cached(self, mock_load_config, mock_needs_t5):
-        cfg = MagicMock(spec = [])
+        cfg = MagicMock(spec=[])
         cfg.model_type = "gemma4"
         cfg.architectures = ["Gemma4ForConditionalGeneration"]
         mock_load_config.return_value = cfg
@@ -219,10 +219,10 @@ class TestVisionCacheDirectPath:
         assert is_vision_model("google/gemma-4-E4B-it") is True
         mock_load_config.assert_called_once()
 
-    @patch("utils.transformers_version.needs_transformers_5", return_value = False)
+    @patch("utils.transformers_version.needs_transformers_5", return_value=False)
     @patch("utils.models.model_config.load_model_config")
     def test_gemma4_audio_subconfig_not_detected_as_vision(self, mock_load_config, mock_needs_t5):
-        cfg = MagicMock(spec = [])
+        cfg = MagicMock(spec=[])
         cfg.model_type = "gemma4_audio"
         cfg.architectures = ["Gemma4AudioModel"]
         mock_load_config.return_value = cfg
@@ -231,10 +231,10 @@ class TestVisionCacheDirectPath:
         assert is_vision_model("local/gemma4-audio-encoder") is False
         mock_load_config.assert_called_once()
 
-    @patch("utils.transformers_version.needs_transformers_5", return_value = False)
+    @patch("utils.transformers_version.needs_transformers_5", return_value=False)
     @patch("utils.models.model_config.load_model_config")
     def test_gemma4_text_subconfig_not_detected_as_vision(self, mock_load_config, mock_needs_t5):
-        cfg = MagicMock(spec = [])
+        cfg = MagicMock(spec=[])
         cfg.model_type = "gemma4_text"
         cfg.architectures = ["Gemma4ForCausalLM"]
         mock_load_config.return_value = cfg
@@ -243,12 +243,12 @@ class TestVisionCacheDirectPath:
         assert is_vision_model("local/gemma-4-text") is False
         mock_load_config.assert_called_once()
 
-    @patch("utils.transformers_version.needs_transformers_5", return_value = False)
+    @patch("utils.transformers_version.needs_transformers_5", return_value=False)
     @patch("utils.models.model_config.load_model_config")
     def test_audio_model_excluded_and_cached(self, mock_load_config, mock_needs_t5):
         """Audio-only models (csm, whisper) with ForConditionalGeneration
         should be excluded from VLM detection and cached as False."""
-        cfg = MagicMock(spec = [])  # strict: only explicitly set attrs exist
+        cfg = MagicMock(spec=[])  # strict: only explicitly set attrs exist
         cfg.model_type = "whisper"
         cfg.architectures = ["WhisperForConditionalGeneration"]
         mock_load_config.return_value = cfg
@@ -265,20 +265,20 @@ class TestVisionCacheTokenHandling:
     """The cache is keyed on (model_name, hf_token). Different tokens
     for the same model trigger separate detections for gated models."""
 
-    @patch("utils.models.model_config._is_vision_model_uncached", return_value = True)
+    @patch("utils.models.model_config._is_vision_model_uncached", return_value=True)
     def test_different_tokens_trigger_new_detection(self, mock_uncached):
         """Different tokens trigger separate detections for gated models
         (e.g. unauthenticated probe → False, then authenticated
         re-check)."""
-        assert is_vision_model("gated/model", hf_token = "token-a") is True
-        assert is_vision_model("gated/model", hf_token = "token-b") is True
+        assert is_vision_model("gated/model", hf_token="token-a") is True
+        assert is_vision_model("gated/model", hf_token="token-b") is True
         assert mock_uncached.call_count == 2
 
-    @patch("utils.models.model_config._is_vision_model_uncached", return_value = True)
+    @patch("utils.models.model_config._is_vision_model_uncached", return_value=True)
     def test_same_token_uses_cache(self, mock_uncached):
         """Repeated calls with identical model + token should hit cache."""
-        assert is_vision_model("gated/model", hf_token = "token-a") is True
-        assert is_vision_model("gated/model", hf_token = "token-a") is True
+        assert is_vision_model("gated/model", hf_token="token-a") is True
+        assert is_vision_model("gated/model", hf_token="token-a") is True
         mock_uncached.assert_called_once()
 
 
@@ -371,17 +371,17 @@ class TestSubprocessScript:
         assert (
             inline_is_vlm(
                 _C(
-                    model_type = "gemma4",
-                    architectures = ["Gemma4ForConditionalGeneration"],
+                    model_type="gemma4",
+                    architectures=["Gemma4ForConditionalGeneration"],
                 )
             )
             is True
         )
         assert (
-            inline_is_vlm(_C(model_type = "gemma4_text", architectures = ["Gemma4ForCausalLM"]))
+            inline_is_vlm(_C(model_type="gemma4_text", architectures=["Gemma4ForCausalLM"]))
             is False
         )
-        assert inline_is_vlm(_C(model_type = "llama", architectures = ["LlamaForCausalLM"])) is False
+        assert inline_is_vlm(_C(model_type="llama", architectures=["LlamaForCausalLM"])) is False
 
 
 # ---------------------------------------------------------------------------
@@ -398,7 +398,7 @@ class TestVlmAudioExclusion:
         assert _AUDIO_ONLY_MODEL_TYPES == {"csm", "whisper"}
 
     def test_is_vlm_excludes_whisper(self):
-        cfg = MagicMock(spec = [])
+        cfg = MagicMock(spec=[])
         cfg.model_type = "whisper"
         cfg.architectures = ["WhisperForConditionalGeneration"]
         assert _is_vlm(cfg) is False
@@ -416,13 +416,13 @@ class TestVlmAudioExclusion:
     def test_inline_subprocess_helper_excludes_whisper(self):
         ns: dict = {}
         exec(_VISION_CHECK_INLINE_HELPERS, ns)
-        cfg = MagicMock(spec = [])
+        cfg = MagicMock(spec=[])
         cfg.model_type = "whisper"
         cfg.architectures = ["WhisperForConditionalGeneration"]
         assert ns["_is_vlm"](cfg) is False
 
-    @patch("utils.models.model_config._is_vision_model_subprocess", return_value = None)
-    @patch("utils.transformers_version.needs_transformers_5", return_value = True)
+    @patch("utils.models.model_config._is_vision_model_subprocess", return_value=None)
+    @patch("utils.transformers_version.needs_transformers_5", return_value=True)
     def test_t5_subprocess_none_falls_back_through_raw_for_whisper(
         self, mock_needs_t5, mock_subprocess, tmp_path
     ):

@@ -34,7 +34,7 @@ DISABLE_ENV_VAR = "UNSLOTH_DISABLE_UPDATE_CHECK"
 LOCAL_INSTALL_SOURCES = {"editable", "local_path", "vcs", "local_repo"}
 
 
-@dataclass(frozen = True)
+@dataclass(frozen=True)
 class LatestVersionResult:
     latest_version: str | None
     checked_at: str
@@ -100,10 +100,10 @@ def get_studio_install_source_status(current_version: str) -> dict[str, Any]:
         reason = "unknown_source"
 
     return _status_response(
-        current_version = current_version,
-        latest_version = None,
-        install_source = install_source,
-        reason = reason,
+        current_version=current_version,
+        latest_version=None,
+        install_source=install_source,
+        reason=reason,
     )
 
 
@@ -113,75 +113,75 @@ def get_studio_update_status(current_version: str) -> dict[str, Any]:
 
     if os.environ.get(DISABLE_ENV_VAR) == "1":
         return _status_response(
-            current_version = current_version,
-            latest_version = None,
-            install_source = install_source,
-            reason = "disabled",
+            current_version=current_version,
+            latest_version=None,
+            install_source=install_source,
+            reason="disabled",
         )
 
     if install_source in LOCAL_INSTALL_SOURCES:
         return _status_response(
-            current_version = current_version,
-            latest_version = None,
-            install_source = install_source,
-            reason = "local_source",
+            current_version=current_version,
+            latest_version=None,
+            install_source=install_source,
+            reason="local_source",
         )
 
     if install_source != "pypi":
         return _status_response(
-            current_version = current_version,
-            latest_version = None,
-            install_source = install_source,
-            reason = "unknown_source",
+            current_version=current_version,
+            latest_version=None,
+            install_source=install_source,
+            reason="unknown_source",
         )
 
     current = _parse_current_version(current_version)
     if current is None:
         return _status_response(
-            current_version = current_version,
-            latest_version = None,
-            install_source = install_source,
-            reason = "invalid_current_version" if current_version != "dev" else "dev_build",
+            current_version=current_version,
+            latest_version=None,
+            install_source=install_source,
+            reason="invalid_current_version" if current_version != "dev" else "dev_build",
         )
     latest_result = get_latest_pypi_version()
     if latest_result.latest_version is None:
         return _status_response(
-            current_version = current_version,
-            latest_version = None,
-            install_source = install_source,
-            reason = latest_result.reason or "offline",
-            error = latest_result.error,
-            checked_at = latest_result.checked_at,
+            current_version=current_version,
+            latest_version=None,
+            install_source=install_source,
+            reason=latest_result.reason or "offline",
+            error=latest_result.error,
+            checked_at=latest_result.checked_at,
         )
 
     try:
         latest = Version(latest_result.latest_version)
     except InvalidVersion:
         return _status_response(
-            current_version = current_version,
-            latest_version = latest_result.latest_version,
-            install_source = install_source,
-            reason = "invalid_latest_version",
-            error = "PyPI returned an invalid version.",
-            checked_at = latest_result.checked_at,
+            current_version=current_version,
+            latest_version=latest_result.latest_version,
+            install_source=install_source,
+            reason="invalid_latest_version",
+            error="PyPI returned an invalid version.",
+            checked_at=latest_result.checked_at,
         )
 
     if latest > current:
         return _status_response(
-            current_version = current_version,
-            latest_version = latest_result.latest_version,
-            install_source = install_source,
-            update_available = True,
-            can_show_web_notification = True,
-            checked_at = latest_result.checked_at,
+            current_version=current_version,
+            latest_version=latest_result.latest_version,
+            install_source=install_source,
+            update_available=True,
+            can_show_web_notification=True,
+            checked_at=latest_result.checked_at,
         )
 
     return _status_response(
-        current_version = current_version,
-        latest_version = latest_result.latest_version,
-        install_source = install_source,
-        reason = "current_not_older",
-        checked_at = latest_result.checked_at,
+        current_version=current_version,
+        latest_version=latest_result.latest_version,
+        install_source=install_source,
+        reason="current_not_older",
+        checked_at=latest_result.checked_at,
     )
 
 
@@ -197,23 +197,23 @@ def get_latest_pypi_version() -> LatestVersionResult:
             if not _latest_version_fetching:
                 _latest_version_fetching = True
                 break
-            _cache_condition.wait(timeout = PYPI_TIMEOUT_SECONDS + 1)
+            _cache_condition.wait(timeout=PYPI_TIMEOUT_SECONDS + 1)
 
     try:
         result = _fetch_latest_pypi_version()
     except Exception:
         result = LatestVersionResult(
-            latest_version = None,
-            checked_at = _utc_now_iso(),
-            reason = "offline",
-            error = "Could not check PyPI update metadata.",
+            latest_version=None,
+            checked_at=_utc_now_iso(),
+            reason="offline",
+            error="Could not check PyPI update metadata.",
         )
 
     ttl = PYPI_SUCCESS_TTL_SECONDS if result.latest_version else PYPI_FAILURE_TTL_SECONDS
     with _cache_condition:
         _latest_version_cache = _LatestVersionCacheEntry(
-            result = result,
-            expires_at = time.monotonic() + ttl,
+            result=result,
+            expires_at=time.monotonic() + ttl,
         )
         _latest_version_fetching = False
         _cache_condition.notify_all()
@@ -224,45 +224,45 @@ def _fetch_latest_pypi_version() -> LatestVersionResult:
     checked_at = _utc_now_iso()
     request = urllib.request.Request(
         PYPI_JSON_URL,
-        headers = {"User-Agent": "unsloth-studio-update-check"},
+        headers={"User-Agent": "unsloth-studio-update-check"},
     )
 
     try:
-        with urllib.request.urlopen(request, timeout = PYPI_TIMEOUT_SECONDS) as response:
+        with urllib.request.urlopen(request, timeout=PYPI_TIMEOUT_SECONDS) as response:
             body = response.read(PYPI_RESPONSE_MAX_BYTES + 1)
         if len(body) > PYPI_RESPONSE_MAX_BYTES:
             return LatestVersionResult(
-                latest_version = None,
-                checked_at = checked_at,
-                reason = "malformed_response",
-                error = "PyPI returned oversized update metadata.",
+                latest_version=None,
+                checked_at=checked_at,
+                reason="malformed_response",
+                error="PyPI returned oversized update metadata.",
             )
         payload = json.loads(body.decode("utf-8"))
     except json.JSONDecodeError:
         return LatestVersionResult(
-            latest_version = None,
-            checked_at = checked_at,
-            reason = "malformed_response",
-            error = "PyPI returned malformed update metadata.",
+            latest_version=None,
+            checked_at=checked_at,
+            reason="malformed_response",
+            error="PyPI returned malformed update metadata.",
         )
     except OSError:
         return LatestVersionResult(
-            latest_version = None,
-            checked_at = checked_at,
-            reason = "offline",
-            error = "Could not reach PyPI for update metadata.",
+            latest_version=None,
+            checked_at=checked_at,
+            reason="offline",
+            error="Could not reach PyPI for update metadata.",
         )
 
     latest = payload.get("info", {}).get("version") if isinstance(payload, dict) else None
     if not isinstance(latest, str) or not latest.strip():
         return LatestVersionResult(
-            latest_version = None,
-            checked_at = checked_at,
-            reason = "malformed_response",
-            error = "PyPI update metadata did not include a version.",
+            latest_version=None,
+            checked_at=checked_at,
+            reason="malformed_response",
+            error="PyPI update metadata did not include a version.",
         )
 
-    return LatestVersionResult(latest_version = latest.strip(), checked_at = checked_at)
+    return LatestVersionResult(latest_version=latest.strip(), checked_at=checked_at)
 
 
 def _status_response(
@@ -355,4 +355,4 @@ def _parse_current_version(current_version: str) -> Version | None:
 
 
 def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).replace(microsecond = 0).isoformat().replace("+00:00", "Z")
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")

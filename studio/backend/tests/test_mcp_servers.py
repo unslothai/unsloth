@@ -18,12 +18,12 @@ def _reset_db(tmp_path, monkeypatch):
 def test_create_and_get_server(tmp_path, monkeypatch):
     _reset_db(tmp_path, monkeypatch)
     mcp_servers_db.create_server(
-        id = "srv1",
-        display_name = "GitHub",
-        url = "https://example.com/mcp",
-        headers_json = '{"Authorization": "Bearer x"}',
-        is_enabled = True,
-        use_oauth = False,
+        id="srv1",
+        display_name="GitHub",
+        url="https://example.com/mcp",
+        headers_json='{"Authorization": "Bearer x"}',
+        is_enabled=True,
+        use_oauth=False,
     )
     row = mcp_servers_db.get_server("srv1")
     assert row["id"] == "srv1"
@@ -36,15 +36,15 @@ def test_create_and_get_server(tmp_path, monkeypatch):
 
 def test_list_servers_ordered_by_created_at(tmp_path, monkeypatch):
     _reset_db(tmp_path, monkeypatch)
-    mcp_servers_db.create_server(id = "a", display_name = "A", url = "https://a/m")
-    mcp_servers_db.create_server(id = "b", display_name = "B", url = "https://b/m")
+    mcp_servers_db.create_server(id="a", display_name="A", url="https://a/m")
+    mcp_servers_db.create_server(id="b", display_name="B", url="https://b/m")
     rows = mcp_servers_db.list_servers()
     assert [r["id"] for r in rows] == ["a", "b"]
 
 
 def test_update_server_coerces_bools(tmp_path, monkeypatch):
     _reset_db(tmp_path, monkeypatch)
-    mcp_servers_db.create_server(id = "srv1", display_name = "A", url = "https://a/m")
+    mcp_servers_db.create_server(id="srv1", display_name="A", url="https://a/m")
     assert mcp_servers_db.update_server("srv1", {"is_enabled": False, "use_oauth": True})
     row = mcp_servers_db.get_server("srv1")
     assert row["is_enabled"] == 0
@@ -53,13 +53,13 @@ def test_update_server_coerces_bools(tmp_path, monkeypatch):
 
 def test_update_server_empty_changes_returns_false(tmp_path, monkeypatch):
     _reset_db(tmp_path, monkeypatch)
-    mcp_servers_db.create_server(id = "srv1", display_name = "A", url = "https://a/m")
+    mcp_servers_db.create_server(id="srv1", display_name="A", url="https://a/m")
     assert mcp_servers_db.update_server("srv1", {}) is False
 
 
 def test_delete_server_roundtrip(tmp_path, monkeypatch):
     _reset_db(tmp_path, monkeypatch)
-    mcp_servers_db.create_server(id = "srv1", display_name = "A", url = "https://a/m")
+    mcp_servers_db.create_server(id="srv1", display_name="A", url="https://a/m")
     assert mcp_servers_db.delete_server("srv1") is True
     assert mcp_servers_db.delete_server("srv1") is False
     assert mcp_servers_db.get_server("srv1") is None
@@ -79,6 +79,7 @@ def test_validate_url_accepts_http_and_https():
 @pytest.mark.parametrize("bad", ["", "   ", "ftp://x", "http://", "noscheme.com"])
 def test_validate_url_rejects_bad(bad):
     from routes.mcp_servers import _validate_url
+
     with pytest.raises(HTTPException) as exc:
         _validate_url(bad)
     assert exc.value.status_code == 400
@@ -99,12 +100,12 @@ def test_changes_from_payload_tristate_headers():
     from models.mcp_servers import McpServerUpdate
 
     # omitted → key absent
-    assert "headers_json" not in _changes_from_payload(McpServerUpdate(display_name = "x"))
+    assert "headers_json" not in _changes_from_payload(McpServerUpdate(display_name="x"))
     # null → stored as None (clear all headers)
-    assert _changes_from_payload(McpServerUpdate(headers = None))["headers_json"] is None
+    assert _changes_from_payload(McpServerUpdate(headers=None))["headers_json"] is None
     # dict → serialised JSON
     assert (
-        _changes_from_payload(McpServerUpdate(headers = {"a": "1"}))["headers_json"] == '{"a": "1"}'
+        _changes_from_payload(McpServerUpdate(headers={"a": "1"}))["headers_json"] == '{"a": "1"}'
     )
 
 
@@ -127,6 +128,7 @@ def test_mcp_specs_skip_oversized_names():
 
 def test_execute_tool_malformed_mcp_name():
     from core.inference.tools import execute_tool
+
     out = execute_tool("mcp__no_double_underscore", {})
     assert out.startswith("Error: malformed MCP tool name")
 
@@ -134,16 +136,17 @@ def test_execute_tool_malformed_mcp_name():
 def test_execute_tool_unknown_server(tmp_path, monkeypatch):
     _reset_db(tmp_path, monkeypatch)
     from core.inference.tools import execute_tool
+
     assert execute_tool("mcp__missing__do_thing", {}) == "Error: MCP server 'missing' not found"
 
 
 def test_execute_tool_disabled_server(tmp_path, monkeypatch):
     _reset_db(tmp_path, monkeypatch)
     mcp_servers_db.create_server(
-        id = "srv1",
-        display_name = "A",
-        url = "https://a/m",
-        is_enabled = False,
+        id="srv1",
+        display_name="A",
+        url="https://a/m",
+        is_enabled=False,
     )
     from core.inference.tools import execute_tool
 
@@ -200,6 +203,7 @@ def test_call_tool_sync_respects_pre_set_cancel_event(monkeypatch):
 
         async def call_tool(self, name, args):
             import asyncio as _asyncio
+
             await _asyncio.sleep(30)  # never finishes during the test
 
     monkeypatch.setattr(mcp_client, "_client", lambda *a, **kw: _StubClient())
@@ -207,12 +211,12 @@ def test_call_tool_sync_respects_pre_set_cancel_event(monkeypatch):
     cancel = threading.Event()
     cancel.set()
     out = mcp_client.call_tool_sync(
-        url = "https://example/mcp",
-        headers = None,
-        name = "slow",
-        args = {},
-        timeout = 30.0,
-        cancel_event = cancel,
+        url="https://example/mcp",
+        headers=None,
+        name="slow",
+        args={},
+        timeout=30.0,
+        cancel_event=cancel,
     )
     assert "cancelled" in out.lower()
 
@@ -239,11 +243,11 @@ def test_delete_server_calls_oauth_cleanup_when_oauth_was_on(tmp_path, monkeypat
 
     monkeypatch.setattr(mcp_client, "_oauth_token_store", None)
     mcp_servers_db.create_server(
-        id = "oauth1",
-        display_name = "GH",
-        url = "https://gh-mcp.example/mcp",
-        is_enabled = True,
-        use_oauth = True,
+        id="oauth1",
+        display_name="GH",
+        url="https://gh-mcp.example/mcp",
+        is_enabled=True,
+        use_oauth=True,
     )
 
     calls: list[str] = []
@@ -256,7 +260,7 @@ def test_delete_server_calls_oauth_cleanup_when_oauth_was_on(tmp_path, monkeypat
     import routes.mcp_servers as routes_mcp
 
     monkeypatch.setattr(routes_mcp, "clear_oauth_tokens_async", fake_clear)
-    asyncio.run(routes_mcp.delete_mcp_server("oauth1", current_subject = "u"))
+    asyncio.run(routes_mcp.delete_mcp_server("oauth1", current_subject="u"))
     assert calls == ["https://gh-mcp.example/mcp"]
     assert mcp_servers_db.get_server("oauth1") is None
 
@@ -271,11 +275,11 @@ def test_delete_server_skips_oauth_cleanup_when_oauth_off(tmp_path, monkeypatch)
 
     monkeypatch.setattr(mcp_client, "_oauth_token_store", None)
     mcp_servers_db.create_server(
-        id = "noauth",
-        display_name = "Plain",
-        url = "https://plain/mcp",
-        is_enabled = True,
-        use_oauth = False,
+        id="noauth",
+        display_name="Plain",
+        url="https://plain/mcp",
+        is_enabled=True,
+        use_oauth=False,
     )
     calls: list[str] = []
 
@@ -283,7 +287,7 @@ def test_delete_server_skips_oauth_cleanup_when_oauth_off(tmp_path, monkeypatch)
         calls.append(url)
 
     monkeypatch.setattr(routes_mcp, "clear_oauth_tokens_async", fake_clear)
-    asyncio.run(routes_mcp.delete_mcp_server("noauth", current_subject = "u"))
+    asyncio.run(routes_mcp.delete_mcp_server("noauth", current_subject="u"))
     assert calls == []
 
 
@@ -299,11 +303,11 @@ def test_update_server_clears_oauth_on_url_change(tmp_path, monkeypatch):
 
     monkeypatch.setattr(mcp_client, "_oauth_token_store", None)
     mcp_servers_db.create_server(
-        id = "s1",
-        display_name = "A",
-        url = "https://old/mcp",
-        is_enabled = True,
-        use_oauth = True,
+        id="s1",
+        display_name="A",
+        url="https://old/mcp",
+        is_enabled=True,
+        use_oauth=True,
     )
     calls: list[str] = []
 
@@ -314,8 +318,8 @@ def test_update_server_clears_oauth_on_url_change(tmp_path, monkeypatch):
     asyncio.run(
         routes_mcp.update_mcp_server(
             "s1",
-            McpServerUpdate(url = "https://new/mcp"),
-            current_subject = "u",
+            McpServerUpdate(url="https://new/mcp"),
+            current_subject="u",
         )
     )
     assert calls == ["https://old/mcp"]
@@ -334,11 +338,11 @@ def test_update_server_clears_oauth_when_oauth_disabled(tmp_path, monkeypatch):
 
     monkeypatch.setattr(mcp_client, "_oauth_token_store", None)
     mcp_servers_db.create_server(
-        id = "s1",
-        display_name = "A",
-        url = "https://u/mcp",
-        is_enabled = True,
-        use_oauth = True,
+        id="s1",
+        display_name="A",
+        url="https://u/mcp",
+        is_enabled=True,
+        use_oauth=True,
     )
     calls: list[str] = []
 
@@ -349,8 +353,8 @@ def test_update_server_clears_oauth_when_oauth_disabled(tmp_path, monkeypatch):
     asyncio.run(
         routes_mcp.update_mcp_server(
             "s1",
-            McpServerUpdate(use_oauth = False),
-            current_subject = "u",
+            McpServerUpdate(use_oauth=False),
+            current_subject="u",
         )
     )
     assert calls == ["https://u/mcp"]
@@ -362,7 +366,7 @@ def test_changes_from_payload_rejects_null_is_enabled():
     from models.mcp_servers import McpServerUpdate
 
     with pytest.raises(HTTPException) as exc:
-        _changes_from_payload(McpServerUpdate(is_enabled = None))
+        _changes_from_payload(McpServerUpdate(is_enabled=None))
     assert exc.value.status_code == 400
 
 
@@ -372,7 +376,7 @@ def test_changes_from_payload_rejects_null_use_oauth():
     from models.mcp_servers import McpServerUpdate
 
     with pytest.raises(HTTPException) as exc:
-        _changes_from_payload(McpServerUpdate(use_oauth = None))
+        _changes_from_payload(McpServerUpdate(use_oauth=None))
     assert exc.value.status_code == 400
 
 
@@ -388,8 +392,8 @@ def test_test_endpoint_surfaces_url_validation_as_400(tmp_path, monkeypatch):
     with pytest.raises(HTTPException) as exc:
         asyncio.run(
             test_mcp_server(
-                McpServerTestRequest(url = "ftp://nope"),
-                current_subject = "u",
+                McpServerTestRequest(url="ftp://nope"),
+                current_subject="u",
             )
         )
     assert exc.value.status_code == 400
@@ -490,12 +494,12 @@ def test_call_tool_sync_short_circuits_on_pre_set_cancel(monkeypatch):
     ev = threading.Event()
     ev.set()
     out = mcp_client.call_tool_sync(
-        url = "https://example/mcp",
-        headers = None,
-        name = "x",
-        args = {},
-        timeout = 5.0,
-        cancel_event = ev,
+        url="https://example/mcp",
+        headers=None,
+        name="x",
+        args={},
+        timeout=5.0,
+        cancel_event=ev,
     )
     assert "cancelled" in out.lower()
     # The client must NOT have been opened.
@@ -588,12 +592,12 @@ def test_safetensors_agentic_empty_allowlist_still_means_allow_all():
 
     list(
         run_safetensors_tool_loop(
-            single_turn = fake_single_turn,
-            messages = [{"role": "user", "content": "x"}],
-            tools = [],
-            execute_tool = fake_execute,
-            cancel_event = threading.Event(),
-            max_tool_iterations = 1,
+            single_turn=fake_single_turn,
+            messages=[{"role": "user", "content": "x"}],
+            tools=[],
+            execute_tool=fake_execute,
+            cancel_event=threading.Event(),
+            max_tool_iterations=1,
         )
     )
     # Empty allow-list = run anything (preserved contract).

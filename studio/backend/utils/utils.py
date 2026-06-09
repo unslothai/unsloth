@@ -54,7 +54,7 @@ def log_and_http_error(
     public_message: str,
     *,
     event: str = "request_failed",
-    log = None,
+    log=None,
 ):
     """Log ``error`` in full server-side and return an ``HTTPException`` whose
     ``detail`` is only ``public_message`` -- never the raw exception text.
@@ -64,8 +64,8 @@ def log_and_http_error(
     from fastapi import HTTPException
 
     # exc_info=error works for both structlog and stdlib loggers.
-    (log or logger).error(f"{event}: {error}", exc_info = error)
-    return HTTPException(status_code = status_code, detail = public_message)
+    (log or logger).error(f"{event}: {error}", exc_info=error)
+    return HTTPException(status_code=status_code, detail=public_message)
 
 
 @contextmanager
@@ -97,7 +97,7 @@ def without_hf_auth():
 
     for token_loc in token_locations:
         if token_loc.exists():
-            temp = tempfile.NamedTemporaryFile(delete = False)
+            temp = tempfile.NamedTemporaryFile(delete=False)
             temp.close()
             shutil.move(str(token_loc), temp.name)
             token_files.append((token_loc, temp.name))
@@ -108,7 +108,7 @@ def without_hf_auth():
         # Restore tokens
         for original, temp in token_files:
             try:
-                original.parent.mkdir(parents = True, exist_ok = True)
+                original.parent.mkdir(parents=True, exist_ok=True)
                 shutil.move(temp, str(original))
             except Exception as e:
                 logger.error(f"Failed to restore token {original}: {e}")
