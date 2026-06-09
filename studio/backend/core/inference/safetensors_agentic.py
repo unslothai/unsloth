@@ -395,12 +395,8 @@ def run_safetensors_tool_loop(
             )
 
             tc_key = tool_name + str(arguments)
-            is_disabled = (
-                bool(allowed_tool_names) and tool_name not in allowed_tool_names
-            )
-            already_ran_ok = any(
-                k == tc_key and not err for k, err in tool_call_history
-            )
+            is_disabled = bool(allowed_tool_names) and tool_name not in allowed_tool_names
+            already_ran_ok = any(k == tc_key and not err for k, err in tool_call_history)
             repeat_render_html = tool_name == "render_html" and render_html_succeeded
             # Only gate calls that would actually run: a disabled, duplicate,
             # or repeat render_html call is short-circuited below and never
@@ -415,9 +411,7 @@ def run_safetensors_tool_loop(
                 and not repeat_render_html
             )
             approval_id = new_approval_id() if needs_confirm else ""
-            decision_slot = (
-                begin_tool_decision(session_id, approval_id) if needs_confirm else None
-            )
+            decision_slot = begin_tool_decision(session_id, approval_id) if needs_confirm else None
 
             if not repeat_render_html:
                 yield {"type": "status", "text": _status_for_tool(tool_name, arguments)}
@@ -444,9 +438,7 @@ def run_safetensors_tool_loop(
             else:
                 denied = (
                     decision_slot is not None
-                    and wait_tool_decision(
-                        decision_slot, approval_id, cancel_event = cancel_event
-                    )
+                    and wait_tool_decision(decision_slot, approval_id, cancel_event = cancel_event)
                     == "deny"
                 )
                 if denied:
@@ -473,9 +465,7 @@ def run_safetensors_tool_loop(
                     "result": result,
                 }
 
-            is_error = isinstance(result, str) and result.lstrip().startswith(
-                TOOL_ERROR_PREFIXES
-            )
+            is_error = isinstance(result, str) and result.lstrip().startswith(TOOL_ERROR_PREFIXES)
             # A user-denied call never executed, so it must not count toward
             # duplicate detection (otherwise re-issuing and approving the same
             # call would be wrongly rejected as a duplicate) nor mark

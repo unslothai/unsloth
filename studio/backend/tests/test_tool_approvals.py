@@ -40,7 +40,13 @@ def _clear_pending():
 class _Waiter:
     """Run ``request_tool_decision`` in a thread and capture its result."""
 
-    def __init__(self, session_id, approval_id, cancel_event = None, timeout = None):
+    def __init__(
+        self,
+        session_id,
+        approval_id,
+        cancel_event = None,
+        timeout = None,
+    ):
         self.session_id = session_id
         self.approval_id = approval_id
         self.cancel_event = cancel_event
@@ -70,7 +76,11 @@ def _has_pending(approval_id) -> bool:
         return approval_id in tool_approvals._pending
 
 
-def _wait_until(pred, timeout = 2.0, interval = 0.005) -> bool:
+def _wait_until(
+    pred,
+    timeout = 2.0,
+    interval = 0.005,
+) -> bool:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if pred():
@@ -207,9 +217,7 @@ def test_concurrent_distinct_calls_route_their_own_decisions():
     for i in range(n):
         aid = new_approval_id()
         waiters[aid] = _Waiter(f"s{i}", aid).start()
-    expected = {
-        aid: ("allow" if i % 2 == 0 else "deny") for i, aid in enumerate(waiters)
-    }
+    expected = {aid: ("allow" if i % 2 == 0 else "deny") for i, aid in enumerate(waiters)}
     for aid, decision in expected.items():
         assert resolve_tool_decision(aid, decision) is True
     for aid, w in waiters.items():

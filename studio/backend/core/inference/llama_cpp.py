@@ -5113,9 +5113,7 @@ class LlamaCppBackend:
                     )
                     _approval_id = new_approval_id() if _needs_confirm else ""
                     _decision_slot = (
-                        begin_tool_decision(session_id, _approval_id)
-                        if _needs_confirm
-                        else None
+                        begin_tool_decision(session_id, _approval_id) if _needs_confirm else None
                     )
 
                     if not _repeat_render_html:

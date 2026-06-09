@@ -1374,8 +1374,7 @@ async def cancel_inference(request: Request, current_subject: str = Depends(get_
 
 @studio_router.post("/tool-confirm")
 async def confirm_tool_call(
-    body: ToolConfirmRequest,
-    current_subject: str = Depends(get_current_subject),
+    body: ToolConfirmRequest, current_subject: str = Depends(get_current_subject)
 ):
     """Allow or deny a tool call awaiting user confirmation.
 
@@ -1386,9 +1385,7 @@ async def confirm_tool_call(
     """
     from state.tool_approvals import resolve_tool_decision
 
-    resolved = resolve_tool_decision(
-        body.approval_id, body.decision, session_id = body.session_id
-    )
+    resolved = resolve_tool_decision(body.approval_id, body.decision, session_id = body.session_id)
     return {"resolved": resolved}
 
 
