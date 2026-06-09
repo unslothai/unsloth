@@ -36,15 +36,23 @@ async def create_speech(
     Mirrors the OpenAI POST /v1/audio/speech interface; `voice` is accepted
     but ignored until per-voice routing is implemented.
     """
-    from routes.inference import get_llama_cpp_backend
+    from routes.inference import get_llama_cpp_backend, get_voice_llama_backend
     from core.inference import get_inference_backend
 
     text = payload.input.strip()
     if not text:
         raise HTTPException(status_code=400, detail="input must not be empty.")
 
+    # Priority: voice slot → main llama slot → transformers backend
+    voice_backend = get_voice_llama_backend()
     llama_backend = get_llama_cpp_backend()
-    if llama_backend.is_loaded and getattr(llama_backend, "_is_audio", False):
+
+    if voice_backend.is_loaded and getattr(voice_backend, "_is_audio", False):
+        gen = lambda: voice_backend.generate_audio_response(
+            text=text,
+            audio_type=voice_backend._audio_type,
+        )
+    elif llama_backend.is_loaded and getattr(llama_backend, "_is_audio", False):
         gen = lambda: llama_backend.generate_audio_response(
             text=text,
             audio_type=llama_backend._audio_type,

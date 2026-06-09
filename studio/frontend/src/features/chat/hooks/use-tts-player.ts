@@ -9,10 +9,12 @@ export const TTS_AUDIO_TYPES = new Set(["snac", "csm", "bicodec", "dac"]);
 export function useTtsPlayer(
   audioType: string | null | undefined,
   onPlaybackEnd?: () => void,
+  voiceSlotLoaded = false,
 ): {
   isSpeaking: boolean;
   speak(text: string): void;
   stop(): void;
+  primeAudio(): void;
 } {
   const [isSpeaking, setIsSpeaking] = useState(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -21,7 +23,18 @@ export function useTtsPlayer(
   const onPlaybackEndRef = useRef(onPlaybackEnd);
   onPlaybackEndRef.current = onPlaybackEnd;
 
-  const isTtsModel = TTS_AUDIO_TYPES.has(audioType ?? "");
+  const isTtsModel = TTS_AUDIO_TYPES.has(audioType ?? "") || voiceSlotLoaded;
+
+  // Unlock Safari's audio autoplay policy by calling play()+pause() during
+  // a synchronous user gesture. The element is reused for all subsequent plays
+  // so the unlock survives async fetch callbacks.
+  const primeAudio = useCallback(() => {
+    if (typeof window === "undefined") return;
+    if (!audioRef.current) {
+      audioRef.current = new Audio();
+    }
+    audioRef.current.play().then(() => audioRef.current?.pause()).catch(() => {});
+  }, []);
 
   const revokeUrl = useCallback(() => {
     if (objectUrlRef.current) {
@@ -36,7 +49,7 @@ export function useTtsPlayer(
       audio.onended = null;
       audio.onerror = null;
       audio.pause();
-      audioRef.current = null;
+      audio.src = "";  // release current source but keep element alive for reuse
     }
     revokeUrl();
   }, [revokeUrl]);
@@ -71,19 +84,19 @@ export function useTtsPlayer(
           const blob = await response.blob();
           const url = URL.createObjectURL(blob);
           objectUrlRef.current = url;
-          const audio = new Audio(url);
+          const audio = audioRef.current ?? new Audio();
           audioRef.current = audio;
           const cleanup = () => {
             if (objectUrlRef.current === url) {
               URL.revokeObjectURL(url);
               objectUrlRef.current = null;
             }
-            if (audioRef.current === audio) audioRef.current = null;
             setIsSpeaking(false);
             onPlaybackEndRef.current?.();
           };
           audio.onended = cleanup;
           audio.onerror = cleanup;
+          audio.src = url;
           audio.play();
         } catch {
           setIsSpeaking(false);
@@ -120,5 +133,5 @@ export function useTtsPlayer(
     };
   }, [stopTts, stopSynth]);
 
-  return { isSpeaking, speak, stop };
+  return { isSpeaking, speak, stop, primeAudio };
 }

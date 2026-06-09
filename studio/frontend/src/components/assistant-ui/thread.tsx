@@ -1137,28 +1137,24 @@ const ImagesToggle: FC = () => {
   );
 };
 
-// Module-level flag: survives the ThreadWelcome → ThreadComposerDock remount
-// (and the GeneratedImageOverlayProvider key-change remount) that occur when
-// the first message is sent. Without this, VoiceToggle instance #2 would
-// always start with voiceModeEnabled = false, silencing the first response.
-let _voiceModeActive = false;
+// Module-level value: survives the ThreadWelcome → ThreadComposerDock remount
+// that occurs when the first message is sent.
+let _voiceMode: "off" | "configuring" | "active" = "off";
 
 const VoiceToggle: FC = () => {
   const aui = useAui();
-  const [voiceModeEnabled, setVoiceModeEnabled] = useState(_voiceModeActive);
+  const [voiceMode, setVoiceModeState] = useState(_voiceMode);
   const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const prevRunningRef = useRef(false);
-  // voiceModeRef is only written in toggle — never in the render body —
-  // to prevent intermediate re-renders from resetting it before React commits
-  // the new voiceModeEnabled state.
-  const voiceModeRef = useRef(_voiceModeActive);
+  // voiceModeRef is only written in toggle/activate — never in the render body.
+  const voiceModeRef = useRef(_voiceMode);
   const isSpeakingRef = useRef(false);
   const auiRef = useRef(aui);
   auiRef.current = aui;
 
+  const voiceModeEnabled = voiceMode !== "off";
+
   const isThreadRunning = useAuiState(({ thread }) => thread.isRunning);
-  // dictation?.status.type and transcript come from assistant-ui's built-in
-  // DictationAdapter — the same one the existing Dictate button drives.
   const dictationStatusType = useAuiState(
     ({ composer }) => composer.dictation?.status.type,
   );
@@ -1172,12 +1168,13 @@ const VoiceToggle: FC = () => {
     const m = s.models.find((m) => m.id === s.params.checkpoint);
     return m?.audioType ?? null;
   });
+  const selectedVoiceModelId = useChatRuntimeStore((s) => s.selectedVoiceModelId);
   const isTtsModelLoaded = TTS_AUDIO_TYPES.has(activeAudioType ?? "");
+  const voiceSlotLoaded = voiceMode === "active" && selectedVoiceModelId !== null;
 
   // Called after speaking ends (or immediately if there's nothing to speak).
-  // Stable ref-based callback so useTtsPlayer captures it once.
   const resumeListen = useCallback(() => {
-    if (voiceModeRef.current) {
+    if (voiceModeRef.current === "active") {
       console.log("[VoiceToggle] resuming dictation after response");
       document
         .querySelector<HTMLButtonElement>('button[aria-label="Dictate"]')
@@ -1185,32 +1182,48 @@ const VoiceToggle: FC = () => {
     }
   }, []);
 
-  const { isSpeaking, speak, stop } = useTtsPlayer(activeAudioType, resumeListen);
+  const { isSpeaking, speak, stop, primeAudio } = useTtsPlayer(activeAudioType, resumeListen, voiceSlotLoaded);
   isSpeakingRef.current = isSpeaking;
-  // Keep a ref so the run-lifecycle effect always calls the latest speak
-  // without adding it to the dependency array (avoids re-running on TTS
-  // model switches mid-conversation).
   const speakRef = useRef(speak);
   speakRef.current = speak;
 
-  // On remount: if voice mode was active when this instance mounted and the
-  // model is already idle, open the mic immediately. The common path
-  // (model still running at remount time) is handled by the run-lifecycle
-  // effect below — this only fires for the rare race where the model
-  // finishes before the new instance's effects run.
+  // Helper: transition to "active" and start the mic.
+  const activateLoop = useCallback(() => {
+    _voiceMode = "active";
+    voiceModeRef.current = "active";
+    setVoiceModeState("active");
+    if (!auiRef.current.thread().getState().isRunning && !isSpeakingRef.current) {
+      document
+        .querySelector<HTMLButtonElement>('button[aria-label="Dictate"]')
+        ?.click();
+    }
+  }, []);
+
+  // On remount: restore "active" only — "configuring" stays as-is (no mic).
   useEffect(() => {
-    if (!_voiceModeActive || isThreadRunning) return;
+    if (_voiceMode !== "active" || isThreadRunning) return;
     document
       .querySelector<HTMLButtonElement>('button[aria-label="Dictate"]')
       ?.click();
   }, []); // mount only
 
-  // Run lifecycle: stop dictation + clear timer when model starts generating;
-  // speak the response and restart dictation when the run finishes.
+  // Watch the store: when it transitions from "configuring" → "active"
+  // (triggered externally by the voice-model dropdown pick), activate the loop.
+  const storeVoiceMode = useChatRuntimeStore((s) => s.voiceMode);
+  useEffect(() => {
+    if (
+      storeVoiceMode === "active" &&
+      voiceModeRef.current === "configuring"
+    ) {
+      activateLoop();
+    }
+  }, [storeVoiceMode, activateLoop]);
+
+  // Run lifecycle: stop dictation when model starts; speak + resume mic when done.
   useEffect(() => {
     if (isThreadRunning) {
       prevRunningRef.current = true;
-      if (voiceModeRef.current) {
+      if (voiceModeRef.current === "active") {
         if (silenceTimerRef.current) {
           clearTimeout(silenceTimerRef.current);
           silenceTimerRef.current = null;
@@ -1227,7 +1240,7 @@ const VoiceToggle: FC = () => {
       voiceMode: voiceModeRef.current,
       isSpeaking: isSpeakingRef.current,
     });
-    if (!voiceModeRef.current || isSpeakingRef.current) return;
+    if (voiceModeRef.current !== "active" || isSpeakingRef.current) return;
 
     const messages = auiRef.current.thread().getState().messages;
     let text = "";
@@ -1250,16 +1263,15 @@ const VoiceToggle: FC = () => {
     speakRef.current(text);
   }, [isThreadRunning, resumeListen]);
 
-  // Silence timer: reset on each new transcript chunk from the DictationAdapter.
-  // 1.5 s after the last update, stop dictation and auto-send.
+  // Silence timer: only fires in "active" state.
   useEffect(() => {
     if (dictationStatusType !== "running") return;
-    if (!voiceModeRef.current) return;
+    if (voiceModeRef.current !== "active") return;
 
     if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
     silenceTimerRef.current = setTimeout(() => {
       silenceTimerRef.current = null;
-      if (!voiceModeRef.current) return;
+      if (voiceModeRef.current !== "active") return;
       const composer = auiRef.current.composer();
       composer.stopDictation();
       if (composer.getState().isEditing && composer.getState().text.trim()) {
@@ -1276,21 +1288,21 @@ const VoiceToggle: FC = () => {
   }, [dictationTranscript, dictationStatusType]);
 
   const toggle = useCallback(() => {
-    const next = !voiceModeRef.current;
-    _voiceModeActive = next;
-    setVoiceModeEnabled(next);
+    // OFF → CONFIGURING (show dropdown, don't start mic)
+    // CONFIGURING → OFF (user cancelled before picking)
+    // ACTIVE → OFF (turn off the loop)
+    const next: "off" | "configuring" =
+      voiceModeRef.current === "off" ? "configuring" : "off";
+    _voiceMode = next;
     voiceModeRef.current = next;
+    setVoiceModeState(next);
+    useChatRuntimeStore.getState().setVoiceMode(next);
 
-    if (next) {
-      if (
-        !auiRef.current.thread().getState().isRunning &&
-        !isSpeakingRef.current
-      ) {
-        document
-          .querySelector<HTMLButtonElement>('button[aria-label="Dictate"]')
-          ?.click();
-      }
-    } else {
+    if (next === "configuring") {
+      primeAudio();
+    }
+
+    if (next === "off") {
       if (silenceTimerRef.current) {
         clearTimeout(silenceTimerRef.current);
         silenceTimerRef.current = null;
@@ -1299,7 +1311,8 @@ const VoiceToggle: FC = () => {
       const composer = auiRef.current.composer();
       if (composer.getState().dictation) composer.stopDictation();
     }
-  }, [stop]);
+    // "configuring": dropdown appears via store; mic stays off.
+  }, [stop, primeAudio]);
 
   useEffect(() => {
     return () => {
@@ -1321,31 +1334,35 @@ const VoiceToggle: FC = () => {
       className="composer-pill-btn"
       data-active={voiceModeEnabled ? "true" : "false"}
       style={
-        voiceModeEnabled
-          ? isDictating
-            ? { color: "rgb(34 197 94)" }
-            : isSpeaking
-              ? { color: "rgb(59 130 246)" }
-              : isThreadRunning
-                ? { color: "rgb(234 179 8)" }
-                : undefined
-          : undefined
+        voiceMode === "configuring"
+          ? { opacity: 0.55 }
+          : voiceMode === "active"
+            ? isDictating
+              ? { color: "rgb(34 197 94)" }
+              : isSpeaking
+                ? { color: "rgb(59 130 246)" }
+                : isThreadRunning
+                  ? { color: "rgb(234 179 8)" }
+                  : undefined
+            : undefined
       }
       aria-label={voiceModeEnabled ? "Disable voice mode" : "Enable voice mode"}
     >
-      {isSpeaking && voiceModeEnabled ? (
+      {isSpeaking && voiceMode === "active" ? (
         <Volume2Icon className="size-3.5" />
       ) : (
         <MicIcon className="size-3.5" />
       )}
       <span>
-        {voiceModeEnabled && isDictating
-          ? "Listening"
-          : voiceModeEnabled && isSpeaking
-            ? "Speaking"
-            : voiceModeEnabled && isThreadRunning
-              ? "Thinking"
-              : "Voice"}
+        {voiceMode === "configuring"
+          ? "Pick a voice"
+          : voiceMode === "active" && isDictating
+            ? "Listening"
+            : voiceMode === "active" && isSpeaking
+              ? "Speaking"
+              : voiceMode === "active" && isThreadRunning
+                ? "Thinking"
+                : "Voice"}
       </span>
     </button>
   );
@@ -1671,7 +1688,10 @@ const SpeakButton: FC = () => {
     const m = s.models.find((m) => m.id === s.params.checkpoint);
     return m?.audioType ?? null;
   });
-  const { isSpeaking, speak, stop } = useTtsPlayer(activeAudioType);
+  const voiceSlotLoaded = useChatRuntimeStore(
+    (s) => s.voiceMode === "active" && s.selectedVoiceModelId !== null,
+  );
+  const { isSpeaking, speak, stop } = useTtsPlayer(activeAudioType, undefined, voiceSlotLoaded);
 
   const handleSpeak = () => {
     if (isSpeaking) {

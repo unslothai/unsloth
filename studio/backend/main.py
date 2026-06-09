@@ -488,6 +488,7 @@ def _build_csp(script_nonce: "str | None" = None) -> str:
         "https://t1.gstatic.com https://t2.gstatic.com "
         "https://t3.gstatic.com https://www.google.com; "
         f"connect-src {connect_src}; "
+        "media-src 'self' blob:; "
         "style-src 'self' 'unsafe-inline'; "
         f"{script_src}; "
         "font-src 'self' data:; "

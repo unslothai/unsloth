@@ -35,6 +35,7 @@ export const CHAT_ALLOW_ARTIFACT_NETWORK_ACCESS_KEY =
 export const CHAT_MCP_ENABLED_KEY = "unsloth_chat_mcp_enabled";
 export const CHAT_WEB_FETCH_TOOLS_ENABLED_KEY =
   "unsloth_chat_web_fetch_tools_enabled";
+const CHAT_VOICE_MODEL_ID_KEY = "unsloth_chat_voice_model_id";
 
 // External provider selection is encoded into `params.checkpoint` as
 // `external::<providerId>::<modelId>`. PersistedChatSettings deliberately
@@ -347,7 +348,19 @@ type ChatRuntimeStore = {
   } | null;
   modelLoading: boolean;
   activeNativePathToken: string | null;
+  /**
+   * Voice conversation mode state (set by VoiceToggle / voice selector).
+   * - "off"         — pill inactive
+   * - "configuring" — pill armed, dropdown visible, loop NOT started
+   * - "active"      — loop running (mic auto-start enabled)
+   * Not persisted — resets to "off" on page load.
+   */
+  voiceMode: "off" | "configuring" | "active";
+  /** The LoRA/GGUF model ID the user has chosen for the voice slot. Persisted to localStorage. */
+  selectedVoiceModelId: string | null;
   hydratePersistedSettings: () => Promise<void>;
+  setVoiceMode: (mode: "off" | "configuring" | "active") => void;
+  setSelectedVoiceModelId: (id: string | null) => void;
   setModelLoading: (loading: boolean) => void;
   setModelRequiresTrustRemoteCode: (required: boolean) => void;
   setParams: (params: InferenceParams) => void;
@@ -672,6 +685,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   contextUsage: null,
   modelLoading: false,
   activeNativePathToken: null,
+  voiceMode: "off" as const,
+  selectedVoiceModelId: loadString(CHAT_VOICE_MODEL_ID_KEY, "") || null,
   hydratePersistedSettings: async () => {
     if (get().settingsHydrated) {
       return;
@@ -710,6 +725,12 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     })();
     return settingsHydrationPromise;
   },
+  setVoiceMode: (voiceMode) => set({ voiceMode }),
+  setSelectedVoiceModelId: (selectedVoiceModelId) =>
+    set(() => {
+      saveString(CHAT_VOICE_MODEL_ID_KEY, selectedVoiceModelId ?? "");
+      return { selectedVoiceModelId };
+    }),
   setModelLoading: (loading) => set({ modelLoading: loading }),
   setModelRequiresTrustRemoteCode: (modelRequiresTrustRemoteCode) =>
     set({ modelRequiresTrustRemoteCode }),
