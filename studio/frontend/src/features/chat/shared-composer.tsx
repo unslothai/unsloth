@@ -1494,19 +1494,6 @@ export function SharedComposer({
                       />
                     ) : null}
                   </DropdownMenuItem>
-                  {/* Click toggles compare mode off. */}
-                  <DropdownMenuItem
-                    className="text-primary font-medium"
-                    onSelect={handleExitCompare}
-                  >
-                    <Columns2Icon />
-                    Compare chat
-                    <HugeiconsIcon
-                      icon={Tick02Icon}
-                      strokeWidth={2}
-                      className="ml-auto"
-                    />
-                  </DropdownMenuItem>
                 </DropdownMenuSubContent>
               </DropdownMenuSub>
               <DropdownMenuSeparator />

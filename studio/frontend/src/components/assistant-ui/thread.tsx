@@ -2252,6 +2252,11 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
             />
           ) : null}
         </DropdownMenuItem>
+        {/* Top-level so it stays one click away (not buried in More). */}
+        <DropdownMenuItem onSelect={() => startCompare()}>
+          <Columns2Icon />
+          Compare chat
+        </DropdownMenuItem>
         <DropdownMenuSub>
           <DropdownMenuSubTrigger>
             <HugeiconsIcon icon={Bookmark02Icon} strokeWidth={2} />
@@ -2336,10 +2341,6 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
                   className="ml-auto"
                 />
               ) : null}
-            </DropdownMenuItem>
-            <DropdownMenuItem onSelect={() => startCompare()}>
-              <Columns2Icon />
-              Compare chat
             </DropdownMenuItem>
           </DropdownMenuSubContent>
         </DropdownMenuSub>

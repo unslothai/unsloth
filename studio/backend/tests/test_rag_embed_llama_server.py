@@ -56,7 +56,14 @@ def _mock_auto(monkeypatch, *, gpus, binary):
     monkeypatch.setattr(LlamaCppBackend, "_find_llama_server_binary", staticmethod(lambda: binary))
 
 
+def _stub_st_load(monkeypatch):
+    # Make the ST probe succeed without importing sentence-transformers (absent in
+    # the torch-free backend CI); these tests assert selection, not a real load.
+    monkeypatch.setattr(embeddings, "_get", lambda *a, **k: object())
+
+
 def test_auto_uses_st_with_cuda(monkeypatch):
+    _stub_st_load(monkeypatch)
     _mock_auto(monkeypatch, gpus = [(0, 40000)], binary = "/bin/llama-server")
     assert type(embeddings._get_backend()).__name__ == "_SentenceTransformersBackend"
 
@@ -67,6 +74,7 @@ def test_auto_uses_llama_without_cuda(monkeypatch):
 
 
 def test_auto_falls_back_to_st_without_binary(monkeypatch):
+    _stub_st_load(monkeypatch)
     _mock_auto(monkeypatch, gpus = [], binary = None)
     assert type(embeddings._get_backend()).__name__ == "_SentenceTransformersBackend"
 
@@ -83,6 +91,7 @@ def test_unknown_backend_raises(monkeypatch):
 
 
 def test_explicit_backend_overrides_auto(monkeypatch):
+    _stub_st_load(monkeypatch)
     monkeypatch.setattr(config, "EMBED_BACKEND", "sentence-transformers")
     assert type(embeddings._get_backend()).__name__ == "_SentenceTransformersBackend"
     monkeypatch.setattr(config, "EMBED_BACKEND", "llama-server")
