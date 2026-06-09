@@ -1383,9 +1383,7 @@ def resolve_simple_install_release_plans(
             max_release_fallbacks = max_release_fallbacks,
         )
     requested_tag = normalized_requested_llama_tag(llama_tag)
-    allow_older_release_fallback = (
-        requested_tag == "latest" and not published_release_tag
-    )
+    allow_older_release_fallback = requested_tag == "latest" and not published_release_tag
     # macOS: pin the last upstream build that loads on a pre-26 host instead of
     # fetching the latest (macOS 26 only) build and walking back release by
     # release. No-op on macOS 26+, unknown version, non-macOS, and the fork.
@@ -1679,11 +1677,7 @@ def parse_published_artifact(raw: Any) -> PublishedLlamaArtifact | None:
     )
     mapped_raw = raw.get("mapped_targets", [])
     mapped_targets = (
-        [
-            value.strip()
-            for value in mapped_raw
-            if isinstance(value, str) and value.strip()
-        ]
+        [value.strip() for value in mapped_raw if isinstance(value, str) and value.strip()]
         if isinstance(mapped_raw, (list, tuple))
         else []
     )
@@ -1939,18 +1933,13 @@ def iter_published_release_bundles(
         yield bundle
 
 
-def _artifact_covers_sms(
-    artifact: PublishedLlamaArtifact, host_sms: Iterable[str]
-) -> bool:
+def _artifact_covers_sms(artifact: PublishedLlamaArtifact, host_sms: Iterable[str]) -> bool:
     """True when every host SM is listed in the artifact's supported_sms and
     falls within its [min_sm, max_sm] range."""
     if not artifact.supported_sms or artifact.min_sm is None or artifact.max_sm is None:
         return False
     supported = {str(value) for value in artifact.supported_sms}
-    return all(
-        sm in supported and artifact.min_sm <= int(sm) <= artifact.max_sm
-        for sm in host_sms
-    )
+    return all(sm in supported and artifact.min_sm <= int(sm) <= artifact.max_sm for sm in host_sms)
 
 
 def _sm_range(artifact: PublishedLlamaArtifact) -> int:
@@ -2007,9 +1996,7 @@ def linux_cuda_choice_from_release(
     # below is arch-agnostic and applies to both.
     cuda_install_kind = "linux-arm64-cuda" if host.is_arm64 else "linux-cuda"
     published_artifacts = [
-        artifact
-        for artifact in release.artifacts
-        if artifact.install_kind == cuda_install_kind
+        artifact for artifact in release.artifacts if artifact.install_kind == cuda_install_kind
     ]
     published_asset_names = sorted(artifact.asset_name for artifact in published_artifacts)
     selection_log.append(
@@ -3228,9 +3215,7 @@ def published_windows_cuda_attempts(
         # the driver major is the real constraint. Mirrors the legacy
         # windows_cuda_attempts fallback; without it a torch-only host gets no
         # fork attempt and silently drops to the upstream build.
-        ordered_lines = [line for line in compatible if line in detected] or list(
-            compatible
-        )
+        ordered_lines = [line for line in compatible if line in detected] or list(compatible)
         if preferred_runtime_line and preferred_runtime_line in ordered_lines:
             ordered_lines = [preferred_runtime_line] + [
                 line for line in ordered_lines if line != preferred_runtime_line
@@ -3275,11 +3260,7 @@ def published_windows_cuda_attempts(
                 and artifact.min_sm is not None
                 and artifact.max_sm is not None
             )
-            if (
-                host_sms
-                and has_sm_info
-                and not _artifact_covers_sms(artifact, host_sms)
-            ):
+            if host_sms and has_sm_info and not _artifact_covers_sms(artifact, host_sms):
                 continue
             if not host_sms and has_sm_info and artifact.coverage_class != "portable":
                 continue
@@ -3909,9 +3890,7 @@ def resolve_release_asset_choice(
         # tried before the CPU fallback. Hard-pinning the published
         # windows-cpu bundle here would make the HIP path unreachable.
         if host.has_rocm:
-            published_choice = published_rocm_choice_for_host(
-                release, host, "windows-rocm"
-            )
+            published_choice = published_rocm_choice_for_host(release, host, "windows-rocm")
         else:
             published_choice = published_asset_choice_for_kind(release, "windows-cpu")
     elif host.is_macos and host.is_arm64:
@@ -5716,14 +5695,10 @@ def _fork_manifest_release_plans(
             if host.is_linux:
                 linux_attempts = _linux_published_attempts(host, bundle, requested_tag)
                 if not linux_attempts:
-                    raise PrebuiltFallback(
-                        "no compatible Linux prebuilt asset was found"
-                    )
+                    raise PrebuiltFallback("no compatible Linux prebuilt asset was found")
                 attempts = apply_approved_hashes(linux_attempts, checksums)
                 if not attempts:
-                    raise PrebuiltFallback(
-                        "no compatible Linux prebuilt asset was found"
-                    )
+                    raise PrebuiltFallback("no compatible Linux prebuilt asset was found")
                 if attempts[0].selection_log:
                     log_lines(attempts[0].selection_log)
             else:
@@ -6229,9 +6204,7 @@ def install_prebuilt(
                 published_repo,
                 published_release_tag,
             )
-            if release_plans and existing_install_matches_plan(
-                install_dir, host, release_plans[0]
-            ):
+            if release_plans and existing_install_matches_plan(install_dir, host, release_plans[0]):
                 current = release_plans[0]
                 log(
                     "existing llama.cpp install already matches selected release "

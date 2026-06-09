@@ -159,9 +159,7 @@ PublishedLlamaArtifact = _mod.PublishedLlamaArtifact
 PublishedReleaseBundle = _mod.PublishedReleaseBundle
 
 
-def _rocm_bundle(
-    gfx_family: str, mapped_targets: list[str]
-) -> "PublishedReleaseBundle":
+def _rocm_bundle(gfx_family: str, mapped_targets: list[str]) -> "PublishedReleaseBundle":
     """A fork manifest bundle exposing a per-gfx linux-rocm artifact, so
     published_rocm_choice_for_host can match the host before the lemonade
     fallback is appended."""
@@ -198,9 +196,7 @@ def test_linux_attempts_include_fork_rocm_and_lemonade_for_rocm_host():
     with patch.object(_mod, "fetch_json", return_value = _stub_lemonade_release()):
         attempts = _linux_published_attempts(host, bundle, "latest")
     kinds = [a.install_kind for a in attempts]
-    assert (
-        "linux-rocm" in kinds
-    ), f"builder did not include any linux-rocm attempt; got {kinds}"
+    assert "linux-rocm" in kinds, f"builder did not include any linux-rocm attempt; got {kinds}"
     sources = {a.source_label for a in attempts if a.install_kind == "linux-rocm"}
     # The fork's own per-gfx bundle is preferred, with the lemonade prebuilt as
     # the fallback -- both must be present for a covered ROCm host.
@@ -225,9 +221,7 @@ def test_direct_upstream_plan_includes_lemonade_for_windows_hip_host():
         plan = direct_upstream_release_plan(release, host, "ggml-org/llama.cpp", "latest")
     assert plan is not None, "Windows ROCm host should plan a lemonade HIP attempt"
     kinds = [a.install_kind for a in plan.attempts]
-    assert (
-        "windows-hip" in kinds
-    ), f"planner did not include a lemonade HIP attempt; got {kinds}"
+    assert "windows-hip" in kinds, f"planner did not include a lemonade HIP attempt; got {kinds}"
 
 
 @pytest.mark.skipif(

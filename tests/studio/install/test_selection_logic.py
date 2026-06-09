@@ -1560,9 +1560,7 @@ class TestResolveInstallAttempts:
         assert attempts[0].expected_sha256 == "a" * 64
         assert approved.release_tag == "llama-prebuilt-latest"
 
-    def test_linux_cpu_fork_without_bundle_raises_no_upstream_fallback(
-        self, monkeypatch
-    ):
+    def test_linux_cpu_fork_without_bundle_raises_no_upstream_fallback(self, monkeypatch):
         # A CPU-only Linux host on the fork no longer falls back to the ggml-org
         # CPU asset: production routes CPU-only Linux to ggml-org, never the fork.
         # With no fork CPU bundle in the manifest the resolver raises rather than
@@ -1599,9 +1597,7 @@ class TestResolveInstallAttempts:
             ),
         )
 
-        with pytest.raises(
-            PrebuiltFallback, match = "no compatible Linux prebuilt asset was found"
-        ):
+        with pytest.raises(PrebuiltFallback, match = "no compatible Linux prebuilt asset was found"):
             resolve_install_attempts("latest", host, "unslothai/llama.cpp", "")
 
     def test_linux_cuda_does_not_fall_back_to_upstream_cpu(self, monkeypatch):
@@ -1627,9 +1623,7 @@ class TestResolveInstallAttempts:
         )
         mock_linux_runtime(monkeypatch, ["cuda12"])
 
-        with pytest.raises(
-            PrebuiltFallback, match = "no compatible Linux prebuilt asset was found"
-        ):
+        with pytest.raises(PrebuiltFallback, match = "no compatible Linux prebuilt asset was found"):
             resolve_install_attempts("latest", host, "unslothai/llama.cpp", "")
 
     def test_windows_cpu_prefers_published_asset(self, monkeypatch):
@@ -1839,9 +1833,7 @@ class TestResolveInstallReleasePlans:
             max_sm = 90,
         )
         return INSTALL_LLAMA_PREBUILT.ResolvedPublishedRelease(
-            bundle = make_release(
-                [art], release_tag = release_tag, upstream_tag = upstream_tag
-            ),
+            bundle = make_release([art], release_tag = release_tag, upstream_tag = upstream_tag),
             checksums = make_checksums_with_source(
                 [asset_name],
                 release_tag = release_tag,
@@ -1849,9 +1841,7 @@ class TestResolveInstallReleasePlans:
             ),
         )
 
-    def test_latest_collects_multiple_older_release_plans_up_to_limit(
-        self, monkeypatch
-    ):
+    def test_latest_collects_multiple_older_release_plans_up_to_limit(self, monkeypatch):
         mock_linux_runtime(monkeypatch, ["cuda12"])
         host = make_host(system = "Linux", machine = "x86_64", compute_caps = ["86"])
         releases = [
@@ -1878,9 +1868,7 @@ class TestResolveInstallReleasePlans:
         assert [plan.release_tag for plan in plans] == ["r3", "r2"]
         assert [plan.llama_tag for plan in plans] == ["b9003", "b9002"]
 
-    def test_latest_skips_non_installable_release_and_keeps_searching(
-        self, monkeypatch
-    ):
+    def test_latest_skips_non_installable_release_and_keeps_searching(self, monkeypatch):
         mock_linux_runtime(monkeypatch, ["cuda12"])
         host = make_host(system = "Linux", machine = "x86_64", compute_caps = ["86"])
         releases = [
@@ -2322,9 +2310,7 @@ class TestPinnedBlackwellCudaFallback:
             ("older", "cuda12", 89, False),  # 12.4 toolkit app bundle stops at Ada
         ],
     )
-    def test_attempt_covers_blackwell_app_bundle(
-        self, profile, runtime_line, max_sm, covers
-    ):
+    def test_attempt_covers_blackwell_app_bundle(self, profile, runtime_line, max_sm, covers):
         # App-named bundles carry no toolkit minor; coverage is read from max_sm.
         attempt = self._app_attempt(profile, runtime_line, max_sm)
         assert _windows_cuda_attempt_covers_blackwell(attempt) is covers
@@ -3168,13 +3154,9 @@ class TestLinuxArm64ForkFallsBackToSource:
             called["args"] = (host.machine, repo)
             return "b9457", ["plan"]
 
-        monkeypatch.setattr(
-            INSTALL_LLAMA_PREBUILT, "_fork_manifest_release_plans", _full
-        )
+        monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_fork_manifest_release_plans", _full)
         host = make_host(system = "Linux", machine = "aarch64")
-        tag, plans = resolve_simple_install_release_plans(
-            "latest", host, "unslothai/llama.cpp", ""
-        )
+        tag, plans = resolve_simple_install_release_plans("latest", host, "unslothai/llama.cpp", "")
         assert called.get("args") == ("aarch64", "unslothai/llama.cpp")
         assert plans == ["plan"]
 
@@ -3188,13 +3170,9 @@ class TestLinuxArm64ForkFallsBackToSource:
             called["args"] = (host.machine, repo)
             return "b9457", ["plan"]
 
-        monkeypatch.setattr(
-            INSTALL_LLAMA_PREBUILT, "_fork_manifest_release_plans", _full
-        )
+        monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_fork_manifest_release_plans", _full)
         host = make_host(system = "Linux", machine = "x86_64")
-        tag, plans = resolve_simple_install_release_plans(
-            "latest", host, "unslothai/llama.cpp", ""
-        )
+        tag, plans = resolve_simple_install_release_plans("latest", host, "unslothai/llama.cpp", "")
         assert called.get("args") == ("x86_64", "unslothai/llama.cpp")
         assert plans == ["plan"]
 
