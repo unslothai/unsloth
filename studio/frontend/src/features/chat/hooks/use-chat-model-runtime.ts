@@ -818,6 +818,9 @@ export function useChatModelRuntime() {
                   gguf_variant: previousVariant,
                   trust_remote_code:
                     previousModelRequiresTrustRemoteCode || trustRemoteCode,
+                  // Restore the previous model in the split mode it was running,
+                  // not the default layer split.
+                  tensor_parallel: stateBeforeUnload.loadedTensorParallel ?? false,
                 });
                 useChatRuntimeStore.setState({
                   activeNativePathToken: previousActiveNativePathToken ?? null,

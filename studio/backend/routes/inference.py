@@ -1041,6 +1041,7 @@ async def load_model(
                 requested_tensor = request.tensor_parallel,
                 extra_args = extra_llama_args,
                 label = config.identifier,
+                cancelled = llama_backend.load_cancelled,
             )
 
             if not success:

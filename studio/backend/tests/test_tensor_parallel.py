@@ -373,6 +373,15 @@ def test_tp_plan_weights_exceed_pool_floors_context():
     assert ec == 2048
 
 
+def test_tp_plan_floor_never_exceeds_explicit_small_context():
+    # An explicit context below the 2048 floor must not be raised: a caller
+    # asking for 1024 should not have KV sized for 2048 (avoidable OOM).
+    _, (ec, mac, gi, ts) = _plan(70, target = 1024)  # weights exceed pool -> floor path
+    assert ec == 1024
+    _, (ec2, *_rest) = _plan(50, target = 1024)  # cap path with a tiny budget
+    assert ec2 <= 1024
+
+
 def test_tp_plan_explicit_context_honored_when_it_fits():
     _, (ec, mac, gi, ts) = _plan(50, target = 8192)
     assert ec == 8192
@@ -501,6 +510,28 @@ def test_tensor_fallback_returns_false_when_both_attempts_fail():
     )
     assert ok is False
     assert calls == [True, False]  # tried tensor, then layer split
+
+
+def test_tensor_fallback_skips_layer_retry_when_cancelled():
+    # load_model returns False on a user cancellation too. When cancelled() is
+    # True, the helper must NOT relaunch the load the user just cancelled.
+    calls: list[bool] = []
+
+    async def _false_on_tensor(tensor_parallel, extra_args):
+        calls.append(tensor_parallel)
+        return False
+
+    ok = asyncio.run(
+        load_with_tensor_fallback(
+            _false_on_tensor,
+            requested_tensor = True,
+            extra_args = None,
+            label = "m",
+            cancelled = lambda: True,
+        )
+    )
+    assert ok is False
+    assert calls == [True]  # no layer-split retry after cancellation
 
 
 @pytest.mark.parametrize(

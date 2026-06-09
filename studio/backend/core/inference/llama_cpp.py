@@ -2697,10 +2697,13 @@ class LlamaCppBackend:
             kv_budget_b -= 2 * 1024**3
 
         if self._can_estimate_kv() and target_ctx > 0:
+            # The floor must never exceed an explicitly requested context: a
+            # caller asking for e.g. 1024 should not have KV sized for 2048.
+            ctx_floor = min(2048, target_ctx)
             if kv_budget_b <= 0:
                 # Weights + buffers exceed the pool -> no context fits; floor and
                 # let the load fall back to layer split.
-                effective_ctx = 2048
+                effective_ctx = ctx_floor
             else:
                 kv_at_target = self._estimate_kv_cache_bytes(
                     target_ctx, cache_type_kv, n_parallel = n_parallel
@@ -2708,7 +2711,7 @@ class LlamaCppBackend:
                 if kv_at_target <= kv_budget_b:
                     effective_ctx = target_ctx
                 else:
-                    effective_ctx = max(2048, int(target_ctx * kv_budget_b / kv_at_target))
+                    effective_ctx = max(ctx_floor, int(target_ctx * kv_budget_b / kv_at_target))
         else:
             # KV size unknown -> can't prove a safe cap; floor.
             effective_ctx = min(4096, target_ctx) if target_ctx > 0 else 4096
@@ -3997,6 +4000,12 @@ class LlamaCppBackend:
         if not saw_buffer_line:
             return None
         return saw_gpu_buffer
+
+    def load_cancelled(self) -> bool:
+        """True if a load was cancelled (e.g. via unload/_cancel_event) and not
+        yet consumed by the next load_model. Lets the tensor->layer fallback
+        avoid restarting a load the user just cancelled."""
+        return self._cancel_event.is_set()
 
     def unload_model(self) -> bool:
         """Terminate the llama-server subprocess and cancel any in-flight download."""

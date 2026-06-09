@@ -26,6 +26,7 @@ async def load_with_tensor_fallback(
     requested_tensor: bool,
     extra_args: Optional[list[str]],
     label: str = "",
+    cancelled: Optional[Callable[[], bool]] = None,
 ) -> bool:
     """Run a GGUF load with the tensor-parallel -> layer-split auto-fallback.
 
@@ -38,6 +39,11 @@ async def load_with_tensor_fallback(
     tensor mode is actually engaged, and it strips ``--split-mode`` from the
     extras so the layer retry can't relaunch the same failing tensor load. A
     non-tensor load keeps its original contract and propagates exceptions.
+
+    ``cancelled()`` distinguishes a real tensor-start failure from a user
+    cancellation: ``attempt_load`` also returns False when the load was
+    cancelled, so without this the helper would restart a load the user just
+    cancelled.
     """
     tensor_requested = resolve_tensor_parallel(extra_args, requested_tensor)
     try:
@@ -49,6 +55,11 @@ async def load_with_tensor_fallback(
         success = False
 
     if success or not tensor_requested:
+        return success
+
+    # The first attempt returned False because the user cancelled, not because
+    # tensor mode is unsupported -- do not relaunch the cancelled load.
+    if cancelled is not None and cancelled():
         return success
 
     logger.warning(
