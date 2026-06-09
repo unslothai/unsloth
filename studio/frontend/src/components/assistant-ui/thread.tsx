@@ -709,7 +709,7 @@ const ThreadWelcome: FC<{
             </h1>
           </div>
           {incognito && (
-            <p className="aui-thread-welcome-message-inner fade-in slide-in-from-bottom-1 -mt-2 animate-in text-center font-heading font-normal text-muted-foreground text-sm delay-75 duration-200">
+            <p className="aui-thread-welcome-message-inner fade-in -mt-2 animate-in text-center font-heading font-normal text-muted-foreground text-sm duration-200">
               This chat won't appear in your history and isn't saved. It
               disappears when you leave.
             </p>
