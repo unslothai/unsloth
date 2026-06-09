@@ -126,9 +126,7 @@ def is_managed_flag(flag: str) -> bool:
 # stripped from inherited extras so they can't last-wins-override an
 # Apply that re-sets the same field.
 _CONTEXT_FLAGS: frozenset[str] = frozenset({"-c", "--ctx-size"})
-_CACHE_FLAGS: frozenset[str] = frozenset(
-    {"-ctk", "--cache-type-k", "-ctv", "--cache-type-v"}
-)
+_CACHE_FLAGS: frozenset[str] = frozenset({"-ctk", "--cache-type-k", "-ctv", "--cache-type-v"})
 _SPEC_FLAGS: frozenset[str] = frozenset(
     {
         "--spec-default",
@@ -157,15 +155,11 @@ _TEMPLATE_FLAGS: frozenset[str] = frozenset(
     }
 )
 
-_SHADOWING_FLAGS: frozenset[str] = (
-    _CONTEXT_FLAGS | _CACHE_FLAGS | _SPEC_FLAGS | _TEMPLATE_FLAGS
-)
+_SHADOWING_FLAGS: frozenset[str] = _CONTEXT_FLAGS | _CACHE_FLAGS | _SPEC_FLAGS | _TEMPLATE_FLAGS
 
 # Shadowing flags that take no value -- strip the flag only, never the
 # following token.
-_BOOLEAN_SHADOWING_FLAGS: frozenset[str] = frozenset(
-    {"--spec-default", "--jinja", "--no-jinja"}
-)
+_BOOLEAN_SHADOWING_FLAGS: frozenset[str] = frozenset({"--spec-default", "--jinja", "--no-jinja"})
 
 
 def parse_ctx_override(args: Optional[Iterable[str]]) -> Optional[int]:
@@ -192,31 +186,22 @@ def parse_ctx_override(args: Optional[Iterable[str]]) -> Optional[int]:
             i += 1
         else:
             if i + 1 >= n or _flag_name(tokens[i + 1]) is not None:
-                raise ValueError(
-                    f"llama-server flag '{flag}' requires an integer value"
-                )
+                raise ValueError(f"llama-server flag '{flag}' requires an integer value")
             raw_value = tokens[i + 1]
             i += 2
 
         try:
             value = int(str(raw_value).strip())
         except ValueError as exc:
-            raise ValueError(
-                f"llama-server flag '{flag}' requires an integer value"
-            ) from exc
+            raise ValueError(f"llama-server flag '{flag}' requires an integer value") from exc
         if value < 0:
-            raise ValueError(
-                f"llama-server flag '{flag}' requires a non-negative integer value"
-            )
+            raise ValueError(f"llama-server flag '{flag}' requires a non-negative integer value")
         override = value
 
     return override
 
 
-def resolve_requested_ctx(
-    args: Optional[Iterable[str]],
-    fallback_n_ctx: int,
-) -> int:
+def resolve_requested_ctx(args: Optional[Iterable[str]], fallback_n_ctx: int) -> int:
     """Return the context size load_model should treat as requested.
 
     Single source of truth for the two-line ``ctx_override = parse_ctx_override(...);
@@ -267,8 +252,7 @@ def parse_cache_override(args: Optional[Iterable[str]]) -> Optional[str]:
 
 
 def resolve_cache_type_kv(
-    args: Optional[Iterable[str]],
-    fallback_cache_type_kv: Optional[str],
+    args: Optional[Iterable[str]], fallback_cache_type_kv: Optional[str]
 ) -> Optional[str]:
     """Return the cache type load_model should treat as requested.
 

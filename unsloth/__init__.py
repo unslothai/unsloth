@@ -27,7 +27,6 @@ os.environ["UNSLOTH_IS_PRESENT"] = "1"
 # errors="replace" guarantees we can never crash on an unencodable glyph.
 if platform.system() == "Windows":
     import sys as _sys
-
     for _name in ("stdout", "stderr"):
         _s = getattr(_sys, _name, None)
         try:
@@ -89,9 +88,7 @@ if _IS_MLX:
     from pathlib import Path as _Path
 
     _raw_text_path = _Path(__file__).resolve().parent / "dataprep" / "raw_text.py"
-    _raw_text_spec = importlib.util.spec_from_file_location(
-        "unsloth._mlx_raw_text", _raw_text_path
-    )
+    _raw_text_spec = importlib.util.spec_from_file_location("unsloth._mlx_raw_text", _raw_text_path)
     if _raw_text_spec is None or _raw_text_spec.loader is None:
         raise ImportError("Unsloth: could not load MLX raw_text dataprep helpers.")
     _raw_text = importlib.util.module_from_spec(_raw_text_spec)
@@ -145,7 +142,6 @@ if _IS_MLX:
     def is_bfloat16_supported():
         try:
             import mlx.core as mx
-
             name = mx.device_info().get("device_name", "") or ""
             return not name.startswith(("Apple M1", "Apple M2"))
         except Exception:

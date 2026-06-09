@@ -22,7 +22,6 @@ from transformers import (
 
 try:
     from transformers import AutoModelForImageTextToText
-
     AutoModelForVision2Seq = AutoModelForImageTextToText
 except:
     from transformers import AutoModelForVision2Seq
@@ -120,9 +119,7 @@ def _infer_device_map_from_loaded_model(model):
             for pname, param in module.named_parameters(remove_duplicate = False):
                 if "." not in pname:
                     full = f"{prefix}.{pname}" if prefix else pname
-                    if not any(
-                        full == k or full.startswith(k + ".") for k in device_map
-                    ):
+                    if not any(full == k or full.startswith(k + ".") for k in device_map):
                         device_map[full] = param.device
 
     _assign(model, "")
@@ -195,9 +192,7 @@ def _attach_bnb_multidevice_hooks(
         try:
             # CUDA -> int index, non-CUDA -> type string ("cpu", "meta").
             device_map_int = {
-                k: (v.index if v.type == "cuda" else v.type)
-                if isinstance(v, torch.device)
-                else v
+                k: (v.index if v.type == "cuda" else v.type) if isinstance(v, torch.device) else v
                 for k, v in inferred_map.items()
             }
 
@@ -257,7 +252,6 @@ from transformers import GenerationConfig, CompileConfig, AutoConfig
 
 try:
     from transformers import PreTrainedConfig
-
     PretrainedConfig = PreTrainedConfig
 except:
     from transformers import PretrainedConfig
@@ -277,11 +271,7 @@ except:
     torch_compiler_set_stance = None
 
 
-def unsloth_base_fast_generate(
-    self,
-    *args,
-    **kwargs,
-):
+def unsloth_base_fast_generate(self, *args, **kwargs):
     if len(args) != 0:
         input_ids = args[0]
     elif "input_ids" in kwargs:
@@ -305,9 +295,7 @@ def unsloth_base_fast_generate(
     FastBaseModel.for_inference(self)
     dtype = _get_dtype(dtype_from_config(self.config))
     # Handle full float32 cases as config.dtype == torch.float32!
-    do_bfloat16_mixed_precision = (
-        os.environ.get("UNSLOTH_BFLOAT16_MIXED_PRECISION", "0") == "1"
-    )
+    do_bfloat16_mixed_precision = os.environ.get("UNSLOTH_BFLOAT16_MIXED_PRECISION", "0") == "1"
     if do_bfloat16_mixed_precision:
         dtype = torch.bfloat16
 
@@ -388,9 +376,7 @@ def unsloth_base_fast_generate(
     # Fix generation_config
     # Use hybrid if sliding window seen, otherwise try static
     cache_implementation = getattr(self.config, "cache_implementation", None)
-    if getattr(
-        self, "_supports_static_cache", getattr(self, "_can_compile_fullgraph", True)
-    ):
+    if getattr(self, "_supports_static_cache", getattr(self, "_can_compile_fullgraph", True)):
         if os.environ.get("UNSLOTH_DISABLE_STATIC_GENERATION", "0") == "0":
             cache_implementation = "static"
         elif Version(transformers_version) < Version("4.56.0.dev0"):
@@ -401,9 +387,7 @@ def unsloth_base_fast_generate(
     else:
         cache_implementation = None
     if cache_implementation is not None:
-        swa = getattr(
-            getattr(self.config, "text_config", self.config), "sliding_window", None
-        )
+        swa = getattr(getattr(self.config, "text_config", self.config), "sliding_window", None)
         if (swa == 0 or type(swa) is not int) and (
             getattr(self, "_can_compile_fullgraph", True) is True
         ):
@@ -462,9 +446,7 @@ def unsloth_base_fast_generate(
     return output
 
 
-def _construct_vlm_processor_fallback(
-    tokenizer_name, model_type, token, trust_remote_code
-):
+def _construct_vlm_processor_fallback(tokenizer_name, model_type, token, trust_remote_code):
     """Construct a VLM processor manually when AutoProcessor.from_pretrained fails.
 
     Some VLMs (e.g., LFM2.5-VL) have tokenizer_class entries that AutoTokenizer
@@ -493,9 +475,7 @@ def _construct_vlm_processor_fallback(
         try:
             from huggingface_hub import hf_hub_download
 
-            config_path = hf_hub_download(
-                tokenizer_name, "tokenizer_config.json", token = token
-            )
+            config_path = hf_hub_download(tokenizer_name, "tokenizer_config.json", token = token)
             with open(config_path, "r", encoding = "utf-8") as f:
                 tok_config = json.load(f)
             # Set model-specific special tokens and their IDs
@@ -532,7 +512,6 @@ def _construct_vlm_processor_fallback(
 
         if proc_class_name is not None:
             import transformers
-
             proc_class = getattr(transformers, proc_class_name, None)
             if proc_class is not None:
                 processor = proc_class(image_processor = image_processor, tokenizer = tok)
@@ -663,7 +642,9 @@ class FastBaseModel:
                 gpu_stats.name + ". " if gpu_stats.name != "" else "NVIDIA GPU Device. "
             )
             gpu_version = torch.version.cuda
-            gpu_stats_snippet = f"CUDA: {gpu_stats.major}.{gpu_stats.minor}. CUDA Toolkit: {gpu_version}."
+            gpu_stats_snippet = (
+                f"CUDA: {gpu_stats.major}.{gpu_stats.minor}. CUDA Toolkit: {gpu_version}."
+            )
             try:
                 vllm_version = f" vLLM: {importlib_version('vllm')}."
             except:
@@ -679,9 +660,7 @@ class FastBaseModel:
                 vllm_version = ""
         elif DEVICE_TYPE == "xpu":
             gpu_stats = torch.xpu.get_device_properties(0)
-            gpu_stats_name = (
-                gpu_stats.name + ". " if gpu_stats.name != "" else "Intel XPU Device. "
-            )
+            gpu_stats_name = gpu_stats.name + ". " if gpu_stats.name != "" else "Intel XPU Device. "
             gpu_version = torch.version.xpu
             gpu_stats_snippet = f"Intel Toolkit: {gpu_version}."
             # [TODO] After adding vLLM support for XPU, change this
@@ -728,9 +707,7 @@ class FastBaseModel:
             if dtype == torch.float16:
                 dtype = torch.bfloat16
         elif dtype == torch.bfloat16 and not SUPPORTS_BFLOAT16:
-            logger.warning_once(
-                "Device does not support bfloat16. Will change to float16."
-            )
+            logger.warning_once("Device does not support bfloat16. Will change to float16.")
             dtype = torch.float16
         assert dtype in (torch.float16, torch.bfloat16, torch.float32)
 
@@ -755,11 +732,8 @@ class FastBaseModel:
             # Allow custom dtypes on all runs
             allow_all_runs = checker == "all"
             # Allow only on float16 datatypes
-            allow_float16_runs = (
-                checker == "float16" or checker == "torch.float16"
-            ) and (
-                dtype == torch.float16
-                or os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1"
+            allow_float16_runs = (checker == "float16" or checker == "torch.float16") and (
+                dtype == torch.float16 or os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1"
             )
             if allow_all_runs or allow_float16_runs:
                 if eval(_dtype) is not None:
@@ -796,6 +770,14 @@ class FastBaseModel:
 
         bnb_config = None
         user_quantization_config = kwargs.get("quantization_config", None)
+
+        # Check if model already has a non-bitsandbytes quantization config (e.g. compressed-tensors/NVFP4)
+        from .loader_utils import check_and_disable_bitsandbytes_loading
+
+        load_in_4bit, load_in_8bit, _ = check_and_disable_bitsandbytes_loading(
+            auto_config, load_in_4bit = load_in_4bit, load_in_8bit = load_in_8bit
+        )
+
         if full_finetuning and (load_in_4bit or load_in_8bit):
             print(
                 "Unsloth: You selected full finetuning support, but 4bit / 8bit is enabled - disabling LoRA / QLoRA."
@@ -831,9 +813,7 @@ class FastBaseModel:
         elif load_in_16bit:
             bnb_config = None
         elif not load_in_4bit and not load_in_8bit and not full_finetuning:
-            print(
-                "Unsloth: QLoRA and full finetuning all not selected. Switching to 16bit LoRA."
-            )
+            print("Unsloth: QLoRA and full finetuning all not selected. Switching to 16bit LoRA.")
 
         if full_finetuning:
             os.environ["UNSLOTH_ENABLE_FULL_FINETUNING"] = "1"
@@ -864,10 +844,7 @@ class FastBaseModel:
         # Cannot be None, since HF now checks for the config
         if load_in_4bit or load_in_8bit:
             # Ignore load_in_4bit / load_in_8bit for MXFP4 - best to get config file
-            if (
-                "gpt-oss-20b" in model_name.lower()
-                or "gpt-oss-120b" in model_name.lower()
-            ):
+            if "gpt-oss-20b" in model_name.lower() or "gpt-oss-120b" in model_name.lower():
                 pass
             else:
                 if user_quantization_config is None:
@@ -904,10 +881,7 @@ class FastBaseModel:
                     pass
                 else:
                     # We cannot dequantize since gpt-oss-20b MXFP4 will now be gpt-oss-20b-BF16
-                    if (
-                        load_in_16bit
-                        and "dequantize" in inspect.signature(quantizer).parameters
-                    ):
+                    if load_in_16bit and "dequantize" in inspect.signature(quantizer).parameters:
                         quantizer_kwargs["dequantize"] = True
                     try:
                         # Sometimes this fails so we wrap it in a try except
@@ -976,9 +950,7 @@ class FastBaseModel:
                 model.fast_generate = make_fast_generate_wrapper(model.generate)
                 model.fast_generate_batches = error_out_no_vllm
             if offload_embedding:
-                if bool(
-                    os.environ.get("WSL_DISTRO_NAME") or os.environ.get("WSL_INTEROP")
-                ):
+                if bool(os.environ.get("WSL_DISTRO_NAME") or os.environ.get("WSL_INTEROP")):
                     # WSL doesn't work with offloaded embeddings
                     pass
                 elif os.name == "nt":
@@ -1026,9 +998,7 @@ class FastBaseModel:
             model_config.model_name = model_name
 
             if fast_inference:
-                fast_inference, model_name = fast_inference_setup(
-                    model_name, model_config
-                )
+                fast_inference, model_name = fast_inference_setup(model_name, model_config)
 
             fp8_mode = None
             if load_in_fp8 != False:
@@ -1081,9 +1051,7 @@ class FastBaseModel:
             model.vllm_engine = llm
             llm.shared_weights = True
             model.fast_generate = model.vllm_engine.generate
-            model.fast_generate_batches = functools.partial(
-                generate_batches, model.vllm_engine
-            )
+            model.fast_generate_batches = functools.partial(generate_batches, model.vllm_engine)
 
         raise_handler.remove()
 
@@ -1118,7 +1086,6 @@ class FastBaseModel:
         # Fix _Unsloth_Patched_ prefix in local config files from old saves (issue #4085)
         if os.path.isdir(tokenizer_name):
             import json as _json
-
             for _cfg_name in (
                 "processor_config.json",
                 "preprocessor_config.json",
@@ -1129,9 +1096,7 @@ class FastBaseModel:
                     try:
                         with open(_cfg_path, "r", encoding = "utf-8") as _f:
                             _cfg = _json.load(_f)
-                        if _cfg.get("processor_class", "").startswith(
-                            "_Unsloth_Patched_"
-                        ):
+                        if _cfg.get("processor_class", "").startswith("_Unsloth_Patched_"):
                             _cfg["processor_class"] = _cfg["processor_class"][
                                 len("_Unsloth_Patched_") :
                             ]
@@ -1175,9 +1140,7 @@ class FastBaseModel:
         # instead of returning a full VLM processor (issue #4085),
         # try constructing the processor manually from separate components.
         _processor_is_degraded = (
-            is_vlm
-            and tokenizer is not None
-            and not hasattr(tokenizer, "image_processor")
+            is_vlm and tokenizer is not None and not hasattr(tokenizer, "image_processor")
         )
         if (tokenizer is None or _processor_is_degraded) and is_vlm:
             _fallback = _construct_vlm_processor_fallback(
@@ -1190,7 +1153,6 @@ class FastBaseModel:
                 tokenizer = _fallback
             if tokenizer is None:
                 import sys
-
                 print(
                     f"Unsloth: Warning - VLM processor fallback returned None for model_type={model_type_arch}",
                     file = sys.stderr,
@@ -1261,7 +1223,6 @@ class FastBaseModel:
             # Last resort: try loading tokenizer via AutoTokenizer, then PreTrainedTokenizerFast
             try:
                 from transformers import AutoTokenizer as _AutoTokenizer
-
                 tokenizer = _AutoTokenizer.from_pretrained(
                     tokenizer_name,
                     padding_side = "left",
@@ -1271,7 +1232,6 @@ class FastBaseModel:
             except Exception:
                 try:
                     from transformers import PreTrainedTokenizerFast
-
                     tokenizer = PreTrainedTokenizerFast.from_pretrained(
                         tokenizer_name,
                         padding_side = "left",
@@ -1367,9 +1327,7 @@ class FastBaseModel:
         **kwargs,
     ):
         if os.environ.get("UNSLOTH_ENABLE_FULL_FINETUNING", "0") == "1":
-            print(
-                "Unsloth: Full finetuning is enabled, so .get_peft_model has no effect"
-            )
+            print("Unsloth: Full finetuning is enabled, so .get_peft_model has no effect")
             return model
         transformers_set_seed(random_state)
 
@@ -1379,9 +1337,7 @@ class FastBaseModel:
             raise TypeError(f"Unsloth: Rank of {str(r)} must be larger than 0.")
 
         if isinstance(model, PeftModelForCausalLM):
-            raise RuntimeError(
-                "Unsloth: You already added LoRA adapters to your model!"
-            )
+            raise RuntimeError("Unsloth: You already added LoRA adapters to your model!")
 
         if target_modules == "all-linear":
             finetune_vision_layers = True
@@ -1397,20 +1353,13 @@ class FastBaseModel:
                 finetune_mlp_modules = finetune_mlp_modules,
             )
         else:
-            assert type(target_modules) in (
-                list,
-                tuple,
-                str,
-            )
+            assert type(target_modules) in (list, tuple, str)
 
         if hasattr(model, "vllm_engine"):
             if (
                 hasattr(model.vllm_engine, "llm_engine")
                 and hasattr(model.vllm_engine.llm_engine, "vllm_config")
-                and getattr(
-                    model.vllm_engine.llm_engine.vllm_config, "lora_config", None
-                )
-                is None
+                and getattr(model.vllm_engine.llm_engine.vllm_config, "lora_config", None) is None
             ):
                 # If vLLM is being used but lora is not enabled, throw an error
                 # Ref https://github.com/vllm-project/vllm/blob/51ba839555a5d122eadd91e9c16463ac288f5fa1/vllm/v1/engine/processor.py#L148-L151
@@ -1575,10 +1524,7 @@ class FastBaseModel:
             pass
         else:
             float32_mixed_precision = True
-            if (
-                _get_dtype(dtype_from_config(model.config)) == torch.bfloat16
-                and full_finetuning
-            ):
+            if _get_dtype(dtype_from_config(model.config)) == torch.bfloat16 and full_finetuning:
                 # Use bfloat16 precision for full finetuning
                 float32_mixed_precision = False
 
@@ -1674,13 +1620,8 @@ class FastBaseModel:
         # Only do this if tokenizer is defined since eos_token == pad_token sometimes!
         pad_token_id = getattr(tokenizer, "pad_token_id", None)
         lm_head = getattr(model, "lm_head", None)
-        lm_head_weight = (
-            getattr(lm_head, "weight", None) if lm_head is not None else None
-        )
-        if (
-            tokenizer is not None
-            and getattr(tokenizer, "eos_token_id", None) != pad_token_id
-        ):
+        lm_head_weight = getattr(lm_head, "weight", None) if lm_head is not None else None
+        if tokenizer is not None and getattr(tokenizer, "eos_token_id", None) != pad_token_id:
             with torch.no_grad():
                 for name, module in model.named_modules():
                     if type(module) is torch.nn.Embedding:
@@ -1695,8 +1636,7 @@ class FastBaseModel:
                                 # Skip if tied to lm_head
                                 if (
                                     lm_head_weight is not None
-                                    and module.weight.data_ptr()
-                                    == lm_head_weight.data_ptr()
+                                    and module.weight.data_ptr() == lm_head_weight.data_ptr()
                                 ):
                                     continue
                                 module.weight[module.padding_idx] = 0

@@ -110,9 +110,7 @@ def test_trl_is_x_available_returns_bool_not_tuple():
     accessor_names = [
         n
         for n in dir(tiu)
-        if n.startswith("is_")
-        and n.endswith("_available")
-        and callable(getattr(tiu, n, None))
+        if n.startswith("is_") and n.endswith("_available") and callable(getattr(tiu, n, None))
     ]
     assert accessor_names, "trl.import_utils has no is_*_available accessors"
 
@@ -158,9 +156,7 @@ def test_trl_cached_available_flags_are_not_tuples():
     tuple_flags = {
         name: value
         for name, value in vars(tiu).items()
-        if name.startswith("_")
-        and name.endswith("_available")
-        and isinstance(value, tuple)
+        if name.startswith("_") and name.endswith("_available") and isinstance(value, tuple)
     }
     if tuple_flags:
         pytest.fail(
@@ -290,10 +286,9 @@ def test_peft_transformers_weight_conversion_importable_and_signature():
             "patch_peft_weight_converter_compatibility will silently no-op."
         )
 
-    assert hasattr(twc, "build_peft_weight_mapping"), (
-        "build_peft_weight_mapping vanished from "
-        "peft.utils.transformers_weight_conversion."
-    )
+    assert hasattr(
+        twc, "build_peft_weight_mapping"
+    ), "build_peft_weight_mapping vanished from peft.utils.transformers_weight_conversion."
     sig = inspect.signature(twc.build_peft_weight_mapping)
     expected_params = {"weight_conversions", "adapter_name"}
     actual_params = set(sig.parameters)
@@ -390,9 +385,7 @@ def test_installed_torch_torchvision_pair_is_compatible():
         )
 
     pre_tags = (".dev", "a0", "b0", "rc", "alpha", "beta", "nightly")
-    is_prerelease = any(t in torch_raw for t in pre_tags) or any(
-        t in tv_raw for t in pre_tags
-    )
+    is_prerelease = any(t in torch_raw for t in pre_tags) or any(t in tv_raw for t in pre_tags)
     is_custom = _is_custom_torch_build(torch_raw) or _is_custom_torch_build(tv_raw)
     if is_prerelease or is_custom:
         pytest.skip(
@@ -593,9 +586,7 @@ def test_patch_loss_functions_does_not_touch_other_loss_types():
     cel = pytest.importorskip("unsloth.kernels.cross_entropy_loss")
 
     non_causal_keys = {
-        k
-        for k, v in lu.LOSS_MAPPING.items()
-        if getattr(v, "__name__", "") != "ForCausalLMLoss"
+        k for k, v in lu.LOSS_MAPPING.items() if getattr(v, "__name__", "") != "ForCausalLMLoss"
     }
 
     saved = dict(lu.LOSS_MAPPING)
