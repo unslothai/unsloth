@@ -1176,13 +1176,20 @@ const VoiceToggle: FC = () => {
   const resumeListen = useCallback(() => {
     if (voiceModeRef.current === "active") {
       console.log("[VoiceToggle] resuming dictation after response");
-      document
-        .querySelector<HTMLButtonElement>('button[aria-label="Dictate"]')
-        ?.click();
+      if (!auiRef.current.composer().getState().dictation) {
+        document
+          .querySelector<HTMLButtonElement>('button[aria-label="Dictate"]')
+          ?.click();
+      }
     }
   }, []);
 
   const { isSpeaking, speak, stop, primeAudio } = useTtsPlayer(activeAudioType, resumeListen, voiceSlotLoaded);
+  const prevIsSpeakingRef = useRef(isSpeaking);
+  if (prevIsSpeakingRef.current !== isSpeaking) {
+    console.log("[VoiceToggle] isSpeaking:", prevIsSpeakingRef.current, "→", isSpeaking);
+    prevIsSpeakingRef.current = isSpeaking;
+  }
   isSpeakingRef.current = isSpeaking;
   const speakRef = useRef(speak);
   speakRef.current = speak;
@@ -1261,12 +1268,33 @@ const VoiceToggle: FC = () => {
     }
     console.log("[VoiceToggle] speak called, text length:", text.length);
     speakRef.current(text);
+    // Start dictation during TTS so barge-in can fire on transcript updates.
+    // TODO: the mic hears the speaker output — model voice can trigger spurious
+    // transcript updates and barge itself in. Proper fix is echo cancellation or
+    // matching transcripts against the TTS text. Leaving as follow-up.
+    if (!auiRef.current.composer().getState().dictation) {
+      document
+        .querySelector<HTMLButtonElement>('button[aria-label="Dictate"]')
+        ?.click();
+    }
   }, [isThreadRunning, resumeListen]);
 
   // Silence timer: only fires in "active" state.
   useEffect(() => {
+    console.log("[VoiceToggle] silence-timer effect", {
+      dictationStatusType,
+      dictationTranscript: dictationTranscript.slice(0, 60),
+      isSpeaking: isSpeakingRef.current,
+      voiceMode: voiceModeRef.current,
+    });
     if (dictationStatusType !== "running") return;
     if (voiceModeRef.current !== "active") return;
+
+    // Barge-in: new non-empty transcript fragment while TTS is playing → interrupt immediately.
+    if (isSpeakingRef.current && dictationTranscript.trim()) {
+      console.log("[VoiceToggle] barge-in: calling stop()");
+      stop();
+    }
 
     if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
     silenceTimerRef.current = setTimeout(() => {
@@ -1285,7 +1313,7 @@ const VoiceToggle: FC = () => {
         silenceTimerRef.current = null;
       }
     };
-  }, [dictationTranscript, dictationStatusType]);
+  }, [dictationTranscript, dictationStatusType, stop]);
 
   const toggle = useCallback(() => {
     // OFF → CONFIGURING (show dropdown, don't start mic)
